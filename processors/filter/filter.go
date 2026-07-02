@@ -19,6 +19,33 @@ var ErrRouteRequired = &shared.BridgeError{
 	Message: "route action requires routeTo configuration",
 }
 
+// ErrUnknownAction signals that a filter was constructed with an Action
+// that is not one of ActionPass / ActionDrop / ActionRoute. Validated in
+// New so a misconfigured filter fails fast at build rather than silently
+// falling through to the chain (which would turn a policy gate into a
+// no-op). Same setup-error convention as ErrRouteRequired.
+var ErrUnknownAction = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "filter: unknown action",
+}
+
+// ErrUnknownOperator signals that a condition was constructed with an
+// unsupported Operator. Validated in New (via newConditionEvaluator) so
+// the misconfiguration fails the build instead of degrading into a
+// per-message plain error the runtime would treat as retryable.
+var ErrUnknownOperator = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "filter: unknown operator",
+}
+
+// DefaultMaxPayloadBytes bounds the JSON payload a filter will parse for
+// a "$." path condition when Config.MaxPayloadBytes is left unset. It
+// caps worst-case parse CPU for an oversized / hostile message while
+// remaining generous for typical broker payloads.
+const DefaultMaxPayloadBytes = 4 << 20 // 4 MiB
+
 // Processor is a filter processor that evaluates conditions against an
 // envelope and applies a configured action (pass, drop, or route).
 type Processor struct {
@@ -29,8 +56,17 @@ type Processor struct {
 var _ ports.Processor = (*Processor)(nil)
 
 // New creates a filter processor from the given configuration.
-// All regex patterns are pre-compiled during construction.
+// All regex patterns are pre-compiled during construction, and the
+// action + every operator are validated so a misconfigured filter is
+// rejected here rather than per message.
 func New(cfg Config) (*Processor, error) {
+	if err := validateAction(cfg.Action); err != nil {
+		return nil, err
+	}
+	if cfg.MaxPayloadBytes <= 0 {
+		cfg.MaxPayloadBytes = DefaultMaxPayloadBytes
+	}
+
 	p := &Processor{
 		config:     cfg,
 		evaluators: make([]*conditionEvaluator, 0, len(cfg.Conditions)),
@@ -41,6 +77,7 @@ func New(cfg Config) (*Processor, error) {
 		if err != nil {
 			return nil, err
 		}
+		eval.maxPayloadBytes = cfg.MaxPayloadBytes
 		p.evaluators = append(p.evaluators, eval)
 	}
 
@@ -51,6 +88,24 @@ func New(cfg Config) (*Processor, error) {
 	return p, nil
 }
 
+// validateAction reports whether a is a supported filter action.
+func validateAction(a Action) error {
+	switch a {
+	case ActionPass, ActionDrop, ActionRoute:
+		return nil
+	default:
+		return ErrUnknownAction.With("action", string(a))
+	}
+}
+
+// contextError classifies an observed context cancellation / deadline as
+// a transient processor timeout so the runtime may retry, while ensuring
+// the processor stops promptly and does not mutate the envelope after
+// the runtime has already moved on.
+func contextError(err error) error {
+	return shared.ErrProcessorTimeout.Wrap(err)
+}
+
 func (p *Processor) Name() string {
 	if p.config.Name != "" {
 		return p.config.Name
@@ -59,7 +114,11 @@ func (p *Processor) Name() string {
 }
 
 func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	matches, err := p.evaluate(env)
+	if err := ctx.Err(); err != nil {
+		return contextError(err)
+	}
+
+	matches, err := p.evaluate(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -78,22 +137,33 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	case ActionDrop:
 		return shared.ErrMessageFiltered
 	case ActionRoute:
+		// Do not mutate the envelope if the runtime already timed out /
+		// cancelled: it may have moved this envelope on already.
+		if err := ctx.Err(); err != nil {
+			return contextError(err)
+		}
 		if env.Headers() == nil {
 			env.ReplaceHeaders(make(map[string]any, 1))
 		}
 		env.SetHeader(messaging.HeaderRouteOverride, p.config.RouteTo)
 		return next(ctx, env)
 	default:
-		return next(ctx, env)
+		// Unreachable: validateAction rejects unknown actions in New.
+		// Fail closed (never silently pass) as defence in depth for a
+		// policy gate.
+		return ErrUnknownAction.With("action", string(p.config.Action))
 	}
 }
 
-func (p *Processor) evaluate(env *messaging.Envelope) (bool, error) {
+func (p *Processor) evaluate(ctx context.Context, env *messaging.Envelope) (bool, error) {
 	if len(p.evaluators) == 0 {
 		return true, nil
 	}
 
 	for _, eval := range p.evaluators {
+		if err := ctx.Err(); err != nil {
+			return false, contextError(err)
+		}
 		match, err := eval.evaluate(env)
 		if err != nil {
 			return false, err

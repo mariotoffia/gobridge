@@ -2,12 +2,20 @@ package sqlitedlq
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 )
+
+// Compile-time interface assertion. io.Closer lets a lifecycle-aware
+// composition root release the file handle on stop/reload without importing
+// this package's concrete type (I5). ports.DLQStore is satisfied structurally
+// and asserted in the test package to keep this production file free of a
+// ports import (see .go-arch-lint.yml).
+var _ io.Closer = (*Store)(nil)
 
 // Store implements ports.DLQStore using SQLite for local durable
 // persistence in tests and single-process deployments.

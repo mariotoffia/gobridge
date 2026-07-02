@@ -21,30 +21,37 @@ import (
 // earlier files.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization
-// PINS the current behaviour: PublishFromEnvelope only special-cases
-// three reserved headers (CorrelationID, ContentType, response-topic).
-// All OTHER x-bridge.* headers are forwarded as MQTT v5 user
-// properties on the wire. This is intentional — receiving bridges
-// strip them via IsReservedHeader, and several reserved headers (e.g.
-// causation-id, idempotency-key, tenant-id) are part of the bridge's
-// distributed-tracing contract and MUST traverse hops.
+// TestAnaMore_PublishFromEnvelope_EgressHeaderPolicy verifies the MQTT
+// egress header policy: INTERNAL-ONLY reserved headers
+// (messaging.IsInternalOnlyHeader — route-id, route-override, source-id,
+// content-type) are NOT serialized as MQTT user properties, while
+// BRIDGE-TO-BRIDGE propagated headers (causation, idempotency, dedup,
+// ordering, tenant, forwarded, trace) and application headers ARE, so a
+// peer bridge can still correlate, deduplicate and continue a trace.
 //
-// External non-bridge consumers will see these headers; operators
-// integrating with such consumers should add a stripping middleware
-// at their ACL.
-func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *testing.T) {
+// This replaces an earlier characterization that PINNED the leak (route-id
+// / source-id appearing on the wire). content-type is mapped to the native
+// MQTT ContentType property; correlation-id to CorrelationData.
+func TestAnaMore_PublishFromEnvelope_EgressHeaderPolicy(t *testing.T) {
 	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
 		Subject: "t",
 		Payload: []byte("p"),
 		Headers: map[string]any{
-			messaging.HeaderCorrelationID:  "corr",         // mapped to MQTT CorrelationData
-			messaging.HeaderContentType:    "text/plain",   // mapped to MQTT ContentType
-			messaging.HeaderCausationID:    "cause",        // forwarded as user property
-			messaging.HeaderIdempotencyKey: "idem",         // forwarded
-			messaging.HeaderTenantID:       "tenant-7",     // forwarded
-			messaging.HeaderRouteID:        "internal-rt",  // forwarded (debatable)
-			messaging.HeaderSourceID:       "internal-src", // forwarded (debatable)
+			messaging.HeaderCorrelationID:   "corr",         // → MQTT CorrelationData
+			messaging.HeaderContentType:     "text/plain",   // → MQTT ContentType (internal-only)
+			messaging.HeaderCausationID:     "cause",        // bridge-to-bridge → user property
+			messaging.HeaderIdempotencyKey:  "idem",         // bridge-to-bridge → user property
+			messaging.HeaderDeduplicationID: "dedup",        // bridge-to-bridge → user property
+			messaging.HeaderOrderingKey:     "order",        // bridge-to-bridge → user property
+			messaging.HeaderTenantID:        "tenant-7",     // bridge-to-bridge → user property
+			messaging.HeaderForwardedFrom:   "bridge-a",     // bridge-to-bridge → user property
+			messaging.HeaderForwardedHop:    "3",            // bridge-to-bridge → user property
+			messaging.HeaderTraceParent:     "00-trace-01",  // bridge-to-bridge → user property
+			messaging.HeaderTraceState:      "vendor=x",     // bridge-to-bridge → user property
+			messaging.HeaderRouteID:         "internal-rt",  // INTERNAL-ONLY → stripped
+			messaging.HeaderRouteOverride:   "internal-ovr", // INTERNAL-ONLY → stripped
+			messaging.HeaderSourceID:        "internal-src", // INTERNAL-ONLY → stripped
+			"x-app-key":                     "app-value",    // application → user property
 		},
 	})
 	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
@@ -57,37 +64,53 @@ func TestAnaMore_PublishFromEnvelope_ReservedHeaderLeak_Characterization(t *test
 		mapped[u.Key] = u.Value
 	}
 
-	// HeaderCorrelationID must NOT be on the wire as a user property
-	// (it occupies CorrelationData instead).
-	if _, hasCorr := mapped[messaging.HeaderCorrelationID]; hasCorr {
+	// CorrelationData / ContentType are mapped to native MQTT properties,
+	// never duplicated as user properties.
+	if _, has := mapped[messaging.HeaderCorrelationID]; has {
 		t.Error("HeaderCorrelationID must not appear as a user property")
 	}
 	if string(pub.Properties.CorrelationData) != "corr" {
 		t.Errorf("CorrelationData = %q, want %q", pub.Properties.CorrelationData, "corr")
 	}
-	// HeaderContentType must NOT be on the wire as a user property.
-	if _, hasCT := mapped[messaging.HeaderContentType]; hasCT {
+	if _, has := mapped[messaging.HeaderContentType]; has {
 		t.Error("HeaderContentType must not appear as a user property")
 	}
 	if pub.Properties.ContentType != "text/plain" {
 		t.Errorf("ContentType = %q, want %q", pub.Properties.ContentType, "text/plain")
 	}
 
-	// All other x-bridge.* headers ARE on the wire (current
-	// behaviour). If this changes, update the characterization to
-	// reflect the new contract.
-	wantOnWire := []string{
-		messaging.HeaderCausationID,
-		messaging.HeaderIdempotencyKey,
-		messaging.HeaderTenantID,
+	// INTERNAL-ONLY reserved headers MUST be stripped from the wire.
+	for _, k := range []string{
 		messaging.HeaderRouteID,
+		messaging.HeaderRouteOverride,
 		messaging.HeaderSourceID,
+	} {
+		if v, ok := mapped[k]; ok {
+			t.Errorf("internal-only header %q leaked to MQTT user property (value %q); want stripped", k, v)
+		}
 	}
-	for _, k := range wantOnWire {
-		if _, ok := mapped[k]; !ok {
-			t.Errorf("CHARACTERIZATION CHANGED: header %q expected on wire but missing — "+
-				"if the send-side now strips reserved headers, update this test to assert that.",
-				k)
+
+	// BRIDGE-TO-BRIDGE and application headers MUST pass through.
+	wantOnWire := map[string]string{
+		messaging.HeaderCausationID:     "cause",
+		messaging.HeaderIdempotencyKey:  "idem",
+		messaging.HeaderDeduplicationID: "dedup",
+		messaging.HeaderOrderingKey:     "order",
+		messaging.HeaderTenantID:        "tenant-7",
+		messaging.HeaderForwardedFrom:   "bridge-a",
+		messaging.HeaderForwardedHop:    "3",
+		messaging.HeaderTraceParent:     "00-trace-01",
+		messaging.HeaderTraceState:      "vendor=x",
+		"x-app-key":                     "app-value",
+	}
+	for k, want := range wantOnWire {
+		got, ok := mapped[k]
+		if !ok {
+			t.Errorf("header %q expected on wire (bridge-to-bridge/application) but missing", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("header %q = %q, want %q", k, got, want)
 		}
 	}
 }
@@ -286,6 +309,10 @@ func TestAnaMore_PushEvent_BurstUnderClose_NoLostCloseSemantics(t *testing.T) {
 // TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone
 // verifies that an emit blocked on an inner channel returns when its
 // runCtx is cancelled (via parent ctx), allowing Run to unwind.
+//
+// Route dispatches SYNCHRONOUSLY (see acl_router.go) — it blocks until the
+// handler/emit returns — so it is driven from a goroutine here; that block
+// IS the backpressure this test exercises.
 func TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
@@ -311,7 +338,9 @@ func TestAnaMore_Receiver_BlockedEmit_BackpressureCancelOnRunCtxDone(t *testing.
 	case <-time.After(2 * time.Second):
 		t.Fatal("receiver did not start")
 	}
-	sess.Router().Route(newTestPacketPublish("t/x", []byte("p")))
+	// Route blocks until emit returns; drive it from a goroutine so the
+	// test can observe the blocked emit and then cancel.
+	go sess.Router().Route(newTestPacketPublish("t/x", []byte("p")))
 
 	select {
 	case <-emitting:

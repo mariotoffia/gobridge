@@ -110,3 +110,64 @@ func TestRetryDelay_PublicJitterStaysWithinBounds(t *testing.T) {
 		}
 	}
 }
+
+// TestRouteRunner_DirectHold_MaxReplay_PerTransportCount proves the
+// MaxReplayAttempts boundary is honored per transport for ASB and amqp10
+// sources, not only SQS. At the cap a recoverable send error poisons the message
+// to the DLQ; one below the cap the same error retries — proving the boundary is
+// exact, not off-by-one. Regression for E5 (asb) / E5-AMQP10 — before the fix
+// receiveCount() read only the SQS header, returned 0 for these transports, and
+// the cap never triggered.
+func TestRouteRunner_DirectHold_MaxReplay_PerTransportCount(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		value  any
+		poison bool // true: count >= cap, expect DLQ; false: count < cap, expect retry
+	}{
+		// ASB DeliveryCount is 1-based: 3 == 3rd delivery == cap; 2 == below cap.
+		{"asb at cap poisons", "asb.delivery-count", 3, true},
+		{"asb below cap retries", "asb.delivery-count", 2, false},
+		// amqp10 delivery-count is 0-based: raw 2 -> count 3 == cap; raw 1 ->
+		// count 2 == below cap.
+		{"amqp10 at cap poisons", "amqp10.delivery-count", uint32(2), true},
+		{"amqp10 below cap retries", "amqp10.delivery-count", uint32(1), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+				cfg.Policy.MaxReplayAttempts = 3
+			})
+			sender.SendErr = shared.ErrUnavailable // recoverable: retries while under cap
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = runner.Run(ctx) }()
+
+			del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
+				ID:      "msg-" + tc.name,
+				Payload: []byte("x"),
+				Headers: map[string]any{tc.header: tc.value},
+			}))
+			if err := receiver.Emit(ctx, del); err != nil {
+				t.Fatalf("emit: %v", err)
+			}
+			if tc.poison {
+				waitFor(t, time.Second, "poisoned to DLQ and acked", func() bool {
+					return dlqStore.Count() == 1 && del.IsAcked()
+				})
+				if del.IsRetried() {
+					t.Fatal("message should be poisoned to DLQ, not retried, once the source count reached the cap")
+				}
+			} else {
+				waitFor(t, time.Second, "retried while below cap", del.IsRetried)
+				if dlqStore.Count() != 0 {
+					t.Fatal("message below the cap must not be poisoned to the DLQ")
+				}
+				if del.IsAcked() {
+					t.Fatal("message below the cap must not be acked (still retrying)")
+				}
+			}
+		})
+	}
+}

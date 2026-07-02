@@ -38,6 +38,14 @@ const (
 type BootstrapConfig struct {
 	BridgeID string `json:"bridge_id"`
 
+	// NodeRole is recorded and validated (must be "control" or
+	// "worker") but is RESERVED / non-operative at runtime: the
+	// bootstrap App starts the transport, admin, and monitor servers
+	// on every node regardless of this value. It is consumed only at
+	// deploy time by the CDK single/cluster facades (per-service role
+	// + synth-time worker validation) and surfaced to the container as
+	// the GOBRIDGE_NODE_ROLE env var. Reserved for future multi-node
+	// coordination.
 	NodeRole NodeRole `json:"node_role,omitempty"`
 	Topology Topology `json:"topology,omitempty"`
 

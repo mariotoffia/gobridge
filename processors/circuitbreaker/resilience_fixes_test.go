@@ -34,6 +34,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -51,14 +52,15 @@ import (
 // -----------------------------------------------
 func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 	cfg := fastConfig()
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	err1 := b.BeforeRequest()
 	if err1 != nil {
@@ -86,14 +88,15 @@ func TestHalfOpen_LimitsConcurrentProbes(t *testing.T) {
 func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 	cfg := fastConfig()
 	cfg.HalfOpenMaxProbes = 3
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < 3; i++ {
 		if err := b.BeforeRequest(); err != nil {
@@ -202,10 +205,12 @@ func TestEviction_PrefersHalfOpenOverOpen(t *testing.T) {
 		SuccessThreshold: 1,
 		ResetTimeout:     1 * time.Hour,
 	}
-	p := New("test", cfg)
+	p := New("test", cfg, WithMaxBreakers(8))
 
 	p.mu.Lock()
-	for i := 0; i < maxBreakers; i++ {
+	// A handful of open breakers is enough to prove eviction order; the exact
+	// fill count is immaterial to the Closed > HalfOpen > Open preference.
+	for i := 0; i < 8; i++ {
 		key := "key-" + string(rune('A'+i%26)) + string(rune('0'+i/26))
 		b := cb.NewBreaker(key, cfg.WithDefaults(), nil)
 		b.ForceStateForTest(cb.StateOpen, time.Now())
@@ -241,14 +246,15 @@ func TestDefaultConfig_SetsHalfOpenMaxProbes(t *testing.T) {
 // half-open probe releases the slot for the next request.
 func TestHalfOpen_ProbeReleasedAfterResponse(t *testing.T) {
 	cfg := fastConfig()
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < 10; i++ {
 		err := b.BeforeRequest()
@@ -272,20 +278,28 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 		SuccessThreshold: 2,
 		ResetTimeout:     50 * time.Millisecond,
 	}
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	var wg sync.WaitGroup
 	var allowed, rejected atomic.Int32
 	const goroutines = 50
 
+	// barrier releases all goroutines at once; attempted tracks that every
+	// goroutine has finished its BeforeRequest call; release keeps any admitted
+	// probe in-flight until all attempts are counted. This exercises the
+	// single-probe limit deterministically without sleeping to "hold" a probe.
 	barrier := make(chan struct{})
+	release := make(chan struct{})
+	var attempted sync.WaitGroup
+	attempted.Add(goroutines)
 
 	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
@@ -295,22 +309,26 @@ func TestHalfOpen_ConcurrentProbesLimited(t *testing.T) {
 			err := b.BeforeRequest()
 			if err == nil {
 				allowed.Add(1)
-				time.Sleep(10 * time.Millisecond) // OTHER: simulate probe latency for concurrent half-open test
+				attempted.Done()
+				<-release
 				b.AfterRequest(nil)
 			} else {
 				rejected.Add(1)
+				attempted.Done()
 			}
 		}()
 	}
 
 	close(barrier)
+	attempted.Wait() // every goroutine has completed BeforeRequest
+	close(release)   // let the admitted probe finish now that attempts are counted
 	wg.Wait()
 
-	if allowed.Load() < 1 {
-		t.Fatal("at least 1 probe should be allowed")
+	if allowed.Load() != 1 {
+		t.Fatalf("exactly 1 probe should be admitted in half-open (max=1), got %d", allowed.Load())
 	}
-	if rejected.Load() == 0 {
-		t.Fatal("some probes should be rejected in half-open with max=1")
+	if rejected.Load() != goroutines-1 {
+		t.Fatalf("expected %d rejected probes in half-open with max=1, got %d", goroutines-1, rejected.Load())
 	}
 }
 

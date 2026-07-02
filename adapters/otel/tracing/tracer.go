@@ -2,6 +2,7 @@ package oteltracing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -28,6 +29,10 @@ func New(ctx context.Context, opts ...Option) (*Tracer, error) {
 	}
 	applyDefaults(&t.config)
 
+	if r := t.config.SamplerRatio; r != nil && (*r < 0 || *r > 1) {
+		return nil, fmt.Errorf("otel-tracing: sampler ratio %v out of range [0,1]", *r)
+	}
+
 	client, err := newTracerClient(ctx, t.config)
 	if err != nil {
 		return nil, err
@@ -48,6 +53,29 @@ func (t *Tracer) StartSpan(
 		return ctx, noopSpan{}
 	}
 	return t.client.StartSpan(ctx, name, tags)
+}
+
+// Extract reads a W3C trace context (traceparent/tracestate) from the
+// given carrier headers into ctx, so a span started next becomes a
+// child of the remote parent. Headers use the bridge's map[string]any
+// bag; the method is SDK-free at its boundary (K1).
+func (t *Tracer) Extract(ctx context.Context, headers map[string]any) context.Context {
+	if t.client == nil {
+		return ctx
+	}
+	return t.client.Extract(ctx, headers)
+}
+
+// Inject writes the active span context in ctx onto the carrier headers
+// for outbound W3C propagation, returning the (possibly new) map (K1).
+func (t *Tracer) Inject(ctx context.Context, headers map[string]any) map[string]any {
+	if t.client == nil {
+		if headers == nil {
+			return make(map[string]any)
+		}
+		return headers
+	}
+	return t.client.Inject(ctx, headers)
 }
 
 // Close shuts down the TracerProvider, flushing any pending spans.

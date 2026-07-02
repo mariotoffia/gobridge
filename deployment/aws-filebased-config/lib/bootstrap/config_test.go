@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -86,4 +87,21 @@ func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 		})
 		require.NoError(t, err)
 	})
+}
+
+// TestNewDefaultPluginRegistry_RegistersDynamoDBStoreDecoder asserts the
+// bundled plugin registry can decode a DynamoDB store config. Without
+// awsstore.Register wired into newDefaultPluginRegistry, Decode returns
+// an "unknown plugin kind" error and any bridge.yaml referencing a
+// `type: dynamodb` store fails to parse in this AWS deployment profile.
+func TestNewDefaultPluginRegistry_RegistersDynamoDBStoreDecoder(t *testing.T) {
+	reg := newDefaultPluginRegistry()
+
+	assert.Contains(t, reg.Kinds(), awsstore.DynamoDBKind)
+
+	cfg, err := reg.Decode(awsstore.DynamoDBKind, nil)
+	require.NoError(t, err)
+	dyn, ok := cfg.(*awsstore.DynamoDBConfig)
+	require.True(t, ok, "decoded config should be *awsstore.DynamoDBConfig, got %T", cfg)
+	assert.Equal(t, awsstore.DynamoDBKind, dyn.Kind())
 }

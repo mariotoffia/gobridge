@@ -50,13 +50,30 @@ func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session 
 	return f.send.NewSender(ctx, spec, session)
 }
 
-// Capabilities returns SQS transport capabilities: visibility extension
-// (for delivery lock renewal) and source redelivery (SQS automatically
-// redelivers un-deleted messages).
+// Capabilities returns SQS transport capabilities:
+//
+//   - CapVisibilityExtension: a Delivery can renew its visibility lock
+//     (ChangeMessageVisibility) so direct_hold routes are admissible.
+//   - CapSourceRedelivery: SQS automatically redelivers a message whose
+//     visibility timeout lapses without a DeleteMessage.
+//   - CapDelayedSend: SQS supports per-message DelaySeconds (0-900), so
+//     the sender can honour delayed delivery requests.
+//
+// ponytail: CapSharedConsumer is deliberately OMITTED. SQS is a
+// competing-consumer work queue — each message is delivered to exactly
+// one consumer, and horizontal scaling across many pollers is the
+// intended mode. CapSharedConsumer means a *broadcast* fan-out source
+// that needs single-active fencing; runtime/validator.go:89 consumes it
+// to REJECT any unfenced direct_hold route. Declaring it would force
+// every SQS direct_hold route (e.g. scenario 02) to adopt a lease/outbox
+// it does not need, defeating SQS's scale-out model. No built-in
+// transport declares CapSharedConsumer; the omission is intentional, not
+// an oversight.
 func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{
 		ports.CapVisibilityExtension,
 		ports.CapSourceRedelivery,
+		ports.CapDelayedSend,
 	}
 }
 
@@ -68,6 +85,13 @@ func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
 // VisibilityTimeout returns the default SQS visibility timeout (30s).
 // The runtime validator uses this to check that SendTimeout does not
 // exceed half the visibility window.
+//
+// This Factory is a stateless singleton with no access to the per-route
+// receiver config, so it reports the transport-wide default. A route that
+// sets e.g. visibility_timeout: 120 is threaded through instead via
+// Config.EffectiveVisibilityTimeout() (ports.VisibilityTimeoutConfig),
+// which the builder prefers over this constant (D2, Phase 1b). This
+// method remains the fallback for callers that provide no receiver config.
 func (f *Factory) VisibilityTimeout() time.Duration {
 	return 30 * time.Second
 }

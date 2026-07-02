@@ -42,8 +42,11 @@ func TestRuntime_StartStop(t *testing.T) {
 	sender := NewFakeSender()
 
 	cfg := goruntime.RouteConfig{
-		ID:                 "route-1",
-		Policy:             routing.RoutePolicy{}.WithDefaults(),
+		ID: "route-1",
+		Policy: routing.RoutePolicy{
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
+		}.WithDefaults(),
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -83,7 +86,11 @@ func TestRuntime_DuplicateRoute(t *testing.T) {
 func TestRuntime_AddRouteWhileRunning(t *testing.T) {
 	rt := goruntime.New()
 	cfg := goruntime.RouteConfig{
-		ID:                 "r1",
+		ID: "r1",
+		Policy: routing.RoutePolicy{
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
+		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 
@@ -196,7 +203,11 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 	sender := NewFakeSender()
 
 	cfg := goruntime.RouteConfig{
-		ID:                 "existing-route",
+		ID: "existing-route",
+		Policy: routing.RoutePolicy{
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
+		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
@@ -223,7 +234,10 @@ func TestRuntime_Inject_NotRunning(t *testing.T) {
 
 // Verifies Inject assigns an ID on the cloned envelope when the input has no ID without mutating the original.
 func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("inject-id"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("inject-id"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -264,7 +278,10 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 
 // Verifies Inject does not mutate the caller's envelope headers after processing.
 func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("inject-clone"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("inject-clone"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

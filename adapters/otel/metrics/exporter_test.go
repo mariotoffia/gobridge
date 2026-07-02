@@ -11,6 +11,12 @@ import (
 
 // Verifies applyDefaults fills zero Config fields with documented defaults.
 func TestConfig_Defaults(t *testing.T) {
+	// Deterministic: clear env so built-in defaults apply regardless of
+	// ambient OTEL_* variables.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	t.Setenv("OTEL_SERVICE_NAME", "")
+
 	cfg := &Config{}
 	applyDefaults(cfg)
 
@@ -22,6 +28,9 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 	if cfg.FlushInterval != 60*time.Second {
 		t.Errorf("expected default FlushInterval 60s, got %v", cfg.FlushInterval)
+	}
+	if cfg.MaxInstruments != defaultMaxInstruments {
+		t.Errorf("expected default MaxInstruments %d, got %d", defaultMaxInstruments, cfg.MaxInstruments)
 	}
 }
 

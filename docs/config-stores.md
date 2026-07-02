@@ -88,7 +88,8 @@ cfg, err := source.Load(ctx)
 - Implements `config.Loader` (load only, no watch).
 - Maximum file size: **4 MiB** (enforced by `config.ParseFile`).
 - Returns `*config.BridgeConfig` on success.
-- Parsing errors surface as standard Go errors.
+- Honours the caller's `context`: a cancelled context short-circuits before any filesystem work.
+- A missing file surfaces as `shared.ErrNotFound`; parse errors pass through with the parser's file/stage annotation.
 
 ---
 
@@ -134,6 +135,7 @@ ch, err := watcher.Watch(ctx)
 - Invalid configs (parse failures) are logged and dropped -- never emitted.
 - Call `Stop()` to halt watching. The channel is closed on stop or context cancellation.
 - In notify mode, watches the **directory** containing the file to handle editor save patterns (write + rename).
+- The emit channel is buffered to one and uses **latest-wins coalescing**: if a valid reload arrives while a previous one is still queued (a slow consumer), the superseded config is evicted and the newest enqueued, so the consumer always converges on the current file state and never applies a stale reload. `Watcher.CoalescedReloads()` counts how often this happened — a non-zero value signals a consumer slower than the file's change rate, not lost reloads.
 
 ### YAML-Driven Configuration
 

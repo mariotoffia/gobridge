@@ -3,7 +3,9 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -19,16 +21,39 @@ import (
 
 var _ ports.Receiver = (*Receiver)(nil)
 
+const (
+	// headerForwarded marks a request as already cluster-forwarded by a
+	// peer bridge. It is advisory only: any client can set it, so it is
+	// trusted ONLY together with a valid headerForwardToken — see
+	// (*Receiver).forwardTrusted.
+	headerForwarded = "X-Bridge-Forwarded"
+	// headerForwardToken carries the shared internal forwarding secret
+	// proving a request originates from a trusted peer bridge rather than
+	// an external client. Without it a spoofed headerForwarded marker
+	// cannot force local processing on a non-owner node.
+	headerForwardToken = "X-Bridge-Forward-Token"
+
+	// External-producer key headers. They let an untrusted HTTP producer
+	// supply idempotency / dedup / ordering keys on the trusted side of
+	// the ingress reserved-header strip (see externalKeysFromRequest).
+	// The cluster forwarder re-emits these so the first-class keys
+	// survive a bridge-to-bridge hop (see forwarder.go).
+	headerIdempotencyKey  = "Idempotency-Key"
+	headerDeduplicationID = "X-Dedup-Id"
+	headerOrderingKey     = "X-Ordering-Key"
+)
+
 type receiverConfig struct {
-	id          string
-	path        string
-	maxBodySize int64
-	apiKey      string
-	locator     ports.RouteLocator
-	forwarder   ports.MessageForwarder
-	metrics     ports.MetricsExporter
-	logger      *slog.Logger
-	clock       clock.Clock
+	id           string
+	path         string
+	maxBodySize  int64
+	apiKey       string
+	forwardToken string
+	locator      ports.RouteLocator
+	forwarder    ports.MessageForwarder
+	metrics      ports.MetricsExporter
+	logger       *slog.Logger
+	clock        clock.Clock
 }
 
 // Receiver implements ports.Receiver for HTTP ingress.
@@ -101,11 +126,19 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if r.cfg.apiKey != "" && !checkAPIKey(req, r.cfg.apiKey) {
-		writeError(w, http.StatusUnauthorized, "invalid or missing API key")
+		writeUnauthorized(w, "invalid or missing API key")
 		return
 	}
 
-	forwarded := req.Header.Get("X-Bridge-Forwarded") == "true"
+	// Loop-prevention / "already forwarded" state is trusted ONLY from an
+	// authenticated peer. A bare client-controlled X-Bridge-Forwarded
+	// header can no longer force local processing on a non-owner node.
+	forwardMarker := req.Header.Get(headerForwarded) == "true"
+	forwarded := forwardMarker && r.forwardTrusted(req)
+	if forwardMarker && !forwarded && logging.DebugEnabled(r.cfg.logger) {
+		r.cfg.logger.Log(ctx, logging.LevelDebug,
+			"http: ignoring untrusted X-Bridge-Forwarded marker", "path", req.URL.Path)
+	}
 
 	if logging.TraceEnabled(r.cfg.logger) {
 		r.cfg.logger.Log(ctx, logging.LevelTrace, "http: ingress request",
@@ -123,9 +156,26 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	dec := json.NewDecoder(req.Body)
 	var body ingressRequest
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+	if err := dec.Decode(&body); err != nil {
+		if isMaxBytes(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds maximum size")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Reject any content after the single JSON value: a well-formed body
+	// yields io.EOF on the next token. A second JSON value, trailing
+	// garbage, or an oversize trailer is rejected rather than silently
+	// ignored (413 when it tripped the body cap, 400 otherwise).
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if isMaxBytes(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds maximum size")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "unexpected trailing data after JSON body")
 		return
 	}
 
@@ -155,6 +205,27 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if !local && node != nil {
+			// Loop guard: a request that already carries an
+			// X-Bridge-Forwarded marker was forwarded to us by a peer.
+			// Trusted markers never reach here — they skip locating and are
+			// processed locally to terminate the chain. An *untrusted* marker
+			// on a route we do not own means a peer forwarded under a routing
+			// disagreement (split-brain, membership churn, stale locator);
+			// re-forwarding could bounce A->B->A until the client timeout
+			// fires. Forwarding is single-hop by contract, so refuse rather
+			// than re-forward. This stays loop-safe even when no forward
+			// token is configured (the default), and remains spoof-safe: an
+			// untrusted marker still cannot force local processing on a
+			// non-owner — we 508, we do not handle it.
+			if forwardMarker {
+				r.cfg.metrics.Counter(MetricHTTPForwardLoopRefused, 1)
+				if r.cfg.logger != nil {
+					r.cfg.logger.Error("refusing to re-forward an already-forwarded request",
+						"route", routeID, "peer", node.InstanceID)
+				}
+				writeError(w, http.StatusLoopDetected, "already forwarded; this node does not own the route")
+				return
+			}
 			if r.cfg.forwarder == nil {
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("remote route but no forwarder configured", "route", routeID, "peer", node.InstanceID)
@@ -208,6 +279,29 @@ type ingressRequest struct {
 	ExpiresAt string          `json:"expires_at,omitempty"`
 }
 
+// forwardTrusted reports whether the request may be treated as an
+// already-forwarded, peer-originated message. A client-controlled
+// X-Bridge-Forwarded header is NOT sufficient: the request must also
+// present the configured internal forwarding token, constant-time
+// compared. When no forward token is configured the receiver refuses to
+// trust forwarded state at all, so a spoofed marker can never force
+// local processing on a non-owner node. The same token must be wired
+// into the peer HTTPForwarder by the composition root — see doc.go for
+// the deferred peer-authentication contract.
+func (r *Receiver) forwardTrusted(req *http.Request) bool {
+	if r.cfg.forwardToken == "" {
+		return false
+	}
+	return constantTimeSecretMatch(req.Header.Get(headerForwardToken), r.cfg.forwardToken)
+}
+
+// isMaxBytes reports whether err is (or wraps) a body-size-cap breach
+// from http.MaxBytesReader, which the handler maps to 413.
+func isMaxBytes(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
 // externalKeys carries the standard, NON-reserved request headers that
 // let an external HTTP producer supply idempotency / dedup / ordering
 // keys without touching the anti-spoofed x-bridge.* namespace. They are
@@ -225,9 +319,9 @@ type externalKeys struct {
 // header exists for them.
 func externalKeysFromRequest(req *http.Request) externalKeys {
 	return externalKeys{
-		idempotencyKey:  req.Header.Get("Idempotency-Key"),
-		deduplicationID: req.Header.Get("X-Dedup-Id"),
-		orderingKey:     req.Header.Get("X-Ordering-Key"),
+		idempotencyKey:  req.Header.Get(headerIdempotencyKey),
+		deduplicationID: req.Header.Get(headerDeduplicationID),
+		orderingKey:     req.Header.Get(headerOrderingKey),
 	}
 }
 

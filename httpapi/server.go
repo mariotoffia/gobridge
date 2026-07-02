@@ -376,13 +376,22 @@ func (s *Server) requestLogMW(next http.Handler) http.Handler {
 	})
 }
 
+// corsAllowedMethods is the union of HTTP verbs served across the admin and
+// monitor APIs, advertised uniformly to browsers on CORS preflight. The
+// config transaction routes use PATCH (apply overlay) and DELETE (rollback),
+// so both must be listed or browser-based admin clients fail preflight for
+// those operations. The monitor mux serves only GET, so it over-advertises
+// harmlessly (an unsupported verb still 405s at the mux). Keep in sync with
+// the route registrations in admin.go, admin_config.go, and monitor.go.
+const corsAllowedMethods = "GET, POST, PATCH, DELETE, OPTIONS"
+
 func (s *Server) corsMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		allowed := origin != "" && s.isAllowedOrigin(origin)
 		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
 			w.Header().Set("Vary", "Origin")
 		}

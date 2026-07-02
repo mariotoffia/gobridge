@@ -7,6 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Reconcile diffs the desired SessionPlan against current subscriptions and
@@ -32,7 +33,22 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		return nil
 	}
 
-	return s.reconcile(ctx, cm, plan)
+	if err := s.reconcile(ctx, cm, plan); err != nil {
+		return err
+	}
+
+	// A reconcile actually ran and succeeded: the plan's subscriptions are
+	// (re)established on the broker. Signal SessionReconciled from this
+	// single owner. Per finding C7 the runtime session manager drives
+	// Reconcile on every SessionConnected, so emitting here (rather than
+	// inline in OnConnectionUp) is what preserves the "all subscriptions
+	// re-established after reconnect" contract (ports.SessionReconciled)
+	// on reconnect. The no-op early return above deliberately does NOT
+	// emit: an empty plan that only re-affirms a prior plan re-established
+	// nothing. A genuine reconcile that established zero NEW topics (the
+	// delta was already satisfied) still signals reconciled.
+	s.pushEvent(ports.SessionReconciled, nil)
+	return nil
 }
 
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {

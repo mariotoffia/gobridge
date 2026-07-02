@@ -24,17 +24,39 @@ type sqlSession struct {
 	db *sql.DB
 }
 
-// openSession opens (or creates) the database at path, applies WAL
-// pragma, and runs the idempotent schema migration.
+// openSession opens (or creates) the database at path, applies the
+// durability/concurrency pragmas, and runs the idempotent schema migration.
+//
+// The connection pool is capped at a single open connection: modernc.org/sqlite
+// gives every *sql.Conn its own private database for ":memory:" paths (a wider
+// pool would fracture an in-memory store), and on a file database it serialises
+// writers so in-process goroutines never race into SQLITE_BUSY (I2).
+//
+// ponytail: single-writer ceiling — sufficient for the single-process
+// deployments this DLQ store targets; a read-heavy deployment would add a
+// separate read-only pool over the WAL. See I2.
 func openSession(path string) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, wrapErr(err, "sqlitedlq: open", "path", path)
 	}
 
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, wrapErr(err, "sqlitedlq: pragma", "path", path)
+	db.SetMaxOpenConns(1)
+
+	// busy_timeout must be armed BEFORE journal_mode=WAL: converting a
+	// rollback-journal file to WAL takes an exclusive lock, and without the
+	// timeout that first conversion fails fast with SQLITE_BUSY under
+	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
+	// block-and-retry up to the timeout — the retry policy for cross-process
+	// contention on a file database, including the initial WAL conversion (I2).
+	for _, pragma := range []string{
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA journal_mode=WAL",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return nil, wrapErr(err, "sqlitedlq: pragma", "path", path, "pragma", pragma)
+		}
 	}
 
 	if _, err := db.Exec(schemaSQL); err != nil {

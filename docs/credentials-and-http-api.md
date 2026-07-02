@@ -99,6 +99,22 @@ repo, err := filecreds.New("/etc/gobridge/creds",
 created. The repository also implements `ports.CredentialAdmin` for
 Create/Update/Delete/List operations with optimistic version locking.
 
+### Durability and safe writes
+
+Create/Update write through a temp file in the destination directory (`0600`
+from creation), `fsync` it, atomically `rename` it over the target, then
+`fsync` the directory. A crash mid-write or a concurrent external reader can
+therefore only ever observe the complete previous file or the complete new
+file — never a truncated or partially written secret. Write/parse/IO failures
+surface as classified `shared.BridgeError` values, and all operations honour a
+cancelled `context`.
+
+> **Production posture.** The `file://` backend is suited to local/dev use and
+> to immutable mounted secrets. It is single-process (an in-process
+> `RWMutex` serialises its own readers/writers); it is not a multi-writer or
+> multi-process rotating secret store. For rotating secrets in production use
+> the `pms://` (SSM) or Secrets Manager backends.
+
 ## `pms://` Backend (AWS SSM Parameter Store)
 
 The SSM backend stores credentials as `SecureString` parameters encrypted at
@@ -263,7 +279,7 @@ HTTP method receive HTTP 405 with a correct `Allow` header.
 | POST | `/api/v1/admin/routes/{routeID}/inject` | Inject a test message (JSON payload, 1 MB limit) |
 | GET | `/api/v1/admin/dlq` | DLQ summary (configured, count) |
 | GET | `/api/v1/admin/dlq/messages` | Paginated DLQ messages (filter by `route_id`, `category`, `since`, `before`) |
-| POST | `/api/v1/admin/dlq/replay` | Replay DLQ entries by ID (max 1000) |
+| POST | `/api/v1/admin/dlq/redrive` | Redrive DLQ entries by ID (max 100) |
 | POST | `/api/v1/admin/dlq/purge` | Purge expired DLQ entries |
 
 All DLQ endpoints return HTTP 404 `{"error": "no DLQ store configured"}` when
@@ -342,20 +358,23 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
 
 The `total` field reflects the count in the current page, not the global total.
 
-### DLQ replay
+### DLQ redrive
 
 ```bash
 curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"ids": ["dlq-001", "dlq-002"]}' \
-  "http://localhost:8080/api/v1/admin/dlq/replay" | jq .
+  "http://localhost:8080/api/v1/admin/dlq/redrive" | jq .
 ```
 
 ```json
-{ "replayed": 2 }
+{ "redriven": 2, "failed": 0 }
 ```
 
-Maximum 1000 IDs per request. Request body limited to 1 MB.
+Maximum 100 IDs per request. Request body limited to 1 MB. Successfully
+redriven entries are automatically deleted from the DLQ store; the response
+`failed` count reports entries that could not be redriven (e.g. entry or route
+not found).
 
 ### DLQ purge
 

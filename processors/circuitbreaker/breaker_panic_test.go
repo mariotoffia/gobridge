@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -22,7 +23,8 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
 	}
-	b := cb.NewBreaker("panic-test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("panic-test", cfg, nil, cb.WithBreakerClock(fake))
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("beforeRequest in closed state: %v", err)
@@ -34,7 +36,7 @@ func TestBreaker_PanicInNext_LeavesHalfOpenProbeStuck(t *testing.T) {
 		t.Fatalf("expected open after 1 failure (threshold=1), got %s", m.State)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 5*time.Millisecond)
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("expected half-open probe to be admitted: %v", err)
@@ -66,7 +68,8 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 		SuccessThreshold: 1,
 		ResetTimeout:     10 * time.Millisecond,
 	}
-	p := New("panic-fix", cfg)
+	fake := clocktest.New()
+	p := New("panic-fix", cfg, WithClock(fake))
 	ctx := context.Background()
 	env := envelope("test", nil)
 
@@ -75,7 +78,7 @@ func TestProcessor_PanicInNext_RecoversProperly(t *testing.T) {
 		t.Fatal("expected error from failing next")
 	}
 
-	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 5*time.Millisecond)
 
 	func() {
 		defer func() {

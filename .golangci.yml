@@ -123,6 +123,10 @@ linters:
         - go.opentelemetry.io/otel/metric.Float64Gauge
         - go.opentelemetry.io/otel/metric.Float64Histogram
         - go.opentelemetry.io/otel/sdk/metric/metricdata.Aggregation
+        # samplerFromConfig composes ParentBased/TraceIDRatioBased, both of
+        # which the OTel SDK hands back as the sdktrace.Sampler interface;
+        # there is no exported concrete sampler type to return (K6).
+        - go.opentelemetry.io/otel/sdk/trace.Sampler
         - github.com/aws/aws-cdk-go/awscdk/v2.Stack
         - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.IFileSystem
         - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.AccessPoint

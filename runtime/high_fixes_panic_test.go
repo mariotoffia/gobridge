@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ import (
 func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
 	rt := goruntime.New(
 		goruntime.WithInstanceID("panic-test"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	panicReceiver := &PanickingReceiver{}
@@ -69,6 +71,11 @@ func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
 
 	if rt.Healthy() {
 		t.Fatal("runtime should be unhealthy after background panic")
+	}
+
+	if !rt.Terminal() {
+		t.Fatal("runtime should be terminal after background panic " +
+			"(liveness must fail so the orchestrator restarts the process)")
 	}
 
 	errs := rt.ComponentErrors()
@@ -104,6 +111,7 @@ func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
 func TestRuntime_PanicRecovery_DoesNotCrash(t *testing.T) {
 	rt := goruntime.New(
 		goruntime.WithInstanceID("no-crash"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	panicReceiver := &PanickingReceiver{PanicMsg: "deliberate test panic"}
@@ -119,6 +127,51 @@ func TestRuntime_PanicRecovery_DoesNotCrash(t *testing.T) {
 	waitFor(t, 2*time.Second, "runtime detects panic", func() bool {
 		return !rt.Healthy()
 	})
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = rt.Stop(stopCtx)
+}
+
+// TestRuntime_FatalComponentError_IsTerminal validates that a background
+// component returning a fatal (non-recoverable, non-stale-fencing) error drives
+// the runtime into the terminal state — the signal the liveness probe uses so
+// the orchestrator restarts the process. This is the path a single-use source
+// session takes on lease re-acquire (ensureConnected -> Start -> ErrUnavailable).
+// It also confirms a freshly built runtime is not terminal, so the flag means
+// "failed", not "young".
+func TestRuntime_FatalComponentError_IsTerminal(t *testing.T) {
+	rt := goruntime.New(
+		goruntime.WithInstanceID("fatal-error"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	if rt.Terminal() {
+		t.Fatal("a freshly built runtime must not be terminal")
+	}
+
+	recv := NewFakeReceiver()
+	recv.RunErr = errors.New("fatal source failure")
+	cfg := goruntime.RouteConfig{
+		ID:                 "fatal-route",
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+	}
+	if err := rt.AddRoute(cfg, recv, NewFakeSender(), nil, nil); err != nil {
+		t.Fatalf("AddRoute failed: %v", err)
+	}
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, "runtime terminal after fatal component error", func() bool {
+		return rt.Terminal()
+	})
+
+	if rt.Healthy() {
+		t.Fatal("runtime should be unhealthy after a fatal background component error")
+	}
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

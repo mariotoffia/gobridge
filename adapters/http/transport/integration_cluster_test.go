@@ -274,20 +274,27 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 // 3.3 — X-Bridge-Forwarded prevents re-forwarding (loop prevention).
 // ---------------------------------------------------------------------------
 
-// Verifies that X-Bridge-Forwarded header prevents infinite forwarding loops between bridges.
+// Verifies that the trusted X-Bridge-Forwarded marker (proven by the
+// shared internal forward token) prevents infinite forwarding loops
+// between bridges. Without the token the marker is ignored, so the token
+// must be wired into every peer's forwarder and receiver — exactly as an
+// operator wires a cluster.
 func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
+	const forwardToken = "cluster-peer-forward-token"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	peerA := &persistence.PeerInfo{InstanceID: "bridge-a", Endpoints: make(map[string]string)}
 	peerB := &persistence.PeerInfo{InstanceID: "bridge-b", Endpoints: make(map[string]string)}
 
-	// Bridge B — locator says remote(A), but forwarded flag bypasses that.
+	// Bridge B — locator says remote(A), but the trusted forwarded marker bypasses that.
 	locB := &stubLocator{peer: peerA, local: false}
-	fwdB := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
+	fwdB := transport.NewHTTPForwarderWithConfig("/transport/http",
+		transport.ForwarderConfig{Timeout: 5 * time.Second, ForwardToken: forwardToken})
 	factoryB := transport.NewFactory(
 		transport.WithRouteLocator(locB),
 		transport.WithMessageForwarder(fwdB),
+		transport.WithForwardToken(forwardToken),
 	)
 	recvB, err := factoryB.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-loop"}, nil)
 	if err != nil {
@@ -314,10 +321,12 @@ func TestIntegration_Cluster_ForwardLoopPrevention(t *testing.T) {
 	defer serverB.Close()
 	// Bridge A — locator says remote(B), forwards via HTTPForwarder.
 	locA := &stubLocator{peer: peerB, local: false}
-	fwdA := transport.NewHTTPForwarder("/transport/http", 5*time.Second)
+	fwdA := transport.NewHTTPForwarderWithConfig("/transport/http",
+		transport.ForwarderConfig{Timeout: 5 * time.Second, ForwardToken: forwardToken})
 	factoryA := transport.NewFactory(
 		transport.WithRouteLocator(locA),
 		transport.WithMessageForwarder(fwdA),
+		transport.WithForwardToken(forwardToken),
 	)
 	recvA, err := factoryA.NewReceiver(ctx, ports.ReceiverSpec{ID: "route-loop"}, nil)
 	if err != nil {

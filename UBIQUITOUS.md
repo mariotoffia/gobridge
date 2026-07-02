@@ -33,7 +33,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Ordering key** | `x-bridge.ordering-key`. Hint to ordered transports (e.g. SQS FIFO group). |
 | **Dedup ID** | `x-bridge.dedup-id`. Transport-level deduplication identifier. |
 | **Forwarded-from / Forwarded-hop** | Cluster-forwarding lineage headers. |
-| **TraceContext** | W3C Trace Context (`traceparent` + `tracestate`). Parsed/formatted/extracted/injected only via the helpers in `messaging`. |
+| **TraceContext** | W3C Trace Context (`traceparent` + `tracestate`). Parsed/formatted via the helpers in `messaging` (the domain path). The `adapters/otel/tracing` adapter additionally bridges the same lowercase `traceparent`/`tracestate` keys into the OpenTelemetry span context via the OTel `propagation.TraceContext` propagator — it may not import `domain/messaging` (`.go-arch-lint.yml`) yet round-trips the identical wire format. |
 
 ## Persistence (`domain/persistence`)
 

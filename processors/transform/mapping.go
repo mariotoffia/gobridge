@@ -7,6 +7,21 @@ import (
 	"strings"
 )
 
+// headerTargetPrefix marks a FieldMapping.Target that writes to an
+// envelope header rather than the payload object.
+const headerTargetPrefix = "header."
+
+// headerTarget reports whether target addresses an envelope header and,
+// if so, returns the header key (the portion after "header."). A bare
+// "header." prefix with no key returns ("", true) so callers can reject
+// it as an invalid configuration.
+func headerTarget(target string) (key string, ok bool) {
+	if !strings.HasPrefix(target, headerTargetPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(target, headerTargetPrefix), true
+}
+
 // setNestedValue sets a value at a nested path in a map.
 // Path is dot-separated, e.g., "user.profile.name"
 func setNestedValue(data map[string]any, path string, value any) {

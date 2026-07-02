@@ -163,6 +163,22 @@ The default AWS-managed SSM key (`alias/aws/ssm`) works without additional
 IAM configuration. If you use a **customer-managed KMS key (CMK)**, you must
 add an explicit `kms:Decrypt` grant for the ECS task role on that key.
 
+### DynamoDB Stores
+
+When the bridge config uses DynamoDB-backed stores (`lease`, `outbox`, or
+`dlq`), the stack grants the ECS task role read/write access on each table the
+store names. Two operator responsibilities follow:
+
+- **Pre-provision the tables.** The stack imports each table by name and grants
+  access to it; it does **not** create the table, its key schema, or its TTL.
+  Provision each DynamoDB table out-of-band (matching the adapter's expected key
+  schema) before deploying.
+- **Set `table_name` on every store.** A store that omits `table_name` falls
+  back to the adapter's built-in default table, which the stack cannot name and
+  therefore cannot grant — the task role would hit `AccessDenied` at runtime.
+  Synth emits a warning for this case; set `table_name`, or grant the default
+  table to the task role externally.
+
 ### DevMode Guard
 
 The `BootstrapConfig.SSMEndpoint` field allows overriding the SSM endpoint for
@@ -216,8 +232,8 @@ Key points:
 
 - **UID 1000** matches the EFS access point POSIX user.
 - **`ca-certificates`** is needed for TLS connections to AWS services.
-- **`wget`** is required for the ECS health check command
-  (`wget -q --spider http://localhost:8080/healthz`).
+- **`wget`** is available for container health probes against the monitor
+  endpoint (`wget -q --spider http://localhost:8081/api/v1/monitor/health`).
 
 ### ECR Lifecycle Policy
 

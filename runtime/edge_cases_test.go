@@ -321,8 +321,11 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 	// Unblock the sender.
 	sender.SetSendErr(nil)
 
-	// The drainer should detect expiry and route to DLQ.
-	waitFor(t, 3*time.Second, "DLQ from drain", func() bool { return dlq.Count() >= 1 })
+	// The drainer should detect expiry and route to DLQ. The first drain
+	// hit the blocked sender (transient), so the record was released for
+	// retry and the next drain is spaced by the A4 transient backoff floor
+	// (~5s); wait past it for the expiry-detection drain.
+	waitFor(t, 8*time.Second, "DLQ from drain", func() bool { return dlq.Count() >= 1 })
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +350,12 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID: "poison-route",
 		Policy: routing.RoutePolicy{
-			DeliveryMode:      routing.DeliverySharedOutbox,
-			MaxReplayAttempts: 3,
+			DeliveryMode: routing.DeliverySharedOutbox,
+			// One replay attempt: under the A4 transient backoff floor each
+			// retry is spaced ~5s, so a small cap keeps the poison path fast
+			// (poison after the first 5s retry) while still exercising the
+			// MaxReplayAttempts → PoisonMessage DLQ transition.
+			MaxReplayAttempts: 1,
 		},
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-poison"},

@@ -12,6 +12,10 @@ const (
 	MetricSQSSendBatchLatency     = "SQSSendBatchLatency"
 	MetricSQSAutoExtends          = "SQSAutoExtends"
 	MetricSQSMalformedMessages    = "SQSMalformedMessages"
+	// MetricSQSDroppedAttributes counts envelope headers dropped from a
+	// send because they would have exceeded the SQS per-message attribute
+	// count or size limits (Finding 11).
+	MetricSQSDroppedAttributes = "SQSDroppedAttributes"
 )
 
 // TagKeyQueueURL is the dimension key used only by the SQS adapter.

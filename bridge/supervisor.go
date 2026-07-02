@@ -283,10 +283,29 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		Duration:  s.clk.Since(start),
 	}
 
+	// ponytail: Reconfiguration is per-process. GoBridge deliberately does
+	// NOT coordinate config versions across the cluster (no version barrier,
+	// no cluster rollback) — see docs/scenarios/10-dynamic-reconfiguration.md
+	// "Cluster Semantics and Limitations". We *observe* the running version on
+	// every swap (also readable via Supervisor.Config().Version) so operators
+	// can detect cross-instance version divergence externally; we do not build
+	// coordination here. config_version is always the version running AFTER this
+	// attempt: a failed swap recovers the old config, so we log its version as
+	// config_version and the rejected version as attempted_config_version —
+	// logging the failed version as config_version would make a wedged instance
+	// indistinguishable from a healthy one for divergence alerting. oldVersion is
+	// -1 when there is no prior config (first apply); 0 is a valid "never committed
+	// via the API" version, so -1 is the distinct sentinel.
+	oldVersion := -1
+	if oldCfg != nil {
+		oldVersion = oldCfg.Version
+	}
+
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("supervisor: reconfiguration failed",
-				"swap_mode", mode, "error", err, "duration", ev.Duration)
+				"swap_mode", mode, "error", err, "duration", ev.Duration,
+				"config_version", oldVersion, "attempted_config_version", newCfg.Version)
 		}
 	} else {
 		s.mu.Lock()
@@ -296,7 +315,8 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 
 		if s.logger != nil {
 			s.logger.Info("supervisor: reconfiguration complete",
-				"swap_mode", mode, "duration", ev.Duration)
+				"swap_mode", mode, "duration", ev.Duration,
+				"config_version", newCfg.Version, "old_config_version", oldVersion)
 		}
 	}
 

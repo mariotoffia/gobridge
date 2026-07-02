@@ -3,9 +3,12 @@ package gobridgebase
 import (
 	"strings"
 
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/constructs-go/constructs/v10"
+	"github.com/aws/jsii-runtime-go"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/ports"
@@ -40,7 +43,7 @@ func applyKmsGrant(p *Props, role awsiam.IRole) {
 // supplied registries are silently skipped here — the Phase 2
 // validator surfaces them as CDK Annotations errors so synth still
 // fails fast, but the base does not duplicate that reporting.
-func applyAdapterGrants(_ constructs.Construct, p *Props, role awsiam.IRole, mat *source.Materialized) {
+func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole, mat *source.Materialized) {
 	if mat == nil || mat.Config == nil {
 		return
 	}
@@ -81,6 +84,30 @@ func applyAdapterGrants(_ constructs.Construct, p *Props, role awsiam.IRole, mat
 			grants.GrantSSMRead(role, p.SsmRegistry.Ref(uri).Parameter())
 		}
 	}
+
+	// DynamoDB stores (lease/outbox/DLQ). Grant read/write data on each
+	// table the config names. Stores that omit table_name fall back to
+	// the adapter's built-in default table name, which this profile
+	// cannot resolve to an ARN -- those are skipped here (supply
+	// table_name to receive an automatic grant, or wire the grant
+	// externally). Dedupe by name so a table shared across store roles
+	// yields a single import + grant.
+	granted := map[string]struct{}{}
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
+		if sc == nil || !isKind(sc.Type, awsstore.DynamoDBKind) {
+			continue
+		}
+		name := dynamoTableName(sc)
+		if name == "" {
+			continue
+		}
+		if _, done := granted[name]; done {
+			continue
+		}
+		granted[name] = struct{}{}
+		table := awsdynamodb.Table_FromTableName(scope, jsii.String("DynamoStoreGrant"+name), jsii.String(name))
+		grants.GrantDynamoDBStore(role, table)
+	}
 }
 
 func isKind(have string, want ...string) bool {
@@ -104,6 +131,29 @@ func sqsQueueName(raw ports.RawConfig) string {
 	}
 	_ = raw.Decode(&probe)
 	return probe.Name
+}
+
+// dynamoTableName extracts the DynamoDB table name from a store
+// config. It prefers the typed DynamoDBConfig (populated both by the
+// bridgecfg builder and by the two-stage parser, since Materialize's
+// registry registers the awsstore decoder) and falls back to a raw
+// probe. Returns "" when unset -- the adapter then uses its built-in
+// default table name, which this profile cannot resolve to an ARN.
+func dynamoTableName(sc *ports.StoreConfig) string {
+	if sc == nil {
+		return ""
+	}
+	if dc, ok := sc.Config.(*awsstore.DynamoDBConfig); ok {
+		return dc.TableName
+	}
+	if raw := sc.Raw(); raw != nil {
+		var probe struct {
+			TableName string `yaml:"table_name" json:"table_name" mapstructure:"table_name"`
+		}
+		_ = raw.Decode(&probe)
+		return probe.TableName
+	}
+	return ""
 }
 
 // collectSSMRefs returns the deduplicated set of SSM parameter

@@ -23,12 +23,61 @@
 //
 // # Header Mapping
 //
-// Standard bridge headers (x-bridge.*) are mapped to/from SQS message
-// attributes. At ingress, headers with the reserved x-bridge.* prefix are
-// stripped to prevent injection from external sources. At egress,
-// messaging.HeaderOrderingKey maps to MessageGroupId and
-// messaging.HeaderDeduplicationID maps to MessageDeduplicationId for FIFO
-// queues.
+// Bridge headers are mapped to/from SQS message attributes asymmetrically,
+// following the central egress header policy:
+//
+//   - INGRESS (attributesToHeaders): message attributes whose names carry
+//     the reserved x-bridge.* prefix are stripped, so an external producer
+//     cannot spoof bridge metadata (idempotency, routing, correlation).
+//   - EGRESS (headersToAttributes): INTERNAL-ONLY reserved headers
+//     (route-id, route-override, source-id, content-type) are stripped —
+//     they are dispatch bookkeeping that must not leak. BRIDGE-TO-BRIDGE
+//     propagated headers (correlation-id, causation-id, idempotency-key,
+//     tenant-id, forwarded-from/hop, traceparent/tracestate) are preserved
+//     as SQS message attributes so a peer bridge on the next hop can
+//     correlate, deduplicate and continue a trace. They are also ranked
+//     ahead of application headers, so when the 10-attribute SQS cap forces
+//     a drop, application metadata is sacrificed before a propagation
+//     header. Application headers are otherwise preserved as-is.
+//   - messaging.HeaderOrderingKey maps to the native MessageGroupId and
+//     messaging.HeaderDeduplicationID maps to the native
+//     MessageDeduplicationId for FIFO queues; neither is also emitted as a
+//     message attribute.
+//
+// Consequence of the asymmetry: egress now PRESERVES bridge-to-bridge
+// headers on the wire, but this adapter's DEFAULT ingress still strips
+// every reserved x-bridge.* attribute, because SQS cannot distinguish a
+// trusted peer bridge from an untrusted external producer. A peer bridge
+// therefore re-stamps its own correlation/idempotency on receive. An
+// opt-in "trusted peer" ingress mode that honours bridge-to-bridge
+// attributes from a verified source requires shared ports configuration
+// and is intentionally out of scope for this adapter (see Phase 1b).
+//
+// # Attribute Limits
+//
+// SQS rejects a send that carries more than 10 message attributes, an
+// invalid attribute name, or an oversized message. headersToAttributes
+// enforces these deterministically rather than letting one bad envelope
+// fail every send: attribute names that SQS would reject (charset,
+// length, AWS./Amazon. reserved prefix, leading/trailing/consecutive
+// periods) are dropped; the remaining eligible headers are sorted and the
+// lowest-sorting are kept up to the 10-attribute cap (one slot is reserved
+// for the Subject attribute when present); the cumulative size is bounded
+// by the SQS message maximum. Headers dropped by the count/size caps are
+// reported via the SQSDroppedAttributes counter and a debug log so the
+// loss is observable.
+//
+// # FIFO Ordering
+//
+// A FIFO source (queue URL or name ending in ".fifo") forces
+// MaxMessages=1 on ReceiveMessage. The runtime dispatches deliveries
+// concurrently, so returning several messages of one MessageGroupId in a
+// single receive could reorder them; SQS keeps a group locked to its
+// in-flight message until that message is deleted, so receiving one at a
+// time preserves per-group order without serialising in the shared route
+// runner. FIFO dedup, when the producer supplies no explicit
+// MessageDeduplicationId, is derived from a hash of the payload, subject
+// and id (or creation time when id is empty) — not the subject alone.
 //
 // # Subject and Address
 //
@@ -42,11 +91,14 @@
 // preserved in headers["sns.topic_arn"] but is NOT promoted into
 // Envelope.Subject.
 //
-// SQS senders are bound to a single queue URL. ports.OutboundMessage
-// .Address is validated against the configured queue URL: empty means
-// "use the configured queue URL", a matching value succeeds, anything
-// else is rejected with shared.ErrInvalidTopic without contacting the
-// SDK. Per-message dynamic addressing for SQS is out of scope.
+// SQS senders are bound to a single queue. ports.OutboundMessage.Address
+// is validated against that queue: empty means "use the configured
+// queue"; a value that refers to the bound queue succeeds — the resolved
+// queue URL, the configured queue name, or the queue name embedded as the
+// URL's last path segment (the form scenario configs use, e.g.
+// `address: orders`); anything else is rejected with
+// shared.ErrInvalidTopic without contacting the SDK. Per-message dynamic
+// addressing for SQS is out of scope.
 //
 // # SQS Native DLQ
 //
@@ -55,6 +107,33 @@
 // infrastructure failures that prevent the bridge from processing the
 // message at all. The bridge's own DLQ handles application-level
 // permanent failures, expired messages, and policy rejections.
+//
+// # Capabilities
+//
+// The factory declares CapVisibilityExtension, CapSourceRedelivery and
+// CapDelayedSend. CapSharedConsumer is intentionally NOT declared: SQS is
+// a competing-consumer work queue (each message goes to one consumer and
+// scaling out across pollers is the intended mode), whereas
+// CapSharedConsumer denotes a broadcast source that the runtime validator
+// forces into single-active fencing. Declaring it would reject every
+// unfenced SQS direct_hold route.
+//
+// # Batch Sends
+//
+// The Sender implements ports.BatchSender and SenderConfig.BatchSize
+// chunks SendMessageBatch calls. The bridge's normal per-delivery dispatch
+// path does not currently call SendBatch, so batch_size only affects
+// callers that invoke SendBatch directly; it does not reduce per-message
+// API calls on the standard route. Batch-aware runtime dispatch is a
+// shared-runtime concern outside this adapter.
+//
+// # Concurrency and Credential Rotation
+//
+// The underlying SQS client is held in an atomic.Pointer snapshot. Hot
+// send/receive paths read it lock-free; ApplyCredentials and lazy
+// initialisation swap a rotated client under an internal mutex. In-flight
+// calls keep using the client they loaded; subsequent calls pick up the
+// rotated credentials. There is no client read/write data race.
 //
 // SQS is stateless and does not require a Session.
 package sqs

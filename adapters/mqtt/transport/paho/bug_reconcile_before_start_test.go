@@ -180,11 +180,13 @@ func TestBugA_StartCtx_AssignedBeforeAwaitConnection(t *testing.T) {
 }
 
 // TestBugA_Integration_ReconcileBeforeStart drives the full real-broker
-// flow: Reconcile (to stash plan) → Start (which fires OnConnectionUp).
-// Without the fix, the autopaho callback goroutine panics and is captured
-// by Go's runtime, often crashing the test process. With the fix, Start
-// completes cleanly and the deferred reconcile applies the previously
-// stored plan.
+// flow: Reconcile (to stash plan) → Start (which fires OnConnectionUp) →
+// manager-driven Reconcile on SessionConnected. Without the fix, the
+// autopaho callback goroutine panics and is captured by Go's runtime, often
+// crashing the test process. With the fix, Start completes cleanly, emits
+// SessionConnected, and the manager-driven Reconcile applies the previously
+// stored plan (finding C7: the runtime session manager is the single owner
+// of reconnect reconciliation).
 //
 // The test runs against the real Mosquitto broker (mqttlocal). It is the
 // strongest end-to-end signal that the race is closed.
@@ -204,11 +206,12 @@ func TestBugA_Integration_ReconcileBeforeStart(t *testing.T) {
 
 	// Stash a plan BEFORE Start. This sets s.plan and returns
 	// "session not started".
-	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+	plan := connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{
 			{Topic: "bug-a/integ/topic", QoS: 1},
 		},
-	}); err == nil {
+	}
+	if err := sess.Reconcile(ctx, plan); err == nil {
 		t.Fatal("expected Reconcile-before-Start to error")
 	}
 
@@ -222,11 +225,13 @@ func TestBugA_Integration_ReconcileBeforeStart(t *testing.T) {
 	}
 	defer func() { _ = sess.Close(ctx) }()
 
-	// Drain events until SessionReconciled (which OnConnectionUp emits
-	// AFTER the deferred reconcile runs). Without the fix, the callback
-	// goroutine panics before reaching the reconcile, and SessionReconciled
-	// is never emitted.
-	deadline := time.After(5 * time.Second)
+	// Emulate the runtime session manager (finding C7: it is the single
+	// owner of reconnect reconciliation). On SessionConnected the manager
+	// drives Reconcile, which re-establishes the stashed plan and emits
+	// SessionReconciled. Without the BUG-A fix, the OnConnectionUp callback
+	// goroutine panics before SessionConnected is emitted and this loop
+	// times out.
+	deadline := time.After(10 * time.Second)
 	gotReconciled := false
 EVENTS:
 	for !gotReconciled {
@@ -235,7 +240,12 @@ EVENTS:
 			if !ok {
 				break EVENTS
 			}
-			if ev.Type == ports.SessionReconciled {
+			switch ev.Type {
+			case ports.SessionConnected:
+				if err := sess.Reconcile(ctx, plan); err != nil {
+					t.Fatalf("manager-driven Reconcile: %v", err)
+				}
+			case ports.SessionReconciled:
 				gotReconciled = true
 			}
 		case <-deadline:

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
@@ -133,6 +134,7 @@ func newDefaultPluginRegistry() *ports.Registry {
 		paho.Register(reg),
 		sqsadapter.Register(reg),
 		nativestore.Register(reg),
+		awsstore.Register(reg),
 		httptransport.Register(reg),
 	); err != nil {
 		panic("bootstrap: register bundled plugin decoders: " + err.Error())

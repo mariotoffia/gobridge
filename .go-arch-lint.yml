@@ -293,7 +293,10 @@ vendors:
         ],
     }
   aws:
-    { in: ["github.com/aws/aws-sdk-go-v2/**", "github.com/aws/smithy-go/**"] }
+    # smithy-go root pkg (where smithy.APIError lives, classified by the
+    # credentials ACL) + subpkgs; the bare root is listed explicitly because
+    # a trailing "/**" matches subpackages only, not the package itself.
+    { in: ["github.com/aws/aws-sdk-go-v2/**", "github.com/aws/smithy-go", "github.com/aws/smithy-go/**"] }
   sqlite: { in: ["modernc.org/sqlite", "modernc.org/sqlite/lib"] }
   otel:
     {
@@ -679,8 +682,11 @@ deps:
     canUse: [_no_external_deps_]
 
   processor_transform:
+    # domain_shared: transform defines permanent domain errors from the
+    # shared catalog (shared.BridgeError / ErrInvalidPayload / etc.).
     mayDependOn:
       - domain_messaging
+      - domain_shared
       - ports
     canUse:
       - ojg
@@ -824,11 +830,12 @@ deps:
   # privilege (mirrored in ARCHITECTURE.md §2) even where only one is
   # imported today, so a later Validate / DefaultMerge call needs no
   # rule edit. The DOMAIN context spread, by contrast, is narrowed to
-  # actual usage (M-23): the file loader only stamps clock timestamps,
-  # the DynamoDB loader adds domain/shared errors, and neither touches
+  # actual usage (M-23): both loaders stamp clock timestamps and classify
+  # failures via domain/shared (the file loader maps a missing config file
+  # to shared.ErrNotFound, I6), and neither touches
   # messaging / persistence / routing / connectivity / events.
   adapter_config_native_file:
-    mayDependOn: [config, config_parser, domain_clock, ports]
+    mayDependOn: [config, config_parser, domain_clock, domain_shared, ports]
     canUse: [fsnotify]
   adapter_config_aws_dynamodb:
     mayDependOn: [config, config_parser, domain_clock, domain_shared, ports]

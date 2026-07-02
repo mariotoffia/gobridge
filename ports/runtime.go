@@ -151,6 +151,11 @@ type RuntimeQuery interface { //nolint:interfacebloat // RuntimeQuery is a delib
 	// Healthy reports whether all background components are healthy
 	// (independent of running state).
 	Healthy() bool
+	// Terminal reports whether the runtime has suffered an unrecoverable
+	// failure and cancelled itself. A terminal runtime never recovers on
+	// its own; the process must be restarted. Liveness probes fail closed
+	// on this so the orchestrator restarts a dead-but-running instance.
+	Terminal() bool
 	// ComponentErrors returns a copy of the failed-component error map.
 	// Empty map means all components are healthy.
 	ComponentErrors() map[string]error

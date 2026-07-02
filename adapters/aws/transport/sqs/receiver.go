@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -18,15 +19,38 @@ var _ ports.Receiver = (*Receiver)(nil)
 // Receiver implements ports.Receiver for Amazon SQS. It long-polls for
 // messages and emits each as a ports.Delivery whose Ack/Retry/Extend
 // operations map to the SQS receipt-handle lifecycle.
+//
+// Concurrency: the SQS client is held in an atomic.Pointer so the poll
+// loop reads it lock-free while ApplyCredentials swaps a rotated client
+// underneath. In-flight deliveries keep the client snapshot captured at
+// creation. initMu serialises lazy-init and credential swaps.
 type Receiver struct {
 	cfg         ReceiverConfig
-	client      sqsAPI
+	client      atomic.Pointer[sqsAPI]
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
 	clk         clock.Clock
 	initMu      sync.Mutex
 	started     chan struct{}
 	startedOnce sync.Once
+}
+
+// loadClient returns the current SQS client snapshot, or nil when unset.
+func (r *Receiver) loadClient() sqsAPI {
+	if p := r.client.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// storeClient atomically installs the SQS client snapshot. A nil client
+// clears it (lazy-init reset / tests).
+func (r *Receiver) storeClient(c sqsAPI) {
+	if c == nil {
+		r.client.Store(nil)
+		return
+	}
+	r.client.Store(&c)
 }
 
 // NewReceiver creates an SQS Receiver.
@@ -74,9 +98,29 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
-	queueURL, err := resolveQueueURL(initCtx, r.client, r.cfg.QueueURL, r.cfg.QueueName)
+	queueURL, err := resolveQueueURL(initCtx, r.loadClient(), r.cfg.QueueURL, r.cfg.QueueName)
 	if err != nil {
 		return err
+	}
+
+	// FIFO ordering safety: a single ReceiveMessage may return multiple
+	// messages from the same MessageGroupId. The runtime processes
+	// deliveries concurrently, so returning a group's messages in one
+	// batch would let them be reordered. Forcing MaxMessages=1 makes SQS
+	// hand back at most one message per receive; because a FIFO group is
+	// locked to its in-flight message until that message is deleted, the
+	// next message of the same group is never released while one is being
+	// processed — preserving per-group order without serialising in the
+	// shared route runner. Detected from the resolved URL's `.fifo`
+	// suffix so a QueueName-only config is covered after resolution.
+	if isFIFOQueue(queueURL) && r.cfg.MaxMessages != 1 {
+		if r.logger != nil {
+			r.logger.Warn("sqs: forcing max_messages=1 for FIFO source to preserve per-group ordering",
+				"queue_url", queueURL,
+				"configured_max_messages", r.cfg.MaxMessages,
+			)
+		}
+		r.cfg.MaxMessages = 1
 	}
 
 	if logging.DebugEnabled(r.logger) {
@@ -129,6 +173,10 @@ func (r *Receiver) pollLoop(
 
 		backoff.reset()
 
+		// Snapshot the client once per batch so the receive and the
+		// resulting deliveries share a coherent client even if a
+		// credential rotation swaps it mid-loop.
+		client := r.loadClient()
 		for _, raw := range results {
 			// Per-delivery context so that auto-extend failure can
 			// cancel processing without affecting other deliveries.
@@ -138,7 +186,7 @@ func (r *Receiver) pollLoop(
 			del := newDelivery(
 				deliveryCtx,
 				raw.env,
-				r.client,
+				client,
 				queueURL,
 				raw.receiptHandle,
 				r.cfg.VisibilityTimeout,

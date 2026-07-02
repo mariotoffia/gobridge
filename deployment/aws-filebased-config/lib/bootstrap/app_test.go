@@ -111,6 +111,84 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 	assert.Equal(t, "debug", applied.Bridge.LogLevel)
 }
 
+// TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the B3
+// regression: a reload that fails to apply is written into logicalRef
+// (watchLoop does this before calling applyLogicalConfig), but the admin
+// config endpoint must surface the *effective* (applied) config, never the
+// rejected one. The endpoint reads through ConfigProvider; before the fix it
+// pointed at logicalRef, so operators saw a rejected config as if it were
+// live. This drives applyLogicalConfig directly (mirroring watchLoop under
+// a.mu) so the assertion is deterministic -- no file watcher, no sleep.
+func TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload(t *testing.T) {
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	app := NewApp(deployinfra.BootstrapConfig{
+		BridgeID:          "bridge-c",
+		ConfigFilePath:    cfgPath,
+		PollInterval:      "1h", // keep the file watcher dormant during the test
+		AdminAddr:         ":0",
+		MonitorAddr:       ":0",
+		TransportHTTPAddr: ":0",
+		AdminAPIKeyParam:  "/admin",
+	}, WithParameterResolver(staticParameterResolver{
+		"/admin": "admin-secret-key-123456",
+	}))
+
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() {
+		_ = app.Stop(context.Background())
+	})
+
+	// Establish a known-good applied config (log_level=debug).
+	good := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
+			ID:             "bridge-c",
+			DeploymentMode: "standalone",
+			LogLevel:       "debug",
+		},
+	}
+	app.mu.Lock()
+	app.logicalRef.Set(good)
+	err := app.applyLogicalConfig(t.Context(), good)
+	app.mu.Unlock()
+	require.NoError(t, err)
+
+	// Simulate a rejected reload exactly as watchLoop does: logicalRef is
+	// updated first, then applyLogicalConfig fails (broken route) and the
+	// last-good runtime + applied config are kept. The distinct log_level
+	// ("error") makes the surfaced config unmistakable.
+	rejected := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
+			ID:             "bridge-c",
+			DeploymentMode: "standalone",
+			LogLevel:       "error",
+		},
+		Routes: []ports.RouteDef{
+			{ID: "broken-route", ReceiverID: "missing", Bindings: []string{"missing"}},
+		},
+	}
+	app.mu.Lock()
+	app.logicalRef.Set(rejected)
+	err = app.applyLogicalConfig(t.Context(), rejected)
+	app.mu.Unlock()
+	require.Error(t, err, "config with a broken route must be rejected")
+
+	// Preconditions: logicalRef holds the rejected config (what the bug
+	// surfaced), while appliedRef retains the last-good one.
+	require.Equal(t, "error", app.CurrentLogicalConfig().Bridge.LogLevel)
+	require.Equal(t, "debug", app.CurrentAppliedConfig().Bridge.LogLevel)
+
+	// The endpoint must return the APPLIED (debug), never the rejected
+	// (error) config held in logicalRef.
+	resp, body := getJSON(t, app.AdminURL()+"/api/v1/admin/config", "admin-secret-key-123456")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	configBody, ok := body["config"].(map[string]any)
+	require.True(t, ok)
+	bridgeBody, ok := configBody["bridge"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "debug", bridgeBody["log_level"],
+		"admin config endpoint must return the applied config, not the rejected reload")
+}
+
 func TestResolveInputs_InjectsHTTPSecretsWithoutMutatingLogicalConfig(t *testing.T) {
 	logical := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{

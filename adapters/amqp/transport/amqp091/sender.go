@@ -32,6 +32,10 @@ type Sender struct {
 
 	mu sync.Mutex
 	sc *senderChannel
+	// scConn records the connection s.sc was opened on, so a channel
+	// cached across a reconnect (stale connection) is detected and
+	// replaced before the first post-reconnect publish.
+	scConn amqpConnection
 }
 
 // NewSender creates a Sender bound to the given Session.
@@ -113,7 +117,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	start := s.clock().Now()
 	res, perr := sc.PublishConfirmed(sendCtx, exchange, routingKey,
-		s.cfg.Mandatory, s.cfg.Immediate, env, s.cfg, s.clock())
+		s.cfg.Mandatory, env, s.cfg, s.clock())
 	if perr != nil {
 		s.resetChannelLocked()
 		s.mu.Unlock()
@@ -186,17 +190,26 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 	return results, nil
 }
 
-// ensureChannelLocked opens a channel if none is cached. Caller must hold s.mu.
+// ensureChannelLocked opens a channel if none is cached, and discards a
+// channel that was cached on a now-stale connection. Caller must hold s.mu.
 func (s *Sender) ensureChannelLocked() (*senderChannel, error) {
-	if s.sc != nil {
-		return s.sc, nil
-	}
 	if s.session == nil {
 		return nil, shared.ErrUnavailable.WithMessage("amqp091: no session")
 	}
 	conn := s.session.Connection()
 	if conn == nil {
 		return nil, shared.ErrUnavailable.WithMessage("amqp091: session not connected")
+	}
+	// After a reconnect, session.Connection() returns a fresh connection
+	// while s.sc still wraps a channel on the old, closed one. Publishing
+	// on that channel would fail spuriously (and only self-heal on the
+	// *next* send). Detect the mismatch up front and reopen on the live
+	// connection so the first post-reconnect publish succeeds.
+	if s.sc != nil && senderChannelStale(s.scConn, conn) {
+		s.resetChannelLocked()
+	}
+	if s.sc != nil {
+		return s.sc, nil
 	}
 
 	sc, err := openSenderChannel(conn, s.cfg.Mandatory)
@@ -210,7 +223,16 @@ func (s *Sender) ensureChannelLocked() (*senderChannel, error) {
 		)
 	}
 	s.sc = sc
+	s.scConn = conn
 	return sc, nil
+}
+
+// senderChannelStale reports whether a cached publisher channel opened on
+// prevConn must be discarded because the session now exposes a different
+// connection or the current connection has been closed. Pure (no SDK,
+// no locks) so the staleness decision is unit-testable in isolation.
+func senderChannelStale(prevConn, currentConn amqpConnection) bool {
+	return prevConn != currentConn || currentConn == nil || currentConn.IsClosed()
 }
 
 // resetChannelLocked closes and clears the cached channel. Caller must hold s.mu.
@@ -219,6 +241,7 @@ func (s *Sender) resetChannelLocked() {
 		_ = s.sc.Close()
 		s.sc = nil
 	}
+	s.scConn = nil
 }
 
 // Close closes the cached publisher channel. Safe to call multiple times.

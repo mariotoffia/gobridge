@@ -17,21 +17,23 @@ import (
 // SessionOptions holds AMQP 0-9-1 connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
-	BrokerURL           string
-	Heartbeat           time.Duration
-	ConnectTimeout      time.Duration
-	ReconnectDelay      time.Duration
-	ReconnectMaxDelay   time.Duration
-	ReconnectMultiplier float64
-	Username            string
-	Password            shared.Secret
-	TLS                 *TLSConfig
-	Vhost               string
+	BrokerURL           string        `mapstructure:"broker_url" yaml:"broker_url" json:"broker_url"`
+	Heartbeat           time.Duration `mapstructure:"heartbeat" yaml:"heartbeat" json:"heartbeat"`
+	ConnectTimeout      time.Duration `mapstructure:"connect_timeout" yaml:"connect_timeout" json:"connect_timeout"`
+	ReconnectDelay      time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
+	ReconnectMaxDelay   time.Duration `mapstructure:"reconnect_max_delay" yaml:"reconnect_max_delay" json:"reconnect_max_delay"`
+	ReconnectMultiplier float64       `mapstructure:"reconnect_multiplier" yaml:"reconnect_multiplier" json:"reconnect_multiplier"`
+	Username            string        `mapstructure:"username" yaml:"username" json:"username"`
+	Password            shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
+	TLS                 *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
+	Vhost               string        `mapstructure:"vhost" yaml:"vhost" json:"vhost"`
 
 	// Clock drives the reconnect backoff wait. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
-	// control the backoff sleep deterministically.
-	Clock clock.Clock
+	// control the backoff sleep deterministically. It is an internal
+	// dependency and must never be populated from YAML; the dash tag
+	// excludes it from the strict options decoder.
+	Clock clock.Clock `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // TLSConfig holds TLS settings for the AMQP connection.
@@ -40,10 +42,10 @@ type SessionOptions struct {
 // paths on the same field. This lets ApplyCredentials supply rotated
 // material in-memory without writing to disk.
 type TLSConfig struct {
-	Enable     bool
-	CACertFile string
-	CertFile   string
-	KeyFile    string
+	Enable     bool   `mapstructure:"enable" yaml:"enable" json:"enable"`
+	CACertFile string `mapstructure:"ca_cert_file" yaml:"ca_cert_file" json:"ca_cert_file"`
+	CertFile   string `mapstructure:"cert_file" yaml:"cert_file" json:"cert_file"`
+	KeyFile    string `mapstructure:"key_file" yaml:"key_file" json:"key_file"`
 
 	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material used
 	// when credentials are rotated via ApplyCredentials. When set
@@ -51,11 +53,11 @@ type TLSConfig struct {
 	// shared.Secret so the (sensitive) private-key material — and, for
 	// uniformity, the cert/CA bundles — redact on JSON/YAML/log marshal;
 	// the config-save path reveals explicitly (see shared.RevealSecrets).
-	CACertPEM shared.Secret
-	CertPEM   shared.Secret
-	KeyPEM    shared.Secret
+	CACertPEM shared.Secret `mapstructure:"ca_cert_pem" yaml:"ca_cert_pem" json:"ca_cert_pem"`
+	CertPEM   shared.Secret `mapstructure:"cert_pem" yaml:"cert_pem" json:"cert_pem"`
+	KeyPEM    shared.Secret `mapstructure:"key_pem" yaml:"key_pem" json:"key_pem"`
 
-	InsecureSkipVerify bool
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify" json:"insecure_skip_verify"`
 }
 
 // ReceiverConfig holds AMQP 0-9-1 receiver-specific configuration.
@@ -77,12 +79,18 @@ type SenderConfig struct {
 	Exchange   string
 	RoutingKey string
 	Mandatory  bool
-	Immediate  bool
-	Timeout    time.Duration
-	Session    *Session
-	Logger     *slog.Logger
-	Metrics    ports.MetricsExporter
-	Clock      clock.Clock
+	// Immediate is retained only so existing configs that set it still
+	// decode. It is ignored by the publish path and rejected by
+	// Config.Validate/the managed factory: RabbitMQ removed basic.publish
+	// "immediate" in 3.0 and closes the channel when it is set.
+	//
+	// Deprecated: unsupported by RabbitMQ; has no effect.
+	Immediate bool
+	Timeout   time.Duration
+	Session   *Session
+	Logger    *slog.Logger
+	Metrics   ports.MetricsExporter
+	Clock     clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.

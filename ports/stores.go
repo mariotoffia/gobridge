@@ -35,8 +35,8 @@ type LeaseStore interface {
 //     Stores MUST honour this version-older rule. A store MAY ADDITIONALLY
 //     reclaim a claimed record whose claim has gone stale past a wall-clock
 //     staleness threshold — a crash-recovery fallback for an owner that died
-//     without bumping the version. The DynamoDB backend implements this
-//     time-stale fallback; the memory and SQLite backends are version-only.
+//     without bumping the version. The DynamoDB and SQLite backends implement
+//     this time-stale fallback; the in-memory backend is version-only.
 //     On a successful claim the store sets claimed_by from token.Owner; there
 //     is no separate owner parameter, so token.Owner is the single source of
 //     claim authority.
@@ -70,6 +70,35 @@ type OutboxStore interface {
 	Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
 	Expire(ctx context.Context, before time.Time) (int, error)
 	QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
+}
+
+// OutboxReleaser is an OPTIONAL OutboxStore capability. A store that
+// implements it lets a still-alive owner return a transiently-failed
+// claimed record to pending immediately, so it is re-claimable on the
+// next drain without a fencing-version bump or a wall-clock stale-claim
+// timeout. Stores that do NOT implement it fall back to version/stale
+// reclaim; on such a store a live owner cannot retry until its lease
+// version advances.
+//
+// Release fencing is owner+version+status, identical to Complete: it
+// transitions a record only when it is currently claimed,
+// claimed_by == token.Owner, and claim_version == token.Version. On any
+// mismatch the store MUST return shared.ErrStaleFencingToken rather than
+// silently skipping the record.
+//
+// Release is single-record-intended: the live drainer always passes exactly
+// one recordID. The recordIDs slice is retained for signature symmetry with
+// Complete, but partial-batch fencing semantics differ across stores and are
+// NOT contractually specified — memory mutates per-record and returns on the
+// first mismatch (earlier ids may already be released), while SQLite updates
+// atomically and then reports a mismatch via RowsAffected. Pass one id to
+// stay within the well-defined single-record contract.
+//
+// Release is claim-scoped, not idempotent: it only acts on a currently
+// claimed record. Re-releasing an already-pending (or completed) record is a
+// status mismatch and returns shared.ErrStaleFencingToken.
+type OutboxReleaser interface {
+	Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
 }
 
 // DLQReader is the read-side of the dead-letter queue: lookups and

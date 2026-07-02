@@ -302,7 +302,7 @@ import (
 func main() {
     cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
-    tenantProc := tenant.New(tenant.Config{
+    tenantProc, _ := tenant.New(tenant.Config{
         Name:          "tenant-validator",
         TenantHeader:  "x-tenant",
         RequireTenant: false, // allow catch-all for messages without tenant
@@ -397,7 +397,7 @@ Each tenant gets an independent circuit breaker. If tenant `startup-42` causes 5
 If the tenant ID is in the JSON payload instead of a header, use a transform processor to extract it before the resolver runs:
 
 ```go
-extractProc := transform.New(transform.Config{
+extractProc, _ := transform.New(transform.Config{
     Name: "extract-tenant",
     Mappings: []transform.FieldMapping{
         {Source: "$.metadata.tenant_id", Target: "header.x-tenant"},

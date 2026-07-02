@@ -29,6 +29,10 @@ func (s *session) getConfigItem(ctx context.Context, pk string) (rawData string,
 			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
 			attrSK: &ddbtypes.AttributeValueMemberS{Value: skCurrent},
 		},
+		// Strong read: config Load/reload must observe the latest committed
+		// version, otherwise a watcher can reload a stale document right
+		// after an admin Save.
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return "", 0, false, fmt.Errorf("dynamodb config load: %w", err)
@@ -66,6 +70,9 @@ func (s *session) getCurrentVersion(ctx context.Context, pk string) (int64, erro
 		ExpressionAttributeNames: map[string]string{
 			"#v": attrVersion,
 		},
+		// Strong read so the poll-mode change detector and the Save CAS see
+		// the latest committed version.
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("dynamodb config current version: %w", err)
@@ -86,8 +93,12 @@ func (s *session) getCurrentVersion(ctx context.Context, pk string) (int64, erro
 }
 
 // putConfigItem writes the (PK, current) row with the supplied JSON
-// payload and version.
-func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, version int64) error {
+// payload and version, guarded by a compare-and-set condition:
+// the write succeeds only if the row is absent (first write) or its
+// stored version equals expectedVersion. On a version-conflict the SDK
+// ConditionalCheckFailedException is returned unwrapped so the loader
+// can classify it as a lost-update conflict.
+func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, version, expectedVersion int64) error {
 	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.tableName,
 		Item: map[string]ddbtypes.AttributeValue{
@@ -96,8 +107,19 @@ func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, ver
 			attrData:    &ddbtypes.AttributeValueMemberS{Value: string(data)},
 			attrVersion: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(version, 10)},
 		},
+		ConditionExpression: aws.String("attribute_not_exists(#pk) OR #v = :expected"),
+		ExpressionAttributeNames: map[string]string{
+			"#pk": attrPK,
+			"#v":  attrVersion,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":expected": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(expectedVersion, 10)},
+		},
 	})
 	if err != nil {
+		if isConditionFailed(err) {
+			return err
+		}
 		return fmt.Errorf("dynamodb config save: %w", err)
 	}
 	return nil

@@ -112,6 +112,17 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 		}
 		cfg = c
 	}
+	// Defense in depth: the config decoder runs Config.Validate (which
+	// rejects auto_ack for managed routes), but a programmatic spec may
+	// bypass it. Re-reject here so the managed factory never builds a
+	// receiver that broker-acks on delivery and loses messages on a
+	// downstream failure.
+	if cfg.Receiver.AutoAck {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 receiver %q: auto_ack=true is unsafe for a managed route; "+
+				"remove it so deliveries settle at-least-once after the downstream succeeds", spec.ID))
+	}
+	cfg.Receiver.applyDefaults()
 	rc := ReceiverConfig{
 		QueueName:     cfg.Receiver.QueueName,
 		ConsumerTag:   cfg.Receiver.ConsumerTag,
@@ -150,11 +161,17 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, sess
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 sender %q: %s", spec.ID, err))
 	}
+	// Defense in depth (see NewReceiver): reject the unsupported
+	// basic.publish immediate flag even if the spec bypassed the decoder's
+	// Config.Validate. RabbitMQ closes the channel when immediate is set.
+	if cfg.Sender.Immediate {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 sender %q: immediate=true is not supported by RabbitMQ; remove it", spec.ID))
+	}
 	sc := SenderConfig{
 		Exchange:   cfg.Sender.Exchange,
 		RoutingKey: cfg.Sender.RoutingKey,
 		Mandatory:  cfg.Sender.Mandatory,
-		Immediate:  cfg.Sender.Immediate,
 		Timeout:    cfg.Sender.Timeout,
 		Session:    amqpSession,
 		Logger:     f.logger,

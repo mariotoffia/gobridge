@@ -61,7 +61,12 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 		if amqp091WellKnown[k] || strings.HasPrefix(k, amqp091Prefix) {
 			continue
 		}
-		if messaging.IsReservedHeader(k) {
+		if messaging.IsInternalOnlyHeader(k) {
+			// Strip internal-only dispatch bookkeeping (route-id,
+			// route-override, source-id, content-type) but PRESERVE
+			// bridge-to-bridge headers (correlation/causation/idempotency,
+			// ordering, tenant, forwarded-from/hop, trace) so a downstream
+			// bridge hop can deduplicate, correlate, and break loops.
 			continue
 		}
 		// HeaderGobridgeSubject is handled by envelopeToPublishing
@@ -227,7 +232,7 @@ type publishResult struct {
 func (sc *senderChannel) PublishConfirmed(
 	ctx context.Context,
 	exchange, routingKey string,
-	mandatory, immediate bool,
+	mandatory bool,
 	env *messaging.Envelope,
 	cfg SenderConfig,
 	clk clock.Clock,
@@ -242,7 +247,7 @@ func (sc *senderChannel) PublishConfirmed(
 	// any such residue rather than mis-attribute it to the next Send.
 	sc.drainReturns()
 
-	if err := sc.ch.publishContext(ctx, exchange, routingKey, mandatory, immediate, pub); err != nil {
+	if err := sc.ch.publishContext(ctx, exchange, routingKey, mandatory, pub); err != nil {
 		return publishResult{}, err
 	}
 

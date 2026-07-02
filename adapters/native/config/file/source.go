@@ -2,8 +2,11 @@ package file
 
 import (
 	"context"
+	"errors"
+	"os"
 
 	"github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -41,7 +44,20 @@ func NewSource(path string, registry *ports.Registry, opts ...SourceOption) *Sou
 	return s
 }
 
-// Load reads and parses the configuration file.
-func (s *Source) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	return parser.ParseFile(s.path, s.format, s.registry)
+// Load reads and parses the configuration file. A cancelled ctx short-circuits
+// before any filesystem work (I6); a missing file maps to shared.ErrNotFound
+// so callers can classify it, while parse errors pass through from the parser.
+func (s *Source) Load(ctx context.Context) (*ports.BridgeConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	cfg, err := parser.ParseFile(s.path, s.format, s.registry)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, shared.ErrNotFound.WithMessage("config file not found").Wrap(err)
+		}
+		return nil, err //nolint:wrapcheck // parser already annotates with file/stage context.
+	}
+	return cfg, nil
 }

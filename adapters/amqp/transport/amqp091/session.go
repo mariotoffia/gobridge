@@ -34,6 +34,13 @@ type Session struct {
 	connected bool
 	starting  bool
 
+	// blocked tracks whether the broker currently has TCP backpressure
+	// engaged (connection.blocked) due to a resource alarm, with the
+	// server-supplied reason. Surfaced in Health so broker memory/disk
+	// pushback is not misread as ordinary send timeouts. Guarded by mu.
+	blocked       bool
+	blockedReason string
+
 	plan       *connectivity.SessionPlan
 	activeSubs map[string]bool // queue names successfully declared
 
@@ -244,6 +251,11 @@ func (s *Session) Start(ctx context.Context) error {
 
 	s.pushEvent(ports.SessionConnected, nil)
 
+	// Observe broker flow control for this connection. The watcher exits
+	// when the connection's blocked stream closes or bgCtx is cancelled,
+	// so its lifetime is bounded by the connection / session.
+	go s.watchBlocked(bgCtx, conn)
+
 	go func() {
 		defer close(done)
 		s.reconnectLoop(bgCtx)
@@ -326,7 +338,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 // AMQP closes the channel on any soft error.
 func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.SubscriptionPlan) error {
 	queueName := sub.Topic
-	exchangeName, routingKey, exchangeType, durable, autoDelete := subscriptionParams(sub)
+	decl := subscriptionParams(sub)
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -334,21 +346,22 @@ func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.Subs
 	}
 	defer func() { _ = ch.Close() }()
 
-	if exchangeName != "" {
-		if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete); err != nil {
+	if decl.exchange != "" {
+		if err := ch.ExchangeDeclare(decl.exchange, decl.exchangeType, decl.durable, decl.autoDelete, decl.exchangeArgs); err != nil {
 			return MapError(err)
 		}
 	}
 
-	if err := ch.QueueDeclare(queueName, durable, autoDelete); err != nil {
+	if err := ch.QueueDeclare(queueName, decl.durable, decl.autoDelete, decl.queueArgs); err != nil {
 		return MapError(err)
 	}
 
-	if exchangeName != "" {
+	if decl.exchange != "" {
+		routingKey := decl.routingKey
 		if routingKey == "" {
 			routingKey = queueName
 		}
-		if err := ch.QueueBind(queueName, routingKey, exchangeName); err != nil {
+		if err := ch.QueueBind(queueName, routingKey, decl.exchange, decl.bindArgs); err != nil {
 			return MapError(err)
 		}
 	}
@@ -366,7 +379,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub connectivity.Publish
 	if exchangeName == "" {
 		return nil
 	}
-	exchangeType, durable, autoDelete := publisherParams(pub)
+	decl := publisherParams(pub)
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -374,7 +387,7 @@ func (s *Session) declarePublisher(conn amqpConnection, pub connectivity.Publish
 	}
 	defer func() { _ = ch.Close() }()
 
-	if err := ch.ExchangeDeclare(exchangeName, exchangeType, durable, autoDelete); err != nil {
+	if err := ch.ExchangeDeclare(exchangeName, decl.exchangeType, decl.durable, decl.autoDelete, decl.exchangeArgs); err != nil {
 		return MapError(err)
 	}
 	return nil
@@ -386,6 +399,8 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	connected := s.connected && s.conn != nil
 	plan := s.plan
 	activeCount := len(s.activeSubs)
+	blocked := s.blocked
+	blockedReason := s.blockedReason
 	s.mu.Unlock()
 
 	wantedCount := 0
@@ -397,6 +412,11 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	switch {
 	case !connected:
 		sl = ports.ServiceLevelNone
+	case blocked:
+		// Connected, but the broker has flow control engaged (resource
+		// alarm): publishes will stall. Report degraded so operators see
+		// the cause rather than mistaking it for send timeouts.
+		sl = ports.ServiceLevelDegraded
 	case wantedCount == 0:
 		sl = ports.ServiceLevelFull
 	case activeCount >= wantedCount:
@@ -407,8 +427,15 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		sl = ports.ServiceLevelDegraded
 	}
 
+	var lastErr error
+	if connected && blocked {
+		lastErr = shared.ErrBrokerBusy.WithMessage(
+			"amqp091: broker flow control engaged: " + blockedReason)
+	}
+
 	return ports.SessionHealth{
 		Connected:           connected,
+		LastError:           lastErr,
 		SubscriptionsWanted: wantedCount,
 		SubscriptionsActive: activeCount,
 		Ready:               connected,
@@ -577,6 +604,52 @@ const (
 	reconnectInitial = 1 * time.Second
 )
 
+// watchBlocked observes broker connection.blocked / connection.unblocked
+// notifications for one connection and reflects them into Session state
+// (consulted by Health), a counter metric, and a log line. RabbitMQ raises
+// these when a memory or disk resource alarm engages TCP backpressure;
+// without this, a blocked broker looks like a string of send timeouts.
+//
+// The watcher exits when the broker closes the blocked stream (connection
+// teardown) or ctx is cancelled, so its lifetime is bounded by the
+// connection it watches. It deliberately does not clear blocked state on
+// exit: the reconnect/disconnect path clears it, so a connection that
+// drops while blocked does not strand a stale alarm.
+func (s *Session) watchBlocked(ctx context.Context, conn amqpConnection) {
+	blockedCh := conn.NotifyBlocked()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case b, ok := <-blockedCh:
+			if !ok {
+				return
+			}
+			s.setBlocked(b.Active, b.Reason)
+			s.metrics.Counter(MetricAMQP091Blocked, 1,
+				shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
+			if s.logger == nil {
+				continue
+			}
+			if b.Active {
+				s.logger.Warn("amqp091: broker engaged connection flow control (resource alarm)",
+					"broker", s.safeBrokerURL(), "reason", b.Reason)
+			} else if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug,
+					"amqp091: broker cleared connection flow control",
+					"broker", s.safeBrokerURL())
+			}
+		}
+	}
+}
+
+func (s *Session) setBlocked(active bool, reason string) {
+	s.mu.Lock()
+	s.blocked = active
+	s.blockedReason = reason
+	s.mu.Unlock()
+}
+
 func (s *Session) reconnectLoop(ctx context.Context) {
 	for {
 		s.mu.Lock()
@@ -610,6 +683,11 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			s.connected = false
 			s.conn = nil
 			s.activeSubs = make(map[string]bool)
+			// A dropped connection cannot be flow-controlled; clear any
+			// lingering blocked state so a reconnect starts clean and
+			// Health does not report stale broker pushback.
+			s.blocked = false
+			s.blockedReason = ""
 			s.mu.Unlock()
 
 			if !ok {
@@ -690,6 +768,11 @@ func (s *Session) doReconnect(ctx context.Context) {
 		s.connected = true
 		plan := s.plan
 		s.mu.Unlock()
+
+		// Re-arm the flow-control watcher for the new connection; the
+		// previous watcher exited when the old connection's blocked
+		// stream closed.
+		go s.watchBlocked(ctx, conn)
 
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: reconnected",

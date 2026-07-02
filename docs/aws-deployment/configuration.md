@@ -58,9 +58,9 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when no bridge config file exists yet. |
-| `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML on EFS (e.g. `/gobridge/bridge.yaml`). |
+| `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. |
-| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Controls which components are started. |
+| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. **Reserved / non-operative at runtime** -- every node starts the transport, admin, and monitor servers regardless of this value. Validated for shape and consumed only at deploy time by the CDK single/cluster facades (per-service role + synth validation). Reserved for future multi-node coordination. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica) or `"filesystem_replicated"` (N replicas sharing EFS). |
 | `poll_interval` | `string` | No | `"1s"` | Go duration string for how often the poll watcher checks the bridge config file for changes. |
 | `admin_addr` | `string` | No | `":8080"` | Listen address for the admin HTTP server. |
@@ -91,15 +91,17 @@ Validation fails if:
 ## Bridge Config on EFS
 
 The bridge config YAML lives on an EFS file system mounted into every Fargate
-task. The EFS access point enforces a root directory so all tasks see a
-consistent path. A typical mapping:
+task through an EFS access point. The access point pins a POSIX owner and
+exposes the file-system root, so every task reads the config at the same
+in-container path. A typical mapping:
 
 | Layer | Path |
 |-------|------|
-| EFS access point root | `/gobridge/` |
-| Container mount point | `/mnt/gobridge/` (mapped via EFS mount in task def) |
-| Bridge config file | `/mnt/gobridge/bridge.yaml` |
-| `config_file_path` in bootstrap | `/gobridge/bridge.yaml` (EFS access point path) |
+| EFS access point root | `/` (the access point exposes the file-system root) |
+| Container mount point | `/var/lib/gobridge` (access point mounted via the task-def EFS volume) |
+| Bridge config file (in container) | `/var/lib/gobridge/bridge.yaml` |
+| Bridge config file (raw EFS path) | `/bridge.yaml` (what a host mounting the file system directly sees) |
+| `config_file_path` in bootstrap | `/var/lib/gobridge/bridge.yaml` (the in-container path the runtime reads) |
 
 You should write the bridge config to EFS using one of the following methods.
 
@@ -116,12 +118,12 @@ S3, a CodeArtifact archive, or an embedded default:
   "command": [
     "s3", "cp",
     "s3://my-config-bucket/gobridge/bridge.yaml",
-    "/gobridge/bridge.yaml"
+    "/var/lib/gobridge/bridge.yaml"
   ],
   "mountPoints": [
     {
       "sourceVolume": "gobridge-efs",
-      "containerPath": "/gobridge"
+      "containerPath": "/var/lib/gobridge"
     }
   ]
 }
@@ -140,7 +142,8 @@ the deployment pipeline:
 aws efs describe-mount-targets --file-system-id $EFS_ID
 # Mount EFS via EFS mount helper (requires amazon-efs-utils)
 mount -t efs -o tls $EFS_ID:/ /mnt/efs
-cp bridge.yaml /mnt/efs/gobridge/bridge.yaml
+# The access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml
+cp bridge.yaml /mnt/efs/bridge.yaml
 umount /mnt/efs
 ```
 
@@ -160,8 +163,8 @@ sudo yum install -y amazon-efs-utils
 sudo mkdir -p /mnt/efs
 sudo mount -t efs -o tls fs-0123456789abcdef0:/ /mnt/efs
 
-# Write config
-sudo cp bridge.yaml /mnt/efs/gobridge/bridge.yaml
+# Write config (access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml)
+sudo cp bridge.yaml /mnt/efs/bridge.yaml
 
 # Unmount
 sudo umount /mnt/efs
@@ -328,7 +331,7 @@ bootstrap library reads and parses this variable.
 ```json
 {
   "bridge_id": "orders-bridge-prod",
-  "config_file_path": "/gobridge/bridge.yaml",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
   "topology": "single",
   "node_role": "control",
   "poll_interval": "10s",

@@ -60,12 +60,19 @@ func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 	})
 	tpl := assertions.Template_FromStack(stack, nil)
 
+	// baseYAML declares no HTTP receiver, so only the control + monitor
+	// target groups are emitted.
 	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), jsii.Number(2))
 	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
 	for id, raw := range *tgs {
 		props := (*raw)["Properties"].(map[string]any)
-		if got := props["HealthCheckPath"]; got != "/healthz" {
-			t.Fatalf("TG %s HealthCheckPath = %v, want /healthz", id, got)
+		if got := props["HealthCheckPath"]; got != "/api/v1/monitor/health" {
+			t.Fatalf("TG %s HealthCheckPath = %v, want /api/v1/monitor/health", id, got)
+		}
+		// Every TG probes the monitor port (8081) via the health-check
+		// port override, regardless of its own traffic port.
+		if got := props["HealthCheckPort"]; got != "8081" {
+			t.Fatalf("TG %s HealthCheckPort = %v, want \"8081\"", id, got)
 		}
 		// HealthCheckProtocol and Matcher default to HTTP/200 implicitly when
 		// the TG's traffic protocol is HTTP — CDK omits them from the CFn
@@ -101,56 +108,86 @@ func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 }
 
 // Test_T20_Attachment_Cluster_TGsTargetCorrectServices pins the TG-to-Service
-// wiring on the cluster scenario: the TG referenced by the Control service's
-// LoadBalancers[0] must be the ControlTargetGroup, and same for Worker. The
-// existing TestALBAttachment_Cluster_TGsTargetCorrectServices only counts
-// LBs per service (1 each); this test asserts the ARN match goes to the
-// correct TG.
+// wiring on the cluster scenario. Each service attaches to exactly two target
+// groups: its role-specific TG (Control→ControlTargetGroup,
+// Worker→WorkerTargetGroup) plus the shared MonitorTargetGroup that every
+// service joins so the monitor-port health checks are reachable. This test
+// asserts the ARN references resolve to those exact TGs — the sibling
+// TestALBAttachment_Cluster_TGsTargetCorrectServices only counts LBs.
 func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
+	// httpReceiverYAML emits the transport target group so the worker
+	// service attaches to its own (transport) TG plus the shared monitor
+	// TG — symmetric 2-LB wiring with the control service.
+	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	cluster := newCluster(t, stack, vpc, src)
 	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
 		Cluster: cluster, Listener: listener, Vpc: vpc, BridgeConfig: src,
 	})
 	tpl := assertions.Template_FromStack(stack, nil)
 
-	// Resolve the construct's TG ARN attribute references back to a logical id.
+	// Resolve the construct's TG ARN attribute references back to logical ids.
 	ctrlTGRef := refOfAttribute(awscdk.Stack_Of(stack), att.ControlTargetGroup().TargetGroupArn())
+	monTGRef := refOfAttribute(awscdk.Stack_Of(stack), att.MonitorTargetGroup().TargetGroupArn())
 	wrkTGRef := refOfAttribute(awscdk.Stack_Of(stack), att.WorkerTargetGroup().TargetGroupArn())
-	if ctrlTGRef == "" || wrkTGRef == "" {
-		t.Fatalf("could not resolve TG logical ids: ctrl=%q wrk=%q", ctrlTGRef, wrkTGRef)
+	if ctrlTGRef == "" || monTGRef == "" || wrkTGRef == "" {
+		t.Fatalf("could not resolve TG logical ids: ctrl=%q mon=%q wrk=%q", ctrlTGRef, monTGRef, wrkTGRef)
+	}
+
+	has := func(list []string, v string) bool {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+		return false
 	}
 
 	svcs := tpl.FindResources(jsii.String("AWS::ECS::Service"), nil)
 	if len(*svcs) != 2 {
 		t.Fatalf("want 2 services, got %d", len(*svcs))
 	}
-	matched := map[string]string{} // role -> tg ref
+	roleTG := map[string]string{} // role -> role-specific (non-monitor) tg ref
 	for id, raw := range *svcs {
 		props := (*raw)["Properties"].(map[string]any)
 		lbs, _ := props["LoadBalancers"].([]any)
-		if len(lbs) != 1 {
-			t.Fatalf("service %s LoadBalancers count = %d, want 1", id, len(lbs))
+		if len(lbs) != 2 {
+			t.Fatalf("service %s LoadBalancers count = %d, want 2 (own + monitor)", id, len(lbs))
 		}
-		lb := lbs[0].(map[string]any)
-		tgArn, _ := lb["TargetGroupArn"].(map[string]any)
-		ref, _ := tgArn["Ref"].(string)
+		refs := make([]string, 0, len(lbs))
+		for _, l := range lbs {
+			lb := l.(map[string]any)
+			tgArn, _ := lb["TargetGroupArn"].(map[string]any)
+			if ref, _ := tgArn["Ref"].(string); ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+		// Every service must join the shared monitor TG.
+		if !has(refs, monTGRef) {
+			t.Fatalf("service %s LBs %v missing monitor TG %q", id, refs, monTGRef)
+		}
+		// The remaining ref is the role-specific TG.
+		var own string
+		for _, r := range refs {
+			if r != monTGRef {
+				own = r
+			}
+		}
 		switch {
 		case strings.Contains(id, "Control"):
-			matched["Control"] = ref
+			roleTG["Control"] = own
 		case strings.Contains(id, "Worker"):
-			matched["Worker"] = ref
+			roleTG["Worker"] = own
 		default:
 			t.Fatalf("unexpected service id %s", id)
 		}
 	}
-	if matched["Control"] != ctrlTGRef {
-		t.Fatalf("Control service TG ref = %q, want %q", matched["Control"], ctrlTGRef)
+	if roleTG["Control"] != ctrlTGRef {
+		t.Fatalf("Control service role TG ref = %q, want %q", roleTG["Control"], ctrlTGRef)
 	}
-	if matched["Worker"] != wrkTGRef {
-		t.Fatalf("Worker service TG ref = %q, want %q", matched["Worker"], wrkTGRef)
+	if roleTG["Worker"] != wrkTGRef {
+		t.Fatalf("Worker service role TG ref = %q, want %q", roleTG["Worker"], wrkTGRef)
 	}
 }
 

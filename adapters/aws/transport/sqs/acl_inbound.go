@@ -35,7 +35,7 @@ func (r *Receiver) pollAndConvert(
 ) ([]rawInbound, error) {
 	pollStart := r.clock().Now()
 	pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
-	output, err := r.client.ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
+	output, err := r.loadClient().ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
 		QueueUrl:              aws.String(queueURL),
 		MaxNumberOfMessages:   r.cfg.MaxMessages,
 		WaitTimeSeconds:       r.cfg.WaitTimeSeconds,
@@ -248,11 +248,11 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	r.initMu.Lock()
 	defer r.initMu.Unlock()
 
-	if r.client != nil {
+	if r.loadClient() != nil {
 		return nil
 	}
 	if r.cfg.Client != nil {
-		r.client = r.cfg.Client
+		r.storeClient(r.cfg.Client)
 		return nil
 	}
 
@@ -260,7 +260,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	r.client = awssqs.NewFromConfig(cfg)
+	r.storeClient(awssqs.NewFromConfig(cfg))
 
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver initialized",

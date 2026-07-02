@@ -34,12 +34,16 @@ import (
 )
 
 // helperMinimalRoute creates a minimal valid RouteConfig with a
-// FakeReceiver and FakeSender suitable for lifecycle tests.
+// FakeReceiver and FakeSender suitable for lifecycle tests. It routes
+// terminal outcomes to drop because these tests wire no DLQ store and
+// exercise lifecycle, not failure handling.
 func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}

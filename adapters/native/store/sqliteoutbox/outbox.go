@@ -2,6 +2,7 @@ package sqliteoutbox
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"time"
 
@@ -10,6 +11,13 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
+// Compile-time interface assertions. io.Closer lets a lifecycle-aware
+// composition root release the file handle on stop/reload without importing
+// this package's concrete type (I5). ports.OutboxStore/OutboxReleaser are
+// satisfied structurally and asserted in the test package to keep this
+// production file free of a ports import (see .go-arch-lint.yml).
+var _ io.Closer = (*Store)(nil)
+
 // Store implements ports.OutboxStore using SQLite for local durable
 // persistence in tests and single-process deployments.
 //
@@ -17,9 +25,10 @@ import (
 // to the acl_*.go files in this package; this file is the port-side
 // implementation and intentionally imports no driver packages.
 type Store struct {
-	sess   *sqlSession
-	clk    clock.Clock
-	logger *slog.Logger
+	sess       *sqlSession
+	clk        clock.Clock
+	staleClaim time.Duration
+	logger     *slog.Logger
 }
 
 // Option configures a Store.
@@ -31,6 +40,20 @@ func WithClock(c clock.Clock) Option {
 	return func(s *Store) {
 		if c != nil {
 			s.clk = c
+		}
+	}
+}
+
+// WithStaleClaimDuration enables time-based reclaim of stranded claims (I1).
+// When d > 0 a Claim may additionally reclaim a record that is still claimed
+// but whose claim is older than d, recovering work orphaned by an owner that
+// crashed between Claim and Complete/Release. When d <= 0 (the default) the
+// store stays strictly version-only, matching the historical behaviour. The
+// bridge derives d from ports.OutboxRuntimeOptions.StaleClaimDuration.
+func WithStaleClaimDuration(d time.Duration) Option {
+	return func(s *Store) {
+		if d > 0 {
+			s.staleClaim = d
 		}
 	}
 }
@@ -73,7 +96,7 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
-	return s.sess.claim(ctx, pk, token, limit)
+	return s.sess.claim(ctx, pk, token, limit, s.clk.Now(), s.staleClaim)
 }
 
 // Complete marks the supplied records as completed at the current clock time.
@@ -82,6 +105,18 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: complete", "count", len(recordIDs))
 	}
 	return s.sess.complete(ctx, recordIDs, token, s.clk.Now())
+}
+
+// Release returns the supplied records from claimed to pending so the
+// same owner can re-claim and retry them on the next drain after a
+// transient egress failure, without a fencing-version bump or a
+// wall-clock stale-claim wait. Fencing is owner+version+status,
+// identical to Complete.
+func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: release", "count", len(recordIDs))
+	}
+	return s.sess.release(ctx, recordIDs, token)
 }
 
 // Expire marks pending records whose expires_at is older than before

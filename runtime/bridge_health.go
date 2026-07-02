@@ -30,6 +30,18 @@ func (rt *Runtime) Healthy() bool {
 	return rt.healthy
 }
 
+// Terminal reports whether the runtime has suffered an unrecoverable
+// failure: a background component returned a fatal error or panicked,
+// causing the runtime to cancel itself. Unlike a clean Stop (which leaves
+// healthy true), a terminal runtime never recovers on its own — its
+// supervisor/orchestrator must restart the process. The liveness probe
+// uses this to fail closed so Kubernetes restarts a dead-but-running pod.
+func (rt *Runtime) Terminal() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.terminal
+}
+
 // ComponentErrors returns a copy of the failed component error map.
 func (rt *Runtime) ComponentErrors() map[string]error {
 	rt.mu.Lock()

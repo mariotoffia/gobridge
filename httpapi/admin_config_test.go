@@ -218,6 +218,49 @@ func TestHandleConfigTxnCreate_Conflict(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, rec2.Code)
 }
 
+// TestHandleConfigTxnCreate_BodyValidation verifies the create handler
+// distinguishes an empty body (defaults) from a non-empty malformed body
+// (rejected). Previously a malformed JSON body was silently swallowed and
+// a default transaction created instead of returning an error. Each case
+// uses a fresh server so the single-active-transaction invariant is not
+// tripped across cases.
+func TestHandleConfigTxnCreate_BodyValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       io.ReadCloser
+		wantStatus int
+	}{
+		{"empty NoBody creates default txn", http.NoBody, http.StatusCreated},
+		{"empty string body creates default txn", bodyReader(""), http.StatusCreated},
+		{"whitespace-only body creates default txn", bodyReader("   \n\t"), http.StatusCreated},
+		{"empty JSON object creates default txn", bodyReader("{}"), http.StatusCreated},
+		{"valid JSON with ttl creates txn", bodyReader(`{"ttl":"90s"}`), http.StatusCreated},
+		{"malformed JSON is rejected", bodyReader("{not json"), http.StatusBadRequest},
+		{"non-JSON garbage is rejected", bodyReader("garbage"), http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newConfigTestServer(t, sampleBridgeConfig())
+
+			rec := httptest.NewRecorder()
+			req := adminRequest(http.MethodPost, "/api/v1/admin/config/transactions")
+			req.Body = tc.body
+			s.handleConfigTxnCreate(rec, req)
+
+			require.Equal(t, tc.wantStatus, rec.Code, "body=%s", rec.Body.String())
+
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+			switch tc.wantStatus {
+			case http.StatusCreated:
+				assert.NotEmpty(t, body["txn_id"], "created txn must carry an id")
+			case http.StatusBadRequest:
+				assert.Equal(t, "invalid request body", body["error"])
+			}
+		})
+	}
+}
+
 // --- PATCH /config/transactions/{txnID} ---
 
 func TestHandleConfigTxnPatch_ReturnsMergedPreview(t *testing.T) {

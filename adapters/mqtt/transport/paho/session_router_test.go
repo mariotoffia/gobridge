@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -23,54 +22,61 @@ func newTestPacketPublish(topic string, payload []byte) *packets.Publish {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// T3 Regression: Router goroutine tracking via WaitGroup
+// Finding #2: Synchronous dispatch (backpressure + deferred ACK)
 //
-// These tests verify that router.Route() tracks spawned handler goroutines
-// so that Wait() (and thus Session.Close) blocks until all are complete.
-//
-//   ┌──────────┐  Route()   ┌───────────────┐
-//   │  router  │───────────▶│ goroutine x N │──▶ wg.Done()
-//   └──────────┘            └───────────────┘
-//        │
-//        ▼
-//   Wait() blocks until all goroutines finish
+// Route must block until every handler for a publish has returned. The Paho
+// client only sends the PUBACK/PUBCOMP after Route unwinds, so blocking here
+// applies broker backpressure and defers the protocol ACK until the handler
+// (emit) has taken ownership.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestRouter_Wait_BlocksUntilHandlersComplete validates that Wait() blocks
-// until all in-flight handler goroutines spawned by Route() have returned.
-//
-// Scenario:
-// ───────────────────────────────────────────────
-//
-//	Register 3 slow handlers (sleep 100ms each)
-//	Call Route() → spawns 3 goroutines
-//	Call Wait() → must block until all 3 complete
-//
-// ───────────────────────────────────────────────
-//
-// Assertions:
-//   - All 3 handlers were invoked
-//   - Wait() does not return before all handlers complete
-func TestRouter_Wait_BlocksUntilHandlersComplete(t *testing.T) {
+// TestRouter_Route_IsSynchronous_BlocksUntilHandlersComplete validates that
+// Route does not return until all handler goroutines it spawned have
+// completed. Neuter-and-verify: against the previous goroutine-per-publish
+// implementation Route returned immediately and the negative select below
+// would fire.
+func TestRouter_Route_IsSynchronous_BlocksUntilHandlersComplete(t *testing.T) {
 	r := newRouter(nil, nil)
+
+	const handlers = 3
+	started := make(chan struct{}, handlers)
+	release := make(chan struct{})
 	var completed atomic.Int32
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < handlers; i++ {
 		id := string(rune('a' + i))
 		r.Register(id, func(_ *pahov5.Publish) {
-			time.Sleep(100 * time.Millisecond) // OTHER: simulated slow handler work
+			started <- struct{}{}
+			<-release
 			completed.Add(1)
 		})
 	}
 
 	pb := newTestPacketPublish("test/topic", []byte("hello"))
-	r.Route(pb)
+	routeReturned := make(chan struct{})
+	go func() {
+		r.Route(pb)
+		close(routeReturned)
+	}()
 
-	// Wait must block until all 3 handlers finish.
-	r.Wait()
+	// Every handler must be dispatched (concurrently) before Route returns.
+	for i := 0; i < handlers; i++ {
+		<-started
+	}
+	// Route is still blocked: it dispatches synchronously and waits for
+	// every handler. This select is deterministically the default branch
+	// on correct code because routeReturned cannot close until we release.
+	select {
+	case <-routeReturned:
+		t.Fatal("Route returned before handlers completed; dispatch must be synchronous")
+	default:
+	}
 
-	if c := completed.Load(); c != 3 {
-		t.Fatalf("expected 3 handlers completed, got %d", c)
+	close(release)
+	<-routeReturned // Route returns once handlers finish.
+
+	if c := completed.Load(); c != handlers {
+		t.Fatalf("expected %d handlers completed, got %d", handlers, c)
 	}
 }
 
@@ -108,19 +114,15 @@ func TestRouter_ShallowCopy_DistinctPointers(t *testing.T) {
 // blocks until all in-flight router handler goroutines have completed
 // before closing the events channel.
 //
-// Scenario:
-// ───────────────────────────────────────────────
-//
-//	Register a slow handler that takes 200ms
-//	Dispatch a message via Route()
-//	Immediately call Close()
-//	Close must not return until the handler finishes
-//
-// ───────────────────────────────────────────────
+// Deterministic design: a handler signals it is in-flight (started) and
+// then parks on a release channel. Close is started in a goroutine; it
+// must not return while the handler is in-flight. Releasing the handler
+// lets Close complete. handlerDone is guaranteed observed once Close
+// returns because the handler's wg.Done runs only after it sets the flag.
 //
 // Assertions:
-//   - Handler was invoked and completed
-//   - Close completes without panic
+//   - Close does not return while a handler is in-flight
+//   - Handler completed before Close returned
 //   - Events channel is closed after Close returns
 func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 	s := NewSession(
@@ -129,18 +131,35 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 		nil,
 	)
 
+	started := make(chan struct{})
+	release := make(chan struct{})
 	var handlerDone atomic.Bool
 	s.router.Register("slow", func(_ *pahov5.Publish) {
-		// OTHER: simulated slow handler — tests that Close waits for in-flight work.
-		time.Sleep(200 * time.Millisecond)
+		close(started)
+		<-release
 		handlerDone.Store(true)
 	})
 
 	pb := newTestPacketPublish("test/topic", []byte("data"))
-	s.router.Route(pb)
+	go s.router.Route(pb)
+	<-started // handler is in-flight (counted in the shared WaitGroup)
 
-	// Close should block until the slow handler finishes.
-	_ = s.Close(context.Background())
+	closeReturned := make(chan struct{})
+	go func() {
+		_ = s.Close(context.Background())
+		close(closeReturned)
+	}()
+
+	// Close must block on the in-flight handler — deterministically the
+	// default branch because closeReturned cannot close before release.
+	select {
+	case <-closeReturned:
+		t.Fatal("Close returned while a handler was still in-flight")
+	default:
+	}
+
+	close(release)
+	<-closeReturned
 
 	if !handlerDone.Load() {
 		t.Fatal("handler should have completed before Close returned")
@@ -162,20 +181,18 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestRouter_Close_RespectsCtxDeadline validates that Session.Close returns
-// within the ctx deadline even when a handler blocks indefinitely.
+// when its context is cancelled even though a handler is still in-flight,
+// rather than blocking on the handler indefinitely.
 //
-// Scenario:
-// ───────────────────────────────────────────────
-//
-//	Register a handler that blocks for 5s
-//	Call Close with 100ms context deadline
-//	Close must return within ~200ms (ctx expired)
-//
-// ───────────────────────────────────────────────
+// Deterministic design: the handler parks on a release channel that is only
+// closed at test cleanup, so it never finishes on its own. Close is invoked
+// with a cancellable context; cancelling it must unblock Close. Against
+// broken code (Close ignoring ctx) this test blocks and the harness times
+// out.
 //
 // Assertions:
-//   - Close returns within 300ms
-//   - Events channel is still closed
+//   - Close returns after ctx cancel without the handler completing
+//   - Events channel is still closed even on ctx cancellation
 func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test-ctx"},
@@ -183,25 +200,28 @@ func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 		nil,
 	)
 
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // unblock the parked handler at test end
 	s.router.Register("blocker", func(_ *pahov5.Publish) {
-		time.Sleep(5 * time.Second) // OTHER: simulated blocking handler for Close deadline test
+		close(started)
+		<-release
 	})
 
 	pb := newTestPacketPublish("test/topic", []byte("data"))
-	s.router.Route(pb)
+	go s.router.Route(pb)
+	<-started // handler is in-flight and will not finish on its own
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	closeReturned := make(chan error, 1)
+	go func() { closeReturned <- s.Close(ctx) }()
 
-	start := time.Now()
-	_ = s.Close(closeCtx)
-	elapsed := time.Since(start)
+	// Close is blocking on the in-flight handler; cancelling ctx must make
+	// it return WITHOUT waiting for the handler to finish.
+	cancel()
+	<-closeReturned
 
-	if elapsed > 300*time.Millisecond {
-		t.Fatalf("Close should have returned within ctx deadline, took %v", elapsed)
-	}
-
-	// Events channel should still be closed even on ctx timeout.
+	// Events channel should still be closed even on ctx cancellation.
 	select {
 	case _, ok := <-s.Events():
 		if ok {
@@ -211,6 +231,18 @@ func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 		t.Fatal("expected closed channel to be readable (zero value)")
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Finding #3: Close stops consumption (lease step-down)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestRouter_Close_WaitsForInflightHandlers (see above) covers the
+// at-least-once boundary on Close: in-flight handlers are awaited so a
+// publish the broker is still delivering during the disconnect window is
+// processed-then-acked rather than dropped. The router has no stop gate —
+// dropping-then-acking in-flight publishes would silently lose them
+// because the Paho Router seam acks after Route returns (see
+// session_lifecycle.go for the rationale).
 
 // ═══════════════════════════════════════════════════════════════════════════
 // L5: Router handler panic recovery
@@ -231,7 +263,6 @@ func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
 		panic("handler panic")
 	})
 	r.Register("normal", func(_ *pahov5.Publish) {
-		time.Sleep(50 * time.Millisecond) // OTHER: simulated slow handler work alongside panicking sibling
 		normalDone.Store(true)
 	})
 

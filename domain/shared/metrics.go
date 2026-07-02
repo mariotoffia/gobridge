@@ -41,7 +41,6 @@ const (
 const (
 	MetricDeliveryE2ELatency = "DeliveryE2ELatency"
 	MetricDLQEntries         = "DLQEntries"
-	MetricDLQBufferOverflow  = "DLQBufferOverflow"
 	MetricDLQWriteFailures   = "DLQWriteFailures"
 	MetricDeliveryPanics     = "DeliveryPanics"
 )

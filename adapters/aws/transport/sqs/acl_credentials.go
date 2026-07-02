@@ -48,9 +48,11 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 
 // ApplyCredentials rotates the Sender's AWS credentials. A new *sqs.Client
 // is built with the new static provider and atomically swapped in. Calls
-// already in flight continue to use the previous client, since they hold
-// a local reference; subsequent sends pick up the new credentials on the
-// next SendMessage call.
+// already in flight continue to use the previous client, since they read
+// the client through an atomic snapshot; subsequent sends pick up the new
+// credentials on the next SendMessage call. The swap is serialised under
+// initMu so it cannot race the lazy-init/queue-URL resolution sequence
+// and lose a rotation.
 //
 // TLS material on CredentialSet is ignored: SQS runs over HTTPS with
 // the SDK's default trust store. Leaf-cert pinning would be configured
@@ -65,7 +67,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 	}
 
 	s.initMu.Lock()
-	s.client = client
+	s.storeClient(client)
 	s.initMu.Unlock()
 	return nil
 }
@@ -82,7 +84,7 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 	}
 
 	r.initMu.Lock()
-	r.client = client
+	r.storeClient(client)
 	r.initMu.Unlock()
 	return nil
 }

@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -27,4 +28,16 @@ func WithValidator(v ports.TenantValidator) Option {
 // processor skips in-flight and message count tracking.
 func WithUsageTracker(t ports.TenantUsageTracker) Option {
 	return func(p *Processor) { p.tracker = t }
+}
+
+// WithMetrics sets the metrics exporter used to emit tracker-error and
+// tenant-reject counters. When unset, a NoopExporter is used.
+func WithMetrics(m ports.MetricsExporter) Option {
+	return func(p *Processor) { p.metrics = m }
+}
+
+// WithLogger sets the structured logger used to surface tracker failures
+// and tenant rejects. When nil (default), those log hooks are skipped.
+func WithLogger(l *slog.Logger) Option {
+	return func(p *Processor) { p.logger = l }
 }

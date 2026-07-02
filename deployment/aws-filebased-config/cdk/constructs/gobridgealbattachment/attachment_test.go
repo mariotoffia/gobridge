@@ -164,7 +164,7 @@ func TestALBAttachment_Single_Synth(t *testing.T) {
 		Vpc:          vpc,
 		BridgeConfig: src,
 	})
-	if att.ControlTargetGroup() == nil || att.WorkerTargetGroup() == nil {
+	if att.ControlTargetGroup() == nil || att.MonitorTargetGroup() == nil || att.WorkerTargetGroup() == nil {
 		t.Fatal("target groups nil")
 	}
 	if att.Listener() == nil {
@@ -175,8 +175,8 @@ func TestALBAttachment_Single_Synth(t *testing.T) {
 	}
 
 	tpl := assertions.Template_FromStack(stack, nil)
-	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), jsii.Number(2))
-	// 3 fixed rules (admin api, admin status, healthz) + 2 receivers
+	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), jsii.Number(3))
+	// 3 fixed rules (monitor, admin status, admin api) + 2 receivers
 	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::ListenerRule"), jsii.Number(5))
 
 	prios := collectRulePriorities(tpl)
@@ -201,28 +201,30 @@ func TestALBAttachment_Single_Synth(t *testing.T) {
 		}
 		t.Fatalf("priority %v missing path %q (got %v)", prio, want, ps)
 	}
-	mustHavePath(100, "/api/v1/*")
+	mustHavePath(100, "/api/v1/monitor/*")
 	mustHavePath(110, "/api/v1/status*")
-	mustHavePath(120, "/healthz")
-	mustHavePath(120, "/readyz")
+	mustHavePath(120, "/api/v1/*")
 	mustHavePath(130, "/hooks/webhook")
 	mustHavePath(140, "/transport/http/receivers/events/messages")
 }
 
-func TestALBAttachment_Single_BothTGsTargetSingleService(t *testing.T) {
+func TestALBAttachment_Single_AllTGsTargetSingleService(t *testing.T) {
 	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
+	// httpReceiverYAML declares an HTTP receiver, so all three target
+	// groups (control, monitor, transport) are emitted.
+	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
 	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
 		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
 	})
 	tpl := assertions.Template_FromStack(stack, nil)
 
-	// Single facade ⇒ exactly 1 ECS service. Both TGs reference it
-	// via the service's LoadBalancers[].TargetGroupArn — so the
-	// service resource must have 2 LoadBalancers entries (one per
-	// TG), confirming both attached.
+	// Single facade ⇒ exactly 1 ECS service. All three TGs (control,
+	// monitor, worker) reference it via the service's
+	// LoadBalancers[].TargetGroupArn — so the service resource must
+	// have 3 LoadBalancers entries (one per TG), confirming all
+	// attached.
 	svcs := tpl.FindResources(jsii.String("AWS::ECS::Service"), nil)
 	if len(*svcs) != 1 {
 		t.Fatalf("ECS::Service count = %d, want 1", len(*svcs))
@@ -230,8 +232,8 @@ func TestALBAttachment_Single_BothTGsTargetSingleService(t *testing.T) {
 	for _, raw := range *svcs {
 		props := (*raw)["Properties"].(map[string]any)
 		lbs, _ := props["LoadBalancers"].([]any)
-		if len(lbs) != 2 {
-			t.Fatalf("Single service LoadBalancers count = %d, want 2 (one per TG)", len(lbs))
+		if len(lbs) != 3 {
+			t.Fatalf("Single service LoadBalancers count = %d, want 3 (one per TG)", len(lbs))
 		}
 	}
 }
@@ -239,7 +241,10 @@ func TestALBAttachment_Single_BothTGsTargetSingleService(t *testing.T) {
 func TestALBAttachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
+	// httpReceiverYAML declares an HTTP receiver, so the worker service
+	// gets its own transport target group in addition to the shared
+	// monitor TG (2 LoadBalancers each, symmetric with control).
+	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	cluster := newCluster(t, stack, vpc, src)
 	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
 		Cluster: cluster, Listener: listener, Vpc: vpc, BridgeConfig: src,
@@ -250,14 +255,84 @@ func TestALBAttachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	if len(*svcs) != 2 {
 		t.Fatalf("ECS::Service count = %d, want 2", len(*svcs))
 	}
+	// Each cluster service attaches to its own TG (control→ControlTG,
+	// worker→WorkerTG) plus the shared MonitorTG that every service
+	// joins — so exactly 2 LoadBalancers entries per service.
 	for _, raw := range *svcs {
 		props := (*raw)["Properties"].(map[string]any)
 		lbs, _ := props["LoadBalancers"].([]any)
-		if len(lbs) != 1 {
-			t.Fatalf("each cluster service should attach to exactly 1 TG, got %d", len(lbs))
+		if len(lbs) != 2 {
+			t.Fatalf("each cluster service should attach to exactly 2 TGs (own + monitor), got %d", len(lbs))
 		}
 	}
+	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), jsii.Number(3))
+}
+
+// TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor pins the
+// behaviour when the yaml declares no HTTP receiver: no transport
+// target group is created (only control + monitor), and
+// WorkerTargetGroup falls back to the monitor target group so
+// downstream consumers (e.g. the alarms construct) still get an
+// LB-attached target group. This is the regression guard for the
+// alarms `TargetGroup needs to be attached to a LoadBalancer` panic.
+func TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor(t *testing.T) {
+	defer jsii.Close()
+	_, stack, vpc, listener := newApp(t)
+	src := source.NewAsset(writeYAML(t, baseYAML))
+	single := newSingle(t, stack, vpc, src)
+	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
+		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
+	})
+
+	// Only control + monitor target groups exist.
+	tpl := assertions.Template_FromStack(stack, nil)
 	tpl.ResourceCountIs(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), jsii.Number(2))
+
+	// WorkerTargetGroup resolves to the monitor target group (same
+	// underlying resource), which carries the "/api/v1/monitor/*" rule
+	// and is therefore attached to the listener.
+	st := awscdk.Stack_Of(stack)
+	wrkRef := refOfAttribute(st, att.WorkerTargetGroup().TargetGroupArn())
+	monRef := refOfAttribute(st, att.MonitorTargetGroup().TargetGroupArn())
+	if wrkRef == "" || wrkRef != monRef {
+		t.Fatalf("WorkerTargetGroup ref = %q, want it to equal MonitorTargetGroup ref %q", wrkRef, monRef)
+	}
+}
+
+// TestALBAttachment_PortsPerConcern is the core B1 regression guard:
+// each concern's target group must sit on the container port the
+// process actually serves — admin (8080), monitor (8081), transport
+// (8082) — so ALB traffic and health checks reach the right listener.
+func TestALBAttachment_PortsPerConcern(t *testing.T) {
+	defer jsii.Close()
+	_, stack, vpc, listener := newApp(t)
+	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
+	single := newSingle(t, stack, vpc, src)
+	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
+		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
+	})
+	tpl := assertions.Template_FromStack(stack, nil)
+	tgs := *tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
+	st := awscdk.Stack_Of(stack)
+	portOf := func(tg elbv2.ApplicationTargetGroup) float64 {
+		ref := refOfAttribute(st, tg.TargetGroupArn())
+		raw, ok := tgs[ref]
+		if !ok {
+			t.Fatalf("target group %q not found in template", ref)
+		}
+		props := (*raw)["Properties"].(map[string]any)
+		p, _ := props["Port"].(float64)
+		return p
+	}
+	if got := portOf(att.ControlTargetGroup()); got != 8080 {
+		t.Fatalf("control TG Port = %v, want 8080 (admin)", got)
+	}
+	if got := portOf(att.MonitorTargetGroup()); got != 8081 {
+		t.Fatalf("monitor TG Port = %v, want 8081", got)
+	}
+	if got := portOf(att.WorkerTargetGroup()); got != 8082 {
+		t.Fatalf("worker (transport) TG Port = %v, want 8082 — receivers must route to the transport port, not admin", got)
+	}
 }
 
 func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
@@ -272,8 +347,13 @@ func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
 	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
 	for _, raw := range *tgs {
 		props := (*raw)["Properties"].(map[string]any)
-		if props["HealthCheckPath"] != "/healthz" {
-			t.Fatalf("HealthCheckPath = %v, want /healthz", props["HealthCheckPath"])
+		if props["HealthCheckPath"] != "/api/v1/monitor/health" {
+			t.Fatalf("HealthCheckPath = %v, want /api/v1/monitor/health", props["HealthCheckPath"])
+		}
+		// Every TG probes the monitor port (8081) via the health-check
+		// port override, regardless of its own traffic port.
+		if props["HealthCheckPort"] != "8081" {
+			t.Fatalf("HealthCheckPort = %v, want \"8081\"", props["HealthCheckPort"])
 		}
 		if props["HealthCheckIntervalSeconds"] != 15.0 {
 			t.Fatalf("HealthCheckIntervalSeconds = %v, want 15", props["HealthCheckIntervalSeconds"])
@@ -305,6 +385,11 @@ func TestALBAttachment_HealthCheckOverride(t *testing.T) {
 		props := (*raw)["Properties"].(map[string]any)
 		if props["HealthCheckPath"] != "/custom/health" {
 			t.Fatalf("HealthCheckPath = %v, want /custom/health", props["HealthCheckPath"])
+		}
+		// A custom Path override is honored, but the health-check Port
+		// stays pinned to the monitor port — the probes live only there.
+		if props["HealthCheckPort"] != "8081" {
+			t.Fatalf("HealthCheckPort = %v, want \"8081\"", props["HealthCheckPort"])
 		}
 	}
 }
@@ -493,8 +578,8 @@ func TestALBAttachment_HealthzURL_HasPathSuffix(t *testing.T) {
 	stack, att := newAttachment(t, 0)
 	resolved := awscdk.Stack_Of(stack).Resolve(att.HealthzURL())
 	s := fmt.Sprintf("%v", resolved)
-	if !strings.Contains(s, "/healthz") {
-		t.Fatalf("HealthzURL resolved form lacks /healthz suffix: %s", s)
+	if !strings.Contains(s, "/api/v1/monitor/health") {
+		t.Fatalf("HealthzURL resolved form lacks /api/v1/monitor/health suffix: %s", s)
 	}
 }
 

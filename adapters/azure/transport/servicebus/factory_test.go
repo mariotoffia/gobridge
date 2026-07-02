@@ -3,6 +3,7 @@ package servicebus
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -35,6 +36,38 @@ func TestFactory_Capabilities(t *testing.T) {
 	}
 	if caps[0] != ports.CapVisibilityExtension {
 		t.Errorf("expected %q, got %q", ports.CapVisibilityExtension, caps[0])
+	}
+}
+
+// verifies Config.EffectiveVisibilityTimeout reports the per-route lock
+// duration (the ASB visibility analog), falling back to the 30s default
+// when lock_duration is unset. The builder threads this value into the
+// runtime validator in preference to Factory.VisibilityTimeout(), so a
+// route with a short lock_duration is correctly guarded (Finding 2 / D2).
+func TestConfig_EffectiveVisibilityTimeout(t *testing.T) {
+	if got := (Config{}).EffectiveVisibilityTimeout(); got != 30*time.Second {
+		t.Errorf("unset lock_duration: got %v, want 30s", got)
+	}
+	cfg := Config{Receiver: ReceiverParams{LockDuration: 10 * time.Second}}
+	if got := cfg.EffectiveVisibilityTimeout(); got != 10*time.Second {
+		t.Errorf("configured lock_duration: got %v, want 10s", got)
+	}
+}
+
+// verifies Config.AutoExtendEnabled defaults on (nil) and honours an
+// explicit flag, matching ReceiverConfig.autoExtendEnabled. The validator
+// uses it to skip the SendTimeout-vs-window check for renewed windows.
+func TestConfig_AutoExtendEnabled(t *testing.T) {
+	if !(Config{}).AutoExtendEnabled() {
+		t.Error("unset auto_extend should default to enabled")
+	}
+	off := false
+	if (Config{Receiver: ReceiverParams{AutoExtend: &off}}).AutoExtendEnabled() {
+		t.Error("auto_extend=false should report disabled")
+	}
+	on := true
+	if !(Config{Receiver: ReceiverParams{AutoExtend: &on}}).AutoExtendEnabled() {
+		t.Error("auto_extend=true should report enabled")
 	}
 }
 

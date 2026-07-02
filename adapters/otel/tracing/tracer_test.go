@@ -25,14 +25,19 @@ var (
 
 // Verifies default tracer configuration uses the expected endpoint, service name, and sampler ratio.
 func TestConfig_Defaults(t *testing.T) {
-	t.Parallel()
+	// Deterministic: clear env so built-in defaults apply regardless of
+	// ambient OTEL_* variables (t.Setenv precludes t.Parallel).
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_SERVICE_NAME", "")
 
 	tr := oteltracing.NewForTest()
 	cfg := tr.ExportConfigForTest()
 
 	assert.Equal(t, "http://localhost:4318", cfg.Endpoint)
 	assert.Equal(t, "gobridge", cfg.ServiceName)
-	assert.Equal(t, 1.0, cfg.SamplerRatio)
+	require.NotNil(t, cfg.SamplerRatio)
+	assert.Equal(t, 1.0, *cfg.SamplerRatio)
 }
 
 // Verifies functional options populate the exported test configuration snapshot.
@@ -56,7 +61,8 @@ func TestOptions(t *testing.T) {
 	assert.Equal(t, "myservice", cfg.ServiceName)
 	assert.Equal(t, "1.2.3", cfg.ServiceVersion)
 	assert.Equal(t, "staging", cfg.Environment)
-	assert.Equal(t, 0.5, cfg.SamplerRatio)
+	require.NotNil(t, cfg.SamplerRatio)
+	assert.Equal(t, 0.5, *cfg.SamplerRatio)
 	assert.True(t, cfg.Insecure)
 	assert.Equal(t, map[string]string{"X-Token": "abc"}, cfg.Headers)
 }

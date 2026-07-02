@@ -21,37 +21,27 @@ import (
 )
 
 // Router classifies errors and writes entries to a [ports.DLQStore].
-// When started, [Router.Route] enqueues entries to an internal buffer and
-// background workers drain them to the store asynchronously, avoiding
-// blocking route-runner semaphore slots on slow DLQ writes.
+// [Router.Route] writes synchronously and returns only once the entry is
+// durably confirmed (or permanently failed after bounded retries). Callers
+// MUST treat a non-nil return as "DLQ evidence is not durable" and refuse to
+// settle (ACK/Complete) the source delivery or outbox record. This keeps the
+// failure evidence at least as durable as the message it describes.
 type Router struct {
 	store             ports.DLQStore
-	buffer            chan routing.DLQEntry
-	bufferSize        int
 	writeTimeout      time.Duration
-	enqTimeout        time.Duration
-	workers           int
-	wg                sync.WaitGroup
 	logger            *slog.Logger
 	metrics           ports.MetricsExporter
 	clk               clock.Clock
-	mu                sync.Mutex // guards started, stopped, and sendWg.Add
-	started           bool
-	stopped           bool
-	done              chan struct{}  // closed by Close() to signal Route() to exit select
-	sendWg            sync.WaitGroup // tracks goroutines in the Route select
+	mu                sync.Mutex // guards tokenFn
 	tokenFn           func() (persistence.LeaseToken, bool)
 	writeMaxAttempts  int
 	writeRetryBackoff routing.BackoffPolicy
 }
 
-// Config configures the async DLQ router.
+// Config configures the DLQ router.
 type Config struct {
 	Store        ports.DLQStore
-	BufferSize   int           // default 1000
 	WriteTimeout time.Duration // per-write deadline, default 30s
-	EnqTimeout   time.Duration // max wait for buffer space, default 5s
-	Workers      int           // background writer goroutines, default 2
 	Logger       *slog.Logger
 	Metrics      ports.MetricsExporter
 	Clock        clock.Clock
@@ -61,31 +51,18 @@ type Config struct {
 }
 
 const (
-	defaultBufferSize   = 1000
 	defaultWriteTimeout = 30 * time.Second
-	defaultEnqTimeout   = 5 * time.Second
-	defaultWorkers      = 2
 )
 
 // New creates a DLQ router. If store is nil, [Router.Route] is a no-op.
-// The router operates synchronously until [Router.Start] is called.
 func New(store ports.DLQStore) *Router {
 	return NewFromConfig(Config{Store: store})
 }
 
 // NewFromConfig creates a DLQ router with explicit configuration.
 func NewFromConfig(cfg Config) *Router {
-	if cfg.BufferSize <= 0 {
-		cfg.BufferSize = defaultBufferSize
-	}
 	if cfg.WriteTimeout <= 0 {
 		cfg.WriteTimeout = defaultWriteTimeout
-	}
-	if cfg.EnqTimeout <= 0 {
-		cfg.EnqTimeout = defaultEnqTimeout
-	}
-	if cfg.Workers <= 0 {
-		cfg.Workers = defaultWorkers
 	}
 	m := cfg.Metrics
 	if m == nil {
@@ -109,10 +86,7 @@ func NewFromConfig(cfg Config) *Router {
 	}
 	return &Router{
 		store:             cfg.Store,
-		bufferSize:        cfg.BufferSize,
 		writeTimeout:      cfg.WriteTimeout,
-		enqTimeout:        cfg.EnqTimeout,
-		workers:           cfg.Workers,
 		logger:            cfg.Logger,
 		metrics:           m,
 		clk:               clk,
@@ -133,45 +107,11 @@ func (r *Router) SetTokenFn(fn func() (persistence.LeaseToken, bool)) {
 	r.mu.Unlock()
 }
 
-// Start launches background workers that drain the buffer to the store.
-// Must be called before [Router.Route] for async behavior; without Start,
-// Route writes synchronously.
-func (r *Router) Start(ctx context.Context) {
-	if r.store == nil {
-		return
-	}
-	r.mu.Lock()
-	r.buffer = make(chan routing.DLQEntry, r.bufferSize)
-	r.started = true
-	r.stopped = false
-	r.done = make(chan struct{})
-	r.mu.Unlock()
-	for range r.workers {
-		r.wg.Add(1)
-		go r.runWorker(ctx)
-	}
-}
-
-// Close drains remaining buffer entries and waits for workers to finish.
-func (r *Router) Close() {
-	r.mu.Lock()
-	if !r.started || r.stopped {
-		r.mu.Unlock()
-		return
-	}
-	r.stopped = true
-	close(r.done) // signal Route() goroutines to exit select
-	r.mu.Unlock()
-
-	r.sendWg.Wait() // wait for all Route() calls to exit select
-	close(r.buffer) // safe: no Route() is sending
-	r.wg.Wait()     // wait for workers to drain remaining entries
-	r.started = false
-}
-
-// Route sends a failed envelope to the DLQ. When started, this enqueues
-// to the internal buffer (non-blocking up to EnqTimeout). When not
-// started, it writes synchronously.
+// Route classifies err and writes a DLQ entry for env synchronously,
+// returning only once the write is durably confirmed (nil) or has
+// permanently failed after bounded retries (non-nil). A non-nil return
+// means the evidence is NOT durable; the caller must not settle the source
+// delivery or outbox record so the message is redelivered or reclaimed.
 //
 // The address parameter is the transport destination address that was
 // the target of the failed delivery (e.g. MQTT topic, SQS queue URL,
@@ -190,30 +130,7 @@ func (r *Router) Route(
 	}
 
 	entry := r.buildEntry(env, routeID, bindingID, address, sessionID, sourceID, err, attempts)
-
-	r.mu.Lock()
-	if r.stopped || !r.started {
-		r.mu.Unlock()
-		return r.writeDirect(ctx, entry)
-	}
-	r.sendWg.Add(1) // under lock: Close() can't set stopped between check and Add
-	r.mu.Unlock()
-	defer r.sendWg.Done()
-
-	timer := r.clk.NewTimer(r.enqTimeout)
-	defer timer.Stop()
-
-	select {
-	case r.buffer <- entry:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-r.done:
-		return r.writeDirect(ctx, entry)
-	case <-timer.C():
-		r.metrics.Counter(shared.MetricDLQBufferOverflow, 1)
-		return fmt.Errorf("DLQ buffer full after %s", r.enqTimeout)
-	}
+	return r.writeConfirmed(ctx, entry)
 }
 
 func (r *Router) buildEntry(
@@ -244,62 +161,71 @@ func (r *Router) buildEntry(
 	})
 }
 
-func (r *Router) writeDirect(ctx context.Context, entry routing.DLQEntry) error {
-	writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
-	defer cancel()
-	return r.store.Write(writeCtx, entry)
-}
+// writeConfirmed writes entry to the store and returns only once the write
+// is durably confirmed (nil) or has permanently failed after
+// writeMaxAttempts (non-nil). Backoff between attempts is driven by the
+// injected clock. The configured lease check is a best-effort gate: it
+// refuses the write with a transient error when the lease is absent at
+// entry, so a cleanly-demoted instance leaves the message for the rightful
+// owner instead of settling it. It is NOT store-level fencing — the token is
+// not passed to Write, so a lease lost mid-write can still produce a
+// duplicate entry (never loss, since duplicates are reconcilable downstream).
+func (r *Router) writeConfirmed(ctx context.Context, entry routing.DLQEntry) error {
+	r.mu.Lock()
+	tokenFn := r.tokenFn
+	r.mu.Unlock()
 
-func (r *Router) runWorker(_ context.Context) {
-	defer r.wg.Done()
-	for entry := range r.buffer {
-		if r.tokenFn != nil {
-			if _, hasLease := r.tokenFn(); !hasLease {
-				if r.logger != nil {
-					r.logger.Warn("DLQ write skipped, lease not held",
-						"entry_id", entry.ID(),
-						"route_id", entry.RouteID(),
-					)
-				}
-				r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
-				continue
-			}
-		}
-
-		maxAttempts := r.writeMaxAttempts
-		delay := r.writeRetryBackoff.InitialInterval
-		var writeErr error
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			if attempt > 0 {
-				select {
-				case <-r.done:
-					return
-				case <-r.clk.After(delay):
-				}
-				delay = time.Duration(float64(delay) * r.writeRetryBackoff.Multiplier)
-				if delay > r.writeRetryBackoff.MaxInterval {
-					delay = r.writeRetryBackoff.MaxInterval
-				}
-			}
-			writeCtx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-			writeErr = r.store.Write(writeCtx, entry)
-			cancel()
-			if writeErr == nil {
-				break
-			}
-		}
-		if writeErr != nil {
-			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
+	if tokenFn != nil {
+		if _, hasLease := tokenFn(); !hasLease {
 			if r.logger != nil {
-				r.logger.Error("DLQ write failed after retries",
+				r.logger.Warn("DLQ write skipped, lease not held",
 					"entry_id", entry.ID(),
 					"route_id", entry.RouteID(),
-					"error", writeErr,
-					"attempts", maxAttempts,
 				)
 			}
+			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
+			return shared.ErrUnavailable.WithMessage("DLQ write skipped: lease not held")
 		}
 	}
+
+	delay := r.writeRetryBackoff.InitialInterval
+	var writeErr error
+	for attempt := 0; attempt < r.writeMaxAttempts; attempt++ {
+		// Honor cancellation before each attempt, including the first, so a
+		// shutdown does not pay one WriteTimeout against a store that ignores
+		// context before returning and unblocking Run's wg.Wait.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-r.clk.After(delay):
+			}
+			delay = time.Duration(float64(delay) * r.writeRetryBackoff.Multiplier)
+			if delay > r.writeRetryBackoff.MaxInterval {
+				delay = r.writeRetryBackoff.MaxInterval
+			}
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
+		writeErr = r.store.Write(writeCtx, entry)
+		cancel()
+		if writeErr == nil {
+			return nil
+		}
+	}
+
+	r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
+	if r.logger != nil {
+		r.logger.Error("DLQ write failed after retries",
+			"entry_id", entry.ID(),
+			"route_id", entry.RouteID(),
+			"error", writeErr,
+			"attempts", r.writeMaxAttempts,
+		)
+	}
+	return fmt.Errorf("runtime: dlq: write failed after %d attempts: %w", r.writeMaxAttempts, writeErr)
 }
 
 // safeErrorReason returns a sanitized error reason suitable for persistence.

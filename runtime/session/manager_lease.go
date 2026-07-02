@@ -47,17 +47,8 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 				return err
 			}
 			sessionStarted = true
-		} else {
-			health := m.session.Health(ctx)
-			if !health.Connected {
-				m.log(ctx, slog.LevelWarn, "session disconnected during lease gap, reconnecting")
-				if closeErr := m.session.Close(ctx); closeErr != nil {
-					m.log(ctx, slog.LevelWarn, "session close failed before restart", "error", closeErr)
-				}
-				if err := m.session.Start(ctx); err != nil {
-					return err
-				}
-			}
+		} else if err := m.ensureConnected(ctx); err != nil {
+			return err
 		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
@@ -86,8 +77,9 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 		}
 		m.setToken(token)
 
+		reacquired := iteration > 0
 		action := "lease.acquired"
-		if iteration > 0 {
+		if reacquired {
 			action = "lease.reacquired"
 			m.metrics.Counter(shared.MetricLeaseTransfers, 1,
 				shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID})
@@ -104,6 +96,15 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 				"owner_id", m.ownerID,
 				"lease_version", token.Version,
 			)
+		}
+
+		if reacquired {
+			// A previous term's stepDown closed the source session to stop a
+			// non-owner from consuming/ACKing source messages. Now that we own
+			// the lease again, re-establish the session before reconciling.
+			if err := m.ensureConnected(ctx); err != nil {
+				return err
+			}
 		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
@@ -199,6 +200,26 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 	}
 }
 
+// ensureConnected re-establishes the source session when it is not currently
+// connected — typically because a previous term's stepDown closed it to stop
+// a non-owner from consuming source messages. It is Health-gated, so it is a
+// no-op for an already-connected session and is therefore safe to call on
+// every lease re-acquisition. The defensive Close clears any half-open state
+// before restarting and is idempotent.
+func (m *Manager) ensureConnected(ctx context.Context) error {
+	if m.session.Health(ctx).Connected {
+		return nil
+	}
+	m.log(ctx, slog.LevelWarn, "session disconnected during lease gap, reconnecting")
+	if closeErr := m.session.Close(ctx); closeErr != nil {
+		m.log(ctx, slog.LevelWarn, "session close failed before restart", "error", closeErr)
+	}
+	if err := m.session.Start(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
 // stepDown implements the three-phase step-down protocol:
 // 1. Stop claiming new outbox entries (clear hasLease)
 // 2. Wait grace period for in-flight completions
@@ -220,6 +241,25 @@ func (m *Manager) stepDown(ctx context.Context) error {
 
 	m.emitLeaseAudit(ctx, "lease.stepdown", "success", token, nil)
 	m.pushLeaseEvent(LeaseStateSteppedDown, token, nil)
+
+	// Stop accepting source messages now that we no longer hold the lease.
+	// A stepped-down owner must not keep consuming or ACKing from the source
+	// while a new owner takes over (split-brain). In the common case source and
+	// destination are distinct sessions, so closing the source does not abort
+	// the grace drain below: that drain settles in-flight outbox Send+Complete
+	// on the destination side, which does not need the source connection. A
+	// source ACK lost on close is redelivered to the new owner (at-least-once;
+	// see Config.StepDownGrace docs).
+	//
+	// Caveat: in a same-broker MQTT->MQTT topology the factory can hand the same
+	// *Session to both receiver and sender (paho/factory.go), so closing it also
+	// closes the destination publish path. There the grace drain cannot complete
+	// in-process; in-flight outbox records instead settle via the durable,
+	// fencing-protected retry path after the next acquisition. Still no loss —
+	// only the in-grace settlement optimization is forfeited for that topology.
+	if err := m.session.Close(ctx); err != nil {
+		m.log(ctx, slog.LevelWarn, "source session close failed during step-down", "error", err)
+	}
 
 	// Grace period must not be aborted by caller cancellation (we still
 	// want in-flight work to settle), but we preserve trace/correlation

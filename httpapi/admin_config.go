@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -51,16 +52,23 @@ type configTxnCreateRequest struct {
 func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
+	// An empty body legitimately means "use defaults": json.Decode
+	// returns io.EOF for an empty or whitespace-only body, which we
+	// treat as the zero-valued request. A non-empty but malformed body
+	// must be rejected rather than silently falling back to a default
+	// transaction.
 	var ttl time.Duration
 	var body configTxnCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-		if body.TTL != "" {
-			var parseErr error
-			ttl, parseErr = time.ParseDuration(body.TTL)
-			if parseErr != nil {
-				writeErr(w, http.StatusBadRequest, "invalid ttl duration")
-				return
-			}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.TTL != "" {
+		var parseErr error
+		ttl, parseErr = time.ParseDuration(body.TTL)
+		if parseErr != nil {
+			writeErr(w, http.StatusBadRequest, "invalid ttl duration")
+			return
 		}
 	}
 

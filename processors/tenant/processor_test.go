@@ -17,10 +17,23 @@ import (
 
 func nextOK(_ context.Context, _ *messaging.Envelope) error { return nil }
 
+// mustNew builds a Processor and fails the test on a construction error.
+// New now validates configuration (e.g. a reserved TenantHeader), so most
+// tests want the fail-fast-on-unexpected-error behavior in one place.
+func mustNew(t *testing.T, cfg Config, opts ...Option) *Processor {
+	t.Helper()
+	p, err := New(cfg, opts...)
+	require.NoError(t, err)
+	return p
+}
+
 func envelope(tenantID string, payloadSize int) *messaging.Envelope {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	if tenantID != "" {
-		env.SetHeader(messaging.HeaderTenantID, tenantID)
+		// Use the non-reserved default source header: a reserved
+		// x-bridge.* header would be stripped at ingress and never reach
+		// the processor.
+		env.SetHeader(DefaultTenantHeader, tenantID)
 	}
 	if payloadSize > 0 {
 		env.SetPayload(make([]byte, payloadSize))
@@ -107,7 +120,7 @@ func (m *mockTracker) inFlightDeltas() []int64 {
 
 // Verifies processing succeeds when tenant header is absent and not required.
 func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
-	p := New(Config{})
+	p := mustNew(t, Config{})
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
 		t.Fatalf("expected nil, got %v", err)
@@ -116,7 +129,7 @@ func TestProcess_NoTenantHeader_NotRequired(t *testing.T) {
 
 // Verifies missing tenant returns ErrInvalidPayload when required.
 func TestProcess_NoTenantHeader_Required(t *testing.T) {
-	p := New(Config{RequireTenant: true})
+	p := mustNew(t, Config{RequireTenant: true})
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 	err := p.Process(context.Background(), env, nextOK)
 	if err == nil {
@@ -130,7 +143,7 @@ func TestProcess_NoTenantHeader_Required(t *testing.T) {
 // Verifies an active validated tenant invokes next.
 func TestProcess_ValidTenant_PassesThrough(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "acme", Active: true}}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 0)
 
 	called := false
@@ -149,7 +162,7 @@ func TestProcess_ValidTenant_PassesThrough(t *testing.T) {
 // Verifies inactive tenant is rejected with ErrInvalidPayload.
 func TestProcess_InactiveTenant_Rejected(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "acme", Active: false}}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 0)
 
 	err := p.Process(context.Background(), env, nextOK)
@@ -162,7 +175,7 @@ func TestProcess_InactiveTenant_Rejected(t *testing.T) {
 func TestProcess_ValidationError_Propagated(t *testing.T) {
 	sentinel := errors.New("db connection lost")
 	v := &stubValidator{err: sentinel}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 0)
 
 	err := p.Process(context.Background(), env, nextOK)
@@ -179,7 +192,7 @@ func TestProcess_MessageSizeExceedsQuota(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 100,
 	}}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 200)
 
 	err := p.Process(context.Background(), env, nextOK)
@@ -193,7 +206,7 @@ func TestProcess_MessageSizeWithinQuota(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 100,
 	}}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 50)
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
@@ -206,7 +219,7 @@ func TestProcess_ZeroQuota_NoSizeCheck(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{
 		ID: "acme", Active: true, MaxMessageSizeBytes: 0,
 	}}
-	p := New(Config{}, WithValidator(v))
+	p := mustNew(t, Config{}, WithValidator(v))
 	env := envelope("acme", 99999)
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
@@ -217,7 +230,7 @@ func TestProcess_ZeroQuota_NoSizeCheck(t *testing.T) {
 // Verifies usage tracker increments messages and balances in-flight.
 func TestProcess_UsageTracker_InFlightAndMessages(t *testing.T) {
 	tracker := &stubTracker{}
-	p := New(Config{}, WithUsageTracker(tracker))
+	p := mustNew(t, Config{}, WithUsageTracker(tracker))
 	env := envelope("acme", 0)
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
@@ -235,7 +248,7 @@ func TestProcess_UsageTracker_InFlightAndMessages(t *testing.T) {
 // Verifies message count is skipped on next error but in-flight is decremented.
 func TestProcess_UsageTracker_NoMessageCountOnError(t *testing.T) {
 	tracker := &stubTracker{}
-	p := New(Config{}, WithUsageTracker(tracker))
+	p := mustNew(t, Config{}, WithUsageTracker(tracker))
 	env := envelope("acme", 0)
 
 	sentinel := errors.New("downstream failure")
@@ -257,7 +270,7 @@ func TestProcess_UsageTracker_NoMessageCountOnError(t *testing.T) {
 // Verifies in-flight increment failure prevents calling next.
 func TestProcess_InFlightTrackingError_ReturnedBeforeNext(t *testing.T) {
 	tracker := &stubTracker{failOnIF: true}
-	p := New(Config{}, WithUsageTracker(tracker))
+	p := mustNew(t, Config{}, WithUsageTracker(tracker))
 	env := envelope("acme", 0)
 
 	called := false
@@ -276,7 +289,7 @@ func TestProcess_InFlightTrackingError_ReturnedBeforeNext(t *testing.T) {
 // Verifies custom tenant header name is read for validation.
 func TestProcess_CustomTenantHeader(t *testing.T) {
 	v := &stubValidator{info: ports.TenantInfo{ID: "custom-tenant", Active: true}}
-	p := New(Config{TenantHeader: "x-custom-tenant"}, WithValidator(v))
+	p := mustNew(t, Config{TenantHeader: "x-custom-tenant"}, WithValidator(v))
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		Subject: "test",
 		Headers: map[string]any{"x-custom-tenant": "custom-tenant"},
@@ -289,7 +302,7 @@ func TestProcess_CustomTenantHeader(t *testing.T) {
 
 // Verifies next-handler errors propagate.
 func TestProcess_NextErrorPropagation(t *testing.T) {
-	p := New(Config{})
+	p := mustNew(t, Config{})
 	env := envelope("acme", 0)
 
 	sentinel := errors.New("downstream failure")
@@ -304,13 +317,13 @@ func TestProcess_NextErrorPropagation(t *testing.T) {
 // Verifies Name default and configured value.
 func TestProcessor_Name(t *testing.T) {
 	t.Run("configured name", func(t *testing.T) {
-		p := New(Config{Name: "my-tenant"})
+		p := mustNew(t, Config{Name: "my-tenant"})
 		if got := p.Name(); got != "my-tenant" {
 			t.Errorf("Name() = %q, want %q", got, "my-tenant")
 		}
 	})
 	t.Run("default name", func(t *testing.T) {
-		p := New(Config{})
+		p := mustNew(t, Config{})
 		if got := p.Name(); got != "tenant" {
 			t.Errorf("Name() = %q, want %q", got, "tenant")
 		}
@@ -319,7 +332,7 @@ func TestProcessor_Name(t *testing.T) {
 
 // Verifies next runs without validator when tenant header is present.
 func TestProcess_NoValidator_SkipsValidation(t *testing.T) {
-	p := New(Config{})
+	p := mustNew(t, Config{})
 	env := envelope("acme", 0)
 
 	called := false
@@ -337,7 +350,7 @@ func TestProcess_NoValidator_SkipsValidation(t *testing.T) {
 
 // Verifies nil headers succeed when tenant is not required.
 func TestProcess_NilHeaders_NotRequired(t *testing.T) {
-	p := New(Config{})
+	p := mustNew(t, Config{})
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test"})
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
@@ -351,7 +364,7 @@ func TestProcess_ValidatorAndTracker_FullFlow(t *testing.T) {
 		ID: "acme", Active: true, MaxMessageSizeBytes: 1024,
 	}}
 	tracker := &stubTracker{}
-	p := New(Config{RequireTenant: true}, WithValidator(v), WithUsageTracker(tracker))
+	p := mustNew(t, Config{RequireTenant: true}, WithValidator(v), WithUsageTracker(tracker))
 	env := envelope("acme", 100)
 
 	if err := p.Process(context.Background(), env, nextOK); err != nil {
@@ -370,7 +383,7 @@ func TestProcess_ValidatorAndTracker_FullFlow(t *testing.T) {
 // decrement runs after next returns even when the request context was cancelled.
 func TestProcessor_DecrementUsesBackgroundContext(t *testing.T) {
 	tracker := &mockTracker{}
-	p := New(Config{}, WithUsageTracker(tracker))
+	p := mustNew(t, Config{}, WithUsageTracker(tracker))
 	env := envelope("acme", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -390,7 +403,7 @@ func TestProcessor_DecrementUsesBackgroundContext(t *testing.T) {
 // errors are ignored on the success path (no panic, Process returns nil).
 func TestProcessor_IncrementMessagesSilentlyIgnoresError(t *testing.T) {
 	tracker := &mockTracker{incrementMessagesErr: errors.New("tracker unavailable")}
-	p := New(Config{}, WithUsageTracker(tracker))
+	p := mustNew(t, Config{}, WithUsageTracker(tracker))
 	env := envelope("acme", 0)
 
 	require.NotPanics(t, func() {
@@ -407,7 +420,7 @@ func TestProcessor_IncrementMessagesSilentlyIgnoresError(t *testing.T) {
 // TestProcessor_RequireTenant_EmptyHeader verifies ErrInvalidPayload when
 // RequireTenant is true and the tenant header is absent.
 func TestProcessor_RequireTenant_EmptyHeader(t *testing.T) {
-	p := New(Config{RequireTenant: true})
+	p := mustNew(t, Config{RequireTenant: true})
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "test", Headers: map[string]any{}})
 
 	err := p.Process(context.Background(), env, nextOK)

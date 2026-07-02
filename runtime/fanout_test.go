@@ -199,8 +199,10 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 	// Now fix sender B.
 	senderB.SetSendErr(nil)
 
-	// B should eventually drain and complete.
-	waitFor(t, 5*time.Second, "B completed", func() bool {
+	// B should eventually drain and complete. Its first drain failed
+	// transiently and was released for retry, so the recovery drain is
+	// spaced by the A4 transient backoff floor (~5s); allow for it.
+	waitFor(t, 8*time.Second, "B completed", func() bool {
 		return outbox.CompletedCount() >= 2
 	})
 }

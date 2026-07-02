@@ -393,7 +393,13 @@ func TestReceiver_ClusterForward(t *testing.T) {
 // 6. TestReceiver_ForwardedRequestNotReforwarded
 // ---------------------------------------------------------------------------
 
+// A request that is genuinely from a peer bridge — proven by the
+// internal forward token — is trusted as already-forwarded and processed
+// locally instead of being re-forwarded (loop prevention). A bare
+// X-Bridge-Forwarded marker WITHOUT the token is covered by the
+// spoofing tests in prodready_security_test.go.
 func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
+	const forwardToken = "peer-forward-token-secret-1"
 	remotePeer := &persistence.PeerInfo{
 		InstanceID: "remote-1",
 		Endpoints:  map[string]string{"http": "http://remote:9090"},
@@ -404,6 +410,7 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 	factory := transport.NewFactory(
 		transport.WithRouteLocator(locator),
 		transport.WithMessageForwarder(fwd),
+		transport.WithForwardToken(forwardToken),
 	)
 
 	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "noreforward"}, nil)
@@ -437,7 +444,8 @@ func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 			"subject": "test.forwarded",
 			"payload": json.RawMessage(`{}`),
 		}, map[string]string{
-			"X-Bridge-Forwarded": "true",
+			"X-Bridge-Forwarded":     "true",
+			"X-Bridge-Forward-Token": forwardToken,
 		})
 		resultCh <- httpResult{rec: rec}
 	}()

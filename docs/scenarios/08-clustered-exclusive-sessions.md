@@ -202,6 +202,15 @@ When set, the bridge does not open the MQTT connection until the lease is acquir
 
 2. **Resource conservation.** The standby instance consumes no broker resources until it actually needs to take over.
 
+The connection lifecycle is **symmetric**: just as the session connects only *after* the lease is acquired, it is **closed when the lease is lost**. On step-down the instance closes its source session, so it immediately stops consuming and acknowledging source messages while the new owner takes over — this prevents split-brain consumption where a former owner keeps draining the source. In-flight outbox `Send`+`Complete` still drains during `step_down_grace` (that settlement runs on the destination side and does not need the source connection); a source acknowledgement lost on close is redelivered under the at-least-once contract.
+
+When the instance later re-acquires the lease it re-establishes the session. How depends on the transport:
+
+- **Restartable transports** reconnect the source session **in-process** and resume immediately.
+- The **MQTT (Paho) session is deliberately single-use** (once `Close` runs, `Start` returns `ErrUnavailable` rather than reconnecting, to avoid a zombie state where a freshly attached connection manager coexists with an already-closed events channel). Re-establishing it in-process is therefore impossible: the session manager surfaces `ErrUnavailable` and the runtime enters a **terminal** state. The process then **restarts** with a fresh session — driven either by the liveness probe (`GET /api/v1/monitor/live` fails closed once terminal) or, on any deployment, by the built-in backstop that **exits the process with a non-zero code** when the runtime goes terminal.
+
+Either way **no message is lost**: un-acknowledged source messages are redelivered to whichever instance next holds the lease, and outbox fencing tokens prevent duplicate destination sends. The single-use path costs one process restart on re-acquisition rather than an in-process reconnect. A restart policy is therefore required: on Kubernetes the default `restartPolicy: Always` covers it (wiring a `livenessProbe` to `/api/v1/monitor/live` gives faster, more granular detection and is recommended); under systemd use `Restart=on-failure` (or `always`). Readiness alone is insufficient — it only removes the pod from the load balancer, it does not restart a terminal runtime.
+
 ### `delivery_mode: shared_outbox` with exclusive session
 
 These two features work together to provide at-least-once delivery across failovers:
@@ -302,7 +311,7 @@ How many consecutive renewal failures the active instance tolerates before initi
 
 ### `step_down_grace` (20s)
 
-After deciding to step down (either from renewal failures or an explicit request), the instance stops accepting new messages and waits up to 20 seconds for in-flight messages to complete. This prevents message loss during graceful transitions.
+After deciding to step down (either from renewal failures or an explicit request), the instance closes its source session — immediately halting consumption and acknowledgement of new source messages — and waits up to 20 seconds for in-flight messages to complete. This stops a former owner from consuming the source during failover and prevents message loss during graceful transitions.
 
 ### `stale_claim_duration` (35s)
 
@@ -379,25 +388,60 @@ routes:
 
 The `sqs-to-sqs` route runs on both instances simultaneously (SQS handles competing consumers natively via visibility timeouts). The `mqtt-to-sqs` route runs on only the lease-holding instance.
 
-### Shorter Failover Window
+### High-Availability Profile
 
-For faster failover at the cost of more DynamoDB writes:
+The default lease timing trades fast failover for low renewal traffic: a dead owner is not detected until its `lease_ttl` (360s) lapses, so worst-case failover approaches 6 minutes. High-availability deployments usually want failover inside the 30--60s band. GoBridge ships a named preset that encodes the *correct interrelationship* between the four timing knobs. Getting that relationship wrong cannot break single-owner safety -- the lease store admits one non-expired lease at a time and the outbox fences every send by fencing-token version -- but it does cause spurious failovers, slower recovery, or a wider at-least-once duplicate-*send* window, so prefer the preset (or the recipe below) over hand-tuning.
+
+**Code preset.** When you build the runtime programmatically, start from `session.HAConfig` instead of `session.DefaultConfig`:
+
+```go
+// ~45s worst-case failover. Tightens only the lease-timing knobs;
+// inherits DefaultConfig's drain strategy and batch sizes.
+cfg := session.HAConfig("mqtt-exclusive", true)
+mgr := session.NewFromConfig(cfg, sess, leaseStore, ownerID, logger)
+```
+
+It sets `LeaseTTL=45s`, `MaxRenewFails=3` (so the derived `RenewInterval` is 15s), `RenewJitter=2s`, and `StepDownGrace=5s`.
+
+**Blueprint recipe.** YAML deployments express the same profile with the existing session knobs:
 
 ```yaml
 routes:
   - id: ingest
     session:
-      lease_ttl: 60s
+      lease_ttl: 45s
       max_renew_fails: 3
-      step_down_grace: 10s
-      # renew_interval derived: 60s / 3 = 20s
+      step_down_grace: 5s
+      # renew_interval derived: 45s / 3 = 15s
 
 stores:
   outbox:
     type: dynamodb
     options:
       table_name: gobridge-outbox
-      stale_claim_duration: 25s   # step_down_grace (10s) + 15s
+      stale_claim_duration: 20s   # step_down_grace (5s) + 15s
 ```
 
-This reduces the worst-case failover window from 300 seconds to 60 seconds. The renewal interval drops to 20 seconds, tripling the DynamoDB write rate for lease renewals. For most workloads this is negligible, but factor it into your DynamoDB capacity planning.
+> The blueprint has no `renew_jitter` field, so YAML deployments keep the 5s default jitter. The session manager clamps the renew timer to `renew_interval ± renew_jitter/2`, i.e. 12.5--17.5s around the 15s interval -- still comfortably inside the 45s TTL. Use the `session.HAConfig` code preset if you need the tighter 2s jitter (14--16s).
+
+**Failover math.** Worst-case failover is approximately `lease_ttl` (45s) plus the new owner's takeover time -- and takeover includes up to one renew interval (~15s) of standby lease-acquire polling plus broker-connect time, so budget ~45--60s end to end. During that window the broker retains messages (QoS 1, `clean_start: false`) and replays them to the new owner once it connects -- exactly as in the failover sequence above, with 45s in place of 300s.
+
+**Invariants the preset preserves** (and any hand-tuned profile must too):
+
+- `step_down_grace < lease_ttl` (5s vs 45s) -- the only step-down trigger is involuntary (`max_renew_fails` consecutive renew failures, detected at roughly `lease_ttl`); the owner then stops claiming and drains in-flight work for `step_down_grace` before releasing. Keeping it well under `lease_ttl` bounds that drain -- it does *not* order the old owner's last send ahead of the new owner's first. Single-owner safety comes from lease-store mutual exclusion plus version fencing on every outbox `Complete`/`Claim`, independent of these timings; a brief duplicate *send* (never a duplicate commit) during the overlap is the inherent at-least-once window, so downstream must be idempotent.
+- `renew_interval × max_renew_fails ≤ lease_ttl` (15s × 3 = 45s) -- the owner gets `max_renew_fails` renewal attempts inside one TTL, so it tolerates two consecutive transient renewal failures before stepping down.
+- `stale_claim_duration` above the worst-case drain-batch timeout (≈20s) -- this bounds recovery of a *same-owner* stranded claim; it does not gate failover (a new owner reclaims immediately via its higher fencing version). Both the DynamoDB and native SQLite outboxes honour it; only the in-memory outbox is version-only. `step_down_grace + 15s` (20s) is a convenient rule of thumb that clears the drain ceiling (see [tuning relationships](#tuning-relationships) above).
+
+**Tradeoff.** Failover drops from ~360s to ~45s, but the 15s renewal interval raises the lease-store write rate roughly 8× over the default (~15s vs ~120s renewals). For most workloads this is negligible DynamoDB traffic; factor it into capacity planning anyway. The tighter timing also tolerates fewer transient renewal failures, so blip-prone networks will see more spurious step-downs -- relax `lease_ttl` toward 60s if renewals are unreliable.
+
+**Pick a point in the band.** The preset's 45s is a defensible midpoint; the relationships above hold across the whole 30--60s band:
+
+| Profile | `lease_ttl` | `renew_interval` (derived) | `step_down_grace` | `stale_claim_duration` | Worst-case failover |
+|---|---|---|---|---|---|
+| Aggressive | 30s | 10s | 5s | 20s | ~30s + takeover |
+| **HA (`session.HAConfig`)** | **45s** | **15s** | **5s** | **20s** | **~45s + takeover** |
+| Conservative | 60s | 20s | 10s | 25s | ~60s + takeover |
+
+Faster rows fail over sooner but renew more often and tolerate fewer network blips. Start at the HA row and move up or down only with evidence from your lease-store latency and renewal-failure metrics.
+
+> Via the blueprint (YAML), the Aggressive row's 10s `renew_interval` pairs with the default 5s `renew_jitter` (= half the interval), so renewals span 7.5--12.5s with no jitter headroom -- still safe inside a 30s TTL, but use the `session.HAConfig` code path (2s jitter) if you want margin. The HA and Conservative rows keep headroom on the default jitter.

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Azure/go-amqp"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 func TestMessageToHeaders(t *testing.T) {
@@ -157,8 +159,12 @@ func TestHeadersToMessage(t *testing.T) {
 	if msg.Properties.ContentType == nil || *msg.Properties.ContentType != ct {
 		t.Errorf("ContentType = %v, want %q", msg.Properties.ContentType, ct)
 	}
-	if msg.Properties.Subject == nil || *msg.Properties.Subject != "evt.shipped" {
-		t.Errorf("Subject = %v", msg.Properties.Subject)
+	// Finding 5 (domain invariant): the amqp10.subject header must NOT
+	// drive the egress Subject. headersToMessage leaves Properties.Subject
+	// unset; Envelope.Subject is the sole source (see envelopeToMessage
+	// and TestEnvelopeToMessage_SubjectOnlyFromEnvelope).
+	if msg.Properties.Subject != nil {
+		t.Errorf("Subject = %v, want nil (amqp10.subject header must not set Subject)", *msg.Properties.Subject)
 	}
 	if msg.Properties.To == nil || *msg.Properties.To != "/queue/target" {
 		t.Errorf("To = %v", msg.Properties.To)
@@ -234,6 +240,73 @@ func TestHeadersToMessage_ReservedFiltered(t *testing.T) {
 	}
 	if msg.ApplicationProperties["custom"] != "kept" {
 		t.Errorf("custom = %v, want %q", msg.ApplicationProperties["custom"], "kept")
+	}
+}
+
+// TestHeadersToMessage_BridgeToBridgePropagated pins the central egress
+// header policy: INTERNAL-ONLY and unclassified reserved keys are
+// stripped, while BRIDGE-TO-BRIDGE PROPAGATED headers cross to the
+// application properties so a peer bridge can correlate / deduplicate.
+func TestHeadersToMessage_BridgeToBridgePropagated(t *testing.T) {
+	headers := map[string]any{
+		messaging.HeaderCorrelationID:  "corr-1",  // bridge-to-bridge -> propagate
+		messaging.HeaderIdempotencyKey: "idem-1",  // bridge-to-bridge -> propagate
+		messaging.HeaderTraceParent:    "00-tp",   // bridge-to-bridge (no prefix) -> propagate
+		messaging.HeaderRouteID:        "route-1", // internal-only -> strip
+		"x-bridge.session-id":          "sess-1",  // unclassified reserved -> strip
+		"custom":                       "kept",    // application -> propagate
+	}
+
+	msg := headersToMessage(headers)
+
+	if msg.ApplicationProperties[messaging.HeaderCorrelationID] != "corr-1" {
+		t.Errorf("bridge-to-bridge correlation-id must propagate, got %v",
+			msg.ApplicationProperties[messaging.HeaderCorrelationID])
+	}
+	if msg.ApplicationProperties[messaging.HeaderIdempotencyKey] != "idem-1" {
+		t.Error("bridge-to-bridge idempotency-key must propagate")
+	}
+	if msg.ApplicationProperties[messaging.HeaderTraceParent] != "00-tp" {
+		t.Error("bridge-to-bridge traceparent must propagate")
+	}
+	if _, ok := msg.ApplicationProperties[messaging.HeaderRouteID]; ok {
+		t.Error("internal-only route-id must be stripped on egress")
+	}
+	if _, ok := msg.ApplicationProperties["x-bridge.session-id"]; ok {
+		t.Error("unclassified reserved x-bridge.session-id must be stripped on egress")
+	}
+	if msg.ApplicationProperties["custom"] != "kept" {
+		t.Error("application header must pass through")
+	}
+}
+
+// TestEnvelopeToMessage_SubjectOnlyFromEnvelope is the finding-5
+// regression guard: the egress AMQP Subject comes only from
+// Envelope.Subject, never from the amqp10.subject header.
+func TestEnvelopeToMessage_SubjectOnlyFromEnvelope(t *testing.T) {
+	// Header carries a subject but Envelope.Subject is empty -> Subject
+	// must stay unset (header must not leak into Properties.Subject).
+	envNoSubject := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "e1",
+		Payload: []byte("x"),
+		Headers: map[string]any{"amqp10.subject": "from-header"},
+	})
+	msg := envelopeToMessage(envNoSubject)
+	if msg.Properties != nil && msg.Properties.Subject != nil {
+		t.Errorf("Subject must not come from amqp10.subject header, got %q", *msg.Properties.Subject)
+	}
+
+	// Envelope.Subject set -> egress Subject reflects it, even when the
+	// header disagrees.
+	envWithSubject := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "e2",
+		Subject: "from-envelope",
+		Payload: []byte("x"),
+		Headers: map[string]any{"amqp10.subject": "from-header"},
+	})
+	msg2 := envelopeToMessage(envWithSubject)
+	if msg2.Properties == nil || msg2.Properties.Subject == nil || *msg2.Properties.Subject != "from-envelope" {
+		t.Errorf("Subject must come from Envelope.Subject, got %v", msg2.Properties.Subject)
 	}
 }
 

@@ -11,4 +11,9 @@ const (
 	MetricAMQP091AckLatency       = "AMQP091AckLatency"
 	MetricAMQP091Reconnects       = "AMQP091Reconnects"
 	MetricAMQP091EventDropped     = "AMQP091EventDropped"
+	// MetricAMQP091Blocked counts connection.blocked / connection.unblocked
+	// transitions the broker raises under a resource alarm (memory/disk).
+	// A non-zero, climbing count distinguishes broker pushback from
+	// ordinary send timeouts.
+	MetricAMQP091Blocked = "AMQP091Blocked"
 )

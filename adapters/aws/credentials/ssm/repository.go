@@ -120,7 +120,14 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 }
 
 // Update updates existing credentials in AWS Parameter Store.
-// If version > 0, optimistic concurrency is enforced.
+//
+// Concurrency: when version > 0 an optimistic version check is performed,
+// but SSM has no conditional PutParameter, so the check and the subsequent
+// write are NOT atomic (a TOCTOU window exists — see checkVersion). Two
+// admins racing an update can therefore still clobber each other's write.
+// This is acceptable for human-driven admin rotation; automated,
+// high-frequency rotation that requires atomic CAS must use a CAS-capable
+// backend (e.g. the DynamoDB config store) instead of SSM.
 func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
 	if creds == nil {
 		return fmt.Errorf("ssm: credential set must not be nil")
@@ -146,7 +153,11 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity
 }
 
 // Delete removes credentials from AWS Parameter Store.
-// If version > 0, optimistic concurrency is enforced.
+//
+// Concurrency: when version > 0 an optimistic version check is performed,
+// but as with Update the check and the DeleteParameter are NOT atomic (SSM
+// has no conditional delete). See Update and checkVersion for the TOCTOU
+// caveat and when to prefer a CAS-capable backend.
 func (r *Repository) Delete(ctx context.Context, uri string, version int64) error {
 	paramPath, err := parseURI(uri)
 	if err != nil {

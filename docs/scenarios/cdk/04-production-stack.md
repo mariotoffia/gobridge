@@ -285,16 +285,36 @@ adot.AddPortMappings(&awsecs.PortMapping{
 })
 ```
 
-### Bridge YAML Configuration
+### Bridge Tracing Configuration
 
-```yaml
-tracing:
-  provider: otlp
-  endpoint: "http://localhost:4318"
-  service_name: gobridge
-  environment: production
-  sampler_ratio: 0.1
+Observability is **not** configured through the bridge YAML — there is no
+`tracing:` config key. The tracer is wired in Go code (see
+[Scenario 18](../18-observability.md)) and honors the standard OpenTelemetry
+environment variables, which is the idiomatic way to configure it per
+environment in ECS:
+
+```go
+tracer, err := oteltracing.New(ctx,
+    oteltracing.WithServiceName("gobridge"),
+    oteltracing.WithEnvironment("production"),
+    oteltracing.WithSamplerRatio(0.1),
+    // Endpoint omitted: honors OTEL_EXPORTER_OTLP_ENDPOINT from the task env.
+)
 ```
+
+Set the exporter target and resource attributes as task-definition
+environment variables pointing at the ADOT sidecar:
+
+```go
+container.AddEnvironment(jsii.String("OTEL_EXPORTER_OTLP_ENDPOINT"),
+    jsii.String("http://localhost:4318"))
+container.AddEnvironment(jsii.String("OTEL_SERVICE_NAME"),
+    jsii.String("gobridge"))
+container.AddEnvironment(jsii.String("OTEL_RESOURCE_ATTRIBUTES"),
+    jsii.String("deployment.environment=production"))
+```
+
+Precedence is: explicit `WithXxx` option > `OTEL_*` env var > built-in default.
 
 ### Sampling Rule and IAM
 

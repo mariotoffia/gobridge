@@ -39,6 +39,13 @@ type Session struct {
 	starting  bool
 	plan      *connectivity.SessionPlan
 
+	// receivers tracks live receiver links for health reporting. A
+	// receiver registers itself when its Run loop starts; the bool
+	// records whether its AMQP link is currently up. Health (finding 4)
+	// degrades the service level when a registered receiver's link is
+	// down while the session connection itself is still alive.
+	receivers map[*Receiver]bool
+
 	// stopMonitor cancels the background health-monitoring goroutine.
 	stopMonitor context.CancelFunc
 	// monitorDone is closed when the monitor goroutine exits.
@@ -90,6 +97,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		clk:         opts.Clock,
 		events:      make(chan ports.SessionEvent, eventChannelSize),
 		reconnectCh: make(chan struct{}, 1),
+		receivers:   make(map[*Receiver]bool),
 		liveCreds: amqp10Credentials{
 			Username: opts.Username,
 			Password: opts.Password.Reveal(),
@@ -291,33 +299,97 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 }
 
 // Health returns the current health state of the session.
+//
+// Finding 4: the service level reflects receiver LINK state, not just
+// connectivity. When the connection is alive but one or more registered
+// receivers have a detached link (e.g. mid-reconnect), the session
+// reports Degraded with a reduced active count instead of falsely
+// claiming Full. The desired count is the larger of the reconciled
+// subscription plan and the number of registered receivers, so existing
+// behaviour (no receivers registered) is preserved exactly.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	connected := s.connected
 	plan := s.plan
+	wanted := 0
+	if plan != nil {
+		wanted = len(plan.Subscriptions)
+	}
+	if n := len(s.receivers); n > wanted {
+		wanted = n
+	}
+	downCount := 0
+	for _, up := range s.receivers {
+		if !up {
+			downCount++
+		}
+	}
 	s.mu.Unlock()
 
-	wantedCount := 0
-	if plan != nil {
-		wantedCount = len(plan.Subscriptions)
-	}
-
 	var sl ports.ServiceLevel
+	active := wanted
 	switch {
 	case !connected:
 		sl = ports.ServiceLevelNone
-	case wantedCount == 0:
+		active = 0
+	case downCount == 0:
 		sl = ports.ServiceLevelFull
 	default:
-		sl = ports.ServiceLevelFull
+		sl = ports.ServiceLevelDegraded
+		active = wanted - downCount
+		if active < 0 {
+			active = 0
+		}
 	}
 
 	return ports.SessionHealth{
 		Connected:           connected,
-		SubscriptionsWanted: wantedCount,
-		SubscriptionsActive: wantedCount,
+		SubscriptionsWanted: wanted,
+		SubscriptionsActive: active,
 		Ready:               connected,
 		ServiceLevel:        sl,
+	}
+}
+
+// registerReceiver records r as a live receiver whose link health feeds
+// Session.Health. The link starts down until markReceiverLink reports it
+// up. Receivers register at Run start and unregister when Run exits.
+func (s *Session) registerReceiver(r *Receiver) {
+	s.mu.Lock()
+	if s.receivers == nil {
+		s.receivers = make(map[*Receiver]bool)
+	}
+	s.receivers[r] = false
+	s.mu.Unlock()
+}
+
+// unregisterReceiver removes r from health tracking when its Run loop
+// exits.
+func (s *Session) unregisterReceiver(r *Receiver) {
+	s.mu.Lock()
+	delete(s.receivers, r)
+	s.mu.Unlock()
+}
+
+// markReceiverLink updates the link-up state of an already-registered
+// receiver. Unknown receivers are ignored so a late callback after
+// unregister cannot resurrect an entry, and direct handleLinkError calls
+// in unit tests (where the receiver never ran) stay no-ops.
+func (s *Session) markReceiverLink(r *Receiver, up bool) {
+	s.mu.Lock()
+	if _, ok := s.receivers[r]; ok {
+		s.receivers[r] = up
+	}
+	s.mu.Unlock()
+}
+
+// markAllReceiversDownLocked flips every registered receiver to
+// link-down. The caller must hold s.mu. Used on connection loss so
+// Health reflects the outage until receivers re-establish their links
+// after reconnect.
+func (s *Session) markAllReceiversDownLocked() {
+	for r := range s.receivers {
+		s.receivers[r] = false
 	}
 }
 
@@ -489,7 +561,7 @@ func (s *Session) monitorLoop(ctx context.Context) {
 			case <-s.reconnectCh:
 				s.tryReconnect(ctx)
 			case <-connDone:
-				s.tryReconnect(ctx)
+				s.handleConnLost(ctx, conn)
 			case <-fallback.C():
 				s.tryReconnect(ctx)
 			}
@@ -520,6 +592,38 @@ func (s *Session) tryReconnect(ctx context.Context) {
 	} else if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp10: tryReconnect skipped, connection alive")
 	}
+}
+
+// handleConnLost is invoked by the monitor loop when a live connection's
+// Done() channel fires. It mirrors notifyDisconnect — clearing the
+// connection so the subsequent reconnect actually dials — but is driven
+// by the SDK's own liveness signal rather than a link error.
+//
+// Finding 1: previously the monitor called tryReconnect on a Done()
+// wakeup, but tryReconnect observed a still-non-nil s.conn, skipped the
+// reconnect, and the loop immediately re-selected on the already-closed
+// Done() channel — a tight busy-spin while Health still reported
+// Connected=true. Clearing the connection here breaks that spin and
+// drives a real reconnect.
+//
+// The lost guard makes this converge with notifyDisconnect: if a link
+// error already swapped in a fresh connection (or the session closed),
+// the stale Done() wakeup is a no-op.
+func (s *Session) handleConnLost(ctx context.Context, lost amqpConn) {
+	s.mu.Lock()
+	if s.closed || s.conn != lost {
+		s.mu.Unlock()
+		return
+	}
+	s.conn = nil
+	s.amqpSess = nil
+	s.connected = false
+	s.markAllReceiversDownLocked()
+	s.mu.Unlock()
+
+	_ = lost.Close()
+	s.pushEvent(ports.SessionDisconnected, nil)
+	s.handleReconnect(ctx)
 }
 
 func (s *Session) handleReconnect(ctx context.Context) {
@@ -612,6 +716,7 @@ func (s *Session) notifyDisconnect(failedConn amqpConn, err error) {
 	s.conn = nil
 	s.amqpSess = nil
 	s.connected = false
+	s.markAllReceiversDownLocked()
 	s.mu.Unlock()
 
 	_ = conn.Close()

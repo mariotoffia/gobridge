@@ -20,8 +20,12 @@ import (
 )
 
 const (
-	defaultTableName   = "gobridge-dlq"
-	defaultGracePeriod = 1 * time.Hour
+	defaultTableName = "gobridge-dlq"
+
+	// defaultMaxScanPages bounds unfiltered/index-less List and Purge scans
+	// so an operator query on a large DLQ table cannot walk the entire table
+	// unbounded. Zero disables the bound (WithMaxScanPages(0)).
+	defaultMaxScanPages = 100
 
 	attrPK            = "PK"
 	attrRouteID       = "route_id"
@@ -42,11 +46,18 @@ const (
 // Store implements ports.DLQStore using DynamoDB with conditional writes
 // for idempotent entry creation and GSI-backed queries for listing by
 // route and category.
+//
+// Retention: by default DLQ entries carry NO TTL and are retained until an
+// operator explicitly deletes/purges them — a dead-lettered message is
+// evidence for investigation and must not silently expire. A days-scale
+// retention window can be opted into with WithRetention, which also enables
+// DynamoDB TTL on the table via EnsureTable.
 type Store struct {
-	client      *dynamodb.Client
-	tableName   string
-	gracePeriod time.Duration
-	logger      *slog.Logger
+	client       dynamoAPI
+	tableName    string
+	retention    time.Duration
+	maxScanPages int
+	logger       *slog.Logger
 }
 
 // Option configures a Store.
@@ -57,10 +68,28 @@ func WithTableName(name string) Option {
 	return func(s *Store) { s.tableName = name }
 }
 
-// WithGracePeriod sets the TTL grace period added to failed_at for DynamoDB
-// TTL-based item deletion (default: 1 hour).
+// WithRetention sets a retention window after which DLQ entries become
+// eligible for DynamoDB TTL deletion (ttl = failed_at + d). The default is
+// no retention (entries are kept until explicitly deleted). Use a
+// days-scale value in production so investigators have time to inspect
+// dead-lettered messages. A value <= 0 disables TTL.
+func WithRetention(d time.Duration) Option {
+	return func(s *Store) { s.retention = d }
+}
+
+// WithGracePeriod is a deprecated alias for WithRetention.
+//
+// Deprecated: use WithRetention. The historical default of 1h was far too
+// short for production investigation; the default is now no TTL.
 func WithGracePeriod(d time.Duration) Option {
-	return func(s *Store) { s.gracePeriod = d }
+	return WithRetention(d)
+}
+
+// WithMaxScanPages bounds the number of DynamoDB pages an index-less List or
+// a Purge will read before stopping, preventing an unbounded full-table
+// scan on large DLQ tables. Default: 100. Zero disables the bound.
+func WithMaxScanPages(n int) Option {
+	return func(s *Store) { s.maxScanPages = n }
 }
 
 // WithLogger sets the structured logger for trace/debug diagnostics.
@@ -77,9 +106,9 @@ func WithLogger(l *slog.Logger) Option {
 //aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
-		client:      client,
-		tableName:   defaultTableName,
-		gracePeriod: defaultGracePeriod,
+		client:       client,
+		tableName:    defaultTableName,
+		maxScanPages: defaultMaxScanPages,
 	}
 	for _, o := range opts {
 		o(s)
@@ -138,6 +167,27 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 	}, 2*time.Minute); err != nil {
 		return wrapErr(err, "wait for dlq table to exist failed", "table", s.tableName)
 	}
+
+	// Enable DynamoDB TTL only when a retention window is configured. With
+	// no retention the ttl attribute is never written, so enabling TTL would
+	// be a no-op that only risks surprising deletions if the schema changes.
+	if s.retention > 0 {
+		if _, err := s.client.UpdateTimeToLive(ctx, &dynamodb.UpdateTimeToLiveInput{
+			TableName: aws.String(s.tableName),
+			TimeToLiveSpecification: &ddbtypes.TimeToLiveSpecification{
+				Enabled:       aws.Bool(true),
+				AttributeName: aws.String(attrTTL),
+			},
+		}); err != nil {
+			// Best-effort: TTL is a retention convenience, not a correctness
+			// requirement. Surface a warning but do not fail table setup
+			// (e.g. DynamoDB Local and re-runs where TTL is already enabled).
+			if s.logger != nil {
+				s.logger.Warn("dynamodbdlq: enabling DynamoDB TTL failed; retention not enforced",
+					"table", s.tableName, "error", err.Error())
+			}
+		}
+	}
 	return nil
 }
 
@@ -155,7 +205,6 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	}
 
 	failedAtMs := entry.FailedAt().UnixMilli()
-	ttlEpoch := entry.FailedAt().Add(s.gracePeriod).Unix()
 
 	item := map[string]ddbtypes.AttributeValue{
 		attrPK:            &ddbtypes.AttributeValueMemberS{Value: dlqKey(entry.ID())},
@@ -171,7 +220,14 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 		attrEnvelopeJSON:  &ddbtypes.AttributeValueMemberS{Value: string(envJSON)},
 		attrFailedAt:      &ddbtypes.AttributeValueMemberN{Value: i64(failedAtMs)},
 		attrAttempts:      &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(entry.Attempts())},
-		attrTTL:           &ddbtypes.AttributeValueMemberN{Value: i64(ttlEpoch)},
+	}
+	// Only stamp a TTL when a retention window is configured. By default DLQ
+	// entries are retained indefinitely so investigators are not racing an
+	// expiry clock.
+	if s.retention > 0 {
+		item[attrTTL] = &ddbtypes.AttributeValueMemberN{
+			Value: i64(entry.FailedAt().Add(s.retention).Unix()),
+		}
 	}
 
 	_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -343,6 +399,7 @@ func (s *Store) listByScan(ctx context.Context, filter routing.DLQFilter) ([]rou
 
 	var entries []routing.DLQEntry
 	var startKey map[string]ddbtypes.AttributeValue
+	pages := 0
 
 	for len(entries) < limit {
 		input := &dynamodb.ScanInput{
@@ -371,6 +428,10 @@ func (s *Store) listByScan(ctx context.Context, filter routing.DLQFilter) ([]rou
 		}
 
 		if out.LastEvaluatedKey == nil {
+			break
+		}
+		pages++
+		if s.scanPageLimitReached(ctx, pages, "list") {
 			break
 		}
 		startKey = out.LastEvaluatedKey
@@ -484,6 +545,7 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	count := 0
 
 	var startKey map[string]ddbtypes.AttributeValue
+	pages := 0
 
 	for {
 		input := &dynamodb.ScanInput{
@@ -523,8 +585,29 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 		if out.LastEvaluatedKey == nil {
 			break
 		}
+		pages++
+		if s.scanPageLimitReached(ctx, pages, "purge") {
+			// Bounded: remaining old entries stay put and can be removed by a
+			// subsequent Purge call (they still match the filter).
+			break
+		}
 		startKey = out.LastEvaluatedKey
 	}
 
 	return count, nil
+}
+
+// scanPageLimitReached reports whether the configured max scan-page bound has
+// been hit, emitting a structured warning the first time so operators know a
+// full-table scan was truncated. A bound of 0 disables the limit.
+func (s *Store) scanPageLimitReached(ctx context.Context, pages int, op string) bool {
+	if s.maxScanPages <= 0 || pages < s.maxScanPages {
+		return false
+	}
+	if s.logger != nil {
+		s.logger.WarnContext(ctx, "dynamodbdlq: scan page bound reached; result truncated",
+			"op", op, "table", s.tableName, "max_scan_pages", s.maxScanPages,
+			"hint", "narrow the filter (route_id/category/time range) or raise WithMaxScanPages")
+	}
+	return true
 }

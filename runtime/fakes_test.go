@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -401,7 +402,6 @@ type FakeOutboxStore struct {
 	CompleteErr   error
 	CompleteFn    func([]string, persistence.LeaseToken) error
 	CompleteCtxFn func(context.Context, []string, persistence.LeaseToken) error
-	StaleClaimAge time.Duration
 }
 
 func NewFakeOutboxStore() *FakeOutboxStore {
@@ -444,38 +444,33 @@ func (s *FakeOutboxStore) Claim(_ context.Context, partitionKey string, token pe
 		return nil, s.ClaimErr
 	}
 
-	staleAge := s.StaleClaimAge
-	if staleAge == 0 {
-		staleAge = 200 * time.Millisecond
-	}
-	staleThreshold := time.Now().Add(-staleAge)
-
-	var claimed []*persistence.OutboxRecord
+	var candidates []*persistence.OutboxRecord
 	for _, rec := range s.records {
-		if len(claimed) >= limit {
-			break
-		}
 		recPK := persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID())
 		if recPK != partitionKey {
 			continue
 		}
-		claimable := rec.IsClaimable(token.Version) ||
-			(rec.Status() == persistence.OutboxClaimed && rec.ClaimedAt().Before(staleThreshold))
-		if !claimable {
+		if !rec.IsClaimable(token.Version) {
 			continue
 		}
-		// Time-based stale take-over: domain Claim refuses the same
-		// token version, so reset back to Pending via snapshot to mimic
-		// the production behaviour where the lease token would have
-		// advanced.
-		if !rec.IsClaimable(token.Version) {
-			snap := rec.PersistenceSnapshot()
-			snap.Status = persistence.OutboxPending
-			snap.ClaimedBy = ""
-			snap.ClaimedAt = time.Time{}
-			snap.ClaimVersion = 0
-			rec = persistence.RehydrateFromSnapshot(snap)
-			s.records[rec.ID()] = rec
+		candidates = append(candidates, rec)
+	}
+	// Claim in a deterministic order — persisted created_at, then envelopeID
+	// as a stable tiebreaker — mirroring the real memory/SQLite stores
+	// (memoryoutbox.Store.Claim) so ordering-group tests are reproducible
+	// instead of depending on Go's randomized map iteration order.
+	sort.Slice(candidates, func(i, j int) bool {
+		ci, cj := candidates[i].CreatedAt(), candidates[j].CreatedAt()
+		if ci.Equal(cj) {
+			return candidates[i].EnvelopeID() < candidates[j].EnvelopeID()
+		}
+		return ci.Before(cj)
+	})
+
+	var claimed []*persistence.OutboxRecord
+	for _, rec := range candidates {
+		if len(claimed) >= limit {
+			break
 		}
 		if claimErr := rec.Claim(time.Now(), token.Owner, token.Version); claimErr != nil {
 			continue
@@ -511,6 +506,30 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 		}
 		if completeErr := rec.Complete(time.Now()); completeErr != nil {
 			return completeErr
+		}
+	}
+	return nil
+}
+
+// Release implements the optional ports.OutboxReleaser capability so the
+// fake exercises the drainer's A4 transient-failure fast path. Fencing is
+// owner+version+status, identical to the real memory/SQLite stores: a
+// record is returned to pending only when it is currently claimed by
+// token.Owner at token.Version; any mismatch yields ErrStaleFencingToken.
+func (s *FakeOutboxStore) Release(_ context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, id := range recordIDs {
+		rec, exists := s.records[id]
+		if !exists ||
+			rec.Status() != persistence.OutboxClaimed ||
+			rec.ClaimedBy() != token.Owner ||
+			rec.ClaimVersion() != token.Version {
+			return shared.ErrStaleFencingToken
+		}
+		if releaseErr := rec.Release(time.Now()); releaseErr != nil {
+			return releaseErr
 		}
 	}
 	return nil
@@ -732,6 +751,12 @@ func (s *FakeSpan) Inspect() (name string, ended bool, attrs []shared.Tag, spanE
 type FakeTracer struct {
 	mu    sync.Mutex
 	Spans []*FakeSpan
+	// InjectKeys, when non-empty, are written into the carrier by Inject so a
+	// test can prove the dispatch path stamps propagator-produced keys onto the
+	// OUTBOUND envelope (guards against env.SetHeader vs outbound.SetHeader
+	// regressions). Nil by default → Inject stays a pass-through and existing
+	// header/propagation assertions are unaffected.
+	InjectKeys map[string]any
 }
 
 func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, ports.Span) {
@@ -741,6 +766,28 @@ func (t *FakeTracer) StartSpan(ctx context.Context, name string, attrs ...shared
 	t.Spans = append(t.Spans, span)
 	return ctx, span
 }
+
+// Extract is a pass-through: the fake does not model W3C propagation, so
+// the context is returned unchanged (mirrors NoopTracer).
+func (t *FakeTracer) Extract(ctx context.Context, _ map[string]any) context.Context {
+	return ctx
+}
+
+// Inject is a pass-through that returns the headers unchanged unless InjectKeys
+// is set, in which case those keys are merged into the carrier (models a tracer
+// stamping W3C headers) so tests can assert the outbound envelope carries them.
+func (t *FakeTracer) Inject(_ context.Context, headers map[string]any) map[string]any {
+	if headers == nil {
+		headers = make(map[string]any)
+	}
+	for k, v := range t.InjectKeys {
+		headers[k] = v
+	}
+	return headers
+}
+
+// Close is a no-op; the fake holds no resources.
+func (t *FakeTracer) Close(context.Context) error { return nil }
 
 func (t *FakeTracer) SpanCount() int {
 	t.mu.Lock()

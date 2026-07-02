@@ -61,7 +61,11 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 				ID:           "r1",
 				ReceiverID:   "rx1",
 				DeliveryMode: "direct_hold",
-				Bindings:     []string{"b1"},
+				Policy: ports.PolicyDef{
+					OnPermanentFailure: "drop",
+					OnExpired:          "drop",
+				},
+				Bindings: []string{"b1"},
 			},
 		},
 	}

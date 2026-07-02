@@ -21,6 +21,7 @@ type Factory struct {
 	pathPrefix      string
 	locator         ports.RouteLocator
 	forwarder       ports.MessageForwarder
+	forwardToken    string
 	metrics         ports.MetricsExporter
 	logger          *slog.Logger
 	clock           clock.Clock
@@ -39,6 +40,15 @@ func WithRouteLocator(l ports.RouteLocator) FactoryOption {
 // WithMessageForwarder sets the forwarder for cluster message routing.
 func WithMessageForwarder(fw ports.MessageForwarder) FactoryOption {
 	return func(f *Factory) { f.forwarder = fw }
+}
+
+// WithForwardToken sets the shared internal forwarding secret that
+// receivers require before trusting an X-Bridge-Forwarded marker. It
+// MUST match the ForwardToken configured on the peer HTTPForwarder.
+// Empty (the default) means receivers never trust forwarded state, so a
+// spoofed marker cannot force local processing on a non-owner node.
+func WithForwardToken(token string) FactoryOption {
+	return func(f *Factory) { f.forwardToken = token }
 }
 
 // WithFactoryMetrics sets the metrics exporter.
@@ -114,15 +124,16 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 	}
 
 	recv := newReceiver(receiverConfig{
-		id:          spec.ID,
-		path:        path,
-		maxBodySize: cfg.effectiveMaxBody(),
-		apiKey:      cfg.APIKey.Reveal(),
-		locator:     f.locator,
-		forwarder:   f.forwarder,
-		metrics:     f.metrics,
-		logger:      f.logger,
-		clock:       f.clock,
+		id:           spec.ID,
+		path:         path,
+		maxBodySize:  cfg.effectiveMaxBody(),
+		apiKey:       cfg.APIKey.Reveal(),
+		forwardToken: f.forwardToken,
+		locator:      f.locator,
+		forwarder:    f.forwarder,
+		metrics:      f.metrics,
+		logger:       f.logger,
+		clock:        f.clock,
 	})
 
 	pattern := "POST " + path
@@ -157,6 +168,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 		id:                spec.ID,
 		path:              path,
 		heartbeatInterval: cfg.effectiveHeartbeat(),
+		writeTimeout:      cfg.effectiveWriteTimeout(),
 		maxClients:        cfg.MaxClients,
 		apiKey:            cfg.APIKey.Reveal(),
 		locator:           f.locator,

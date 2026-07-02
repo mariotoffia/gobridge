@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 var errTest = errors.New("test failure")
@@ -61,14 +62,15 @@ func TestBreaker_OpenRejectsRequests(t *testing.T) {
 
 func TestBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	cfg := fastConfig()
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	err := b.BeforeRequest()
 	if err != nil {
@@ -83,14 +85,15 @@ func TestBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 
 func TestBreaker_HalfOpenToClosedAfterSuccessThreshold(t *testing.T) {
 	cfg := fastConfig()
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < cfg.SuccessThreshold; i++ {
 		if err := b.BeforeRequest(); err != nil {
@@ -107,14 +110,15 @@ func TestBreaker_HalfOpenToClosedAfterSuccessThreshold(t *testing.T) {
 
 func TestBreaker_HalfOpenToOpenOnFailure(t *testing.T) {
 	cfg := fastConfig()
-	b := cb.NewBreaker("test", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("test", cfg, nil, cb.WithBreakerClock(fake))
 
 	for i := 0; i < cfg.FailureThreshold; i++ {
 		_ = b.BeforeRequest()
 		b.AfterRequest(errTest)
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	_ = b.BeforeRequest()
 	b.AfterRequest(errTest)

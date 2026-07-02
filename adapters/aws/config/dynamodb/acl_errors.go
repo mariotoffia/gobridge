@@ -28,3 +28,11 @@ func mapEnsureTableError(err error) error {
 	}
 	return err
 }
+
+// isConditionFailed reports whether err is a DynamoDB
+// ConditionalCheckFailedException, i.e. a compare-and-set conflict on a
+// conditional write (a concurrent Save advanced the version).
+func isConditionFailed(err error) bool {
+	var ccf *ddbtypes.ConditionalCheckFailedException
+	return errors.As(err, &ccf)
+}

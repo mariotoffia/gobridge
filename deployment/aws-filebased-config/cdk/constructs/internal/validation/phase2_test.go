@@ -10,8 +10,10 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
+	"github.com/aws/aws-cdk-go/awscdk/v2/cxapi"
 	"github.com/aws/jsii-runtime-go"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
@@ -34,13 +36,25 @@ func newStack(t *testing.T) awscdk.Stack {
 func errorMessages(t *testing.T, stack awscdk.Stack) []string {
 	t.Helper()
 	a := assertions.Annotations_FromStack(stack)
-	msgs := a.FindError(jsii.String("*"), assertions.Match_AnyValue())
+	return annotationData(a.FindError(jsii.String("*"), assertions.Match_AnyValue()))
+}
+
+// warningMessages mirrors errorMessages for the warning bucket.
+func warningMessages(t *testing.T, stack awscdk.Stack) []string {
+	t.Helper()
+	a := assertions.Annotations_FromStack(stack)
+	return annotationData(a.FindWarning(jsii.String("*"), assertions.Match_AnyValue()))
+}
+
+// annotationData flattens the string payloads from a set of synthesis
+// messages (FindError and FindWarning both return this shape).
+func annotationData(msgs *[]*cxapi.SynthesisMessage) []string { //nolint:staticcheck // CDK assertions API (FindError/FindWarning) still returns SynthesisMessage; no Go replacement yet.
 	if msgs == nil {
 		return nil
 	}
 	out := make([]string, 0, len(*msgs))
 	for _, m := range *msgs {
-		if m == nil || m.Entry == nil { //nolint:staticcheck // CDK assertions API still surfaces SynthesisMessage; no replacement on Annotations.FindError yet.
+		if m == nil || m.Entry == nil { //nolint:staticcheck // CDK assertions API still surfaces SynthesisMessage; no replacement on Annotations.Find* yet.
 			continue
 		}
 		switch v := m.Entry.Data.(type) { //nolint:staticcheck // see above
@@ -317,4 +331,62 @@ func TestRunPhase2_NilScopeOrCfg_NoOp(t *testing.T) {
 	validation.RunPhase2(nil, validation.Phase2Input{})
 	stack := newStack(t)
 	validation.RunPhase2(stack, validation.Phase2Input{Cfg: nil})
+}
+
+// dynamoStore builds a config with one DynamoDB-backed store in the
+// given role ("lease"/"outbox"/"dlq") carrying tableName (empty to
+// omit it).
+func dynamoStore(role, tableName string) *ports.BridgeConfig {
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
+	sc := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
+	sc.SetDecoded(&awsstore.DynamoDBConfig{TableName: tableName}, nil)
+	switch role {
+	case "lease":
+		cfg.Stores.Lease = sc
+	case "outbox":
+		cfg.Stores.Outbox = sc
+	case "dlq":
+		cfg.Stores.DLQ = sc
+	}
+	return cfg
+}
+
+func TestRunPhase2_DynamoStoreNoTableName_EmitsWarningNotError(t *testing.T) {
+	stack := newStack(t)
+	cfg := dynamoStore("lease", "")
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	// Omitting table_name is a valid (if risky) choice: warn, never
+	// fail synth.
+	if got := errorMessages(t, stack); len(got) != 0 {
+		t.Fatalf("expected zero errors (missing table_name is a warning), got %d: %v", len(got), got)
+	}
+	got := warningMessages(t, stack)
+	if !containsAll(t, got, "dynamodb lease store", "table_name", "AccessDenied") {
+		t.Fatalf("missing dynamodb table_name warning: %v", got)
+	}
+}
+
+func TestRunPhase2_DynamoStoreWithTableName_NoWarning(t *testing.T) {
+	stack := newStack(t)
+	cfg := dynamoStore("outbox", "gobridge-outbox")
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	if got := warningMessages(t, stack); len(got) != 0 {
+		t.Fatalf("expected zero warnings when table_name is set, got %d: %v", len(got), got)
+	}
+}
+
+func TestRunPhase2_NonDynamoStore_NoWarning(t *testing.T) {
+	stack := newStack(t)
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
+	cfg.Stores.Lease = &ports.StoreConfig{Type: "sqlite"}
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	if got := warningMessages(t, stack); len(got) != 0 {
+		t.Fatalf("expected zero warnings for a non-dynamodb store, got %d: %v", len(got), got)
+	}
 }

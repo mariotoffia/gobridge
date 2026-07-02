@@ -18,17 +18,16 @@ import (
 // DLQ Router Integration Tests with DynamoDB Local
 //
 // Validates the DLQRouter against a real DynamoDB DLQ store, exercising
-// async buffer draining, error classification, concurrent writes, and
-// graceful shutdown semantics.
+// synchronous confirmed writes, error classification, and concurrent writes.
 //
 // Summary:
 // ┌──────┬──────────────────────────────────────────────────────────────┐
 // │ Test │ Description                                                  │
 // ├──────┼──────────────────────────────────────────────────────────────┤
 // │ DR1  │ Route persists entry with all fields in DynamoDB             │
-// │ DR2  │ Async buffer mode drains entries via background workers      │
+// │ DR2  │ Each Route persists synchronously before returning           │
 // │ DR3  │ Error classification persists correct category and code      │
-// │ DR4  │ Close drains remaining buffer entries before stopping        │
+// │ DR4  │ Entry is durable the instant Route returns (no Close step)   │
 // │ DR5  │ Concurrent Route calls all persist safely                    │
 // └──────┴──────────────────────────────────────────────────────────────┘
 // ═══════════════════════════════════════════════════════════════════════════
@@ -93,18 +92,17 @@ func TestIntegration_DLQRouter_RouteStoresEntry(t *testing.T) {
 	}
 }
 
-// TestIntegration_DLQRouter_AsyncBufferDrains validates that when the router
-// is started in async mode, entries enqueued via Route are eventually drained
-// to the DynamoDB store by background workers.
+// TestIntegration_DLQRouter_SynchronousWrites validates that each Route call
+// persists its entry to the real DynamoDB store synchronously — the call
+// returns only after the write is durably confirmed.
 //
 // Scenario:
 //
-//	DLQRouter.Start() ── workers active
-//	Route(entry1)      ──▶ buffer ──▶ worker ──▶ DynamoDB
-//	Route(entry2)      ──▶ buffer ──▶ worker ──▶ DynamoDB
-//	... wait ...
-//	List ──▶ 2 entries
-func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
+//	Route(entry1) ──▶ DynamoDB (confirmed before return)
+//	Route(entry2) ──▶ DynamoDB (confirmed before return)
+//	... 5 entries ...
+//	List ──▶ 5 entries
+func TestIntegration_DLQRouter_SynchronousWrites(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -112,20 +110,16 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 	store := newDDBDLQStore(t, "dr2")
 	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
-		BufferSize:   100,
-		Workers:      2,
 		WriteTimeout: 10 * time.Second,
 	})
 
 	ctx := context.Background()
-	router.Start(ctx)
-	defer router.Close()
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      uniqueID("env-dr2"),
-			Subject: "test/async",
-			Payload: []byte(`{"async":"entry"}`),
+			Subject: "test/sync",
+			Payload: []byte(`{"sync":"entry"}`),
 		})
 		routeErr := shared.ErrUnavailable.WithMessage("transient failure")
 		if err := router.Route(ctx, env, "route-dr2", uniqueID("bind"), "", "sess-dr2", "", routeErr, 1); err != nil {
@@ -133,15 +127,10 @@ func TestIntegration_DLQRouter_AsyncBufferDrains(t *testing.T) {
 		}
 	}
 
-	e2eWaitFor(t, 10*time.Second, "async DLQ entries drained", func() bool {
-		entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
-		if err != nil {
-			return false
-		}
-		return len(entries) >= entryCount
-	})
-
-	entries, _ := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
+	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr2"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	if len(entries) != entryCount {
 		t.Fatalf("expected %d DLQ entries, got %d", entryCount, len(entries))
 	}
@@ -201,13 +190,14 @@ func TestIntegration_DLQRouter_ErrorClassification(t *testing.T) {
 	}
 }
 
-// TestIntegration_DLQRouter_CloseDrainsBuffer validates that calling Close
-// after Start drains all remaining buffer entries to DynamoDB before returning.
+// TestIntegration_DLQRouter_RouteConfirmsBeforeReturn validates the durability
+// boundary of the synchronous router: the entry is already queryable in
+// DynamoDB the instant Route returns, with no drain or Close step required.
 //
 // Scenario:
 //
-//	Start → Route(5 entries) → Close() → verify all 5 in DDB
-func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
+//	for each entry: Route() → List immediately → entry present
+func TestIntegration_DLQRouter_RouteConfirmsBeforeReturn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -215,34 +205,29 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 	store := newDDBDLQStore(t, "dr4")
 	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
-		BufferSize:   100,
-		Workers:      1,
 		WriteTimeout: 10 * time.Second,
 	})
 
 	ctx := context.Background()
-	router.Start(ctx)
 
 	const entryCount = 5
 	for i := 0; i < entryCount; i++ {
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{
 			ID:      uniqueID("env-dr4"),
-			Subject: "test/drain",
-			Payload: []byte(`{"drain":"test"}`),
+			Subject: "test/confirm",
+			Payload: []byte(`{"confirm":"test"}`),
 		})
 		if err := router.Route(ctx, env, "route-dr4", uniqueID("bind"), "", "sess-dr4", "", shared.ErrUnavailable, 1); err != nil {
 			t.Fatalf("Route[%d]: %v", i, err)
 		}
-	}
-
-	router.Close()
-
-	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr4"})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(entries) != entryCount {
-		t.Fatalf("expected %d entries after Close, got %d", entryCount, len(entries))
+		// Synchronous contract: the write is durable the moment Route returns.
+		entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr4"})
+		if err != nil {
+			t.Fatalf("List[%d]: %v", i, err)
+		}
+		if len(entries) != i+1 {
+			t.Fatalf("after Route[%d] expected %d entries, got %d", i, i+1, len(entries))
+		}
 	}
 }
 
@@ -251,9 +236,9 @@ func TestIntegration_DLQRouter_CloseDrainsBuffer(t *testing.T) {
 //
 // Scenario:
 //
-//	20 goroutines ──Route──▶ buffer ──▶ workers ──▶ DynamoDB
-//	                                                 ↓
-//	                                           List = 20 entries
+//	20 goroutines ──Route──▶ DynamoDB (each confirmed before return)
+//	                                    ↓
+//	                              List = 20 entries
 func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -262,13 +247,10 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 	store := newDDBDLQStore(t, "dr5")
 	router := dlq.NewFromConfig(dlq.Config{
 		Store:        store,
-		BufferSize:   200,
-		Workers:      4,
 		WriteTimeout: 10 * time.Second,
 	})
 
 	ctx := context.Background()
-	router.Start(ctx)
 
 	const goroutines = 20
 	var wg sync.WaitGroup
@@ -285,7 +267,7 @@ func TestIntegration_DLQRouter_ConcurrentRoutes(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	router.Close()
+	// No Close: synchronous Route already confirmed every write.
 
 	entries, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dr5"})
 	if err != nil {

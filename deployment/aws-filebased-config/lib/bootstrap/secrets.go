@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
@@ -117,6 +118,28 @@ func buildDevModeSSMClient(ctx context.Context, region, endpoint string) (*awsss
 	return awsssm.NewFromConfig(awsCfg, func(o *awsssm.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
 	}), nil
+}
+
+// newDynamoDBClient builds the *dynamodb.Client backing the DynamoDB
+// store factory (see App.newFactoryRegistry). The region comes from
+// BootstrapConfig.AWSRegion when set, otherwise from the ambient AWS
+// environment (task role / AWS_REGION). LoadDefaultConfig is
+// offline-safe -- credentials are resolved lazily on first call -- so
+// building the client never blocks startup or makes a network call.
+//
+// BootstrapConfig has no DynamoDB-endpoint knob: local emulation (e.g.
+// LocalStack) must inject a pre-configured client via WithDynamoDBClient
+// rather than relying on this constructor.
+func newDynamoDBClient(ctx context.Context, cfg deployinfra.BootstrapConfig) (*dynamodb.Client, error) {
+	opts := []func(*awsconfig.LoadOptions) error{}
+	if cfg.AWSRegion != "" {
+		opts = append(opts, awsconfig.WithRegion(cfg.AWSRegion))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: load AWS config for DynamoDB: %w", err)
+	}
+	return dynamodb.NewFromConfig(awsCfg), nil
 }
 
 type resolvedInputs struct {

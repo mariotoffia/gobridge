@@ -188,6 +188,15 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 // HeaderGobridgeSubject user property. The Envelope.ID is included as a
 // HeaderMessageID user property so EnvelopeFromPublish can recover it.
 //
+// Egress header policy: INTERNAL-ONLY reserved headers
+// (messaging.IsInternalOnlyHeader — route-id, route-override, source-id,
+// content-type) are NOT serialized as MQTT user properties, so the bridge's
+// private dispatch bookkeeping never leaks to a non-bridge subscriber.
+// content-type is instead mapped to the native MQTT ContentType property.
+// BRIDGE-TO-BRIDGE propagated headers (correlation, causation, idempotency,
+// dedup, ordering, tenant, forwarded, trace) and application headers pass
+// through so a peer bridge can correlate, deduplicate and continue a trace.
+//
 // The returned *pahov5.Publish is the SDK boundary output this ACL helper
 // exists to produce; it is consumed by the pahoConn ACL seam
 // (acl_client.go PublishEnvelope) and by the legacy Sender path.
@@ -252,6 +261,16 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 			if k == messaging.HeaderCorrelationID || k == messaging.HeaderContentType ||
 				k == headerMQTTResponseTopic || k == HeaderMessageID ||
 				k == HeaderGobridgeSubject || k == HeaderMQTTTopic {
+				continue
+			}
+			// Egress header policy: strip INTERNAL-ONLY reserved headers
+			// (route-id, route-override, source-id, content-type) so the
+			// bridge's private dispatch bookkeeping is never serialized as
+			// MQTT user properties to a non-bridge subscriber. BRIDGE-TO-
+			// BRIDGE propagated headers (correlation/causation/idempotency/
+			// dedup/ordering/tenant/forwarded/trace) and application headers
+			// pass through. Mirrors messaging.StripInternalOnlyHeaders.
+			if messaging.IsInternalOnlyHeader(k) {
 				continue
 			}
 			s, ok := v.(string)

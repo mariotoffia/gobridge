@@ -178,6 +178,8 @@ rt := runtime.New(
 | `WithBufferSize(n)` | 1000 | Max buffered non-histogram metrics before async flush |
 | `WithDefaultTags(tags...)` | none | Tags added to every metric as dimensions |
 | `WithEndpoint(url)` | AWS default | Custom endpoint (for LocalStack) |
+| `WithLogger(l)` | nil (silent) | Structured logger for dropped/requeued metrics & invalid dimensions |
+| `WithMaxRetryDatums(n)` | 10000 | Bound on datums requeued after a failed `PutMetricData` before the oldest are dropped |
 
 ### Key Metrics
 
@@ -192,11 +194,23 @@ rt := runtime.New(
 | `DLQEntries` | `route_id`, `category` | Count | Messages written to DLQ |
 | `LeaseAcquireFailures` | `lease_id` | Count | Failed lease acquisitions |
 | `LeaseExpiries` | `lease_id` | Count | Leases that expired without renewal |
-| `SQSVisibilityExtensions` | `queue_url` | Count | SQS visibility timeout extensions |
+| `SQSVisibilityExtensions` | `transport` | Count | SQS visibility timeout extensions |
 
 Dimensions map directly to `domain.Tag` key-value pairs. Standard dimension keys
-include `route_id`, `lease_id`, `session_id`, `partition`, `queue_url`,
-`category`, and `transport`.
+include `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
+`transport`.
+
+> **Dimension cardinality warning.** CloudWatch bills and indexes per unique
+> dimension-value combination, and each distinct combination is a separate
+> metric. Do **not** use unbounded/high-cardinality values such as `queue_url`
+> (full ARNs/URLs), message IDs, or per-request identifiers as dimensions — they
+> explode cost and make dashboards unusable. Prefer low-cardinality keys
+> (`route_id`, `transport`, `category`). The exporter enforces the CloudWatch
+> hard limits defensively: dimensions with an empty name or value are dropped,
+> name/value are truncated to 256 bytes, and at most 30 dimensions are kept per
+> metric; excess/invalid dimensions are dropped with a logged warning rather
+> than silently truncated. Configure a logger via `WithLogger` to observe these
+> events.
 
 ---
 

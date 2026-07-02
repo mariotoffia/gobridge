@@ -10,6 +10,18 @@ import (
 // Kind is the registry discriminator for the HTTP transport.
 const Kind = "http"
 
+// minAPIKeyLength is the enforced floor for an inline api_key. The
+// documented examples (scenario 15, transport-configuration.md) already
+// use >=16-character keys; this turns that convention into a decode-time
+// guard so a too-short key cannot silently weaken endpoint protection.
+// The check applies only to inline keys: credential-resolved material is
+// validated at the credential layer, not re-validated post-resolution.
+const minAPIKeyLength = 16
+
+// defaultSSEWriteTimeout bounds each individual SSE frame write when the
+// operator does not set WriteTimeout. See Config.WriteTimeout.
+const defaultSSEWriteTimeout = 15 * time.Second
+
 // Config is the typed plugin config for the HTTP transport. It covers
 // both the receiver (POST endpoint) and the SSE sender. All fields are
 // optional except Mode, which the sender rejects when it is anything
@@ -36,6 +48,14 @@ type Config struct {
 	// means no cap.
 	MaxClients int `yaml:"max_clients,omitempty" json:"max_clients,omitempty" mapstructure:"max_clients"`
 
+	// WriteTimeout bounds each individual SSE frame write. The SSE
+	// handler re-arms this per-write deadline before every frame via
+	// http.ResponseController, which (a) overrides a fronting server's
+	// global WriteTimeout so a healthy long-lived stream is not killed
+	// and (b) evicts a stalled client instead of pinning a goroutine on
+	// a blocked write. Zero falls through to the 15s default.
+	WriteTimeout time.Duration `yaml:"write_timeout,omitempty" json:"write_timeout,omitempty" mapstructure:"write_timeout"`
+
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. Resolved material populates
 	// APIKey via ApplyCredentials when APIKey is empty.
@@ -53,8 +73,14 @@ func (c Config) Validate() error {
 	if c.HeartbeatInterval < 0 {
 		return fmt.Errorf("http: heartbeat_interval must be >= 0")
 	}
+	if c.WriteTimeout < 0 {
+		return fmt.Errorf("http: write_timeout must be >= 0")
+	}
 	if c.MaxClients < 0 {
 		return fmt.Errorf("http: max_clients must be >= 0")
+	}
+	if key := c.APIKey.Reveal(); key != "" && len(key) < minAPIKeyLength {
+		return fmt.Errorf("http: api_key must be at least %d characters when set", minAPIKeyLength)
 	}
 	if c.Mode != "" && c.Mode != "sse" {
 		return fmt.Errorf("http: unsupported sender mode %q (only \"sse\" supported)", c.Mode)
@@ -74,6 +100,13 @@ func (c Config) effectiveHeartbeat() time.Duration {
 		return 30 * time.Second
 	}
 	return c.HeartbeatInterval
+}
+
+func (c Config) effectiveWriteTimeout() time.Duration {
+	if c.WriteTimeout <= 0 {
+		return defaultSSEWriteTimeout
+	}
+	return c.WriteTimeout
 }
 
 func (c Config) effectiveMode() string {

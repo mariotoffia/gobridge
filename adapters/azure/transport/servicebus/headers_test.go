@@ -62,7 +62,7 @@ func TestMessageToHeaders_SystemProperties(t *testing.T) {
 	requireEqual(t, asbHeaderTTL, h[asbHeaderTTL], ttl)
 	requireEqual(t, asbHeaderEnqueuedTime, h[asbHeaderEnqueuedTime], now)
 	requireEqual(t, asbHeaderSequenceNum, h[asbHeaderSequenceNum], seqNum)
-	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], deliveryCount)
+	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], int(deliveryCount))
 }
 
 // verifies messageToHeaders omits headers when optional system properties are nil.
@@ -74,7 +74,7 @@ func TestMessageToHeaders_NilPointers(t *testing.T) {
 	h := messageToHeaders(msg)
 
 	requireEqual(t, asbHeaderMessageID, h[asbHeaderMessageID], "msg-002")
-	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], uint32(0))
+	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], int(0))
 
 	for _, key := range []string{
 		asbHeaderCorrelationID,
@@ -143,7 +143,7 @@ func TestMessageToHeaders_MixedProperties(t *testing.T) {
 	requireEqual(t, asbHeaderMessageID, h[asbHeaderMessageID], "msg-005")
 	requireEqual(t, asbHeaderCorrelationID, h[asbHeaderCorrelationID], "corr-005")
 	requireEqual(t, asbHeaderSubject, h[asbHeaderSubject], "evt.shipped")
-	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], uint32(1))
+	requireEqual(t, asbHeaderDeliveryCount, h[asbHeaderDeliveryCount], int(1))
 	requireEqual(t, "region", h["region"], "eu-west-1")
 	requireEqual(t, "priority", h["priority"], "high")
 

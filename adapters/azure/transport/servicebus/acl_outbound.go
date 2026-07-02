@@ -21,6 +21,12 @@ import (
 // SDK properties and routing the rest into ApplicationProperties.
 // Reserved x-bridge.* headers and asb.* well-known keys are filtered
 // out of ApplicationProperties.
+//
+// ponytail: this helper is NOT on the live send path — the Sender uses
+// envelopeToMessage, which applies the central egress header policy
+// (strip internal-only, keep bridge-to-bridge). headersToMessage strips
+// ALL reserved headers; do not wire it into egress without aligning it
+// to IsInternalOnlyHeader first.
 func headersToMessage(headers map[string]any) *azservicebus.Message {
 	msg := &azservicebus.Message{}
 
@@ -152,6 +158,21 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 			}
 		default:
 			if strings.HasPrefix(k, asbHeaderPrefix) {
+				continue
+			}
+			// Central egress header policy (mirrors the SQS adapter):
+			// strip ONLY internal-only reserved headers (the bridge's own
+			// dispatch bookkeeping — route-id, route-override, source-id,
+			// content-type). Bridge-to-bridge reserved headers
+			// (correlation/idempotency/tracing/tenant/forwarded-*) and
+			// application headers pass through as ApplicationProperties so
+			// a receiving bridge can still correlate, deduplicate and
+			// continue a trace. The envelope reaches the sender with
+			// reserved headers intact (the runtime has no egress strip
+			// hook — see domain/messaging StripInternalOnlyHeaders doc), so
+			// this ACL is the last line that prevents internal-only header
+			// leakage to a non-bridge consumer.
+			if messaging.IsInternalOnlyHeader(k) {
 				continue
 			}
 			if appProps == nil {

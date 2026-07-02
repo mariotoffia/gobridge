@@ -359,6 +359,11 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		attrs = append(attrs, shared.Tag{Key: "trace_id", Value: tc.TraceID})
 	}
 
+	// Join the upstream trace before creating this hop's span: Extract
+	// parents the runtime span on the remote span carried by W3C
+	// traceparent, so the bridge appears as a child of the caller (K1).
+	ctx = r.tracer.Extract(ctx, env.Headers())
+
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
 	defer span.End()
 

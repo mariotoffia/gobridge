@@ -9,6 +9,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -26,7 +27,8 @@ func envelope(subject string, headers map[string]any) *messaging.Envelope {
 // Verifies closed-to-open-to-half-open-to-closed transitions under failures and reset timeout.
 func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 	cfg := cb.Config{FailureThreshold: 3, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
-	p := New("cb", cfg)
+	fake := clocktest.New()
+	p := New("cb", cfg, WithClock(fake))
 	ctx := context.Background()
 	env := envelope("test", nil)
 	fail := nextErr(errors.New("boom"))
@@ -53,7 +55,7 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 		t.Fatalf("circuit should be open: expected ErrUnavailable, got %v", err)
 	}
 
-	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(60 * time.Millisecond)
 
 	if err := p.Process(ctx, env, nextOK); err != nil {
 		t.Fatalf("half-open should allow request, got %v", err)
@@ -71,7 +73,8 @@ func TestStateTransitions_ClosedToOpenToHalfOpenToClosed(t *testing.T) {
 // Verifies a failure in half-open reopens the circuit.
 func TestHalfOpen_FailureReopens(t *testing.T) {
 	cfg := cb.Config{FailureThreshold: 2, SuccessThreshold: 2, ResetTimeout: 50 * time.Millisecond}
-	p := New("cb", cfg)
+	fake := clocktest.New()
+	p := New("cb", cfg, WithClock(fake))
 	ctx := context.Background()
 	env := envelope("test", nil)
 	fail := nextErr(errors.New("boom"))
@@ -85,7 +88,7 @@ func TestHalfOpen_FailureReopens(t *testing.T) {
 		t.Fatalf("expected open circuit, got %v", err)
 	}
 
-	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(60 * time.Millisecond)
 
 	if err := p.Process(ctx, env, fail); err == nil {
 		t.Fatal("half-open failure: expected error from next, got nil")
@@ -317,7 +320,8 @@ func TestOnStateChangeCallback(t *testing.T) {
 	var mu sync.Mutex
 	var transitions []struct{ from, to cb.State }
 
-	p := New("cb", cfg, WithOnStateChange(func(key string, from, to cb.State) {
+	fake := clocktest.New()
+	p := New("cb", cfg, WithClock(fake), WithOnStateChange(func(key string, from, to cb.State) {
 		mu.Lock()
 		transitions = append(transitions, struct{ from, to cb.State }{from, to})
 		mu.Unlock()
@@ -337,7 +341,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 	}
 	mu.Unlock()
 
-	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(60 * time.Millisecond)
 
 	// Triggers half-open transition inside beforeRequest.
 	_ = p.Process(ctx, env, nextOK)

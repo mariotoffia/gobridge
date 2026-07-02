@@ -232,6 +232,27 @@ func (r *OutboxRecord) Complete(now time.Time) *shared.BridgeError {
 	return nil
 }
 
+// Release returns a Claimed record to Pending so the same owner can
+// re-claim and retry it on the next drain after a transient egress
+// failure, without waiting for a fencing-version bump or wall-clock
+// stale-claim timeout. It does NOT change replayCount (the next Claim
+// increments it, preserving the poison-message cap). Returns
+// shared.ErrOutboxNotInClaimedState when invoked from any other state.
+func (r *OutboxRecord) Release(_ time.Time) *shared.BridgeError {
+	if r.status != OutboxClaimed {
+		return shared.ErrOutboxNotInClaimedState.
+			WithMessage("outbox record must be in claimed state to release").
+			With("recordID", r.id).
+			With("status", string(r.status))
+	}
+	r.status = OutboxPending
+	r.claimedBy = ""
+	r.claimedAt = time.Time{}
+	// claimVersion is intentionally left as-is: it is irrelevant once the
+	// record is Pending and is overwritten by the next Claim.
+	return nil
+}
+
 // Expire transitions the aggregate to the Expired terminal state. Valid
 // only from Pending or Claimed; returns shared.ErrOutboxAlreadyTerminal
 // otherwise.

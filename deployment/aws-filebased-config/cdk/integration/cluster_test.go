@@ -20,7 +20,7 @@ import (
 // Test_T21_Integration_Cluster_ScaleAndKill deploys a GoBridgeCluster
 // with WorkerDesiredCount=2, scales the worker service to 3, kills
 // one task, and asserts the service self-heals back to 3 RUNNING
-// while ALB /healthz remains 200 throughout.
+// while the ALB health endpoint remains 200 throughout.
 func Test_T21_Integration_Cluster_ScaleAndKill(t *testing.T) {
 	env := RequireSandbox(t)
 

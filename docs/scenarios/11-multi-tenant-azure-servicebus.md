@@ -112,7 +112,7 @@ This scenario bridges Azure Service Bus (ingress) to AWS SQS (egress) -- a genui
 Register the tenant processor in Go before building the runtime:
 
 ```go
-tenantProc := tenant.New(tenant.Config{
+tenantProc, _ := tenant.New(tenant.Config{
     Name:          "tenant-check",
     TenantHeader:  "x-tenant-id",
     RequireTenant: true,
@@ -290,7 +290,7 @@ The `prefetch` option controls the AMQP link credit -- how many messages the bro
 ```go
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
-tenantProc := tenant.New(tenant.Config{
+tenantProc, _ := tenant.New(tenant.Config{
     Name:          "tenant-check",
     TenantHeader:  "x-tenant-id",
     RequireTenant: true,

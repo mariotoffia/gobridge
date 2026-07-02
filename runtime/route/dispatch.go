@@ -79,6 +79,30 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	rc := receiveCount(env)
 	attempt := rc + 1
 
+	// Continue the distributed trace downstream: stamp the active span context
+	// (this bridge hop) onto the outbound envelope's W3C headers so the
+	// receiving service parents on this hop. Injecting into an empty carrier
+	// keeps this allocation-light. SetHeader is the trusted per-key path —
+	// ReplaceHeaders would strip the freshly stamped reserved headers. Done at
+	// send time so processor header mutations are already applied.
+	//
+	// When a tracer stamped this hop the outbound W3C headers are made exactly
+	// the propagator output: any stale upstream traceparent/tracestate the clone
+	// carried (e.g. an invalid tracestate OTel dropped during Extract) is removed
+	// first so it cannot ride alongside the fresh bridge span. When tracing is
+	// disabled the tracer returns no keys, this block is skipped, and the
+	// upstream headers pass through untouched (bridge-to-bridge trace continuity
+	// preserved). The shared-outbox path is decoupled (drained after the ingress
+	// span ends) and instead relies on the upstream traceparent preserved on the
+	// persisted envelope (K1).
+	if injected := r.tracer.Inject(sendCtx, map[string]any{}); len(injected) > 0 {
+		outbound.DeleteHeader(messaging.HeaderTraceParent)
+		outbound.DeleteHeader(messaging.HeaderTraceState)
+		for k, v := range injected {
+			outbound.SetHeader(k, v)
+		}
+	}
+
 	sendErr := sender.Send(sendCtx, ports.OutboundMessage{Envelope: outbound, Address: plan.Address})
 
 	r.invokeOnDelivery(outbound, sendErr)
@@ -318,31 +342,76 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 	return r.ackDelivery(ctx, del)
 }
 
-// receiveCount extracts the transport-level receive count from envelope
-// headers. SQS populates this as "sqs.ApproximateReceiveCount".
-// Handles int, int64, float64, and string representations.
-// Returns 0 when the header is absent or not convertible.
+// Transport redelivery-count headers. Each source transport stamps its own
+// per-message delivery counter under a transport-scoped key, and each bases that
+// counter differently. receiveCount normalizes them to a 1-based count
+// (1 == first delivery) so MaxReplayAttempts behaves identically regardless of
+// the source transport. The runtime cannot import the adapter packages (layer
+// rule), so these keys mirror the adapter constants by value.
+const (
+	// headerSQSReceiveCount is 1-based: SQS ApproximateReceiveCount is 1 on the
+	// first receive and increments on each redelivery.
+	headerSQSReceiveCount = "sqs.ApproximateReceiveCount"
+	// headerASBDeliveryCount is 1-based: the Azure Service Bus SDK normalizes the
+	// raw AMQP delivery-count by +1 before exposing DeliveryCount (1 on first
+	// delivery, azservicebus message.go), and the asb adapter stamps that value
+	// verbatim.
+	headerASBDeliveryCount = "asb.delivery-count"
+	// headerAMQP10DeliveryCount is 0-based: the amqp10 adapter stamps the raw
+	// AMQP 1.0 header delivery-count, defined as the number of PRIOR failed
+	// delivery attempts (0 on first delivery). receiveCount adds 1 to align it
+	// with the 1-based transports above.
+	headerAMQP10DeliveryCount = "amqp10.delivery-count"
+)
+
+// receiveCount extracts the source transport's redelivery count from envelope
+// headers, normalized to 1-based (1 == first delivery). Transports are checked
+// in a fixed order; a delivery normally carries exactly one of these headers, so
+// the order only matters in rare bridge-to-bridge topologies where a stale
+// upstream header survives, in which case the first match wins. Returns 0 when
+// no known counter header is present (treated as a first delivery for the
+// retry cap).
 func receiveCount(env *messaging.Envelope) int {
-	if env.Headers() == nil {
+	h := env.Headers()
+	if h == nil {
 		return 0
 	}
-	v, ok := env.Headers()["sqs.ApproximateReceiveCount"]
+	if n, ok := headerInt(h, headerSQSReceiveCount); ok {
+		return n
+	}
+	if n, ok := headerInt(h, headerASBDeliveryCount); ok {
+		return n
+	}
+	if n, ok := headerInt(h, headerAMQP10DeliveryCount); ok {
+		return n + 1 // 0-based AMQP delivery-count -> 1-based receive count
+	}
+	return 0
+}
+
+// headerInt reads key from h and coerces the common numeric encodings a
+// transport adapter may stamp (int, int64, uint32, float64, decimal string)
+// into an int. The second result is false when the key is absent or the value
+// cannot be interpreted as an integer.
+func headerInt(h map[string]any, key string) (int, bool) {
+	v, ok := h[key]
 	if !ok {
-		return 0
+		return 0, false
 	}
 	switch n := v.(type) {
 	case int:
-		return n
+		return n, true
 	case int64:
-		return int(n)
+		return int(n), true
+	case uint32:
+		return int(n), true
 	case float64:
-		return int(n)
+		return int(n), true
 	case string:
 		if i, err := strconv.Atoi(n); err == nil {
-			return i
+			return i, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func (r *RouteRunner) emitDLQ(category string) {

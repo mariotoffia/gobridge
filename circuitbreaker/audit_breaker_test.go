@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -116,9 +117,10 @@ func TestBreaker_FullLifecycle(t *testing.T) {
 		HalfOpenMaxProbes: 1,
 	}.WithDefaults()
 
+	fake := clocktest.New()
 	b := circuitbreaker.NewBreaker("lifecycle", cfg, func(key string, from, to circuitbreaker.State) {
 		transitions = append(transitions, from.String()+"→"+to.String())
-	})
+	}, circuitbreaker.WithBreakerClock(fake))
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("closed breaker should allow: %v", err)
@@ -134,7 +136,7 @@ func TestBreaker_FullLifecycle(t *testing.T) {
 		t.Fatal("open breaker should reject")
 	}
 
-	time.Sleep(15 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(15 * time.Millisecond)
 
 	if err := b.BeforeRequest(); err != nil {
 		t.Fatalf("half-open breaker should allow probe: %v", err)

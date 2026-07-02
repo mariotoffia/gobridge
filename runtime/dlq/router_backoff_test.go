@@ -69,8 +69,8 @@ func (s *retryCountingDLQStore) DeleteByFilter(_ context.Context, _ routing.DLQF
 func (s *retryCountingDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 // TestRouter_RetryBackoff_FakeClock proves that the DLQ router's
-// exponential backoff between write retries is driven entirely by the
-// injected clock, not wall time.
+// exponential backoff between synchronous write retries is driven entirely
+// by the injected clock, not wall time.
 //
 // Backoff policy: Initial=100ms, Multiplier=2.0, Max=1s, Attempts=3.
 // The store fails writes 1 and 2, succeeding on write 3.
@@ -80,19 +80,21 @@ func (s *retryCountingDLQStore) Purge(_ context.Context, _ time.Time) (int, erro
 //	T+0ms   — attempt 1: immediate, fails
 //	T+100ms — attempt 2: after 100ms backoff, fails
 //	T+300ms — attempt 3: after 200ms backoff (100ms×2), succeeds
+//
+// Route runs in a goroutine because it now blocks until the write is
+// confirmed; the test drives the fake clock between attempts and collects
+// the final result from errCh.
 func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	store := &retryCountingDLQStore{
 		failN:   2,
-		onWrite: make(chan int), // unbuffered — worker blocks until test reads
+		onWrite: make(chan int), // unbuffered — Route blocks until the test reads
 	}
 
 	router := dlq.NewFromConfig(dlq.Config{
-		Store:      store,
-		BufferSize: 1,
-		Workers:    1,
-		Clock:      fake,
+		Store: store,
+		Clock: fake,
 		WriteRetryBackoff: routing.BackoffPolicy{
 			InitialInterval: 100 * time.Millisecond,
 			MaxInterval:     1 * time.Second,
@@ -100,32 +102,32 @@ func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 		},
 		WriteMaxAttempts: 3,
 		WriteTimeout:     5 * time.Second,
-		EnqTimeout:       5 * time.Second,
 	})
 
-	ctx := context.Background()
-	router.Start(ctx)
-	defer router.Close()
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "backoff-test-1",
 		Subject: "test/backoff",
 		Payload: []byte("payload"),
 	})
 
-	err := router.Route(ctx, env, "route-1", "bind-1", "", "sess-1", "src-1", shared.ErrUnavailable, 1)
-	require.NoError(t, err)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- router.Route(
+			context.Background(), env,
+			"route-1", "bind-1", "", "sess-1", "src-1",
+			shared.ErrUnavailable, 1,
+		)
+	}()
 
 	// ── Attempt 1 (immediate, no timer wait) ─────────────────────────────
 	n := <-store.onWrite
 	assert.Equal(t, 1, n, "first write attempt")
 
-	// OTHER: real-time sync for clocktest.Fake
-	// The worker returns from Write, loops, and calls clk.After(100ms) to
-	// register the backoff timer. A brief wall-clock sleep lets the
-	// goroutine reach that point before we touch the fake clock.
-	time.Sleep(10 * time.Millisecond)
-
-	// Without advancing the fake clock, the retry must NOT fire.
+	// The goroutine returns from Write, loops, and calls clk.After(100ms) to
+	// register the backoff timer. Wait deterministically for that timer
+	// instead of sleeping, then prove it does not fire without an advance.
+	require.Eventually(t, func() bool { return fake.TimerCount() == 1 },
+		time.Second, time.Millisecond, "backoff timer for attempt 2 not registered")
 	select {
 	case <-store.onWrite:
 		t.Fatal("second attempt fired without clock advance")
@@ -138,8 +140,8 @@ func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 	n = <-store.onWrite
 	assert.Equal(t, 2, n, "second write attempt after 100ms advance")
 
-	time.Sleep(10 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
-
+	require.Eventually(t, func() bool { return fake.TimerCount() == 1 },
+		time.Second, time.Millisecond, "backoff timer for attempt 3 not registered")
 	select {
 	case <-store.onWrite:
 		t.Fatal("third attempt fired without clock advance")
@@ -152,7 +154,9 @@ func TestRouter_RetryBackoff_FakeClock(t *testing.T) {
 	n = <-store.onWrite
 	assert.Equal(t, 3, n, "third write attempt after 200ms advance")
 
-	// The third attempt succeeds (failN == 2). Verify the entry landed.
+	// The third attempt succeeds (failN == 2). Route returns nil and the
+	// entry is durably recorded.
+	require.NoError(t, <-errCh, "Route should confirm after the third attempt")
 	entries := store.storedEntries()
 	require.Len(t, entries, 1, "entry should be persisted after third attempt")
 	assert.Equal(t, "backoff-test-1", entries[0].Snapshot().ID())

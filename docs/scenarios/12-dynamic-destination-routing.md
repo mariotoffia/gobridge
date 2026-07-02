@@ -416,7 +416,7 @@ Extract payload fields into headers, then use address templates:
 
 ```go
 // Step 1: Transform extracts payload field into a header
-transformProc := transform.New(transform.Config{
+transformProc, _ := transform.New(transform.Config{
     Name: "extract-region",
     Mappings: []transform.FieldMapping{
         {Source: "$.metadata.region", Target: "header.region"},

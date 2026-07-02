@@ -20,6 +20,55 @@ import (
 // Compile-time check.
 var _ ports.Delivery = (*sqsDelivery)(nil)
 
+const (
+	// sqsMaxVisibilitySeconds is the SQS hard cap for a message
+	// VisibilityTimeout (12 hours).
+	sqsMaxVisibilitySeconds int32 = 43200
+
+	// minAutoExtendVisibilitySeconds is the smallest visibility timeout
+	// the auto-extend machinery will use. Below 2s the derived tick
+	// interval (visibility/2) rounds down toward a non-positive duration,
+	// and a clock Ticker panics when NewTicker/Reset is handed d <= 0. It
+	// is also the threshold newDelivery uses to decide whether starting
+	// the auto-extend goroutine is worthwhile at all.
+	minAutoExtendVisibilitySeconds int32 = 2
+)
+
+// clampVisibilitySeconds bounds a desired visibility timeout (seconds)
+// into the range the auto-extend machinery can apply safely.
+//
+//   - Lower bound minAutoExtendVisibilitySeconds (2s): an Extend whose
+//     deadline resolves to "now or in the past" (delta <= 0) MUST NOT be
+//     turned into a 0-second ChangeMessageVisibility — that would make
+//     the still-in-flight message immediately visible to another
+//     consumer and cause duplicate processing. The same floor guarantees
+//     the auto-extend loop derives a strictly positive tick interval, so
+//     Ticker.Reset / NewTicker never panic (both reject d <= 0).
+//   - Upper bound sqsMaxVisibilitySeconds (43200s): the SQS hard cap.
+func clampVisibilitySeconds(seconds int32) int32 {
+	if seconds < minAutoExtendVisibilitySeconds {
+		return minAutoExtendVisibilitySeconds
+	}
+	if seconds > sqsMaxVisibilitySeconds {
+		return sqsMaxVisibilitySeconds
+	}
+	return seconds
+}
+
+// autoExtendInterval returns the tick interval for the auto-extend loop
+// given the current visibility timeout (seconds): half the visibility
+// window, floored at 1s so the clock Ticker never receives a
+// non-positive duration (NewTicker / Reset panic on d <= 0). It is the
+// defensive counterpart to clampVisibilitySeconds — even if a degenerate
+// visibility ever reached the loop, the ticker stays valid.
+func autoExtendInterval(visSeconds int32) time.Duration {
+	d := time.Duration(visSeconds) * time.Second / 2
+	if d < time.Second {
+		return time.Second
+	}
+	return d
+}
+
 // sqsDelivery wraps a received SQS message and maps the ports.Delivery
 // lifecycle (Ack, Retry, Extend) to SQS receipt-handle operations.
 //
@@ -115,7 +164,7 @@ func newDelivery(
 	}
 	d.visibilityTimeout.Store(visibilityTimeout)
 
-	if autoExtend && visibilityTimeout > 1 {
+	if autoExtend && visibilityTimeout >= minAutoExtendVisibilitySeconds {
 		go d.autoExtendLoop(ctx)
 	}
 
@@ -161,9 +210,8 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 	} else if timeout == 0 && after > 0 {
 		timeout = 1
 	}
-	const sqsMaxVisibility = 43200
-	if timeout > sqsMaxVisibility {
-		timeout = sqsMaxVisibility
+	if timeout > sqsMaxVisibilitySeconds {
+		timeout = sqsMaxVisibilitySeconds
 	}
 
 	if logging.TraceEnabled(d.logger) {
@@ -186,7 +234,13 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 }
 
 // Extend pushes the visibility timeout to the given absolute time.
-// The delta from now is clamped to [0, 43200] seconds (SQS maximum).
+// The delta from now is clamped via clampVisibilitySeconds into
+// [minAutoExtendVisibilitySeconds, sqsMaxVisibilitySeconds]. The lower
+// floor is deliberate: an Extend whose deadline has already passed must
+// NOT surface the in-flight message (a 0-second ChangeMessageVisibility
+// would do exactly that and invite duplicate processing), and the floor
+// also keeps the auto-extend tick interval strictly positive so the
+// ticker can never be Reset with a panicking d <= 0.
 //
 // When auto-extend is running, Extend also updates the stored timeout
 // atomically so the next auto-extend tick uses the new value. Without
@@ -196,14 +250,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // Extend does NOT stop auto-extend — the goroutine keeps running and
 // will maintain the new timeout. Call Ack or Retry to finalize.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
-	timeout := int32(until.Sub(d.clk.Now()).Seconds())
-	if timeout < 0 {
-		timeout = 0
-	}
-	const sqsMaxVisibility = 43200
-	if timeout > sqsMaxVisibility {
-		timeout = sqsMaxVisibility
-	}
+	timeout := clampVisibilitySeconds(int32(until.Sub(d.clk.Now()).Seconds()))
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: extending",
@@ -298,7 +345,7 @@ const autoExtendMaxFailures = 3
 // via stopAutoExtend() in Ack/Retry, or via parent context cancellation
 // during graceful shutdown.
 func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
-	interval := time.Duration(d.visibilityTimeout.Load()) * time.Second / 2
+	interval := autoExtendInterval(d.visibilityTimeout.Load())
 
 	ticker := d.clk.NewTicker(interval)
 	defer ticker.Stop()
@@ -344,7 +391,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				continue
 			}
 			consecutiveFailures = 0
-			newInterval := time.Duration(vis) * time.Second / 2
+			newInterval := autoExtendInterval(vis)
 			if newInterval != interval {
 				ticker.Reset(newInterval)
 				interval = newInterval

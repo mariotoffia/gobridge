@@ -3,8 +3,10 @@ package cloudwatch
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
@@ -40,6 +42,13 @@ type aggregate struct {
 	tags  []shared.Tag
 }
 
+// maxDimensions is the CloudWatch hard limit on dimensions per metric.
+const maxDimensions = 30
+
+// maxDimensionField is the CloudWatch hard limit on a dimension name or
+// value length (bytes).
+const maxDimensionField = 256
+
 type batcher struct {
 	namespace   string
 	defaultTags []shared.Tag
@@ -48,9 +57,21 @@ type batcher struct {
 	mu          sync.Mutex
 	aggregates  map[string]*aggregate
 	clk         clock.Clock
+	logger      *slog.Logger
+
+	// retryBuffer holds datums from a failed PutMetricData so the next flush
+	// re-attempts delivery instead of silently dropping them. It is bounded
+	// by maxRetry; dropped counts are surfaced via droppedTotal.
+	retryBuffer  []cwtypes.MetricDatum
+	maxRetry     int
+	droppedTotal int64
+
+	// dimWarned latches a single high-cardinality/over-limit dimension
+	// warning so a hot metric path does not flood the log.
+	dimWarned bool
 }
 
-func newBatcher(namespace string, defaultTags []shared.Tag, maxSize int, clk clock.Clock) *batcher {
+func newBatcher(namespace string, defaultTags []shared.Tag, maxSize int, clk clock.Clock, logger *slog.Logger, maxRetry int) *batcher {
 	return &batcher{
 		namespace:   namespace,
 		defaultTags: defaultTags,
@@ -58,6 +79,8 @@ func newBatcher(namespace string, defaultTags []shared.Tag, maxSize int, clk clo
 		maxSize:     maxSize,
 		aggregates:  make(map[string]*aggregate),
 		clk:         clk,
+		logger:      logger,
+		maxRetry:    maxRetry,
 	}
 }
 
@@ -95,12 +118,18 @@ func (b *batcher) add(md metricData) bool {
 	return len(b.buffer) >= b.maxSize
 }
 
-// drain removes and converts all buffered metrics to CloudWatch format.
+// drain removes and converts all buffered metrics to CloudWatch format,
+// prepending any datums requeued from a previous failed flush so they are
+// re-attempted ahead of fresh samples.
 func (b *batcher) drain() []cwtypes.MetricDatum {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	var result []cwtypes.MetricDatum
+	if len(b.retryBuffer) > 0 {
+		result = append(result, b.retryBuffer...)
+		b.retryBuffer = nil
+	}
 
 	for _, md := range b.buffer {
 		dims := b.buildDimensions(md.tags)
@@ -142,24 +171,92 @@ func (b *batcher) drain() []cwtypes.MetricDatum {
 func (b *batcher) isEmpty() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.buffer) == 0 && len(b.aggregates) == 0
+	return len(b.buffer) == 0 && len(b.aggregates) == 0 && len(b.retryBuffer) == 0
 }
 
+// requeue stores datums from a failed PutMetricData for the next flush,
+// bounded by maxRetry. When the bound is exceeded the oldest datums are
+// dropped and counted so a persistently failing endpoint cannot leak memory.
+// Returns the number of datums dropped by this call.
+func (b *batcher) requeue(datums []cwtypes.MetricDatum) int64 {
+	if len(datums) == 0 {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.retryBuffer = append(b.retryBuffer, datums...)
+	var dropped int64
+	if b.maxRetry > 0 && len(b.retryBuffer) > b.maxRetry {
+		dropped = int64(len(b.retryBuffer) - b.maxRetry)
+		// Drop the oldest datums, keep the most recent maxRetry.
+		b.retryBuffer = b.retryBuffer[len(b.retryBuffer)-b.maxRetry:]
+		b.droppedTotal += dropped
+	}
+	return dropped
+}
+
+func (b *batcher) droppedCount() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.droppedTotal
+}
+
+// buildDimensions converts tags to CloudWatch dimensions, enforcing the
+// CloudWatch limits: dimensions with an empty name or value are dropped
+// (CloudWatch rejects them, which would fail the whole PutMetricData batch),
+// name/value are truncated to 256 bytes, and at most 30 dimensions are kept.
+// Excess/invalid dimensions are dropped with a single latched warning rather
+// than silently discarded, since callers are cautioned against high-cardinality
+// dimensions (see docs/aws-deployment/monitoring.md).
 func (b *batcher) buildDimensions(tags []shared.Tag) []cwtypes.Dimension {
 	all := append(b.defaultTags, tags...)
 	if len(all) == 0 {
 		return nil
 	}
-	if len(all) > 30 {
-		all = all[:30]
+	dims := make([]cwtypes.Dimension, 0, len(all))
+	var invalid, excess int
+	for _, tag := range all {
+		if tag.Key == "" || tag.Value == "" {
+			invalid++
+			continue
+		}
+		if len(dims) >= maxDimensions {
+			excess++
+			continue
+		}
+		k := truncateField(tag.Key)
+		v := truncateField(tag.Value)
+		dims = append(dims, cwtypes.Dimension{Name: &k, Value: &v})
 	}
-	dims := make([]cwtypes.Dimension, len(all))
-	for i, tag := range all {
-		k := tag.Key
-		v := tag.Value
-		dims[i] = cwtypes.Dimension{Name: &k, Value: &v}
+	if (invalid > 0 || excess > 0) && b.logger != nil && !b.dimWarned {
+		b.dimWarned = true
+		b.logger.Warn("cloudwatch: dropped invalid or excess metric dimensions",
+			slog.Int("invalid", invalid),
+			slog.Int("excess", excess),
+			slog.Int("limit", maxDimensions),
+		)
+	}
+	if len(dims) == 0 {
+		return nil
 	}
 	return dims
+}
+
+// truncateField caps a dimension name/value at the CloudWatch 256-byte limit
+// on a UTF-8 rune boundary. A naive byte slice can split a multi-byte rune,
+// producing invalid UTF-8 that CloudWatch rejects with InvalidParameterValue
+// — and since PutMetricData is all-or-nothing, one poison datum fails the
+// entire batch (MF-2/J10).
+func truncateField(s string) string {
+	if len(s) <= maxDimensionField {
+		return s
+	}
+	b := s[:maxDimensionField]
+	for len(b) > 0 && !utf8.ValidString(b) {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 func aggregateKey(name string, tags []shared.Tag) string {
@@ -250,6 +347,15 @@ func (b *batcher) flush(ctx context.Context, client cloudWatchAPI, namespace str
 			MetricData: data[i:end],
 		})
 		if err != nil {
+			// Requeue everything not yet delivered (this batch and the
+			// remainder) so the next flush re-attempts it instead of losing
+			// the samples that were drained out of the buffer.
+			if dropped := b.requeue(data[i:]); dropped > 0 && b.logger != nil {
+				b.logger.Warn("cloudwatch: dropped requeued metric datums (retry buffer full)",
+					slog.Int64("dropped", dropped),
+					slog.Int64("dropped_total", b.droppedCount()),
+				)
+			}
 			return fmt.Errorf("cloudwatch: put metric data: %w", err)
 		}
 	}

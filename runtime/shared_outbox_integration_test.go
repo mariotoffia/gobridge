@@ -138,6 +138,158 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	})
 }
 
+// TestSharedOutbox_BindingInheritsRouteSession is the regression test for A1:
+// a shared_outbox binding that omits its own SessionID must inherit the route
+// session so the outbox record persists under the same SESSION#<id> partition
+// the single drainer polls. Without the inheritance the record is orphaned and
+// never drains, even though the source was acked after persist (silent loss).
+func TestSharedOutbox_BindingInheritsRouteSession(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-a1", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sess := NewFakeSession()
+
+	sessCfg := fastSessionConfig("mqtt-sess-a1")
+
+	cfg := goruntime.RouteConfig{
+		ID: "a1-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Resolver: &FakeResolver{
+			Plans: []routing.DispatchPlan{
+				{BindingID: "binding-1", Address: "devices/1/state"},
+			},
+		},
+		Bindings: []routing.DestinationBinding{
+			// SessionID intentionally omitted: it must inherit the route session.
+			{ID: "binding-1"},
+		},
+	}
+
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
+	})
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "msg-a1-1",
+		Subject: "device.state.update",
+		Payload: []byte("hello"),
+	})
+	del := NewFakeDelivery(env)
+	if err := receiver.Emit(ctx, del); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	waitFor(t, time.Second, "delivery acked", func() bool {
+		return del.IsAcked()
+	})
+
+	// The record drains through the route session's sender only when the
+	// binding inherited the route SessionID (A1); otherwise it is orphaned.
+	waitFor(t, 2*time.Second, "message drained via inherited session", func() bool {
+		return sender.SentCount() >= 1
+	})
+
+	waitFor(t, time.Second, "outbox completed", func() bool {
+		return outbox.CompletedCount() >= 1
+	})
+}
+
+// TestSharedOutbox_OrphanBindingPlan_NotAckedOrLost is the regression test for
+// the dispatch-time orphan guard. When a Resolver emits a plan whose BindingID
+// is absent from the configured bindings, the binding resolves to no session;
+// the outbox record would persist under a BINDING#<id> partition that no drainer
+// ever polls, and the source would be ACKed after persist — silent loss. The
+// guard must fail the delivery (retry/DLQ) before any persist+ack so the source
+// message is preserved. This vector is not statically decidable (the Resolver is
+// a runtime function), so the static validator cannot catch it.
+func TestSharedOutbox_OrphanBindingPlan_NotAckedOrLost(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-orphan", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sess := NewFakeSession()
+
+	sessCfg := fastSessionConfig("mqtt-sess-orphan")
+
+	cfg := goruntime.RouteConfig{
+		ID: "orphan-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Resolver: &FakeResolver{
+			// "ghost-binding" is NOT among the configured bindings, so it
+			// resolves to no session at dispatch time.
+			Plans: []routing.DispatchPlan{
+				{BindingID: "ghost-binding", Address: "devices/1/state"},
+			},
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "binding-1", SessionID: "mqtt-sess-orphan"},
+		},
+	}
+
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
+	})
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "msg-orphan-1",
+		Subject: "device.state.update",
+		Payload: []byte("hello"),
+	})
+	del := NewFakeDelivery(env)
+	if err := receiver.Emit(ctx, del); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// The orphan guard must fail the delivery (retry), never persist+ack.
+	waitFor(t, time.Second, "delivery retried", func() bool {
+		return del.IsRetried()
+	})
+
+	if del.IsAcked() {
+		t.Fatal("source ACKed for an orphan dispatch plan — silent message loss")
+	}
+	if outbox.RecordCount() != 0 {
+		t.Fatalf("orphan record persisted under a BINDING# partition no drainer polls: %d record(s)", outbox.RecordCount())
+	}
+}
+
 // TestSharedOutbox_DrainPreservesLogicalSubject is the acceptance test for
 // T04: the drainer must dispatch using OutboxRecord.Address as the destination
 // while leaving the persisted envelope's logical Subject untouched.

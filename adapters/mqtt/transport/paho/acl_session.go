@@ -114,41 +114,18 @@ func (s *Session) Start(ctx context.Context) error {
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
 
-		OnConnectionUp: func(cm *autopaho.ConnectionManager, _ *pahov5.Connack) {
-			s.mu.Lock()
-			s.connected = true
-			s.mu.Unlock()
-			s.pushEvent(ports.SessionConnected, nil)
-			if logging.DebugEnabled(s.logger) {
-				s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
-					"client_id", s.opts.ClientID)
-			}
-			s.mu.Lock()
-			oldSubs := s.activeSubs
-			s.activeSubs = make(map[string]byte)
-			plan := s.plan
-			parentCtx := s.startCtx
-			s.mu.Unlock()
-			if plan != nil {
-				reconTimeout := s.opts.ReconnectTimeout
-				if reconTimeout == 0 {
-					reconTimeout = 30 * time.Second
-				}
-				reconCtx, reconCancel := context.WithTimeout(parentCtx, reconTimeout)
-				defer reconCancel()
-				if err := s.reconcile(reconCtx, newPahoConn(cm), *plan); err != nil {
-					s.mu.Lock()
-					s.activeSubs = oldSubs
-					s.mu.Unlock()
-					if s.logger != nil {
-						s.logger.Warn("reconcile on reconnect failed", "error", err)
-					}
-				} else {
-					s.pushEvent(ports.SessionReconciled, nil)
-				}
-			} else {
-				s.pushEvent(ports.SessionReconciled, nil)
-			}
+		// OnConnectionUp fires on every (re)connect. Per finding C7, the
+		// runtime session manager is the SINGLE owner of reconnect
+		// reconciliation and failure propagation: it observes the
+		// SessionConnected event emitted here and drives Reconcile, whose
+		// outcome is authoritative (a rejected re-subscribe propagates out
+		// of Manager.Run so the bridge can restart/alarm — finding S9).
+		// This callback therefore only resets local subscription state and
+		// signals SessionConnected; it MUST NOT reconcile inline. See
+		// handleConnectionUp for the reset-before-signal ordering that lets
+		// the manager observe an empty subscription set on reconnect.
+		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *pahov5.Connack) {
+			s.handleConnectionUp()
 		},
 		OnConnectError: func(err error) {
 			s.mu.Lock()
@@ -169,6 +146,25 @@ func (s *Session) Start(ctx context.Context) error {
 		},
 
 		ClientConfig: pahov5.ClientConfig{
+			// ClientID is the MQTT session identity. The broker keys a
+			// persistent session (subscriptions + queued QoS 1/2 messages)
+			// to this ID, so the identity strategy differs by mode:
+			//   - Exclusive (clustered failover): the ClientID MUST be
+			//     STABLE and SHARED across all instances of the logical
+			//     session. When the active instance dies and a standby
+			//     reconnects with the SAME ClientID, the broker performs
+			//     "session takeover" and hands the resumed session — and
+			//     its queued messages — to the new owner. A unique-per-
+			//     instance ClientID would create a SEPARATE broker session,
+			//     so queued QoS messages would never reach the standby and
+			//     failover continuity is lost.
+			//   - Persistent (single instance, durable across restarts):
+			//     stable ClientID, CleanStart=false; the same process
+			//     resumes its own session.
+			//   - Ephemeral: ClientID may be unique; CleanStart=true forces
+			//     a fresh session on every connect (no continuity expected).
+			// The lease (one active owner) is what makes a shared Exclusive
+			// ClientID safe — at most one holder connects at a time.
 			ClientID: s.opts.ClientID,
 			Router:   s.router,
 		},

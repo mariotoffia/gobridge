@@ -44,11 +44,11 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 	}
 
 	s := &Sender{
-		client:   mock,
 		queueURL: "https://sqs.us-west-1.amazonaws.com/123/q",
 		cfg:      SenderConfig{Timeout: 10 * time.Second, BatchSize: 10},
 		metrics:  &ports.NoopExporter{},
 	}
+	s.storeClient(mock)
 
 	envs := []*messaging.Envelope{
 		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-0", Payload: []byte(`{"ok":true}`)}),
@@ -118,11 +118,11 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 			}
 
 			s := &Sender{
-				client:   mock,
 				queueURL: "https://sqs.us-west-1.amazonaws.com/123/q",
 				cfg:      SenderConfig{Timeout: 10 * time.Second, BatchSize: 10},
 				metrics:  &ports.NoopExporter{},
 			}
+			s.storeClient(mock)
 
 			envs := []*messaging.Envelope{
 				messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-0", Payload: []byte(`{"test":true}`)}),

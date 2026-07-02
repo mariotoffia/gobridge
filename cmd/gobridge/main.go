@@ -1,3 +1,15 @@
+// Command gobridge is a demonstration / reference binary for the GoBridge
+// runtime. It deliberately links a MINIMAL adapter set — the MQTT (paho)
+// transport plus the native in-memory and SQLite stores — so it builds with no
+// cloud SDK dependencies and runs out of the box for local development and the
+// documented scenarios.
+//
+// It is NOT a production build. A production deployment links only the
+// transports and stores it actually uses and registers them at the two sites
+// this binary already demonstrates: the config-decoder registry (reg.Register)
+// and the supervisor factories (sup.RegisterTransport / sup.RegisterStoreFactory).
+// See the AWS wiring guidance inline in run(), and the
+// deployment/aws-filebased-config profile for a complete production example.
 package main
 
 import (
@@ -24,6 +36,15 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run executes the full bridge lifecycle and returns the process exit code.
+// main is a thin os.Exit(run()) wrapper so that every deferred cleanup (config
+// watcher, HTTP server, context cancel) runs before the process exits: os.Exit
+// skips defers, so a terminal-triggered exit must flow through a return value
+// rather than an os.Exit buried in the body.
+func run() int {
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
 	flag.Parse()
@@ -39,14 +60,14 @@ func main() {
 		nativestore.Register(reg),
 	); err != nil {
 		logger.Error("failed to register plugin decoders", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	fileSource := fileconfig.NewSource(*configPath, reg)
 	baseCfg, err := fileSource.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	fileWatcher := fileconfig.NewWatcher(*configPath, reg,
@@ -65,7 +86,7 @@ func main() {
 	cfg, err := mgr.Load(ctx)
 	if err != nil {
 		logger.Error("invalid config", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	sup := bridge.NewSupervisor(
@@ -82,6 +103,9 @@ func main() {
 		}),
 	)
 
+	// Demo adapter set: MQTT transport + native memory/SQLite stores only.
+	// Production builds register their own transports/stores here (and the
+	// matching config decoders above) — see the AWS guidance below.
 	sup.RegisterTransport("mqtt", paho.NewFactory(logger))
 	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 	sup.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
@@ -102,7 +126,7 @@ func main() {
 	watchCh, err := mgr.Watch(ctx)
 	if err != nil {
 		logger.Error("failed to start config watcher", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer mgr.Stop()
 
@@ -116,7 +140,7 @@ func main() {
 	if rt == nil {
 		logger.Error("supervisor did not produce a runtime within timeout")
 		cancel()
-		os.Exit(1)
+		return 1
 	}
 
 	if cfg.HTTP != nil {
@@ -149,7 +173,7 @@ func main() {
 		)
 		if err := srv.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		defer func() { _ = srv.Stop(context.Background()) }()
 		logger.Info("HTTP servers started", "admin", apiCfg.AdminAddr, "monitor", apiCfg.MonitorAddr)
@@ -157,9 +181,27 @@ func main() {
 
 	logger.Info("bridge started", "instance_id", rt.InstanceID())
 
+	// Deployment-independent liveness backstop. The /live 503-on-terminal path
+	// only restarts the process where a Kubernetes livenessProbe is wired. With
+	// HTTP disabled or no probe (systemd, bare process), a terminal
+	// (unrecoverable) runtime would otherwise stall silently forever. This
+	// watcher takes the process down so an external supervisor restarts it. The
+	// channel is buffered so the watcher never blocks if we exit for another
+	// reason first.
+	terminalCh := make(chan struct{}, 1)
+	go func() {
+		if watchTerminal(ctx, clock.System, terminalPollInterval, func() bool {
+			rt := sup.Runtime()
+			return rt != nil && rt.Terminal()
+		}) {
+			terminalCh <- struct{}{}
+		}
+	}()
+
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
+	exitCode := 0
 	select {
 	case received := <-sig:
 		logger.Info("shutdown signal received", "signal", received.String())
@@ -167,6 +209,10 @@ func main() {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("supervisor exited unexpectedly", "error", err)
 		}
+	case <-terminalCh:
+		logger.Error("runtime entered terminal (unrecoverable) state; " +
+			"exiting non-zero so the orchestrator restarts the process")
+		exitCode = 1
 	}
 
 	cancel()
@@ -190,6 +236,30 @@ func main() {
 	}
 
 	logger.Info("bridge stopped")
+	return exitCode
+}
+
+// terminalPollInterval is how often the liveness backstop checks whether the
+// current runtime has gone terminal. Terminal state only follows a sustained
+// failure (e.g. ~30s of lease-store outage before step-down), so a coarse poll
+// is ample and cheap.
+const terminalPollInterval = 5 * time.Second
+
+// watchTerminal polls isTerminal every poll interval, returning true the first
+// time it reports terminal or false when ctx is cancelled. It carries no
+// runtime knowledge itself (the caller supplies the predicate), which keeps the
+// poll loop trivially testable.
+func watchTerminal(ctx context.Context, clk clock.Clock, poll time.Duration, isTerminal func() bool) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-clk.After(poll):
+			if isTerminal() {
+				return true
+			}
+		}
+	}
 }
 
 func waitForSupervisorRuntime(sup *bridge.Supervisor, clk clock.Clock, timeout time.Duration) *goruntime.Runtime {

@@ -192,7 +192,17 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 		p.DeliveryMode = DeliveryDirectHold
 	}
 	if !p.AckAfter.IsValid() {
-		p.AckAfter = AckAfterTargetAccept
+		// shared_outbox acks the source once the outbox record is durably
+		// persisted, never after the downstream target accepts; default the
+		// effective policy to the boundary it actually honors so consumers
+		// reading the defaulted policy don't see a target_accept that is never
+		// observed. An explicit target_accept on shared_outbox is rejected up
+		// front by the route validator; this only governs the unset default.
+		if p.DeliveryMode == DeliverySharedOutbox {
+			p.AckAfter = AckAfterOutboxPersist
+		} else {
+			p.AckAfter = AckAfterTargetAccept
+		}
 	}
 	if p.SendTimeout <= 0 {
 		p.SendTimeout = DefaultSendTimeout

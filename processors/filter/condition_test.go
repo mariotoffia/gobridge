@@ -1,9 +1,11 @@
 package filter
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func TestCondition_Equals(t *testing.T) {
@@ -317,15 +319,14 @@ func TestCondition_EmptyPayload(t *testing.T) {
 }
 
 func TestCondition_UnsupportedOperator(t *testing.T) {
-	eval, err := newConditionEvaluator(Condition{
+	_, err := newConditionEvaluator(Condition{
 		Field: "subject", Operator: "unsupported", Value: "x",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrUnknownOperator) {
+		t.Fatalf("expected ErrUnknownOperator at construction, got %v", err)
 	}
-	_, err = eval.evaluate(envelope("test", nil, nil))
-	if err == nil {
-		t.Fatal("expected error for unsupported operator")
+	if be, ok := shared.AsBridgeError(err); !ok || be.Class != shared.ErrorPermanent {
+		t.Fatalf("expected a permanent BridgeError setup error, got %v", err)
 	}
 }
 

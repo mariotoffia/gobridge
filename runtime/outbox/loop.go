@@ -14,6 +14,12 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
+// transientRetryFloor is the minimum wait before re-polling a partition
+// after a stale-token or transient-egress failure, so a down broker is not
+// hammered every poll interval and a transient outage does not burn the
+// replay/poison budget in a few seconds.
+const transientRetryFloor = 5 * time.Second
+
 // Run polls the outbox for pending records and sends them. It blocks
 // until the context is cancelled or a fencing error occurs. The polling
 // interval is determined by the configured DrainStrategy.
@@ -43,18 +49,30 @@ func (d *Drainer) Run(ctx context.Context) error {
 				continue
 			}
 			d.hasDrained = true
-			n, err := d.drainBatch(ctx, token)
+			n, transient, err := d.drainBatch(ctx, token)
 			if err != nil {
 				if errors.Is(err, shared.ErrStaleFencingToken) {
 					d.log(ctx, slog.LevelWarn, "stale fencing token, waiting for new lease")
-					staleBackoff := max(d.strategy.NextInterval(0), 5*time.Second)
+					staleBackoff := max(d.strategy.NextInterval(0), transientRetryFloor)
 					timer.Reset(staleBackoff)
 					continue
 				}
 				d.log(ctx, slog.LevelWarn, "drain batch error", "error", err)
 			}
 			d.adaptBatchSize(n)
-			timer.Reset(d.strategy.NextInterval(n))
+			interval := d.strategy.NextInterval(n)
+			if transient > 0 {
+				// ponytail: the 5s floor stops broker hammering and the
+				// sub-30s poison-DLQ on typical restarts, but transient
+				// retries still increment replay_count, so an outage longer
+				// than the poison budget still DLQs good messages (memory/
+				// SQLite ~6x sooner than DynamoDB's stale-claim path). The
+				// real fix — bounding delivery attempts by record age rather
+				// than claim count — is a larger follow-up across the
+				// aggregate, snapshot, and Dynamo store.
+				interval = max(interval, transientRetryFloor)
+			}
+			timer.Reset(interval)
 		}
 	}
 }
@@ -92,13 +110,13 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), finalCeiling)
 	defer cancel()
-	if _, err := d.drainBatch(drainCtx, token); err != nil {
+	if _, _, err := d.drainBatch(drainCtx, token); err != nil {
 		return fmt.Errorf("runtime: outbox-drainer: final drain: %w", err)
 	}
 	return nil
 }
 
-func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, error) {
+func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
@@ -112,7 +130,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 
 	records, err := d.outboxStore.Claim(ctx, d.partitionKey, token, d.currentBatchSize)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(records) == 0 {
 		if d.hadPending {
@@ -126,7 +144,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 			d.idleMu.Unlock()
 			close(old)
 		}
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	d.idleMu.Lock()
@@ -145,6 +163,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	sem := make(chan struct{}, d.maxConcurrency)
 	var wg sync.WaitGroup
 	var successCount int64
+	var transientReleases int64
 	var staleDetected atomic.Bool
 
 	// workCtx gives in-flight goroutines a bounded deadline to finish
@@ -203,7 +222,7 @@ loop:
 			// later same-key record can never overtake an earlier one that
 			// has not yet succeeded; the unsent remainder is re-claimed and
 			// retried in order on a subsequent cycle.
-			for _, rec := range group {
+			for ri, rec := range group {
 				if ctx.Err() != nil || batchCtx.Err() != nil {
 					return
 				}
@@ -212,14 +231,28 @@ loop:
 					d.metrics.Counter(shared.MetricOutboxReplayCount, 1, routeTag)
 				}
 				if err := d.processRecord(batchCtx, rec, token); err != nil {
-					if errors.Is(err, shared.ErrStaleFencingToken) {
+					switch {
+					case errors.Is(err, errReleasedForRetry):
+						// Transient egress failure: processRecord already
+						// released (or left claimed) this record for retry.
+						// Stop the group so a later same-key record cannot
+						// overtake it, and release the still-claimed remainder
+						// so the whole group is re-claimed and retried in
+						// order next cycle instead of stranding the unsent
+						// tail. Not counted as a success or a hard failure;
+						// drives the backoff floor via transientReleases.
+						atomic.AddInt64(&transientReleases, 1)
+						d.releaseRemainder(batchCtx, group[ri+1:], token)
+					case errors.Is(err, shared.ErrStaleFencingToken):
 						staleDetected.Store(true)
 						batchCancel()
-					} else {
+						d.log(batchCtx, slog.LevelWarn, "record processing failed",
+							"record_id", rec.ID(), "error", err)
+					default:
 						d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
+						d.log(batchCtx, slog.LevelWarn, "record processing failed",
+							"record_id", rec.ID(), "error", err)
 					}
-					d.log(batchCtx, slog.LevelWarn, "record processing failed",
-						"record_id", rec.ID(), "error", err)
 					return
 				}
 				atomic.AddInt64(&successCount, 1)
@@ -244,7 +277,7 @@ loop:
 				"owner", token.Owner,
 			)
 		}
-		return int(atomic.LoadInt64(&successCount)), shared.ErrStaleFencingToken
+		return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)), shared.ErrStaleFencingToken
 	}
 
 	if logging.DebugEnabled(d.logger) {
@@ -255,7 +288,7 @@ loop:
 		)
 	}
 
-	return int(atomic.LoadInt64(&successCount)), nil
+	return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)), nil
 }
 
 // orderingGroup is an ordered run of claimed outbox records delivered as

@@ -20,6 +20,21 @@ import (
 // registered handlers (one per Receiver on this Session). A WaitGroup
 // tracks in-flight handler goroutines so Session.Close can await them.
 //
+// Dispatch is SYNCHRONOUS: Route blocks until every handler for a given
+// publish has returned. This is mandatory for two reasons:
+//
+//   - Backpressure (finding: serial synchronous emit). The ports.Receiver
+//     contract requires emit to be driven serially; the Paho client calls
+//     Route from a single routePublishPackets goroutine and only sends the
+//     PUBACK/PUBCOMP once Route returns. By blocking in Route until emit
+//     completes, the broker's Receive Maximum window fills when downstream
+//     is slow, so read-ahead stops instead of spawning unbounded
+//     goroutines. The protocol acknowledgement is therefore deferred until
+//     AFTER application ownership transfer (e.g. outbox persist) rather
+//     than fired the instant a packet is read.
+//   - Close coordination. The shared wg lets Session.Close await any
+//     handler that is still in flight (bounded by the Close context).
+//
 // Messages arriving before any handler is registered are dropped. Use
 // Session.Health().HandlersRegistered to confirm handlers are active
 // before sending traffic. The DeepHealth / gobridgesync mechanism
@@ -46,10 +61,16 @@ func newRouter(logger *slog.Logger, metrics ports.MetricsExporter) *router {
 }
 
 // Route implements paho.Router. It converts packets.Publish to paho.Publish
-// and dispatches to all registered handlers concurrently. Each handler
-// receives an independent copy of the Publish -- both the struct and the
-// Payload slice are copied so that handlers can safely inspect (but should
-// not mutate) the data without racing on shared backing arrays.
+// and dispatches to all registered handlers concurrently, then BLOCKS until
+// every handler has returned (synchronous dispatch). Each handler receives an
+// independent copy of the Publish -- both the struct and the Payload slice are
+// copied so that handlers can safely inspect (but should not mutate) the data
+// without racing on shared backing arrays.
+//
+// Route returning marks the point at which the Paho client sends the
+// PUBACK/PUBCOMP, so blocking here defers the protocol acknowledgement until
+// after the handler (emit) has taken ownership, and applies broker-level
+// backpressure when downstream is slow.
 //
 // If no handlers are registered, the message is dropped and counted.
 func (r *router) Route(pb *packets.Publish) {
@@ -84,7 +105,13 @@ func (r *router) Route(pb *packets.Publish) {
 		)
 	}
 
+	// local tracks just this publish's handlers so Route can block until
+	// they complete (synchronous dispatch / backpressure). r.wg is the
+	// shared WaitGroup Session.Close awaits, so an in-flight handler still
+	// blocks Close when Route is driven from its own goroutine.
+	var local sync.WaitGroup
 	r.wg.Add(len(handlers))
+	local.Add(len(handlers))
 	for i, h := range handlers {
 		p := *pub
 		if pub.Payload != nil {
@@ -122,6 +149,7 @@ func (r *router) Route(pb *packets.Publish) {
 		}
 		go func(handler func(*pahov5.Publish)) {
 			defer r.wg.Done()
+			defer local.Done()
 			defer func() {
 				if rv := recover(); rv != nil {
 					r.metrics.Counter(MetricMQTTHandlerPanics, 1)
@@ -136,6 +164,9 @@ func (r *router) Route(pb *packets.Publish) {
 			handler(&p)
 		}(h)
 	}
+	// Block until all handlers for THIS publish have returned. This is the
+	// backpressure / deferred-ACK point described in the type doc.
+	local.Wait()
 }
 
 // Wait blocks until all in-flight handler goroutines have returned.

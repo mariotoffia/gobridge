@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -108,3 +111,29 @@ func (w *fakeResponseWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 func (w *fakeResponseWriter) WriteHeader(code int) { w.code = code }
+
+// TestNewFactoryRegistry_RegistersDynamoDBStoreFactory asserts the
+// DynamoDB store factory is registered in the runtime factory set of
+// this AWS deployment profile. Without it a bridge.yaml referencing a
+// DynamoDB-backed lease/outbox/DLQ store fails at build time with an
+// unknown store type. A nil *dynamodb.Client is sufficient here:
+// registration only stores the client; it is dereferenced lazily when
+// a store is actually constructed.
+func TestNewFactoryRegistry_RegistersDynamoDBStoreFactory(t *testing.T) {
+	app := NewApp(deployinfra.BootstrapConfig{
+		BridgeID:         "bridge-a",
+		ConfigFilePath:   "/tmp/bridge.yaml",
+		AdminAPIKeyParam: "/admin",
+	}, WithDynamoDBClient(nil))
+
+	reg := app.newFactoryRegistry(&ports.BridgeConfig{})
+
+	factory, ok := reg.stores[awsstore.DynamoDBKind]
+	require.True(t, ok, "dynamodb store factory must be registered")
+	assert.NotNil(t, factory)
+
+	// Guard against a regression that drops the native stores while
+	// adding DynamoDB.
+	assert.Contains(t, reg.stores, "memory")
+	assert.Contains(t, reg.stores, "sqlite")
+}

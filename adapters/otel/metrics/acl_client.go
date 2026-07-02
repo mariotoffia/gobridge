@@ -2,6 +2,7 @@ package otelmetrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,11 +11,16 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
+
+// errInstrumentLimit is returned when the instrument cache is full and
+// a new (likely dynamic) metric name is rejected (K9).
+var errInstrumentLimit = errors.New("instrument cache limit reached")
 
 // meterClient is the adapter-internal mock seam shielding the
 // port-side Exporter from OpenTelemetry SDK types. All
@@ -36,6 +42,9 @@ type otelMeterClient struct {
 	meter        metric.Meter
 	defaultAttrs []attribute.KeyValue
 
+	maxInstruments int
+	onError        func(error)
+
 	mu         sync.RWMutex
 	counters   map[string]metric.Int64Counter
 	gauges     map[string]metric.Float64Gauge
@@ -45,8 +54,11 @@ type otelMeterClient struct {
 // newMeterClient constructs a production meterClient backed by an
 // OTLP HTTP exporter and a periodic-reader MeterProvider.
 func newMeterClient(ctx context.Context, cfg Config) (*otelMeterClient, error) {
-	exporterOpts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(cfg.Endpoint),
+	var exporterOpts []otlpmetrichttp.Option
+	// Only pin the endpoint when explicitly configured; otherwise the
+	// SDK honors OTEL_EXPORTER_OTLP[_METRICS]_ENDPOINT env vars (K7).
+	if cfg.Endpoint != "" {
+		exporterOpts = append(exporterOpts, otlpmetrichttp.WithEndpointURL(cfg.Endpoint))
 	}
 	if cfg.Insecure {
 		exporterOpts = append(exporterOpts, otlpmetrichttp.WithInsecure())
@@ -60,26 +72,41 @@ func newMeterClient(ctx context.Context, cfg Config) (*otelMeterClient, error) {
 		return nil, fmt.Errorf("otel-metrics: create otlp exporter: %w", err)
 	}
 
+	// resource.Default() already merges OTEL_SERVICE_NAME and
+	// OTEL_RESOURCE_ATTRIBUTES; only override attributes explicitly set
+	// via options so env-provided values are not clobbered (K7).
+	var resAttrs []attribute.KeyValue
+	if cfg.ServiceName != "" {
+		resAttrs = append(resAttrs, semconv.ServiceName(cfg.ServiceName))
+	}
+	if cfg.ServiceVersion != "" {
+		resAttrs = append(resAttrs, semconv.ServiceVersion(cfg.ServiceVersion))
+	}
+	if cfg.Environment != "" {
+		resAttrs = append(resAttrs, semconv.DeploymentEnvironment(cfg.Environment))
+	}
+
+	// NewSchemaless avoids a schema-URL conflict with resource.Default(),
+	// whose semconv version may differ from ours across SDK bumps.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceVersion(cfg.ServiceVersion),
-			semconv.DeploymentEnvironment(cfg.Environment),
-		),
+		resource.NewSchemaless(resAttrs...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("otel-metrics: create resource: %w", err)
 	}
 
+	observed := &observedMetricExporter{Exporter: exporter, onError: cfg.errorHandler}
+
+	readerOpts := []sdkmetric.PeriodicReaderOption{
+		sdkmetric.WithInterval(cfg.FlushInterval),
+	}
+	if cfg.ExportTimeout > 0 {
+		readerOpts = append(readerOpts, sdkmetric.WithTimeout(cfg.ExportTimeout))
+	}
+
 	provider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(cfg.FlushInterval),
-			),
-		),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(observed, readerOpts...)),
 		sdkmetric.WithResource(res),
 	)
 
@@ -90,22 +117,36 @@ func newMeterClient(ctx context.Context, cfg Config) (*otelMeterClient, error) {
 // meterClient. Used by tests that drive the adapter via a manual
 // reader without a network exporter.
 func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMeterClient {
+	maxInstruments := cfg.MaxInstruments
+	if maxInstruments == 0 {
+		maxInstruments = defaultMaxInstruments
+	}
 	return &otelMeterClient{
-		provider:     mp,
-		meter:        mp.Meter("github.com/mariotoffia/gobridge"),
-		defaultAttrs: buildDefaultAttrs(cfg.DefaultTags),
-		counters:     make(map[string]metric.Int64Counter),
-		gauges:       make(map[string]metric.Float64Gauge),
-		histograms:   make(map[string]metric.Float64Histogram),
+		provider:       mp,
+		meter:          mp.Meter("github.com/mariotoffia/gobridge"),
+		defaultAttrs:   buildDefaultAttrs(cfg.DefaultTags),
+		maxInstruments: maxInstruments,
+		onError:        cfg.errorHandler,
+		counters:       make(map[string]metric.Int64Counter),
+		gauges:         make(map[string]metric.Float64Gauge),
+		histograms:     make(map[string]metric.Float64Histogram),
+	}
+}
+
+// reportError surfaces a non-fatal emit/export failure through the
+// configured error handler. The port methods have no error return, so
+// without a handler these failures are lost; the handler is the
+// classified visibility path (K3).
+func (c *otelMeterClient) reportError(err error) {
+	if err != nil && c.onError != nil {
+		c.onError(err)
 	}
 }
 
 func (c *otelMeterClient) Counter(name string, value int64, tags []shared.Tag) {
 	counter, err := c.getOrCreateCounter(name)
 	if err != nil {
-		// Emit failure intentionally dropped: ports.MetricsExporter.Counter
-		// has no error return; observability emit failures are
-		// non-classified per _design/error-wrapping-policy.adoc §"Observability".
+		c.reportError(err)
 		return
 	}
 	counter.Add(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -114,6 +155,7 @@ func (c *otelMeterClient) Counter(name string, value int64, tags []shared.Tag) {
 func (c *otelMeterClient) Gauge(name string, value float64, tags []shared.Tag) {
 	gauge, err := c.getOrCreateGauge(name)
 	if err != nil {
+		c.reportError(err)
 		return
 	}
 	gauge.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -122,6 +164,7 @@ func (c *otelMeterClient) Gauge(name string, value float64, tags []shared.Tag) {
 func (c *otelMeterClient) Histogram(name string, value float64, tags []shared.Tag) {
 	histogram, err := c.getOrCreateHistogram(name)
 	if err != nil {
+		c.reportError(err)
 		return
 	}
 	histogram.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -146,6 +189,25 @@ func (c *otelMeterClient) Close(ctx context.Context) error {
 	return nil
 }
 
+// instrumentCountLocked returns the total distinct instrument count.
+// Callers must hold c.mu (read or write).
+func (c *otelMeterClient) instrumentCountLocked() int {
+	return len(c.counters) + len(c.gauges) + len(c.histograms)
+}
+
+// rejectIfFullLocked returns errInstrumentLimit when creating a new
+// instrument named name would exceed maxInstruments. Callers must hold
+// c.mu for writing (K9).
+func (c *otelMeterClient) rejectIfFullLocked(name string) error {
+	if c.maxInstruments > 0 && c.instrumentCountLocked() >= c.maxInstruments {
+		return fmt.Errorf(
+			"otel-metrics: rejecting dynamic metric %q: %w (limit %d); use a bounded static name set",
+			name, errInstrumentLimit, c.maxInstruments,
+		)
+	}
+	return nil
+}
+
 func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, error) {
 	c.mu.RLock()
 	if counter, ok := c.counters[name]; ok {
@@ -159,6 +221,10 @@ func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, 
 
 	if counter, ok := c.counters[name]; ok {
 		return counter, nil
+	}
+
+	if err := c.rejectIfFullLocked(name); err != nil {
+		return nil, err
 	}
 
 	counter, err := c.meter.Int64Counter(name)
@@ -184,6 +250,10 @@ func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, er
 		return gauge, nil
 	}
 
+	if err := c.rejectIfFullLocked(name); err != nil {
+		return nil, err
+	}
+
 	gauge, err := c.meter.Float64Gauge(name)
 	if err != nil {
 		return nil, fmt.Errorf("otel-metrics: create float64 gauge: %w", err)
@@ -205,6 +275,10 @@ func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histo
 
 	if histogram, ok := c.histograms[name]; ok {
 		return histogram, nil
+	}
+
+	if err := c.rejectIfFullLocked(name); err != nil {
+		return nil, err
 	}
 
 	histogram, err := c.meter.Float64Histogram(name)
@@ -230,4 +304,21 @@ func buildDefaultAttrs(tags []shared.Tag) []attribute.KeyValue {
 		attrs[i] = attribute.String(tag.Key, tag.Value)
 	}
 	return attrs
+}
+
+// observedMetricExporter wraps a metric Exporter to surface export
+// failures through an error callback that would otherwise be
+// invisible (K3). All non-Export methods are inherited from the
+// embedded Exporter interface.
+type observedMetricExporter struct {
+	sdkmetric.Exporter
+	onError func(error)
+}
+
+func (e *observedMetricExporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) error {
+	err := e.Exporter.Export(ctx, rm)
+	if err != nil && e.onError != nil {
+		e.onError(fmt.Errorf("otel-metrics: export: %w", err))
+	}
+	return err //nolint:wrapcheck // decorator pass-through: onError already wraps for observability; the sdkmetric.Exporter contract requires returning the SDK error verbatim.
 }

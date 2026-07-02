@@ -82,6 +82,14 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		)
 	}
 
+	if r.session != nil {
+		// Finding 4: register for health tracking so Session.Health can
+		// report Degraded if this receiver's link detaches while the
+		// session connection itself is still alive.
+		r.session.registerReceiver(r)
+		defer r.session.unregisterReceiver(r)
+	}
+
 	if err := r.ensureLink(ctx); err != nil {
 		return err
 	}
@@ -104,8 +112,33 @@ func (r *Receiver) closeLink() {
 			r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
 				"address", redactURL(r.cfg.Address))
 		}
-		_ = link.Close(context.Background())
+		// Finding 3: bound the detach. closeLink runs from Run's defer
+		// on shutdown; an unbounded context.Background() could hang the
+		// Run goroutine forever on an unresponsive broker. We derive from
+		// Background (not the — by now cancelled — Run ctx) on purpose so
+		// the detach still gets its full LinkCloseTimeout window to flush
+		// in-flight dispositions during a graceful stop, mirroring
+		// handleLinkError.
+		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
+		_ = link.Close(closeCtx)
+		cancel()
 	}
+}
+
+// defaultLinkCloseTimeout bounds a link detach when SessionOptions does
+// not supply one. NewSession always calls applyDefaults (which sets 5s),
+// so this only guards directly-constructed receivers in tests.
+const defaultLinkCloseTimeout = 5 * time.Second
+
+// linkCloseTimeout returns the bounded deadline used to detach a receiver
+// link. A non-positive or unset SessionOptions.LinkCloseTimeout falls
+// back to defaultLinkCloseTimeout so link.Close can never block the Run
+// goroutine indefinitely on an unresponsive broker.
+func (r *Receiver) linkCloseTimeout() time.Duration {
+	if r.session != nil && r.session.opts.LinkCloseTimeout > 0 {
+		return r.session.opts.LinkCloseTimeout
+	}
+	return defaultLinkCloseTimeout
 }
 
 func (r *Receiver) ensureLink(ctx context.Context) error {
@@ -139,6 +172,9 @@ func (r *Receiver) createLink(ctx context.Context) error {
 
 	r.link = recv
 	r.linkConn = conn
+	if r.session != nil {
+		r.session.markReceiverLink(r, true) // finding 4: link is up
+	}
 	return nil
 }
 
@@ -222,14 +258,14 @@ func (r *Receiver) handleLinkError(err error) {
 	r.linkConn = nil
 	r.mu.Unlock()
 
+	if r.session != nil {
+		r.session.markReceiverLink(r, false) // finding 4: link is down
+	}
+
 	if link != nil {
-		timeout := 5 * time.Second
-		if r.session != nil {
-			timeout = r.session.opts.LinkCloseTimeout
-		}
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), timeout)
+		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
 		_ = link.Close(closeCtx)
-		closeCancel()
+		cancel()
 	}
 
 	if r.session != nil {

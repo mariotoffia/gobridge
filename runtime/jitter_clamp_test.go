@@ -72,6 +72,7 @@ func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test"),
 		runtime.WithGlobalMaxInFlight(-5),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	err := rt.AddRoute(runtime.RouteConfig{
@@ -128,6 +129,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test"),
 		runtime.WithGlobalMaxInFlight(1),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	err := rt.AddRoute(runtime.RouteConfig{

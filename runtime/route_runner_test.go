@@ -181,6 +181,79 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 	}
 }
 
+// TestRouteRunner_TraceInjection_StampsOutbound proves the dispatch path stamps
+// propagator-produced W3C headers onto the OUTBOUND envelope and replaces the
+// stale upstream trace headers the clone carried. Guards the otel K1 egress
+// wiring against an env.SetHeader/outbound.SetHeader mix-up (the FakeTracer
+// pass-through blind spot the adversarial review flagged) and the stale
+// tracestate leak.
+func TestRouteRunner_TraceInjection_StampsOutbound(t *testing.T) {
+	const sentinel = "00-11111111111111111111111111111111-2222222222222222-01"
+	tracer := &FakeTracer{InjectKeys: map[string]any{messaging.HeaderTraceParent: sentinel}}
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+
+	// Seed a stale upstream traceparent + tracestate; the tracer's Inject only
+	// reproduces traceparent (via InjectKeys), so the outbound must carry the
+	// sentinel traceparent and NO tracestate.
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
+		ID: "msg-trace",
+		Headers: map[string]any{
+			messaging.HeaderTraceParent: "00-99999999999999999999999999999999-8888888888888888-01",
+			messaging.HeaderTraceState:  "vendor=stale",
+		},
+	})
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "delivery acked and message sent", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
+
+	sent := sender.GetSent()[0]
+	if tp, _ := sent.Headers()[messaging.HeaderTraceParent].(string); tp != sentinel {
+		t.Fatalf("outbound traceparent = %q, want sentinel %q (dispatch must stamp the propagator output onto the OUTBOUND envelope)", tp, sentinel)
+	}
+	if _, ok := sent.Headers()[messaging.HeaderTraceState]; ok {
+		t.Fatal("stale upstream tracestate must be removed when the tracer stamps this hop")
+	}
+}
+
+// TestRouteRunner_TraceInjection_PassthroughWhenTracerInactive proves that when
+// the tracer produces no keys (tracing disabled), the dispatch injection block
+// is skipped and an upstream traceparent passes through untouched — preserving
+// bridge-to-bridge trace continuity without an active tracer.
+func TestRouteRunner_TraceInjection_PassthroughWhenTracerInactive(t *testing.T) {
+	const upstream = "00-33333333333333333333333333333333-4444444444444444-01"
+	tracer := &FakeTracer{} // InjectKeys nil → Inject returns no keys
+	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+		cfg.Tracer = tracer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+
+	env := messaging.MustEnvelopeWithReserved(messaging.EnvelopeInput{
+		ID:      "msg-passthrough",
+		Headers: map[string]any{messaging.HeaderTraceParent: upstream},
+	})
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "delivery acked and message sent", func() bool {
+		return del.IsAcked() && sender.SentCount() == 1
+	})
+
+	sent := sender.GetSent()[0]
+	if tp, _ := sent.Headers()[messaging.HeaderTraceParent].(string); tp != upstream {
+		t.Fatalf("outbound traceparent = %q, want upstream %q (must pass through untouched when no tracer stamps)", tp, upstream)
+	}
+}
+
 // TestRouteRunner_ProcessorError_Permanent verifies permanent processor errors route to DLQ and ack the delivery.
 func TestRouteRunner_ProcessorError_Permanent(t *testing.T) {
 	receiver, _, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
@@ -547,6 +620,7 @@ func TestRouteRunner_Tracer_FilteredNoError(t *testing.T) {
 func TestRouteRunner_SharedOutbox_HappyPath(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
+		cfg.Bindings = []routing.DestinationBinding{{ID: "bind-1", SessionID: "sess-outbox"}}
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-1", Address: "topic/a"},
@@ -579,6 +653,7 @@ func TestRouteRunner_SharedOutbox_DuplicatePersist(t *testing.T) {
 	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
 		cfg.OutboxStore = outbox
+		cfg.Bindings = []routing.DestinationBinding{{ID: "bind-dup", SessionID: "sess-dup"}}
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
 				{BindingID: "bind-dup", Address: "topic/dup"},
@@ -934,6 +1009,7 @@ func TestRouteRunner_MQTTToSQS_DirectHold(t *testing.T) {
 func TestRouteRunner_MQTTToSQS_SharedOutbox(t *testing.T) {
 	receiver, _, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
+		cfg.Bindings = []routing.DestinationBinding{{ID: "sqs-bind", SessionID: "sess-sqs"}}
 		cfg.Resolver = &FakeResolver{
 			Plans: []routing.DispatchPlan{
 				{BindingID: "sqs-bind", Address: "arn:aws:sqs:eu-west-1:123456789:events"},

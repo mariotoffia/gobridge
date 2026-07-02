@@ -229,12 +229,14 @@ All health endpoints live on the monitor server (default `:8081`) and are
 |----------|---------|---------|-----------|
 | `GET /api/v1/monitor/health` | Overall health | 200 `{"status":"ok"}` | 503 `{"status":"unhealthy"}` |
 | `GET /api/v1/monitor/live` | Liveness probe | 200 `{"status":"alive"}` | Always 200 |
-| `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready"}` | 503 `{"status":"not_ready"}` |
+| `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready"}` | 503 `{"error":"not ready"}` |
 
 The `health` endpoint checks runtime state, session connectivity, and route
 health. The `live` endpoint always returns 200 -- it confirms the process is
-running. The `ready` endpoint returns 200 only when the bridge is fully
-initialized and accepting traffic.
+running. The bare `ready` endpoint returns 200 once the runtime is started
+and healthy; it does **not** guarantee transport sessions are connected or
+subscriptions acknowledged. Gate production traffic with the `?level=`
+parameter described under "Readiness levels" below.
 
 ### Shutdown Timeouts
 
@@ -298,12 +300,36 @@ livenessProbe:
   periodSeconds: 10
 readinessProbe:
   httpGet:
-    path: /api/v1/monitor/ready
+    path: /api/v1/monitor/ready?level=subscribed
     port: 8081
   initialDelaySeconds: 10
   periodSeconds: 5
 terminationGracePeriodSeconds: 60
 ```
+
+**Readiness levels.** The readiness probe accepts a `?level=` query
+parameter that controls how strict the gate is. Bare
+`/api/v1/monitor/ready` (no level) reports ready as soon as the runtime is
+started and healthy -- *before* transport sessions connect or subscriptions
+are acknowledged -- so a pod can be added to the Service endpoints while it
+would still miss messages. Gate production traffic on a transport-level
+check instead. Supported levels, least to most strict:
+
+- `live` -- process is up and serving HTTP. Use for liveness, not readiness.
+- `running` -- runtime started and healthy (the level bare `/ready`
+  approximates).
+- `connected` -- every session is currently connected to its broker; a
+  per-session reconnect drops below this level (503) until the session
+  reconnects.
+- `subscribed` -- every subscription has been acknowledged by the broker,
+  so the bridge will not miss messages. **Recommended for readiness
+  gating** and used in the example above.
+- `full` -- every route handler is registered and ready to dispatch; the
+  strictest gate, suitable as a pre-traffic check on initial rollout.
+
+The probe returns `200` once the runtime has reached the requested level and
+`503` otherwise, so Kubernetes holds the pod out of rotation until it is
+genuinely ready to carry traffic. An unknown level returns `400`.
 
 Set the orchestrator's stop/termination timeout higher than `shutdown_timeout`
 to give GoBridge enough time to drain before the orchestrator sends `SIGKILL`.

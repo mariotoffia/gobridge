@@ -9,9 +9,19 @@ import (
 // Health returns the current health state of the session, including
 // subscription and handler readiness.
 //
-// Ready is true when the session is connected to the broker (connectivity only).
+// Ready reports CONNECTIVITY ONLY: it is true when the session is
+// connected to the broker. This is intentional and matches the
+// ports.SessionHealth contract — Ready does NOT imply that subscriptions
+// are active or that receiver handlers are registered. A sender-only
+// session is fully serviceable as soon as it is connected, so a liveness
+// probe keyed on Ready is correct for it.
 //
-// ServiceLevel describes operational completeness:
+// For a RECEIVER session, connectivity alone is not operational
+// readiness: messages are dropped until subscriptions are reconciled and
+// a handler is registered. Production READINESS probes for receiver
+// sessions must therefore gate on ServiceLevel == Full (which the monitor
+// exposes via ?level=full), not on Ready. ServiceLevel describes
+// operational completeness:
 //   - Full: all desired subscriptions active and handlers registered (when expected)
 //   - Degraded: connected but not all desired subscriptions are active
 //   - None: not connected, or no subscriptions/handlers registered

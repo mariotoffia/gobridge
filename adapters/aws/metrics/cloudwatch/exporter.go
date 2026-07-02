@@ -3,6 +3,7 @@ package cloudwatch
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -44,7 +45,7 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 		e.client = client
 	}
 
-	e.batcher = newBatcher(e.config.Namespace, e.config.DefaultTags, e.config.BufferSize, e.config.Clock)
+	e.batcher = newBatcher(e.config.Namespace, e.config.DefaultTags, e.config.BufferSize, e.config.Clock, e.config.Logger, e.config.MaxRetryDatums)
 
 	e.wg.Add(1)
 	go e.flushLoop()
@@ -106,7 +107,10 @@ func (e *Exporter) flushLoop() {
 			return
 		case <-ticker.C():
 			ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
-			_ = e.Flush(ctx)
+			if err := e.Flush(ctx); err != nil && e.config.Logger != nil {
+				e.config.Logger.Warn("cloudwatch: periodic flush failed; samples requeued for retry",
+					slog.String("error", err.Error()))
+			}
 			cancel()
 		}
 	}
@@ -115,5 +119,8 @@ func (e *Exporter) flushLoop() {
 func (e *Exporter) asyncFlush() {
 	ctx, cancel := context.WithTimeout(context.Background(), e.config.FlushRPCTimeout)
 	defer cancel()
-	_ = e.Flush(ctx)
+	if err := e.Flush(ctx); err != nil && e.config.Logger != nil {
+		e.config.Logger.Warn("cloudwatch: async flush failed; samples requeued for retry",
+			slog.String("error", err.Error()))
+	}
 }

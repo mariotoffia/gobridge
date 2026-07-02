@@ -30,12 +30,17 @@ type ReceiverConfig struct {
 	// ReceiveMessages call. Default 10, capped at 100.
 	MaxMessages int
 
-	// MaxWaitTime is the maximum time to wait for messages.
-	// Default 30 s.
+	// MaxWaitTime bounds a single ReceiveMessages long-poll. The Azure
+	// SDK has no "max wait for the first message" option, so it is applied
+	// as a per-receive context deadline: when it elapses with no messages
+	// the poll loop simply re-issues. Default 30 s.
 	MaxWaitTime time.Duration
 
-	// Prefetch sets the prefetch count on the AMQP link. Default 0
-	// (SDK default).
+	// Prefetch is accepted for forward compatibility but is currently a
+	// no-op: azservicebus v1.10.0 exposes no public prefetch-count knob on
+	// ReceiverOptions/SessionReceiverOptions (prefetch is managed
+	// internally by the SDK's AMQP credit machinery). A non-zero value is
+	// warned about at receiver construction. Default 0.
 	Prefetch int32
 
 	// ReceiveMode is "PeekLock" (default) or "ReceiveAndDelete".
@@ -155,6 +160,15 @@ func (c *ReceiverConfig) applyDefaults() {
 
 func (c *ReceiverConfig) autoExtendEnabled() bool {
 	return c.AutoExtend == nil || *c.AutoExtend
+}
+
+// receiveAndDelete reports whether the receiver runs in
+// ReceiveModeReceiveAndDelete, where the broker removes the message at
+// receive time. In that mode there is no lock to renew or settle:
+// auto-extend is disabled and Ack/Extend are no-ops while Retry reports
+// ErrNotSupported (see asbDelivery).
+func (c *ReceiverConfig) receiveAndDelete() bool {
+	return c.ReceiveMode == "ReceiveAndDelete"
 }
 
 func (c *SenderConfig) validate() error {

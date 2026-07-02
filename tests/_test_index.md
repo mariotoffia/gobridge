@@ -982,7 +982,7 @@ Catalog of all test functions in the gobridge repository.
 | TestF6_StaleFencingTokenDoesNotKillRuntime | validates stale fencing token on one drainer does not kill runtime | unit | runtime_resilience | pass |
 | TestF6_CriticalErrorStillKillsRuntime | validates non-fencing errors still mark runtime unhealthy | unit | runtime_resilience | pass |
 | TestF7_ReacquiredLeaseRestartsDeadSession | validates session.Start re-called when health shows disconnected on re-acquisition | unit | runtime_resilience | pass |
-| TestF7_ReacquiredLeaseSkipsRestartIfHealthy | validates healthy session is not restarted on lease re-acquisition | unit | runtime_resilience | pass |
+| TestF7_StepDownClosesSessionAndReacquireRestarts | validates step-down closes the source session (no split-brain) and re-acquire restarts it | unit | runtime_resilience | pass |
 | TestDrainBatch_ParallelSends | validates records in a drain batch are sent concurrently | unit | outbox_drainer_concurrent | pass |
 | TestDrainBatch_ConcurrencyLimit | validates MaxDrainConcurrency caps simultaneous goroutines | unit | outbox_drainer_concurrent | pass |
 | TestDrainBatch_ErrorIsolation | validates one record failure does not block others | unit | outbox_drainer_concurrent | pass |

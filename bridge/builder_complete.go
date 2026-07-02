@@ -3,8 +3,10 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -86,6 +88,10 @@ func (b *Builder) wireRoutes(
 	receivers map[string]ports.Receiver,
 	senders map[string]ports.Sender,
 ) error {
+	if err := validateSharedOutboxBindingSessions(b.cfg); err != nil {
+		return err
+	}
+
 	registeredSessions := make(map[string]bool)
 
 	for _, routeDef := range b.cfg.Routes {
@@ -105,10 +111,23 @@ func (b *Builder) wireRoutes(
 		}
 		applyBridgeDrainDefaults(sessCfg, b.cfg.Bridge)
 
+		// Assemble the session's desired topology from the blueprint so the
+		// session manager reconciles a non-empty plan. sessionPlanFor is the
+		// per-session union of every receiver bound to the session, so the
+		// plan is identical for all routes sharing it — safe under the
+		// first-wins session-manager dedup in runtime/bridge_start.go.
+		// Without this the broker session declares no topology and
+		// subscribes to nothing (F1). sessCfg is nil only when the route has
+		// no session, in which case there is nothing to reconcile.
+		if sessCfg != nil && routeDef.Session != nil {
+			sessCfg.Plan = sessionPlanFor(b.cfg, routeDef.Session.SessionID)
+		}
+
 		var routeSession ports.Session
 		var routeSender ports.Sender
 		var caps []ports.Capability
 		var sourceVisTimeout time.Duration
+		var sourceAutoExtend bool
 
 		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
 		if recvDef != nil {
@@ -122,6 +141,16 @@ func (b *Builder) wireRoutes(
 				caps = tf.Capabilities()
 				if vtp, ok := tf.(ports.VisibilityTimeoutProvider); ok {
 					sourceVisTimeout = vtp.VisibilityTimeout()
+				}
+				// A per-route receiver config (SQS visibility_timeout, ASB
+				// lock_duration) overrides the transport-wide Factory
+				// constant, so the validator checks SendTimeout against the
+				// window the route actually runs with (Finding 2 / D2). Its
+				// auto-extend flag lets the validator skip that check when
+				// the window is renewed in the background.
+				if vc, ok := recvDef.Config.(ports.VisibilityTimeoutConfig); ok {
+					sourceVisTimeout = vc.EffectiveVisibilityTimeout()
+					sourceAutoExtend = vc.AutoExtendEnabled()
 				}
 			}
 		}
@@ -164,6 +193,7 @@ func (b *Builder) wireRoutes(
 			Processors:              procs,
 			SourceCapabilities:      caps,
 			SourceVisibilityTimeout: sourceVisTimeout,
+			SourceAutoExtend:        sourceAutoExtend,
 		}
 
 		// Build content-based resolver from config if present.
@@ -198,6 +228,30 @@ func (b *Builder) wireRoutes(
 			rcfg.AddressValidators = vmap
 		}
 
+		// Build-time address validation (D1): fail fast when a binding's static
+		// address does not match its sender's bound destination, instead of
+		// surfacing the error only at first send. Only literal addresses are
+		// checked here — an address containing a "{key}" placeholder is rendered
+		// per message (runtime/route.RenderAddress) and cannot be validated
+		// statically. Config-built resolvers select among these same bindings,
+		// so a literal address is a valid check with or without a resolver; this
+		// also covers bindings only reachable through a resolver, each validated
+		// against its own sender. Senders that do not implement
+		// ports.AddressValidatingSender (or cannot decide statically) are skipped
+		// and rely on send-time validation.
+		for _, bd := range bindings {
+			if bd.Address == "" || strings.Contains(bd.Address, "{") {
+				continue
+			}
+			av, ok := senders[bd.SenderID].(ports.AddressValidatingSender)
+			if !ok {
+				continue
+			}
+			if err := av.ValidateAddress(bd.Address); err != nil {
+				return fmt.Errorf("bridge: route %q: binding %q: %w", routeDef.ID, bd.ID, err)
+			}
+		}
+
 		if err := rt.AddRoute(rcfg, recv, routeSender, routeSession, sessCfg); err != nil {
 			return fmt.Errorf("bridge: add route %q: %w", routeDef.ID, err)
 		}
@@ -230,9 +284,136 @@ func (b *Builder) wireRoutes(
 	return nil
 }
 
-// session-id → credentials_uri map. The URI is captured BEFORE
-// resolveCredentials consumes and deletes it, so the credential
-// refresher can bind watchers after session construction.
+// validateSharedOutboxBindingSessions rejects a shared_outbox binding whose
+// session is the PRIMARY session of a DIFFERENT route. Within a single
+// blueprint every binding session must be drained locally: there is no
+// "another instance drains it" pattern in one blueprint (cross-instance handoff
+// uses distinct per-instance configs built through the low-level API, not one
+// shared blueprint). A binding session is correctly drained only when it is
+// either (i) the route's own primary session — drained by that route's Path-1
+// outbox drainer — or (ii) a dedicated session owned by no route, registered as
+// a session-sender (Path-2). A session that is some OTHER route's primary is a
+// topology error:
+//
+//   - other route is direct_hold: that session has NO outbox drainer at all, so
+//     the binding's records persist under SESSION#<sid> and are never drained —
+//     the source is ACKed after persist and the record is silently lost.
+//   - other route is shared_outbox: that session is drained by the OTHER route's
+//     sender, so the binding's records are delivered to the wrong destination.
+//
+// A dedicated session is also a topology error when two bindings drain it with
+// DIFFERENT senders: a session has exactly one Path-2 drainer, wired with the
+// FIRST registered binding's sender, so the later binding's records drain via
+// the wrong sender and are delivered to the wrong destination. (Two bindings
+// sharing a session with the SAME sender is the legitimate fan-out case and is
+// allowed.)
+//
+// Symmetrically, a binding whose EFFECTIVE session is the route's OWN primary
+// (named explicitly, or inherited via the empty-SessionID rule) is drained by
+// the route's single Path-1 drainer, which is wired with the route primary's
+// sender. A binding that names a DIFFERENT sender there has that sender silently
+// ignored — the records ship through the route sender to the wrong destination.
+// Reject it so the footgun is explicit rather than silent. (An empty binding
+// SenderID is the normal case: it simply uses the route sender.)
+//
+// wireRoutes resolves the primary-collision case via a builder-wide
+// registeredSessions map whose outcome is declaration-order dependent (a
+// direct_hold primary declared first suppresses the session-sender registration
+// a later shared_outbox binding needs; reverse the order and the binding instead
+// contends for the exclusive lease) and silently drops the second sender in the
+// sender-conflict case. Validate it statically up front, where the whole topology
+// is known and order does not matter.
+func validateSharedOutboxBindingSessions(cfg *ports.BridgeConfig) error {
+	type primary struct {
+		routeID      string
+		sharedOutbox bool
+	}
+	primaryOf := make(map[string]primary, len(cfg.Routes))
+	for i := range cfg.Routes {
+		rd := &cfg.Routes[i]
+		if rd.Session == nil || rd.Session.SessionID == "" {
+			continue
+		}
+		primaryOf[rd.Session.SessionID] = primary{
+			routeID:      rd.ID,
+			sharedOutbox: routing.DeliveryMode(rd.DeliveryMode) == routing.DeliverySharedOutbox,
+		}
+	}
+
+	dedicatedSender := make(map[string]string, len(cfg.Routes))
+	for i := range cfg.Routes {
+		rd := &cfg.Routes[i]
+		if routing.DeliveryMode(rd.DeliveryMode) != routing.DeliverySharedOutbox {
+			continue
+		}
+		ownPrimary := ""
+		if rd.Session != nil {
+			ownPrimary = rd.Session.SessionID
+		}
+		for _, bd := range toBindings(cfg, rd.Bindings) {
+			// Own-primary conflicting sender: when a binding's effective
+			// session is the route's own primary (named explicitly, or
+			// inherited via the empty-SessionID rule), its records drain
+			// through the route's single Path-1 drainer, wired with the route
+			// primary's sender. A different non-empty binding SenderID is
+			// silently ignored, so the records ship through the wrong sender.
+			// rd.Session.SenderID=="" is left to wireRoutes' "session sender
+			// not created" error; an empty binding SenderID is the normal
+			// "use the route sender" case.
+			if ownPrimary != "" && rd.Session.SenderID != "" &&
+				(bd.SessionID == ownPrimary || bd.SessionID == "") &&
+				bd.SenderID != "" && bd.SenderID != rd.Session.SenderID {
+				return fmt.Errorf("bridge: route %q: binding %q resolves to the route's primary "+
+					"session %q but names sender %q instead of the session sender %q; the primary "+
+					"session has a single outbox drainer wired with the route sender, so the binding "+
+					"sender is silently ignored and its records are delivered through the wrong sender "+
+					"— omit sender_id to use the route sender, or give this binding a dedicated session_id",
+					rd.ID, bd.ID, ownPrimary, bd.SenderID, rd.Session.SenderID)
+			}
+			if bd.SessionID == "" || bd.SessionID == ownPrimary {
+				continue
+			}
+			owner, ok := primaryOf[bd.SessionID]
+			if ok && owner.routeID != rd.ID {
+				if owner.sharedOutbox {
+					return fmt.Errorf("bridge: route %q: binding %q targets session %q, which is the "+
+						"primary session of shared_outbox route %q; its outbox records would be drained by "+
+						"route %q's sender and delivered to the wrong destination — give this binding a "+
+						"dedicated session_id",
+						rd.ID, bd.ID, bd.SessionID, owner.routeID, owner.routeID)
+				}
+				return fmt.Errorf("bridge: route %q: binding %q targets session %q, which is the primary "+
+					"session of direct_hold route %q; a direct_hold session has no outbox drainer, so the "+
+					"binding's records would persist under SESSION#%s and never drain (silent message loss) "+
+					"— give this binding a dedicated session_id",
+					rd.ID, bd.ID, bd.SessionID, owner.routeID, bd.SessionID)
+			}
+			if ok {
+				continue // self-reference; already covered by the ownPrimary skip
+			}
+			// Dedicated fan-out session (no route's primary). It gets a single
+			// Path-2 drainer wired with the FIRST binding's sender; a later binding
+			// draining the same session with a different sender is silently dropped
+			// by the builder's registeredSessions dedup and mis-delivers. An empty
+			// SenderID is a separate error wireRoutes reports ("unknown sender").
+			if bd.SenderID == "" {
+				continue
+			}
+			if prev, seen := dedicatedSender[bd.SessionID]; seen {
+				if prev != bd.SenderID {
+					return fmt.Errorf("bridge: route %q: binding %q drains dedicated session %q with "+
+						"sender %q, but that session is already drained by sender %q; a session has a "+
+						"single outbox drainer, so one binding's records would be delivered to the wrong "+
+						"destination — give each sender its own session_id",
+						rd.ID, bd.ID, bd.SessionID, bd.SenderID, prev)
+				}
+				continue
+			}
+			dedicatedSender[bd.SessionID] = bd.SenderID
+		}
+	}
+	return nil
+}
 func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.Session, map[string]string, error) {
 	sessions := make(map[string]ports.Session, len(b.cfg.Sessions))
 	uris := make(map[string]string, len(b.cfg.Sessions))

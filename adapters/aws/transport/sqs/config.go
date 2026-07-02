@@ -3,6 +3,7 @@ package sqs
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -143,6 +144,18 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.MaxMessages <= 0 || c.MaxMessages > 10 {
 		c.MaxMessages = 10
 	}
+	// FIFO ordering safety (Finding 5): the route runner dispatches
+	// deliveries concurrently, so a single ReceiveMessage returning
+	// several messages of one MessageGroupId could let them be reordered.
+	// SQS keeps a FIFO group locked to its in-flight message until that
+	// message is deleted, so MaxMessages=1 guarantees at most one
+	// in-flight message per group and preserves per-group order without
+	// serialising in the shared runner. Detected from the configured URL
+	// or name (.fifo suffix); Run re-checks the resolved URL as a safety
+	// net for QueueName-only configs.
+	if isFIFOQueue(c.QueueURL) || isFIFOQueue(c.QueueName) {
+		c.MaxMessages = 1
+	}
 	if c.WaitTimeSeconds <= 0 {
 		c.WaitTimeSeconds = 20
 	} else if c.WaitTimeSeconds > 20 {
@@ -202,4 +215,11 @@ func (c *SenderConfig) applyDefaults() {
 
 func (c *SenderConfig) isFIFO() bool {
 	return c.FIFO || c.MessageGroupID != ""
+}
+
+// isFIFOQueue reports whether an SQS queue URL or name denotes a FIFO
+// queue. AWS requires FIFO queue names (and therefore the trailing path
+// segment of their URLs) to end in ".fifo".
+func isFIFOQueue(urlOrName string) bool {
+	return strings.HasSuffix(urlOrName, ".fifo")
 }

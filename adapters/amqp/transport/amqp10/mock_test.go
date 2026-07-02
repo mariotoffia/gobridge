@@ -51,6 +51,22 @@ func (m *mockConn) Done() <-chan struct{} {
 	return m.done
 }
 
+// triggerDone simulates the SDK signalling connection loss by closing the
+// Done() channel without marking the conn closed. It is idempotent and
+// safe to call before or after the monitor loop first reads Done().
+func (m *mockConn) triggerDone() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.done == nil {
+		m.done = make(chan struct{})
+	}
+	select {
+	case <-m.done:
+	default:
+		close(m.done)
+	}
+}
+
 // mockSettler implements settler for unit tests.
 type mockSettler struct {
 	mu             sync.Mutex

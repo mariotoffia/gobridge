@@ -94,6 +94,16 @@ func (r *RouteRunner) buildOutboxRecords(env *messaging.Envelope, plans []routin
 
 	for i, plan := range plans {
 		sessionID := r.sessionIDForBinding(plan.BindingID)
+		if sessionID == "" {
+			// An empty session maps to a BINDING#<id> outbox partition that no
+			// drainer ever polls — every drainer keys on SESSION#<sid>. Persisting
+			// here would orphan the record while the source is ACKed: silent loss.
+			// Fail closed; the caller routes this through retryOrFallback (retry or
+			// DLQ), never a bare ACK. Reachable when a Resolver emits a BindingID
+			// absent from the configured bindings, or a shared_outbox route resolves
+			// a plan to a binding with no effective session.
+			return nil, fmt.Errorf("runtime: route-runner: route %q: dispatch plan binding %q resolves to no session; outbox record would orphan under BINDING#%s and never drain", r.routeID, plan.BindingID, plan.BindingID)
+		}
 		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
 			ID:              generateID(),
 			RouteID:         r.routeID,

@@ -15,8 +15,10 @@ func validDirectHoldEntry() (runtime.RouteConfig, ports.Receiver, ports.Sender, 
 	cfg := runtime.RouteConfig{
 		ID: "sqs-to-mqtt-dh",
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			DispatchMode: routing.DispatchSingle,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			DispatchMode:       routing.DispatchSingle,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -229,7 +231,10 @@ func TestValidator_SharedOutbox_RejectsMissingOutboxStore(t *testing.T) {
 
 // TestValidator_DirectHold_DefaultDeliveryMode verifies default policy implies direct_hold and passes when capabilities match.
 func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
-	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
 
 	cfg := runtime.RouteConfig{
 		ID:                 "default-mode",
@@ -298,6 +303,7 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		},
+		Bindings: []routing.DestinationBinding{{ID: "b1", Address: "topic/x"}},
 	}
 	nonExclusiveCfg := session.DefaultConfig("mqtt-persistent", false)
 
@@ -526,6 +532,249 @@ func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
 	err := rt.Start(ctx)
 	if err != nil {
 		t.Fatalf("expected no validation error for HTTP source, got: %v", err)
+	}
+	_ = rt.Stop(context.Background())
+}
+
+// TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected verifies that a
+// route whose effective on_permanent_failure routes to the DLQ is rejected when
+// no DLQ store is configured (A5: terminal failures must not be silently dropped).
+func TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+	cfg.Policy.OnExpired = routing.ExpiredDrop
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for on_permanent_failure=dlq without DLQ store")
+	}
+	if !strings.Contains(err.Error(), "on_permanent_failure=dlq but no DLQ store configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected verifies that a
+// route whose effective on_expired routes to the DLQ is rejected when no DLQ
+// store is configured (A5).
+func TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.OnPermanentFailure = routing.FailureDrop
+	cfg.Policy.OnExpired = routing.ExpiredDLQ
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for on_expired=dlq without DLQ store")
+	}
+	if !strings.Contains(err.Error(), "on_expired=dlq but no DLQ store configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_TerminalFailureSink_DLQWithStore_Accepted verifies that routing
+// terminal outcomes to the DLQ passes validation once a DLQ store is configured.
+func TestValidator_TerminalFailureSink_DLQWithStore_Accepted(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+	cfg.Policy.OnExpired = routing.ExpiredDLQ
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := rt.Start(ctx)
+	if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("terminal DLQ routing with a DLQ store should pass validation, got: %v", err)
+	}
+}
+
+// TestValidator_SharedOutbox_RejectsZeroBindingsNoResolver asserts that a
+// shared_outbox route with neither bindings nor a resolver is rejected at Start.
+// With no bindings the dispatcher falls back to the plan {BindingID: routeID};
+// routeID matches no binding, so the record's session resolves to "" and it
+// persists under BINDING#<routeID> — a partition no drainer in any instance ever
+// polls. The source is ACKed after persist and the record is silently lost, so
+// validation must fail closed.
+func TestValidator_SharedOutbox_RejectsZeroBindingsNoResolver(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "zero-binding-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		// No Bindings and no Resolver.
+	}
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for shared_outbox route with no bindings and no resolver")
+	}
+	if !strings.Contains(err.Error(), "has no bindings and no resolver") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates locks in the
+// no-false-positive contract: an ingress-only instance whose binding targets a
+// non-empty session that has NO drainer in THIS runtime must still validate.
+// This is the core cross-instance handoff (T11) — a different instance owns the
+// session lease and drains the shared outbox. Local drainer absence is not proof
+// of orphaning, so the per-instance validator must not reject it.
+func TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("ingress-only-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithLeaseStore(NewFakeLeaseStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "ingress-only-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Bindings: []routing.DestinationBinding{
+			// Non-empty session owned and drained by a DIFFERENT instance.
+			{ID: "b1", SessionID: "remote-owned-sess", Address: "topic/a"},
+		},
+	}
+
+	// nil session + nil sessCfg and no RegisterSessionSender → no local drainer
+	// for "remote-owned-sess". This must still validate.
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("ingress-only cross-instance route must validate (remote instance drains): %v", err)
+	}
+	_ = rt.Stop(context.Background())
+}
+
+// TestValidator_SharedOutbox_RejectsExplicitTargetAccept verifies that an
+// explicit ack_after=target_accept on a shared_outbox route is rejected because
+// the outbox persist — not the downstream accept — is the durability boundary (A2).
+func TestValidator_SharedOutbox_RejectsExplicitTargetAccept(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "sqs-to-mqtt-so-ackafter",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+			AckAfter:     routing.AckAfterTargetAccept,
+		},
+		Resolver: &FakeResolver{
+			Plans: []routing.DispatchPlan{{BindingID: "b1", Address: "topic/a"}},
+		},
+	}
+	sessCfg := session.DefaultConfig("mqtt-sess", false)
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for explicit ack_after=target_accept on shared_outbox")
+	}
+	if !strings.Contains(err.Error(), "ack_after=target_accept is not honored") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_SharedOutbox_RejectsOrphanBinding asserts that a shared_outbox
+// route with no route session and a binding that omits its session_id is
+// rejected at Start. With no session to inherit (the A1 fixup needs a route
+// session) and an empty binding session, the outbox record would persist under
+// a BINDING#<id> partition that no drainer ever polls — the source is ACKed
+// after persist and the record is silently lost. Validation must fail closed.
+func TestValidator_SharedOutbox_RejectsOrphanBinding(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "orphan-binding-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "b-orphan", Address: "topic/a"}, // no SessionID, nothing to inherit
+		},
+	}
+
+	// nil session + nil sessCfg → the empty binding session stays empty.
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for shared_outbox binding with no session to drain")
+	}
+	if !strings.Contains(err.Error(), "has no session_id and the route has no session to inherit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_SharedOutbox_BindingInheritsRouteSession asserts the inverse of
+// the orphan case: an empty binding session is fine when the route has a
+// session for it to inherit (A1), so validation passes.
+func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithLeaseStore(NewFakeLeaseStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "inherit-binding-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "b-inherit", Address: "topic/a"}, // no SessionID → inherits route session
+		},
+	}
+	sessCfg := session.DefaultConfig("route-sess", false)
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("expected route to validate (binding inherits route session): %v", err)
 	}
 	_ = rt.Stop(context.Background())
 }

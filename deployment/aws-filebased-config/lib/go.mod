@@ -19,12 +19,15 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
+require github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.20 // indirect
+
 require (
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.20 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.55.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.20 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.8 // indirect
@@ -40,6 +43,10 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
@@ -73,6 +80,15 @@ replace (
 	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra => ../infra
 	github.com/mariotoffia/gobridge/httpapi => ../../../httpapi
 	github.com/mariotoffia/gobridge/processors/circuitbreaker => ../../../processors/circuitbreaker
+	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
 	github.com/mariotoffia/gobridge/testutil/localstack => ../../../testutil/localstack
 	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store => ../../../adapters/aws/store
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../../adapters/aws/store/dynamodbdlq
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../../adapters/aws/store/dynamodblease
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../../adapters/aws/store/dynamodboutbox

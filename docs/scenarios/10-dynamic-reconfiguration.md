@@ -6,7 +6,7 @@ Update a running bridge -- add routes, change policies, or swap endpoints -- wit
 
 You operate a message bridge in production and need to evolve its configuration over time: adding new routes for newly discovered device types, adjusting backpressure limits in response to traffic patterns, or changing broker endpoints during maintenance windows. Restarting the process is unacceptable because it interrupts in-flight message processing and may cause duplicate deliveries downstream.
 
-GoBridge solves this with a layered configuration system, file watchers, and a Supervisor that coordinates runtime swaps safely.
+GoBridge solves this with a layered configuration system, file watchers, and a Supervisor that coordinates runtime swaps safely **within a single process**. Reconfiguration is per-process, not cluster-coordinated -- see [Cluster Semantics and Limitations](#cluster-semantics-and-limitations) for the boundaries this implies in a multi-instance deployment.
 
 ## Dynamic Reconfiguration Lifecycle
 
@@ -200,6 +200,24 @@ Split the build into two phases. **Prepare** validates the config and builds sto
 ### SwapAuto (Default)
 
 Inspects all transport factories referenced by the new config's sessions. If any factory declares `CapExclusiveIdentity`, the supervisor uses PrepareCommit. Otherwise it uses Overlap. This is the recommended default -- it adapts automatically to the transports in use.
+
+## Cluster Semantics and Limitations
+
+Reconfiguration is **per-process**. Each instance independently watches its own config source, reloads, validates, and swaps its runtime through the Supervisor. GoBridge does **not** apply a config version atomically across the cluster: there is **no cluster-wide version barrier and no coordinated cluster rollback**. During a rollout -- or if one instance fails to load or validate the new config -- different instances may run **different** route, store, session, or policy definitions simultaneously, until every instance has reloaded -- indefinitely, if an instance stays wedged on a config it cannot load or validate.
+
+What this does and does not break:
+
+- **Per-instance durability and fencing guarantees hold -- as long as every instance resolves a session to the same session id, lease store, and outbox store.** The outbox is durable on each instance, and lease fencing admits a single active drainer for an exclusive session regardless of config version, because the lease CAS is keyed on the lease version, not `BridgeConfig.Version` (see [Scenario 8: Clustered MQTT with Exclusive Sessions](08-clustered-exclusive-sessions.md)). Within those bounds a mixed-version window does **not** cause duplicate *commits* or message loss within an instance.
+  - **A reconfiguration that changes a session's id, or repoints its lease or outbox store, is _not_ version-skew-safe.** Two instances then drive the *same* session against *different* stores: both hold "its" lease (in different lease stores) and drain independently -- elevated duplicate *sends* -- and any records left undrained in the now-unreferenced outbox store are stranded and lost. Treat session ids and lease/outbox store targets as cluster-wide invariants: migrate them with a full drain-and-stop, never a rolling reconfiguration.
+- **Routing, policy, and transformation behaviour is eventually consistent across the cluster, not atomic.** The same message class may be handled under the old or the new definition depending on which instance processed it during the divergence window.
+
+Operators who need an atomic cluster cutover must coordinate it externally -- for example, drain and stop all instances, deploy, then restart.
+
+To operate safely:
+
+- **Validate config before deploy.** The `version` CAS field (`BridgeConfig.Version`) guards concurrent *commits* to a shared config file (e.g. on AWS EFS); it does not gate the per-instance apply, so it is not a cluster rollout barrier.
+- **Roll instances one at a time** rather than reconfiguring the whole fleet at once.
+- **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is readable programmatically via `Supervisor.Config().Version`. There is no continuous metric or HTTP field for it today and the initial config load is not logged with a version, so for fleet-wide convergence monitoring scrape `Supervisor.Config().Version` (e.g. into a gauge) rather than relying on swap logs alone. Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `Config().Version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
 
 ## ReconfigStrategy Comparison
 

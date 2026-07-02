@@ -18,6 +18,14 @@ info:
 
     **Observability** -- Every response includes `X-Correlation-ID`,
     `X-Trace-ID`, and `X-Span-ID` headers injected by middleware.
+
+
+    **CORS** -- When `cors_origins` is configured, browser preflight
+    (OPTIONS) requests from an allowed origin receive
+    `Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS`.
+    PATCH and DELETE are required for the config-transaction endpoints
+    (apply overlay and rollback). Origins are matched exactly; the
+    wildcard `*` is rejected at startup.
   contact:
     name: GoBridge Maintainers
   license:
@@ -834,7 +842,8 @@ paths:
         Creates a new config transaction. Only one transaction may be
         active at a time; returns 409 if another exists. The transaction
         auto-rolls back after the specified TTL (default 5 minutes,
-        max 30 minutes).
+        max 30 minutes). An empty request body creates a transaction with
+        the default TTL; a non-empty malformed body is rejected with 400.
       tags: [Config]
       requestBody:
         required: false
@@ -849,6 +858,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConfigTxnCreateResponse"
+        "400":
+          description: >
+            Invalid request body. Returned when the body is non-empty but
+            not valid JSON, or when the "ttl" field is not a valid Go
+            duration string. An empty body is accepted and uses defaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example: { "error": "invalid request body" }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":

@@ -192,6 +192,66 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 	return nil
 }
 
+// Release returns the supplied records from claimed to pending so the
+// same owner can re-claim and retry them on the next drain after a
+// transient egress failure, without a fencing-version bump or wall-clock
+// stale-claim wait. Fencing is owner+version+status, identical to
+// Complete: a record is released only when it is currently claimed by
+// token.Owner at token.Version. Any mismatch (missing, not claimed,
+// wrong owner, wrong version) yields shared.ErrStaleFencingToken.
+func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: release",
+			"count", len(recordIDs))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, id := range recordIDs {
+		r, ok := s.records[id]
+		if !ok || r.Status() != persistence.OutboxClaimed ||
+			r.ClaimedBy() != token.Owner ||
+			r.ClaimVersion() != token.Version {
+			return shared.ErrStaleFencingToken.
+				WithMessage("release fence mismatch: record must be claimed by token owner at token version").
+				With("recordID", id).
+				With("status", statusOf(r)).
+				With("storedOwner", ownerOf(r)).
+				With("storedClaimVersion", claimVersionOf(r)).
+				With("givenOwner", token.Owner).
+				With("givenVersion", token.Version)
+		}
+		if releaseErr := r.Release(s.clk.Now()); releaseErr != nil {
+			return releaseErr
+		}
+	}
+	return nil
+}
+
+// statusOf, ownerOf and claimVersionOf safely read fence metadata from a
+// possibly-nil record so the Release mismatch error is informative even
+// when the record id is unknown.
+func statusOf(r *persistence.OutboxRecord) string {
+	if r == nil {
+		return "missing"
+	}
+	return string(r.Status())
+}
+
+func ownerOf(r *persistence.OutboxRecord) string {
+	if r == nil {
+		return ""
+	}
+	return r.ClaimedBy()
+}
+
+func claimVersionOf(r *persistence.OutboxRecord) uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.ClaimVersion()
+}
+
 func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

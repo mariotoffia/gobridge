@@ -201,7 +201,10 @@ func TestF4_DirectHoldSharedConsumerRejected(t *testing.T) {
 // TestF4_DirectHoldAllowUnfenced validates that the AllowUnfenced policy
 // flag bypasses the shared consumer fencing check for direct_hold.
 func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("bridge-f4-allow"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("bridge-f4-allow"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
@@ -345,7 +348,10 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 // TestF6_CriticalErrorStillKillsRuntime validates that non-fencing
 // errors (e.g. fatal receiver failure) still mark the runtime unhealthy.
 func TestF6_CriticalErrorStillKillsRuntime(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("bridge-f6-crit"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("bridge-f6-crit"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
 
 	receiver := NewFakeReceiver()
 	receiver.RunErr = errors.New("fatal receiver error")
@@ -420,9 +426,16 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 	<-errCh
 }
 
-// TestF7_ReacquiredLeaseSkipsRestartIfHealthy validates that a healthy
-// sess is NOT restarted on lease re-acquisition.
-func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
+// TestF7_StepDownClosesSessionAndReacquireRestarts validates the C3
+// cluster-safety fix on the connect-after-lease (deferred) path: losing the
+// lease must Close the source session so a non-owner stops consuming/ACKing
+// source messages during failover (no split-brain), and re-acquiring the
+// lease must Start it again so the new owner resumes consuming.
+//
+// This replaces an earlier test that asserted a "healthy" session is NOT
+// restarted on re-acquisition — that assertion encoded the very bug C3 fixes
+// (the receiver was never stopped on step-down, so it always looked healthy).
+func TestF7_StepDownClosesSessionAndReacquireRestarts(t *testing.T) {
 	sess := NewControllableSession()
 	leaseStore := NewFakeLeaseStore()
 
@@ -450,6 +463,12 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 
 	leaseStore.SetRenewErr(shared.ErrVersionMismatch)
 
+	// Step-down must Close the source session: a non-owner must stop
+	// consuming source messages while the new owner takes over.
+	waitFor(t, 3*time.Second, "source session closed on step-down", func() bool {
+		return sess.GetCloseCount() >= 1
+	})
+
 	waitFor(t, 3*time.Second, "lease lost", func() bool {
 		_, has := mgr.Token()
 		return !has
@@ -457,16 +476,10 @@ func TestF7_ReacquiredLeaseSkipsRestartIfHealthy(t *testing.T) {
 
 	leaseStore.SetRenewErr(nil)
 
-	waitFor(t, 3*time.Second, "lease re-acquired", func() bool {
-		_, has := mgr.Token()
-		return has
+	// Re-acquisition must restart the source session (receiver restored).
+	waitFor(t, 5*time.Second, "source session restarted on re-acquire", func() bool {
+		return sess.GetStartCount() >= 2
 	})
-
-	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy sess is not restarted on re-acquisition
-
-	if c := sess.GetStartCount(); c != 1 {
-		t.Fatalf("expected 1 start call (healthy sess), got %d", c)
-	}
 
 	cancel()
 }

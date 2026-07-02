@@ -227,7 +227,11 @@ func supervisorTestConfig(routeID string) *ports.BridgeConfig {
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
 				DeliveryMode: "direct_hold",
-				Bindings:     []string{routeID + "-b1"},
+				Policy: ports.PolicyDef{
+					OnPermanentFailure: "drop",
+					OnExpired:          "drop",
+				},
+				Bindings: []string{routeID + "-b1"},
 			},
 		},
 	}
@@ -260,7 +264,11 @@ func supervisorTestConfigWithSession(routeID, sessionID string) *ports.BridgeCon
 				ID:           routeID,
 				ReceiverID:   routeID + "-rx",
 				DeliveryMode: "shared_outbox",
-				Bindings:     []string{routeID + "-b1"},
+				Policy: ports.PolicyDef{
+					OnPermanentFailure: "drop",
+					OnExpired:          "drop",
+				},
+				Bindings: []string{routeID + "-b1"},
 				Session: &ports.RouteSessionDef{
 					SessionID: sessionID,
 					SenderID:  routeID + "-tx",

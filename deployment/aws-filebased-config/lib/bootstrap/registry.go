@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"net/http"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
@@ -15,6 +16,7 @@ type factoryRegistry struct {
 	cfg        *ports.BridgeConfig
 	builder    *bridge.Builder
 	transports map[string]ports.TransportFactory
+	stores     map[string]ports.StoreFactory
 	http       *httptransport.Factory
 }
 
@@ -39,13 +41,20 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	for name, factory := range transports {
 		builder.RegisterTransportFactory(name, factory)
 	}
-	builder.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
-	builder.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
+	stores := map[string]ports.StoreFactory{
+		"memory":              nativestore.NewMemoryStoreFactory(),
+		"sqlite":              nativestore.NewSQLiteStoreFactory(),
+		awsstore.DynamoDBKind: awsstore.NewDynamoDBStoreFactory(a.dynamoDBClient),
+	}
+	for name, factory := range stores {
+		builder.RegisterStoreFactory(name, factory)
+	}
 
 	return &factoryRegistry{
 		cfg:        runtimeCfg,
 		builder:    builder,
 		transports: transports,
+		stores:     stores,
 		http:       httpFactory,
 	}
 }

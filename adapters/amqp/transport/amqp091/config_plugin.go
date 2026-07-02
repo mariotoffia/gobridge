@@ -40,6 +40,27 @@ type ReceiverParams struct {
 	PrefetchSize  int    `mapstructure:"prefetch_size" yaml:"prefetch_size" json:"prefetch_size"`
 }
 
+// defaultPrefetchCount is the QoS prefetch applied when a receiver config
+// omits prefetch_count. It bounds the number of unacknowledged deliveries
+// the broker pushes to a single consumer.
+const defaultPrefetchCount = 10
+
+// applyDefaults fills receiver defaults that a typed (struct) config loses
+// when a field is omitted. A zero prefetch_count is treated as the safe
+// default rather than "unlimited prefetch": with manual settlement an
+// unbounded window lets the broker hand the whole queue to one consumer,
+// exhausting memory and defeating fair dispatch. Operators who genuinely
+// want a large window must set an explicit positive prefetch_count.
+//
+// ponytail: 0 maps to the bounded default (not unlimited) deliberately;
+// unlimited prefetch is the backpressure footgun this default exists to
+// prevent.
+func (p *ReceiverParams) applyDefaults() {
+	if p.PrefetchCount == 0 {
+		p.PrefetchCount = defaultPrefetchCount
+	}
+}
+
 // SenderParams holds user-settable sender fields.
 type SenderParams struct {
 	Exchange   string        `mapstructure:"exchange" yaml:"exchange" json:"exchange"`
@@ -59,6 +80,19 @@ type SubscriptionParams struct {
 	ExchangeType string `mapstructure:"exchange_type" yaml:"exchange_type" json:"exchange_type"`
 	Durable      bool   `mapstructure:"durable" yaml:"durable" json:"durable"`
 	AutoDelete   bool   `mapstructure:"auto_delete" yaml:"auto_delete" json:"auto_delete"`
+	// QueueArguments are passed verbatim as the AMQP queue-declare
+	// arguments table (e.g. x-queue-type=quorum, x-dead-letter-exchange,
+	// x-message-ttl, x-max-length). This is what enables quorum queues,
+	// dead-lettering, TTL and length limits. Numeric values should be
+	// integers — RabbitMQ rejects a float where it expects an integer.
+	QueueArguments map[string]any `mapstructure:"queue_arguments" yaml:"queue_arguments" json:"queue_arguments"`
+	// ExchangeArguments are passed as the exchange-declare arguments
+	// table (e.g. alternate-exchange, or x-delayed-type for the delayed
+	// message exchange plugin).
+	ExchangeArguments map[string]any `mapstructure:"exchange_arguments" yaml:"exchange_arguments" json:"exchange_arguments"`
+	// BindingArguments are passed as the queue-bind arguments table
+	// (e.g. x-match plus headers for a headers-exchange binding).
+	BindingArguments map[string]any `mapstructure:"binding_arguments" yaml:"binding_arguments" json:"binding_arguments"`
 }
 
 // PublisherParams describes per-binding publisher setup performed
@@ -69,6 +103,9 @@ type PublisherParams struct {
 	ExchangeType string `mapstructure:"exchange_type" yaml:"exchange_type" json:"exchange_type"`
 	Durable      bool   `mapstructure:"durable" yaml:"durable" json:"durable"`
 	AutoDelete   bool   `mapstructure:"auto_delete" yaml:"auto_delete" json:"auto_delete"`
+	// ExchangeArguments are passed as the exchange-declare arguments
+	// table (see SubscriptionParams.ExchangeArguments).
+	ExchangeArguments map[string]any `mapstructure:"exchange_arguments" yaml:"exchange_arguments" json:"exchange_arguments"`
 }
 
 // Kind reports the registry discriminator.
@@ -86,6 +123,16 @@ func (c Config) Validate() error {
 		if err := c.Session.validate(); err != nil {
 			return err
 		}
+	}
+	if c.Receiver.AutoAck {
+		return errors.New("amqp091: receiver.auto_ack=true is unsafe for a managed route: " +
+			"the bridge settles each delivery only after the downstream send/persist succeeds, " +
+			"whereas broker auto-ack acknowledges on delivery and silently drops messages when a " +
+			"downstream step fails. Remove auto_ack — the default (false) provides at-least-once settlement")
+	}
+	if c.Sender.Immediate {
+		return errors.New("amqp091: sender.immediate=true is not supported by RabbitMQ: the broker " +
+			"removed basic.publish 'immediate' in 3.0 and closes the channel when it is set. Remove it")
 	}
 	return nil
 }

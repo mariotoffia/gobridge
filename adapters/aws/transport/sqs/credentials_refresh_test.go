@@ -21,7 +21,7 @@ func TestApplyCredentials_Sender_SwapsClient(t *testing.T) {
 	require.NoError(t, err)
 
 	s.initMu.Lock()
-	s.client = nil
+	s.storeClient(nil)
 	s.initMu.Unlock()
 
 	pw := connectivity.NewPasswordCredential("AKIA_NEW", "SECRET_NEW")
@@ -29,7 +29,7 @@ func TestApplyCredentials_Sender_SwapsClient(t *testing.T) {
 	require.NoError(t, err)
 
 	s.initMu.Lock()
-	got := s.client
+	got := s.loadClient()
 	s.initMu.Unlock()
 	require.NotNil(t, got, "client must be non-nil after ApplyCredentials")
 }
@@ -47,7 +47,7 @@ func TestApplyCredentials_Receiver_SwapsClient(t *testing.T) {
 	require.NoError(t, err)
 
 	r.initMu.Lock()
-	got := r.client
+	got := r.loadClient()
 	r.initMu.Unlock()
 	require.NotNil(t, got, "client must be non-nil after ApplyCredentials")
 }

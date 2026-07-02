@@ -11,4 +11,9 @@ const (
 	MetricSSEBroadcastLatency = "SSEBroadcastLatency"
 	MetricClusterForwards     = "ClusterForwards"
 	MetricSSEDroppedEvents    = "SSEDroppedEvents"
+	// MetricHTTPForwardLoopRefused counts requests refused because they
+	// already carried an X-Bridge-Forwarded marker yet resolved to a remote
+	// route — a routing-disagreement loop that this node breaks instead of
+	// re-forwarding.
+	MetricHTTPForwardLoopRefused = "HTTPForwardLoopRefused"
 )

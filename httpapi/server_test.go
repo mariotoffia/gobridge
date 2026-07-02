@@ -690,7 +690,9 @@ func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 	cfg := runtime.RouteConfig{
 		ID: "test-route",
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}

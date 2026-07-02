@@ -173,7 +173,10 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 			"asb.session-id":     "sess-456",
 			"asb.to":             "dest-queue",
 			"custom-header":      "custom-value",
-			"x-bridge.route-id":  "route-1",
+			// Reserved-header egress policy: internal-only is stripped,
+			// bridge-to-bridge propagated headers pass through.
+			"x-bridge.route-id":       "route-1",  // internal-only -> stripped
+			"x-bridge.correlation-id": "corr-b2b", // bridge-to-bridge -> preserved
 		},
 	})
 
@@ -203,7 +206,11 @@ func TestSender_Send_HeaderMapping(t *testing.T) {
 	}
 
 	assertAppProp(t, msg, "custom-header", "custom-value")
-	assertAppProp(t, msg, "x-bridge.route-id", "route-1")
+	// Egress header policy (central): a bridge-to-bridge reserved header is
+	// preserved so a peer bridge can correlate, but an internal-only
+	// reserved header must be stripped and never reach the wire.
+	assertAppProp(t, msg, "x-bridge.correlation-id", "corr-b2b")
+	requireAbsent(t, msg.ApplicationProperties, "x-bridge.route-id")
 
 	for k := range msg.ApplicationProperties {
 		if len(k) > 4 && k[:4] == "asb." {

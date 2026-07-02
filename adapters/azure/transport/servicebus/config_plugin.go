@@ -10,6 +10,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.VisibilityTimeoutConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the Azure Service Bus
 // transport. Service Bus has no session, so only Receiver/Sender
@@ -61,6 +62,31 @@ func (c Config) Validate() error {
 		return errors.New("servicebus: at least one of receiver.{queue_name|topic+subscription} or sender.{queue_name|topic_name} must be set")
 	}
 	return nil
+}
+
+// EffectiveVisibilityTimeout returns the receiver lock duration this
+// config resolves to at runtime — the Service Bus analog of a visibility
+// window — honouring the same 30s default ReceiverConfig.applyDefaults
+// applies when lock_duration is unset. It satisfies
+// ports.VisibilityTimeoutConfig so the builder threads this per-route
+// value into the runtime validator instead of the Factory's 30s constant,
+// correctly guarding a route whose lock_duration is shorter than the
+// default against a SendTimeout that exceeds half the lock window
+// (Finding 2). It mirrors the identical SQS EffectiveVisibilityTimeout().
+func (c Config) EffectiveVisibilityTimeout() time.Duration {
+	if c.Receiver.LockDuration > 0 {
+		return c.Receiver.LockDuration
+	}
+	return 30 * time.Second
+}
+
+// AutoExtendEnabled reports whether the receiver renews the message lock
+// in the background while a message is in flight, mirroring
+// ReceiverConfig.autoExtendEnabled (default on when unset). It satisfies
+// ports.VisibilityTimeoutConfig so the validator can skip the finite
+// SendTimeout-vs-window check for auto-extended routes (Finding 2 / D2).
+func (c Config) AutoExtendEnabled() bool {
+	return c.Receiver.AutoExtend == nil || *c.Receiver.AutoExtend
 }
 
 func (c Config) toReceiverConfig() ReceiverConfig {

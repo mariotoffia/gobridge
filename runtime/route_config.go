@@ -51,6 +51,14 @@ type RouteConfig struct {
 	// prevent duplicate processing from source redelivery. Zero means
 	// unknown or not applicable (validation is skipped).
 	SourceVisibilityTimeout time.Duration
+
+	// SourceAutoExtend reports whether the source transport renews the
+	// visibility/lock window in the background while a message is in
+	// flight (SQS/ASB auto_extend). When true the SourceVisibilityTimeout
+	// check is skipped: the source will not redeliver during a long send
+	// (barring repeated renewal failure), so a short window paired with
+	// auto-extend is valid and must not be rejected.
+	SourceAutoExtend bool
 }
 
 // CheckRandSource probes crypto/rand once and returns a permanent

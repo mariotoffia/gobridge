@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -23,6 +24,7 @@ type sseSenderConfig struct {
 	id                string
 	path              string
 	heartbeatInterval time.Duration
+	writeTimeout      time.Duration
 	maxClients        int
 	apiKey            string
 	locator           ports.RouteLocator
@@ -47,6 +49,9 @@ type SSESender struct {
 func newSSESender(cfg sseSenderConfig) *SSESender {
 	if cfg.heartbeatInterval == 0 {
 		cfg.heartbeatInterval = 30 * time.Second
+	}
+	if cfg.writeTimeout == 0 {
+		cfg.writeTimeout = defaultSSEWriteTimeout
 	}
 	if cfg.maxClients == 0 {
 		cfg.maxClients = defaultMaxSSEClients
@@ -141,7 +146,13 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		ID:      env.ID(),
 		Subject: env.Subject(),
 		Payload: env.Payload(),
-		Headers: env.Headers(),
+		// Egress to a possibly-external subscriber: strip INTERNAL-ONLY
+		// reserved headers (route-id, route-override, source-id,
+		// content-type) so bridge dispatch bookkeeping never leaks.
+		// Bridge-to-bridge propagated and application headers pass
+		// through — a sender cannot tell a peer bridge from an external
+		// client, so this is the safe default.
+		Headers: messaging.StripInternalOnlyHeaders(env.Headers()),
 	})
 	if err != nil {
 		return fmt.Errorf("sse: marshal event: %w", err)
@@ -159,7 +170,7 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if logging.TraceEnabled(s.cfg.logger) {
 		s.cfg.logger.Log(ctx, logging.LevelTrace, "sse: broadcasting",
 			"sender_id", s.cfg.id,
-			"envelope_id", env.ID,
+			"envelope_id", env.ID(),
 			"client_count", len(clients),
 		)
 	}
@@ -174,7 +185,7 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 			s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1)
 			if s.cfg.logger != nil {
 				s.cfg.logger.Warn("sse: client buffer full, dropping event",
-					"client", c.id, "event_id", env.ID)
+					"client", c.id, "event_id", env.ID())
 			}
 		}
 	}
@@ -190,9 +201,10 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	rc := http.NewResponseController(w)
 
 	if s.cfg.apiKey != "" && !checkAPIKey(r, s.cfg.apiKey) {
-		writeError(w, http.StatusUnauthorized, "invalid or missing API key")
+		writeUnauthorized(w, "invalid or missing API key")
 		return
 	}
 
@@ -255,6 +267,16 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	s.armWriteDeadline(rc)
+	if s.cfg.writeTimeout > 0 && !s.deadlineProbe(rc) && s.cfg.logger != nil {
+		// The per-write deadline is the slow-client eviction mechanism
+		// (H4). If the ResponseWriter chain does not support it (e.g. a
+		// fronting middleware that wraps without Unwrap), eviction is inert
+		// and a stalled reader would pin this goroutine. Warn once so the
+		// gap is visible rather than silent.
+		s.cfg.logger.Warn("sse: per-write deadline unsupported by ResponseWriter; slow-client eviction disabled",
+			"client_id", clientID)
+	}
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -267,17 +289,43 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case event := <-client.events:
+			s.armWriteDeadline(rc)
 			if _, err := w.Write(event); err != nil {
 				return
 			}
 			flusher.Flush()
 		case <-heartbeat.C():
+			s.armWriteDeadline(rc)
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return
 			}
 			flusher.Flush()
 		}
 	}
+}
+
+// armWriteDeadline re-arms the per-write deadline on the underlying
+// connection before each SSE frame. Re-arming on every write overrides a
+// fronting server's global WriteTimeout — which would otherwise kill a
+// healthy long-lived stream — while still bounding any single frame so a
+// stalled client is evicted (the next Write fails and the handler
+// returns) instead of pinning this goroutine. Best-effort: a writer
+// without deadline support (e.g. httptest.ResponseRecorder) returns
+// http.ErrNotSupported, which is ignored. The deadline is sourced from
+// the injected clock so tests stay deterministic.
+func (s *SSESender) armWriteDeadline(rc *http.ResponseController) {
+	if s.cfg.writeTimeout <= 0 {
+		return
+	}
+	_ = rc.SetWriteDeadline(s.cfg.clock.Now().Add(s.cfg.writeTimeout))
+}
+
+// deadlineProbe reports whether the underlying ResponseWriter actually
+// supports write deadlines. It is called once at stream start so an
+// unsupported writer (which makes armWriteDeadline a silent no-op, leaving
+// slow-client eviction inert) can be surfaced to operators.
+func (s *SSESender) deadlineProbe(rc *http.ResponseController) bool {
+	return rc.SetWriteDeadline(s.cfg.clock.Now().Add(s.cfg.writeTimeout)) == nil
 }
 
 type sseEvent struct {

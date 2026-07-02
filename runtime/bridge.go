@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	goruntime "runtime/debug"
 	"sync"
@@ -14,7 +15,6 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
-	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -49,10 +49,10 @@ type Runtime struct {
 	sessionSenders  map[string]*sessionSenderEntry
 	sessionMgrs     map[string]*session.Manager
 	drainers        []*outbox.Drainer
-	dlqRouter       *dlq.Router
 	globalSem       chan struct{}
 	running         bool
 	healthy         bool
+	terminal        bool
 	componentErrors map[string]error
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
@@ -288,11 +288,6 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		errs = append(errs, ctx.Err())
 	}
 
-	// Drain remaining DLQ buffer entries before closing sessions.
-	if rt.dlqRouter != nil {
-		rt.dlqRouter.Close()
-	}
-
 	// Close/flush must complete regardless of caller ctx cancellation,
 	// but we preserve values (trace/correlation) for logging.
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
@@ -305,7 +300,24 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		}
 	}
 	metrics := rt.metrics
+	tracer := rt.tracer
+	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
 	rt.mu.Unlock()
+
+	// Release store resources (e.g. SQLite file handles) after every session
+	// manager has closed and drained. Stores that hold OS resources implement
+	// io.Closer; in-memory stores do not and are skipped. Closing here is safe
+	// because reconfiguration always builds a fresh runtime with its own store
+	// instances (buildStores) before Stopping the old one, so a closed handle
+	// is never shared with a live runtime; without this the old runtime's
+	// handles leaked on every reload. (Finding I5.)
+	for _, s := range stores {
+		if c, ok := s.(io.Closer); ok {
+			if err := c.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 
 	if metrics != nil {
 		flushTimeout := rt.shutdownTimeout / 2
@@ -315,6 +327,20 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
 		defer flushCancel()
 		if err := metrics.Flush(flushCtx); err != nil {
+			errs = append(errs, err)
+		}
+		// Close releases the exporter/provider; Flush alone does not shut the
+		// metric reader down. Bounded by the same flush budget (K2).
+		if err := metrics.Close(flushCtx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	// Close the tracer so buffered spans are flushed and the TracerProvider is
+	// released on shutdown, bounded by closeCtx. NoopTracer.Close is a no-op, so
+	// this is safe when tracing is disabled (K2).
+	if tracer != nil {
+		if err := tracer.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -338,6 +364,7 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 				rt.mu.Lock()
 				rt.componentErrors[name] = err
 				rt.healthy = false
+				rt.terminal = true
 				cancel := rt.cancel
 				rt.mu.Unlock()
 				if cancel != nil {
@@ -356,6 +383,7 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 				return
 			}
 			rt.healthy = false
+			rt.terminal = true
 			cancel := rt.cancel
 			rt.mu.Unlock()
 			if cancel != nil {

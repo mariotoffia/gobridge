@@ -158,7 +158,7 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 **SQLite**: `options.path` (string) -- database file path.
 **DynamoDB**: `options.table_name`, `options.region`, `options.endpoint`.
 
-Special option for outbox: `options.stale_claim_duration` (duration) -- age after which unclaimed records can be re-claimed. Should be close to `step_down_grace + 15s`.
+Outbox option `options.stale_claim_duration` (duration) -- how long a *same-owner* stranded claim waits before another claim attempt may take it (failover reclaim is immediate via the higher fencing version, independent of this). Honoured by the DynamoDB and native SQLite outboxes; the in-memory outbox is version-only. Set it above your worst-case drain-batch timeout; `step_down_grace + 15s` (~20s) is a safe rule of thumb.
 
 ```yaml
 stores:
@@ -350,6 +350,8 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_max_concurrency` | int | no | 10 | Max concurrent send goroutines per drain cycle |
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | false | Delay transport connection until lease acquired |
+
+**High-availability profile.** The defaults above (`lease_ttl` 360s) favor low renewal traffic, so worst-case failover approaches 6 minutes. For HA deployments that need failover in the 30--60s band, use the ready-made preset `session.HAConfig` (Go API) or its equivalent recipe -- `lease_ttl: 45s`, `max_renew_fails: 3`, `step_down_grace: 5s` (derived `renew_interval` 15s), paired with the outbox store's `stale_claim_duration: 20s`. The preset encodes the required relationship between these knobs (`step_down_grace < lease_ttl` and `renew_interval × max_renew_fails ≤ lease_ttl`); hand-tuning that gets it wrong won't break single-owner safety -- the lease store and outbox version fencing guarantee that -- but it does cause spurious failovers, slower recovery, or a wider duplicate-send window. See [Scenario 8: High-Availability Profile](scenarios/08-clustered-exclusive-sessions.md#high-availability-profile) for the failover math, the invariants, and the aggressive/conservative variants.
 
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
 

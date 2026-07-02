@@ -95,7 +95,7 @@ Both processors are created in Go and registered on the builder before `Build()`
 ### Transform Processor
 
 ```go
-transformProc := transform.New(transform.Config{
+transformProc, _ := transform.New(transform.Config{
     Name: "reshape",
     Mappings: []transform.FieldMapping{
         {Source: "$.event.user.name", Target: "username", Transform: "string"},
@@ -292,7 +292,7 @@ transform.FieldMapping{
 When the downstream consumer requires a minimal, well-defined schema:
 
 ```go
-transformProc := transform.New(transform.Config{
+transformProc, _ := transform.New(transform.Config{
     Name:         "strict-reshape",
     DropUnmapped: true,
     FailOnError:  true,

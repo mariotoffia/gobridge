@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     status         TEXT NOT NULL DEFAULT 'pending',
     claimed_by     TEXT NOT NULL DEFAULT '',
     claim_version  INTEGER NOT NULL DEFAULT 0,
+    claimed_at     INTEGER NOT NULL DEFAULT 0,
     replay_count   INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL DEFAULT 0,
@@ -73,11 +74,6 @@ const (
 		 VALUES (?, ?)
 		 ON CONFLICT(partition_key) DO UPDATE SET max_version = MAX(max_version, excluded.max_version)`
 
-	selectClaimableIDsSQL = `SELECT id FROM outbox
-		 WHERE partition_key = ? AND (status = 'pending' OR (status = 'claimed' AND claim_version < ?))
-		 ORDER BY created_at, envelope_id
-		 LIMIT ?`
-
 	selectPendingByPartitionSQL = `SELECT ` + outboxColumns + `
 		 FROM outbox
 		 WHERE partition_key = ? AND status = 'pending'
@@ -88,13 +84,44 @@ const (
 		 WHERE expires_at > 0 AND expires_at < ? AND status = 'pending'`
 )
 
+// claimableWhere is the reusable predicate identifying rows a Claim may take:
+// a pending row, a row claimed under a strictly-older fence version (a
+// preempted owner), or — when time-stale reclaim is enabled — a row that is
+// still claimed but whose claim was stranded past the stale cutoff (I1:
+// crash-recovery for an owner that died mid-drain without completing or
+// releasing, mirroring the DynamoDB backend's stale-claim fallback). The
+// claim_version placeholder is always present; the claimed_at cutoff
+// placeholder is present only when staleEnabled, so a store configured
+// without a stale-claim duration stays strictly version-only.
+func claimableWhere(staleEnabled bool) string {
+	w := `(status = 'pending' OR (status = 'claimed' AND claim_version < ?)`
+	if staleEnabled {
+		w += ` OR (status = 'claimed' AND claimed_at > 0 AND claimed_at <= ?)`
+	}
+	return w + `)`
+}
+
+// selectClaimableIDsSQL builds the claimable-ID SELECT. Bind order:
+// partition_key, claim_version, [stale_cutoff_ms], limit.
+func selectClaimableIDsSQL(staleEnabled bool) string {
+	return `SELECT id FROM outbox
+		 WHERE partition_key = ? AND ` + claimableWhere(staleEnabled) + `
+		 ORDER BY created_at, envelope_id
+		 LIMIT ?`
+}
+
 // updateClaimSQL builds the UPDATE statement that flips n records
-// from pending/claimed to claimed under a new owner+version.
-func updateClaimSQL(n int) string {
+// from pending/claimed to claimed under a new owner+version and stamps
+// claimed_at so a later stale-claim reclaim can find a stranded row. The
+// WHERE clause repeats the claimableWhere fence (I2: the claim UPDATE is
+// guarded, not a blind id-list write) so a row that stopped being claimable
+// between select and update is never stolen. Bind order:
+// claimed_by, claim_version, claimed_at, ids..., claim_version, [stale_cutoff_ms].
+func updateClaimSQL(n int, staleEnabled bool) string {
 	return fmt.Sprintf(
 		`UPDATE outbox SET status = 'claimed', claimed_by = ?, claim_version = ?,
-			 replay_count = replay_count + 1
-			 WHERE id IN (%s)`,
+			 claimed_at = ?, replay_count = replay_count + 1
+			 WHERE id IN (%s) AND `+claimableWhere(staleEnabled),
 		placeholders(n),
 	)
 }
@@ -113,6 +140,23 @@ func selectByIDsSQL(n int) string {
 func updateCompleteSQL(n int) string {
 	return fmt.Sprintf(
 		`UPDATE outbox SET status = 'completed', completed_at = ?
+			 WHERE id IN (%s) AND status = 'claimed' AND claimed_by = ? AND claim_version = ?`,
+		placeholders(n),
+	)
+}
+
+// releaseOutboxSQL builds the UPDATE statement that returns n records
+// from claimed back to pending iff they are still claimed by the token
+// owner at the supplied claim_version (owner+version+status fence, the
+// same fence as updateCompleteSQL). It clears claimed_by so the row is
+// re-claimable on the next drain; claim_version is left as-is (it is
+// irrelevant once pending and is overwritten by the next Claim). The
+// outbox schema has no claimed_at column, so no claim timestamp is
+// reset. replay_count is untouched — the next Claim increments it,
+// preserving the poison-message cap.
+func releaseOutboxSQL(n int) string {
+	return fmt.Sprintf(
+		`UPDATE outbox SET status = 'pending', claimed_by = ''
 			 WHERE id IN (%s) AND status = 'claimed' AND claimed_by = ? AND claim_version = ?`,
 		placeholders(n),
 	)

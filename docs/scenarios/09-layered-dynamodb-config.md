@@ -428,10 +428,22 @@ The DynamoDB config table uses the following schema. One item per bridge, identi
 |-----------|------|-----|-------------|
 | `PK` | String | Partition | `config#<bridge-id>` (e.g., `config#production`) |
 | `SK` | String | Sort | `current` |
-| `config` | Map | -- | The full or partial `BridgeConfig` as a DynamoDB map |
-| `version` | Number | -- | Monotonically increasing version for change detection |
-| `updated_at` | String | -- | ISO 8601 timestamp of last update |
+| `data` | String | -- | The full or partial `BridgeConfig` serialized as a JSON string |
+| `version` | Number | -- | Monotonically increasing version for change detection and compare-and-set writes |
 
-The DynamoDB loader polls this item at `PollInterval` and compares the `version` field. When the version changes, it deserializes the `config` attribute into a `BridgeConfig` struct and emits it through the watcher channel.
+The DynamoDB loader detects changes via DynamoDB Streams by default (falling
+back to `version`-number polling at `PollInterval` when streams are not
+enabled on the table). On a change it reads the item with a strongly
+consistent read, parses the `data` JSON string into a `BridgeConfig`, and
+emits it through the watcher channel.
 
-To update the overlay, write a new item with an incremented `version`. The bridge picks up the change within one poll interval (default 30 seconds).
+Reads are strongly consistent so an admin `Save` is observed immediately by
+watchers. `Save` is a compare-and-set: it reads the current `version`, then
+writes `version+1` guarded by a `ConditionExpression` on the unchanged
+`version`. Concurrent admin writes therefore cannot silently lose updates —
+the losing writer receives a version-mismatch error and must reload and
+retry.
+
+To update the overlay out-of-band, write a new item whose `data` JSON string
+carries the new config and whose `version` is incremented; guard the write on
+the previous `version` to avoid clobbering a concurrent update.

@@ -30,6 +30,13 @@ type ForwarderConfig struct {
 	MaxIdleConnsPerHost int
 	MaxConnsPerHost     int
 	Clock               clock.Clock
+	// ForwardToken is the shared internal secret sent as
+	// X-Bridge-Forward-Token so the receiving peer can distinguish a
+	// trusted bridge-to-bridge hop from a spoofed client request. It MUST
+	// match the receiver-side forward token (Factory.WithForwardToken).
+	// Empty disables the token (the receiver then ignores the forwarded
+	// marker entirely — see (*Receiver).forwardTrusted).
+	ForwardToken string
 }
 
 // DefaultForwarderConfig returns production-safe defaults.
@@ -48,11 +55,12 @@ func DefaultForwarderConfig() ForwarderConfig {
 // HTTPForwarder implements ports.MessageForwarder using HTTP POST
 // to forward messages to other gobridge instances in the cluster.
 type HTTPForwarder struct {
-	cfg        ForwarderConfig
-	client     *http.Client
-	pathPrefix string
-	clusterKey string
-	logger     *slog.Logger
+	cfg          ForwarderConfig
+	client       *http.Client
+	pathPrefix   string
+	clusterKey   string
+	forwardToken string
+	logger       *slog.Logger
 }
 
 // NewHTTPForwarder creates a forwarder that sends messages to remote instances.
@@ -104,7 +112,8 @@ func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterK
 				IdleConnTimeout:     cfg.IdleConnTimeout,
 			},
 		},
-		pathPrefix: pathPrefix,
+		pathPrefix:   pathPrefix,
+		forwardToken: cfg.ForwardToken,
 	}
 	if len(clusterKey) > 0 {
 		f.clusterKey = clusterKey[0]
@@ -114,6 +123,16 @@ func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterK
 
 // SetLogger configures the forwarder's logger for trace/debug output.
 func (f *HTTPForwarder) SetLogger(l *slog.Logger) { f.logger = l }
+
+// setForwardedKeyHeader copies a reserved envelope header onto the
+// trusted external-producer HTTP header consumed by the receiver's
+// ingress path, when present and non-empty. No-op for absent keys so a
+// forwarded request carries only the keys the original envelope held.
+func setForwardedKeyHeader(req *http.Request, httpHeader string, env *messaging.Envelope, envHeader string) {
+	if v, ok := env.Headers().GetString(envHeader); ok && v != "" {
+		req.Header.Set(httpHeader, v)
+	}
+}
 
 // retryDelay returns a linearly interpolated delay between
 // RetryInitialDelay and RetryMaxDelay for the given 1-based attempt.
@@ -167,10 +186,22 @@ func (f *HTTPForwarder) Forward(
 		return shared.ErrForwardFailed.Wrap(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Bridge-Forwarded", "true")
+	req.Header.Set(headerForwarded, "true")
+	if f.forwardToken != "" {
+		req.Header.Set(headerForwardToken, f.forwardToken)
+	}
 	if f.clusterKey != "" {
 		req.Header.Set("X-API-Key", f.clusterKey)
 	}
+	// Re-emit the first-class idempotency / dedup / ordering keys as the
+	// trusted external-producer HTTP headers so they survive the
+	// receiver's reserved-header strip and are re-stamped on the far
+	// side. The remaining bridge-to-bridge headers (tenant, correlation,
+	// causation, trace, forwarded-from/hop) require the authenticated
+	// envelope-propagation contract that is deferred — see doc.go.
+	setForwardedKeyHeader(req, headerIdempotencyKey, env, messaging.HeaderIdempotencyKey)
+	setForwardedKeyHeader(req, headerDeduplicationID, env, messaging.HeaderDeduplicationID)
+	setForwardedKeyHeader(req, headerOrderingKey, env, messaging.HeaderOrderingKey)
 
 	var lastErr error
 	for attempt := 0; attempt <= f.cfg.MaxRetries; attempt++ {

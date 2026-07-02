@@ -149,6 +149,7 @@ func (s *ControllableSession) Start(_ context.Context) error {
 		return s.startErr
 	}
 	s.startCount++
+	s.connected = true
 	return nil
 }
 
@@ -177,6 +178,7 @@ func (s *ControllableSession) Close(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closeCount++
+	s.connected = false
 	return nil
 }
 
@@ -190,4 +192,10 @@ func (s *ControllableSession) GetStartCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.startCount
+}
+
+func (s *ControllableSession) GetCloseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCount
 }

@@ -20,22 +20,43 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-// checkAPIKey validates the request API key using constant-time comparison.
-// Both values are SHA256-hashed before comparison to prevent length-based
-// timing leaks (subtle.ConstantTimeCompare returns 0 immediately when
-// slice lengths differ).
+// bearerChallenge is the RFC 7235 WWW-Authenticate value returned with
+// every 401 from a Bearer-capable endpoint so standard HTTP clients
+// learn how to authenticate. The transport accepts the same secret via
+// the X-API-Key header or "Authorization: Bearer <key>"; the Bearer
+// scheme is advertised as the canonical challenge.
+const bearerChallenge = `Bearer realm="gobridge"`
+
+// writeUnauthorized writes a 401 response with the WWW-Authenticate
+// challenge. The challenge header MUST be set before the status line is
+// written (headers added after WriteHeader are dropped), so it is set
+// before delegating to writeError.
+func writeUnauthorized(w http.ResponseWriter, message string) {
+	w.Header().Set("WWW-Authenticate", bearerChallenge)
+	writeError(w, http.StatusUnauthorized, message)
+}
+
+// constantTimeSecretMatch reports whether got and want are equal using a
+// constant-time comparison over their SHA-256 digests. Hashing first
+// keeps the comparison constant-time even when the two values differ in
+// length — subtle.ConstantTimeCompare returns 0 immediately for unequal
+// slice lengths, which would otherwise leak the secret length.
+func constantTimeSecretMatch(got, want string) bool {
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+// checkAPIKey validates the request API key using constant-time
+// comparison against either the X-API-Key header or a Bearer token. See
+// constantTimeSecretMatch for the length-leak rationale.
 func checkAPIKey(r *http.Request, key string) bool {
-	expHash := sha256.Sum256([]byte(key))
-	if got := r.Header.Get("X-API-Key"); len(got) > 0 {
-		gotHash := sha256.Sum256([]byte(got))
-		if subtle.ConstantTimeCompare(gotHash[:], expHash[:]) == 1 {
-			return true
-		}
+	if got := r.Header.Get("X-API-Key"); len(got) > 0 && constantTimeSecretMatch(got, key) {
+		return true
 	}
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		token := strings.TrimPrefix(auth, "Bearer ")
-		tHash := sha256.Sum256([]byte(token))
-		if subtle.ConstantTimeCompare(tHash[:], expHash[:]) == 1 {
+		if constantTimeSecretMatch(token, key) {
 			return true
 		}
 	}

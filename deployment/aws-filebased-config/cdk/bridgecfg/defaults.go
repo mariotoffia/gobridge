@@ -16,10 +16,11 @@ const (
 	// they want it.
 	DefaultMonitorAddr = ""
 
-	// DefaultAdminAPIPathPrefix is the documented prefix for admin
-	// endpoints; the bridge HTTP server mounts /healthz, /readyz
-	// and /api/v1/* under this. Carried as a constant so docs and
-	// tests share a single source of truth.
+	// DefaultAdminAPIPathPrefix is the documented prefix for the bridge
+	// HTTP API; the admin server mounts /api/v1/admin/* and the monitor
+	// server mounts /api/v1/monitor/* (health/live/ready) under this
+	// prefix. Carried as a constant so docs and tests share a single
+	// source of truth.
 	DefaultAdminAPIPathPrefix = "/api/v1"
 
 	// DefaultMQTTKeepAlive is the keep-alive (in seconds) the MQTT

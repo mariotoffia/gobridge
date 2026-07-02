@@ -28,7 +28,7 @@ flowchart LR
 
     subgraph HTTP Admin
         OP[Operator] -->|GET /dlq| API[Admin API\n:8080]
-        OP -->|POST /dlq/replay| API
+        OP -->|POST /dlq/redrive| API
         API --> DLQ
         API -->|re-inject| Route
     end
@@ -164,19 +164,21 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
 }
 ```
 
-### Replay DLQ Entries
+### Redrive DLQ Entries
 
-Re-inject entries back into their original route. Maximum 1000 IDs per request.
+Re-inject (redrive) entries back into their original route. Maximum 100 IDs per
+request. Successfully redriven entries are automatically deleted from the DLQ
+store.
 
 ```bash
 curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"ids": ["dlq-001", "dlq-002"]}' \
-  "http://localhost:8080/api/v1/admin/dlq/replay" | jq .
+  "http://localhost:8080/api/v1/admin/dlq/redrive" | jq .
 ```
 
 ```json
-{ "replayed": 2 }
+{ "redriven": 2, "failed": 0 }
 ```
 
 ### Purge DLQ Entries
@@ -212,7 +214,7 @@ sequenceDiagram
     O->>D: GET /api/v1/admin/dlq/messages
     D-->>O: Full message bodies
     Note over O: Diagnose root cause, deploy fix
-    O->>D: POST /api/v1/admin/dlq/replay
+    O->>D: POST /api/v1/admin/dlq/redrive
     D->>B: Re-inject envelope into route
     B->>B: Reprocess (succeeds this time)
 ```

@@ -29,9 +29,9 @@ Override default addresses with the `admin_addr`, `monitor_addr`, and
 > **Health check note:** The health probe endpoints (`/health`, `/live`,
 > `/ready`) are registered only on the **monitor server** (port 8081). For
 > ALB target groups on ports 8080 and 8082, configure the health check to
-> use port 8081 with path `/api/v1/monitor/health`. The ECS container-level
-> health check uses `wget -q --spider http://localhost:8080/healthz` as a
-> simple connectivity test; this is separate from ALB health checking.
+> use port 8081 with path `/api/v1/monitor/health`. The CDK defines no
+> ECS container-level health check; if you add one, target the same monitor
+> endpoint (`wget -q --spider http://localhost:8081/api/v1/monitor/health`).
 
 ---
 
@@ -44,10 +44,10 @@ port externally only when HTTP ingress or SSE egress is required.
 
 | Setting | Value | Rationale |
 |---------|-------|-----------|
-| Interval | 30 s | Matches ECS container health check interval |
-| Timeout | 5 s | Matches ECS health check timeout |
+| Interval | 15 s | Balances detection speed against probe overhead |
+| Timeout | 5 s | Ample margin over the monitor health handler latency |
 | Healthy threshold | 2 | Two consecutive passes before routing traffic |
-| Unhealthy threshold | 3 | Three consecutive failures before draining |
+| Unhealthy threshold | 2 | Two consecutive failures before draining |
 | Path | `/api/v1/monitor/health` | Returns structured health status with component errors |
 | Port override | `8081` | Health probes are on the monitor server only |
 | Matcher | `200` | Only route traffic to healthy instances |
@@ -78,10 +78,10 @@ adminTG := elbv2.NewApplicationTargetGroup(stack, jsii.String("AdminTG"),
         HealthCheck: &elbv2.HealthCheck{
             Path:                    jsii.String("/api/v1/monitor/health"),
             Port:                    jsii.String("8081"),
-            Interval:                awscdk.Duration_Seconds(jsii.Number(30)),
+            Interval:                awscdk.Duration_Seconds(jsii.Number(15)),
             Timeout:                 awscdk.Duration_Seconds(jsii.Number(5)),
             HealthyThresholdCount:   jsii.Number(2),
-            UnhealthyThresholdCount: jsii.Number(3),
+            UnhealthyThresholdCount: jsii.Number(2),
         },
         StickinessCookieDuration: awscdk.Duration_Minutes(jsii.Number(5)),
     },

@@ -54,6 +54,12 @@ type Watcher struct {
 	started     chan struct{}
 	startedOnce sync.Once
 	lastApplied atomic.Pointer[time.Time]
+
+	// coalescedReloads counts reloads whose predecessor was still queued and
+	// had to be evicted so the newest config could be enqueued (I4). It is a
+	// convergence signal, not a loss signal: the consumer still receives the
+	// latest file state.
+	coalescedReloads atomic.Uint64
 }
 
 // WatcherOption configures a Watcher.
@@ -208,8 +214,16 @@ func (w *Watcher) LastApplied() time.Time {
 	return time.Time{}
 }
 
+// CoalescedReloads returns the number of parsed reloads that superseded a
+// still-queued predecessor (I4). A non-zero value means the consumer is
+// slower than the file changes; every reload is still eventually delivered as
+// the latest config, none are silently dropped.
+func (w *Watcher) CoalescedReloads() uint64 {
+	return w.coalescedReloads.Load()
+}
+
 // notifyLoop uses fsnotify for file change detection with debouncing.
-func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan<- *ports.BridgeConfig) {
+func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan *ports.BridgeConfig) {
 	var debounceTimer clock.Timer
 	var debounceCh <-chan time.Time
 
@@ -267,7 +281,7 @@ func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan
 }
 
 // pollLoop periodically reads the file and emits on content change.
-func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig) {
+func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig) {
 	defer func() {
 		close(ch)
 		w.mu.Lock()
@@ -297,7 +311,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig) {
 	}
 }
 
-func (w *Watcher) emitParsed(ch chan<- *ports.BridgeConfig) {
+func (w *Watcher) emitParsed(ch chan *ports.BridgeConfig) {
 	cfg, err := parser.ParseFile(w.path, w.format, w.registry)
 	if err != nil {
 		if w.logger != nil {
@@ -305,11 +319,32 @@ func (w *Watcher) emitParsed(ch chan<- *ports.BridgeConfig) {
 		}
 		return
 	}
-	select {
-	case ch <- cfg:
-		now := w.clk.Now()
-		w.lastApplied.Store(&now)
-	default:
+	// Latest-wins coalescing (I4). The consumer channel is buffered to one.
+	// Instead of silently discarding a valid reload when that slot is full —
+	// which would leave the consumer stuck on a stale config — evict the
+	// superseded pending config and enqueue the newest, so a slow consumer
+	// always converges on the current file state. Only this single producer
+	// goroutine touches the channel's send side, so the evict/enqueue pair
+	// cannot race another writer and the loop terminates in at most a couple
+	// of iterations.
+	for {
+		select {
+		case ch <- cfg:
+			now := w.clk.Now()
+			w.lastApplied.Store(&now)
+			return
+		default:
+		}
+		select {
+		case <-ch:
+			w.coalescedReloads.Add(1)
+			if w.logger != nil {
+				w.logger.Warn("file config watcher: superseded a queued reload before the consumer read it",
+					"path", w.path, "coalesced_total", w.coalescedReloads.Load())
+			}
+		default:
+			// Consumer drained the slot concurrently; retry the send.
+		}
 	}
 }
 

@@ -251,7 +251,7 @@ func TestE2E_DynamoDB_SharedOutboxFlow(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	if err := leaseStore.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure lease table: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestE2E_DynamoDB_LeaseTransfer(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	_ = leaseStore.EnsureTable(context.Background())
 	ddblocal.CleanupTable(t, client, leaseTable)
 
@@ -564,7 +564,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	if err := leaseStore.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure lease table: %v", err)
 	}
@@ -695,7 +695,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	_ = leaseStore.EnsureTable(context.Background())
 	ddblocal.CleanupTable(t, client, leaseTable)
 
@@ -788,7 +788,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	_ = leaseStore.EnsureTable(context.Background())
 	ddblocal.CleanupTable(t, client, leaseTable)
 
@@ -874,7 +874,7 @@ func TestE2E_DynamoDB_FanOutAtomicity(t *testing.T) {
 	leaseTable := ddblocal.UniqueTable("leases")
 	outboxTable := ddblocal.UniqueTable("outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	_ = leaseStore.EnsureTable(context.Background())
 	ddblocal.CleanupTable(t, client, leaseTable)
 

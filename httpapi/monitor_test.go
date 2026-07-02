@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -57,6 +58,32 @@ func TestHandleLive_ReturnsAlive(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "alive", body["status"])
+}
+
+// terminalRuntimeStub satisfies ports.Runtime by embedding the interface and
+// overriding only Terminal — the sole method handleLive calls. Any other call
+// would panic on the nil embedded interface, which keeps the test honest about
+// handleLive's dependencies.
+type terminalRuntimeStub struct{ ports.Runtime }
+
+func (terminalRuntimeStub) Terminal() bool { return true }
+
+// TestHandleLive_TerminalReturns503 validates the liveness probe fails closed
+// when the runtime is terminal (an unrecoverable component failure that
+// cancelled the runtime). Failing liveness is what makes Kubernetes restart a
+// dead-but-running process instead of leaving it wedged.
+func TestHandleLive_TerminalReturns503(t *testing.T) {
+	s := New(terminalRuntimeStub{}, testConfig())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/live", nil)
+	s.handleLive(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	assert.Equal(t, "terminal", body["status"])
 }
 
 // TestMonitorHandleReady_NotRunning validates the readiness probe returns 503

@@ -89,7 +89,9 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-alpha",
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, nil, nil)
@@ -137,7 +139,9 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-with-session",
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}, receiver, sender, sess, sessCfg)

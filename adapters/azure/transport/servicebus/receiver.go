@@ -50,6 +50,13 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if clk == nil {
 		clk = clock.System
 	}
+	if cfg.Prefetch != 0 && l != nil {
+		// Finding 7: the configured prefetch cannot be honoured because
+		// azservicebus v1.10.0 exposes no public prefetch knob. Warn so the
+		// setting is not silently misleading operators.
+		l.Warn("servicebus: prefetch is configured but not supported by the Azure SDK; ignoring",
+			"prefetch", cfg.Prefetch)
+	}
 	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
 }
 
@@ -129,14 +136,14 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 
 	recvOpts := asbReceiverOptions{
-		ReceiveAndDelete: r.cfg.ReceiveMode == "ReceiveAndDelete",
+		ReceiveAndDelete: r.cfg.receiveAndDelete(),
 		SubQueue:         r.cfg.SubQueue,
 	}
 	entityName := r.entityName()
 
 	if r.cfg.SessionID != "" {
 		sessOpts := asbSessionOptions{
-			ReceiveAndDelete: r.cfg.ReceiveMode == "ReceiveAndDelete",
+			ReceiveAndDelete: r.cfg.receiveAndDelete(),
 		}
 
 		var seam asbAPI
@@ -164,14 +171,30 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		r.client = seam
 	}
 
-	sender, err := asbClient.NewSender(entityName)
-	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("servicebus: could not create retry scheduler sender",
-				"entity", entityName, "error", err)
+	// Finding 2 (no message duplication): the scheduled-retry sender
+	// addresses the entity by name. For a topic subscription the entity
+	// name is the TOPIC, so a scheduled retry would be published to the
+	// topic and fan out to *every* sibling subscription — duplicating the
+	// message. Only a queue can safely self-schedule (its entity name is
+	// the queue itself). For subscriptions we leave scheduler == nil and
+	// asbDelivery.Retry falls back to AbandonMessage (same-subscription
+	// redelivery, no fan-out).
+	if r.cfg.QueueName != "" {
+		sender, err := asbClient.NewSender(entityName)
+		if err != nil {
+			if r.logger != nil {
+				r.logger.Warn("servicebus: could not create retry scheduler sender",
+					"entity", entityName, "error", err)
+			}
+		} else {
+			r.scheduler = sender
 		}
-	} else {
-		r.scheduler = sender
+	} else if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug,
+			"servicebus: delayed-retry scheduler disabled for topic subscription (would fan out to sibling subscriptions); using abandon-based redelivery",
+			"topic", r.cfg.TopicName,
+			"subscription", r.cfg.SubscriptionName,
+		)
 	}
 
 	r.asbClient = asbClient
@@ -191,13 +214,22 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 
 	r.startedOnce.Do(func() { close(r.started) })
 
+	// Auto-extend never runs in ReceiveAndDelete mode: the broker settles
+	// the message at receive time, so there is no lock to renew.
+	autoExtend := r.cfg.autoExtendEnabled() && !r.cfg.receiveAndDelete()
+	// A topic subscription cannot self-schedule a delayed retry without
+	// fanning the scheduled copy out to sibling subscriptions, so the
+	// delivery falls back to abandon (logged at debug, not error).
+	delayedRetryDisabled := r.cfg.QueueName == ""
+	receiveAndDelete := r.cfg.receiveAndDelete()
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
 		pollStart := r.clock().Now()
-		deliveries, err := r.receiveAndConvert(ctx)
+		raws, err := r.pollAndConvert(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -221,8 +253,33 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 
-		for _, del := range deliveries {
-			if err := emit(ctx, del); err != nil {
+		for _, raw := range raws {
+			// Per-message context tree (mirrors the SQS adapter):
+			// deliveryCtx is handed to emit() AND to newDelivery (as
+			// processingCancel). If emit fails we cancel it so the
+			// auto-extend goroutine stops and the broker lock lapses for
+			// redelivery — never left silently held. On the happy path the
+			// settlement methods free it via cleanupContext().
+			deliveryCtx, deliveryCancel := context.WithCancel(ctx)
+			del := newDelivery(
+				deliveryCtx,
+				raw.env,
+				r.client,
+				r.scheduler,
+				raw.msg,
+				r.cfg.LockDuration,
+				autoExtend,
+				deliveryCancel,
+				r.logger,
+				r.metrics,
+				r.clock(),
+				r.cfg.MinAutoExtendInterval,
+			)
+			del.receiveAndDelete = receiveAndDelete
+			del.delayedRetryDisabled = delayedRetryDisabled
+
+			if err := emit(deliveryCtx, del); err != nil {
+				deliveryCancel()
 				return err
 			}
 		}

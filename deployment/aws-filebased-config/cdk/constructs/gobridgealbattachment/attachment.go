@@ -1,10 +1,39 @@
 // Package gobridgealbattachment exposes the GoBridgeALBAttachment
 // construct: it attaches a previously-built GoBridgeSingle or
 // GoBridgeCluster facade to a consumer-supplied ApplicationListener
-// by creating a control + worker target group, registering the ECS
-// services as targets, and emitting listener rules whose path
-// patterns are derived from the deployed yaml (admin API + status +
-// healthz/readyz + each HTTP receiver path).
+// by creating admin (control), monitor, and transport (worker) target
+// groups, registering the ECS services as targets, and emitting
+// listener rules whose path patterns are derived from the deployed
+// yaml (monitor API + admin API + status + each HTTP receiver path).
+//
+// # Target groups, ports and health checks
+//
+// GoBridge serves three HTTP listeners on distinct ports: admin
+// (config API + status), monitor (public health/live/ready probes
+// plus the authenticated topology/routes/deephealth endpoints) and
+// transport (HTTP receivers). Each concern maps to its own target
+// group on the matching container port:
+//
+//   - ControlTargetGroup -> admin port: "/api/v1/status*" and
+//     "/api/v1/*".
+//   - MonitorTargetGroup -> monitor port: "/api/v1/monitor/*". This is
+//     the HealthzURL target and the endpoint every target group
+//     health-checks.
+//   - WorkerTargetGroup -> transport port: each HTTP receiver path.
+//     The transport target group is created only when the yaml declares
+//     at least one HTTP receiver (otherwise the transport port is
+//     unmapped and targeting it would fail synth). When absent,
+//     WorkerTargetGroup falls back to the monitor target group so
+//     consumers (e.g. the alarms construct) always get an attached
+//     target group.
+//
+// Every target group health-checks the monitor port with path
+// "/api/v1/monitor/health" (the only server exposing the probes) via
+// the health-check port override. The monitor target group registers
+// *every* bridge service so the ALB is granted ingress to the monitor
+// port on each service security group -- without that target
+// registration the port-overridden health checks would be unreachable
+// and tasks would flap unhealthy.
 //
 // # Reserved priority range
 //
@@ -18,15 +47,17 @@
 //
 // # Single facade target groups
 //
-// For Single, both target groups are still emitted as distinct
-// CDK resources but both forward to the single Fargate service.
-// Keeping the two-TG layout makes the listener rule wiring uniform
-// across Single and Cluster and simplifies T15's URL/output layer.
+// For Single, the control and monitor target groups (and the transport
+// target group when HTTP receivers are declared) are emitted as
+// distinct CDK resources but all forward to the single Fargate service.
+// Keeping the layout uniform across Single and Cluster keeps the
+// listener-rule wiring and the T15 URL/output layer simple.
 package gobridgealbattachment
 
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -45,11 +76,15 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Documented priority offsets, relative to BasePriority.
+// Documented priority offsets, relative to BasePriority. Lower
+// numbers win on the ALB, so the specific "/api/v1/monitor/*" and
+// "/api/v1/status*" rules must precede the broad "/api/v1/*" admin
+// catch-all -- otherwise the catch-all would shadow monitor traffic
+// onto the admin port.
 const (
-	OffsetAdminAPI      = 0
+	OffsetMonitor       = 0
 	OffsetAdminStatus   = 10
-	OffsetHealthz       = 20
+	OffsetAdminAPI      = 20
 	OffsetReceiversBase = 30
 
 	// ReservedSpan is the size of the reserved priority window
@@ -70,6 +105,18 @@ const (
 	// rule (lower priority number wins).
 	DefaultAdminStatusPath = "/api/v1/status*"
 
+	// DefaultMonitorPath is the path pattern routed to the monitor
+	// target group. The runtime serves the unauthenticated
+	// health/live/ready probes and the authenticated
+	// topology/routes/deephealth endpoints under this prefix on the
+	// monitor port.
+	DefaultMonitorPath = "/api/v1/monitor/*"
+
+	// MonitorHealthPath is the unauthenticated health probe every
+	// target group health-checks and the path HealthzURL resolves to.
+	// It matches the route registered in httpapi/monitor.go.
+	MonitorHealthPath = "/api/v1/monitor/health"
+
 	// ManifestVersion is the schema sentinel published as
 	// `<prefix>/manifest-version` by [GoBridgeALBAttachment.WithSSMExports].
 	// Bump when the set or semantics of published SSM parameters
@@ -79,10 +126,12 @@ const (
 )
 
 // HealthCheckProps overrides the default health-check configuration
-// applied to BOTH target groups. Zero-value fields fall through to
-// the defaults documented on AttachmentProps.HealthCheck.
+// applied to all three target groups. Zero-value fields fall through
+// to the defaults documented on AttachmentProps.HealthCheck.
 type HealthCheckProps struct {
-	// Path defaults to "/healthz".
+	// Path defaults to MonitorHealthPath ("/api/v1/monitor/health").
+	// The health check always targets the monitor port regardless of
+	// Path, because the probes are only served there.
 	Path string
 	// IntervalSeconds defaults to 15.
 	IntervalSeconds float64
@@ -131,7 +180,7 @@ type AttachmentProps struct {
 	BasePriority int
 
 	// HealthCheck overrides the default health-check configuration
-	// applied to both target groups. nil means "use the documented
+	// applied to all three target groups. nil means "use the documented
 	// defaults".
 	HealthCheck *HealthCheckProps
 }
@@ -146,6 +195,7 @@ type GoBridgeALBAttachment struct {
 	inner      constructs.Construct
 	listener   elbv2.IApplicationListener
 	controlTG  elbv2.ApplicationTargetGroup
+	monitorTG  elbv2.ApplicationTargetGroup
 	workerTG   elbv2.ApplicationTargetGroup
 	rules      []elbv2.ApplicationListenerRule
 	base       int
@@ -185,59 +235,104 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 	}
 	defer func() { _ = mat.Close() }()
 
-	hc := buildHealthCheck(props.HealthCheck)
-
-	// 3. Resolve target service(s) + the container port used for
+	// 3. Resolve target service(s) + the container ports used for
 	//    target registration.
-	controlSvc, workerSvc, controlPort, workerPort := resolveTargets(props)
+	tgt := resolveTargets(props)
 
-	// 4. Build the two target groups. For Single both forward to
-	//    the same service but stay as distinct TG resources.
+	// Every target group health-checks the monitor port + path (the
+	// only listener serving the probes) via the health-check port
+	// override.
+	hc := buildHealthCheck(props.HealthCheck, tgt.monitorPort)
+
+	// 4. Build the admin (control) and monitor target groups. These
+	//    always exist; the transport (worker) target group is created
+	//    in step 6 only when the config declares HTTP receivers.
 	controlTG := elbv2.NewApplicationTargetGroup(c, jsii.String("ControlTG"), &elbv2.ApplicationTargetGroupProps{
 		Vpc:         props.Vpc,
-		Port:        jsii.Number(controlPort),
+		Port:        jsii.Number(tgt.controlPort),
 		Protocol:    elbv2.ApplicationProtocol_HTTP,
 		TargetType:  elbv2.TargetType_IP,
 		HealthCheck: hc,
 	})
-	workerTG := elbv2.NewApplicationTargetGroup(c, jsii.String("WorkerTG"), &elbv2.ApplicationTargetGroupProps{
+	monitorTG := elbv2.NewApplicationTargetGroup(c, jsii.String("MonitorTG"), &elbv2.ApplicationTargetGroupProps{
 		Vpc:         props.Vpc,
-		Port:        jsii.Number(workerPort),
+		Port:        jsii.Number(tgt.monitorPort),
 		Protocol:    elbv2.ApplicationProtocol_HTTP,
 		TargetType:  elbv2.TargetType_IP,
 		HealthCheck: hc,
 	})
 
-	controlTG.AddTarget(controlSvc.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
+	controlTG.AddTarget(tgt.control.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
 		ContainerName: jsii.String(gobridgebase.ContainerNameMain),
-		ContainerPort: jsii.Number(controlPort),
+		ContainerPort: jsii.Number(tgt.controlPort),
 	}))
-	workerTG.AddTarget(workerSvc.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
-		ContainerName: jsii.String(gobridgebase.ContainerNameMain),
-		ContainerPort: jsii.Number(workerPort),
-	}))
+	// The monitor TG registers every bridge service: this load-balances
+	// external "/api/v1/monitor/*" traffic across the fleet and --
+	// crucially -- makes CDK open the monitor port on each service's
+	// security group so the port-overridden health checks on the other
+	// target groups are actually reachable.
+	for _, svc := range tgt.monitorTargets {
+		monitorTG.AddTarget(svc.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
+			ContainerName: jsii.String(gobridgebase.ContainerNameMain),
+			ContainerPort: jsii.Number(tgt.monitorPort),
+		}))
+	}
 
-	// 5. Derive the path patterns from yaml + emit listener rules
-	//    at the documented offsets.
+	// 5. Emit the fixed listener rules at the documented offsets.
+	//    Monitor first: "/api/v1/monitor/*" must outrank the broad
+	//    "/api/v1/*" admin rule (lower priority number wins) or the
+	//    catch-all would shadow monitor traffic onto the admin port.
 	adminAPIPath := DefaultAdminAPIPath
 	adminStatusPath := DefaultAdminStatusPath
 
 	rules := []elbv2.ApplicationListenerRule{}
+	rules = append(rules, addRule(c, "RuleMonitor", props.Listener, base+OffsetMonitor,
+		[]string{DefaultMonitorPath}, monitorTG))
 	rules = append(rules, addRule(c, "RuleAdminStatus", props.Listener, base+OffsetAdminStatus,
 		[]string{adminStatusPath}, controlTG))
 	rules = append(rules, addRule(c, "RuleAdminAPI", props.Listener, base+OffsetAdminAPI,
 		[]string{adminAPIPath}, controlTG))
-	rules = append(rules, addRule(c, "RuleHealth", props.Listener, base+OffsetHealthz,
-		[]string{"/healthz", "/readyz"}, workerTG))
 
+	// 6. When the config declares HTTP receivers, build the transport
+	//    (worker) target group on the transport port and route each
+	//    receiver path to it. With no HTTP receivers the transport port
+	//    is unmapped (targeting it would fail synth) and there is no
+	//    receiver traffic, so no transport target group is created and
+	//    WorkerTargetGroup falls back to the monitor TG (see below).
 	receiverPaths := deriveReceiverPaths(mat.Config)
-	for i, p := range receiverPaths {
-		offset := OffsetReceiversBase + i*10
-		if offset >= ReservedSpan {
-			panic(fmt.Sprintf("GoBridgeALBAttachment: too many HTTP receivers — derived offset %d exceeds reserved span %d", offset, ReservedSpan))
+	var transportTG elbv2.ApplicationTargetGroup
+	if len(receiverPaths) > 0 {
+		if !tgt.hasTransport {
+			panic("GoBridgeALBAttachment: HTTP receivers derived from config but no transport port is mapped")
 		}
-		rules = append(rules, addRule(c, fmt.Sprintf("RuleReceiver%d", i), props.Listener, base+offset,
-			[]string{p}, workerTG))
+		transportTG = elbv2.NewApplicationTargetGroup(c, jsii.String("WorkerTG"), &elbv2.ApplicationTargetGroupProps{
+			Vpc:         props.Vpc,
+			Port:        jsii.Number(tgt.transportPort),
+			Protocol:    elbv2.ApplicationProtocol_HTTP,
+			TargetType:  elbv2.TargetType_IP,
+			HealthCheck: hc,
+		})
+		transportTG.AddTarget(tgt.worker.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
+			ContainerName: jsii.String(gobridgebase.ContainerNameMain),
+			ContainerPort: jsii.Number(tgt.transportPort),
+		}))
+		for i, p := range receiverPaths {
+			offset := OffsetReceiversBase + i*10
+			if offset >= ReservedSpan {
+				panic(fmt.Sprintf("GoBridgeALBAttachment: too many HTTP receivers — derived offset %d exceeds reserved span %d", offset, ReservedSpan))
+			}
+			rules = append(rules, addRule(c, fmt.Sprintf("RuleReceiver%d", i), props.Listener, base+offset,
+				[]string{p}, transportTG))
+		}
+	}
+
+	// WorkerTargetGroup exposes the transport TG when it exists, else
+	// the monitor TG (which every service, including the worker, joins),
+	// so consumers such as the alarms construct always receive an
+	// LB-attached target group to derive metrics from.
+	workerTG := transportTG
+	if workerTG == nil {
+		workerTG = monitorTG
 	}
 
 	dns := loadBalancerOf(props.Listener).LoadBalancerDnsName()
@@ -245,7 +340,7 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 		jsii.String("https://"), dns, jsii.String("/api/v1/"),
 	})
 	healthzURL := awscdk.Fn_Join(jsii.String(""), &[]*string{
-		jsii.String("https://"), dns, jsii.String("/healthz"),
+		jsii.String("https://"), dns, jsii.String(MonitorHealthPath),
 	})
 
 	clusterArn, efsID := resolveImplARNs(props)
@@ -255,6 +350,7 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 		inner:      c,
 		listener:   props.Listener,
 		controlTG:  controlTG,
+		monitorTG:  monitorTG,
 		workerTG:   workerTG,
 		rules:      rules,
 		base:       base,
@@ -282,10 +378,22 @@ func (a *GoBridgeALBAttachment) ControlTargetGroup() elbv2.ApplicationTargetGrou
 	return a.controlTG
 }
 
-// WorkerTargetGroup returns the target group that healthz/readyz +
-// HTTP receiver rules forward to.
+// WorkerTargetGroup returns the transport target group that the HTTP
+// receiver rules forward to. When the yaml declares no HTTP receiver
+// there is no transport target group and this returns the monitor
+// target group (which every service, including the worker, joins) so
+// callers always receive an LB-attached target group.
 func (a *GoBridgeALBAttachment) WorkerTargetGroup() elbv2.ApplicationTargetGroup {
 	return a.workerTG
+}
+
+// MonitorTargetGroup returns the target group on the monitor port that
+// "/api/v1/monitor/*" (health/live/ready + the authenticated
+// topology/routes/deephealth endpoints) forwards to. It is also the
+// endpoint every target group health-checks and the target HealthzURL
+// resolves to.
+func (a *GoBridgeALBAttachment) MonitorTargetGroup() elbv2.ApplicationTargetGroup {
+	return a.monitorTG
 }
 
 // Listener returns the consumer-supplied listener the rules were
@@ -310,8 +418,9 @@ func (a *GoBridgeALBAttachment) PublicDnsName() *string { return a.dnsName }
 // ALB themselves.
 func (a *GoBridgeALBAttachment) AdminURL() *string { return a.adminURL }
 
-// HealthzURL returns the deploy-time URL of the worker healthz
-// probe: `https://<albdns>/healthz`.
+// HealthzURL returns the deploy-time URL of the monitor health probe:
+// `https://<albdns>/api/v1/monitor/health`, routed to the monitor
+// target group.
 func (a *GoBridgeALBAttachment) HealthzURL() *string { return a.healthzURL }
 
 // WithCfnOutputs emits two same-stack CloudFormation outputs:
@@ -440,8 +549,8 @@ func addRule(scope constructs.Construct, id string, listener elbv2.IApplicationL
 	})
 }
 
-func buildHealthCheck(o *HealthCheckProps) *elbv2.HealthCheck {
-	path := "/healthz"
+func buildHealthCheck(o *HealthCheckProps, monitorPort float64) *elbv2.HealthCheck {
+	path := MonitorHealthPath
 	interval := 15.0
 	timeout := 5.0
 	healthy := 2.0
@@ -468,7 +577,11 @@ func buildHealthCheck(o *HealthCheckProps) *elbv2.HealthCheck {
 		}
 	}
 	return &elbv2.HealthCheck{
-		Path:                    jsii.String(path),
+		Path: jsii.String(path),
+		// Probe the monitor port regardless of the target group's
+		// traffic port -- the health/live/ready endpoints live only on
+		// the monitor server.
+		Port:                    jsii.String(strconv.FormatFloat(monitorPort, 'f', -1, 64)),
 		Interval:                awscdk.Duration_Seconds(jsii.Number(interval)),
 		Timeout:                 awscdk.Duration_Seconds(jsii.Number(timeout)),
 		HealthyThresholdCount:   jsii.Number(healthy),
@@ -477,15 +590,49 @@ func buildHealthCheck(o *HealthCheckProps) *elbv2.HealthCheck {
 	}
 }
 
-func resolveTargets(p *AttachmentProps) (control, worker awsecs.BaseService, controlPort, workerPort float64) {
+// resolved captures the services + container ports the attachment
+// wires into target groups.
+type resolved struct {
+	control, worker awsecs.BaseService
+	controlPort     float64 // admin: config API + status
+	monitorPort     float64 // health/live/ready probes
+	transportPort   float64 // HTTP receivers; only valid when hasTransport
+	hasTransport    bool    // config declares >=1 HTTP receiver
+	// monitorTargets is every distinct bridge service. The monitor TG
+	// registers all of them so the ALB may reach the monitor port on
+	// each service's security group (required for the port-overridden
+	// health checks) and so "/api/v1/monitor/*" is load-balanced across
+	// the fleet.
+	monitorTargets []awsecs.BaseService
+}
+
+func resolveTargets(p *AttachmentProps) resolved {
 	if p.Single != nil {
 		svc := mustBaseService(p.Single.ControlService())
-		port := adminPort(p.Single.PortMappings())
-		return svc, svc, port, port
+		pm := p.Single.PortMappings()
+		tp, ok := lookupPort(pm, gobridgebase.PortKindTransport)
+		return resolved{
+			control:        svc,
+			worker:         svc,
+			controlPort:    adminPort(pm),
+			monitorPort:    monitorPortOf(pm),
+			transportPort:  tp,
+			hasTransport:   ok,
+			monitorTargets: []awsecs.BaseService{svc},
+		}
 	}
-	cport := adminPort(p.Cluster.ControlPortMappings())
-	wport := adminPort(p.Cluster.WorkerPortMappings())
-	return mustBaseService(p.Cluster.ControlService()), mustBaseService(p.Cluster.WorkerService()), cport, wport
+	ctrl := mustBaseService(p.Cluster.ControlService())
+	wrk := mustBaseService(p.Cluster.WorkerService())
+	tp, ok := lookupPort(p.Cluster.WorkerPortMappings(), gobridgebase.PortKindTransport)
+	return resolved{
+		control:        ctrl,
+		worker:         wrk,
+		controlPort:    adminPort(p.Cluster.ControlPortMappings()),
+		monitorPort:    monitorPortOf(p.Cluster.ControlPortMappings()),
+		transportPort:  tp,
+		hasTransport:   ok,
+		monitorTargets: []awsecs.BaseService{ctrl, wrk},
+	}
 }
 
 // mustBaseService asserts that the IService returned by a facade is
@@ -502,13 +649,36 @@ func mustBaseService(s awsecs.IService) awsecs.BaseService {
 	return bs
 }
 
+// Port fallbacks mirror infra.Default{Admin,Monitor}Addr. In practice
+// the derived mappings always carry admin + monitor (bootstrap
+// Normalized fills both), so these only guard a facade that omits them.
+const (
+	defaultAdminPort   = 8080
+	defaultMonitorPort = 8081
+)
+
 func adminPort(mappings []gobridgebase.PortMapping) float64 {
+	return portOf(mappings, gobridgebase.PortKindAdmin, defaultAdminPort)
+}
+
+func monitorPortOf(mappings []gobridgebase.PortMapping) float64 {
+	return portOf(mappings, gobridgebase.PortKindMonitor, defaultMonitorPort)
+}
+
+func portOf(mappings []gobridgebase.PortMapping, kind gobridgebase.PortKind, def float64) float64 {
+	if p, ok := lookupPort(mappings, kind); ok {
+		return p
+	}
+	return def
+}
+
+func lookupPort(mappings []gobridgebase.PortMapping, kind gobridgebase.PortKind) (float64, bool) {
 	for _, m := range mappings {
-		if m.Kind == gobridgebase.PortKindAdmin {
-			return m.Port
+		if m.Kind == kind {
+			return m.Port, true
 		}
 	}
-	return 8080
+	return 0, false
 }
 
 // deriveReceiverPaths walks the parsed bridge config for HTTP

@@ -56,13 +56,16 @@ func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConf
 }
 
 // NewOutboxStore creates a SQLite outbox store from the typed config.
-func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
+// The runtime-derived StaleClaimDuration is threaded into the store so a
+// claim stranded by a crashed owner is reclaimed once it goes stale (I1);
+// when zero the store stays strictly version-only.
+func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, rt ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	path, err := requiredPath(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return sqliteoutbox.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
+	return sqliteoutbox.NewStore(path, sqliteoutbox.WithStaleClaimDuration(rt.StaleClaimDuration)) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
 }
 
 // NewDLQStore creates a SQLite DLQ store from the typed config.

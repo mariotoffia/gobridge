@@ -21,8 +21,24 @@ type amqpConnection interface {
 	// error (the connection-close cause) and is then closed. Graceful
 	// closes deliver no value before closing.
 	NotifyClose() <-chan error
+	// NotifyBlocked returns a stream of connection block/unblock
+	// notifications the broker sends (connection.blocked /
+	// connection.unblocked) when a resource alarm — memory or disk —
+	// engages or clears TCP backpressure. Observing it lets the session
+	// distinguish broker pushback from ordinary send timeouts. The
+	// channel is closed when the underlying connection closes.
+	NotifyBlocked() <-chan connBlockState
 	// IsClosed reports whether the connection has been closed.
 	IsClosed() bool
+}
+
+// connBlockState is the domain-typed mirror of amqp.Blocking. Active is
+// true while the broker has TCP backpressure engaged; Reason carries the
+// server-supplied cause (e.g. "low on memory"). Kept SDK-free so the
+// Session never references amqp.Blocking.
+type connBlockState struct {
+	Active bool
+	Reason string
 }
 
 // sdkConnection adapts a real *amqp091.Connection to amqpConnection so
@@ -68,17 +84,48 @@ func (c *sdkConnection) NotifyClose() <-chan error {
 	return out
 }
 
+// NotifyBlocked adapts amqp091-go's connection.blocked/unblocked stream to
+// the SDK-free connBlockState channel. The forwarding goroutine exits when
+// the SDK closes its channel on connection teardown.
+func (c *sdkConnection) NotifyBlocked() <-chan connBlockState {
+	in := c.raw.NotifyBlocked(make(chan amqp.Blocking, 1))
+	out := make(chan connBlockState, 1)
+	go func() {
+		defer close(out)
+		for b := range in {
+			out <- connBlockState{Active: b.Active, Reason: b.Reason}
+		}
+	}()
+	return out
+}
+
 // dialFunc abstracts the AMQP dial operation for test-double injection.
 type dialFunc func(url string) (amqpConnection, error)
 
-// defaultDialFromOpts returns a dialFunc that honours TLS and heartbeat
-// configuration. When TLS is enabled, it builds a *tls.Config and uses
-// amqp091.DialTLS_Config; otherwise it uses amqp091.DialConfig with the
-// configured heartbeat interval.
-func defaultDialFromOpts(opts SessionOptions) dialFunc {
-	cfg := amqp.Config{
+// dialConfig builds the amqp.Config used for every (re)dial. It carries
+// the heartbeat interval and the AMQP virtual host.
+//
+// Vhost precedence: a non-empty SessionOptions.Vhost is forwarded to
+// amqp091-go's Config.Vhost, which DialConfig honours over whatever path
+// the broker URL encodes (DialConfig only falls back to the URL path when
+// Config.Vhost == ""). Setting the field is the SDK-correct way to select
+// the vhost and avoids the URL path-escaping pitfalls of names such as
+// "/production" (which must be percent-encoded in a URI but not here). An
+// empty Vhost preserves the historical behaviour of resolving the vhost
+// from the broker URL.
+func dialConfig(opts SessionOptions) amqp.Config {
+	return amqp.Config{
 		Heartbeat: opts.Heartbeat,
+		Vhost:     opts.Vhost,
 	}
+}
+
+// defaultDialFromOpts returns a dialFunc that honours TLS, heartbeat, and
+// virtual-host configuration. When TLS is enabled, it builds a *tls.Config
+// and dials with it; otherwise it uses amqp091.DialConfig with the
+// configured heartbeat interval and vhost.
+func defaultDialFromOpts(opts SessionOptions) dialFunc {
+	cfg := dialConfig(opts)
 	if opts.TLS != nil && opts.TLS.Enable {
 		return func(brokerURL string) (amqpConnection, error) {
 			tlsCfg, err := BuildTLSConfig(opts.TLS)

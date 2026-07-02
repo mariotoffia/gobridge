@@ -16,6 +16,7 @@ func Register(reg *ports.Registry) error {
 				return nil, err
 			}
 		}
+		c.Session.normalizeBrokerURLs()
 		if err := c.Validate(); err != nil {
 			return nil, err
 		}

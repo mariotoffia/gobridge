@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var (
-	_ ports.ReceiverFactory  = (*ReceiverFactory)(nil)
-	_ ports.SenderFactory    = (*SenderFactory)(nil)
-	_ ports.TransportFactory = (*Factory)(nil)
+	_ ports.ReceiverFactory           = (*ReceiverFactory)(nil)
+	_ ports.SenderFactory             = (*SenderFactory)(nil)
+	_ ports.TransportFactory          = (*Factory)(nil)
+	_ ports.VisibilityTimeoutProvider = (*Factory)(nil)
 )
 
 var errInvalidConfig = errors.New("servicebus: spec.Config must be of type servicebus.Config")
@@ -115,3 +117,21 @@ func (f *Factory) Capabilities() []ports.Capability {
 // validated by the SDK at send time and have no runtime-enforceable
 // rendered-address rules of the kind MQTT topics need.
 func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
+
+// VisibilityTimeout returns the default Service Bus message lock
+// duration (30 s) — the ASB analog of a visibility window and the
+// safe-by-default counterpart to ReceiverConfig.LockDuration's own
+// default. The runtime validator uses it to reject a SendTimeout that
+// exceeds half the window, which would risk duplicate processing.
+//
+// The Factory is stateless and has no per-entity LockDuration in scope,
+// so this is a conservative constant rather than a per-receiver value.
+// A route configured with a LONGER lock only gains slack. A route with a
+// SHORTER lock (ASB allows down to 5 s) is threaded through instead via
+// Config.EffectiveVisibilityTimeout() (ports.VisibilityTimeoutConfig),
+// which the builder prefers over this constant (D2, Phase 1b), mirroring
+// the identical SQS boundary. This method remains the fallback when no
+// receiver config is available.
+func (f *Factory) VisibilityTimeout() time.Duration {
+	return 30 * time.Second
+}

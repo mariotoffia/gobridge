@@ -5,6 +5,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Reload tears down the current ConnectionManager and re-runs Start
@@ -56,8 +57,21 @@ func (s *Session) Reload(ctx context.Context) error {
 //  1. Set s.closed = true under mutex — prevents pushEvent from sending.
 //  2. Call cm.Disconnect — may trigger OnConnectError, which calls
 //     pushEvent, but the s.closed guard returns early (safe re-entrancy).
-//  3. Close s.events channel — safe because step 1 guarantees no
-//     concurrent sender can reach the channel send.
+//     Synchronous Route (see acl_router.go) means any publish the Paho
+//     client is still dispatching is processed-then-acked (no loss); if
+//     the socket tears down mid-dispatch the message is left un-acked and
+//     the broker redelivers it to the next owner — at-least-once either way.
+//  3. Await in-flight handlers (bounded by ctx), then close s.events —
+//     safe because step 1 guarantees no concurrent sender can reach the
+//     channel send.
+//
+// Note: this adapter does NOT halt consumption before disconnecting. The
+// Paho Router seam ACKs after Route returns and cannot NACK, so a "stop
+// pulling new work, then drain" gate would have to drop-and-ACK in-flight
+// publishes — silently losing them. Graceful lease step-down (quiesce the
+// source before disconnect, e.g. via EnableManualAcknowledgment so ACKs
+// only follow emit) is a manager-driven concern tracked outside this
+// adapter; until then, step-down relies on broker redelivery above.
 func (s *Session) Close(ctx context.Context) error {
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session closing",
@@ -100,4 +114,39 @@ func (s *Session) Close(ctx context.Context) error {
 		return MapError(disconnErr)
 	}
 	return nil
+}
+
+// handleConnectionUp records that the transport connection is
+// (re)established and signals SessionConnected. autopaho invokes the
+// OnConnectionUp callback (registered in Start) on every (re)connect,
+// which calls this method.
+//
+// Ownership (finding C7): the runtime session manager is the SINGLE
+// owner of reconnect reconciliation. It reacts to the SessionConnected
+// event by calling Reconcile, whose outcome is authoritative and whose
+// failure propagates out of Manager.Run (finding S9). This method must
+// therefore NOT reconcile inline; it only resets local subscription
+// state and emits the event.
+//
+// Ordering is load-bearing: activeSubs is reset to empty BEFORE
+// SessionConnected is emitted. The reset happens-before the event, which
+// happens-before the manager's reconcile reads activeSubs, so on
+// reconnect the manager always observes an empty set and issues a full,
+// authoritative re-subscribe. The previous ordering emitted the event
+// first, letting the manager's reconcile observe stale subscriptions,
+// compute an empty delta, and skip the re-subscribe — which, combined
+// with an inline reconcile that swallowed its own failure, could leave a
+// topic silently unsubscribed with no error surfaced (finding C7).
+func (s *Session) handleConnectionUp() {
+	s.mu.Lock()
+	s.connected = true
+	s.activeSubs = make(map[string]byte)
+	s.mu.Unlock()
+
+	s.pushEvent(ports.SessionConnected, nil)
+
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
+			"client_id", s.opts.ClientID)
+	}
 }

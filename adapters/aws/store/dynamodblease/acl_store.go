@@ -19,8 +19,7 @@ import (
 )
 
 const (
-	defaultTableName   = "gobridge-leases"
-	defaultGracePeriod = 1 * time.Hour
+	defaultTableName = "gobridge-leases"
 
 	attrPK         = "PK"
 	attrOwner      = "owner"
@@ -28,23 +27,33 @@ const (
 	attrAcquiredAt = "acquired_at"
 	attrExpiresAt  = "expires_at"
 	attrRenewedAt  = "renewed_at"
-	attrTTL        = "ttl"
 	attrEndpoints  = "endpoints"
+	// attrTTL is the legacy DynamoDB TTL attribute. New code never WRITES it,
+	// but every mutating operation issues `REMOVE #ttl` to strip any stale
+	// value a pre-fix build may have stamped, so a TTL reaper can never delete
+	// an actively-held lease row and reset its fencing version (see MF-1/J1).
+	attrTTL = "ttl"
 )
 
 // Store implements ports.LeaseStore using DynamoDB conditional writes
 // for fencing-safe lease management.
 //
+// Lease rows double as the monotonic fencing-counter store: the version
+// attribute must survive forever so that a re-acquire after a release can
+// only ever increment it. For this reason lease rows deliberately carry NO
+// DynamoDB TTL attribute — enabling TTL on the lease table would delete a
+// released row and reset its version to 1, breaking fencing-token
+// monotonicity across the cluster.
+//
 // Table schema (configurable via WithTableName):
 //
 //	PK (String): "LEASE#<lease_id>" -- partition key, no sort key
-//	owner, version, acquired_at, expires_at, renewed_at, ttl
+//	owner, version, acquired_at, expires_at, renewed_at
 type Store struct {
-	client      *dynamodb.Client
-	tableName   string
-	gracePeriod time.Duration
-	clk         clock.Clock
-	logger      *slog.Logger
+	client    dynamoAPI
+	tableName string
+	clk       clock.Clock
+	logger    *slog.Logger
 }
 
 // Option configures a Store.
@@ -55,10 +64,16 @@ func WithTableName(name string) Option {
 	return func(s *Store) { s.tableName = name }
 }
 
-// WithGracePeriod sets the TTL grace period added to expires_at for DynamoDB
-// TTL-based item deletion (default: 1 hour).
-func WithGracePeriod(d time.Duration) Option {
-	return func(s *Store) { s.gracePeriod = d }
+// WithGracePeriod is deprecated and now a no-op.
+//
+// Lease rows are the monotonic fencing-counter store and must never be
+// TTL-deleted (see the Store doc comment). The lease store therefore no
+// longer writes a TTL attribute and this option is retained only for
+// backward compatibility with existing call sites.
+//
+// Deprecated: lease rows carry no TTL; this option has no effect.
+func WithGracePeriod(_ time.Duration) Option {
+	return func(*Store) {}
 }
 
 // WithClock overrides the clock used for timestamps.
@@ -85,10 +100,9 @@ func WithLogger(l *slog.Logger) Option {
 //aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
-		client:      client,
-		tableName:   defaultTableName,
-		gracePeriod: defaultGracePeriod,
-		clk:         clock.System,
+		client:    client,
+		tableName: defaultTableName,
+		clk:       clock.System,
 	}
 	for _, o := range opts {
 		o(s)
@@ -116,7 +130,6 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		attrAcquiredAt: &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
 		attrExpiresAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
 		attrRenewedAt:  &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
-		attrTTL:        &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
 	}
 	if len(endpoints) > 0 {
 		item[attrEndpoints] = marshalEndpoints(endpoints)
@@ -139,28 +152,30 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 
 	// Item exists -- attempt expired takeover with atomic version increment.
 	updateExpr := "SET #own = :owner, #ver = #ver + :one, " +
-		"#acq = :now_ms, #exp = :exp_ms, " +
-		"#ren = :now_ms, #ttl_a = :ttl_epoch"
+		"#acq = :now_ms, #exp = :exp_ms, #ren = :now_ms"
 	exprNames := map[string]string{
-		"#own":   attrOwner,
-		"#ver":   attrVersion,
-		"#acq":   attrAcquiredAt,
-		"#exp":   attrExpiresAt,
-		"#ren":   attrRenewedAt,
-		"#ttl_a": attrTTL,
+		"#own": attrOwner,
+		"#ver": attrVersion,
+		"#acq": attrAcquiredAt,
+		"#exp": attrExpiresAt,
+		"#ren": attrRenewedAt,
 	}
 	exprValues := map[string]ddbtypes.AttributeValue{
-		":owner":     &ddbtypes.AttributeValueMemberS{Value: ownerID},
-		":one":       &ddbtypes.AttributeValueMemberN{Value: "1"},
-		":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
-		":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
-		":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+		":owner":  &ddbtypes.AttributeValueMemberS{Value: ownerID},
+		":one":    &ddbtypes.AttributeValueMemberN{Value: "1"},
+		":now_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
+		":exp_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
 	}
 	if len(endpoints) > 0 {
 		updateExpr += ", #ep = :ep"
 		exprNames["#ep"] = attrEndpoints
 		exprValues[":ep"] = marshalEndpoints(endpoints)
 	}
+	// Strip any legacy ttl a pre-fix build may have stamped so a reaper can
+	// never delete this actively-taken lease row (MF-1/J1). REMOVE on an
+	// absent attribute is a harmless no-op on fresh rows.
+	updateExpr += " REMOVE #ttl"
+	exprNames["#ttl"] = attrTTL
 
 	result, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
@@ -200,26 +215,28 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 	expiresAt := now.Add(ttl)
 	pk := leaseKey(leaseID)
 
-	updateExpr := "SET #exp = :exp_ms, #ren = :now_ms, #ttl_a = :ttl_epoch"
+	updateExpr := "SET #exp = :exp_ms, #ren = :now_ms"
 	exprNames := map[string]string{
-		"#own":   attrOwner,
-		"#ver":   attrVersion,
-		"#exp":   attrExpiresAt,
-		"#ren":   attrRenewedAt,
-		"#ttl_a": attrTTL,
+		"#own": attrOwner,
+		"#ver": attrVersion,
+		"#exp": attrExpiresAt,
+		"#ren": attrRenewedAt,
 	}
 	exprValues := map[string]ddbtypes.AttributeValue{
-		":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
-		":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
-		":exp_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
-		":now_ms":    &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
-		":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(expiresAt.Add(s.gracePeriod))},
+		":owner":  &ddbtypes.AttributeValueMemberS{Value: token.Owner},
+		":ver":    &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
+		":exp_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
+		":now_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
 	}
 	if len(endpoints) > 0 {
 		updateExpr += ", #ep = :ep"
 		exprNames["#ep"] = attrEndpoints
 		exprValues[":ep"] = marshalEndpoints(endpoints)
 	}
+	// Strip any legacy ttl so a renewed (actively-held) row is never reaped
+	// (MF-1/J1). This sheds a stale ttl within one renew interval of upgrade.
+	updateExpr += " REMOVE #ttl"
+	exprNames["#ttl"] = attrTTL
 
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
@@ -243,14 +260,17 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 // Release marks the lease as released by clearing the owner and setting
 // expires_at to zero. The item is preserved so that the version counter
 // remains available for monotonic increments on subsequent acquires.
-// DynamoDB TTL will eventually remove the item after the grace period.
+//
+// Released lease rows are deliberately NOT given a TTL: they are the
+// monotonic fencing-counter of record and must never be deleted, or a
+// subsequent fresh acquire would reset the version to 1 and break
+// fencing-token monotonicity across the cluster.
 func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: release", "lease_id", leaseID)
 	}
 
 	pk := leaseKey(leaseID)
-	now := s.clk.Now()
 
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
@@ -259,19 +279,18 @@ func (s *Store) Release(ctx context.Context, leaseID string, token persistence.L
 		},
 		ConditionExpression: aws.String("#own = :owner AND #ver = :ver"),
 		UpdateExpression: aws.String(
-			"SET #own = :empty, #exp = :zero, #ttl_a = :ttl_epoch"),
+			"SET #own = :empty, #exp = :zero REMOVE #ttl"),
 		ExpressionAttributeNames: map[string]string{
-			"#own":   attrOwner,
-			"#ver":   attrVersion,
-			"#exp":   attrExpiresAt,
-			"#ttl_a": attrTTL,
+			"#own": attrOwner,
+			"#ver": attrVersion,
+			"#exp": attrExpiresAt,
+			"#ttl": attrTTL,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":owner":     &ddbtypes.AttributeValueMemberS{Value: token.Owner},
-			":ver":       &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
-			":empty":     &ddbtypes.AttributeValueMemberS{Value: ""},
-			":zero":      &ddbtypes.AttributeValueMemberN{Value: "0"},
-			":ttl_epoch": &ddbtypes.AttributeValueMemberN{Value: epochStr(now.Add(s.gracePeriod))},
+			":owner": &ddbtypes.AttributeValueMemberS{Value: token.Owner},
+			":ver":   &ddbtypes.AttributeValueMemberN{Value: uintStr(token.Version)},
+			":empty": &ddbtypes.AttributeValueMemberS{Value: ""},
+			":zero":  &ddbtypes.AttributeValueMemberN{Value: "0"},
 		},
 	})
 	if err != nil {
@@ -332,6 +351,9 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 	if err != nil {
 		var inUse *ddbtypes.ResourceInUseException
 		if errors.As(err, &inUse) {
+			// Table already exists (possibly from an older build). It is the
+			// fencing counter of record: DynamoDB TTL MUST be disabled on it.
+			s.warnIfTTLEnabled(ctx)
 			return nil
 		}
 		return wrapErr(err, "create lease table failed", "table", s.tableName)
@@ -344,6 +366,36 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 		return wrapErr(err, "wait for lease table to exist failed", "table", s.tableName)
 	}
 	return nil
+}
+
+// warnIfTTLEnabled logs a loud warning when DynamoDB TTL is ENABLED (or
+// enabling) on the lease table. The lease table is the monotonic fencing
+// counter: a reaper deleting a released — or, with a stale legacy ttl, an
+// actively-held — row would reset its version to 1 and break fencing-token
+// monotonicity (split-brain / duplicate commits). This is a preflight
+// safeguard for operators upgrading from a build that wrote a ttl attribute;
+// it never fails EnsureTable (the DescribeTimeToLive call itself may be
+// unsupported on some emulators).
+func (s *Store) warnIfTTLEnabled(ctx context.Context) {
+	if s.logger == nil {
+		return
+	}
+	out, err := s.client.DescribeTimeToLive(ctx, &dynamodb.DescribeTimeToLiveInput{
+		TableName: &s.tableName,
+	})
+	if err != nil || out.TimeToLiveDescription == nil {
+		return
+	}
+	switch out.TimeToLiveDescription.TimeToLiveStatus {
+	case ddbtypes.TimeToLiveStatusEnabled, ddbtypes.TimeToLiveStatusEnabling:
+		s.logger.Warn(
+			"dynamodblease: DynamoDB TTL is ENABLED on the lease table; it is the "+
+				"fencing counter of record and TTL MUST be DISABLED or fencing-token "+
+				"monotonicity will break. Disable table TTL immediately.",
+			"table", s.tableName,
+			"ttl_status", string(out.TimeToLiveDescription.TimeToLiveStatus),
+		)
+	}
 }
 
 // classifyConditionFailure distinguishes between "item not found" and
@@ -385,10 +437,6 @@ func isConditionFailed(err error) bool {
 
 func millisStr(t time.Time) string {
 	return strconv.FormatInt(t.UnixMilli(), 10)
-}
-
-func epochStr(t time.Time) string {
-	return strconv.FormatInt(t.Unix(), 10)
 }
 
 func uintStr(n uint64) string {

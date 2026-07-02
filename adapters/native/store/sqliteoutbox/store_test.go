@@ -2,6 +2,7 @@ package sqliteoutbox_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,8 +12,17 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
+
+// Compile-time assertion that the SQLite store implements the optional
+// OutboxReleaser capability the drainer type-asserts for the A4 transient-
+// failure fast path. It lives in the test file because the production
+// package satisfies its ports structurally (no ports import) per
+// .go-arch-lint.yml; only memorydlq carries an in-package ports assertion.
+var _ ports.OutboxReleaser = (*sqliteoutbox.Store)(nil)
 
 func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	t.Helper()
@@ -221,4 +231,118 @@ func TestExpiresAtRoundTrip(t *testing.T) {
 	if !pending[0].ExpiresAt().Equal(expiry) {
 		t.Fatalf("expiresAt: got %v, want %v", pending[0].ExpiresAt(), expiry)
 	}
+}
+
+// persistSQLite is a small helper that inserts a single pending record
+// under the given session for the Release tests.
+func persistSQLite(t *testing.T, s *sqliteoutbox.Store, id, sessionID string) {
+	t.Helper()
+	rec := persistence.MustOutboxRecord(persistence.OutboxSpec{
+		ID:         id,
+		RouteID:    "route-1",
+		EnvelopeID: "env-" + id,
+		BindingID:  "bind-" + id,
+		SessionID:  sessionID,
+		Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-" + id, Subject: "test"}),
+	})
+	if err := s.Persist(context.Background(), []*persistence.OutboxRecord{rec}); err != nil {
+		t.Fatalf("persist %s: %v", id, err)
+	}
+}
+
+// TestRelease_AllowsSameOwnerRetryAfterTransientFailure proves the A4
+// fast path on the SQLite backend: a live owner returns a
+// transiently-failed claimed record to pending via Release and re-claims
+// it on the next drain with the SAME token version — no fencing-version
+// bump and no wall-clock stale-claim wait. replay_count is unchanged by
+// Release but advances on the re-Claim.
+func TestRelease_AllowsSameOwnerRetryAfterTransientFailure(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+	const sessionID = "sess-rel"
+	pk := persistence.OutboxPartitionKey(sessionID, "")
+	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
+
+	persistSQLite(t, s, "rel-1", sessionID)
+
+	claimed, err := s.Claim(ctx, pk, token, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("first claim: err=%v len=%d", err, len(claimed))
+	}
+	if claimed[0].ReplayCount() != 1 {
+		t.Fatalf("replayCount after first claim = %d, want 1", claimed[0].ReplayCount())
+	}
+
+	if err := s.Release(ctx, []string{"rel-1"}, token); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// Released → pending again; replay_count untouched by Release.
+	pending, err := s.QueryPending(ctx, pk, 10)
+	if err != nil {
+		t.Fatalf("query pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID() != "rel-1" {
+		t.Fatalf("expected rel-1 pending after release, got %v", pending)
+	}
+	if pending[0].Status() != persistence.OutboxPending {
+		t.Fatalf("status after release = %q, want pending", pending[0].Status())
+	}
+	if pending[0].ReplayCount() != 1 {
+		t.Fatalf("replayCount after release = %d, want 1 (unchanged)", pending[0].ReplayCount())
+	}
+
+	// The SAME owner at the SAME version re-claims it; only now does
+	// replay_count advance.
+	reclaimed, err := s.Claim(ctx, pk, token, 10)
+	if err != nil || len(reclaimed) != 1 {
+		t.Fatalf("re-claim: err=%v len=%d", err, len(reclaimed))
+	}
+	if reclaimed[0].ReplayCount() != 2 {
+		t.Fatalf("replayCount after re-claim = %d, want 2", reclaimed[0].ReplayCount())
+	}
+}
+
+// TestRelease_FencingRejectsMismatch verifies Release enforces the
+// owner+version+status fence (identical to Complete): a wrong owner, a
+// never-claimed (pending) record, and an already-completed record are all
+// rejected with shared.ErrStaleFencingToken.
+func TestRelease_FencingRejectsMismatch(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+	token := persistence.LeaseToken{Version: 1, Owner: "owner-A"}
+
+	t.Run("never_claimed_pending_rejected", func(t *testing.T) {
+		persistSQLite(t, s, "relf-pending", "sess-relf-p")
+		err := s.Release(ctx, []string{"relf-pending"}, token)
+		if !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("got %v, want ErrStaleFencingToken", err)
+		}
+	})
+
+	t.Run("wrong_owner_rejected", func(t *testing.T) {
+		persistSQLite(t, s, "relf-owner", "sess-relf-o")
+		if _, err := s.Claim(ctx, "SESSION#sess-relf-o", token, 10); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		wrongOwner := persistence.LeaseToken{Version: 1, Owner: "owner-B"}
+		err := s.Release(ctx, []string{"relf-owner"}, wrongOwner)
+		if !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("got %v, want ErrStaleFencingToken", err)
+		}
+	})
+
+	t.Run("already_completed_rejected", func(t *testing.T) {
+		persistSQLite(t, s, "relf-done", "sess-relf-d")
+		if _, err := s.Claim(ctx, "SESSION#sess-relf-d", token, 10); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if err := s.Complete(ctx, []string{"relf-done"}, token); err != nil {
+			t.Fatalf("complete: %v", err)
+		}
+		err := s.Release(ctx, []string{"relf-done"}, token)
+		if !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("got %v, want ErrStaleFencingToken", err)
+		}
+	})
 }

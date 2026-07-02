@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,7 +25,26 @@ const (
 	defaultCompactionGrace    = 1 * time.Hour
 	defaultStaleClaimDuration = 30 * time.Second
 
+	// defaultResolveMaxAttempts bounds how many times Complete retries a
+	// RecordIDIndex GSI lookup that returns not-found. The GSI is
+	// eventually consistent, so a lookup immediately after a Claim on a
+	// cold key cache can lag; a small bounded retry closes the
+	// duplicate-delivery window without unbounded blocking.
+	//
+	// ponytail: fixed small ceiling; the key cache populated by Claim is
+	// the primary (miss-free) path, so this retry is only exercised on a
+	// cold cache (process restart with in-flight claimed records).
+	defaultResolveMaxAttempts = 5
+	defaultResolveBackoff     = 50 * time.Millisecond
+
 	skPrefix = "OUTBOX#"
+
+	// fenceSK is the sort key of the per-partition fence-metadata row that
+	// holds the monotonic max_claim_version. It is deliberately outside the
+	// OUTBOX# key space so it is invisible to record queries and, having no
+	// GSI key attributes, to every GSI as well.
+	fenceSK             = "FENCE"
+	attrMaxClaimVersion = "max_claim_version"
 )
 
 // Store implements ports.OutboxStore using DynamoDB with partitioned
@@ -43,13 +63,28 @@ const (
 // A RecordIDIndex GSI on the record_id attribute enables O(1) lookup
 // by application-level record ID for the Complete operation.
 type Store struct {
-	client         *dynamodb.Client
+	client         dynamoAPI
 	table          string
 	compactGrace   time.Duration
 	staleClaim     time.Duration
 	maxReplayCount int
 	clk            clock.Clock
 	logger         *slog.Logger
+
+	resolveMaxAttempts int
+	resolveBackoff     time.Duration
+
+	// keyCache maps an application record ID to its base-table (PK, SK),
+	// populated on Claim so Complete can address the base table directly
+	// instead of resolving through the eventually consistent RecordIDIndex
+	// GSI (which can lag and report not-found, causing duplicate delivery).
+	keyMu    sync.Mutex
+	keyCache map[string]recordKey
+}
+
+type recordKey struct {
+	pk string
+	sk string
 }
 
 // Option configures a Store.
@@ -94,6 +129,22 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithCompleteResolveRetry tunes how Complete tolerates RecordIDIndex GSI
+// replication lag when the Claim-populated key cache misses (e.g. after a
+// process restart with in-flight claimed records). attempts is the total
+// number of GSI lookups (>=1) and backoff is the pause between them. Values
+// <= 0 leave the defaults unchanged.
+func WithCompleteResolveRetry(attempts int, backoff time.Duration) Option {
+	return func(s *Store) {
+		if attempts > 0 {
+			s.resolveMaxAttempts = attempts
+		}
+		if backoff > 0 {
+			s.resolveBackoff = backoff
+		}
+	}
+}
+
 // NewStore creates a DynamoDB-backed OutboxStore.
 //
 // The *dynamodb.Client parameter is the SDK boundary input this ACL
@@ -109,6 +160,10 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 		staleClaim:     defaultStaleClaimDuration,
 		maxReplayCount: routing.DefaultMaxReplayAttempts,
 		clk:            clock.System,
+
+		resolveMaxAttempts: defaultResolveMaxAttempts,
+		resolveBackoff:     defaultResolveBackoff,
+		keyCache:           make(map[string]recordKey),
 	}
 	for _, o := range opts {
 		o(s)
@@ -180,6 +235,27 @@ func (s *Store) CreateTable(ctx context.Context) error {
 		TableName: aws.String(s.table),
 	}, 2*time.Minute); err != nil {
 		return wrapErr(err, "wait for outbox table to exist failed", "table", s.table)
+	}
+
+	// Enable DynamoDB TTL on the "ttl" attribute so completed/expired records
+	// are compacted physically. A ttl is stamped on completed records and on
+	// any record carrying an ExpiresAt (including pending ones) — but always
+	// as expiresAt + compactGrace, i.e. strictly at/after the record's own
+	// expiry, so TTL never reaps a still-deliverable record. Records with no
+	// ExpiresAt and the per-partition FENCE metadata rows carry no ttl and are
+	// never reaped. Best-effort: TTL is a housekeeping convenience, not a
+	// correctness requirement, and is already enabled on re-runs.
+	if _, err := s.client.UpdateTimeToLive(ctx, &dynamodb.UpdateTimeToLiveInput{
+		TableName: aws.String(s.table),
+		TimeToLiveSpecification: &ddbtypes.TimeToLiveSpecification{
+			Enabled:       aws.Bool(true),
+			AttributeName: aws.String("ttl"),
+		},
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("dynamodboutbox: enabling DynamoDB TTL failed; completed records not compacted",
+				"table", s.table, "error", err.Error())
+		}
 	}
 	return nil
 }
@@ -288,6 +364,14 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 			With("latestVersion", maxVersion)
 	}
 
+	// Raise the per-partition fence to this (accepted) token version so any
+	// later claim with a lower version is rejected in O(1), even after the
+	// records this owner claims are completed and compacted away. Raise-only
+	// via a conditional write, so concurrent higher versions are preserved.
+	if err := s.raiseFence(ctx, partitionKey, token.Version); err != nil {
+		return nil, err
+	}
+
 	// A claimed record is reclaimable when its claim_version is strictly
 	// older than the incoming token (version-monotonic preemption, matching
 	// the port contract and memory/sqlite) OR when its claim has gone stale
@@ -383,6 +467,9 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 			if err != nil {
 				return nil, err
 			}
+			// Cache the base-table keys so Complete can address this record
+			// directly instead of resolving through the lagging GSI.
+			s.cacheKey(rec.ID(), pk, sk)
 			claimed = append(claimed, rec)
 		}
 
@@ -463,6 +550,8 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			}
 			return wrapErr(err, "outbox complete update failed", "recordID", id, "ownerID", token.Owner)
 		}
+		// Record is terminal; drop its cached keys.
+		s.evictKey(id)
 	}
 
 	return nil
@@ -612,11 +701,79 @@ func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int
 	return records, nil
 }
 
-// maxClaimVersion returns the highest claim_version stamped on any record in
-// the partition (0 if none). Used by Claim to enforce a version-monotonic
-// fence against preempted (stale-version) tokens. Uses strongly consistent
-// reads and projects only claim_version to keep the scan cheap.
+// maxClaimVersion returns the monotonic fence for the partition: the
+// highest claim_version any owner has ever used to claim in this partition
+// (0 if none). It reads a single per-partition fence-metadata row (O(1),
+// strongly consistent) rather than scanning the whole partition.
+//
+// Backward-compatibility: partitions written before the fence row existed
+// have no fence row. On such a cold partition the fence is seeded once from
+// a bounded scan of the existing records' claim_version and persisted, so
+// the O(N) scan happens at most once per partition ever (the fence row
+// carries no TTL and therefore survives).
 func (s *Store) maxClaimVersion(ctx context.Context, partitionKey string) (uint64, error) {
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: partitionKey},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: fenceSK},
+		},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return 0, wrapErr(err, "outbox fence read failed", "partitionKey", partitionKey)
+	}
+	if len(out.Item) > 0 {
+		return numAttrU64(out.Item, attrMaxClaimVersion), nil
+	}
+
+	// Cold partition: seed the fence from existing records once.
+	seed, err := s.maxClaimVersionByScan(ctx, partitionKey)
+	if err != nil {
+		return 0, err
+	}
+	if seed > 0 {
+		if err := s.raiseFence(ctx, partitionKey, seed); err != nil {
+			return 0, err
+		}
+	}
+	return seed, nil
+}
+
+// raiseFence raises the partition fence row's max_claim_version to version
+// using a raise-only conditional write, so concurrent claims with a higher
+// version are never clobbered by a lower one.
+func (s *Store) raiseFence(ctx context.Context, partitionKey string, version uint64) error {
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: partitionKey},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: fenceSK},
+		},
+		UpdateExpression:    aws.String("SET #mcv = :ver"),
+		ConditionExpression: aws.String("attribute_not_exists(#mcv) OR #mcv < :ver"),
+		ExpressionAttributeNames: map[string]string{
+			"#mcv": attrMaxClaimVersion,
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":ver": &ddbtypes.AttributeValueMemberN{Value: u64(version)},
+		},
+	})
+	if err != nil {
+		// Condition failure means a concurrent claim already advanced the
+		// fence to >= version — the monotonic invariant still holds.
+		if isConditionFailed(err) {
+			return nil
+		}
+		return wrapErr(err, "outbox fence raise failed", "partitionKey", partitionKey)
+	}
+	return nil
+}
+
+// maxClaimVersionByScan computes the fence seed for a cold partition by
+// scanning existing record rows (bounded to one full partition read; used
+// once per partition to migrate to the fence row).
+func (s *Store) maxClaimVersionByScan(ctx context.Context, partitionKey string) (uint64, error) {
 	var maxVersion uint64
 	var startKey map[string]ddbtypes.AttributeValue
 
@@ -654,9 +811,38 @@ func (s *Store) maxClaimVersion(ctx context.Context, partitionKey string) (uint6
 	return maxVersion, nil
 }
 
-// resolveRecordKeys uses the RecordIDIndex GSI to find the base table PK/SK
-// for a given application-level record ID.
+// resolveRecordKeys returns the base-table (PK, SK) for an application record
+// ID. It first consults the key cache populated by Claim (the miss-free path),
+// then falls back to the eventually consistent RecordIDIndex GSI with a
+// bounded retry to absorb GSI replication lag — closing the not-found →
+// duplicate-delivery window a single GSI read would leave open.
 func (s *Store) resolveRecordKeys(ctx context.Context, recordID string) (string, string, error) {
+	if k, ok := s.lookupKey(recordID); ok {
+		return k.pk, k.sk, nil
+	}
+
+	var lastPK, lastSK string
+	for attempt := 0; ; attempt++ {
+		pk, sk, err := s.resolveRecordKeysFromGSI(ctx, recordID)
+		if err != nil {
+			return "", "", err
+		}
+		if pk != "" {
+			return pk, sk, nil
+		}
+		lastPK, lastSK = pk, sk
+
+		if attempt >= s.resolveMaxAttempts-1 {
+			break
+		}
+		if err := s.sleep(ctx, s.resolveBackoff); err != nil {
+			return "", "", err
+		}
+	}
+	return lastPK, lastSK, nil
+}
+
+func (s *Store) resolveRecordKeysFromGSI(ctx context.Context, recordID string) (string, string, error) {
 	out, err := s.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(s.table),
 		IndexName:              aws.String("RecordIDIndex"),
@@ -669,10 +855,46 @@ func (s *Store) resolveRecordKeys(ctx context.Context, recordID string) (string,
 	if err != nil {
 		return "", "", wrapErr(err, "outbox resolve record keys failed", "recordID", recordID)
 	}
-
 	if len(out.Items) == 0 {
 		return "", "", nil
 	}
-
 	return strAttr(out.Items[0], "PK"), strAttr(out.Items[0], "SK"), nil
+}
+
+// sleep blocks for d honoring context cancellation, using the injected
+// clock so tests remain deterministic.
+func (s *Store) sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := s.clk.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C():
+		return nil
+	}
+}
+
+func (s *Store) cacheKey(recordID, pk, sk string) {
+	if recordID == "" {
+		return
+	}
+	s.keyMu.Lock()
+	s.keyCache[recordID] = recordKey{pk: pk, sk: sk}
+	s.keyMu.Unlock()
+}
+
+func (s *Store) lookupKey(recordID string) (recordKey, bool) {
+	s.keyMu.Lock()
+	k, ok := s.keyCache[recordID]
+	s.keyMu.Unlock()
+	return k, ok
+}
+
+func (s *Store) evictKey(recordID string) {
+	s.keyMu.Lock()
+	delete(s.keyCache, recordID)
+	s.keyMu.Unlock()
 }

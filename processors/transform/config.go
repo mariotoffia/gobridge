@@ -11,6 +11,10 @@ type Config struct {
 	DropUnmapped bool `json:"dropUnmapped,omitempty"`
 	// FailOnError stops processing if a mapping fails. Default is false (skip failed mappings).
 	FailOnError bool `json:"failOnError,omitempty"`
+	// MaxPayloadBytes bounds the JSON payload this processor will parse.
+	// A payload larger than this is rejected before parsing to cap
+	// worst-case CPU. Non-positive selects DefaultMaxPayloadBytes.
+	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
 }
 
 // FieldMapping defines a single field transformation.
@@ -20,6 +24,11 @@ type FieldMapping struct {
 	Source string `json:"source"`
 	// Target is the target field path (dot notation).
 	// Example: "userName", "firstItemId", "nested.field"
+	//
+	// A Target prefixed with "header." writes the mapped value to an
+	// envelope header instead of the payload. Example: "header.x-tenant"
+	// copies the parsed value into the "x-tenant" header. Reserved
+	// x-bridge.* header targets are rejected at construction.
 	Target string `json:"target"`
 	// Transform is an optional transformation to apply.
 	// Supported: "string", "int", "float", "bool", "base64encode", "base64decode"

@@ -64,6 +64,19 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 	countingOutbox := NewQueryCountingOutboxStore()
 	resolver := &varyingResolver{}
 
+	// The resolver emits a distinct BindingID per message (bind-1, bind-2, …);
+	// each must map to a configured binding with its own session so the outbox
+	// partition key (SESSION#<sid>) is distinct per message. That is the
+	// production way to exercise >1000 distinct partition keys for cache
+	// eviction — an unmatched BindingID would instead orphan under BINDING#<id>.
+	bindings := make([]routing.DestinationBinding, 1100)
+	for i := range bindings {
+		bindings[i] = routing.DestinationBinding{
+			ID:        fmt.Sprintf("bind-%d", i+1),
+			SessionID: fmt.Sprintf("sess-%d", i+1),
+		}
+	}
+
 	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:       "burst-route",
 		Policy:        routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100000},
@@ -71,7 +84,7 @@ func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
 		Sender:        sender,
 		OutboxStore:   countingOutbox,
 		Resolver:      resolver,
-		Bindings:      []routing.DestinationBinding{{ID: "b1", SessionID: "burst-sess"}},
+		Bindings:      bindings,
 		DepthCacheTTL: time.Minute,
 	})
 

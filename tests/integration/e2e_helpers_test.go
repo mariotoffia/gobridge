@@ -302,7 +302,7 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 	leaseTable := ddblocal.UniqueTable("e2e-leases")
 	outboxTable := ddblocal.UniqueTable("e2e-outbox")
 
-	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable), dblease.WithGracePeriod(5*time.Second))
+	leaseStore := dblease.NewStore(client, dblease.WithTableName(leaseTable))
 	if err := leaseStore.EnsureTable(context.Background()); err != nil {
 		t.Fatalf("ensure lease table: %v", err)
 	}

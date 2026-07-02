@@ -311,7 +311,6 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 
 	leaseStore := dblease.NewStore(client,
 		dblease.WithTableName(leaseTable),
-		dblease.WithGracePeriod(10*time.Second),
 	)
 	require.NoError(t, leaseStore.EnsureTable(context.Background()), "lease table")
 	ddblocal.CleanupTable(t, client, leaseTable)
@@ -339,7 +338,6 @@ func setupDynamoStoresForRestart(t *testing.T) (ports.LeaseStore, ports.OutboxSt
 
 	leaseStore := dblease.NewStore(client,
 		dblease.WithTableName(leaseTable),
-		dblease.WithGracePeriod(10*time.Second),
 	)
 	require.NoError(t, leaseStore.EnsureTable(context.Background()), "lease table")
 	ddblocal.CleanupTable(t, client, leaseTable)

@@ -39,33 +39,43 @@ The runtime automatically instruments message delivery with metrics and traces. 
 
 ### Metrics
 
-The runtime emits these metrics automatically when a `MetricsExporter` is configured:
+The runtime emits these metrics automatically when a `MetricsExporter` is configured. Names are the constant *values* declared in `domain/shared/metrics.go` (the exporter passes them through verbatim):
 
 | Metric | Kind | Tags | Description |
 |---|---|---|---|
-| `bridge.delivery.latency` | Timer | `route_id` | End-to-end delivery time per message |
-| `bridge.delivery.success` | Counter | `route_id` | Successful deliveries |
-| `bridge.delivery.error` | Counter | `route_id`, `error_class` | Failed deliveries by error class |
-| `bridge.inflight` | Gauge | `route_id` | Current in-flight messages |
-| `bridge.dlq.write` | Counter | `route_id`, `category` | Messages routed to DLQ |
-| `bridge.outbox.depth` | Gauge | `partition` | Pending outbox records |
-| `bridge.outbox.drain.latency` | Timer | `session_id` | Outbox drain cycle time |
-| `bridge.lease.acquire` | Counter | `lease_id` | Lease acquisitions |
-| `bridge.lease.renew.failure` | Counter | `lease_id` | Failed lease renewals |
-| `bridge.mqtt.publish.failures` | Counter | `reason` | MQTT publish failures |
+| `MessagesReceived` | Counter | `route_id` | Messages accepted for a route |
+| `MessagesSent` | Counter | `route_id` | Messages dispatched to a sender |
+| `MessagesDropped` | Counter | `route_id` | Messages dropped (retry unsupported, no DLQ) |
+| `RouteErrors` | Counter | `route_id` | Recoverable route errors |
+| `DeliveryE2ELatency` | Timer | `route_id` | End-to-end delivery time per message |
+| `DeliveryPanics` | Counter | `route_id` | Recovered panics during delivery |
+| `DLQEntries` | Counter | `route_id`, `category` | Messages routed to the DLQ |
+| `DLQWriteFailures` | Counter | — | Failed DLQ writes |
+| `OutboxDepth` | Gauge | `partition` | Pending outbox records |
+| `OutboxDrainLatency` | Timer | `session_id` | Outbox drain cycle time |
+| `LeaseAcquireLatency` | Timer | `lease_id` | Lease acquisition latency |
+| `LeaseAcquireFailures` | Counter | `lease_id` | Failed lease acquisitions |
+| `MQTTReconnects` | Counter | `session_id` | Session reconnects (historical wire name) |
 
-All metrics use `domain.Tag` for dimensional tagging.
+All metrics use `shared.Tag` for dimensional tagging. The OTLP/CloudWatch
+backend applies its own name normalization (e.g. Prometheus lowercases and
+`_`-separates), so dashboard queries use the backend-normalized form of these
+names.
 
 ### Traces
 
 When a `Tracer` is configured, the runtime creates a span around each `handleDelivery` call:
 
-- **Span name**: `bridge.deliver`
-- **Attributes**: `route_id`, `envelope_id`, `subject`
-- **Events**: processor start/end, send success/failure
-- **Error**: set on delivery failure with the `BridgeError` details
+- **Span name**: `bridge.handleDelivery`
+- **Attributes**: `route_id`, `envelope_id`, and `trace_id` (only when an ingress `traceparent` is present)
+- **Error**: set on delivery failure via `span.SetError` with the wrapped error
 
-W3C `traceparent` headers are extracted from ingress messages and propagated through the bridge. If no trace context exists, the tracer starts a new root span.
+The runtime parses the W3C `traceparent` header from ingress messages and
+records the incoming `trace_id` on the span and in the log context. Full
+parent/child linkage of the OTel span to the upstream trace (and re-injection
+onto outbound headers) is provided by the tracer adapter's `Extract`/`Inject`
+methods; see the adapter package docs. If no trace context exists, the tracer
+starts a new root span.
 
 ### Structured Logging
 
@@ -122,7 +132,7 @@ routes:
       max_in_flight: 100
 ```
 
-Observability is configured in Go code, not YAML -- the metrics exporter, tracer, and logger are runtime options.
+Observability is configured in Go code, not YAML -- the metrics exporter, tracer, and logger are runtime options. There is no `tracing:` or `metrics:` YAML key. The OTel adapters additionally honor the standard `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, and `OTEL_RESOURCE_ATTRIBUTES` environment variables when the matching `WithXxx` option is not set (option > env > default).
 
 ## Go Bootstrap
 
@@ -236,17 +246,17 @@ func main() {
 **Metrics** (pushed to OTel Collector every 60s):
 
 ```
-bridge.delivery.latency{route_id="ingest"} p50=8ms p99=45ms
-bridge.delivery.success{route_id="ingest"} count=12847
-bridge.inflight{route_id="ingest"} value=23
+DeliveryE2ELatency{route_id="ingest"} p50=8ms p99=45ms
+MessagesSent{route_id="ingest"} count=12847
+MessagesReceived{route_id="ingest"} count=12870
 ```
 
 **Traces** (visible in Jaeger, Tempo, or any OTLP-compatible backend):
 
 ```
 trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
-  └─ bridge.deliver (12ms)
-       route_id=ingest, envelope_id=e-abc123, subject=events/orders
+  └─ bridge.handleDelivery (12ms)
+       route_id=ingest, envelope_id=e-abc123, trace_id=4bf92f35...
 ```
 
 ## Variations
@@ -279,6 +289,34 @@ tracer, err := oteltracing.New(ctx,
 
 Unsampled messages still get correlation IDs in logs, so you can always search by `correlation_id` even without a trace.
 
+### Surfacing Telemetry Export Failures
+
+By default, OTLP export and backpressure failures are invisible. Install an
+error handler (and, optionally, bound the batch/queue) so drops are logged:
+
+```go
+metrics, _ := otelmetrics.New(ctx,
+    otelmetrics.WithErrorHandler(func(err error) {
+        logger.Warn("metrics export failed", "error", err)
+    }),
+    otelmetrics.WithExportTimeout(10*time.Second),
+    otelmetrics.WithMaxInstruments(1024), // reject unbounded dynamic names
+)
+
+tracer, _ := oteltracing.New(ctx,
+    oteltracing.WithErrorHandler(func(err error) {
+        logger.Warn("span export failed", "error", err)
+    }),
+    oteltracing.WithMaxQueueSize(2048),
+    oteltracing.WithExportTimeout(10*time.Second),
+)
+```
+
+Emit only metric names from the bounded static set in
+`domain/shared/metrics.go`; dynamic names beyond `WithMaxInstruments` are
+rejected and reported through the error handler rather than growing the
+process heap.
+
 ### Trace-Level Logging
 
 Use the `logging` package for fine-grained per-message logs in development:
@@ -301,10 +339,13 @@ A typical Grafana setup queries all three signals:
 
 | Panel | Data Source | Query |
 |---|---|---|
-| Delivery rate | Prometheus (via OTel) | `rate(bridge_delivery_success_total[5m])` |
-| Error rate | Prometheus | `rate(bridge_delivery_error_total[5m])` |
-| p99 latency | Prometheus | `histogram_quantile(0.99, bridge_delivery_latency_bucket)` |
+| Delivery rate | Prometheus (via OTel) | `rate(messages_sent_total[5m])` |
+| Error rate | Prometheus | `rate(route_errors_total[5m])` |
+| p99 latency | Prometheus | `histogram_quantile(0.99, delivery_e2e_latency_bucket)` |
 | Trace drilldown | Tempo | Click a data point → jump to trace by `trace_id` |
 | Log context | Loki | `{job="gobridge"} |= "<correlation_id>"` |
 
-The `correlation_id` is the join key across all three systems.
+The `correlation_id` is the join key across all three systems. Prometheus
+names above are the OTel-normalized form of the runtime constants
+(`MessagesSent` → `messages_sent_total`, etc.); confirm the exact names in
+your backend, since normalization rules vary.

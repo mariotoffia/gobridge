@@ -11,6 +11,7 @@ import (
 // Compile-time interface contract: only *Config satisfies
 // CredentialedConfig because ApplyCredentials mutates the receiver.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.VisibilityTimeoutConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the SQS transport. A single
 // struct holds session/receiver/sender fields; the factory derives
@@ -35,6 +36,17 @@ type Config struct {
 	VisibilityTimeout int32 `mapstructure:"visibility_timeout" yaml:"visibility_timeout" json:"visibility_timeout"`
 	AutoExtend        *bool `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
 	SNSUnwrap         bool  `mapstructure:"sns_unwrap" yaml:"sns_unwrap" json:"sns_unwrap"`
+
+	// Receiver resilience tuning. These map directly to the
+	// ReceiverConfig backoff/init knobs that previously had no plugin
+	// surface, so outage/failover behaviour could not be tuned from
+	// deployment config (Finding 10). Durations decode from strings such
+	// as "30s" via the config parser's StringToTimeDuration hook. Zero /
+	// omitted values fall back to the ReceiverConfig defaults.
+	InitTimeout           time.Duration `mapstructure:"init_timeout" yaml:"init_timeout,omitempty" json:"init_timeout,omitempty"`
+	PollBackoffInitial    time.Duration `mapstructure:"poll_backoff_initial" yaml:"poll_backoff_initial,omitempty" json:"poll_backoff_initial,omitempty"`
+	PollBackoffMax        time.Duration `mapstructure:"poll_backoff_max" yaml:"poll_backoff_max,omitempty" json:"poll_backoff_max,omitempty"`
+	PollBackoffMultiplier float64       `mapstructure:"poll_backoff_multiplier" yaml:"poll_backoff_multiplier,omitempty" json:"poll_backoff_multiplier,omitempty"`
 
 	// Sender
 	DelaySeconds   int32         `mapstructure:"delay_seconds" yaml:"delay_seconds" json:"delay_seconds"`
@@ -89,6 +101,15 @@ func (c Config) Validate() error {
 	if c.DelaySeconds < 0 || c.DelaySeconds > 900 {
 		return errors.New("sqs: delay_seconds must be in [0,900]")
 	}
+	if c.PollBackoffMultiplier != 0 && c.PollBackoffMultiplier < 1 {
+		return errors.New("sqs: poll_backoff_multiplier must be >= 1.0")
+	}
+	if c.InitTimeout < 0 || c.PollBackoffInitial < 0 || c.PollBackoffMax < 0 {
+		return errors.New("sqs: init_timeout and poll_backoff durations must not be negative")
+	}
+	if c.PollBackoffInitial > 0 && c.PollBackoffMax > 0 && c.PollBackoffMax < c.PollBackoffInitial {
+		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
+	}
 	return nil
 }
 
@@ -96,17 +117,54 @@ func (c Config) Validate() error {
 // ReceiverConfig used by the SQS receiver.
 func (c Config) toReceiverConfig() ReceiverConfig {
 	return ReceiverConfig{
-		QueueURL:          c.QueueURL,
-		QueueName:         c.QueueName,
-		Region:            c.Region,
-		Endpoint:          c.Endpoint,
-		Profile:           c.Profile,
-		MaxMessages:       c.MaxMessages,
-		WaitTimeSeconds:   c.WaitTimeSeconds,
-		VisibilityTimeout: c.VisibilityTimeout,
-		AutoExtend:        c.AutoExtend,
-		SNSUnwrap:         c.SNSUnwrap,
+		QueueURL:              c.QueueURL,
+		QueueName:             c.QueueName,
+		Region:                c.Region,
+		Endpoint:              c.Endpoint,
+		Profile:               c.Profile,
+		MaxMessages:           c.MaxMessages,
+		WaitTimeSeconds:       c.WaitTimeSeconds,
+		VisibilityTimeout:     c.VisibilityTimeout,
+		AutoExtend:            c.AutoExtend,
+		SNSUnwrap:             c.SNSUnwrap,
+		InitTimeout:           c.InitTimeout,
+		PollBackoffInitial:    c.PollBackoffInitial,
+		PollBackoffMax:        c.PollBackoffMax,
+		PollBackoffMultiplier: c.PollBackoffMultiplier,
 	}
+}
+
+// EffectiveVisibilityTimeout returns the receiver visibility timeout
+// this config resolves to at runtime, honouring the same 30s default the
+// receiver applies when visibility_timeout is unset. It satisfies
+// ports.VisibilityTimeoutConfig, so the builder threads this per-route
+// value into the runtime validator's SourceVisibilityTimeout in
+// preference to the hardcoded Factory.VisibilityTimeout() constant
+// (Finding 2, wired in bridge/builder_complete.go, Phase 1b).
+func (c Config) EffectiveVisibilityTimeout() time.Duration {
+	if c.VisibilityTimeout > 0 {
+		return time.Duration(c.VisibilityTimeout) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// AutoExtendEnabled reports whether the receiver actually renews message
+// visibility in the background while a message is in flight. This is the
+// *effective* signal the validator needs, not the bare config flag: the
+// SQS runtime starts the renewal goroutine only when auto-extend is on
+// AND the effective window meets the runtime floor
+// (minAutoExtendVisibilitySeconds — see newDelivery in acl_delivery.go).
+// Below the floor the runtime runs a fixed, non-renewed window, so the
+// validator must still enforce the finite SendTimeout-vs-window check to
+// prevent source redelivery mid-send. It satisfies
+// ports.VisibilityTimeoutConfig (Finding 2 / D2).
+func (c Config) AutoExtendEnabled() bool {
+	flag := c.AutoExtend == nil || *c.AutoExtend
+	effSecs := c.VisibilityTimeout
+	if effSecs <= 0 {
+		effSecs = 30 // mirror applyDefaults: an unset window defaults to 30s
+	}
+	return flag && effSecs >= minAutoExtendVisibilitySeconds
 }
 
 // toSenderConfig projects the unified Config onto the internal

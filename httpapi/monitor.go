@@ -64,11 +64,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, httpStatus, resp)
 }
 
-// handleLive always returns 200 — the process is alive. Kubernetes uses
-// this probe to decide whether to restart the container; it should succeed
-// even during runtime swap windows when the runtime is temporarily nil.
+// handleLive reports process liveness. It returns 200 while the process is
+// alive and able to recover — including during runtime swap windows when the
+// runtime is temporarily nil — and 503 only when the runtime is terminal: an
+// unrecoverable component failure that cancelled the runtime. Kubernetes uses
+// this probe to restart the container, so failing closed on a terminal runtime
+// is what turns a dead-but-running process into an automatic restart.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
+	if rt := s.currentRuntime(); rt != nil && rt.Terminal() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "terminal"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 

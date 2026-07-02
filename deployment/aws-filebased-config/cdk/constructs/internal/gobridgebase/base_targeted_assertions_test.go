@@ -293,6 +293,75 @@ func Test_T20_Base_Mounts_PerModeReadOnlyFlag(t *testing.T) {
 	}
 }
 
+const t20BaseDynamoStoreYAML = `
+bridge:
+  id: test-bridge
+stores:
+  outbox:
+    type: dynamodb
+    options:
+      table_name: bridge-outbox-tbl
+`
+
+// Test_T20_Base_IAM_DynamoDBStoreGrant asserts that a bridge config
+// referencing a DynamoDB-backed store with an explicit table_name emits
+// DynamoDB read/write IAM actions on the task role, and that a config
+// with no DynamoDB store emits none. Guards J4: the AWS profile must
+// grant the table actions the DynamoDB store adapter performs.
+func Test_T20_Base_IAM_DynamoDBStoreGrant(t *testing.T) {
+	defer jsii.Close()
+
+	t.Run("granted-with-table-name", func(t *testing.T) {
+		stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDynamoStoreYAML)
+		tpl := assertions.Template_FromStack(stack, nil)
+		actions := t20CollectPolicyActions(tpl)
+		for _, want := range []string{
+			"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+			"dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
+		} {
+			if !actions[want] {
+				t.Fatalf("missing IAM action %q for DynamoDB store (got %v)", want, keysOf(actions))
+			}
+		}
+	})
+
+	t.Run("absent-without-dynamo-store", func(t *testing.T) {
+		stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
+		tpl := assertions.Template_FromStack(stack, nil)
+		actions := t20CollectPolicyActions(tpl)
+		if actions["dynamodb:PutItem"] {
+			t.Fatalf("unexpected dynamodb:PutItem action when no DynamoDB store configured")
+		}
+	})
+}
+
+// t20CollectPolicyActions gathers every IAM action string across all
+// AWS::IAM::Policy statements in the synthesized template.
+func t20CollectPolicyActions(tpl assertions.Template) map[string]bool {
+	out := map[string]bool{}
+	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
+	for _, raw := range *policies {
+		props, _ := (*raw)["Properties"].(map[string]any)
+		doc, _ := props["PolicyDocument"].(map[string]any)
+		stmts, _ := doc["Statement"].([]any)
+		for _, st := range stmts {
+			m, _ := st.(map[string]any)
+			for _, a := range t20NormalizeActions(m["Action"]) {
+				out[a] = true
+			}
+		}
+	}
+	return out
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func t20NormalizeActions(v any) []string {
 	switch tv := v.(type) {
 	case string:

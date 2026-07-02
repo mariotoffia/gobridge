@@ -45,6 +45,41 @@ func TestHandleConfigTxnCommit_VersionConflict(t *testing.T) {
 	assert.Equal(t, "info", parsed.Bridge.LogLevel)
 }
 
+// TestHandleConfigTxnCommit_ZeroPatchDoesNotMutateSharedConfig is the
+// regression for the computeMerged aliasing bug surfaced by B3's review: a
+// commit with no intervening PATCH must not mutate the live config object
+// returned by ConfigProvider (the App's appliedRef). Before the fix,
+// computeMerged returned that shared pointer unaliased and Commit bumped its
+// Version in place -- both an in-memory state corruption (GET /config would
+// report an un-applied version) and a data race with concurrent GET /config
+// reads.
+func TestHandleConfigTxnCommit_ZeroPatchDoesNotMutateSharedConfig(t *testing.T) {
+	cfg := sampleBridgeConfig() // Version 0
+	s, path := newConfigTestServer(t, cfg)
+
+	// Commit with zero patches: POST /transactions then POST /commit with no
+	// PATCH in between (a legitimately reachable sequence).
+	txnID := createTxn(t, s)
+	rec := httptest.NewRecorder()
+	req := adminRequest(http.MethodPost, "/api/v1/admin/config/transactions/"+txnID+"/commit")
+	req.SetPathValue("txnID", txnID)
+	s.handleConfigTxnCommit(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	assert.Equal(t, float64(1), body["version"]) // 0 -> 1 written to disk
+
+	parsed, err := parser.ParseFile(path, parser.FormatYAML, newTestRegistry(t))
+	require.NoError(t, err)
+	assert.Equal(t, 1, parsed.Version)
+
+	// The shared in-memory config (what ConfigProvider/appliedRef returns and
+	// GET /config dereferences) must be left UNTOUCHED at version 0.
+	assert.Equal(t, 0, cfg.Version,
+		"zero-patch commit must not mutate the shared applied config in place")
+}
+
 func TestHandleConfigTxnCommit_SequentialVersionIncrement(t *testing.T) {
 	cfg := sampleBridgeConfig()
 	s, path := newConfigTestServer(t, cfg)

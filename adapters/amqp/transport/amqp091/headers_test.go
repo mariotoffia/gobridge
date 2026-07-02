@@ -218,13 +218,19 @@ func TestHeadersToPublishing(t *testing.T) {
 	}
 }
 
-// verifies headersToPublishing excludes amqp091-prefixed and reserved headers from the table.
-func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
+// verifies headersToPublishing strips internal-only reserved headers but
+// PRESERVES bridge-to-bridge propagated headers on egress, so a downstream
+// bridge can still deduplicate, correlate, and break forwarding loops.
+func TestHeadersToPublishing_StripsInternalOnly_PreservesBridgeToBridge(t *testing.T) {
 	headers := map[string]any{
-		HeaderDeliveryTag:             uint64(1),
-		HeaderRedelivered:             true,
-		messaging.HeaderCorrelationID: "injected",
-		"custom":                      "keep",
+		HeaderDeliveryTag:              uint64(1), // amqp091-native → excluded
+		HeaderRedelivered:              true,      // amqp091-native → excluded
+		messaging.HeaderRouteID:        "r1",      // internal-only → stripped
+		messaging.HeaderSourceID:       "src",     // internal-only → stripped
+		messaging.HeaderCorrelationID:  "corr",    // bridge-to-bridge → preserved
+		messaging.HeaderIdempotencyKey: "idem",    // bridge-to-bridge → preserved
+		messaging.HeaderTraceParent:    "00-x",    // W3C trace → preserved
+		"custom":                       "keep",    // application → preserved
 	}
 
 	pub := headersToPublishing(headers)
@@ -232,14 +238,22 @@ func TestHeadersToPublishing_ExcludesReserved(t *testing.T) {
 	if pub.Headers == nil {
 		t.Fatal("Headers table is nil")
 	}
-	if _, ok := pub.Headers[HeaderDeliveryTag]; ok {
-		t.Error("amqp091-prefixed key should not be in table")
+	for _, k := range []string{HeaderDeliveryTag, HeaderRedelivered} {
+		if _, ok := pub.Headers[k]; ok {
+			t.Errorf("amqp091-native key %q should not be in table", k)
+		}
 	}
-	if _, ok := pub.Headers[HeaderRedelivered]; ok {
-		t.Error("amqp091-prefixed key should not be in table")
+	for _, k := range []string{messaging.HeaderRouteID, messaging.HeaderSourceID} {
+		if _, ok := pub.Headers[k]; ok {
+			t.Errorf("internal-only header %q must be stripped on egress", k)
+		}
 	}
-	if _, ok := pub.Headers[messaging.HeaderCorrelationID]; ok {
-		t.Error("reserved header should not be in table")
+	for _, k := range []string{
+		messaging.HeaderCorrelationID, messaging.HeaderIdempotencyKey, messaging.HeaderTraceParent,
+	} {
+		if _, ok := pub.Headers[k]; !ok {
+			t.Errorf("bridge-to-bridge header %q must be preserved on egress", k)
+		}
 	}
 	if pub.Headers["custom"] != "keep" {
 		t.Errorf("Headers[custom] = %v", pub.Headers["custom"])

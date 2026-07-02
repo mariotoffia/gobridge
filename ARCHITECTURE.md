@@ -1200,6 +1200,10 @@ graph TB
 
 All instances run all routes identically. The `LeaseStore` determines which instance's `OutboxDrainer` actively drains and sends. The active instance holds the lease; standby instances persist to the outbox but do not drain until they acquire the lease.
 
+### Reconfiguration Is Per-Process
+
+Configuration reload and runtime swap are **per-process**: each instance watches its own config source and swaps its own runtime via the `Supervisor`. There is **no cluster-wide config-version barrier and no coordinated cluster rollback** -- during a rollout, instances may run different route/store/session/policy definitions until every instance has reloaded (indefinitely, if one is wedged on an invalid config). Per-instance durability and lease fencing still hold **provided every instance resolves the same session ids and the same lease and outbox store targets** (the lease CAS is keyed on the lease version, not `BridgeConfig.Version`), so a mixed-version window causes no duplicate commits and -- within an instance -- no message loss; only routing/policy/transformation behaviour is eventually consistent across the cluster, not atomic. Reconfiguring a session's identity or its lease or outbox store target is **not** version-skew-safe (two instances drive the same session against different stores -- two active drainers, and records stranded in a replaced outbox are lost); coordinate those changes with a drain-and-stop. Operators observe each instance's running `config_version` (`Supervisor.Config().Version`, logged on each reconfiguration swap) to confirm convergence. See scenario 10 (`docs/scenarios/10-dynamic-reconfiguration.md`) for operator guidance.
+
 ### Instance Identity
 
 Each runtime instance is assigned a unique identifier used as the lease owner ID:

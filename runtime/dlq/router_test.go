@@ -2,6 +2,7 @@ package dlq_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -131,15 +132,15 @@ func TestRouter_Route_RedactsErrorDetails(t *testing.T) {
 func TestRouter_Route_StoreWriteError_Propagated(t *testing.T) {
 	store := NewFakeStore()
 	store.WriteErr = fmt.Errorf("disk full")
-	r := dlq.New(store)
+	r := dlq.NewFromConfig(dlq.Config{Store: store, WriteMaxAttempts: 1})
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-fail"})
 
 	err := r.Route(context.Background(), env, "r", "", "", "", "", shared.ErrNotFound, 1)
 	if err == nil {
 		t.Fatal("expected store write error to be propagated")
 	}
-	if err.Error() != "disk full" {
-		t.Fatalf("expected error 'disk full', got %q", err.Error())
+	if !errors.Is(err, store.WriteErr) {
+		t.Fatalf("expected wrapped error to match store write error, got %q", err.Error())
 	}
 }
 

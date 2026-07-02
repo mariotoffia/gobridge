@@ -123,6 +123,24 @@ type BatchSender interface {
 	SendBatch(ctx context.Context, msgs []OutboundMessage) ([]BatchResult, error)
 }
 
+// AddressValidatingSender is an optional interface a Sender may implement to
+// validate a STATIC binding address when the bridge is built, so a
+// misconfigured address fails fast at build time rather than at first send.
+//
+// This is distinct from the factory-level AddressValidator: that validates
+// resolved addresses per-dispatch, whereas this checks a binding's literal
+// configured address against the sender's own bound destination.
+//
+// The builder calls ValidateAddress only for non-empty, non-templated binding
+// addresses — an address containing a "{key}" placeholder is rendered per
+// message (see runtime/route.RenderAddress) and cannot be checked statically.
+// A non-nil error fails the build. A Sender that cannot decide statically
+// (e.g. the destination is only known at connect time) must return nil.
+type AddressValidatingSender interface {
+	Sender
+	ValidateAddress(address string) error
+}
+
 // SessionEventType classifies session lifecycle events.
 type SessionEventType int
 

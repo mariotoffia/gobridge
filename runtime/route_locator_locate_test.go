@@ -38,6 +38,7 @@ func TestRouteLocator_Locate_NonExclusive(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("instance-1"),
 		runtime.WithLeaseStore(leaseStore),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	err := rt.AddRoute(runtime.RouteConfig{
@@ -97,6 +98,7 @@ func TestRouteLocator_Locate_Exclusive_LocalOwner(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
+		Bindings: []routing.DestinationBinding{{ID: "b1", Address: "topic/x"}},
 	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +165,7 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
+		Bindings: []routing.DestinationBinding{{ID: "b1", Address: "topic/x"}},
 	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +230,7 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 		}.WithDefaults(),
+		Bindings: []routing.DestinationBinding{{ID: "b1", Address: "topic/x"}},
 	}, receiver, sender, sess, &sessCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +264,10 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 
 // TestRouteLocator_NilWhenNoLeaseStore validates standalone mode.
 func TestRouteLocator_NilWhenNoLeaseStore(t *testing.T) {
-	rt := runtime.New(runtime.WithInstanceID("standalone"))
+	rt := runtime.New(
+		runtime.WithInstanceID("standalone"),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

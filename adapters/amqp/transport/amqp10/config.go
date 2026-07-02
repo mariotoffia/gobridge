@@ -16,22 +16,28 @@ import (
 
 // SessionOptions configures the AMQP 1.0 session connection.
 type SessionOptions struct {
-	Address             string
-	ConnectTimeout      time.Duration
-	ReconnectDelay      time.Duration
-	ReconnectMaxDelay   time.Duration
-	ReconnectMultiplier float64
-	IdleTimeout         time.Duration
-	MaxFrameSize        uint32
-	Username            string
-	Password            shared.Secret
-	TLS                 *TLSConfig
-	ContainerID         string
+	// Address is the SINGLE broker endpoint to dial, e.g.
+	// "amqp://localhost:5672". Reconnection re-dials this same endpoint;
+	// the adapter keeps no client-side broker list and performs no
+	// multi-broker failover. For high availability, resolve Address to a
+	// load balancer or DNS name that points at a healthy node (see the
+	// package doc, "Connection & High Availability").
+	Address             string        `mapstructure:"address" yaml:"address" json:"address"`
+	ConnectTimeout      time.Duration `mapstructure:"connect_timeout" yaml:"connect_timeout" json:"connect_timeout"`
+	ReconnectDelay      time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
+	ReconnectMaxDelay   time.Duration `mapstructure:"reconnect_max_delay" yaml:"reconnect_max_delay" json:"reconnect_max_delay"`
+	ReconnectMultiplier float64       `mapstructure:"reconnect_multiplier" yaml:"reconnect_multiplier" json:"reconnect_multiplier"`
+	IdleTimeout         time.Duration `mapstructure:"idle_timeout" yaml:"idle_timeout" json:"idle_timeout"`
+	MaxFrameSize        uint32        `mapstructure:"max_frame_size" yaml:"max_frame_size" json:"max_frame_size"`
+	Username            string        `mapstructure:"username" yaml:"username" json:"username"`
+	Password            shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
+	TLS                 *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
+	ContainerID         string        `mapstructure:"container_id" yaml:"container_id" json:"container_id"`
 
 	// LinkCloseTimeout is the deadline for closing an AMQP link or
 	// session during cleanup (e.g. after a failure or reconnect).
 	// Defaults to 5s if zero.
-	LinkCloseTimeout time.Duration
+	LinkCloseTimeout time.Duration `mapstructure:"link_close_timeout" yaml:"link_close_timeout" json:"link_close_timeout"`
 
 	// ConnectionMonitorFallback is the cadence at which the session
 	// monitor loop re-checks connection liveness as a sanity fallback
@@ -39,12 +45,14 @@ type SessionOptions struct {
 	// are detected immediately via Conn.Done(); this ticker only guards
 	// against a broker that silently drops without closing. Defaults to
 	// 30s if zero.
-	ConnectionMonitorFallback time.Duration
+	ConnectionMonitorFallback time.Duration `mapstructure:"connection_monitor_fallback" yaml:"connection_monitor_fallback" json:"connection_monitor_fallback"`
 
 	// Clock drives the reconnect backoff wait. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
-	// control the backoff sleep deterministically.
-	Clock clock.Clock
+	// control the backoff sleep deterministically. It is an internal
+	// dependency and must never be populated from YAML; the dash tag
+	// excludes it from the strict options decoder.
+	Clock clock.Clock `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // TLSConfig holds TLS settings for the AMQP 1.0 connection.
@@ -53,10 +61,10 @@ type SessionOptions struct {
 // paths on the same field. This lets ApplyCredentials supply rotated
 // material in-memory without writing to disk.
 type TLSConfig struct {
-	Enable     bool
-	CACertFile string
-	CertFile   string
-	KeyFile    string
+	Enable     bool   `mapstructure:"enable" yaml:"enable" json:"enable"`
+	CACertFile string `mapstructure:"ca_cert_file" yaml:"ca_cert_file" json:"ca_cert_file"`
+	CertFile   string `mapstructure:"cert_file" yaml:"cert_file" json:"cert_file"`
+	KeyFile    string `mapstructure:"key_file" yaml:"key_file" json:"key_file"`
 
 	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material used
 	// when credentials are rotated via ApplyCredentials. Non-empty
@@ -64,11 +72,11 @@ type TLSConfig struct {
 	// shared.Secret so the (sensitive) private-key material — and, for
 	// uniformity, the cert/CA bundles — redact on JSON/YAML/log marshal;
 	// the config-save path reveals explicitly (see shared.RevealSecrets).
-	CACertPEM shared.Secret
-	CertPEM   shared.Secret
-	KeyPEM    shared.Secret
+	CACertPEM shared.Secret `mapstructure:"ca_cert_pem" yaml:"ca_cert_pem" json:"ca_cert_pem"`
+	CertPEM   shared.Secret `mapstructure:"cert_pem" yaml:"cert_pem" json:"cert_pem"`
+	KeyPEM    shared.Secret `mapstructure:"key_pem" yaml:"key_pem" json:"key_pem"`
 
-	InsecureSkipVerify bool
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify" json:"insecure_skip_verify"`
 }
 
 // RoutingType controls how Artemis (and compatible brokers) route

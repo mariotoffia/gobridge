@@ -275,14 +275,14 @@ Retrieve per-key metrics at runtime via `proc.Metrics()`, which returns
 **Package:** `processors/tenant` | **Config type:** `tenant.Config`
 
 Validates tenant identity and enforces per-tenant quotas. Reads the tenant ID
-from a configurable header (default: `x-bridge.tenant-id`).
+from a configurable header (default: `x-tenant-id`).
 
 ### Configuration Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Name` | `string` | `"tenant"` | Unique processor instance name. |
-| `TenantHeader` | `string` | `"x-bridge.tenant-id"` | Header name containing the tenant ID. |
+| `TenantHeader` | `string` | `"x-tenant-id"` | Header name containing the tenant ID. |
 | `RequireTenant` | `bool` | `false` | Reject messages that lack a tenant header. |
 
 ### Optional Integrations (Go Only)
@@ -307,7 +307,7 @@ processors:
 ### Go Example
 
 ```go
-proc := tenant.New(tenant.Config{
+proc, err := tenant.New(tenant.Config{
     Name:          "my-tenant",
     TenantHeader:  "x-tenant-id",
     RequireTenant: true,
@@ -364,6 +364,8 @@ stores:
 - **Required option:** `path` (string) -- file path for the database
 - Persistent across restarts. Single-instance only.
 - Suitable for single-instance production with disk durability.
+- WAL journalling is always on; a single writer connection plus `busy_timeout` serialises in-process writers safely.
+- Outbox honours the runtime-derived `stale_claim_duration`: a claim stranded by a crashed owner is reclaimed once it goes stale (in addition to immediate higher-version reclaim). Pair it with a durable lease store for strict multi-restart crash recovery; `memory` lease resets its fencing version on restart.
 - No SQLite lease store exists -- use memory or DynamoDB for leases.
 
 ### DynamoDB Store
@@ -421,7 +423,7 @@ cbProc := circuitbreaker.New("my-cb", circuitbreaker.Config{
 }, circuitbreaker.WithKeyExtractor(circuitbreaker.SubjectKey()))
 builder.RegisterProcessor("my-cb", cbProc)
 
-tenantProc := tenant.New(tenant.Config{Name: "my-tenant", RequireTenant: true})
+tenantProc, _ := tenant.New(tenant.Config{Name: "my-tenant", RequireTenant: true})
 builder.RegisterProcessor("my-tenant", tenantProc)
 
 // Register store factories

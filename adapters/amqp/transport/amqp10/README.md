@@ -1,6 +1,6 @@
 # AMQP 1.0 Transport Adapter
 
-Transport adapter for AMQP 1.0 (OASIS standard) brokers. Implements `ports.Session`, `ports.Receiver`, `ports.Sender`, and `ports.BatchSender`. Tested with Apache ActiveMQ Artemis, Solace PubSub+, Apache Qpid, and any broker that speaks the AMQP 1.0 wire protocol.
+Transport adapter for AMQP 1.0 (OASIS standard) brokers. Implements `ports.Session`, `ports.Receiver`, `ports.Sender`, and `ports.BatchSender`. Exercised in CI against Apache ActiveMQ Artemis; any broker that conforms to the AMQP 1.0 wire protocol is expected to interoperate, but only Artemis is covered by the integration suite.
 
 Built on [github.com/Azure/go-amqp](https://github.com/Azure/go-amqp).
 
@@ -71,12 +71,14 @@ Settlement is idempotent. Only the first call on a `Delivery` performs the dispo
 |---|---|---|
 | `Ack(ctx)` | `AcceptMessage` — accepted | Message removed from queue |
 | `Retry(ctx, 0, err)` | `ReleaseMessage` — released | Immediate redelivery to any consumer |
-| `Retry(ctx, >0, err)` | `ModifyMessage` — delivery-failed=true | Signals broker to schedule retry |
+| `Retry(ctx, >0, err)` | `ModifyMessage` — delivery-failed=true | Hands the message back to the broker; the **broker controls redelivery timing**, so the requested delay is advisory (AMQP 1.0 has no portable client-side delay). The message is never dropped. |
 | `Extend(ctx, deadline)` | — | Returns `ErrNotSupported`; AMQP 1.0 uses credit-based flow, not visibility timeouts |
 
 ## Header Mapping
 
 Standard AMQP 1.0 message properties map to envelope headers with the `amqp10.` prefix. Application properties pass through directly. Reserved bridge headers (`x-bridge.*`) are stripped at ingress.
+
+`Envelope.Subject` is the **sole** egress source for the AMQP `subject` property; the `amqp10.subject` header is informational only and never sets `subject` (it cannot override or spoof it when `Envelope.Subject` is empty).
 
 | AMQP 1.0 property | Envelope header key |
 |---|---|
@@ -94,7 +96,7 @@ Standard AMQP 1.0 message properties map to envelope headers with the `amqp10.` 
 | `absolute-expiry-time` | `amqp10.absolute-expiry-time` |
 | `delivery-count` (header) | `amqp10.delivery-count` |
 
-On egress, envelope headers with the `amqp10.` prefix are mapped back to AMQP 1.0 message properties. Other non-reserved headers become application properties.
+On egress, envelope headers with the `amqp10.` prefix are mapped back to AMQP 1.0 message properties. The central header policy then applies: **internal-only** reserved headers (and any unclassified `x-bridge.*` keys) are stripped, while **bridge-to-bridge** headers (`x-bridge.correlation-id`, `x-bridge.idempotency-key`, `x-bridge.ordering-key`, `x-bridge.tenant-id`, `traceparent`, ...) and ordinary application headers pass through as application properties so a peer bridge can correlate, deduplicate and continue a trace.
 
 ## Error Mapping
 
@@ -272,6 +274,10 @@ The session runs a background monitor goroutine. On connection loss:
 5. Receivers and senders re-create their links on the next operation.
 
 Subscribe to `sess.Events()` to observe lifecycle transitions (`SessionConnected`, `SessionDisconnected`, `SessionReconnecting`, `SessionReconciled`, `SessionError`).
+
+### High Availability
+
+`SessionOptions.Address` is a **single** broker endpoint. Reconnection re-dials that same endpoint; the adapter keeps no client-side broker list and performs no multi-broker failover. For HA, resolve `Address` to a load balancer or DNS name that points at a healthy node (a VIP, an Artemis cluster connector, or a service-mesh address) so a single `Address` transparently follows failover.
 
 ## Metrics
 

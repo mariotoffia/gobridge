@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
 func TestBreaker_OnStateChangeDoesNotDeadlock(t *testing.T) {
@@ -51,7 +52,8 @@ func TestBreaker_OnStateChangeCallbackSafeConcurrent(t *testing.T) {
 	var mu sync.Mutex
 	var transitions []string
 
-	b := cb.NewBreaker("safe-cb", cfg, nil)
+	fake := clocktest.New()
+	b := cb.NewBreaker("safe-cb", cfg, nil, cb.WithBreakerClock(fake))
 	b.SetOnStateChangeForTest(func(key string, from, to cb.State) {
 		m := b.GetMetrics()
 		mu.Lock()
@@ -64,7 +66,7 @@ func TestBreaker_OnStateChangeCallbackSafeConcurrent(t *testing.T) {
 		b.AfterRequest(errors.New("fail"))
 	}
 
-	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
+	fake.Advance(cfg.ResetTimeout + 10*time.Millisecond)
 
 	for i := 0; i < cfg.SuccessThreshold; i++ {
 		_ = b.BeforeRequest()

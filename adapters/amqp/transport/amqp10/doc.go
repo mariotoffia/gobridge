@@ -1,6 +1,8 @@
 // Package amqp10 implements ports.Session, ports.Receiver, ports.Sender,
-// and ports.BatchSender for AMQP 1.0 (OASIS standard) brokers such as
-// Apache ActiveMQ Artemis, Solace PubSub+, and Apache Qpid.
+// and ports.BatchSender for AMQP 1.0 (OASIS standard) brokers. The
+// adapter is exercised in CI against Apache ActiveMQ Artemis; any broker
+// that conforms to the AMQP 1.0 wire protocol is expected to
+// interoperate, but only Artemis is covered by the integration suite.
 //
 // # Architecture
 //
@@ -16,7 +18,9 @@
 //
 //   - Ack:            AcceptMessage   (disposition: accepted)
 //   - Retry(after=0): ReleaseMessage  (make available for immediate redelivery)
-//   - Retry(after>0): ModifyMessage   (DeliveryFailed=true, signal broker retry)
+//   - Retry(after>0): ModifyMessage   (DeliveryFailed=true; hands the message
+//     back to the broker, which controls redelivery timing — the requested
+//     delay is advisory only, never dropped, see Delivery.Retry)
 //   - Extend:         ErrNotSupported (AMQP 1.0 uses credit-based flow control,
 //     not visibility timeouts)
 //
@@ -27,10 +31,12 @@
 // validated against the configured sender link address. An empty
 // Address selects the configured address; a non-empty Address that
 // does not match yields shared.ErrInvalidTopic without contacting the
-// broker. The logical Envelope.Subject is mapped to
-// Properties.Subject in both directions and never participates in
-// link routing. On receive, a missing Properties.Subject leaves
-// Envelope.Subject empty — there is no fallback to the link address.
+// broker. On egress, Envelope.Subject is the SOLE source for the AMQP
+// Properties.Subject: the amqp10.subject header is informational only
+// and never sets Subject, so it cannot override or spoof Subject when
+// Envelope.Subject is empty. On receive, Properties.Subject populates
+// Envelope.Subject; a missing Properties.Subject leaves Envelope.Subject
+// empty — there is no fallback to the link address.
 //
 // # Header Mapping
 //
@@ -38,7 +44,12 @@
 // content-type, subject, to, reply-to, etc.) are mapped to envelope
 // headers with the "amqp10." prefix. Application properties are mapped
 // directly as envelope headers. Reserved bridge headers (x-bridge.*)
-// are stripped from incoming messages at ingress.
+// are stripped from incoming messages at ingress. On egress the central
+// header policy applies: INTERNAL-ONLY reserved headers (and any
+// unclassified x-bridge.* keys) are stripped, while BRIDGE-TO-BRIDGE
+// PROPAGATED headers (correlation-id, idempotency-key, ordering-key,
+// tenant-id, traceparent, ...) pass through as application properties so
+// a peer bridge can correlate, deduplicate and continue a trace.
 //
 // # Error Mapping
 //
@@ -54,4 +65,16 @@
 //   - amqp:link:detach-forced      -> ErrConnectionLost   (transient)
 //   - amqp:link:message-size-exceeded -> ErrPayloadTooLarge (rejected)
 //   - context.DeadlineExceeded     -> ErrTimeout          (transient)
+//
+// # Connection & High Availability
+//
+// SessionOptions.Address is a SINGLE broker endpoint. Reconnection
+// re-dials that same endpoint with exponential backoff; the adapter does
+// not maintain a client-side list of broker URLs and performs no
+// multi-broker failover. For highly-available deployments, place the
+// brokers behind an external load balancer or a DNS name that resolves
+// to a healthy node (e.g. a VIP, an Artemis cluster connector, or a
+// service-mesh address) so a single Address transparently follows
+// failover. ponytail: client-side endpoint-list failover is deliberately
+// out of scope — HA is delegated to the network/broker layer.
 package amqp10

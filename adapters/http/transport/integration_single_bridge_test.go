@@ -91,8 +91,10 @@ func directHoldRouteConfig(id string, procs []ports.Processor) runtime.RouteConf
 	return runtime.RouteConfig{
 		ID: id,
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			DispatchMode: routing.DispatchSingle,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			DispatchMode:       routing.DispatchSingle,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{
 			ports.CapSourceRedelivery,
@@ -351,7 +353,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 // 1.5 TestIntegration_HTTPPost_BodyTooLarge
 // ---------------------------------------------------------------------------
 
-// Validates that requests exceeding max_body_size are rejected with 400.
+// Validates that requests exceeding max_body_size are rejected with 413.
 func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
 	factory := transport.NewFactory()
 	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
@@ -378,8 +380,8 @@ func TestIntegration_HTTPPost_BodyTooLarge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	factory.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

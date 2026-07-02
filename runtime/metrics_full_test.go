@@ -25,6 +25,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("metrics-test-instance"),
 		runtime.WithMetrics(rec),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	cfg := runtime.RouteConfig{

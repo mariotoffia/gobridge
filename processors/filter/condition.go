@@ -9,14 +9,24 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 type conditionEvaluator struct {
 	condition Condition
 	regex     *regexp.Regexp
+	// maxPayloadBytes is the effective payload-size ceiling for "$."
+	// path evaluation, copied from the owning Processor's Config in
+	// New. Zero means "no ceiling" (a bare evaluator constructed in a
+	// test), so direct evaluator use is not size-limited.
+	maxPayloadBytes int
 }
 
 func newConditionEvaluator(c Condition) (*conditionEvaluator, error) {
+	if err := validateOperator(c.Operator); err != nil {
+		return nil, err
+	}
+
 	eval := &conditionEvaluator{condition: c}
 
 	if c.Operator == OperatorRegex {
@@ -84,9 +94,20 @@ func (e *conditionEvaluator) extractFromPayload(payload []byte, path string) (an
 		return nil, false, nil
 	}
 
+	if e.maxPayloadBytes > 0 && len(payload) > e.maxPayloadBytes {
+		return nil, false, shared.ErrPayloadTooLarge.Wrap(
+			fmt.Errorf("filter: payload %d bytes exceeds limit %d", len(payload), e.maxPayloadBytes))
+	}
+
 	var data map[string]any
 	if err := json.Unmarshal(payload, &data); err != nil {
-		return nil, false, nil
+		// SECURITY: a JSON parse failure must NOT be a silent no-match.
+		// Treating malformed JSON as "field absent" lets a hostile
+		// producer bypass an ActionDrop (deny) rule by sending garbage.
+		// Fail closed: classify the payload as rejected so the runtime
+		// DLQs it instead of passing it down the chain.
+		return nil, false, shared.ErrInvalidPayload.Wrap(
+			fmt.Errorf("filter: %q path on unparseable JSON payload: %w", path, err))
 	}
 
 	path = strings.TrimPrefix(path, "$.")
@@ -133,7 +154,26 @@ func (e *conditionEvaluator) compare(value any) (bool, error) {
 	case OperatorIn:
 		return e.isIn(value), nil
 	default:
-		return false, fmt.Errorf("unsupported operator: %s", e.condition.Operator)
+		// Unreachable: validateOperator rejects unknown operators at
+		// construction. Kept as a fail-closed, correctly classified
+		// guard rather than a plain (runtime-retryable) fmt.Errorf.
+		return false, shared.NewBridgeError(shared.ErrCodeInternal, shared.ErrorPermanent,
+			fmt.Sprintf("filter: unhandled operator %q", e.condition.Operator))
+	}
+}
+
+// validateOperator reports whether op is a supported comparison
+// operator. It runs at construction so a misconfigured operator fails
+// the build (structured setup error) instead of degrading to a
+// per-message plain error the runtime would treat as retryable.
+func validateOperator(op Operator) error {
+	switch op {
+	case OperatorEquals, OperatorNotEquals, OperatorContains, OperatorRegex,
+		OperatorGreaterThan, OperatorLessThan, OperatorGreaterOrEqual,
+		OperatorLessOrEqual, OperatorExists, OperatorIn:
+		return nil
+	default:
+		return ErrUnknownOperator.With("operator", string(op))
 	}
 }
 

@@ -77,6 +77,7 @@ func TestRouteRunner_SharedOutboxCreatedAtUsesInjectedClock(t *testing.T) {
 		Receiver:    receiver,
 		Sender:      NewFakeSender(),
 		OutboxStore: outbox,
+		Bindings:    []routing.DestinationBinding{{ID: "bind-clocked", SessionID: "sess-clocked"}},
 		Resolver: &FakeResolver{Plans: []routing.DispatchPlan{{
 			BindingID: "bind-clocked",
 			Address:   "topic/clocked",

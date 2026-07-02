@@ -257,19 +257,31 @@ func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 	return l.session.getCurrentVersion(ctx, l.pk())
 }
 
-// Save writes a BridgeConfig to DynamoDB, auto-incrementing the version.
-// This is useful for tests and admin tooling.
+// Save writes a BridgeConfig to DynamoDB using an optimistic
+// compare-and-set so concurrent admin writers cannot silently lose
+// updates. It reads the current committed version with a strongly
+// consistent read, then conditionally writes version+1 guarded on the
+// stored version being unchanged. A concurrent write that advanced the
+// version causes a shared.ErrVersionMismatch, which the caller should
+// resolve by reloading and retrying.
 func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	data, err := parser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)
 	}
 
-	l.mu.Lock()
-	newVersion := l.lastVersion + 1
-	l.mu.Unlock()
+	current, err := l.currentVersion(ctx)
+	if err != nil {
+		return err
+	}
+	newVersion := current + 1
 
-	if err := l.session.putConfigItem(ctx, l.pk(), data, newVersion); err != nil {
+	if err := l.session.putConfigItem(ctx, l.pk(), data, newVersion, current); err != nil {
+		if isConditionFailed(err) {
+			return shared.ErrVersionMismatch.
+				WithMessage("dynamodb config save: concurrent update detected; reload and retry").
+				With("expectedVersion", current)
+		}
 		return err
 	}
 

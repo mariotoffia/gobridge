@@ -249,6 +249,63 @@ func TestOutboxRecord_Complete(t *testing.T) {
 	}
 }
 
+// TestOutboxRecord_Release validates that Release returns a Claimed
+// record to Pending — clearing claim ownership and timestamp but leaving
+// replayCount untouched — and is rejected from every non-Claimed state.
+// This is the aggregate side of the A4 transient-failure fast path: the
+// same owner can re-claim the released record without a fencing-version
+// bump.
+func TestOutboxRecord_Release(t *testing.T) {
+	now := time.Unix(1_700_000_250, 0)
+
+	t.Run("from_claimed_returns_to_pending_and_is_reclaimable", func(t *testing.T) {
+		rec, _ := persistence.NewOutboxRecord(validSpec())
+		if err := rec.Claim(now, "owner-A", 1); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if err := rec.Release(now); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if rec.Status() != persistence.OutboxPending {
+			t.Errorf("status=%q want Pending", rec.Status())
+		}
+		if rec.ClaimedBy() != "" {
+			t.Errorf("claimedBy=%q want empty", rec.ClaimedBy())
+		}
+		if !rec.ClaimedAt().IsZero() {
+			t.Errorf("claimedAt=%v want zero", rec.ClaimedAt())
+		}
+		// Release must NOT touch replayCount; the next Claim increments it.
+		if rec.ReplayCount() != 1 {
+			t.Errorf("replayCount=%d want 1 (unchanged by Release)", rec.ReplayCount())
+		}
+		// The same owner at the same fencing version can re-claim the now
+		// pending record; only then does replayCount advance.
+		if err := rec.Claim(now, "owner-A", 1); err != nil {
+			t.Fatalf("re-claim after release: %v", err)
+		}
+		if rec.ReplayCount() != 2 {
+			t.Errorf("replayCount=%d want 2 after re-claim", rec.ReplayCount())
+		}
+	})
+
+	for _, st := range []persistence.OutboxStatus{
+		persistence.OutboxPending, persistence.OutboxCompleted, persistence.OutboxExpired,
+	} {
+		st := st
+		t.Run("from_"+string(st)+"_rejected", func(t *testing.T) {
+			rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+				ID: "r", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
+				Status: st,
+			})
+			err := rec.Release(now)
+			if !errors.Is(err, shared.ErrOutboxNotInClaimedState) {
+				t.Fatalf("err=%v want ErrOutboxNotInClaimedState", err)
+			}
+		})
+	}
+}
+
 // TestOutboxRecord_Expire validates legal transitions from Pending and
 // Claimed plus rejection from terminal states.
 func TestOutboxRecord_Expire(t *testing.T) {

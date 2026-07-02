@@ -114,9 +114,17 @@ func (d *Delivery) Ack(ctx context.Context) error {
 }
 
 // Retry releases or modifies the message for redelivery.
-// When after is zero, the message is released for immediate redelivery.
-// When after is positive, the message is modified with DeliveryFailed=true
-// to signal the broker that a retry is needed.
+//
+// When after is zero, the message is released for immediate redelivery
+// (ReleaseMessage). When after is positive, the message is modified with
+// DeliveryFailed=true (ModifyMessage) to hand it back to the broker for
+// redelivery. AMQP 1.0 has no portable client-side delayed-redelivery
+// primitive, so the requested delay is ADVISORY: the broker — not this
+// client — controls when the message is redelivered. The message is
+// never dropped, which preserves at-least-once delivery (the safe choice
+// over returning ErrNotSupported, which would route every backed-off
+// retry straight to the DLQ).
+//
 // If a prior settlement attempt failed, subsequent calls return
 // ErrUnavailable.
 func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) error {
@@ -134,10 +142,16 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 
 	var err error
 	if after > 0 {
-		if logging.TraceEnabled(d.logger) {
-			d.logger.Log(ctx, logging.LevelTrace, "amqp10: modifying message for retry",
+		// Finding 2 (delayed-retry boundary): the broker, not this
+		// client, controls redelivery timing for a modified outcome, so
+		// the runtime's requested backoff is not honored here. Surface it
+		// at Debug (rather than silently) so operators can see when a
+		// configured backoff is effectively broker-driven.
+		if logging.DebugEnabled(d.logger) {
+			d.logger.Log(ctx, logging.LevelDebug,
+				"amqp10: delayed retry not honored client-side; broker controls redelivery timing",
 				"envelope_id", d.env.ID(),
-				"delay", after,
+				"requested_delay", after,
 			)
 		}
 		err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{

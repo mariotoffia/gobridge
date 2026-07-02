@@ -86,6 +86,16 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	}
 }
 
+// TestRoutePolicy_WithDefaults_SharedOutboxAckBoundary verifies that an unset
+// AckAfter on a shared_outbox route defaults to outbox_persist — the boundary
+// the delivery actually honors — rather than the global target_accept default.
+func TestRoutePolicy_WithDefaults_SharedOutboxAckBoundary(t *testing.T) {
+	p := routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox}.WithDefaults()
+	if p.AckAfter != routing.AckAfterOutboxPersist {
+		t.Fatalf("shared_outbox AckAfter default: got %s, want %s", p.AckAfter, routing.AckAfterOutboxPersist)
+	}
+}
+
 // TestNewDefaultBackoffPolicy_Values validates the recommended default backoff values.
 func TestNewDefaultBackoffPolicy_Values(t *testing.T) {
 	bp := routing.NewDefaultBackoffPolicy()

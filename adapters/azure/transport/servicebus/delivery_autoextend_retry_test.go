@@ -32,7 +32,7 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
 	defer d.stop()
 
 	// OTHER: real-time sync for clocktest.Fake goroutine startup
@@ -65,7 +65,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
 	defer d.stop()
 
 	// OTHER: real-time sync for clocktest.Fake goroutine startup
@@ -108,7 +108,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, fake)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
 	defer d.stop()
 
 	// OTHER: real-time sync for clocktest.Fake goroutine startup

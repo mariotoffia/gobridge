@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -340,17 +341,19 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	drainEvents(sess, 1, 3*time.Second)
-
-	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
+	// Emulate the runtime session manager (finding C7: it is the single
+	// owner of reconnect reconciliation). The pump is the sole consumer of
+	// sess.Events() and drives Reconcile on every SessionConnected — the
+	// initial connect and every reconnect after the outage.
+	plan := connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
-	}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
 	}
+	pump := startReconcilePump(ctx, sess, plan)
 
-	// Wait for the SessionReconciled event so we know the subscription
-	// is in place before we exercise the outage.
-	waitForEventType(t, sess, ports.SessionReconciled, 5*time.Second)
+	// Initial connect drives the first reconcile; wait until the
+	// subscription is established before exercising the outage.
+	pump.waitCount(t, ports.SessionReconciled, 1, 10*time.Second, "initial SessionReconciled")
+	waitSubActive(t, sess, 5*time.Second)
 
 	recv := paho.NewReceiver("res-outage-rx", sess)
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
@@ -379,12 +382,15 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	// Phase 2: kill broker, wait for SessionDisconnected.
 	broker.Stop()
-	waitForEventType(t, sess, ports.SessionDisconnected, 15*time.Second)
+	pump.waitCount(t, ports.SessionDisconnected, 1, 15*time.Second, "SessionDisconnected after outage")
 
-	// Phase 3: bring broker back; expect SessionConnected then SessionReconciled.
+	// Phase 3: bring broker back. The pump observes a second
+	// SessionConnected and drives the reconnect reconcile (the single owner
+	// per C7), which re-subscribes the plan and emits a second
+	// SessionReconciled.
 	broker.Restart()
-	waitForEventType(t, sess, ports.SessionConnected, 30*time.Second)
-	waitForEventType(t, sess, ports.SessionReconciled, 15*time.Second)
+	pump.waitCount(t, ports.SessionConnected, 2, 30*time.Second, "SessionConnected after restart")
+	pump.waitCount(t, ports.SessionReconciled, 2, 15*time.Second, "SessionReconciled after reconnect")
 
 	waitSubActive(t, sess, 5*time.Second)
 
@@ -414,24 +420,6 @@ func drainEvents(sess *paho.Session, n int, timeout time.Duration) {
 	}
 }
 
-func waitForEventType(t *testing.T, sess *paho.Session, want ports.SessionEventType, timeout time.Duration) {
-	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		select {
-		case ev, ok := <-sess.Events():
-			if !ok {
-				t.Fatalf("events channel closed while waiting for %v", want)
-			}
-			if ev.Type == want {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for event %v", want)
-		}
-	}
-}
-
 func waitForCount(t *testing.T, c *atomic.Int64, want int64, timeout time.Duration, desc string) {
 	t.Helper()
 	deadline := time.After(timeout)
@@ -444,5 +432,77 @@ func waitForCount(t *testing.T, c *atomic.Int64, want int64, timeout time.Durati
 			t.Fatalf("timed out waiting for %s (got %d, want %d)", desc, c.Load(), want)
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reconcilePump emulates the runtime session manager for integration tests.
+//
+// Per finding C7 the runtime session manager is the SINGLE owner of reconnect
+// reconciliation: it consumes SessionConnected events and drives
+// Session.Reconcile, whose outcome is authoritative. paho's OnConnectionUp no
+// longer reconciles inline, so an integration test that exercises a real
+// reconnect must supply that owner. The pump is the SOLE consumer of
+// sess.Events() (so it never races the test for the shared channel) and, on
+// every SessionConnected — initial connect and each reconnect — calls
+// sess.Reconcile(plan). It tallies events by type so the test waits on counts
+// instead of draining the channel directly.
+type reconcilePump struct {
+	mu       sync.Mutex
+	counts   map[ports.SessionEventType]int
+	reconErr error
+}
+
+func startReconcilePump(ctx context.Context, sess *paho.Session, plan connectivity.SessionPlan) *reconcilePump {
+	p := &reconcilePump{counts: make(map[ports.SessionEventType]int)}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-sess.Events():
+				if !ok {
+					return
+				}
+				p.mu.Lock()
+				p.counts[ev.Type]++
+				p.mu.Unlock()
+				if ev.Type == ports.SessionConnected {
+					// Manager reconciles in response to connection-up.
+					// This runs strictly happens-after OnConnectionUp's
+					// activeSubs reset (channel receive after send), so the
+					// reconcile always observes an empty set on reconnect
+					// and re-subscribes the full plan.
+					if err := sess.Reconcile(ctx, plan); err != nil {
+						p.mu.Lock()
+						p.reconErr = err
+						p.mu.Unlock()
+					}
+				}
+			}
+		}
+	}()
+	return p
+}
+
+func (p *reconcilePump) count(tp ports.SessionEventType) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.counts[tp]
+}
+
+func (p *reconcilePump) reconcileErr() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reconErr
+}
+
+// waitCount blocks until at least want events of type tp have been observed,
+// failing the test on timeout or if a manager-driven Reconcile errored.
+func (p *reconcilePump) waitCount(t *testing.T, tp ports.SessionEventType, want int, timeout time.Duration, desc string) {
+	t.Helper()
+	wait.Until(t, timeout, desc, func() bool { return p.count(tp) >= want })
+	if err := p.reconcileErr(); err != nil {
+		t.Fatalf("%s: manager-driven Reconcile failed: %v", desc, err)
 	}
 }

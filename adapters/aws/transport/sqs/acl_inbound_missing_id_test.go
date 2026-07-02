@@ -114,7 +114,7 @@ func TestSQSPollAndConvert_DropsMalformedMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	r.client = mock
+	r.storeClient(mock)
 
 	results, err := r.pollAndConvert(context.Background(), "http://test/q", 0)
 	if err != nil {

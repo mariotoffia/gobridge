@@ -117,6 +117,30 @@ type AddressValidator interface {
 // visibility timeout. The runtime validator uses this value to check
 // that SendTimeout does not exceed half the visibility window, which
 // would cause duplicate processing.
+//
+// This reports a transport-WIDE default constant. When a receiver's
+// typed PluginConfig also satisfies VisibilityTimeoutConfig, that
+// per-route value takes precedence — see VisibilityTimeoutConfig.
 type VisibilityTimeoutProvider interface {
 	VisibilityTimeout() time.Duration
+}
+
+// VisibilityTimeoutConfig is an optional interface a receiver's typed
+// PluginConfig may satisfy to declare the route's effective visibility /
+// lock window (e.g. SQS visibility_timeout, ASB lock_duration) and
+// whether that window is auto-extended while a message is in flight.
+// When a receiver config satisfies it, the builder uses this per-route
+// window instead of the transport Factory's VisibilityTimeoutProvider
+// constant, so the runtime validator checks SendTimeout against the
+// window the route will actually run with (Finding 2 / D2).
+//
+// AutoExtendEnabled reports whether the receiver renews the window in the
+// background (SQS/ASB auto_extend). When true the finite-window
+// SendTimeout check does not apply: the source will not redeliver while
+// processing continues (barring repeated renewal failure), so a
+// deliberately short window paired with auto-extend is a valid config the
+// validator must not reject.
+type VisibilityTimeoutConfig interface {
+	EffectiveVisibilityTimeout() time.Duration
+	AutoExtendEnabled() bool
 }

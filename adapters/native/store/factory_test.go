@@ -3,6 +3,7 @@ package nativestore_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/ports"
@@ -62,6 +63,24 @@ func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 	cfg := &nativestore.SQLiteConfig{Path: ":memory:"}
 
 	s, err := f.NewOutboxStore(context.Background(), cfg, ports.OutboxRuntimeOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected non-nil OutboxStore")
+	}
+}
+
+// Verifies the SQLite factory accepts the runtime-derived StaleClaimDuration
+// (I1 wiring). Deterministic stale-reclaim behaviour is covered with a fake
+// clock in the sqliteoutbox package; here we only pin that the factory wires
+// the option through and still constructs a usable store.
+func TestSQLiteStoreFactory_NewOutboxStore_WithStaleClaimDuration(t *testing.T) {
+	f := nativestore.NewSQLiteStoreFactory()
+	cfg := &nativestore.SQLiteConfig{Path: ":memory:"}
+
+	s, err := f.NewOutboxStore(context.Background(), cfg,
+		ports.OutboxRuntimeOptions{StaleClaimDuration: 30 * time.Second})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

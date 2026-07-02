@@ -16,6 +16,12 @@ type Config struct {
 	Action     Action      `json:"action"`
 	RouteTo    string      `json:"routeTo,omitempty"`
 	Invert     bool        `json:"invert,omitempty"`
+	// MaxPayloadBytes bounds the JSON payload the filter is willing to
+	// parse for a "$." path condition. Payloads larger than this are
+	// rejected with shared.ErrPayloadTooLarge instead of being parsed,
+	// bounding worst-case CPU for a hostile / oversized message.
+	// Non-positive selects DefaultMaxPayloadBytes.
+	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
 }
 
 // Condition defines a single field-level predicate.

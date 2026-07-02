@@ -38,12 +38,11 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 			hasProps = true
 		}
 	}
-	if v, ok := headers[headerSubject]; ok {
-		if s, ok := v.(string); ok {
-			props.Subject = &s
-			hasProps = true
-		}
-	}
+	// Finding 5 (domain invariant): the amqp10.subject header is
+	// deliberately NOT mapped to Properties.Subject. Envelope.Subject is
+	// the SOLE egress source for the AMQP Subject (applied in
+	// envelopeToMessage), so a free-form amqp10.subject header can never
+	// override or spoof it when Envelope.Subject is empty.
 	if v, ok := headers[headerTo]; ok {
 		if s, ok := v.(string); ok {
 			props.To = &s
@@ -98,12 +97,27 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 		msg.Properties = props
 	}
 
+	// Central egress header policy: strip INTERNAL-ONLY reserved headers
+	// (route-id, route-override, source-id, content-type) so bridge
+	// dispatch bookkeeping never leaks to a consumer, while BRIDGE-TO-
+	// BRIDGE PROPAGATED headers (correlation-id, idempotency-key,
+	// ordering-key, tenant-id, traceparent, ...) pass through so a
+	// receiving bridge can correlate, deduplicate and continue a trace.
+	//
+	// We strip via (IsReservedHeader && !IsBridgeToBridgeHeader) rather
+	// than the literal StripInternalOnlyHeaders so that UNCLASSIFIED
+	// x-bridge.* keys (anything reserved-prefixed that is neither
+	// internal-only nor part of the bridge-to-bridge contract) are also
+	// stripped — they are not a propagation contract and must not leak.
+	// ponytail: a per-sender "bridge-to-bridge mode" toggle (strip ALL
+	// reserved for an external-only sink) lives in shared config; absent
+	// that, this is the safe default.
 	var appProps map[string]any
 	for k, v := range headers {
 		if wellKnownHeaders[k] || strings.HasPrefix(k, headerPrefix) {
 			continue
 		}
-		if messaging.IsReservedHeader(k) {
+		if messaging.IsReservedHeader(k) && !messaging.IsBridgeToBridgeHeader(k) {
 			continue
 		}
 		if appProps == nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -78,7 +79,11 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		)
 	}
 
+	// failures counts consecutive rapid consume failures to drive the
+	// reconnect backoff; it resets after a healthy run (see loop body).
+	var failures int
 	for {
+		loopStart := r.clock().Now()
 		err := r.consumeLoop(ctx, emit)
 		if err == nil || ctx.Err() != nil {
 			if logging.DebugEnabled(r.logger) {
@@ -92,6 +97,26 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			return errors.Unwrap(err)
 		}
 
+		// A permanent transport error (queue/exchange missing, access
+		// refused, unsupported, protocol error) recurs identically on
+		// every reconnect. Failing the component surfaces the
+		// misconfiguration instead of hot-looping forever on it.
+		if isPermanentError(err) {
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(ctx, logging.LevelDebug,
+					"amqp091: receiver stopping on permanent error",
+					"queue", r.cfg.QueueName, "error", err)
+			}
+			return err
+		}
+
+		// Reset the failure counter once a consume loop has run long
+		// enough to be considered healthy, so an occasional reconnect
+		// after a long stable run does not inherit an escalated backoff.
+		if r.clock().Since(loopStart) >= receiverHealthyRun {
+			failures = 0
+		}
+
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "amqp091: consumer channel lost, waiting for reconnect",
 				"queue", r.cfg.QueueName, "error", err)
@@ -99,6 +124,20 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 		if !r.waitForReconnect(ctx) {
 			return ctx.Err()
+		}
+
+		// Bounded backoff before re-establishing the consumer. When the
+		// session stays connected but consumeLoop keeps failing fast
+		// (e.g. the broker repeatedly cancels the consumer, or a transient
+		// channel error), waitForReconnect returns immediately because
+		// Health reports Connected. Without this delay the loop hot-spins,
+		// burning CPU and hammering the broker. The delay grows with
+		// consecutive failures and is reset after a healthy run above.
+		failures++
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.clock().After(receiverBackoff(failures)):
 		}
 	}
 }
@@ -109,6 +148,46 @@ type emitError struct{ err error }
 
 func (e *emitError) Error() string { return e.err.Error() }
 func (e *emitError) Unwrap() error { return e.err }
+
+const (
+	// receiverRetryInitial is the first backoff applied after a transient
+	// consume failure that left the session connected.
+	receiverRetryInitial = 100 * time.Millisecond
+	// receiverRetryMax caps the exponential reconnect backoff.
+	receiverRetryMax = 5 * time.Second
+	// receiverHealthyRun is how long a consume loop must run before a
+	// subsequent failure is treated as fresh and the backoff resets.
+	receiverHealthyRun = 30 * time.Second
+)
+
+// isPermanentError reports whether err is a classified permanent
+// transport error (queue/exchange missing, access refused, unsupported,
+// protocol error). Such errors recur identically on every reconnect, so
+// the receiver fails the component instead of retrying forever.
+func isPermanentError(err error) bool {
+	var be *shared.BridgeError
+	if errors.As(err, &be) {
+		return be.Class == shared.ErrorPermanent
+	}
+	return false
+}
+
+// receiverBackoff returns the bounded exponential backoff for the nth
+// consecutive rapid failure (failures >= 1).
+func receiverBackoff(failures int) time.Duration {
+	if failures <= 1 {
+		return receiverRetryInitial
+	}
+	shift := failures - 1
+	if shift > 8 { // 100ms<<8 already exceeds the cap; avoid shift overflow
+		shift = 8
+	}
+	d := receiverRetryInitial << uint(shift)
+	if d <= 0 || d > receiverRetryMax {
+		return receiverRetryMax
+	}
+	return d
+}
 
 // isEmitError returns true when the error originated from the emit callback
 // rather than from the AMQP transport layer.
@@ -140,8 +219,21 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		consumerTag = r.cfg.ConsumerTag + "-" + consumerTag
 	}
 
+	// Derive a per-attempt context so that when this consumeLoop returns
+	// for ANY reason (broker channel close, delivery-channel close, a
+	// consume error, or caller cancellation) the forwarding goroutine
+	// started inside ch.Consume is released from a blocked send on its
+	// out channel and nack-requeues the in-flight delivery instead of
+	// leaking. The parent ctx is long-lived (reused across reconnects in
+	// Run) and only cancels on full receiver shutdown, so without this a
+	// broker-initiated channel close would strand the forwarder forever
+	// (one leaked goroutine + one unsettled delivery per channel flap).
+	consumeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	consumeStart := r.clock().Now()
 	deliveries, err := ch.Consume(
+		consumeCtx,
 		r.cfg.QueueName,
 		consumerTag,
 		r.cfg.AutoAck,

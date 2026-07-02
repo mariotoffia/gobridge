@@ -343,6 +343,7 @@ func TestDeliveryHook_Builder_RegisterPropagates(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-hook-prop"),
 		runtime.WithDeliveryHook(hook),
+		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
 	cfg := runtime.RouteConfig{

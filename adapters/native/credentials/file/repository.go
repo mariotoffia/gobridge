@@ -141,6 +141,10 @@ func (r *Repository) Scheme() string    { return Scheme }
 func (r *Repository) Namespace() string { return r.namespace }
 
 func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -154,18 +158,22 @@ func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.Credent
 		if os.IsNotExist(err) {
 			return nil, shared.ErrNotFound
 		}
-		return nil, fmt.Errorf("failed to read credentials file: %w", err)
+		return nil, shared.ErrUnavailable.WithMessage("failed to read credentials file").Wrap(err)
 	}
 
 	var stored storedCredentials
 	if err := json.Unmarshal(data, &stored); err != nil {
-		return nil, fmt.Errorf("failed to parse credentials file: %w", err)
+		return nil, shared.ErrInvalidPayload.WithMessage("failed to parse credentials file").Wrap(err)
 	}
 
 	return stored.Credentials.toDomain(), nil
 }
 
 func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -179,8 +187,8 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to create directory").Wrap(err)
 	}
 
 	now := r.clk.Now()
@@ -195,6 +203,10 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 }
 
 func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -208,12 +220,12 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity
 		if os.IsNotExist(err) {
 			return shared.ErrNotFound
 		}
-		return fmt.Errorf("failed to read credentials file: %w", err)
+		return shared.ErrUnavailable.WithMessage("failed to read credentials file").Wrap(err)
 	}
 
 	var stored storedCredentials
 	if err := json.Unmarshal(data, &stored); err != nil {
-		return fmt.Errorf("failed to parse credentials file: %w", err)
+		return shared.ErrInvalidPayload.WithMessage("failed to parse credentials file").Wrap(err)
 	}
 
 	if version > 0 && stored.Version != version {
@@ -228,6 +240,10 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity
 }
 
 func (r *Repository) Delete(ctx context.Context, uri string, version int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -243,12 +259,12 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 	if version > 0 {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			return fmt.Errorf("failed to read credentials file: %w", err)
+			return shared.ErrUnavailable.WithMessage("failed to read credentials file").Wrap(err)
 		}
 
 		var stored storedCredentials
 		if err := json.Unmarshal(data, &stored); err != nil {
-			return fmt.Errorf("failed to parse credentials file: %w", err)
+			return shared.ErrInvalidPayload.WithMessage("failed to parse credentials file").Wrap(err)
 		}
 
 		if stored.Version != version {
@@ -257,13 +273,17 @@ func (r *Repository) Delete(ctx context.Context, uri string, version int64) erro
 	}
 
 	if err := os.Remove(filePath); err != nil {
-		return fmt.Errorf("failed to delete credentials file: %w", err)
+		return shared.ErrUnavailable.WithMessage("failed to delete credentials file").Wrap(err)
 	}
 
 	return nil
 }
 
 func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -280,6 +300,11 @@ func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) 
 	err := filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		// Abort a large walk promptly if the caller cancelled (N5): the
+		// entry-time ctx check above only covers the first entry.
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
 		}
 		if info.IsDir() {
 			return nil
@@ -356,12 +381,71 @@ func (r *Repository) ensureUnderBasePath(resolved string) error {
 func (r *Repository) writeCredentials(filePath string, stored *storedCredentials) error {
 	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal credentials: %w", err)
+		return shared.ErrInvalidPayload.WithMessage("failed to marshal credentials").Wrap(err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write credentials file: %w", err)
+	return atomicWriteFile(filePath, data, 0o600)
+}
+
+// atomicWriteFile writes data to a temp file in the destination directory,
+// fsyncs it, atomically renames it over path, then fsyncs the directory so the
+// rename is durable (I3). A crash mid-write or a concurrent external reader can
+// therefore only ever observe the complete old file or the complete new file —
+// never a truncated or partially written secret. The temp file is 0600 from
+// creation and removed on every error path.
+//
+// ponytail: POSIX atomic-rename + fsync ceiling. Sufficient for local/dev and
+// immutable-mount deployments this store targets; a multi-writer or
+// multi-process rotating secret store would move to a real secrets manager
+// (SSM/Secrets Manager adapters) rather than shared files. Directory fsync is a
+// no-op-or-error on some non-POSIX filesystems; the target platforms are
+// Linux/macOS.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+
+	tmp, err := os.CreateTemp(dir, ".credtmp-*")
+	if err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to create temp credentials file").Wrap(err)
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup. After a successful rename tmpName no longer exists,
+	// so this Remove fails harmlessly; on any error path it deletes the partial
+	// temp file so no secret residue is left behind.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return shared.ErrUnavailable.WithMessage("failed to chmod temp credentials file").Wrap(err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return shared.ErrUnavailable.WithMessage("failed to write temp credentials file").Wrap(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return shared.ErrUnavailable.WithMessage("failed to fsync temp credentials file").Wrap(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to close temp credentials file").Wrap(err)
 	}
 
+	if err := os.Rename(tmpName, path); err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to rename credentials file into place").Wrap(err)
+	}
+
+	return fsyncDir(dir)
+}
+
+// fsyncDir flushes a directory entry so a preceding rename survives a crash.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to open credentials dir for fsync").Wrap(err)
+	}
+	defer func() { _ = d.Close() }()
+
+	if err := d.Sync(); err != nil {
+		return shared.ErrUnavailable.WithMessage("failed to fsync credentials dir").Wrap(err)
+	}
 	return nil
 }

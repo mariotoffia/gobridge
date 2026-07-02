@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
@@ -31,12 +33,21 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 	return func(a *App) { a.credentialStore = store }
 }
 
+// WithDynamoDBClient overrides the *dynamodb.Client used by the
+// DynamoDB store factory. When unset (the default) the App builds a
+// client from the ambient AWS environment during Start via
+// newDynamoDBClient. Tests and local emulation (e.g. LocalStack)
+// inject a pre-configured client here.
+func WithDynamoDBClient(client *dynamodb.Client) Option {
+	return func(a *App) { a.dynamoDBClient = client }
+}
+
 // WithPluginRegistry overrides the *ports.Registry used to decode
 // blueprints loaded from the file source / re-parsed during secret
 // resolution. When unset (the default) the App constructs a fresh
 // registry and populates it with the adapters this binary bundles
-// (paho, sqs, native store, http transport). Tests use this option
-// to inject hermetic stubs.
+// (paho, sqs, native + DynamoDB store, http transport). Tests use this
+// option to inject hermetic stubs.
 func WithPluginRegistry(reg *ports.Registry) Option {
 	return func(a *App) { a.pluginRegistry = reg }
 }
@@ -53,6 +64,7 @@ type App struct {
 	parameterResolver parameterResolver
 	credentialStore   ports.CredentialStore
 	pluginRegistry    *ports.Registry
+	dynamoDBClient    *dynamodb.Client
 
 	manager         *config.Manager
 	httpServer      *httpapi.Server
@@ -118,6 +130,13 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		a.credentialStore = store
 	}
+	if a.dynamoDBClient == nil {
+		client, err := newDynamoDBClient(ctx, a.cfg)
+		if err != nil {
+			return err
+		}
+		a.dynamoDBClient = client
+	}
 
 	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
@@ -138,6 +157,9 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// NodeRole is intentionally NOT consulted here: every node starts
+	// the transport, admin, and monitor servers. node_role is reserved
+	// / non-operative at runtime today (see infra.BootstrapConfig.NodeRole).
 	a.transportServer = newTransportServer(a.handlerRef, a.logger)
 	if err := a.transportServer.Start(a.cfg.TransportHTTPAddr); err != nil {
 		return fmt.Errorf("bootstrap: start transport HTTP server: %w", err)
@@ -156,8 +178,16 @@ func (a *App) Start(ctx context.Context) error {
 			}
 			return rt
 		},
-		ConfigStore:    &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
-		ConfigProvider: a.logicalRef.Get,
+		ConfigStore: &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
+		// ConfigProvider must expose the *effective* (currently running)
+		// config, so read from appliedRef -- the config of the last
+		// successfully-applied runtime. logicalRef holds the last config
+		// read from disk, which may be a reload that FAILED validation or
+		// apply (watchLoop keeps the last-good runtime on rejection); using
+		// it here would surface a rejected config to operators as if it were
+		// live. appliedRef is nil only when nothing is cleanly running, and
+		// every configProvider consumer handles nil (GET /config -> 503).
+		ConfigProvider: a.appliedRef.Get,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),

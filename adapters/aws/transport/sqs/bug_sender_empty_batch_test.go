@@ -20,10 +20,10 @@ import (
 func TestSendBatch_NilSlice_ReturnsZeroNil(t *testing.T) {
 	mock := &mockSQSClient{}
 	s := &Sender{
-		client:   mock,
 		queueURL: "https://sqs.us-west-1.amazonaws.com/123456789012/test",
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
+	s.storeClient(mock)
 
 	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage(nil))
 	require.NoError(t, err)
@@ -33,10 +33,10 @@ func TestSendBatch_NilSlice_ReturnsZeroNil(t *testing.T) {
 func TestSendBatch_EmptySlice_ReturnsZeroNil(t *testing.T) {
 	mock := &mockSQSClient{}
 	s := &Sender{
-		client:   mock,
 		queueURL: "https://sqs.us-west-1.amazonaws.com/123456789012/test",
 		cfg:      SenderConfig{BatchSize: 10, Timeout: 30},
 	}
+	s.storeClient(mock)
 
 	results, err := s.SendBatch(context.Background(), []ports.OutboundMessage{})
 	require.NoError(t, err)

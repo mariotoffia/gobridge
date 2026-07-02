@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
@@ -28,6 +29,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 	rt.running = true
 	rt.healthy = true
+	rt.terminal = false
 	rt.componentErrors = make(map[string]error)
 
 	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
@@ -45,9 +47,28 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
-	dlqRouter := dlq.NewFromConfig(dlq.Config{Store: rt.dlqStore, Clock: rt.clk})
-	dlqRouter.Start(ctx)
-	rt.dlqRouter = dlqRouter
+	// The DLQ write is on the settle-critical path: it runs inside the route
+	// runner's per-delivery goroutine, which holds the global in-flight slot
+	// until it returns. Keep the budget small and well under typical source
+	// visibility so a degraded DLQ store cannot pin global slots for the full
+	// 30s×3 default and starve healthy routes. Worst case here is ~10.5s.
+	//
+	// With the default transports this budget does not affect duplicates: SQS
+	// AutoExtend and ASB lock renewal keep the source message invisible for the
+	// whole blocking write, so a hung store yields a clean NACK-and-retry, not a
+	// duplicate DLQ entry. Duplicate amplification only arises if a source runs
+	// with visibility extension OFF and a visibility window shorter than the
+	// send+DLQ budget — a deployment that must size visibility accordingly.
+	//
+	// ponytail: fixed 2×5s budget; make it per-route visibility-aware only if a
+	// route both disables visibility extension and sets a visibility window below
+	// the send+DLQ budget.
+	dlqRouter := dlq.NewFromConfig(dlq.Config{
+		Store:            rt.dlqStore,
+		Clock:            rt.clk,
+		WriteTimeout:     5 * time.Second,
+		WriteMaxAttempts: 2,
+	})
 
 	m := rt.metrics
 	if m == nil {
@@ -65,6 +86,20 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	drainerSessions := make(map[string]bool)
 
 	for _, entry := range rt.entries {
+		// A1: For shared_outbox routes with a primary session, bindings that
+		// omit their own SessionID inherit the route session. This keeps each
+		// outbox record's partition (SESSION#<routeSession>) aligned with the
+		// drainer that polls it; without this, records persist under
+		// BINDING#<id> while the only drainer polls SESSION#<routeSession>, so
+		// they never drain even though the source was ACKed after persist.
+		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && entry.sessCfg != nil {
+			for i := range entry.config.Bindings {
+				if entry.config.Bindings[i].SessionID == "" {
+					entry.config.Bindings[i].SessionID = entry.sessCfg.SessionID
+				}
+			}
+		}
+
 		entry.runner = route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 			RouteID:           entry.config.ID,
 			Policy:            entry.config.Policy,

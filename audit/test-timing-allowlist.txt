@@ -38,13 +38,9 @@
 ./adapters/mqtt/transport/paho/analysis_session_test.go:381:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 ./adapters/mqtt/transport/paho/analysis_session_test.go:462:	time.Sleep(20 * time.Millisecond) // OTHER: race window — let ConnectionManager accessor goroutine exercise before Close
 ./adapters/mqtt/transport/paho/analysis_session_test.go:93:		time.Sleep(50 * time.Millisecond) // OTHER: race window — cancel during Start connect attempt
-./adapters/mqtt/transport/paho/integration_resilience_test.go:241:		time.Sleep(40 * time.Millisecond)
+./adapters/mqtt/transport/paho/integration_resilience_test.go:242:		time.Sleep(40 * time.Millisecond)
 ./adapters/mqtt/transport/paho/integration_test.go:311:			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation
 ./adapters/mqtt/transport/paho/session_pushevent_test.go:65:			time.Sleep(50 * time.Microsecond) // OTHER: microsecond pacing — race window for concurrent Close during pushEvent
-./adapters/mqtt/transport/paho/session_router_test.go:135:		time.Sleep(200 * time.Millisecond)
-./adapters/mqtt/transport/paho/session_router_test.go:187:		time.Sleep(5 * time.Second) // OTHER: simulated blocking handler for Close deadline test
-./adapters/mqtt/transport/paho/session_router_test.go:234:		time.Sleep(50 * time.Millisecond) // OTHER: simulated slow handler work alongside panicking sibling
-./adapters/mqtt/transport/paho/session_router_test.go:61:			time.Sleep(100 * time.Millisecond) // OTHER: simulated slow handler work
 ./adapters/native/config/file/watcher_test.go:225:		time.Sleep(20 * time.Millisecond)
 ./adapters/native/config/file/watcher_test.go:337:		time.Sleep(1 * time.Millisecond)
 ./bridge/reconfig_strategy_test.go:150:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
@@ -52,9 +48,8 @@
 ./bridge/reconfig_strategy_test.go:197:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:219:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:397:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
-./bridge/supervisor_fakes_test.go:315:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor runtime init poll
-./bridge/supervisor_fakes_test.go:332:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor route convergence poll
-./circuitbreaker/audit_breaker_test.go:137:	time.Sleep(15 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
+./bridge/supervisor_fakes_test.go:323:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor runtime init poll
+./bridge/supervisor_fakes_test.go:340:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor route convergence poll
 ./config/manager_test.go:294:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg1 before pushing cfg2
 ./config/manager_test.go:296:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg2 before pushing cfg3
 ./config/manager_test.go:298:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg3 before reading output
@@ -63,31 +58,15 @@
 ./domain/clock/clocktest/fake_test.go:318:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 ./domain/clock/clocktest/fake_test.go:372:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 ./domain/clock/clocktest/fake_test.go:429:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
-./processors/circuitbreaker/breaker_deadlock_test.go:67:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/breaker_panic_test.go:37:	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/breaker_panic_test.go:78:	time.Sleep(cfg.ResetTimeout + 5*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/breaker_test.go:117:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/breaker_test.go:71:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/breaker_test.go:93:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/processor_test.go:340:	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/processor_test.go:56:	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/processor_test.go:88:	time.Sleep(60 * time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/resilience_fixes_test.go:251:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/resilience_fixes_test.go:282:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/resilience_fixes_test.go:298:				time.Sleep(10 * time.Millisecond) // OTHER: simulate probe latency for concurrent half-open test
-./processors/circuitbreaker/resilience_fixes_test.go:61:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
-./processors/circuitbreaker/resilience_fixes_test.go:96:	time.Sleep(cfg.ResetTimeout + 10*time.Millisecond) // OTHER: circuit breaker reset timeout transition
 ./runtime/credential_cache_eviction_test.go:132:	time.Sleep(2 * time.Millisecond) // FIXED: ensure deterministic ordering of expiry times
 ./runtime/credential_cache_eviction_test.go:273:	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 ./runtime/credential_cache_eviction_test.go:336:	time.Sleep(20 * time.Millisecond) // FIXED: wait for cache TTL (5ms) to expire
 ./runtime/credential_race_test.go:126:	time.Sleep(60 * time.Millisecond) // FIXED: wait for cache TTL (50ms) to expire
 ./runtime/cross_instance_test.go:280:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify sess not started before lease acquisition
-./runtime/dlq/router_backoff_test.go:126:	time.Sleep(10 * time.Millisecond)
-./runtime/dlq/router_backoff_test.go:141:	time.Sleep(10 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/edge_cases_test.go:319:	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
-./runtime/fakes_test.go:25:		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
-./runtime/jitter_clamp_test.go:124:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/medium_fixes_test.go:160:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
+./runtime/fakes_test.go:26:		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
+./runtime/jitter_clamp_test.go:125:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
+./runtime/medium_fixes_test.go:173:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 ./runtime/metrics_integration_test.go:242:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:248:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:254:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
@@ -98,8 +77,8 @@
 ./runtime/resilience_fakes_test.go:113:	time.Sleep(r.ExitDelay) // OTHER: simulated processing duration
 ./runtime/retry_fallback_test.go:190:	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when both retry and DLQ fail
 ./runtime/retry_fallback_test.go:425:	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when retry succeeds (redelivery expected)
-./runtime/route_locator_locate_test.go:184:	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
-./runtime/route_locator_locate_test.go:248:	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
+./runtime/route_locator_locate_test.go:187:	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
+./runtime/route_locator_locate_test.go:252:	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
 ./runtime/route_runner_concurrent_test.go:139:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/route_runner_concurrent_test.go:200:		time.Sleep(200 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/route_runner_concurrent_test.go:230:	time.Sleep(50 * time.Millisecond) // STARTUP: let emit reach receiver before cancel
@@ -107,13 +86,11 @@
 ./runtime/route_runner_concurrent_test.go:323:	time.Sleep(200 * time.Millisecond) // SYNC: let in-flight sends complete for peak measurement
 ./runtime/route_runner_concurrent_test.go:49:		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/runtime_resilience_test.go:157:	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
-./runtime/runtime_resilience_test.go:327:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
-./runtime/runtime_resilience_test.go:465:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify healthy sess is not restarted on re-acquisition
+./runtime/runtime_resilience_test.go:330:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
 ./runtime/s12_timeout_alignment_test.go:208:			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
 ./runtime/session/manager_clock_test.go:141:		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
 ./runtime/session/manager_clock_test.go:145:	time.Sleep(20 * time.Millisecond)
 ./runtime/session/manager_clock_test.go:172:	time.Sleep(20 * time.Millisecond)
-./runtime/shared_outbox_transient_recovery_test.go:177:		time.Sleep(25 * time.Millisecond) // NEGATIVE: verify no records complete during transient-failure window
 ./tests/integration/e2e_failover_test.go:254:	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
 ./tests/integration/e2e_failover_test.go:264:	time.Sleep(600 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold so B can reclaim
 ./tests/integration/e2e_failover_test.go:307:	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
@@ -156,7 +133,7 @@
 ./tests/longrunning/longrunning_helpers_test.go:636:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
 ./tests/longrunning/longrunning_helpers_test.go:687:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:450:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/longrunning_test.go:448:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:144:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
 ./tests/longrunning/res_gap_validation_test.go:265:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability

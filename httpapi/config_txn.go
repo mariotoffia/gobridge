@@ -303,6 +303,17 @@ func (m *configTxnManager) computeMerged(ctx context.Context) (*ports.BridgeConf
 		return nil, fmt.Errorf("no current config available")
 	}
 
+	// A zero-patch transaction would otherwise return configProvider()'s
+	// shared pointer (the live appliedRef object). Callers own the result --
+	// Commit mutates Version in place before writing -- so return a copy to
+	// avoid mutating, and racing concurrent GET /config reads against, the
+	// live config. The >=1-patch path already yields a fresh struct from
+	// Merge (DefaultMerge copies base), so it is already safe.
+	if len(m.active.patches) == 0 {
+		clone := *base
+		return &clone, nil
+	}
+
 	result := base
 	for i, patch := range m.active.patches {
 		merged, err := m.store.Merge(ctx, result, patch)

@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -491,4 +494,80 @@ func TestSupervisor_EmptyConfig_Rejected(t *testing.T) {
 	err := s.Run(ctx, &ports.BridgeConfig{}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bridge.id is required")
+}
+
+// TestSupervisor_SwapUpdatesObservableConfigVersion validates that the
+// running config version is observable via Supervisor.Config after a
+// successful swap, and stays at the old version after a failed swap. It also
+// pins the swap-log field semantics operators alert on (finding A6): a
+// failed swap logs config_version = the still-running version, not the
+// rejected one, so a wedged instance is distinguishable from a healthy one.
+// GoBridge observes the running version, it does not coordinate versions
+// across the cluster.
+func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
+	onSwap, swaps := swapChan(2)
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := newTestSupervisor(WithOnSwap(onSwap), WithSupervisorLogger(logger))
+	ch := make(chan *ports.BridgeConfig, 1)
+
+	initial := quickCfg("r1")
+	initial.Version = 7
+	cancel, _ := quickSupervisorRun(s, initial, ch)
+	defer cancel()
+	require.Equal(t, 7, s.Config().Version)
+
+	// Successful swap to a higher version updates the observable version,
+	// and the SwapEvent carries it for OnSwap callbacks.
+	next := quickCfg("r2")
+	next.Version = 8
+	require.True(t, sendConfig(ch, next, time.Second))
+	ev := awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+	assert.Equal(t, 8, s.Config().Version)
+	assert.Equal(t, 8, ev.NewConfig.Version)
+
+	// The success log records config_version = the now-running version (8)
+	// and the prior version as old_config_version (7).
+	okRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration complete")
+	assert.Equal(t, float64(8), okRec["config_version"])
+	assert.Equal(t, float64(7), okRec["old_config_version"])
+
+	// A failed swap (unresolvable transport, fails at build) must not advance
+	// the observable version — the old config keeps running.
+	bad := quickCfg("r3")
+	bad.Version = 9
+	bad.Receivers[0].Transport = "nonexistent"
+	require.True(t, sendConfig(ch, bad, time.Second))
+	ev = awaitSwap(t, swaps)
+	require.Error(t, ev.Error)
+	assert.Equal(t, 8, s.Config().Version)
+
+	// The failure log records config_version = the still-running version (8,
+	// NOT the rejected 9) and the rejected version as attempted_config_version.
+	// Logging the failed version as config_version would make a wedged instance
+	// emit the same (config_version, *) pair as a healthy one, defeating the
+	// divergence alert the docs tell operators to build (finding A6).
+	failRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration failed")
+	assert.Equal(t, float64(8), failRec["config_version"])
+	assert.Equal(t, float64(9), failRec["attempted_config_version"])
+}
+
+// lastLogRecord returns the last JSON log line in buf whose "msg" equals want,
+// decoded into a map. It fails the test if no such line exists.
+func lastLogRecord(t *testing.T, buf *bytes.Buffer, want string) map[string]any {
+	t.Helper()
+	var found map[string]any
+	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal(line, &rec))
+		if rec["msg"] == want {
+			found = rec
+		}
+	}
+	require.NotNilf(t, found, "no log record with msg=%q", want)
+	return found
 }

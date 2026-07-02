@@ -26,8 +26,10 @@ func helperQuiescentRoute(id string, release <-chan struct{}) (goruntime.RouteCo
 	cfg := goruntime.RouteConfig{
 		ID: id,
 		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  4,
+			DeliveryMode:       routing.DeliveryDirectHold,
+			MaxInFlight:        4,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
 	}

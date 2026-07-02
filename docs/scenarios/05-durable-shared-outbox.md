@@ -89,9 +89,11 @@ sessions:
 
 stores:
   outbox:
-    type: memory
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/outbox.db
   lease:
-    type: memory
+    type: memory # single-instance example; use dynamodb for multi-instance (see stores.lease)
 
 receivers:
   - id: mqtt-in
@@ -159,7 +161,9 @@ The outbox store must be configured when using `shared_outbox` delivery mode.
 ```yaml
 stores:
   outbox:
-    type: memory
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/outbox.db
 ```
 
 The `type` field selects the store backend:
@@ -170,7 +174,7 @@ The `type` field selects the store backend:
 | `sqlite` | Disk-persistent | Single-instance production without external DB |
 | `dynamodb` | Cloud-durable | Multi-instance production, high availability |
 
-For true crash survival, use `sqlite` or `dynamodb`. The `memory` store is useful for development but loses all pending records on process restart.
+For true crash survival, use `sqlite` or `dynamodb` -- this scenario's examples default to `sqlite` for exactly that reason. The `memory` store is development-only: it loses all pending records on process restart, which would violate the zero-loss guarantee this scenario promises.
 
 ### `stores.lease`
 
@@ -277,6 +281,13 @@ sequenceDiagram
 
 Record A was completed before the crash, so it is not re-sent. Record B was claimed but never completed -- the outbox store releases it back to pending status (the claim expires), and the new drainer instance picks it up.
 
+### Transient Failures vs. Crash Recovery
+
+Two distinct paths return a claimed record to `pending`:
+
+- **Transient send failure, owner still alive** (for example, the target broker briefly disconnects). The drainer returns the record to `pending` immediately, so the same owner re-claims and retries it on the very next drain -- no fencing-version bump and no wall-clock wait. This live-owner release is available on the `memory`, `sqlite`, and `dynamodb` stores. Each retry increments the replay count, so a persistently failing record still reaches the DLQ once it exceeds `max_replay_attempts`.
+- **Crash recovery, owner gone.** A dead instance cannot release anything. `dynamodb` additionally reclaims a record whose claim has gone stale past a wall-clock threshold, allowing another instance to take over. The `memory` and `sqlite` stores have no wall-clock reclaim; a restarted single instance recovers its own records when it re-acquires the lease at a higher fencing version.
+
 ## Key Decisions: When to Use Each Mode
 
 | Criterion | `direct_hold` | `shared_outbox` |
@@ -311,12 +322,30 @@ stores:
     type: sqlite
     options:
       path: /var/lib/gobridge/outbox.db
-      wal_mode: true
   lease:
     type: memory
 ```
 
-On crash and restart, the drainer finds all pending records and resumes delivery. WAL mode is recommended for concurrent read/write performance.
+On crash and restart, the drainer finds all pending records and resumes
+delivery. WAL journalling is always enabled. The store keeps a single writer
+connection with a `busy_timeout`, so concurrent in-process writers serialise
+safely rather than failing with `SQLITE_BUSY`.
+
+**Recovering in-flight (claimed-but-not-completed) records.** A record that was
+claimed by a drainer that then crashed before completing or releasing it is
+recovered two ways: a higher lease fencing version reclaims it immediately, and
+— as a same-owner fallback — the `stale_claim_duration` window (auto-derived
+from `step_down_grace`, or set explicitly) lets it be re-claimed once the claim
+goes stale. The native SQLite outbox now honours `stale_claim_duration` for this
+fallback, matching the DynamoDB backend.
+
+> **Note on `lease: memory`.** The in-memory lease store resets its fencing
+> version on restart, so it cannot guarantee version continuity across a crash.
+> For a single instance whose lease returns to the same version this is fine and
+> the stale-claim fallback above still recovers stranded work; for
+> multi-instance or strict crash-recovery guarantees use a durable lease store
+> (DynamoDB). `memory` lease and outbox remain development/test grade — see the
+> store readiness notes in [config-stores](../config-stores.md).
 
 ### DynamoDB Outbox for Multi-Instance
 

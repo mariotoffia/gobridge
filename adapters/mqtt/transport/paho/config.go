@@ -15,27 +15,47 @@ import (
 // SessionOptions holds MQTT connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
-	BrokerURLs            []string
-	ClientID              string
-	KeepAlive             uint16
-	ConnectTimeout        time.Duration
-	ReconnectTimeout      time.Duration
-	CleanStart            bool
-	SessionExpiryInterval uint32
-	Username              string
-	Password              shared.Secret
-	TLS                   *TLSConfig
+	BrokerURLs []string `mapstructure:"broker_urls" yaml:"broker_urls" json:"broker_urls"`
+	// BrokerURL is the single-broker convenience form of broker_urls and the
+	// dominant documented key (configuration-reference.md, scenarios 01-17).
+	// normalizeBrokerURLs folds it into BrokerURLs when the list form is absent
+	// and clears it, so the typed decode path honors the documented
+	// single-broker config and re-serializes on the canonical broker_urls key.
+	BrokerURL             string        `mapstructure:"broker_url" yaml:"broker_url,omitempty" json:"broker_url,omitempty"`
+	ClientID              string        `mapstructure:"client_id" yaml:"client_id" json:"client_id"`
+	KeepAlive             uint16        `mapstructure:"keep_alive" yaml:"keep_alive" json:"keep_alive"`
+	ConnectTimeout        time.Duration `mapstructure:"connect_timeout" yaml:"connect_timeout" json:"connect_timeout"`
+	ReconnectTimeout      time.Duration `mapstructure:"reconnect_timeout" yaml:"reconnect_timeout" json:"reconnect_timeout"`
+	CleanStart            bool          `mapstructure:"clean_start" yaml:"clean_start" json:"clean_start"`
+	SessionExpiryInterval uint32        `mapstructure:"session_expiry_interval" yaml:"session_expiry_interval" json:"session_expiry_interval"`
+	Username              string        `mapstructure:"username" yaml:"username" json:"username"`
+	Password              shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
+	TLS                   *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
 	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
 	// broker can send before receiving PUBACKs. Default 0 means use the
 	// paho library default (65535). Set higher for high-throughput scenarios.
-	ReceiveMaximum uint16
+	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
 	// ReconnectDelay is the constant delay between failed reconnection
 	// attempts after the first immediate retry. Zero means use the
 	// autopaho default (10s). Shorter values speed up reconnection in
 	// test environments but increase load on the broker in production.
-	ReconnectDelay time.Duration
-	Clock          clock.Clock
+	ReconnectDelay time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
+	// Clock is an internal dependency injected by the factory/tests and
+	// must never be populated from YAML; the dash tag excludes it from
+	// the strict options decoder (which would otherwise reject it).
+	Clock clock.Clock `mapstructure:"-" yaml:"-" json:"-"`
+}
+
+// normalizeBrokerURLs folds the single-broker BrokerURL alias into the
+// canonical BrokerURLs list when the list form is empty, then clears the alias
+// so a re-serialized config carries only broker_urls. The registry decoder
+// calls this after Decode and before Validate.
+func (o *SessionOptions) normalizeBrokerURLs() {
+	if o.BrokerURL != "" && len(o.BrokerURLs) == 0 {
+		o.BrokerURLs = []string{o.BrokerURL}
+	}
+	o.BrokerURL = ""
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.
@@ -45,11 +65,11 @@ type ReceiverOptions struct {
 
 // SenderOptions holds MQTT sender-specific configuration.
 type SenderOptions struct {
-	DefaultTopic       string
-	QoS                byte
-	Retain             bool
-	Timeout            time.Duration
-	ThrottleRetryAfter time.Duration
+	DefaultTopic       string        `mapstructure:"default_topic" yaml:"default_topic" json:"default_topic"`
+	QoS                byte          `mapstructure:"qos" yaml:"qos" json:"qos"`
+	Retain             bool          `mapstructure:"retain" yaml:"retain" json:"retain"`
+	Timeout            time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`
+	ThrottleRetryAfter time.Duration `mapstructure:"throttle_retry_after" yaml:"throttle_retry_after" json:"throttle_retry_after"`
 }
 
 // TLSConfig holds TLS settings for the MQTT connection.
@@ -61,10 +81,10 @@ type SenderOptions struct {
 // non-empty PEM should never be silently ignored in favour of a
 // stale file on disk.
 type TLSConfig struct {
-	Enable     bool
-	CACertFile string
-	CertFile   string
-	KeyFile    string
+	Enable     bool   `mapstructure:"enable" yaml:"enable" json:"enable"`
+	CACertFile string `mapstructure:"ca_cert_file" yaml:"ca_cert_file" json:"ca_cert_file"`
+	CertFile   string `mapstructure:"cert_file" yaml:"cert_file" json:"cert_file"`
+	KeyFile    string `mapstructure:"key_file" yaml:"key_file" json:"key_file"`
 
 	// CACertPEM, CertPEM, KeyPEM carry in-memory PEM material, typically
 	// populated by credential rotation. When any of these is non-empty
@@ -72,11 +92,11 @@ type TLSConfig struct {
 	// shared.Secret so the (sensitive) private-key material — and, for
 	// uniformity, the cert/CA bundles — redact on JSON/YAML/log marshal;
 	// the config-save path reveals explicitly (see shared.RevealSecrets).
-	CACertPEM shared.Secret
-	CertPEM   shared.Secret
-	KeyPEM    shared.Secret
+	CACertPEM shared.Secret `mapstructure:"ca_cert_pem" yaml:"ca_cert_pem" json:"ca_cert_pem"`
+	CertPEM   shared.Secret `mapstructure:"cert_pem" yaml:"cert_pem" json:"cert_pem"`
+	KeyPEM    shared.Secret `mapstructure:"key_pem" yaml:"key_pem" json:"key_pem"`
 
-	InsecureSkipVerify bool
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify" json:"insecure_skip_verify"`
 }
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
