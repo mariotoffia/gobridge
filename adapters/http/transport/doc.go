@@ -34,6 +34,19 @@
 // ordering/tenant/trace/forwarded-*) and application headers pass
 // through unchanged.
 //
+// CAVEAT — public SSE endpoints. The BRIDGE-TO-BRIDGE pass-through above
+// is safe only while every subscriber is internal. Those retained keys
+// (x-bridge.tenant-id, x-bridge.forwarded-from, x-bridge.correlation-id,
+// the W3C traceparent/tracestate, and the other x-bridge.* propagated
+// headers) are serialised into the SSE event payload and streamed to
+// every connected subscriber, and a sender cannot tell a peer bridge
+// from an external client. If ANY SSE endpoint is publicly reachable the
+// operator MUST either keep it internal behind a per-destination egress
+// ACL, or strip the full x-bridge.* namespace (plus traceparent/
+// tracestate) from the stream at the edge — otherwise tenant, routing,
+// correlation, and trace metadata leaks to external clients. Only the
+// INTERNAL-ONLY subset is stripped here by design (H2).
+//
 // SSE per-write deadline. The SSE handler re-arms a per-frame write
 // deadline (Config.WriteTimeout, default 15s) via http.ResponseController
 // before every frame. Re-arming on each write (a) overrides a fronting
@@ -63,6 +76,21 @@
 // challenge. An inline api_key shorter than the enforced minimum (16
 // chars) is rejected at decode time; credential-resolved keys are
 // validated at the credential layer, not re-validated post-resolution.
+//
+// API key length floor (release note). The 16-character inline api_key
+// minimum above is enforced at Config.Validate / decode time, and the
+// rejection error names the 16-character minimum as the cause. A short
+// inline key that an earlier build accepted is a breaking change and
+// must be lengthened to >=16 characters; credential-resolved keys are
+// unaffected.
+//
+// WARNING — the api_key and the forward token MUST be distinct secrets.
+// Every client presents the api_key on each request, so reusing that
+// same value as the forward token (Factory.WithForwardToken /
+// ForwarderConfig.ForwardToken) would let any authenticated caller send
+// a valid X-Bridge-Forward-Token and thereby spoof X-Bridge-Forwarded —
+// reopening the H1 header-spoofing class the token exists to close (see
+// "Cluster forward trust" above). Provision two independent secrets.
 //
 // # Deferred cross-cutting work (tracked outside this package)
 //

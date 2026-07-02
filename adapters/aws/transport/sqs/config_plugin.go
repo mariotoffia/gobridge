@@ -95,6 +95,12 @@ func (c Config) Validate() error {
 	if c.WaitTimeSeconds < 0 || c.WaitTimeSeconds > 20 {
 		return errors.New("sqs: wait_time_seconds must be in [0,20]")
 	}
+	// SQS caps the visibility timeout at 12h (43200s); 0 means "use the
+	// 30s default" (see EffectiveVisibilityTimeout). A value above the
+	// broker limit would be rejected at receive time, so fail fast here.
+	if c.VisibilityTimeout < 0 || c.VisibilityTimeout > 43200 {
+		return errors.New("sqs: visibility_timeout must be in [0,43200] seconds (0-12h)")
+	}
 	if c.BatchSize < 0 || c.BatchSize > 10 {
 		return errors.New("sqs: batch_size must be in [1,10]")
 	}

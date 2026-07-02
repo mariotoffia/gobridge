@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestSessionPlanFor_UnionAcrossReceiversOnSharedSession(t *testing.T) {
 		},
 	}
 
-	plan := sessionPlanFor(cfg, "s1")
+	plan := sessionPlanFor(cfg, "s1", nil)
 
 	// Union of rx1 + rx2, in deterministic (receiver then topic) order.
 	require.Len(t, plan.Subscriptions, 3)
@@ -75,7 +76,7 @@ func TestSessionPlanFor_PassesTypedSubscriptionConfigThrough(t *testing.T) {
 		},
 	}
 
-	plan := sessionPlanFor(cfg, "s1")
+	plan := sessionPlanFor(cfg, "s1", nil)
 
 	require.Len(t, plan.Subscriptions, 1)
 	assert.Equal(t, "q1", plan.Subscriptions[0].Topic)
@@ -88,15 +89,15 @@ func TestSessionPlanFor_PassesTypedSubscriptionConfigThrough(t *testing.T) {
 // confirms Publishers stays empty when a sender is bound to the session but its
 // typed config (here nil) does not implement ports.PublishingConfig.
 func TestSessionPlanFor_EmptyAndDegenerateInputs(t *testing.T) {
-	assert.Empty(t, sessionPlanFor(nil, "s1").Subscriptions, "nil cfg")
-	assert.Empty(t, sessionPlanFor(&ports.BridgeConfig{}, "").Subscriptions, "empty sessionID")
+	assert.Empty(t, sessionPlanFor(nil, "s1", nil).Subscriptions, "nil cfg")
+	assert.Empty(t, sessionPlanFor(&ports.BridgeConfig{}, "", nil).Subscriptions, "empty sessionID")
 
 	noMatch := &ports.BridgeConfig{
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx", SessionID: "other", Topics: []ports.SubscriptionDef{{Topic: "t"}}},
 		},
 	}
-	assert.Empty(t, sessionPlanFor(noMatch, "s1").Subscriptions, "no receiver on session")
+	assert.Empty(t, sessionPlanFor(noMatch, "s1", nil).Subscriptions, "no receiver on session")
 
 	withSender := &ports.BridgeConfig{
 		Senders: []ports.SenderDef{{ID: "tx", Transport: "amqp091", SessionID: "s1"}},
@@ -104,7 +105,7 @@ func TestSessionPlanFor_EmptyAndDegenerateInputs(t *testing.T) {
 			{ID: "rx", SessionID: "s1", Topics: []ports.SubscriptionDef{{Topic: "t"}}},
 		},
 	}
-	got := sessionPlanFor(withSender, "s1")
+	got := sessionPlanFor(withSender, "s1", nil)
 	assert.Len(t, got.Subscriptions, 1)
 	assert.Empty(t, got.Publishers, "empty because this sender's nil Config doesn't implement ports.PublishingConfig")
 }
@@ -257,11 +258,15 @@ func TestBuilder_AssemblesAndThreadsSessionPlan_SharedSessionUnion(t *testing.T)
 // sender config (e.g. amqp091.Config) so the bridge test can exercise the
 // Publishers path WITHOUT importing any adapter — the bridge package must never
 // depend on an adapter (.go-arch-lint.yml), not even in tests.
-type pubDeclConfig struct{ topic string }
+type pubDeclConfig struct {
+	topic   string
+	topoKey string
+}
 
-func (*pubDeclConfig) Kind() string             { return "test.pubdecl" }
-func (*pubDeclConfig) Validate() error          { return nil }
-func (c *pubDeclConfig) PublisherTopic() string { return c.topic }
+func (*pubDeclConfig) Kind() string                   { return "test.pubdecl" }
+func (*pubDeclConfig) Validate() error                { return nil }
+func (c *pubDeclConfig) PublisherTopic() string       { return c.topic }
+func (c *pubDeclConfig) PublisherTopologyKey() string { return c.topoKey }
 
 // TestSessionPlanFor_PublishersFromDeclarer proves sessionPlanFor derives
 // Publishers from senders bound to the session whose typed config implements
@@ -276,7 +281,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 			},
 		}
 
-		plan := sessionPlanFor(cfg, "s1")
+		plan := sessionPlanFor(cfg, "s1", nil)
 
 		require.Len(t, plan.Publishers, 1)
 		assert.Equal(t, "ex.orders", plan.Publishers[0].Topic)
@@ -292,7 +297,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 			},
 		}
 
-		plan := sessionPlanFor(cfg, "s1")
+		plan := sessionPlanFor(cfg, "s1", nil)
 
 		require.Len(t, plan.Publishers, 1, "two senders on the same exchange collapse to one publisher")
 		assert.Equal(t, "ex.orders", plan.Publishers[0].Topic)
@@ -305,7 +310,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 			},
 		}
 
-		assert.Empty(t, sessionPlanFor(cfg, "s1").Publishers,
+		assert.Empty(t, sessionPlanFor(cfg, "s1", nil).Publishers,
 			"an empty PublisherTopic() means no exchange to declare")
 	})
 
@@ -316,7 +321,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 			},
 		}
 
-		assert.Empty(t, sessionPlanFor(cfg, "s1").Publishers,
+		assert.Empty(t, sessionPlanFor(cfg, "s1", nil).Publishers,
 			"only senders bound to the target session contribute publishers")
 	})
 }
@@ -336,7 +341,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 // Before the fix builder_complete.go built the session-sender config with
 // session.DefaultConfig(...) (empty plan) and never threaded sessionPlanFor,
 // so the capture would hold zero subscriptions and this test FAILS. After the
-// fix (sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)) it PASSES.
+// fix (sc.Plan = sessionPlanFor(b.cfg, bd.SessionID, b.logger)) it PASSES.
 func TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "bridge-p4", DrainTimeout: "1s"},
@@ -417,4 +422,79 @@ func TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4(t *testing.T) {
 	}
 	assert.Equal(t, map[string]int{"topic/dedicated": 1}, got,
 		"a Path-2 session-sender must reconcile its receivers' subscriptions, not an empty plan (F1-P4)")
+}
+
+// warnCountingHandler is a minimal slog.Handler that records only Warn-level (or
+// above) entries, so a test can assert exactly-one-warn semantics without
+// parsing formatted log output.
+type warnCountingHandler struct {
+	mu    sync.Mutex
+	warns []slog.Record
+}
+
+func (h *warnCountingHandler) Enabled(_ context.Context, lvl slog.Level) bool {
+	return lvl >= slog.LevelWarn
+}
+
+func (h *warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.warns = append(h.warns, r)
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *warnCountingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *warnCountingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *warnCountingHandler) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.warns)
+}
+
+// TestSessionPlanFor_WarnsOnDivergentPublisherTopology is the focused guard for
+// REV-2-topowarn: two senders naming the SAME exchange collapse to the FIRST
+// (broker first-declare-wins), but a sibling whose publisher.* topology ACTUALLY
+// DIFFERS from the kept first is otherwise silently discarded — a misconfig with
+// no signal. sessionPlanFor must warn on genuine divergence and stay silent on a
+// legitimate identical re-declaration (a plain fan-out of two senders).
+func TestSessionPlanFor_WarnsOnDivergentPublisherTopology(t *testing.T) {
+	t.Run("divergent topology on same exchange -> one warn + first-wins plan", func(t *testing.T) {
+		h := &warnCountingHandler{}
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "s1",
+					Config: &pubDeclConfig{topic: "ex.orders", topoKey: "type=direct;durable=true"}},
+				{ID: "tx2", Transport: "amqp091", SessionID: "s1",
+					Config: &pubDeclConfig{topic: "ex.orders", topoKey: "type=fanout;durable=false"}},
+			},
+		}
+
+		plan := sessionPlanFor(cfg, "s1", slog.New(h))
+
+		require.Len(t, plan.Publishers, 1, "first-wins: the two senders collapse to a single publisher")
+		assert.Equal(t, "ex.orders", plan.Publishers[0].Topic)
+		first, ok := plan.Publishers[0].Config.(*pubDeclConfig)
+		require.True(t, ok)
+		assert.Equal(t, "type=direct;durable=true", first.topoKey, "the FIRST sender's topology is kept")
+		assert.Equal(t, 1, h.count(), "exactly one warn for the genuine topology divergence")
+	})
+
+	t.Run("identical topology on same exchange -> no warn", func(t *testing.T) {
+		h := &warnCountingHandler{}
+		cfg := &ports.BridgeConfig{
+			Senders: []ports.SenderDef{
+				{ID: "tx1", Transport: "amqp091", SessionID: "s1",
+					Config: &pubDeclConfig{topic: "ex.orders", topoKey: "type=direct;durable=true"}},
+				{ID: "tx2", Transport: "amqp091", SessionID: "s1",
+					Config: &pubDeclConfig{topic: "ex.orders", topoKey: "type=direct;durable=true"}},
+			},
+		}
+
+		plan := sessionPlanFor(cfg, "s1", slog.New(h))
+
+		require.Len(t, plan.Publishers, 1)
+		assert.Equal(t, 0, h.count(),
+			"an identical re-declaration is a legitimate fan-out and must stay silent")
+	})
 }

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -59,7 +58,7 @@ func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
 	// transaction.
 	var ttl time.Duration
 	var body configTxnCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeStrictJSON(r.Body, &body); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -124,7 +123,7 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var overlay ports.BridgeConfig
-	if err := json.NewDecoder(r.Body).Decode(&overlay); err != nil {
+	if err := decodeStrictJSON(r.Body, &overlay); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

@@ -157,8 +157,24 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 			"record_id", rec.ID(), "error", releaseErr)
 		return shared.ErrStaleFencingToken
 	default:
-		// Release failed for some other reason; fall back to today's
-		// leave-claimed behavior rather than escalating.
+		// Release failed for some reason OTHER than a stale token (e.g. a
+		// store write/I/O error). Fall back to today's leave-claimed
+		// behavior rather than escalating: return nil so the drain loop
+		// does not cancel sibling sends for what is a localized, transient
+		// store hiccup.
+		//
+		// Residual (A4-R2, reviewer-blessed): returning nil makes the
+		// group loop count this record as a success and CONTINUE to the
+		// next same-key record, so a later record in the ordering group
+		// can overtake this still-claimed, never-sent head. There is NO
+		// data loss — the head stays durably Claimed (Release did not
+		// transition it and we did not Complete it) and is re-claimed and
+		// re-sent in persisted order via version/stale reclaim once the
+		// lease version advances (or the store's stale-claim window
+		// elapses). Closing the ordering window fully would need a
+		// distinct "release-failed" signal plus a conditional
+		// releaseRemainder — over-engineering for a store error that must
+		// land precisely on Release — so it is deliberately deferred.
 		d.log(ctx, slog.LevelWarn, "release after transient failure failed",
 			"record_id", rec.ID(), "error", releaseErr)
 		return nil
@@ -219,6 +235,21 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 
 func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := rec.Snapshot()
+	// Replay-count exhaustion is the ONLY route to this poison DLQ: a
+	// permanent send error DLQs immediately (see the non-transient branch
+	// in processRecord), so a record only crosses MaxReplayAttempts by
+	// being re-claimed and re-attempted repeatedly — i.e. by successive
+	// TRANSIENT egress failures. An outage that outlasts the replay budget
+	// therefore DLQs an otherwise-good message (A4-R1). The
+	// transientRetryFloor bounds how fast that budget burns but does not
+	// decouple it from wall-clock age; the age-based root-cause fix is a
+	// deferred cross-store change. Emit an explicit WARN so this
+	// premature-DLQ-from-outage is observable at the point of loss instead
+	// of surfacing only as a generic, reason-less DLQ entry.
+	d.log(ctx, slog.LevelWarn, "outbox record poisoned: replay attempts exhausted, routing to DLQ",
+		"record_id", rec.ID(),
+		"replay_count", rec.ReplayCount(),
+		"max_replay_attempts", d.policy.MaxReplayAttempts)
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", poisonErr, rec.ReplayCount()); dlqErr != nil {
 		return dlqErr

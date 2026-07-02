@@ -2,6 +2,8 @@ package dynamodboutbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // fakeDDB is an in-package dynamoAPI seam that lets unit tests drive the
@@ -95,7 +98,7 @@ func newFakeStore(f *fakeDDB) *Store {
 		clk:                clock.System,
 		resolveMaxAttempts: defaultResolveMaxAttempts,
 		resolveBackoff:     0, // deterministic: no wall-clock backoff in tests
-		keyCache:           map[string]recordKey{},
+		keys:               newKeyCache(defaultMaxKeyCache),
 	}
 }
 
@@ -177,5 +180,63 @@ func TestComplete_RetriesLaggingGSI(t *testing.T) {
 	}
 	if gsiCalls != 3 {
 		t.Fatalf("expected 3 GSI attempts (2 lagging + 1 hit), got %d", gsiCalls)
+	}
+}
+
+// Regression for J-N3: when the key cache misses and the RecordIDIndex GSI
+// never converges within the bounded resolve retry, Complete must return a
+// retryable (transient) error, NOT a permanent ErrNotFound. The record was
+// just claimed (it exists in the base table), so the caller must retry
+// Complete on GSI lag rather than treat it as absent and re-deliver.
+func TestComplete_GSILagExhaustion_ReturnsRetryable(t *testing.T) {
+	f := newFakeDDB()
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{}, nil // GSI lags on every attempt
+	}
+	s := newFakeStore(f) // resolveBackoff 0 → deterministic, no sleeping
+
+	err := s.Complete(context.Background(), []string{"rec-cold"}, persistence.LeaseToken{Version: 1, Owner: "o"})
+	if err == nil {
+		t.Fatal("expected an error on GSI-lag exhaustion")
+	}
+	if errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("GSI-lag exhaustion must not return permanent ErrNotFound: %v", err)
+	}
+	if !errors.Is(err, shared.ErrTimeout) {
+		t.Fatalf("expected retryable ErrTimeout on GSI-lag exhaustion, got %v", err)
+	}
+	if be, ok := shared.AsBridgeError(err); !ok || be.Class != shared.ErrorTransient {
+		t.Fatalf("GSI-lag error must be classified transient (retryable), got %v", err)
+	}
+	// The bounded retry exhausted every configured GSI attempt before giving up.
+	if got := f.queryCalls["RecordIDIndex"]; got != defaultResolveMaxAttempts {
+		t.Fatalf("expected %d GSI attempts, got %d", defaultResolveMaxAttempts, got)
+	}
+}
+
+// Regression for J-N1: record keys are cached on Claim and only evicted on
+// terminal Complete, so records this instance claimed but never completes
+// (lease churn) would grow the cache without bound. The LRU cap keeps it
+// bounded and retains the hottest (most-recently-claimed) keys that a
+// Complete is about to need.
+func TestKeyCache_BoundedUnderClaimChurn(t *testing.T) {
+	const capacity = 8
+	s := newFakeStore(newFakeDDB())
+	s.keys = newKeyCache(capacity)
+
+	const churn = 1000
+	for i := 0; i < churn; i++ {
+		s.cacheKey(fmt.Sprintf("rec-%d", i), "PART#1", fmt.Sprintf("OUTBOX#e%d#b", i))
+	}
+
+	if got := s.keys.len(); got != capacity {
+		t.Fatalf("key cache must stay bounded at %d under churn, got %d", capacity, got)
+	}
+	// The most-recently-claimed key is retained (hot); the oldest is evicted.
+	if _, ok := s.lookupKey(fmt.Sprintf("rec-%d", churn-1)); !ok {
+		t.Fatalf("most-recently-claimed key must be retained")
+	}
+	if _, ok := s.lookupKey("rec-0"); ok {
+		t.Fatalf("oldest key must have been evicted under the cap")
 	}
 }

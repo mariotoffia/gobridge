@@ -52,24 +52,47 @@
 // (immediate same-subscription redelivery, no fan-out); the requested
 // delay is not honoured.
 //
+// Design note: the subscription abandon-instead-of-schedule fallback
+// (dropping the requested delay to avoid topic fan-out) is a deliberate
+// trade-off, not a limitation worked around here — honouring the delay on
+// a subscription would require a per-subscription scheduling primitive
+// that Service Bus does not expose.
+//
+// Dedup caveat (queue path): the scheduled copy is built by
+// buildRetryMessage, which REUSES the original message's MessageID. If the
+// queue has duplicate detection enabled (RequiresDuplicateDetection), the
+// broker can treat the rescheduled copy as a duplicate of the original
+// within its DuplicateDetectionHistoryTimeWindow and silently discard it —
+// dropping the delayed retry with no redelivery. Do not enable duplicate
+// detection on queues that rely on delayed retry, or keep the dedup window
+// shorter than the retry delay.
+//
 // # Dead-lettering (boundary)
 //
 // This adapter does not call native DeadLetterMessage. Permanent
 // processing failures are routed to the GoBridge DLQ by the runtime and
 // the source message is then settled with CompleteMessage — the intended,
-// primary dead-letter path, where a message is dead-lettered exactly once.
+// primary dead-letter sink.
 //
-// There is a SECOND dead-letter sink outside the adapter's control: the
-// broker's MaxDeliveryCount. Paths that release a message with
-// AbandonMessage (malformed deliveries, and delayed retry on a topic
-// subscription) increment the broker delivery count; once it exceeds
-// MaxDeliveryCount the broker moves the message to its native DLQ. So the
-// "exactly once, one place" guarantee holds only on the runtime-DLQ path —
-// abandon-based redelivery can additionally land in the broker DLQ.
-// Operators should size MaxDeliveryCount accordingly and monitor the
-// native DLQ, which remains reachable for *reading* via
-// ReceiverConfig.SubQueue ("deadletter") even though this adapter never
-// writes to it explicitly.
+// This is NOT exactly-once. End-to-end the bridge is at-least-once with
+// idempotency-based deduplication: the DLQ write and the source
+// CompleteMessage are two separate steps, so a crash or a settlement
+// failure between them leaves the PeekLock to expire, the broker
+// redelivers, and the runtime can route the same message to the DLQ
+// again. Consumers (and the bridge's own dedup) must key on the
+// idempotency header rather than assume a single dead-letter event.
+//
+// There is also a SECOND dead-letter sink outside the adapter's control:
+// the broker's MaxDeliveryCount. Paths that release a message with
+// AbandonMessage — an ordinary transient Retry, a malformed delivery, or a
+// delayed retry on a topic subscription (see above) — increment the broker
+// delivery count; once it exceeds MaxDeliveryCount the broker moves the
+// message to its own native DLQ, which is DISTINCT from the GoBridge DLQ.
+// A single logical failure can therefore surface in either sink (and,
+// across redeliveries, occasionally both). Operators should size
+// MaxDeliveryCount accordingly and monitor the native DLQ, which remains
+// reachable for *reading* via ReceiverConfig.SubQueue ("deadletter") even
+// though this adapter never writes to it explicitly.
 //
 // # Sender
 //

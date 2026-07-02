@@ -61,6 +61,14 @@ func (c Config) Validate() error {
 	if !hasRecv && !hasSend {
 		return errors.New("servicebus: at least one of receiver.{queue_name|topic+subscription} or sender.{queue_name|topic_name} must be set")
 	}
+	// Service Bus accepts a message lock duration of 5s..5min; 0 means
+	// "use the 30s default" (see EffectiveVisibilityTimeout). A value
+	// outside the broker range is rejected at entity/receiver setup, so
+	// fail fast here naming the field and the allowed range.
+	if c.Receiver.LockDuration != 0 &&
+		(c.Receiver.LockDuration < 5*time.Second || c.Receiver.LockDuration > 5*time.Minute) {
+		return errors.New("servicebus: receiver.lock_duration must be in [5s,5m]")
+	}
 	return nil
 }
 

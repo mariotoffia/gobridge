@@ -34,6 +34,10 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{
 		ports.CapStatefulSession,
 		ports.CapExclusiveIdentity,
+		// MQTT receivers subscribe ONLY when the session manager reconciles the
+		// SessionPlan, so a receiver on an unmanaged session is silently inert;
+		// the builder enforces a manager for these (ADV-P4-FU1).
+		ports.CapPlanDrivenSubscriptions,
 	}
 }
 

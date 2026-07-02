@@ -733,7 +733,10 @@ paths:
       summary: Get cluster topology
       description: >
         Returns instance identity, running state, and a compact route list.
-        Requires monitor or admin authentication.
+        When a config provider is wired, the response also carries
+        `config_version` -- the running configuration version -- for
+        scrapeable fleet-convergence monitoring. Requires monitor or admin
+        authentication.
       tags: [Monitor]
       responses:
         "200":

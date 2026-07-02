@@ -194,7 +194,7 @@ func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.Me
 		budget-- // reserve the Subject slot added below
 	}
 
-	attrs, dropped := headersToAttributes(env.Headers(), budget)
+	attrs, dropped := headersToAttributes(env.Headers(), budget, len(env.Payload()))
 
 	if hasSubject {
 		if attrs == nil {
@@ -258,15 +258,18 @@ func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelo
 //     bridge-to-bridge first then by name, and the highest-ranked maxAttrs
 //     kept, so selection is deterministic and never sacrifices a
 //     propagation header for application metadata.
-//   - Cumulative *attribute* size is capped at sqsMaxMessageBytes. The
-//     message body shares SQS's 256 KiB budget and is NOT counted here, so
-//     a body-dominant oversize is surfaced by SQS (MapError), not pre-capped.
+//   - Cumulative size (message body + each attribute's name, type and
+//     value) is capped at sqsMaxMessageBytes. bodyBytes seeds the size
+//     accumulator so the 256 KiB budget SQS charges across body AND
+//     attributes is respected: an attribute that would push the
+//     body+attribute total over the ceiling is dropped (and counted)
+//     here instead of failing the whole send at SQS (MapError).
 //
 // It returns the attribute map (nil when empty) and the number of
 // eligible headers dropped by the count/size caps so the caller can
 // surface the loss. Name-invalid and unsupported-type headers are not
 // counted — they could never be SQS attributes.
-func headersToAttributes(headers map[string]any, maxAttrs int) (map[string]sqstypes.MessageAttributeValue, int) {
+func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (map[string]sqstypes.MessageAttributeValue, int) {
 	if len(headers) == 0 || maxAttrs <= 0 {
 		return nil, 0
 	}
@@ -327,7 +330,10 @@ func headersToAttributes(headers map[string]any, maxAttrs int) (map[string]sqsty
 
 	attrs := make(map[string]sqstypes.MessageAttributeValue, min(len(eligible), maxAttrs))
 	dropped := 0
-	sizeBytes := 0
+	// Seed with the body size: SQS charges the 256 KiB ceiling against the
+	// body and attributes together, so attributes are measured against the
+	// budget the body already consumes.
+	sizeBytes := bodyBytes
 	for _, c := range eligible {
 		if len(attrs) >= maxAttrs {
 			dropped++

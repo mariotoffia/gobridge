@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -15,12 +16,19 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // errInstrumentLimit is returned when the instrument cache is full and
 // a new (likely dynamic) metric name is rejected (K9).
 var errInstrumentLimit = errors.New("instrument cache limit reached")
+
+// rejectReportInterval bounds how often a full-cache rejection is
+// surfaced through the error handler (N4). Once the cache is full every
+// new dynamic name is rejected on every emit; reporting each one would
+// flood the handler, so reports are throttled to one per interval.
+const rejectReportInterval = time.Minute
 
 // meterClient is the adapter-internal mock seam shielding the
 // port-side Exporter from OpenTelemetry SDK types. All
@@ -44,6 +52,17 @@ type otelMeterClient struct {
 
 	maxInstruments int
 	onError        func(error)
+
+	// clk sources the timestamp for reject-report throttling. Defaults to
+	// clock.System; the codebase forbids direct time.Now (forbidigo).
+	clk clock.Clock
+
+	// lastRejectReport holds the UnixNano of the last full-cache
+	// rejection surfaced through onError. It rate-limits rejection
+	// reporting (N4) to one report per rejectReportInterval via a
+	// lock-free CAS, so a dynamic-name flood neither floods the handler
+	// nor contends on mu. Bounded memory: one timestamp, no per-name state.
+	lastRejectReport atomic.Int64
 
 	mu         sync.RWMutex
 	counters   map[string]metric.Int64Counter
@@ -127,26 +146,57 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 		defaultAttrs:   buildDefaultAttrs(cfg.DefaultTags),
 		maxInstruments: maxInstruments,
 		onError:        cfg.errorHandler,
+		clk:            clock.System,
 		counters:       make(map[string]metric.Int64Counter),
 		gauges:         make(map[string]metric.Float64Gauge),
 		histograms:     make(map[string]metric.Float64Histogram),
 	}
 }
 
-// reportError surfaces a non-fatal emit/export failure through the
-// configured error handler. The port methods have no error return, so
-// without a handler these failures are lost; the handler is the
-// classified visibility path (K3).
-func (c *otelMeterClient) reportError(err error) {
-	if err != nil && c.onError != nil {
-		c.onError(err)
+// reportInstrumentError surfaces an instrument-acquisition failure through
+// the configured error handler. The port methods have no error return, so
+// without a handler these failures are lost; the handler is the classified
+// visibility path (K3).
+//
+// A full-cache rejection (errInstrumentLimit) is reported at most once per
+// rejectReportInterval (N4): under dynamic-name misuse every emit is
+// rejected, and reporting each one would flood the handler. The formatted
+// error is built only when a report is actually emitted, so the rejected
+// hot path stays allocation-free. Bounded memory: a single timestamp, no
+// per-name state. Other (rare) acquisition errors are always reported.
+func (c *otelMeterClient) reportInstrumentError(name string, err error) {
+	if err == nil || c.onError == nil {
+		return
 	}
+	if errors.Is(err, errInstrumentLimit) {
+		if !c.allowRejectReport() {
+			return
+		}
+		err = fmt.Errorf(
+			"otel-metrics: rejecting dynamic metric %q: %w (limit %d); use a bounded static name set",
+			name, errInstrumentLimit, c.maxInstruments,
+		)
+	}
+	c.onError(err)
+}
+
+// allowRejectReport reports whether a full-cache rejection may be surfaced
+// now, throttling to one report per rejectReportInterval. It is lock-free
+// (a single load plus CAS) so the rejected hot path never contends on
+// c.mu, and concurrent floods yield exactly one report per window (N4).
+func (c *otelMeterClient) allowRejectReport() bool {
+	now := c.clk.Now().UnixNano()
+	last := c.lastRejectReport.Load()
+	if now-last < int64(rejectReportInterval) {
+		return false
+	}
+	return c.lastRejectReport.CompareAndSwap(last, now)
 }
 
 func (c *otelMeterClient) Counter(name string, value int64, tags []shared.Tag) {
 	counter, err := c.getOrCreateCounter(name)
 	if err != nil {
-		c.reportError(err)
+		c.reportInstrumentError(name, err)
 		return
 	}
 	counter.Add(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -155,7 +205,7 @@ func (c *otelMeterClient) Counter(name string, value int64, tags []shared.Tag) {
 func (c *otelMeterClient) Gauge(name string, value float64, tags []shared.Tag) {
 	gauge, err := c.getOrCreateGauge(name)
 	if err != nil {
-		c.reportError(err)
+		c.reportInstrumentError(name, err)
 		return
 	}
 	gauge.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -164,7 +214,7 @@ func (c *otelMeterClient) Gauge(name string, value float64, tags []shared.Tag) {
 func (c *otelMeterClient) Histogram(name string, value float64, tags []shared.Tag) {
 	histogram, err := c.getOrCreateHistogram(name)
 	if err != nil {
-		c.reportError(err)
+		c.reportInstrumentError(name, err)
 		return
 	}
 	histogram.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
@@ -195,26 +245,31 @@ func (c *otelMeterClient) instrumentCountLocked() int {
 	return len(c.counters) + len(c.gauges) + len(c.histograms)
 }
 
-// rejectIfFullLocked returns errInstrumentLimit when creating a new
-// instrument named name would exceed maxInstruments. Callers must hold
-// c.mu for writing (K9).
-func (c *otelMeterClient) rejectIfFullLocked(name string) error {
-	if c.maxInstruments > 0 && c.instrumentCountLocked() >= c.maxInstruments {
-		return fmt.Errorf(
-			"otel-metrics: rejecting dynamic metric %q: %w (limit %d); use a bounded static name set",
-			name, errInstrumentLimit, c.maxInstruments,
-		)
-	}
-	return nil
+// isFullLocked reports whether the instrument cache has reached
+// maxInstruments. Callers must hold c.mu (read or write). The caches only
+// grow (there is no eviction), so once this is true it stays true — the
+// RLock fast path (N4) relies on that to reject a new name without taking
+// the write Lock. maxInstruments <= 0 disables the bound.
+func (c *otelMeterClient) isFullLocked() bool {
+	return c.maxInstruments > 0 && c.instrumentCountLocked() >= c.maxInstruments
 }
 
 func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, error) {
 	c.mu.RLock()
-	if counter, ok := c.counters[name]; ok {
-		c.mu.RUnlock()
+	counter, ok := c.counters[name]
+	full := !ok && c.isFullLocked()
+	c.mu.RUnlock()
+	if ok {
 		return counter, nil
 	}
-	c.mu.RUnlock()
+	if full {
+		// N4 fast path: the cache is full and this name is not cached.
+		// Because the caches only grow, the name will always be rejected;
+		// return the sentinel without taking the write Lock so a
+		// dynamic-name flood cannot serialize the hot path. The formatted
+		// error is built later, only if a report is actually emitted.
+		return nil, errInstrumentLimit
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -223,8 +278,8 @@ func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, 
 		return counter, nil
 	}
 
-	if err := c.rejectIfFullLocked(name); err != nil {
-		return nil, err
+	if c.isFullLocked() {
+		return nil, errInstrumentLimit
 	}
 
 	counter, err := c.meter.Int64Counter(name)
@@ -237,11 +292,16 @@ func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, 
 
 func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, error) {
 	c.mu.RLock()
-	if gauge, ok := c.gauges[name]; ok {
-		c.mu.RUnlock()
+	gauge, ok := c.gauges[name]
+	full := !ok && c.isFullLocked()
+	c.mu.RUnlock()
+	if ok {
 		return gauge, nil
 	}
-	c.mu.RUnlock()
+	if full {
+		// N4 fast path: see getOrCreateCounter.
+		return nil, errInstrumentLimit
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -250,8 +310,8 @@ func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, er
 		return gauge, nil
 	}
 
-	if err := c.rejectIfFullLocked(name); err != nil {
-		return nil, err
+	if c.isFullLocked() {
+		return nil, errInstrumentLimit
 	}
 
 	gauge, err := c.meter.Float64Gauge(name)
@@ -264,11 +324,16 @@ func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, er
 
 func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histogram, error) {
 	c.mu.RLock()
-	if histogram, ok := c.histograms[name]; ok {
-		c.mu.RUnlock()
+	histogram, ok := c.histograms[name]
+	full := !ok && c.isFullLocked()
+	c.mu.RUnlock()
+	if ok {
 		return histogram, nil
 	}
-	c.mu.RUnlock()
+	if full {
+		// N4 fast path: see getOrCreateCounter.
+		return nil, errInstrumentLimit
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -277,8 +342,8 @@ func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histo
 		return histogram, nil
 	}
 
-	if err := c.rejectIfFullLocked(name); err != nil {
-		return nil, err
+	if c.isFullLocked() {
+		return nil, errInstrumentLimit
 	}
 
 	histogram, err := c.meter.Float64Histogram(name)

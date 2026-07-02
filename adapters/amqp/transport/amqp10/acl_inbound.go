@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Azure/go-amqp"
@@ -91,6 +92,9 @@ type linkReceiver interface {
 // domain-typed *Delivery values inside the ACL.
 type receiverLink struct {
 	raw *amqp.Receiver
+	// delayUnhonoredWarn dedupes the delayed-retry-unhonored Warn to once
+	// per link (G-N2). It is shared with every Delivery this link creates.
+	delayUnhonoredWarn sync.Once
 }
 
 var _ linkReceiver = (*receiverLink)(nil)
@@ -119,7 +123,11 @@ func (r *receiverLink) Receive(
 		_ = r.raw.RejectMessage(ctx, msg, nil)
 		return nil, err
 	}
-	return NewDelivery(env, msg, r.raw, logger, metrics, clk), nil
+	d := NewDelivery(env, msg, r.raw, logger, metrics, clk)
+	// Share the per-link warn guard so an unhonored delayed retry warns
+	// once per link, not once per message (G-N2).
+	d.delayWarnOnce = &r.delayUnhonoredWarn
+	return d, nil
 }
 
 // Close closes the receiver link. The supplied context bounds the

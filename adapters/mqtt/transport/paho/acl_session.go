@@ -262,21 +262,10 @@ func (s *Session) Start(ctx context.Context) error {
 	// We derive a background context that is only cancelled by Close().
 	cmCtx, cmCancel := context.WithCancel(context.Background())
 
-	// BUG-A fix: assign s.startCtx BEFORE NewConnection so that the
-	// OnConnectionUp callback (which may fire from an autopaho goroutine
-	// before AwaitConnection returns) always observes a non-nil parent
-	// context when deriving the reconcile timeout. Otherwise, if a prior
-	// Reconcile call had stashed s.plan, the callback would panic on
-	// context.WithTimeout(nil, ...).
-	s.mu.Lock()
-	s.startCtx = cmCtx
-	s.mu.Unlock()
-
 	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
 		cmCancel()
 		s.mu.Lock()
-		s.startCtx = nil
 		s.starting = false
 		s.mu.Unlock()
 		return MapError(err)
@@ -293,7 +282,6 @@ func (s *Session) Start(ctx context.Context) error {
 		cmCancel()
 		_ = cm.Disconnect(context.Background())
 		s.mu.Lock()
-		s.startCtx = nil
 		s.starting = false
 		s.mu.Unlock()
 		if logging.DebugEnabled(s.logger) {
@@ -306,7 +294,6 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.cm = newPahoConn(cm)
 	s.cmCancel = cmCancel
-	// startCtx was already assigned before NewConnection (BUG-A fix).
 	s.connected = true
 	s.starting = false
 	s.mu.Unlock()

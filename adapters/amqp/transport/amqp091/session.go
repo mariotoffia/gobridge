@@ -643,7 +643,13 @@ func (s *Session) watchBlocked(ctx context.Context, conn amqpConnection) {
 			if !ok {
 				return
 			}
-			s.setBlocked(b.Active, b.Reason)
+			if !s.setBlocked(conn, b.Active, b.Reason) {
+				// Stale notification from a watcher whose connection has
+				// been superseded by a reconnect: ignore it entirely so a
+				// dropped connection cannot pin the healthy one to Degraded
+				// or emit phantom flow-control metrics/logs.
+				continue
+			}
 			s.metrics.Counter(MetricAMQP091Blocked, 1,
 				shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
 			if s.logger == nil {
@@ -661,11 +667,23 @@ func (s *Session) watchBlocked(ctx context.Context, conn amqpConnection) {
 	}
 }
 
-func (s *Session) setBlocked(active bool, reason string) {
+// setBlocked records a broker flow-control transition observed by conn's
+// watcher. It reports whether the write was applied: a notification from a
+// connection that is no longer current is ignored (returns false), so a
+// watcher bound to a dropped connection cannot pin the freshly reconnected
+// (healthy) connection to Degraded + ErrBrokerBusy with a buffered
+// {Active:true} it delivers after the reconnect. The current connection
+// identity acts as the generation token — once s.conn advances to a new
+// connection, every stale watcher write is rejected.
+func (s *Session) setBlocked(conn amqpConnection, active bool, reason string) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if conn != s.conn {
+		return false
+	}
 	s.blocked = active
 	s.blockedReason = reason
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Session) reconnectLoop(ctx context.Context) {

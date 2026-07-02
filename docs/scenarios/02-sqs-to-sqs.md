@@ -77,8 +77,10 @@ SQS is a **stateless** transport. Unlike MQTT, there's no persistent connection 
 - **`auto_extend: true`** -- A background goroutine renews the visibility timeout at 50% (30s mark), preventing redelivery for long-running processing.
 
 ### `senders`
-- **`batch_size: 10`** -- Groups up to 10 messages per `SendMessageBatch` call, reducing API costs.
+- **`batch_size: 10`** -- Maximum entries per `SendMessageBatch` call. It takes effect only when a caller invokes the sender's `SendBatch` (batch) API directly. This route's per-delivery dispatch sends one message per `Send` call, so `batch_size` does not reduce API calls here, and it does not apply to the shared-outbox drain path either (the drainer sends one record per `Send`).
 - Timeout defaults to 30 seconds per call.
+
+> **Note on the SQS binding `address`.** An SQS sender is pinned to one queue via its `queue_url` or `queue_name`. The binding `address` may be the bare queue name (as here, `processing-events`) or the full queue URL -- either form is matched to that bound queue. It names the sender's queue rather than routing per message.
 
 ### SQS Polling Lifecycle
 

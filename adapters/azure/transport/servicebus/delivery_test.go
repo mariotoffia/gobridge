@@ -9,7 +9,6 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 
-	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -160,31 +159,27 @@ func TestDelivery_Extend_Error(t *testing.T) {
 
 // verifies auto-extend periodically renews the lock while the delivery is active.
 func TestDelivery_AutoExtend_CallsRenew(t *testing.T) {
+	renewed := make(chan struct{}, 1)
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
 		RenewMessageLockFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.RenewMessageLockOptions) error {
 			renewCount.Add(1)
+			signal(renewed)
 			return nil
 		},
 	}
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
+	clk := newSignalClock()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
+	defer d.stop()
 
-	// OTHER: real-time sync for clocktest.Fake goroutine startup
-	deadline := time.Now().Add(2 * time.Second)
-	for fake.TickerCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(1 * time.Millisecond)
-	}
+	<-clk.started                        // goroutine has armed its renewal ticker
+	clk.Advance(1100 * time.Millisecond) // past one tick interval (lockDuration/2 = 1s)
+	<-renewed                            // block until the goroutine processed the tick
 
-	fake.Advance(1100 * time.Millisecond) // past one tick interval (lockDuration/2 = 1s)
-	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-	d.stop()
-
-	count := renewCount.Load()
-	if count < 1 {
+	if count := renewCount.Load(); count < 1 {
 		t.Fatalf("expected at least 1 auto-extend renew call, got %d", count)
 	}
 }
@@ -201,18 +196,20 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
+	clk := newSignalClock()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
 
-	if err := d.Ack(context.Background()); err != nil {
+	<-clk.started // goroutine has armed its renewal ticker
+
+	if err := d.Ack(context.Background()); err != nil { // Ack calls stop() → cancels the loop
 		t.Fatalf("Ack failed: %v", err)
 	}
 
-	fake.Advance(3 * time.Second)     // well past tick interval — if ticker was alive it would fire
-	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
+	<-clk.stopped // goroutine observed cancellation and stopped its ticker
 
-	count := renewCount.Load()
-	if count > 0 {
+	clk.Advance(3 * time.Second) // ticker already stopped — no tick can fire
+
+	if count := renewCount.Load(); count > 0 {
 		t.Fatalf("auto-extend should not fire after Ack, got %d calls", count)
 	}
 }
@@ -229,23 +226,30 @@ func TestDelivery_AutoExtend_StopsOnRetry(t *testing.T) {
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	fake := clocktest.New()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, fake)
+	clk := newSignalClock()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
 
-	if err := d.Retry(context.Background(), 0, nil); err != nil {
+	<-clk.started // goroutine has armed its renewal ticker
+
+	if err := d.Retry(context.Background(), 0, nil); err != nil { // Retry calls stop() → cancels the loop
 		t.Fatalf("Retry failed: %v", err)
 	}
 
-	fake.Advance(3 * time.Second)     // well past tick interval — if ticker was alive it would fire
-	time.Sleep(20 * time.Millisecond) // OTHER: goroutine teardown yield
+	<-clk.stopped // goroutine observed cancellation and stopped its ticker
 
-	count := renewCount.Load()
-	if count > 0 {
+	clk.Advance(3 * time.Second) // ticker already stopped — no tick can fire
+
+	if count := renewCount.Load(); count > 0 {
 		t.Fatalf("auto-extend should not fire after Retry, got %d calls", count)
 	}
 }
 
-// verifies renew is not called when auto-extend is disabled.
+// verifies renew is not called when auto-extend is disabled: no renewal
+// goroutine is spawned, so the fake clock's ticker is never armed. Waiting on
+// the signalClock's started channel (bounded by a negative window) proves the
+// goroutine never started — sharper than sleeping and checking renewCount,
+// since a wrongly-spawned goroutine signals started the instant it arms the
+// ticker, whereas its first renewal would not fire until a full interval later.
 func TestDelivery_NoAutoExtend(t *testing.T) {
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
@@ -257,10 +261,15 @@ func TestDelivery_NoAutoExtend(t *testing.T) {
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, false, nil, nil, nil, nil)
+	clk := newSignalClock()
+	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, false, nil, nil, nil, clk)
+	defer d.stop()
 
-	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify no lock renewal when auto-extend disabled (tightened from 1500ms)
-	d.stop()
+	select {
+	case <-clk.started:
+		t.Fatal("auto-extend goroutine must not start when disabled")
+	case <-time.After(100 * time.Millisecond): // bounded negative window
+	}
 
 	if renewCount.Load() > 0 {
 		t.Fatal("auto-extend should not fire when disabled")
@@ -283,31 +292,38 @@ func TestDelivery_MultipleStopsAreSafe(t *testing.T) {
 	}
 }
 
-// verifies auto-extend scheduling respects ReceivedMessage.LockedUntil when set.
+// verifies auto-extend scheduling respects ReceivedMessage.LockedUntil when
+// set: the renewal interval derives from LockedUntil (remaining/2), not the
+// lockDuration/2 fallback. Deterministic via the fake clock — LockedUntil is
+// set 4s ahead of the clock's now, so the interval is 2s; advancing exactly 2s
+// fires a renew, whereas the lockDuration/2 fallback (15s for a 30s lock) would
+// not, so a single renew proves the LockedUntil path drove the cadence.
 func TestDelivery_AutoExtend_UsesLockedUntil(t *testing.T) {
+	renewed := make(chan struct{}, 1)
 	var renewCount atomic.Int32
 	mock := &mockASBClient{
 		RenewMessageLockFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.RenewMessageLockOptions) error {
 			renewCount.Add(1)
+			signal(renewed)
 			return nil
 		},
 	}
 
-	lockedUntil := time.Now().Add(4 * time.Second)
+	clk := newSignalClock()
+	lockedUntil := clk.Now().Add(4 * time.Second) // remaining/2 → 2s renewal interval
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{
 		MessageID:   "test-msg",
 		LockedUntil: &lockedUntil,
 	}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, true, nil, nil, nil, clk)
+	defer d.stop()
 
-	// SYNC: wall-clock required — interval derived from time.Until(LockedUntil), not d.clk
-	time.Sleep(2500 * time.Millisecond)
-	d.stop()
-	time.Sleep(100 * time.Millisecond) // SYNC: drain after stop
+	<-clk.started                // goroutine has armed its renewal ticker
+	clk.Advance(2 * time.Second) // LockedUntil-derived interval; lockDuration/2 (15s) would not fire
+	<-renewed                    // block until the goroutine processed the tick
 
-	count := renewCount.Load()
-	if count < 1 {
-		t.Fatalf("expected at least 1 renew call using LockedUntil-based interval (~2s), got %d", count)
+	if count := renewCount.Load(); count < 1 {
+		t.Fatalf("expected at least 1 renew call using LockedUntil-based interval (2s), got %d", count)
 	}
 }

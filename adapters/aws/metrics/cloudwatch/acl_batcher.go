@@ -248,6 +248,17 @@ func (b *batcher) buildDimensions(tags []shared.Tag) []cwtypes.Dimension {
 // producing invalid UTF-8 that CloudWatch rejects with InvalidParameterValue
 // — and since PutMetricData is all-or-nothing, one poison datum fails the
 // entire batch (MF-2/J10).
+//
+// Operator caution (aggregation collision): truncation is lossy, and
+// CloudWatch identifies a metric series by its full set of dimension
+// name=value pairs. Two dimension values that share the same first 256
+// bytes truncate to the SAME string here, so CloudWatch folds their datums
+// into ONE series — silently aggregating what were meant to be distinct
+// timeseries (the same holds for two colliding dimension names). This is
+// inherent to the CloudWatch maxDimensionField limit, not a bug in
+// buildDimensions. Keep high-cardinality dimension values distinguishable
+// WITHIN their first 256 bytes (put the varying part — e.g. an id — early,
+// not after a long shared prefix).
 func truncateField(s string) string {
 	if len(s) <= maxDimensionField {
 		return s

@@ -310,8 +310,8 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 }
 
 // TestIntegration_SessionStartStoresContext validates that after Start(),
-// the session's Health reports connected, proving startCtx was stored
-// and connection was established successfully.
+// the session's Health reports connected — proving the connection was
+// established successfully.
 func TestIntegration_SessionStartStoresContext(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

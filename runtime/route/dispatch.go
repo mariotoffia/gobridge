@@ -82,6 +82,25 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	defer sendCancel()
 
 	rc := receiveCount(env)
+	// E5-FU3: a redelivery-count header that is present but uninterpretable makes
+	// receiveCount fail open to a first delivery (rc==0) so a good message is
+	// never DLQ'd on a parse error — but that silently uncaps MaxReplayAttempts,
+	// and the recoverable-retry path below would then retry a permanently-failing
+	// send unbounded. Keep the fail-open value; surface the condition as a metric
+	// (+ debug log) so the otherwise-silent unbounded retry is observable — it
+	// re-emits on each redelivery of the same malformed message.
+	if badKey := unparseableReceiveCountKey(env); badKey != "" {
+		r.metrics.Counter(shared.MetricReceiveCountUnparseable, 1,
+			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "unparseable redelivery-count header; treating as first delivery",
+				"route", r.routeID,
+				"envelope_id", env.ID(),
+				"header", badKey,
+				"value", fmt.Sprintf("%v", env.Headers()[badKey]),
+			)
+		}
+	}
 	attempt := rc + 1
 
 	// Continue the distributed trace downstream: stamp the active span context
@@ -97,9 +116,12 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// first so it cannot ride alongside the fresh bridge span. When tracing is
 	// disabled the tracer returns no keys, this block is skipped, and the
 	// upstream headers pass through untouched (bridge-to-bridge trace continuity
-	// preserved). The shared-outbox path is decoupled (drained after the ingress
-	// span ends) and instead relies on the upstream traceparent preserved on the
-	// persisted envelope (K1).
+	// preserved). The shared-outbox path is decoupled (drained later by a
+	// separate drainer that no longer holds this span), so it stamps the same
+	// active span onto the PERSISTED envelope at outbox-build time
+	// (buildOutboxRecords) — symmetric with this hop — so a drained record still
+	// propagates this bridge hop downstream rather than the bare upstream
+	// traceparent the clone carried (OTEL-N3).
 	if injected := r.tracer.Inject(sendCtx, map[string]any{}); len(injected) > 0 {
 		outbound.DeleteHeader(messaging.HeaderTraceParent)
 		outbound.DeleteHeader(messaging.HeaderTraceState)
@@ -369,6 +391,20 @@ const (
 	headerAMQP10DeliveryCount = "amqp10.delivery-count"
 )
 
+// receiveCountHeaderKeys lists the transport redelivery-count header keys in the
+// precedence order receiveCount consults them. Declared once so the
+// present-but-unparseable detector (unparseableReceiveCountKey) and the
+// cross-module wire-key contract test iterate the exact same set as receiveCount
+// without re-listing the constants. It is an immutable lookup shared by the
+// detector and its pin test, not mutable state.
+//
+//nolint:gochecknoglobals // immutable shared wire-contract lookup, not state.
+var receiveCountHeaderKeys = []string{
+	headerSQSReceiveCount,
+	headerASBDeliveryCount,
+	headerAMQP10DeliveryCount,
+}
+
 // receiveCount extracts the source transport's redelivery count from envelope
 // headers, normalized to 1-based (1 == first delivery). Transports are checked
 // in a fixed order; a delivery normally carries exactly one of these headers, so
@@ -391,6 +427,36 @@ func receiveCount(env *messaging.Envelope) int {
 		return n + 1 // 0-based AMQP delivery-count -> 1-based receive count
 	}
 	return 0
+}
+
+// unparseableReceiveCountKey reports a transport redelivery-count header that is
+// PRESENT on env but whose value headerInt cannot interpret as an integer,
+// scanning in the same precedence order receiveCount uses. It returns a key ONLY
+// when no equal-or-higher-precedence header supplied a usable count — i.e.
+// exactly the case where receiveCount fails open to 0 (first delivery) and
+// MaxReplayAttempts is silently uncapped (E5-FU3). A cleanly parsed count (even a
+// literal 0) or a merely absent header yields "" (no signal), so a valid
+// fallback count never produces a false positive. Callers use the non-empty key
+// only to emit an observability signal; the fail-open value from receiveCount is
+// left untouched.
+func unparseableReceiveCountKey(env *messaging.Envelope) string {
+	h := env.Headers()
+	if h == nil {
+		return ""
+	}
+	firstBad := ""
+	for _, key := range receiveCountHeaderKeys {
+		if _, present := h[key]; !present {
+			continue
+		}
+		if _, ok := headerInt(h, key); ok {
+			return "" // a usable count exists; receiveCount used it — no silent uncap
+		}
+		if firstBad == "" {
+			firstBad = key
+		}
+	}
+	return firstBad
 }
 
 // stripInboundReceiveCounts removes every source-transport redelivery-count
@@ -507,7 +573,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		}
 	}
 
-	records, buildErr := r.buildOutboxRecords(env, plans)
+	records, buildErr := r.buildOutboxRecords(ctx, env, plans)
 	if buildErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, buildErr)
 	}

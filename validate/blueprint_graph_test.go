@@ -324,3 +324,38 @@ func TestValidateBlueprintGraph_NilOnEmpty(t *testing.T) {
 		t.Fatalf("expected nil result for empty config, got: %+v", res)
 	}
 }
+
+// TestValidateBlueprintGraph_ReceiverSessionTransport covers the
+// ADV-F1-P2 guard: a receiver whose explicit transport differs from
+// its session's transport fails validation, while a matching pair — or
+// a receiver that inherits the session transport — passes.
+func TestValidateBlueprintGraph_ReceiverSessionTransport(t *testing.T) {
+	tests := []struct {
+		name        string
+		rxTransport string
+		wantErr     bool
+	}{
+		{name: "mismatch fails", rxTransport: "amqp", wantErr: true},
+		{name: "match passes", rxTransport: "mqtt", wantErr: false},
+		{name: "inherited transport passes", rxTransport: "", wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ports.BridgeConfig{
+				Bridge:   ports.BridgeSettings{ID: "test"},
+				Sessions: []ports.SessionDef{{ID: "s1", Transport: "mqtt"}},
+				Receivers: []ports.ReceiverDef{
+					{ID: "rx1", Transport: tc.rxTransport, SessionID: "s1"},
+				},
+			}
+			got := errorString(t, cfg)
+			if tc.wantErr {
+				if !strings.Contains(got, "must share one transport") {
+					t.Fatalf("expected transport-mismatch error, got: %q", got)
+				}
+			} else if got != "" {
+				t.Fatalf("expected no errors, got: %q", got)
+			}
+		})
+	}
+}

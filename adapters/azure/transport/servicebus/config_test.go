@@ -243,6 +243,33 @@ func TestSenderConfigFromOptions(t *testing.T) {
 
 // --- helpers ---
 
+// D2-FU2 — Config.Validate bounds receiver.lock_duration to the Service Bus
+// broker range (5s..5min); 0 means "use the 30s default".
+func TestConfig_Validate_LockDurationBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		lock    time.Duration
+		wantErr bool
+	}{
+		{"zero means default", 0, false},
+		{"min 5s ok", 5 * time.Second, false},
+		{"max 5m ok", 5 * time.Minute, false},
+		{"below min rejected", 2 * time.Second, true},
+		{"above max rejected", 6 * time.Minute, true},
+		{"negative rejected", -time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Receiver: ReceiverParams{QueueName: "q", LockDuration: tt.lock},
+			}
+			if err := cfg.Validate(); (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 func assertEqual(t *testing.T, field, got, want string) {

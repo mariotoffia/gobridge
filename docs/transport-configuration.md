@@ -276,10 +276,29 @@ Either `queue_url` or `queue_name` must be provided.
 - **Adaptive auto-extend ticker.** When `Extend()` changes the SQS visibility
   timeout, the auto-extend ticker interval updates accordingly, preventing
   excessive or insufficient extend calls.
+- **Send timeout vs. visibility window.** With `auto_extend` disabled, the
+  builder rejects a route whose policy `send_timeout` is at least half the
+  effective `visibility_timeout`: a send that outruns half the window lets SQS
+  redeliver the in-flight message before the send finishes, producing
+  duplicates. With `auto_extend` on (the default) the check is skipped --
+  background renewal holds the message invisible for the whole send, so a short
+  window paired with auto-extend is a valid config and is not rejected. The
+  check reads the route's own `visibility_timeout` (default 30s), not a
+  transport-wide constant. An effective window below 2 seconds runs a fixed,
+  non-renewed visibility even under `auto_extend: true`, so the check still
+  applies there.
 
 > **Tip:** Set the SQS native DLQ `maxReceiveCount` to at least
 > `(bridge max retries + 3)` to prevent SQS from moving messages to the DLQ
 > before the bridge has finished its own retry handling.
+
+> **Migration.** The send-timeout check reads the route's own
+> `visibility_timeout` (SQS) or `lock_duration` (Service Bus) rather than a
+> fixed 30s default. A route that ran `auto_extend: false` with a short window
+> and a long `send_timeout` may now fail at build where it passed before. Keep
+> `auto_extend` on (the default), raise the window, or lower `send_timeout`.
+> For Service Bus, also set `lock_duration` to the broker entity LockDuration
+> -- see Azure Service Bus below.
 
 ---
 
@@ -384,6 +403,23 @@ Either `queue_name` or `topic_name` is required.
 | `insecure_skip_verify` | bool | `false` | Skip TLS server verification |
 
 Either `connection_string` or `namespace` is required.
+
+### Resilience Behavior
+
+- **`lock_duration` is a client-side mirror.** It does not configure the
+  broker; the queue or subscription entity carries the authoritative
+  LockDuration. The receiver uses `lock_duration` only to seed the auto-extend
+  renewal cadence (half the value); once a message arrives its broker
+  `LockedUntil` deadline governs renewal. The accepted range is 5s--5m, and `0`
+  resolves to the 30s default.
+- **Send timeout vs. lock window.** The builder applies the same send-timeout
+  check described under AWS SQS, using `lock_duration` as the window. With
+  `auto_extend` on (the default) the check is skipped. With `auto_extend: false`
+  the builder judges `send_timeout` against the *declared* `lock_duration`, not
+  the broker's real lock -- a declared-short `lock_duration` is rejected at
+  build even when the broker entity permits a longer lock. Set `lock_duration`
+  to match the broker entity LockDuration so the declared window reflects what
+  the broker enforces.
 
 ---
 

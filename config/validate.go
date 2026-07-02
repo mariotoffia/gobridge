@@ -143,9 +143,14 @@ func validateEnum(ve *ValidationError, field, value string, allowed ...string) {
 
 // validateStaleClaimDuration warns when the outbox store's
 // stale_claim_duration is explicitly set to a value much larger than the
-// session step-down grace periods. A staleClaimAge that exceeds 2x the
-// maximum StepDownGrace delays failover recovery without preventing
-// duplicate sends.
+// session step-down grace periods. The real lower bound on
+// stale_claim_duration is the worst-case drain-batch timeout: a stranded
+// claim must exceed it before the SAME owner can reclaim it (this recovery
+// path is DynamoDB-outbox-only). A value far above that ceiling only delays
+// same-owner stranded-claim recovery — it does not gate failover hand-off,
+// which a new owner drives immediately via its strictly higher fencing
+// version. The 2x-max-StepDownGrace threshold is a cheap proxy for "much
+// larger than the drain ceiling"; it does not change the recovery semantics.
 func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 	if cfg.Stores.Outbox == nil {
 		return
@@ -198,9 +203,12 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 
 	if stale > 2*maxGrace {
 		ve.Warnf("stores.outbox.options.stale_claim_duration (%s) is more than 2x "+
-			"the maximum step_down_grace (%s); this delays failover recovery "+
-			"without reducing duplicate sends — consider a value closer to "+
-			"step_down_grace + 15s (%s)",
+			"the maximum step_down_grace (%s); a value this large only delays "+
+			"same-owner stranded-claim recovery (DynamoDB outbox only) and does "+
+			"not gate failover hand-off. The real lower bound is the worst-case "+
+			"drain-batch timeout, which a stranded claim must exceed before it "+
+			"can be reclaimed; step_down_grace + 15s (%s) is only a rule-of-thumb "+
+			"starting point that usually clears that ceiling, not the constraint",
 			stale, maxGrace, maxGrace+15*time.Second)
 	}
 }

@@ -3,7 +3,6 @@ package runtime_test
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +18,9 @@ import (
 //
 // Validates the S12 changes that align lease-related timeouts:
 //   - DefaultSessionConfig produces correct new defaults
-//   - RenewInterval is derived from LeaseTTL / MaxRenewFails
+//   - RenewInterval defaults derive from LeaseTTL / MaxRenewFails when left
+//     zero; the presets pin it just under that to keep a sub-TTL margin
+//     (A8-R1-leasettl-margin)
 //   - Session manager lifecycle works with derived intervals
 //
 // ┌─────────────┐     ┌───────────────┐     ┌────────────────┐
@@ -45,7 +46,10 @@ func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
 		want time.Duration
 	}{
 		{"LeaseTTL", cfg.LeaseTTL, 360 * time.Second},
-		{"RenewInterval", cfg.RenewInterval, 0},
+		// RenewInterval is pinned to 110s (not the derived 120s) so that
+		// RenewInterval*MaxRenewFails = 330s < 360s LeaseTTL, lifting the final
+		// renew off the expiry boundary (A8-R1-leasettl-margin).
+		{"RenewInterval", cfg.RenewInterval, 110 * time.Second},
 		{"RenewJitter", cfg.RenewJitter, 5 * time.Second},
 		{"StepDownGrace", cfg.StepDownGrace, 15 * time.Second},
 	}
@@ -170,10 +174,13 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-1", Payload: []byte("hello")}),
 	})})
 
-	var sent atomic.Int32
+	sentCh := make(chan struct{}, 1)
 	sender := &FakeSender{
 		SendFn: func(_ *messaging.Envelope) error {
-			sent.Add(1)
+			select {
+			case sentCh <- struct{}{}:
+			default:
+			}
 			return nil
 		},
 	}
@@ -198,15 +205,10 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 		done <- drainer.Run(ctx)
 	}()
 
-	deadline := time.After(3 * time.Second)
-	for sent.Load() <= 0 {
-
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for send")
-		default:
-			time.Sleep(20 * time.Millisecond) // SYNC: poll interval in inline wait loop
-		}
+	select {
+	case <-sentCh: // first send happened
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for send")
 	}
 
 	cancel()

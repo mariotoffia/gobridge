@@ -229,4 +229,19 @@ const (
 	CapSharedConsumer      Capability = "shared_consumer"
 	CapExclusiveIdentity   Capability = "exclusive_identity"
 	CapHTTPEndpoint        Capability = "http_endpoint"
+
+	// CapPlanDrivenSubscriptions marks a transport whose receivers establish
+	// their subscriptions ONLY by the session manager reconciling the
+	// connectivity.SessionPlan (MQTT/paho, amqp091). For such a transport a
+	// receiver bound to a session that never gets a manager is silently inert:
+	// nothing reconciles its plan, so it subscribes to nothing. The bridge
+	// builder uses this capability to require a session manager for every
+	// plan-driven receiver and to FAIL the build otherwise (ADV-P4-FU1).
+	//
+	// Self-establishing transports (amqp10, whose receivers attach links on
+	// start independently of the plan) and address-direct transports
+	// (SQS/Service Bus/HTTP, which poll or receive at an address and have no
+	// reconcile plan) do NOT advertise it, so the builder skips the check for
+	// them — a missing manager is not the same defect there.
+	CapPlanDrivenSubscriptions Capability = "plan_driven_subscriptions"
 )

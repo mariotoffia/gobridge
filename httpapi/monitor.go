@@ -149,6 +149,25 @@ type topologyRouteView struct {
 	DispatchMode string `json:"dispatch_mode"`
 }
 
+// configVersion reports the optimistic-concurrency version of the
+// running configuration and whether a config source is wired. It is
+// the scrapeable surface for fleet-convergence monitoring: when
+// several instances share one config file, an instance whose
+// config_version lags the others has not yet converged on the latest
+// committed configuration. It returns ok=false when no ConfigProvider
+// is configured, so callers omit the field rather than report a
+// misleading zero (which otherwise means "never committed via the API").
+func (s *Server) configVersion() (version int, ok bool) {
+	if s.cfg.ConfigProvider == nil {
+		return 0, false
+	}
+	cfg := s.cfg.ConfigProvider()
+	if cfg == nil {
+		return 0, false
+	}
+	return cfg.Version, true
+}
+
 func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	if rt == nil {
@@ -164,11 +183,18 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 			DispatchMode: string(ri.DispatchMode),
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"instance_id": rt.InstanceID(),
 		"running":     rt.IsRunning(),
 		"routes":      views,
-	})
+	}
+	// Surface the running config version for fleet-convergence
+	// monitoring when a config provider is wired; omit it otherwise so
+	// a missing provider is not confused with config version 0.
+	if version, ok := s.configVersion(); ok {
+		resp["config_version"] = version
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // monitorRouteView is a detailed route view with policy fields.

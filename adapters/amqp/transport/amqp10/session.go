@@ -307,6 +307,11 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 // claiming Full. The desired count is the larger of the reconciled
 // subscription plan and the number of registered receivers, so existing
 // behaviour (no receivers registered) is preserved exactly.
+//
+// G-N3: the reported active count is additionally clamped to the
+// link-derived up count (registered receivers whose link is live), so a
+// plan wanting more subscriptions than there are self-establishing
+// receivers cannot over-report active during startup.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	connected := s.connected
@@ -315,8 +320,9 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	if plan != nil {
 		wanted = len(plan.Subscriptions)
 	}
-	if n := len(s.receivers); n > wanted {
-		wanted = n
+	registered := len(s.receivers)
+	if registered > wanted {
+		wanted = registered
 	}
 	downCount := 0
 	for _, up := range s.receivers {
@@ -325,6 +331,12 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		}
 	}
 	s.mu.Unlock()
+
+	// linkUp is the link-derived count of registered receivers whose AMQP
+	// link is actually established. Health clamps the reported active count
+	// to it (G-N3) so a plan wanting more subscriptions than there are
+	// self-establishing receivers cannot over-report active during startup.
+	linkUp := registered - downCount
 
 	var sl ports.ServiceLevel
 	active := wanted
@@ -340,6 +352,9 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		if active < 0 {
 			active = 0
 		}
+	}
+	if active > linkUp {
+		active = linkUp
 	}
 
 	return ports.SessionHealth{

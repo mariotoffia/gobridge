@@ -245,15 +245,36 @@ routes:
       max_in_flight: 100
 ```
 
+`transform.New` takes a single `Config` and returns `(*transform.Processor, error)` -- there is no name argument and no functional options. Every rewrite is a declarative JSONPath mapping in `Config.Mappings`; a `Target` prefixed with `header.` writes to an envelope header instead of the payload body.
+
 ```go
-transformProc := transform.New("format-external", transform.Config{
+transformProc, _ := transform.New(transform.Config{
     Name: "format-external",
-}, transform.WithTransformFunc(func(ctx context.Context, env *domain.Envelope) error {
-    // Remap internal fields to external partner schema
-    env.Headers["partner-version"] = "2"
-    return nil
-}))
+    Mappings: []transform.FieldMapping{
+        // Rename internal payload fields to the external partner schema.
+        transform.SimpleMapping("$.order.id", "orderId"),
+        transform.SimpleMapping("$.order.customerRef", "partner.customer"),
+        // Promote a payload field into a header the partner consumer reads.
+        transform.SimpleMapping("$.order.region", "header.partner-region"),
+        // Stamp partner-version=2. Mappings have no dedicated "constant"
+        // field, so point Source at a path the payload never carries and let
+        // DefaultValue supply the value: the resolver falls back to
+        // DefaultValue whenever the Source yields no match.
+        {Source: "$.__partner_version__", Target: "header.partner-version", DefaultValue: "2"},
+    },
+})
 ```
+
+Register it under the name the route references so `processors: [format-external]` resolves:
+
+```go
+rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+    // ... amqp091 / amqp10 transport factories as in the Go Bootstrap section ...
+    RegisterProcessor("format-external", transformProc).
+    Build(ctx)
+```
+
+> **Constant headers are not a first-class transform capability.** The processor is mapping-based: each rule copies a JSONPath source from the payload to a payload or `header.` target. There is no "set literal header" option, so the `partner-version` rule above leans on `DefaultValue`, which applies only when the `Source` is absent -- hence the synthetic source path the payload never contains. Header writes also happen only for a non-empty, valid-JSON payload; with the default `FailOnError: false` and no required mappings, an empty or non-JSON body passes through untouched.
 
 ### Durable Outbox for Guaranteed Cross-Protocol Delivery
 

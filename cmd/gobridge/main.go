@@ -202,10 +202,15 @@ func run() int {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
 	exitCode := 0
+	supExited := false
 	select {
 	case received := <-sig:
 		logger.Info("shutdown signal received", "signal", received.String())
 	case err := <-supDone:
+		// The supervisor self-exited: its single result is now consumed, so the
+		// bounded shutdown wait below must not read supDone a second time — that
+		// read would block until the full ShutdownTimeout elapsed (C3-FU5).
+		supExited = true
 		if err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("supervisor exited unexpectedly", "error", err)
 		}
@@ -226,14 +231,7 @@ func run() int {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Bridge.ShutdownTimeoutDuration())
 	defer shutdownCancel()
 
-	select {
-	case err := <-supDone:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("supervisor shutdown error", "error", err)
-		}
-	case <-shutdownCtx.Done():
-		logger.Error("supervisor shutdown timed out")
-	}
+	awaitSupervisorShutdown(supExited, supDone, shutdownCtx.Done(), logger)
 
 	logger.Info("bridge stopped")
 	return exitCode
@@ -244,6 +242,27 @@ func run() int {
 // failure (e.g. ~30s of lease-store outage before step-down), so a coarse poll
 // is ample and cheap.
 const terminalPollInterval = 5 * time.Second
+
+// awaitSupervisorShutdown blocks — bounded by the shutdown deadline (done) —
+// for the supervisor goroutine to report it has unwound after the root context
+// was cancelled. When alreadyExited is true the supervisor already self-exited
+// and its single result was consumed by the primary select in run(); there is
+// nothing left to wait for, so it returns immediately rather than reading the
+// now-drained supDone a second time. A second read would never complete and the
+// call would block until the full ShutdownTimeout elapsed (C3-FU5).
+func awaitSupervisorShutdown(alreadyExited bool, supDone <-chan error, done <-chan struct{}, logger *slog.Logger) {
+	if alreadyExited {
+		return
+	}
+	select {
+	case err := <-supDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("supervisor shutdown error", "error", err)
+		}
+	case <-done:
+		logger.Error("supervisor shutdown timed out")
+	}
+}
 
 // watchTerminal polls isTerminal every poll interval, returning true the first
 // time it reports terminal or false when ctx is cancelled. It carries no

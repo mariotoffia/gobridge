@@ -166,7 +166,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 // ReceiverConfigFromOptions extracts ReceiverConfig from a generic options map.
 func ReceiverConfigFromOptions(m map[string]any) ReceiverConfig {
 	cfg := ReceiverConfig{
-		PrefetchCount: 10,
+		PrefetchCount: defaultPrefetchCount,
 	}
 	if m == nil {
 		return cfg
@@ -184,7 +184,11 @@ func ReceiverConfigFromOptions(m map[string]any) ReceiverConfig {
 	if v, ok := optBool(m, "exclusive"); ok {
 		cfg.Exclusive = v
 	}
-	if v, ok := optInt(m, "prefetch_count"); ok {
+	if v, ok := optInt(m, "prefetch_count"); ok && v != 0 {
+		// Mirror the typed path (ReceiverParams.applyDefaults): an explicit
+		// prefetch_count:0 means the bounded default, not "unlimited" — an
+		// unbounded window lets the broker hand the whole queue to one
+		// manual-settlement consumer, defeating fair dispatch/backpressure.
 		cfg.PrefetchCount = v
 	}
 	if v, ok := optInt(m, "prefetch_size"); ok {

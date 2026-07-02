@@ -71,6 +71,18 @@ type PluginConfig interface {
 // don't implement it.
 type PublishingConfig interface {
 	PublisherTopic() string
+
+	// PublisherTopologyKey returns a deterministic descriptor of the exchange
+	// DECLARATION topology this config contributes (exchange type, durability,
+	// auto-delete, and the exchange-argument table — NOT the routing key, which
+	// is a per-message property and legitimately differs between senders). The
+	// bridge dedups senders by PublisherTopic() keeping the first (broker
+	// first-declare-wins); it compares this key to tell a legitimate identical
+	// re-declaration of an already-advertised exchange (stays silent) from a
+	// genuinely DIVERGENT one (logged as a misconfiguration — REV-2-topowarn).
+	// The comparison is transport-neutral: the bridge never reads adapter fields
+	// directly. A config that declares no publish-side topology returns "".
+	PublisherTopologyKey() string
 }
 
 // RawConfig is an opaque carrier for not-yet-decoded plugin options.

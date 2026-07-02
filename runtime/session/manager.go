@@ -27,6 +27,12 @@ const (
 	LeaseStateLost
 	LeaseStateSteppedDown
 	LeaseStateReleased
+	// LeaseStateReconcileFailed signals a reconcile-on-reconnect failure while
+	// the lease was still held and renewing. It is emitted INSTEAD OF
+	// LeaseStateLost so a subscription blip is never mis-observed as a lease
+	// loss/transfer; the session is surfaced to superviseSession for isolated
+	// restart (C7-N2). Appended last to keep the existing iota values stable.
+	LeaseStateReconcileFailed
 )
 
 // LeaseStateEvent is emitted whenever the lease state changes.

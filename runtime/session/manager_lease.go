@@ -12,6 +12,13 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
+// errLeaseLostAfterRenewal is the sentinel stepDown returns once consecutive
+// renewal failures cross MaxRenewFails. runExclusive/runExclusiveDeferred match
+// it with errors.Is to distinguish a GENUINE lease loss (re-acquire — a real
+// transfer) from any OTHER renewLoop exit, chiefly a reconcile-on-reconnect
+// failure that must not masquerade as a lease transfer (C7-N2).
+var errLeaseLostAfterRenewal = errors.New("lease lost after renewal failures")
+
 func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 	sessionStarted := false
 	iteration := 0
@@ -59,12 +66,12 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
-		m.pushLeaseEvent(LeaseStateLost, token, err)
-		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
-		m.mu.Lock()
-		m.hasLease = false
-		m.mu.Unlock()
+		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
+		// reconnect failure is surfaced for isolated restart instead of being
+		// relabelled as a lease transfer (C7-N2).
+		if m.afterRenewLoopExit(ctx, token, err) {
+			return err
+		}
 	}
 }
 
@@ -115,12 +122,12 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
-		m.pushLeaseEvent(LeaseStateLost, token, err)
-		m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
-		m.mu.Lock()
-		m.hasLease = false
-		m.mu.Unlock()
+		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
+		// reconnect failure is surfaced for isolated restart instead of being
+		// relabelled as a lease transfer (C7-N2).
+		if m.afterRenewLoopExit(ctx, token, err) {
+			return err
+		}
 	}
 }
 
@@ -293,5 +300,54 @@ func (m *Manager) stepDown(ctx context.Context) error {
 		}
 	}
 
-	return errors.New("lease lost after renewal failures")
+	return errLeaseLostAfterRenewal
+}
+
+// afterRenewLoopExit classifies renewLoop's non-ctx return and emits the
+// matching observability signal. It reports whether the caller must PROPAGATE
+// the error (return from Run) rather than re-acquire the lease.
+//
+//   - Genuine lease loss (stepDown crossed the renewal-failure threshold,
+//     errLeaseLostAfterRenewal): emit lease.lost + LeaseStateLost, clear
+//     hasLease, and return false so the caller re-acquires. This — and only
+//     this — is a real lease transfer (MetricLeaseTransfers on re-acquire).
+//
+//   - Reconcile-on-reconnect failure (any other non-nil err): the lease is
+//     still held and unexpired, so this is NOT a lease loss. Emit the DISTINCT
+//     LeaseStateReconcileFailed signal (never lease.lost / LeaseStateLost / a
+//     MetricLeaseTransfers-bearing re-acquire — MetricReconcileFailures was
+//     already emitted at the failure site) and return true so the caller
+//     surfaces the error to superviseSession for isolated restart, keeping
+//     lease-transfer observability uncontaminated (C7-N2). hasLease is cleared
+//     so a drainer does not act on a lease this failing session is no longer
+//     renewing during the restart window (fencing would reject it regardless).
+//
+// ponytail: bounded restart latency. renewLoop has stopped renewing, but the
+// lease is deliberately NOT released here, so superviseSession's restarted Run
+// re-acquires the SAME still-unexpired lease — which Acquire rejects (no
+// same-owner refresh path in either store) until it self-expires, bounding
+// recovery by leaseTTL measured from the last successful renewal. No data loss
+// (fencing + durable outbox retry preserve correctness) and not a regression:
+// main's prior in-loop re-acquire blocked identically. Upgrade path if faster
+// isolated recovery is wanted: release the lease here via a stepDown-style
+// close-source -> Release so the restart re-acquires immediately, traded
+// against added source close/reconnect churn on every reconcile blip.
+//
+// A clean events-closed exit (err == nil) keeps the pre-existing re-acquire
+// behaviour: it falls through to the lease-loss branch below.
+func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.LeaseToken, err error) bool {
+	if err != nil && !errors.Is(err, errLeaseLostAfterRenewal) {
+		m.pushLeaseEvent(LeaseStateReconcileFailed, token, err)
+		m.mu.Lock()
+		m.hasLease = false
+		m.mu.Unlock()
+		return true
+	}
+	m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
+	m.pushLeaseEvent(LeaseStateLost, token, err)
+	m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
+	m.mu.Lock()
+	m.hasLease = false
+	m.mu.Unlock()
+	return false
 }

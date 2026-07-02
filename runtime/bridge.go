@@ -292,6 +292,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	select {
 	case <-waitDone:
 	case <-ctx.Done():
+		// Pre-cancelled / early-expiring ctx: we stop waiting for background
+		// goroutines and proceed to close metrics/tracer below. A straggler
+		// (e.g. a drainer still finalising) may therefore emit a counter or span
+		// after its provider is closed. That is benign: OTel Counter/Start calls
+		// on a shut-down provider are no-ops and the SDK is concurrency-safe, so
+		// no panic, race, or corruption results (OTEL-N6).
 		errs = append(errs, ctx.Err())
 	}
 
@@ -337,8 +343,12 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 		// Close releases the exporter/provider; Flush alone does not shut the
-		// metric reader down. Bounded by the same flush budget (K2).
-		if err := metrics.Close(flushCtx); err != nil {
+		// metric reader down. Close under closeCtx — the same full-budget context
+		// the tracer Close uses below — NOT the halved flushCtx: a slow-but-
+		// successful Flush must not eat into Close's deadline and turn an
+		// otherwise-clean provider shutdown into a spurious ctx error on the Stop
+		// result (OTEL-N5, K2).
+		if err := metrics.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}

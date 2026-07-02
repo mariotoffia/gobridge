@@ -37,7 +37,7 @@ func TestHeadersToAttributes_PreservesBridgeToBridge_StripsInternalOnly(t *testi
 		messaging.HeaderDeduplicationID: "dup",     // native FIFO field → not an attribute
 	}
 
-	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 	require.Zero(t, dropped)
 
 	for _, k := range []string{
@@ -89,7 +89,7 @@ func TestHeadersToAttributes_PrioritizesBridgeToBridgeUnderCap(t *testing.T) {
 		headers[fmt.Sprintf("a%02d-app", i)] = "app"
 	}
 
-	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 
 	require.Len(t, attrs, sqsMaxMessageAttributes, "the cap must be filled exactly")
 	for _, k := range bridge {
@@ -148,7 +148,7 @@ func TestHeadersToAttributes_CapsAtMaxDeterministically(t *testing.T) {
 		headers[fmt.Sprintf("h%02d", i)] = "v"
 	}
 
-	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 	require.Len(t, attrs, sqsMaxMessageAttributes)
 	require.Equal(t, 10, dropped, "the 10 keys over the cap must be reported as dropped")
 
@@ -171,7 +171,7 @@ func TestHeadersToAttributes_SelectionStableAcrossRuns(t *testing.T) {
 
 	var first []string
 	for run := 0; run < 50; run++ {
-		attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes)
+		attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 		require.Len(t, attrs, sqsMaxMessageAttributes)
 		require.Equal(t, 20, dropped)
 
@@ -231,7 +231,7 @@ func TestHeadersToAttributes_DropsInvalidNames(t *testing.T) {
 		"slash/y":      "no",
 	}
 
-	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes)
+	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 	require.Zero(t, dropped, "name-invalid headers are skipped, not counted as cap drops")
 
 	_, ok := attrs["valid_name"]
@@ -271,7 +271,48 @@ func TestIsValidSQSAttributeName(t *testing.T) {
 }
 
 func TestHeadersToAttributes_ZeroBudget_ReturnsNil(t *testing.T) {
-	attrs, dropped := headersToAttributes(map[string]any{"a": "b"}, 0)
+	attrs, dropped := headersToAttributes(map[string]any{"a": "b"}, 0, 0)
 	assert.Nil(t, attrs)
 	assert.Zero(t, dropped)
+}
+
+// SQS-N1: SQS charges its 256 KiB ceiling against the message body AND
+// attributes together, so headersToAttributes seeds the size accumulator
+// with the body length. An attribute that fits on its own must still be
+// dropped (and counted) once the body has consumed the shared budget.
+func TestHeadersToAttributes_BodySharesSizeBudget(t *testing.T) {
+	headers := map[string]any{"keep-small": "v"}
+
+	// Body leaves only 4 bytes of the shared budget — less than the
+	// attribute needs — so the attribute is dropped and counted.
+	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, sqsMaxMessageBytes-4)
+	assert.Nil(t, attrs, "attribute must drop once the body consumes the shared 256 KiB budget")
+	assert.Equal(t, 1, dropped)
+
+	// Same header, empty body: proves the body size (not the header) forced
+	// the drop above.
+	attrs, dropped = headersToAttributes(headers, sqsMaxMessageAttributes, 0)
+	require.Len(t, attrs, 1)
+	assert.Zero(t, dropped)
+	_, ok := attrs["keep-small"]
+	assert.True(t, ok)
+}
+
+// SQS-N2: bool headers must survive egress as an SQS String attribute
+// ("true"/"false") rather than being silently skipped and uncounted.
+func TestHeadersToAttributes_BoolBecomesStringAttribute(t *testing.T) {
+	attrs, dropped := headersToAttributes(map[string]any{
+		"enabled":  true,
+		"disabled": false,
+	}, sqsMaxMessageAttributes, 0)
+	assert.Zero(t, dropped, "bool headers must not be dropped/uncounted")
+
+	for name, want := range map[string]string{"enabled": "true", "disabled": "false"} {
+		av, ok := attrs[name]
+		require.Truef(t, ok, "bool header %q must be carried as an attribute", name)
+		require.NotNil(t, av.DataType)
+		assert.Equalf(t, "String", *av.DataType, "bool %q must map to SQS String type", name)
+		require.NotNil(t, av.StringValue)
+		assert.Equalf(t, want, *av.StringValue, "bool %q serialisation", name)
+	}
 }

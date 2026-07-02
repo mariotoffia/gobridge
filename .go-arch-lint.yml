@@ -863,7 +863,10 @@ deps:
     mayDependOn: [domain_clock, domain_shared, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    mayDependOn: [domain_shared, ports]
+    # domain_clock: the instrument-limit reject-report throttle (N4) needs an
+    # injectable time source; forbidigo bans direct time.Now, so it reads the
+    # timestamp via domain/clock like every other timing-aware adapter.
+    mayDependOn: [domain_clock, domain_shared, ports]
     canUse: [otel]
   adapter_tracing_otel:
     mayDependOn: [domain_shared, ports]

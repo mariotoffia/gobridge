@@ -135,6 +135,8 @@ routes:
       drain_batch_size: 50
 ```
 
+> **Note on the SQS binding `address`.** The SQS sender is pinned to one queue via its `queue_url` or `queue_name`. The binding `address` may be the bare queue name (as here, `sensor-events`) or the full queue URL -- either form is matched to that bound queue rather than routing per message.
+
 ## Config Walkthrough
 
 ### `delivery_mode: shared_outbox`

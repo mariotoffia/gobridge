@@ -34,9 +34,15 @@ type Session struct {
 	connected bool // true when autopaho reports connection is up
 	starting  bool // guards against concurrent Start() calls (BUG-2 fix)
 
-	// reconcileMu serializes concurrent reconcile calls (e.g. external
-	// Reconcile vs OnConnectionUp callback) to prevent interleaved
-	// subscribe/unsubscribe operations from corrupting activeSubs.
+	// reconcileMu serializes concurrent Reconcile calls so their
+	// subscribe/unsubscribe operations cannot interleave and corrupt
+	// activeSubs (e.g. the SessionManager-driven reconcile on
+	// SessionConnected racing a rotation- or caller-triggered Reconcile).
+	// Per finding C7 the SessionManager is the single owner of
+	// reconciliation; OnConnectionUp (handleConnectionUp) does NOT
+	// reconcile inline — it only resets activeSubs and signals the
+	// manager — so it is intentionally not a holder of this mutex (see
+	// handleConnectionUp for why it must not block on it).
 	reconcileMu sync.Mutex
 
 	// router receives all incoming publishes; Receivers register handlers.
@@ -47,12 +53,6 @@ type Session struct {
 
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
-
-	// startCtx is a long-lived context derived from context.Background(),
-	// used to derive reconnect reconciliation contexts. It is cancelled
-	// by Close() via cmCancel, ensuring in-progress reconciliations are
-	// aborted on shutdown.
-	startCtx context.Context
 
 	// liveCreds is the most recently applied credential material. It is
 	// consulted by the ConnectPacketBuilder on every (re)connect so that

@@ -137,6 +137,24 @@ func (s *Session) Close(ctx context.Context) error {
 // compute an empty delta, and skip the re-subscribe — which, combined
 // with an inline reconcile that swallowed its own failure, could leave a
 // topic silently unsubscribed with no error surfaced (finding C7).
+//
+// Lock discipline (finding C7-N4 — analysed, deliberately deferred): this
+// callback takes ONLY s.mu for the activeSubs reset and MUST NOT acquire
+// reconcileMu. autopaho invokes OnConnectionUp synchronously on its sole
+// connection-management goroutine and documents that the callback "must
+// not block" (autopaho.ClientConfig.OnConnectionUp, auto.go). reconcileMu
+// is held by reconcile() for the entire duration of a network SUBSCRIBE /
+// UNSUBSCRIBE round-trip, so blocking on it here would stall that
+// goroutine — the owner of reconnect and error handling — on a network
+// call, violating the SDK contract and coupling liveness to paho's
+// in-flight-request teardown behaviour. The TOCTOU this guard would close
+// (a prior-connect reconcile writing stale subscriptions into activeSubs
+// after this reset) is a sub-microsecond, ephemeral-only window whose
+// worst case is a redundant re-subscribe or a Subscribe error that goes
+// terminal — never silent subscription loss (persistent/exclusive
+// sessions resume server-side, so a non-empty activeSubs is correct there
+// anyway). The deadlock/contract hazard therefore outweighs the benefit;
+// do NOT add reconcileMu here without revisiting the autopaho contract.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	s.connected = true

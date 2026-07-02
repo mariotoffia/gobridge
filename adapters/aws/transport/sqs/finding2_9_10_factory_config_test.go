@@ -95,6 +95,32 @@ func TestConfig_Validate_ResilienceKnobs(t *testing.T) {
 	})
 }
 
+// D2-FU2 — visibility_timeout is bounded by the SQS broker limit (0..12h).
+func TestConfig_Validate_VisibilityTimeoutBounds(t *testing.T) {
+	base := Config{QueueURL: "https://q"}
+
+	t.Run("zero_means_default_ok", func(t *testing.T) {
+		c := base
+		c.VisibilityTimeout = 0
+		require.NoError(t, c.Validate())
+	})
+	t.Run("max_12h_ok", func(t *testing.T) {
+		c := base
+		c.VisibilityTimeout = 43200
+		require.NoError(t, c.Validate())
+	})
+	t.Run("above_12h_rejected", func(t *testing.T) {
+		c := base
+		c.VisibilityTimeout = 43201
+		require.Error(t, c.Validate())
+	})
+	t.Run("negative_rejected", func(t *testing.T) {
+		c := base
+		c.VisibilityTimeout = -1
+		require.Error(t, c.Validate())
+	})
+}
+
 // Finding 2 — per-route visibility timeout, threaded into the validator.
 //
 // EffectiveVisibilityTimeout exposes the configured value (default 30s);
