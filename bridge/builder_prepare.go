@@ -330,13 +330,13 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 // carry the runtime knob.
 func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRuntimeOptions, error) {
 	if sc == nil {
-		return ports.OutboxRuntimeOptions{}, nil
+		return ports.OutboxRuntimeOptions{Metrics: b.metrics}, nil
 	}
 
 	if explicit, ok, err := explicitStaleClaimDuration(sc); err != nil {
 		return ports.OutboxRuntimeOptions{}, err
 	} else if ok {
-		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit}, nil
+		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit, Metrics: b.metrics}, nil
 	}
 
 	maxStepDownGrace := session.DefaultConfig("", true).StepDownGrace
@@ -356,6 +356,11 @@ func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRunti
 	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
 	return ports.OutboxRuntimeOptions{
 		StaleClaimDuration: maxStepDownGrace + staleClaimBuffer,
+		// Thread the builder's exporter (the same one handed to routes) so
+		// the DynamoDB outbox store emits shared.MetricOutboxClaimConflicts in
+		// production; nil when no exporter is configured (factory treats nil as
+		// no-op).
+		Metrics: b.metrics,
 	}, nil
 }
 

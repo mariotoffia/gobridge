@@ -505,7 +505,12 @@ func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
 		client := throttleKeyFromRequest(r)
 		if s.authThrottle.throttled(client) {
-			s.emitAudit(r, "auth.throttled", "admin", "", "failure", nil)
+			// Audit only the transition into throttling (first reject per
+			// window), not every rejected request — a brute-forcer must not be
+			// able to write audit records at request line-rate.
+			if s.authThrottle.shouldAuditThrottle(client) {
+				s.emitAudit(r, "auth.throttled", "admin", "", "failure", nil)
+			}
 			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
@@ -528,7 +533,12 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
 		client := throttleKeyFromRequest(r)
 		if s.authThrottle.throttled(client) {
-			s.emitAudit(r, "auth.throttled", "monitor", "", "failure", nil)
+			// Audit only the transition into throttling (first reject per
+			// window), not every rejected request — a brute-forcer must not be
+			// able to write audit records at request line-rate.
+			if s.authThrottle.shouldAuditThrottle(client) {
+				s.emitAudit(r, "auth.throttled", "monitor", "", "failure", nil)
+			}
 			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return

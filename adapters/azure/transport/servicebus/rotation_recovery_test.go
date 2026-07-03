@@ -347,6 +347,112 @@ func driveFakeClock(t *testing.T, fake *clocktest.Fake, guard time.Duration, con
 	}
 }
 
+// --- Regression: stale in-flight rebuild clobbers newer stack (NEW-DEFECT) --
+
+// A slow in-flight session rebuild of an OLDER connection must NOT
+// overwrite a newer committed stack when it finally completes. Exact
+// interleaving from the re-review: pending(conn1) → poll loop starts
+// building conn1 (blocked) → rotation conn2 lands successfully → unblock
+// conn1 build → its commit must be fenced (generation mismatch), the
+// stale stack discarded, and the receiver stays on conn2.
+func TestReceiver_SessionRebuild_StaleBuildDoesNotClobberNewer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		cs0 = "Endpoint=sb://ns0.servicebus.windows.net/;SharedAccessKeyName=k;SharedAccessKey=djA="
+		cs1 = "Endpoint=sb://ns1.servicebus.windows.net/;SharedAccessKeyName=k;SharedAccessKey=djE="
+		cs2 = "Endpoint=sb://ns2.servicebus.windows.net/;SharedAccessKeyName=k;SharedAccessKey=djI="
+	)
+
+	var (
+		mu         sync.Mutex
+		stacks     = map[string]*closeableASBClient{}
+		cs1FailNP  = true        // first cs1 build (rotation A) fails, no block
+		cs1Gate    chan struct{} // gate for the in-flight (poll-loop) cs1 build
+		cs1Started chan struct{} // closed once the gated cs1 build begins
+	)
+	readStack := func(key string) *closeableASBClient {
+		mu.Lock()
+		defer mu.Unlock()
+		return stacks[key]
+	}
+
+	build := func(_ context.Context, conn ConnectionConfig) (receiverStack, error) {
+		key := conn.ConnectionString.Reveal()
+		mu.Lock()
+		if key == cs1 {
+			if cs1FailNP {
+				cs1FailNP = false
+				mu.Unlock()
+				return receiverStack{}, errors.New("servicebus-test: cs1 first build fails")
+			}
+			gate, started := cs1Gate, cs1Started
+			mu.Unlock()
+			if started != nil {
+				close(started) // signal: captured gen, build began
+			}
+			if gate != nil {
+				<-gate // block: the slow in-flight rebuild of conn1
+			}
+			c := &closeableASBClient{}
+			mu.Lock()
+			stacks[cs1] = c
+			mu.Unlock()
+			return receiverStack{client: c}, nil
+		}
+		c := &closeableASBClient{}
+		stacks[key] = c
+		mu.Unlock()
+		return receiverStack{client: c}, nil
+	}
+
+	recv, err := NewReceiver(ReceiverConfig{
+		QueueName:  "q",
+		SessionID:  "s1",
+		Connection: ConnectionConfig{ConnectionString: shared.NewSecret(cs0)},
+	}, nil)
+	require.NoError(t, err)
+	recv.buildStackFn = build
+
+	ctx := context.Background()
+	require.NoError(t, recv.ensureClient(ctx)) // builds cs0
+	require.Same(t, readStack(cs0), recv.currentClient())
+
+	// Rotation A (→cs1): build fails, establishing pending(cs1) at gen 1.
+	require.Error(t, recv.ApplyCredentials(ctx, connectivity.NewCredentialSet(pwCred("", cs1), nil)))
+	require.True(t, rebuildPendingState(recv))
+	require.Equal(t, cs0, connSnapshot(recv).ConnectionString.Reveal(), "failed rebuild must not advance cfg.Connection")
+
+	// Arm the gate for the poll loop's in-flight rebuild of cs1.
+	mu.Lock()
+	cs1Gate = make(chan struct{})
+	cs1Started = make(chan struct{})
+	gate, started := cs1Gate, cs1Started
+	mu.Unlock()
+
+	// Poll loop's pending rebuild of cs1 (captures gen 1, then blocks).
+	rebuildDone := make(chan error, 1)
+	go func() { rebuildDone <- recv.rebuildPendingStack(ctx) }()
+	<-started // the cs1 rebuild has captured gen 1 and is blocked on the gate
+
+	// Rotation B (→cs2) lands successfully while the cs1 rebuild is stuck.
+	require.NoError(t, recv.ApplyCredentials(ctx, connectivity.NewCredentialSet(pwCred("", cs2), nil)))
+	require.False(t, rebuildPendingState(recv))
+	require.Equal(t, cs2, connSnapshot(recv).ConnectionString.Reveal())
+	require.Same(t, readStack(cs2), recv.currentClient(), "conn2 stack is live")
+
+	// Unblock the stale conn1 build: its commit must be fenced (gen 1 !=
+	// current gen 2), discarding the freshly built stack and leaving cs2.
+	close(gate)
+	require.NoError(t, <-rebuildDone)
+
+	require.Same(t, readStack(cs2), recv.currentClient(), "stale conn1 build must NOT clobber the conn2 stack")
+	require.Equal(t, cs2, connSnapshot(recv).ConnectionString.Reveal(), "cfg.Connection must stay on the newer conn2")
+	require.False(t, rebuildPendingState(recv), "no rebuild pending after the newer rotation committed")
+	require.Equal(t, int32(1), readStack(cs1).closeCalls.Load(), "the superseded conn1 stack is discarded (closed)")
+	require.Equal(t, int32(0), readStack(cs2).closeCalls.Load(), "the live conn2 stack is not closed")
+}
+
 // --- Regression: stale client pinned in session renewer (FIX 2) -------------
 
 // The session renewer must resolve the live receiver seam via

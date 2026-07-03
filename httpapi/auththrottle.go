@@ -38,6 +38,10 @@ type authThrottle struct {
 type authWindow struct {
 	windowStart time.Time
 	failures    int
+	// audited records whether the throttle-begin audit event has already been
+	// emitted for the current window, so repeated rejections while throttled do
+	// not flood the audit log (see shouldAuditThrottle).
+	audited bool
 }
 
 func newAuthThrottle(clk clock.Clock, limit int, window time.Duration) *authThrottle {
@@ -100,8 +104,36 @@ func (t *authThrottle) recordFailure(client string) {
 	if now.Sub(w.windowStart) >= t.window {
 		w.windowStart = now
 		w.failures = 0
+		w.audited = false
 	}
 	w.failures++
+}
+
+// shouldAuditThrottle reports whether a throttling rejection for this client
+// should emit an audit event, and marks the window as audited when it returns
+// true. To keep the operator signal without letting a brute-forcer write audit
+// records at request line-rate, it fires only ONCE per window — the moment
+// throttling begins for the client. A fresh window (rolled over by
+// recordFailure) re-arms the signal so a renewed burst is still observed. It
+// must be called only after throttled() has returned true.
+func (t *authThrottle) shouldAuditThrottle(client string) bool {
+	if t == nil {
+		return false
+	}
+	now := t.clk.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	w := t.clients[client]
+	if w == nil || now.Sub(w.windowStart) >= t.window {
+		// No active window: throttling is not actually in effect, so there is
+		// nothing to audit (throttled() would also have returned false).
+		return false
+	}
+	if w.audited {
+		return false
+	}
+	w.audited = true
+	return true
 }
 
 // recordSuccess clears any failure state for the client on a successful auth.

@@ -44,11 +44,22 @@ type LeaseStore interface {
 //
 // Claim ordering contract:
 //
-//   - Claim and QueryPending return records in per-partition persist order:
-//     ascending (CreatedAt, Seq), where Seq is a monotonic per-partition
-//     sequence the store assigns at Persist. Records persisted before the
-//     sequence existed carry Seq 0 and sort first within their CreatedAt
-//     millisecond, which preserves their relative age.
+//   - Claim returns records in per-partition persist order: ascending
+//     (CreatedAt, Seq), where Seq is a monotonic per-partition sequence the
+//     store assigns at Persist. Records persisted before the sequence existed
+//     carry Seq 0 and sort first within their CreatedAt millisecond, which
+//     preserves their relative age. Under a backlog deeper than `limit`, Claim
+//     SELECTS the oldest-N pending records (not an arbitrary subset), because
+//     per-partition send ordering depends on it.
+//   - QueryPending returns records ordered ascending (CreatedAt, Seq) WITHIN
+//     the returned set, but its SELECTION under a backlog deeper than `limit`
+//     is store-defined: it is a depth/preview query (the runtime uses it only
+//     to count pending records against MaxOutboxDepth), so a store MAY return
+//     the first `limit` records in its native scan order rather than the
+//     globally oldest-N. The in-memory and SQLite backends happen to select
+//     oldest-N (ORDER BY created_at, seq LIMIT); the DynamoDB backend selects
+//     in SK order for depth/preview to avoid read amplification. Callers that
+//     need oldest-N SELECTION must use Claim, never QueryPending.
 //   - Claim with limit <= 0 is a fencing no-op: it validates the token and
 //     advances the durable per-partition fencing high-water-mark exactly
 //     like an empty-partition claim, but claims and returns no records.
@@ -183,8 +194,15 @@ type DLQStore interface {
 // derived from the maximum session step-down grace and bounds how
 // long a claimed-but-not-completed outbox record waits before
 // another owner can reclaim it.
+//
+// Metrics is the runtime's MetricsExporter (the same one handed to
+// routes) so a store backend can emit store-level observability signals
+// such as MetricOutboxClaimConflicts. It is nil when the deployment
+// configured no exporter; factories MUST treat nil as "no metrics" and
+// substitute a no-op rather than dereferencing it.
 type OutboxRuntimeOptions struct {
 	StaleClaimDuration time.Duration
+	Metrics            MetricsExporter
 }
 
 // StoreFactory creates backing store instances (lease, outbox, DLQ)

@@ -52,7 +52,11 @@
 //     reconciliation has settled and every receiver has registered its
 //     filters) identifies its own topic as orphaned, and the adapter
 //     issues UNSUBSCRIBE for that exact topic (deduped per topic,
-//     rate-limited to one warn + one unsubscribe per topic). A wildcard
+//     rate-limited to one warn + one unsubscribe per topic), UNLESS a
+//     still-desired subscription (an active broker subscription or a filter
+//     in the current plan) covers the topic — in that case the receiver has
+//     merely not registered its handler yet, so the UNSUBSCRIBE is skipped
+//     (ack-and-drop still applies) to avoid killing a live route. A wildcard
 //     orphan subscription may survive the concrete-topic UNSUBSCRIBE, but
 //     its publishes keep being acked-and-dropped, so the stall cannot
 //     recur. The mechanism converges broker state without a

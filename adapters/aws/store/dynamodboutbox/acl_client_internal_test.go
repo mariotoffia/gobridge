@@ -428,6 +428,36 @@ func TestClaim_TransactionConflict_CountsMetricAndSkips(t *testing.T) {
 			t.Fatalf("a benign record-level lost race must not emit %s, got %d", shared.MetricOutboxClaimConflicts, got)
 		}
 	})
+
+	// The DynamoDBStoreFactory installs the runtime exporter by appending the
+	// PUBLIC WithMetrics option (not by touching the unexported field). Exercise
+	// that exact option path — apply WithMetrics(rec) as NewStore would — and
+	// assert a conflict is counted, so a regression in the option wiring is
+	// caught without a live DynamoDB.
+	t.Run("WithMetrics option (factory path) routes the conflict counter", func(t *testing.T) {
+		f := newFakeDDB()
+		f.getItemFn = fenceGetItem("5")
+		f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+				pendingQueryItem("PART#opt", "OUTBOX#env-1#bind-1", "rec-1"),
+			}}, nil
+		}
+		f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, transactCanceled("None", "TransactionConflict")
+		}
+		rec := &ports.RecordingExporter{}
+		s := newFakeStore(f)
+		// Route through the exported option, exactly as the factory does via
+		// dynamodboutbox.NewStore(client, WithMetrics(runtime.Metrics)).
+		WithMetrics(rec)(s)
+
+		if _, err := s.Claim(context.Background(), "PART#opt", persistence.LeaseToken{Version: 5, Owner: "a"}, 10); err != nil {
+			t.Fatalf("transaction conflict must not error: %v", err)
+		}
+		if got := len(rec.FindEntries(shared.MetricOutboxClaimConflicts)); got != 1 {
+			t.Fatalf("WithMetrics option must route the conflict counter to the exporter, got %d", got)
+		}
+	})
 }
 
 // Every per-record claim must pair the record update with a ConditionCheck

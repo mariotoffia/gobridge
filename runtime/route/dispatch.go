@@ -436,7 +436,17 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 		r.emitDLQ("rejected")
 		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
-	return r.retryOrFallback(ctx, del, env, 0, err)
+	// Transient (or unknown-so-recoverable) resolve error. Apply the same
+	// replay-cap gate as handleProcessorError: a deterministically-failing
+	// resolver (e.g. a persistently unreachable locator) would otherwise retry
+	// forever, and previously re-dispatched with ZERO delay — an immediate hot
+	// loop. At or above MaxReplayAttempts, poison terminally; below the cap,
+	// retry with the policy's bounded backoff instead of zero.
+	rc := receiveCount(env)
+	if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+		return r.poisonReplayCapExceeded(ctx, del, env, rc, err, "max_retries")
+	}
+	return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, rc+1, err), err)
 }
 
 // retryOrFallback attempts del.Retry; if the source transport does not

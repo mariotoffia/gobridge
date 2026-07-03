@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -16,10 +17,19 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// redriveTimeout bounds the detached claim→inject→restore sequence for a single
-// redrive batch so a stuck inject or store cannot hang the handler forever once
-// the request context is severed from cancellation.
+// redriveTimeout bounds the detached claim→inject sequence for a full redrive
+// batch so a stuck inject or store cannot hang the handler forever once the
+// request context is severed from cancellation.
 const redriveTimeout = 30 * time.Second
+
+// redriveRestoreTimeout bounds a SINGLE best-effort restore of a claimed entry
+// after a failed inject. It is deliberately its own short budget, freshly
+// derived per restore and independent of the per-batch redriveTimeout: a batch
+// that exhausts (or nearly exhausts) its budget mid-loop would otherwise fail
+// the restore on the same expired context and permanently lose the claimed
+// (already-deleted) entry. A fresh detached context guarantees the restore
+// always gets a real chance to run.
+const redriveRestoreTimeout = 10 * time.Second
 
 // bindingInjector is the optional capability a Runtime exposes for
 // binding-scoped synthetic injection. The concrete runtime implements
@@ -39,10 +49,20 @@ type bindingInjector interface {
 // strips x-bridge.route-override at ingress before any consumption site reads
 // it, which is exactly the security property that keeps external messages from
 // steering routing.
-func injectRedrive(ctx context.Context, rt ports.RuntimeCommand, routeID, bindingID string, env *messaging.Envelope) error {
+func injectRedrive(ctx context.Context, logger *slog.Logger, rt ports.RuntimeCommand, routeID, bindingID string, env *messaging.Envelope) error {
 	if bindingID != "" {
 		if bi, ok := rt.(bindingInjector); ok {
 			return bi.InjectToBinding(ctx, routeID, bindingID, env)
+		}
+		// The entry recorded a specific failed binding, but this runtime does
+		// not implement binding-scoped injection. Falling back to a plain Inject
+		// fans the replay out to ALL bindings on the route, re-delivering to the
+		// N-1 healthy destinations — the exact duplicate-delivery hazard the
+		// binding-scoped path exists to prevent. Surface the degradation at Warn
+		// so an operator can see why a supposedly-confined redrive fanned out.
+		if logger != nil {
+			logger.Warn("dlq redrive: runtime lacks binding-scoped injection; replay will fan out to all bindings",
+				"route_id", routeID, "binding_id", bindingID)
 		}
 	}
 	return rt.Inject(ctx, routeID, env)
@@ -374,15 +394,22 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		// the N-1 healthy bindings on a fan-out route do not receive duplicate
 		// deliveries. Snapshot returns a fresh deep copy.
 		env := entry.Snapshot()
-		if err := injectRedrive(opCtx, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
+		if err := injectRedrive(opCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
 			msg := "inject failed"
 			if errors.Is(err, shared.ErrNotFound) {
 				msg = "route not found"
 			}
 			// Inject failed after we claimed the entry: best-effort restore so
-			// the failure evidence is not lost. If restore itself fails, flag
+			// the failure evidence is not lost. The restore runs under its OWN
+			// fresh detached context (context.WithoutCancel + a short timeout),
+			// NOT the per-batch opCtx: a batch that exhausted its budget mid-loop
+			// would otherwise fail this restore on the same expired context and
+			// permanently drop the claimed entry. If restore still fails, flag
 			// the entry as dropped so the operator can investigate.
-			if restoreErr := admin.Write(opCtx, entry); restoreErr != nil {
+			restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveRestoreTimeout)
+			restoreErr := admin.Write(restoreCtx, entry)
+			restoreCancel()
+			if restoreErr != nil {
 				msg += " (entry lost: restore failed)"
 			}
 			redriveErrors = append(redriveErrors, redriveError{

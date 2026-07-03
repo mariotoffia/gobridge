@@ -317,3 +317,103 @@ func TestOrphan_SessionWiring_UnsubscribesExactTopic(t *testing.T) {
 
 	require.NoError(t, sess.Close(context.Background()))
 }
+
+// topicCoveredLocked is the guard that stops the orphan-unsubscribe from
+// killing a legitimate route whose handler simply registers late. It must
+// match a concrete publish topic against the FILTERS the session still
+// wants (active broker subs + plan), including wildcards — so wildcard
+// coverage is by design, not by accident.
+func TestSession_TopicCoveredLocked(t *testing.T) {
+	sess := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "cov",
+	}, connectivity.SessionPersistent, nil)
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	// Nothing configured yet: every unmatched topic is a genuine orphan.
+	require.False(t, sess.topicCoveredLocked("a/b"))
+
+	// Active broker subscription (wildcard) covers a concrete topic.
+	sess.activeSubs["sensors/+/temp"] = 1
+	require.True(t, sess.topicCoveredLocked("sensors/kitchen/temp"),
+		"a wildcard active subscription covers the concrete topic")
+	require.False(t, sess.topicCoveredLocked("actuators/kitchen/set"))
+
+	// Desired plan filter (wildcard) covers even before it is re-subscribed
+	// (activeSubs is reset on every reconnect; the plan is not).
+	sess.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "actuators/#", QoS: 1}},
+	}
+	require.True(t, sess.topicCoveredLocked("actuators/kitchen/set"),
+		"a desired plan filter covers the concrete topic")
+	require.False(t, sess.topicCoveredLocked("removed/route/1"),
+		"a topic covered by neither active subs nor the plan is a true orphan")
+}
+
+// NEW-DEFECT regression: a topic COVERED by a still-desired subscription
+// whose handler registers later than the grace window must be
+// acked-and-dropped (unavoidable, the broker already acked) but NEVER
+// unsubscribed — unsubscribing would silently kill a live route until the
+// next reconcile. A genuine orphan on a different topic is still
+// unsubscribed. The single FIFO unsubscribe worker orders the covered topic
+// before the orphan, giving a deterministic "already handled" barrier.
+func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testing.T) {
+	clk := testClock()
+	rec := &ports.RecordingExporter{}
+	sess := NewSession(SessionOptions{
+		BrokerURLs:     []string{"tcp://192.0.2.1:1883"},
+		ClientID:       "covered-guard",
+		UnmatchedGrace: testGrace,
+		Clock:          clk,
+	}, connectivity.SessionPersistent, nil, rec)
+
+	fake := &recordingUnsubConn{}
+	sess.mu.Lock()
+	sess.cm = fake
+	// The desired plan still wants sensors/temp; its receiver has just not
+	// registered its handler on the router yet (Start→Reconcile→Run lag).
+	sess.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/temp", QoS: 1}},
+	}
+	sess.mu.Unlock()
+
+	sess.handleConnectionUp() // arms grace (also resets activeSubs)
+	clk.Advance(testGrace + time.Second)
+
+	// Covered topic first, then a genuine orphan on a different topic. The
+	// single FIFO grace worker processes the covered one (skip) before the
+	// orphan (unsubscribe), so the orphan appearing is proof the covered
+	// topic was already handled.
+	sess.Router().dispatch(&pahov5.Publish{Topic: "sensors/temp", QoS: 1, Payload: []byte("21")},
+		func() error { return nil })
+	sess.Router().dispatch(&pahov5.Publish{Topic: "removed/route/1", QoS: 1, Payload: []byte("x")},
+		func() error { return nil })
+
+	require.Eventually(t, func() bool {
+		for _, tp := range fake.unsubscribed() {
+			if tp == "removed/route/1" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond, "the true orphan must be unsubscribed")
+
+	require.Equal(t, []string{"removed/route/1"}, fake.unsubscribed(),
+		"the covered topic must NOT be unsubscribed; only the true orphan is")
+	require.Equal(t, int64(2), sess.Router().UnmatchedDroppedCount(),
+		"both publishes are acked-and-dropped (the covered one unrecoverably, per protocol)")
+
+	// The still-live route works once its handler registers: subsequent
+	// publishes are delivered rather than dropped — proof it was not killed.
+	got := make(chan string, 1)
+	sess.Router().RegisterFiltered("rx", []string{"sensors/temp"},
+		func(pub *pahov5.Publish, ack func() error) { _ = ack(); got <- pub.Topic })
+	sess.Router().dispatch(&pahov5.Publish{Topic: "sensors/temp", QoS: 1, Payload: []byte("22")},
+		func() error { return nil })
+	require.Equal(t, "sensors/temp", <-got,
+		"the covered route still delivers after the handler registers (route not killed)")
+
+	require.NoError(t, sess.Close(context.Background()))
+}

@@ -73,6 +73,14 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, cfg ports.Plugi
 	if dc.CompactionGrace > 0 {
 		opts = append(opts, dynamodboutbox.WithCompactionGrace(dc.CompactionGrace))
 	}
+	// Thread the runtime exporter so store-level counters (e.g.
+	// shared.MetricOutboxClaimConflicts) are actually emitted in
+	// config-driven deployments. A nil exporter leaves the store's default
+	// no-op meter in place (WithMetrics ignores nil), so this never installs
+	// a dereferenceable-nil exporter.
+	if runtime.Metrics != nil {
+		opts = append(opts, dynamodboutbox.WithMetrics(runtime.Metrics))
+	}
 	return dynamodboutbox.NewStore(f.client, opts...), nil
 }
 

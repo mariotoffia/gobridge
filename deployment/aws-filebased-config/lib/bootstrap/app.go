@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -154,6 +156,25 @@ type App struct {
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
 	started bool
+
+	// lastAppliedFingerprint is the canonical content hash (see
+	// configFingerprint) of the last config that applyLogicalConfig applied
+	// successfully. It makes reloads idempotent: the poll watcher re-emits a
+	// config after every on-disk change — including the admin-commit write
+	// that applyCommittedConfig already applied in-band — and a blind
+	// re-apply would trigger a SECOND full stop→rebuild→start swap (and, in
+	// prepare/commit mode, a second exposure to the swap-failure→wedge path)
+	// seconds after the first, on every commit. Guarded by mu (every apply
+	// path holds mu), so no atomic is needed.
+	lastAppliedFingerprint string
+
+	// onRuntimeInstalled and onReloadSkipped are test seams (nil in
+	// production). onRuntimeInstalled fires on every successful runtime
+	// install (swap); onReloadSkipped fires when applyLogicalIfChanged
+	// recognises an already-applied config and skips the rebuild. Tests use
+	// them to assert exactly one rebuild per admin commit.
+	onRuntimeInstalled func()
+	onReloadSkipped    func()
 }
 
 func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
@@ -248,7 +269,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.logicalRef.Set(logicalCfg)
 
-	if err := a.applyLogicalConfig(ctx, logicalCfg); err != nil {
+	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
 		return err
 	}
 
@@ -500,11 +521,19 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 
 			// Serialize config reloads to prevent concurrent
 			// applyLogicalConfig calls from racing on runtime swap.
+			// applyLogicalIfChanged skips the rebuild when the emitted
+			// config is byte-identical (canonically) to the running one —
+			// e.g. the poll watcher re-emitting the admin-commit write that
+			// applyCommittedConfig already applied in-band — so an admin
+			// commit costs exactly one runtime swap, not two.
 			a.mu.Lock()
-			err := a.applyLogicalConfig(ctx, logicalCfg)
+			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
 			a.mu.Unlock()
-			if err != nil {
+			switch {
+			case err != nil:
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
+			case skipped:
+				a.logger.Debug("bootstrap: config reload matches the running config (already applied in-band); skipping redundant runtime swap")
 			}
 		}
 	}
@@ -698,6 +727,9 @@ func (a *App) installPlan(plan *runtimePlan) {
 	a.appliedRef.Set(plan.logical)
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
+	if a.onRuntimeInstalled != nil {
+		a.onRuntimeInstalled()
+	}
 }
 
 // applyCommittedConfig is the httpapi ConfigApplier hook. It converges the
@@ -705,14 +737,93 @@ func (a *App) installPlan(plan *runtimePlan) {
 // driving the same reload path the file watcher uses (applyLogicalConfig),
 // serialized under mu against watchLoop's reloads. httpapi calls it after the
 // durable write, so a returned error is surfaced as committed_not_applied
-// (disk and runtime diverged; the operator reconciles). The subsequent file
-// watcher poll observes the same on-disk version and re-applies idempotently.
+// (disk and runtime diverged; the operator reconciles).
+//
+// The commit's durable write changes the on-disk content hash, so the poll
+// watcher re-emits the same config on its next tick. applyLogicalIfChanged
+// records this config's fingerprint here, so that re-emit is recognised as
+// already-applied and SKIPPED — avoiding a second, redundant stop→rebuild→start
+// swap (and a second exposure to the swap-failure→wedge path) seconds after
+// this one. If the watcher happens to win the race and apply the committed
+// config first, applyLogicalIfChanged short-circuits here instead: either way
+// a commit costs exactly one runtime swap.
 func (a *App) applyCommittedConfig(ctx context.Context, cfg *ports.BridgeConfig) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.logicalRef.Set(cfg)
-	if err := a.applyLogicalConfig(ctx, cfg); err != nil {
+	if _, err := a.applyLogicalIfChanged(ctx, cfg, false); err != nil {
 		return fmt.Errorf("bootstrap: apply committed config: %w", err)
 	}
 	return nil
+}
+
+// applyLogicalIfChanged applies logical unless it is byte-identical (in
+// canonical wire form) to the last successfully-applied config, in which case
+// it is a no-op that returns skipped=true. This makes reloads idempotent so a
+// config re-emitted by the poll watcher (which fires after every on-disk
+// change, including the admin-commit write applyCommittedConfig already applied
+// in-band) does not trigger a second, redundant stop→rebuild→start swap.
+//
+// Caller MUST hold a.mu. parsed indicates logical is already in the watcher's
+// parsed form (see parsedFingerprint). The fingerprint is recorded only on a
+// successful apply, so a rejected reload does not suppress a later retry of the
+// same bytes once the underlying problem is fixed.
+func (a *App) applyLogicalIfChanged(ctx context.Context, logical *ports.BridgeConfig, parsed bool) (bool, error) {
+	fp := a.parsedFingerprint(logical, parsed)
+	if fp != "" && fp == a.lastAppliedFingerprint {
+		if a.onReloadSkipped != nil {
+			a.onReloadSkipped()
+		}
+		return true, nil
+	}
+	if err := a.applyLogicalConfig(ctx, logical); err != nil {
+		return false, err
+	}
+	if fp != "" {
+		a.lastAppliedFingerprint = fp
+	}
+	return false, nil
+}
+
+// parsedFingerprint computes the fingerprint of cfg as the poll watcher
+// observes it — i.e. after a parse round-trip. The watcher always emits parsed
+// configs, so a config already in parsed form (parsed=true: from the watcher,
+// manager.Load, or a prior reload) is fingerprinted directly. The in-band
+// commit path passes the in-memory merged config (parsed=false); it is
+// canonicalised through cloneBridgeConfig — Parse(MarshalYAML(cfg)) — so its
+// fingerprint matches the parsed form the watcher re-emits from the identical
+// on-disk projection (FileStore.Save writes MarshalYAML(cfg); the watcher
+// parses those exact bytes). No parse∘marshal fixed-point is assumed: both
+// sides fingerprint Parse(MarshalYAML(cfg)). Returns "" when the fingerprint
+// cannot be computed, which fails open (the config is applied, not skipped).
+func (a *App) parsedFingerprint(cfg *ports.BridgeConfig, parsed bool) string {
+	canonical := cfg
+	if !parsed {
+		clone, err := cloneBridgeConfig(cfg, a.pluginRegistry)
+		if err != nil || clone == nil {
+			return ""
+		}
+		canonical = clone
+	}
+	fp, err := configFingerprint(canonical)
+	if err != nil {
+		return ""
+	}
+	return fp
+}
+
+// configFingerprint returns a stable content hash of cfg in its canonical wire
+// form. Two configs with the same fingerprint marshal to identical bytes, so
+// re-applying one over the other is a genuine no-op — the basis for skipping
+// the poll watcher's re-emit of a config already applied.
+func configFingerprint(cfg *ports.BridgeConfig) (string, error) {
+	if cfg == nil {
+		return "", nil
+	}
+	data, err := cfgparser.MarshalYAML(cfg)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap: fingerprint config: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

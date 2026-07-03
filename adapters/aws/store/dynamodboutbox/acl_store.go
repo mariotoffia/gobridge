@@ -1008,9 +1008,30 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 	return count, nil
 }
 
-// QueryPending returns pending records for the given partition key, ordered
-// by creation time (oldest first). Uses strongly consistent reads and
-// paginates past DynamoDB's Limit+Filter interaction.
+// QueryPending returns up to `limit` pending records for the given partition
+// key, ordered oldest-first — ascending (CreatedAt, Seq) — WITHIN the returned
+// set, using strongly consistent reads and paginating past DynamoDB's
+// Limit+Filter interaction.
+//
+// SELECTION semantics (count/preview, NOT oldest-N): DynamoDB Query returns
+// items in SK order (OUTBOX#<envelope_id>#… — lexicographic by envelope ID,
+// unrelated to record age). When a partition holds MORE than `limit` pending
+// records this method collects the first `limit` items DynamoDB yields (SK
+// order) and then sorts THAT subset oldest-first, so the returned set is NOT
+// guaranteed to be the globally oldest-N — only internally age-ordered. This
+// is deliberate: the sole runtime caller counts pending records against
+// MaxOutboxDepth (runtime/route/dispatch.go), where only the COUNT matters and
+// the identity of the sampled records is immaterial, so QueryPending avoids the
+// read amplification of a Claim-style candidate window.
+//
+// Claim, by contrast, DOES select the oldest-N (it gathers a bounded candidate
+// window and sorts before claiming) because per-partition send ordering depends
+// on it. Callers that need oldest-N SELECTION must use Claim, not QueryPending.
+//
+// ponytail: if a future caller needs oldest-N selection here, give QueryPending
+// the same candidate-window treatment as Claim, or add a created_at range key /
+// per-partition GSI so the Query returns age-ordered items directly (which
+// would let both methods drop the client-side sort).
 func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: query_pending", "partition_key", partitionKey, "limit", limit)

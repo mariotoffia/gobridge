@@ -216,8 +216,9 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 	if sessionMode {
 		// Exclusive session semantics: close the old link before the
 		// rebuild, recording the target as pending WITHOUT committing
-		// cfg.Connection.
-		old := r.beginSessionRebuild(newConn)
+		// cfg.Connection. beginSessionRebuild returns the generation so
+		// the commit can be fenced against a newer rotation.
+		old, gen := r.beginSessionRebuild(newConn)
 		old.close(ctx)
 
 		stack, err := r.build(ctx, newConn)
@@ -229,8 +230,15 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 			return fmt.Errorf("servicebus: rebuild session receiver stack for %q: %w", r.entityName(), err)
 		}
 
-		old = r.commitStack(stack, newConn)
-		old.close(ctx)
+		toClose, applied := r.commitRebuild(gen, stack, newConn)
+		toClose.close(ctx)
+		if !applied {
+			// A newer rotation superseded this build while it ran; the
+			// freshly built stack was closed above and the newer stack is
+			// live. Report success — the rotation intent was satisfied by
+			// the newer connection.
+			return nil
+		}
 
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug,

@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,6 +174,36 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	assert.Len(t, remaining, 1, "failed-inject entry must be restored to the DLQ")
 }
 
+// TestHandleDLQRedrive_FailedInject_RestoresDespiteCancelledRequest guards the
+// detached-restore invariant: the best-effort restore after a failed inject runs
+// under its OWN fresh, cancellation-immune context (context.WithoutCancel + a
+// short timeout), independent of the request context AND of the per-batch
+// budget. An operator disconnect mid-batch (or a batch that has exhausted its
+// budget) must therefore NOT lose the claimed (already-deleted) entry.
+func TestHandleDLQRedrive_FailedInject_RestoresDespiteCancelledRequest(t *testing.T) {
+	mux, dlq, _ := redriveSetup(t)
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
+		ID: "e1", RouteID: "nonexistent-route",
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
+		FailedAt: time.Now(),
+	}))
+
+	// Request context is already cancelled before the handler runs, simulating
+	// an operator who disconnected mid-batch.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := redriveReq(`{"ids":["e1"]}`).WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	// The inject still fails (route not found), and the restore still runs on a
+	// detached context, so the claimed entry is returned to the DLQ rather than
+	// permanently lost.
+	remaining, _ := dlq.List(context.Background(), routing.DLQFilter{})
+	assert.Len(t, remaining, 1, "claimed entry must be restored even when the request context is cancelled")
+}
+
 // TestHandleDLQRedrive_RetryDoesNotDoubleInject validates the claim-before-
 // inject ordering: a second (retried) redrive of already-redriven IDs finds
 // them gone and does NOT re-inject, matching the at-least-once/no-double-replay
@@ -258,4 +291,145 @@ func TestHandleDLQRedrive_AllFailed(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, float64(0), body["redriven"])
 	assert.Equal(t, float64(2), body["failed"])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Binding-scoped redrive threading (FIX 1 residual)
+//
+// injectRedrive must carry a DLQ entry's BindingID out-of-band into
+// Runtime.InjectToBinding so a redrive of one failed leg of a fan-out
+// route does not re-deliver to the N-1 healthy bindings. These tests
+// pin that threading at the HTTP layer: a silent revert of injectRedrive
+// back to a plain Inject would fail them.
+// ═══════════════════════════════════════════════════════════════════
+
+// recordingBindingInjectorRuntime wraps a real ports.Runtime (for DLQ
+// read/admin access) and records Inject / InjectToBinding calls. Because it
+// exposes InjectToBinding, injectRedrive's type-assertion to bindingInjector
+// succeeds and a binding-scoped entry takes the confined path.
+type recordingBindingInjectorRuntime struct {
+	ports.Runtime
+	mu           sync.Mutex
+	injectRoutes []string
+	bindingCalls []bindingInjectCall
+}
+
+type bindingInjectCall struct {
+	routeID   string
+	bindingID string
+}
+
+func (r *recordingBindingInjectorRuntime) Inject(_ context.Context, routeID string, _ *messaging.Envelope) error {
+	r.mu.Lock()
+	r.injectRoutes = append(r.injectRoutes, routeID)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *recordingBindingInjectorRuntime) InjectToBinding(_ context.Context, routeID, bindingID string, _ *messaging.Envelope) error {
+	r.mu.Lock()
+	r.bindingCalls = append(r.bindingCalls, bindingInjectCall{routeID: routeID, bindingID: bindingID})
+	r.mu.Unlock()
+	return nil
+}
+
+func newRecordingRedriveServer(t *testing.T) (*http.ServeMux, *memorydlq.Store, *recordingBindingInjectorRuntime) {
+	t.Helper()
+	dlq := memorydlq.NewStore()
+	base := runtime.New(
+		runtime.WithInstanceID("redrive-binding-test"),
+		runtime.WithDLQStore(dlq),
+	)
+	rec := &recordingBindingInjectorRuntime{Runtime: base}
+	s := New(rec, testConfig())
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+	return mux, dlq, rec
+}
+
+// TestHandleDLQRedrive_ThreadsBindingIDIntoInjectToBinding asserts an entry
+// carrying a BindingID is redriven via InjectToBinding with that EXACT binding,
+// while an entry without one takes plain Inject.
+func TestHandleDLQRedrive_ThreadsBindingIDIntoInjectToBinding(t *testing.T) {
+	mux, dlq, rec := newRecordingRedriveServer(t)
+	seedDLQ(t, dlq,
+		routing.NewDLQEntry(routing.DLQEntrySpec{
+			ID: "with-binding", RouteID: "fanout-route", BindingID: "binding-A",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
+			FailedAt: time.Now(),
+		}),
+		routing.NewDLQEntry(routing.DLQEntrySpec{
+			ID: "no-binding", RouteID: "simple-route",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s2"}),
+			FailedAt: time.Now(),
+		}),
+	)
+
+	out := httptest.NewRecorder()
+	mux.ServeHTTP(out, redriveReq(`{"ids":["with-binding","no-binding"]}`))
+	require.Equal(t, http.StatusOK, out.Code)
+
+	// The binding-scoped entry must go through InjectToBinding with its exact
+	// BindingID — NOT plain Inject (which would fan out to all bindings).
+	require.Len(t, rec.bindingCalls, 1, "binding-scoped entry must use InjectToBinding")
+	assert.Equal(t, "fanout-route", rec.bindingCalls[0].routeID)
+	assert.Equal(t, "binding-A", rec.bindingCalls[0].bindingID)
+
+	// The entry without a binding must take plain Inject.
+	require.Len(t, rec.injectRoutes, 1, "entry without a binding must use plain Inject")
+	assert.Equal(t, "simple-route", rec.injectRoutes[0])
+}
+
+// recordingInjectOnlyRuntime wraps a real ports.Runtime but deliberately does
+// NOT implement InjectToBinding, so injectRedrive falls back to a fan-out
+// Inject when an entry carries a binding.
+type recordingInjectOnlyRuntime struct {
+	ports.Runtime
+	mu           sync.Mutex
+	injectRoutes []string
+}
+
+func (r *recordingInjectOnlyRuntime) Inject(_ context.Context, routeID string, _ *messaging.Envelope) error {
+	r.mu.Lock()
+	r.injectRoutes = append(r.injectRoutes, routeID)
+	r.mu.Unlock()
+	return nil
+}
+
+// TestHandleDLQRedrive_FanoutFallback_LogsWarnWhenBindingScopeUnavailable pins
+// the visibility guarantee: when the runtime cannot confine a replay to a single
+// binding but the entry HAS one, the redrive falls back to a fan-out Inject and
+// that confinement loss is logged at Warn.
+func TestHandleDLQRedrive_FanoutFallback_LogsWarnWhenBindingScopeUnavailable(t *testing.T) {
+	dlq := memorydlq.NewStore()
+	base := runtime.New(
+		runtime.WithInstanceID("redrive-nobinding-test"),
+		runtime.WithDLQStore(dlq),
+	)
+	rt := &recordingInjectOnlyRuntime{Runtime: base}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	s := New(rt, testConfig(), WithServerLogger(logger))
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
+		ID: "e1", RouteID: "some-route", BindingID: "binding-A",
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
+		FailedAt: time.Now(),
+	}))
+
+	out := httptest.NewRecorder()
+	mux.ServeHTTP(out, redriveReq(`{"ids":["e1"]}`))
+	require.Equal(t, http.StatusOK, out.Code)
+
+	// Fell back to a fan-out Inject (binding dropped) ...
+	require.Len(t, rt.injectRoutes, 1)
+	assert.Equal(t, "some-route", rt.injectRoutes[0])
+
+	// ... and the confinement loss is visible in the logs.
+	logOut := buf.String()
+	assert.Contains(t, logOut, "runtime lacks binding-scoped injection")
+	assert.Contains(t, logOut, "binding-A")
 }

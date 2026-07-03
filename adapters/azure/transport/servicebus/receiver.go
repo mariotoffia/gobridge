@@ -45,9 +45,14 @@ type Receiver struct {
 	asbClient *asbClientHandle
 	// pendingConn holds the connection a deferred session-mode rebuild
 	// must use; rebuildPending reports whether such a rebuild is
-	// outstanding. Both are guarded by initMu.
+	// outstanding. rebuildGen is bumped by beginSessionRebuild to fence
+	// stale builds: a build that started for an earlier generation must
+	// not clobber a newer committed stack (last-writer-wins hazard when a
+	// slow rebuild races a newer rotation). All three are guarded by
+	// initMu.
 	pendingConn    ConnectionConfig
 	rebuildPending bool
+	rebuildGen     uint64
 	// buildStackFn overrides buildStack for tests that need to simulate
 	// build failures/successes deterministically; nil in production.
 	buildStackFn func(context.Context, ConnectionConfig) (receiverStack, error)
@@ -173,9 +178,11 @@ func (r *Receiver) commitStack(next receiverStack, conn ConnectionConfig) receiv
 // session-mode rotation: it swaps in an EMPTY stack, records conn as
 // the pending rebuild target WITHOUT committing cfg.Connection, and
 // marks rebuildPending so a later re-push of the same credentials is
-// not short-circuited and the poll loop can retry the build. Returns
-// the previous stack for the caller to close OUTSIDE the lock.
-func (r *Receiver) beginSessionRebuild(conn ConnectionConfig) receiverStack {
+// not short-circuited and the poll loop can retry the build. It bumps
+// rebuildGen and returns the new generation so the eventual commit can
+// detect a newer rotation that superseded it. Returns the previous
+// stack for the caller to close OUTSIDE the lock.
+func (r *Receiver) beginSessionRebuild(conn ConnectionConfig) (receiverStack, uint64) {
 	r.initMu.Lock()
 	defer r.initMu.Unlock()
 	old := receiverStack{client: r.client, scheduler: r.scheduler, handle: r.asbClient}
@@ -184,7 +191,41 @@ func (r *Receiver) beginSessionRebuild(conn ConnectionConfig) receiverStack {
 	r.asbClient = nil
 	r.rebuildPending = true
 	r.pendingConn = conn
-	return old
+	r.rebuildGen++
+	return old, r.rebuildGen
+}
+
+// commitRebuild installs next and commits conn IFF the rebuild
+// generation is still gen — i.e. no newer beginSessionRebuild
+// superseded this build while it ran. This fences the last-writer-wins
+// hazard where a slow rebuild of an OLDER connection completes after a
+// newer rotation already committed, which would otherwise overwrite the
+// newer stack and roll cfg.Connection back to stale credentials.
+//
+// Because a generation maps 1:1 to a single beginSessionRebuild(conn)
+// (both set under the same lock), every builder that captured gen G
+// targets the SAME conn, so a same-generation double-commit is benign
+// (converges to conn, the redundant stack is closed).
+//
+// Returns (stackToClose, applied): when applied, stackToClose is the
+// previous live stack; when superseded, stackToClose is next itself, so
+// the caller closes the discarded build. Either way the caller closes
+// the returned stack OUTSIDE the lock.
+func (r *Receiver) commitRebuild(gen uint64, next receiverStack, conn ConnectionConfig) (receiverStack, bool) {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	if r.rebuildGen != gen {
+		// A newer rotation superseded this build; discard it.
+		return next, false
+	}
+	old := receiverStack{client: r.client, scheduler: r.scheduler, handle: r.asbClient}
+	r.client = next.client
+	r.scheduler = next.scheduler
+	r.asbClient = next.handle
+	r.cfg.Connection = conn
+	r.rebuildPending = false
+	r.pendingConn = ConnectionConfig{}
+	return old, true
 }
 
 // build constructs a receiver stack from conn, honouring the optional
@@ -594,11 +635,10 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 // rebuildPendingStack completes a deferred session-mode rebuild: when a
 // prior rotation closed the old stack (beginSessionRebuild) but the
 // build failed, it retries the build with the pending connection and
-// commits it on success. It is a no-op when nothing is pending. Only
-// invoked from the session poll loop, so at most one rebuild runs from
-// here at a time; a concurrent ApplyCredentials re-push is safe — the
-// loser's freshly built stack is returned as the "old" stack and
-// closed.
+// commits it on success — but ONLY if no newer rotation superseded it
+// in the meantime (commitRebuild fences on the captured generation). A
+// superseded build is discarded (its stack closed) and reported as
+// success: the newer rotation already installed a live stack.
 func (r *Receiver) rebuildPendingStack(ctx context.Context) error {
 	r.initMu.Lock()
 	if !r.rebuildPending {
@@ -606,6 +646,7 @@ func (r *Receiver) rebuildPendingStack(ctx context.Context) error {
 		return nil
 	}
 	conn := r.pendingConn
+	gen := r.rebuildGen
 	r.initMu.Unlock()
 
 	stack, err := r.build(ctx, conn)
@@ -613,8 +654,13 @@ func (r *Receiver) rebuildPendingStack(ctx context.Context) error {
 		return fmt.Errorf("servicebus: retry pending session rebuild for %q: %w", r.entityName(), err)
 	}
 
-	old := r.commitStack(stack, conn)
-	old.close(ctx)
+	toClose, applied := r.commitRebuild(gen, stack, conn)
+	toClose.close(ctx)
+	if !applied {
+		// A newer rotation superseded this rebuild while it ran; the
+		// freshly built stack was closed above. Nothing to commit.
+		return nil
+	}
 
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug,

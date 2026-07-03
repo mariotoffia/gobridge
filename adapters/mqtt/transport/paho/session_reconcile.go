@@ -75,14 +75,36 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 // acked-and-dropped, so the stall cannot recur. The router dedups per
 // topic, so this runs at most once per orphan topic per process.
 //
+// A concrete topic that a STILL-DESIRED subscription covers (an active
+// broker subscription in s.activeSubs, or a filter in the current plan) is
+// NEVER an orphan: its receiver has merely not registered its handler yet
+// (registration follows Start→Reconcile→Run and can lag the grace window
+// on a degraded start). Unsubscribing it here would silently kill a live
+// route until the next reconcile/reconnect, so the UNSUBSCRIBE is skipped
+// for covered topics. The router's ack-and-drop of the early publishes is
+// unavoidable (the broker already acked them), but the subscription stays
+// intact so later publishes are delivered once the handler registers.
+//
 // It is invoked from the router's own goroutine (never the paho publish
 // callback), tracked by the router WaitGroup so Session.Close awaits it.
 func (s *Session) unsubscribeOrphan(topic string) {
 	s.mu.Lock()
 	cm := s.cm
 	closed := s.closed
+	covered := s.topicCoveredLocked(topic)
 	s.mu.Unlock()
 	if cm == nil || closed {
+		return
+	}
+
+	if covered {
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(context.Background(), logging.LevelDebug,
+				"mqtt: skipping orphan unsubscribe; topic covered by a configured subscription (handler not yet registered)",
+				"client_id", s.opts.ClientID,
+				"topic", topic,
+			)
+		}
 		return
 	}
 
@@ -110,6 +132,31 @@ func (s *Session) unsubscribeOrphan(topic string) {
 			"topic", topic,
 		)
 	}
+}
+
+// topicCoveredLocked reports whether a concrete publish topic is covered by
+// a subscription the session still wants — either an active broker
+// subscription (s.activeSubs) or a desired filter in the current plan.
+// Both maps/plans are keyed by topic FILTERS (possibly wildcarded), so the
+// concrete topic is matched against each filter with the same MQTT
+// topic-filter logic the router uses for dispatch. Such a topic is never an
+// orphan, only a route whose handler has not registered yet. An empty
+// activeSubs and a nil plan therefore cover nothing (every unmatched topic
+// is a genuine orphan). Callers must hold s.mu.
+func (s *Session) topicCoveredLocked(topic string) bool {
+	for filter := range s.activeSubs {
+		if matchTopicFilter(filter, topic) {
+			return true
+		}
+	}
+	if s.plan != nil {
+		for _, sub := range s.plan.Subscriptions {
+			if matchTopicFilter(sub.Topic, topic) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {

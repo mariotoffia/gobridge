@@ -78,6 +78,65 @@ func TestRequireAdminAuth_ThrottlesAfterLimit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, do("test-secret-key-0123456789"))
 }
 
+// A brute-forcer hammering the endpoint while throttled must NOT be able to
+// write one audit record per rejected request (line-rate audit flooding). The
+// auth.throttled event is sampled: it fires once when throttling BEGINS for a
+// key, then stays silent for the rest of the window, and re-arms on a fresh
+// window so a renewed burst is still observed.
+func TestRequireAdminAuth_ThrottleAuditSampledPerWindow(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	rt := runtime.New(runtime.WithInstanceID("auth-throttle-audit-sample"))
+	audit := &recordingAuditLogger{}
+	cfg := testConfig()
+	cfg.AuthFailureLimit = 3
+	cfg.AuthFailureWindow = time.Minute
+	s := New(rt, cfg, WithAuditLogger(audit), WithClock(clk))
+
+	h := s.requireAdminAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	do := func(key string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bridge", nil)
+		req.Header.Set("X-API-Key", key)
+		req.RemoteAddr = "10.0.0.9:1234"
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec.Code
+	}
+
+	countThrottled := func() int {
+		n := 0
+		for _, ev := range audit.Events() {
+			if ev.Action == "auth.throttled" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Exhaust the limit — these emit auth.failure, not auth.throttled.
+	for i := 0; i < 3; i++ {
+		require.Equal(t, http.StatusUnauthorized, do("wrong"))
+	}
+	// Hammer while throttled: many 429s, but only the FIRST emits auth.throttled.
+	for i := 0; i < 10; i++ {
+		require.Equal(t, http.StatusTooManyRequests, do("wrong"))
+	}
+	assert.Equal(t, 1, countThrottled(),
+		"throttle audit must fire once per window, not once per rejected request")
+
+	// A fresh window re-arms the signal: advance past the window, drive back
+	// into throttling, and expect exactly one more throttle audit.
+	clk.Advance(cfg.AuthFailureWindow + time.Second)
+	for i := 0; i < 3; i++ {
+		require.Equal(t, http.StatusUnauthorized, do("wrong"))
+	}
+	require.Equal(t, http.StatusTooManyRequests, do("wrong"))
+	assert.Equal(t, 2, countThrottled(),
+		"a fresh window must re-arm the throttle audit signal")
+}
+
 // A config PATCH carrying an unknown field (notably a plugin `options` block,
 // which the def types tag json:"-") must be REJECTED loudly (400) rather than
 // silently dropped and then erased from disk on commit.
