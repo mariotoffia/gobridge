@@ -40,6 +40,36 @@ var ErrUnknownOperator = &shared.BridgeError{
 	Message: "filter: unknown operator",
 }
 
+// ErrExistsValueNotBool signals an "exists" condition whose Value is
+// missing or not a bool. Without an explicit bool the previous behavior
+// silently defaulted to false ("not exists"), turning a "drop if x
+// exists" rule into "drop everything missing x". Validated in New so
+// the misconfiguration fails the build.
+var ErrExistsValueNotBool = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "filter: exists operator requires an explicit bool value",
+}
+
+// ErrInValueNotSlice signals an "in" condition whose Value is not a
+// slice. A non-slice value can never match, silently disabling the
+// condition. Validated in New so the misconfiguration fails the build.
+var ErrInValueNotSlice = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "filter: in operator requires a slice value",
+}
+
+// ErrComparisonValueNotNumeric signals a gt/lt/gte/lte condition whose
+// configured Value cannot be interpreted as a number. Validated in New
+// so a deterministic misconfiguration fails the build instead of
+// producing a per-message error the runtime would retry.
+var ErrComparisonValueNotNumeric = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "filter: comparison operator requires a numeric value",
+}
+
 // DefaultMaxPayloadBytes bounds the JSON payload a filter will parse for
 // a "$." path condition when Config.MaxPayloadBytes is left unset. It
 // caps worst-case parse CPU for an oversized / hostile message while
@@ -160,11 +190,15 @@ func (p *Processor) evaluate(ctx context.Context, env *messaging.Envelope) (bool
 		return true, nil
 	}
 
+	// One payloadDoc per Process call: the JSON payload is copied and
+	// parsed at most once and shared read-only across all "$." path
+	// conditions.
+	doc := &payloadDoc{}
 	for _, eval := range p.evaluators {
 		if err := ctx.Err(); err != nil {
 			return false, contextError(err)
 		}
-		match, err := eval.evaluate(env)
+		match, err := eval.evaluateDoc(env, doc)
 		if err != nil {
 			return false, err
 		}

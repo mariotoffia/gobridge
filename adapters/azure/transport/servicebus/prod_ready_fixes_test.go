@@ -26,7 +26,7 @@ func TestReceiveAndDelete_AckIsNoOp(t *testing.T) {
 	mock := &mockASBClient{}
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "rad-ack"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "rad-ack"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 30 * time.Second}, nil, nil, nil, nil)
 	d.receiveAndDelete = true
 
 	if err := d.Ack(context.Background()); err != nil {
@@ -50,7 +50,7 @@ func TestReceiveAndDelete_RetryReturnsNotSupported(t *testing.T) {
 	sched := &mockRetryScheduler{}
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "rad-retry"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "rad-retry"}
-	d := newDelivery(context.Background(), env, mock, sched, msg, 30*time.Second, false, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, sched, msg, deliveryTuning{lockDuration: 30 * time.Second}, nil, nil, nil, nil)
 	d.receiveAndDelete = true
 
 	err := d.Retry(context.Background(), 5*time.Second, errors.New("boom"))
@@ -81,7 +81,7 @@ func TestReceiveAndDelete_ExtendIsNoOp(t *testing.T) {
 	mock := &mockASBClient{}
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "rad-ext"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "rad-ext"}
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 30 * time.Second}, nil, nil, nil, nil)
 	d.receiveAndDelete = true
 
 	if err := d.Extend(context.Background(), time.Now().Add(time.Minute)); err != nil {
@@ -155,7 +155,7 @@ func TestSubscription_DelayedRetry_FallsBackToAbandon(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "sub-retry"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "sub-retry"}
 	// scheduler == nil mirrors a subscription receiver (see ensureClient).
-	d := newDelivery(context.Background(), env, mock, nil, msg, 30*time.Second, false, nil, nil, nil, nil)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 30 * time.Second}, nil, nil, nil, nil)
 	d.delayedRetryDisabled = true
 
 	if err := d.Retry(context.Background(), 10*time.Second, nil); err != nil {
@@ -312,7 +312,7 @@ func TestAutoExtend_MaxFailures_CancelsProcessingContext(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "maxfail"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "maxfail"}
 	fake := clocktest.New()
-	d := newDelivery(deliveryCtx, env, mock, nil, msg, 2*time.Second, true, deliveryCancel, nil, nil, fake)
+	d := newDelivery(deliveryCtx, env, mock, nil, msg, deliveryTuning{lockDuration: 2 * time.Second, autoExtend: true}, deliveryCancel, nil, nil, fake)
 	defer d.stop()
 
 	// newDelivery spawns autoExtendLoop, which registers its ticker from a

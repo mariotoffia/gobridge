@@ -3,6 +3,7 @@ package awsstore_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/ports"
@@ -71,5 +72,59 @@ func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 	}
 	if dlq == nil {
 		t.Fatal("dlq: expected non-nil store")
+	}
+}
+
+// Verifies the role-specific tuning knobs in the typed config are accepted
+// by both factories (typed stale-claim overrides the runtime-derived value;
+// deterministic behaviour is pinned inside the store packages).
+func TestDynamoDBStoreFactory_TypedTuningKnobs(t *testing.T) {
+	f := awsstore.NewDynamoDBStoreFactory(nil)
+	cfg := &awsstore.DynamoDBConfig{
+		TableName:          "custom-table",
+		StaleClaimDuration: time.Minute,
+		CompactionGrace:    2 * time.Hour,
+		Retention:          14 * 24 * time.Hour,
+		MaxScanPages:       500,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+
+	outbox, err := f.NewOutboxStore(context.Background(), cfg,
+		ports.OutboxRuntimeOptions{StaleClaimDuration: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("outbox: unexpected error: %v", err)
+	}
+	if outbox == nil {
+		t.Fatal("outbox: expected non-nil store")
+	}
+
+	dlq, err := f.NewDLQStore(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("dlq: unexpected error: %v", err)
+	}
+	if dlq == nil {
+		t.Fatal("dlq: expected non-nil store")
+	}
+}
+
+// Verifies Validate rejects negative duration knobs.
+func TestDynamoDBConfig_ValidateRejectsNegativeDurations(t *testing.T) {
+	cases := []awsstore.DynamoDBConfig{
+		{StaleClaimDuration: -time.Second},
+		{CompactionGrace: -time.Second},
+		{Retention: -time.Second},
+	}
+	for i, c := range cases {
+		if err := c.Validate(); err == nil {
+			t.Fatalf("case %d: expected validation error, got nil", i)
+		}
+	}
+
+	// MaxScanPages may be negative (disables the scan bound).
+	ok := awsstore.DynamoDBConfig{MaxScanPages: -1}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("negative max_scan_pages should validate (disables bound): %v", err)
 	}
 }

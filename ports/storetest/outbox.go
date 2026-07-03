@@ -48,9 +48,11 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("PersistAndQueryPending", func(t *testing.T) { testPersistAndQueryPending(t, store) })
 	t.Run("PersistDuplicate", func(t *testing.T) { testPersistDuplicate(t, store) })
 	t.Run("PersistFanOut", func(t *testing.T) { testPersistFanOut(t, store) })
+	t.Run("PersistPartialOverlap", func(t *testing.T) { testPersistPartialOverlap(t, store) })
+	t.Run("PersistBatchInternalDuplicate", func(t *testing.T) { testPersistBatchInternalDuplicate(t, store) })
 	t.Run("ClaimTransitionsStatus", func(t *testing.T) { testClaimTransitionsStatus(t, store) })
 	t.Run("ClaimRespectsLimit", func(t *testing.T) { testClaimRespectsLimit(t, store) })
-	t.Run("ClaimReclaimsStale", func(t *testing.T) { testClaimReclaimsStale(t, store) })
+	t.Run("ClaimVersionPreemptsPriorOwner", func(t *testing.T) { testClaimVersionPreemptsPriorOwner(t, store) })
 	t.Run("CompleteWithValidToken", func(t *testing.T) { testCompleteWithValidToken(t, store) })
 	t.Run("CompleteWithWrongToken", func(t *testing.T) { testCompleteWithWrongToken(t, store) })
 	t.Run("ExpireMarksEligible", func(t *testing.T) { testExpireMarksEligible(t, store) })
@@ -66,7 +68,10 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("ClaimRejectsStaleVersionOnPending", func(t *testing.T) { testClaimRejectsStaleVersionOnPending(t, store) })
 	t.Run("ClaimRejectsStaleVersionAfterNoopHigherClaim", func(t *testing.T) { testClaimRejectsStaleVersionAfterNoopHigherClaim(t, store) })
 	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
-	t.Run("ClaimTieBreaksByEnvelopeIDOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt(t, store) })
+	t.Run("ClaimTieBreaksByPersistOrderOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t, store) })
+	t.Run("ClaimZeroLimitAdvancesFenceOnly", func(t *testing.T) { testClaimZeroLimitAdvancesFenceOnly(t, store) })
+	t.Run("ClaimFenceInterleaving", func(t *testing.T) { testClaimFenceInterleaving(t, store) })
+	t.Run("ConcurrentClaimersClaimEachRecordOnce", func(t *testing.T) { testConcurrentClaimersClaimEachRecordOnce(t, store) })
 }
 
 func testPersistAndQueryPending(t *testing.T, store ports.OutboxStore) {
@@ -109,6 +114,78 @@ func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 	err := store.Persist(ctx, []*persistence.OutboxRecord{r2})
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("expected ErrDuplicateRecord, got %v", err)
+	}
+}
+
+// testPersistPartialOverlap pins the per-record Persist idempotency contract
+// (C1): a batch that partially overlaps already-persisted records persists
+// the new records and silently skips the existing ones; ErrDuplicateRecord
+// is returned ONLY when every record in the batch already existed. This is
+// what makes a fan-out re-persist after a partial failure safe: without it,
+// the retried batch fails all-or-nothing and the unpersisted legs are ACKed
+// away — a verified message-loss sequence.
+func testPersistPartialOverlap(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+
+	a := makeRecord(t, "po-a", "env-po-a", "bind-po-a", "sess-po", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{a}); err != nil {
+		t.Fatalf("persist {A}: %v", err)
+	}
+
+	// Re-persist A (same envelope+binding identity, new record instance)
+	// together with a brand-new B: B must be persisted, no error returned.
+	a2 := makeRecord(t, "po-a-retry", "env-po-a", "bind-po-a", "sess-po", "route-1", time.Time{})
+	b := makeRecord(t, "po-b", "env-po-b", "bind-po-b", "sess-po", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{a2, b}); err != nil {
+		t.Fatalf("persist {A,B} with A existing: want nil error, got %v", err)
+	}
+
+	pending, err := store.QueryPending(ctx, "SESSION#sess-po", 10)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending (A kept once, B persisted), got %d", len(pending))
+	}
+	ids := map[string]bool{}
+	for _, r := range pending {
+		ids[r.ID()] = true
+	}
+	if !ids["po-a"] {
+		t.Fatal("original record po-a must be retained (skip, not overwrite)")
+	}
+	if !ids["po-b"] {
+		t.Fatal("new record po-b must be persisted despite duplicate sibling")
+	}
+
+	// Re-persisting ONLY the existing identity is an all-duplicate batch.
+	a3 := makeRecord(t, "po-a-again", "env-po-a", "bind-po-a", "sess-po", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{a3}); !errors.Is(err, shared.ErrDuplicateRecord) {
+		t.Fatalf("expected ErrDuplicateRecord for all-duplicate batch, got %v", err)
+	}
+}
+
+// testPersistBatchInternalDuplicate pins the per-record rule for a batch that
+// contains the same identity twice: the first occurrence is persisted, the
+// rest are skipped, and no error is returned (the batch persisted new work).
+func testPersistBatchInternalDuplicate(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+
+	r1 := makeRecord(t, "bid-1", "env-bid", "bind-bid", "sess-bid", "route-1", time.Time{})
+	r2 := makeRecord(t, "bid-2", "env-bid", "bind-bid", "sess-bid", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r1, r2}); err != nil {
+		t.Fatalf("persist batch with internal duplicate: want nil error, got %v", err)
+	}
+
+	pending, err := store.QueryPending(ctx, "SESSION#sess-bid", 10)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending (first occurrence wins), got %d", len(pending))
+	}
+	if pending[0].ID() != "bid-1" {
+		t.Fatalf("expected first occurrence bid-1 persisted, got %q", pending[0].ID())
 	}
 }
 
@@ -183,7 +260,13 @@ func testClaimRespectsLimit(t *testing.T, store ports.OutboxStore) {
 	}
 }
 
-func testClaimReclaimsStale(t *testing.T, store ports.OutboxStore) {
+// testClaimVersionPreemptsPriorOwner proves version-monotonic reclaim: a
+// record claimed under an older fencing version is claimable by a newer
+// token (the prior owner's lease was preempted). This is version reclaim,
+// not wall-clock stale reclaim — the time-based crash-recovery fallback is
+// pinned separately by RunOutboxStaleReclaimTests for the backends that
+// implement it.
+func testClaimVersionPreemptsPriorOwner(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	r := makeRecord(t, "recl-1", "env-recl-1", "bind-recl-1", "sess-recl", "route-1", time.Time{})
 	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {

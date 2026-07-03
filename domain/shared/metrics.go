@@ -29,6 +29,18 @@ const (
 	MetricOutboxReplayCount       = "OutboxReplayCount"
 	MetricOutboxRecordFailures    = "OutboxRecordFailures"
 	MetricOutboxDuplicateRisk     = "OutboxDuplicateRisk"
+	// MetricOutboxDeferred counts claimed records the drainer could NOT process
+	// this cycle (batch deadline expired before the send launched or completed)
+	// and released/left for the next drain. They are neither successes nor hard
+	// failures; a rising value under load flags a drain budget too small for the
+	// batch size (see Drainer.drainBatch batch-deadline handling).
+	MetricOutboxDeferred = "OutboxDeferred"
+	// MetricDrainSkippedNoLease counts drain cycles skipped because the drainer's
+	// TokenFn reported no held lease. A continuously-rising value on a route that
+	// is supposed to drain flags a misconfiguration (e.g. shared_outbox bound to
+	// a non-exclusive session that never acquires a lease) rather than a normal
+	// standby that legitimately holds no lease.
+	MetricDrainSkippedNoLease = "DrainSkippedNoLease"
 )
 
 // Generic transport-agnostic delivery metric names.
@@ -49,8 +61,24 @@ const (
 const (
 	MetricMessagesReceived = "MessagesReceived"
 	MetricMessagesSent     = "MessagesSent"
-	MetricMessagesDropped  = "MessagesDropped"
-	MetricRouteErrors      = "RouteErrors"
+	// MetricMessagesDropped counts messages the runtime terminated WITHOUT a
+	// DLQ record and without a successful send: a permanent/expired/unsupported
+	// outcome under a drop policy (or a missing DLQ store on a retry-unsupported
+	// source). Together with MessagesReceived, MessagesSent, MetricDLQEntries and
+	// in-flight it closes the conservation law received = sent + dropped + dlq +
+	// inflight, so a rising Dropped is the single signal for silent message loss.
+	MetricMessagesDropped = "MessagesDropped"
+	// MetricMessagesFiltered counts messages a processor deliberately dropped
+	// (shared.ErrMessageFiltered) under OnPermanentFailure=drop — a POLICY
+	// discard, not a fault. Split from MessagesDropped so an intentional filter
+	// rate never masks (or is masked by) genuine loss.
+	MetricMessagesFiltered = "MessagesFiltered"
+	// MetricMessagesExpired counts messages dropped because they expired before
+	// delivery under OnExpired=drop (the ingress route-expired path and the
+	// drainer expired-before-send path). Distinct from Filtered/Dropped so TTL
+	// loss is separately observable.
+	MetricMessagesExpired = "MessagesExpired"
+	MetricRouteErrors     = "RouteErrors"
 	// MetricReceiveCountUnparseable counts deliveries whose source-transport
 	// redelivery-count header was PRESENT but uninterpretable as an integer, so
 	// receiveCount failed open to a first delivery (count 0) and
@@ -66,6 +94,19 @@ const (
 const (
 	MetricProcessorPanics   = "ProcessorPanics"
 	MetricProcessorTimeouts = "ProcessorTimeouts"
+)
+
+// Circuit-breaker metric names. Emitted by the circuit-breaker processor
+// (processors/circuitbreaker) around outbound protection state. The
+// procs agent owns the emission sites; the name is declared here so the
+// wire value is fixed once and shared. MetricCircuitBreakerStateChanged
+// counts every open<->half-open<->closed transition (tag the breaker key
+// and the new state); a spike is the leading indicator of a failing
+// downstream dependency.
+const (
+	MetricCircuitBreakerStateChanged = "CircuitBreakerStateChanged"
+	MetricCircuitBreakerTrips        = "CircuitBreakerTrips"
+	MetricCircuitBreakerRejections   = "CircuitBreakerRejections"
 )
 
 // Session metric names. Emitted by the generic runtime session manager
@@ -92,4 +133,10 @@ const (
 	TagKeyCategory  = "category"
 	TagKeyTransport = "transport"
 	TagKeyEntity    = "entity"
+	// TagKeyState dimensions a metric by a component lifecycle state — used by
+	// the circuit-breaker state-change counter (open/half-open/closed).
+	TagKeyState = "state"
+	// TagKeyReason dimensions a drop/filter/expire counter by the terminal
+	// reason so a single MessagesDropped series can be split by cause.
+	TagKeyReason = "reason"
 )

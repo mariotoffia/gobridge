@@ -27,6 +27,36 @@ type LeaseStore interface {
 
 // OutboxStore manages the durable outbox for reliable egress.
 //
+// Persist idempotency contract:
+//
+//   - Persist is idempotent per record. A record's persistence identity is
+//     (partition key, EnvelopeID, BindingID). Records whose identity already
+//     exists in the store are SKIPPED — not overwritten, not an error — while
+//     every new record in the same batch IS persisted. This makes fan-out
+//     re-persist after a partial failure safe: already-persisted legs are
+//     no-ops and previously-unpersisted legs are stored.
+//   - Persist returns shared.ErrDuplicateRecord ONLY when every record in
+//     the batch already existed (nothing was persisted). Callers use this
+//     purely as a signal that the whole batch was a replay; it is not a
+//     failure of durability.
+//   - A batch that contains the same identity twice persists the first
+//     occurrence and skips the rest, following the same per-record rule.
+//
+// Claim ordering contract:
+//
+//   - Claim and QueryPending return records in per-partition persist order:
+//     ascending (CreatedAt, Seq), where Seq is a monotonic per-partition
+//     sequence the store assigns at Persist. Records persisted before the
+//     sequence existed carry Seq 0 and sort first within their CreatedAt
+//     millisecond, which preserves their relative age.
+//   - Claim with limit <= 0 is a fencing no-op: it validates the token and
+//     advances the durable per-partition fencing high-water-mark exactly
+//     like an empty-partition claim, but claims and returns no records.
+//   - Stores MUST NOT filter claimable records by replay count. Poison
+//     detection (max replay attempts) is the drainer's decision; a store
+//     that hides high-replay records from Claim makes them unreachable for
+//     DLQ routing.
+//
 // Fencing contract:
 //
 //   - Claim fencing is version-monotonic. A record is claimable when it is
@@ -51,6 +81,13 @@ type LeaseStore interface {
 //     record only when it is currently claimed, claimed_by == token.Owner, and
 //     claim_version == token.Version. On any mismatch the store MUST return
 //     shared.ErrStaleFencingToken rather than silently skipping the record.
+//     Backends that resolve record IDs through an eventually-consistent
+//     secondary index (DynamoDB RecordIDIndex) may transiently fail to find
+//     a just-written record after a process restart evicts the key cache;
+//     they retry with backoff and surface shared.ErrTimeout if the index
+//     never converges, leaving the record claimed until stale reclaim. The
+//     live drainer only completes records it claimed in-process, so this
+//     window exists only across restarts.
 //   - Expire is pending-only. It may transition to expired only records that
 //     are still pending with a non-zero expires_at strictly before the cutoff.
 //     Claimed records are never expired here; a claimed-but-stale record is
@@ -88,10 +125,9 @@ type OutboxStore interface {
 //
 // Release is single-record-intended: the live drainer always passes exactly
 // one recordID. The recordIDs slice is retained for signature symmetry with
-// Complete, but partial-batch fencing semantics differ across stores and are
-// NOT contractually specified — memory mutates per-record and returns on the
-// first mismatch (earlier ids may already be released), while SQLite updates
-// atomically and then reports a mismatch via RowsAffected. Pass one id to
+// Complete. The memory and SQLite backends validate the whole batch before
+// mutating (all-or-nothing); DynamoDB releases per-record and stops at the
+// first mismatch, so earlier ids may already be released. Pass one id to
 // stay within the well-defined single-record contract.
 //
 // Release is claim-scoped, not idempotent: it only acts on a currently
@@ -105,6 +141,11 @@ type OutboxReleaser interface {
 // scans that never mutate stored entries. Driving read adapters (the
 // runtime read port, monitor endpoints) depend on this narrow port so
 // they cannot delete or purge.
+//
+// List ordering contract: entries are returned OLDEST-FIRST — ascending
+// FailedAt with ascending entry ID as the deterministic tiebreaker — so
+// operators triage the oldest failures first and pagination via
+// DLQFilter.Limit walks forward in time identically on every backend.
 type DLQReader interface {
 	Get(ctx context.Context, id string) (routing.DLQEntry, error)
 	List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
@@ -114,6 +155,12 @@ type DLQReader interface {
 // ingest plus the destructive operations (delete, delete-by-filter,
 // purge). Only the runtime command port and admin endpoints depend on
 // it, keeping mutation authority off the read path.
+//
+// DeleteByFilter deletes EVERY entry matching the filter when
+// DLQFilter.Limit <= 0, regardless of any internal scan page size, and
+// returns the accurate deleted count. With a positive Limit it deletes at
+// most Limit entries, selected oldest-first per the DLQReader ordering
+// contract.
 type DLQAdmin interface {
 	Write(ctx context.Context, entry routing.DLQEntry) error
 	Delete(ctx context.Context, ids []string) (int, error)

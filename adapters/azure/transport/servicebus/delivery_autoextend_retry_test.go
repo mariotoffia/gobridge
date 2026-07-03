@@ -85,7 +85,7 @@ func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	clk := newSignalClock()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 2 * time.Second, autoExtend: true}, nil, nil, nil, clk)
 	defer d.stop()
 
 	<-clk.started // goroutine has armed its renewal ticker
@@ -116,7 +116,7 @@ func TestAutoExtendStopsAfterMaxConsecutiveFailures(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	clk := newSignalClock()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 2 * time.Second, autoExtend: true}, nil, nil, nil, clk)
 	defer d.stop()
 
 	<-clk.started // goroutine has armed its renewal ticker
@@ -157,7 +157,7 @@ func TestAutoExtendInterleavedFailSuccessASB(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-1"})
 	msg := &azservicebus.ReceivedMessage{MessageID: "test-msg"}
 	clk := newSignalClock()
-	d := newDelivery(context.Background(), env, mock, nil, msg, 2*time.Second, true, nil, nil, nil, clk)
+	d := newDelivery(context.Background(), env, mock, nil, msg, deliveryTuning{lockDuration: 2 * time.Second, autoExtend: true}, nil, nil, nil, clk)
 	defer d.stop()
 
 	<-clk.started // goroutine has armed its renewal ticker

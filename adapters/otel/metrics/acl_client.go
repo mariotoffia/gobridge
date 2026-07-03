@@ -30,6 +30,14 @@ var errInstrumentLimit = errors.New("instrument cache limit reached")
 // flood the handler, so reports are throttled to one per interval.
 const rejectReportInterval = time.Minute
 
+// MetricExporterRejectedDatums is the self-metric (MF-5) reporting the
+// cumulative number of metric emissions this exporter rejected (full
+// instrument cache, K9). Published through the exporter's own pipeline
+// as an observable counter so silent self-loss is visible on the same
+// backend as the metrics themselves. Name kept in sync with the
+// CloudWatch adapter's equivalent self-metric.
+const MetricExporterRejectedDatums = "ExporterRejectedDatums"
+
 // meterClient is the adapter-internal mock seam shielding the
 // port-side Exporter from OpenTelemetry SDK types. All
 // SDK-typed fields, lazy instrument caches and recording calls
@@ -63,6 +71,12 @@ type otelMeterClient struct {
 	// lock-free CAS, so a dynamic-name flood neither floods the handler
 	// nor contends on mu. Bounded memory: one timestamp, no per-name state.
 	lastRejectReport atomic.Int64
+
+	// rejectedTotal counts every rejected emission. It backs the
+	// MetricExporterRejectedDatums observable self-metric (MF-5) so
+	// self-loss is visible through the exporter's own pipeline, not
+	// only through the (possibly suppressed) error handler.
+	rejectedTotal atomic.Int64
 
 	mu         sync.RWMutex
 	counters   map[string]metric.Int64Counter
@@ -140,7 +154,7 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 	if maxInstruments == 0 {
 		maxInstruments = defaultMaxInstruments
 	}
-	return &otelMeterClient{
+	c := &otelMeterClient{
 		provider:       mp,
 		meter:          mp.Meter("github.com/mariotoffia/gobridge"),
 		defaultAttrs:   buildDefaultAttrs(cfg.DefaultTags),
@@ -150,6 +164,29 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 		counters:       make(map[string]metric.Int64Counter),
 		gauges:         make(map[string]metric.Float64Gauge),
 		histograms:     make(map[string]metric.Float64Histogram),
+	}
+	c.registerSelfMetrics()
+	return c
+}
+
+// registerSelfMetrics installs the MetricExporterRejectedDatums
+// observable counter (MF-5). The callback observes the cumulative
+// reject count on every collection; nothing is observed while the
+// count is zero so healthy pipelines carry no extra series. Failure to
+// create the instrument is surfaced through the error handler — the
+// exporter itself stays functional.
+func (c *otelMeterClient) registerSelfMetrics() {
+	_, err := c.meter.Int64ObservableCounter(MetricExporterRejectedDatums,
+		metric.WithDescription("metric emissions rejected by the exporter (instrument cache full)"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			if v := c.rejectedTotal.Load(); v > 0 {
+				o.Observe(v)
+			}
+			return nil
+		}),
+	)
+	if err != nil && c.onError != nil {
+		c.onError(fmt.Errorf("otel-metrics: create self-metric %s: %w", MetricExporterRejectedDatums, err))
 	}
 }
 
@@ -165,7 +202,13 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 // hot path stays allocation-free. Bounded memory: a single timestamp, no
 // per-name state. Other (rare) acquisition errors are always reported.
 func (c *otelMeterClient) reportInstrumentError(name string, err error) {
-	if err == nil || c.onError == nil {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, errInstrumentLimit) {
+		c.rejectedTotal.Add(1)
+	}
+	if c.onError == nil {
 		return
 	}
 	if errors.Is(err, errInstrumentLimit) {

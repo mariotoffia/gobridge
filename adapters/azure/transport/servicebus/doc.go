@@ -20,14 +20,26 @@
 // When AutoExtend is enabled (the default), a background goroutine
 // periodically renews the lock at 50 % of the configured lock duration,
 // preventing Service Bus from making the message visible to other
-// consumers while the bridge pipeline is still processing it. If lock
-// renewal fails autoExtendMaxFailures times in a row the goroutine
-// cancels the delivery's processing context — the same context handed
-// to the emit callback — so the in-flight pipeline aborts rather than
-// continuing to work a message whose lock has lapsed. Likewise, when the
-// emit callback returns an error the poll loop cancels that context, so
-// auto-extend stops and the broker lock is allowed to expire for
-// redelivery; the message is never left silently held after Run returns.
+// consumers while the bridge pipeline is still processing it. Renewal
+// starts for EVERY message of a received batch immediately after the
+// batch arrives — before the (possibly blocking) emit loop — so the
+// locks of batched-but-not-yet-emitted messages cannot lapse under
+// backpressure. If lock renewal fails autoExtendMaxFailures times in a
+// row the goroutine cancels the delivery's processing context — the same
+// context handed to the emit callback — so the in-flight pipeline aborts
+// rather than continuing to work a message whose lock has lapsed.
+// Likewise, when the emit callback returns an error the poll loop
+// cancels that context (and the contexts of every not-yet-emitted
+// delivery of the batch), so auto-extend stops and the broker lock is
+// allowed to expire for redelivery; the message is never left silently
+// held after Run returns.
+//
+// Total renewal per delivery is capped by
+// ReceiverConfig.MaxLockRenewalDuration (default 5m): when the cap is
+// reached, renewal stops, the processing context is cancelled, and
+// MetricASBLockRenewalCapExceeded is incremented — a hung pipeline can
+// no longer keep a message locked (invisible, never redelivered, never
+// dead-lettered) forever.
 //
 // # Receive modes
 //
@@ -38,7 +50,34 @@
 // shared.ErrNotSupported. The runtime then DLQ-routes the message rather
 // than looping on a retry that can never take effect. ReceiveAndDelete is
 // therefore at-most-once: a processing failure with no DLQ configured
-// drops the message — choose PeekLock when no-loss is required.
+// drops the message — choose PeekLock when no-loss is required. Because
+// the broker settles at receive time, MaxMessages is forced to 1 in this
+// mode (a larger batch would lose every received-but-not-yet-emitted
+// message on shutdown); a clamped configuration is warned about at
+// receiver construction.
+//
+// ReceiveMode and SubQueue are validated strictly (case-insensitive
+// against the known values); an unknown spelling such as "dead-letter"
+// is a configuration error instead of silently selecting the default —
+// which for sub_queue would mean consuming the MAIN queue during a DLQ
+// redrive.
+//
+// # Sessions
+//
+// ReceiverConfig.SessionID locks the receiver to one ASB session.
+// Session accept retries with backoff (up to sessionAcceptMaxAttempts):
+// com.microsoft:session-cannot-be-locked is expected during rolling
+// deploys while the outgoing pod still holds the session lock, and must
+// not crash-loop the bridge. SessionID cannot be combined with SubQueue
+// (the SDK's SessionReceiverOptions has no sub-queue selector); the
+// combination is rejected at validation. A NON-session receiver on a
+// session-enabled entity fails fast with shared.ErrNotSupported instead
+// of warn-looping forever; accept-next-session polling is not
+// implemented. In session mode all in-flight deliveries share ONE
+// session lock, so a single session-renewer goroutine replaces the
+// per-delivery auto-extend goroutines; MaxLockRenewalDuration does not
+// apply to the session renewer (the session lock must be held for the
+// life of the poll loop).
 //
 // # Delayed retry (Retry with a non-zero delay)
 //
@@ -58,14 +97,26 @@
 // a subscription would require a per-subscription scheduling primitive
 // that Service Bus does not expose.
 //
-// Dedup caveat (queue path): the scheduled copy is built by
-// buildRetryMessage, which REUSES the original message's MessageID. If the
-// queue has duplicate detection enabled (RequiresDuplicateDetection), the
-// broker can treat the rescheduled copy as a duplicate of the original
-// within its DuplicateDetectionHistoryTimeWindow and silently discard it —
-// dropping the delayed retry with no redelivery. Do not enable duplicate
-// detection on queues that rely on delayed retry, or keep the dedup window
-// shorter than the retry delay.
+// The scheduled copy (buildRetryMessage) carries three safety measures:
+//
+//   - Attempt accounting: scheduling a fresh copy resets the broker
+//     DeliveryCount to 1, so the copy carries the accumulated receive
+//     count in the reserved x-bridge.retry-attempt application
+//     property. Ingress adds it back onto the broker DeliveryCount when
+//     stamping the asb.delivery-count header, so the runtime's
+//     MaxReplayAttempts gate keeps firing across bridge-scheduled
+//     retries and poison messages reach the DLQ instead of ping-ponging
+//     forever.
+//   - Duplicate detection: the copy's MessageID is salted with the
+//     attempt number ("<original>-r<n>") so a dedup-enabled queue
+//     (RequiresDuplicateDetection) never silently discards the
+//     scheduled retry inside its dedup window. The FIRST delivery's
+//     MessageID is preserved in x-bridge.original-message-id and
+//     restored as the envelope ID on ingress, so end-to-end
+//     idempotency still sees one logical message.
+//   - TTL: the copy's TimeToLive is the REMAINING time until the
+//     original absolute expiry (ExpiresAt), not a restart of the full
+//     TTL per retry.
 //
 // # Dead-lettering (boundary)
 //
@@ -108,11 +159,24 @@
 // ReceiverConfig.MaxWaitTime bounds a single ReceiveMessages long-poll.
 // The Azure SDK exposes no "max wait for the first message" option, so it
 // is applied as a per-receive context deadline; an elapsed deadline with
-// no messages is a normal idle poll, not a transport error.
-// ReceiverConfig.Prefetch is accepted for forward compatibility but is
-// currently a no-op: azservicebus v1.10.0 exposes no public prefetch
-// knob (prefetch is managed internally by the SDK's AMQP credit
-// machinery). A non-zero value is warned about at receiver construction.
+// no messages is a normal idle poll, not a transport error. Config
+// validation floors max_wait_time at 1s (a sub-second value turns the
+// long-poll into a hot loop). There is no prefetch knob: azservicebus
+// v1.10.0 manages AMQP credit internally and exposes no public prefetch
+// option.
+//
+// # Credential rotation
+//
+// ApplyCredentials on both Receiver and Sender builds a complete
+// replacement stack from the rotated material and atomically swaps it
+// in while traffic is flowing; the poll loop / send paths snapshot the
+// live client under a lock and are never exposed to a nil or
+// half-initialised client. In-flight operations finish against the old
+// link; unsettled locks then lapse and the broker redelivers
+// (at-least-once). For session receivers the old link is closed first
+// (the new accept cannot obtain the session lock while the old holder
+// lives), so rotation has a short receive-error gap bridged by poll
+// backoff.
 //
 // # Header Mapping
 //

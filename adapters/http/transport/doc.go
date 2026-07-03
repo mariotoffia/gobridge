@@ -92,6 +92,73 @@
 // reopening the H1 header-spoofing class the token exists to close (see
 // "Cluster forward trust" above). Provision two independent secrets.
 //
+// # Delivery semantics
+//
+// EMIT-CONCURRENCY DEVIATION. The ports.Receiver emit-callback contract
+// (ports/transport.go) defaults to SEQUENTIAL emit from Run's goroutine
+// and requires any deviation to be documented: this receiver DEVIATES.
+// Each in-flight HTTP request emits from its own handler goroutine, so
+// the downstream pipeline observes CONCURRENT emit invocations and no
+// ordering guarantee exists — not even for requests carrying the same
+// X-Ordering-Key. The ordering key is propagated as envelope metadata
+// for ordered TARGETS (FIFO queues etc.); HTTP ingress itself never
+// orders. Backpressure is bounded by the HTTP server's connection
+// limits rather than by the receiver.
+//
+// Dispatch is decoupled from the client connection. Once a request body
+// has been converted to an envelope, the delivery is emitted on a
+// context.WithoutCancel copy of the request context: a client
+// disconnect can no longer abort the pipeline mid-dispatch. The HTTP
+// RESPONSE still honours the client context (504 on timeout/disconnect)
+// — meaning a 504 tells the producer "outcome unknown", not "not
+// processed". Producers that retry on 504 should supply Idempotency-Key
+// so the idempotency window (below) absorbs the duplicate.
+//
+// Ingress idempotency window. Each receiver keeps a bounded, node-local
+// LRU of the Idempotency-Key / X-Dedup-Id values of successfully
+// processed requests (Config.DedupWindow, default 4096 keys). A request
+// presenting a remembered key is acknowledged with 200 without
+// re-emitting the delivery and counted on MetricHTTPIngressDuplicates.
+// Keys are recorded only AFTER successful processing, so a retry after
+// a 5xx is re-processed. The window is BEST-EFFORT: it is per-node and
+// per-process (not shared across the cluster, not persisted across
+// restarts) and bounds — but does not eliminate — duplicates. Ingress
+// remains at-least-once.
+//
+// Cluster forwarding is AT-LEAST-ONCE. A forward timeout after the peer
+// received the body is retried as a fresh POST. Every forward carries
+// an Idempotency-Key — the envelope's own when present, else derived
+// from the preserved envelope ID — so the receiving peer's idempotency
+// window absorbs the replay. Forward-level classification: 5xx, 429 and
+// 408 responses are TRANSIENT (429 → ErrThrottled, 408 → ErrTimeout,
+// 5xx → ErrUnavailable) and honour a bounded Retry-After hint (seconds
+// or HTTP-date, clamped to 30s); other 4xx are PERMANENT. An optional
+// ports.CircuitBreaker (ForwarderConfig.Breaker, supplied by the
+// composition root) makes a dead peer fail fast instead of costing
+// every inbound request the full retry × timeout budget.
+//
+// SSE egress is AT-MOST-ONCE. Send reports success even when zero
+// subscribers are connected or every subscriber's buffer is full — the
+// route runner acks the source either way, so the event is gone. Both
+// zero-delivery cases are counted (MetricSSENoSubscribers /
+// MetricSSEAllDropped) and logged. Operators needing stronger delivery
+// must front SSE egress with an outbox/DLQ route policy. Consistently,
+// SSE frames carry NO "id:" field: emitting one would make EventSource
+// clients send Last-Event-ID on reconnect and expect a replay window
+// that does not exist. The envelope ID remains in the JSON payload.
+//
+// SSE cross-cluster redirect is OPT-IN. When the bound route is owned
+// by a remote node, the sender refuses with 503 by default; it emits a
+// 307 only when Config.RedirectEndpoint names the PeerInfo.Endpoints
+// key to redirect to — redirecting to the internal forwarder endpoint
+// would leak it to external clients in the Location header.
+//
+// Graceful shutdown. SSESender.Close (and Factory.Close, which fans
+// out to every SSE sender it created) unblocks all connected client
+// handlers so http.Server.Shutdown can complete. The composition root
+// must call it BEFORE server shutdown; otherwise Shutdown blocks until
+// clients disconnect on their own.
+//
 // # Deferred cross-cutting work (tracked outside this package)
 //
 // The following require edits to shared trees and are intentionally NOT

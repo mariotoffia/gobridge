@@ -141,6 +141,75 @@ func TestParse_InvalidJSON(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestParse_SenderInheritsTransportFromSession validates Finding 12: a sender
+// (and a binding through it) that omits its own transport inherits the
+// transport of the session it references, so the session-inherited-transport
+// feature the builder already supports is reachable from YAML.
+func TestParse_SenderInheritsTransportFromSession(t *testing.T) {
+	input := `
+bridge:
+  id: b1
+sessions:
+  - id: mqtt-sess
+    transport: mqtt
+    session_mode: exclusive
+receivers:
+  - id: sqs-rx
+    transport: sqs
+senders:
+  - id: mqtt-tx
+    session_id: mqtt-sess
+bindings:
+  - id: b-a
+    sender_id: mqtt-tx
+    session_id: mqtt-sess
+    address: "topic/x"
+routes:
+  - id: r1
+    receiver_id: sqs-rx
+    delivery_mode: shared_outbox
+    bindings:
+      - b-a
+`
+	cfg, err := Parse(strings.NewReader(input), FormatYAML, passthroughRegistry("mqtt", "sqs"))
+	require.NoError(t, err, "a sender that omits transport but sets session_id must parse")
+
+	require.Len(t, cfg.Senders, 1)
+	assert.Equal(t, "mqtt-tx", cfg.Senders[0].ID)
+	assert.Equal(t, "mqtt-sess", cfg.Senders[0].SessionID)
+	assert.Empty(t, cfg.Senders[0].Transport, "sender transport stays empty; it is inherited from the session")
+
+	require.Len(t, cfg.Bindings, 1)
+	assert.Equal(t, "b-a", cfg.Bindings[0].ID)
+}
+
+// TestParse_SenderWithoutTransportOrSession_Errors validates that the parser
+// still rejects a sender that resolves to no transport at all (Finding 12 keeps
+// the "something must resolve" invariant).
+func TestParse_SenderWithoutTransportOrSession_Errors(t *testing.T) {
+	input := `
+bridge:
+  id: b1
+receivers:
+  - id: sqs-rx
+    transport: sqs
+senders:
+  - id: orphan-tx
+bindings:
+  - id: b-a
+    sender_id: orphan-tx
+    address: "topic/x"
+routes:
+  - id: r1
+    receiver_id: sqs-rx
+    delivery_mode: shared_outbox
+    bindings:
+      - b-a
+`
+	_, err := Parse(strings.NewReader(input), FormatYAML, passthroughRegistry("sqs"))
+	require.Error(t, err, "a sender with neither transport nor session must be rejected")
+}
+
 // Verifies detectFormat maps common file extensions to YAML or JSON, defaulting unknown extensions to YAML.
 func TestDetectFormat(t *testing.T) {
 	assert.Equal(t, FormatYAML, detectFormat("config.yaml"))

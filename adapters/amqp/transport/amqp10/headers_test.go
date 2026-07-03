@@ -291,7 +291,7 @@ func TestEnvelopeToMessage_SubjectOnlyFromEnvelope(t *testing.T) {
 		Payload: []byte("x"),
 		Headers: map[string]any{"amqp10.subject": "from-header"},
 	})
-	msg := envelopeToMessage(envNoSubject)
+	msg := envelopeToMessage(envNoSubject, true)
 	if msg.Properties != nil && msg.Properties.Subject != nil {
 		t.Errorf("Subject must not come from amqp10.subject header, got %q", *msg.Properties.Subject)
 	}
@@ -304,7 +304,7 @@ func TestEnvelopeToMessage_SubjectOnlyFromEnvelope(t *testing.T) {
 		Payload: []byte("x"),
 		Headers: map[string]any{"amqp10.subject": "from-header"},
 	})
-	msg2 := envelopeToMessage(envWithSubject)
+	msg2 := envelopeToMessage(envWithSubject, true)
 	if msg2.Properties == nil || msg2.Properties.Subject == nil || *msg2.Properties.Subject != "from-envelope" {
 		t.Errorf("Subject must come from Envelope.Subject, got %v", msg2.Properties.Subject)
 	}

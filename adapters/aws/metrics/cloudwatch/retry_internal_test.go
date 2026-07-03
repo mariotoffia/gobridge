@@ -5,20 +5,22 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 
-	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// J9 regression: a failed PutMetricData must requeue the drained datums so a
-// subsequent flush re-attempts delivery instead of silently losing metrics.
+// J9 regression: a failed retryable PutMetricData must requeue the drained
+// datums so a subsequent flush re-attempts delivery instead of silently
+// losing metrics.
 func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 	b.addCounter("test.counter", 7, []shared.Tag{{Key: "env", Value: "test"}})
 
 	var attempts int
@@ -26,14 +28,14 @@ func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
 		PutMetricDataFn: func(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
 			attempts++
 			if attempts == 1 {
-				return nil, errors.New("throttled")
+				return nil, errors.New("connection reset") // not an APIError => retryable
 			}
 			return &cloudwatch.PutMetricDataOutput{}, nil
 		},
 	}
 
 	// First flush fails; datums must be retained for retry.
-	if err := b.flush(context.Background(), mock, "Test", 20); err == nil {
+	if err := b.flush(context.Background(), mock, "Test", 20, 0); err == nil {
 		t.Fatal("expected error on first flush")
 	}
 	if b.isEmpty() {
@@ -41,7 +43,7 @@ func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
 	}
 
 	// Second flush succeeds and delivers the requeued datum.
-	if err := b.flush(context.Background(), mock, "Test", 20); err != nil {
+	if err := b.flush(context.Background(), mock, "Test", 20, 0); err != nil {
 		t.Fatalf("second flush: %v", err)
 	}
 	if !b.isEmpty() {
@@ -60,7 +62,11 @@ func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
 // J9 regression: the retry buffer is bounded; beyond the bound the oldest
 // datums are dropped and counted rather than growing without limit.
 func TestRequeue_BoundedDropsOldest(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 2)
+	b := newBatcher(Config{
+		BufferSize:     100,
+		MaxRetryDatums: 2,
+		Clock:          clocktest.NewAt(time.Unix(1700000000, 0)),
+	})
 
 	mk := func(name string) cwtypes.MetricDatum {
 		n := name
@@ -86,7 +92,7 @@ func TestRequeue_BoundedDropsOldest(t *testing.T) {
 // J10 regression: invalid dimensions (empty name/value) are dropped, values are
 // truncated to the CloudWatch 256-byte limit, and at most 30 are kept.
 func TestBuildDimensions_ValidatesAndBounds(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 
 	tags := []shared.Tag{
 		{Key: "good", Value: "v"},
@@ -99,7 +105,7 @@ func TestBuildDimensions_ValidatesAndBounds(t *testing.T) {
 		tags = append(tags, shared.Tag{Key: "k" + string(rune('A'+i%26)) + string(rune('0'+i/26)), Value: "y"})
 	}
 
-	dims := b.buildDimensions(tags)
+	dims := b.buildDimensions(tags, false)
 	if len(dims) != maxDimensions {
 		t.Fatalf("expected %d dimensions, got %d", maxDimensions, len(dims))
 	}
@@ -119,7 +125,7 @@ func TestBuildDimensions_ValidatesAndBounds(t *testing.T) {
 // is always valid UTF-8. A byte-slice truncation would corrupt the rune and
 // CloudWatch would reject the whole all-or-nothing PutMetricData batch.
 func TestBuildDimensions_TruncatesOnRuneBoundary(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 
 	// 255 ASCII bytes + a 3-byte rune (中) => byte 256 falls INSIDE the rune.
 	val := strings.Repeat("a", 255) + "中" + strings.Repeat("b", 50)
@@ -127,7 +133,7 @@ func TestBuildDimensions_TruncatesOnRuneBoundary(t *testing.T) {
 		t.Fatalf("test value must exceed %d bytes, got %d", maxDimensionField, len(val))
 	}
 
-	dims := b.buildDimensions([]shared.Tag{{Key: "k", Value: val}})
+	dims := b.buildDimensions([]shared.Tag{{Key: "k", Value: val}}, false)
 	if len(dims) != 1 {
 		t.Fatalf("expected 1 dimension, got %d", len(dims))
 	}

@@ -229,19 +229,18 @@ func TestCondition_In(t *testing.T) {
 	}
 }
 
+// TestCondition_In_NonSliceValue: a non-slice "in" value can never
+// match (a silently disabled policy gate), so it is rejected at
+// construction as a permanent setup error.
 func TestCondition_In_NonSliceValue(t *testing.T) {
-	eval, err := newConditionEvaluator(Condition{
+	_, err := newConditionEvaluator(Condition{
 		Field: "header.x", Operator: OperatorIn, Value: "not-a-slice",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrInValueNotSlice) {
+		t.Fatalf("expected ErrInValueNotSlice, got %v", err)
 	}
-	result, err := eval.evaluate(envelope("", map[string]any{"x": "a"}, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result {
-		t.Fatal("expected false when Value is not a slice")
+	if be, ok := shared.AsBridgeError(err); !ok || be.Class != shared.ErrorPermanent {
+		t.Fatalf("expected permanent setup error, got %v", err)
 	}
 }
 

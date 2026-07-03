@@ -334,14 +334,22 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 // ───────────────────────────────────────────────────────────────────────
 //
 //	50 records queued, maxConcurrency=1 (serial sem)
-//	Sender blocks until context is cancelled after first send
-//	Run must return within the timeout guard (2s) or the test fails
+//	Sender cancels the run context after the second send
+//	Run must return within the timeout guard (10s) or the test fails
 //
 // ───────────────────────────────────────────────────────────────────────
 //
 // Assertions:
-//   - Run returns before the timeout guard
-//   - Fewer than 50 records are sent (batch was interrupted)
+//   - Run returns before the timeout guard (no deadlock/semaphore leak)
+//   - At least one record is sent
+//
+// Note (findings 9 & 10): on cancellation the main-loop batch releases its
+// unsent, claimed records back to pending instead of stranding them, and
+// Run then performs a bounded finalDrain that flushes those released records
+// during graceful shutdown. Consequently the total send count may reach the
+// full batch — that is the correct no-loss behavior, not a bug. The subject
+// of this test is prompt, deadlock-free return on cancellation, so we no
+// longer assert an upper bound on the send count.
 func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
@@ -402,8 +410,8 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 	}
 
 	sent := int(atomic.LoadInt32(&sendCount))
-	if sent >= 50 {
-		t.Fatalf("expected fewer than 50 sends (batch interrupted), got %d", sent)
+	if sent == 0 {
+		t.Fatal("expected at least one send before cancellation")
 	}
 }
 
@@ -460,14 +468,18 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 // ───────────────────────────────────────────────────────────────────────
 //
 //	20 records, maxConcurrency=3
-//	Sender introduces a small delay to ensure concurrent processing
 //	Context is cancelled after a few sends
 //
 // ───────────────────────────────────────────────────────────────────────
 //
 // Assertions:
 //   - Run returns before the timeout guard (no semaphore imbalance hang)
-//   - Some but not all records are sent
+//   - At least one record is sent
+//
+// Note (findings 9 & 10): as with CancelDuringBatch, released records are
+// flushed by the bounded finalDrain on shutdown, so the total send count may
+// reach the full batch. This test's subject is semaphore consistency and
+// prompt, deadlock-free return — not a partial-send count.
 func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
@@ -528,9 +540,6 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 	}
 
 	sent := int(atomic.LoadInt32(&sendCount))
-	if sent >= 20 {
-		t.Fatalf("expected fewer than 20 sends (batch interrupted), got %d", sent)
-	}
 	if sent == 0 {
 		t.Fatal("expected at least some sends before cancellation")
 	}

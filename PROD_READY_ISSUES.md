@@ -1,720 +1,423 @@
 # Production Readiness Issues
 
-Generated: 2026-06-30
+Generated: 2026-07-03 (fresh adversarial audit of HEAD `501111a`; supersedes the 2026-06-30 report)
 
-Overall verdict: not production ready for the documented production/cluster/zero-loss posture.
-
-The architecture has useful primitives: typed plugin config, ports/adapters separation, route policies, leases, shared outbox, DLQ, health probes, and observability hooks. The blockers are at the production seams: ACK boundaries, DLQ durability, outbox reclaim, cluster failover, live reconfiguration, docs/code drift, and several plugin-specific settlement/reconnect bugs.
-
-## Cross-cutting blockers
-
-- CRITICAL message durability: several paths ACK/complete before the durable target or DLQ write is guaranteed (`runtime/route/dispatch.go`, `runtime/dlq/router.go`, MQTT Paho delivery, Service Bus auto-renew). This can lose messages or failed-message evidence.
-- CRITICAL docs/code drift: multiple advertised YAML examples do not match strict typed plugin config decoding, especially MQTT and Azure Service Bus.
-- CRITICAL cluster safety: lease ownership does not reliably stop source consumption for MQTT, and cluster-wide reconfiguration has no version barrier or rollback semantics.
-- HIGH failover: 30-60s failover is configurable in places but not the default or primary documented production posture. Several plugins rely on external LB/DNS failover without saying so.
-- HIGH observability: failed DLQ writes, telemetry export loss, CloudWatch drops, config watcher drops, tenant/filter drops, and some lock/lease failures are not consistently reported.
-- HIGH deployment/operator: the AWS filebased CDK ALB routes health and HTTP receiver traffic to the wrong port/path.
-
-## Production question summary
-
-1. Code production ready: FAIL. Concrete critical/high defects found.
-2. Documentation production ready: FAIL. Several examples and endpoint/path claims contradict code.
-3. Zero bugs: FAIL. The audit found concrete correctness bugs; zero bugs cannot be claimed.
-4. Can run in a cluster: PARTIAL. Leases/outbox exist, but ownership, readiness, and rollout semantics are incomplete.
-5. Resilient to outages and recovery: PARTIAL. Some reconnect/retry exists; stuck claimed records, unsafe DLQ, and plugin retry bugs remain.
-6. Message loss recorded/reported/handled: FAIL. Some loss paths ACK before durable DLQ/outbox completion and do not leave reliable records.
-7. Easy standard process/Docker/Kubernetes/ECS consumption: PARTIAL/FAIL. The demo CLI and AWS deployment docs do not provide a clean production path for all documented configs.
-8. Runtime reconfiguration resilient: PARTIAL. Local rollback exists, but state reporting and in-flight semantics are flawed.
-9. Cluster reconfiguration resilient: FAIL. No cluster-wide config version barrier or coordinated rollout.
-10. Cluster failover in configurable 30-60s: PARTIAL. Tunable examples exist; defaults/docs and plugin behavior do not make it a reliable promise.
+Method: 16 independent adversarial subagent reviews, one per functional area / plugin. Each reviewed code (not docs claims), traced ACK/settlement boundaries end to end, and answered the ten production questions. Findings below are ordered CRITICAL → LOW per chunk. Executive summary is at the end of this file.
 
 ---
 
-## Chunk: Core runtime, cluster, outbox, DLQ, dynamic reconfiguration
+## Chunk: AWS SQS transport plugin (`adapters/aws/transport/sqs`)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, configuration/deployment/scenario docs, `TESTS.md`, `runtime/**`, `bridge/**`, `config/**`, `validate/**`, `ports/**`, native/DynamoDB outbox stores, runtime/bridge/e2e/long-running tests.
+Examined: all non-test files (receiver, sender, config, factory, register, ACL in/out/delivery/credentials/errors, metrics, doc.go), contract in `ports/transport.go`, PLUGIN.md, SQS sections of `docs/transport-configuration.md`, runtime dispatch interplay. `go build`/`go vet`/`go test -race` clean.
 
-Verdict: not production ready. Durable/shared-outbox and DLQ semantics do not match the documented zero-loss posture.
+Verdicts: production ready PARTIAL · zero bugs FAIL · outage resilience PASS · message loss PASS (no delete-before-dispatch window; malformed messages left for SQS redrive and counted) · cluster PASS (competing consumers native; FIFO forces `max_messages=1`) · docs PARTIAL.
 
-Findings:
-
-- CRITICAL resilience/message-loss: `runtime/route/helpers.go:91`, `runtime/bridge_start.go:112`, `runtime/bridge_start.go:148`, `docs/scenarios/05-durable-shared-outbox.md:111` - SharedOutbox records for documented MQTT to SQS route-session wiring are persisted under the binding partition while the drainer polls the route-session partition. Source can be ACKed after persist and the outbox record never drains. Fix partitioning or create binding-partition drainers; add a Scenario 5 regression test.
-- CRITICAL correctness/message-loss: `runtime/route/dispatch.go:427`, `runtime/route/dispatch.go:435`, `domain/routing/policy.go:48`, `domain/routing/policy.go:194`, `docs/scenarios/05-durable-shared-outbox.md:142` - `ack_after: target_accept` is modeled and documented but ignored by `sharedOutbox`, which always ACKs after `Persist`. Operators selecting strongest ACK semantics do not get them. Implement target-accept correlation or reject/document it as unsupported for SharedOutbox.
-- CRITICAL resilience/message-loss: `runtime/dlq/router.go:172`, `runtime/dlq/router.go:207`, `runtime/dlq/router.go:291`, `runtime/outbox/retry.go:91`, `runtime/outbox/retry.go:109`, `runtime/route/dispatch.go:156` - Terminal DLQ paths treat async enqueue as success, then ACK/complete source/outbox before the DLQ write is durable. Require confirmed DLQ write before terminal settlement, or keep source/outbox unsettled until DLQ persistence succeeds.
-- HIGH resilience: `runtime/outbox/retry.go:115`, `runtime/outbox/retry.go:122`, `ports/stores.go:35`, `adapters/native/store/memoryoutbox/store.go:130`, `adapters/native/store/sqliteoutbox/acl_query.go:76` - Transient send failures leave records claimed and rely on stale-claim reclaim; memory/SQLite do not implement the same time-stale behavior used by tests. Add explicit release/retry state or consistent stale reclaim in production stores and conformance tests.
-- HIGH correctness: `runtime/validator.go:113`, `runtime/validator.go:125`, `runtime/dlq/router.go:188`, `docs/configuration-reference.md:144` - Docs require a DLQ store for DLQ policies, but validation only requires it for non-retrying sources and `Router.Route` no-ops without a store. Permanent failures can be ACKed/completed without DLQ records. Validate DLQ store whenever policy routes terminal failures to DLQ, or require explicit `drop`.
-- HIGH architecture/resilience: `bridge/supervisor.go:317`, `bridge/supervisor.go:363`, `docs/scenarios/10-dynamic-reconfiguration.md:11`, `ARCHITECTURE.md:1201` - Reconfiguration is per-process runtime swapping, not cluster-coordinated rollout. Cluster instances can run different route/store/session definitions with no version barrier or cluster rollback. Document this or add shared config-version coordination.
-- MEDIUM documentation: `docs/scenarios/05-durable-shared-outbox.md:3`, `:90`, `:167` - Scenario 5 promises "zero message loss" while the main config uses memory stores and only later warns memory loses records on restart. Make durable examples use SQLite/DynamoDB by default; demote memory to dev-only.
-- MEDIUM documentation/resilience: `docs/scenarios/08-clustered-exclusive-sessions.md:269`, `:382`, `runtime/session/config.go:17` - Cluster failover can be tuned to 60s, but defaults and main scenario are 300-360s. Provide an explicit production fast-failover profile.
-- MEDIUM test-gap: `runtime/shared_outbox_transient_recovery_test.go:71`, `:173`, `runtime/fakes_test.go:447`, `TESTS.md:45` - Transient recovery tests depend on fake stale reclaim and sleeps. Move to store conformance/integration coverage against real stores and fake clocks/events.
-
-Question coverage: Q1 FAIL, Q2 PARTIAL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL, Q6 FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 FAIL, Q10 PARTIAL.
+- HIGH — Auto-extend starts too late for batch-mates. `receiver.go:180-204` + `runtime/route/helpers.go:166-184`: visibility clocks for all ≤10 batch messages start at receive, but the auto-extend goroutine per message is created serially only after the previous message's `emit` returns; under `MaxInFlight` saturation, later batch-mates burn their 30s visibility with no extension → expiry → redelivery → duplicate-amplification feedback loop and stale receipt handles failing the eventual Ack. Fix: create all deliveries (starting auto-extend) right after conversion, before the emit loop.
+- HIGH — FIFO sender misconfiguration classified transient and inconsistently. `config.go:216-218`, `acl_outbound.go:222-239`, `acl_errors.go:79-98`: sender does not auto-detect `.fifo`; missing `MessageGroupId` yields `MissingParameter`, unmapped → `ErrUnavailable` (transient, retried to max) via single send, but `SenderFault` → `ErrInvalidPayload` (immediate DLQ) via batch send — same deterministic config fault, two behaviors. Fix: validate at build time; map `MissingParameter` to rejected class.
+- MEDIUM — Receipt-handle expiry (`MessageNotInflight`, `ReceiptHandleIsInvalid`) mapped to permanent `ErrInvalidPayload` (`acl_errors.go:33-41`) though SQS redelivers anyway; pollutes DLQ categorization/metrics. Map to transient/conflict.
+- MEDIUM — Shutdown cancels in-flight delivery contexts instantly (`receiver.go:185`); a send completing at shutdown fails its `Ack` on a canceled ctx → DeleteMessage never issued → guaranteed duplicate egress on restart for every in-flight message. Loss-safe but drain-defeating; derive settlement ctx with `context.WithoutCancel` as the panic path already does (`runner.go:236-240`).
+- MEDIUM — Under the 10-attribute SQS cap, egress keeps `x-bridge.*` headers and sacrifices application headers (`acl_outbound.go:317-348`), but peer-bridge ingress unconditionally strips reserved headers (`acl_inbound.go:173-175`) — real data dropped in favor of headers the next hop discards.
+- MEDIUM — Docs drift: capability list wrong (`delayed_send` is declared by the factory but docs say no transport declares it; `visibility_extension`/`source_redelivery` listed incorrectly), five real config keys undocumented (`init_timeout`, `poll_backoff_initial/max/multiplier`, `credentials_uri`), silent FIFO clamp of `max_messages=1` absent from operator docs.
+- LOW — SNS unwrap trusts any JSON with a `TopicArn` field (`acl_inbound.go:229`): no `Type=="Notification"` check, forgeable `sns.*` headers. Require the type field; document queue-policy assumption.
+- LOW — `Envelope.CreatedAt` set to bridge receive time, not `SentTimestamp` (`acl_inbound.go:147`); TTL/expiry policies measure the wrong age.
+- LOW — `SQSReceiveLatency` includes up to ~20s of intentional long-poll idle (`acl_inbound.go:51-58`); useless dashboard signal on quiet queues.
+- LOW — `Started()` never closes when init fails (`receiver.go:87-146`); readiness probe selecting only on `Started()` hangs.
+- LOW — Unspecified `int32` conversion for very large delay durations (`acl_delivery.go:207,253`) can go negative → near-immediate redelivery instead of a long hold; clamp before converting.
 
 ---
 
-## Chunk: Documentation, CLI, HTTP API, deployment/operator surface
+## Chunk: Builder, config pipeline, ports & domain contracts (`bridge/`, `config/`, `ports/`, `domain/`)
 
-Examined: `README.md`, `LANGUAGE.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `cmd/gobridge/main.go`, `httpapi/**`, `deployment/aws-filebased-config/**`, `docs/deployment-guide.md`, `docs/configuration-overview.md`, `docs/configuration-reference.md`, `docs/credentials-and-http-api.md`, `docs/aws-deployment/*.md`, `spec/httpapi/*.yaml`.
+Examined: full `bridge/` (builder, prepare/complete/resolve, convert, specs, credential_refresh, reconfig_strategy, supervisor), full `config/` (manager, merge, validate, rawmap, parser), `ports/` contracts, `domain/shared|events|connectivity`, cross-verified against `runtime/bridge*.go`, `runtime/validator.go`, file config adapter, `cmd/gobridge/main.go`. `go build`/`go vet`/`go test -race` clean.
 
-Verdict: not production ready. The documented/operator-facing deployment path has blocking health/routing drift and unsafe or misleading reconfiguration/cluster claims.
+Verdicts: production ready FAIL · zero bugs FAIL · runtime reconfiguration PARTIAL (ordering right; rollback leaks, wedge states) · config-source resilience FAIL · consumability PARTIAL · validation-error clarity PASS.
 
-Findings:
-
-- CRITICAL deployment: `deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment/attachment.go:230-231`, `:443-477`, `:480-512` - CDK ALB attachment routes `/healthz`/`/readyz` and HTTP receiver paths to the admin port, while monitor health is under `/api/v1/monitor/*` and HTTP transport uses `transport_http_addr`. ECS ALB health checks and receiver traffic can 404. Target monitor/transport ports correctly or add aliases on the targeted port.
-- HIGH deployment: `docs/aws-deployment/configuration.md:63`, `deployment/aws-filebased-config/infra/bootstrap.go:41`, `deployment/aws-filebased-config/lib/bootstrap/app.go:141-169` - `node_role` is documented as controlling started components, but every node starts transport, admin, and monitor servers. Enforce `NodeRole` or document it as reserved/non-operative.
-- HIGH correctness: `deployment/aws-filebased-config/lib/bootstrap/app.go:289-298`, `:159-160`, `httpapi/admin_config.go:30-42` - Rejected reloads are stored in `logicalRef` before apply, and `/api/v1/admin/config` returns that logical config as effective. Operators can see rejected config as active. Expose desired/applied/rejected state separately and read effective from `appliedRef`.
-- HIGH documentation: `docs/deployment-guide.md:290-305`, `httpapi/monitor.go:75-93` - Kubernetes readiness example uses bare `/api/v1/monitor/ready`, but production gating likely needs `?level=connected|subscribed|full`. Document production readiness with the stricter level.
-- HIGH resilience: `runtime/session/config.go:17-31`, `docs/configuration-reference.md:343-346`, `docs/scenarios/08-clustered-exclusive-sessions.md:256-269` - Default/primary cluster failover windows are 300-360s, not 30-60s. Provide a 30-60s HA profile or stop implying fast failover as default.
-- HIGH correctness: `httpapi/server.go:383-386`, `httpapi/admin_config.go:23-27`, `spec/httpapi/http-api.yaml:883-918` - CORS allows only `GET, POST, OPTIONS`, but config transactions require `PATCH` and `DELETE`. Browser admin clients fail preflight. Add `PATCH, DELETE` or derive allowed methods from routes.
-- MEDIUM deployability: `cmd/gobridge/main.go:85-100` - Example binary registers only MQTT and native memory/SQLite stores; SQS/DynamoDB are commented guidance. Mark it as demo-scoped or provide a production build profile.
-- MEDIUM documentation: `docs/credentials-and-http-api.md:257-267`, `:345-358`, `spec/httpapi/http-api.yaml:425-433`, `httpapi/admin.go:31-34` - Docs say `POST /api/v1/admin/dlq/replay`, max 1000; code/spec use `/api/v1/admin/dlq/redrive`, max 100. Align docs with OpenAPI/code.
-- MEDIUM correctness: `httpapi/admin_config.go:52-67` - Invalid JSON on config transaction create is silently ignored and a default transaction is created. Return `400` for non-empty malformed bodies.
-- MEDIUM documentation: `docs/aws-deployment/configuration.md:97-103`, `docs/aws-deployment/overview.md:121-129` - AWS docs conflict on `config_file_path`: access-point path vs container mount path. Standardize on the container-visible path.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL, Q6 PARTIAL, Q7 FAIL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
-
----
-
-## Chunk: MQTT Paho transport plugin
-
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, scenarios 01/03/08, `adapters/mqtt/transport/paho/**`, relevant `ports/transport.go`, `domain/messaging/headers.go`, `runtime/session/**`, `runtime/route/**`.
-
-Verdict: not production ready. It is a useful MQTT client foundation, but at-least-once delivery, failover, backpressure, and documented config are not defensible.
-
-Findings:
-
-- CRITICAL message-loss: `adapters/mqtt/transport/paho/delivery.go:10`, `adapters/mqtt/transport/paho/acl_router.go:87`, `runtime/route/dispatch.go:427`, `docs/scenarios/08-clustered-exclusive-sessions.md:205` - MQTT `Ack` is a no-op because Paho acknowledges before application ownership, while docs claim SharedOutbox ACKs after persistence. A crash between broker ACK and outbox persist loses messages. Use an MQTT receive path with application-controlled ACK/settlement, or downgrade guarantees and docs.
-- CRITICAL resilience/backpressure: `ports/transport.go:29`, `adapters/mqtt/transport/paho/receiver.go:53`, `adapters/mqtt/transport/paho/acl_router.go:87` - The port requires serial synchronous `emit`, but the router spawns a goroutine per inbound publish and returns immediately. `max_in_flight` cannot stop broker read-ahead, causing unbounded goroutines/memory and early ACKs. Route synchronously or through a bounded queue tied to `ReceiveMaximum`.
-- CRITICAL cluster/message-loss: `runtime/session/manager_lease.go:45`, `runtime/session/manager_lease.go:216`, `docs/scenarios/08-clustered-exclusive-sessions.md:197` - Lease loss does not disconnect/unsubscribe/stop the MQTT receiver. A non-owner can keep consuming and ACKing during failover. On step-down, stop accepting source messages and close/disconnect the session.
-- HIGH documentation/config: `config/parser/parse.go:296`, `adapters/mqtt/transport/paho/config_plugin.go:16`, `docs/scenarios/01-mqtt-to-mqtt.md:35`, `docs/transport-configuration.md:89` - Docs show flat MQTT options and receiver/sender `session_id` only, but strict typed decoding expects nested session/sender fields and receiver/sender transport kind. Update docs or decoder.
-- HIGH cluster/docs: `adapters/mqtt/transport/paho/acl_session.go:171`, `docs/scenarios/08-clustered-exclusive-sessions.md:94`, `:269` - Scenario requires unique client IDs per instance but claims broker-retained QoS messages reach the new active instance. MQTT persistent queues are tied to client/session identity. Define one identity strategy and test it.
-- HIGH security/metadata: `domain/messaging/headers.go:48`, `runtime/route/address.go:121`, `adapters/mqtt/transport/paho/acl_headers.go:251` - MQTT egress serializes internal `x-bridge.*` headers as user properties. Strip internal-only headers unless explicit bridge-to-bridge mode allows them.
-- MEDIUM resilience: `adapters/mqtt/transport/paho/acl_session.go:117`, `runtime/session/manager.go:227` - Paho `OnConnectionUp` reconciles subscriptions, then session manager reconciles again. Pick one owner for reconnect reconciliation.
-- MEDIUM readiness: `adapters/mqtt/transport/paho/session_health.go:12`, `:57` - `Ready` means connected only, while subscription/handler readiness is in `ServiceLevel`. Production probes should use full service level for receiver sessions.
-- MEDIUM documentation: `docs/scenarios/01-mqtt-to-mqtt.md:199`, `docs/scenarios/03-mqtt-to-sqs.md:189`, `adapters/mqtt/transport/paho/delivery.go:10` - Docs overstate QoS/retain as end-to-end guarantees. Document MQTT QoS as broker-client packet semantics only.
-- MEDIUM test-gap: `TESTS.md:21`, `docs/scenarios/08-clustered-exclusive-sessions.md:205` - Missing production tests for broker restart, crash before outbox persist, lease loss, and bounded 30-60s failover.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 FAIL, Q5 PARTIAL, Q6 FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
+- CRITICAL — Watcher failure silently shuts down the whole bridge with exit code 0. `bridge/supervisor.go:250-253` treats a closed changes channel as "stop"; `config/manager.go:176-181,200-215` closes that channel when a layer watcher fails to start (Warn only) or all watcher goroutines end; `cmd/gobridge/main.go:209-216` exits 0. Scenario: inotify exhaustion → fsnotify.NewWatcher fails → bridge drains, stops, exits clean → `restart: on-failure` never restarts → message flow halts silently. Fix: distinguish "watch source failed" from "shutdown requested"; never stop a healthy runtime because the watcher died.
+- CRITICAL — Built-but-never-started runtime is un-cleanable; failed swaps leak sessions/receivers/store handles forever. `runtime/bridge.go:226-231` (`Stop` no-ops when not running) + `bridge/supervisor.go:358-378,406-448`: when `newRt.Start` or `complete` fails, prep-opened lease/outbox/DLQ stores and every opened session leak; a config flapping bad/good leaks one full connection set per attempt. Fix: teardown path for the built-not-started state.
+- HIGH — Supervisor credential-rotation options are dead code. `supervisor.go:59-61,108-123` store push/poll credential stores but `newBuilder` (:459-487) never forwards them; `builder_complete.go:63` gates the refresher on the always-nil field. Rotation silently doesn't work under hot-reload; expired certs surface hours later. Fix: forward the three fields.
+- HIGH — shared_outbox route with a stateless-transport (nil) primary session: source ACKed, outbox records never drained — silent message loss. `builder_complete.go:516-518,159-163` tolerate nil session; `runtime/bridge_start.go:95-101,134,147` creates no drainer for the binding partition; `validateRoutes` doesn't check it. Fix: hard error when a shared_outbox route's session resolves to nil.
+- HIGH — `validateRoutes` runs only in `Start`, after the old runtime is already stopped. `runtime/bridge_start.go:35` + `supervisor.go:348-357,396-404`: a pure, statically-checkable rejection (e.g. `direct_hold` without visibility-extension capability) causes drain-old → fail → rebuild-old — an avoidable outage on every rejected config. Fix: run route validation at end of `complete()`.
+- HIGH — Sessions not owned by a session manager are never closed on Stop. `runtime/bridge.go:309-314` closes only `sessionMgrs`; `builder_complete.go:497-519` creates sessions for every SessionDef (even unreferenced), and non-shared_outbox binding sessions get no manager (`bridge_start.go:183-232`). One leaked broker connection per session per reconfiguration swap. Fix: close unmanaged sessions on Stop, or refuse to create unreferenced ones.
+- MEDIUM — Wedged supervisor invisible to the terminal-state backstop. After swap+recovery both fail, `s.rt = nil` (supervisor.go:369-370,418-419) but `cmd/gobridge/main.go:191-199` requires `rt != nil && rt.Terminal()`; process idles alive routing nothing. Fix: treat nil runtime after failed swap as terminal.
+- MEDIUM — `DefaultMerge` silently drops overlay `bridge.cluster` (and overlay `version`). `config/merge.go:19,66-91`. Overlay cluster endpoints accepted, validated, ignored. Fix: merge Cluster; define Version semantics.
+- MEDIUM — Three supervisor drain options are inert: `WithDefaultDrainTimeout` can never apply (`supervisor.go:528-536` vs `ports/blueprint.go:92-99` hard 30s default); `PerRecordDrainTimeout`/`MaxDrainTimeout` have zero callers. Fix or delete.
+- MEDIUM — Misleading error for stateless-transport sessions: silently-skipped nil session later reported as `references unknown session` (`builder_complete.go:516-518,543-545`). Emit a dedicated message.
+- LOW — Debounce/window reconfig strategies can drop the final pending config on channel close (`reconfig_strategy.go:102-105,216-219`).
+- LOW — Parser requires `transport` (`config/parser/parse.go:250-259`) while the builder supports session-inherited transport (`builder_complete.go:530-535`); YAML users can never use inheritance.
+- LOW — `WithPolledCredentialStore` captures logger order-dependently (`bridge/builder.go:76-81`); `convert.go` has three error-swallowing helpers with no non-test callers.
 
 ---
 
-## Chunk: AWS SQS transport plugin
+## Chunk: Cluster, leases & failover (`runtime/cluster`, `runtime/session`, lease stores, resolvers)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, scenarios 02/03/05, `adapters/aws/transport/sqs/**`, relevant `ports/**`, `runtime/validator.go`, `runtime/route/**`, `runtime/outbox/**`, `runtime/bridge_start.go`.
+Examined: `runtime/cluster/locator.go`, `runtime/session/` (manager, lease lifecycle, config), memorylease + dynamodblease stores, native + ECS resolvers, `ports/cluster.go|resolver.go|stores.go`, `domain/persistence/lease.go`, lease gates in outbox/DLQ, bridge role/readiness, supervisor swap path, scenarios 08/10, CDK cluster construct. `go vet` clean.
 
-Verdict: partial. Basic standard SQS send/receive is credible; FIFO, durable, clustered, and outage readiness are not production ready.
+Verdicts: cluster-capable PARTIAL (fencing on outbox commit sound; consumption split-brain windows real) · failover 30–60s FAIL with defaults (~8.4 min worst; ~55–90s with explicit HA values) · prompt loser step-down FAIL · lease-store bugs PARTIAL · cluster reconfiguration PARTIAL (per-process only, documented) · lease-store outage handling PARTIAL (CP: cluster-wide consumption halt, near-silent).
 
-Findings:
+Failover math (worst case): defaults TTL=360s + acquire-poll 112.5s + connect ≈ **~502s**. Explicit HA values (ttl=45s, renew=14s): ≈ **61.5s + connect**. Loser-stop gap after takeover: ~4.5s + 3×(unbounded renew-call latency); frozen-process case adds ~49.5s (HA) / ~330s (defaults) of dual consumption.
 
-- HIGH documentation/config: `docs/scenarios/02-sqs-to-sqs.md:52`, `docs/scenarios/03-mqtt-to-sqs.md:75`, `docs/scenarios/05-durable-shared-outbox.md:114`, `adapters/aws/transport/sqs/sender.go:84` - Scenario configs use queue names as binding addresses, but sender rejects non-empty address not equal to queue URL. Fix docs and add build-time validation.
-- HIGH correctness: `adapters/aws/transport/sqs/factory.go:68`, `bridge/builder_complete.go:123`, `runtime/validator.go:138` - Visibility validation always uses 30s and ignores configured `visibility_timeout`. Thread actual receiver config into `SourceVisibilityTimeout`.
-- HIGH correctness/panic: `adapters/aws/transport/sqs/acl_delivery.go:198`, `:227`, `:347` - `Extend()` can store `0`/`1` seconds while auto-extend later calls `ticker.Reset(0)`, which can panic. Clamp values and test boundary.
-- HIGH concurrency: `adapters/aws/transport/sqs/acl_credentials.go:67`, `:84`, `adapters/aws/transport/sqs/config.go:29`, `adapters/aws/transport/sqs/acl_inbound.go:38` - Credential rotation swaps `client` under mutex while send/receive read it unlocked. Use atomic client snapshots/RWMutex and race tests.
-- HIGH correctness/FIFO: `adapters/aws/transport/sqs/config.go:34`, `runtime/route/runner.go:199`, `docs/scenarios/02-sqs-to-sqs.md:146` - FIFO source ordering is not preserved when messages from the same group process concurrently. Serialize per `MessageGroupId` or force FIFO receivers to `max_messages: 1`.
-- HIGH resilience: `runtime/outbox/retry.go:115`, `runtime/outbox/loop.go:214`, `domain/persistence/outbox.go:183`, `docs/scenarios/05-durable-shared-outbox.md:208` - Transient SQS send failure returns nil without completing or releasing the outbox record. Add failed/release transition or reliable stale reclaim.
-- HIGH metadata: `adapters/aws/transport/sqs/config.go:223`, `adapters/aws/transport/sqs/acl_inbound.go:173`, `adapters/aws/transport/sqs/doc.go:24` - Docs say bridge headers map to SQS attributes, but code strips reserved `x-bridge.*`, losing idempotency/correlation across bridge hops. Preserve safe bridge-to-bridge headers or document loss.
-- MEDIUM performance/docs: `runtime/route/dispatch.go:82`, `runtime/outbox/retry.go:53`, `docs/scenarios/02-sqs-to-sqs.md:19` - Runtime never uses `SendBatch`, so `batch_size` does not reduce normal bridge API calls. Implement BatchSender-aware dispatch/draining or document it as direct API only.
-- MEDIUM capability: `adapters/aws/transport/sqs/factory.go:56` - Capabilities omit `shared_consumer` and `delayed_send`. Add or document the omission.
-- MEDIUM operability: `adapters/aws/transport/sqs/config.go:52`, `config_plugin.go:32` - Poll backoff knobs exist internally but are not exposed in plugin config, so outage/failover tuning is not deployable. Expose and document them.
-- MEDIUM correctness: `adapters/aws/transport/sqs/config.go:125`, `:212` - All headers become SQS attributes without SQS 10-attribute/name/size guards. Enforce limits or pack overflow deterministically.
-- LOW documentation: `docs/transport-configuration.md:62` - Docs say FIFO dedup hashes logical subject only; code hashes payload, subject, ID, and creation time. Align docs.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL/FAIL, Q6 FAIL, Q7 PARTIAL, Q8 FAIL, Q9 FAIL, Q10 PARTIAL/FAIL.
+- CRITICAL — Documented renew-interval derivation is not implemented in the production config path. `bridge/convert.go:82` seeds `session.DefaultConfig` (RenewInterval=110s pinned), so the derive branch (`runtime/session/manager.go:102-107`, promised by `ports/blueprint.go:301-303` and scenario 08) never fires from YAML. Any `lease_ttl` < 110s (the whole HA band) yields RenewInterval > TTL: lease expires between renews → ~285s repeating dual-active windows with a standby, flapping even single-instance. No cross-field validation catches it. Fix: leave RenewInterval zero unless configured; validate `renew×fails + jitter < ttl`.
+- HIGH — Loser does not step down on definitive lease-loss. `manager_lease.go:184-192` treats `ErrStaleFencingToken`/`ErrNotFound` like transient errors, waiting out `MaxRenewFails=3`; old owner consumes ~33s (HA) / ~220s (defaults) alongside the new owner. Fix: immediate step-down on definitive signals.
+- HIGH — No per-call timeout on lease Acquire/Renew (`manager_lease.go:138,181`); a hanging DynamoDB call stretches step-down and takeover unboundedly (SDK retry budget added to every dual-active window). Fix: `context.WithTimeout` ≈ min(renew/2, 5s) per call.
+- HIGH — DLQ lease gate is instance-global "any lease held". `bridge_start.go:235-245` + `dlq/router.go:175-187`: a standby's non-exclusive routes cannot DLQ poison messages (NACK/redelivery loop for the standby's lifetime); conversely an unrelated lease authorizes DLQ writes for routes it doesn't own. Fix: scope the token check to the failing route's session.
+- MEDIUM — Renew jitter (fixed 5s, not configurable in YAML) breaks the expiry-margin invariant in the HA band: 3×(14+2.5)=49.5s > 45s TTL; even code-level `HAConfig` sits exactly on its own boundary. Expose jitter; include it in validation.
+- MEDIUM — Takeover compares owner-written wall clock to taker's clock (`dynamodblease/acl_store.go:185,246`); skew > TTL−fails×interval (≈3s in HA band) seizes an unexpired lease. Document a clock-sync budget or count missed heartbeats on the taker's clock.
+- MEDIUM — Standby acquire-poll cadence = renew interval (`manager_lease.go:146-150`), adding up to 112.5s to failover with defaults; scenario 08 documents worst case as `lease_ttl` only. Separate the poll knob or fix the docs.
+- MEDIUM — Binding-only (Path-2) sessions get hard-coded `DefaultConfig` lease timings (`builder_complete.go:276-277`) — 6-minute failover on exclusive sender sessions in an otherwise 45s-tuned cluster.
+- MEDIUM — Cluster locator fails open to local processing when its breaker opens, and counts normal `ErrNotFound` (no owner yet) toward `MaxFailures` (`locator.go:119-135`) — opens during every ordinary lease transfer; inconsistent with the session layer's fail-closed outage posture. Distinguish not-found from store errors; document fail-open.
+- LOW — Lease-store outage nearly silent: acquire retries log at Debug (`manager_lease.go:144`); promote a rate-limited Warn.
+- LOW — Endpoint-resolution failure silently disables cluster forwarding for process lifetime (`builder_prepare.go:255-261`); ECS resolver does one 5s GET, no retry (`ecs/resolver.go:51-101`) though ECS metadata is flaky early in task life. Retry or fail startup in clustered mode.
+- LOW — memorylease split-brain guard is opt-in: only rejected when `deployment_mode: clustered` is explicitly set (`validate/store.go:7-10`); two instances without the flag silently split-brain. Warn when a process-local lease store coexists with cluster endpoints.
 
 ---
 
-## Chunk: Azure Service Bus transport plugin
+## Chunk: Runtime message path (`runtime/route`, `runtime/session`, resolve/condition/validator, instrumentation)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, `docs/scenarios/11-multi-tenant-azure-servicebus.md`, `docs/scenarios/05-durable-shared-outbox.md`, `adapters/azure/transport/servicebus/**`, relevant `ports/**`, `runtime/route/dispatch.go`, `runtime/validator.go`, `bridge/builder_complete.go`.
+Examined: full `runtime/route/` (runner, dispatch, chain, helpers, retry, address, id), `runtime/session/` (manager, lease, config), resolve.go, condition.go, validator.go, route_config.go, instrumented*.go, bridge*.go message-path aspects; verified flows into outbox/DLQ/stores. `go build`/`go vet`/`go test -race` clean.
 
-Verdict: not production ready. Queue happy path is credible; topic retry, lock lifecycle, documented config, and timeout/retry semantics are not production-safe.
+Verdicts: production ready PARTIAL (persist-before-ack skeleton is sound) · zero bugs FAIL · outage resilience PARTIAL · message loss PARTIAL (main paths never ACK before durability; edge paths below) · concurrency/shutdown PARTIAL · live reconfig PARTIAL (whole-runtime swap only; no per-route reconfig).
 
-Findings:
-
-- CRITICAL documentation/config: `docs/transport-configuration.md:299-311`, `docs/scenarios/11-multi-tenant-azure-servicebus.md:48-59`, `adapters/azure/transport/servicebus/config_plugin.go:18-21`, `config/parser/raw_config.go:60-63` - Docs show flat ASB options, but strict decoder expects nested `receiver`, `sender`, and `connection`. Update docs or support the documented flat shape.
-- CRITICAL correctness/message-duplication: `receiver.go:167-174`, `receiver.go:68-73`, `acl_inbound.go:212-230`, `runtime/route/dispatch.go:153`, `:267` - Delayed retry from a topic subscription republishes to the topic, causing retry fan-out to sibling subscriptions. Disable delayed retry for topic/subscription receivers or implement subscription-safe retry.
-- CRITICAL resilience/message-loss: `ports/transport.go:36-42`, `acl_inbound.go:144-173`, `receiver.go:224-226` - If `emit` fails, auto-renew can keep the message invisible after `Run` returns. Stop auto-extension before returning emit failure when ownership is not transferred.
-- HIGH correctness: `docs/scenarios/11-multi-tenant-azure-servicebus.md:230-235`, `acl_inbound.go:181-191`, `:202-249`, `:157-173` - `ReceiveAndDelete` is documented, but settlement still calls PeekLock-only operations. Make settlement/extension no-op for ReceiveAndDelete or reject unsupported mode.
-- HIGH correctness: `acl_inbound.go:24-25`, `runtime/route/dispatch.go:321-330` - ASB delivery count is recorded but ignored; `max_replay_attempts` does not work for ASB. Expose receive count through Delivery or teach runtime to read ASB count.
-- HIGH resilience: `acl_inbound.go:307-315`, `receiver.go:224-226` - Auto-extend failure cancels a private context, not the work context. Processing can continue after lock loss and race with redelivery. Propagate lock-loss cancellation/status to runtime.
-- MEDIUM config/docs: `config.go:33-39`, `docs/transport-configuration.md:351-353`, `acl_inbound.go:335`, `acl_client.go:200-212` - `max_wait_time` and `prefetch` are configured/documented but not applied to the SDK. Wire them or remove docs.
-- MEDIUM validation: `bridge/builder_complete.go:121-125`, `runtime/validator.go:131-142`, `factory.go:109-112` - Timeout-vs-lock validation is bypassed because ASB lacks `VisibilityTimeoutProvider`. Expose lock duration/default visibility or add ASB-specific route validation.
-- MEDIUM docs/feature: `acl_client.go:21-26`, `runtime/route/dispatch.go:269-273` - Native ASB dead-letter is implied but not implemented; permanent failures route to GoBridge DLQ then ACK. Document "GoBridge DLQ only" or add native dead-letter policy.
-- LOW test-gap: topic delayed retry and ReceiveAndDelete settlement behavior are not covered by integration tests.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 PARTIAL, Q5 FAIL, Q6 FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
-
----
-
-## Chunk: RabbitMQ AMQP 0-9-1 transport plugin
-
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, scenarios 19/21, `adapters/amqp/transport/amqp091/**`, relevant `ports/transport.go`, `runtime/route/**`, `runtime/outbox/**`, `runtime/session/**`, selected AMQP tests.
-
-Verdict: not production ready.
-
-Findings:
-
-- CRITICAL docs/runtime drift: `docs/transport-configuration.md:596`, `bridge/specs.go:20`, `bridge/convert.go:77`, `runtime/session/manager.go:147` - Declarative RabbitMQ topology in `topics[].options` is documented as auto-declared, but bridge never builds a `SessionPlan` from receiver topics/sender bindings. Runtime reconciles an empty/default plan. Assemble session plans from config and add scenario integration tests.
-- CRITICAL message-loss: `acl_session.go:91`, `runtime/route/dispatch.go:97`, `acl_delivery.go:82`, `docs/transport-configuration.md:581` - `auto_ack` is exposed as normal receiver option while runtime still settles deliveries. With broker auto-ack, source messages are settled before downstream send succeeds. Reject `auto_ack=true` for managed routes or mark as unsafe/manual mode.
-- HIGH resilience/backpressure: `factory.go:115`, `receiver.go:127`, `docs/transport-configuration.md:583` - Typed-config path loses default `prefetch_count: 10`; zero skips QoS, leaving unlimited prefetch. Apply defaults in receiver factory and test YAML/typed config omission.
-- HIGH resilience: `receiver.go:91`, `:120`, `:251` - Consumer/channel errors while session remains connected immediately loop because `waitForReconnect` returns true on connected health. Back off, trigger reconcile, distinguish permanent consume errors, or fail component.
-- HIGH correctness: `config_plugin.go:47`, `acl_outbound.go:245`, `docs/transport-configuration.md:592` - `immediate=true` is documented/exposed, but RabbitMQ does not support it and closes the channel. Reject/remove it.
-- HIGH correctness/config: `config.go:29`, `config.go:125`, `acl_client.go:117`, `docs/scenarios/19-rabbitmq-to-rabbitmq.md:173` - `vhost` is parsed/documented but never applied to the broker URL. Inject it into URI path or delete the option/docs.
-- HIGH shutdown: `acl_session.go:104`, `acl_session.go:119`, `receiver.go:171` - Delivery forwarding uses unbuffered send with no cancellation select. Shutdown under load can leak goroutines and hold SDK delivery state. Select on send vs cancellation.
-- MEDIUM resilience: `sender.go:190`, `session.go:605`, `session.go:688` - Sender caches channel across reconnect; first send after reconnect can hit stale channel. Subscribe to session events or validate cached channel against current connection.
-- MEDIUM observability/backpressure: `acl_client.go:14`, `session.go:383` - No RabbitMQ `NotifyBlocked`/`NotifyFlow` in health/metrics. Broker memory/disk alarms look like send timeouts. Add blocked/unblocked observation.
-- MEDIUM cluster/failover: `config.go:20`, `docs/transport-configuration.md:562` - Single broker URL only; no documented RabbitMQ node failover contract. Document LB/DNS requirement or support URL rotation.
-- MEDIUM config/topology: `acl_session.go:39`, `acl_session.go:47`, `config_plugin.go:56` - Topology declaration supports only basic exchange/queue flags and nil arguments. Production RabbitMQ features cannot be declared safely. Expose arguments or document pre-provisioned topology.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 PARTIAL/FAIL, Q5 PARTIAL, Q6 FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL/FAIL.
+- HIGH — Abandoned processor goroutine races on the shared envelope → fatal process crash. `runtime/route/chain.go:140-191` + `dispatch.go:305-325`: on chain timeout the processor goroutine keeps running with the same `*Envelope` whose `Headers` is a bare `map[string]any`; the runner concurrently reads it (receiveCount, DLQ serialization). Late `SetHeader` → concurrent map read/write → unrecoverable fatal error, whole bridge dies. Fix: clone the envelope for the chain and merge on success, or never abandon.
+- HIGH — Panic-recovery retry is uncapped and immediate. `runner.go:236-249`: panics outside RunChain (resolver, hooks, tracer, metrics) → `retryDelivery(…, 0)` with no receive-count/poison gate (that cap exists only in `sendDirectHold`). A deterministically-panicking resolver = infinite immediate redelivery hot loop on MQTT/AMQP requeue. Fix: apply the rc-based poison-DLQ gate before post-panic retry.
+- MEDIUM — `Runtime.Start` after `Stop` silently corrupts state: Stop closes outbox/DLQ/lease stores (`bridge.go:327-333`) but drainers/managers/entries are never reset; restart appends duplicate drainers over closed stores. Guard restart or support it properly.
+- MEDIUM — Own-lease self-block: on reconcile-failure or failed Release the manager never releases its own lease (`manager_lease.go:326-352`); restart blocks in acquire until TTL self-expiry (360s default) — complete outbox delivery outage for that session. Make release-then-reacquire the default.
+- MEDIUM — `stepDown` grace is skipped on shutdown, contradicting its own contract (`manager_lease.go:272-280`: comment says grace "must not be aborted by caller cancellation", code selects on `ctx.Done()`); in-flight outbox Send+Complete get no settle window → fenced duplicates.
+- MEDIUM — Partial-overlap fanout re-persist ACKs unpersisted legs (verified loss sequence). Persist `{A}` ok, ack fails, redelivery resolves `{A,B}`; store hits UNIQUE on A, rolls back the whole tx, returns `ErrDuplicateRecord` (`sqliteoutbox/acl_session.go:191`; DynamoDB TransactWriteItems identical); `dispatch.go:583-584` treats duplicate as "already persisted" and ACKs — B is permanently lost. Fix: ACK on duplicate only when all records are duplicates.
+- MEDIUM — direct_hold silently discards extra dispatch plans: only `plans[0]` sent (`runner.go:461-465`); validator blocks fan-out policy but not a multi-plan resolver under DispatchSingle. Message ACKed after one leg, others vanish with zero telemetry.
+- MEDIUM — Drop paths emit false `DLQEntries`, no `MessagesDropped`: `dlq.Router.Route` is a silent no-op without a store (`dlq/router.go:130-132`) but `handleProcessorError`/`handleResolveError` emit `DLQEntries` unconditionally; expired-drop path (`dispatch.go:295-303`) ACKs with zero telemetry; `OnPermanentFailure=drop` is ignored on the non-filtered permanent branch. Fix: gate emitDLQ on HasStore(), count every drop, honor policy.
+- MEDIUM — Outbox replay budget burned by outages: claim-count poison (default 5) with 5s transient floor DLQs perfectly good records after a ~25-30s egress outage that slips past ReadyFn (`outbox/loop.go:64-74`, acknowledged in code). Move to age-based bounding.
+- LOW — `InFlight` incremented inside the spawned goroutine (`runner.go:199-209`); `WaitQuiescent` can snapshot 0 with an accepted-but-unstarted delivery.
+- LOW — Closed session Events channel treated as clean stop (`manager.go:219-221`): non-exclusive session dies permanently with no restart and no error; exclusive path emits false `lease.lost` audit.
+- LOW — Shared-session drainer inherits the first route's policy/sender/RouteID for all records in the partition (`bridge_start.go:147-177`); silent config bleed.
+- LOW — `LeaseStateChanged` events dropped on full 16-slot buffer (`manager.go:182-188`); any future consumer inherits lossy semantics.
+- LOW — Post-ack panic invokes `retryDelivery` on a settled delivery (`runner.go:243`); duplicate noise.
+- LOW — Cluster locator fails open to `local=true` when its breaker is open (`cluster/locator.go:119-121`); exclusivity/ordering quietly weakened exactly when the cluster is degraded.
 
 ---
 
-## Chunk: AMQP 1.0 transport plugin
+## Chunk: Config sources & credential adapters (file config, DynamoDB config, file credentials, SSM credentials, rotation pipeline)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, scenarios 20/21, `adapters/amqp/transport/amqp10/**`, `runtime/route/dispatch.go`, `runtime/outbox/**`, `ports/transport.go`.
+Examined: `adapters/native/config/file/` (source, watcher), `adapters/aws/config/dynamodb/` (loader, session/params/streams/errors ACL), `adapters/native/credentials/file/`, `adapters/aws/credentials/ssm/`, plus `ports/credentials.go|blueprint_loader.go`, `config/manager.go`, `runtime/credentials/poll.go`, `runtime/credential_resolver.go`, `bridge/credential_refresh.go`, supervisor apply path, `cmd/gobridge/main.go`, reference deployment wiring, and the three credential/config docs. `go build`/`go vet` clean on all four modules.
 
-Verdict: not production ready; partial at best. Send/receive/settlement paths exist, but reconnect health, retry delay semantics, shutdown cancellation, and broker support claims are not production-safe.
+Verdicts: production ready PARTIAL · zero bugs FAIL · outage resilience PARTIAL · runtime reconfiguration PARTIAL (correct pipeline; missed-event and dedup gaps) · cluster reconfiguration PARTIAL (streams mode unsafe ≥3 instances) · docs FAIL (config-stores.md breaks a copy-paste integrator).
 
-Findings:
-
-- HIGH resilience: `adapters/amqp/transport/amqp10/session.go:491-522` - `Conn.Done()` wakeups do not clear `s.conn`; `tryReconnect` sees non-nil conn and skips reconnect, leaving false `Connected=true` and potentially spinning. On conn done, mark disconnected, close/clear conn/session, emit disconnected, then reconnect.
-- HIGH correctness/retry: `adapters/amqp/transport/amqp10/acl_delivery.go:136-146`, `runtime/route/dispatch.go:153`, `:267` - `Retry(ctx, after>0)` ignores actual delay while runtime passes meaningful backoff. Implement/document broker-specific delayed redelivery or return `ErrNotSupported`.
-- HIGH shutdown: `adapters/amqp/transport/amqp10/receiver.go:95-108` - Receiver shutdown closes link with `context.Background()` and no timeout. Use bounded `LinkCloseTimeout` and caller cancellation.
-- MEDIUM readiness: `adapters/amqp/transport/amqp10/session.go:315-319`, `runtime/bridge_start.go:137-139` - Health reports subscriptions active when connected, regardless of receiver link state. Track receiver link active/error state.
-- MEDIUM domain invariant: `adapters/amqp/transport/amqp10/acl_outbound.go:41-45`, `:122-134` - Outbound `amqp10.subject` header can set AMQP Subject when `Envelope.Subject` is empty. Make `Envelope.Subject` the only egress source.
-- MEDIUM docs/test: `adapters/amqp/transport/amqp10/README.md:3`, `integration_test.go:1`, `:15` - Docs claim Solace/Qpid testing, but visible integration is Artemis-local. Remove unsupported claims or add broker matrix tests.
-- LOW failover/docs: `adapters/amqp/transport/amqp10/config.go:17-21`, `docs/transport-configuration.md:747-749` - Reconnect is same-endpoint only; no AMQP 1.0 multi-broker failover list. Document external LB/DNS requirement or add endpoint list support.
-
-Question coverage: Q1 FAIL, Q2 PARTIAL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL, Q6 PARTIAL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL/FAIL.
-
----
-
-## Chunk: HTTP transport plugin
-
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/transport-configuration.md`, `docs/credentials-and-http-api.md`, scenarios 13/15, `docs/deployment-guide.md`, `docs/aws-deployment/http-api.md`, `spec/http-adapter/http-api.yaml`, `adapters/http/transport/**`, `deployment/aws-filebased-config/lib/bootstrap/transport_server.go`.
-
-Verdict: partial. Acceptable for controlled single-node HTTP ingress behind a hardened gateway; not ready for clustered ingress/SSE.
-
-Findings:
-
-- HIGH cluster/security: `adapters/http/transport/receiver.go:108`, `:148` - Client-controlled `X-Bridge-Forwarded: true` bypasses route-location forwarding. A caller can force local processing on a non-owner node. Trust forwarded state only after peer authentication or use an internal token.
-- HIGH metadata/security: `adapters/http/transport/sender_sse.go:140-145`, `:283-288`, `domain/messaging/headers.go:48-50`, `:106-113` - SSE serializes headers directly, including internal `x-bridge.*`. Strip internal-only headers before external SSE.
-- HIGH deployment: `deployment/aws-filebased-config/lib/bootstrap/transport_server.go:63-66`, `adapters/http/transport/sender_sse.go:254-279` - Production transport server sets `WriteTimeout: 30s` while SSE is long-lived. Healthy SSE streams can be killed. Split ingress/SSE listeners or use per-write deadlines.
-- HIGH resilience: `adapters/http/transport/sender_sse.go:269-278` - SSE writes have no per-frame write deadline and can block goroutines on slow clients. Set per-write deadlines and close slow clients.
-- HIGH cluster/metadata: `adapters/http/transport/forwarder.go:149-170`, `receiver.go:226-230`, `domain/messaging/envelope.go:92-104` - Cluster forwarding puts `env.Headers()` in body, then receiver strips reserved headers and only trusts selected HTTP headers. Idempotency, tenant, and trace context can be lost across forwarding. Define authenticated bridge-to-bridge envelope propagation.
-- MEDIUM correctness: `adapters/http/transport/receiver.go:118`, `:126-129` - Oversized bodies are returned as `400`, and decoder accepts first JSON value without EOF check. Return `413` for `MaxBytesError` and reject trailing tokens.
-- MEDIUM security/config: `adapters/http/transport/config.go:22-27`, `:48-63`, docs scenario 15 - API key examples imply min-16, but `Config.Validate` does not enforce it. Enforce or document no minimum.
-- MEDIUM auth: `adapters/http/transport/helpers.go:19-20`, `receiver.go:103-105`, `sender_sse.go:194-196` - 401 responses omit `WWW-Authenticate` for Bearer-capable endpoints. Add appropriate challenge.
-- LOW docs: docs scenarios 13/15 use bare `http.ListenAndServe` without timeouts/TLS caveats. Mark as development-only or show hardened server/proxy setup.
-- LOW test-gap: missing adversarial tests for forwarded-header spoofing, SSE internal-header leakage, trailing JSON, 413 mapping, slow SSE writers; one inspected test uses `time.Sleep`.
-
-Question coverage: Q1 PARTIAL, Q2 PARTIAL, Q3 FAIL, Q4 PARTIAL/FAIL, Q5 PARTIAL, Q6 PARTIAL/FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
+- CRITICAL — Default notify mode silently misses Kubernetes ConfigMap updates forever. `acl_watcher.go:252-255` filters events to the exact file path while ConfigMap updates swap the `..data` symlink — no Write/Create/Rename ever matches; modes are exclusive (`:169-187`), no hash reconciliation backs up notify; zero log or staleness signal. `docs/deployment-guide.md:106-109` never names the pitfall. Fix: hybrid notify+hash-poll or EvalSymlinks re-arm; at minimum document poll as required on k8s.
+- HIGH — Watcher startup failure collapses into clean exit 0 (same chain as the builder chunk: `config/manager.go:174-181` Warn+skip → channel close → supervisor stop → `main.go` exit 0). inotify limit exhaustion = silent total outage.
+- HIGH — DynamoDB poll watch advances its version cursor before a non-blocking send with `default:` discard (`loader.go:246-251`): newest config dropped and never re-detected — instance runs stale until an unrelated future version bump. Same pattern in the stream path (`acl_streams.go:88-91`). The file watcher fixed exactly this class (latest-wins); the DDB adapter never got the fix.
+- HIGH — Streams mode breaks in clusters: 500ms `GetRecords` cadence per instance (`loader.go:21`) against the ~5 TPS/shard shared budget → ≥3 instances permanently throttle each other; every throttle discards the iterator and re-acquires `LATEST` (`acl_streams.go:61-72,142`), skipping records written in between — instances can miss a config update entirely and diverge. Fix: back off without LATEST reset, reconcile via version check; prefer poll for clusters.
+- HIGH — SSM password+TLS credential sets silently lose all TLS material on round-trip. `parser.go:129-150` serializes both capabilities with `type:"password"`; `parseJSONCredentials` (`:36-52`) dispatches to exactly one branch and drops cert/key/CA/insecure. TLS regresses to defaults or fails with no error anywhere; contradicts `credentials-and-http-api.md:164` ("either or both"). Fix: parse all capabilities present.
+- MEDIUM — DDB poll loop swallows every error silently forever (`loader.go:233-245`: bare `continue`, logger never used) — IAM change or table deletion = config updates stop with zero log/metric.
+- MEDIUM — Stream re-acquire uses LATEST with no version reconciliation; disabled stream = warn-spam every 500ms forever, no fallback to poll after `Watch` (`acl_streams.go:37-57,142`, `loader.go:188-201`).
+- MEDIUM — No content dedup in notify mode (`acl_watcher.go:314-321`) and no config-equality check in the supervisor: ArgoCD/Ansible rewriting an identical file triggers a full stop-the-world runtime swap each sync.
+- MEDIUM — fsnotify errors incl. `ErrEventOverflow` (kernel dropped events) only logged, no forced resync reload (`acl_watcher.go:272-279`).
+- MEDIUM — 5-minute credential-resolver cache silently defeats the documented 30s rotation poll (`runtime/credential_resolver.go:19` + `bridge/builder.go:76-79`): the poll wrapper polls the cache; rotation detected only at TTL expiry; a post-rotation rebuild within TTL reconnects with the rotated-out secret. Nothing calls `InvalidateCache` on rotation. Document and bypass.
+- MEDIUM — The only reference deployment never wires rotation at all (`deployment/aws-filebased-config/lib/bootstrap/registry.go:28-29`: pull store only); `credentials-rotation.md:263-265` claims one-poll-interval pickup — untrue for this profile.
+- MEDIUM — `docs/config-stores.md` breaks a copy-paste integrator: `NewSource`/`NewWatcher` examples omit the mandatory `*ports.Registry` arg (:76,105); DDB options table omits required `WithRegistry` and `WithWatchMode`/`WithStreamsClient`; watch mechanism documented as version poll while code defaults to Streams; wrong error type (`domain.ErrNotFound` vs `shared.ErrNotFound`); wrong RCU claim (consistent read = 1 RCU); inverted interface-ownership claim.
+- LOW — `EnsureTable` provisions no StreamSpecification while ModeStreams is the default (`acl_params.go:158-175`) — self-provisioned deployments silently run poll after a warning.
+- LOW — `DescribeStream` shard listing unpaginated (`acl_streams.go:118-137`); >100 shards → nil iterator → silent no-events loop.
+- LOW — SSM `getParameterVersion` conflates deleted parameter (nil Parameter) with version 0 → `ErrVersionMismatch` instead of `ErrNotFound` (`acl_params.go:64-81`, `repository.go:202-213`).
+- LOW — File credentials: base dir 0755 (listable secret names) and lexical-only path-escape check, symlink can escape base (`repository.go:128,373-379`); acceptable for documented dev posture, tighten to 0700 + EvalSymlinks. Otherwise the strongest of the four adapters (fsync'd atomic rename, redacting VOs).
+- LOW — `CredentialRefresher.watchers` map is write-only (`credential_refresh.go:38,108`); intended dedup doesn't exist — duplicate Watch spawns duplicate pollers.
 
 ---
 
-## Chunk: Native store/config/credential plugins
+## Chunk: Runtime durability — outbox, DLQ router, credentials runtime, health/readiness (`runtime/outbox`, `runtime/dlq`, `runtime/credentials`, bridge health)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/processors-and-stores.md`, `docs/config-stores.md`, `docs/credentials-rotation.md`, `docs/configuration-overview.md`, `docs/credentials-and-http-api.md`, `docs/configuration-reference.md`, `docs/scenarios/05-durable-shared-outbox.md`, `adapters/native/store/**`, `adapters/native/config/file/**`, `adapters/native/credentials/file/**`.
+Examined: full `runtime/outbox/` (drainer, loop, retry, timeout, depth_cache), `runtime/dlq/router.go`, `runtime/credentials/poll.go`, `runtime/credential_resolver.go`, bridge health/readiness/stop, `domain/persistence`, `ports/stores.go|resilience.go`, hot-path dispatch, `httpapi/admin_dlq.go` redrive, and the memory/SQLite/DynamoDB outbox backends for contract verification. `go build`/`go vet` clean.
 
-Verdict: no/partial. Memory plugins are dev/test only; SQLite DLQ is close for single-process use; SQLite outbox has a production-blocking crash-recovery gap; file config is usable with caveats; file credentials are not production-safe as a rotating secret store.
+Verdicts: production ready PARTIAL (persist→ack, fenced claims, confirmed DLQ writes are correct) · zero bugs FAIL · outage resilience PARTIAL · message/evidence loss FAIL (redrive path) · cluster-safety PASS (durable per-partition fences prevent double-drain beyond at-least-once) · health/readiness PARTIAL.
 
-Findings:
-
-- CRITICAL durability: `docs/scenarios/05-durable-shared-outbox.md:304-319`, `memorylease/store.go:51-60`, `:96-104`, `sqliteoutbox/acl_query.go:76-79`, `:16-40`, `:91-99`, `adapters/native/store/factory.go:58-65` - SQLite outbox can strand claimed records after crash while docs advertise SQLite+memory lease crash survival. Persist `claimed_at`, honor stale claim duration, add restart/crash tests, or stop documenting it as crash-safe.
-- HIGH concurrency: `sqliteoutbox/acl_session.go:30-46`, `sqlitedlq/acl_session.go:29-45`, `sqliteoutbox/acl_query.go:91-99` - SQLite stores do not set `busy_timeout`, connection limits, or retry policy; claim updates lack status/version guards. Harden writer behavior and test concurrent claims/writes.
-- HIGH security/durability: `repository.go:206-227`, `repository.go:356-364` - File credentials update rewrites target file directly. Crash/readers can see truncated/partial JSON secrets. Use temp file, fsync file/dir, chmod 0600, atomic rename, and locking/CAS where needed.
-- HIGH observability/reconfig: `acl_watcher.go:161`, `acl_watcher.go:300-313` - File config watcher has one-slot channel and silently drops valid reloads. Coalesce safely or report dropped reloads.
-- MEDIUM lifecycle: `sqliteoutbox/outbox.go:58-61`, `sqlitedlq/dlq.go:36-39`, `runtime/bridge.go:291-318` - Runtime does not close SQLite store handles on stop/reload. Add optional closer handling for stores.
-- MEDIUM error/cancellation: `source.go:44-47`, `repository.go:143-264` - File config/credential operations mostly ignore ctx and return raw errors. Check ctx at boundaries and map errors to `BridgeError`.
-- MEDIUM test-gap: `TESTS.md:266-320`, `tests/longrunning/uc57_outbox_lease_test.go:52-54` - Missing SQLite claimed-record crash recovery, concurrent writer/busy, file credential partial-write, and config watcher backpressure tests.
-- LOW docs: durable examples overstate memory/SQLite production posture; `stale_claim_duration` is documented generically although native SQLite ignores it.
-
-Plugin verdicts:
-
-- Memory lease: not production ready; dev/test only.
-- Memory outbox: not production ready; loses messages on restart.
-- Memory DLQ: not production ready; loses evidence on restart.
-- SQLite outbox: not production ready until claimed-record crash recovery is fixed.
-- SQLite DLQ: partial single-process readiness; needs busy timeout/retry and lifecycle close.
-- File config: partial; watcher can drop valid reloads.
-- File credentials: not production-safe for rotating secrets; acceptable for local/dev or immutable mounted secrets.
-- Native store aggregator: partial; ignores SQLite stale-claim runtime options and has no lifecycle ownership.
-
-Question coverage: Q1 FAIL, Q2 PARTIAL/FAIL, Q3 FAIL, Q4 FAIL for native stores, Q5 PARTIAL, Q6 PARTIAL/FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 FAIL, Q10 FAIL.
+- CRITICAL — DLQ redrive of shared-outbox messages silently destroys the message and its evidence. `httpapi/admin_dlq.go:215+` redrives via `Runtime.Inject` preserving the envelope ID; the drainer's earlier poison/expired handling Completed the outbox row but retained it (`sqliteoutbox/acl_query.go:35,142`; Dynamo `attribute_not_exists(SK)`), so re-Persist returns `ErrDuplicateRecord` → `dispatch.go:583-584` acks → redrive reports success → DLQ entry deleted, message never re-sent, no metric, no log. Operator fixes target, redrives, API says `redriven:1`, data is gone. Fix: fresh envelope ID with provenance header on redrive, or bypass outbox dedup for synthetic deliveries.
+- HIGH — Batch-deadline abort strands claimed records and counts them as successes. `outbox/retry.go:124-128`: transient send error with expired batch ctx returns nil (no Release/Complete); `loop.go:258` counts success; unlaunched groups also stay claimed. Recovery only via stale-claim (~20-30s) and each reclaim burns `replay_count` — slow target ⇒ healthy messages poisoned to DLQ after 5 claims; inflated successCount also grows batch size under degradation (`loop.go:330-336`). Fix: Release + count deferred on ctx expiry.
+- HIGH — Configured SendTimeout silently capped at ~10s. `loop.go:170-183`: `batchTimeout = min(max(1.5×SendTimeout, floor), 10s ceiling)` for a whole batch of up to 100 records — while the comment claims the cap avoids exactly this. Any send slower than the shrunken budget hits the strand-and-poison path every cycle. Raise the ceiling to ≥ SendTimeout+margin or fail validation.
+- HIGH — Per-key ordering breaks at millisecond ties: claim order is `ORDER BY created_at(ms), envelope_id(random hex)` (`sqliteoutbox/acl_query.go:80,109,132`; Dynamo sort key equivalent); two same-OrderingKey messages <1ms apart drain in random order; cross-instance ingest adds wall-clock skew. Fix: monotonic per-partition sequence assigned at Persist.
+- MEDIUM — Non-exclusive session + shared_outbox = permanent silent drain stall: `TokenFn` never reports held for non-exclusive sessions; `loop.go:38-42` skips drain with no log/metric; validator doesn't reject the combo (blueprint path forces exclusive; programmatic AddRoute hits it). Add validation error + `drain_skipped_no_lease` counter.
+- MEDIUM — DLQ lease gate keyed on "any manager holds any lease" (`bridge_start.go:235-245`): standby refuses ingress-path DLQ writes; for sources without retry, `dispatch.go:342-370` then neither acks nor records evidence. (Same defect flagged in the cluster chunk.)
+- MEDIUM — Stop can close stores while finalDrain is mid-send (`bridge.go:292-333` vs `loop.go:84-117` WithoutCancel+10s): Complete against a closed SQLite handle after a successful send ⇒ duplicate on restart. Defer store close until drainer wg confirmed done.
+- MEDIUM — `InstrumentedOutboxStore` strips optional capabilities (`instrumented.go:57-108`): forwards neither `OutboxReleaser` (fast-release silently degrades) nor `io.Closer` (store never closed). Exported API; forward optional interfaces.
+- MEDIUM — Data race on shared `*rand.Rand` in credential poll wrapper (`credentials/poll.go:70,163-175`) when ≥2 watched URIs use Jitter>0.
+- MEDIUM — Egress failure invisible to ReadyFn (auth error, quota) burns the 5-attempt replay budget in under a minute and converts the entire backlog into poison-DLQ entries (acknowledged in `loop.go:64-74`) — which then feed the CRITICAL redrive loss. Age-based replay budget needed.
+- LOW — Drainer-path DLQ writes emit no `MetricDLQEntries` (only route-runner path does, `dispatch.go:503`); dashboards under-count drainer-originated failures.
+- LOW — `OutboxStore.Expire` is dead code; expired-but-never-claimed records linger.
+- LOW — Re-`Start` after `Stop` duplicates drainers over closed stores (same as message-path chunk); reject Start on a stopped runtime.
+- LOW — Assorted: memory outbox never deletes completed records (documented non-production); `DepthCache` overflow evicts to one entry → depth-query stampede; `CredentialResolver` has no singleflight and `InvalidateCache` has zero callers (revoked credentials served up to full TTL); `emitDLQ("retry_unsupported")` fires with no DLQ store; readiness never factors Role — a standby with connected sessions reports `Full` (DeepHealth does expose Role, but the default probe answer misleads failover routing).
 
 ---
 
-## Chunk: AWS DynamoDB/config/credential/metrics plugins
+## Chunk: MQTT transport plugin (`adapters/mqtt/transport/paho`)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/processors-and-stores.md`, `docs/config-stores.md`, `docs/credentials-rotation.md`, `docs/aws-deployment/*.md`, scenarios 05/08/09, `adapters/aws/store/**`, `adapters/aws/config/dynamodb/**`, `adapters/aws/credentials/ssm/**`, `adapters/aws/metrics/cloudwatch/**`, deployment bootstrap/CDK/grants/validation.
+Examined: all 20 non-test files fully (config, register, factory, session lifecycle/reconcile/credentials/health, ACL session/client/router/headers, receiver, sender, cb_sender, delivery, errors, metrics, topic_validator, doc.go); verified ack boundary against `eclipse/paho.golang v0.23.0` source (ack fires when Route returns) and against `runtime/route/runner.go` emit semantics; empirically proved the documented flat `options:` YAML fails strict decode. `go build`/`go vet` clean.
 
-Verdict: partial/no for clustered production. Conditional-write intent exists, but lease fencing lifetime, outbox completion consistency, config CAS/reload consistency, deployment wiring, and metrics/SSM behavior are not production-tight.
+Verdicts: production ready PARTIAL · zero bugs FAIL · outage resilience PARTIAL · message loss FAIL · cluster PARTIAL · docs FAIL.
 
-Findings:
-
-- HIGH correctness/cluster: `adapters/aws/store/dynamodblease/acl_store.go:112-119`, `:243-246`, `:274` - Lease fencing token monotonicity can reset after DynamoDB TTL deletes a released lease row. Never TTL-delete fencing counter rows or split lease presence from non-expiring monotonic counter.
-- HIGH message-duplication: `adapters/aws/store/dynamodboutbox/acl_store.go:423-431`, `:657-668` - `Complete` resolves keys through an eventually consistent GSI immediately after send. Lagging GSI can return not found and duplicate later. Complete by base-table keys from `Claim`, encode keys in ID, or bounded-retry GSI misses.
-- HIGH reconfig/consistency: `adapters/aws/config/dynamodb/acl_params.go:25-32`, `:58-69`, `:90-99`, `loader.go:268-278` - Config reads are eventual and `Save` is unconditional local-version `PutItem`, so concurrent saves can lose updates and watchers reload stale data. Use strong reads and conditional writes or document/admin-gate last-writer-wins.
-- HIGH deployability: `deployment/aws-filebased-config/lib/bootstrap/registry.go:42-43`, `cdk/constructs/internal/gobridgebase/grants.go:49-82` - AWS filebased runtime/CDK does not register DynamoDB store factory or grant table permissions. DynamoDB store configs will not run in this profile. Register/grant or reject with clear validation.
-- HIGH scalability: `adapters/aws/store/dynamodboutbox/acl_store.go:280-289`, `:619-655` - Every `Claim` scans entire outbox partition to compute max claim version. Maintain per-partition fence metadata or redesign stale-token rejection.
-- MEDIUM ops: `dynamodblease/acl_store.go:321-331`, `dynamodboutbox/acl_store.go:126-170`, `dynamodbdlq/acl_store.go:97-127` - Tables write TTL attributes but table creation never enables TTL; if enabled for leases it can break fencing, if disabled data accumulates. Provide explicit infra/table validation and different retention rules per store.
-- MEDIUM durability: `adapters/aws/store/dynamodbdlq/acl_store.go:157-174` - DLQ default TTL is `failed_at + 1h`, too short for production investigation if TTL is enabled. Default to no TTL or configurable days-scale retention.
-- MEDIUM security/resilience: `adapters/aws/credentials/ssm/repository.go:188-190`, `acl_errors.go:24-35` - SSM update/delete versioning is TOCTOU; throttling/auth/KMS/context errors collapse to unavailable. Classify errors and document admin writes as non-atomic or move rotation writes to CAS backend.
-- MEDIUM observability: `adapters/aws/metrics/cloudwatch/acl_batcher.go:236-254`, `exporter.go:108-118` - Metrics are drained before `PutMetricData`; background flush drops errors and does not requeue. Requeue with bounded retry/drop counters and structured warnings.
-- MEDIUM observability/cardinality: `adapters/aws/metrics/cloudwatch/acl_batcher.go:148-155`, `docs/aws-deployment/monitoring.md:184-199` - Dimensions are silently truncated at 30 and docs recommend high-cardinality `queue_url`. Validate/drop with warning and normalize dimensions.
-- LOW scalability: `adapters/aws/store/dynamodbdlq/acl_store.go:316-360`, `:488-520` - Unfiltered DLQ list/purge uses full scans. Require indexed filters or bounded pagination.
-- LOW docs: `docs/scenarios/09-layered-dynamodb-config.md:423-435`, `adapters/aws/config/dynamodb/acl_params.go:40-51` - Scenario says config item uses `config` map; implementation uses `data` string JSON. Align schema/docs.
-
-Plugin verdicts:
-
-- DynamoDB lease: partial; TTL deletion can break fencing token monotonicity.
-- DynamoDB outbox: partial/no; GSI completion race and O(N) claim scan block production readiness.
-- DynamoDB DLQ: partial; idempotent writes, but retention/scan semantics need production controls.
-- DynamoDB config: partial/no; lacks strong consistency/CAS for production admin reloads.
-- SSM credentials: partial; read path works, rotation/admin semantics and error classification weak.
-- CloudWatch metrics: partial; exporter works, failure loss/cardinality need hardening.
-- AWS store aggregator: partial; factory exists, deployment/runtime integration missing.
-
-Question coverage: Q1 PARTIAL/FAIL, Q2 PARTIAL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL, Q6 PARTIAL/FAIL, Q7 FAIL for AWS filebased profile, Q8 PARTIAL/FAIL, Q9 PARTIAL/FAIL, Q10 PARTIAL.
+- CRITICAL — Documented ack-after-durable-handoff guarantee is false: PUBACK precedes outbox persist. `delivery.go:16-18`, `acl_router.go:30-34`, `doc.go:20-24` claim the protocol ACK defers until persist/ownership transfer — but runtime emit returns at concurrency-slot acquisition and detaches processing (`runner.go:182-199`), and paho acks when Route returns (`paho/client.go:471-473`). kill -9 with N in-flight ⇒ up to `MaxInFlight` QoS 1/2 messages PUBACKed but never persisted — permanently lost, no redelivery, no DLQ. Fix: block emit until persist for shared_outbox, or adopt `EnableManualAcknowledgment` + ack-after-persist (named in `delivery.go:76-78` itself); correct the three doc claims meanwhile.
+- HIGH — `keep_alive` default never applied on the typed YAML path: `register.go:12-24` decodes into zero-value Config; `DefaultSessionOptions()` only used by the legacy map path. `keep_alive` omitted ⇒ 0 ⇒ paho pinger disabled ⇒ silent network partition never detected (no PINGREQ, no reconnect until OS TCP timeout). Docs claim default 30. Apply defaults in Register/NewSession.
+- HIGH — Documented YAML shape fails strict decoding in both docs (`transport-configuration.md:95-110,929`, `configuration-reference.md:199-201`): flat keys under `options:` vs required `session:`/`sender:` nesting; empirically rejected (`invalid keys: broker_url, client_id`). Every copy-paste user gets a load failure.
+- HIGH — Startup window drops+acks messages before any handler registers: `acl_router.go:76-91` drops publishes with no handler, Route returns, paho acks. Session managers start before route runners (`bridge_start.go`), so a Persistent/Exclusive session receives its queued backlog on CONNACK before `Receiver.Run` registers — first burst after every restart can be permanently lost (only `MetricMQTTRouterDropped` counts it). Gate session start on receiver registration or buffer pre-registration publishes.
+- MEDIUM — Explicit `qos: 0` sender coerced to QoS 1 (`factory.go:97-99` can't distinguish unset from 0); docs say 0 is valid.
+- MEDIUM — Cross-receiver fan-out: every publish dispatched to all handlers on a shared session (`acl_router.go:76-170`); two routes with disjoint topics each process the other's messages. Filter per-receiver by subscription match or forbid >1 receiver per session.
+- MEDIUM — `reconnect_timeout` is dead config (decoded, documented, never read); the real knob `reconnect_delay` and `receive_maximum` are undocumented.
+- MEDIUM — `ApplyCredentials` mutates `s.opts` (username/password/TLS in-place) outside the session mutex (`session_credentials.go:64-73,152-163`) racing a supervisor-restarted Start reading TLS material — torn TLS config / data race.
+- MEDIUM — Envelope-ID fallback is `crypto/rand` while the comment promises deterministic topic+payload hash (`acl_headers.go:67-69,312-318`); QoS 1 redeliveries from non-bridge publishers get fresh IDs — downstream dedup cannot detect exactly the duplicates that need it.
+- MEDIUM — No damping/detection of ClientID-collision takeover storms: two Persistent instances sharing a client_id mutually kick forever (0x8F mapped at `errors.go:62` but never counted/damped); guard only covers CleanStart+Exclusive.
+- LOW — Persistent mode with default `session_expiry_interval: 0` gives zero offline retention, unvalidated — contradicts the docs' mode table.
+- LOW — No Last-Will-Testament support at all (autopaho supports it); peers cannot detect ungraceful bridge death.
+- LOW — QoS 0 flood can stall the paho incoming loop when `receive_maximum` is tuned low (blocks PINGRESP/PUBACK processing); with the 65535 default the risk is unbounded buffering instead.
+- LOW — Concurrent `Start` returns success while another Start is in flight (`acl_session.go:89-92`); a racing Reload silently skips the TLS rebuild.
+- LOW — Docs: capabilities list stale (misses `plan_driven_subscriptions`), `clean_start` default documented `true` but decodes `false`, TLS PEM keys undocumented.
 
 ---
 
-## Chunk: OpenTelemetry metrics/tracing plugins
+## Chunk: HTTP transport plugin (`adapters/http/transport`)
 
-Examined: `adapters/otel/metrics/**`, `adapters/otel/tracing/**`, `observability/**`, `logging/**`, `runtime/route/runner.go`, `runtime/bridge.go`, `ports/{metrics,tracer}.go`, `domain/messaging/tracecontext.go`, `domain/shared/metrics.go`, `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `docs/scenarios/18-observability.md`, `docs/deployment-guide.md`, `docs/aws-deployment/monitoring.md`, `docs/scenarios/cdk/04-production-stack.md`, `TESTS.md`.
+Examined: all 11 non-test files fully, plus ports contract, strict-decode parser, runtime ack boundary, builder call sites, `docs/transport-configuration.md` §HTTP, `spec/http-adapter/http-api.yaml`. `go build`/`go vet`/tests clean; ServeMux panic reproduced empirically.
 
-Verdict: partial. Metrics are usable for happy-path export; tracing is not production-ready for distributed diagnosis.
+Verdicts: production ready PARTIAL · zero bugs FAIL · outage resilience PARTIAL · message loss PARTIAL (ingress ack boundary exemplary — 200 only after pipeline settles; SSE egress is unsignalled at-most-once) · cluster PARTIAL · docs FAIL.
 
-Findings:
-
-- HIGH tracing: `runtime/route/runner.go:352`, `adapters/otel/tracing/acl_client.go:99` - W3C `traceparent` is parsed as attributes/log context, but not extracted into OpenTelemetry context before `StartSpan`. Use OTel `propagation.TraceContext` extraction before span creation and inject new child context onto outbound headers.
-- HIGH lifecycle: `runtime/bridge.go:310`, `ports/tracer.go:20` - Runtime shutdown only calls `metrics.Flush`; tracer port has no `Close`. Tail spans can be lost and metric providers are not closed by runtime. Add managed telemetry lifecycle or explicit bounded close hooks.
-- HIGH observability: `adapters/otel/metrics/acl_client.go:103`, `adapters/otel/tracing/acl_client.go:70` - Telemetry export/backpressure failures are effectively invisible. Add logger/error callback/self-metric path and expose batch/export timeout/queue settings.
-- HIGH docs: `docs/scenarios/18-observability.md:44`, `domain/shared/metrics.go:40` - Docs/dashboard examples use `bridge.delivery.*` names the runtime does not emit. Generate docs from constants or add explicit name translation.
-- HIGH docs/config: `docs/scenarios/cdk/04-production-stack.md:288`, `docs/scenarios/18-observability.md:125` - Deployment docs show YAML `tracing:` config while scenario says observability is configured in Go code. Implement config/env wiring or delete unsupported YAML.
-- MEDIUM correctness: `adapters/otel/tracing/config.go:45`, `:73` - `WithSamplerRatio(0)` cannot disable tracing because zero is treated as unset and reset to 1.0. Track unset explicitly and validate `[0,1]`.
-- MEDIUM deployability: `adapters/otel/metrics/config.go:89`, `adapters/otel/tracing/config.go:66` - Hardcoded defaults and no `OTEL_*` docs mean standard deployment env vars are not supported. Honor/document `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, and resource attributes.
-- MEDIUM test-gap: `adapters/otel/metrics/export_test.go:7`, `adapters/otel/tracing/export_test.go:7` - Tests avoid real collector/export-failure paths. Add `httptest`/collector tests for flush, outage, queue overflow, retry/drop visibility.
-- LOW cardinality: `adapters/otel/metrics/acl_client.go:39` - Metric instruments cache arbitrary metric names with no bound/guidance. Document/reject dynamic names.
-
-Plugin verdicts:
-
-- Metrics: partial; emits instruments and flushes, but lifecycle ownership, docs names, env config, and export-failure visibility need fixes.
-- Tracing: no; parent propagation, shutdown ownership, drop/backpressure visibility, and sampler semantics are not production-ready.
-
-Question coverage: Q1 PARTIAL, Q2 PARTIAL/FAIL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL, Q6 FAIL for telemetry loss reporting, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
+- HIGH — SSE `Send` reports success with zero subscribers and after 100% buffer-full drops (`sender_sse.go:163-194`); RouteRunner then Acks the source — SQS/AMQP message deleted while delivered to nobody, zero observability for the empty-subscriber case. Count/log it; document SSE egress as at-most-once so operators front it with outbox/DLQ.
+- HIGH — Forwarder classifies 429/408 as permanent (`forwarder.go:242-254`): throttled peer ⇒ messages dead-lettered instead of retried; the classification test omits exactly 429/408. Treat as transient; honor `Retry-After`.
+- HIGH — Receiver violates the documented emit-sequentiality contract without documenting it (`receiver.go:253` emits from concurrent handler goroutines; `ports/transport.go:29-34` requires documentation of that choice); safe with today's runner but a contract trap; also the whole pipeline runs on the request context — client disconnect aborts processing mid-dispatch; ordering never guaranteed even with `X-Ordering-Key`.
+- MEDIUM — Operator-supplied `path` panics the process at build: `mux.HandleFunc("POST "+path)` with unvalidated Path (`factory.go:146,187`); missing leading `/` or overlapping wildcards = crash instead of a build error (verified). Validate in `Config.Validate` or recover→error.
+- MEDIUM — Forward retry duplicates with no remote dedup (`forwarder.go:207-226`): timeout after the peer received the body re-posts a fresh delivery; nothing dedups on the preserved envelope ID; undocumented at-least-once.
+- MEDIUM — No circuit breaker on the forwarder (a dead peer costs every inbound request 3×30s; repo's `circuitbreaker/` unused here) and SSE handlers block graceful shutdown (no Close/drain on `SSESender`; `http.Server.Shutdown` hangs with active clients).
+- MEDIUM — SSE reconnect gap is silent loss with false resumability: `id:` emitted per event so EventSource clients send `Last-Event-ID`, which is never read; no backlog. Document at-most-once.
+- MEDIUM — 307 redirect leaks the internal peer endpoint to external SSE clients (`sender_sse.go:227` uses the same endpoint the internal forwarder uses).
+- MEDIUM — Cluster identity gaps: single shared `clusterKey` sent as `X-API-Key` for all receivers (per-receiver keys ⇒ 401 ⇒ permanent ⇒ DLQ); generated envelope IDs `http-<unixnano>-<counter>` lack instance entropy — cross-node collisions can clobber dedup/DLQ keyed on ID (docs claim UUID).
+- LOW — `Retry(nil reason)` indistinguishable from Ack (`delivery.go:39-45`); latent.
+- LOW — Protocol strictness: case-sensitive Content-Type prefix match (415 on `Application/JSON`, over-accepts `application/jsonfoo`); case-sensitive Bearer scheme match; `MaxClients` comment says 0=uncapped but code maps 0→10000.
+- LOW/MEDIUM — Docs/spec drift (all verified): sender table omits `write_timeout` and `credentials_uri`; "unique UUID envelope ID" false; stripped-header namespace documented as `X-Bridge-*` but code strips `x-bridge.` (dot); loop-prevention doc/spec stale (forward-token + 508 model, `WithForwardToken` absent from options table); 16-char `api_key` floor undocumented; OpenAPI misses actual 413/415/504/508 responses and the Idempotency-Key/X-Dedup-Id/X-Ordering-Key request headers.
 
 ---
 
-## Chunk: Processor plugins
+## Chunk: Processors & circuit breaker (`processors/tenant|filter|transform|circuitbreaker`, `circuitbreaker/`)
 
-Examined: `README.md`, `ARCHITECTURE.md`, `DDD.md`, `PLUGIN.md`, `TESTS.md`, `docs/processors-and-stores.md`, scenarios 04/06/14/17, `processors/filter/**`, `processors/transform/**`, `processors/tenant/**`, `processors/circuitbreaker/**`, `circuitbreaker/**`, `runtime/route/chain.go`, `runner.go`, `dispatch.go`, messaging/error primitives.
+Examined: all four processor modules + root `circuitbreaker/` fully; traced through `runtime/route/chain.go|runner.go|dispatch.go|retry.go`, envelope semantics, `bridge/builder_resolve.go`; compared `docs/processors-and-stores.md` against actual types. `go build`/`go vet` clean. Key claims empirically verified in a scratch module (CB slot theft, filter eq bypass, transform `_value` wrapping, etc.).
 
-Verdict: not production ready as documented policy/security/resilience controls.
+Verdicts: production ready PARTIAL · zero bugs FAIL (five verified) · resilience PARTIAL · message loss PARTIAL (filter drop is a proper ACK; the non-DLQ drop path is fully silent) · cluster FAIL (per-process CB state undocumented) · docs FAIL (documented YAML processor surface does not exist).
 
-Findings:
-
-- CRITICAL integration/resilience: `runtime/route/chain.go:99`, `runtime/route/runner.go:390`, `runtime/route/runner.go:418`, `processors/circuitbreaker/processor.go:63`, `docs/scenarios/06-transform-circuit-breaker.md:33` - Circuit breaker cannot observe sender failures. Processors run before dispatch; as last processor, `next` is terminal no-op. Move breaker into dispatch/sender wrapping or scope docs/API to processor-chain failures only.
-- HIGH error-classification: `processors/transform/transform.go:86`, `:116`, `domain/shared/errors.go:327`, `docs/scenarios/06-transform-circuit-breaker.md:186` - Transform failures return plain `fmt.Errorf`, which runtime treats as retryable, contradicting docs saying rejected/permanent/DLQ. Wrap as `BridgeError`.
-- HIGH correctness: `processors/transform/transform.go:63` - Invalid JSON payloads pass through unchanged even with mappings configured. Fail with structured rejected error when `FailOnError` or required mappings exist.
-- HIGH validation: `processors/filter/filter.go:75`, `processors/filter/condition.go:135`, `processors/filter/filter_edge_test.go:14` - Unknown filter actions fall through and unknown operators become per-message plain errors. Validate action/operator at construction with structured setup errors.
-- HIGH security/policy: `processors/filter/condition.go:87`, `processors/filter/filter.go:71`, `processors/filter/filter_edge_test.go:87` - JSON parse failure is silent no-match, allowing malformed JSON to bypass `ActionDrop` filters. Add strict JSON-path mode or classify parse failure as rejected.
-- HIGH tenant/security: `processors/tenant/processor.go:25`, `domain/messaging/headers.go:27`, `runtime/route/runner.go:341`, `docs/processors-and-stores.md:277` - Tenant default header is reserved `x-bridge.tenant-id`, but runtime strips reserved headers at ingress. Use non-reserved default or document explicit `TenantHeader`.
-- HIGH docs: `docs/scenarios/14-multi-tenant-priority-routing.md:397`, `processors/transform/transform.go:136`, `processors/tenant/processor.go:47` - Scenario claims transform can copy payload tenant into envelope header, but transform only writes JSON payload fields and tenant reads headers. Add header-mapping processor or correct recipe.
-- HIGH resilience/load: `processors/circuitbreaker/processor.go:47`, `:55`, `:108` - High-cardinality keys can churn fixed 10k breaker cache and evict open breakers. Make capacity configurable/observable and avoid untrusted key spaces.
-- MEDIUM timeout/mutation: `runtime/route/chain.go:131`, `processors/transform/transform.go:63`, `processors/filter/filter.go:62` - Runtime can return processor timeout while filter/transform continue CPU work and may mutate envelope later. Check `ctx.Err()` around parse/mapping/evaluation loops and add payload/path limits.
-- MEDIUM observability: `processors/tenant/processor.go:80`, `:93`, `runtime/route/dispatch.go:254` - Tenant tracker decrement/message-count errors and filtered drops have little/no structured observability. Emit metrics/log hooks for rejects, drops, skipped mappings, and tracker failures.
-- LOW test-gap: `processors/circuitbreaker/resilience_fixes_test.go:61`, `TESTS.md:45` - Circuit-breaker tests use `time.Sleep` despite repo test rules. Replace with fake clock/event synchronization.
-
-Plugin verdicts:
-
-- Filter: partial; works for simple routing, not safe as strict policy gate.
-- Transform: no; invalid JSON and transform failures are misclassified/pass-through.
-- Tenant: partial; usable with explicit non-reserved header and validator, unsafe default/docs.
-- Circuit breaker: no; state machine is useful, but processor placement does not protect senders.
-
-Question coverage: Q1 FAIL, Q2 FAIL, Q3 FAIL, Q4 PARTIAL, Q5 PARTIAL/FAIL, Q6 PARTIAL/FAIL, Q7 PARTIAL, Q8 PARTIAL, Q9 PARTIAL, Q10 PARTIAL.
+- CRITICAL — Filter `eq`/`in`/`ne` silently never match numeric JSON values: deny-filter fails open. `filter/condition.go:180-182,216-227`: `reflect.DeepEqual` with no numeric coercion — JSON numbers are `float64`, config values are `int`. Verified: drop rule `{eq, 3}` vs payload `{"priority":3}` forwards the message policy says must be dropped; `ne` becomes always-true; `gt/lt` coerce but `eq/ne/in` don't. Fix: numeric coercion for eq/ne/in.
+- HIGH — `gt/lt` on non-numeric field yields a bare error classified transient → uncapped retry loop: `condition.go:229-256` + `shared/errors.go:329-338` + `dispatch.go:315-318` (processor-error retry has no MaxReplayAttempts cap). Deterministically mismatched message redelivers forever on transports without broker redrive. Classify conversion failure `ErrInvalidPayload`; cap the processor-error retry path.
+- HIGH — Circuit breaker has no request generation: stale outcomes corrupt half-open (verified three ways). `circuitbreaker/breaker.go:123-153`: any request completing during HalfOpen steals the probe slot (second probe admitted past `HalfOpenMaxProbes=1`); a stale Closed-era success closes the circuit on pre-outage evidence; a stale epoch-1 failure re-opens while epoch-2's probe is in flight, whose success is then discarded — an extra full ResetTimeout. Fix: generation/epoch token matched between BeforeRequest/AfterRequest (à la gobreaker).
+- HIGH — Transform silently corrupts non-object payloads to `{"_value": ...}` even for header-only or empty-mapping transforms (`transform/transform.go:141-152,218`: always re-marshals once parsed — array payloads wrapped, keys reordered, HTML-escaped). Never payload-preserving; breaks downstream signatures/idempotency hashes. Skip SetPayload when no payload mapping applied.
+- HIGH — Abandoned processor goroutine can mutate the envelope concurrently with the runner's retry/DLQ path (`chain.go:152-191`; check-then-write on ctx not atomic with the chain's select) — concurrent map write = fatal process crash under CPU starvation. (Same root cause as the message-path chunk's top finding.)
+- HIGH — Docs: the documented YAML processor configuration surface (`processors: <name>: {type, config}`) does not exist — routes carry only `Processors []string` resolved against Go-registered instances (`ports/blueprint.go:257`, `builder_resolve.go:10-23`); `circuitbreaker.Config` has no yaml tags. Operators following the docs write config that is ignored/rejected.
+- HIGH — Docs: "omitting the `next` call stops the message" is false — the runner dispatches after the chain returns nil (`chain.go:99-101`, `runner.go:395-429`); only `ErrMessageFiltered` stops. Custom processors written to the doc ship filters that pass everything.
+- MEDIUM — Filtered drops are ACKed with zero metric/log/OnSettled (`dispatch.go:305-314`, non-DLQ branch) — a misconfigured filter discarding production traffic is diagnosable only by absence. Add `MessagesFiltered` + terminal OnSettled.
+- MEDIUM — CB state changes invisible by default: only optional `WithOnStateChange`; zero CB metric names exist in the shared registry; nothing polls `Stats()`. An open breaker manifests only as ErrUnavailable churn.
+- MEDIUM — CB cache-full new-key insert does an O(10k) scan holding processor-wide `p.mu` taking each breaker's lock (`processors/circuitbreaker/processor.go:102-115,153-205`): high-cardinality key extractor (hostile header) = every message pays the scan, route serialized — lock-convoy DoS shape. LRU or sampled eviction.
+- MEDIUM — Filter `exists` without a value means "not exists" (`condition.go:53-59`: bool assert defaults false) — a "drop if x exists" rule drops everything missing x. Require explicit bool.
+- MEDIUM — Per-condition payload copy + re-parse: each `$.` condition defensively copies and re-parses the payload (`condition.go:81-82`); 5 conditions × 4 MiB = 20 MiB alloc + 5 parses per message. Parse once per Process.
+- MEDIUM — Transform `TransformType` not validated at construction; typo = silently-skipped mapping on every message forever with default FailOnError=false (`transform.go:61-98`, `mapping.go:79-81`).
+- LOW — CB negative config values pass `WithDefaults` (`== 0` check): `FailureThreshold:-1` opens on first failure; zero-value Config via direct `NewBreaker` gives threshold-0 flapping.
+- LOW — Transform payload mappings read mutated data when `DropUnmapped=false` (aliasing; diverges from `DropUnmapped=true`); headers were fixed for exactly this, payload chains not.
+- LOW — Tenant doc promises header normalization that doesn't exist; "quota enforcement" is increment-only (no ceiling checked); otherwise well-built.
+- MEDIUM — Docs config-table drift (itemized): filter/transform tables omit `MaxPayloadBytes` and `header.<key>` target; tenant omits `InFlightDecrementTimeout`; CB section omits `WithMaxBreakers`/eviction; `ProcessorFunc` signature wrong; Go example doesn't compile; per-instance CB state never documented (clustered downstreams absorb N×FailureThreshold failures, N× probes, out-of-phase flapping).
 
 ---
 
-## Minimum fix order
+## Chunk: Observability stack (`adapters/otel/*`, `adapters/aws/metrics/cloudwatch`, `observability/`, `logging/`, instrumentation ports & decorators)
 
-1. Fix message-loss blockers first: SharedOutbox partitioning, ACK boundary semantics, durable DLQ confirmation before ACK/Complete, MQTT receive ACK/backpressure, Service Bus topic retry/auto-renew.
-2. Fix cluster safety: MQTT lease step-down stops consumption, cluster-wide config version coordination or explicit docs limitation, production 30-60s HA profile.
-3. Fix deployment/doc truth: typed config examples, AWS ALB health/receiver routing, root CLI/demo labeling, DLQ endpoint docs, readiness level docs.
-4. Fix plugin-specific settlement/reconnect bugs: AMQP091 auto-ack/topology/prefetch/vhost/immediate, AMQP10 conn-done reconnect and delayed retry semantics, SQS visibility/race/FIFO/outbox release, HTTP forwarded-header trust and SSE header/deadline behavior.
-5. Fix observability/reporting: DLQ write failures, telemetry export drops, CloudWatch drops, config watcher drops, processor rejects/drops.
+Examined: OTel metrics + tracing adapters, CloudWatch exporter/batcher/alarms, `observability/`, `logging/`, all observability ports, `runtime/instrumented*.go`, consumers across route/outbox/dlq/session/bridge/supervisor/cmd/deployment, `domain/shared/metrics.go`, and docs (scenario 18, aws monitoring, timing-audit). `go build`/`go vet` clean.
 
-No code changes were applied by this audit.
+Verdicts: production ready FAIL · zero bugs FAIL · resilience PARTIAL (emission never blocks the data path — except the goroutine-explosion below) · loss visibility FAIL (conservation law cannot be closed) · cluster PARTIAL (no instance dimension on metrics) · docs FAIL (scenario 18 bootstrap does not compile).
+
+- CRITICAL — Metrics, tracing, and runtime audit are unreachable from every shipped composition path. `runtime.WithMetrics/WithTracer/WithAuditLogger` exist, but `bridge.Builder` and `Supervisor` — the only config-driven paths — expose no option to pass them (`builder_prepare.go:116-134`, `builder.go:26-96`, `supervisor.go:73-160`); neither `cmd/gobridge` nor the AWS deployment profile wires any exporter (zero grep hits). Every production deployment built as documented runs NoopExporter+NoopTracer — zero message metrics, traces, lease audit. Fix: add Builder/Supervisor options and wire the deployment profile.
+- CRITICAL — All six `DefaultAlarms` are permanently inert: alarms have no `Dimensions` while every actual emission carries dimensions (`DLQEntries`→route_id,category; lease metrics→lease_id; SQS→queue_url), and `OutboxDepth` is emitted nowhere; `TreatMissingData: notBreaching` means they silently never fire; `EnsureAlarms` has zero callers (`cloudwatch/acl_alarms.go:39-133`). Operators installing them believe backlog/DLQ growth is alarmed when nothing is.
+- CRITICAL — All four `Instrumented*` decorators are dead code (zero call sites): `OutboxDepth`, `OutboxPersistLatency`, `OutboxClaimRecoveries`, `AckLatency`, generic `VisibilityExtensions` never exist despite being documented and alarmed. Wire them in the builder or delete them and their doc rows.
+- HIGH — CloudWatch exporter spawns one goroutine per metric emission while a flush is slow (`exporter.go:56-78,119-126` + unbounded buffer): at 10k emissions/s during a 30s CloudWatch stall ≈ 300k goroutines (~2.4GB stacks) — observability failure becomes a data-path OOM. Single flush-pending guard + cap the buffer.
+- HIGH — Poison datum bricks the CloudWatch pipeline: flush requeues on any error without classification, and nothing rejects NaN/±Inf (`acl_batcher.go:181-197,340-374`); one invalid datum fails whole batches repeatedly until >10k accumulate and eviction discards it — hours of metric blackout, silent by default (Logger nil). Validate at add(); drop on 4xx.
+- HIGH — Loss-visibility gaps break the conservation law: outbox-drainer DLQ writes emit no `DLQEntries` (`outbox/retry.go:100-121,236-272`); direct-path expired drop is fully silent (`dispatch.go:295-303`); `Runtime.Inject` skips `MessagesReceived` but emits `MessagesSent`.
+- HIGH — `DLQEntries` incremented for messages actually dropped: no-store `dlq.Route` returns nil vacuously, `emitDLQ` fires anyway, `MessagesDropped` is not incremented (`dlq/router.go:128-130` + dispatch call sites) — operators told messages sit in a DLQ that doesn't exist. (Corroborates the message-path chunk.)
+- HIGH — `OnSettled` "exactly once per terminal state" contract violated on most terminal paths (route-expired, filtered, processor-permanent→DLQ, resolve-error→DLQ, retry-unsupported-with-DLQ-write) — loss accounting built on the hook (its stated purpose) undercounts.
+- MEDIUM — CloudWatch batching 50× under the real API limit (`MaxBatchSize=20` vs 1,000/1MB since 2022) and counters never aggregated per (name,tags) window — ~50 PutMetricData calls/s at 500 msg/s; needless cost + self-inflicted throttling.
+- MEDIUM — Self-loss and export failure silent by default across all three exporters (nil Logger/errorHandler defaults; requeue-overflow drops and OTLP failures invisible; `droppedTotal` never surfaced). Default to slog.Warn + a MetricsDroppedDatums counter.
+- MEDIUM — No instance identity on metrics: nothing attaches `instance_id`; fleet gauges would collide (moot only because the gauge is dead code); only manual `WithDefaultTags` saves it and no doc says so.
+- MEDIUM — Log correlation fields wrong: `trace_id`/`span_id` in logs come from the upstream traceparent, not the active span (`runner.go:352-376`); root deliveries get no trace_id; `x-bridge.correlation-id` is stripped and regenerated per hop, so the documented cross-hop join key resets on every bridge-to-bridge hop.
+- LOW — Aggregate-key `|` separator can truncate names/fold distinct series; theoretical with today's static names.
+- LOW — W3C carrier lookup is case-sensitive for `traceparent` (`oteltracing/acl_client.go:188-195`); a transport stamping `Traceparent` silently breaks trace continuity.
+- LOW — Docs drift (verified item by item): wrong dimensions in monitoring.md, nonexistent `bridge.inflight` metric and `bridge.deliver` span, alarm/bootstrap namespace mismatch (`GoBridge/Runtime` vs `GoBridge`), scenario-18 bootstrap has three compile-breaking API mismatches, monitoring.md warns against a queue_url dimension the SQS adapter emits, timing-audit.md cites stale paths (its core zero-unauthorized-timing claim re-verified and holds).
 
 ---
 
-## Post-remediation backlog — deferred follow-ups
-
-_Added 2026-07-02. All 117 audit findings above were remediated across Waves 0–5 (`make lint` and `make test` green). The items below are the **48 deferred follow-ups** surfaced during implementation and adversarial review: lower-severity own-unit refinements or documented boundaries, none blocking production. Listed here so a fresh session can pick them up without the session database._
-
-| Severity | Count |
-| --- | --- |
-| MEDIUM | 5 (✅ resolved) |
-| LOW | 40 (✅ resolved) |
-| NICE | 4 (✅ resolved) |
-
-### MEDIUM (5)
-
-> **✅ RESOLVED 2026-07-02** on branch `fix/prod-ready-medium-followups` (`make lint` + `make test` green).
-> Each item below carries a **Resolution** note. One adjacent shape surfaced during the
-> adversarial review of these fixes — a receiver whose `session_id` never gets a session
-> **manager** (distinct from the planless-manager case P4 closes) — is tracked as a new
-> follow-up: **`ADV-P4-FU1`** under LOW below.
-
-#### `ADV-F1-P3` — amqp091
-amqp091 producer exchange never auto-declared (PublisherPlan empty); publish to an absent custom exchange fails visibly (404), not silent
-
-- **Files:** `bridge/specs.go`, `adapters/amqp/transport/amqp091/session.go`
-- **Notes:** F1 left SessionPlan.Publishers empty (documented ponytail boundary). amqp091 declarePublisher reads exchange name solely from pub.Topic; that name lives in the opaque typed sender PluginConfig (amqp091.Config.Sender.Exchange) which the transport-neutral bridge cannot read without importing the adapter (arch-lint forbidden) or a new ports accessor. SenderDef/BindingDef carry routing key (Address), not exchange. Failure is VISIBLE: PublishConfirmed -> channel 404 -> mapPublishError -> retry/DLQ (sender.go:119-129), so no silent loss. Fix needs a transport-neutral exchange accessor (ports interface the adapter implements) so bridge can emit PublisherPlan{Topic: exchange} and pre-declare. Out of bridge-only scope. Related to existing F11.
-- **Resolution (2026-07-02):** Added transport-neutral optional interface `ports.PublishingConfig { PublisherTopic() string }`; `amqp091.Config` implements it returning `Sender.Exchange`. `bridge/specs.go:sessionPlanFor` now emits a `PublisherPlan` (deduped by exchange, first-wins) for every sender bound to the session, so `declarePublisher` pre-declares the producer exchange. The declare is **best-effort / non-fatal**: on broker rejection (`PRECONDITION_FAILED` for a pre-existing exchange, `ACCESS_REFUSED` under least-privilege creds) the session logs a warning, increments `AMQP091PublisherDeclareFailed`, and continues — a pre-existing / externally-managed exchange is never taken down, and a genuinely-absent one still fails visibly at publish (404). `sender.exchange` names the declared exchange; the `publisher.*` block only decorates topology. Tests: `adapters/amqp/transport/amqp091/prodready_publisher_declare_test.go` (non-fatal publisher vs. fatal subscription asymmetry), `bridge/session_plan_test.go`. Docs: `docs/transport-configuration.md` (Publisher-side exchange auto-declare).
-
-#### `HTTP-N1` — http
-SSE per-write deadline silently no-ops when fronting middleware wraps ResponseWriter without Unwrap() -> slow-client pins handler goroutine (H4 failure returns)
-
-- **Files:** `adapters/http/transport/sender_sse.go`
-- **Notes:** NICE-TO-HAVE: probe SetWriteDeadline once at stream start, warn+metric when unsupported so slow-client eviction inertness is observable.
-- **Resolution (2026-07-02):** Added `MetricSSEDeadlineUnsupported` counter (`adapters/http/transport/metrics.go`), emitted once per stream in `ServeHTTP` alongside the existing start-of-stream warn when `write_timeout > 0` but the (possibly middleware-wrapped) `ResponseWriter` exposes no working `SetWriteDeadline` (no `Unwrap()` chain reaching one). Slow-client eviction inertness is now observable, not silent. Test: `prodready_sse_deadline_test.go` (bare recorder increments the counter; a deadline-capable writer does not).
-
-#### `C3-FU2` — runtime
-Whole-runtime terminal on a single session lease blip: one session re-acquire failure cancels the entire runtime (all routes) rather than isolating the failed session. Consider per-session failure isolation.
-
-- **Files:** `runtime/bridge.go`, `runtime/supervisor.go`
-- **Notes:** Acceptable now: single-use re-acquire failure is rare (3 renew fails ~30s outage) and restart yields a clean fleet. Follow-up: per-session restart/quarantine to avoid blast radius.
-- **Resolution (2026-07-02):** Session managers now run under `Runtime.superviseSession`, which isolates a single session's failure from the fleet. On `mgr.Run` error (ctx still live) it records the session in `componentErrors`, emits `MetricSessionRestarts`, and retries with capped-exponential backoff **plus equal-jitter** (`wait ∈ [backoff/2, backoff]`), resetting the backoff after a sustained-stability window and clearing the session's `componentErrors` entry on clean stop / before a successful retry. It never sets terminal or global `healthy=false`, so other routes keep running; panics still hit `startBackground`'s recover (documented boundary). Unbounded retry is deliberate — a terminal ceiling would reintroduce the exact whole-fleet outage this issue fixes; permanent failures instead surface via the continuous `MetricSessionRestarts` rate, `componentErrors`, and per-session readiness (`/ready?level=...`). Tests: `runtime/session_supervise_test.go` (fleet survival, backoff reset after sustained recovery, componentErrors cleared after recovery; all pass with `-race`).
-
-#### `E5-FU1` — runtime/route+adapters
-Transport redelivery-count headers (sqs./asb./amqp10.delivery-count) survive bridge-to-bridge hops and can win receiveCount precedence over the fresh local count, mis-firing max_replay_attempts in chained mixed-transport topologies (premature DLQ = good-message loss, or stale<cap = no cap).
-
-- **Files:** `runtime/route/dispatch.go:355-363`, `adapters/azure/transport/servicebus/acl_outbound.go`, `adapters/amqp/transport/amqp10/acl_outbound.go`, `adapters/aws/transport/sqs`
-- **Notes:** Discovered by E5 adversarial review (e5-adversarial). NOT a receiveCount bug — root cause is adapter ACLs carrying foreign transport count headers across hops (these keys are transport-namespaced, NOT x-bridge.* reserved, so unclassified + unstripped). Reachable: foreign count header carried at egress (servicebus/acl_outbound.go:91, amqp10/acl_outbound.go:117 pass non-own-prefix props) and re-imported at ingress (servicebus/acl_inbound.go:60-64, amqp10/acl_inbound.go:70-74). Repro: env {asb.delivery-count:9, amqp10.delivery-count:uint32(0)} -> receiveCount=9 not 1. E5 fix marginally widens a PRE-EXISTING class (sqs stale header already won before). Documented in dispatch.go:344-349 receiveCount comment. Two fix options: (A) strip sqs./asb./amqp10. count keys at egress in each adapter ACL (or do not re-import foreign ones at ingress); (B) thread source-transport identity from RouteRunner into receiveCount so it reads ONLY the local transport count (local ingress always overwrites its own key fresh; foreign keys are always stale). Related cluster: PROD_READY_ISSUES #91/#115/#205 (x-bridge.* hop hygiene). Own unit + review.
-- **Resolution (2026-07-02):** Chose the runtime-chokepoint strip (Option A, but transport-agnostic and in one place) over threading source identity. New helper `stripInboundReceiveCounts(env)` (`runtime/route/dispatch.go`) deletes the three foreign redelivery-count keys (`sqs./asb./amqp10.delivery-count`); applied to the **outbound clone** in `sendDirectHold` and to a **pre-persist clone** in `buildOutboxRecords`, never to the source env (receiveCount is re-read on retry paths). Downstream hops now read only the fresh local count, so `max_replay_attempts` can no longer be tripped early (nor stuck below cap) by a stale cross-hop count, and the wire is cleaned of foreign bookkeeping. Test: `runtime/route/dispatch_test.go` (stale foreign count stripped; fresh local count preserved; nil-header safe).
-
-#### `ADV-F1-P4` — validate
-Receiver with topics on a session that only gets a planless session-sender manager silently subscribes to nothing (F1-class silent loss)
-
-- **Files:** `validate/blueprint_graph.go`
-- **Notes:** REACHABLE shape: shared_outbox route omits its Session block but a binding has session_id==receiver.SessionID; that session gets only a planless RegisterSessionSender manager (bridge_start.go:194-199) so a plan-driven receiver on it subscribes to nothing. Pre-existing, NOT introduced by F1. CAVEAT (why not a naive guard): the obvious guard "receiver with topics requires a route Session.SessionID==its SessionID" FALSE-POSITIVES on amqp10, whose receivers self-establish links on start independent of the plan (amqp10/session.go:271-272; plan feeds only Health). validate/ is config-only and cannot distinguish plan-driven (mqtt/amqp091) from self-establishing (amqp10) transports without adapter knowledge arch-lint forbids. Correct fix needs a transport capability (e.g. PlanDrivenSubscriptions) surfaced to the builder, OR move the check to the builder where transport factories/Capabilities() are available. Verified against source 2026-06-30.
-- **Resolution (2026-07-02):** Fixed functionally (no validate-layer guard, so the amqp10 false-positive is avoided). `bridge/builder_complete.go`'s `RegisterSessionSender` loop now sets `sc.Plan = sessionPlanFor(b.cfg, bd.SessionID)`, so a session that previously received only a planless sender manager now also carries the plan needed to reconcile its plan-driven receiver subscriptions (harmless for amqp10/servicebus where the plan feeds only Health; necessary for mqtt/amqp091). **Scope note:** this closes the *planless-manager* shape. A distinct adjacent shape — a receiver whose `session_id` resolves to **no manager at all** — is out of scope and tracked below as `ADV-P4-FU1`.
-
-### LOW (40)
-
-> **✅ RESOLVED 2026-07-02** on branch `fix/prod-ready-medium-followups` (`make lint` + `make test` green). Each item carries a **Resolution** note; entries marked *verify-keep* were confirmed already-correct, and a few carry a documented deferral with its rationale (no silent gaps).
-
-#### `ADV-P4-FU1` — bridge/builder
-Receiver whose `session_id` resolves to NO session manager (neither plan-driven nor planless) silently subscribes to nothing — the missing-manager sibling of `ADV-F1-P4`.
-
-- **Files:** `bridge/builder_complete.go`, `bridge/specs.go`
-- **Notes:** Surfaced by the adversarial review of the `ADV-F1-P4` fix (2026-07-02). P4 closed the *planless-manager* case (a session that gets a planless sender manager now also carries a reconcilable plan). This item is the distinct case where `receiver.SessionID` maps to no manager whatsoever, so nothing ever reconciles its subscriptions and the receiver is silently inert. A naive validate-layer guard false-positives on amqp10 (self-establishes links, plan-independent), same reason `ADV-F1-P4` was not fixed in `validate/`. Correct fix: surface a transport `PlanDrivenSubscriptions` capability to the builder so it can require a session manager only for plan-driven transports (mqtt/amqp091) and skip the check for self-establishing ones (amqp10). Deferred: needs a new ports capability + builder threading, out of this branch's scope.
-- **Resolution (2026-07-02):** FIXED. New transport capability `ports.CapPlanDrivenSubscriptions`, advertised **only** by the mqtt (paho) and amqp091 factories (amqp10/sqs/asb/http deliberately do not). `bridge/builder_complete.go` `validatePlanDrivenReceiverSessions` runs as a final `wireRoutes` pass over the exact builder-managed session set: a route-referenced receiver bound to an unmanaged session whose transport advertises the capability now **fails the build**, naming the receiver, transport and `session_id`. Self-establishing (amqp10) and address-direct (sqs/asb/http) transports are skipped — the exact false-positive that blocked the validate-layer fix. The capability lives on the transport factory (which arch-lint lets the composition root read). Test: `bridge/plan_driven_receiver_test.go` (mqtt-like orphan fails naming rx/session/transport; amqp10-like builds).
-
-#### `OTEL-N3` — adapters/otel
-Outbox-path causality gap: store-and-forward never injects the bridge hop at drain; downstream parents on upstream span (traced) or starts disconnected trace (untraced).
-
-- **Files:** `runtime/route/dispatch.go`
-- **Notes:** Strict improvement over pre-K1 (bridge span now joins upstream trace via Extract) and documented in dispatch.go. Full fix = persist+re-inject at drain time. Tracked.
-- **Resolution (2026-07-02):** FIXED (persist-at-build, route-local, no schema change). `runtime/route/helpers.go` `buildOutboxRecords` now stamps this bridge's active span onto the **persisted clone**'s W3C headers (the source env is never mutated), deleting any stale `traceparent`/`tracestate` first; it is a no-op when tracing is off (Inject writes zero keys) and mirrors the existing `sendDirectHold` inject. This closes the causality gap so downstream hops parent on the bridge span, not a bare/disconnected upstream. A distinct drain-hop span (needs a Tracer threaded into `outbox.Config`/`Drainer`, cross-package) is deferred and documented. Test: `TestBuildOutboxRecords_StampsBridgeSpanForDrain`.
-
-#### `OTEL-N4` — adapters/otel/metrics
-Metrics limit hot-path cliff: once cache full, every NEW name misses RLock fast path, takes Lock, rejected, calls onError on every emit → serialize + flood under dynamic-name misuse.
-
-- **Files:** `adapters/otel/metrics/acl_client.go`
-- **Notes:** K9 correctly trades OOM for bounded-but-noisy failure. Only bites operator misuse (runtime emits static set). Consider once-per-name/rate-limited rejection reporting.
-- **Resolution (2026-07-02):** FIXED. `adapters/otel/metrics/acl_client.go`: an `RLock` fast-path rejects when the instrument cache is full (caches only grow — invariant documented) so the rejected hot path never serializes on the write lock; the write path double-checks existence and fullness. `reportInstrumentError` rate-limits the full-cache rejection to one report per minute via a lock-free atomic CAS (the timestamp is sourced from an injected `clock.Clock`, defaulting to `clock.System`, per the forbidigo/no-`time.Now` rule), and the error string is built only when actually reported (allocation-free reject). Test: `TestInstrumentLimit_RejectFloodRateLimited` (8×2000 names, asserts `onError` fires once).
-
-#### `AMQP091-N1` — amqp091
-setBlocked stale {Active:true} from a dropped-connection watcher can pin a healthy conn to Degraded+ErrBrokerBusy (no epoch guard)
-
-- **Files:** `adapters/amqp/transport/amqp091/session.go`, `acl_client.go`
-- **Notes:** NICE-TO-HAVE: pass a generation token / conn to setBlocked and ignore writes from a non-current connection.
-- **Resolution (2026-07-02):** FIXED. `session.go` `setBlocked(conn, active, reason)` now reads `s.conn` under `s.mu` and rejects the write when `conn != s.conn` (a connection-identity generation token); the blocked-watcher continues on rejection with no phantom metric/log. A stale watcher from a dropped connection can no longer degrade a healthy reconnect. No new state. Test: `TestSession_SetBlocked_StaleWatcherAfterReconnect_DoesNotDegrade` (fails without the guard).
-
-#### `AMQP091-N2` — amqp091
-map-path ReceiverConfigFromOptions lets explicit prefetch_count:0 mean unlimited, contradicting typed path 0->defaultPrefetchCount
-
-- **Files:** `adapters/amqp/transport/amqp091/config.go`
-- **Notes:** NICE-TO-HAVE: low-level/manual users only (managed uses typed path); latent backpressure footgun.
-- **Resolution (2026-07-02):** FIXED. `config.go` `ReceiverConfigFromOptions` now guards `prefetch_count`: an explicit `0` resolves to `defaultPrefetchCount` (mirroring the typed `ReceiverParams.applyDefaults` `0→default`), while negatives pass through unchanged; the default is tied to the `defaultPrefetchCount` const. Test: `TestReceiverConfigFromOptions_ExplicitZeroPrefetch_UsesDefault`.
-
-#### `G-N1` — amqp10
-amqp10 egress is a 3rd divergent policy (IsReservedHeader && !IsBridgeToBridgeHeader) vs StripInternalOnlyHeaders / strip-all
-
-- **Files:** `adapters/amqp/transport/amqp10/acl_outbound.go`
-- **Notes:** DECIDED: keep amqp10 fail-closed predicate (stronger; reviewer agrees more-correct). Unify only if a shared StripNonPropagatedReservedHeaders lands across ALL transports (cross-cutting, deferred).
-- **Resolution (2026-07-02):** VERIFY-KEEP. `acl_outbound.go`'s `IsReservedHeader && !IsBridgeToBridgeHeader` egress test is the stronger fail-closed policy (strips internal-only and unclassified `x-bridge.*`, lets bridge-to-bridge headers through). Unifying it into a shared `StripNonPropagatedReservedHeaders` across all transports is deferred; the file is unchanged.
-
-#### `G-N2` — amqp10
-F2 unhonored delayed-retry logged Debug only; ops-invisible retry-spacing loss
-
-- **Files:** `adapters/amqp/transport/amqp10/acl_delivery.go`, `metrics.go`
-- **Notes:** NICE-TO-HAVE: add MetricAMQP10DelayedRetryUnhonored counter + once-per-link Warn.
-- **Resolution (2026-07-02):** FIXED. `acl_delivery.go`: a per-message `MetricAMQP10DelayedRetryUnhonored` counter (the settle guard prevents double-count) plus a once-per-link `Warn` via a shared, nil-safe `*sync.Once` rebuilt per `createLink`. Delayed-retry-not-honored is now observable per message and warned once per link. Test: `TestDelivery_DelayedRetryUnhonored_MetricAndWarn`.
-
-#### `G-N3` — amqp10
-Health over-reports active when plan.Subscriptions > registered receivers during startup
-
-- **Files:** `adapters/amqp/transport/amqp10/session.go`
-- **Notes:** NICE-TO-HAVE (partly pre-existing): clamp active to link-derived counts.
-- **Resolution (2026-07-02):** FIXED. `session.go`: health now computes `linkUp = registered - downCount` and clamps `active > linkUp`, preventing over-report when the plan wants more receivers than are self-established during startup. Test: `TestSession_Health_ActiveClampedToRegistered` (plan=2, 1 up → active=1, wanted=2, degraded).
-
-#### `ASB-D1` — asb
-ASB docs: broker-side MaxDeliveryCount auto-DLQ is a 2nd dead-letter sink; queue delayed-retry reuses MessageID (dedup-loss caveat); RAD+no-DLQ at-most-once drop
-
-- **Files:** `adapters/azure/transport/servicebus/doc.go`
-- **Notes:** DOC-DEFERRED (Wave 5). asb-adversarial approach-challenges: doc "exactly once in one place" overstated; subscription abandon-not-schedule merits ADR.
-- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/azure/transport/servicebus/doc.go`: added the subscription abandon-instead-of-schedule design-note trade-off; the queue delayed-retry **dedup caveat** (`buildRetryMessage` reuses the original `MessageID`, so `RequiresDuplicateDetection` can silently discard the rescheduled copy within its `DuplicateDetectionHistoryTimeWindow`); softened the overstated "exactly once, one place" claim to **at-least-once with idempotency** (the DLQ write and source `CompleteMessage` are two separate steps); and kept the distinct broker `MaxDeliveryCount` second DLQ sink. Comment-only.
-
-#### `ASB-N1` — asb
-Pre-existing time.Sleep in delivery_autoextend_retry_test.go / delivery_test.go (fake-clock sync)
-
-- **Files:** `adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go`, `delivery_test.go`
-- **Notes:** Reviewer scoped OUT (pre-existing, allowlisted). Track for a determinism sweep: signal-channel handshake instead of sleep.
-- **Resolution (2026-07-02):** FIXED (test determinism). The Service Bus auto-extend/renewal tests now use buffered signal channels (`signalClock`/`signalTicker` emitting on started/stopped) so six fake-clock-sync tests use `<-started`/`<-renewed` handshakes with zero `time.Sleep`/`time.Now`; two genuinely real-clock tests are retained and documented (timing-allowlisted). Deterministic under `-race -count=5`.
-
-#### `J-N1` — aws-stores
-outbox keyCache slow leak: claimed-but-never-completed records evicted only on terminal Complete → unbounded in the limit under lease churn (bounded ~0 healthy)
-
-- **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
-- **Notes:** aws-adv N1. LRU/size cap or evict-on-condition-failure.
-- **Resolution (2026-07-02):** FIXED. `adapters/aws/store/dynamodboutbox/acl_keycache.go`: a bounded LRU (container/list, mirroring `runtime/outbox/depth_cache.go`, cap 100k) replaces the unbounded key cache, fixing growth from claimed-never-completed keys under lease churn; a miss falls back to the bounded GSI resolve (always correct). Test: `TestKeyCache_BoundedUnderClaimChurn`.
-
-#### `J-N3` — aws-stores
-Complete returns ErrNotFound after GSI-retry exhaustion → re-delivery instead of Complete-retry on genuine GSI lag (at-least-once holds)
-
-- **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
-- **Notes:** aws-adv N3. retryable/timeout error so caller retries Complete.
-- **Resolution (2026-07-02):** FIXED. `acl_store.go` `Complete`'s GSI-exhaustion branch now returns `shared.ErrTimeout` (transient) instead of `ErrNotFound` (permanent): the record exists and is merely claimed, and GSI lag ≠ absence. The safe direction keeps the record claimed and retries once the GSI converges (at-least-once holds) with no hot loop (retried next drain). Test: `TestComplete_GSILagExhaustion_ReturnsRetryable`.
-
-#### `J-N6` — aws-stores
-cold-partition seed seed==0 does not persist a fence row → repeated bounded scan each Claim until first claim raises fence (self-heals, safe)
-
-- **Files:** `adapters/aws/store/dynamodboutbox/acl_store.go`
-- **Notes:** aws-adv N6. raiseFence raise-only so seed race safe.
-- **Resolution (2026-07-02):** VERIFY-KEEP. `raiseFence` is raise-only monotonic (`attribute_not_exists OR #mcv < :ver`, nil on cond-fail). A cold-seed `0` self-heals: `Claim` unconditionally `raiseFence(token.Version)` after `maxClaimVersion`, persisting the fence on first claim. An optional seed-persist write was declined (net-negative extra write). Persistence is confirmed by the J-N7 test.
-
-#### `J-N7` — aws-stores
-integration gap: J5/J2/J3/J6 unit-only vs fakes; Docker/LocalStack concurrent claimers + cold-seed race would close residual
-
-- **Files:** `adapters/aws/store/**`
-- **Notes:** aws-adv N7. Deferred to make check-all.
-- **Resolution (2026-07-02):** FIXED (test). `store_concurrent_test.go` `TestConcurrentClaimersColdSeedRace`: 25 records in a fresh no-fence partition, 8 concurrent owners at the same fence version racing the `seed==0` cold path against real DynamoDB-local. Asserts no double-claim, all 25 claimed once, and the fence persisted (a later v0 claim → `ErrStaleFencingToken`). Docker/ddblocal-gated (runs under `check-all`, skips `-short`/no-Docker).
-
-#### `C3-FU5` — cmd
-Pre-existing (not from C3): both selects in run() read supDone. If the supervisor self-exits first, the first select consumes supDone, so the second select blocks until the full ShutdownTimeout elapses before returning. Bounded/benign (slow-but-correct shutdown). The C3 terminal path is unaffected (first select consumes terminalCh, not supDone).
-
-- **Files:** `cmd/gobridge/main.go`
-- **Notes:** Reviewer residual NICE-TO-HAVE, explicitly pre-existing + out of C3 scope. Fix: track whether supDone was already consumed, or use a bool/nil-channel guard on the second read.
-- **Resolution (2026-07-02):** FIXED. `cmd/gobridge/main.go`: a `supExited` bool set in the primary `select` case on `<-supDone`, and an `awaitSupervisorShutdown` helper that returns immediately when the supervisor already self-exited (else the original bounded select). Signal/terminal paths are unchanged. Tests: `SkipsWaitWhenSupervisorAlreadyExited` / `WaitsForSupervisorToUnwind` / `ReturnsOnDeadline`.
-
-#### `A8-R2-validate-stale-msg` — config/validate.go
-validate.go:199-205 stale_claim_duration warning propagates the imprecise rationale ("without reducing duplicate sends", "closer to step_down_grace + 15s"). Real constraint: stale_claim must exceed the worst-case drain-batch timeout (same-owner stranded-claim recovery, DynamoDB-only); grace+15s is only a rule of thumb. Refine the warning message to state the drain-ceiling constraint.
-
-- **Files:** `config/validate.go:199-205`
-- **Notes:** From a8-resilience review. Pre-existing code, not added by A8; left untouched to keep A8 doc-scoped. A8 docs now state the correct rationale and remain consistent with the grace+15s rule-of-thumb the validator nudges toward.
-- **Resolution (2026-07-02):** FIXED (text-only). `config/validate.go` warning + doc now state the real constraint: the stale-claim duration must exceed the worst-case drain-batch timeout, bounds same-owner stranded-claim recovery, is DynamoDB-only, and does **not** gate failover hand-off; the `step_down_grace + 15s` figure is demoted to a rule-of-thumb. The threshold (`stale > 2*maxGrace`) is unchanged; the eight existing `TestValidateStaleClaimDuration_*` cases still pass.
-
-#### `D2-FU1` — docs
-Doc: visibility/lock timeout + auto-extend validator interaction + migration note
-
-- **Files:** `docs/transports/*`
-- **Notes:** Docs sweep: document validator skips SendTimeout<window/2 when auto_extend on; only auto_extend:false + short window + long send is rejected (correct). ASB LockDuration is client-side mirror of broker value; operators should mirror broker lock. Also (reviewer NTH): document that ASB lock_duration must match the broker entity LockDuration, else auto_extend:false + declared-short lock_duration produces a fail-fast validator rejection on the declared value.
-- **Resolution (2026-07-02):** FIXED (docs). `docs/transport-configuration.md`: new SQS and Service Bus "Resilience Behavior" sections documenting why the validator skips the send-timeout-vs-window check under `auto_extend` (guard `!SourceAutoExtend && vis>0 && SendTimeout>=vis/2`); the SQS 2s floor (`minAutoExtendVisibilitySeconds=2` disables auto-extend even when requested, so the check re-applies); and `lock_duration` as a client-side mirror (broker `LockedUntil` governs, a declared-short value is rejected under `auto_extend:false`), plus a migration note. All claims traced to code.
-
-#### `DOC-DEFERRED-S21` — docs
-scenario 21 transform.New uses non-existent API (name arg + WithTransformFunc + domain.Envelope + env.Headers map-write)
-
-- **Files:** `docs/scenarios/21-amqp-cross-protocol.md:249`
-- **Notes:** Not a mechanical single-return fix: reflects an old/imagined transform API that never existed in current code (New(cfg)(*Processor,error), no name, no options, mapping-based). Setting a CONSTANT header (partner-version=2) may not be expressible via transform mappings -> needs capability reconciliation in Wave 5 cross-plugin docs sweep. Do NOT botch mechanically.
-- **Resolution (2026-07-02):** FIXED. The scenario-21 Go block was rewritten to the **real** transform API: `transform.New(Config{Name, Mappings})` (no name arg, no `WithTransformFunc`), the `SimpleMapping(src, target)` helper, a `header.`-prefixed `Target` to write an envelope header, and `partner-version=2` via a synthetic `Source` + `DefaultValue` fallback (there is no constant-header primitive) with an honest blockquote caveat. Runtime-verified against the package; only the `.md` changed.
-
-#### `J-N4` — docs
-CloudWatch 256-byte dim prefix collision → two values sharing prefix collapse to one series (inherent to CW limit)
-
-- **Files:** `adapters/aws/metrics/cloudwatch/acl_batcher.go`
-- **Notes:** aws-adv N4. Doc caution.
-- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/aws/metrics/cloudwatch/acl_batcher.go` `truncateField`: an operator caution that two dimension values sharing a ≥256-byte prefix truncate to the same string and collapse into one CloudWatch series (`maxDimensionField=256`, `buildDimensions`), framed as inherent to the CloudWatch limit (not a bug), with guidance to keep high-cardinality values distinct within the first 256 bytes. Comment-only.
-
-#### `HTTP-N2` — http
-SSE Send streams bridge-to-bridge x-bridge.* (tenant-id/forwarded-from/correlation/trace) to possibly-external subscribers
-
-- **Files:** `adapters/http/transport/sender_sse.go`, `doc.go`
-- **Notes:** H2 scoped to internal-only strip by design; DOC: if any SSE endpoint is public, operators must strip full x-bridge.* at the edge (or add per-destination egress ACL).
-- **Resolution (2026-07-02):** FIXED (doc). `adapters/http/transport/doc.go`: a caveat that on **public** SSE endpoints the retained `x-bridge.*` headers plus `traceparent`/`tracestate` are serialized to every subscriber and must be egress-ACL'd or stripped at the edge.
-
-#### `HTTP-N3` — http
-min-16 api_key floor is a silent breaking change for <16-char inline keys; no warning against reusing api_key as forward token
-
-- **Files:** `adapters/http/transport/config.go`, `doc.go`
-- **Notes:** Release-note the floor; warn that reusing api_key as ForwardToken reopens H1 spoofing.
-- **Resolution (2026-07-02):** FIXED. `config.go`'s API-key floor error now names both the too-short length and the minimum (16), and `doc.go` gains a release note plus a warning that the `api_key` is not the forward token. Test: `TestConfig_Validate_APIKeyFloorErrorNamesMinimum`.
-
-#### `A6-R1` — httpapi
-Expose running config_version on GET /topology for continuous fleet monitoring
-
-- **Files:** `httpapi/monitor.go`, `spec/httpapi/http-api.yaml`, `spec/httpapi/components.yaml`
-- **Notes:** A6 adversarial NICE-TO-HAVE N1. handleTopology (monitor.go ~145-165) returns instance_id/running/routes; s.cfg.ConfigProvider() is already wired and reachable, so the running config version could be surfaced as a response field for scrapeable fleet-convergence monitoring (no continuous metric/HTTP field exists today). Deferred from A6 because it is a contract change: requires updating the OpenAPI spec (spec/httpapi/http-api.yaml + components.yaml) and would pull in contract-reviewer scope — out of proportion for a LOW NICE-TO-HAVE during a doc/observability fix. A6 instead points operators at Supervisor.Config().Version (the real programmatic surface). Pick up as a contract-aware change in the Wave 4 httpapi unit.
-- **Resolution (2026-07-02):** FIXED. `monitor.go` `configVersion()` is nil-safe (reads `s.cfg.ConfigProvider().Version`), and `handleTopology` adds `config_version` **only** when a provider is wired (additive, avoiding conflating no-provider with v0). Spec: `TopologyResponse.config_version` (optional) in `components.yaml` and the `getTopology` description. Test: `TestHandleTopology_ConfigVersion` (present==7 / omitted).
-
-#### `B9-FU-STRICTJSON` — httpapi
-Optional: strict JSON body decode (reject trailing garbage / multi-value) shared across create/patch/inject handlers
-
-- **Files:** `httpapi/admin_config.go`, `httpapi/admin.go`
-- **Notes:** httpapi-adversarial NICE-TO-HAVE. B9 finding (malformed->silent default txn) is CLOSED. Residual: {"ttl":"90s"}JUNK->201 honors leading value + ignores trailing (NOT default, milder); null->201 default (well-formed, defensible); multi-value->first wins. Same one-value Decode pattern in handleInject(admin.go:149) + handleConfigTxnPatch(admin_config.go:127). Proper fix = shared decodeStrictJSON (Decode + assert dec.Decode(&struct{}{})==io.EOF) across all 3. YAGNI now: no data-loss/security impact, finding closed.
-- **Resolution (2026-07-02):** FIXED. `httpapi/decode.go` `decodeStrictJSON` decodes one value then asserts the next `Decode` is `io.EOF`, else returns a distinct `errTrailingData` (so an empty body still yields defaults, but `{json}JUNK`/multi-value bodies are rejected 400). Used by the config-txn create/patch/inject handlers. Test: `TestStrictJSON_RejectsTrailingAndMultiValue`.
-
-#### `C3-FU3` — mqtt
-Make Paho session reusable (resubscribe on re-Start) for true in-process lease re-acquire, eliminating the process-restart cost for exclusive MQTT.
-
-- **Files:** `adapters/mqtt/transport/paho/acl_session.go`
-- **Notes:** Single-use is deliberate (client-ID uniqueness). Reusable would need careful clean-session/clientID handling. Follow-up, not required for correctness.
-- **Resolution (2026-07-02):** VERIFY-KEEP. The single-use `Session` is intentional: `Start()` guards `if s.closed → ErrUnavailable`, with the clientID-uniqueness/clean-session rationale documented. Reuse would need careful clientID/clean-session handling and is deliberately not done. Regression `bug_start_after_close_test.go` (4 `TestBugSAC_*`) passes.
-
-#### `MQTT-ADR1` — mqtt
-ADR: MQTT in-flight QoS1/2 settlement on session step-down (drop-and-ack vs disconnect-first-redeliver vs EnableManualAcknowledgment+post-emit-ack)
-
-- **Files:** `adapters/mqtt/transport/paho/acl_router.go`, `delivery.go`
-- **Notes:** Reverted stop-gate => current model = forward-in-flight + broker-redelivers-un-acked-on-socket-teardown. True graceful drain is manager-deferred (C7 + manual-ack future). Ratify as ADR.
-- **Resolution (2026-07-02):** FIXED (doc-comment). `adapters/mqtt/transport/paho/delivery.go` gains a "Design decision: in-flight QoS 1/2 settlement on session step-down" block recording the ratified forward-in-flight + broker-redelivery model (no consume-gate before disconnect), contrasting the three options (drop-and-ACK stop-gate reverted/lossy; disconnect-first chosen; `EnableManualAcknowledgment` deferred) and noting that true graceful drain is SessionManager-deferred (finding C7). No ADR directory invented. Comment-only.
-
-#### `MQTT-N1` — mqtt
-Non-string bridge-to-bridge header values silently skipped on egress (v.(string) else continue), no counter
-
-- **Files:** `adapters/mqtt/transport/paho/acl_headers.go`
-- **Notes:** Pre-existing, consistent with sibling transports; out of strict scope. A non-string idempotency-key/tenant-id would drop without signal.
-- **Resolution (2026-07-02):** FIXED. `acl_headers.go` `PublishFromEnvelope` gains a variadic `...ports.MetricsExporter` (mirroring `NewSession`, zero churn to its ~20 four-arg callers); the egress loop counts dropped non-string headers and emits `MetricMQTTNonStringHeaderDropped` once, with `sender.go` passing `s.metrics`. Tests: `NonStringHeaderIncrementsCounter` and `AllStringHeaders_NoDropCounter`.
-
-#### `L8-FU1` — processors/circuitbreaker
-Pre-existing (NOT introduced by L1/L8/L11): fetch-breaker-then-use-outside-p.mu in Process — a concurrent evictOldest can drop the breaker another goroutine is mid-flight on, transiently yielding two breakers per key and dropping the orphan state update. Manifests only under cache-full high-cardinality churn (the regime L8 now surfaces via Stats().OpenEvictions). Proper fix (refcount or hold-lock-across-call) is non-trivial and risks serializing throughput — defer as its own unit.
-
-- **Files:** `processors/circuitbreaker/processor.go`
-- **Notes:** From cb-adversarial NICE-4.
-- **Resolution (2026-07-02):** FIXED. `processor.go` now keys the breaker map on `*breakerEntry{breaker, inFlight atomic.Int32}`. `Process` pins `inFlight` under `p.mu` with the decrement deferred first (so it fires last, after `AfterRequest`), and `evictOldest` skips any entry with `inFlight>0` across all tiers. Pin and evict are serialized under `p.mu`; the cache bound is soft under extreme churn (bounded, self-correcting overshoot) — documented, no hot-path serialization. Test: `TestProcessor_InFlightBreakerSurvivesEvictionChurn`.
-
-#### `OTEL-N5` — runtime
-Metrics Flush+Close share one halved shutdownTimeout/2 budget; slow Flush can push Close(provider.Shutdown) to deadline → spurious ctx error appended to Stop result (provider still shuts down).
-
-- **Files:** `runtime/bridge.go`
-- **Notes:** Harmless (Flush != shutdown, comment accurate). Tracer gets its own full closeTimeout. Give Close its own budget for clean shutdown errors.
-- **Resolution (2026-07-02):** FIXED. `bridge.go` calls `metrics.Close(closeCtx)` with the full close budget instead of the halved `flushCtx` (matching `tracer.Close`), so a slow-but-successful flush no longer eats the close deadline and produces a spurious ctx error on clean shutdown. Test: `TestStop_MetricsCloseGetsOwnBudget_NoSpuriousError` (fails if reverted).
-
-#### `OTEL-N6` — runtime
-Straggler drainer after close when Stop ctx pre-cancelled: select skips wg.Wait, proceeds to close metrics/tracer while drainer may emit.
-
-- **Files:** `runtime/bridge.go`
-- **Notes:** Benign — OTel counter/span calls on shut-down provider are no-ops (SDK concurrency-safe). Note only.
-- **Resolution (2026-07-02):** VERIFY-KEEP (+comment). `bridge.go`'s pre-cancelled `Stop` ctx skips `wg.Wait`; a straggler emit after provider `Close` is benign (OTel Counter/Start on a shut-down provider are concurrency-safe no-ops). Documented; no synchronization added (which would slow every shutdown for a non-bug).
-
-#### `A4-R1-replaycount-decouple` — runtime/outbox + domain/persistence + dynamo
-Transient retries still increment replay_count, so an outage longer than the poison budget DLQs good messages (memory/SQLite ~6x sooner than DynamoDB). Root-cause fix: bound delivery attempts by record AGE not claim count. Larger change across aggregate, snapshot, Dynamo store. Marked with ponytail comment in loop.go Run.
-
-- **Files:** `runtime/outbox/loop.go`, `domain/persistence/outbox.go`
-- **Notes:** Deferred per adversarial reviewer; 5s floor is the ship-gate mitigation.
-- **Resolution (2026-07-02):** VERIFY-KEEP + safe observability add; root-cause deferred. Verified the 5s `transientRetryFloor` is present and working and the cross-store "~6× sooner" claim (memory/sqlite implement `OutboxReleaser` → release+reclaim ~every 5s; DynamoDB has no `Release` → stale-claim reclaim ~every 30s; 30/5=6). Added a point-of-loss `WARN` at `handlePoison` (previously silent) with `record_id`/`replay_count`/`max_replay_attempts` — replay-count exhaustion is the only route to the poison DLQ, so the WARN faithfully marks premature-DLQ-from-outage. Pure observability, no schema/behavior change. The root-cause fix (age-based `IsPoisoned` decoupled from `replayCount`) needs a `firstAttemptAt` field threaded through the aggregate + `OutboxSnapshot` + all three stores (sqlite migration, dynamo reconcile vs the 30s stale reset) plus a `MaxDeliveryAge` knob — its own migration-bearing unit, deferred. Test: `TestOutboxDrainer_PoisonReplayExhaustion_EmitsObservableWarn`.
-
-#### `A4-R2-other-releaseerr-ordering` — runtime/outbox/retry.go
-Rare degraded path: if store Release returns a non-stale store error (e.g. SQLite I/O error), processRecord returns nil -> head counted as success + group continues -> later same-key record may overtake the stranded head. Requires a store write error precisely on Release. Reviewer-blessed fallback; no data loss (head recovers via version/stale reclaim).
-
-- **Files:** `runtime/outbox/retry.go`
-- **Notes:** Documented residual; fixing fully needs a second signal + conditional releaseRemainder, over-engineering a rare store-failure path.
-- **Resolution (2026-07-02):** VERIFY-KEEP, comment-only. A non-stale `Release` error (the `default` branch) returns `nil` so the drain loop does not cancel sibling sends. Verified no data loss: the head stays durably Claimed (Release did not transition it and it was never Completed) and is re-sent in persisted order via version/stale reclaim once the lease version advances (per the `OutboxReleaser` contract). Added a precise residual comment documenting the head-counted-as-success/group-continues/overtake window and its recovery; fully closing it would need a distinct release-failed signal plus a conditional `releaseRemainder` — over-engineering for a store error that must land precisely on `Release` — so it is deliberately deferred.
-
-#### `E5-FU2` — runtime/route
-receiveCount hardcodes 3 transport header strings that mirror unexported adapter constants in separate modules with no compile/test pin; an adapter rename silently disables max_replay for that transport with zero failing tests.
-
-- **Files:** `runtime/route/dispatch.go:330`, `335`, `340`
-- **Notes:** Discovered by E5 adversarial review. Runtime cannot import adapter packages (layer rule) and keys are unexported (servicebus/headers.go:20, amqp10/headers.go:21, sqs inline acl_inbound.go:186+193). Coupling IS documented (dispatch.go:324-326 comment) and an adapter rename breaks the adapter own header test (e.g. sqs headers_test.go:68) alerting the dev, so not fully silent. Fix options: cross-module contract test, or move the 3 keys into a shared domain/messaging header-name registry both layers import (reviewer ADR, borderline/reversible). Defer; values stable + documented.
-- **Resolution (2026-07-02):** FIXED (contract test, no registry). `dispatch.go`'s `receiveCountHeaderKeys` ordered slice (reused by E5-FU3, not gratuitous) is pinned by `TestReceiveCountHeaderKeys_WireContract`, which fixes the three wire strings and the slice, with per-key comments naming each adapter header source and its paired adapter-side pin test (sqs/servicebus/amqp10 `headers_test`). Renaming either side breaks a test.
-
-#### `E5-FU3` — runtime/route
-headerInt returns (0,false) for a present-but-unparseable count -> receiveCount treats it as first delivery (rc=0) -> on DirectHold a permanently-failing recoverable send retries unbounded with no signal.
-
-- **Files:** `runtime/route/dispatch.go:385-389`
-- **Notes:** Discovered by E5 adversarial review. Fail-open is defensible (do not DLQ a good message on a parse error) but the silent unbounded retry is unobservable. Adapters only stamp well-typed int/uint32 on the direct ingress path, so this needs header injection or a future adapter regression to hit. Minimal fix: when key present but uninterpretable, emit a debug log/metric. uint32-max->int (64-bit) and float64 truncation are NON-ISSUES per reviewer. Defer.
-- **Resolution (2026-07-02):** FIXED (observability, fail-open unchanged). `dispatch.go` emits `MetricReceiveCountUnparseable` + a debug log at the DirectHold chokepoint; the unparseable path fires only when there is **no** usable fallback (a literal-0 or valid fallback is not a false positive). The new transport-agnostic metric is added to `domain/shared/metrics.go` (and both exhaustive test lists). Tests: `UnparseableReceiveCountEmitsSignal` and an unparseable-key truth table.
-
-#### `C3-FU4` — runtime/session
-Add a real-adapter test exercising step-down concurrent with in-flight delivery (Probe 5 NICE-TO-HAVE) — current coverage uses fakes + the single-use regression.
-
-- **Files:** `runtime/session`
-- **Notes:** Adversarial Probe 5: no real-adapter step-down-concurrent-with-delivery test. Fakes + singleUseSession cover the manager logic; an integration-tagged test would harden it.
-- **Resolution (2026-07-02):** FIXED (test, fake-based, normal suite). `manager_stepdown_delivery_test.go` `TestSessionManager_StepDownConcurrentWithInflightDelivery`: an in-flight delivery via `mgr.Token()` (real `tokenFn` gate) with a version-fenced sink snapshots the owner token v1, stalls mid-settle across a fake-clock step-down; the manager re-acquires (fence v2>v1); the new term settles; the stalled v1 settle is fenced out — exactly-once. Asserts source closed, gate cleared, monotonic fence, no double-ack, clean shutdown. Addresses adversarial Probe 5.
-
-#### `A8-R1-leasettl-margin` — runtime/session/config.go
-Optional non-zero margin so RenewInterval*MaxRenewFails < LeaseTTL (e.g. LeaseTTL 48-50s) or a per-renew timeout < RenewInterval, making the "tolerates 2 transient renew failures then recovers on the 3rd" claim literally true and lifting the final renewal off the expiry boundary. Resilience-auditor classed it NICE-TO-HAVE; equality is acceptable given DefaultConfig parity (120*3=360).
-
-- **Files:** `runtime/session/config.go:118-126 (HAConfig) and :66-80 (DefaultConfig)`
-- **Notes:** From a8-resilience review. MUST apply to BOTH HAConfig and DefaultConfig (identical zero-margin structure). No safety impact (lease store + version fencing guarantee single-commit); availability/spurious-failover only.
-- **Resolution (2026-07-02):** FIXED. `runtime/session/config.go` now pins `RenewInterval` explicitly just under the derived value in **both** presets (Default 110s: 110×3=330 < 360 TTL, 30s margin; HA 14s: 14×3=42 < 45 TTL, 3s margin). `LeaseTTL`/`MaxRenewFails`/failover-SLA are unchanged, and the zero-derivation path (custom `Config{RenewInterval:0}`) still derives. This makes "tolerates 2 renew failures, recovers on the 3rd" literally true. Test: `TestLeaseRenewMargin_BothConfigs` (strict `<` for both).
-
-#### `SQS-D1` — sqs
-Scenario docs 02/03/05 should note address:<queue-name> now accepted (not only full URL); F8 batch_size direct-API-only note in scenario 02
-
-- **Files:** `docs/scenarios/02-sqs-to-sqs.md`, `docs/scenarios/03-mqtt-to-sqs.md`, `docs/scenarios/05-durable-shared-outbox.md`
-- **Notes:** DOC-DEFERRED to Wave 5 docs sweep.
-- **Resolution (2026-07-02):** FIXED (docs). Scenarios 02/03/05 now note that an SQS binding `address` may be a **bare queue name** (not only a full URL), per `addressMatchesQueue`/`ValidateAddress`; scenario 02 adds the note that `batch_size` sizes `SendBatch` only and does **not** apply to the per-delivery dispatch or outbox-drain paths (zero `SendBatch` callers in `runtime/`, verified). Doc-only.
-
-#### `SQS-N1` — sqs
-Attr size cap counts header bytes only, ignores MessageBody (256KiB shared budget)
-
-- **Files:** `adapters/aws/transport/sqs/acl_outbound.go`
-- **Notes:** NICE-TO-HAVE from sqs-adversarial: thread len(Payload) into starting budget OR scope comment to header-bytes-only. Non-loss (MapError surfaces SQS oversize).
-- **Resolution (2026-07-02):** FIXED. `sqs/acl_outbound.go` `headersToAttributes` takes a `bodyBytes int` seed so body + attributes are measured together against the 256KiB `sqsMaxMessageBytes` budget (the caller passes `len(env.Payload())`); bridge-to-bridge headers are ranked first so app metadata drops before dedup-critical headers, and `bodyBytes=0` preserves prior behavior. Test: `TestHeadersToAttributes_BodySharesSizeBudget`.
-
-#### `SQS-N2` — sqs
-attributeValue has no bool case; bool headers skipped uncounted (invisible)
-
-- **Files:** `adapters/aws/transport/sqs/acl_outbound.go`
-- **Notes:** NICE-TO-HAVE from sqs-adversarial: map bool->String or count in dropped metric so the loss is visible.
-- **Resolution (2026-07-02):** VERIFY-KEEP + regression test. `attributeValue` already renders `bool` as an SQS `String` ("true"/"false"); no code change (laziest-correct). Test: `TestHeadersToAttributes_BoolBecomesStringAttribute` (DataType==String, dropped==0).
-
-#### `D2-FU2` — sqs+asb
-Bounds validation for SQS visibility_timeout / ASB lock_duration vs broker limits
-
-- **Files:** `adapters/aws/transport/sqs/config_plugin.go`, `adapters/azure/transport/servicebus/config_plugin.go`
-- **Notes:** ASB allows 5s..5min lock; Validate() does not clamp/check. Distinct from D2. Reviewer NICE-TO-HAVE #2.
-- **Resolution (2026-07-02):** FIXED (both transports, fail-fast). `sqs/config_plugin.go` `Validate` bounds `VisibilityTimeout` to `[0,43200]`s (0=30s default); `servicebus/config_plugin.go` `Validate` bounds `LockDuration` to `0` or `[5s,5m]`. Field and range are named in the existing error style. Tests: `TestConfig_Validate_VisibilityTimeoutBounds` and `TestConfig_Validate_LockDurationBounds`.
-
-#### `ADV-F1-P2` — validate
-No validation that a receiver/session pair share a transport; mixed-transport session is a silent misconfig
-
-- **Files:** `validate/blueprint_graph.go`
-- **Notes:** sessionPlanFor unions receivers by SessionID regardless of Transport. Nothing guarantees all receivers on a session share the session transport (blueprint_graph.go:66-70 checks only FK existence). Not a regression (a mixed-transport session is already broken independent of the plan; amqp091 configFromPlan returns ok=false on foreign config -> default direct, no panic). Clean transport-neutral guard available: in the receiver collectIDs closure compare r.Transport against sessionsByID[r.SessionID].Transport when both non-empty. No false-positive risk. Low value (obvious misconfig).
-- **Resolution (2026-07-02):** FIXED. `validate/blueprint_graph.go` builds a `sessionsByID` map and adds an else-if guard (`r.Transport!="" && sess.Transport!="" && they differ`) yielding a clear error, so a receiver whose explicit transport conflicts with its session's transport is caught at validation. Test: `TestValidateBlueprintGraph_ReceiverSessionTransport` (mismatch fails; match and inherited pass).
-
-### NICE (4)
-
-> **✅ RESOLVED 2026-07-02** — see per-item **Resolution** notes below.
-
-#### `C7-N3` — adapters/mqtt/transport/paho
-startCtx dead state: write-only in production after C7 (assigned acl_session.go:272, read only by tests). Remove field + bug_reconcile_before_start_test.go/BUG-A machinery, or document retention. Refresh stale reconcileMu doc (session.go:37-40).
-
-- **Files:** `adapters/mqtt/transport/paho/session.go`, `acl_session.go`
-- **Notes:** From c7-adversarial NICE-TO-HAVE #3. Cleanup caused by the fix; deferred to avoid destabilizing a verified MEDIUM fix - needs careful source read of the ordering invariant the BUG-A test guards.
-- **Resolution (2026-07-02):** FIXED (removal). The write-only `startCtx` field is fully removed (grep-clean), making the nil-parent-context panic in `OnConnectionUp` unreachable (the manager owns reconcile). Two dead tests were removed; `TestBugA_Integration_ReconcileBeforeStart` is kept (it guards the real invariant via `activeSubs`/`SessionReconciled`, with no `startCtx` dependency).
-
-#### `C7-N4` — adapters/mqtt/transport/paho
-Probe-4 TOCTOU defense-in-depth: handleConnectionUp does not take reconcileMu, so an in-flight prior-connect reconcile could rewrite activeSubs after reset (narrow ephemeral-session window). Take reconcileMu in handleConnectionUp or re-validate post-Subscribe.
-
-- **Files:** `adapters/mqtt/transport/paho/session_lifecycle.go`
-- **Notes:** From c7-adversarial NICE-TO-HAVE #4. LOW/theoretical: persistent/exclusive sessions moot; ephemeral window yields redundant no-op or Subscribe-error->terminal (no silent loss). Lock-ordering change - defer to avoid deadlock risk on a verified fix.
-- **Resolution (2026-07-02):** DEFERRED (documented). Acquiring `reconcileMu` in `handleConnectionUp` would violate autopaho's `OnConnectionUp` "must not block" contract — `reconcile()` holds `reconcileMu` across network Subscribe/Unsubscribe, and blocking the sole connection-manager goroutine is not provably deadlock-free. The TOCTOU worst case is a redundant re-subscribe or an observable Subscribe-error→terminal, never silent loss. The hazard is documented in `session_lifecycle.go` `handleConnectionUp`; erring toward safety.
-
-#### `C7-N1` — adapters/mqtt/transport/paho + runtime
-Transient vs permanent reconcile failure: a momentary reconnect-resubscribe blip terminates the whole bridge (manager.go:238 -> bridge.go:375). Consider bounded in-manager retry for non-ACL errors before going terminal.
-
-- **Files:** `runtime/manager.go`, `runtime/bridge.go`
-- **Notes:** From c7-adversarial NICE-TO-HAVE #1. Conscious trade-off: correct as-is (terminal+alarm right for permanent ACL failure).
-- **Resolution (2026-07-02):** VERIFY-KEEP (+docs). The premise is stale after C3-FU2: sessions now run under `superviseSession` (not bare `startBackground`), which restarts just that session with capped backoff on a transient fault including a reconcile blip (C7-N2). A permanent reconcile failure stays observable (`MetricReconcileFailures` + `MetricSessionRestarts` + readiness) rather than being escalated to a pod restart. No in-manager retry was added (it would duplicate `superviseSession` and risk masking permanent failure). Documented in `bridge_start.go`.
-
-#### `C7-N2` — runtime
-Exclusive-path conflation: reconcile errors relabeled lease.lost (+MetricLeaseTransfers, LeaseStateLost) at manager_lease.go:114-123. Emit distinct reconcile-failure signal for accurate observability.
-
-- **Files:** `runtime/manager_lease.go`
-- **Notes:** From c7-adversarial NICE-TO-HAVE #2.
-- **Resolution (2026-07-02):** FIXED. `manager.go` adds a distinct `LeaseStateReconcileFailed` (appended, iota-stable); `manager_lease.go` `afterRenewLoopExit` classifies via an `errLeaseLostAfterRenewal` sentinel so a reconcile blip emits the distinct signal, clears `hasLease`, and propagates to `superviseSession` (no `lease.lost`/`LeaseStateLost`/`MetricLeaseTransfers`), while a genuine loss/clean nil keeps the old re-acquire path. This stops a reconcile blip from polluting lease-transfer metrics. Test: `TestSessionManager_ExclusiveReconcileFailure_EmitsDistinctSignalNotLeaseTransfer`.
+## Chunk: Outbox & DLQ stores (`adapters/native/store/*`, `adapters/aws/store/dynamodboutbox|dynamodbdlq`)
+
+Examined: all six store modules fully, `ports/stores.go` fencing contract, `domain/persistence/outbox.go`, drainer consumer path, builder stale-claim derivation, `httpapi/admin_dlq.go`, storetest conformance suites, docs. Builds/vet/tests green; the `stale_claim_duration` docs mismatch empirically confirmed (strict decode rejects it).
+
+Verdicts: production ready PARTIAL (SQLite genuinely durable: WAL, synchronous=FULL, single-conn, transactional fence) · zero bugs FAIL · outage resilience PARTIAL · evidence loss FAIL (DDB TTL deletes stuck poison records) · cluster PARTIAL · docs FAIL.
+
+- CRITICAL — dynamodboutbox: poison records can never reach the DLQ; TTL then silently deletes the evidence. Claim filters `replay_count < 5` (`acl_store.go:390-393,440-443`) while the drainer's poison gate needs to claim a record with `ReplayCount() > 5` (`runtime/outbox/retry.go:46`) — the last permitted claim yields 5, `5 > 5` false, transient failure leaves it `claimed` (DDB implements no OutboxReleaser), stale reclaim blocked by the same filter → stuck forever; `handlePoison` unreachable on DynamoDB. With `ExpiresAt` set, the item TTL physically deletes it — no DLQ entry, no metric. SQLite/memory DLQ correctly; divergence is DDB-only. Fix: drop the store-side filter or set store cap = policy cap + 1.
+- HIGH — dynamodboutbox: fence high-water-mark check is TOCTOU-racy across instances (`acl_store.go:356-373` read fence, then separate per-record claims whose condition never references the FENCE item): owner A (v5) passes the check, B (v6) raises fence and claims, A keeps claiming other PENDING records below the HWM — exactly the split-brain duplicate fencing exists to prevent; violates `ports/stores.go:43-49`. SQLite does check+claim in one transaction. Fix: TransactWriteItems pairing each claim with a ConditionCheck on FENCE.
+- HIGH — dynamodbdlq: `DeleteByFilter` with no limit silently deletes at most 100 entries (delegates to List whose default limit=100); SQLite/memory delete all matches. Operator purging 5,000 entries deletes 100 with a clean success. Loop until exhausted; return count.
+- HIGH — Docs: documented `stale_claim_duration` YAML option breaks config parsing (strict decode rejects it for both sqlite and dynamodb kinds — verified); the documented "30s default" is unreachable because the builder always derives and overrides it. The entire documented stale-claim story is wrong.
+- MEDIUM — dynamodboutbox: FENCE items are immortal (excluded from TTL); one permanent item per session partition — unbounded growth for ephemeral/rotating sessions.
+- MEDIUM — dynamodboutbox: `StatusIndex` GSI keyed on `status` (≤4 values) is a table-wide hot partition written on every state transition; `ClaimedByIndex` is created but never queried — pure write amplification.
+- MEDIUM — dynamodboutbox: >400KB envelope (`ValidationException`) misclassified transient (`acl_errors.go:87`) — deterministic permanent failure retried indefinitely with misleading telemetry.
+- MEDIUM — sqliteoutbox: completed/expired rows never deleted (no DELETE anywhere in the module; fence rows too) — the single-instance production backend grows unboundedly. Add retention compaction mirroring DDB's grace.
+- MEDIUM — DLQ List ordering diverges: DDB oldest-first, SQLite/memory newest-first; with Limit, backends return different entries and admin pagination pages in opposite directions. Pin ordering in the port; assert in storetest.
+- MEDIUM — Conformance suite gaps where the real bugs live: `testClaimReclaimsStale` actually tests version reclaim (misnamed); no concurrent-claimer outbox test; DDB fence TOCTOU uncovered.
+- LOW — `Claim(limit<=0)` semantics differ across all three backends (none/all/none-or-all); pin in the port.
+- LOW — dynamodboutbox: Complete via lagging GSI after restart returns `ErrTimeout`, record claimed until stale reclaim → documented duplicate window.
+- LOW — sqliteoutbox: hydrated records lose `ClaimedAt` (column omitted from select); stale comment contradicts schema; `fetchByIDs` runs after the claim tx commits (thief-visible snapshot; converges via fencing).
+- LOW — sqlitedlq/dynamodbdlq: `Address` silently dropped on durable backends (memory preserves it) — one-of-three field survival is a trap; persist or remove.
+- LOW — memoryoutbox: batch-internal duplicates not rejected; partial mutation before error in Complete/Release; version-only reclaim (documented dev store).
+- LOW — Programmatic-only knobs (`WithMaxReplayCount`, `WithCompactionGrace`, `WithRetention`, `WithMaxScanPages`, …) never passed by factories, no YAML keys, undocumented as embedder-only.
+
+---
+
+## Chunk: AMQP 1.0 transport plugin (`adapters/amqp/transport/amqp10`)
+
+Examined: all 17 non-test files fully; tests skimmed; settlement semantics verified against `Azure/go-amqp v1.5.1` source (dispositions, link options, durability terminus); contract + strict-decode parser + runtime supervision traced; docs §AMQP 1.0. `go build`/`go vet` clean.
+
+Verdicts: production ready FAIL · zero bugs FAIL · outage resilience PARTIAL (solid after first connect; fatal before) · message loss FAIL · cluster PASS (with warts) · docs FAIL.
+
+- CRITICAL — Outbound messages never marked durable: `envelopeToMessage` (`acl_outbound.go:136-158`) never sets `msg.Header.Durable`; Artemis treats durable=false as non-persistent — bridge sends, gets accepted, Acks the source; broker restarts; message gone. End-to-end at-least-once broken across the broker hop. Set `Header.Durable` (default true, config-exposed).
+- CRITICAL — `durability_mode` configures the wrong terminus and links have random names: durable subscriptions do not exist. `acl_session.go:42-44` sets client-terminus `Durability`; `SourceDurability`, `SourceExpiryPolicy`, and a stable link `Name` are never set (SDK defaults random). A multicast receiver with `durability_mode: 2` silently loses everything published while detached; each reconnect would orphan a new subscription if the broker honored it.
+- CRITICAL — Cold-start race is bridge-fatal: `receiver.go:93-95` returns the initial `ensureLink` error terminally while the session manager dials concurrently (`bridge_start.go:257-295`); any non-ctx route error cancels the whole runtime (`bridge.go:392-408`). Broker briefly unreachable at pod start — or a pure scheduling race — takes the bridge down; the identical failure a moment later is retried patiently. Route initial link failure through `waitAndReconnect` (as amqp091 does).
+- CRITICAL — Documented YAML cannot decode: docs show flat `options:` keys (`transport-configuration.md:730-760,835-848`) but the registered decoder strictly requires nested `Config{session,receiver,sender}` — every documented example fails with "unused keys".
+- HIGH — No backoff in link re-creation: connected-but-attach-failing broker (e.g. resource-limit-exceeded) triggers a tight unthrottled attach storm (`receiver.go:181-198,280-348`); amqp091 fixed this exact hot-spin, amqp10 didn't. Apply backoff on failed createLink.
+- HIGH — Broker `Released`/`Modified` disposition on send treated as success: go-amqp `Send` only fails on Rejected; Released (broker couldn't enqueue) returns nil → bridge Acks the source → silent loss. Use `SendWithReceipt`, treat non-Accepted as error.
+- HIGH — `CapSourceRedelivery` not declared though the broker fully redelivers unsettled messages (`factory.go:33-35`); validator therefore flags every amqp10 route as no-retry, forcing DLQ store or `AllowRetryDrop` on a transport that doesn't drop. Declare the capability.
+- MEDIUM — Any link-level `ErrUnavailable` (including a plain LinkError with nil RemoteErr, which matches no heuristic) escalates to full connection teardown (`receiver.go:271-277`, `session.go:723-748`) — every other link on the session disrupted for a single-link fault. Distinguish LinkError from ConnError/SessionError via `errors.As`.
+- MEDIUM — Receiver link detached before in-flight settlements complete (`receiver.go:96` defer close; runner waits for in-flight only after Run returns; no `Close(ctx)` implemented): every graceful deploy fails in-flight Acks → duplicates after restart. Keep the link open on Run exit; implement Close.
+- MEDIUM — Ingress strips the bridge-to-bridge headers its own egress deliberately propagates (`acl_inbound.go:71-76` vs `acl_outbound.go:100-127`) and never lifts them into IdempotencyKey/DeduplicationID/OrderingKey — dedup and ordering silently vanish at the receiving hop of a bridge→Artemis→bridge topology.
+- MEDIUM — Delayed retry is broker-controlled and effectively immediate on Artemis (`Retry(after>0)` → Modify(DeliveryFailed); default `redelivery-delay=0`) — burns max-delivery-attempts in milliseconds, defeating runtime backoff. Use `x-opt-delivery-time` or document mandatory broker-side delay.
+- MEDIUM — Docs tables materially incomplete: missing `reconnect_max_delay`, `reconnect_multiplier`, `link_close_timeout`, `connection_monitor_fallback`, `credentials_uri`, TLS PEM keys, `routing` (typed path decodes only int 0/1; the string `"multicast"` works only in dead map helpers); `durability_mode` description misleading.
+- LOW — TOCTOU pairing of session-link and connection identity in createLink (stale linkConn drops a later notifyDisconnect; self-heals via monitor).
+- LOW — `MetricAMQP10ReceiveLatency` times the blocking `link.Receive` — quiet queue reports minutes of "latency".
+- LOW — Egress clobbers producer `creation-time` with bridge receive time.
+- LOW — Ingress Reject path is dead code wired to a terminal outcome: if envelope validation ever tightens, one poison message exits the receive loop non-transiently → whole-bridge shutdown, no ingress-reject metric.
+- LOW — Concurrent settle race reports a misleading "already settled with error"; SASL PLAIN only (no EXTERNAL for mTLS); static `container_id` example duplicated across replicas.
+
+---
+
+## Chunk: Azure Service Bus transport plugin (`adapters/azure/transport/servicebus`)
+
+Examined: all 17 non-test files fully; 21 test files skimmed; settlement/recovery semantics verified against `azservicebus v1.10.0` source; strict-decode empirically probed against the real parser (flat shape AND all nested snake_case connection keys rejected); runtime consumers traced. `go build`/`go vet` clean.
+
+Verdicts: production ready FAIL · zero bugs FAIL · outage resilience PARTIAL · message loss PARTIAL · cluster PARTIAL · docs FAIL.
+
+- CRITICAL — Documented YAML config is undecodable; managed-identity/connection-string auth cannot be configured from YAML at all. Docs (`transport-configuration.md:318-410`) show flat keys; the decoder requires nested `receiver:/sender:/connection:` — and `ConnectionConfig` (`acl_client.go:93-111`) has no json tags, so even correctly nested `connection_string`, `use_managed_identity`, `tenant_id`, `client_id`, `client_secret`, `ca_pem`, `insecure_skip_verify` are rejected (verified). Only `namespace` matches by field name. `ReceiverConfigFromOptions`/`SenderConfigFromOptions`, which understand these keys, have zero callers. Fix: json tags + rewrite docs + parser round-trip test.
+- CRITICAL — Delayed Retry resets the broker delivery count: poison messages ping-pong forever and reach no DLQ. Queue retries are Schedule(fresh copy)+Complete(original) (`acl_inbound.go:302-330`); the copy carries no attempt counter, so broker DeliveryCount is always 1, the runtime's `rc >= MaxReplayAttempts` gate never fires, and ASB's own MaxDeliveryCount is bypassed because the original is always Completed. Recoverable send failures cycle indefinitely at non-escalating delay; queue vs topic retry semantics silently diverge. Fix: stamp a bridge attempt counter into the scheduled copy and read it at ingress.
+- CRITICAL — Live credential rotation nil-panics the receiver poll loop and takes down the whole bridge. `Receiver.ApplyCredentials` (`credentials_refresh.go:174-181`) nils `r.client` under a mutex the poll loop never takes (`acl_inbound.go:473`); `ensureClient` runs once at Run start. First effective rotation with the recommended push-store setup ⇒ nil-interface panic ⇒ runtime terminal, all routes cancelled. The docstring claim that Run keeps a cached local reference is false; also a data race. Fix: atomic swap of a rebuilt client (as the Sender does) or re-run ensureClient under lock.
+- HIGH — Delayed retry on duplicate-detection queues silently loses the message: retry copy reuses the original MessageID (`acl_outbound.go:203-204`); broker discards the scheduled copy inside the dedup window, then Retry Completes the original — gone, no error, no metric, no DLQ. Documented only in package godoc, absent from operator docs. Salt the MessageID or document loudly.
+- HIGH — One-shot init tears down the entire bridge: `ensureClient` (`receiver.go:133-172`) builds client + accepts session exactly once, no retry; `com.microsoft:session-cannot-be-locked` is expected during rolling deploys (old pod holds the lock) ⇒ every session-enabled deploy risks a crash-loop until the old lock lapses. Bounded retry with backoff, at minimum for session accept.
+- MEDIUM — Sender client swap races with in-flight sends (`sender.go:107,187` read without initMu while ApplyCredentials swaps and closes) — data race; in-flight send on the closed sender fails.
+- MEDIUM — Unbounded lock renewal: no max renewal wall-time (`acl_inbound.go:390-442`); a hung pipeline holds a message locked and invisible forever, never redelivered or DLQ'd, no metric. Cap total renewal and cancel processing.
+- MEDIUM — Invalid `sub_queue`/`receive_mode` silently swallowed with dangerous defaults: typo `"dead-letter"` consumes the main queue during a DLQ redrive; only exact `"ReceiveAndDelete"` matches, other casings silently run PeekLock; `Config.Validate` checks neither.
+- MEDIUM — Session gaps: `sub_queue` silently ignored when `session_id` set; fixed-ID only (no AcceptNextSession — scaling requires hand-assigned IDs; session-enabled entity without session_id fails every poll forever with only Warn logs); each in-flight delivery redundantly renews the same session lock (up to 100 goroutines).
+- MEDIUM — Tiny `max_wait_time` = 100% CPU hot loop: expired per-receive deadline treated as a normal empty poll (no backoff); a YAML bare int decodes as nanoseconds (parser guards floats only); `applyDefaults` fixes only ≤0. Floor-validate ≥1s.
+- MEDIUM — Locks of batched-but-unemitted messages lapse under backpressure: auto-extend starts only at each message's `newDelivery` immediately before a blocking emit — tail of a 100-message batch expires unrenewed → redelivery duplicates + LockLost on settle, unattributed. (Same shape as the SQS finding.)
+- MEDIUM — ReceiveAndDelete shutdown loss window scales with MaxMessages: broker deleted at receive; raws still queued when emit errors are lost — up to 100 messages per shutdown, no DLQ write, no drop metric; doc says at-most-once per message, not per batch. Force MaxMessages=1 in this mode or drain raws to DLQ.
+- LOW — `prefetch` documented as functional but is a warn-and-ignore no-op.
+- LOW — Malformed-message abandon error discarded (`_ =`); poll receive failures have no counter metric — slow-burn outage invisible to dashboards.
+- LOW — `SendBatch` shares one timeout across all chunks (docs say per-call); retry copy aliases ApplicationProperties by reference and restarts TTL on every retry.
+
+---
+
+## Chunk: AMQP 0-9-1 / RabbitMQ transport plugin (`adapters/amqp/transport/amqp091`)
+
+Examined: all 24 non-test files fully; tests skimmed; dispatch/confirm semantics cross-checked against amqp091-go v1.10.0 in the module cache; runtime call sites and strict-decode parser traced; docs §RabbitMQ + module README. `go build`/`go vet` clean.
+
+Verdicts: production ready PARTIAL · zero bugs FAIL · outage resilience PARTIAL · message loss PARTIAL (consume→ack correct; publish durability broken) · cluster PARTIAL · docs FAIL.
+
+- CRITICAL — Publishes are always transient: confirmed messages die with the broker. `acl_outbound.go:46-48`: `DeliveryMode` set only from an `amqp091.delivery-mode` header type-asserted to `uint8` (YAML/JSON header ints fail the assertion); no `sender.delivery_mode` knob, no persistent default. RabbitMQ confirms a transient message once in memory — bridge Acks the source/completes outbox — destination broker restarts — every in-queue bridged message on a classic durable queue is silently lost despite publisher confirms being the advertised durability mechanism. Fix: `delivery_mode: persistent` default + accept int headers. (Quorum queues mitigate; undocumented.)
+- HIGH — Documented YAML configuration cannot boot: all RabbitMQ examples use flat option keys (`options.broker_url`, `options.queue_name`, topic `options.exchange`) rejected by the strict nested decoder (`options.session.*`/`receiver.*`/`sender.*`); even the newest publisher-auto-declare example mixes flat and nested. No repo test decodes the documented shapes. Rewrite examples + add a docs-example decode test.
+- HIGH — Transient broker races classified permanent → route terminal → pod crash loop. (a) `exclusive=true` after a partition: broker holds the stale consumer ~2× heartbeat; reconnect gets 403 `ACCESS_REFUSED` → permanent → component dies; post-restart recurrence = crash loop. (b) Broker restart with non-durable queue: `doReconnect` sets `connected=true` before reconcile and pushes `SessionConnected` even when reconcile fails (`session.go:802-830`); receiver's health probe wins the race → consume → 404 → permanent. Classify 403-exclusive/reconnect-window-404 transient with bounded retries; emit SessionConnected only after successful reconcile.
+- MEDIUM — Start/Close and doReconnect/Close races install a connection on a closed session and leak it forever (`session.go:221-226,802-806,853-864`): live ghost TCP connection + ghost consumers (interacting badly with exclusive queues) until process exit. Re-check `s.closed` under lock after dial.
+- MEDIUM — Initial-Start reconcile failure swallowed at debug, Start returns nil (`session.go:243-250`): a bind failure leaves the queue unbound — consumers receive nothing, messages silently unroutable, only a Degraded service level as evidence.
+- MEDIUM — One in-flight publish per sender: confirm awaited under the sender mutex; SendBatch strictly sequential (`sender.go:111-131,185-191`) — ~10 msg/s ceiling on a 100ms WAN link; Close blocks behind an in-flight confirm. Document or pipeline confirms.
+- MEDIUM — `Retry(after>0)` nacks with immediate requeue, no redelivery cap, only a debug log (`acl_delivery.go:101-135`): poison message hot-loops on classic queues; the identical amqp10 gap got a metric+Warn, this one didn't. Add parity + document `x-delivery-limit`/DLX as the poison guard.
+- LOW — Credential rotation silently ineffective when `broker_url` embeds userinfo (`acl_client.go:154-167`): rotation reports success but redials with the old embedded credentials; fails as an auth loop when the old password is revoked.
+- LOW — `SessionHealth.ActiveTopics` never populated (HasTopic always false); docs/README drift: capabilities omit `plan_driven_subscriptions`; `immediate` and `auto_ack` documented as functional but rejected; session table missing reconnect/credentials/TLS-PEM keys; README example does not compile.
+- LOW — YAML bare-int durations silently decode as nanoseconds (parser guard rejects floats only): `heartbeat: 30` → 30ns → broker default silently wins. Cross-cutting; extend the decode hook.
+
+---
+
+## Chunk: Consumability & deployment (`cmd/gobridge`, `deployment/aws-filebased-config`, Makefile, CI, docs)
+
+Examined: both entrypoints line-by-line (`cmd/gobridge` demo binary, `lib/cmd/gobridge-filebased` production binary), full CDK construct tree (single, cluster, ALB attachment, alarms, EFS, validation phases, grants, seeder), Makefile, go.work, CI/release workflows, all deployment/config docs, httpapi endpoints for claim verification, tests/integration + longrunning coverage assessment. External: `ghcr.io/mariotoffia/gobridge` → 404. Both binaries build.
+
+Verdicts: standard-process/Docker/ECS consumability PARTIAL (signal handling, exit codes, health endpoints, 12-factor bootstrap genuinely well built — but no runtime Dockerfile exists, demo binary self-declares "NOT a production build", referenced image doesn't exist) · docs FAIL (15+ verified drifts incl. an entirely fictional CDK API documented across 5 files) · infra bugs FAIL · resilience-as-deployed PARTIAL · cluster deployment FAIL · reconfiguration-as-deployed PARTIAL (two documented paths, mutually destructive).
+
+Test-coverage note: integration/longrunning suites cover runtime semantics well, but nothing exercises the shipped process/container path — no SIGTERM process test, no Dockerfile build test, and the opt-in AWS integration tests reference the nonexistent ghcr.io image plus the zero-digest seeder, so they cannot have passed as checked in.
+
+- CRITICAL — Seeder image pinned to an all-zeros placeholder digest: every default deployment is dead on arrival. `cdk/constructs/internal/seeder/image.txt:1` = `…@sha256:0000…0000`; ECS cannot pull it; the main container depends on seeder SUCCESS (`base.go:325-328`) and never starts, on both profiles. Commit a real digest (`make update-seeder-image`) + synth-time guard.
+- CRITICAL — Mount-path split-brain: Phase-1 validation checks store paths against `/mnt/gobridge` (`validation/phase1.go:20`) while tasks mount EFS at `/var/lib/gobridge` (`base.go:56`); docs contradict each other. The profile README's own quickstart panics at synth; conversely a store at `/mnt/gobridge/…` validates, then writes to ephemeral Fargate storage — outbox/DLQ durability silently lost on every task replacement.
+- HIGH — `config_file_path` never cross-checked against the seeder target; on mismatch `optionalFileSource` silently falls back to an empty default config (`lib/bootstrap/config.go:96-123`) — process starts, passes `/health`, bridges nothing. Synth-time assert + loud fallback.
+- HIGH — Admin-API hot reconfiguration permanently breaks worker self-healing: config-txn commit rewrites EFS bridge.yaml; worker seeders are hard-coded `AbortDeploy` on hash mismatch vs the synth-time asset (`cluster.go:133-136`, `seeder.sh:205-214`) — after any admin edit, every new worker task (scale-out, crash replacement) fails init until the next CDK deploy; the two documented reconfiguration paths are mutually destructive.
+- HIGH — Production binary has no terminal-runtime backstop and the task has no container health check: demo binary exits 1 on `Terminal()`, `bootstrap.App` never consults it (`app.go:267-275`), CDK sets no HealthCheck (`base.go:307-319`); without the optional ALB, an unrecoverable runtime leaves a "running" task bridging nothing forever.
+- HIGH — `GoBridgeCluster` never forces `topology=filesystem_replicated` (`cluster.go:219-223`; default `single`): both the synth validator and runtime guard return early, so the default cluster may declare shared_outbox routes and session leases on SQLite-over-EFS — the cross-instance corruption the restrictions exist to prevent. With the correct topology, shared_outbox/leases are rejected and the error points to an "HA/DynamoDB profile" that does not exist in the repo; no lease store is provisioned by CDK, and stores omitting `table_name` get no IAM grant → runtime AccessDenied (`grants.go:97-105`).
+- MEDIUM — No `StopTimeout` on ECS containers: Fargate's 30s default equals the drain budget exactly; docs instruct 45s; in-flight drains get SIGKILLed mid-cleanup.
+- MEDIUM — Referenced runtime image doesn't exist and nothing can produce it: no runtime Dockerfile in the repo (the docs offer two conflicting inline ones — one building the wrong binary), no image publish in CI/release.
+- MEDIUM — Release workflow tags target module paths that no longer exist (`transport/mqtt/v*` … vs actual `adapters/…`); consumers cannot get tagged adapter releases.
+- MEDIUM — `bridge.log_level` documented, parsed, merged — and dead: no logger consumes it; production debug logging requires a redeploy. Wire slog.LevelVar or delete.
+- LOW — Container user never enforced non-root (no Dockerfile USER, no CDK `User`); EFS AP posix enforcement covers EFS I/O only.
+- LOW — deployment-guide's health-check example uses `curl` while its recommended image installs only `wget` — copy-pasting both yields always-failing health checks; `/live` documented "always 200" but correctly 503s on terminal (fix the doc).
+- Docs drift (verified, further): fictional `NewGoBridgeService`/`NewGoBridgeStack`/`GoBridgeServiceProps` API in overview + 4 scenario docs (real API: `NewGoBridgeSingle`/`NewGoBridgeCluster`); "auto-scaling to 4 tasks at 70% CPU by default" false (opt-in only; single profile has none); quickstart Dockerfile builds the demo binary for the AWS stack; metric names `bridge.delivery.*`/`bridge.inflight`/`MessagesFailed` don't exist (real: `DeliveryE2ELatency`, `MessagesReceived`, `RouteErrors`, `DLQEntries`); bootstrap example shown as YAML but the loader is JSON-only; "CGO_ENABLED=1 required for SQLite" false (modernc, pure Go). Verified-accurate items (health endpoint semantics, ports, pms://, 4MiB limit, EFS AP uid/gid, ALB HC, CORS/DevMode guards) noted to be correct.
+
+---
+
+## Chunk: HTTP admin/monitor API (`httpapi/`)
+
+Examined: all httpapi files fully (server, middleware, admin, admin_config, admin_dlq, config_txn, monitor, audit, event_publisher, decode); traced supporting paths in config/merge, config/parser, validate/, runtime health/routes/readiness, route dispatch, dlq router, supervisor, cmd/gobridge. Every route traced mux → auth wrapper → handler → runtime call. `go build`/`go vet` clean.
+
+Verdicts: production ready PARTIAL (auth, body limits, panic recovery, timeouts, graceful shutdown all present — but zero TLS support) · zero bugs FAIL · config-txn machinery good but flagship PATCH flow corrupts persisted config · K8s/ECS probe semantics PASS (proper live/ready ladder with role exposure) · security PARTIAL · degraded-runtime handling PASS (clean 503s, failed hot-swap keeps old runtime serving).
+
+- CRITICAL — Config PATCH silently destroys plugin `options` of any touched entry, corrupting the persisted config. `admin_config.go:125-129` decodes overlays into `ports.BridgeConfig` whose defs carry plugin config as `json:"-"` (`ports/blueprint.go:150-232`); `decodeStrictJSON` lacks `DisallowUnknownFields`, so overlay `options` are silently dropped; `mergeByID` (`config/merge.go:108-131`) replaces whole entries — patching an existing session (e.g. only `session_mode`) yields nil `Config`; no validator checks `.Config`; Commit writes no `options` block → broker URLs/credentials permanently erased from disk. Preview can't reveal it (`options` are `json:"-"` in responses too). Next watcher reload fails; old runtime keeps running; process cannot restart — a time bomb. Existing tests never modify existing entries. Fix: custom JSON codec carrying options, or reject ID-colliding overlay entries without options, and validate `Config != nil` at commit.
+- HIGH — PATCHing the HTTP block clears both API keys: `config/merge.go:36-50` wholesale-replaces the block; `preserveRedactedSecret` guards only the literal `[REDACTED]`, not empty. `{"http":{"admin_addr":":9090"}}` → zero-value keys persisted → reload refuses to start the API → operator locked out of the API needed to fix it.
+- HIGH — DLQ redrive replays route-wide: `admin_dlq.go:262` uses `rt.Inject(route)` which fans out to ALL bindings, though the entry records the failed `BindingID` and binding-scoped dispatch exists (`dispatch.go:17`) — N−1 healthy bindings get duplicates.
+- HIGH — DLQ redrive non-transactional and unfenced: inject-then-delete; Delete failure still returns HTTP 200 (warning field only) → natural retry re-injects everything; concurrent admin instances double-deliver (no claim/fencing); `rt.DLQAdmin()` at `:284` not nil-checked → panic after injects already happened.
+- HIGH — No TLS anywhere: both servers built with no TLS path, `adminURL` hardcodes `http://` (`server.go:221-247`); bearer keys transit plaintext; nothing enforces or documents an external terminator.
+- HIGH — Commit writes the file but never applies it: `config_txn.go:190-226` ends at `store.Save`; if the watcher is absent or hot reload fails (e.g. via the CRITICAL above), API says `committed` while runtime diverges and every next txn hits `version_conflict`.
+- MEDIUM — CAS baselines against the in-memory running config, not disk (`config_txn.go:92-95` vs `:190-215`): hand-edited files are clobbered without conflict.
+- MEDIUM — DLQ pagination: `Limit: limit+offset` unbounded fetch (offset validated only ≥0 → millions materialized under memorydlq mutex; near-MaxInt overflows to unlimited); `total` is a lie (min(matched, limit+offset)); `/dlq` `count` caps at 100 — operators alerting on it never see real depth.
+- MEDIUM — Failed auth attempts emit no audit event (and no rate limit exists) — brute force is invisible; audit actor is `RemoteAddr` only → behind an LB every action attributes to the LB IP; single shared key, no per-operator identity.
+- MEDIUM — `POST /dlq/purge` deletes the entire DLQ with zero confirmation while delete-by-filter requires `confirm_delete_all=true` — one mistyped path destroys all failure evidence.
+- MEDIUM — Admin `WriteTimeout` (30s) equals `AdminOperationTimeout` (30s): a slow start/stop completes server-side but the client connection resets mid-response; operator retries against ambiguous state.
+- MEDIUM — DLQ payload reads (full base64, potentially PII/secrets) unaudited, while config reads are audited.
+- LOW — DLQ endpoints use plain non-strict JSON decode (trailing garbage accepted); no handler uses `DisallowUnknownFields` (the enabler of the CRITICAL); `AdminURL()`/`MonitorURL()` race Start (unsynchronized read); predictable timestamp txn-ID fallback on rand failure (rest of codebase panics); unauth `/health` leaks instance_id/route count/failed component names; `Vary: Origin` omitted on disallowed origins.
+
+---
+
+# Executive summary
+
+16 areas examined by independent adversarial reviewers (every transport plugin, every store family, runtime core, cluster, config/credentials, processors, observability, httpapi, deployment). Severity tally across all chunks: **22 CRITICAL · 54 HIGH · 88 MEDIUM · 60 LOW**.
+
+## Overall verdict
+
+**Not production ready.** The durability core (persist-before-ack outbox, fenced claims, confirmed DLQ writes, SQLite WAL + synchronous=FULL, correct SQS/HTTP ingress ACK boundaries) is genuinely well engineered — but it is surrounded by defects that defeat it: three of five brokers can lose confirmed messages, the cluster's dual-active guard is not derivable from YAML, the flagship admin PATCH corrupts the persisted config, all shipped deployments run Noop metrics, and the reference AWS deployment cannot start as checked in.
+
+## Ten-question verdict table
+
+| # | Question | Verdict | Why (one line) |
+|---|---|---|---|
+| 1 | Production ready? | **FAIL** | 22 CRITICALs spanning message loss, config corruption, cluster dual-active, and a dead-on-arrival reference deployment. |
+| 2 | Documentation production ready? | **FAIL** | Systemic docs-vs-code drift: documented YAML for MQTT/AMQP 1.0/AMQP 0-9-1/Service Bus/processors/stores fails strict decode; a fictional CDK API documented across 5 files; wrong metric names; examples that don't compile. |
+| 3 | Zero bugs? | **FAIL** | 22 CRITICAL + 54 HIGH verified bugs with file:line evidence; several independently confirmed by two reviewers (silent-shutdown chain, processor envelope race). |
+| 4 | Can this run in a cluster? | **PARTIAL** | Lease/fencing design is sound, but renew-interval is not derivable from YAML (default derivation guarantees dual-active for lease_ttl < 110s), no step-down on definitive stale token, CDK cluster profile never forces the required topology and provisions no lease store. |
+| 5 | Resilient to outages, comes back on track? | **PARTIAL** | Reconnect/backoff machinery exists everywhere, but single-component init failures terminate the whole bridge (AMQP10 cold-start race, ASB one-shot init, amqp091 transient-as-permanent 403/404), the config-watcher failure chain exits 0 silently, and the production binary never checks Terminal(). |
+| 6 | Message loss recorded/reported/handled? | **FAIL** | MQTT PUBACKs before persist; amqp091 publishes always transient (confirmed-then-lost on broker restart); AMQP10 never sets Durable and counts Released as success; DLQ redrive destroys evidence via ErrDuplicateRecord ack; DynamoDB TTL deletes DLQ evidence; conservation law (received = sent+dropped+dlq) cannot be closed because metrics are unwireable. SQS and HTTP ingress boundaries are exemplary. |
+| 7 | Easy to consume as a standard process on Docker/K8s/ECS? | **PARTIAL** | Excellent process citizenship (signals, exit codes, /live+/ready ladder, 12-factor bootstrap) — but no runtime Dockerfile exists, the referenced ghcr.io image is a 404, the demo binary self-declares non-production, and the AWS binary hard-requires SSM. |
+| 8 | Runtime reconfiguration resilient? | **PARTIAL** | Hot-swap keeps the old runtime on failure and txn mechanics (TTL, CAS, atomic rename) are good — but PATCH erases plugin options (CRITICAL), an HTTP-block patch erases the API keys, commit ≠ apply, and a watcher failure silently exits 0. |
+| 9 | Cluster reconfiguration resilient? | **FAIL** | The two shipped paths are mutually destructive: an admin-API edit breaks every future worker seeder (AbortDeploy hash mismatch → crash-loop at scale-out/replacement), and a CDK redeploy with SeedOnce silently doesn't apply. |
+| 10 | Failover within configurable 30-60s? | **FAIL** | No configuration produces reliable 30-60s failover: renew-interval derivation is unimplemented, worst-case takeover with defaults is ~8.4 min, and even hand-tuned HA values yield ~55-90s with no per-call lease timeouts to bound the tail. |
+
+## Cross-cutting themes
+
+1. **Docs/YAML drift is systemic, not incidental.** Four of five broker transports document flat `options:` shapes the strict decoder rejects; the processors' documented YAML surface doesn't exist; store and scenario examples fail to parse or compile. Any doc-following operator fails at boot. One fix pattern: a CI test that decodes every documented YAML example.
+2. **ACK-before-durable defeats the durability core.** MQTT acks at slot acquisition; amqp091 publishes transient; AMQP10 omits Durable and treats Released as success. The outbox can't protect messages the transports have already acked away or the destination broker holds only in memory.
+3. **Whole-bridge terminality.** One route/receiver init failure cancels the entire runtime across multiple plugins — a single bad queue takes down every healthy route, and in ECS becomes a crash loop.
+4. **Silent-shutdown chain** (found independently twice): config watcher failure → manager closes channel → supervisor reads it as intentional stop → clean exit 0. A production bridge disappears with a success code.
+5. **Observability is unwireable.** Builder/Supervisor expose no WithMetrics/WithTracer/WithAuditLogger; every shipped deployment runs Noop exporters; all six CloudWatch DefaultAlarms are inert (dimension mismatch; OutboxDepth never emitted); the Instrumented* decorators are dead code.
+6. **The admin plane can corrupt what it manages.** PATCH drops `json:"-"` plugin options and persists the damage invisibly; redrive fans out to healthy bindings and double-delivers on retry; purge needs no confirmation.
+7. **Cluster guarantees exist on paper only.** Fencing tokens are honored by stores, but renew timing, step-down, and deployment topology enforcement are missing — the safety property (single active) is not actually deliverable from configuration.
+8. **The good parts deserve note:** SQS/HTTP ingress ACK discipline, the outbox state machine, fenced store writes, config-txn atomic persistence, health/readiness ladder, and shutdown drain logic are all careful, well-tested code. The defects are concentrated at integration seams — between plugins and docs, runtime and deployment, metrics and wiring — where no test currently looks.
+
+## Suggested remediation order
+
+1. Message-loss class first: MQTT ack boundary, amqp091 delivery mode, AMQP10 Durable/Released, DLQ redrive evidence destruction, DynamoDB poison/TTL (all CRITICAL, all data loss).
+2. Config-corruption class: httpapi PATCH options erasure, API-key clearing, silent-shutdown chain, watcher exit-0.
+3. Cluster class: renew-interval derivation, step-down on stale token, per-call lease timeouts, CDK topology enforcement + lease-store provisioning.
+4. Deployment blockers: seeder digest, mount-path split-brain, terminal backstop, StopTimeout, runtime Dockerfile + published image.
+5. Observability wiring: builder options for metrics/tracer/audit, CloudWatch dimension alignment, OutboxDepth emission.
+6. Docs: regenerate every YAML example from decoded fixtures; delete the fictional CDK API; align metric names; add CI decode tests for all documented examples.

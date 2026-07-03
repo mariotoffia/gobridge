@@ -149,17 +149,19 @@ func defaultDialFromOpts(opts SessionOptions) dialFunc {
 	}
 }
 
-// injectCredentials merges username/password into the broker URL if they
-// are set and the URL does not already contain user-info.
+// injectCredentials merges username/password into the broker URL. An
+// explicitly configured (or rotated — see Session.ApplyCredentials)
+// username/password ALWAYS wins over userinfo embedded in the URL:
+// otherwise a credential rotation would report success while every
+// redial silently kept authenticating with the old, embedded (and
+// presumably soon-to-be-revoked) credentials. URL userinfo is used
+// only when no explicit username is configured.
 func injectCredentials(brokerURL, username, password string) string {
 	if username == "" {
 		return brokerURL
 	}
 	u, err := url.Parse(brokerURL)
 	if err != nil {
-		return brokerURL
-	}
-	if u.User != nil && u.User.Username() != "" {
 		return brokerURL
 	}
 	u.User = url.UserPassword(username, password)

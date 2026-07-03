@@ -47,6 +47,14 @@ func (m *mockConnection) channelCalls() int {
 	return m.ChannelCalls
 }
 
+// closeCalls returns the number of Close() invocations under lock so
+// tests can poll it from another goroutine without racing.
+func (m *mockConnection) closeCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.CloseCalls
+}
+
 func (m *mockConnection) Close() error {
 	m.mu.Lock()
 	m.CloseCalls++

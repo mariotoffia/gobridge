@@ -127,6 +127,20 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if b.hook != nil {
 		rtOpts = append(rtOpts, runtime.WithDeliveryHook(b.hook))
 	}
+	// Forward observability into the runtime so a config-driven deployment
+	// exports real metrics/traces/audit instead of the Noop defaults
+	// (Finding 15). The Builder/Supervisor previously had no seam to pass
+	// these through despite runtime.WithMetrics/WithTracer/WithAuditLogger
+	// existing.
+	if b.metrics != nil {
+		rtOpts = append(rtOpts, runtime.WithMetrics(b.metrics))
+	}
+	if b.tracer != nil {
+		rtOpts = append(rtOpts, runtime.WithTracer(b.tracer))
+	}
+	if b.auditLogger != nil {
+		rtOpts = append(rtOpts, runtime.WithAuditLogger(b.auditLogger))
+	}
 
 	endpoints := b.resolveClusterEndpoints(ctx)
 	if len(endpoints) > 0 {
@@ -227,15 +241,52 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		res.dlqDist = isDistributedFactory(sf)
 	}
 
-	if b.cfg.Bridge.DeploymentMode == "clustered" {
+	// Clustered posture is implied by configured cluster endpoints even when
+	// deployment_mode is unset (cluster finding 11): forwarding between
+	// instances with a process-local lease/outbox/DLQ store silently breaks
+	// exclusivity and durability, so the store-distribution guard keys on
+	// either signal.
+	clustered := b.cfg.Bridge.DeploymentMode == "clustered" ||
+		(b.cfg.Bridge.Cluster != nil && len(b.cfg.Bridge.Cluster.Endpoints) > 0)
+	if clustered {
 		if res.lease != nil && !res.leaseDist {
-			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed LeaseStore; the configured store is process-local")
+			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed LeaseStore; the configured store is process-local")
 		}
 		if res.outbox != nil && !res.outboxDist {
-			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed OutboxStore; the configured store is process-local")
+			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed OutboxStore; the configured store is process-local")
 		}
 		if res.dlq != nil && !res.dlqDist {
-			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed DLQStore; the configured store is process-local")
+			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
+		}
+	}
+
+	// Wrap stores with metrics decorators when an exporter is configured so
+	// lease/outbox latency and failure metrics are actually emitted for
+	// config-driven deployments (Finding 15). Wrapping happens AFTER the
+	// distributed-store validation so leaseDist/outboxDist reflect the real
+	// backing factory, not the decorator. A nil clock defaults to the system
+	// clock inside the decorator. No DLQ decorator exists in the runtime, so
+	// the DLQ store is left unwrapped.
+	//
+	// runtime.NewInstrumentedOutboxStoreCapabilityPreserving re-exports the
+	// inner store's optional io.Closer/OutboxReleaser capabilities dynamically,
+	// so its result is used directly — the bare NewInstrumentedOutboxStore would
+	// mask OutboxReleaser and silently degrade the drainer's fast-release path
+	// to stale reclaim. NewInstrumentedLeaseStore does NOT forward io.Closer,
+	// yet runtime.Stop releases durable (file-backed) lease handles via an
+	// io.Closer type assertion on the store it holds; wrapping a closable lease
+	// store with the bare decorator would mask its Close and leak the OS handle
+	// on every reconfiguration, so it is wrapped in instrumentedClosableLeaseStore
+	// to keep Close visible to teardown.
+	if b.metrics != nil {
+		if res.lease != nil {
+			res.lease = instrumentedClosableLeaseStore{
+				InstrumentedLeaseStore: runtime.NewInstrumentedLeaseStore(res.lease, b.metrics, nil),
+				inner:                  res.lease,
+			}
+		}
+		if res.outbox != nil {
+			res.outbox = runtime.NewInstrumentedOutboxStoreCapabilityPreserving(res.outbox, b.metrics, nil)
 		}
 	}
 

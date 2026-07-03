@@ -67,11 +67,18 @@ func (p *ReceiverParams) applyDefaults() {
 
 // SenderParams holds user-settable sender fields.
 type SenderParams struct {
-	Exchange   string        `mapstructure:"exchange" yaml:"exchange" json:"exchange"`
-	RoutingKey string        `mapstructure:"routing_key" yaml:"routing_key" json:"routing_key"`
-	Mandatory  bool          `mapstructure:"mandatory" yaml:"mandatory" json:"mandatory"`
-	Immediate  bool          `mapstructure:"immediate" yaml:"immediate" json:"immediate"`
-	Timeout    time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`
+	Exchange   string `mapstructure:"exchange" yaml:"exchange" json:"exchange"`
+	RoutingKey string `mapstructure:"routing_key" yaml:"routing_key" json:"routing_key"`
+	Mandatory  bool   `mapstructure:"mandatory" yaml:"mandatory" json:"mandatory"`
+	Immediate  bool   `mapstructure:"immediate" yaml:"immediate" json:"immediate"`
+	// DeliveryMode selects the default persistence of every publish:
+	// "persistent" (default; AMQP delivery-mode 2, survives a broker
+	// restart on a durable queue) or "transient" (delivery-mode 1, lost
+	// on broker restart even on a durable classic queue). A per-message
+	// "amqp091.delivery-mode" envelope header overrides it. Quorum
+	// queues persist regardless of this knob.
+	DeliveryMode string        `mapstructure:"delivery_mode" yaml:"delivery_mode" json:"delivery_mode"`
+	Timeout      time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`
 }
 
 // SubscriptionParams describes per-topic broker setup performed when
@@ -194,6 +201,9 @@ func (c Config) Validate() error {
 	if c.Sender.Immediate {
 		return errors.New("amqp091: sender.immediate=true is not supported by RabbitMQ: the broker " +
 			"removed basic.publish 'immediate' in 3.0 and closes the channel when it is set. Remove it")
+	}
+	if err := validateDeliveryMode(c.Sender.DeliveryMode); err != nil {
+		return fmt.Errorf("amqp091: sender.%w", err)
 	}
 	return nil
 }

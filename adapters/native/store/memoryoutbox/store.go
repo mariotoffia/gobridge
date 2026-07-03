@@ -27,6 +27,7 @@ type Store struct {
 	clk           clock.Clock
 	logger        *slog.Logger
 	latestVersion map[string]uint64 // per-partition fencing token version
+	nextSeq       map[string]uint64 // per-partition monotonic persist sequence
 }
 
 // Option configures a Store.
@@ -54,6 +55,7 @@ func NewStore(opts ...Option) *Store {
 		dedup:         make(map[string]bool),
 		clk:           clock.System,
 		latestVersion: make(map[string]uint64),
+		nextSeq:       make(map[string]uint64),
 	}
 	for _, o := range opts {
 		o(s)
@@ -73,35 +75,49 @@ func cloneAggregate(r *persistence.OutboxRecord) *persistence.OutboxRecord {
 	return persistence.RehydrateFromSnapshot(r.PersistenceSnapshot())
 }
 
+// Persist stores the batch with per-record idempotency (ports.OutboxStore
+// contract): records whose (EnvelopeID, BindingID) identity already exists —
+// in the store or earlier in the same batch — are skipped, new records are
+// persisted, and shared.ErrDuplicateRecord is returned only when EVERY
+// record in the batch was a duplicate (nothing persisted).
 func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: persist",
 			"count", len(records))
 	}
+	if len(records) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := s.clk.Now()
+	skipped := 0
 	for _, rec := range records {
 		dk := dedupKey(rec.EnvelopeID(), rec.BindingID())
 		if s.dedup[dk] {
-			return shared.ErrDuplicateRecord.
-				WithMessage("duplicate outbox record").
-				With("envelopeID", rec.EnvelopeID()).
-				With("bindingID", rec.BindingID())
+			skipped++
+			continue
 		}
-	}
-
-	now := s.clk.Now()
-	for _, rec := range records {
-		// Stamp a default CreatedAt on the persistence DTO (the aggregate is
-		// immutable) and rehydrate, so the caller cannot mutate stored state.
+		// Stamp a default CreatedAt and the store-assigned per-partition
+		// sequence on the persistence DTO (the aggregate is immutable) and
+		// rehydrate, so the caller cannot mutate stored state.
 		snap := rec.PersistenceSnapshot()
 		if snap.CreatedAt.IsZero() {
 			snap.CreatedAt = now
 		}
+		pk := persistence.OutboxPartitionKey(snap.SessionID, snap.BindingID)
+		s.nextSeq[pk]++
+		snap.Seq = s.nextSeq[pk]
 		stored := persistence.RehydrateFromSnapshot(snap)
 		s.records[stored.ID()] = stored
-		s.dedup[dedupKey(stored.EnvelopeID(), stored.BindingID())] = true
+		s.dedup[dk] = true
+	}
+
+	if skipped == len(records) {
+		return shared.ErrDuplicateRecord.
+			WithMessage("all records in batch already persisted").
+			With("recordCount", len(records))
 	}
 	return nil
 }
@@ -122,6 +138,12 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	}
 	s.latestVersion[pk] = token.Version
 
+	// limit <= 0 is a fencing no-op (ports.OutboxStore contract): the fence
+	// above has advanced, but no records are claimed.
+	if limit <= 0 {
+		return nil, nil
+	}
+
 	var candidates []*persistence.OutboxRecord
 	for _, r := range s.records {
 		if partitionKey(r) != pk {
@@ -132,17 +154,18 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 		}
 	}
 
-	// Sort by persisted created_at, then by envelopeID as a stable
-	// tiebreaker so equal-millisecond timestamps are deterministic.
+	// Sort by persisted created_at, then by the store-assigned persist
+	// sequence so equal-millisecond timestamps drain in persist order
+	// (ports.OutboxStore claim-ordering contract).
 	sort.Slice(candidates, func(i, j int) bool {
 		ci, cj := candidates[i].CreatedAt(), candidates[j].CreatedAt()
 		if ci.Equal(cj) {
-			return candidates[i].EnvelopeID() < candidates[j].EnvelopeID()
+			return candidates[i].Seq() < candidates[j].Seq()
 		}
 		return ci.Before(cj)
 	})
 
-	if limit > 0 && len(candidates) > limit {
+	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
 
@@ -160,6 +183,12 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	return result, nil
 }
 
+// Complete transitions the batch to completed, all-or-nothing: every
+// record's fence (claimed + owner + version) is validated BEFORE any
+// mutation, so a fence mismatch mid-batch can never leave earlier
+// records completed while the call errors. A missing record ID is a
+// fence mismatch (the durable backends report it identically via
+// rows-affected accounting).
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: complete",
@@ -168,24 +197,11 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.checkFences(recordIDs, token, "completion"); err != nil {
+		return err
+	}
 	for _, id := range recordIDs {
-		r, ok := s.records[id]
-		if !ok {
-			continue
-		}
-		if r.Status() != persistence.OutboxClaimed ||
-			r.ClaimedBy() != token.Owner ||
-			r.ClaimVersion() != token.Version {
-			return shared.ErrStaleFencingToken.
-				WithMessage("completion fence mismatch: record must be claimed by token owner at token version").
-				With("recordID", id).
-				With("status", string(r.Status())).
-				With("storedOwner", r.ClaimedBy()).
-				With("storedClaimVersion", r.ClaimVersion()).
-				With("givenOwner", token.Owner).
-				With("givenVersion", token.Version)
-		}
-		if completeErr := r.Complete(s.clk.Now()); completeErr != nil {
+		if completeErr := s.records[id].Complete(s.clk.Now()); completeErr != nil {
 			return completeErr
 		}
 	}
@@ -199,6 +215,8 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // Complete: a record is released only when it is currently claimed by
 // token.Owner at token.Version. Any mismatch (missing, not claimed,
 // wrong owner, wrong version) yields shared.ErrStaleFencingToken.
+// Like Complete, the batch is all-or-nothing: every fence is validated
+// before any record is mutated.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: release",
@@ -207,22 +225,34 @@ func (s *Store) Release(ctx context.Context, recordIDs []string, token persisten
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.checkFences(recordIDs, token, "release"); err != nil {
+		return err
+	}
+	for _, id := range recordIDs {
+		if releaseErr := s.records[id].Release(s.clk.Now()); releaseErr != nil {
+			return releaseErr
+		}
+	}
+	return nil
+}
+
+// checkFences validates the owner+version+status fence for every record in
+// the batch without mutating anything. Callers hold s.mu. op names the
+// operation for the error message ("completion", "release").
+func (s *Store) checkFences(recordIDs []string, token persistence.LeaseToken, op string) error {
 	for _, id := range recordIDs {
 		r, ok := s.records[id]
 		if !ok || r.Status() != persistence.OutboxClaimed ||
 			r.ClaimedBy() != token.Owner ||
 			r.ClaimVersion() != token.Version {
 			return shared.ErrStaleFencingToken.
-				WithMessage("release fence mismatch: record must be claimed by token owner at token version").
+				WithMessage(op+" fence mismatch: record must be claimed by token owner at token version").
 				With("recordID", id).
 				With("status", statusOf(r)).
 				With("storedOwner", ownerOf(r)).
 				With("storedClaimVersion", claimVersionOf(r)).
 				With("givenOwner", token.Owner).
 				With("givenVersion", token.Version)
-		}
-		if releaseErr := r.Release(s.clk.Now()); releaseErr != nil {
-			return releaseErr
 		}
 	}
 	return nil
@@ -289,7 +319,11 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 	}
 
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].CreatedAt().Before(result[j].CreatedAt())
+		ci, cj := result[i].CreatedAt(), result[j].CreatedAt()
+		if ci.Equal(cj) {
+			return result[i].Seq() < result[j].Seq()
+		}
+		return ci.Before(cj)
 	})
 
 	if limit > 0 && len(result) > limit {

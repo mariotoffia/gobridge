@@ -1,7 +1,9 @@
 package transform
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -79,6 +81,59 @@ func applyTransform(value any, transform TransformType) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported transform: %s", transform)
 	}
+}
+
+// validTransformType reports whether t is a supported TransformType.
+// Checked at construction: with the default FailOnError=false an
+// unknown type would otherwise silently skip its mapping per message.
+func validTransformType(t TransformType) bool {
+	switch t {
+	case TransformNone, TransformString, TransformInt, TransformFloat,
+		TransformBool, TransformBase64Encode, TransformBase64Decode:
+		return true
+	default:
+		return false
+	}
+}
+
+// deepCopyMap deep-copies a parsed JSON object so payload mappings can
+// write into the copy while every read still sees the pristine source
+// (no aliasing between mapping chain steps).
+func deepCopyMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyValue(v)
+	}
+	return out
+}
+
+func deepCopyValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return deepCopyMap(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = deepCopyValue(e)
+		}
+		return out
+	default:
+		return x
+	}
+}
+
+// marshalPayload serializes a transformed payload WITHOUT HTML escaping:
+// the result is a message body, not HTML, and escaping <, > and & would
+// corrupt byte-sensitive consumers. encoding/json's Encoder appends a
+// trailing newline, which is trimmed.
+func marshalPayload(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, fmt.Errorf("marshal transformed payload: %w", err)
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
 // toInt converts a value to int64.

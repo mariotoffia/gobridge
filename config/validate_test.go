@@ -166,6 +166,62 @@ func TestValidate_ExclusiveSessionWithoutLeaseStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires stores.lease")
 }
 
+// TestValidate_SessionRenewTiming_BadCombo validates the C3 cross-field
+// invariant: when renew_interval is set explicitly, (renew_interval +
+// jitter/2) * max_renew_fails must stay below lease_ttl, otherwise the owner
+// can exhaust all tolerated renewal failures before the lease expires and a
+// standby can take over while the old owner still believes it holds the lease
+// (split-brain).
+func TestValidate_SessionRenewTiming_BadCombo(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = "200s"
+	cfg.Routes[0].Session.LeaseTTL = "360s"
+	cfg.Routes[0].Session.MaxRenewFails = 3 // 200*3 = 600s >= 360s
+
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worst-case renew span")
+}
+
+// TestValidate_SessionRenewTiming_JitterPushesOverLease proves the jitter term
+// participates in the invariant (C3): a combo that is valid without jitter
+// becomes invalid once lease_renew_jitter is added.
+func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = "100s"
+	cfg.Routes[0].Session.LeaseTTL = "360s"
+	cfg.Routes[0].Session.MaxRenewFails = 3 // 100*3 = 300s < 360s -> valid
+	require.NoError(t, Validate(cfg))
+
+	// jitter/2 = 60s: (100+60)*3 = 480s >= 360s -> rejected.
+	cfg.Routes[0].Session.RenewJitter = "120s"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worst-case renew span")
+}
+
+// TestValidate_SessionRenewTiming_OK accepts a correctly-sized renew/lease combo.
+func TestValidate_SessionRenewTiming_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = "60s"
+	cfg.Routes[0].Session.LeaseTTL = "360s"
+	cfg.Routes[0].Session.MaxRenewFails = 3 // 60*3 = 180s < 360s
+
+	require.NoError(t, Validate(cfg))
+}
+
+// TestValidate_SessionRenewTiming_DerivedRenewSkipped validates that an empty
+// renew_interval (derived from lease_ttl downstream, contract C3) is not
+// subjected to the invariant, so a derive-config never produces a false
+// split-brain rejection even with a tiny lease_ttl.
+func TestValidate_SessionRenewTiming_DerivedRenewSkipped(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = ""
+	cfg.Routes[0].Session.LeaseTTL = "1s"
+
+	require.NoError(t, Validate(cfg))
+}
+
 // Verifies Validate rejects routes with no bindings.
 func TestValidate_RouteNoBindings(t *testing.T) {
 	cfg := validConfig()

@@ -78,14 +78,22 @@ func TestSupervisor_InitialBuildFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "initial build")
 }
 
-// TestSupervisor_InitialStartFailure validates that build OK but Start failure returns error.
-func TestSupervisor_InitialStartFailure(t *testing.T) {
+// TestSupervisor_StaticallyInvalidConfigFailsAtBuild validates finding 5 / C2:
+// a statically-rejectable initial config (direct_hold with multiple bindings and
+// no resolver) is rejected during the BUILD phase — complete() runs the
+// runtime's ValidateRoutes before Start — so the supervisor reports it as
+// "initial build" and never produces a runtime. Route validation must NOT be
+// deferred to Start, where (during a hot swap) the old runtime would already be
+// stopped.
+func TestSupervisor_StaticallyInvalidConfigFailsAtBuild(t *testing.T) {
 	s := newTestSupervisor()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	err := s.Run(ctx, startFailCfg(), nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "initial start")
+	assert.Contains(t, err.Error(), "initial build",
+		"a statically-rejectable config must fail at build (before Start), not at start")
+	assert.Nil(t, s.Runtime(), "no runtime should be produced for an invalid config")
 }
 
 // TestSupervisor_RuntimeAccessorBeforeRun validates that Runtime() is nil before Run.
@@ -449,8 +457,12 @@ func TestSupervisor_ContextCancellation(t *testing.T) {
 	assert.False(t, rt.IsRunning())
 }
 
-// TestSupervisor_ChannelClosed_GracefulShutdown validates Run returns nil on channel close.
-func TestSupervisor_ChannelClosed_GracefulShutdown(t *testing.T) {
+// TestSupervisor_ChannelClosed_GracefulShutdown validates that a closed config
+// change stream does NOT stop a healthy runtime (Finding 1): the supervisor
+// keeps serving, marks itself degraded, and Run returns only when ctx is
+// cancelled. A closed channel used to drain+stop the bridge and exit 0, turning
+// a watcher failure (e.g. inotify exhaustion) into a silent total outage.
+func TestSupervisor_ChannelClosed_KeepsServingAndDegrades(t *testing.T) {
 	s := newTestSupervisor()
 	ch := make(chan *ports.BridgeConfig)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -458,12 +470,32 @@ func TestSupervisor_ChannelClosed_GracefulShutdown(t *testing.T) {
 	errCh := runSupervisorAsync(ctx, s, quickCfg("r1"), ch)
 	rt := waitForRuntime(s, 2*time.Second)
 	require.NotNil(t, rt)
+
 	close(ch)
+
+	// The runtime must keep serving and the supervisor must report degraded
+	// (not terminal) after the change stream closes.
+	require.Eventually(t, func() bool {
+		degraded, _ := s.Degraded()
+		return degraded
+	}, 2*time.Second, 10*time.Millisecond, "supervisor must mark degraded on channel close")
+	assert.True(t, rt.IsRunning(), "runtime must keep serving after channel close")
+	assert.False(t, s.Terminal(), "channel close is degraded, not terminal")
+
+	// Run must NOT have returned yet — a closed channel is not a shutdown.
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned on channel close but must keep serving: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Only ctx cancellation stops the runtime and returns Run.
+	cancel()
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after channel close")
+		t.Fatal("Run did not return after ctx cancel")
 	}
 	assert.False(t, rt.IsRunning())
 }

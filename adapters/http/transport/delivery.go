@@ -37,6 +37,14 @@ func (d *httpDelivery) Ack(_ context.Context) error {
 }
 
 func (d *httpDelivery) Retry(_ context.Context, _ time.Duration, reason error) error {
+	// A nil reason must still be distinguishable from Ack: the handler
+	// keys success on result.err == nil, so a Retry(nil) would otherwise
+	// masquerade as a successful delivery (200 to the producer for a
+	// message the pipeline did NOT process). Substitute a generic
+	// transient reason.
+	if reason == nil {
+		reason = shared.ErrUnavailable.WithMessage("http: delivery retry requested without reason")
+	}
 	select {
 	case d.done <- deliveryResult{err: reason}:
 	default:

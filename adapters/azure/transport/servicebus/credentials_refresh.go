@@ -107,7 +107,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
-	newConn, changed := credentialsToConnection(s.cfg.Connection, set)
+	newConn, changed := credentialsToConnection(s.connectionSnapshot(), set)
 	if !changed {
 		return nil
 	}
@@ -124,13 +124,7 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 			fmt.Errorf("servicebus: rotate sender for %q: %w", s.entityName(), err))
 	}
 
-	s.initMu.Lock()
-	oldClient := s.asbClient
-	oldSender := s.client
-	s.client = newSender
-	s.asbClient = asbClient
-	s.cfg.Connection = newConn
-	s.initMu.Unlock()
+	oldSender, oldClient := s.swapClient(newSender, asbClient, newConn)
 
 	// Close the old sender and client outside the lock. Errors here
 	// are logged but not returned: the rotation itself succeeded.
@@ -152,32 +146,71 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 }
 
 // ApplyCredentials rotates the Receiver's Service Bus credentials.
-// Same contract as Sender.ApplyCredentials. The receiver's active
-// message pump is not interrupted; the next Run after Close picks up
-// the rotated material.
+// Same contract as Sender.ApplyCredentials: a complete replacement
+// stack (client handle + receiver seam + retry scheduler) is built
+// from the new material and atomically swapped in under the stack
+// lock; the poll loop's next snapshot (currentClient) picks it up.
+// The live client is NEVER nilled — if the rebuild fails, the old
+// stack stays in place (its credentials may keep working until
+// expiry) and the error is returned for the supervisor to retry.
 //
-// Implementation detail: we do not tear down the active asbAPI link
-// here because the Receiver's Run loop polls on it and will emit
-// bogus errors mid-flight. Instead we stash the new config; the
-// long-running Run is expected to be restarted by the framework
-// (Close → Run) on credential rotation. This is conservative but
-// matches how most supervisors already handle config changes.
-func (r *Receiver) ApplyCredentials(_ context.Context, set *connectivity.CredentialSet) error {
+// In-flight deliveries keep settling against the link they were
+// received on (rawInbound pins the client); once the old link closes,
+// their unsettled locks lapse and the broker redelivers — normal
+// at-least-once semantics.
+//
+// Ordering: for non-session receivers the new stack is built FIRST and
+// the old one closed after the swap. A session receiver is the
+// opposite corner: the new accept cannot succeed while the old link
+// still holds the session lock, so the old stack is closed first and
+// the accept (with its rolling-deploy retry) runs after; during that
+// gap the poll loop sees transient receive errors on the closed link
+// and backs off — degraded but never nil, never a panic.
+func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
+
+	r.initMu.Lock()
 	newConn, changed := credentialsToConnection(r.cfg.Connection, set)
 	if !changed {
+		r.initMu.Unlock()
+		return nil
+	}
+	r.cfg.Connection = newConn
+	injected := r.cfg.Client != nil
+	started := r.client != nil
+	sessionMode := r.cfg.SessionID != ""
+	r.initMu.Unlock()
+
+	if injected || !started {
+		// Injected test client: nothing to rebuild. Not started yet:
+		// ensureClient builds from the updated Connection on Run.
 		return nil
 	}
 
-	r.initMu.Lock()
-	r.cfg.Connection = newConn
-	// Clearing client forces ensureClient to rebuild on the next Run
-	// invocation. Active Run goroutines keep using the cached local
-	// client reference until they exit.
-	r.client = nil
-	r.scheduler = nil
-	r.initMu.Unlock()
+	if sessionMode {
+		old := r.swapStack(receiverStack{})
+		old.close(ctx)
+	}
+
+	stack, err := r.buildStack(ctx, newConn)
+	if err != nil {
+		// Non-session: old stack still installed and polling. Session:
+		// the poll loop errors with backoff until a later rotation (or
+		// restart) succeeds — visible, recoverable, no nil panic.
+		return err
+	}
+
+	old := r.swapStack(stack)
+	old.close(ctx)
+
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug,
+			"servicebus: receiver stack rotated",
+			"entity", r.entityName(),
+			"session_id", r.cfg.SessionID,
+		)
+	}
 	return nil
 }

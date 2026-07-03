@@ -2,12 +2,12 @@ package servicebus
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
-	"math"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -23,11 +23,16 @@ type ReceiverConfig struct {
 	// SubscriptionName is the subscription on TopicName.
 	SubscriptionName string
 
-	// SessionID locks the receiver to a specific ASB session.
+	// SessionID locks the receiver to a specific ASB session. Cannot
+	// be combined with SubQueue: the SDK's SessionReceiverOptions has
+	// no sub-queue selector (azservicebus v1.10.0).
 	SessionID string
 
 	// MaxMessages is the maximum number of messages per
-	// ReceiveMessages call. Default 10, capped at 100.
+	// ReceiveMessages call. Default 10, capped at 100. Forced to 1 in
+	// ReceiveAndDelete mode: the broker deletes at receive time, so
+	// every batched-but-not-yet-emitted message would be lost on
+	// shutdown — a window that scales with MaxMessages.
 	MaxMessages int
 
 	// MaxWaitTime bounds a single ReceiveMessages long-poll. The Azure
@@ -36,18 +41,14 @@ type ReceiverConfig struct {
 	// the poll loop simply re-issues. Default 30 s.
 	MaxWaitTime time.Duration
 
-	// Prefetch is accepted for forward compatibility but is currently a
-	// no-op: azservicebus v1.10.0 exposes no public prefetch-count knob on
-	// ReceiverOptions/SessionReceiverOptions (prefetch is managed
-	// internally by the SDK's AMQP credit machinery). A non-zero value is
-	// warned about at receiver construction. Default 0.
-	Prefetch int32
-
-	// ReceiveMode is "PeekLock" (default) or "ReceiveAndDelete".
+	// ReceiveMode is "PeekLock" (default) or "ReceiveAndDelete"
+	// (case-insensitive). Any other value is rejected by validate.
 	ReceiveMode string
 
 	// SubQueue selects a sub-queue: "", "deadletter", or
-	// "transferdeadletter".
+	// "transferdeadletter" (case-insensitive). Any other value is
+	// rejected by validate so a typo can never silently consume the
+	// main queue during a DLQ redrive.
 	SubQueue string
 
 	// LockDuration is the expected message lock duration configured
@@ -64,6 +65,15 @@ type ReceiverConfig struct {
 	// MinAutoExtendInterval is the floor for the computed
 	// auto-extend renewal interval. Default 1s.
 	MinAutoExtendInterval time.Duration
+
+	// MaxLockRenewalDuration caps the total wall-clock time a single
+	// delivery's lock is auto-renewed. When the cap is reached the
+	// delivery's processing context is cancelled and renewal stops, so
+	// a hung pipeline cannot hold a message locked (invisible, never
+	// redelivered, never DLQ'd) forever. Occurrences are counted by
+	// MetricASBLockRenewalCapExceeded. Default 5m; <= 0 selects the
+	// default.
+	MaxLockRenewalDuration time.Duration
 
 	// Connection holds Azure Service Bus connection/credential settings.
 	Connection ConnectionConfig
@@ -102,7 +112,8 @@ type SenderConfig struct {
 	// Default 10.
 	BatchSize int
 
-	// Timeout is the per-call timeout for send operations.
+	// Timeout is the per-call timeout for send operations. SendBatch
+	// applies it per chunk, not across the whole batch.
 	// Default 30 s.
 	Timeout time.Duration
 
@@ -124,12 +135,54 @@ type SenderConfig struct {
 	Clock clock.Clock
 }
 
+// validateReceiveMode enforces the closed receive_mode value set,
+// case-insensitively: "" (defaults to PeekLock), "PeekLock", or
+// "ReceiveAndDelete". Shared by ReceiverConfig.validate (programmatic
+// path) and Config.Validate (YAML plugin path).
+func validateReceiveMode(mode string) error {
+	switch {
+	case mode == "",
+		strings.EqualFold(mode, "PeekLock"),
+		strings.EqualFold(mode, "ReceiveAndDelete"):
+		return nil
+	default:
+		return fmt.Errorf("servicebus: receive_mode %q is invalid; must be \"PeekLock\" or \"ReceiveAndDelete\"", mode)
+	}
+}
+
+// validateSubQueue enforces the closed sub_queue value set,
+// case-insensitively: "", "deadletter", or "transferdeadletter". A typo
+// (e.g. "dead-letter") must fail fast — silently receiving from the
+// MAIN queue during a DLQ redrive re-processes live traffic.
+func validateSubQueue(subQueue string) error {
+	switch {
+	case subQueue == "",
+		strings.EqualFold(subQueue, "deadletter"),
+		strings.EqualFold(subQueue, "transferdeadletter"):
+		return nil
+	default:
+		return fmt.Errorf("servicebus: sub_queue %q is invalid; must be \"deadletter\" or \"transferdeadletter\"", subQueue)
+	}
+}
+
 func (c *ReceiverConfig) validate() error {
 	if c.QueueName == "" && (c.TopicName == "" || c.SubscriptionName == "") {
 		return errors.New("servicebus: either QueueName or TopicName+SubscriptionName is required")
 	}
 	if c.Client == nil && c.Connection.ConnectionString.IsZero() && c.Connection.Namespace == "" {
 		return errors.New("servicebus: Connection.ConnectionString or Connection.Namespace is required")
+	}
+	if err := validateReceiveMode(c.ReceiveMode); err != nil {
+		return err
+	}
+	if err := validateSubQueue(c.SubQueue); err != nil {
+		return err
+	}
+	if c.SessionID != "" && c.SubQueue != "" {
+		// azservicebus v1.10.0 SessionReceiverOptions has no SubQueue
+		// selector: a session receiver cannot target a sub-queue, and
+		// silently ignoring sub_queue would consume the wrong entity.
+		return errors.New("servicebus: session_id cannot be combined with sub_queue (not supported by the Azure SDK)")
 	}
 	return nil
 }
@@ -139,6 +192,13 @@ func (c *ReceiverConfig) applyDefaults() {
 		c.MaxMessages = 10
 	} else if c.MaxMessages > 100 {
 		c.MaxMessages = 100
+	}
+	if c.receiveAndDelete() {
+		// ReceiveAndDelete pre-settles at the broker: every received-but-
+		// not-yet-emitted message is unrecoverable on shutdown or emit
+		// error. Cap the loss window at one message. NewReceiver warns
+		// when this clamps a larger configured value.
+		c.MaxMessages = 1
 	}
 	if c.MaxWaitTime <= 0 {
 		c.MaxWaitTime = 30 * time.Second
@@ -153,10 +213,18 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.MinAutoExtendInterval <= 0 {
 		c.MinAutoExtendInterval = time.Second
 	}
+	if c.MaxLockRenewalDuration <= 0 {
+		c.MaxLockRenewalDuration = defaultMaxLockRenewalDuration
+	}
 	if c.Clock == nil {
 		c.Clock = clock.System
 	}
 }
+
+// defaultMaxLockRenewalDuration bounds per-delivery lock auto-renewal
+// when max_lock_renewal_duration is unset (finding: a hung pipeline
+// must not hold a message invisible forever).
+const defaultMaxLockRenewalDuration = 5 * time.Minute
 
 func (c *ReceiverConfig) autoExtendEnabled() bool {
 	return c.AutoExtend == nil || *c.AutoExtend
@@ -166,9 +234,10 @@ func (c *ReceiverConfig) autoExtendEnabled() bool {
 // ReceiveModeReceiveAndDelete, where the broker removes the message at
 // receive time. In that mode there is no lock to renew or settle:
 // auto-extend is disabled and Ack/Extend are no-ops while Retry reports
-// ErrNotSupported (see asbDelivery).
+// ErrNotSupported (see asbDelivery). Matching is case-insensitive;
+// validate rejects every other spelling.
 func (c *ReceiverConfig) receiveAndDelete() bool {
-	return c.ReceiveMode == "ReceiveAndDelete"
+	return strings.EqualFold(c.ReceiveMode, "ReceiveAndDelete")
 }
 
 func (c *SenderConfig) validate() error {
@@ -190,154 +259,5 @@ func (c *SenderConfig) applyDefaults() {
 	}
 	if c.Timeout <= 0 {
 		c.Timeout = 30 * time.Second
-	}
-}
-
-// ReceiverConfigFromOptions extracts a ReceiverConfig from a generic
-// options map as carried by ports.ReceiverSpec.Options.
-func ReceiverConfigFromOptions(opts map[string]any) ReceiverConfig {
-	cfg := ReceiverConfig{}
-	cfg.QueueName, _ = optString(opts, "queue_name")
-	cfg.TopicName, _ = optString(opts, "topic_name")
-	cfg.SubscriptionName, _ = optString(opts, "subscription_name")
-	cfg.SessionID, _ = optString(opts, "session_id")
-	cfg.MaxMessages = optInt(opts, "max_messages", 10)
-	if v, ok := optDuration(opts, "max_wait_time"); ok && v > 0 {
-		cfg.MaxWaitTime = v
-	}
-	cfg.Prefetch = optInt32(opts, "prefetch", 0)
-	cfg.ReceiveMode, _ = optString(opts, "receive_mode")
-	cfg.SubQueue, _ = optString(opts, "sub_queue")
-	if v, ok := optDuration(opts, "lock_duration"); ok && v > 0 {
-		cfg.LockDuration = v
-	}
-	if v, ok := optBool(opts, "auto_extend"); ok {
-		cfg.AutoExtend = &v
-	}
-	cfg.Connection = connectionFromOptions(opts)
-	return cfg
-}
-
-// SenderConfigFromOptions extracts a SenderConfig from a generic
-// options map as carried by ports.SenderSpec.Options.
-func SenderConfigFromOptions(opts map[string]any) SenderConfig {
-	cfg := SenderConfig{}
-	cfg.QueueName, _ = optString(opts, "queue_name")
-	cfg.TopicName, _ = optString(opts, "topic_name")
-	cfg.DefaultSessionID, _ = optString(opts, "default_session_id")
-	cfg.BatchSize = optInt(opts, "batch_size", 10)
-	if v, ok := optDuration(opts, "timeout"); ok && v > 0 {
-		cfg.Timeout = v
-	}
-	cfg.Connection = connectionFromOptions(opts)
-	return cfg
-}
-
-func connectionFromOptions(opts map[string]any) ConnectionConfig {
-	var c ConnectionConfig
-	cs, _ := optString(opts, "connection_string")
-	c.ConnectionString = shared.NewSecret(cs)
-	c.Namespace, _ = optString(opts, "namespace")
-	c.UseManagedIdentity, _ = optBool(opts, "use_managed_identity")
-	c.TenantID, _ = optString(opts, "tenant_id")
-	c.ClientID, _ = optString(opts, "client_id")
-	csec, _ := optString(opts, "client_secret")
-	c.ClientSecret = shared.NewSecret(csec)
-	capem, _ := optString(opts, "ca_pem")
-	c.CaPEM = shared.NewSecret(capem)
-	c.InsecureSkipVerify, _ = optBool(opts, "insecure_skip_verify")
-	return c
-}
-
-func optString(m map[string]any, key string) (string, bool) {
-	v, ok := m[key]
-	if !ok {
-		return "", false
-	}
-	s, ok := v.(string)
-	return s, ok
-}
-
-func optBool(m map[string]any, key string) (bool, bool) {
-	v, ok := m[key]
-	if !ok {
-		return false, false
-	}
-	b, ok := v.(bool)
-	return b, ok
-}
-
-func optInt(m map[string]any, key string, fallback int) int {
-	v, ok := m[key]
-	if !ok {
-		return fallback
-	}
-	switch n := v.(type) {
-	case int:
-		return n
-	case int32:
-		return int(n)
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	default:
-		return fallback
-	}
-}
-
-func optInt32(m map[string]any, key string, fallback int32) int32 {
-	v, ok := m[key]
-	if !ok {
-		return fallback
-	}
-	switch n := v.(type) {
-	case int:
-		return int32(n)
-	case int32:
-		return n
-	case int64:
-		return int32(n)
-	case float64:
-		return int32(n)
-	default:
-		return fallback
-	}
-}
-
-func optDuration(m map[string]any, key string) (time.Duration, bool) {
-	v, ok := m[key]
-	if !ok {
-		return 0, false
-	}
-	switch d := v.(type) {
-	case time.Duration:
-		if d < 0 {
-			return 0, false
-		}
-		return d, true
-	case string:
-		parsed, err := time.ParseDuration(d)
-		if err != nil || parsed < 0 {
-			return 0, false
-		}
-		return parsed, true
-	case int:
-		if d < 0 {
-			return 0, false
-		}
-		return time.Duration(d) * time.Second, true
-	case int64:
-		if d < 0 {
-			return 0, false
-		}
-		return time.Duration(d) * time.Second, true
-	case float64:
-		if d < 0 || math.IsNaN(d) || math.IsInf(d, 0) {
-			return 0, false
-		}
-		return time.Duration(d * float64(time.Second)), true
-	default:
-		return 0, false
 	}
 }

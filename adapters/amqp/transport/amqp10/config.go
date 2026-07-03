@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -33,6 +34,16 @@ type SessionOptions struct {
 	Password            shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
 	TLS                 *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
 	ContainerID         string        `mapstructure:"container_id" yaml:"container_id" json:"container_id"`
+
+	// SASLMechanism selects the SASL layer used at dial time:
+	//
+	//   - ""          — PLAIN when Username is set, otherwise no SASL.
+	//   - "plain"     — SASL PLAIN with Username/Password.
+	//   - "external"  — SASL EXTERNAL; authentication is carried by the
+	//     transport layer (mTLS client certificate). Configure TLS
+	//     cert/key material alongside this.
+	//   - "anonymous" — SASL ANONYMOUS.
+	SASLMechanism string `mapstructure:"sasl_mechanism" yaml:"sasl_mechanism" json:"sasl_mechanism"`
 
 	// LinkCloseTimeout is the deadline for closing an AMQP link or
 	// session during cleanup (e.g. after a failure or reconnect).
@@ -101,6 +112,48 @@ func (rt RoutingType) capability() string {
 	}
 }
 
+// String returns the canonical textual form ("anycast"/"multicast").
+func (rt RoutingType) String() string {
+	if rt == RoutingMulticast {
+		return "multicast"
+	}
+	return "anycast"
+}
+
+// UnmarshalText decodes the documented string forms ("anycast",
+// "multicast", case-insensitive) as well as the legacy numeric forms
+// ("0", "1") so both YAML shapes decode through the strict plugin
+// options decoder (config/parser TextUnmarshaller hook). Plain YAML
+// integers keep decoding natively via mapstructure's int conversion.
+func (rt *RoutingType) UnmarshalText(text []byte) error {
+	switch strings.ToLower(strings.TrimSpace(string(text))) {
+	case "", "anycast", "0":
+		*rt = RoutingAnycast
+	case "multicast", "1":
+		*rt = RoutingMulticast
+	default:
+		return fmt.Errorf("amqp10: invalid routing %q (want \"anycast\" or \"multicast\")", string(text))
+	}
+	return nil
+}
+
+// parseRoutingType interprets a generic options-map value as a
+// RoutingType, accepting both the string forms ("anycast"/"multicast")
+// and the numeric forms (0/1). ok is false for missing or invalid values.
+func parseRoutingType(v any) (RoutingType, bool) {
+	if s, ok := v.(string); ok {
+		var rt RoutingType
+		if err := rt.UnmarshalText([]byte(s)); err != nil {
+			return RoutingAnycast, false
+		}
+		return rt, true
+	}
+	if n, ok := optUint32(map[string]any{"routing": v}, "routing"); ok && n <= 1 {
+		return RoutingType(n), true
+	}
+	return RoutingAnycast, false
+}
+
 // ReceiverConfig configures an AMQP 1.0 receiver link.
 type ReceiverConfig struct {
 	Address        string
@@ -110,6 +163,14 @@ type ReceiverConfig struct {
 	Session        *Session
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
+
+	// SubscriptionName pins the AMQP link name. Durable subscriptions
+	// (DurabilityMode > 0) are identified by container-id + link name;
+	// a stable name is REQUIRED for the broker to resume an existing
+	// subscription instead of orphaning it and creating a new one on
+	// every reconnect. When empty and DurabilityMode > 0, a stable name
+	// is derived from the session's ContainerID and the link Address.
+	SubscriptionName string
 
 	// Clock drives retry backoff waits. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
@@ -127,6 +188,19 @@ type SenderConfig struct {
 	Logger         *slog.Logger
 	Metrics        ports.MetricsExporter
 	Clock          clock.Clock
+
+	// Durable controls the AMQP message header durable flag on every
+	// outbound message. Brokers (e.g. Artemis) treat durable=false
+	// messages as non-persistent: they are lost on broker restart even
+	// after the send was accepted. nil (unset) defaults to TRUE — the
+	// safe, at-least-once-preserving choice; set explicitly to false to
+	// trade durability for throughput.
+	Durable *bool
+}
+
+// durable reports the effective message-durability flag (default true).
+func (c *SenderConfig) durable() bool {
+	return c.Durable == nil || *c.Durable
 }
 
 // DefaultSessionOptions returns SessionOptions with sensible defaults.
@@ -153,8 +227,21 @@ func (o *SessionOptions) validate() error {
 	if o.Address == "" {
 		return shared.ErrInvalidPayload.WithMessage("amqp10: Address is required")
 	}
+	switch strings.ToLower(o.SASLMechanism) {
+	case "", saslMechanismPlain, saslMechanismExternal, saslMechanismAnonymous:
+	default:
+		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"amqp10: invalid sasl_mechanism %q (want plain, external, or anonymous)", o.SASLMechanism))
+	}
 	return nil
 }
+
+// Recognized sasl_mechanism values (lowercase canonical form).
+const (
+	saslMechanismPlain     = "plain"
+	saslMechanismExternal  = "external"
+	saslMechanismAnonymous = "anonymous"
+)
 
 // BuildTLSConfig constructs a *tls.Config from the TLSConfig options.
 // Returns nil if cfg is nil or TLS is not enabled.
@@ -319,6 +406,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := optString(m, "container_id"); ok {
 		opts.ContainerID = v
 	}
+	if v, ok := optString(m, "sasl_mechanism"); ok {
+		opts.SASLMechanism = v
+	}
 
 	if sub, ok := m["tls"].(map[string]any); ok {
 		tc := &TLSConfig{}
@@ -348,8 +438,13 @@ func ReceiverConfigFromOptions(m map[string]any) ReceiverConfig {
 	if v, ok := optUint32(m, "durability_mode"); ok {
 		cfg.DurabilityMode = v
 	}
-	if v, ok := optString(m, "routing"); ok && v == "multicast" {
-		cfg.Routing = RoutingMulticast
+	if v, ok := optString(m, "subscription_name"); ok {
+		cfg.SubscriptionName = v
+	}
+	if raw, ok := m["routing"]; ok {
+		if v, ok := parseRoutingType(raw); ok {
+			cfg.Routing = v
+		}
 	}
 	return cfg
 }
@@ -367,8 +462,13 @@ func SenderConfigFromOptions(m map[string]any) SenderConfig {
 	if v, ok := optUint32(m, "durability_mode"); ok {
 		cfg.DurabilityMode = v
 	}
-	if v, ok := optString(m, "routing"); ok && v == "multicast" {
-		cfg.Routing = RoutingMulticast
+	if v, ok := optBool(m, "durable"); ok {
+		cfg.Durable = &v
+	}
+	if raw, ok := m["routing"]; ok {
+		if v, ok := parseRoutingType(raw); ok {
+			cfg.Routing = v
+		}
 	}
 	return cfg
 }

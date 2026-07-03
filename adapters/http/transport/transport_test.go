@@ -541,8 +541,14 @@ func TestSSESender_BroadcastToClients(t *testing.T) {
 	}
 
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "id: evt-1") {
-		t.Fatalf("expected SSE event with id evt-1, got:\n%s", joined)
+	// The frame must NOT carry an SSE "id:" field (no Last-Event-ID
+	// resumability is offered — see doc.go "SSE egress is AT-MOST-ONCE");
+	// the envelope ID travels in the JSON payload instead.
+	if strings.Contains(joined, "id: evt-1") {
+		t.Fatalf("expected no SSE id: field, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, `"id":"evt-1"`) {
+		t.Fatalf("expected envelope id in SSE data payload, got:\n%s", joined)
 	}
 	if !strings.Contains(joined, "event: message") {
 		t.Fatalf("expected SSE event type message, got:\n%s", joined)
@@ -568,8 +574,10 @@ func TestSSESender_RedirectWhenRemote(t *testing.T) {
 	)
 
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
-		ID:     "sse-redirect",
-		Config: transport.Config{Mode: "sse"},
+		ID: "sse-redirect",
+		// Cross-cluster redirect is opt-in (default 503): name the
+		// PeerInfo.Endpoints key that may be exposed to clients.
+		Config: transport.Config{Mode: "sse", RedirectEndpoint: "http"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)

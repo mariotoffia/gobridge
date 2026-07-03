@@ -89,6 +89,13 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]ro
 	return cp, nil
 }
 
+// PlanCount reports how many dispatch plans this resolver always yields. It
+// lets pre-start validation statically reject a StaticResolver that would emit
+// more than one plan on a route that can only dispatch a single leg
+// (direct_hold / DispatchSingle), where the extra plans would otherwise be
+// silently discarded at runtime (finding 4).
+func (r *StaticResolver) PlanCount() int { return len(r.plans) }
+
 // MatchByHeader returns a MatchFunc that selects a binding when the envelope
 // header identified by headerKey has a value that maps to the binding's ID
 // in bindingMap. This implements the SQS-to-factory pattern: header "factory"

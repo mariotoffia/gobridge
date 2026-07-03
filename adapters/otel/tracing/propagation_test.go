@@ -130,3 +130,33 @@ func TestNew_RejectsOutOfRangeSamplerRatio(t *testing.T) {
 	_, err = oteltracing.New(context.Background(), oteltracing.WithSamplerRatio(-0.1))
 	require.Error(t, err)
 }
+
+// MF-9: W3C header lookup must be case-insensitive — a transport that
+// stamps "Traceparent" (HTTP-style casing) must not silently break
+// trace continuity.
+func TestPropagation_ExtractIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	tr := oteltracing.NewFromProvider(tp)
+
+	headers := map[string]any{
+		"Traceparent": remoteParent, // HTTP-style casing, not bridge-lowercase
+	}
+
+	ctx := tr.Extract(context.Background(), headers)
+	_, span := tr.StartSpan(ctx, "child")
+	span.End()
+
+	_ = tp.ForceFlush(context.Background())
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, remoteTraceID, spans[0].SpanContext.TraceID().String(),
+		"capitalized Traceparent must still join the remote trace")
+	assert.Equal(t, remoteSpanID, spans[0].Parent.SpanID().String(),
+		"child must be parented on the remote span")
+}

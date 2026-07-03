@@ -2,11 +2,13 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -15,6 +17,21 @@ type LocatorConfig struct {
 	CacheTTL       time.Duration
 	MaxFailures    int
 	CooldownPeriod time.Duration
+
+	// FailOpen selects the posture used when the current owner of an
+	// exclusivity-sensitive route cannot be determined — the lease store is
+	// failing (breaker open) or a transient error leaves no cached owner.
+	//
+	// Default (false = fail-CLOSED, consistent with the session layer): refuse
+	// the routing decision by returning an error, so a non-owner never processes
+	// or forwards an exclusive route while ownership is unverifiable. This trades
+	// availability for strict single-owner exclusivity.
+	//
+	// Setting FailOpen = true restores optimistic LOCAL processing during those
+	// windows, trading exclusivity for availability. Only enable it where the
+	// workload tolerates transient duplicate processing (fencing on the data
+	// path still prevents duplicate commits).
+	FailOpen bool
 }
 
 // DefaultLocatorConfig returns a LocatorConfig with recommended defaults.
@@ -40,6 +57,7 @@ type Locator struct {
 	cacheTTL       time.Duration
 	maxFailures    int
 	cooldownPeriod time.Duration
+	failOpen       bool
 	clk            clock.Clock
 
 	mu              sync.RWMutex
@@ -74,6 +92,7 @@ func NewLocator(instanceID string, leaseStore ports.LeaseStore, cfg LocatorConfi
 		cacheTTL:        cfg.CacheTTL,
 		maxFailures:     cfg.MaxFailures,
 		cooldownPeriod:  cfg.CooldownPeriod,
+		failOpen:        cfg.FailOpen,
 		clk:             clk,
 		routeSessionMap: make(map[string]string),
 		cache:           make(map[string]cachedLease),
@@ -117,13 +136,30 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 	}
 
 	if rl.isCircuitOpen(now) {
-		return nil, true, nil
+		// The lease store has been failing repeatedly. We cannot verify the
+		// current owner, so apply the configured posture rather than blindly
+		// processing locally. Default is fail-CLOSED (consistent with the
+		// session layer): refuse the decision so a non-owner does not process an
+		// exclusive route during a store outage (finding M7).
+		return rl.onOwnershipUnknown(shared.ErrUnavailable)
 	}
 
 	info, err := rl.leaseStore.Current(ctx, sessionID)
 	if err != nil {
+		// A not-found lease is NORMAL: the lease is momentarily unowned (mid
+		// transfer, or before the first acquisition). It is NOT a store failure
+		// and must NOT count toward the breaker, otherwise the breaker opens on
+		// every ordinary lease transfer (finding M7). We still cannot name an
+		// owner, so apply the ownership-unknown posture.
+		if errors.Is(err, shared.ErrNotFound) {
+			return rl.onOwnershipUnknown(shared.ErrNoRouteOwner)
+		}
+
 		rl.recordFailure(now)
 		if hasCached {
+			// A transient store error with a last-known owner: serve the cached
+			// owner rather than fail, so a brief blip does not disrupt routing.
+			// Fencing on the data path still rejects a stale forward.
 			if cached.info.Owner == rl.instanceID {
 				return nil, true, nil
 			}
@@ -132,7 +168,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 				Endpoints:  cached.info.Endpoints,
 			}, false, nil
 		}
-		return nil, false, err
+		return rl.onOwnershipUnknown(err)
 	}
 
 	rl.recordSuccess()
@@ -171,6 +207,25 @@ func (rl *Locator) recordSuccess() {
 	rl.failMu.Lock()
 	rl.consecutiveFailures = 0
 	rl.failMu.Unlock()
+}
+
+// onOwnershipUnknown applies the configured posture when the locator cannot
+// determine the current owner of an exclusivity-sensitive route (breaker open,
+// unowned lease, or a transient store error with no cached owner).
+//
+// Default (fail-CLOSED, consistent with the session layer): return err so the
+// caller refuses to process or forward the route while ownership is
+// unverifiable — a non-owner must not act on an exclusive route. Callers surface
+// this as an error (e.g. HTTP 502), which is the safe outcome for exclusivity.
+//
+// LocatorConfig.FailOpen switches to optimistic LOCAL processing (local=true,
+// no error), trading exclusivity for availability where the workload tolerates
+// transient duplicate processing.
+func (rl *Locator) onOwnershipUnknown(err error) (*persistence.PeerInfo, bool, error) {
+	if rl.failOpen {
+		return nil, true, nil
+	}
+	return nil, false, err
 }
 
 // Compile-time port-conformance assertion.

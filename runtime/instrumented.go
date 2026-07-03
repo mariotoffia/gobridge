@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -63,8 +65,103 @@ type InstrumentedOutboxStore struct {
 var _ ports.OutboxStore = (*InstrumentedOutboxStore)(nil)
 
 // NewInstrumentedOutboxStore decorates inner with metrics instrumentation.
+//
+// This constructor returns the bare *InstrumentedOutboxStore concrete type.
+// It does NOT preserve inner's optional capabilities (ports.OutboxReleaser,
+// io.Closer); composition roots MUST use
+// NewInstrumentedOutboxStoreCapabilityPreserving instead.
 func NewInstrumentedOutboxStore(inner ports.OutboxStore, metrics ports.MetricsExporter, clk clock.Clock) *InstrumentedOutboxStore {
 	return &InstrumentedOutboxStore{inner: inner, metrics: metrics, clk: instrumentedClock(clk)}
+}
+
+// NewInstrumentedOutboxStoreCapabilityPreserving decorates inner with metrics
+// instrumentation while preserving its OPTIONAL capabilities (finding 14).
+//
+// OutboxStore carries two optional capabilities — ports.OutboxReleaser (fast
+// fencing-safe release of a transiently-failed claim) and io.Closer
+// (durable-handle cleanup on Stop). The bare *InstrumentedOutboxStore statically
+// masks them: the drainer's `store.(ports.OutboxReleaser)` and Stop's
+// `store.(io.Closer)` assertions fail even when the backing store supports them,
+// silently degrading release-fast to version/stale reclaim and leaking the
+// underlying handle. To preserve the DYNAMIC capability set we select, at
+// construction time, the smallest wrapper that re-exports exactly the
+// capabilities inner actually has (2^n variants generated only for the two
+// capabilities that exist). The base OutboxStore metrics apply in every variant
+// via the embedded *InstrumentedOutboxStore.
+func NewInstrumentedOutboxStoreCapabilityPreserving(inner ports.OutboxStore, metrics ports.MetricsExporter, clk clock.Clock) ports.OutboxStore {
+	base := &InstrumentedOutboxStore{inner: inner, metrics: metrics, clk: instrumentedClock(clk)}
+	releaser, hasReleaser := inner.(ports.OutboxReleaser)
+	closer, hasCloser := inner.(io.Closer)
+	switch {
+	case hasReleaser && hasCloser:
+		return &instrumentedOutboxReleaserCloser{InstrumentedOutboxStore: base, releaser: releaser, closer: closer}
+	case hasReleaser:
+		return &instrumentedOutboxReleaser{InstrumentedOutboxStore: base, releaser: releaser}
+	case hasCloser:
+		return &instrumentedOutboxCloser{InstrumentedOutboxStore: base, closer: closer}
+	default:
+		return base
+	}
+}
+
+// instrumentedOutboxReleaser re-exports the optional ports.OutboxReleaser
+// capability of a wrapped store that also supports it.
+type instrumentedOutboxReleaser struct {
+	*InstrumentedOutboxStore
+	releaser ports.OutboxReleaser
+}
+
+var (
+	_ ports.OutboxStore    = (*instrumentedOutboxReleaser)(nil)
+	_ ports.OutboxReleaser = (*instrumentedOutboxReleaser)(nil)
+)
+
+func (s *instrumentedOutboxReleaser) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	return s.releaser.Release(ctx, recordIDs, token)
+}
+
+// instrumentedOutboxCloser re-exports the optional io.Closer capability of a
+// wrapped store that also supports it.
+type instrumentedOutboxCloser struct {
+	*InstrumentedOutboxStore
+	closer io.Closer
+}
+
+var (
+	_ ports.OutboxStore = (*instrumentedOutboxCloser)(nil)
+	_ io.Closer         = (*instrumentedOutboxCloser)(nil)
+)
+
+func (s *instrumentedOutboxCloser) Close() error {
+	if err := s.closer.Close(); err != nil {
+		return fmt.Errorf("close instrumented outbox store: %w", err)
+	}
+	return nil
+}
+
+// instrumentedOutboxReleaserCloser re-exports both optional capabilities of a
+// wrapped store that supports OutboxReleaser and io.Closer.
+type instrumentedOutboxReleaserCloser struct {
+	*InstrumentedOutboxStore
+	releaser ports.OutboxReleaser
+	closer   io.Closer
+}
+
+var (
+	_ ports.OutboxStore    = (*instrumentedOutboxReleaserCloser)(nil)
+	_ ports.OutboxReleaser = (*instrumentedOutboxReleaserCloser)(nil)
+	_ io.Closer            = (*instrumentedOutboxReleaserCloser)(nil)
+)
+
+func (s *instrumentedOutboxReleaserCloser) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	return s.releaser.Release(ctx, recordIDs, token)
+}
+
+func (s *instrumentedOutboxReleaserCloser) Close() error {
+	if err := s.closer.Close(); err != nil {
+		return fmt.Errorf("close instrumented outbox store: %w", err)
+	}
+	return nil
 }
 
 func (s *InstrumentedOutboxStore) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {

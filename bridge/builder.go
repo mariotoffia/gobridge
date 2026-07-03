@@ -17,6 +17,11 @@ type Builder struct {
 	logger           *slog.Logger
 	credStore        ports.CredentialStore
 	pushCredStore    ports.PushCredentialStore
+	pollCredStore    ports.PullCredentialStore
+	pollCredConfig   ports.PollBasedWrapperConfig
+	metrics          ports.MetricsExporter
+	tracer           ports.Tracer
+	auditLogger      ports.AuditLogger
 	endpointResolver ports.EndpointResolver
 	hook             ports.DeliveryHook
 	validator        ports.BlueprintValidator
@@ -73,11 +78,64 @@ func WithPushCredentialStore(cs ports.PushCredentialStore) BuilderOption {
 // synchronous initial resolve during session construction, and the
 // runtime needs a push store to observe rotations. A single call
 // configures them consistently.
+//
+// The poll wrapper is NOT constructed here: doing so captured whatever
+// b.logger happened to be at option-application time, making the result
+// depend on option ordering (WithLogger applied after this call was
+// silently ignored, Finding 13). Instead the pull store and config are
+// recorded and the wrapper is built at build time via effectivePushStore
+// with the fully-resolved logger.
 func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) BuilderOption {
 	return func(b *Builder) {
 		b.credStore = cs
-		b.pushCredStore = credentials.NewPollBasedWrapper(cs, cfg, credentials.WithPollLogger(b.logger))
+		b.pollCredStore = cs
+		b.pollCredConfig = cfg
 	}
+}
+
+// WithMetrics forwards a MetricsExporter to the runtime so config-driven
+// deployments export real metrics instead of the Noop exporter. Without
+// this seam the Builder and Supervisor had no way to pass an exporter
+// through to runtime.WithMetrics (Finding 15). nil is ignored.
+func WithMetrics(m ports.MetricsExporter) BuilderOption {
+	return func(b *Builder) {
+		if m != nil {
+			b.metrics = m
+		}
+	}
+}
+
+// WithTracer forwards a Tracer to the runtime (Finding 15). nil is ignored.
+func WithTracer(t ports.Tracer) BuilderOption {
+	return func(b *Builder) {
+		if t != nil {
+			b.tracer = t
+		}
+	}
+}
+
+// WithAuditLogger forwards an AuditLogger to the runtime (Finding 15).
+// nil is ignored.
+func WithAuditLogger(a ports.AuditLogger) BuilderOption {
+	return func(b *Builder) {
+		if a != nil {
+			b.auditLogger = a
+		}
+	}
+}
+
+// effectivePushStore returns the push credential store the build should
+// use: an explicitly-provided one wins; otherwise a poll wrapper is built
+// lazily around the recorded pull store using the fully-resolved logger so
+// the result is independent of option ordering (Finding 13).
+func (b *Builder) effectivePushStore() ports.PushCredentialStore {
+	if b.pushCredStore != nil {
+		return b.pushCredStore
+	}
+	if b.pollCredStore != nil {
+		return credentials.NewPollBasedWrapper(b.pollCredStore, b.pollCredConfig, credentials.WithPollLogger(b.logger))
+	}
+	return nil
 }
 
 // NewBuilder creates a builder from the given configuration.

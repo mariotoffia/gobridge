@@ -30,8 +30,18 @@ func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory 
 }
 
 // Capabilities returns the transport capabilities for AMQP 1.0.
+//
+// CapSourceRedelivery is declared because an AMQP 1.0 broker fully
+// redelivers unsettled deliveries: releasing (Retry) or simply losing
+// the link before settlement puts the message back on the source queue.
+// Without this declaration the route validator treats amqp10 as a
+// no-retry transport and forces a DLQ store or AllowRetryDrop even
+// though the transport never drops.
 func (f *Factory) Capabilities() []ports.Capability {
-	return []ports.Capability{ports.CapStatefulSession}
+	return []ports.Capability{
+		ports.CapStatefulSession,
+		ports.CapSourceRedelivery,
+	}
 }
 
 // AddressValidator returns nil — AMQP 1.0 link target addresses have
@@ -68,13 +78,14 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 			fmt.Sprintf("amqp10 receiver %q: %s", spec.ID, err))
 	}
 	rc := ReceiverConfig{
-		Address:        cfg.Receiver.Address,
-		LinkCredit:     cfg.Receiver.LinkCredit,
-		DurabilityMode: cfg.Receiver.DurabilityMode,
-		Routing:        cfg.Receiver.Routing,
-		Logger:         f.Logger,
-		Metrics:        f.Metrics,
-		Session:        amqpSession,
+		Address:          cfg.Receiver.Address,
+		LinkCredit:       cfg.Receiver.LinkCredit,
+		DurabilityMode:   cfg.Receiver.DurabilityMode,
+		Routing:          cfg.Receiver.Routing,
+		SubscriptionName: cfg.Receiver.SubscriptionName,
+		Logger:           f.Logger,
+		Metrics:          f.Metrics,
+		Session:          amqpSession,
 	}
 	return NewReceiver(rc, amqpSession)
 }
@@ -96,6 +107,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 		Timeout:        cfg.Sender.Timeout,
 		DurabilityMode: cfg.Sender.DurabilityMode,
 		Routing:        cfg.Sender.Routing,
+		Durable:        cfg.Sender.Durable,
 		Logger:         f.Logger,
 		Metrics:        f.Metrics,
 		Session:        amqpSession,

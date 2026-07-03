@@ -31,34 +31,64 @@ type CredentialRefresher struct {
 	push   ports.PushCredentialStore
 	logger *slog.Logger
 
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	watchers map[string]bool // uri → already watching
+	// onRotation, when set, is invoked with the URI after each rotation is
+	// applied. The builder wires it to the CredentialResolver's InvalidateCache
+	// so the pull-side cache drops the stale entry and the next synchronous
+	// resolve fetches the rotated material (contract C4).
+	onRotation func(uri string)
+
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	// watchers maps a URI to the set of CredentialAware targets that share it.
+	// Exactly ONE poller goroutine is started per URI (on first registration)
+	// and it fans the rotation out to every target; additional Watch calls for
+	// the same URI append to the slice instead of spawning a duplicate poller
+	// (Finding 14). A nil slice value means "poller starting/failed"; presence
+	// of the key means a poller has been (or is being) established.
+	watchers map[string][]CredentialAware
+}
+
+// RefresherOption configures a CredentialRefresher.
+type RefresherOption func(*CredentialRefresher)
+
+// WithRotationCallback sets a callback invoked with the URI after each applied
+// rotation. The builder passes CredentialResolver.InvalidateCache so the pull
+// cache is dropped in lock-step with a push rotation (contract C4). nil is
+// ignored.
+func WithRotationCallback(fn func(uri string)) RefresherOption {
+	return func(r *CredentialRefresher) {
+		if fn != nil {
+			r.onRotation = fn
+		}
+	}
 }
 
 // NewCredentialRefresher creates a refresher bound to the given push
 // store. push may be nil, in which case Watch is a no-op — callers
 // should always construct one and delegate the nil-check here so the
 // rest of the code path stays uniform.
-func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger) *CredentialRefresher {
+func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger, opts ...RefresherOption) *CredentialRefresher {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &CredentialRefresher{
+	r := &CredentialRefresher{
 		push:     push,
 		logger:   logger,
 		ctx:      ctx,
 		cancel:   cancel,
-		watchers: make(map[string]bool),
+		watchers: make(map[string][]CredentialAware),
 	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // Watch registers a (uri, session) pair for refresh. If the same URI
-// is registered multiple times (e.g. two sessions share credentials),
-// a new goroutine is spawned per session so each gets its own apply
-// callback — the underlying PushCredentialStore is expected to handle
-// multiple concurrent Watch calls for the same URI efficiently (the
-// PollBasedWrapper does, by giving each call its own ticker).
+// is registered by multiple targets (e.g. two sessions share
+// credentials), a SINGLE poller is spawned for the URI and each
+// registered target receives the rotation — duplicate Watch calls no
+// longer spawn duplicate pollers (Finding 14).
 //
 // Sessions that do not implement CredentialAware are silently skipped
 // with a debug log — this is intentional so mixed transports (MQTT
@@ -105,26 +135,37 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		return
 	}
 	parent := r.ctx
-	r.watchers[uri] = true
+	_, alreadyWatching := r.watchers[uri]
+	r.watchers[uri] = append(r.watchers[uri], aware)
 	r.mu.Unlock()
+
+	if alreadyWatching {
+		// A poller already exists for this URI; the target we just appended
+		// will be served by it. Do not spawn a duplicate poller (Finding 14).
+		return
+	}
 
 	ch, err := r.push.Watch(parent, uri)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("credential refresh: Watch failed", "uri", uri, "error", err)
 		}
+		// Drop the key so a later Watch for the same URI can retry
+		// establishing a poller rather than being suppressed as a duplicate.
+		r.mu.Lock()
+		delete(r.watchers, uri)
+		r.mu.Unlock()
 		return
 	}
 
 	r.wg.Add(1)
-	go r.run(parent, uri, ch, aware)
+	go r.run(parent, uri, ch)
 }
 
 func (r *CredentialRefresher) run(
 	parent context.Context,
 	uri string,
 	ch <-chan *connectivity.CredentialSet,
-	aware CredentialAware,
 ) {
 	defer r.wg.Done()
 	for {
@@ -138,15 +179,31 @@ func (r *CredentialRefresher) run(
 			if creds == nil {
 				continue
 			}
-			if err := aware.ApplyCredentials(parent, creds); err != nil {
-				if r.logger != nil {
-					r.logger.Warn("credential refresh: ApplyCredentials failed",
-						"uri", uri, "error", err)
+			// Snapshot the fan-out targets under lock; the slice may grow while
+			// the poller runs (targets registering during build).
+			r.mu.Lock()
+			targets := make([]CredentialAware, len(r.watchers[uri]))
+			copy(targets, r.watchers[uri])
+			r.mu.Unlock()
+
+			for _, aware := range targets {
+				if err := aware.ApplyCredentials(parent, creds); err != nil {
+					if r.logger != nil {
+						r.logger.Warn("credential refresh: ApplyCredentials failed",
+							"uri", uri, "error", err)
+					}
+				} else if logging.DebugEnabled(r.logger) {
+					r.logger.Log(parent, logging.LevelDebug,
+						"credential refresh: applied rotated credentials",
+						"uri", uri)
 				}
-			} else if logging.DebugEnabled(r.logger) {
-				r.logger.Log(parent, logging.LevelDebug,
-					"credential refresh: applied rotated credentials",
-					"uri", uri)
+			}
+
+			// Invalidate the pull cache so subsequent synchronous resolves see
+			// the rotated material (contract C4). Done once per rotation, after
+			// the push targets are updated.
+			if r.onRotation != nil {
+				r.onRotation(uri)
 			}
 		}
 	}

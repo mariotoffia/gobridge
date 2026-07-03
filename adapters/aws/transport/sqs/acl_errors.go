@@ -32,12 +32,23 @@ func MapError(err error) *shared.BridgeError {
 
 	var notInflight *sqstypes.MessageNotInflight
 	if errors.As(err, &notInflight) {
-		return shared.ErrInvalidPayload.Wrap(err).WithMessage("message not in flight")
+		// Receipt-handle expiry: the visibility window lapsed, so SQS
+		// already owns redelivery of this message. Classify transient —
+		// the failed settlement is a timing conflict, not a poison
+		// message; a permanent/rejected class would pollute DLQ
+		// categorization and metrics for a condition the broker
+		// self-heals.
+		return shared.ErrUnavailable.Wrap(err).
+			WithMessage("message not in flight (visibility expired; source will redeliver)")
 	}
 
 	var badHandle *sqstypes.ReceiptHandleIsInvalid
 	if errors.As(err, &badHandle) {
-		return shared.ErrInvalidPayload.Wrap(err).WithMessage("receipt handle is invalid")
+		// Same class as MessageNotInflight: a stale/expired receipt
+		// handle means SQS will redeliver on its own — transient, not
+		// a permanent payload rejection.
+		return shared.ErrUnavailable.Wrap(err).
+			WithMessage("receipt handle invalid or expired (source will redeliver)")
 	}
 
 	var idsNotDistinct *sqstypes.BatchEntryIdsNotDistinct
@@ -90,7 +101,12 @@ func MapError(err error) *shared.BridgeError {
 	if containsAny(msg, "AccessDenied", "UnauthorizedAccess", "InvalidClientTokenId") {
 		return shared.ErrNotAuthorized.Wrap(err)
 	}
-	if containsAny(msg, "ValidationError", "InvalidParameter", "MalformedQueryString") {
+	// MissingParameter covers deterministic request faults such as a
+	// FIFO send without a MessageGroupId: retrying cannot succeed, so
+	// it must classify rejected — the same class the batch API's
+	// SenderFault yields — instead of falling through to the transient
+	// default and being retried forever.
+	if containsAny(msg, "ValidationError", "InvalidParameter", "MissingParameter", "MalformedQueryString") {
 		return shared.ErrInvalidPayload.Wrap(err)
 	}
 

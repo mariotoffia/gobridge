@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -21,16 +22,42 @@ type SessionOptions struct {
 	// normalizeBrokerURLs folds it into BrokerURLs when the list form is absent
 	// and clears it, so the typed decode path honors the documented
 	// single-broker config and re-serializes on the canonical broker_urls key.
-	BrokerURL             string        `mapstructure:"broker_url" yaml:"broker_url,omitempty" json:"broker_url,omitempty"`
-	ClientID              string        `mapstructure:"client_id" yaml:"client_id" json:"client_id"`
-	KeepAlive             uint16        `mapstructure:"keep_alive" yaml:"keep_alive" json:"keep_alive"`
-	ConnectTimeout        time.Duration `mapstructure:"connect_timeout" yaml:"connect_timeout" json:"connect_timeout"`
-	ReconnectTimeout      time.Duration `mapstructure:"reconnect_timeout" yaml:"reconnect_timeout" json:"reconnect_timeout"`
-	CleanStart            bool          `mapstructure:"clean_start" yaml:"clean_start" json:"clean_start"`
+	BrokerURL string `mapstructure:"broker_url" yaml:"broker_url,omitempty" json:"broker_url,omitempty"`
+	ClientID  string `mapstructure:"client_id" yaml:"client_id" json:"client_id"`
+	// KeepAlive is the MQTT keep-alive interval in seconds. The registry
+	// decode path pre-fills the documented default (30) before decoding,
+	// so an omitted key gets 30 while an EXPLICIT `keep_alive: 0`
+	// (disable the pinger) is honoured. Hand-built SessionOptions carry
+	// the caller's literal value unchanged.
+	KeepAlive uint16 `mapstructure:"keep_alive" yaml:"keep_alive" json:"keep_alive"`
+	// ConnectTimeout bounds the INITIAL Start connection await. Zero
+	// falls back to 30s at Start time.
+	ConnectTimeout time.Duration `mapstructure:"connect_timeout" yaml:"connect_timeout" json:"connect_timeout"`
+	// ReconnectTimeout bounds each individual (re)connect attempt made
+	// by the autopaho reconnection loop (TCP dial + TLS handshake + MQTT
+	// CONNECT/CONNACK). Zero means the autopaho default (10s). It maps
+	// to autopaho.ClientConfig.ConnectTimeout.
+	ReconnectTimeout time.Duration `mapstructure:"reconnect_timeout" yaml:"reconnect_timeout" json:"reconnect_timeout"`
+	// CleanStart is the MQTT 5 clean-start flag consulted for Persistent
+	// and Exclusive sessions (Ephemeral sessions always connect with
+	// CleanStart=true regardless). The default is FALSE: the modes that
+	// consult the flag exist to RESUME broker session state, so a
+	// clean-start default would silently discard it.
+	CleanStart bool `mapstructure:"clean_start" yaml:"clean_start" json:"clean_start"`
+	// SessionExpiryInterval is the MQTT 5 session expiry in seconds.
+	// For Persistent/Exclusive sessions a zero value gives ZERO offline
+	// retention (the broker drops the session state the moment the
+	// connection closes), contradicting the mode's purpose — NewSession
+	// therefore defaults zero to DefaultPersistentSessionExpiry for
+	// those modes (with a warning). Ephemeral sessions always use 0.
 	SessionExpiryInterval uint32        `mapstructure:"session_expiry_interval" yaml:"session_expiry_interval" json:"session_expiry_interval"`
 	Username              string        `mapstructure:"username" yaml:"username" json:"username"`
 	Password              shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
 	TLS                   *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
+	// Will configures an MQTT Last Will and Testament published by the
+	// broker when this session's connection terminates ungracefully,
+	// letting peers detect ungraceful death. Optional; nil means no will.
+	Will *WillOptions `mapstructure:"will" yaml:"will,omitempty" json:"will,omitempty"`
 	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
 	// broker can send before receiving PUBACKs. Default 0 means use the
@@ -61,6 +88,36 @@ func (o *SessionOptions) normalizeBrokerURLs() {
 // ReceiverOptions holds MQTT receiver-specific configuration.
 type ReceiverOptions struct {
 	// No additional fields; subscriptions come from ReceiverSpec.Subscriptions.
+}
+
+// WillOptions configures the MQTT Last Will and Testament (LWT) for a
+// session. The broker publishes the will message on the configured
+// topic when the client's connection terminates ungracefully (network
+// partition, crash, keep-alive timeout) — peers subscribe to the will
+// topic to detect ungraceful death. A graceful Close (normal
+// DISCONNECT) does not trigger the will.
+type WillOptions struct {
+	Topic   string `mapstructure:"topic" yaml:"topic" json:"topic"`
+	Payload string `mapstructure:"payload" yaml:"payload" json:"payload"`
+	QoS     byte   `mapstructure:"qos" yaml:"qos" json:"qos"`
+	Retain  bool   `mapstructure:"retain" yaml:"retain" json:"retain"`
+}
+
+// Validate checks the will configuration for protocol violations.
+func (w *WillOptions) Validate() error {
+	if w == nil {
+		return nil
+	}
+	if w.Topic == "" {
+		return fmt.Errorf("mqtt: will.topic is required when will is configured")
+	}
+	if strings.ContainsAny(w.Topic, "+#") {
+		return fmt.Errorf("mqtt: will.topic %q must not contain wildcards", w.Topic)
+	}
+	if w.QoS > 2 {
+		return fmt.Errorf("mqtt: will.qos must be 0, 1, or 2, got %d", w.QoS)
+	}
+	return nil
 }
 
 // SenderOptions holds MQTT sender-specific configuration.
@@ -99,13 +156,27 @@ type TLSConfig struct {
 	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify" json:"insecure_skip_verify"`
 }
 
+// DefaultPersistentSessionExpiry is the session_expiry_interval (in
+// seconds) applied by NewSession when a Persistent or Exclusive session
+// is configured with the zero value. 0 would give ZERO offline
+// retention — the broker drops subscriptions and queued QoS 1/2
+// messages the instant the connection closes — contradicting the
+// documented purpose of those modes. 24 hours survives typical
+// restarts and outages without leaking broker session state forever
+// (0xFFFFFFFF "never expire" was deliberately rejected).
+const DefaultPersistentSessionExpiry uint32 = 86400
+
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
+//
+// CleanStart defaults to FALSE: only Persistent/Exclusive sessions
+// consult the flag (Ephemeral always connects clean), and those modes
+// exist to resume broker session state.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
 		KeepAlive:        30,
 		ConnectTimeout:   30 * time.Second,
 		ReconnectTimeout: 30 * time.Second,
-		CleanStart:       true,
+		CleanStart:       false,
 		Clock:            clock.System,
 	}
 }
@@ -116,6 +187,24 @@ func DefaultSenderOptions() SenderOptions {
 		QoS:                1,
 		Timeout:            30 * time.Second,
 		ThrottleRetryAfter: 500 * time.Millisecond,
+	}
+}
+
+// DefaultConfig returns a Config pre-filled with every documented
+// default. The registry decoder (register.go) decodes INTO this value:
+// mapstructure only assigns fields present in the input map, so an
+// omitted key keeps its default while an explicit value — including an
+// explicit zero such as `qos: 0` or `keep_alive: 0` — overrides it.
+// This is what makes "unset ⇒ default, explicit 0 ⇒ honoured"
+// distinguishable without pointer-typed config fields.
+func DefaultConfig() Config {
+	session := DefaultSessionOptions()
+	// Clock is an injected dependency, never config state; keep the
+	// decoded Config free of it (NewSession installs clock.System).
+	session.Clock = nil
+	return Config{
+		Session: session,
+		Sender:  DefaultSenderOptions(),
 	}
 }
 
@@ -217,8 +306,53 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := m["tls"].(map[string]any); ok {
 		opts.TLS = tlsConfigFromMap(v)
 	}
+	if v, ok := m["will"].(*WillOptions); ok {
+		opts.Will = v
+	}
+	if v, ok := m["will"].(map[string]any); ok {
+		will, err := willOptionsFromMap(v)
+		if err != nil {
+			return opts, err
+		}
+		opts.Will = will
+	}
 
 	return opts, nil
+}
+
+// willOptionsFromMap extracts WillOptions from a generic options map.
+func willOptionsFromMap(m map[string]any) (*WillOptions, error) {
+	w := &WillOptions{}
+	if v, ok := m["topic"].(string); ok {
+		w.Topic = v
+	}
+	if v, ok := m["payload"].(string); ok {
+		w.Payload = v
+	}
+	if raw, exists := m["qos"]; exists {
+		var v int
+		switch n := raw.(type) {
+		case int:
+			v = n
+		case int64:
+			v = int(n)
+		case float64:
+			v = int(n)
+		default:
+			return nil, fmt.Errorf("will.qos must be a number, got %T", raw)
+		}
+		if v < 0 || v > 2 {
+			return nil, fmt.Errorf("will.qos must be 0, 1, or 2, got %d", v)
+		}
+		w.QoS = byte(v)
+	}
+	if v, ok := m["retain"].(bool); ok {
+		w.Retain = v
+	}
+	if err := w.Validate(); err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 // SenderOptionsFromMap extracts SenderOptions from a generic options map.

@@ -28,6 +28,13 @@ func TestOutboxStoreConformance(t *testing.T) {
 	storetest.RunOutboxStoreTests(t, store)
 }
 
+// Validates the optional fast-release capability against the shared
+// conformance suite so release fencing matches SQLite/DynamoDB.
+func TestOutboxReleaseConformance(t *testing.T) {
+	store := memoryoutbox.NewStore()
+	storetest.RunOutboxReleaseTests(t, store)
+}
+
 // newClockStore builds a memory store driven by an injected fake clock so
 // the Release tests are deterministic and free of any wall-clock or sleep
 // dependence.

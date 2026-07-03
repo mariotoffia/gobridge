@@ -364,9 +364,9 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	rwg.Add(1)
 	go func() {
 		defer rwg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			received.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 	defer func() { recvCancel(); rwg.Wait() }()

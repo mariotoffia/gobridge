@@ -23,7 +23,9 @@
 // # Export-failure visibility
 //
 // WithErrorHandler installs a callback invoked when a span export
-// fails, and WithBatchTimeout / WithExportTimeout / WithMaxQueueSize /
+// fails. When never configured, failures are logged at Warn level via
+// slog.Default(); WithErrorHandler(nil) suppresses reporting.
+// WithBatchTimeout / WithExportTimeout / WithMaxQueueSize /
 // WithMaxExportBatchSize tune the BatchSpanProcessor.
 //
 // # Environment variables

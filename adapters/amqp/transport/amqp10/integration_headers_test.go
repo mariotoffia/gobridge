@@ -70,6 +70,7 @@ func TestIntegration_HeaderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -150,6 +151,7 @@ func TestIntegration_EnvelopeTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -237,6 +239,7 @@ func TestIntegration_ApplicationProperties(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()

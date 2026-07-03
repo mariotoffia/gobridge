@@ -1,4 +1,4 @@
-./adapters/amqp/transport/amqp091/integration_edge_advanced_test.go:359:			time.Sleep(100 * time.Millisecond)
+./adapters/amqp/transport/amqp091/integration_edge_advanced_test.go:362:			time.Sleep(100 * time.Millisecond)
 ./adapters/amqp/transport/amqp091/session_lifecycle_test.go:60:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp091/session_resilience_test.go:132:		time.Sleep(200 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/receiver_disconnect_test.go:60:	time.Sleep(50 * time.Millisecond)
@@ -6,25 +6,20 @@
 ./adapters/amqp/transport/amqp10/sender_disconnect_test.go:81:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_lifecycle_test.go:48:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_reconnect_test.go:52:		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
-./adapters/aws/store/dynamodblease/store_test.go:90:		time.Sleep(2 * time.Second)
-./adapters/aws/store/dynamodboutbox/store_test.go:246:	time.Sleep(10 * time.Millisecond)
+./adapters/aws/cluster/ecs/resolver_test.go:189:		time.Sleep(time.Millisecond) // OTHER: bounded poll for fake-clock timer registration (no fake-time dependency)
+./adapters/aws/store/dynamodblease/store_test.go:132:		time.Sleep(50 * time.Millisecond) // OTHER: real elapsed time — renewed_at epoch-millis must differ from baseline
+./adapters/aws/store/dynamodblease/store_test.go:141:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — full TTL must pass to prove the window reset
+./adapters/aws/store/dynamodblease/store_test.go:99:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — emulator observation window keys on wall-clock renewed_at (M5)
 ./adapters/aws/transport/sqs/sender_test.go:477:			time.Sleep(5 * time.Millisecond) // OTHER: ensure distinguishable deadlines
 ./adapters/aws/transport/sqs/sender_timeout_test.go:205:			time.Sleep(2 * time.Millisecond) // OTHER: simulate work for deadline verification
 ./adapters/aws/transport/sqs/sender_timeout_test.go:32:			time.Sleep(10 * time.Millisecond) // OTHER: shift wall clock for distinguishable deadlines
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:117:		time.Sleep(1 * time.Millisecond)
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:125:		time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:41:		time.Sleep(1 * time.Millisecond)
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:45:	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:47:	time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:74:		time.Sleep(1 * time.Millisecond)
-./adapters/azure/transport/servicebus/delivery_autoextend_retry_test.go:79:		time.Sleep(20 * time.Millisecond)     // OTHER: let goroutine process tick
 ./adapters/azure/transport/servicebus/integration_test.go:69:		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
 ./adapters/http/transport/benchmark_test.go:103:				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
 ./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:57:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
 ./adapters/http/transport/subject_address_test.go:303:		time.Sleep(10 * time.Millisecond)
 ./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
-./adapters/mqtt/transport/paho/analysis_router_test.go:167:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
+./adapters/mqtt/transport/paho/analysis_router_test.go:236:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
 ./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:285:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
 ./adapters/mqtt/transport/paho/analysis_session_test.go:334:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
@@ -40,7 +35,7 @@
 ./bridge/reconfig_strategy_test.go:156:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:197:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:219:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
-./bridge/reconfig_strategy_test.go:397:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+./bridge/reconfig_strategy_test.go:423:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/supervisor_fakes_test.go:323:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor runtime init poll
 ./bridge/supervisor_fakes_test.go:340:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor route convergence poll
 ./config/manager_test.go:294:	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg1 before pushing cfg2
@@ -142,10 +137,10 @@
 ./tests/longrunning/uc48_broker_multihop_test.go:142:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:279:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
 ./tests/longrunning/uc48_broker_multihop_test.go:506:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
-./tests/longrunning/uc5_pipeline_chain_test.go:52:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/uc52_sqs_resilience_test.go:194:	time.Sleep(10 * time.Second) // NEGATIVE: verify dedup discards most duplicates
 ./tests/longrunning/uc57_outbox_lease_test.go:108:	time.Sleep(5 * time.Second) // ESSENTIAL: wait for lease TTL (2s) to expire + margin
 ./tests/longrunning/uc59_outbox_edge_test.go:166:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc5_pipeline_chain_test.go:52:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/uc63_performance_test.go:303:		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
 ./tests/longrunning/uc74_protocol_edge_test.go:45:	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 ./tests/longrunning/uc80_benchmark_test.go:91:		time.Sleep(500 * time.Millisecond) // SYNC: poll for message delivery progress

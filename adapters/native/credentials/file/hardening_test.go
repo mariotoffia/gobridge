@@ -177,3 +177,93 @@ func TestGet_CorruptFileReturnsBridgeError(t *testing.T) {
 	var be *shared.BridgeError
 	require.True(t, errors.As(err, &be), "expected a *shared.BridgeError, got %T", err)
 }
+
+// --- Directory permission hardening (secret names must not be listable) ---
+
+// Verifies New creates the base directory 0700: a group/world listable
+// directory leaks the set of credential names even with 0600 files.
+func TestNew_BaseDirCreated0700(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "creds")
+	_, err := New(dir)
+	require.NoError(t, err)
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+// Verifies New tightens a PRE-EXISTING loose base directory to 0700
+// (MkdirAll does not touch the mode of directories that already exist).
+func TestNew_TightensPreexistingLooseBaseDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "creds")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	// TempDir parents may carry restrictive umasks; force the loose mode.
+	require.NoError(t, os.Chmod(dir, 0o755))
+
+	_, err := New(dir)
+	require.NoError(t, err)
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+// Verifies Create makes nested credential directories 0700.
+func TestCreate_NestedDirs0700(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := New(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Create(context.Background(), "file://broker/mqtt/prod", passwordCreds("u", "p")))
+
+	info, err := os.Stat(filepath.Join(dir, "broker", "mqtt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+// --- Symlink containment (lexical checks alone cannot catch these) ---
+
+// Verifies a symlinked directory inside the base that points OUTSIDE it
+// is rejected: the lexical prefix check passes (the path looks like
+// base/sub/x) but the real path escapes, so Get/Create must fail.
+func TestSymlinkEscapeRejected(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "creds")
+	outside := filepath.Join(root, "outside")
+	require.NoError(t, os.MkdirAll(outside, 0o700))
+
+	repo, err := New(base)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Symlink(outside, filepath.Join(base, "sub")))
+
+	_, err = repo.Get(context.Background(), "file://sub/secret")
+	require.Error(t, err, "Get through an escaping symlink must be rejected")
+	assert.Contains(t, err.Error(), "escapes base directory")
+
+	err = repo.Create(context.Background(), "file://sub/secret", passwordCreds("u", "p"))
+	require.Error(t, err, "Create through an escaping symlink must be rejected")
+	assert.Contains(t, err.Error(), "escapes base directory")
+
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "no file may be written outside the base directory")
+}
+
+// Verifies a symlink INSIDE the base pointing to another location
+// inside the base is still allowed (containment, not a symlink ban).
+func TestSymlinkWithinBaseAllowed(t *testing.T) {
+	base := t.TempDir()
+	repo, err := New(base)
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "real"), 0o700))
+	require.NoError(t, os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")))
+
+	require.NoError(t, repo.Create(context.Background(), "file://alias/secret", passwordCreds("u", "p")))
+
+	got, err := repo.Get(context.Background(), "file://real/secret")
+	require.NoError(t, err)
+	require.NotNil(t, got.Password())
+	assert.Equal(t, "u", got.Password().Username())
+}

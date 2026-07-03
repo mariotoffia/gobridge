@@ -197,6 +197,11 @@ func testConfig() *ports.BridgeConfig {
 				ReceiverID:   "sqs-rx",
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"b1"},
+				// drop policies keep the shared testConfig route valid under the
+				// build-time ValidateRoutes call (Finding 5 / C2): the default
+				// on_permanent_failure/on_expired is "dlq", which requires a DLQ
+				// store. Tests that need DLQ behaviour set it explicitly.
+				Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 				Session: &ports.RouteSessionDef{
 					SessionID: "mqtt-s1",
 					SenderID:  "mqtt-tx",
@@ -282,6 +287,7 @@ func TestBuilder_DirectHoldRoute(t *testing.T) {
 				ReceiverID:   "rx1",
 				DeliveryMode: "direct_hold",
 				Bindings:     []string{"b1"},
+				Policy:       ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 			},
 		},
 	}
@@ -446,6 +452,7 @@ func TestBuilder_SharedOutboxBinding_DedicatedFanoutSession_OK(t *testing.T) {
 				DeliveryMode: "shared_outbox",
 				DispatchMode: "fanout",
 				Bindings:     []string{"b1", "b2"},
+				Policy:       ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 				Session:      &ports.RouteSessionDef{SessionID: "mqtt-s1", SenderID: "mqtt-tx"},
 			},
 		},
@@ -550,6 +557,7 @@ func TestBuilder_SharedOutboxBinding_DedicatedSessionSameSender_OK(t *testing.T)
 				DeliveryMode: "shared_outbox",
 				DispatchMode: "fanout",
 				Bindings:     []string{"b1", "b-a", "b-b"},
+				Policy:       ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 				Session:      &ports.RouteSessionDef{SessionID: "mqtt-s1", SenderID: "mqtt-tx"},
 			},
 		},
@@ -694,6 +702,7 @@ func TestBuilder_SharedOutboxBinding_PrimarySessionInheritedSameSender_OK(t *tes
 				DeliveryMode: "shared_outbox",
 				DispatchMode: "fanout",
 				Bindings:     []string{"b1"},
+				Policy:       ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 				Session:      &ports.RouteSessionDef{SessionID: "mqtt-s1", SenderID: "mqtt-tx"},
 			},
 		},
@@ -789,7 +798,7 @@ func TestBuilder_Clustered_NonDistributedStore_Rejected(t *testing.T) {
 		Build(context.Background())
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "clustered deployment requires a distributed")
+	assert.Contains(t, err.Error(), "requires a distributed")
 }
 
 // Verifies Build succeeds for clustered deployment when store factories report IsDistributed.
@@ -910,6 +919,10 @@ func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
 		DepthCacheTTL:  "100ms",
 		AllowUnfenced:  true,
 		AllowRetryDrop: true,
+		// drop policies keep the route valid under build-time ValidateRoutes
+		// (Finding 5); this test exercises the OTHER policy fields.
+		OnPermanentFailure: "drop",
+		OnExpired:          "drop",
 	}
 
 	rt, err := NewBuilder(cfg).
@@ -950,8 +963,10 @@ func TestBuilder_DrainMaxFieldsReachSessionConfig(t *testing.T) {
 // TestBuilder_WiresSourceVisibilityTimeout verifies that a transport
 // factory implementing VisibilityTimeoutProvider causes the builder to
 // populate SourceVisibilityTimeout on the resulting route. When
-// SendTimeout >= VisibilityTimeout/2, the runtime validator rejects the
-// route at Start() time.
+// SendTimeout >= VisibilityTimeout/2, the route is rejected — and, since
+// Finding 5 / C2 moved static route validation into complete(), that
+// rejection now happens at BUILD time (before the old runtime is stopped),
+// not only at Start().
 func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.Routes[0].DeliveryMode = "direct_hold"
@@ -960,17 +975,13 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 
 	sqsFactory := &fakeVisibilityFactory{timeout: 30 * time.Second}
 
-	rt, err := NewBuilder(cfg).
+	_, err := NewBuilder(cfg).
 		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
 		RegisterTransportFactory("sqs", sqsFactory).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
-	require.NoError(t, err)
-	require.NotNil(t, rt)
-
-	err = rt.Start(context.Background())
-	require.Error(t, err)
+	require.Error(t, err, "the SendTimeout/VisibilityTimeout mismatch must fail at build (Finding 5)")
 	assert.Contains(t, err.Error(), "SendTimeout")
 	assert.Contains(t, err.Error(), "VisibilityTimeout")
 }
@@ -981,9 +992,10 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 // factory reports 30s, under which SendTimeout=8s is safe (8 < 15). The
 // receiver config reports a shorter 10s window with auto-extend OFF (a
 // fixed window), under which the same SendTimeout is unsafe (8 > 5), so
-// Start() must reject the route. If the builder ignored the config and
-// used the factory constant, no error would fire — making this a true
-// regression guard.
+// the route must be rejected. Since Finding 5 / C2 moved static route
+// validation into complete(), that rejection now happens at BUILD time. If
+// the builder ignored the config and used the factory constant, no error
+// would fire — making this a true regression guard.
 func TestBuilder_ReceiverConfigVisibilityTimeoutOverridesFactory(t *testing.T) {
 	cfg := testConfig()
 	cfg.Routes[0].DeliveryMode = "direct_hold"
@@ -995,17 +1007,13 @@ func TestBuilder_ReceiverConfigVisibilityTimeoutOverridesFactory(t *testing.T) {
 
 	sqsFactory := &fakeVisibilityFactory{timeout: 30 * time.Second}
 
-	rt, err := NewBuilder(cfg).
+	_, err := NewBuilder(cfg).
 		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
 		RegisterTransportFactory("sqs", sqsFactory).
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
-	require.NoError(t, err)
-	require.NotNil(t, rt)
-
-	err = rt.Start(context.Background())
-	require.Error(t, err)
+	require.Error(t, err, "the shorter receiver-config window must fail the route at build (Finding 5)")
 	assert.Contains(t, err.Error(), "SendTimeout")
 	assert.Contains(t, err.Error(), "VisibilityTimeout")
 }
@@ -1088,7 +1096,11 @@ func TestBuilder_ValidatesStaticAddressAtBuildTime(t *testing.T) {
 			Senders:   []ports.SenderDef{{ID: "tx1", Transport: "sqs"}},
 			Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx1", Address: address}},
 			Routes: []ports.RouteDef{
-				{ID: "r1", ReceiverID: "rx1", DeliveryMode: "direct_hold", Bindings: []string{"b1"}},
+				// drop policies keep the route valid under the build-time
+				// ValidateRoutes call (Finding 5 / C2) so this test isolates
+				// static ADDRESS validation, not DLQ-policy validation.
+				{ID: "r1", ReceiverID: "rx1", DeliveryMode: "direct_hold", Bindings: []string{"b1"},
+					Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"}},
 			},
 		}
 	}

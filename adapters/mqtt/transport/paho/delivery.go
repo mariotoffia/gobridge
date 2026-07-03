@@ -1,37 +1,43 @@
 // Delivery contract notes (file-level).
 //
-// MQTT QoS delivery guarantees are owned by the autopaho client library,
-// not by the application layer. This causes deliberate asymmetries in the
-// ports.Delivery implementation when compared to SQS
-// (see adapters/aws/transport/sqs/delivery.go), where Ack/Retry/Extend
-// map to real broker-side operations (DeleteMessage,
-// ChangeMessageVisibility, redrive):
+// This adapter runs the Paho client with EnableManualAcknowledgment:
+// the protocol acknowledgement (PUBACK for QoS 1, PUBREC/PUBCOMP for
+// QoS 2) is NOT sent when the message is read off the wire, and NOT
+// sent when the router's dispatch returns — it is sent only when the
+// runtime SETTLES the delivery by calling Delivery.Ack. For a
+// shared_outbox route that is after the outbox Persist completes; for
+// a direct_hold route it is after the target accepted. A crash at any
+// point before settlement leaves the QoS 1/2 message un-acked on the
+// broker, and a persistent/exclusive broker session redelivers it to
+// the next owner — true ack-after-durable-handoff.
 //
-//   - Ack is a no-op: the PUBACK (QoS 1) or PUBREC/PUBCOMP (QoS 2) is sent
-//     by the Paho client's routePublishPackets goroutine when the router's
-//     Route call returns — there is no application-layer handle to send it.
-//     The adapter narrows the loss window by dispatching SYNCHRONOUSLY:
-//     Route blocks until emit returns (see acl_router.go), so the
-//     acknowledgement is deferred until AFTER the handler has taken
-//     ownership (for shared_outbox, until the outbox Persist completes).
-//     A crash strictly BEFORE Route returns therefore leaves the QoS 1/2
-//     message un-acked, and a persistent broker session redelivers it.
+// Ordering: the MQTT spec requires QoS 1/2 acknowledgements to be sent
+// in the order the PUBLISH packets were received. The Paho client
+// handles this internally (paho.Client acksTracker): Delivery.Ack marks
+// the packet acknowledged, and the client flushes acknowledgements to
+// the broker strictly in receive order — out-of-order settlement by
+// concurrent route runners is therefore safe, at the cost of
+// head-of-line blocking behind the oldest unsettled delivery.
 //
-//     Residual boundary (cannot be closed with the Paho Router seam):
+// Residual boundaries:
 //
-//   - On emit ERROR the message has still been read by Paho and will
-//     be auto-acked once Route unwinds; there is no per-message NACK.
-//     Durability for the error path must come from the outbox/DLQ, not
-//     from broker redelivery.
+//   - There is no per-message NACK in MQTT. A delivery that is never
+//     settled (emit error, pipeline crash) simply stays un-acked; the
+//     broker redelivers it on the next session resume. Durability for
+//     the in-connection error path must come from the outbox/DLQ.
 //
 //   - QoS 0 and ephemeral (clean-start) sessions have no broker
-//     redelivery at all — delivery is best-effort by protocol.
-//     True application-controlled settlement would require Paho's
-//     EnableManualAcknowledgment + OnPublishReceived (Client-scoped ack),
-//     a larger re-architecture deliberately not taken here.
+//     redelivery at all — delivery is best-effort by protocol, and
+//     Ack is a no-op for QoS 0.
+//
+//   - An Ack issued after the underlying connection was torn down and
+//     re-established cannot be delivered (the client's ack tracker was
+//     reset); it reports success because the broker will redeliver and
+//     downstream idempotency/dedup absorbs the duplicate.
 //
 //   - Retry returns shared.ErrNotSupported: MQTT has no broker-side
-//     visibility timeout or per-message redelivery primitive akin to SQS.
+//     visibility timeout or per-message redelivery primitive akin to
+//     SQS. The route runner falls back to DLQ routing.
 //
 //   - Extend returns shared.ErrNotSupported for the same reason — there
 //     is nothing to extend.
@@ -42,51 +48,18 @@
 // imply the egress sender, a downstream broker, or the ultimate consumer
 // received the message.
 //
-// Routes that need at-least-once semantics on top of an MQTT source must
-// use DeliveryMode shared_outbox; durability comes from the outbox store
-// and the egress sender, NOT from broker redelivery.
+// # Session step-down / shutdown
 //
-// # Design decision: in-flight QoS 1/2 settlement on session step-down
-//
-// When an exclusive session loses its lease (or the process shuts down)
-// this adapter does NOT gate consumption before disconnecting. The
-// ratified model is forward-in-flight + broker-redelivery: Session.Close
-// (session_lifecycle.go) flips the closed guard, disconnects the
-// ConnectionManager, and awaits in-flight handlers bounded by the Close
-// context. Because Route is synchronous and the Paho client sends the
-// PUBACK/PUBCOMP only after Route returns (acl_router.go), a QoS 1/2
-// publish that is mid-dispatch when the socket tears down is left
-// UN-ACKED, so a persistent/exclusive broker session redelivers it to the
-// next owner — at-least-once, with the durable outbox's version fence
-// stopping a double-commit of the same record.
-//
-// Three options were considered; the first two were rejected:
-//
-//   - Drop-and-ACK (a stop-gate that stops pulling new work, then drains
-//     the in-flight set): rejected. The Paho Router seam ACKs after Route
-//     returns and cannot NACK, so "stop, then drain" would have to
-//     drop-and-ACK whatever was already read — silently LOSING those
-//     in-flight publishes. An earlier stop-gate along these lines was
-//     reverted for exactly this reason.
-//   - Disconnect-first-then-redeliver: the CHOSEN model above. Tearing the
-//     socket down before acking is the only seam-safe way to force
-//     redelivery, so it is preferred over any adapter-local drop.
-//   - EnableManualAcknowledgment + post-emit ACK: the correct long-term
-//     fix (ack only after emit has taken ownership, which enables a true
-//     quiesce), but it is a Client-scoped re-architecture around
-//     OnPublishReceived that is deliberately NOT taken here.
-//
-// True graceful drain — quiescing the source before disconnect so no
-// in-flight publish is interrupted — is therefore deferred to the manager
-// layer: the runtime SessionManager is the single owner of lease
-// step-down and reconnect (finding C7) and is where a future
-// EnableManualAcknowledgment path would land. Until then, step-down
-// correctness rests on broker redelivery and the outbox fence, not on an
-// adapter-local drain.
+// Session.Close disconnects without draining: any delivery that is
+// unsettled when the socket tears down is left un-acked, so a
+// persistent/exclusive broker session redelivers it to the next owner —
+// at-least-once, with the durable outbox's version fence stopping a
+// double-commit of the same record.
 package paho
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -97,25 +70,51 @@ import (
 var _ ports.Delivery = (*Delivery)(nil)
 
 // Delivery implements ports.Delivery for an incoming MQTT message.
-// MQTT protocol-level acknowledgement (PUBACK for QoS 1, PUBREC/PUBCOMP for
-// QoS 2) is handled internally by the Paho client, so Ack is a no-op.
-// Retry and Extend are not supported by MQTT.
+// Ack triggers the MQTT protocol acknowledgement (PUBACK / PUBREC-
+// PUBCOMP via the Paho manual-acknowledgment API); Retry and Extend
+// are not supported by MQTT.
 type Delivery struct {
 	env *messaging.Envelope
+	ack func() error
+
+	ackOnce sync.Once
+	ackErr  error
+}
+
+// DeliveryOption customises a Delivery.
+type DeliveryOption func(*Delivery)
+
+// WithAckFunc installs the protocol-acknowledgement callback invoked by
+// the first Ack call. The router wires this to the Paho client's manual
+// Ack for the originating publish.
+func WithAckFunc(fn func() error) DeliveryOption {
+	return func(d *Delivery) { d.ack = fn }
 }
 
 // NewDelivery wraps an Envelope as a ports.Delivery.
-func NewDelivery(env *messaging.Envelope) *Delivery {
-	return &Delivery{env: env}
+func NewDelivery(env *messaging.Envelope, opts ...DeliveryOption) *Delivery {
+	d := &Delivery{env: env}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
-// Ack is a no-op. The MQTT protocol acknowledgement is sent by the Paho
-// client when the router's synchronous Route call returns, not by the
-// application — see the file-level contract notes for the deferred-ack
-// behaviour and its residual at-least-once boundary.
-func (d *Delivery) Ack(_ context.Context) error { return nil }
+// Ack sends the MQTT protocol acknowledgement for the originating
+// publish (deferred-until-settlement; see the file-level contract
+// notes). Ack is idempotent: the protocol acknowledgement fires at most
+// once and subsequent calls return the first result. A Delivery
+// constructed without an ack callback (QoS 0, tests, legacy Route path)
+// acks as a no-op.
+func (d *Delivery) Ack(_ context.Context) error {
+	if d.ack == nil {
+		return nil
+	}
+	d.ackOnce.Do(func() { d.ackErr = d.ack() })
+	return d.ackErr
+}
 
 func (d *Delivery) Retry(_ context.Context, _ time.Duration, _ error) error {
 	return shared.ErrNotSupported

@@ -42,6 +42,13 @@ func TestOutboxStoreConformance(t *testing.T) {
 	storetest.RunOutboxStoreTests(t, store)
 }
 
+// Validates the optional fast-release capability against the shared
+// conformance suite so release fencing matches memory/DynamoDB.
+func TestOutboxReleaseConformance(t *testing.T) {
+	store := newTempStore(t)
+	storetest.RunOutboxReleaseTests(t, store)
+}
+
 // Validates the in-memory SQLite outbox store against the shared conformance suite.
 func TestInMemoryMode(t *testing.T) {
 	s, err := sqliteoutbox.NewStore(":memory:")
@@ -50,6 +57,21 @@ func TestInMemoryMode(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	storetest.RunOutboxStoreTests(t, s)
+}
+
+// Validates the wall-clock stale-claim reclaim behaviour against the shared
+// conformance suite, driven by a fake clock (TESTS.md: no time.Sleep).
+func TestOutboxStaleReclaimConformance(t *testing.T) {
+	const stale = 5 * time.Minute
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	s, err := sqliteoutbox.NewStore(":memory:",
+		sqliteoutbox.WithClock(clk),
+		sqliteoutbox.WithStaleClaimDuration(stale))
+	if err != nil {
+		t.Fatalf("NewStore(:memory:): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	storetest.RunOutboxStaleReclaimTests(t, s, stale, clk.Advance)
 }
 
 // Verifies persisted outbox records survive closing and reopening the database file.

@@ -264,10 +264,18 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 
 	go func() {
 		defer close(done)
+		// No SSE "id:" field is emitted (at-most-once, see doc.go);
+		// collect envelope IDs from the JSON data payload instead.
 		for scanner.Scan() {
 			line := scanner.Text()
-			if strings.HasPrefix(line, "id: ") {
-				collected = append(collected, strings.TrimPrefix(line, "id: "))
+			if strings.HasPrefix(line, "data: ") {
+				var evt struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err != nil {
+					continue
+				}
+				collected = append(collected, evt.ID)
 				if len(collected) >= 3 {
 					return
 				}

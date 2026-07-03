@@ -35,10 +35,14 @@
 //     propagated headers (correlation-id, causation-id, idempotency-key,
 //     tenant-id, forwarded-from/hop, traceparent/tracestate) are preserved
 //     as SQS message attributes so a peer bridge on the next hop can
-//     correlate, deduplicate and continue a trace. They are also ranked
-//     ahead of application headers, so when the 10-attribute SQS cap forces
-//     a drop, application metadata is sacrificed before a propagation
-//     header. Application headers are otherwise preserved as-is.
+//     correlate, deduplicate and continue a trace. Under the 10-attribute
+//     SQS cap, however, only the ESSENTIAL propagation headers
+//     (idempotency-key, traceparent, tracestate) outrank application
+//     headers; the remaining bridge-to-bridge headers are sacrificed
+//     FIRST, because a peer bridge's ingress strips reserved x-bridge.*
+//     attributes anyway — dropping real application data to keep them
+//     would lose data for headers the next hop discards. Application
+//     headers are otherwise preserved as-is.
 //   - messaging.HeaderOrderingKey maps to the native MessageGroupId and
 //     messaging.HeaderDeduplicationID maps to the native
 //     MessageDeduplicationId for FIFO queues; neither is also emitted as a
@@ -60,12 +64,14 @@
 // enforces these deterministically rather than letting one bad envelope
 // fail every send: attribute names that SQS would reject (charset,
 // length, AWS./Amazon. reserved prefix, leading/trailing/consecutive
-// periods) are dropped; the remaining eligible headers are sorted and the
-// lowest-sorting are kept up to the 10-attribute cap (one slot is reserved
-// for the Subject attribute when present); the cumulative size is bounded
-// by the SQS message maximum. Headers dropped by the count/size caps are
-// reported via the SQSDroppedAttributes counter and a debug log so the
-// loss is observable.
+// periods) are dropped; the remaining eligible headers are ranked
+// (essential propagation headers, then application headers, then other
+// bridge-to-bridge headers; by name within a rank) and the
+// highest-ranked are kept up to the 10-attribute cap (one slot is
+// reserved for the Subject attribute when present); the cumulative size
+// is bounded by the SQS message maximum. Headers dropped by the
+// count/size caps are reported via the SQSDroppedAttributes counter and
+// a debug log so the loss is observable.
 //
 // # FIFO Ordering
 //
@@ -79,17 +85,30 @@
 // MessageDeduplicationId, is derived from a hash of the payload, subject
 // and id (or creation time when id is empty) — not the subject alone.
 //
+// A FIFO TARGET queue (SenderConfig.QueueURL/QueueName ending in
+// ".fifo") requires a message group: NewSender fails fast unless
+// MessageGroupID (a default group) is configured or FIFO is true
+// (per-envelope group via the x-bridge.ordering-key header). With FIFO
+// enabled but no group resolvable for a given envelope, Send/SendBatch
+// reject that envelope with shared.ErrInvalidPayload before any SDK
+// call — a deterministic configuration fault is never retried as
+// transient.
+//
 // # Subject and Address
 //
 // The logical Envelope.Subject is mapped to the "Subject" SQS message
 // attribute on egress and read back from that attribute on ingress.
 // The receiver does NOT fall back to the queue name or queue URL when
 // the "Subject" attribute is absent — Envelope.Subject is left empty
-// in that case. When SNSUnwrap is enabled and the body is an SNS
-// notification, the inner SNS Subject (if present) is used instead;
-// when the SNS notification has no Subject field the TopicArn is
-// preserved in headers["sns.topic_arn"] but is NOT promoted into
-// Envelope.Subject.
+// in that case. When SNSUnwrap is enabled and the body is a JSON
+// document with Type == "Notification" and a non-empty TopicArn, the
+// inner SNS Subject (if present) is used instead; when the SNS
+// notification has no Subject field the TopicArn is preserved in
+// headers["sns.topic_arn"] but is NOT promoted into Envelope.Subject.
+// Bodies without the Type field are passed through verbatim — a bare
+// TopicArn key is not enough to forge sns.* metadata. The unwrap still
+// trusts the queue policy to restrict sqs:SendMessage to the intended
+// SNS topic; it is a format check, not an authenticity check.
 //
 // SQS senders are bound to a single queue. ports.OutboundMessage.Address
 // is validated against that queue: empty means "use the configured

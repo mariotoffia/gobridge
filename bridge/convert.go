@@ -11,11 +11,6 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
-func toRoutePolicy(r ports.RouteDef) routing.RoutePolicy {
-	p, _ := toRoutePolicyE(r)
-	return p
-}
-
 func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	p := routing.RoutePolicy{
 		DeliveryMode:       routing.DeliveryMode(r.DeliveryMode),
@@ -69,11 +64,6 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	return p, nil
 }
 
-func toSessionConfig(rs *ports.RouteSessionDef) *session.Config {
-	sc, _ := toSessionConfigE(rs)
-	return sc
-}
-
 func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 	if rs == nil {
 		return nil, nil
@@ -81,6 +71,14 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 
 	sc := session.DefaultConfig(rs.SessionID, true)
 	sc.ConnectAfterLease = rs.ConnectAfterLease
+	// DefaultConfig pins RenewInterval to a fixed value (110s). Leaving it set
+	// suppresses the session manager's documented derive-from-TTL branch
+	// (runtime/session/manager.go), so a blueprint that only sets lease_ttl
+	// would silently keep the 110s renew cadence regardless of a much shorter
+	// TTL. Reset it to zero and only override when the operator explicitly
+	// configures renew_interval, letting the session manager derive it from
+	// LeaseTTL otherwise (contract C3).
+	sc.RenewInterval = 0
 
 	if rs.LeaseTTL != "" {
 		d, err := time.ParseDuration(rs.LeaseTTL)
@@ -95,6 +93,13 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 			return nil, fmt.Errorf("invalid renew_interval %q: %w", rs.RenewInterval, err)
 		}
 		sc.RenewInterval = d
+	}
+	if rs.RenewJitter != "" {
+		d, err := time.ParseDuration(rs.RenewJitter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid lease_renew_jitter %q: %w", rs.RenewJitter, err)
+		}
+		sc.RenewJitter = d
 	}
 	if rs.MaxRenewFails > 0 {
 		sc.MaxRenewFails = rs.MaxRenewFails
@@ -144,11 +149,6 @@ func applyBridgeDrainDefaults(sc *session.Config, bs ports.BridgeSettings) {
 	if sc.MaxDrainTimeout == 0 {
 		sc.MaxDrainTimeout = bs.MaxDrainTimeoutDuration()
 	}
-}
-
-func toDrainStrategy(rs *ports.RouteSessionDef) persistence.DrainStrategy {
-	ds, _ := toDrainStrategyE(rs)
-	return ds
 }
 
 func toDrainStrategyE(rs *ports.RouteSessionDef) (persistence.DrainStrategy, error) {

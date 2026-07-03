@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -40,6 +41,21 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		}
 	}()
 
+	// If the build fails after the runtime takes ownership of the prep-opened
+	// stores, the discarded runtime is never Started and therefore never
+	// Stopped, so its lease/outbox/DLQ handles (e.g. SQLite files) would leak on
+	// every failed swap (Finding 2). Release them here, mirroring runtime.Stop's
+	// io.Closer teardown. Sessions are handled by the defer above; the durable
+	// store handles are the piece an abandoned, never-started runtime would
+	// otherwise never close. This is independent of the supervisor calling
+	// newRt.Stop() on a runtime it received (C1): complete() returns nil on
+	// failure, so the supervisor never sees this runtime to stop it.
+	defer func() {
+		if retErr != nil {
+			b.closeStoreHandles(prep.stores)
+		}
+	}()
+
 	receivers, receiverURIs, err := b.buildReceiversWithURIs(ctx, sessions)
 	if err != nil {
 		return nil, err
@@ -58,10 +74,22 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 
 	// Start credential refresh watchers for any session, receiver, or
 	// sender that carries a credentials_uri AND whose target implements
-	// CredentialAware. Gated on pushCredStore so builds without a push
-	// store skip this entirely, preserving legacy behavior.
-	if b.pushCredStore != nil && (len(sessionURIs)+len(receiverURIs)+len(senderURIs)) > 0 {
-		refresher := NewCredentialRefresher(b.pushCredStore, b.logger)
+	// CredentialAware. Gated on the effective push store so builds without
+	// one skip this entirely, preserving legacy behavior. effectivePushStore
+	// resolves an explicitly-registered push store, or lazily wraps a polled
+	// pull store with the fully-resolved logger (Finding 13).
+	pushStore := b.effectivePushStore()
+	if pushStore != nil && (len(sessionURIs)+len(receiverURIs)+len(senderURIs)) > 0 {
+		var refresherOpts []RefresherOption
+		// Wire push rotations to the pull-cache invalidator so a rotation
+		// observed by the refresher drops the stale cached entry and the next
+		// synchronous resolve fetches fresh material (contract C4). The pull
+		// store is the CredentialResolver when the composition root wires one;
+		// detect the capability structurally to avoid importing runtime here.
+		if inv, ok := b.credStore.(interface{ InvalidateCache(uri string) }); ok {
+			refresherOpts = append(refresherOpts, WithRotationCallback(inv.InvalidateCache))
+		}
+		refresher := NewCredentialRefresher(pushStore, b.logger, refresherOpts...)
 		for sid, uri := range sessionURIs {
 			if sess, ok := sessions[sid]; ok {
 				refresher.Watch(ctx, uri, sess)
@@ -80,7 +108,65 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
 	}
 
+	// Contract C2: run the runtime's pre-start route validation now, while the
+	// OLD runtime (if any) is still serving, so a statically-rejectable config
+	// fails HERE — during construction, before the supervisor stops the old
+	// runtime — instead of inside Start, after the old runtime has already been
+	// torn down and cannot resume. ValidateRoutes is idempotent and
+	// side-effect-free; Start runs the same checks internally as a backstop. On
+	// failure retErr is set, so the defers above release the sessions and store
+	// handles this half-built runtime opened (Finding 2).
+	if err := rt.ValidateRoutes(); err != nil {
+		return nil, fmt.Errorf("bridge: route validation: %w", err)
+	}
+
 	return rt, nil
+}
+
+// closeStoreHandles releases any store handles that hold OS resources (SQLite
+// file handles, network connections) when a build is abandoned before the
+// runtime that would own them is Started. In-memory stores do not implement
+// io.Closer and are skipped, mirroring runtime.Stop's teardown. The order
+// (outbox, DLQ, lease) matches runtime.Stop for consistency; each Close is
+// best-effort and a failure is logged rather than propagated because the build
+// has already failed and every handle must still be attempted.
+func (b *Builder) closeStoreHandles(stores *storeResult) {
+	if stores == nil {
+		return
+	}
+	for _, s := range []any{stores.outbox, stores.dlq, stores.lease} {
+		c, ok := s.(io.Closer)
+		if !ok {
+			continue
+		}
+		if err := c.Close(); err != nil && b.logger != nil {
+			b.logger.Warn("closing store after build failure", "error", err)
+		}
+	}
+}
+
+// (contract C5). Instead of a hard-coded session.DefaultConfig — which pinned a
+// ~6-minute failover regardless of a tuned cluster — it inherits the timings
+// from the route's own session block when present, the same source the route's
+// primary session uses, so a binding-only exclusive sender is tuned like the
+// rest of the deployment. When the route has no session block it falls back to
+// defaults but leaves RenewInterval unset so the session manager derives it
+// from LeaseTTL (contract C3), and applies bridge-level drain defaults.
+func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string) (session.Config, error) {
+	if routeDef.Session != nil {
+		derived, err := toSessionConfigE(routeDef.Session)
+		if err != nil {
+			return session.Config{}, err
+		}
+		sc := *derived
+		sc.SessionID = sessionID
+		applyBridgeDrainDefaults(&sc, b.cfg.Bridge)
+		return sc, nil
+	}
+	sc := session.DefaultConfig(sessionID, true)
+	sc.RenewInterval = 0
+	applyBridgeDrainDefaults(&sc, b.cfg.Bridge)
+	return sc, nil
 }
 
 func (b *Builder) wireRoutes(
@@ -182,6 +268,25 @@ func (b *Builder) wireRoutes(
 			return fmt.Errorf("bridge: route %q: no sender resolved", routeDef.ID)
 		}
 
+		// A shared_outbox route drains its outbox through the drainer wired to
+		// its primary session. If that session resolves to nil because it is
+		// declared on a stateless transport, the runtime creates no drainer for
+		// the partition: the source is ACKed after the outbox persist but the
+		// records are never drained — silent message loss (Finding 4). Reject
+		// it at build time.
+		if routeDef.Session != nil && routeSession == nil &&
+			routing.DeliveryMode(routeDef.DeliveryMode) == routing.DeliverySharedOutbox {
+			transport := ""
+			if sd := findSession(b.cfg, routeDef.Session.SessionID); sd != nil {
+				transport = sd.Transport
+			}
+			return fmt.Errorf("bridge: route %q: shared_outbox route declares primary session %q but "+
+				"it resolves to a nil session (transport %q is stateless); a shared_outbox route needs a "+
+				"stateful session to drain its outbox, otherwise records are persisted and never drained "+
+				"(silent message loss) — use a stateful transport for the session or a direct delivery mode",
+				routeDef.ID, routeDef.Session.SessionID, transport)
+		}
+
 		procs, procErr := b.resolveProcessors(routeDef.Processors)
 		if procErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, procErr)
@@ -267,13 +372,26 @@ func (b *Builder) wireRoutes(
 			}
 			sess, sessOk := sessions[bd.SessionID]
 			if !sessOk {
+				if decl := findSession(b.cfg, bd.SessionID); decl != nil {
+					return fmt.Errorf("bridge: route %q: binding %q references session %q whose "+
+						"transport %q is stateless (it creates no session object); a binding drainer "+
+						"needs a stateful session — records would be persisted and never drained "+
+						"(silent message loss)", routeDef.ID, bd.ID, bd.SessionID, decl.Transport)
+				}
 				return fmt.Errorf("bridge: route %q: binding %q references unknown session %q", routeDef.ID, bd.ID, bd.SessionID)
 			}
 			snd, sndOk := senders[bd.SenderID]
 			if !sndOk {
 				return fmt.Errorf("bridge: route %q: binding %q references unknown sender %q", routeDef.ID, bd.ID, bd.SenderID)
 			}
-			sc := session.DefaultConfig(bd.SessionID, true)
+			// Derive the binding session's lease timings the same way the
+			// route's primary session gets them, instead of a hard-coded
+			// DefaultConfig that pinned a ~6-minute failover on an otherwise
+			// tuned cluster (contract C5).
+			sc, scErr := b.bindingSessionConfig(routeDef, bd.SessionID)
+			if scErr != nil {
+				return fmt.Errorf("bridge: route %q: binding %q session config: %w", routeDef.ID, bd.ID, scErr)
+			}
 			sc.ConnectAfterLease = true
 			// Thread the session's desired topology so a session registered only
 			// via a binding (Path-2) still reconciles its receivers' subscriptions
@@ -483,6 +601,13 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 	sessions := make(map[string]ports.Session, len(b.cfg.Sessions))
 	uris := make(map[string]string, len(b.cfg.Sessions))
 
+	// A SessionDef is only worth constructing when something references it: a
+	// route's primary session, a binding, a receiver, or a sender. An
+	// unreferenced session gets no session manager and is never handed to the
+	// runtime, so it would open a connection/lease that Stop never closes —
+	// a leak on every hot-reload (Finding 6). Skip them with a warning.
+	referenced := referencedSessionIDs(b.cfg)
+
 	cleanup := func(exclude string) {
 		for id, s := range sessions {
 			if id == exclude {
@@ -495,6 +620,14 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 	}
 
 	for _, sd := range b.cfg.Sessions {
+		if !referenced[sd.ID] {
+			if b.logger != nil {
+				b.logger.Warn("bridge: skipping unreferenced session; no route, binding, receiver, "+
+					"or sender references it so it would never be managed or closed",
+					"session", sd.ID, "transport", sd.Transport)
+			}
+			continue
+		}
 		tf, ok := b.transports[sd.Transport]
 		if !ok {
 			cleanup("")
@@ -520,6 +653,35 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 	return sessions, uris, nil
 }
 
+// referencedSessionIDs returns the set of session IDs referenced by any route
+// primary session, binding, receiver, or sender. Used to avoid constructing
+// (and leaking) unreferenced SessionDefs (Finding 6).
+func referencedSessionIDs(cfg *ports.BridgeConfig) map[string]bool {
+	ref := make(map[string]bool, len(cfg.Sessions))
+	for i := range cfg.Routes {
+		rd := &cfg.Routes[i]
+		if rd.Session != nil && rd.Session.SessionID != "" {
+			ref[rd.Session.SessionID] = true
+		}
+		for _, bd := range toBindings(cfg, rd.Bindings) {
+			if bd.SessionID != "" {
+				ref[bd.SessionID] = true
+			}
+		}
+	}
+	for i := range cfg.Receivers {
+		if cfg.Receivers[i].SessionID != "" {
+			ref[cfg.Receivers[i].SessionID] = true
+		}
+	}
+	for i := range cfg.Senders {
+		if cfg.Senders[i].SessionID != "" {
+			ref[cfg.Senders[i].SessionID] = true
+		}
+	}
+	return ref
+}
+
 // buildReceiversWithURIs mirrors buildSessionsWithURIs: it returns the
 // receiver-level credentials_uri (captured BEFORE resolveCredentials
 // removes it) so CredentialRefresher can bind watchers per receiver.
@@ -541,6 +703,17 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 		if rd.SessionID != "" {
 			sess = sessions[rd.SessionID]
 			if sess == nil {
+				// Distinguish a genuinely undeclared session from one that is
+				// declared but resolved to a nil session because its transport
+				// is stateless (NewSession returns nil). The old code reported
+				// both as "references unknown session", which misled operators
+				// debugging a stateless-transport session (Finding 10).
+				if sd := findSession(b.cfg, rd.SessionID); sd != nil {
+					return nil, nil, fmt.Errorf("bridge: receiver %q references session %q whose "+
+						"transport %q is stateless (it creates no session object); a receiver cannot "+
+						"bind to a stateless session — remove session_id, or point it at a session on a "+
+						"stateful transport", rd.ID, rd.SessionID, sd.Transport)
+				}
 				return nil, nil, fmt.Errorf("bridge: receiver %q references unknown session %q", rd.ID, rd.SessionID)
 			}
 		}
@@ -579,6 +752,14 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 		if sd.SessionID != "" {
 			sess = sessions[sd.SessionID]
 			if sess == nil {
+				// See buildReceiversWithURIs: distinguish undeclared from
+				// declared-but-stateless (Finding 10).
+				if decl := findSession(b.cfg, sd.SessionID); decl != nil {
+					return nil, nil, fmt.Errorf("bridge: sender %q references session %q whose "+
+						"transport %q is stateless (it creates no session object); a sender cannot "+
+						"bind to a stateless session — remove session_id, or point it at a session on a "+
+						"stateful transport", sd.ID, sd.SessionID, decl.Transport)
+				}
 				return nil, nil, fmt.Errorf("bridge: sender %q references unknown session %q", sd.ID, sd.SessionID)
 			}
 		}

@@ -69,9 +69,9 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 	wg1.Add(1)
 	go func() {
 		defer wg1.Done()
-		_ = recv1.Run(recvCtx1, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv1.Run(recvCtx1, func(ctx context.Context, del ports.Delivery) error {
 			received1.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 
@@ -123,9 +123,9 @@ func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
-		_ = recv2.Run(recvCtx2, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv2.Run(recvCtx2, func(ctx context.Context, del ports.Delivery) error {
 			received2.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 
@@ -210,9 +210,9 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			receivedTopics.Store(del.Envelope().Subject(), true)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 
@@ -413,9 +413,9 @@ func TestIntegration_ConcurrentReconcile_ActiveSubsIntegrity(t *testing.T) {
 	rwg.Add(1)
 	go func() {
 		defer rwg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			got.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 

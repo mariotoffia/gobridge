@@ -75,6 +75,7 @@ func TestIntegration_SendReceive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -163,6 +164,7 @@ func TestIntegration_SendBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()

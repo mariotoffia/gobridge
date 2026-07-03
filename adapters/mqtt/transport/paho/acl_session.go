@@ -66,6 +66,14 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 // once the initial connection is established. Calling Start on an
 // already-started session is a no-op (idempotent).
 //
+// Concurrent Start calls are synchronized: while one attempt is in
+// flight, other callers WAIT for its outcome instead of returning a
+// false success. If the winner succeeds they return nil (session is
+// up); if it fails they retry the attempt themselves; if their context
+// expires while waiting they get a definite error. This closes the
+// window where a racing Reload observed "started" and silently skipped
+// its TLS rebuild.
+//
 // A Session is single-use: once Close has been called, Start returns
 // ErrUnavailable and does NOT attempt a new connection. This prevents
 // a "zombie" state where a freshly attached cm coexists with an
@@ -78,20 +86,54 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 // pahoConnection seam installed below.
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed {
+	for {
+		if s.closed {
+			s.mu.Unlock()
+			return shared.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
+		}
+		if s.cm != nil {
+			s.mu.Unlock()
+			return nil
+		}
+		if !s.starting {
+			break
+		}
+		// Another Start attempt is in flight: wait for its outcome
+		// rather than reporting success for work we did not do.
+		done := s.startDone
 		s.mu.Unlock()
-		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
-	}
-	if s.cm != nil {
-		s.mu.Unlock()
-		return nil
-	}
-	if s.starting {
-		s.mu.Unlock()
-		return nil
+		select {
+		case <-done:
+			// Winner finished — loop to observe the result: success
+			// (cm != nil → nil), or failure (starting == false, cm ==
+			// nil → this caller runs its own attempt).
+		case <-ctx.Done():
+			return MapError(ctx.Err()).WithMessage("waiting for concurrent Start to finish")
+		}
+		s.mu.Lock()
 	}
 	s.starting = true
+	s.startDone = make(chan struct{})
+	// Snapshot the TLS options pointer under the mutex: ApplyCredentials
+	// swaps in a NEW *TLSConfig on rotation (copy-on-write), so holding
+	// this snapshot gives Start immutable TLS material even if a
+	// rotation lands mid-connect.
+	tlsOpts := s.opts.TLS
+	// Seed liveCreds from the current options so the first CONNECT picks
+	// them up via the ConnectPacketBuilder. ApplyCredentials can later
+	// mutate this record without touching the cfg struct.
+	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
 	s.mu.Unlock()
+
+	// finishStart publishes the attempt's outcome: clears the in-flight
+	// flag and wakes every waiter. Deferred-closed channel (not reused)
+	// so late waiters holding the old channel still unblock.
+	finishStart := func() {
+		s.mu.Lock()
+		s.starting = false
+		close(s.startDone)
+		s.mu.Unlock()
+	}
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connecting",
@@ -104,9 +146,7 @@ func (s *Session) Start(ctx context.Context) error {
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
-		s.mu.Lock()
-		s.starting = false
-		s.mu.Unlock()
+		finishStart()
 		return shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
@@ -166,12 +206,65 @@ func (s *Session) Start(ctx context.Context) error {
 			// The lease (one active owner) is what makes a shared Exclusive
 			// ClientID safe — at most one holder connects at a time.
 			ClientID: s.opts.ClientID,
-			Router:   s.router,
+
+			// Manual acknowledgment is the load-bearing delivery
+			// guarantee of this adapter: the client does NOT auto-ack
+			// when the publish callback returns; the PUBACK/PUBCOMP is
+			// sent when the runtime settles the Delivery (Delivery.Ack
+			// after outbox persist / pipeline completion). The paho
+			// client serialises acks in receive order internally, so
+			// out-of-order settlement is safe. See delivery.go and
+			// acl_router.go. NOTE: Router must NOT also be set — the SDK
+			// would then dispatch every publish twice.
+			EnableManualAcknowledgment: true,
+			OnPublishReceived: []func(pahov5.PublishReceived) (bool, error){
+				s.router.onPublishReceived,
+			},
+
+			// Server-initiated DISCONNECT observer: feeds session-takeover
+			// (0x8E) damping so two instances sharing a client_id cannot
+			// silently kick each other forever. autopaho invokes this in
+			// its own goroutine.
+			OnServerDisconnect: func(d *pahov5.Disconnect) {
+				var code byte
+				if d != nil {
+					code = d.ReasonCode
+				}
+				s.handleServerDisconnect(code)
+			},
 		},
 	}
 
+	// Will (LWT): registered with the broker at CONNECT so peers can
+	// detect ungraceful death of this bridge instance. Validated in
+	// NewSession/Config.Validate.
+	if w := s.opts.Will; w != nil {
+		cfg.WillMessage = &pahov5.WillMessage{
+			Topic:   w.Topic,
+			Payload: []byte(w.Payload),
+			QoS:     w.QoS,
+			Retain:  w.Retain,
+		}
+	}
+
+	// Reconnect pacing: base delay from reconnect_delay (SDK default
+	// 10s), plus an escalating session-takeover penalty so a ClientID
+	// collision (two instances mutually kicking each other) backs off
+	// instead of storming; see noteSessionTakeover.
+	base := autopaho.NewConstantBackoff(10 * time.Second)
 	if s.opts.ReconnectDelay > 0 {
-		cfg.ReconnectBackoff = autopaho.NewConstantBackoff(s.opts.ReconnectDelay)
+		base = autopaho.NewConstantBackoff(s.opts.ReconnectDelay)
+	}
+	cfg.ReconnectBackoff = func(attempt int) time.Duration {
+		return base(attempt) + s.takeoverPenalty()
+	}
+
+	// reconnect_timeout bounds each individual (re)connect attempt —
+	// dial, TLS handshake and CONNACK — inside autopaho's reconnect
+	// loop (SDK default 10s). This is distinct from connect_timeout,
+	// which bounds how long Start waits for the FIRST connection.
+	if s.opts.ReconnectTimeout > 0 {
+		cfg.ConnectTimeout = s.opts.ReconnectTimeout
 	}
 
 	// ConnectPacketBuilder customisations are accumulated here and merged
@@ -188,13 +281,6 @@ func (s *Session) Start(ctx context.Context) error {
 	// connect via ConnectPacketBuilder.
 	ephemeralCleanStart := false
 	rm := s.opts.ReceiveMaximum
-
-	// Seed liveCreds from the initial options so the first CONNECT picks
-	// them up via the ConnectPacketBuilder. ApplyCredentials can later
-	// mutate this record without touching the cfg struct.
-	s.mu.Lock()
-	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
-	s.mu.Unlock()
 
 	switch s.mode {
 	case connectivity.SessionEphemeral:
@@ -247,12 +333,10 @@ func (s *Session) Start(ctx context.Context) error {
 		return cp, nil
 	}
 
-	if s.opts.TLS != nil && s.opts.TLS.Enable {
-		tlsCfg, err := BuildTLSConfig(s.opts.TLS)
+	if tlsOpts != nil && tlsOpts.Enable {
+		tlsCfg, err := BuildTLSConfig(tlsOpts)
 		if err != nil {
-			s.mu.Lock()
-			s.starting = false
-			s.mu.Unlock()
+			finishStart()
 			return shared.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
 		}
 		cfg.TlsCfg = tlsCfg
@@ -265,9 +349,7 @@ func (s *Session) Start(ctx context.Context) error {
 	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
 		cmCancel()
-		s.mu.Lock()
-		s.starting = false
-		s.mu.Unlock()
+		finishStart()
 		return MapError(err)
 	}
 
@@ -281,9 +363,7 @@ func (s *Session) Start(ctx context.Context) error {
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		cmCancel()
 		_ = cm.Disconnect(context.Background())
-		s.mu.Lock()
-		s.starting = false
-		s.mu.Unlock()
+		finishStart()
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
 				"client_id", s.opts.ClientID, "error", err)
@@ -296,6 +376,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.cmCancel = cmCancel
 	s.connected = true
 	s.starting = false
+	close(s.startDone)
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(connectStart)

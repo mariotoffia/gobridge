@@ -41,6 +41,13 @@ type Runtime struct {
 	clusterEndpoints  map[string]string
 	locator           *cluster.Locator
 
+	// outboxPoisonMinAge is the minimum record age required, in ADDITION to
+	// replay-count exhaustion, before an outbox drainer poisons a record to the
+	// DLQ (finding 8). Zero (default) lets each drainer pick its own default of
+	// max(5×SendTimeout, 2m). Exposed as a knob so deployments (and tests) can
+	// tune the transient-outage protection window.
+	outboxPoisonMinAge time.Duration
+
 	shutdownTimeout time.Duration
 
 	// randFloat supplies the [0,1) value used to jitter session-restart
@@ -155,6 +162,21 @@ func WithShutdownTimeout(d time.Duration) Option {
 	return func(rt *Runtime) { rt.shutdownTimeout = d }
 }
 
+// WithOutboxPoisonMinAge sets the minimum wall-clock age a record must reach
+// BEFORE replay-count exhaustion is allowed to poison it to the DLQ (finding 8).
+// The age gate prevents a transient egress outage — which can burn the small
+// replay budget in seconds — from poisoning otherwise-healthy records. A
+// positive value is applied to every outbox drainer; zero (default) lets each
+// drainer fall back to max(5×SendTimeout, 2m). Values are clamped to >= 0.
+func WithOutboxPoisonMinAge(d time.Duration) Option {
+	return func(rt *Runtime) {
+		if d < 0 {
+			d = 0
+		}
+		rt.outboxPoisonMinAge = d
+	}
+}
+
 // WithClock sets the clock used by all runtime components. When nil or
 // not set, the runtime defaults to clock.System (real wall-clock time).
 func WithClock(c clock.Clock) Option {
@@ -220,16 +242,28 @@ func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
 }
 
 // Stop gracefully shuts down the runtime. It cancels all goroutines,
-// waits for them to finish, then closes sessions. If ctx expires before
-// goroutines finish, sessions are still closed with the expired context
-// and an error is returned.
+// waits for them to finish, then closes sessions, stores, and telemetry.
+// If ctx expires before goroutines finish, teardown still proceeds under a
+// bounded detached context and an error is returned.
+//
+// Stop is idempotent and safe to call on a runtime that was BUILT but never
+// Started (C1): the composition-root supervisor calls Stop() on a runtime whose
+// swap failed, so Stop must release every prep-opened resource — lease/outbox/
+// DLQ stores, all opened sessions (including unmanaged binding sessions), and
+// any session managers — even though no background goroutine ever ran. After
+// Stop the runtime is terminal and cannot be restarted (finding 3).
 func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Lock()
-	if !rt.running {
-		rt.mu.Unlock()
-		return nil
+	if rt.terminal {
+		// Already fully stopped (or a background component tripped terminal and
+		// a prior Stop completed teardown): idempotent no-op.
+		if !rt.running {
+			rt.mu.Unlock()
+			return nil
+		}
 	}
 	rt.running = false
+	rt.terminal = true
 	cancel := rt.cancel
 	rt.mu.Unlock()
 
@@ -239,6 +273,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		)
 	}
 
+	// cancel is nil for a built-but-never-started runtime (Start assigns it).
 	if cancel != nil {
 		cancel()
 	}
@@ -279,21 +314,22 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	var errs []error
 
 	// Wait-goroutine has explicit fire-and-forget lifetime: it survives
-	// only until rt.wg drains. If ctx fires first we record the error
-	// and proceed to session close under closeCtx (below); the bounded
-	// closeCtx ensures Stop cannot hang indefinitely waiting on a stuck
-	// background goroutine.
+	// only until rt.wg drains. For a never-started runtime rt.wg is empty and
+	// this returns immediately. If ctx fires first we record the error and
+	// proceed to teardown under the bounded closeCtx (below).
 	waitDone := make(chan struct{})
 	go func() {
 		defer close(waitDone)
 		rt.wg.Wait()
 	}()
 
+	drainersDone := false
 	select {
 	case <-waitDone:
+		drainersDone = true
 	case <-ctx.Done():
 		// Pre-cancelled / early-expiring ctx: we stop waiting for background
-		// goroutines and proceed to close metrics/tracer below. A straggler
+		// goroutines and proceed to close sessions/telemetry below. A straggler
 		// (e.g. a drainer still finalising) may therefore emit a counter or span
 		// after its provider is closed. That is benign: OTel Counter/Start calls
 		// on a shut-down provider are no-ops and the SDK is concurrency-safe, so
@@ -307,29 +343,79 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	defer closeCancel()
 
 	rt.mu.Lock()
-	for _, mgr := range rt.sessionMgrs {
+	managed := make(map[string]bool, len(rt.sessionMgrs))
+	for sid, mgr := range rt.sessionMgrs {
+		managed[sid] = true
 		if err := mgr.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// C1: close every session that no manager owns. A built-but-never-started
+	// runtime has no managers at all, so ALL of its opened sessions land here;
+	// a started runtime reaches here only for unmanaged binding sessions
+	// (session senders never promoted to a drainer). Dedupe by pointer so a
+	// session shared across entries/binding-senders is closed exactly once.
+	closedSessions := make(map[ports.Session]bool)
+	closeSession := func(sid string, sess ports.Session) {
+		if sess == nil || managed[sid] || closedSessions[sess] {
+			return
+		}
+		closedSessions[sess] = true
+		if err := sess.Close(closeCtx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, entry := range rt.entries {
+		sid := ""
+		if entry.sessCfg != nil {
+			sid = entry.sessCfg.SessionID
+		}
+		closeSession(sid, entry.session)
+	}
+	for sid, sse := range rt.sessionSenders {
+		closeSession(sid, sse.session)
 	}
 	metrics := rt.metrics
 	tracer := rt.tracer
 	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
 	rt.mu.Unlock()
 
-	// Release store resources (e.g. SQLite file handles) after every session
-	// manager has closed and drained. Stores that hold OS resources implement
-	// io.Closer; in-memory stores do not and are skipped. Closing here is safe
-	// because reconfiguration always builds a fresh runtime with its own store
-	// instances (buildStores) before Stopping the old one, so a closed handle
-	// is never shared with a live runtime; without this the old runtime's
-	// handles leaked on every reload. (Finding I5.)
-	for _, s := range stores {
-		if c, ok := s.(io.Closer); ok {
-			if err := c.Close(); err != nil {
-				errs = append(errs, err)
+	// Finding 13: the durable stores must NOT be released while a drainer's
+	// finalDrain is still mid-send. finalDrain runs under context.WithoutCancel
+	// plus a bounded grace (outbox/loop.go), so it can outlive the caller's Stop
+	// ctx by design. Closing the SQLite handle underneath an in-flight Complete
+	// would, after a SUCCESSFUL send, drop the terminal state update and
+	// resurface the record on restart as a duplicate. Only release store handles
+	// once the drainer wg has CONFIRMED done. If the caller ctx expired above
+	// before the wg drained, wait a bounded grace for it; should the grace also
+	// elapse (a genuinely stuck drainer) we skip the close and leak the handle
+	// rather than risk mid-send corruption — a fresh runtime opens its own
+	// handles on reload, so a leaked handle is the strictly safer failure.
+	if !drainersDone {
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), storeCloseGrace)
+		select {
+		case <-waitDone:
+			drainersDone = true
+		case <-graceCtx.Done():
+		}
+		graceCancel()
+	}
+
+	if drainersDone {
+		// Release store resources (e.g. SQLite file handles). Stores that hold
+		// OS resources implement io.Closer; in-memory stores do not and are
+		// skipped. Reconfiguration always builds a fresh runtime with its own
+		// store instances before Stopping the old one, so a closed handle is
+		// never shared with a live runtime. (Finding I5 + finding 13.)
+		for _, s := range stores {
+			if c, ok := s.(io.Closer); ok {
+				if err := c.Close(); err != nil {
+					errs = append(errs, err)
+				}
 			}
 		}
+	} else {
+		errs = append(errs, errors.New("runtime: stop: drainers did not confirm done before store-close grace; leaving store handles open to avoid mid-send corruption"))
 	}
 
 	if metrics != nil {
@@ -364,6 +450,13 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	return errors.Join(errs...)
 }
+
+// storeCloseGrace bounds how long Stop waits for the drainer waitgroup to
+// confirm done before releasing durable store handles when the caller ctx has
+// already expired (finding 13). It comfortably covers the default finalDrain
+// ceiling; if it is exceeded the store close is skipped (handles leak, which is
+// safe) rather than risking a close underneath an in-flight Complete.
+const storeCloseGrace = 15 * time.Second
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
 	if logging.TraceEnabled(rt.logger) {
@@ -409,6 +502,14 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 		}
 	})
 }
+
+// errSessionUnexpectedStop marks a session manager's Run returning nil while the
+// runtime is still live — an anomalous early exit (e.g. a closed broker Events
+// channel mis-reported as a clean stop). superviseSession converts a live-ctx
+// nil return into this error so the death is surfaced as a per-session
+// degradation and restarted in isolation, never swallowed as a clean stop
+// (finding 23).
+var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unexpectedly while runtime is running")
 
 // superviseSession wraps a session manager's Run so a transient failure
 // (broker reconnect, lease re-acquire) restarts JUST that session with jittered,
@@ -470,9 +571,25 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 		for {
 			runStart := rt.clk.Now()
 			err := run(ctx)
-			if err == nil || ctx.Err() != nil {
-				rt.clearComponentError(name) // clean stop: drop any prior fault
+			if ctx.Err() != nil {
+				// Runtime is shutting down: a nil (or any) return is a genuine
+				// clean stop. Drop any prior fault and exit.
+				rt.clearComponentError(name)
 				return nil
+			}
+			if err == nil {
+				// Finding 23: the session manager returned nil while the runtime
+				// is still live. A session should only stop cleanly on shutdown
+				// (ctx cancelled, handled above) or on ErrStaleFencingToken
+				// (lease lost, handled below). A nil return here means the
+				// session's event loop ended unexpectedly — e.g. a closed broker
+				// Events channel that the manager mis-reports as a clean stop.
+				// Exiting silently would strand a dead session while the runtime
+				// still advertises it healthy and ready. Surface it as a
+				// per-session degradation (failed_components + MetricSessionRestarts)
+				// and restart it in isolation like any other transient fault,
+				// rather than tearing down the whole runtime.
+				err = errSessionUnexpectedStop
 			}
 			rt.setComponentError(name, err)
 			if errors.Is(err, shared.ErrStaleFencingToken) {

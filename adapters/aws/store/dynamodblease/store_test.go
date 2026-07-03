@@ -87,7 +87,16 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 			t.Fatalf("acquire: %v", err)
 		}
 
-		time.Sleep(2 * time.Second)
+		// Takeover of an actively-held lease uses a local-clock observation
+		// window (finding M5): the taker must first observe the lease, then wait
+		// at least the lease TTL before it may seize. A single post-expiry
+		// acquire is therefore rejected; the pre-expiry attempt establishes the
+		// observation baseline.
+		if _, err := store.Acquire(ctx, "em-exp", "bridge-2", 30*time.Second, nil); err == nil {
+			t.Fatal("takeover before the observation window elapsed must be rejected")
+		}
+
+		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — emulator observation window keys on wall-clock renewed_at (M5)
 
 		tok2, err := store.Acquire(ctx, "em-exp", "bridge-2", 30*time.Second, nil)
 		if err != nil {
@@ -96,6 +105,43 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 		if tok2.Version <= tok.Version {
 			t.Fatalf("version must increase after expired takeover: v1=%d, v2=%d",
 				tok.Version, tok2.Version)
+		}
+	})
+
+	t.Run("ObservationWindowAbortsOnRenewal", func(t *testing.T) {
+		// Finding M5: the takeover observation window keys on the liveness tuple
+		// (owner, version, renewed_at). If the owner renews after the taker
+		// begins observing, renewed_at advances, the tuple changes, and the
+		// observation window RESETS — the taker must NOT seize an actively
+		// renewing lease even after a full TTL of local time has passed. This is
+		// exactly the skew-immunity property: no wall-clock comparison is made,
+		// so a fast-clocked taker cannot steal a live lease.
+		tokA, err := store.Acquire(ctx, "em-obs", "bridge-A", 1*time.Second, nil)
+		if err != nil {
+			t.Fatalf("owner-A acquire: %v", err)
+		}
+
+		// Taker begins observing (baseline established).
+		if _, err := store.Acquire(ctx, "em-obs", "bridge-B", 30*time.Second, nil); err == nil {
+			t.Fatal("first takeover attempt must be rejected (establishes observation)")
+		}
+
+		// Owner renews: renewed_at advances (version stays the same). The short
+		// pause guarantees the renewed_at epoch-millis differs from the value the
+		// taker recorded at baseline, so the tuple change is observable.
+		time.Sleep(50 * time.Millisecond) // OTHER: real elapsed time — renewed_at epoch-millis must differ from baseline
+		if _, err := store.Renew(ctx, "em-obs", tokA, 1*time.Second, nil); err != nil {
+			t.Fatalf("owner-A renew: %v", err)
+		}
+
+		// Wait past the original TTL. In the no-renewal case (see
+		// ExpiredTakeoverIncrementsVersion) the taker would now seize; here the
+		// advanced renewed_at changes the tuple and resets the window, so the
+		// taker must NOT seize the still-recently-renewed lease.
+		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — full TTL must pass to prove the window reset
+
+		if _, err := store.Acquire(ctx, "em-obs", "bridge-B", 30*time.Second, nil); err == nil {
+			t.Fatal("takeover must be aborted after the owner renewed within the window")
 		}
 	})
 }

@@ -57,6 +57,10 @@ func TestBuilder_PlanDrivenReceiverWithoutSessionManager_ADVP4FU1(t *testing.T) 
 					ReceiverID:   "rx",
 					DeliveryMode: "direct_hold",
 					Bindings:     []string{"b1"},
+					// drop policies keep the route valid under the build-time
+					// ValidateRoutes call (Finding 5 / C2) so this test isolates
+					// the ADV-P4-FU1 unmanaged-session check, not DLQ policy.
+					Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 					// No Session block: s-src is neither a route-primary session
 					// nor a binding session, so it gets no manager.
 				},
@@ -82,6 +86,11 @@ func TestBuilder_PlanDrivenReceiverWithoutSessionManager_ADVP4FU1(t *testing.T) 
 	t.Run("self-establishing source (amqp10-like) builds fine", func(t *testing.T) {
 		selfEstablishing := &capTransportFactory{caps: []ports.Capability{
 			ports.CapStatefulSession, // deliberately NO CapPlanDrivenSubscriptions
+			// direct_hold requires the source to support visibility extension;
+			// amqp10 sources hold the message for the delivery window, so this
+			// is realistic and keeps ValidateRoutes (Finding 5) focused on the
+			// ADV-P4-FU1 behaviour under test rather than an unrelated mode error.
+			ports.CapVisibilityExtension,
 		}}
 		rt, err := NewBuilder(makeCfg("amqp10")).
 			RegisterTransportFactory("amqp10", selfEstablishing).

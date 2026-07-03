@@ -32,6 +32,10 @@ func directHoldConfig() *ports.BridgeConfig {
 				ReceiverID:   "rx1",
 				DeliveryMode: "direct_hold",
 				Bindings:     []string{"b1"},
+				// drop policies keep the route valid under build-time
+				// ValidateRoutes (Finding 5 / C2); the default is "dlq" which
+				// needs a DLQ store this minimal config omits.
+				Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 			},
 		},
 	}
@@ -225,7 +229,29 @@ func TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected(t *testing.T) {
 		prepare(context.Background())
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "clustered deployment requires a distributed")
+	assert.Contains(t, err.Error(), "requires a distributed")
+}
+
+// TestBuilder_Prepare_ClusterEndpointsImplyClustered validates that configured
+// cluster endpoints imply clustered posture even when deployment_mode is
+// unset: process-local stores must be rejected, or cross-instance forwarding
+// would silently break lease exclusivity (cluster finding 11).
+func TestBuilder_Prepare_ClusterEndpointsImplyClustered(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.DeploymentMode = ""
+	cfg.Bridge.Cluster = &ports.ClusterConfig{
+		Endpoints: map[string]string{"node-2": "http://node-2:8080"},
+	}
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+		RegisterTransportFactory("sqs", &fakeTransportFactory{}).
+		RegisterStoreFactory("memory", &fakeStoreFactory{}).
+		prepare(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a distributed")
+	assert.Contains(t, err.Error(), "cluster.endpoints")
 }
 
 // ---------------------------------------------------------------------------

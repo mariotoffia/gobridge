@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"time"
 
@@ -144,19 +145,23 @@ func (s *Session) Connection() amqpConnection {
 // Start connects to the AMQP broker and starts the reconnection loop.
 // Calling Start on an already-started session is a no-op (idempotent).
 //
+// When a SessionPlan is already installed (Reconcile was called before
+// Start), Start reconciles it before reporting the session connected.
+// A reconcile failure fails Start: the connection is torn down, the
+// error is returned, and Start may be retried. This surfaces a broken
+// topology (e.g. an unbindable queue that would silently drop routed
+// messages) instead of degrading Health as the only evidence.
+//
 // Concurrent callers do not race the connection: the first caller takes
 // the "starting" slot and performs the dial; later callers block on the
-// same outcome (success, dial error, or session-closed-during-start) so
-// that "Start returned nil" reliably means "session is connected".
+// same outcome (success, dial/reconcile error, or
+// session-closed-during-start) so that "Start returned nil" reliably
+// means "session is connected and reconciled".
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("amqp091: session already closed")
-	}
-	if s.conn != nil {
-		s.mu.Unlock()
-		return nil
 	}
 	if s.starting {
 		startDone := s.startDone
@@ -177,6 +182,14 @@ func (s *Session) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	// Checked after "starting": the connection is installed mid-Start
+	// (before reconcile completes), so a concurrent caller must join the
+	// in-flight Start above rather than observe the half-started conn
+	// and return success early.
+	if s.conn != nil {
+		s.mu.Unlock()
+		return nil
 	}
 	s.starting = true
 	s.startDone = make(chan struct{})
@@ -215,14 +228,29 @@ func (s *Session) Start(ctx context.Context) error {
 		return mappedErr
 	}
 
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
+	// Re-check closed under the lock AFTER the dial: Close may have run
+	// while the dial was in flight. Installing the connection on a
+	// closed session would leak a live TCP connection (and any consumers
+	// opened on it) until process exit, because Close has already taken
+	// and released its snapshot of s.conn.
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close()
+		closedErr := shared.ErrUnavailable.WithMessage("amqp091: session closed during start")
+		s.mu.Lock()
+		s.startErr = closedErr
+		s.mu.Unlock()
+		return closedErr
+	}
+	// Install the connection so a concurrent Close tears it down, but
+	// keep connected=false until reconcile has restored the topology:
+	// Health must not report Connected (and no SessionConnected event
+	// may fire) while queues/bindings are still missing, or a receiver
+	// races the reconcile, consumes from an undeclared queue, and dies
+	// on a permanent 404.
 	s.conn = conn
-	s.connected = true
-	s.cancel = bgCancel
-	s.bgDone = done
+	plan := s.plan
 	s.mu.Unlock()
 
 	safeBroker := s.safeBrokerURL()
@@ -236,18 +264,55 @@ func (s *Session) Start(ctx context.Context) error {
 
 	// Defer SessionConnected until after reconcile when a plan is present,
 	// so consumers don't act on a connection that isn't fully set up.
-	s.mu.Lock()
-	plan := s.plan
-	s.mu.Unlock()
-
 	if plan != nil {
 		if err := s.reconcile(ctx, conn, *plan); err != nil {
-			if logging.DebugEnabled(s.logger) {
-				s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile on start failed",
+			// A failed initial reconcile means the declared topology is
+			// NOT in place: messages published to the missing binding are
+			// silently unroutable. Surface it — fail Start so the caller
+			// (runtime or embedder) sees the misconfiguration instead of
+			// a Degraded service level as the only evidence. Start can be
+			// retried; the session is unwound to its pre-Start state.
+			mappedErr := MapError(err)
+			if s.logger != nil {
+				s.logger.Error("amqp091: reconcile on start failed; failing Start",
 					"broker", safeBroker, "error", err)
 			}
+			s.mu.Lock()
+			ownsConn := s.conn == conn
+			if ownsConn {
+				s.conn = nil
+			}
+			s.startErr = mappedErr
+			s.mu.Unlock()
+			if ownsConn {
+				// If Close ran meanwhile it already took (and closed) the
+				// connection; only close what we still own.
+				_ = conn.Close()
+			}
+			return mappedErr
 		}
 	}
+
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	s.mu.Lock()
+	if s.closed {
+		// Close ran during reconcile; it already closed the installed
+		// connection. Do not start background goroutines on a closed
+		// session.
+		s.mu.Unlock()
+		bgCancel()
+		closedErr := shared.ErrUnavailable.WithMessage("amqp091: session closed during start")
+		s.mu.Lock()
+		s.startErr = closedErr
+		s.mu.Unlock()
+		return closedErr
+	}
+	s.connected = true
+	s.cancel = bgCancel
+	s.bgDone = done
+	s.mu.Unlock()
 
 	s.pushEvent(ports.SessionConnected, nil)
 
@@ -417,9 +482,17 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	connected := s.connected && s.conn != nil
 	plan := s.plan
 	activeCount := len(s.activeSubs)
+	activeTopics := make([]string, 0, len(s.activeSubs))
+	for topic := range s.activeSubs {
+		activeTopics = append(activeTopics, topic)
+	}
 	blocked := s.blocked
 	blockedReason := s.blockedReason
 	s.mu.Unlock()
+
+	// Deterministic order so callers (and tests) never observe map
+	// iteration randomness.
+	sort.Strings(activeTopics)
 
 	wantedCount := 0
 	if plan != nil {
@@ -456,6 +529,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		LastError:           lastErr,
 		SubscriptionsWanted: wantedCount,
 		SubscriptionsActive: activeCount,
+		ActiveTopics:        activeTopics,
 		Ready:               connected,
 		ServiceLevel:        sl,
 	}
@@ -799,16 +873,24 @@ func (s *Session) doReconnect(ctx context.Context) {
 			continue
 		}
 
+		// Re-check closed under the lock AFTER the dial: Close may have
+		// run while the dial was in flight. Installing the connection on
+		// a closed session would leak a live TCP connection (plus any
+		// consumers later opened on it) until process exit.
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		// Install the connection so a concurrent Close tears it down,
+		// but keep connected=false (and defer SessionConnected) until
+		// reconcile has restored the topology. Otherwise a receiver's
+		// health probe wins the race against reconcile, consumes from a
+		// not-yet-redeclared queue, and dies on a permanent 404.
 		s.conn = conn
-		s.connected = true
 		plan := s.plan
 		s.mu.Unlock()
-
-		// Re-arm the flow-control watcher for the new connection; the
-		// previous watcher exited when the old connection's blocked
-		// stream closed.
-		go s.watchBlocked(ctx, conn)
 
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: reconnected",
@@ -820,12 +902,53 @@ func (s *Session) doReconnect(ctx context.Context) {
 			err := s.reconcile(reconCtx, conn, *plan)
 			reconCancel()
 			if err != nil {
+				// The topology is NOT restored — do not report the
+				// session connected on it. Drop this connection and
+				// retry the whole reconnect (dial + reconcile) with
+				// backoff; a transient window (e.g. broker still
+				// settling after restart) heals on a later attempt,
+				// and a persistent failure keeps Health at
+				// ServiceLevelNone instead of luring consumers onto a
+				// broken topology.
 				if s.logger != nil {
-					s.logger.Warn("amqp091: reconcile on reconnect failed",
-						"error", err)
+					s.logger.Error("amqp091: reconcile on reconnect failed; retrying reconnect",
+						"broker", safeBroker, "attempt", attempt+1, "error", err)
 				}
+				s.mu.Lock()
+				ownsConn := s.conn == conn
+				if ownsConn {
+					s.conn = nil
+				}
+				closed := s.closed
+				s.mu.Unlock()
+				if ownsConn {
+					_ = conn.Close()
+				}
+				if closed {
+					return
+				}
+				delay = time.Duration(math.Min(
+					float64(delay)*s.opts.ReconnectMultiplier,
+					float64(s.opts.ReconnectMaxDelay),
+				))
+				continue
 			}
 		}
+
+		s.mu.Lock()
+		if s.closed {
+			// Close ran during reconcile; it already closed the
+			// installed connection.
+			s.mu.Unlock()
+			return
+		}
+		s.connected = true
+		s.mu.Unlock()
+
+		// Re-arm the flow-control watcher for the new connection; the
+		// previous watcher exited when the old connection's blocked
+		// stream closed.
+		go s.watchBlocked(ctx, conn)
 
 		s.pushEvent(ports.SessionConnected, nil)
 

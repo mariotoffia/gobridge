@@ -177,17 +177,114 @@ func mapPublishError(err error) error {
 	return MapError(err)
 }
 
-// SendBatch publishes each envelope sequentially with publisher
-// confirms, recording the per-message outcome. The whole batch is
-// dispatched — a failed Send does not abort the remaining messages.
-// The returned slice is index-aligned with msgs and the error is
-// always nil; see ports.BatchSender for the result contract.
+// SendBatch publishes every envelope and records the per-message
+// outcome. The whole batch is dispatched — a failed publish does not
+// abort the remaining messages. The returned slice is index-aligned
+// with msgs and the error is always nil; see ports.BatchSender for the
+// result contract.
+//
+// Non-mandatory batches are PIPELINED: all messages are published
+// first, then the publisher confirms are awaited out-of-band, so the
+// batch pays ~one broker round-trip instead of one per message (the
+// difference between ~10 msg/s and wire-limited throughput on a 100ms
+// WAN link). Mandatory batches fall back to sequential Send because
+// unroutable-message attribution relies on the strict
+// return-before-confirm ordering of one in-flight publish at a time
+// (basic.return carries no delivery tag to match against).
 func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
-	results := make([]ports.BatchResult, len(msgs))
-	for i, m := range msgs {
-		results[i] = ports.BatchResult{Index: i, Err: s.Send(ctx, m)}
+	if s.cfg.Mandatory {
+		results := make([]ports.BatchResult, len(msgs))
+		for i, m := range msgs {
+			results[i] = ports.BatchResult{Index: i, Err: s.Send(ctx, m)}
+		}
+		return results, nil
 	}
-	return results, nil
+	return s.sendBatchPipelined(ctx, msgs), nil
+}
+
+// sendBatchPipelined publishes all messages with deferred confirms and
+// then awaits every confirmation. Per-message error attribution is
+// preserved: a publish/validation failure is recorded at its own index
+// and does not consume a confirmation; each confirm handle is awaited
+// for exactly the message that produced it.
+func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMessage) []ports.BatchResult {
+	results := make([]ports.BatchResult, len(msgs))
+	if len(msgs) == 0 {
+		return results
+	}
+
+	sendCtx, cancel := s.applyTimeout(ctx)
+	defer cancel()
+
+	sessionTag := shared.Tag{Key: shared.TagKeyEntity, Value: s.cfg.Exchange}
+
+	type inflight struct {
+		index int
+		pc    *pendingConfirm
+	}
+	pending := make([]inflight, 0, len(msgs))
+
+	s.mu.Lock()
+	start := s.clock().Now()
+	for i, m := range msgs {
+		results[i] = ports.BatchResult{Index: i}
+		if m.Envelope == nil {
+			results[i].Err = shared.ErrInvalidPayload.WithMessage("amqp091: nil envelope")
+			continue
+		}
+		routingKey, err := resolveRoutingKey(s.cfg, m)
+		if err != nil {
+			results[i].Err = err
+			continue
+		}
+		// (Re-)ensure the channel per message: a publish error discards
+		// the channel, and the next message gets a fresh attempt instead
+		// of inheriting a dead channel for the rest of the batch.
+		sc, err := s.ensureChannelLocked()
+		if err != nil {
+			results[i].Err = MapError(err)
+			continue
+		}
+		pc, perr := sc.PublishDeferred(sendCtx, s.cfg.Exchange, routingKey,
+			false, m.Envelope, s.cfg, s.clock())
+		if perr != nil {
+			s.resetChannelLocked()
+			results[i].Err = mapPublishError(perr)
+			continue
+		}
+		pending = append(pending, inflight{index: i, pc: pc})
+	}
+
+	// Await the confirms out-of-band, still under the sender mutex (the
+	// channel and its confirmation bookkeeping are single-owner). On a
+	// channel death the SDK nacks every outstanding confirm, so this
+	// loop always terminates within the batch deadline.
+	channelDead := false
+	for _, p := range pending {
+		if err := p.pc.Wait(sendCtx); err != nil {
+			results[p.index].Err = mapPublishError(err)
+			if errors.Is(err, errConfirmChannelClosed) ||
+				errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				channelDead = true
+			}
+			continue
+		}
+		s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
+	}
+	if channelDead {
+		s.resetChannelLocked()
+	}
+	s.mu.Unlock()
+
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "amqp091: batch published",
+			"exchange", s.cfg.Exchange,
+			"batch_size", len(msgs),
+			"pipelined", len(pending),
+			"duration", s.clock().Since(start),
+		)
+	}
+	return results
 }
 
 // ensureChannelLocked opens a channel if none is cached, and discards a

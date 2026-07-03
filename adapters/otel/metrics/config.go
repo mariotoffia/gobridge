@@ -1,11 +1,20 @@
 package otelmetrics
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
+
+// TagKeyInstanceID is the attribute key used by WithInstanceTag to
+// distinguish bridge instances in a fleet (mirrors
+// ports.BridgeSettings.InstanceID / UBIQUITOUS.md "BridgeSettings").
+// Adapter-local constant, same precedent as
+// adapters/aws/transport/sqs.TagKeyQueueURL.
+const TagKeyInstanceID = "instance_id"
 
 // defaultMaxInstruments bounds the per-name instrument cache to guard
 // against unbounded cardinality from dynamic metric names (K9).
@@ -37,6 +46,10 @@ type Config struct {
 	Environment string `json:"environment,omitempty"`
 	// DefaultTags are added to all metrics as attributes.
 	DefaultTags []shared.Tag `json:"defaultTags,omitempty"`
+	// InstanceID, when set, is added to DefaultTags as the
+	// "instance_id" attribute so per-instance series in a fleet do not
+	// collide (MF-8). Set via WithInstanceTag.
+	InstanceID string `json:"instanceId,omitempty"`
 	// FlushInterval is how often to export metrics. Default: 60 seconds.
 	FlushInterval time.Duration `json:"flushInterval,omitempty"`
 	// ExportTimeout bounds a single periodic export. Zero keeps the SDK
@@ -52,8 +65,12 @@ type Config struct {
 
 	// errorHandler receives export/backpressure failures and rejected
 	// instrument creations that would otherwise be invisible (K3, K9).
-	// Not serialized.
+	// Defaults to a slog.Default() Warn logger (MF-5); explicitly
+	// installing nil suppresses reporting. Not serialized.
 	errorHandler func(error)
+	// errorHandlerSet distinguishes "never configured" (default warn
+	// logging applies) from an explicit WithErrorHandler(nil) opt-out.
+	errorHandlerSet bool
 }
 
 // Option is a functional option for configuring the exporter.
@@ -94,6 +111,31 @@ func WithDefaultTags(tags ...shared.Tag) Option {
 	}
 }
 
+// WithInstanceTag adds an "instance_id" attribute (TagKeyInstanceID) to
+// every emitted metric so per-instance series in a fleet do not collide
+// (MF-8). Pass the bridge's configured InstanceID
+// (ports.BridgeSettings.InstanceID); an empty id derives
+// "<hostname>-<pid>".
+func WithInstanceTag(id string) Option {
+	return func(e *Exporter) {
+		if id == "" {
+			id = deriveInstanceID()
+		}
+		e.config.InstanceID = id
+	}
+}
+
+// deriveInstanceID builds a best-effort instance identity from
+// hostname and pid, for callers that do not configure an explicit
+// ports.BridgeSettings.InstanceID.
+func deriveInstanceID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
+}
+
 // WithFlushInterval sets the flush interval.
 func WithFlushInterval(interval time.Duration) Option {
 	return func(e *Exporter) {
@@ -132,11 +174,13 @@ func WithHeaders(headers map[string]string) Option {
 }
 
 // WithErrorHandler installs a callback invoked when a metric export
-// fails or an instrument is rejected. Without it these failures are
-// invisible (K3, K9).
+// fails or an instrument is rejected. When never configured, failures
+// are logged at Warn level via slog.Default() (MF-5); pass nil to
+// explicitly suppress reporting.
 func WithErrorHandler(fn func(error)) Option {
 	return func(e *Exporter) {
 		e.config.errorHandler = fn
+		e.config.errorHandlerSet = true
 	}
 }
 
@@ -153,6 +197,25 @@ func applyDefaults(cfg *Config) {
 	if cfg.MaxInstruments == 0 {
 		cfg.MaxInstruments = defaultMaxInstruments
 	}
+	if cfg.InstanceID != "" && !hasTagKey(cfg.DefaultTags, TagKeyInstanceID) {
+		cfg.DefaultTags = append(cfg.DefaultTags, shared.Tag{Key: TagKeyInstanceID, Value: cfg.InstanceID})
+	}
+	if cfg.errorHandler == nil && !cfg.errorHandlerSet {
+		// Export failures and rejected instruments must not be silent
+		// by default (MF-5). Opt out with WithErrorHandler(nil).
+		cfg.errorHandler = func(err error) {
+			slog.Default().Warn("otel-metrics: export failure", slog.String("error", err.Error()))
+		}
+	}
+}
+
+func hasTagKey(tags []shared.Tag, key string) bool {
+	for _, t := range tags {
+		if t.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // envEndpointUnset reports whether neither the generic nor the

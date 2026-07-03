@@ -32,8 +32,19 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 // achieved. Computed from a single DeepHealth snapshot so the result
 // is internally consistent.
 //
+// Finding 22: the level is Role-aware. A STANDBY instance (exclusive
+// sessions configured but none currently holding a lease) is not dispatching
+// traffic for its exclusive routes, so it MUST NOT advertise LevelFull — the
+// pre-traffic gate and failover routers treat LevelFull as "route real traffic
+// here". Reporting Full from a standby with merely-connected sessions would
+// mislead them into steering traffic at an instance that is not serving. A
+// ready standby is therefore capped at LevelSubscribed (connected + subscribed,
+// but not the primary) — a distinct "ready-standby" state below Full. The
+// operational role remains explicitly observable via DeepHealth.Role / Role().
+//
 // Note: this is a snapshot — the level may change between this call and
-// the next call as sessions reconnect / subscriptions complete.
+// the next call as sessions reconnect / subscriptions complete, or as this
+// instance wins/loses a lease and transitions between standby and active.
 func (rt *Runtime) ReadinessLevel(ctx context.Context) ports.ReadinessLevel {
 	if rt == nil {
 		return ports.LevelDown
@@ -47,6 +58,20 @@ func (rt *Runtime) ReadinessLevel(ctx context.Context) ports.ReadinessLevel {
 		return ports.LevelLive
 	}
 
+	level := rt.readinessFromSnapshot(dh)
+
+	// Standby cap: an instance holding no lease for its exclusive routes is
+	// ready-but-not-primary. Never advertise Full so failover routing does not
+	// treat it as an active dispatch target.
+	if dh.Role == roleStandby && level > ports.LevelSubscribed {
+		return ports.LevelSubscribed
+	}
+	return level
+}
+
+// readinessFromSnapshot derives the achieved level from a consistent DeepHealth
+// snapshot, independent of Role.
+func (rt *Runtime) readinessFromSnapshot(dh ports.DeepHealth) ports.ReadinessLevel {
 	// Sender-only sessions report Connected without subscriptions; track
 	// the strongest level all sessions satisfy.
 	allConnected := true

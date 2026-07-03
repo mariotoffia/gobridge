@@ -28,6 +28,7 @@ func makeDLQEntry(id, routeID, category string, failedAt time.Time) routing.DLQE
 		SessionID:     "sess-" + id,
 		SourceID:      "src-" + id,
 		CorrelationID: "corr-" + id,
+		Address:       "addr/" + id,
 		Reason:        "test failure",
 		Category:      category,
 		ErrorCode:     "TEST_ERROR",
@@ -61,6 +62,7 @@ func RunDLQStoreTests(t *testing.T, store ports.DLQStore) {
 	t.Run("ListFilterBySince", func(t *testing.T) { dlqListFilterBySince(t, store) })
 	t.Run("ListFilterByBefore", func(t *testing.T) { dlqListFilterByBefore(t, store) })
 	t.Run("ListRespectsLimit", func(t *testing.T) { dlqListRespectsLimit(t, store) })
+	t.Run("ListOldestFirst", func(t *testing.T) { dlqListOldestFirst(t, store) })
 	t.Run("WriteIdempotent", func(t *testing.T) { dlqWriteIdempotent(t, store) })
 	t.Run("GetExisting", func(t *testing.T) { dlqGetExisting(t, store) })
 	t.Run("EnvelopeIsolation", func(t *testing.T) { dlqEnvelopeIsolation(t, store) })
@@ -73,6 +75,7 @@ func RunDLQStoreTests(t *testing.T, store ports.DLQStore) {
 	t.Run("DeleteByFilterTimeRange", func(t *testing.T) { dlqDeleteByFilterTimeRange(t, store) })
 	t.Run("DeleteByFilterWithLimit", func(t *testing.T) { dlqDeleteByFilterWithLimit(t, store) })
 	t.Run("DeleteByFilterAll", func(t *testing.T) { dlqDeleteByFilterAll(t, store) })
+	t.Run("DeleteByFilterExhaustsScanPages", func(t *testing.T) { dlqDeleteByFilterExhaustsScanPages(t, store) })
 	t.Run("PurgeRemovesOld", func(t *testing.T) { dlqPurgeRemovesOld(t, store) })
 	t.Run("PurgeSkipsRecent", func(t *testing.T) { dlqPurgeSkipsRecent(t, store) })
 	t.Run("FullLifecycle", func(t *testing.T) { dlqFullLifecycle(t, store) })
@@ -144,6 +147,9 @@ func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
 	}
 	if found.CorrelationID() != "corr-wal-1" {
 		t.Fatalf("CorrelationID: got %q, want %q", found.CorrelationID(), "corr-wal-1")
+	}
+	if found.Address() != "addr/wal-1" {
+		t.Fatalf("Address: got %q, want %q", found.Address(), "addr/wal-1")
 	}
 	if !found.FailedAt().Equal(dlqT1) {
 		t.Fatalf("FailedAt: got %v, want %v", found.FailedAt(), dlqT1)

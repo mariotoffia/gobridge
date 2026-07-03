@@ -339,7 +339,12 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	rt := newTestRuntime("bridge-poison", outbox, lease, dlq)
+	// Finding 8: poisoning now requires the record to reach poisonMinAge in
+	// addition to exhausting its replay budget. This real-time test cannot wait
+	// the generous production default (max(5×SendTimeout, 2m)), so shrink the age
+	// gate to effectively-immediate; the test still exercises the
+	// MaxReplayAttempts → PoisonMessage DLQ transition after the ~5s retry.
+	rt := newTestRuntime("bridge-poison", outbox, lease, dlq, goruntime.WithOutboxPoisonMinAge(time.Millisecond))
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

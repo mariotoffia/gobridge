@@ -55,9 +55,16 @@ func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time
 		"expires_at":    &ddbtypes.AttributeValueMemberN{Value: i64(millisOrZero(expiresAt))},
 		"completed_at":  &ddbtypes.AttributeValueMemberN{Value: "0"},
 	}
-	// Omit claimed_by and claimed_at for unclaimed records — DynamoDB
-	// sparse GSI semantics: items without the GSI key attributes are
-	// excluded from the ClaimedByIndex, which is exactly what we want.
+	// claimed_by and claimed_at are omitted for unclaimed records; Claim
+	// sets them and Release removes them again. The seq attribute is
+	// stamped by Persist after allocating the per-partition sequence.
+
+	// has_expiry is the sparse ExpiryIndex hash key: present only on
+	// records that can ever expire, so Expire scans exactly its candidate
+	// set. Terminal transitions (Complete/Expire) remove it.
+	if !expiresAt.IsZero() {
+		item[attrHasExpiry] = &ddbtypes.AttributeValueMemberS{Value: hasExpiryFlag}
+	}
 
 	if dh := r.DispatchHeaders(); dh != nil {
 		hdrJSON, err := json.Marshal(dh)
@@ -88,6 +95,7 @@ func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (*persistence.Outb
 		ClaimedBy:    strAttr(item, "claimed_by"),
 		ClaimVersion: numAttrU64(item, "claim_version"),
 		ReplayCount:  int(numAttrI64(item, "replay_count")),
+		Seq:          numAttrU64(item, "seq"),
 		CreatedAt:    timeFromMillis(numAttrI64(item, "created_at")),
 		ClaimedAt:    timeFromMillis(numAttrI64(item, "claimed_at")),
 		CompletedAt:  timeFromMillis(numAttrI64(item, "completed_at")),

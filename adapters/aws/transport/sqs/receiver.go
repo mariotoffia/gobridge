@@ -81,16 +81,31 @@ func (r *Receiver) clock() clock.Clock {
 	return clock.System
 }
 
-// Started returns a channel that is closed once the receiver's poll
-// loop is live and ready to process messages. It satisfies
+// Started returns a channel that is closed once the receiver reaches a
+// terminal startup state: either the poll loop is live and ready to
+// process messages, or Run returned with an initialisation error. The
+// failure-path close prevents a readiness probe that selects only on
+// Started() from hanging forever when init fails (Run's error is the
+// authoritative failure signal). It satisfies
 // ports.ReceiverStartedSignaler.
 func (r *Receiver) Started() <-chan struct{} { return r.started }
+
+// signalStarted closes the Started channel exactly once.
+func (r *Receiver) signalStarted() {
+	r.startedOnce.Do(func() { close(r.started) })
+}
 
 // Run starts the long-poll loop. For each received SQS message it
 // creates a Delivery and calls emit synchronously, providing natural
 // backpressure. Run blocks until ctx is cancelled or an unrecoverable
 // error occurs.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
+	// Guarantee Started() unblocks even when initialisation fails below:
+	// pollLoop closes it on the happy path; this defer covers every
+	// error return so a probe never waits on a receiver that already
+	// gave up.
+	defer r.signalStarted()
+
 	initCtx, initCancel := context.WithTimeout(ctx, r.cfg.InitTimeout)
 	defer initCancel()
 
@@ -143,7 +158,7 @@ func (r *Receiver) pollLoop(
 	backoff := newPollBackoffFromConfig(r.cfg)
 	pollTimeout := time.Duration(r.cfg.WaitTimeSeconds+10) * time.Second
 
-	r.startedOnce.Do(func() { close(r.started) })
+	r.signalStarted()
 
 	for {
 		if ctx.Err() != nil {
@@ -177,32 +192,64 @@ func (r *Receiver) pollLoop(
 		// resulting deliveries share a coherent client even if a
 		// credential rotation swaps it mid-loop.
 		client := r.loadClient()
+
+		// Create ALL deliveries for the batch BEFORE the emit loop.
+		// Every batch-mate's visibility clock started ticking at
+		// ReceiveMessage; emit is synchronous and can block for a long
+		// time under MaxInFlight saturation, so a delivery created only
+		// after the previous emit returns would burn its visibility
+		// window with no auto-extend running → expiry → source
+		// redelivery → duplicate amplification and a stale receipt
+		// handle failing the eventual Ack. Constructing them up front
+		// starts each message's auto-extend goroutine at receive time.
+		pending := make([]batchDelivery, 0, len(results))
 		for _, raw := range results {
 			// Per-delivery context so that auto-extend failure can
 			// cancel processing without affecting other deliveries.
 			// The cancel func is passed into newDelivery so it is set
 			// BEFORE any auto-extend goroutine starts.
 			deliveryCtx, deliveryCancel := context.WithCancel(ctx)
-			del := newDelivery(
-				deliveryCtx,
-				raw.env,
-				client,
-				queueURL,
-				raw.receiptHandle,
-				r.cfg.VisibilityTimeout,
-				r.cfg.autoExtendEnabled(),
-				deliveryCancel,
-				r.logger,
-				r.metrics,
-				r.clock(),
-			)
+			pending = append(pending, batchDelivery{
+				del: newDelivery(
+					deliveryCtx,
+					raw.env,
+					client,
+					queueURL,
+					raw.receiptHandle,
+					r.cfg.VisibilityTimeout,
+					r.cfg.autoExtendEnabled(),
+					deliveryCancel,
+					r.logger,
+					r.metrics,
+					r.clock(),
+				),
+				ctx:    deliveryCtx,
+				cancel: deliveryCancel,
+			})
+		}
 
-			if err := emit(deliveryCtx, del); err != nil {
-				deliveryCancel()
+		for i, p := range pending {
+			if err := emit(p.ctx, p.del); err != nil {
+				// Cancel this delivery and every not-yet-emitted
+				// batch-mate so their auto-extend goroutines stop;
+				// the un-settled messages become visible again after
+				// the current window and SQS redelivers them.
+				for _, rest := range pending[i:] {
+					rest.cancel()
+				}
 				return err
 			}
 		}
 	}
+}
+
+// batchDelivery pairs a constructed Delivery with its per-delivery
+// context so the poll loop can build a whole receive batch (starting
+// auto-extend for every batch-mate) before emitting any of them.
+type batchDelivery struct {
+	del    ports.Delivery
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // pollBackoff implements exponential backoff with jitter for poll loops.

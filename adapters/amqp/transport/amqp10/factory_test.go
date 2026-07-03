@@ -14,11 +14,21 @@ func TestFactory_Capabilities(t *testing.T) {
 	bf := NewFactory(slog.Default())
 	caps := bf.Capabilities()
 
-	if len(caps) != 1 {
-		t.Fatalf("Capabilities() returned %d caps, want 1", len(caps))
+	want := []ports.Capability{ports.CapStatefulSession, ports.CapSourceRedelivery}
+	if len(caps) != len(want) {
+		t.Fatalf("Capabilities() returned %d caps, want %d", len(caps), len(want))
 	}
-	if caps[0] != ports.CapStatefulSession {
-		t.Fatalf("Capabilities()[0] = %q, want %q", caps[0], ports.CapStatefulSession)
+	for _, w := range want {
+		found := false
+		for _, c := range caps {
+			if c == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Capabilities() = %v, missing %q", caps, w)
+		}
 	}
 }
 

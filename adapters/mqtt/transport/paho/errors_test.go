@@ -87,7 +87,8 @@ func TestMapDisconnectReasonCode(t *testing.T) {
 	}{
 		{0x00, true, ""},
 		{0x89, false, shared.ErrCodeBrokerBusy},
-		{0x8F, false, shared.ErrCodeConnectionLost},
+		{0x8E, false, shared.ErrCodeConnectionLost}, // session taken over (MQTT v5 §3.14.2.1)
+		{0x8F, false, shared.ErrCodeInvalidTopic},   // topic filter invalid
 		{0x93, false, shared.ErrCodeThrottled},
 		{0x87, false, shared.ErrCodeNotAuthorized},
 		{0x90, false, shared.ErrCodeInvalidTopic},

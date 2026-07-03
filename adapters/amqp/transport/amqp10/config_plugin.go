@@ -31,6 +31,11 @@ type ReceiverParams struct {
 	LinkCredit     uint32      `mapstructure:"link_credit" yaml:"link_credit" json:"link_credit"`
 	DurabilityMode uint32      `mapstructure:"durability_mode" yaml:"durability_mode" json:"durability_mode"`
 	Routing        RoutingType `mapstructure:"routing" yaml:"routing" json:"routing"`
+
+	// SubscriptionName pins the AMQP link name so a durable
+	// subscription (durability_mode > 0) survives reconnects. When
+	// empty, a stable name is derived from container_id + address.
+	SubscriptionName string `mapstructure:"subscription_name" yaml:"subscription_name,omitempty" json:"subscription_name,omitempty"`
 }
 
 // SenderParams holds user-settable sender fields.
@@ -39,6 +44,11 @@ type SenderParams struct {
 	Timeout        time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`
 	DurabilityMode uint32        `mapstructure:"durability_mode" yaml:"durability_mode" json:"durability_mode"`
 	Routing        RoutingType   `mapstructure:"routing" yaml:"routing" json:"routing"`
+
+	// Durable sets the AMQP message header durable flag on outbound
+	// messages. Unset defaults to true (persistent); set to false to
+	// opt into non-persistent (faster, lost on broker restart) sends.
+	Durable *bool `mapstructure:"durable" yaml:"durable,omitempty" json:"durable,omitempty"`
 }
 
 // Kind reports the plugin discriminator.

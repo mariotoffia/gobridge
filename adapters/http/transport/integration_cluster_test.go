@@ -177,7 +177,9 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 	}
 	factoryA := transport.NewFactory(transport.WithRouteLocator(locA))
 	senderA, err := factoryA.NewSender(ctx, ports.SenderSpec{
-		ID: "sse-cluster", Config: transport.Config{Mode: "sse"},
+		// Redirect is opt-in: expose the "http" endpoints key here since
+		// both bridges are test-local.
+		ID: "sse-cluster", Config: transport.Config{Mode: "sse", RedirectEndpoint: "http"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender A: %v", err)
@@ -259,8 +261,10 @@ func TestIntegration_Cluster_SSERedirect(t *testing.T) {
 			}
 		}
 		joined := strings.Join(lines, "\n")
-		if !strings.Contains(joined, "id: sse-evt-1") {
-			t.Fatalf("missing SSE id, got:\n%s", joined)
+		// No SSE "id:" field is emitted (at-most-once, no Last-Event-ID
+		// resumability); the envelope ID rides in the JSON payload.
+		if !strings.Contains(joined, `"id":"sse-evt-1"`) {
+			t.Fatalf("missing envelope id in SSE data, got:\n%s", joined)
 		}
 		if !strings.Contains(joined, `"subject":"user.created"`) {
 			t.Fatalf("missing subject in SSE data, got:\n%s", joined)

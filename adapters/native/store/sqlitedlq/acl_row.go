@@ -25,7 +25,7 @@ func scanDLQEntries(rows *sql.Rows) ([]routing.DLQEntry, error) {
 		)
 		err := rows.Scan(
 			&spec.ID, &spec.RouteID, &spec.BindingID, &spec.SessionID, &spec.SourceID,
-			&spec.CorrelationID, &spec.Reason, &spec.Category, &spec.ErrorCode, &spec.LastError,
+			&spec.CorrelationID, &spec.Address, &spec.Reason, &spec.Category, &spec.ErrorCode, &spec.LastError,
 			&envJSON, &failedAtMs, &spec.Attempts,
 		)
 		if err != nil {

@@ -18,8 +18,9 @@ type Config struct {
 // Option configures the tenant processor.
 type Option func(*Processor)
 
-// WithValidator sets the tenant validator used for tenant lookup and
-// active/quota checks. When nil, the processor skips validation.
+// WithValidator sets the tenant validator used for tenant lookup, the
+// active check, and the MaxMessageSizeBytes limit check. When nil, the
+// processor skips validation.
 func WithValidator(v ports.TenantValidator) Option {
 	return func(p *Processor) { p.validator = v }
 }

@@ -17,8 +17,15 @@
 // # Export-failure visibility
 //
 // WithErrorHandler installs a callback invoked when a metric export
-// fails or an instrument is rejected. WithExportTimeout bounds a single
+// fails or an instrument is rejected. When never configured, failures
+// are logged at Warn level via slog.Default(); WithErrorHandler(nil)
+// suppresses reporting. Rejected emissions are additionally published
+// through the exporter's own pipeline as the ExporterRejectedDatums
+// observable counter (nothing is observed while the count is zero).
+// WithExportTimeout bounds a single
 // periodic export and WithFlushInterval sets the export cadence.
+// WithInstanceTag stamps every metric with an instance_id attribute so
+// per-instance series in a fleet do not collide.
 //
 // # Environment variables
 //

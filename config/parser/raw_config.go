@@ -109,23 +109,45 @@ func (r *rawMapConfig) AsMap() map[string]any {
 	return r.data
 }
 
-// floatToIntegerOrDurationHook rejects YAML/JSON float inputs that
-// would silently lose information when coerced into an integer or a
-// time.Duration. JSON unmarshalling produces float64 for any numeric
-// literal, so without this hook `maxMessages: 5.9` would truncate to
-// 5 and `flushInterval: 30` would be interpreted as 30 nanoseconds.
+// floatToIntegerOrDurationHook rejects numeric inputs that would silently
+// lose information or be misread when coerced into an integer or a
+// time.Duration.
 //
+// JSON unmarshalling produces float64 for every numeric literal, and YAML
+// produces a Go int for a bare integer literal. Either way, a bare number
+// decoded into a time.Duration is interpreted as NANOSECONDS, so
+// `heartbeat: 30` silently becomes 30ns instead of the 30s the operator
+// meant. This hook forbids that entirely.
+//
+//   - number -> time.Duration: always error (both float and integer sources).
+//     Durations must be given as a string literal with a unit (e.g. "30s").
 //   - float -> int*/uint*: error if the value has a fractional part;
-//     otherwise pass through and let mapstructure's built-in
-//     coercion narrow it to the integer target.
-//   - float -> time.Duration: always error. Durations must be given
-//     as a string literal (e.g. "30s") to avoid the
-//     nanoseconds-vs-seconds ambiguity.
+//     otherwise pass through and let mapstructure's built-in coercion narrow
+//     it to the integer target.
 //   - any other (from, to) pair: pass through unchanged.
 func floatToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) (any, error) {
 	if from == nil || to == nil {
 		return data, nil
 	}
+
+	// Reject ANY bare number into a duration field regardless of whether the
+	// source decoded as a float (JSON) or an integer (YAML bare int). A bare
+	// number would be read as nanoseconds — never what an operator intends.
+	// A value that is ALREADY a time.Duration (from == Duration) is explicit
+	// and passes through unchanged.
+	durationType := reflect.TypeOf(time.Duration(0))
+	if to == durationType && from != durationType {
+		switch from.Kind() {
+		case reflect.Float32, reflect.Float64,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return nil, fmt.Errorf("cannot decode bare number %v into a duration field; use a "+
+				"string with a unit like \"30s\" (a bare number is interpreted as nanoseconds)", data)
+		default:
+			return data, nil
+		}
+	}
+
 	switch from.Kind() {
 	case reflect.Float32, reflect.Float64:
 	default:
@@ -140,10 +162,6 @@ func floatToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) 
 		f = v
 	default:
 		return data, nil
-	}
-
-	if to == reflect.TypeOf(time.Duration(0)) {
-		return nil, fmt.Errorf("cannot decode bare number %v into time.Duration; use a string like \"30s\"", data)
 	}
 
 	switch to.Kind() {

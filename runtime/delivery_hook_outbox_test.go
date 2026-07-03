@@ -104,7 +104,7 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 		ID: "rec-poison", RouteID: "route-1", EnvelopeID: env.ID(),
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 5,
-		Status: persistence.OutboxPending, CreatedAt: time.Now(),
+		Status: persistence.OutboxPending, CreatedAt: time.Now().Add(-10 * time.Minute),
 	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

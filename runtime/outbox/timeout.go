@@ -54,3 +54,52 @@ func (d *Drainer) batchDeadline(batchCount int) time.Duration {
 		DrainTimeout:          d.drainTimeout,
 	})
 }
+
+// batchTimeout returns the wall-clock budget for a whole drain batch's
+// send+complete work (finding 10). It must never undercut a single record's
+// SendTimeout + Complete margin, and it scales with the sequential send depth
+// the batch needs: the number of concurrency waves (recordCount/maxConcurrency)
+// OR the longest ordering group (whose records send strictly sequentially),
+// whichever is larger. The configured DrainTimeout/MaxDrainTimeout ceiling may
+// only RAISE this budget — it can no longer cut it below one full send, which
+// was the silent SendTimeout cap the previous min()-with-ceiling introduced.
+func (d *Drainer) batchTimeout(recordCount int, groups []orderingGroup) time.Duration {
+	perSend := d.policy.SendTimeout + d.completeBudget()
+	if perSend <= 0 {
+		perSend = d.batchTimeoutFloor
+	}
+
+	conc := d.maxConcurrency
+	if conc <= 0 {
+		conc = 1
+	}
+	waves := (recordCount + conc - 1) / conc
+
+	longest := 0
+	for _, g := range groups {
+		if len(g) > longest {
+			longest = len(g)
+		}
+	}
+
+	depth := waves
+	if longest > depth {
+		depth = longest
+	}
+	if depth < 1 {
+		depth = 1
+	}
+
+	budget := time.Duration(depth) * perSend
+	if budget < perSend {
+		budget = perSend
+	}
+	if budget < d.batchTimeoutFloor {
+		budget = d.batchTimeoutFloor
+	}
+	// The configured ceiling may only raise the budget; never undercut a send.
+	if ceiling := d.batchDeadline(recordCount); ceiling > budget {
+		budget = ceiling
+	}
+	return budget
+}

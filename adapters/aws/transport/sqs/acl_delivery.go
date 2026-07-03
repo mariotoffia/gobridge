@@ -32,10 +32,36 @@ const (
 	// is also the threshold newDelivery uses to decide whether starting
 	// the auto-extend goroutine is worthwhile at all.
 	minAutoExtendVisibilitySeconds int32 = 2
+
+	// sqsSettlementTimeout bounds the final Ack/Retry SQS call when the
+	// caller's context is already cancelled at settlement time (typically
+	// graceful shutdown racing a completed send). See settlementContext.
+	sqsSettlementTimeout = 10 * time.Second
 )
 
+// settlementContext returns the context for the final Ack/Retry SQS
+// call. A live ctx is used as-is. When ctx is already cancelled —
+// shutdown cancelled the delivery context after the send completed —
+// cancellation is stripped with context.WithoutCancel (values such as
+// trace/correlation are kept) and the call is bounded by
+// sqsSettlementTimeout instead, mirroring the runtime's panic-path
+// settlement pattern (runtime/route/runner.go). Without this, a
+// delivery whose egress finished at shutdown would fail its
+// DeleteMessage on the cancelled ctx, guaranteeing duplicate egress on
+// restart for every in-flight message.
+func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), sqsSettlementTimeout)
+}
+
 // clampVisibilitySeconds bounds a desired visibility timeout (seconds)
-// into the range the auto-extend machinery can apply safely.
+// into the range the auto-extend machinery can apply safely. It takes
+// int64 so callers convert Duration→seconds BEFORE any int32 narrowing:
+// a naive int32(hugeDuration.Seconds()) is an unspecified conversion in
+// Go and can wrap negative, turning a "hold this message for a long
+// time" request into a near-immediate redelivery.
 //
 //   - Lower bound minAutoExtendVisibilitySeconds (2s): an Extend whose
 //     deadline resolves to "now or in the past" (delta <= 0) MUST NOT be
@@ -45,14 +71,14 @@ const (
 //     the auto-extend loop derives a strictly positive tick interval, so
 //     Ticker.Reset / NewTicker never panic (both reject d <= 0).
 //   - Upper bound sqsMaxVisibilitySeconds (43200s): the SQS hard cap.
-func clampVisibilitySeconds(seconds int32) int32 {
-	if seconds < minAutoExtendVisibilitySeconds {
+func clampVisibilitySeconds(seconds int64) int32 {
+	if seconds < int64(minAutoExtendVisibilitySeconds) {
 		return minAutoExtendVisibilitySeconds
 	}
-	if seconds > sqsMaxVisibilitySeconds {
+	if seconds > int64(sqsMaxVisibilitySeconds) {
 		return sqsMaxVisibilitySeconds
 	}
-	return seconds
+	return int32(seconds)
 }
 
 // autoExtendInterval returns the tick interval for the auto-extend loop
@@ -174,9 +200,17 @@ func newDelivery(
 func (d *sqsDelivery) Envelope() *messaging.Envelope { return d.env }
 
 // Ack deletes the SQS message, confirming successful processing.
+//
+// When ctx is already cancelled (shutdown racing a completed send) the
+// DeleteMessage still runs under a bounded settlement context — see
+// settlementContext — so a successfully egressed message is not
+// redelivered on restart.
 func (d *sqsDelivery) Ack(ctx context.Context) error {
 	d.stopAutoExtend()
 	defer d.cleanupContext()
+
+	settleCtx, settleCancel := settlementContext(ctx)
+	defer settleCancel()
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: acking",
@@ -186,7 +220,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	}
 
 	start := d.clk.Now()
-	_, err := d.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+	_, err := d.client.DeleteMessage(settleCtx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
 		ReceiptHandle: aws.String(d.receiptHandle),
 	})
@@ -200,19 +234,29 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 
 // Retry makes the message visible again after the given delay.
 // A zero delay makes the message immediately available for re-delivery.
+//
+// The delay is clamped in int64 seconds BEFORE the int32 narrowing —
+// int32(hugeDuration.Seconds()) is an unspecified conversion that can
+// wrap negative, turning a long hold into near-immediate redelivery.
+// Like Ack, Retry settles under settlementContext so a shutdown-
+// cancelled ctx cannot prevent the nack from reaching SQS.
 func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) error {
 	d.stopAutoExtend()
 	defer d.cleanupContext()
 
-	timeout := int32(after.Seconds())
-	if timeout < 0 {
-		timeout = 0
-	} else if timeout == 0 && after > 0 {
-		timeout = 1
+	settleCtx, settleCancel := settlementContext(ctx)
+	defer settleCancel()
+
+	secs := int64(after / time.Second)
+	switch {
+	case secs < 0:
+		secs = 0
+	case secs == 0 && after > 0:
+		secs = 1
+	case secs > int64(sqsMaxVisibilitySeconds):
+		secs = int64(sqsMaxVisibilitySeconds)
 	}
-	if timeout > sqsMaxVisibilitySeconds {
-		timeout = sqsMaxVisibilitySeconds
-	}
+	timeout := int32(secs)
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: retrying",
@@ -222,7 +266,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		)
 	}
 
-	_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+	_, err := d.client.ChangeMessageVisibility(settleCtx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(d.queueURL),
 		ReceiptHandle:     aws.String(d.receiptHandle),
 		VisibilityTimeout: timeout,
@@ -234,13 +278,17 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 }
 
 // Extend pushes the visibility timeout to the given absolute time.
-// The delta from now is clamped via clampVisibilitySeconds into
-// [minAutoExtendVisibilitySeconds, sqsMaxVisibilitySeconds]. The lower
-// floor is deliberate: an Extend whose deadline has already passed must
-// NOT surface the in-flight message (a 0-second ChangeMessageVisibility
-// would do exactly that and invite duplicate processing), and the floor
-// also keeps the auto-extend tick interval strictly positive so the
-// ticker can never be Reset with a panicking d <= 0.
+// The delta from now is converted to whole seconds in int64 and clamped
+// via clampVisibilitySeconds into
+// [minAutoExtendVisibilitySeconds, sqsMaxVisibilitySeconds] BEFORE any
+// int32 narrowing (a naive int32 conversion of a huge delta is
+// unspecified and can wrap negative — near-immediate redelivery instead
+// of a long hold). The lower floor is deliberate: an Extend whose
+// deadline has already passed must NOT surface the in-flight message (a
+// 0-second ChangeMessageVisibility would do exactly that and invite
+// duplicate processing), and the floor also keeps the auto-extend tick
+// interval strictly positive so the ticker can never be Reset with a
+// panicking d <= 0.
 //
 // When auto-extend is running, Extend also updates the stored timeout
 // atomically so the next auto-extend tick uses the new value. Without
@@ -250,7 +298,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // Extend does NOT stop auto-extend — the goroutine keeps running and
 // will maintain the new timeout. Call Ack or Retry to finalize.
 func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
-	timeout := clampVisibilitySeconds(int32(until.Sub(d.clk.Now()).Seconds()))
+	timeout := clampVisibilitySeconds(int64(until.Sub(d.clk.Now()) / time.Second))
 
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: extending",

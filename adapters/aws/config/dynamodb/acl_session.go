@@ -79,7 +79,7 @@ func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 		bridgeID:           defaultBridgeID,
 		pollInterval:       defaultPollInterval,
 		streamPollInterval: defaultStreamPollInterval,
-		mode:               ModeStreams,
+		mode:               ModePoll,
 		clk:                clock.System,
 	}
 	for _, o := range opts {
@@ -89,7 +89,8 @@ func NewLoader(client *dynamodb.Client, opts ...Option) *Loader {
 }
 
 // WithStreamsClient configures the DynamoDB Streams client used by
-// ModeStreams. If not set, Watch falls back to ModePoll with a warning.
+// ModeStreams (see WithWatchMode). If not set while ModeStreams is
+// selected, Watch falls back to ModePoll with a warning.
 //
 // The *dynamodbstreams.Client parameter is the SDK boundary input this
 // ACL option exists to wrap; it is injected by the composition root and

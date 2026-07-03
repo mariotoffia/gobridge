@@ -62,6 +62,7 @@ func TestIntegration_RetryRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer recvCancel()
@@ -76,9 +77,15 @@ func TestIntegration_RetryRelease(t *testing.T) {
 			return nil
 		}
 		headers := del.Envelope().Headers()
+		// AMQP 1.0 §3.4.4: the released outcome does NOT increment
+		// delivery-count — a released transfer "did not happen" for
+		// counting purposes. (Before messages carried a header section
+		// — durable=true — Artemis omitted the all-default header and
+		// this branch never ran; delivery-count=0 now round-trips and
+		// must be asserted spec-correct.)
 		if dc, ok := headers[headerDeliveryCount]; ok {
-			if count, ok := dc.(uint32); ok && count == 0 {
-				t.Error("expected delivery-count > 0 on redelivery")
+			if count, ok := dc.(uint32); ok && count != 0 {
+				t.Errorf("delivery-count = %d after release, want 0 (released must not increment)", count)
 			}
 		}
 		if err := del.Ack(recvCtx); err != nil {
@@ -143,6 +150,7 @@ func TestIntegration_RetryModify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer recvCancel()
@@ -225,6 +233,7 @@ func TestIntegration_ExtendNotSupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()

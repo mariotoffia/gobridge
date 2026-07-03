@@ -54,8 +54,12 @@ func checkAPIKey(r *http.Request, key string) bool {
 	if got := r.Header.Get("X-API-Key"); len(got) > 0 && constantTimeSecretMatch(got, key) {
 		return true
 	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimPrefix(auth, "Bearer ")
+	// Auth-scheme comparison is case-insensitive per RFC 7235 §2.1
+	// ("bearer", "BEARER" and "Bearer" name the same scheme).
+	const bearerPrefix = "Bearer "
+	if auth := r.Header.Get("Authorization"); len(auth) > len(bearerPrefix) &&
+		strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
+		token := auth[len(bearerPrefix):]
 		if constantTimeSecretMatch(token, key) {
 			return true
 		}

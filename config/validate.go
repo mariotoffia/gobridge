@@ -55,8 +55,76 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 	}
 
 	validateStaleClaimDuration(ve, cfg)
+	validateSessionRenewTiming(ve, cfg)
 
 	return ve
+}
+
+// validateSessionRenewTiming enforces the renew/lease invariant for every
+// route session that sets renew_interval explicitly:
+//
+//	(renewInterval + jitter/2) * maxRenewFails < leaseTTL
+//
+// If it does not hold, the owner can burn through all its tolerated renewal
+// failures (plus worst-case jitter) before the lease expires is detected — the
+// lease can lapse and a standby take over while the old owner still believes it
+// holds it, risking split-brain. This mirrors the invariant runtime/session
+// Config.Validate enforces (renewWorstCaseSpan); duplicating it in the config
+// layer fails a statically-rejectable blueprint before any runtime is built
+// (contract C3). renew_interval left empty is derived downstream and is safe,
+// so it is not checked here; lease_ttl empty falls back to the runtime default.
+func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
+	// Mirrors runtime/session.DefaultConfig defaults so the config-layer check
+	// rejects exactly the set the runtime would (never more, never less). The
+	// config package must not import runtime/session (layering), so the
+	// literals are duplicated with this note.
+	const (
+		defaultMaxRenewFails = 3
+		defaultLeaseTTL      = 360 * time.Second
+	)
+	for _, r := range cfg.Routes {
+		s := r.Session
+		if s == nil || s.RenewInterval == "" {
+			continue
+		}
+		renew, err := time.ParseDuration(s.RenewInterval)
+		if err != nil {
+			ve.Addf("routes[%s].session.renew_interval: invalid duration %q: %v", r.ID, s.RenewInterval, err)
+			continue
+		}
+		if renew <= 0 {
+			continue
+		}
+		lease := defaultLeaseTTL
+		if s.LeaseTTL != "" {
+			lease, err = time.ParseDuration(s.LeaseTTL)
+			if err != nil {
+				ve.Addf("routes[%s].session.lease_ttl: invalid duration %q: %v", r.ID, s.LeaseTTL, err)
+				continue
+			}
+		}
+		var jitter time.Duration
+		if s.RenewJitter != "" {
+			jitter, err = time.ParseDuration(s.RenewJitter)
+			if err != nil {
+				ve.Addf("routes[%s].session.lease_renew_jitter: invalid duration %q: %v", r.ID, s.RenewJitter, err)
+				continue
+			}
+		}
+		maxFails := s.MaxRenewFails
+		if maxFails <= 0 {
+			maxFails = defaultMaxRenewFails
+		}
+		worst := (renew + jitter/2) * time.Duration(maxFails)
+		if worst >= lease {
+			ve.Addf("routes[%s].session: worst-case renew span %s "+
+				"((renew_interval=%s + lease_renew_jitter/2=%s) * max_renew_fails=%d) must be < "+
+				"lease_ttl (%s); otherwise the owner can exhaust all tolerated renewal failures before "+
+				"the lease expires, risking split-brain takeover — lower renew_interval/max_renew_fails "+
+				"or raise lease_ttl",
+				r.ID, worst, renew, jitter/2, maxFails, lease)
+		}
+	}
 }
 
 func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {

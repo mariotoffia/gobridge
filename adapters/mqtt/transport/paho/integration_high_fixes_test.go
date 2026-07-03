@@ -121,9 +121,9 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 	recvWg.Add(1)
 	go func() {
 		defer recvWg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			received.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 

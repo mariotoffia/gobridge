@@ -21,12 +21,73 @@ import (
 // of the success count, and (3) drive the transient-retry backoff floor.
 var errReleasedForRetry = errors.New("outbox: record released for transient retry")
 
+// errBatchDeadlineDeferred signals processRecord aborted a send because the
+// batch deadline (workCtx/batchCtx) fired mid-flight. The record was NOT
+// delivered and has been released back to pending (finding 9): it must be
+// counted as DEFERRED, never as a success, and drives the transient backoff
+// floor so the next cycle does not immediately re-hammer an overloaded batch.
+var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadline aborted send")
+
 func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	timeout := d.policy.SendTimeout
 	if timeout <= 0 || timeout > 5*time.Second {
 		timeout = 5 * time.Second
 	}
 	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+}
+
+// completeBudget mirrors completeCtx's bounded Complete/Release window so the
+// batch timeout can reserve margin for it on top of each send (finding 10).
+func (d *Drainer) completeBudget() time.Duration {
+	timeout := d.policy.SendTimeout
+	if timeout <= 0 || timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return timeout
+}
+
+// emitDLQ counts a durable DLQ write from the drain path (finding 15). Without
+// it, drainer-side poison/expiry/permanent DLQ writes were invisible to the
+// conservation law even though the ingress route path emits the same counter.
+func (d *Drainer) emitDLQ(category string) {
+	d.metrics.Counter(shared.MetricDLQEntries, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID},
+		shared.Tag{Key: shared.TagKeyCategory, Value: category},
+	)
+}
+
+// poisonAgeReached reports whether a replay-exhausted record is old enough to
+// be poisoned to the DLQ (finding 8). The age gate prevents a transient egress
+// outage — which can burn the small replay budget in seconds — from poisoning
+// otherwise-healthy records: a record is only poisoned once it has ALSO reached
+// poisonMinAge. When CreatedAt is unknown (zero), the age cannot be checked, so
+// we fail OPEN and allow poisoning — preserving the pre-age-gate behaviour
+// (poison on replay exhaustion) rather than retrying a genuinely poisoned record
+// forever. Production records always carry a persist timestamp, so the age gate
+// is effective there; only ageless (e.g. hand-rehydrated) records fail open.
+func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
+	created := rec.CreatedAt()
+	if created.IsZero() {
+		return true
+	}
+	return d.clk.Since(created) >= d.poisonMinAge
+}
+
+// releaseOne best-effort returns a single claimed record to pending using the
+// optional OutboxReleaser capability (finding 9). Stores without the capability
+// keep the legacy leave-claimed behavior and recover via version/stale reclaim.
+func (d *Drainer) releaseOne(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) {
+	releaser, ok := d.outboxStore.(ports.OutboxReleaser)
+	if !ok {
+		return
+	}
+	releaseCtx, cancel := d.completeCtx(ctx)
+	err := releaser.Release(releaseCtx, []string{rec.ID()}, token)
+	cancel()
+	if err != nil {
+		d.log(ctx, slog.LevelWarn, "failed to release batch-deadline-aborted record",
+			"record_id", rec.ID(), "error", err)
+	}
 }
 
 func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
@@ -43,7 +104,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 		return d.handleExpired(ctx, rec, token)
 	}
 
-	if rec.ReplayCount() > d.policy.MaxReplayAttempts {
+	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.poisonAgeReached(rec) {
 		return d.handlePoison(ctx, rec, token)
 	}
 
@@ -104,6 +165,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 				"record_id", rec.ID(), "dlq_error", dlqErr)
 			return dlqErr
 		}
+		d.emitDLQ("permanent")
 		d.hook.OnSettled(ctx, ports.DeliveryOutcome{
 			Direction:   ports.DirectionEgress,
 			RouteID:     d.routeID,
@@ -122,9 +184,15 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	}
 
 	if ctx.Err() != nil {
-		d.log(ctx, slog.LevelDebug, "send aborted due to context cancellation",
+		// The batch deadline (workCtx/batchCtx) — or a stale-token cancel —
+		// fired mid-send. The record was NOT delivered: releasing it (finding
+		// 9) returns it to pending so this owner re-claims and retries it next
+		// cycle, instead of the previous behaviour that returned nil and let
+		// drainBatch count the stranded, never-sent record as a success.
+		d.log(ctx, slog.LevelDebug, "send aborted by batch deadline; deferring record",
 			"record_id", rec.ID(), "error", sendErr)
-		return nil
+		d.releaseOne(ctx, rec, token)
+		return errBatchDeadlineDeferred
 	}
 
 	// Genuine transient failure (not shutdown cancellation). If the store
@@ -211,10 +279,16 @@ func (d *Drainer) releaseRemainder(ctx context.Context, recs []*persistence.Outb
 
 func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := rec.Snapshot()
+	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
 	if d.policy.OnExpired == routing.ExpiredDLQ {
 		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", shared.ErrMessageExpired, rec.ReplayCount()); dlqErr != nil {
 			return dlqErr
 		}
+		d.emitDLQ("expired")
+	} else {
+		// Expired-drop: previously fully silent (finding 15). Count it so the
+		// conservation law can attribute the loss.
+		d.metrics.Counter(shared.MetricMessagesExpired, 1, routeTag)
 	}
 	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
@@ -254,6 +328,7 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", poisonErr, rec.ReplayCount()); dlqErr != nil {
 		return dlqErr
 	}
+	d.emitDLQ("poison")
 	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,

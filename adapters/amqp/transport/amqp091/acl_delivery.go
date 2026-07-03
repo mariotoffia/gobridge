@@ -30,6 +30,14 @@ type Delivery struct {
 	mu       sync.Mutex
 	settled  bool
 	settleOK bool
+
+	// delayWarnOnce dedupes the "delayed retry not honored" Warn to once
+	// per consumer channel (shared by every Delivery the channel's
+	// forwarder creates), so a poison message cannot flood the log while
+	// MetricAMQP091DelayedRetryUnhonored still counts every occurrence.
+	// Mirrors the amqp10 adapter's delayWarnOnce. Nil (directly
+	// constructed deliveries) warns on each call.
+	delayWarnOnce *sync.Once
 }
 
 // NewDelivery wraps an amqp091.Delivery as a ports.Delivery.
@@ -94,8 +102,15 @@ func (d *Delivery) Ack(ctx context.Context) error {
 }
 
 // Retry nacks the message with requeue=true for immediate redelivery.
-// The after parameter is logged but AMQP 0-9-1 does not support delayed
-// redelivery natively; the message is requeued immediately.
+// The after parameter is advisory only: AMQP 0-9-1 has no native
+// delayed-redelivery primitive, so the runtime's requested backoff
+// spacing is NOT honored and the message returns to the head of a
+// classic queue immediately. That silent retry-spacing loss is
+// surfaced two ways (parity with the amqp10 adapter): a per-message
+// MetricAMQP091DelayedRetryUnhonored counter for rate/alerting and a
+// once-per-consumer-channel Warn. Guard poison messages broker-side
+// with x-delivery-limit (quorum queues) or a dead-letter-exchange on
+// the queue declaration.
 // If a prior settlement attempt failed, subsequent calls return
 // ErrUnavailable.
 func (d *Delivery) Retry(ctx context.Context, after time.Duration, reason error) error {
@@ -111,11 +126,10 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, reason error)
 	d.settled = true
 	d.mu.Unlock()
 
-	if after > 0 && d.logger != nil {
-		logging.Debug(d.logger, "amqp091: delayed retry not natively supported, requeueing immediately",
-			"delivery_tag", d.raw.DeliveryTag,
-			"requested_delay", after,
-		)
+	if after > 0 {
+		d.metrics.Counter(MetricAMQP091DelayedRetryUnhonored, 1,
+			shared.Tag{Key: shared.TagKeyEntity, Value: d.raw.RoutingKey})
+		d.warnDelayedRetryUnhonored(after, reason)
 	}
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "amqp091: nacking (requeue)",
@@ -137,4 +151,31 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, reason error)
 // Extend is not supported by AMQP 0-9-1 (no visibility timeout concept).
 func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
 	return shared.ErrNotSupported
+}
+
+// warnDelayedRetryUnhonored emits a single Warn per consumer channel when
+// a delayed retry cannot be honored client-side. delayWarnOnce is shared
+// by every Delivery created from the same consume forwarder, so the
+// warning fires once per channel rather than once per message;
+// MetricAMQP091DelayedRetryUnhonored still records every occurrence. A
+// nil guard (directly-constructed deliveries) warns on each call.
+func (d *Delivery) warnDelayedRetryUnhonored(after time.Duration, reason error) {
+	if d.logger == nil {
+		return
+	}
+	emit := func() {
+		d.logger.Warn(
+			"amqp091: delayed retry not honored client-side; nacked with immediate requeue "+
+				"(guard poison messages with x-delivery-limit or a dead-letter-exchange)",
+			"delivery_tag", d.raw.DeliveryTag,
+			"routing_key", d.raw.RoutingKey,
+			"requested_delay", after,
+			"reason", reason,
+		)
+	}
+	if d.delayWarnOnce != nil {
+		d.delayWarnOnce.Do(emit)
+		return
+	}
+	emit()
 }

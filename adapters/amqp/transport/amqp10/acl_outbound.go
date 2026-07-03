@@ -2,6 +2,7 @@ package amqp10
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // headersToMessage maps envelope headers to AMQP 1.0 message properties
@@ -133,9 +135,19 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 // envelopeToMessage builds an outbound *amqp.Message from an envelope,
 // merging headers, payload, and any envelope-level fields (ID, subject,
 // expiry, creation time) into a single SDK message.
-func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
+//
+// durable stamps the AMQP message-header durable flag. Brokers treat
+// durable=false as non-persistent: the message is lost on broker
+// restart even after an accepted disposition, silently breaking the
+// bridge's at-least-once contract. Senders default this to true (see
+// SenderConfig.Durable).
+func envelopeToMessage(env *messaging.Envelope, durable bool) *amqp.Message {
 	msg := headersToMessage(env.Headers())
 	msg.Data = [][]byte{env.Payload()}
+
+	if durable {
+		msg.Header = &amqp.MessageHeader{Durable: true}
+	}
 
 	if msg.Properties == nil {
 		msg.Properties = &amqp.MessageProperties{}
@@ -150,30 +162,83 @@ func envelopeToMessage(env *messaging.Envelope) *amqp.Message {
 		expiry := env.ExpiresAt()
 		msg.Properties.AbsoluteExpiryTime = &expiry
 	}
-	if !env.CreatedAt().IsZero() {
+	// Preserve the PRODUCER's creation-time when the inbound hop carried
+	// one (mapped from the amqp10.creation-time header by
+	// headersToMessage). Only fall back to Envelope.CreatedAt — which on
+	// a relayed message is the bridge RECEIVE time — when no producer
+	// timestamp is present, so egress never clobbers the original.
+	if msg.Properties.CreationTime == nil && !env.CreatedAt().IsZero() {
 		createdAt := env.CreatedAt()
 		msg.Properties.CreationTime = &createdAt
 	}
 	return msg
 }
 
+// errNotAccepted marks a send whose disposition outcome was anything
+// other than Accepted (Released, Modified, Rejected, or unknown). The
+// LINK is healthy in this case — the broker answered — so Sender.Send
+// must NOT detach/rebuild the link for these errors.
+var errNotAccepted = errors.New("amqp10: broker did not accept message")
+
+// dispositionError classifies a send receipt's terminal delivery state.
+//
+//   - Accepted           → nil (enqueued durably per the message header)
+//   - Released/Modified  → transient ErrUnavailable: the broker could
+//     not or did not enqueue the message; treating this as success (as
+//     plain Send does — it only fails on Rejected) would Ack the source
+//     and silently lose the message.
+//   - Rejected           → permanent by default (broker deems the
+//     message unprocessable); a broker-supplied error condition is
+//     mapped through the normal condition table.
+func dispositionError(state amqp.DeliveryState) error {
+	switch st := state.(type) {
+	case *amqp.StateAccepted:
+		return nil
+	case *amqp.StateRejected:
+		if st.Error != nil {
+			return mapAMQPCondition(st.Error).Wrap(fmt.Errorf("%w: rejected: %w", errNotAccepted, st.Error))
+		}
+		return shared.ErrInvalidPayload.Wrap(errNotAccepted).
+			WithMessage("amqp10: message rejected by broker without error condition")
+	case *amqp.StateReleased:
+		return shared.ErrUnavailable.Wrap(errNotAccepted).
+			WithMessage("amqp10: message released by broker (not enqueued)")
+	case *amqp.StateModified:
+		return shared.ErrUnavailable.Wrap(errNotAccepted).
+			WithMessage("amqp10: message returned modified by broker (not enqueued)")
+	default:
+		return shared.ErrUnavailable.Wrap(errNotAccepted).
+			WithMessage(fmt.Sprintf("amqp10: unexpected delivery state %T", state))
+	}
+}
+
 // senderLink wraps a *amqp.Sender, exposing only an envelope-typed
-// Send. *amqp.Sender.Send is documented as safe for concurrent use, so
-// this wrapper preserves that contract: SendEnvelope may be invoked
-// from many goroutines at once.
+// Send. *amqp.Sender.SendWithReceipt is documented as safe for
+// concurrent use, so this wrapper preserves that contract: SendEnvelope
+// may be invoked from many goroutines at once.
 type senderLink struct {
 	raw *amqp.Sender
+	// durable stamps the message-header durable flag on every message
+	// sent over this link (captured from SenderConfig at link creation).
+	durable bool
 }
 
 // SendEnvelope serialises the envelope into an AMQP 1.0 message and
-// publishes it over the link. Errors flow through unwrapped so callers
-// can MapError them at the seam.
+// publishes it over the link, waiting for the broker's disposition.
+// Unlike raw Send (which reports success for Released/Modified), any
+// non-Accepted outcome is surfaced as an error so the caller never
+// Acks the source for a message the broker did not enqueue.
 func (s *senderLink) SendEnvelope(ctx context.Context, env *messaging.Envelope) error {
-	msg := envelopeToMessage(env)
-	if err := s.raw.Send(ctx, msg, nil); err != nil {
+	msg := envelopeToMessage(env, s.durable)
+	receipt, err := s.raw.SendWithReceipt(ctx, msg, nil)
+	if err != nil {
 		return fmt.Errorf("amqp10: send: %w", err)
 	}
-	return nil
+	state, err := receipt.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("amqp10: send settlement: %w", err)
+	}
+	return dispositionError(state)
 }
 
 // Close closes the link with the supplied context as detach timeout.

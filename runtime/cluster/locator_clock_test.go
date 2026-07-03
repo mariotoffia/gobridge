@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // stubLeaseStore is a minimal LeaseStore used for Locator clock tests.
@@ -117,9 +118,11 @@ func TestLocator_CacheTTL_FakeClock(t *testing.T) {
 }
 
 // TestLocator_CircuitCooldown_FakeClock verifies that after MaxFailures
-// consecutive Current() errors the circuit opens and Locate
-// short-circuits (returning local=true without hitting the lease store)
-// until CooldownPeriod advances on the fake clock.
+// consecutive Current() errors the circuit opens and Locate short-circuits
+// (without hitting the lease store) until CooldownPeriod advances on the fake
+// clock. With the default fail-CLOSED posture (finding M7) the open breaker
+// surfaces an error and never processes locally, so a non-owner cannot act on
+// an exclusive route during a store outage.
 func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 
@@ -152,15 +155,17 @@ func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 
 	callsAtOpen := store.callCount()
 
+	// Breaker open: fail-CLOSED default returns an error and does NOT touch the
+	// store or process locally.
 	peer, local, err := rl.Locate(ctx, "route-1")
-	if err != nil {
-		t.Fatalf("during cooldown Locate should not return error, got %v", err)
+	if err == nil {
+		t.Fatal("open breaker must fail closed (return error) by default")
 	}
-	if !local {
-		t.Fatal("during cooldown Locate must short-circuit as local=true")
+	if local {
+		t.Fatal("open breaker must NOT process locally under the fail-closed default")
 	}
 	if peer != nil {
-		t.Fatalf("during cooldown peer must be nil, got %+v", peer)
+		t.Fatalf("open breaker peer must be nil, got %+v", peer)
 	}
 	if got := store.callCount(); got != callsAtOpen {
 		t.Fatalf("expected no lease store call while circuit open, got %d (was %d)",
@@ -168,8 +173,8 @@ func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	}
 
 	fake.Advance(cfg.CooldownPeriod - time.Millisecond)
-	if _, local, _ = rl.Locate(ctx, "route-1"); !local {
-		t.Fatal("circuit still open just before cooldown elapses; expected short-circuit")
+	if _, local, err = rl.Locate(ctx, "route-1"); err == nil || local {
+		t.Fatal("circuit still open just before cooldown elapses; expected fail-closed short-circuit")
 	}
 	if got := store.callCount(); got != callsAtOpen {
 		t.Fatalf("expected no lease store call while circuit still open, got %d", got)
@@ -189,5 +194,88 @@ func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	if got := store.callCount(); got != callsAtOpen+1 {
 		t.Fatalf("expected one lease store call after cooldown, got %d (was %d)",
 			got, callsAtOpen)
+	}
+}
+
+// TestLocator_CircuitCooldown_FailOpen verifies the opt-in fail-OPEN posture
+// (LocatorConfig.FailOpen = true): an open breaker processes locally
+// (local=true, no error) instead of failing closed, trading exclusivity for
+// availability (finding M7).
+func TestLocator_CircuitCooldown_FailOpen(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := &stubLeaseStore{}
+	cfg := LocatorConfig{
+		CacheTTL:       100 * time.Millisecond,
+		MaxFailures:    3,
+		CooldownPeriod: 2 * time.Second,
+		FailOpen:       true,
+	}
+	rl := NewLocator("instance-local", store, cfg, fake)
+	rl.RegisterRoute("route-1", "sess-1")
+
+	ctx := context.Background()
+	store.setErrForNCalls(errors.New("lease store down"), 100)
+
+	// With fail-open, the store errors still trip the breaker but each Locate
+	// falls back to local processing (no error surfaced to the caller).
+	for i := 0; i < cfg.MaxFailures; i++ {
+		if _, local, _ := rl.Locate(ctx, "route-1"); !local {
+			t.Fatalf("failure %d: fail-open store error must process locally", i+1)
+		}
+	}
+	callsAtOpen := store.callCount()
+
+	// Breaker open: fail-open short-circuits to local=true without touching the
+	// store.
+	peer, local, err := rl.Locate(ctx, "route-1")
+	if err != nil {
+		t.Fatalf("fail-open open breaker must not return error, got %v", err)
+	}
+	if !local {
+		t.Fatal("fail-open open breaker must process locally")
+	}
+	if peer != nil {
+		t.Fatalf("fail-open open breaker peer must be nil, got %+v", peer)
+	}
+	if got := store.callCount(); got != callsAtOpen {
+		t.Fatalf("expected no lease store call while circuit open, got %d", got)
+	}
+}
+
+// TestLocator_NotFoundDoesNotTripBreaker pins finding M7's primary fix: a
+// not-found lease (the lease is momentarily unowned during an ordinary
+// transfer) is NOT a store failure and must never advance the breaker toward
+// opening, no matter how many transfers occur. Each such Locate fails closed
+// (error, no local processing) by default, but the store is still consulted
+// every time because the breaker stays shut.
+func TestLocator_NotFoundDoesNotTripBreaker(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := &stubLeaseStore{}
+	cfg := LocatorConfig{
+		CacheTTL:       100 * time.Millisecond,
+		MaxFailures:    3,
+		CooldownPeriod: 2 * time.Second,
+	}
+	rl := NewLocator("instance-local", store, cfg, fake)
+	rl.RegisterRoute("route-1", "sess-1")
+
+	ctx := context.Background()
+	// Simulate an unowned lease on every call (many more than MaxFailures).
+	store.setErrForNCalls(shared.ErrNotFound, 100)
+
+	const attempts = 10 // >> MaxFailures
+	for i := 0; i < attempts; i++ {
+		peer, local, err := rl.Locate(ctx, "route-1")
+		if !errors.Is(err, shared.ErrNoRouteOwner) {
+			t.Fatalf("attempt %d: expected ErrNoRouteOwner, got %v", i+1, err)
+		}
+		if local || peer != nil {
+			t.Fatalf("attempt %d: not-found must fail closed (no local, no peer)", i+1)
+		}
+	}
+	// The breaker never opened: every attempt reached the store.
+	if got := store.callCount(); int(got) != attempts {
+		t.Fatalf("not-found must not trip the breaker; expected %d store calls, got %d",
+			attempts, got)
 	}
 }

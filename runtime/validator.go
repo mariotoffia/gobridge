@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
@@ -45,7 +46,88 @@ func validateRoutes(entries []*routeEntry, hasOutboxStore, hasLeaseStore, hasDLQ
 		validateRoute(ve, entry, hasOutboxStore, hasLeaseStore, hasDLQStore)
 	}
 
+	validateSharedOutboxPartitions(ve, entries)
+
 	return ve.err()
+}
+
+// drainRelevantPolicy is the subset of RoutePolicy a shared_outbox drainer
+// applies to EVERY record in its partition, independent of which route produced
+// the record. These are exactly the fields the drainer send path reads from
+// d.policy (SendTimeout, MaxReplayAttempts, OnExpired; poisonMinAge derives from
+// SendTimeout). Ingress-only fields (MaxInFlight, DepthCacheTTL, ...) are
+// excluded so routes that legitimately differ only on ingress behaviour are not
+// rejected for sharing a session.
+type drainRelevantPolicy struct {
+	sendTimeout       time.Duration
+	maxReplayAttempts int
+	onExpired         routing.ExpiredAction
+}
+
+func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
+	return drainRelevantPolicy{
+		sendTimeout:       p.SendTimeout,
+		maxReplayAttempts: p.MaxReplayAttempts,
+		onExpired:         p.OnExpired,
+	}
+}
+
+// validateSharedOutboxPartitions rejects a configuration where two or more
+// shared_outbox routes drain the SAME session partition with divergent
+// drain-relevant policy (finding 17). A session partition has exactly one
+// drainer — the first route to claim it wins (bridge_start drainerSessions
+// guard) — so the other routes' records would be silently drained under the
+// first route's SendTimeout / MaxReplayAttempts / OnExpired. Rather than let
+// that config bleed happen invisibly, fail fast at validation and tell the
+// operator to either align the policies or give the routes separate sessions.
+func validateSharedOutboxPartitions(ve *ValidationError, entries []*routeEntry) {
+	type claim struct {
+		routeID string
+		drain   drainRelevantPolicy
+	}
+	// Effective drain session -> the first route that claimed it.
+	claimed := make(map[string]claim)
+
+	for _, entry := range entries {
+		policy := entry.config.Policy.WithDefaults()
+		if policy.DeliveryMode != routing.DeliverySharedOutbox {
+			continue
+		}
+		dr := drainRelevant(policy)
+
+		routeSession := ""
+		if entry.sessCfg != nil {
+			routeSession = entry.sessCfg.SessionID
+		}
+
+		// Distinct effective sessions this route persists records under. An
+		// empty binding session inherits the route session (mirrors the
+		// inheritance bridge_start applies before creating drainers).
+		seen := make(map[string]bool)
+		for _, b := range entry.config.Bindings {
+			eff := b.SessionID
+			if eff == "" {
+				eff = routeSession
+			}
+			if eff == "" || seen[eff] {
+				continue
+			}
+			seen[eff] = true
+			prev, ok := claimed[eff]
+			if !ok {
+				claimed[eff] = claim{routeID: entry.config.ID, drain: dr}
+				continue
+			}
+			if prev.drain != dr {
+				ve.add(fmt.Sprintf(
+					"shared_outbox partition conflict: routes %q and %q both drain session %q "+
+						"but have divergent drain policy (SendTimeout/MaxReplayAttempts/OnExpired); "+
+						"the partition has a single drainer, so one route's records would be drained "+
+						"under the other's policy — give them separate sessions or align their policy",
+					prev.routeID, entry.config.ID, eff))
+			}
+		}
+	}
 }
 
 func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLeaseStore, hasDLQStore bool) {
@@ -89,6 +171,21 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 	if !policy.AllowUnfenced && hasCapability(entry.config.SourceCapabilities, ports.CapSharedConsumer) {
 		ve.add(prefix + "direct_hold invalid: shared consumer source requires fencing (use shared_outbox) or set AllowUnfenced")
 	}
+
+	// Finding 4: direct_hold dispatches a SINGLE leg (DispatchSingle). A
+	// resolver that yields more than one plan has its extra plans silently
+	// discarded at runtime (only plans[0] is sent). We cannot in general know
+	// how many plans an arbitrary resolver returns before it runs, but a
+	// StaticResolver's cardinality is fixed and knowable now — reject it
+	// statically so the misconfiguration surfaces before Start rather than as a
+	// runtime permanent-failure per message.
+	if sr, ok := entry.config.Resolver.(*StaticResolver); ok && sr.PlanCount() > 1 {
+		ve.add(prefix + fmt.Sprintf(
+			"direct_hold invalid: static resolver yields %d plans but direct_hold dispatches a "+
+				"single leg; the extra plans would be discarded (use shared_outbox for fan-out or "+
+				"configure a single-plan resolver)",
+			sr.PlanCount()))
+	}
 }
 
 // outboxTransactionLimit is the maximum number of records atomically
@@ -102,6 +199,19 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 
 	if entry.sessCfg != nil && entry.sessCfg.Exclusive && !hasLeaseStore {
 		ve.add(prefix + "shared_outbox invalid: no LeaseStore configured for exclusive session")
+	}
+
+	// Finding 11: a non-exclusive session never acquires a lease (only
+	// runExclusive sets hasLease), so its outbox drainer's TokenFn reports
+	// "not held" on every cycle and the partition NEVER drains — the source is
+	// ACKed after persist and the records silently strand. shared_outbox
+	// therefore requires an exclusive session (which in turn requires a lease
+	// store, checked above). Reject the combo statically; the drainer also
+	// surfaces it at runtime via MetricDrainSkippedNoLease + a rate-limited warn.
+	if entry.sessCfg != nil && !entry.sessCfg.Exclusive {
+		ve.add(prefix + "shared_outbox invalid: session is non-exclusive; a non-exclusive " +
+			"session never acquires a lease, so its outbox drainer skips every cycle and " +
+			"persisted records never drain (make the session exclusive)")
 	}
 
 	if policy.DispatchMode == routing.DispatchFanOut && len(entry.config.Bindings) > outboxTransactionLimit {

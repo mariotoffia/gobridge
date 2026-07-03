@@ -51,7 +51,9 @@ func (f *DynamoDBStoreFactory) NewLeaseStore(_ context.Context, cfg ports.Plugin
 }
 
 // NewOutboxStore creates a DynamoDB-backed outbox store from the typed config
-// and runtime tuning options.
+// and runtime tuning options. The typed config's stale_claim_duration (when
+// > 0) overrides the runtime-derived value; compaction_grace (when > 0)
+// overrides the store's default item-TTL grace.
 func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, runtime ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
 	dc, err := dynamoDBConfigFromOrZero(cfg)
 	if err != nil {
@@ -61,13 +63,23 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(_ context.Context, cfg ports.Plugi
 	if dc.TableName != "" {
 		opts = append(opts, dynamodboutbox.WithTableName(dc.TableName))
 	}
-	if runtime.StaleClaimDuration > 0 {
-		opts = append(opts, dynamodboutbox.WithStaleClaimDuration(runtime.StaleClaimDuration))
+	staleClaim := runtime.StaleClaimDuration
+	if dc.StaleClaimDuration > 0 {
+		staleClaim = dc.StaleClaimDuration
+	}
+	if staleClaim > 0 {
+		opts = append(opts, dynamodboutbox.WithStaleClaimDuration(staleClaim))
+	}
+	if dc.CompactionGrace > 0 {
+		opts = append(opts, dynamodboutbox.WithCompactionGrace(dc.CompactionGrace))
 	}
 	return dynamodboutbox.NewStore(f.client, opts...), nil
 }
 
 // NewDLQStore creates a DynamoDB-backed DLQ store from the typed config.
+// A positive retention enables item TTL on dead-letter entries; a
+// non-zero max_scan_pages overrides the default scan bound (negative
+// disables the bound).
 func (f *DynamoDBStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
 	dc, err := dynamoDBConfigFromOrZero(cfg)
 	if err != nil {
@@ -76,6 +88,12 @@ func (f *DynamoDBStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginCo
 	var opts []dynamodbdlq.Option
 	if dc.TableName != "" {
 		opts = append(opts, dynamodbdlq.WithTableName(dc.TableName))
+	}
+	if dc.Retention > 0 {
+		opts = append(opts, dynamodbdlq.WithRetention(dc.Retention))
+	}
+	if dc.MaxScanPages != 0 {
+		opts = append(opts, dynamodbdlq.WithMaxScanPages(max(dc.MaxScanPages, 0)))
 	}
 	return dynamodbdlq.NewStore(f.client, opts...), nil
 }

@@ -61,29 +61,39 @@ func TestHeadersToAttributes_PreservesBridgeToBridge_StripsInternalOnly(t *testi
 	assert.False(t, hasDedup, "dedup id maps to native MessageDeduplicationId, not an attribute")
 }
 
-// Finding 7 × 11 regression: under the SQS attribute COUNT cap, the
-// bridge-to-bridge propagation headers MUST win slots over application
-// metadata. A name-ascending sort alone keeps the lowest-sorting names,
-// but every bridge-to-bridge attribute name sorts last (traceparent /
-// tracestate start with 't'; x-bridge.* with 'x'), so under attribute
-// pressure a naive sort silently drops idempotency-key / correlation-id
-// in favour of lower-sorting app headers — duplicate processing across a
-// hop. They must be ranked first.
-func TestHeadersToAttributes_PrioritizesBridgeToBridgeUnderCap(t *testing.T) {
-	// The 8 bridge-to-bridge headers that become attributes (ordering-key
-	// and dedup-id map to native FIFO fields, so they are excluded here).
-	bridge := []string{
-		messaging.HeaderCorrelationID, messaging.HeaderCausationID,
-		messaging.HeaderIdempotencyKey, messaging.HeaderTenantID,
-		messaging.HeaderForwardedFrom, messaging.HeaderForwardedHop,
+// Egress priority under the SQS attribute COUNT cap: a peer bridge's SQS
+// ingress strips reserved x-bridge.* attributes unconditionally, so
+// keeping every bridge header ahead of application data would sacrifice
+// real payload metadata for headers the next hop discards. The policy
+// (egressAttributeRank) keeps only the ESSENTIAL propagation headers
+// ahead of application data:
+//
+//	rank 0 — idempotency-key (cross-hop identity/dedup) and
+//	         traceparent/tracestate (W3C keys that survive the peer's
+//	         reserved-header strip)
+//	rank 1 — application headers
+//	rank 2 — remaining bridge-to-bridge reserved headers (correlation,
+//	         causation, tenant, forwarded-*) — sacrificed first.
+func TestHeadersToAttributes_EssentialThenAppThenBridgeUnderCap(t *testing.T) {
+	essential := []string{
+		messaging.HeaderIdempotencyKey,
 		messaging.HeaderTraceParent, messaging.HeaderTraceState,
 	}
+	expendableBridge := []string{
+		messaging.HeaderCorrelationID, messaging.HeaderCausationID,
+		messaging.HeaderTenantID,
+		messaging.HeaderForwardedFrom, messaging.HeaderForwardedHop,
+	}
 	headers := map[string]any{}
-	for _, k := range bridge {
+	for _, k := range essential {
 		headers[k] = "b2b"
 	}
-	// 12 application headers, all sorting BEFORE traceparent/tracestate and
-	// x-bridge.* — exactly the pressure a naive name-sort loses to.
+	for _, k := range expendableBridge {
+		headers[k] = "b2b"
+	}
+	// 12 application headers — more than the slots left after the
+	// essential propagation headers, so the cap must drop the
+	// non-essential bridge headers AND the highest-sorting app headers.
 	const appCount = 12
 	for i := 0; i < appCount; i++ {
 		headers[fmt.Sprintf("a%02d-app", i)] = "app"
@@ -92,22 +102,24 @@ func TestHeadersToAttributes_PrioritizesBridgeToBridgeUnderCap(t *testing.T) {
 	attrs, dropped := headersToAttributes(headers, sqsMaxMessageAttributes, 0)
 
 	require.Len(t, attrs, sqsMaxMessageAttributes, "the cap must be filled exactly")
-	for _, k := range bridge {
+	for _, k := range essential {
 		_, ok := attrs[k]
-		assert.Truef(t, ok, "bridge-to-bridge header %q must survive the attribute cap", k)
+		assert.Truef(t, ok, "essential propagation header %q must survive the attribute cap", k)
 	}
-	// 8 bridge + 12 app = 20 eligible, cap 10 → 10 dropped, and the only
-	// survivors beyond the 8 bridge headers are application headers.
-	require.Equal(t, len(bridge)+appCount-sqsMaxMessageAttributes, dropped,
-		"only application headers are sacrificed to the cap")
-	survivingApp := 0
-	for k := range attrs {
-		if !messaging.IsBridgeToBridgeHeader(k) {
-			survivingApp++
-		}
+	for _, k := range expendableBridge {
+		_, ok := attrs[k]
+		assert.Falsef(t, ok,
+			"non-essential bridge header %q must be sacrificed before application data (peer ingress strips it anyway)", k)
 	}
-	assert.Equal(t, sqsMaxMessageAttributes-len(bridge), survivingApp,
-		"application headers may only take the slots left after bridge-to-bridge")
+	// 3 essential + 5 expendable bridge + 12 app = 20 eligible, cap 10 →
+	// 10 dropped: all 5 expendable bridge + the 5 highest-sorting app.
+	require.Equal(t, len(essential)+len(expendableBridge)+appCount-sqsMaxMessageAttributes, dropped)
+	appSlots := sqsMaxMessageAttributes - len(essential)
+	for i := 0; i < appCount; i++ {
+		_, ok := attrs[fmt.Sprintf("a%02d-app", i)]
+		assert.Equalf(t, i < appSlots, ok,
+			"app header a%02d-app: within a rank, name order decides survival deterministically", i)
+	}
 }
 
 // TestBuildAttributes_EgressHeaderPolicy exercises the policy through the

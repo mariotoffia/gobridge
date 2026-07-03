@@ -247,17 +247,24 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 	}
 }
 
-// TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled is the
-// negative counterpart to the scaled-timeout test: when only the
-// legacy DrainTimeout is set (new fields zero), a slow batch should
-// hit the fixed deadline and fail to complete all records. This
-// confirms that the backward-compat path still behaves like the old
-// code.
+// TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled
+// verifies the finding-10 protection on the legacy-config path: when only
+// the fixed DrainTimeout is set (new scaling fields zero), the per-batch
+// work budget still scales with the send depth and can never be undercut
+// below one record's SendTimeout + Complete margin. A DrainTimeout set far
+// below the send budget (500ms vs a 30s default SendTimeout) therefore no
+// longer prematurely cancels an otherwise-healthy batch — all records
+// complete instead of stranding-and-poisoning every cycle.
+//
+// Before finding 10 the old formula min(max(1.5×SendTimeout, floor),
+// DrainTimeout) collapsed the batch budget to the 500ms DrainTimeout and
+// cancelled mid-batch; this test now proves that regression is closed even
+// for the backward-compatible legacy path.
 //
 // Assertions:
-//   - Fewer than recordCount records complete within the fixed
-//     DrainTimeout window (context cancels mid-batch).
-func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
+//   - All recordCount records complete in the first batch (no premature
+//     cancellation by the too-small legacy DrainTimeout).
+func TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	const recordCount = 5
@@ -305,11 +312,12 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
-		// Legacy fixed DrainTimeout well below serial-batch duration
-		// (5 * 250ms = 1250ms > 500ms). Leaving the new fields zero
-		// forces backward-compat path. Subsequent drain cycles may
-		// re-pick the unfinished records, so we assert on the *first*
-		// batch's success count rather than the cumulative total.
+		// Legacy fixed DrainTimeout well below the serial-batch duration
+		// (5 * 250ms = 1250ms > 500ms) AND below one record's SendTimeout
+		// budget. Leaving the new scaling fields zero forces the
+		// backward-compat path. Under finding 10 this DrainTimeout may only
+		// RAISE the batch budget, never undercut a single send, so the batch
+		// is expected to complete all records rather than strand them.
 		DrainTimeout:      500 * time.Millisecond,
 		BatchTimeoutFloor: 500 * time.Millisecond,
 		TokenFn: func() (persistence.LeaseToken, bool) {
@@ -333,8 +341,9 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 		close(done)
 	}()
 
-	// Capture the success count from the first drain batch — the one
-	// whose deadline is the fixed legacy DrainTimeout.
+	// Capture the success count from the first drain batch. Under finding
+	// 10 the legacy DrainTimeout can no longer undercut the send budget, so
+	// the whole batch should complete.
 	var firstBatch int
 	select {
 	case firstBatch = <-batchCh:
@@ -346,13 +355,9 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderBatchCancelled(t *testing.T) {
 	cancel()
 	<-done
 
-	if firstBatch >= recordCount {
-		t.Fatalf("legacy fixed DrainTimeout should have cancelled the "+
-			"first batch before all %d records completed; got %d in one batch",
-			recordCount, firstBatch)
-	}
-	if firstBatch == 0 {
-		t.Fatalf("expected at least one successful send before the " +
-			"legacy deadline fired; got 0")
+	if firstBatch != recordCount {
+		t.Fatalf("finding 10: legacy DrainTimeout must not undercut the send "+
+			"budget; expected all %d records to complete in the first batch, "+
+			"got %d", recordCount, firstBatch)
 	}
 }

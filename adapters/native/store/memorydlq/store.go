@@ -119,8 +119,15 @@ func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.D
 		}
 	}
 
+	// Oldest-first with ID tiebreak (ports.DLQReader ordering contract):
+	// operators triage the oldest failures first and limited pagination
+	// pages identically on every backend.
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].FailedAt().After(result[j].FailedAt())
+		fi, fj := result[i].FailedAt(), result[j].FailedAt()
+		if fi.Equal(fj) {
+			return result[i].ID() < result[j].ID()
+		}
+		return fi.Before(fj)
 	})
 
 	if filter.Limit > 0 && len(result) > filter.Limit {
@@ -158,8 +165,8 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Collect matching IDs, sorted by FailedAt descending (newest first)
-	// to match SQLite/DynamoDB ordering when Limit is applied.
+	// Collect matching IDs. A limited delete removes the OLDEST matches
+	// first (ports.DLQAdmin contract), mirroring List's ordering.
 	var matched []routing.DLQEntry
 	for _, e := range s.entries {
 		if matchesFilter(e, filter) {
@@ -169,7 +176,11 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 
 	if filter.Limit > 0 && len(matched) > filter.Limit {
 		sort.Slice(matched, func(i, j int) bool {
-			return matched[i].FailedAt().After(matched[j].FailedAt())
+			fi, fj := matched[i].FailedAt(), matched[j].FailedAt()
+			if fi.Equal(fj) {
+				return matched[i].ID() < matched[j].ID()
+			}
+			return fi.Before(fj)
 		})
 		matched = matched[:filter.Limit]
 	}

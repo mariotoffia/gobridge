@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS dlq (
     session_id      TEXT NOT NULL DEFAULT '',
     source_id       TEXT NOT NULL DEFAULT '',
     correlation_id  TEXT NOT NULL DEFAULT '',
+    address         TEXT NOT NULL DEFAULT '',
     reason          TEXT NOT NULL DEFAULT '',
     category        TEXT NOT NULL DEFAULT '',
     error_code      TEXT NOT NULL DEFAULT '',
@@ -40,13 +41,13 @@ CREATE INDEX IF NOT EXISTS idx_dlq_failed_at ON dlq(failed_at);
 // dlqColumns is the canonical column list used for SELECTs that
 // hydrate full routing.DLQEntry values via scanEntries.
 const dlqColumns = `id, route_id, binding_id, session_id, source_id, correlation_id,
-		reason, category, error_code, last_error, envelope_json, failed_at, attempts`
+		address, reason, category, error_code, last_error, envelope_json, failed_at, attempts`
 
 const (
 	insertDLQSQL = `INSERT INTO dlq (id, route_id, binding_id, session_id, source_id,
-		 correlation_id, reason, category, error_code, last_error,
+		 correlation_id, address, reason, category, error_code, last_error,
 		 envelope_json, failed_at, attempts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	selectByIDSQL = `SELECT ` + dlqColumns + ` FROM dlq WHERE id = ?`
 
@@ -84,7 +85,8 @@ func listSQL(filter routing.DLQFilter) (string, []any) {
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	q += " ORDER BY failed_at DESC"
+	// Oldest-first with ID tiebreak (ports.DLQReader ordering contract).
+	q += " ORDER BY failed_at ASC, id ASC"
 	if filter.Limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)
@@ -103,7 +105,9 @@ func deleteByFilterSQL(filter routing.DLQFilter) (string, []any) {
 		if len(clauses) > 0 {
 			sub += " WHERE " + strings.Join(clauses, " AND ")
 		}
-		sub += " ORDER BY failed_at DESC"
+		// A limited delete removes the OLDEST matches first
+		// (ports.DLQAdmin contract), mirroring List's ordering.
+		sub += " ORDER BY failed_at ASC, id ASC"
 		sub += fmt.Sprintf(" LIMIT %d", filter.Limit)
 		return "DELETE FROM dlq WHERE id IN (" + sub + ")", args
 	}

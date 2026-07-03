@@ -2,6 +2,7 @@ package paho
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -32,6 +33,12 @@ func (Config) Kind() string { return "mqtt.paho" }
 func (c Config) Validate() error {
 	if c.Session.ClientID == "" && len(c.Session.BrokerURLs) == 0 && c.Sender.DefaultTopic == "" {
 		return errors.New("mqtt: at least one of session.client_id, session.broker_urls, or sender.default_topic must be set")
+	}
+	if c.Sender.QoS > 2 {
+		return fmt.Errorf("mqtt: sender.qos must be 0, 1, or 2, got %d", c.Sender.QoS)
+	}
+	if err := c.Session.Will.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

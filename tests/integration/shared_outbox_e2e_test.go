@@ -793,13 +793,12 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	ddblocal.CleanupTable(t, client, leaseTable)
 
 	// MaxReplayAttempts=3 means 3 send attempts; on the 4th claim the
-	// drainer detects ReplayCount > MaxReplayAttempts and sends to DLQ.
-	// The DynamoDB store's Claim filter checks pre-update replay_count,
-	// so maxReplayCount must be MaxReplayAttempts+1 to allow that 4th claim.
+	// drainer's poison gate detects ReplayCount > MaxReplayAttempts and
+	// sends to DLQ. Stores never filter claims by replay count (contract
+	// C2) — the drainer is the sole poison authority.
 	outboxStore := dboutbox.NewStore(client,
 		dboutbox.WithTableName(outboxTable),
 		dboutbox.WithStaleClaimDuration(200*time.Millisecond),
-		dboutbox.WithMaxReplayCount(4),
 	)
 	_ = outboxStore.CreateTable(context.Background())
 	ddblocal.CleanupTable(t, client, outboxTable)
@@ -812,6 +811,9 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
 		goruntime.WithDLQStore(dlq),
+		// The poison age gate (default max(5×SendTimeout, 2m)) would stall
+		// this fast-poll e2e; replay-count exhaustion is what is under test.
+		goruntime.WithOutboxPoisonMinAge(time.Millisecond),
 	)
 
 	receiver := newFakeReceiver()

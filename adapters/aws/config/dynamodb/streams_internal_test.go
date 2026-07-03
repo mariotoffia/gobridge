@@ -22,11 +22,16 @@ import (
 
 // fakeDDB implements the ddbAPI surface used by the loader's Load path.
 // It stores a single (PK, SK, data, version) row in memory and ignores
-// write operations that are irrelevant to the streams code path.
+// write operations that are irrelevant to the streams code path. Tests
+// can inject a GetItem error via setGetErr and inspect the last
+// CreateTable input via lastCreateInput.
 type fakeDDB struct {
-	mu      sync.Mutex
-	data    string
-	version string
+	mu         sync.Mutex
+	data       string
+	version    string
+	getErr     error
+	lastCreate *awsddb.CreateTableInput
+	getCalls   atomic.Int32
 }
 
 func (f *fakeDDB) setRow(data string, version int64) {
@@ -36,9 +41,25 @@ func (f *fakeDDB) setRow(data string, version int64) {
 	f.version = strconv.FormatInt(version, 10)
 }
 
-func (f *fakeDDB) GetItem(ctx context.Context, params *awsddb.GetItemInput, optFns ...func(*awsddb.Options)) (*awsddb.GetItemOutput, error) {
+func (f *fakeDDB) setGetErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getErr = err
+}
+
+func (f *fakeDDB) lastCreateInput() *awsddb.CreateTableInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCreate
+}
+
+func (f *fakeDDB) GetItem(ctx context.Context, params *awsddb.GetItemInput, optFns ...func(*awsddb.Options)) (*awsddb.GetItemOutput, error) {
+	f.getCalls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return &awsddb.GetItemOutput{
 		Item: map[string]ddbtypes.AttributeValue{
 			attrPK:      &ddbtypes.AttributeValueMemberS{Value: "config#stream-test"},
@@ -54,6 +75,9 @@ func (f *fakeDDB) PutItem(ctx context.Context, params *awsddb.PutItemInput, optF
 }
 
 func (f *fakeDDB) CreateTable(ctx context.Context, params *awsddb.CreateTableInput, optFns ...func(*awsddb.Options)) (*awsddb.CreateTableOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastCreate = params
 	return &awsddb.CreateTableOutput{}, nil
 }
 
@@ -64,13 +88,18 @@ func (f *fakeDDB) DescribeTable(ctx context.Context, params *awsddb.DescribeTabl
 // fakeStreams implements streamsAPI for tests. It serves a single open
 // shard and feeds successive GetRecords calls from a queue of record
 // batches supplied by the test. Once the queue is drained, subsequent
-// calls return empty batches so the consumer idles.
+// calls return empty batches so the consumer idles. Error injection:
+// describeErr makes every DescribeStream call fail; enqueueRecordErr
+// queues errors that GetRecords returns (in order) before serving
+// batches.
 type fakeStreams struct {
 	mu              sync.Mutex
 	describeCalls   atomic.Int32
 	shardIterCalls  atomic.Int32
 	getRecordsCalls atomic.Int32
 	batches         [][]dstreamtypes.Record
+	recordErrs      []error
+	describeErr     error
 	closeAfterDrain bool
 }
 
@@ -80,8 +109,20 @@ func (f *fakeStreams) enqueue(batch []dstreamtypes.Record) {
 	f.batches = append(f.batches, batch)
 }
 
+func (f *fakeStreams) enqueueRecordErr(errs ...error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordErrs = append(f.recordErrs, errs...)
+}
+
 func (f *fakeStreams) DescribeStream(ctx context.Context, params *dynamodbstreams.DescribeStreamInput, optFns ...func(*dynamodbstreams.Options)) (*dynamodbstreams.DescribeStreamOutput, error) {
 	f.describeCalls.Add(1)
+	f.mu.Lock()
+	describeErr := f.describeErr
+	f.mu.Unlock()
+	if describeErr != nil {
+		return nil, describeErr
+	}
 	return &dynamodbstreams.DescribeStreamOutput{
 		StreamDescription: &dstreamtypes.StreamDescription{
 			Shards: []dstreamtypes.Shard{{
@@ -106,6 +147,12 @@ func (f *fakeStreams) GetRecords(ctx context.Context, params *dynamodbstreams.Ge
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if len(f.recordErrs) > 0 {
+		err := f.recordErrs[0]
+		f.recordErrs = f.recordErrs[1:]
+		return nil, err
+	}
 
 	var batch []dstreamtypes.Record
 	if len(f.batches) > 0 {

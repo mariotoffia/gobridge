@@ -71,6 +71,7 @@ func TestIntegration_MultipleSenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer recvCancel()
@@ -152,6 +153,7 @@ func TestIntegration_CompetingReceivers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewReceiver(%d) error = %v", r, err)
 		}
+		defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -296,6 +298,7 @@ func TestIntegration_SenderCloseReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver() error = %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()

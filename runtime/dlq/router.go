@@ -33,7 +33,7 @@ type Router struct {
 	metrics           ports.MetricsExporter
 	clk               clock.Clock
 	mu                sync.Mutex // guards tokenFn
-	tokenFn           func() (persistence.LeaseToken, bool)
+	tokenFn           func(sessionID string) (persistence.LeaseToken, bool)
 	writeMaxAttempts  int
 	writeRetryBackoff routing.BackoffPolicy
 }
@@ -101,7 +101,14 @@ func (r *Router) HasStore() bool {
 }
 
 // SetTokenFn sets the function used to check lease validity before DLQ writes.
-func (r *Router) SetTokenFn(fn func() (persistence.LeaseToken, bool)) {
+// The check is SCOPED to the sessionID that owns the failing route/record
+// (finding 12): the DLQ write is fenced only when the failing route's own
+// session holds an exclusive lease. Wiring supplies a resolver that returns
+// held=true for a session with no lease to fence on — a non-exclusive session,
+// or an ingress failure with no owning session (empty sessionID) — so a standby
+// can DLQ-write its own unfenced ingress failures, while an unrelated instance's
+// lease can no longer authorize writes for a route it does not own.
+func (r *Router) SetTokenFn(fn func(sessionID string) (persistence.LeaseToken, bool)) {
 	r.mu.Lock()
 	r.tokenFn = fn
 	r.mu.Unlock()
@@ -176,11 +183,12 @@ func (r *Router) writeConfirmed(ctx context.Context, entry routing.DLQEntry) err
 	r.mu.Unlock()
 
 	if tokenFn != nil {
-		if _, hasLease := tokenFn(); !hasLease {
+		if _, hasLease := tokenFn(entry.SessionID()); !hasLease {
 			if r.logger != nil {
-				r.logger.Warn("DLQ write skipped, lease not held",
+				r.logger.Warn("DLQ write skipped, lease not held for owning session",
 					"entry_id", entry.ID(),
 					"route_id", entry.RouteID(),
+					"session_id", entry.SessionID(),
 				)
 			}
 			r.metrics.Counter(shared.MetricDLQWriteFailures, 1)

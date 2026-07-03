@@ -67,10 +67,22 @@ func (c *DepthCache) Update(partitionKey string, atCapacity bool) {
 				delete(c.entries, k)
 			}
 		}
-		if len(c.entries) > depthCacheMaxEntries {
-			c.entries = map[string]depthEntry{
-				partitionKey: {atCapacity: atCapacity, checkedAt: now},
+		// Finding 21: if the stale sweep did not free enough, evict entries
+		// ONE AT A TIME (random order — Go map iteration is randomized) until
+		// back within the bound, never below it. The previous code collapsed
+		// the entire cache to a single entry, which dropped every other
+		// partition's fresh "under capacity" verdict and triggered a
+		// depth-query stampede against the store on the next ingress burst.
+		// Never evict the just-written key so this Update is not immediately
+		// undone.
+		for k := range c.entries {
+			if len(c.entries) <= depthCacheMaxEntries {
+				break
 			}
+			if k == partitionKey {
+				continue
+			}
+			delete(c.entries, k)
 		}
 	}
 	c.mu.Unlock()

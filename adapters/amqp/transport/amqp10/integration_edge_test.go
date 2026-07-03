@@ -84,6 +84,7 @@ func edgeSendRecv(t *testing.T, sess *Session, addr string, env *messaging.Envel
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -199,6 +200,7 @@ func TestIntegration_Edge_ReceiveContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -210,6 +212,13 @@ func TestIntegration_Edge_ReceiveContextCancel(t *testing.T) {
 
 	if err != nil && ctx.Err() == nil {
 		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	// Run leaves the link open (in-flight settlement contract); the
+	// owner — the route runner in production, this test here — performs
+	// the bounded close.
+	if err := recv.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 
 	assertLogContains(t, &buf, "amqp10: receiver starting", "amqp10: closing receiver link")
@@ -242,6 +251,7 @@ func TestIntegration_Edge_DoubleAck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -290,6 +300,7 @@ func TestIntegration_Edge_DoubleRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -340,6 +351,7 @@ func TestIntegration_Edge_AckThenRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()
@@ -418,6 +430,7 @@ func TestIntegration_Edge_ReceiverOnClosedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer recvCancel()

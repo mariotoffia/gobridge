@@ -56,6 +56,8 @@ type Manager struct {
 	leaseTTL          time.Duration
 	renewInterval     time.Duration
 	renewJitter       time.Duration
+	acquirePoll       time.Duration
+	renewCallTimeout  time.Duration
 	maxRenewFails     int
 	stepDownGrace     time.Duration
 	endpoints         map[string]string
@@ -69,7 +71,8 @@ type Manager struct {
 	hasLease      bool
 	connectedOnce atomic.Bool
 
-	leaseEvents chan LeaseStateEvent
+	leaseEvents     chan LeaseStateEvent
+	leaseEventDrops atomic.Uint64
 }
 
 // NewFromConfig creates a Manager from a Config.
@@ -93,19 +96,58 @@ func NewWithMetrics(cfg Config, session ports.Session, leaseStore ports.LeaseSto
 
 func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *Manager {
 	defaults := DefaultConfig(cfg.SessionID, cfg.Exclusive)
-	if cfg.LeaseTTL == 0 {
+	if cfg.LeaseTTL <= 0 {
 		cfg.LeaseTTL = defaults.LeaseTTL
 	}
-	if cfg.MaxRenewFails == 0 {
+	if cfg.MaxRenewFails <= 0 {
 		cfg.MaxRenewFails = defaults.MaxRenewFails
 	}
-	if cfg.RenewInterval == 0 {
-		cfg.RenewInterval = max(cfg.LeaseTTL/time.Duration(cfg.MaxRenewFails), time.Millisecond)
-		if cfg.RenewInterval >= cfg.LeaseTTL {
-			cfg.RenewInterval = max(cfg.LeaseTTL/2, time.Millisecond)
-		}
+	// Derive the renewal cadence from the TTL when the operator supplies only
+	// LeaseTTL (C3: bridge/convert.go no longer seeds DefaultConfig, so this is
+	// now the production path). deriveRenewInterval/deriveRenewJitter target the
+	// MaxRenewFails-th renew at ~75% of the TTL, folding jitter into the
+	// expiry-margin invariant so renew×maxFails+jitter < ttl with margin.
+	//
+	// Jitter is derived ONLY when the renew interval was also unset. If the
+	// caller pinned RenewInterval it is explicit enough that a zero RenewJitter
+	// is honored as "no jitter" (deterministic cadence) rather than reinterpreted
+	// as "derive"; an operator wanting spread on a pinned interval sets the
+	// lease_renew_jitter field. The C3 production path leaves both zero, so both
+	// are derived.
+	renewIntervalDerived := cfg.RenewInterval <= 0
+	if renewIntervalDerived {
+		cfg.RenewInterval = deriveRenewInterval(cfg.LeaseTTL, cfg.MaxRenewFails)
 	}
-	if cfg.StepDownGrace == 0 {
+	if cfg.RenewJitter < 0 {
+		cfg.RenewJitter = 0
+	}
+	if cfg.RenewJitter == 0 && renewIntervalDerived {
+		cfg.RenewJitter = deriveRenewJitter(cfg.RenewInterval)
+	}
+	// Defensively enforce the expiry-margin invariant even for explicit configs
+	// so a hand-tuned combination can never produce a renew span that reaches
+	// the TTL (Config.Validate reports the same violation as a hard error).
+	renewInterval, renewJitter, clamped := clampRenewTimings(cfg.LeaseTTL, cfg.RenewInterval, cfg.RenewJitter, cfg.MaxRenewFails)
+	if clamped && logger != nil {
+		logger.Warn("session lease timings clamped to satisfy the expiry-margin invariant",
+			"session_id", cfg.SessionID,
+			"lease_ttl", cfg.LeaseTTL,
+			"requested_renew_interval", cfg.RenewInterval,
+			"requested_renew_jitter", cfg.RenewJitter,
+			"clamped_renew_interval", renewInterval,
+			"clamped_renew_jitter", renewJitter,
+			"max_renew_fails", cfg.MaxRenewFails,
+		)
+	}
+	cfg.RenewInterval = renewInterval
+	cfg.RenewJitter = renewJitter
+	if cfg.AcquirePollInterval <= 0 {
+		cfg.AcquirePollInterval = deriveAcquirePollInterval(cfg.RenewInterval, cfg.LeaseTTL)
+	}
+	if cfg.RenewCallTimeout <= 0 {
+		cfg.RenewCallTimeout = deriveRenewCallTimeout(cfg.RenewInterval)
+	}
+	if cfg.StepDownGrace <= 0 {
 		cfg.StepDownGrace = defaults.StepDownGrace
 	}
 
@@ -120,13 +162,15 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 		leaseTTL:          cfg.LeaseTTL,
 		renewInterval:     cfg.RenewInterval,
 		renewJitter:       cfg.RenewJitter,
+		acquirePoll:       cfg.AcquirePollInterval,
+		renewCallTimeout:  cfg.RenewCallTimeout,
 		maxRenewFails:     cfg.MaxRenewFails,
 		stepDownGrace:     cfg.StepDownGrace,
 		metrics:           &ports.NoopExporter{},
 		audit:             ports.NoopAuditLogger{},
 		logger:            logger,
 		clk:               clock.System,
-		leaseEvents:       make(chan LeaseStateEvent, 16),
+		leaseEvents:       make(chan LeaseStateEvent, leaseEventBuffer),
 	}
 }
 
@@ -176,14 +220,42 @@ func (m *Manager) SetEndpoints(endpoints map[string]string) {
 	m.endpoints = endpoints
 }
 
+// leaseEventBuffer is the capacity of the LeaseStateChanged channel. Lease
+// transitions are low-frequency but observability-critical; the buffer is sized
+// so a slow consumer rarely fills it, and pushLeaseEvent coalesces on overflow
+// rather than silently dropping (finding L15).
+const leaseEventBuffer = 64
+
 // LeaseStateChanged returns a channel that receives lease state transitions.
 func (m *Manager) LeaseStateChanged() <-chan LeaseStateEvent { return m.leaseEvents }
 
+// LeaseEventDrops returns the number of lease state transitions that had to
+// overwrite an older, still-unconsumed event because the buffer was full. A
+// non-zero value means a consumer is not draining LeaseStateChanged promptly;
+// the newest transitions are always preserved.
+func (m *Manager) LeaseEventDrops() uint64 { return m.leaseEventDrops.Load() }
+
+// pushLeaseEvent delivers a lease transition to LeaseStateChanged. On a full
+// buffer it does NOT silently drop the newest event: it evicts the OLDEST
+// buffered event (the least relevant — state has moved on since) and enqueues
+// the new one, incrementing a drop counter for observability. The current
+// state is more valuable to a consumer than a stale one, so overwrite-oldest
+// preserves the freshest transitions (finding L15).
 func (m *Manager) pushLeaseEvent(state LeaseState, token persistence.LeaseToken, err error) {
 	evt := LeaseStateEvent{State: state, Token: token, Timestamp: m.clk.Now(), Err: err}
-	select {
-	case m.leaseEvents <- evt:
-	default:
+	for {
+		select {
+		case m.leaseEvents <- evt:
+			return
+		default:
+		}
+		// Buffer full: evict the oldest event and retry. The loop tolerates a
+		// concurrent consumer draining between the failed send and the evict.
+		select {
+		case <-m.leaseEvents:
+			m.leaseEventDrops.Add(1)
+		default:
+		}
 	}
 }
 
@@ -218,7 +290,13 @@ func (m *Manager) handleEvents(ctx context.Context) error {
 			return ctx.Err()
 		case ev, ok := <-events:
 			if !ok {
-				return nil
+				// An unexpected Events-channel close (not driven by ctx
+				// cancellation) means the underlying session died. Treat it as
+				// a session FAILURE so superviseSession restarts this one
+				// session in isolation, instead of the previous silent "clean
+				// stop" that let a non-exclusive session die permanently with
+				// no restart and no error (finding L14).
+				return fmt.Errorf("runtime: session-manager: %w", errSessionEventsClosed)
 			}
 			if err := m.handleSessionEvent(ctx, ev); err != nil {
 				return fmt.Errorf("runtime: session-manager: handle session event: %w", err)
@@ -279,6 +357,28 @@ func (m *Manager) jitter() time.Duration {
 // the renewal interval.
 func (m *Manager) clampedInterval() time.Duration {
 	return max(m.renewInterval+m.jitter(), time.Millisecond)
+}
+
+// acquirePollDelay returns the standby lease-acquisition poll interval with a
+// small de-synchronising jitter. Standbys poll on a DEDICATED cadence
+// (m.acquirePoll), decoupled from the (typically much larger) owner renew
+// interval, so a takeover is not delayed by up to a full renew interval
+// (finding M6). The ±25% jitter spreads competing standbys so they do not
+// stampede the lease store on expiry. Floored at 1ms.
+func (m *Manager) acquirePollDelay() time.Duration {
+	base := m.acquirePoll
+	if base <= 0 {
+		base = m.renewInterval
+	}
+	if base <= 0 {
+		return time.Millisecond
+	}
+	spread := base / 2 // full width of the jitter window (±25% of base)
+	var j time.Duration
+	if spread > 0 {
+		j = time.Duration(rand.Int64N(int64(spread))) - spread/2
+	}
+	return max(base+j, time.Millisecond)
 }
 
 func (m *Manager) log(ctx context.Context, level slog.Level, msg string, args ...any) {

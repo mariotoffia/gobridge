@@ -114,7 +114,7 @@ func TestProcessor_EvictsClosedBreakerPreferentially(t *testing.T) {
 	for len(p.breakers) < capacity {
 		key := fmt.Sprintf("filler-%d", i)
 		i++
-		p.breakers[key] = &breakerEntry{breaker: cb.NewBreaker(key, cfg, nil)}
+		p.insertLocked(key, &breakerEntry{breaker: cb.NewBreaker(key, cfg, nil)})
 	}
 	p.mu.Unlock()
 

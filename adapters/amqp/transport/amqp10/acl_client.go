@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/Azure/go-amqp"
 )
@@ -64,8 +65,20 @@ func defaultDial(ctx context.Context, opts SessionOptions, creds amqp10Credentia
 	if opts.ContainerID != "" {
 		connOpts.ContainerID = opts.ContainerID
 	}
-	if creds.Username != "" {
+	switch strings.ToLower(opts.SASLMechanism) {
+	case saslMechanismExternal:
+		// mTLS-style client-certificate auth: identity is established by
+		// the TLS layer; the empty authorization identity lets the broker
+		// derive it from the certificate.
+		connOpts.SASLType = amqp.SASLTypeExternal("")
+	case saslMechanismAnonymous:
+		connOpts.SASLType = amqp.SASLTypeAnonymous()
+	case saslMechanismPlain:
 		connOpts.SASLType = amqp.SASLTypePlain(creds.Username, creds.Password)
+	default: // "" — infer: PLAIN when credentials are present.
+		if creds.Username != "" {
+			connOpts.SASLType = amqp.SASLTypePlain(creds.Username, creds.Password)
+		}
 	}
 	if opts.TLS != nil && opts.TLS.Enable {
 		tlsCfg, err := BuildTLSConfig(opts.TLS)

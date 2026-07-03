@@ -19,7 +19,7 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLeaseStore, dlq *FakeDLQStore) *goruntime.Runtime {
+func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLeaseStore, dlq *FakeDLQStore, extra ...goruntime.Option) *goruntime.Runtime {
 	opts := []goruntime.Option{
 		goruntime.WithInstanceID(instanceID),
 	}
@@ -34,6 +34,7 @@ func newTestRuntime(instanceID string, outbox *FakeOutboxStore, lease *FakeLease
 	} else {
 		opts = append(opts, goruntime.WithDLQStore(NewFakeDLQStore()))
 	}
+	opts = append(opts, extra...)
 	return goruntime.New(opts...)
 }
 

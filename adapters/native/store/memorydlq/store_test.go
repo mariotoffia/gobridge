@@ -203,8 +203,9 @@ func TestListRespectsLimit(t *testing.T) {
 	}
 }
 
-// Verifies List orders entries by FailedAt descending.
-func TestListSortedByFailedAtDescending(t *testing.T) {
+// Verifies List orders entries oldest-first (ascending FailedAt), the
+// ports.DLQReader ordering contract shared by every backend.
+func TestListSortedByFailedAtAscending(t *testing.T) {
 	s := memorydlq.NewStore()
 	ctx := context.Background()
 	now := time.Now()
@@ -220,14 +221,14 @@ func TestListSortedByFailedAtDescending(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-	if entries[0].ID() != "e-new" {
-		t.Errorf("first entry: got %q, want %q", entries[0].ID(), "e-new")
+	if entries[0].ID() != "e-old" {
+		t.Errorf("first entry: got %q, want %q", entries[0].ID(), "e-old")
 	}
 	if entries[1].ID() != "e-mid" {
 		t.Errorf("second entry: got %q, want %q", entries[1].ID(), "e-mid")
 	}
-	if entries[2].ID() != "e-old" {
-		t.Errorf("third entry: got %q, want %q", entries[2].ID(), "e-old")
+	if entries[2].ID() != "e-new" {
+		t.Errorf("third entry: got %q, want %q", entries[2].ID(), "e-new")
 	}
 }
 

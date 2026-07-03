@@ -32,12 +32,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL DEFAULT 0,
     completed_at   INTEGER NOT NULL DEFAULT 0,
+    seq            INTEGER NOT NULL DEFAULT 0,
     UNIQUE(envelope_id, binding_id)
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
 CREATE TABLE IF NOT EXISTS outbox_partition_fence (
     partition_key TEXT PRIMARY KEY,
-    max_version   INTEGER NOT NULL DEFAULT 0
+    max_version   INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0
 );
 `
 
@@ -45,12 +47,22 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 // hydrate full persistence.OutboxRecord values via scanRecords.
 const outboxColumns = `id, partition_key, route_id, envelope_id, binding_id, session_id,
         address, envelope_json, headers_json, status, claimed_by, claim_version,
-        replay_count, created_at, expires_at, completed_at`
+        claimed_at, replay_count, created_at, expires_at, completed_at, seq`
 
 const (
-	insertOutboxSQL = `INSERT INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
-		 session_id, address, envelope_json, headers_json, status, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+	// insertOutboxSQL persists one record with per-record idempotency
+	// (ports.OutboxStore Persist contract): OR IGNORE skips a row whose
+	// identity (id primary key or UNIQUE(envelope_id, binding_id)) already
+	// exists, letting the caller count RowsAffected to detect an
+	// all-duplicate batch. seq is the monotonic per-partition persist
+	// sequence: MAX(seq)+1 within the partition is race-free here because
+	// the pool is capped at a single writer connection (I2) and the batch
+	// runs in one transaction. Bind order: ..., created_at, expires_at,
+	// partition_key (again, for the seq subselect).
+	insertOutboxSQL = `INSERT OR IGNORE INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
+		 session_id, address, envelope_json, headers_json, status, created_at, expires_at, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?,
+		 (SELECT COALESCE(MAX(seq), 0) + 1 FROM outbox WHERE partition_key = ?))`
 
 	// selectMaxClaimVersionSQL reports the highest claim_version ever stamped
 	// on a persisted row in the partition. It is only the legacy-row component
@@ -69,19 +81,44 @@ const (
 
 	// upsertFenceVersionSQL advances the durable high-water-mark on every
 	// Claim. MAX(...) keeps it monotonic so an out-of-order older token can
-	// never lower the fence.
-	upsertFenceVersionSQL = `INSERT INTO outbox_partition_fence (partition_key, max_version)
-		 VALUES (?, ?)
-		 ON CONFLICT(partition_key) DO UPDATE SET max_version = MAX(max_version, excluded.max_version)`
+	// never lower the fence. updated_at is refreshed on every touch so
+	// retention compaction can eventually drop fences of abandoned
+	// (ephemeral/rotating) partitions instead of growing the table forever.
+	// Bind order: partition_key, max_version, updated_at_ms.
+	upsertFenceVersionSQL = `INSERT INTO outbox_partition_fence (partition_key, max_version, updated_at)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(partition_key) DO UPDATE SET
+		 max_version = MAX(max_version, excluded.max_version),
+		 updated_at = excluded.updated_at`
 
 	selectPendingByPartitionSQL = `SELECT ` + outboxColumns + `
 		 FROM outbox
 		 WHERE partition_key = ? AND status = 'pending'
-		 ORDER BY created_at, envelope_id
+		 ORDER BY created_at, seq
 		 LIMIT ?`
 
 	expireOutboxSQL = `UPDATE outbox SET status = 'expired'
 		 WHERE expires_at > 0 AND expires_at < ? AND status = 'pending'`
+
+	// Retention compaction (mirrors the DynamoDB backend's TTL grace):
+	// terminal rows — completed or expired — older than the retention window
+	// are physically deleted so the single-file production backend does not
+	// grow unboundedly. Deleting a terminal row also releases its
+	// UNIQUE(envelope_id, binding_id) dedup identity, so the retention window
+	// must comfortably exceed any upstream redelivery window (same tradeoff
+	// as DynamoDB item TTL).
+	deleteCompletedSQL = `DELETE FROM outbox
+		 WHERE status = 'completed' AND completed_at > 0 AND completed_at < ?`
+	deleteExpiredSQL = `DELETE FROM outbox
+		 WHERE status = 'expired' AND expires_at > 0 AND expires_at < ?`
+
+	// deleteStaleFencesSQL drops fence rows untouched for longer than the
+	// fence retention window (max(retention, 30d)). Losing a fence after a
+	// month of abandonment is acceptable: a partition idle that long has no
+	// competing owners left to fence, and per-partition seq restarting at 1
+	// cannot reorder claims because created_at is the primary sort key.
+	deleteStaleFencesSQL = `DELETE FROM outbox_partition_fence
+		 WHERE updated_at > 0 AND updated_at < ?`
 )
 
 // claimableWhere is the reusable predicate identifying rows a Claim may take:
@@ -106,7 +143,7 @@ func claimableWhere(staleEnabled bool) string {
 func selectClaimableIDsSQL(staleEnabled bool) string {
 	return `SELECT id FROM outbox
 		 WHERE partition_key = ? AND ` + claimableWhere(staleEnabled) + `
-		 ORDER BY created_at, envelope_id
+		 ORDER BY created_at, seq
 		 LIMIT ?`
 }
 
@@ -129,7 +166,7 @@ func updateClaimSQL(n int, staleEnabled bool) string {
 // selectByIDsSQL builds the SELECT that hydrates n records by ID.
 func selectByIDsSQL(n int) string {
 	return fmt.Sprintf(
-		`SELECT %s FROM outbox WHERE id IN (%s) ORDER BY created_at, envelope_id`,
+		`SELECT %s FROM outbox WHERE id IN (%s) ORDER BY created_at, seq`,
 		outboxColumns, placeholders(n),
 	)
 }
@@ -148,15 +185,15 @@ func updateCompleteSQL(n int) string {
 // releaseOutboxSQL builds the UPDATE statement that returns n records
 // from claimed back to pending iff they are still claimed by the token
 // owner at the supplied claim_version (owner+version+status fence, the
-// same fence as updateCompleteSQL). It clears claimed_by so the row is
-// re-claimable on the next drain; claim_version is left as-is (it is
-// irrelevant once pending and is overwritten by the next Claim). The
-// outbox schema has no claimed_at column, so no claim timestamp is
-// reset. replay_count is untouched — the next Claim increments it,
-// preserving the poison-message cap.
+// same fence as updateCompleteSQL). It clears claimed_by and claimed_at
+// so the row is re-claimable on the next drain and hydrates identically
+// to the domain aggregate after Release (which zeroes both);
+// claim_version is left as-is (it is irrelevant once pending and is
+// overwritten by the next Claim). replay_count is untouched — the next
+// Claim increments it, preserving the poison-message cap.
 func releaseOutboxSQL(n int) string {
 	return fmt.Sprintf(
-		`UPDATE outbox SET status = 'pending', claimed_by = ''
+		`UPDATE outbox SET status = 'pending', claimed_by = '', claimed_at = 0
 			 WHERE id IN (%s) AND status = 'claimed' AND claimed_by = ? AND claim_version = ?`,
 		placeholders(n),
 	)

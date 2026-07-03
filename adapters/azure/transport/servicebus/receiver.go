@@ -2,8 +2,10 @@ package servicebus
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +21,13 @@ var _ ports.Receiver = (*Receiver)(nil)
 // concentrated in acl_*.go: this file references only the unexported
 // seam interfaces (asbAPI, retryScheduler) and the *asbClientHandle
 // wrapper, which makes the package's SDK boundary visible by file name.
+//
+// client / scheduler / asbClient form the swappable receiver stack:
+// every access goes through initMu (currentClient / currentScheduler /
+// swapStack) so a live credential rotation (ApplyCredentials) can
+// replace the whole stack while the poll loop is running — the loop
+// only ever observes either the complete old stack or the complete new
+// one, never nil.
 type Receiver struct {
 	cfg         ReceiverConfig
 	client      asbAPI
@@ -33,7 +42,32 @@ type Receiver struct {
 	startedOnce sync.Once
 }
 
+// receiverStack bundles the SDK client handle with the receiver and
+// scheduler seams built from it, so init/rotation/close can move all
+// three as one unit.
+type receiverStack struct {
+	client    asbAPI
+	scheduler retryScheduler
+	handle    *asbClientHandle
+}
+
+// close releases the stack's resources; nil members are skipped.
+func (s receiverStack) close(ctx context.Context) {
+	if closer, ok := s.client.(ports.ContextCloser); ok {
+		_ = closer.Close(ctx)
+	}
+	if s.scheduler != nil {
+		if closer, ok := s.scheduler.(ports.ContextCloser); ok {
+			_ = closer.Close(ctx)
+		}
+	}
+	if s.handle != nil {
+		_ = s.handle.Close(ctx)
+	}
+}
+
 func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
+	requestedMaxMessages := cfg.MaxMessages
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -50,12 +84,12 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if clk == nil {
 		clk = clock.System
 	}
-	if cfg.Prefetch != 0 && l != nil {
-		// Finding 7: the configured prefetch cannot be honoured because
-		// azservicebus v1.10.0 exposes no public prefetch knob. Warn so the
-		// setting is not silently misleading operators.
-		l.Warn("servicebus: prefetch is configured but not supported by the Azure SDK; ignoring",
-			"prefetch", cfg.Prefetch)
+	if cfg.receiveAndDelete() && requestedMaxMessages > 1 && l != nil {
+		// applyDefaults clamps MaxMessages to 1 in ReceiveAndDelete mode:
+		// the broker deletes at receive time, so every batched-but-not-
+		// yet-emitted message would be lost on shutdown or emit error.
+		l.Warn("servicebus: receive_mode ReceiveAndDelete forces max_messages=1 (broker settles at receive; larger batches risk message loss on shutdown)",
+			"requested_max_messages", requestedMaxMessages)
 	}
 	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
 }
@@ -65,6 +99,37 @@ func (r *Receiver) clock() clock.Clock {
 		return r.clk
 	}
 	return clock.System
+}
+
+// currentClient returns the live receiver seam under the stack lock.
+// Nil means "not started" (or closed).
+func (r *Receiver) currentClient() asbAPI {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	return r.client
+}
+
+// currentScheduler returns the live retry scheduler under the stack
+// lock. Nil is valid (topic subscription, or sender build failed).
+//
+//nolint:ireturn // retryScheduler is an adapter-internal mock seam (category 5).
+func (r *Receiver) currentScheduler() retryScheduler {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	return r.scheduler
+}
+
+// swapStack installs next as the live stack under the stack lock and
+// returns the previous stack so the caller can close it OUTSIDE the
+// lock (Close on AMQP links can block).
+func (r *Receiver) swapStack(next receiverStack) receiverStack {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	old := receiverStack{client: r.client, scheduler: r.scheduler, handle: r.asbClient}
+	r.client = next.client
+	r.scheduler = next.scheduler
+	r.asbClient = next.handle
+	return old
 }
 
 // Started returns a channel that is closed once the receiver's poll
@@ -86,17 +151,8 @@ func (r *Receiver) entityName() string {
 // settlement operations are still in progress.
 func (r *Receiver) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
-		if closer, ok := r.client.(ports.ContextCloser); ok {
-			_ = closer.Close(ctx)
-		}
-		if r.scheduler != nil {
-			if closer, ok := r.scheduler.(ports.ContextCloser); ok {
-				_ = closer.Close(ctx)
-			}
-		}
-		if r.asbClient != nil {
-			_ = r.asbClient.Close(ctx)
-		}
+		old := r.swapStack(receiverStack{})
+		old.close(ctx)
 	})
 	return nil
 }
@@ -130,9 +186,34 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		return nil
 	}
 
-	asbClient, err := buildClient(r.cfg.Connection)
+	stack, err := r.buildStack(ctx, r.cfg.Connection)
 	if err != nil {
 		return err
+	}
+
+	r.client = stack.client
+	r.scheduler = stack.scheduler
+	r.asbClient = stack.handle
+
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "servicebus: client initialized",
+			"entity", r.entityName(),
+			"session_id", r.cfg.SessionID,
+		)
+	}
+
+	return nil
+}
+
+// buildStack constructs a complete receiver stack (client handle,
+// receiver seam, retry scheduler) from conn. Shared by ensureClient
+// (first Run) and ApplyCredentials (live rotation) so both paths have
+// identical semantics. It never mutates the Receiver; the caller
+// installs the stack under initMu.
+func (r *Receiver) buildStack(ctx context.Context, conn ConnectionConfig) (receiverStack, error) {
+	asbClient, err := buildClient(conn)
+	if err != nil {
+		return receiverStack{}, err
 	}
 
 	recvOpts := asbReceiverOptions{
@@ -141,22 +222,30 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 	entityName := r.entityName()
 
+	stack := receiverStack{handle: asbClient}
+
 	if r.cfg.SessionID != "" {
 		sessOpts := asbSessionOptions{
 			ReceiveAndDelete: r.cfg.receiveAndDelete(),
 		}
 
-		var seam asbAPI
-		if r.cfg.QueueName != "" {
-			seam, err = asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)
-		} else {
-			seam, err = asbClient.AcceptSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, r.cfg.SessionID, sessOpts)
+		// Session accept DIALS the broker and competes for the session
+		// lock. During rolling deploys the outgoing pod still holds it
+		// (com.microsoft:session-cannot-be-locked), which is expected and
+		// transient — retry with backoff instead of crash-looping the
+		// whole bridge on a one-shot accept.
+		accept := func(ctx context.Context) (asbAPI, error) {
+			if r.cfg.QueueName != "" {
+				return asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)
+			}
+			return asbClient.AcceptSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, r.cfg.SessionID, sessOpts)
 		}
+		seam, err := acceptSessionWithRetry(ctx, accept, r.clock(), r.logger)
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return shared.ErrUnavailable.Wrap(err)
+			return receiverStack{}, shared.ErrUnavailable.Wrap(err)
 		}
-		r.client = seam
+		stack.client = seam
 	} else {
 		var seam asbAPI
 		if r.cfg.QueueName != "" {
@@ -166,9 +255,9 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		}
 		if err != nil {
 			_ = asbClient.Close(context.Background())
-			return shared.ErrUnavailable.Wrap(err)
+			return receiverStack{}, shared.ErrUnavailable.Wrap(err)
 		}
-		r.client = seam
+		stack.client = seam
 	}
 
 	// Finding 2 (no message duplication): the scheduled-retry sender
@@ -187,7 +276,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 					"entity", entityName, "error", err)
 			}
 		} else {
-			r.scheduler = sender
+			stack.scheduler = sender
 		}
 	} else if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug,
@@ -197,16 +286,81 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		)
 	}
 
-	r.asbClient = asbClient
+	return stack, nil
+}
 
-	if logging.DebugEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelDebug, "servicebus: client initialized",
-			"entity", entityName,
-			"session_id", r.cfg.SessionID,
-		)
+// sessionAcceptMaxAttempts bounds acceptSessionWithRetry. With the
+// pollBackoff schedule (1s..30s, x2) five attempts span roughly 15s of
+// backoff — enough to ride out a rolling-deploy lock handover without
+// masking a genuinely dead entity.
+const sessionAcceptMaxAttempts = 5
+
+// acceptSessionWithRetry retries a session accept with exponential
+// backoff. Retryable: com.microsoft:session-cannot-be-locked (the old
+// holder's lock has not lapsed yet — expected during rolling deploys),
+// no-session-available timeouts, and everything MapError classifies as
+// recoverable. Permanent errors (unauthorized, entity not found, ...)
+// fail immediately.
+func acceptSessionWithRetry(
+	ctx context.Context,
+	accept func(context.Context) (asbAPI, error),
+	clk clock.Clock,
+	logger *slog.Logger,
+) (asbAPI, error) {
+	backoff := newPollBackoff()
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		seam, err := accept(ctx)
+		if err == nil {
+			return seam, nil
+		}
+		lastErr = err
+		if !isRetryableSessionAcceptError(err) || attempt >= sessionAcceptMaxAttempts {
+			return nil, lastErr
+		}
+		delay := backoff.next()
+		if logger != nil {
+			logger.Warn("servicebus: session accept failed, retrying",
+				"attempt", attempt,
+				"max_attempts", sessionAcceptMaxAttempts,
+				"retry_after", delay,
+				"error", err,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-clk.After(delay):
+		}
 	}
+}
 
-	return nil
+// isRetryableSessionAcceptError reports whether a session accept
+// failure is worth retrying. session-cannot-be-locked never gets its
+// own azservicebus.Code (the SDK treats it as fatal for the ONE
+// accept), so it is matched on the AMQP error text.
+func isRetryableSessionAcceptError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "session-cannot-be-locked") {
+		return true
+	}
+	return shared.IsRecoverableError(MapError(err))
+}
+
+// isSessionRequiredError matches the amqp:not-allowed failure a
+// NON-session receiver gets on a session-enabled entity ("it is not
+// possible for an entity that requires sessions to create a
+// non-sessionful message receiver"). Retrying can never succeed, so
+// the poll loop fails fast instead of warn-looping forever.
+func isSessionRequiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "requires sessions") ||
+		strings.Contains(msg, "sessionful")
 }
 
 func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
@@ -223,6 +377,34 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 	delayedRetryDisabled := r.cfg.QueueName == ""
 	receiveAndDelete := r.cfg.receiveAndDelete()
 
+	sessionMode := r.cfg.SessionID != ""
+	if sessionMode && autoExtend {
+		// In session mode every in-flight delivery shares ONE session
+		// lock (sessionReceiverAdapter.RenewMessageLock renews the
+		// session, not the message). Per-delivery auto-extend would spawn
+		// up to MaxMessages goroutines all renewing the same lock, so a
+		// single session-renewer goroutine replaces them for the life of
+		// the poll loop. It has no MaxLockRenewalDuration cap: the
+		// session lock must be held as long as the loop runs; the cap is
+		// a per-delivery hung-pipeline guard, which does not translate to
+		// session scope.
+		renewCtx, renewCancel := context.WithCancel(ctx)
+		defer renewCancel()
+
+		interval := r.cfg.LockDuration / 2
+		if floor := r.cfg.MinAutoExtendInterval; floor > 0 && interval < floor {
+			interval = floor
+		}
+		go r.runSessionRenewer(renewCtx, r.currentClient(), interval)
+	}
+
+	tuning := deliveryTuning{
+		lockDuration:          r.cfg.LockDuration,
+		autoExtend:            autoExtend && !sessionMode,
+		minAutoExtendInterval: r.cfg.MinAutoExtendInterval,
+		maxLockRenewal:        r.cfg.MaxLockRenewalDuration,
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -234,6 +416,17 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if !sessionMode && isSessionRequiredError(err) {
+				// A non-session receiver on a session-enabled entity can
+				// never succeed: fail fast with a clear remedy instead of
+				// warn-looping forever. AcceptNextSession-style rotating
+				// session consumption is not implemented.
+				return shared.ErrNotSupported.Wrap(fmt.Errorf(
+					"servicebus: entity %q requires sessions but no session_id is configured; set receiver.session_id (accept-next-session polling is not supported): %w",
+					r.entityName(), err))
+			}
+			r.metrics.Counter(MetricASBReceiveFailures, 1,
+				shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("servicebus: ReceiveMessages failed, retrying",
@@ -253,6 +446,19 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
 
+		scheduler := r.currentScheduler()
+
+		// Build ALL deliveries first so lock auto-renewal starts for the
+		// whole batch immediately after receive. emit() below can block on
+		// pipeline backpressure; if renewal only started per message right
+		// before its own emit, the locks of the batch tail would lapse
+		// unrenewed — redelivery duplicates plus LockLost on settle.
+		type pendingDelivery struct {
+			del    *asbDelivery
+			ctx    context.Context
+			cancel context.CancelFunc
+		}
+		pending := make([]pendingDelivery, 0, len(raws))
 		for _, raw := range raws {
 			// Per-message context tree (mirrors the SQS adapter):
 			// deliveryCtx is handed to emit() AND to newDelivery (as
@@ -264,24 +470,80 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			del := newDelivery(
 				deliveryCtx,
 				raw.env,
-				r.client,
-				r.scheduler,
+				raw.client,
+				scheduler,
 				raw.msg,
-				r.cfg.LockDuration,
-				autoExtend,
+				tuning,
 				deliveryCancel,
 				r.logger,
 				r.metrics,
 				r.clock(),
-				r.cfg.MinAutoExtendInterval,
 			)
 			del.receiveAndDelete = receiveAndDelete
 			del.delayedRetryDisabled = delayedRetryDisabled
+			pending = append(pending, pendingDelivery{del: del, ctx: deliveryCtx, cancel: deliveryCancel})
+		}
 
-			if err := emit(deliveryCtx, del); err != nil {
-				deliveryCancel()
+		for i, pd := range pending {
+			if err := emit(pd.ctx, pd.del); err != nil {
+				// Cancel this delivery and every not-yet-emitted one so
+				// their auto-extend goroutines stop and the broker locks
+				// lapse for redelivery.
+				for _, rest := range pending[i:] {
+					rest.cancel()
+				}
 				return err
 			}
+		}
+	}
+}
+
+// runSessionRenewer renews the shared session lock at interval until
+// ctx is done. One instance per poll loop in session mode; replaces
+// the per-delivery auto-extend goroutines (which would all renew the
+// SAME session lock redundantly). Tolerates up to autoExtendMaxFailures
+// consecutive errors, then stops: the session lock will lapse and the
+// subsequent ReceiveMessages failures surface through the poll loop's
+// error path (backoff + MetricASBReceiveFailures).
+func (r *Receiver) runSessionRenewer(ctx context.Context, client asbAPI, interval time.Duration) {
+	if client == nil {
+		return
+	}
+	ticker := r.clock().NewTicker(interval)
+	defer ticker.Stop()
+
+	consecutiveFailures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C():
+			// The message argument is unused by sessionReceiverAdapter:
+			// session receivers renew the session lock, not a message lock.
+			if err := client.RenewMessageLock(ctx, nil, nil); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				consecutiveFailures++
+				if r.logger != nil {
+					r.logger.Warn("servicebus: session lock renewal failed",
+						"session_id", r.cfg.SessionID,
+						"error", err,
+						"consecutive_failures", consecutiveFailures,
+					)
+				}
+				if consecutiveFailures >= autoExtendMaxFailures {
+					if r.logger != nil {
+						r.logger.Error("servicebus: session lock renewal max failures reached, stopping renewer",
+							"session_id", r.cfg.SessionID,
+						)
+					}
+					return
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			r.metrics.Counter(MetricASBLockRenewals, 1)
 		}
 	}
 }

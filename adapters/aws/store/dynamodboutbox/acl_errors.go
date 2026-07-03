@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -15,9 +16,24 @@ func isConditionFailed(err error) bool {
 	return errors.As(err, &ccf)
 }
 
-func isTransactionCanceled(err error) bool {
+// transactCancellationCodes returns the per-item cancellation reason codes
+// of a TransactionCanceledException ("ConditionalCheckFailed",
+// "TransactionConflict", "None", ...) in TransactItems order, and whether
+// err was a transaction cancellation at all. Callers map the codes onto the
+// items they submitted (e.g. fence ConditionCheck at index 0, record
+// update at index 1 in claimOne).
+func transactCancellationCodes(err error) ([]string, bool) {
 	var tce *ddbtypes.TransactionCanceledException
-	return errors.As(err, &tce)
+	if !errors.As(err, &tce) {
+		return nil, false
+	}
+	codes := make([]string, len(tce.CancellationReasons))
+	for i, r := range tce.CancellationReasons {
+		if r.Code != nil {
+			codes[i] = *r.Code
+		}
+	}
+	return codes, true
 }
 
 func isResourceInUse(err error) bool {
@@ -70,8 +86,20 @@ func mapError(err error) error {
 		return shared.ErrUnavailable.Wrap(err)
 	}
 
+	// ValidationException is deterministic request rejection — most
+	// prominently an item exceeding DynamoDB's 400KB limit (oversized
+	// envelope). It is a PERMANENT failure: retrying the identical write
+	// can never succeed, so it must not be classified transient (which
+	// would retry an unpersistable record forever).
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ValidationException" {
+		return shared.ErrInvalidPayload.Wrap(err)
+	}
+
 	msg := err.Error()
 	switch {
+	case containsAny(msg, "ValidationException"):
+		return shared.ErrInvalidPayload.Wrap(err)
 	case containsAny(msg, "ThrottlingException", "throttl", "rate exceeded", "RequestLimitExceeded"):
 		return shared.ErrThrottled.Wrap(err)
 	case containsAny(msg, "ExpiredToken", "expired credentials"):

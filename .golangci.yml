@@ -88,6 +88,10 @@ linters:
         # RuntimeCommand.DLQAdmin (the DLQStore seam split for finding #16).
         - github.com/mariotoffia/gobridge/ports.DLQReader
         - github.com/mariotoffia/gobridge/ports.DLQAdmin
+        # Builder.effectivePushStore returns either the explicitly-registered
+        # push store or a poll wrapper built lazily behind the same port; the
+        # caller must not know which (order-independence, finding #13).
+        - github.com/mariotoffia/gobridge/ports.PushCredentialStore
 
         # 4. Domain / port polymorphic seams.
         - github.com/mariotoffia/gobridge/domain/persistence.DrainStrategy

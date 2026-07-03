@@ -212,6 +212,74 @@ func TestSerializeAndParseRoundTrip_TLS(t *testing.T) {
 	assert.True(t, parsed.TLS().InsecureSkipVerify())
 }
 
+// Verifies a credential set carrying BOTH password and TLS capabilities
+// survives a serialize/parse round-trip intact. Regression test: the
+// old parser dispatched on a single "type" and silently dropped all TLS
+// material from a combined set, so mutual-TLS + SASL brokers regressed
+// to TLS defaults after any Get.
+func TestSerializeAndParseRoundTrip_PasswordAndTLS(t *testing.T) {
+	original := connectivity.NewCredentialSet(
+		pwCred("u", "p"),
+		tlsMat("cert-data", "key-data", []string{"ca1", "ca2"}, true),
+	)
+	s, err := serializeCredentialSet(original)
+	require.NoError(t, err)
+
+	parsed, err := parseCredentials(s)
+	require.NoError(t, err)
+
+	require.NotNil(t, parsed.Password(), "password capability lost in round-trip")
+	assert.Equal(t, "u", parsed.Password().Username())
+	assert.Equal(t, "p", parsed.Password().Password().Reveal())
+
+	require.NotNil(t, parsed.TLS(), "TLS capability lost in round-trip")
+	assert.Equal(t, "cert-data", parsed.TLS().CertPEM())
+	assert.Equal(t, "key-data", parsed.TLS().KeyPEM().Reveal())
+	assert.Equal(t, []string{"ca1", "ca2"}, parsed.TLS().CAPEMs())
+	assert.True(t, parsed.TLS().InsecureSkipVerify())
+}
+
+// Verifies hand-written JSON with coexisting password and TLS fields
+// (no explicit combined "type") parses both capabilities.
+func TestParseCredentials_JSONPasswordAndTLSFieldsCoexist(t *testing.T) {
+	creds, err := parseCredentials(`{
+		"username": "broker-user",
+		"password": "broker-pass",
+		"certPem": "cert-data",
+		"keyPem": "key-data",
+		"caPem": ["ca1"]
+	}`)
+	require.NoError(t, err)
+
+	require.NotNil(t, creds.Password())
+	assert.Equal(t, "broker-user", creds.Password().Username())
+	assert.Equal(t, "broker-pass", creds.Password().Password().Reveal())
+
+	require.NotNil(t, creds.TLS())
+	assert.Equal(t, "cert-data", creds.TLS().CertPEM())
+	assert.Equal(t, "key-data", creds.TLS().KeyPEM().Reveal())
+	assert.Equal(t, []string{"ca1"}, creds.TLS().CAPEMs())
+}
+
+// Verifies the explicit combined type token drives both parsers and a
+// declared-password capability still validates its mandatory fields.
+func TestParseCredentials_CombinedTypeToken(t *testing.T) {
+	creds, err := parseCredentials(`{
+		"type": "password+tls",
+		"username": "u",
+		"password": "p",
+		"certPem": "cert-data",
+		"keyPem": "key-data"
+	}`)
+	require.NoError(t, err)
+	require.NotNil(t, creds.Password())
+	require.NotNil(t, creds.TLS())
+
+	_, err = parseCredentials(`{"type": "password+tls", "certPem": "cert-data"}`)
+	require.Error(t, err, "declared password capability without username must fail")
+	assert.Contains(t, err.Error(), "missing username")
+}
+
 // ---------------------------------------------------------------------------
 // URI parsing
 // ---------------------------------------------------------------------------
@@ -410,6 +478,24 @@ func TestRepository_Update_VersionMismatch(t *testing.T) {
 	err := r.Update(context.Background(), "pms://ns/path", connectivity.NewCredentialSet(pwCred("u", "p"), nil), 3)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, shared.ErrVersionMismatch))
+}
+
+// Verifies a version-checked Update against a DELETED parameter (SDK
+// returns a response with no Parameter struct) surfaces ErrNotFound —
+// not ErrVersionMismatch, which would mislead the caller into a
+// reload-and-retry loop against a parameter that no longer exists.
+func TestRepository_Update_DeletedParameterIsNotFound(t *testing.T) {
+	mock := &mockSSM{
+		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
+			return &awsssm.GetParameterOutput{Parameter: nil}, nil
+		},
+	}
+
+	r := New(WithClient(mock))
+	err := r.Update(context.Background(), "pms://ns/path", connectivity.NewCredentialSet(pwCred("u", "p"), nil), 3)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrNotFound), "got %v, want ErrNotFound", err)
+	assert.False(t, errors.Is(err, shared.ErrVersionMismatch), "deleted parameter must not read as version mismatch")
 }
 
 // Verifies Delete removes the parameter at the resolved path.

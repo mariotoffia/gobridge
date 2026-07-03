@@ -194,10 +194,16 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
-		r.metrics.Counter(shared.MetricMessagesReceived, 1,
-			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		// Finding 16: count in-flight BEFORE spawning the goroutine. If we
+		// incremented inside the goroutine, WaitQuiescent could snapshot 0
+		// between "emit accepted the delivery" and "goroutine started",
+		// reporting quiescence with an accepted-but-unstarted delivery.
+		r.inFlight.Add(1)
+		// Finding 18: wrap the delivery so terminal settlement (Ack/Retry) is
+		// observable from the panic-recovery path — a panic AFTER settlement
+		// must not trigger a duplicate retry on an already-settled delivery.
+		tracked := &settleTrackingDelivery{Delivery: del}
 		go func() {
-			r.inFlight.Add(1)
 			defer func() {
 				// Why: fire IdleChanged on every InFlight → 0 transition
 				// so Runtime.WaitQuiescent (runtime/bridge_health.go) can
@@ -229,6 +235,17 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(shared.MetricDeliveryPanics, 1,
 							shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 						)
+						// Finding 18: a panic AFTER the delivery already reached a
+						// terminal state (e.g. in a tracer/metric/hook call fired
+						// after ACK) must not re-settle it — retrying an acked
+						// delivery is duplicate noise.
+						if tracked.Settled() {
+							if r.logger != nil {
+								r.logger.Warn("panic after delivery settled; skipping retry",
+									"route", r.routeID)
+							}
+							return
+						}
 						// Propagate caller ctx for trace/correlation values and to
 						// honour any deadline the caller already set. If the caller
 						// ctx is cancelled, strip cancellation but keep values so
@@ -240,16 +257,18 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 							retryParent = ctx
 						}
 						retryCtx, retryCancel := context.WithTimeout(retryParent, r.panicRetryTimeout)
-						retryErr := r.retryDelivery(retryCtx, del, 0, fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
-						retryCancel()
-						if retryErr != nil && r.logger != nil {
-							r.logger.Error("retry after panic failed",
-								"route", r.routeID, "error", retryErr)
-						}
+						defer retryCancel()
+						// Finding 2: panics outside RunChain (resolver, hooks,
+						// tracer, metrics) reach here. Route the recovery through
+						// the SAME receive-count poison gate the send path uses so
+						// a deterministically-panicking resolver cannot spin an
+						// uncapped, immediate redelivery hot loop.
+						r.recoverDelivery(retryCtx, tracked,
+							fmt.Errorf("panic recovered in route %s: %v", r.routeID, rec))
 					}()
 				}
 			}()
-			r.processDelivery(ctx, del)
+			r.processDelivery(ctx, tracked)
 		}()
 		return nil
 	})
@@ -338,6 +357,15 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env := del.Envelope()
 
+	// Finding 15: count every delivery that ENTERS the pipeline here — the sole
+	// choke point shared by both the Run receive loop and Runtime.Inject
+	// (HandleDelivery). Previously only the Run callback emitted it, so injected
+	// deliveries were invisible to the conservation law even though they emit
+	// MessagesSent on success. Counting here (not in the Run callback) keeps a
+	// single emission per delivery across both entry points.
+	r.metrics.Counter(shared.MetricMessagesReceived, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+
 	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 	r.injectHeaders(env)
 
@@ -392,7 +420,19 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		return nil
 	}
 
-	if err := RunChain(ctx, r.processors, env,
+	// chainEnv is an isolated clone the processor chain mutates. On a chain
+	// TIMEOUT or shutdown-grace abandonment (route/chain.go) the underlying
+	// processor goroutine keeps running with a *live* envelope; were that the
+	// shared source envelope, a late SetHeader would race the runner's
+	// concurrent reads (receiveCount, DLQ serialization) — a fatal concurrent
+	// map read/write. Running the chain on a clone confines any
+	// abandoned-goroutine mutation to chainEnv; the source env is only ever
+	// read by the runner on the error path. On SUCCESS every processor
+	// goroutine has returned (happens-before close(done) in invokeProcessor),
+	// so the clone is quiescent and we merge its processor-owned mutations
+	// (subject, payload, headers) back onto env for dispatch.
+	chainEnv := env.Clone()
+	if err := RunChain(ctx, r.processors, chainEnv,
 		WithChainLogger(r.logger),
 		WithChainMetrics(r.metrics),
 		WithChainTimeout(r.policy.ProcessorTimeout),
@@ -405,6 +445,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		}
 		return pErr
 	}
+	mergeProcessedEnvelope(env, chainEnv)
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "processors complete",
@@ -462,5 +503,103 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("resolver returned no dispatch plans for route %s", r.routeID))
 	}
 
+	if len(plans) > 1 {
+		// direct_hold is single-dispatch: it delivers exactly one leg and ACKs
+		// the source. A resolver that yielded multiple plans here would send
+		// plans[0] and silently drop the remainder after the source is ACKed —
+		// unrecoverable loss. The validator blocks the fan-out POLICY, but an
+		// opaque resolver can still return >1 plan at runtime; refuse it as a
+		// permanent config error (routed to DLQ/drop per policy) rather than
+		// vanishing the extra legs.
+		r.metrics.Counter(shared.MetricRouteErrors, 1,
+			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		if r.logger != nil {
+			r.logger.Error("direct_hold resolver returned multiple dispatch plans; single-dispatch delivers one leg only",
+				"route", r.routeID, "plan_count", len(plans), "envelope_id", env.ID())
+		}
+		multiErr := shared.NewBridgeError(shared.ErrCodeInternal, shared.ErrorPermanent,
+			fmt.Sprintf("direct_hold route %q: resolver returned %d dispatch plans but single-dispatch delivers exactly one; refusing to silently drop the remainder (use shared_outbox for fan-out)", r.routeID, len(plans)))
+		return r.handleProcessorError(ctx, del, env, multiErr)
+	}
+
 	return r.sendDirectHold(ctx, del, env, plans[0])
 }
+
+// recoverDelivery settles a delivery whose processing goroutine panicked
+// OUTSIDE the processor chain (resolver, hooks, tracer, metrics — RunChain has
+// its own recovery). Finding 2: it applies the SAME receive-count poison gate
+// the send path uses so a deterministically-panicking resolver cannot spin an
+// uncapped, immediate redelivery hot loop. At or above MaxReplayAttempts the
+// message is poisoned to the DLQ (or dropped-with-metric when the policy is
+// drop or no store is configured); below the cap it is retried with the
+// policy's bounded backoff (never the previous immediate, zero-delay retry).
+func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, cause error) {
+	env := del.Envelope()
+	rc := receiveCount(env)
+	attempts := rc + 1
+
+	if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+		poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
+			fmt.Sprintf("panic-recovery: receive count %d >= max replay attempts %d: %v", rc, r.policy.MaxReplayAttempts, cause))
+		if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
+			r.emitDrop("panic")
+			if r.logger != nil {
+				r.logger.Warn("panic-poison dropped: at replay cap with no DLQ or drop policy",
+					"route", r.routeID, "envelope_id", env.ID(), "receive_count", rc, "error", cause)
+			}
+			if err := r.settleTerminal(ctx, del, env, poisonErr, attempts); err != nil && r.logger != nil {
+				r.logger.Error("panic-poison settle failed", "route", r.routeID, "error", err)
+			}
+			return
+		}
+		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", poisonErr, rc); dlqErr != nil {
+			// Leave the delivery unsettled so the source redelivers rather than
+			// silently dropping a poison message we could not persist.
+			if r.logger != nil {
+				r.logger.Error("panic-poison DLQ write failed; leaving delivery for redelivery",
+					"route", r.routeID, "envelope_id", env.ID(), "error", dlqErr)
+			}
+			return
+		}
+		r.emitDLQ("panic")
+		if err := r.settleTerminal(ctx, del, env, poisonErr, attempts); err != nil && r.logger != nil {
+			r.logger.Error("panic-poison settle failed", "route", r.routeID, "error", err)
+		}
+		return
+	}
+
+	// Below the cap: bounded-delay retry, falling back to DLQ/drop when the
+	// source transport does not support retry (retryOrFallback handles both).
+	if err := r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, attempts, cause), cause); err != nil && r.logger != nil {
+		r.logger.Error("retry after panic failed", "route", r.routeID, "error", err)
+	}
+}
+
+// settleTrackingDelivery wraps a ports.Delivery to record terminal settlement.
+// A delivery is "settled" once Ack or Retry has succeeded. The panic-recovery
+// path consults Settled() so a panic AFTER settlement (finding 18) does not
+// re-settle an already-terminal delivery. Extend is a visibility operation, not
+// a settlement, so it is not tracked.
+type settleTrackingDelivery struct {
+	ports.Delivery
+	settled atomic.Bool
+}
+
+func (d *settleTrackingDelivery) Ack(ctx context.Context) error {
+	err := d.Delivery.Ack(ctx)
+	if err == nil {
+		d.settled.Store(true)
+	}
+	return err
+}
+
+func (d *settleTrackingDelivery) Retry(ctx context.Context, after time.Duration, reason error) error {
+	err := d.Delivery.Retry(ctx, after, reason)
+	if err == nil {
+		d.settled.Store(true)
+	}
+	return err
+}
+
+// Settled reports whether the delivery has reached a terminal settlement.
+func (d *settleTrackingDelivery) Settled() bool { return d.settled.Load() }

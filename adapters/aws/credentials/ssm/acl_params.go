@@ -59,8 +59,9 @@ func (s *session) getParameter(ctx context.Context, path string, decrypt bool) (
 // getParameterVersion returns just the current version of a
 // parameter (without decrypting the value). Used for optimistic
 // concurrency checks where the value is irrelevant. A missing
-// parameter (no Parameter struct in response) yields version 0 and
-// no error so the caller can distinguish absent-from-mismatch.
+// parameter — surfaced either as a ParameterNotFound SDK error or as
+// a response without a Parameter struct — yields ErrNotFound so
+// callers can distinguish "deleted" from a genuine version mismatch.
 func (s *session) getParameterVersion(ctx context.Context, path string) (int64, error) {
 	api, err := s.ensure(ctx)
 	if err != nil {
@@ -75,7 +76,9 @@ func (s *session) getParameterVersion(ctx context.Context, path string) (int64, 
 		return 0, mapAWSError(err)
 	}
 	if out.Parameter == nil {
-		return 0, nil
+		return 0, shared.ErrNotFound.WithMessage(
+			fmt.Sprintf("SSM parameter %s not found", path),
+		)
 	}
 	return out.Parameter.Version, nil
 }

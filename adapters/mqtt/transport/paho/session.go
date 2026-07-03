@@ -32,7 +32,20 @@ type Session struct {
 	events    chan ports.SessionEvent
 	closed    bool
 	connected bool // true when autopaho reports connection is up
-	starting  bool // guards against concurrent Start() calls (BUG-2 fix)
+	starting  bool // true while a Start() attempt is in flight
+	// startDone is closed when the in-flight Start attempt finishes
+	// (success or failure) so concurrent Start callers can wait for the
+	// outcome instead of returning a false success (finding: concurrent
+	// Start returned nil while the winner was still connecting).
+	// Replaced with a fresh channel each time a Start attempt begins.
+	startDone chan struct{}
+
+	// takeoverStreak counts consecutive session-takeover disconnects
+	// (0x8E) without an intervening stable connection; connUpAt is when
+	// the current connection came up. Both guarded by mu; used to damp
+	// ClientID-collision takeover storms.
+	takeoverStreak int
+	connUpAt       int64 // unix nanos of last OnConnectionUp; 0 when down
 
 	// reconcileMu serializes concurrent Reconcile calls so their
 	// subscribe/unsubscribe operations cannot interleave and corrupt
@@ -74,6 +87,12 @@ var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an MQTT Session from the given options.
 // metrics may be nil; a no-op exporter is used in that case.
+//
+// For Persistent/Exclusive modes a zero SessionExpiryInterval is
+// coerced to DefaultPersistentSessionExpiry (with a warning): expiry 0
+// means the broker discards session state the moment the network drops,
+// which silently voids the offline-retention contract those modes exist
+// to provide.
 func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
@@ -82,6 +101,21 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	if opts.Clock == nil {
 		opts.Clock = clock.System
 	}
+	if mode != connectivity.SessionEphemeral && opts.SessionExpiryInterval == 0 {
+		opts.SessionExpiryInterval = DefaultPersistentSessionExpiry
+		if logger != nil {
+			logger.Warn("mqtt: session_expiry_interval 0 gives zero offline retention; defaulting",
+				"mode", string(mode),
+				"session_expiry_interval", opts.SessionExpiryInterval,
+			)
+		}
+	}
+	r := newRouter(logger, m)
+	if opts.ReceiveMaximum > 0 {
+		// Bound the pre-registration pending buffer by the same window
+		// that bounds the broker's un-acked QoS 1/2 in-flight publishes.
+		r.setPendingLimit(int(opts.ReceiveMaximum))
+	}
 	return &Session{
 		opts:       opts,
 		mode:       mode,
@@ -89,7 +123,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		metrics:    m,
 		clk:        opts.Clock,
 		events:     make(chan ports.SessionEvent, 16),
-		router:     newRouter(logger, m),
+		router:     r,
 		activeSubs: make(map[string]byte),
 	}
 }

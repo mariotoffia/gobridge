@@ -12,9 +12,15 @@ import (
 
 // MapError converts an AMQP 1.0 error into a *shared.BridgeError with the
 // appropriate ErrorClass for the runtime to decide retry vs DLQ.
+// Already-classified *shared.BridgeError values pass through unchanged.
 func MapError(err error) *shared.BridgeError {
 	if err == nil {
 		return nil
+	}
+
+	var be *shared.BridgeError
+	if errors.As(err, &be) {
+		return be
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -22,6 +28,23 @@ func MapError(err error) *shared.BridgeError {
 	}
 	if errors.Is(err, context.Canceled) {
 		return shared.ErrUnavailable.Wrap(err)
+	}
+
+	// Scope-typed SDK errors: map the peer-supplied condition when
+	// present; otherwise classify by scope. A bare *amqp.LinkError with
+	// nil RemoteErr (local detach, no condition) is transient — the link
+	// can be re-attached on the live session.
+	var linkErr *amqp.LinkError
+	if errors.As(err, &linkErr) && linkErr.RemoteErr == nil {
+		return shared.ErrUnavailable.Wrap(err).WithMessage("amqp10: link detached")
+	}
+	var connErr *amqp.ConnError
+	if errors.As(err, &connErr) && connErr.RemoteErr == nil {
+		return shared.ErrConnectionLost.Wrap(err)
+	}
+	var sessErr *amqp.SessionError
+	if errors.As(err, &sessErr) && sessErr.RemoteErr == nil {
+		return shared.ErrUnavailable.Wrap(err).WithMessage("amqp10: session ended")
 	}
 
 	var amqpErr *amqp.Error
@@ -48,6 +71,21 @@ func MapError(err error) *shared.BridgeError {
 	}
 
 	return shared.ErrUnavailable.Wrap(err)
+}
+
+// isLinkScopedError reports whether err is a fault confined to a single
+// AMQP link (*amqp.LinkError) with the connection and session still
+// healthy. Link-scoped faults must rebuild ONLY the link — escalating
+// them to a full connection teardown (notifyDisconnect) would disrupt
+// every other link on the session for a single-link problem.
+func isLinkScopedError(err error) bool {
+	var linkErr *amqp.LinkError
+	if !errors.As(err, &linkErr) {
+		return false
+	}
+	var connErr *amqp.ConnError
+	var sessErr *amqp.SessionError
+	return !errors.As(err, &connErr) && !errors.As(err, &sessErr)
 }
 
 func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {

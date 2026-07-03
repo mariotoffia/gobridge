@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -173,6 +174,9 @@ func forwardDeliveries(
 	clk clock.Clock,
 ) {
 	defer close(out)
+	// One Warn-dedup guard per consumer channel: every Delivery this
+	// forwarder creates shares it (see Delivery.warnDelayedRetryUnhonored).
+	var delayWarnOnce sync.Once
 	for d := range deliveries {
 		env, err := deliveryToEnvelope(d, clk)
 		if err != nil {
@@ -185,8 +189,10 @@ func forwardDeliveries(
 			_ = d.Reject(false)
 			continue
 		}
+		delivery := NewDelivery(env, d, logger, metrics, clk)
+		delivery.delayWarnOnce = &delayWarnOnce
 		select {
-		case out <- NewDelivery(env, d, logger, metrics, clk):
+		case out <- delivery:
 		case <-ctx.Done():
 			// Shutdown/reconnect: do not leak this goroutine blocking
 			// on a reader that is gone. Requeue the in-flight delivery
@@ -201,22 +207,33 @@ func forwardDeliveries(
 	}
 }
 
-// publishContext publishes a single *amqp091.Publishing built from the
-// envelope, on the underlying channel. Used by the senderChannel wrapper.
+// publishDeferredContext publishes a single *amqp091.Publishing on the
+// underlying channel and returns the SDK's DeferredConfirmation handle
+// for the publish (the channel is always in Confirm mode — see
+// openSenderChannel). Used by the senderChannel wrapper for both the
+// per-message confirmed path and the pipelined batch path.
 //
 // The AMQP basic.publish "immediate" flag is intentionally hard-wired to
 // false: RabbitMQ removed support for it in 3.0 and closes the channel
 // when it is set, so there is no safe value other than false. The managed
 // config layer (Config.Validate) rejects sender.immediate=true outright.
-func (c *amqpChannel) publishContext(
+func (c *amqpChannel) publishDeferredContext(
 	ctx context.Context,
 	exchange, routingKey string,
 	mandatory bool,
 	pub amqp.Publishing,
-) error {
+) (*amqp.DeferredConfirmation, error) {
 	const immediate = false
-	if err := c.raw.PublishWithContext(ctx, exchange, routingKey, mandatory, immediate, pub); err != nil {
-		return fmt.Errorf("amqp091: publish: %w", err)
+	dc, err := c.raw.PublishWithDeferredConfirmWithContext(
+		ctx, exchange, routingKey, mandatory, immediate, pub)
+	if err != nil {
+		return nil, fmt.Errorf("amqp091: publish: %w", err)
 	}
-	return nil
+	if dc == nil {
+		// The SDK only returns a nil handle when the channel is not in
+		// Confirm mode — a programming error in this adapter, since
+		// openSenderChannel always enables confirms before use.
+		return nil, fmt.Errorf("amqp091: publish returned no confirmation handle (channel not in confirm mode)")
+	}
+	return dc, nil
 }

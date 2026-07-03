@@ -55,6 +55,12 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	t.Run("AcquireExpiredTakeover", func(t *testing.T) {
 		leaseAcquireExpiredTakeover(t, store, opts)
 	})
+	t.Run("TakeoverOnlyAfterTTL", func(t *testing.T) {
+		leaseTakeoverOnlyAfterTTL(t, store, opts)
+	})
+	t.Run("RenewAfterTakeover", func(t *testing.T) {
+		leaseRenewAfterTakeover(t, store, opts)
+	})
 	t.Run("RenewSuccess", func(t *testing.T) {
 		leaseRenewSuccess(t, store)
 	})
@@ -81,6 +87,9 @@ func RunLeaseStoreTests(t *testing.T, store ports.LeaseStore, opts *LeaseTestOpt
 	})
 	t.Run("ReleaseNonExistent", func(t *testing.T) {
 		leaseReleaseNonExistent(t, store)
+	})
+	t.Run("ReleaseIdempotent", func(t *testing.T) {
+		leaseReleaseIdempotent(t, store)
 	})
 	t.Run("CurrentReturnsInfo", func(t *testing.T) {
 		leaseCurrentReturnsInfo(t, store)
@@ -138,6 +147,15 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 		t.Fatalf("first acquire: %v", err)
 	}
 
+	// Pre-expiry takeover attempt. It MUST be rejected (the lease is still
+	// held), and for a store that takes over via a local-clock observation
+	// window (dynamodblease, finding M5) it also establishes owner-B's
+	// observation baseline so the post-expiry seize is permitted. A single-clock
+	// store (memorylease) simply rejects it as still-held.
+	if _, err := store.Acquire(ctx, "lt-aet-1", "owner-B", 30*time.Second, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("pre-expiry takeover must be rejected with ErrAlreadyExists, got %v", err)
+	}
+
 	opts.waitForExpiry(ttl)
 
 	tok2, err := store.Acquire(ctx, "lt-aet-1", "owner-B", 30*time.Second, nil)
@@ -149,6 +167,106 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 	}
 	if tok2.Owner != "owner-B" {
 		t.Fatalf("owner: got %q, want %q", tok2.Owner, "owner-B")
+	}
+}
+
+// leaseTakeoverOnlyAfterTTL pins that an actively-held lease cannot be seized
+// until it has been observed unowned for a full TTL on the TAKER's own clock
+// (finding M5): repeated takeover attempts before the TTL elapses must all be
+// rejected, and only after the expiry wait does the takeover succeed.
+func leaseTakeoverOnlyAfterTTL(t *testing.T, store ports.LeaseStore, opts *LeaseTestOptions) {
+	ctx := context.Background()
+	ttl := opts.leaseTTL()
+
+	if _, err := store.Acquire(ctx, "lt-tat-1", "owner-A", ttl, nil); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	// Several rapid pre-expiry attempts: none may seize the lease.
+	for i := 0; i < 3; i++ {
+		if _, err := store.Acquire(ctx, "lt-tat-1", "owner-B", 30*time.Second, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+			t.Fatalf("attempt %d before TTL must be rejected with ErrAlreadyExists, got %v", i+1, err)
+		}
+	}
+
+	opts.waitForExpiry(ttl)
+
+	tok, err := store.Acquire(ctx, "lt-tat-1", "owner-B", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("takeover after TTL: %v", err)
+	}
+	if tok.Owner != "owner-B" {
+		t.Fatalf("owner: got %q, want %q", tok.Owner, "owner-B")
+	}
+}
+
+// leaseRenewAfterTakeover pins the definitive lease-loss signal the session
+// layer relies on for immediate step-down (finding H2): once a new owner has
+// taken over an expired lease, the OLD owner's renew with its now-stale token
+// must be fenced with ErrStaleFencingToken (never a transient error), while the
+// new owner can still renew.
+func leaseRenewAfterTakeover(t *testing.T, store ports.LeaseStore, opts *LeaseTestOptions) {
+	ctx := context.Background()
+	ttl := opts.leaseTTL()
+
+	tokA, err := store.Acquire(ctx, "lt-rat-1", "owner-A", ttl, nil)
+	if err != nil {
+		t.Fatalf("owner-A acquire: %v", err)
+	}
+
+	// Establish owner-B's observation baseline for the observation-window store.
+	if _, err := store.Acquire(ctx, "lt-rat-1", "owner-B", 30*time.Second, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("pre-expiry takeover must be rejected, got %v", err)
+	}
+
+	opts.waitForExpiry(ttl)
+
+	tokB, err := store.Acquire(ctx, "lt-rat-1", "owner-B", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("owner-B takeover: %v", err)
+	}
+
+	// Old owner's renew with the stale token is definitively fenced.
+	if _, err := store.Renew(ctx, "lt-rat-1", tokA, ttl, nil); !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("stale owner renew after takeover must return ErrStaleFencingToken, got %v", err)
+	}
+
+	// New owner can still renew.
+	if _, err := store.Renew(ctx, "lt-rat-1", tokB, 30*time.Second, nil); err != nil {
+		t.Fatalf("new owner renew after takeover: %v", err)
+	}
+}
+
+// leaseReleaseIdempotent pins that releasing an already-released lease is a safe
+// operation: it returns a DEFINITIVE signal (ErrNotFound or ErrStaleFencingToken,
+// never a transient/opaque error), does not corrupt state, and leaves the lease
+// re-acquirable with a strictly higher fencing version. The manager's
+// release-then-reacquire recovery (finding M12) tolerates a double release, so
+// the store must not surprise it.
+func leaseReleaseIdempotent(t *testing.T, store ports.LeaseStore) {
+	ctx := context.Background()
+
+	tok, err := store.Acquire(ctx, "lt-ri-1", "owner-A", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := store.Release(ctx, "lt-ri-1", tok); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+
+	// Second release of the same, now-released token must be safely definitive.
+	err = store.Release(ctx, "lt-ri-1", tok)
+	if !errors.Is(err, shared.ErrNotFound) && !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("second release must return a definitive signal (ErrNotFound/ErrStaleFencingToken), got %v", err)
+	}
+
+	// The lease remains usable and monotonic after the double release.
+	tok2, err := store.Acquire(ctx, "lt-ri-1", "owner-B", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("re-acquire after double release: %v", err)
+	}
+	if tok2.Version <= tok.Version {
+		t.Fatalf("re-acquire version must increase: v1=%d, v2=%d", tok.Version, tok2.Version)
 	}
 }
 

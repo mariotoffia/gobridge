@@ -20,6 +20,38 @@ const (
 	defaultPollInterval       = 30 * time.Second
 	defaultStreamPollInterval = 500 * time.Millisecond
 
+	// maxStreamBackoff caps the exponential backoff applied between
+	// stream calls after throttles/errors. GetRecords shares a ~5 TPS
+	// per-shard budget across ALL consumers of the stream, so backing
+	// off far beyond the base cadence is what lets a fleet of bridge
+	// instances coexist on one config table.
+	maxStreamBackoff = 30 * time.Second
+
+	// streamAcquireFallbackAfter is the number of consecutive shard/
+	// iterator acquisition failures after which the streams consumer
+	// gives up and falls back to poll mode for the remainder of this
+	// Watch (e.g. the stream was disabled or deleted after Watch
+	// started). One Warn marks the switch; poll mode then guarantees
+	// convergence at pollInterval instead of warn-spamming forever.
+	streamAcquireFallbackAfter = 5
+
+	// streamErrorsBeforeIteratorReset bounds how many consecutive
+	// GetRecords failures are retried on the SAME iterator before it is
+	// discarded. Throttles keep the iterator (position preserved);
+	// persistent unknown errors eventually force a re-acquire, which is
+	// followed by a version reconciliation to cover the gap.
+	streamErrorsBeforeIteratorReset = 3
+
+	// pollFailureEscalateAfter is the number of consecutive poll-cycle
+	// failures after which the (rate-limited) diagnostic escalates from
+	// Warn to Error — a persistent IAM/table problem must not hide at
+	// Warn forever.
+	pollFailureEscalateAfter = 10
+
+	// pollFailureLogInterval rate-limits repeated poll-failure logs so a
+	// broken dependency does not flood the log at pollInterval cadence.
+	pollFailureLogInterval = time.Minute
+
 	attrPK      = "PK"
 	attrSK      = "SK"
 	attrData    = "data"
@@ -32,18 +64,25 @@ const (
 type WatchMode int
 
 const (
-	// ModeStreams uses DynamoDB Streams events for low-latency push-based
-	// change detection. This is the default. On Watch the loader probes
-	// the table for an enabled stream via DescribeTable; if streams are
-	// not available on the table (or no streams client was configured via
-	// WithStreamsClient) the loader transparently falls back to ModePoll
-	// and emits a warning through the configured logger.
-	ModeStreams WatchMode = iota
 	// ModePoll periodically reads the table's version attribute at
-	// PollInterval (legacy behaviour). This is selected automatically as
-	// a fallback when streams are unavailable, or explicitly via
-	// WithWatchMode(ModePoll).
-	ModePoll
+	// PollInterval. This is the default: its steady-state cost is one
+	// strongly consistent GetItem per instance per interval, which
+	// scales safely to any fleet size. It is also the automatic
+	// fallback when ModeStreams cannot run.
+	ModePoll WatchMode = iota
+	// ModeStreams uses DynamoDB Streams events for low-latency
+	// push-based change detection, selected via WithWatchMode. On Watch
+	// the loader probes the table for an enabled stream via
+	// DescribeTable; if streams are not available on the table (or no
+	// streams client was configured via WithStreamsClient) the loader
+	// transparently falls back to ModePoll and emits a warning through
+	// the configured logger.
+	//
+	// A DynamoDB stream shard serves roughly 5 GetRecords calls/sec
+	// shared across ALL consumers, so prefer ModePoll for clustered
+	// deployments (3+ instances) unless sub-second config propagation
+	// is required.
+	ModeStreams
 )
 
 var (
@@ -62,10 +101,12 @@ var (
 //
 // Two change-detection modes are supported, selectable via WithWatchMode:
 //
-//   - ModeStreams (default): consume DynamoDB Streams records on the
-//     table for push-based updates. Falls back to ModePoll if streams
-//     are not enabled or no streams client is configured.
-//   - ModePoll: periodically compare the stored version attribute.
+//   - ModePoll (default): periodically compare the stored version
+//     attribute. Safe at any fleet size.
+//   - ModeStreams: consume DynamoDB Streams records on the table for
+//     push-based updates. Falls back to ModePoll if streams are not
+//     enabled or no streams client is configured, and after persistent
+//     stream failures at runtime.
 type Loader struct {
 	session            *session
 	bridgeID           string
@@ -101,8 +142,10 @@ func WithPollInterval(d time.Duration) Option {
 }
 
 // WithWatchMode selects the change-detection mechanism used by Watch.
-// The default is ModeStreams, which falls back to ModePoll when streams
-// are not available on the table.
+// The default is ModePoll. ModeStreams offers sub-second propagation
+// but shares a ~5 GetRecords/sec per-shard budget across all consumers
+// — prefer ModePoll for clustered deployments. ModeStreams falls back
+// to ModePoll when streams are not available on the table.
 func WithWatchMode(m WatchMode) Option {
 	return func(l *Loader) { l.mode = m }
 }
@@ -176,12 +219,14 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // ctx is cancelled. The initial config is NOT emitted; call Load
 // separately for the first load.
 //
-// In ModeStreams (default), Watch probes the table via DescribeTable
-// for an enabled stream and, when present together with a configured
-// streams client, consumes stream records for push-based updates.
-// If streams are not available or no streams client has been supplied
-// through WithStreamsClient, Watch transparently falls back to ModePoll
-// and logs a warning.
+// In ModeStreams, Watch probes the table via DescribeTable for an
+// enabled stream and, when present together with a configured streams
+// client, consumes stream records for push-based updates. If streams
+// are not available or no streams client has been supplied through
+// WithStreamsClient, Watch transparently falls back to ModePoll and
+// logs a warning. Persistent stream failures at runtime (e.g. the
+// stream is disabled while watching) also degrade to poll mode after
+// streamAcquireFallbackAfter consecutive acquisition failures.
 func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
 	ch := make(chan *ports.BridgeConfig, 1)
 
@@ -217,13 +262,55 @@ func (l *Loader) resolveStreamArn(ctx context.Context) (string, string) {
 	return arn, reason
 }
 
-func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ticker clock.Ticker) {
+// pollLoop compares the stored version each tick and delivers a fresh
+// config when it advanced. The version cursor (lastSeen) only moves
+// after the corresponding config has been enqueued — deliverLatest
+// cannot fail — so a change is never marked "seen" without being
+// observable by the consumer (the file watcher's latest-wins fix,
+// ported here).
+//
+// Failures (version read or Load) are logged with rate limiting and
+// escalate from Warn to Error after pollFailureEscalateAfter
+// consecutive failures: a silently broken IAM policy or deleted table
+// must be visible in operations, not just "config stops updating".
+func (l *Loader) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, ticker clock.Ticker) {
 	defer close(ch)
 	defer ticker.Stop()
 
 	l.mu.Lock()
 	lastSeen := l.lastVersion
 	l.mu.Unlock()
+
+	var consecutiveFailures int
+	var lastFailureLog time.Time
+
+	logFailure := func(stage string, err error) {
+		consecutiveFailures++
+		if l.logger == nil {
+			return
+		}
+		now := l.clk.Now()
+		first := consecutiveFailures == 1
+		// The first escalation must not be swallowed by rate limiting:
+		// it is the operational signal that config updates have stopped.
+		escalating := consecutiveFailures == pollFailureEscalateAfter
+		if !first && !escalating && now.Sub(lastFailureLog) < pollFailureLogInterval {
+			return
+		}
+		lastFailureLog = now
+		msg := "dynamodb config loader: poll cycle failed"
+		attrs := []any{
+			"stage", stage,
+			"error", err,
+			"table", l.session.tableName,
+			"consecutive_failures", consecutiveFailures,
+		}
+		if consecutiveFailures >= pollFailureEscalateAfter {
+			l.logger.Error(msg+"; config updates are NOT being applied", attrs...)
+			return
+		}
+		l.logger.Warn(msg, attrs...)
+	}
 
 	for {
 		select {
@@ -232,23 +319,52 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, ti
 		case <-ticker.C():
 			v, err := l.currentVersion(ctx)
 			if err != nil {
+				logFailure("version check", err)
 				continue
 			}
 
 			if v == lastSeen {
+				consecutiveFailures = 0
 				continue
 			}
 
 			cfg, err := l.Load(ctx)
 			if err != nil {
+				logFailure("load", err)
 				continue
 			}
-			lastSeen = v
+			consecutiveFailures = 0
 
-			select {
-			case ch <- cfg:
-			default:
+			l.deliverLatest(ch, cfg)
+			lastSeen = v
+		}
+	}
+}
+
+// deliverLatest enqueues cfg on the 1-buffered watch channel with
+// latest-wins coalescing: when the consumer has not yet drained the
+// previous update, that stale pending config is evicted and the newest
+// enqueued in its place. Only a single producer goroutine (poll OR
+// stream loop, never both) touches the send side, so the evict/enqueue
+// pair cannot race another writer and the loop terminates in at most a
+// couple of iterations. This guarantees the consumer always converges
+// on the newest committed config — an update is never silently
+// dropped.
+func (l *Loader) deliverLatest(ch chan *ports.BridgeConfig, cfg *ports.BridgeConfig) {
+	for {
+		select {
+		case ch <- cfg:
+			return
+		default:
+		}
+		select {
+		case <-ch:
+			if l.logger != nil {
+				l.logger.Warn("dynamodb config loader: superseded a queued config before the consumer read it",
+					"table", l.session.tableName)
 			}
+		default:
+			// Consumer drained the slot concurrently; retry the send.
 		}
 	}
 }
@@ -293,9 +409,12 @@ func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 }
 
 // EnsureTable creates the DynamoDB table if it does not already exist.
-// Intended for test setup and local development.
+// When the loader runs in ModeStreams the table is provisioned with a
+// KEYS_ONLY stream so self-provisioned deployments actually get the
+// streams-based Watch they configured instead of silently degrading to
+// poll mode. Intended for test setup and local development.
 func (l *Loader) EnsureTable(ctx context.Context) error {
-	if err := l.session.ensureTable(ctx); err != nil {
+	if err := l.session.ensureTable(ctx, l.mode == ModeStreams); err != nil {
 		return err
 	}
 	return l.session.waitTableExists(ctx, 30*time.Second)

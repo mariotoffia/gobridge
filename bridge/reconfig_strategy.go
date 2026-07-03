@@ -95,13 +95,19 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 				return
 			case cfg, ok := <-in:
 				if !ok {
-					if pending != nil && timerActive {
-						if !timer.Stop() {
-							<-timer.C()
+					// Input closed: flush the final debounced config before
+					// exiting instead of dropping it with a best-effort
+					// non-blocking send (Finding 11). A change that arrived
+					// just before close would otherwise be silently lost.
+					if pending != nil {
+						if timerActive {
+							if !timer.Stop() {
+								<-timer.C()
+							}
 						}
 						select {
 						case out <- pending:
-						default:
+						case <-ctx.Done():
 						}
 					}
 					return
@@ -206,16 +212,21 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 				return
 			case cfg, ok := <-in:
 				if !ok {
+					// Input closed: flush the final pending config with a
+					// blocking send (ctx-guarded) so a change batched just
+					// before close is not dropped (Finding 11).
 					if pending != nil {
 						if !quietTimer.Stop() && quietActive {
 							<-quietTimer.C()
 						}
+						quietActive = false
 						if !maxTimer.Stop() && maxActive {
 							<-maxTimer.C()
 						}
+						maxActive = false
 						select {
 						case out <- pending:
-						default:
+						case <-ctx.Done():
 						}
 					}
 					return

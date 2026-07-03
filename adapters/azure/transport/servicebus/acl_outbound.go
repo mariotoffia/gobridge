@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,14 +196,54 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 // buildRetryMessage constructs a fresh *azservicebus.Message that
 // mirrors a previously-received message, suitable for re-enqueueing
 // via ScheduleMessages on the retry path.
-func buildRetryMessage(received *azservicebus.ReceivedMessage) *azservicebus.Message {
+//
+// Three production-safety rules apply to the copy:
+//
+//  1. Attempt accounting: scheduling a fresh message resets the
+//     broker's DeliveryCount to 1, which would bypass both the
+//     runtime's MaxReplayAttempts gate and the entity's
+//     MaxDeliveryCount DLQ. The copy therefore carries the accumulated
+//     receive count in the reserved x-bridge.retry-attempt application
+//     property; ingress (messageToHeaders) adds it back onto the
+//     broker DeliveryCount.
+//  2. Duplicate detection: on a dedup-enabled entity a scheduled copy
+//     reusing the original MessageID inside the dedup window is
+//     silently discarded — and the original is then Completed, losing
+//     the message. The copy's MessageID is salted with the attempt
+//     number ("<original>-r<attempt>") while the FIRST MessageID is
+//     preserved in x-bridge.original-message-id so end-to-end dedup
+//     still keys on one logical message.
+//  3. TTL: the original absolute expiry is preserved — the copy's
+//     TimeToLive is the REMAINING time until ExpiresAt, not a restart
+//     of the full TTL on every retry.
+//
+// ApplicationProperties are deep-copied (top-level) so mutations on
+// the copy never alias the received message.
+func buildRetryMessage(received *azservicebus.ReceivedMessage, clk clock.Clock) *azservicebus.Message {
 	out := &azservicebus.Message{
 		Body:    received.Body,
 		Subject: received.Subject,
 	}
-	if received.MessageID != "" {
-		out.MessageID = &received.MessageID
+
+	props := make(map[string]any, len(received.ApplicationProperties)+2)
+	for k, v := range received.ApplicationProperties {
+		props[k] = v
 	}
+
+	attempt := effectiveReceiveCount(received)
+	props[asbPropRetryAttempt] = int64(attempt)
+
+	originalID := received.MessageID
+	if prior, ok := stringProp(received.ApplicationProperties, asbPropOriginalMessageID); ok {
+		originalID = prior
+	}
+	if originalID != "" {
+		props[asbPropOriginalMessageID] = originalID
+		salted := originalID + "-r" + strconv.Itoa(attempt)
+		out.MessageID = &salted
+	}
+	out.ApplicationProperties = props
+
 	if received.SessionID != nil {
 		out.SessionID = received.SessionID
 	}
@@ -212,19 +253,36 @@ func buildRetryMessage(received *azservicebus.ReceivedMessage) *azservicebus.Mes
 	if received.CorrelationID != nil {
 		out.CorrelationID = received.CorrelationID
 	}
-	if len(received.ApplicationProperties) > 0 {
-		out.ApplicationProperties = received.ApplicationProperties
-	}
 	if received.ReplyTo != nil {
 		out.ReplyTo = received.ReplyTo
 	}
 	if received.To != nil {
 		out.To = received.To
 	}
-	if received.TimeToLive != nil {
-		out.TimeToLive = received.TimeToLive
+	switch {
+	case received.ExpiresAt != nil:
+		remaining := received.ExpiresAt.Sub(clk.Now())
+		if remaining <= 0 {
+			// Already expired: give the scheduled copy a minimal TTL so
+			// the broker drops (or dead-letters) it promptly instead of
+			// resurrecting an expired message with a fresh lifetime.
+			remaining = time.Millisecond
+		}
+		out.TimeToLive = &remaining
+	case received.TimeToLive != nil:
+		ttl := *received.TimeToLive
+		out.TimeToLive = &ttl
 	}
 	return out
+}
+
+// stringProp fetches a string-typed application property.
+func stringProp(props map[string]any, key string) (string, bool) {
+	if props == nil {
+		return "", false
+	}
+	s, ok := props[key].(string)
+	return s, ok && s != ""
 }
 
 // sendOne builds the SDK message from env and dispatches a single

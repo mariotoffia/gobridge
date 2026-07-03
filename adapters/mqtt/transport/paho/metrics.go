@@ -18,4 +18,16 @@ const (
 	// non-string idempotency-key or tenant-id). Emitted by
 	// PublishFromEnvelope so the otherwise-silent drop is observable.
 	MetricMQTTNonStringHeaderDropped = "MQTTNonStringHeaderDropped"
+
+	// MetricMQTTRouterBuffered counts publishes that arrived before any
+	// matching handler registered (e.g. the persistent-session backlog
+	// delivered on CONNACK before Receiver.Run runs) and were held in the
+	// router's bounded pending buffer instead of being dropped.
+	MetricMQTTRouterBuffered = "MQTTRouterBuffered"
+
+	// MetricMQTTSessionTakeover counts server disconnects with reason code
+	// 0x8E/0x8F (session taken over): another client connected with the
+	// same ClientID. A steadily increasing count signals two instances
+	// sharing a client_id and mutually kicking each other.
+	MetricMQTTSessionTakeover = "MQTTSessionTakeover"
 )

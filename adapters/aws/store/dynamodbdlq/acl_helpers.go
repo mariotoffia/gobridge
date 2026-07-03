@@ -24,6 +24,7 @@ func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (routing.DLQEntry, 
 	spec.SessionID = strAttr(item, attrSessionID)
 	spec.SourceID = strAttr(item, attrSourceID)
 	spec.CorrelationID = strAttr(item, attrCorrelationID)
+	spec.Address = strAttr(item, attrAddress)
 	spec.Reason = strAttr(item, attrReason)
 	spec.Category = strAttr(item, attrCategory)
 	spec.ErrorCode = strAttr(item, attrErrorCode)

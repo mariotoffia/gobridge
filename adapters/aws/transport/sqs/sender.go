@@ -149,6 +149,26 @@ func (s *Sender) ValidateAddress(address string) error {
 		address, s.queueURL, s.cfg.QueueName))
 }
 
+// validateFIFOGroup enforces, before any SDK dispatch, that a FIFO send
+// resolves a MessageGroupId — from the envelope's x-bridge.ordering-key
+// header or the configured default MessageGroupID. SQS would reject the
+// send with MissingParameter; failing locally keeps the classification
+// deterministic (rejected, same class as the batch API's SenderFault)
+// for both single and batch sends, instead of the single-send path
+// falling into the transient default and retrying a config fault.
+func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
+	if !s.cfg.isFIFO() {
+		return nil
+	}
+	groupID, _ := extractFIFOFields(env.Headers())
+	if groupID == "" && s.cfg.MessageGroupID == "" {
+		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"sqs: FIFO send requires a message group: envelope %q carries no %s header and no message_group_id is configured",
+			env.ID(), messaging.HeaderOrderingKey))
+	}
+	return nil
+}
+
 // Send submits a single envelope to SQS.
 //
 // Address validation: an SQS Sender is bound to a single queue (resolved
@@ -176,6 +196,9 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 			"sqs: address %q does not match configured queue URL %q",
 			msg.Address, s.queueURL))
 	}
+	if err := s.validateFIFOGroup(env); err != nil {
+		return err
+	}
 
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqs: sending",
@@ -193,9 +216,11 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 // SendBatch sends each envelope in chunks of up to BatchSize via the SQS
 // SendMessageBatch API. The whole slice is pre-validated before any SDK
-// dispatch: a nil envelope yields shared.ErrInvalidPayload and a
+// dispatch: a nil envelope yields shared.ErrInvalidPayload, a
 // non-empty address that does not match the resolved queue URL yields
-// shared.ErrInvalidTopic; either rejects the entire batch with
+// shared.ErrInvalidTopic, and a FIFO send that resolves no
+// MessageGroupId yields shared.ErrInvalidPayload (see
+// validateFIFOGroup); any of these rejects the entire batch with
 // (nil, joined-errs) — fail-fast, no chunk is dispatched. A client setup
 // failure likewise returns (nil, err).
 //
@@ -221,6 +246,10 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 			preErrs = append(preErrs, shared.ErrInvalidTopic.WithMessage(fmt.Sprintf(
 				"sqs: address %q at index %d does not match configured queue URL %q",
 				m.Address, i, s.queueURL)))
+			continue
+		}
+		if err := s.validateFIFOGroup(m.Envelope); err != nil {
+			preErrs = append(preErrs, fmt.Errorf("index %d: %w", i, err))
 		}
 	}
 	if len(preErrs) > 0 {

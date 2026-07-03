@@ -43,7 +43,11 @@ func MapError(err error) *shared.BridgeError {
 }
 
 // MapDisconnectReasonCode converts an MQTT v5 DISCONNECT reason code to a
-// BridgeError. Returns nil for normal disconnection (0x00).
+// BridgeError. Returns nil for normal disconnection (0x00). The table
+// follows MQTT v5 §3.14.2.1 (see also the constants in
+// github.com/eclipse/paho.golang/packets/disconnect.go); CONNACK-only
+// codes (0x84–0x86, 0x88) are also handled because autopaho surfaces
+// both through the same disconnect path.
 func MapDisconnectReasonCode(code byte) *shared.BridgeError {
 	switch code {
 	case 0x00:
@@ -54,24 +58,28 @@ func MapDisconnectReasonCode(code byte) *shared.BridgeError {
 		return shared.ErrUnavailable.Wrap(errors.New("disconnect with will message"))
 	case 0x89:
 		return shared.ErrBrokerBusy.Wrap(errors.New("server busy"))
-	case 0x8D:
+	case 0x8B:
 		return shared.ErrUnavailable.Wrap(errors.New("server shutting down"))
-	case 0x8E:
+	case 0x8D:
 		return shared.ErrTimeout.Wrap(errors.New("keep alive timeout"))
-	case 0x8F:
+	case 0x8E:
 		return shared.ErrConnectionLost.Wrap(errors.New("session taken over"))
 	case 0x93:
 		return shared.ErrThrottled.Wrap(errors.New("receive maximum exceeded"))
+	case 0x96:
+		return shared.ErrThrottled.Wrap(errors.New("message rate too high"))
 	case 0x97:
 		return shared.ErrThrottled.Wrap(errors.New("quota exceeded"))
 	case 0x9B:
 		return shared.ErrQoSNotSupported.Wrap(errors.New("QoS not supported"))
-	case 0x9D:
+	case 0x9C:
 		return shared.ErrUnavailable.Wrap(errors.New("use another server"))
-	case 0x9E:
+	case 0x9D:
 		return shared.ErrUnavailable.Wrap(errors.New("server moved"))
-	case 0xA1:
+	case 0x9F:
 		return shared.ErrThrottled.Wrap(errors.New("connection rate exceeded"))
+	case 0xA0:
+		return shared.ErrUnavailable.Wrap(errors.New("maximum connect time"))
 
 	// Permanent
 	case 0x81:
@@ -90,23 +98,25 @@ func MapDisconnectReasonCode(code byte) *shared.BridgeError {
 		return shared.ErrNotAuthorized.Wrap(errors.New("not authorized"))
 	case 0x88:
 		return shared.ErrUnavailable.Wrap(errors.New("server unavailable"))
-	case 0x90:
+	case 0x8F:
 		return shared.ErrInvalidTopic.Wrap(errors.New("topic filter invalid"))
-	case 0x91:
+	case 0x90:
 		return shared.ErrInvalidTopic.Wrap(errors.New("topic name invalid"))
+	case 0x91:
+		return shared.ErrProtocolError.Wrap(errors.New("packet identifier in use"))
 	case 0x94:
 		return shared.ErrInvalidTopic.Wrap(errors.New("topic alias invalid"))
 	case 0x95:
 		return shared.ErrPayloadTooLarge.Wrap(errors.New("packet too large"))
+	case 0x98:
+		return shared.ErrUnavailable.Wrap(errors.New("administrative action"))
 	case 0x99:
 		return shared.ErrInvalidPayload.Wrap(errors.New("payload format invalid"))
 	case 0x9A:
 		return shared.ErrProtocolError.Wrap(errors.New("retain not supported"))
-	case 0x9C:
-		return shared.ErrNotFound.Wrap(errors.New("no subscription existed"))
-	case 0x9F:
+	case 0x9E:
 		return shared.ErrProtocolError.Wrap(errors.New("shared subscriptions not supported"))
-	case 0xA0:
+	case 0xA1:
 		return shared.ErrProtocolError.Wrap(errors.New("subscription identifiers not supported"))
 	case 0xA2:
 		return shared.ErrProtocolError.Wrap(errors.New("wildcard subscriptions not supported"))

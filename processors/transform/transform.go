@@ -2,7 +2,6 @@ package transform
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/ohler55/ojg/jp"
@@ -34,6 +33,17 @@ var ErrHeaderTargetEmpty = &shared.BridgeError{
 	Code:    shared.ErrCodeInvalidPayload,
 	Class:   shared.ErrorPermanent,
 	Message: "transform: header target key must not be empty",
+}
+
+// ErrUnknownTransformType signals a FieldMapping.Transform that is not
+// one of the supported TransformType values. Validated at construction:
+// with the default FailOnError=false a typo'd transform would otherwise
+// silently skip its mapping on every message forever. Setup error:
+// permanent invalid-payload.
+var ErrUnknownTransformType = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "transform: unknown transform type",
 }
 
 // Processor is a processor that transforms message payloads using JSONPath.
@@ -74,6 +84,11 @@ func New(cfg Config) (*Processor, error) {
 		expr, err := jp.ParseString(m.Source)
 		if err != nil {
 			return nil, shared.ErrInvalidPayload.Wrap(fmt.Errorf("invalid JSONPath %q: %w", m.Source, err))
+		}
+		if !validTransformType(m.Transform) {
+			return nil, ErrUnknownTransformType.
+				With("transform", string(m.Transform)).
+				With("source", m.Source)
 		}
 
 		pm := parsedMapping{mapping: m, expr: expr}
@@ -137,27 +152,12 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		return next(ctx, env)
 	}
 
-	// Build output
-	var output map[string]any
-	if p.config.DropUnmapped {
-		output = make(map[string]any)
-	} else {
-		// Start with original data
-		if m, ok := data.(map[string]any); ok {
-			output = m
-		} else {
-			// Wrap in object if not already
-			output = map[string]any{"_value": data}
-		}
-	}
-
-	// Resolve header-target values FIRST, over the pristine parsed data. When
-	// DropUnmapped is false, output aliases data, so a payload mapping below
-	// mutates data in place; resolving headers up front guarantees a header
-	// target always reads the ORIGINAL payload value regardless of mapping
-	// order (matching DropUnmapped=true). Header writes are applied to the
-	// envelope only after the final cancellation check, so a timed-out message
-	// never mutates the envelope headers.
+	// Resolve header-target values over the pristine parsed data. Payload
+	// mappings below also read only from the pristine data (they write to a
+	// separate output object), so a header target always reads the ORIGINAL
+	// payload value regardless of mapping order. Header writes are applied to
+	// the envelope only after the final cancellation check, so a timed-out
+	// message never mutates the envelope headers.
 	var headerWrites map[string]any
 	for _, pm := range p.parsers {
 		if !pm.toHeader {
@@ -182,8 +182,32 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		headerWrites[pm.headerKey] = value
 	}
 
-	// Apply payload mappings. These mutate output (which may alias data), so
-	// they run after every header value has been captured from pristine data.
+	// Apply payload mappings against an IMMUTABLE source: every mapping
+	// reads from the pristine parsed data and writes into a separate
+	// output object (a deep copy when DropUnmapped=false), so a mapping
+	// chain never observes an earlier mapping's write — identical read
+	// semantics in both DropUnmapped modes, matching how header targets
+	// already resolve.
+	var output map[string]any
+	if p.config.DropUnmapped {
+		output = make(map[string]any)
+	}
+	ensureOutput := func() map[string]any {
+		if output == nil {
+			if m, ok := data.(map[string]any); ok {
+				output = deepCopyMap(m)
+			} else {
+				// A keyed mapping target needs an object root. A
+				// non-object payload (array / scalar) is wrapped only
+				// here — when a mapping genuinely writes — never for
+				// header-only or non-matching mappings.
+				output = map[string]any{"_value": data}
+			}
+		}
+		return output
+	}
+
+	payloadApplied := false
 	for _, pm := range p.parsers {
 		if pm.toHeader {
 			continue
@@ -191,7 +215,8 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		if err := ctx.Err(); err != nil {
 			return contextError(err)
 		}
-		if err := p.applyMapping(data, output, pm); err != nil {
+		value, ok, err := p.resolveMapping(data, pm)
+		if err != nil {
 			if p.config.FailOnError || pm.mapping.Required {
 				// Transform failures are deterministic w.r.t. the
 				// payload; a retry cannot succeed. Classify as rejected
@@ -201,12 +226,26 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 			// Skip failed mapping
 			continue
 		}
+		if !ok {
+			continue
+		}
+		setNestedValue(ensureOutput(), pm.mapping.Target, value)
+		payloadApplied = true
 	}
 
-	// Serialize output
-	newPayload, err := json.Marshal(output)
-	if err != nil {
-		return shared.ErrInvalidPayload.Wrap(fmt.Errorf("failed to serialize transformed payload: %w", err))
+	// Serialize the output only when the configuration actually rewrote
+	// the payload: DropUnmapped is an explicit whole-payload rewrite,
+	// otherwise at least one mapping must have applied. Header-only and
+	// no-op transforms leave the payload bytes byte-identical (no key
+	// reordering, no HTML escaping, no {"_value": ...} wrapping of
+	// non-object payloads).
+	rewritePayload := p.config.DropUnmapped || payloadApplied
+	var newPayload []byte
+	if rewritePayload {
+		newPayload, err = marshalPayload(output)
+		if err != nil {
+			return shared.ErrInvalidPayload.Wrap(fmt.Errorf("failed to serialize transformed payload: %w", err))
+		}
 	}
 
 	// Final guard: do not mutate the envelope if the runtime already
@@ -215,7 +254,9 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		return contextError(err)
 	}
 
-	env.SetPayload(newPayload)
+	if rewritePayload {
+		env.SetPayload(newPayload)
+	}
 	for k, v := range headerWrites {
 		env.SetHeader(k, v)
 	}
@@ -261,21 +302,6 @@ func (p *Processor) resolveMapping(data any, pm parsedMapping) (value any, ok bo
 	}
 
 	return value, true, nil
-}
-
-// applyMapping applies a single payload field mapping.
-func (p *Processor) applyMapping(data any, output map[string]any, pm parsedMapping) error {
-	value, ok, err := p.resolveMapping(data, pm)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // Skip this mapping
-	}
-
-	// Set in output
-	setNestedValue(output, pm.mapping.Target, value)
-	return nil
 }
 
 // Ensure Processor implements ports.Processor

@@ -17,6 +17,7 @@ import (
 )
 
 var _ ports.Sender = (*SSESender)(nil)
+var _ ports.ContextCloser = (*SSESender)(nil)
 
 const defaultMaxSSEClients = 10000
 
@@ -27,10 +28,15 @@ type sseSenderConfig struct {
 	writeTimeout      time.Duration
 	maxClients        int
 	apiKey            string
-	locator           ports.RouteLocator
-	metrics           ports.MetricsExporter
-	logger            *slog.Logger
-	clock             clock.Clock
+	// redirectEndpoint is the PeerInfo.Endpoints key consulted for
+	// cross-cluster SSE client redirects. Empty (the default) disables
+	// redirecting entirely: a request for a remote route is refused with
+	// 503 instead of leaking an internal peer endpoint in a 307 Location.
+	redirectEndpoint string
+	locator          ports.RouteLocator
+	metrics          ports.MetricsExporter
+	logger           *slog.Logger
+	clock            clock.Clock
 }
 
 type sseClient struct {
@@ -40,10 +46,12 @@ type sseClient struct {
 
 // SSESender implements ports.Sender by broadcasting envelopes to connected SSE clients.
 type SSESender struct {
-	cfg     sseSenderConfig
-	mu      sync.RWMutex
-	clients map[string]*sseClient
-	routeID string
+	cfg       sseSenderConfig
+	mu        sync.RWMutex
+	clients   map[string]*sseClient
+	routeID   string
+	shutdown  chan struct{}
+	closeOnce sync.Once
 }
 
 func newSSESender(cfg sseSenderConfig) *SSESender {
@@ -63,8 +71,31 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 		cfg.clock = clock.System
 	}
 	return &SSESender{
-		cfg:     cfg,
-		clients: make(map[string]*sseClient),
+		cfg:      cfg,
+		clients:  make(map[string]*sseClient),
+		shutdown: make(chan struct{}),
+	}
+}
+
+// Close drains the sender for graceful shutdown: it unblocks every
+// connected client handler (each ServeHTTP loop selects on the shutdown
+// channel and returns) and then waits — bounded by ctx — until all
+// clients have deregistered. Without this, http.Server.Shutdown hangs
+// forever on the long-lived SSE handlers. It satisfies
+// ports.ContextCloser; the composition root must invoke it (directly or
+// via Factory.Close) BEFORE http.Server.Shutdown. Safe to call multiple
+// times.
+func (s *SSESender) Close(ctx context.Context) error {
+	s.closeOnce.Do(func() { close(s.shutdown) })
+	for {
+		if s.ClientCount() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.cfg.clock.After(10 * time.Millisecond):
+		}
 	}
 }
 
@@ -158,7 +189,7 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return fmt.Errorf("sse: marshal event: %w", err)
 	}
 
-	eventBytes := formatSSE("message", env.ID(), data)
+	eventBytes := formatSSE("message", data)
 
 	s.mu.RLock()
 	clients := make([]*sseClient, 0, len(s.clients))
@@ -175,6 +206,22 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		)
 	}
 
+	// SSE egress is AT-MOST-ONCE (see doc.go): Send reports success even
+	// when the event reached nobody, and the route runner then acks the
+	// source. Both zero-delivery cases — no subscribers at all, and every
+	// subscriber's buffer full — are therefore counted and logged so the
+	// loss is observable instead of silent.
+	if len(clients) == 0 {
+		s.cfg.metrics.Counter(MetricSSENoSubscribers, 1)
+		if s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: no subscribers connected, event not delivered",
+				"sender_id", s.cfg.id, "envelope_id", env.ID())
+		}
+		s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+		return nil
+	}
+
+	dropped := 0
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
@@ -182,11 +229,19 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
+			dropped++
 			s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1)
 			if s.cfg.logger != nil {
 				s.cfg.logger.Warn("sse: client buffer full, dropping event",
 					"client", c.id, "event_id", env.ID())
 			}
+		}
+	}
+	if dropped == len(clients) {
+		s.cfg.metrics.Counter(MetricSSEAllDropped, 1)
+		if s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: all subscriber buffers full, event delivered to nobody",
+				"sender_id", s.cfg.id, "envelope_id", env.ID(), "client_count", len(clients))
 		}
 	}
 
@@ -218,16 +273,41 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.cfg.logger.Warn("sse: route location failed, serving locally", "route", rid, "error", err)
 		}
 		if err == nil && !local && node != nil {
-			httpEndpoint, ok := node.Endpoints["http"]
+			// Cross-cluster redirect is OPT-IN (Config.RedirectEndpoint
+			// names the PeerInfo.Endpoints key to redirect to). The
+			// default is to refuse with 503: redirecting to the same
+			// endpoint the internal forwarder uses would leak the
+			// internal peer address to a possibly-external SSE client
+			// in the 307 Location header.
+			if s.cfg.redirectEndpoint == "" {
+				writeError(w, http.StatusServiceUnavailable,
+					"route is owned by another node and no redirect endpoint is configured")
+				return
+			}
+			endpoint, ok := node.Endpoints[s.cfg.redirectEndpoint]
 			if ok {
 				if logging.DebugEnabled(s.cfg.logger) {
 					s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: redirecting to peer",
-						"route_id", rid, "peer", node.InstanceID)
+						"route_id", rid, "peer", node.InstanceID, "endpoint_key", s.cfg.redirectEndpoint)
 				}
-				http.Redirect(w, r, httpEndpoint+s.cfg.path, http.StatusTemporaryRedirect)
+				http.Redirect(w, r, endpoint+s.cfg.path, http.StatusTemporaryRedirect)
 				return
 			}
+			if s.cfg.logger != nil {
+				s.cfg.logger.Warn("sse: peer lacks configured redirect endpoint, refusing",
+					"route_id", rid, "peer", node.InstanceID, "endpoint_key", s.cfg.redirectEndpoint)
+			}
+			writeError(w, http.StatusServiceUnavailable,
+				"route is owned by another node")
+			return
 		}
+	}
+
+	select {
+	case <-s.shutdown:
+		writeError(w, http.StatusServiceUnavailable, "sender is shutting down")
+		return
+	default:
 	}
 
 	clientID := generateClientID()
@@ -292,6 +372,11 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.shutdown:
+			// Graceful drain (Close): unblock the handler so
+			// http.Server.Shutdown can complete instead of hanging on
+			// long-lived SSE streams.
+			return
 		case event := <-client.events:
 			s.armWriteDeadline(rc)
 			if _, err := w.Write(event); err != nil {
@@ -339,16 +424,18 @@ type sseEvent struct {
 	Headers map[string]any  `json:"headers,omitempty"`
 }
 
-func formatSSE(event, id string, data []byte) []byte {
-	id = sanitizeSSEField(id)
+// formatSSE renders one SSE frame. It deliberately emits NO "id:" field:
+// an id would make EventSource clients persist a Last-Event-ID and send
+// it on reconnect, implying resumability this sender does not provide
+// (there is no backlog or replay window — events broadcast while a
+// client is disconnected are lost). Omitting the id keeps the wire
+// contract honestly at-most-once; the envelope ID remains available in
+// the JSON payload's "id" field. See doc.go "SSE delivery semantics".
+func formatSSE(event string, data []byte) []byte {
 	event = sanitizeSSEField(event)
-	size := len("id: ") + len(id) + 1 +
-		len("event: ") + len(event) + 1 +
+	size := len("event: ") + len(event) + 1 +
 		len("data: ") + len(data) + 2
 	buf := make([]byte, 0, size)
-	buf = append(buf, "id: "...)
-	buf = append(buf, id...)
-	buf = append(buf, '\n')
 	buf = append(buf, "event: "...)
 	buf = append(buf, event...)
 	buf = append(buf, '\n')

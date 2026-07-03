@@ -345,10 +345,13 @@ func TestAnaRecv_EmitErrorWithMultipleDeliveries_OnlyFirstErrorReturned(t *testi
 	}
 }
 
-// TestAnaRecv_RouterRoutingWithoutAnyReceiver_DropsAndCounts verifies
-// that messages routed before any Receiver is running are dropped (no
-// panic, drop counter incremented).
-func TestAnaRecv_RouterRoutingWithoutAnyReceiver_DropsAndCounts(t *testing.T) {
+// TestAnaRecv_RouterRoutingWithoutAnyReceiver_BuffersUntilRegistration
+// verifies that messages routed before any Receiver is running are NOT
+// dropped: they are held in the router's bounded pending buffer and
+// flushed — in order — once a matching handler registers. This pins the
+// startup-window fix: a persistent session's CONNACK backlog arriving
+// before Receiver.Run must survive.
+func TestAnaRecv_RouterRoutingWithoutAnyReceiver_BuffersUntilRegistration(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-no-handler",
@@ -356,16 +359,53 @@ func TestAnaRecv_RouterRoutingWithoutAnyReceiver_DropsAndCounts(t *testing.T) {
 
 	const n = 5
 	for i := 0; i < n; i++ {
-		sess.Router().Route(newTestPacketPublish("t/x", []byte("p")))
+		sess.Router().Route(newTestPacketPublish("t/x", []byte{byte(i)}))
 	}
 	got, dropped := sess.Router().Stats()
-	if got != n || dropped != n {
-		t.Fatalf("Stats received=%d dropped=%d, want %d/%d", got, dropped, n, n)
+	if got != n || dropped != 0 {
+		t.Fatalf("Stats received=%d dropped=%d, want %d received and 0 dropped", got, dropped, n)
+	}
+	if pc := sess.Router().PendingCount(); pc != n {
+		t.Fatalf("PendingCount = %d, want %d buffered", pc, n)
+	}
+
+	// Registering a matching handler flushes the backlog in order.
+	var mu sync.Mutex
+	var seen []byte
+	done := make(chan struct{})
+	sess.Router().RegisterFiltered("late", []string{"t/#"}, func(pub *pahov5.Publish, _ func() error) {
+		mu.Lock()
+		seen = append(seen, pub.Payload[0])
+		if len(seen) == n {
+			close(done)
+		}
+		mu.Unlock()
+	})
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		mu.Lock()
+		got := len(seen)
+		mu.Unlock()
+		t.Fatalf("only %d/%d buffered messages flushed to the late handler", got, n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i, b := range seen {
+		if int(b) != i {
+			t.Fatalf("flush out of order: position %d got payload %d", i, b)
+		}
+	}
+	if pc := sess.Router().PendingCount(); pc != 0 {
+		t.Fatalf("PendingCount after flush = %d, want 0", pc)
 	}
 }
 
 // TestAnaRecv_HandlerSeesIndependentEnvelope verifies the EnvelopeFromPublish
-// path produces a unique Envelope per delivery (different IDs).
+// path produces an independent Envelope per delivery: distinct
+// publishes get distinct IDs, while a redelivered (byte-identical)
+// publish derives the SAME fallback ID so downstream dedup can catch
+// broker redeliveries (deterministic topic+payload hash).
 func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
@@ -396,32 +436,45 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 
 	const n = 10
 	for i := 0; i < n; i++ {
-		sess.Router().Route(newTestPacketPublish("t/x", []byte("p")))
+		// Distinct payloads → distinct application messages.
+		sess.Router().Route(newTestPacketPublish("t/x", []byte{byte(i)}))
 	}
+	// One byte-identical redelivery of the first publish: must NOT get a
+	// fresh ID (QoS 1 redelivery dedup contract).
+	sess.Router().Route(newTestPacketPublish("t/x", []byte{0}))
 
 	deadline := time.After(2 * time.Second)
 	for {
 		mu.Lock()
 		l := len(ids)
 		mu.Unlock()
-		if l >= n {
+		if l >= n+1 {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("only got %d/%d deliveries", l, n)
+			t.Fatalf("only got %d/%d deliveries", l, n+1)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, id := range ids {
-		if seen[id] {
-			t.Fatalf("duplicate envelope ID %s", id)
+		seen[id]++
+	}
+	if len(seen) != n {
+		t.Fatalf("got %d distinct envelope IDs for %d distinct messages (+1 redelivery), want %d", len(seen), n, n)
+	}
+	dups := 0
+	for _, c := range seen {
+		if c == 2 {
+			dups++
 		}
-		seen[id] = true
+	}
+	if dups != 1 {
+		t.Fatalf("redelivered publish should share its original ID exactly once, got %d duplicated IDs", dups)
 	}
 }
 

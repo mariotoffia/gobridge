@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,55 @@ func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 	sc := toSessionConfig(nil)
 	if sc != nil {
 		t.Fatal("expected nil for nil input")
+	}
+}
+
+// TestToSessionConfig_DerivesRenewIntervalFromTTL validates contract C3: when
+// only lease_ttl is configured, RenewInterval is left ZERO so the session
+// manager derives it from LeaseTTL downstream. Seeding it (the old bug via
+// session.DefaultConfig, which pins RenewInterval=110s) suppressed the
+// derive-from-TTL branch and kept a 110s renew cadence regardless of a much
+// shorter TTL.
+func TestToSessionConfig_DerivesRenewIntervalFromTTL(t *testing.T) {
+	rs := &ports.RouteSessionDef{SessionID: "s1", LeaseTTL: "45s"}
+
+	sc := toSessionConfig(rs)
+	if sc == nil {
+		t.Fatal("expected non-nil SessionConfig")
+	}
+	if sc.LeaseTTL != 45*time.Second {
+		t.Fatalf("LeaseTTL: got %v, want 45s", sc.LeaseTTL)
+	}
+	if sc.RenewInterval != 0 {
+		t.Fatalf("RenewInterval must be zero (derived from TTL downstream) when only lease_ttl is set; got %v", sc.RenewInterval)
+	}
+}
+
+// TestToSessionConfig_LeaseRenewJitter validates that the lease_renew_jitter
+// YAML field is plumbed into session.Config.RenewJitter (contract C3).
+func TestToSessionConfig_LeaseRenewJitter(t *testing.T) {
+	rs := &ports.RouteSessionDef{SessionID: "s1", RenewJitter: "5s"}
+
+	sc := toSessionConfig(rs)
+	if sc == nil {
+		t.Fatal("expected non-nil SessionConfig")
+	}
+	if sc.RenewJitter != 5*time.Second {
+		t.Fatalf("RenewJitter: got %v, want 5s", sc.RenewJitter)
+	}
+}
+
+// TestToSessionConfig_InvalidJitter_ReturnsError validates that a malformed
+// lease_renew_jitter duration surfaces a clear error naming the field.
+func TestToSessionConfig_InvalidJitter_ReturnsError(t *testing.T) {
+	rs := &ports.RouteSessionDef{SessionID: "s1", RenewJitter: "not-a-duration"}
+
+	_, err := toSessionConfigE(rs)
+	if err == nil {
+		t.Fatal("expected error for invalid lease_renew_jitter")
+	}
+	if !strings.Contains(err.Error(), "lease_renew_jitter") {
+		t.Fatalf("error should name the lease_renew_jitter field; got %v", err)
 	}
 }
 

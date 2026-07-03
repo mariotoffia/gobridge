@@ -124,9 +124,12 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(rctx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error {
 			got.Add(1)
-			return nil
+			// Settle the delivery like the runtime does on every
+			// terminal path — under manual ack an unsettled QoS 1
+			// delivery would exhaust the broker's in-flight window.
+			return del.Ack(ctx)
 		})
 	}()
 	defer func() { rcancel(); wg.Wait() }()
@@ -185,12 +188,13 @@ func TestAnaIntg_LargePayload_RoundTrip(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(rctx, func(_ context.Context, del ports.Delivery) error {
+		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error {
 			mu.Lock()
 			recvBuf = make([]byte, len(del.Envelope().Payload()))
 			copy(recvBuf, del.Envelope().Payload())
 			mu.Unlock()
-			rcancel() // we have what we need
+			_ = del.Ack(ctx) // settle before stopping the receiver
+			rcancel()        // we have what we need
 			return nil
 		})
 	}()
@@ -242,11 +246,11 @@ func TestAnaIntg_MultipleReceivers_SameTopic_AllReceive(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = recv1.Run(rctx, func(_ context.Context, _ ports.Delivery) error { got1.Add(1); return nil })
+		_ = recv1.Run(rctx, func(ctx context.Context, del ports.Delivery) error { got1.Add(1); return del.Ack(ctx) })
 	}()
 	go func() {
 		defer wg.Done()
-		_ = recv2.Run(rctx, func(_ context.Context, _ ports.Delivery) error { got2.Add(1); return nil })
+		_ = recv2.Run(rctx, func(ctx context.Context, del ports.Delivery) error { got2.Add(1); return del.Ack(ctx) })
 	}()
 	defer func() { rcancel(); wg.Wait() }()
 
@@ -298,9 +302,12 @@ func TestAnaIntg_HighConcurrencyPublish_NoLoss(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(rctx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error {
 			got.Add(1)
-			return nil
+			// Settle like the runtime: without Ack the broker's QoS 1
+			// in-flight window (Receive Maximum) fills after ~20
+			// messages and the flood stalls.
+			return del.Ack(ctx)
 		})
 	}()
 
@@ -367,7 +374,7 @@ func TestAnaIntg_ReconcileSameTopicTwice_Idempotent(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(rctx, func(_ context.Context, _ ports.Delivery) error { got.Add(1); return nil })
+		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error { got.Add(1); return del.Ack(ctx) })
 	}()
 	defer func() { rcancel(); wg.Wait() }()
 
@@ -418,7 +425,7 @@ func TestAnaIntg_HealthDuringTraffic_RemainsStable(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(rctx, func(_ context.Context, _ ports.Delivery) error { return nil })
+		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error { return del.Ack(ctx) })
 	}()
 	defer func() { rcancel(); wg.Wait() }()
 

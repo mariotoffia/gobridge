@@ -2,10 +2,12 @@ package circuitbreaker
 
 import (
 	"context"
+	"log/slog"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // KeyExtractor derives a circuit breaker key from each envelope.
@@ -72,9 +74,37 @@ func WithClock(clk clock.Clock) Option {
 	}
 }
 
-// WithOnStateChange registers a callback for state transitions.
+// WithOnStateChange registers a callback for state transitions, replacing
+// the default handler (which logs every transition at Warn via the
+// processor's logger — see WithLogger). Passing nil keeps the default.
 func WithOnStateChange(fn func(key string, from, to cb.State)) Option {
 	return func(p *Processor) {
-		p.onStateChange = fn
+		if fn != nil {
+			p.onStateChange = fn
+		}
+	}
+}
+
+// WithLogger sets the structured logger used by the default state-change
+// handler. A nil logger keeps slog.Default(). Ignored for transitions when
+// WithOnStateChange replaces the default handler.
+func WithLogger(l *slog.Logger) Option {
+	return func(p *Processor) {
+		if l != nil {
+			p.logger = l
+		}
+	}
+}
+
+// WithMetrics sets the metrics exporter used to emit the shared
+// circuit-breaker counters (shared.MetricCircuitBreakerStateChanged,
+// ...Trips, ...Rejections). State-change metrics are emitted for every
+// transition regardless of WithOnStateChange. When unset (or nil), a
+// NoopExporter is used.
+func WithMetrics(m ports.MetricsExporter) Option {
+	return func(p *Processor) {
+		if m != nil {
+			p.metrics = m
+		}
 	}
 }

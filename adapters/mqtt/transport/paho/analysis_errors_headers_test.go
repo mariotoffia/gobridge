@@ -145,15 +145,16 @@ func TestAnaErr_MapDisconnectReasonCode_KnownCodes(t *testing.T) {
 	}{
 		{0x00, ""}, // success → nil
 		{0x89, shared.ErrBrokerBusy.Code},
-		{0x8E, shared.ErrTimeout.Code},
-		{0x8F, shared.ErrConnectionLost.Code},
+		{0x8D, shared.ErrTimeout.Code},        // keep alive timeout (MQTT v5 §3.14.2.1)
+		{0x8E, shared.ErrConnectionLost.Code}, // session taken over
+		{0x8F, shared.ErrInvalidTopic.Code},   // topic filter invalid
 		{0x97, shared.ErrThrottled.Code},
 		{0x86, shared.ErrNotAuthorized.Code},
 		{0x87, shared.ErrNotAuthorized.Code},
 		{0x88, shared.ErrUnavailable.Code},
-		{0x91, shared.ErrInvalidTopic.Code},
+		{0x91, shared.ErrProtocolError.Code}, // packet identifier in use
 		{0x95, shared.ErrPayloadTooLarge.Code},
-		{0x9C, shared.ErrNotFound.Code},
+		{0x9C, shared.ErrUnavailable.Code}, // use another server
 	}
 	for _, tc := range cases {
 		be := MapDisconnectReasonCode(tc.code)
@@ -257,20 +258,32 @@ func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) 
 	}
 }
 
-// TestAnaHdr_GenerateEnvelopeID_UniqueAcrossManyCalls verifies that
-// generated envelope IDs do not collide.
-func TestAnaHdr_GenerateEnvelopeID_UniqueAcrossManyCalls(t *testing.T) {
-	const n = 1024
-	seen := make(map[string]struct{}, n)
-	for i := 0; i < n; i++ {
-		id := generateEnvelopeID()
-		if len(id) == 0 {
-			t.Fatal("empty id generated")
+// TestAnaHdr_DeriveEnvelopeID_DeterministicAndDistinct verifies the
+// fallback envelope ID is a deterministic function of topic + payload
+// (same inputs → same ID, so QoS 1 redeliveries from non-bridge
+// publishers dedup downstream) while distinct inputs — including
+// topic/payload boundary shifts — yield distinct IDs.
+func TestAnaHdr_DeriveEnvelopeID_DeterministicAndDistinct(t *testing.T) {
+	a := deriveEnvelopeID("sensors/temp", []byte("21.5"))
+	b := deriveEnvelopeID("sensors/temp", []byte("21.5"))
+	if a == "" {
+		t.Fatal("empty id derived")
+	}
+	if a != b {
+		t.Fatalf("same topic+payload must derive the same id: %s vs %s", a, b)
+	}
+
+	distinct := map[string]string{
+		"different payload":      deriveEnvelopeID("sensors/temp", []byte("22.0")),
+		"different topic":        deriveEnvelopeID("sensors/hum", []byte("21.5")),
+		"boundary shift (t+p)":   deriveEnvelopeID("sensors/temp2", []byte("1.5")),
+		"empty payload":          deriveEnvelopeID("sensors/temp", nil),
+		"topic bytes as payload": deriveEnvelopeID("", []byte("sensors/temp21.5")),
+	}
+	for name, id := range distinct {
+		if id == a {
+			t.Errorf("%s collided with base id %s", name, a)
 		}
-		if _, dup := seen[id]; dup {
-			t.Fatalf("duplicate id generated at iteration %d: %s", i, id)
-		}
-		seen[id] = struct{}{}
 	}
 }
 

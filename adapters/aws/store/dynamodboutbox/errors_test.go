@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -118,5 +119,30 @@ func TestMapError_PreservesContextErrors(t *testing.T) {
 			out := mapError(tc.input)
 			tc.check(t, tc.input, out)
 		})
+	}
+}
+
+// TestMapError_ValidationExceptionIsPermanent pins the classification of
+// ValidationException (e.g. an envelope exceeding DynamoDB's 400KB item
+// limit): it is a deterministic, permanent failure and must map to
+// shared.ErrInvalidPayload — never to a transient class that would retry
+// the identical unpersistable write forever.
+func TestMapError_ValidationExceptionIsPermanent(t *testing.T) {
+	in := &smithy.GenericAPIError{
+		Code:    "ValidationException",
+		Message: "Item size has exceeded the maximum allowed size",
+	}
+
+	out := mapError(fmt.Errorf("operation error DynamoDB: PutItem: %w", in))
+
+	if !errors.Is(out, shared.ErrInvalidPayload) {
+		t.Fatalf("ValidationException must classify as shared.ErrInvalidPayload, got %v", out)
+	}
+	be, ok := shared.AsBridgeError(out)
+	if !ok {
+		t.Fatalf("expected *shared.BridgeError, got %T", out)
+	}
+	if be.Class == shared.ErrorTransient {
+		t.Fatalf("ValidationException must not be transient: %v", out)
 	}
 }

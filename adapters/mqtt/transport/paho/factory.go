@@ -64,17 +64,30 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
 	}
+	if err := opts.Will.Validate(); err != nil {
+		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
+	}
 	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
 }
 
-// NewReceiver creates an MQTT Receiver bound to the given Session.
+// NewReceiver creates an MQTT Receiver bound to the given Session. The
+// receiver's subscription topics become its router topic filters, so a
+// shared session dispatches each publish only to the receivers whose
+// filters cover it.
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: session must be a non-nil MQTT session", spec.ID))
 	}
-	return NewReceiver(spec.ID, mqttSession), nil
+	filters := make([]string, 0, len(spec.Subscriptions))
+	for _, sub := range spec.Subscriptions {
+		if sub.Topic != "" {
+			filters = append(filters, sub.Topic)
+		}
+	}
+	return NewReceiver(spec.ID, mqttSession, WithTopicFilters(filters...)), nil
 }
 
 // NewSender creates an MQTT Sender bound to the given Session.
@@ -94,9 +107,11 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt sender %q: qos must be 0, 1, or 2", spec.ID))
 	}
-	if opts.QoS == 0 {
-		opts.QoS = DefaultSenderOptions().QoS
-	}
+	// QoS is honoured as-is: the registry decode path (register.go)
+	// pre-fills the default (1) so an omitted key arrives here as 1,
+	// while an EXPLICIT `qos: 0` arrives as 0 and stays 0. Coercing
+	// 0 → 1 here would make the documented at-most-once setting
+	// unreachable.
 	if opts.Timeout == 0 {
 		opts.Timeout = DefaultSenderOptions().Timeout
 	}

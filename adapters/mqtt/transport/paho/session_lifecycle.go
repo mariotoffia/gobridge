@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
@@ -57,21 +58,18 @@ func (s *Session) Reload(ctx context.Context) error {
 //  1. Set s.closed = true under mutex — prevents pushEvent from sending.
 //  2. Call cm.Disconnect — may trigger OnConnectError, which calls
 //     pushEvent, but the s.closed guard returns early (safe re-entrancy).
-//     Synchronous Route (see acl_router.go) means any publish the Paho
-//     client is still dispatching is processed-then-acked (no loss); if
-//     the socket tears down mid-dispatch the message is left un-acked and
-//     the broker redelivers it to the next owner — at-least-once either way.
 //  3. Await in-flight handlers (bounded by ctx), then close s.events —
 //     safe because step 1 guarantees no concurrent sender can reach the
 //     channel send.
 //
-// Note: this adapter does NOT halt consumption before disconnecting. The
-// Paho Router seam ACKs after Route returns and cannot NACK, so a "stop
-// pulling new work, then drain" gate would have to drop-and-ACK in-flight
-// publishes — silently losing them. Graceful lease step-down (quiesce the
-// source before disconnect, e.g. via EnableManualAcknowledgment so ACKs
-// only follow emit) is a manager-driven concern tracked outside this
-// adapter; until then, step-down relies on broker redelivery above.
+// Delivery semantics on Close: the adapter uses manual acknowledgment
+// (see delivery.go), so a publish whose Delivery has not been settled
+// when the socket tears down is simply never acked — the broker
+// redelivers it to the next owner of a persistent/exclusive session.
+// Close does NOT drain: it disconnects, waits (bounded by ctx) for
+// handler goroutines to return, and leaves unsettled deliveries to
+// broker redelivery — at-least-once either way, with downstream
+// idempotency/dedup absorbing the duplicates.
 func (s *Session) Close(ctx context.Context) error {
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session closing",
@@ -158,6 +156,7 @@ func (s *Session) Close(ctx context.Context) error {
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	s.connected = true
+	s.connUpAt = s.clock().Now().UnixNano()
 	s.activeSubs = make(map[string]byte)
 	s.mu.Unlock()
 
@@ -167,4 +166,98 @@ func (s *Session) handleConnectionUp() {
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
 			"client_id", s.opts.ClientID)
 	}
+}
+
+// disconnectSessionTakenOver is the MQTT v5 DISCONNECT reason code the
+// broker sends to the OLD connection when another client connects with
+// the same ClientID (spec §3.14.2.1; packets.DisconnectSessionTakenOver).
+const disconnectSessionTakenOver byte = 0x8E
+
+// takeoverStabilityWindow is how long a connection must have been up
+// for a subsequent takeover to be considered a NEW incident (legit
+// failover) rather than the continuation of a ClientID-collision storm.
+const takeoverStabilityWindow = 30 * time.Second
+
+// handleServerDisconnect observes server-initiated DISCONNECT packets
+// (autopaho invokes the OnServerDisconnect hook in its own goroutine).
+// Session takeover (0x8E) feeds the collision damping in
+// noteSessionTakeover; every other reason code is logged — connection-
+// down bookkeeping and events are owned by OnConnectionDown /
+// OnConnectError, so no state is mutated here to avoid double signals.
+func (s *Session) handleServerDisconnect(code byte) {
+	if code == disconnectSessionTakenOver {
+		s.noteSessionTakeover()
+		return
+	}
+	if berr := MapDisconnectReasonCode(code); berr != nil && s.logger != nil {
+		s.logger.Warn("mqtt: server disconnected the session",
+			"client_id", s.opts.ClientID,
+			"reason_code", code,
+			"error", berr,
+		)
+	}
+}
+
+// noteSessionTakeover counts consecutive session-takeover disconnects
+// and dampens the resulting reconnect storm. One takeover is normal
+// (Exclusive failover: the standby legitimately claims the ClientID),
+// so the first occurrence carries no penalty. Repeated takeovers
+// without an intervening stable connection (>= takeoverStabilityWindow
+// of uptime) mean two live instances share a client_id and are mutually
+// kicking each other; each additional occurrence doubles the reconnect
+// backoff penalty (1s, 2s, ... capped at 64s — see takeoverPenalty) and
+// from the third occurrence an explicit Error log names the
+// misconfiguration. MetricMQTTSessionTakeover counts every occurrence.
+func (s *Session) noteSessionTakeover() {
+	now := s.clock().Now().UnixNano()
+	s.mu.Lock()
+	if s.connUpAt != 0 && now-s.connUpAt >= int64(takeoverStabilityWindow) {
+		// The connection had been stable: treat this as a fresh
+		// incident, not a continuation of a collision storm.
+		s.takeoverStreak = 0
+	}
+	s.takeoverStreak++
+	streak := s.takeoverStreak
+	s.mu.Unlock()
+
+	s.metrics.Counter(MetricMQTTSessionTakeover, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+
+	berr := MapDisconnectReasonCode(disconnectSessionTakenOver).
+		With("takeover_count", streak)
+	s.pushEvent(ports.SessionReconnecting, berr)
+
+	if s.logger != nil {
+		if streak >= 3 {
+			s.logger.Error("mqtt: repeated session takeover — another live instance is using the same client_id; "+
+				"reconnects are being backed off (fix the client_id collision or the instances will keep kicking each other)",
+				"client_id", s.opts.ClientID,
+				"takeover_count", streak,
+				"backoff_penalty", s.takeoverPenalty(),
+			)
+		} else {
+			s.logger.Warn("mqtt: session taken over by another connection with the same client_id",
+				"client_id", s.opts.ClientID,
+				"takeover_count", streak,
+			)
+		}
+	}
+}
+
+// takeoverPenalty returns the extra reconnect delay applied on top of
+// the configured backoff while a takeover storm is in progress:
+// 0 for streak <= 1 (single takeover = legitimate failover; the standby
+// must not be slowed down), then 1s << (streak-2) capped at 64s.
+func (s *Session) takeoverPenalty() time.Duration {
+	s.mu.Lock()
+	streak := s.takeoverStreak
+	s.mu.Unlock()
+	if streak <= 1 {
+		return 0
+	}
+	shift := streak - 2
+	if shift > 6 {
+		shift = 6
+	}
+	return time.Duration(1<<shift) * time.Second
 }

@@ -193,6 +193,19 @@ func (c *SenderConfig) validate() error {
 	if c.QueueURL == "" && c.QueueName == "" {
 		return errors.New("sqs: either QueueURL or QueueName is required")
 	}
+	// FIFO fail-fast: a ".fifo" queue send without a MessageGroupId is a
+	// deterministic config fault SQS rejects at runtime with
+	// MissingParameter. Require a message-group configuration up front:
+	// either a default MessageGroupID, or the explicit FIFO flag as the
+	// operator's opt-in to per-envelope groups via the
+	// x-bridge.ordering-key header (a missing header is then rejected
+	// per-message before the SDK call — see Sender.validateFIFOGroup).
+	if (isFIFOQueue(c.QueueURL) || isFIFOQueue(c.QueueName)) && !c.FIFO && c.MessageGroupID == "" {
+		return errors.New(
+			"sqs: FIFO queue (\".fifo\" suffix) requires message_group_id " +
+				"(default message group) or fifo: true (per-envelope group " +
+				"via the x-bridge.ordering-key header)")
+	}
 	return nil
 }
 
@@ -213,8 +226,15 @@ func (c *SenderConfig) applyDefaults() {
 	}
 }
 
+// isFIFO reports whether the sender must apply FIFO send semantics
+// (MessageGroupId / MessageDeduplicationId). True when the operator set
+// the FIFO flag or a default MessageGroupID, and ALSO auto-detected
+// from the ".fifo" suffix of the configured queue URL/name so a FIFO
+// queue can never be sent to with the standard-queue shape (the broker
+// would reject every such send with MissingParameter).
 func (c *SenderConfig) isFIFO() bool {
-	return c.FIFO || c.MessageGroupID != ""
+	return c.FIFO || c.MessageGroupID != "" ||
+		isFIFOQueue(c.QueueURL) || isFIFOQueue(c.QueueName)
 }
 
 // isFIFOQueue reports whether an SQS queue URL or name denotes a FIFO

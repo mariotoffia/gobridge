@@ -342,18 +342,31 @@ func TestEdge_SSEFieldSanitization(t *testing.T) {
 	}
 
 	for _, line := range lines {
+		// No "id:" framing field may be emitted at all: it would both
+		// reopen the newline-injection vector this test guards and imply
+		// Last-Event-ID resumability the sender does not provide.
 		if strings.HasPrefix(line, "id: ") {
-			idVal := strings.TrimPrefix(line, "id: ")
-			if strings.Contains(idVal, "\n") {
-				t.Fatalf("SSE id field contains raw newline: %q", idVal)
+			t.Fatalf("unexpected SSE id: field emitted: %q", line)
+		}
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") {
+			// The hostile envelope ID must arrive JSON-escaped inside the
+			// data payload — never as a raw newline that could forge an
+			// extra SSE field or frame boundary.
+			var evt struct {
+				ID string `json:"id"`
 			}
-			if idVal != "evilinjection" {
-				t.Fatalf("SSE id: got %q, want %q", idVal, "evilinjection")
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err != nil {
+				t.Fatalf("SSE data payload is not valid JSON (framing injection?): %v", err)
+			}
+			if evt.ID != "evil\ninjection" {
+				t.Fatalf("envelope id mangled in data payload: got %q", evt.ID)
 			}
 			return
 		}
 	}
-	t.Fatal("no id: line found in SSE output")
+	t.Fatal("no data: line found in SSE output")
 }
 
 // ---------------------------------------------------------------------------

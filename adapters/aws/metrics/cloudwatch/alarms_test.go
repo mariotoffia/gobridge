@@ -82,3 +82,18 @@ func TestDefaultAlarms_Severities(t *testing.T) {
 		t.Errorf("expected 2 CRITICAL alarms, got %d", criticals)
 	}
 }
+
+// MF-4: OutboxDepth is a continuously emitted gauge — missing data means
+// the emitter is dead, so its alarms treat missing data as breaching.
+// Event counters treat missing data as notBreaching (no events = healthy).
+func TestDefaultAlarms_TreatMissingData(t *testing.T) {
+	for _, a := range DefaultAlarms("", "") {
+		want := "notBreaching"
+		if a.MetricName == shared.MetricOutboxDepth {
+			want = "breaching"
+		}
+		if a.TreatMissingData != want {
+			t.Errorf("alarm %s TreatMissingData = %q, want %q", a.Name, a.TreatMissingData, want)
+		}
+	}
+}

@@ -46,6 +46,10 @@ func WithCredentialClock(clk clock.Clock) CredentialResolverOption {
 // CredentialResolver implements ports.CredentialStore by dispatching to
 // registered CredentialRepository backends based on URI scheme and
 // longest namespace prefix match.
+//
+// Cache-miss fetches are deduplicated per URI (singleflight): under a
+// thundering herd of concurrent Resolve calls for the same URI only one
+// repository Get is issued; the rest wait for its result.
 type CredentialResolver struct {
 	mu            sync.RWMutex
 	repos         []ports.CredentialRepository
@@ -53,11 +57,25 @@ type CredentialResolver struct {
 	cacheTTL      time.Duration
 	cacheDisabled bool
 	clk           clock.Clock
+
+	// flightMu guards flight, the in-progress cache-miss fetches.
+	// Separate from mu because repository Gets block on I/O and must
+	// not hold the cache lock.
+	flightMu sync.Mutex
+	flight   map[string]*credFlight
 }
 
 type credCacheEntry struct {
 	creds     *connectivity.CredentialSet
 	expiresAt time.Time
+}
+
+// credFlight is one in-progress fetch shared by concurrent Resolve
+// callers for the same URI. done is closed once creds/err are set.
+type credFlight struct {
+	done  chan struct{}
+	creds *connectivity.CredentialSet
+	err   error
 }
 
 // NewCredentialResolver creates a resolver with the given options.
@@ -67,6 +85,7 @@ func NewCredentialResolver(opts ...CredentialResolverOption) *CredentialResolver
 		cache:    make(map[string]*credCacheEntry),
 		cacheTTL: DefaultCredentialCacheTTL,
 		clk:      clock.System,
+		flight:   make(map[string]*credFlight),
 	}
 	for _, o := range opts {
 		o(r)
@@ -84,14 +103,68 @@ func (r *CredentialResolver) Register(repo ports.CredentialRepository) {
 
 // Resolve looks up credentials for the given URI. It selects the best
 // matching repository by scheme and longest namespace prefix, fetches
-// credentials from it, and optionally caches the result.
+// credentials from it, and optionally caches the result. Concurrent
+// cache misses for the same URI are coalesced into a single repository
+// fetch.
 func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
-	if !r.cacheDisabled {
-		if creds := r.getCached(uri); creds != nil {
-			return creds, nil
-		}
+	if r.cacheDisabled {
+		return r.fetch(ctx, uri)
 	}
 
+	if creds := r.getCached(uri); creds != nil {
+		return creds, nil
+	}
+
+	// Singleflight: join an in-progress fetch for this URI or become
+	// its leader.
+	r.flightMu.Lock()
+	if fl, ok := r.flight[uri]; ok {
+		r.flightMu.Unlock()
+		select {
+		case <-fl.done:
+			if fl.err != nil {
+				return nil, fl.err
+			}
+			return cloneCredentialSet(fl.creds), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	fl := &credFlight{done: make(chan struct{})}
+	r.flight[uri] = fl
+	r.flightMu.Unlock()
+
+	creds, err := r.fetch(ctx, uri)
+	fl.creds, fl.err = creds, err
+
+	r.flightMu.Lock()
+	delete(r.flight, uri)
+	r.flightMu.Unlock()
+	close(fl.done)
+
+	if err != nil {
+		return nil, err
+	}
+	return cloneCredentialSet(creds), nil
+}
+
+// ResolveUncached bypasses the read side of the cache and fetches fresh
+// credentials directly from the backing repository, then refreshes the
+// cache with the fresh value. It implements the poll wrapper's
+// UncachedPullCredentialStore capability (runtime/credentials): the
+// rotation poll must observe the store, not the cache — otherwise a
+// 30s rotation poll against a 5m cache TTL detects rotations only at
+// TTL expiry. Refreshing (rather than just bypassing) the cache means a
+// connection rebuild that happens right after a rotation resolves the
+// rotated secret instead of the rotated-out one.
+func (r *CredentialResolver) ResolveUncached(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
+	return r.fetch(ctx, uri)
+}
+
+// fetch resolves the repository, gets the credentials and refreshes the
+// cache (unless caching is disabled). Callers own singleflight; fetch
+// itself performs exactly one repository Get.
+func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	repo, err := r.resolveRepo(uri)
 	if err != nil {
 		return nil, err

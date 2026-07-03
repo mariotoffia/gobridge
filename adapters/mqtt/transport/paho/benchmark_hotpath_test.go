@@ -73,18 +73,21 @@ func BenchmarkRouter_Route_MultiHandler(b *testing.B) {
 	}
 }
 
-// BenchmarkGenerateEnvelopeID measures the cost of crypto/rand based
-// ID generation (16 bytes random + hex encode).
-func BenchmarkGenerateEnvelopeID(b *testing.B) {
+// BenchmarkDeriveEnvelopeID measures the cost of the deterministic
+// SHA-256 based fallback ID derivation (topic + payload hash, 16 bytes
+// hex encoded).
+func BenchmarkDeriveEnvelopeID(b *testing.B) {
+	payload := make([]byte, 1024)
 	b.ReportAllocs()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = generateEnvelopeID()
+		_ = deriveEnvelopeID("bench/topic/path", payload)
 	}
 }
 
 // BenchmarkEnvelopeFromPublish measures the full MQTT-to-Envelope
 // conversion cost including header map allocation, Property extraction,
-// and generateEnvelopeID().
+// and deriveEnvelopeID().
 func BenchmarkEnvelopeFromPublish(b *testing.B) {
 	pub := &pahov5.Publish{
 		Topic:   "bench/topic/path",

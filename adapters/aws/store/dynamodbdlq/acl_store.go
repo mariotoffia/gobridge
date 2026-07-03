@@ -33,6 +33,7 @@ const (
 	attrSessionID     = "session_id"
 	attrSourceID      = "source_id"
 	attrCorrelationID = "correlation_id"
+	attrAddress       = "address"
 	attrReason        = "reason"
 	attrCategory      = "category"
 	attrErrorCode     = "error_code"
@@ -208,18 +209,29 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 
 	item := map[string]ddbtypes.AttributeValue{
 		attrPK:            &ddbtypes.AttributeValueMemberS{Value: dlqKey(entry.ID())},
-		attrRouteID:       &ddbtypes.AttributeValueMemberS{Value: entry.RouteID()},
 		attrBindingID:     &ddbtypes.AttributeValueMemberS{Value: entry.BindingID()},
 		attrSessionID:     &ddbtypes.AttributeValueMemberS{Value: entry.SessionID()},
 		attrSourceID:      &ddbtypes.AttributeValueMemberS{Value: entry.SourceID()},
 		attrCorrelationID: &ddbtypes.AttributeValueMemberS{Value: entry.CorrelationID()},
+		attrAddress:       &ddbtypes.AttributeValueMemberS{Value: entry.Address()},
 		attrReason:        &ddbtypes.AttributeValueMemberS{Value: entry.Reason()},
-		attrCategory:      &ddbtypes.AttributeValueMemberS{Value: entry.Category()},
 		attrErrorCode:     &ddbtypes.AttributeValueMemberS{Value: entry.ErrorCode()},
 		attrLastError:     &ddbtypes.AttributeValueMemberS{Value: entry.LastError()},
 		attrEnvelopeJSON:  &ddbtypes.AttributeValueMemberS{Value: string(envJSON)},
 		attrFailedAt:      &ddbtypes.AttributeValueMemberN{Value: i64(failedAtMs)},
 		attrAttempts:      &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(entry.Attempts())},
+	}
+	// route_id and category are GSI partition keys (RouteIndex/CategoryIndex)
+	// and DynamoDB rejects empty strings for index key attributes. Both are
+	// optional in the domain, so omit them when empty — the entry simply
+	// stays out of that sparse index (an empty value can never match a
+	// RouteID/Category filter anyway) while unmarshalEntry reads the missing
+	// attribute back as "".
+	if entry.RouteID() != "" {
+		item[attrRouteID] = &ddbtypes.AttributeValueMemberS{Value: entry.RouteID()}
+	}
+	if entry.Category() != "" {
+		item[attrCategory] = &ddbtypes.AttributeValueMemberS{Value: entry.Category()}
 	}
 	// Only stamp a TTL when a retention window is configured. By default DLQ
 	// entries are retained indefinitely so investigators are not racing an
@@ -358,8 +370,13 @@ func (s *Store) listByIndex(
 		startKey = out.LastEvaluatedKey
 	}
 
+	// Oldest-first with ID tiebreak (ports.DLQReader ordering contract).
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].FailedAt().Before(entries[j].FailedAt())
+		fi, fj := entries[i].FailedAt(), entries[j].FailedAt()
+		if fi.Equal(fj) {
+			return entries[i].ID() < entries[j].ID()
+		}
+		return fi.Before(fj)
 	})
 
 	if len(entries) > limit {
@@ -437,8 +454,13 @@ func (s *Store) listByScan(ctx context.Context, filter routing.DLQFilter) ([]rou
 		startKey = out.LastEvaluatedKey
 	}
 
+	// Oldest-first with ID tiebreak (ports.DLQReader ordering contract).
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].FailedAt().Before(entries[j].FailedAt())
+		fi, fj := entries[i].FailedAt(), entries[j].FailedAt()
+		if fi.Equal(fj) {
+			return entries[i].ID() < entries[j].ID()
+		}
+		return fi.Before(fj)
 	})
 
 	if len(entries) > limit {
@@ -504,34 +526,70 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 	return count, nil
 }
 
-// DeleteByFilter removes all DLQ entries matching the filter criteria.
-// Returns the count of entries deleted.
+// deleteBatchSize is the List page size DeleteByFilter uses per pass when
+// deleting without a caller-imposed Limit.
+const deleteBatchSize = 100
+
+// DeleteByFilter removes DLQ entries matching the filter criteria and
+// returns the count of entries deleted.
+//
+// Per the ports.DLQAdmin contract: with filter.Limit <= 0 it deletes EVERY
+// matching entry — it loops List+delete until a pass finds nothing, so the
+// internal List page size (100) never truncates the delete. With a positive
+// Limit it deletes at most Limit entries, selected oldest-first.
+//
+// Interaction with WithMaxScanPages: an index-less filter (no RouteID and
+// no Category) resolves candidates via a bounded table scan; each delete
+// pass makes progress, but if more than maxScanPages pages of NON-matching
+// entries precede the remaining matches, a pass can come up empty early.
+// Filters carrying RouteID or Category use a GSI and are exhaustive.
 func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: delete_by_filter",
-			"route_id", filter.RouteID, "category", filter.Category)
+			"route_id", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
 	}
 
-	entries, err := s.List(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
+	remaining := filter.Limit // <= 0 means delete all matches
+	total := 0
 
-	var count int
-	for _, e := range entries {
-		_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: aws.String(s.tableName),
-			Key: map[string]ddbtypes.AttributeValue{
-				attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID())},
-			},
-		})
-		if err != nil {
-			return count, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID())
+	for {
+		batch := filter
+		if remaining > 0 {
+			batch.Limit = remaining
+		} else {
+			batch.Limit = deleteBatchSize
 		}
-		count++
+
+		entries, err := s.List(ctx, batch)
+		if err != nil {
+			return total, err
+		}
+		if len(entries) == 0 {
+			break
+		}
+
+		for _, e := range entries {
+			_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+				TableName: aws.String(s.tableName),
+				Key: map[string]ddbtypes.AttributeValue{
+					attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID())},
+				},
+			})
+			if err != nil {
+				return total, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID())
+			}
+			total++
+		}
+
+		if remaining > 0 {
+			remaining -= len(entries)
+			if remaining <= 0 {
+				break
+			}
+		}
 	}
 
-	return count, nil
+	return total, nil
 }
 
 // Purge deletes entries whose failed_at is before the given time.

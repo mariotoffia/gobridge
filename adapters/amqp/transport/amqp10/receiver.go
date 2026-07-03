@@ -2,6 +2,7 @@ package amqp10
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	mathrand "math/rand/v2"
 	"sync"
@@ -29,6 +30,15 @@ type Receiver struct {
 	mu       sync.Mutex
 	link     linkReceiver
 	linkConn amqpConn
+
+	// In-flight settlement tracking (finding: graceful shutdown).
+	// inflightCount counts deliveries emitted to the pipeline whose
+	// settlement has not yet completed; inflightIdle is closed on every
+	// transition to zero so Close can wait event-driven (bounded by its
+	// ctx) for outstanding Acks/Retries before detaching the link.
+	inflightMu    sync.Mutex
+	inflightCount int
+	inflightIdle  chan struct{}
 }
 
 // NewReceiver creates an AMQP 1.0 Receiver.
@@ -74,6 +84,20 @@ func (r *Receiver) clock() clock.Clock {
 func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 // Run creates a receiver link and enters the receive loop.
+//
+// Cold-start resilience: a RECOVERABLE initial link failure (broker
+// briefly unreachable while the session manager is still dialing) does
+// NOT fail Run — by the ports.Receiver contract a non-ctx error from
+// Run is terminal for the whole runtime. Instead the receive loop's
+// waitAndReconnect path (the same one used for mid-run link loss)
+// establishes the link once the session connects. Only permanent
+// (misconfiguration-class) errors surface immediately.
+//
+// The receiver link is deliberately left OPEN when Run returns: the
+// route runner settles in-flight deliveries AFTER Run exits and then
+// calls Close, which waits (bounded) for those settlements before
+// detaching. Closing the link here would fail every in-flight Ack on
+// graceful shutdown and cause duplicates after restart.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "amqp10: receiver starting",
@@ -91,13 +115,90 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 
 	if err := r.ensureLink(ctx); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !shared.IsRecoverableError(err) {
+			return err
+		}
+		if r.logger != nil {
+			r.logger.Warn("amqp10: initial link creation failed; waiting for session",
+				"address", redactURL(r.cfg.Address),
+				"error", err,
+			)
+		}
 	}
-	defer r.closeLink()
-
-	r.startedOnce.Do(func() { close(r.started) })
 
 	return r.receiveLoop(ctx, emit)
+}
+
+// Close waits — bounded by ctx — for in-flight delivery settlements to
+// complete, then detaches the receiver link. The route runner calls it
+// after Run has returned and its processing goroutines have drained, so
+// graceful shutdown never strands an Ack on a closed link.
+func (r *Receiver) Close(ctx context.Context) error {
+	r.waitInflight(ctx)
+	r.closeLink()
+	return nil
+}
+
+// trackDelivery registers del in the in-flight settlement count and
+// arms its onSettled hook to decrement on completion.
+func (r *Receiver) trackDelivery(del *Delivery) {
+	r.inflightMu.Lock()
+	if r.inflightCount == 0 {
+		r.inflightIdle = make(chan struct{})
+	}
+	r.inflightCount++
+	r.inflightMu.Unlock()
+	del.onSettled = r.settlementDone
+}
+
+// settlementDone is the Delivery.onSettled hook: it decrements the
+// in-flight count and signals idle on the transition to zero.
+func (r *Receiver) settlementDone() {
+	r.inflightMu.Lock()
+	r.inflightCount--
+	if r.inflightCount == 0 && r.inflightIdle != nil {
+		close(r.inflightIdle)
+		r.inflightIdle = nil
+	}
+	r.inflightMu.Unlock()
+}
+
+// waitInflight blocks until every tracked delivery has settled or ctx
+// expires (the bound that keeps Close from hanging on a lost settler).
+func (r *Receiver) waitInflight(ctx context.Context) {
+	for {
+		r.inflightMu.Lock()
+		if r.inflightCount == 0 {
+			r.inflightMu.Unlock()
+			return
+		}
+		idle := r.inflightIdle
+		pending := r.inflightCount
+		r.inflightMu.Unlock()
+
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug,
+				"amqp10: waiting for in-flight settlements before link close",
+				"address", redactURL(r.cfg.Address),
+				"in_flight", pending,
+			)
+		}
+
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			if r.logger != nil {
+				r.logger.Warn("amqp10: closing link with unsettled in-flight deliveries",
+					"address", redactURL(r.cfg.Address),
+					"in_flight", pending,
+				)
+			}
+			return
+		}
+	}
 }
 
 func (r *Receiver) closeLink() {
@@ -108,14 +209,31 @@ func (r *Receiver) closeLink() {
 	r.mu.Unlock()
 
 	if link != nil {
+		// Durable subscriptions (DurabilityMode > 0) must NOT be closed
+		// at the link level: go-amqp can only send a full close
+		// (Detach{Closed:true}), which brokers interpret as UNSUBSCRIBE —
+		// deleting the subscription and every message retained for it
+		// (verified against Artemis: link close deletes, connection drop
+		// preserves). The link is released locally and torn down with
+		// the connection instead, which keeps the subscription.
+		if r.cfg.DurabilityMode > 0 {
+			if logging.DebugEnabled(r.logger) {
+				r.logger.Log(context.Background(), logging.LevelDebug,
+					"amqp10: leaving durable subscription link for connection teardown (link close would unsubscribe)",
+					"address", redactURL(r.cfg.Address),
+					"subscription", r.linkName(),
+				)
+			}
+			return
+		}
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
 				"address", redactURL(r.cfg.Address))
 		}
-		// Finding 3: bound the detach. closeLink runs from Run's defer
-		// on shutdown; an unbounded context.Background() could hang the
-		// Run goroutine forever on an unresponsive broker. We derive from
-		// Background (not the — by now cancelled — Run ctx) on purpose so
+		// Finding 3: bound the detach. closeLink runs from Close on
+		// shutdown; an unbounded context.Background() could hang the
+		// caller forever on an unresponsive broker. We derive from
+		// Background (not a — by now cancelled — Run ctx) on purpose so
 		// the detach still gets its full LinkCloseTimeout window to flush
 		// in-flight dispositions during a graceful stop, mirroring
 		// handleLinkError.
@@ -153,11 +271,15 @@ func (r *Receiver) ensureLink(ctx context.Context) error {
 }
 
 func (r *Receiver) createLink(ctx context.Context) error {
-	sess := r.session.AMQPSession()
+	// Finding: capture the session link and its owning connection under
+	// ONE session lock so the (link, conn) pair can never be mismatched
+	// by a concurrent reconnect between two separate getter calls. A
+	// stale pairing would make notifyDisconnect drop a later legitimate
+	// disconnect notification for this link's real connection.
+	sess, conn := r.session.sessionAndConn()
 	if sess == nil {
 		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
-	conn := r.session.Conn()
 
 	recv, err := sess.NewReceiverLink(
 		ctx,
@@ -165,6 +287,7 @@ func (r *Receiver) createLink(ctx context.Context) error {
 		int32(r.cfg.LinkCredit),
 		r.cfg.DurabilityMode,
 		r.cfg.Routing.capability(),
+		r.linkName(),
 	)
 	if err != nil {
 		return MapError(err)
@@ -175,11 +298,47 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	if r.session != nil {
 		r.session.markReceiverLink(r, true) // finding 4: link is up
 	}
+	r.startedOnce.Do(func() { close(r.started) })
 	return nil
 }
 
+// linkName returns the AMQP link name for this receiver. An explicit
+// SubscriptionName always wins. Durable subscriptions (DurabilityMode >
+// 0) REQUIRE a stable name — brokers identify the subscription by
+// container-id + link name, so the SDK's random default would orphan
+// the subscription on every reconnect and silently drop everything
+// published while detached — hence a deterministic name is derived from
+// the session container id and the link address. Non-durable links keep
+// the SDK's random name (empty return).
+func (r *Receiver) linkName() string {
+	if r.cfg.SubscriptionName != "" {
+		return r.cfg.SubscriptionName
+	}
+	if r.cfg.DurabilityMode == 0 {
+		return ""
+	}
+	cid := ""
+	if r.session != nil {
+		cid = r.session.opts.ContainerID
+	}
+	if cid == "" {
+		// Still stable across restarts of the same configuration, but
+		// shared by every replica lacking a distinct container_id —
+		// operators should set container_id per replica.
+		return "gobridge:" + r.cfg.Address
+	}
+	return cid + ":" + r.cfg.Address
+}
+
 func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	backoff := newBackoff()
+	receiveBackoff := newBackoff()
+	// linkBackoff throttles link RE-CREATION attempts. Without it, a
+	// connected-but-attach-refusing broker (e.g. resource-limit-exceeded)
+	// turns the waitAndReconnect path into a tight unthrottled attach
+	// storm: Health reports Connected, so waitAndReconnect returns
+	// immediately and the loop re-attaches as fast as the broker can
+	// refuse.
+	linkBackoff := newBackoff()
 
 	for {
 		if ctx.Err() != nil {
@@ -194,14 +353,49 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			if err := r.waitAndReconnect(ctx); err != nil {
 				return err
 			}
+			r.mu.Lock()
+			created := r.link != nil
+			r.mu.Unlock()
+			if created {
+				linkBackoff.reset()
+				continue
+			}
+			delay := linkBackoff.next()
+			if r.logger != nil {
+				r.logger.Warn("amqp10: link re-creation failed, backing off",
+					"address", redactURL(r.cfg.Address),
+					"retry_after", delay,
+				)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-r.clock().After(delay):
+			}
 			continue
 		}
 
-		start := r.clock().Now()
 		del, err := link.Receive(ctx, r.logger, r.metrics, r.clock())
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+
+			if errors.Is(err, errIngressRejected) {
+				// A malformed message was rejected at the broker inside
+				// Receive. The link is healthy and the message settled —
+				// count it and keep receiving; one poison message must
+				// never exit the loop (a non-transient return would take
+				// the whole bridge down).
+				r.metrics.Counter(MetricAMQP10IngressRejected, 1,
+					shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
+				if r.logger != nil {
+					r.logger.Warn("amqp10: rejected malformed inbound message",
+						"address", redactURL(r.cfg.Address),
+						"error", err,
+					)
+				}
+				continue
 			}
 
 			bridgeErr := MapError(err)
@@ -210,7 +404,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 				return bridgeErr
 			}
 
-			delay := backoff.next()
+			delay := receiveBackoff.next()
 			if r.logger != nil {
 				r.logger.Warn("amqp10: receive failed, retrying",
 					"address", redactURL(r.cfg.Address),
@@ -229,9 +423,7 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			continue
 		}
 
-		r.metrics.Timer(MetricAMQP10ReceiveLatency, r.clock().Since(start),
-			shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
-		backoff.reset()
+		receiveBackoff.reset()
 
 		if logging.TraceEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelTrace, "amqp10: received message",
@@ -241,7 +433,13 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 			)
 		}
 
+		r.trackDelivery(del)
 		if err := emit(ctx, del); err != nil {
+			// The pipeline did not take ownership: release the in-flight
+			// slot so Close does not wait on a settlement nobody will
+			// perform. The delivery itself stays settleable (ownership
+			// contract: settlement remains with whoever holds it).
+			del.fireOnSettled()
 			return err
 		}
 	}
@@ -262,13 +460,24 @@ func (r *Receiver) handleLinkError(err error) {
 		r.session.markReceiverLink(r, false) // finding 4: link is down
 	}
 
-	if link != nil {
+	if link != nil && r.cfg.DurabilityMode == 0 {
+		// Durable subscription links are never full-closed (go-amqp only
+		// sends Detach{Closed:true} = broker-side UNSUBSCRIBE, deleting
+		// retained messages); the failed link is abandoned locally and
+		// dies with the connection. See closeLink.
 		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
 		_ = link.Close(closeCtx)
 		cancel()
 	}
 
 	if r.session != nil {
+		// Finding: a link-scoped fault (e.g. *amqp.LinkError on a live
+		// session) must rebuild only THIS link — escalating it via
+		// notifyDisconnect would tear down the shared connection and
+		// disrupt every other link on the session.
+		if isLinkScopedError(err) {
+			return
+		}
 		bridgeErr := MapError(err)
 		if bridgeErr != nil && (bridgeErr.Code == shared.ErrCodeConnectionLost ||
 			bridgeErr.Code == shared.ErrCodeUnavailable) {

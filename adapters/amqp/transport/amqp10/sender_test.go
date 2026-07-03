@@ -112,7 +112,7 @@ func TestSender_BuildMessage(t *testing.T) {
 		},
 	})
 
-	msg := envelopeToMessage(env)
+	msg := envelopeToMessage(env, true)
 
 	if len(msg.Data) != 1 || string(msg.Data[0]) != "payload-data" {
 		t.Fatalf("Data = %v", msg.Data)
@@ -146,7 +146,7 @@ func TestSender_BuildMessage_NoExpiry(t *testing.T) {
 		Payload: []byte("data"),
 	})
 
-	msg := envelopeToMessage(env)
+	msg := envelopeToMessage(env, true)
 
 	if msg.Properties.AbsoluteExpiryTime != nil {
 		t.Fatal("AbsoluteExpiryTime should be nil when no expiry set")

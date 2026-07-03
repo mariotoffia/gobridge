@@ -20,6 +20,32 @@ const (
 	asbHeaderDeliveryCount = "asb.delivery-count"
 )
 
+// Reserved (x-bridge.*, UBIQUITOUS.md "Reserved header") application
+// properties stamped by this adapter on the SCHEDULED COPY a delayed
+// Retry enqueues. They live only on the Service Bus wire message —
+// ingress strips every reserved ApplicationProperty (IsReservedHeader)
+// before headers reach the envelope, so neither key ever appears in
+// Envelope.Headers and an external producer cannot inject them past
+// the ACL.
+const (
+	// asbPropRetryAttempt carries the accumulated 1-based receive count
+	// at the moment the retry copy was scheduled. Scheduling a fresh
+	// copy resets the broker's DeliveryCount to 1, so without this
+	// counter the runtime's receive-count gate (MaxReplayAttempts) and
+	// the broker's own MaxDeliveryCount would never fire — a poison
+	// message would ping-pong forever. Ingress adds this value to the
+	// broker DeliveryCount when stamping asb.delivery-count.
+	asbPropRetryAttempt = "x-bridge.retry-attempt"
+
+	// asbPropOriginalMessageID preserves the FIRST delivery's MessageID
+	// across retry copies. The copy's own MessageID is salted with the
+	// attempt number so broker duplicate detection never silently
+	// discards a scheduled retry; ingress restores this value as the
+	// envelope ID so end-to-end (envelope-ID / idempotency) dedup still
+	// sees one logical message.
+	asbPropOriginalMessageID = "x-bridge.original-message-id"
+)
+
 var asbWellKnownHeaders = map[string]bool{
 	asbHeaderMessageID:     true,
 	asbHeaderCorrelationID: true,

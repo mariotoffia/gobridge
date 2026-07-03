@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -87,6 +89,13 @@ type linkReceiver interface {
 	Close(ctx context.Context) error
 }
 
+// errIngressRejected marks an inbound message that failed envelope
+// construction and was rejected at the broker. The receive LOOP must
+// treat this as a handled, per-message event (count it and continue) —
+// not as a link fault and NEVER as a terminal receiver error: one
+// poison message must not tear down the route or the whole bridge.
+var errIngressRejected = errors.New("amqp10: inbound message rejected at ingress")
+
 // receiverLink wraps a *amqp.Receiver, exposing only the operations
 // the adapter's Receiver needs and converting incoming messages to
 // domain-typed *Delivery values inside the ACL.
@@ -104,29 +113,42 @@ var _ linkReceiver = (*receiverLink)(nil)
 // types to the caller. The receiver does NOT fall back to the link
 // address when Properties.Subject is missing; an inbound message
 // without Properties.Subject yields an Envelope with empty Subject.
+//
+// MetricAMQP10ReceiveLatency measures only the post-arrival conversion
+// work (message → envelope → delivery). The blocking wait for a message
+// is deliberately EXCLUDED: timing the idle block would report minutes
+// of "latency" on a quiet queue.
 func (r *receiverLink) Receive(
 	ctx context.Context,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
 	clk clock.Clock,
 ) (*Delivery, error) {
+	if clk == nil {
+		clk = clock.System
+	}
 	msg, err := r.raw.Receive(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("amqp10: receive: %w", err)
 	}
+	arrived := clk.Now()
 	env, err := messageToEnvelope(msg, clk)
 	if err != nil {
 		// Reject malformed message at the broker so it is not redelivered
-		// in an infinite loop, then surface the classified error to the
-		// caller. We deliberately swallow Reject's error: the receive-side
-		// classification is the authoritative signal.
+		// in an infinite loop. The errIngressRejected marker tells the
+		// receive loop this is a handled per-message event (settled via
+		// Reject), NOT a link fault — the loop counts it and continues.
 		_ = r.raw.RejectMessage(ctx, msg, nil)
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errIngressRejected, err)
 	}
 	d := NewDelivery(env, msg, r.raw, logger, metrics, clk)
 	// Share the per-link warn guard so an unhonored delayed retry warns
 	// once per link, not once per message (G-N2).
 	d.delayWarnOnce = &r.delayUnhonoredWarn
+	if metrics != nil {
+		metrics.Timer(MetricAMQP10ReceiveLatency, clk.Since(arrived),
+			shared.Tag{Key: shared.TagKeyEntity, Value: r.raw.Address()})
+	}
 	return d, nil
 }
 
@@ -148,6 +170,15 @@ func (r *receiverLink) Close(ctx context.Context) error {
 // envelope's Subject is left empty (no fallback to the link address).
 // The raw amqp10.subject header is still recorded under
 // envelope.Headers() via messageToHeaders for full property round-trip.
+//
+// Bridge-to-bridge identity headers: a peer bridge's egress deliberately
+// propagates HeaderIdempotencyKey / HeaderDeduplicationID /
+// HeaderOrderingKey as application properties (see headersToMessage).
+// NewEnvelope strips every x-bridge.* key from untrusted Headers, so
+// those values are LIFTED into EnvelopeInput's first-class fields — the
+// trusted, anti-spoof-safe path — before the strip; otherwise dedup and
+// ordering silently vanish at the receiving hop of a
+// bridge→broker→bridge topology.
 func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
@@ -187,18 +218,44 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
 		expiresAt = *msg.Properties.AbsoluteExpiryTime
 	}
+	// Preserve the producer's creation-time when present; fall back to
+	// the bridge receive time only for messages that carry none, so a
+	// relayed envelope keeps its original timestamp across hops.
+	createdAt := clk.Now()
+	if msg.Properties != nil && msg.Properties.CreationTime != nil && !msg.Properties.CreationTime.IsZero() {
+		createdAt = *msg.Properties.CreationTime
+	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
-		ID:        msgID,
-		Subject:   subject,
-		Payload:   body,
-		Headers:   headers,
-		CreatedAt: clk.Now(),
-		ExpiresAt: expiresAt,
+		ID:              msgID,
+		Subject:         subject,
+		Payload:         body,
+		Headers:         headers,
+		CreatedAt:       createdAt,
+		ExpiresAt:       expiresAt,
+		IdempotencyKey:  bridgeHeaderString(msg, messaging.HeaderIdempotencyKey),
+		DeduplicationID: bridgeHeaderString(msg, messaging.HeaderDeduplicationID),
+		OrderingKey:     bridgeHeaderString(msg, messaging.HeaderOrderingKey),
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
 	}
 	return env, nil
+}
+
+// bridgeHeaderString reads a reserved bridge-to-bridge header from the
+// message's application properties as a string (case-insensitive on the
+// x-bridge. namespace, consistent with messaging.IsReservedHeader).
+// Returns "" when absent or not a string.
+func bridgeHeaderString(msg *amqp.Message, key string) string {
+	for k, v := range msg.ApplicationProperties {
+		if strings.EqualFold(k, key) {
+			if s, ok := v.(string); ok {
+				return s
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 func generateEnvelopeID() string {

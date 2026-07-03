@@ -151,6 +151,7 @@ func TestReceiver_RunStripsReservedHeaders(t *testing.T) {
 // Verifies SNS-wrapped bodies are unwrapped into subject, payload, and topic metadata.
 func TestReceiver_RunSNSUnwrap(t *testing.T) {
 	snsMsg := map[string]string{
+		"Type":     "Notification",
 		"TopicArn": "arn:aws:sns:us-west-1:123:my-topic",
 		"Subject":  "Test Subject",
 		"Message":  `{"inner":"data"}`,

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -84,6 +85,13 @@ func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
 // ConnectionConfig holds the credentials and TLS settings shared by
 // both Receiver and Sender.
 //
+// Field tags follow the repo plugin-config convention (snake_case,
+// see config_plugin.go): the strict registry decoder (TagName "json",
+// ErrorUnused) resolves YAML keys through the json tag, so every
+// user-settable field MUST carry one or the documented key is
+// rejected as unknown. TLSConfig is programmatic-only (a pre-built
+// *tls.Config cannot come from YAML) and is excluded from decoding.
+//
 // TLS material precedence:
 //   - TLSConfig (pre-built *tls.Config) wins when non-nil.
 //   - CaPEM / ClientCertPEM / ClientKeyPEM are the PEM-driven source
@@ -91,23 +99,23 @@ func (a *sessionReceiverAdapter) Close(ctx context.Context) error {
 //     any PEM field is set, buildClientOptions constructs a fresh
 //     *tls.Config from them.
 type ConnectionConfig struct {
-	ConnectionString   shared.Secret
-	Namespace          string
-	UseManagedIdentity bool
-	TenantID           string
-	ClientID           string
-	ClientSecret       shared.Secret
-	TLSConfig          *tls.Config
-	CaPEM              shared.Secret
+	ConnectionString   shared.Secret `mapstructure:"connection_string" yaml:"connection_string,omitempty" json:"connection_string,omitempty"`
+	Namespace          string        `mapstructure:"namespace" yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	UseManagedIdentity bool          `mapstructure:"use_managed_identity" yaml:"use_managed_identity,omitempty" json:"use_managed_identity,omitempty"`
+	TenantID           string        `mapstructure:"tenant_id" yaml:"tenant_id,omitempty" json:"tenant_id,omitempty"`
+	ClientID           string        `mapstructure:"client_id" yaml:"client_id,omitempty" json:"client_id,omitempty"`
+	ClientSecret       shared.Secret `mapstructure:"client_secret" yaml:"client_secret,omitempty" json:"client_secret,omitempty"`
+	TLSConfig          *tls.Config   `mapstructure:"-" yaml:"-" json:"-"`
+	CaPEM              shared.Secret `mapstructure:"ca_pem" yaml:"ca_pem,omitempty" json:"ca_pem,omitempty"`
 	// ClientCertPEM and ClientKeyPEM carry an in-memory client
 	// certificate/key pair for mutual TLS. Both must be set; one
 	// without the other is a configuration error. They are
 	// shared.Secret so the (sensitive) private key — and, for
 	// uniformity, the cert/CA bundles — redact on JSON/YAML/log
 	// marshal; the config-save path reveals explicitly.
-	ClientCertPEM      shared.Secret
-	ClientKeyPEM       shared.Secret
-	InsecureSkipVerify bool
+	ClientCertPEM      shared.Secret `mapstructure:"client_cert_pem" yaml:"client_cert_pem,omitempty" json:"client_cert_pem,omitempty"`
+	ClientKeyPEM       shared.Secret `mapstructure:"client_key_pem" yaml:"client_key_pem,omitempty" json:"client_key_pem,omitempty"`
+	InsecureSkipVerify bool          `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify,omitempty" json:"insecure_skip_verify,omitempty"`
 }
 
 // asbReceiverOptions carries the receiver-construction knobs in a
@@ -202,7 +210,10 @@ func buildReceiverOptions(o asbReceiverOptions) *azservicebus.ReceiverOptions {
 	if o.ReceiveAndDelete {
 		out.ReceiveMode = azservicebus.ReceiveModeReceiveAndDelete
 	}
-	switch o.SubQueue {
+	// Config validation (validateSubQueue) guarantees SubQueue is one of
+	// the known values; matching is case-insensitive so an accepted
+	// casing can never silently fall through to the main queue.
+	switch strings.ToLower(o.SubQueue) {
 	case "deadletter":
 		out.SubQueue = azservicebus.SubQueueDeadLetter
 	case "transferdeadletter":

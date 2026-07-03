@@ -27,6 +27,8 @@ type sqlSession struct {
 
 // openSession opens (or creates) the database at path, applies the
 // durability/concurrency pragmas, and runs the idempotent schema migration.
+// nowMs stamps legacy fence rows that predate the updated_at column so they
+// age from "now" rather than being compacted immediately.
 //
 // The connection pool is capped at a single open connection. modernc.org/sqlite
 // gives every *sql.Conn its own private database for ":memory:" paths, so a
@@ -38,7 +40,7 @@ type sqlSession struct {
 // ponytail: single-writer ceiling. Good enough for the single-process
 // deployments this store targets; a read-heavy file deployment would upgrade
 // to a separate read-only connection pool over the WAL. See I2.
-func openSession(path string) (*sqlSession, error) {
+func openSession(path string, nowMs int64) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: open", "path", path)
@@ -67,50 +69,68 @@ func openSession(path string) (*sqlSession, error) {
 		return nil, wrapErr(err, "sqliteoutbox: migrate", "path", path)
 	}
 
-	if err := migrateClaimedAt(db); err != nil {
+	if err := migrateColumn(db, "outbox", "claimed_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
 		return nil, wrapErr(err, "sqliteoutbox: migrate claimed_at", "path", path)
+	}
+	if err := migrateColumn(db, "outbox", "seq", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqliteoutbox: migrate seq", "path", path)
+	}
+	if err := migrateColumn(db, "outbox_partition_fence", "updated_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqliteoutbox: migrate fence updated_at", "path", path)
+	}
+	// Stamp legacy fence rows (updated_at 0, i.e. never touched since the
+	// column appeared) with "now" so they age through the full fence
+	// retention window instead of being compacted on the next Claim.
+	if _, err := db.Exec(
+		"UPDATE outbox_partition_fence SET updated_at = ? WHERE updated_at = 0", nowMs,
+	); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqliteoutbox: stamp legacy fences", "path", path)
 	}
 
 	return &sqlSession{db: db}, nil
 }
 
-// migrateClaimedAt adds the claimed_at column to a pre-existing outbox table
-// that predates it (I1). CREATE TABLE IF NOT EXISTS in schemaSQL already
-// covers fresh databases; this handles upgrade-in-place for older files
-// without dropping data. Idempotent: a no-op once the column exists.
-func migrateClaimedAt(db *sql.DB) error {
-	has, err := hasClaimedAtColumn(db)
+// migrateColumn adds a column to a pre-existing table that predates it (I1).
+// CREATE TABLE IF NOT EXISTS in schemaSQL already covers fresh databases;
+// this handles upgrade-in-place for older files without dropping data.
+// Idempotent: a no-op once the column exists.
+func migrateColumn(db *sql.DB, table, column, decl string) error {
+	has, err := hasColumn(db, table, column)
 	if err != nil {
 		return err
 	}
 	if has {
 		return nil
 	}
-	if _, err := db.Exec("ALTER TABLE outbox ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+	ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl)
+	if _, err := db.Exec(ddl); err != nil {
 		// A concurrent first-upgrade open (multi-process shared file) can lose
 		// the ALTER race with "duplicate column name": both opens passed the
 		// table_info check above, then both ran ALTER. Re-check; if the column
 		// now exists the migration is effectively complete, so treat it as
 		// success rather than failing NewStore (busy_timeout cannot mask a
 		// schema error).
-		if got, chkErr := hasClaimedAtColumn(db); chkErr == nil && got {
+		if got, chkErr := hasColumn(db, table, column); chkErr == nil && got {
 			return nil
 		}
-		return fmt.Errorf("sqliteoutbox: add claimed_at column: %w", err)
+		return fmt.Errorf("sqliteoutbox: add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }
 
-// hasClaimedAtColumn reports whether the outbox table already has the
-// claimed_at column. Used for both the pre-ALTER check and the post-ALTER
-// race re-check in migrateClaimedAt. PRAGMA table_info auto-releases the
-// single connection when the scan reaches the end, so a following ALTER on
-// the same SetMaxOpenConns(1) pool does not self-deadlock.
-func hasClaimedAtColumn(db *sql.DB) (bool, error) {
-	rows, err := db.Query("PRAGMA table_info(outbox)")
+// hasColumn reports whether the table already has the named column. Used for
+// both the pre-ALTER check and the post-ALTER race re-check in migrateColumn.
+// PRAGMA table_info auto-releases the single connection when the scan reaches
+// the end, so a following ALTER on the same SetMaxOpenConns(1) pool does not
+// self-deadlock.
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return false, fmt.Errorf("sqliteoutbox: query table_info: %w", err)
+		return false, fmt.Errorf("sqliteoutbox: query table_info(%s): %w", table, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -124,9 +144,9 @@ func hasClaimedAtColumn(db *sql.DB) (bool, error) {
 			pk      int
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, fmt.Errorf("sqliteoutbox: scan table_info: %w", err)
+			return false, fmt.Errorf("sqliteoutbox: scan table_info(%s): %w", table, err)
 		}
-		if name == "claimed_at" {
+		if name == column {
 			return true, nil
 		}
 	}
@@ -141,10 +161,15 @@ func (s *sqlSession) close() error {
 	return nil
 }
 
-// persist inserts records under a single transaction. Duplicate
-// records are translated to shared.ErrDuplicateRecord at the SDK
-// boundary.
+// persist inserts records under a single transaction with per-record
+// idempotency (ports.OutboxStore Persist contract): INSERT OR IGNORE
+// skips records whose identity already exists — in the store or earlier
+// in the same batch — and shared.ErrDuplicateRecord is returned only
+// when EVERY record in the batch was a duplicate (nothing persisted).
 func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxRecord, clk clock.Clock) error {
+	if len(records) == 0 {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrapErr(err, "sqliteoutbox: begin tx", "recordCount", len(records))
@@ -157,6 +182,7 @@ func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxR
 	}
 	defer func() { _ = stmt.Close() }()
 
+	inserted := 0
 	for _, r := range records {
 		envJSON, err := json.Marshal(r.Snapshot())
 		if err != nil {
@@ -181,33 +207,29 @@ func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxR
 			expiresAtMs = expiresAt.UnixMilli()
 		}
 
+		pk := partitionKey(r)
 		res, err := stmt.ExecContext(ctx,
-			r.ID(), partitionKey(r), r.RouteID(), r.EnvelopeID(), r.BindingID(),
+			r.ID(), pk, r.RouteID(), r.EnvelopeID(), r.BindingID(),
 			r.SessionID(), r.Address(), string(envJSON), nullableString(headersJSON),
 			createdAt.UnixMilli(), expiresAtMs,
+			pk, // seq subselect
 		)
 		if err != nil {
-			if isUniqueViolation(err) {
-				return shared.ErrDuplicateRecord.
-					WithMessage("duplicate outbox record").
-					With("envelopeID", r.EnvelopeID()).
-					With("bindingID", r.BindingID())
-			}
 			return wrapErr(err, "sqliteoutbox: insert",
 				"envelopeID", r.EnvelopeID(), "bindingID", r.BindingID())
 		}
-
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			return shared.ErrDuplicateRecord.
-				WithMessage("duplicate outbox record").
-				With("envelopeID", r.EnvelopeID()).
-				With("bindingID", r.BindingID())
+		if n, _ := res.RowsAffected(); n > 0 {
+			inserted++
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return wrapErr(err, "sqliteoutbox: commit persist", "recordCount", len(records))
+	}
+	if inserted == 0 {
+		return shared.ErrDuplicateRecord.
+			WithMessage("all records in batch already persisted").
+			With("recordCount", len(records))
 	}
 	return nil
 }
@@ -258,8 +280,17 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 			With("givenVersion", token.Version).
 			With("latestVersion", observed)
 	}
-	if _, err := tx.ExecContext(ctx, upsertFenceVersionSQL, pk, token.Version); err != nil {
+	if _, err := tx.ExecContext(ctx, upsertFenceVersionSQL, pk, token.Version, now.UnixMilli()); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: upsert fence version", "partitionKey", pk)
+	}
+
+	// limit <= 0 is a fencing no-op (ports.OutboxStore contract): commit the
+	// fence advance, claim nothing.
+	if limit <= 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, wrapErr(err, "sqliteoutbox: commit zero-limit claim fence", "partitionKey", pk)
+		}
+		return nil, nil
 	}
 
 	selArgs := make([]any, 0, 4)
@@ -327,22 +358,33 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 			With("affected", n)
 	}
 
+	// Hydrate INSIDE the claim transaction so the rows returned are exactly
+	// the rows this call flipped to claimed — a competing claimer that wins
+	// the row after our commit can never leak into this result set (the
+	// pre-fix read-after-commit was a thief-visible snapshot; it only
+	// converged via fencing).
+	recs, err := fetchByIDsTx(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: commit claim",
 			"partitionKey", pk, "ownerID", token.Owner)
 	}
 
-	return s.fetchByIDs(ctx, ids)
+	return recs, nil
 }
 
-// fetchByIDs hydrates records by ID using the canonical column list.
-func (s *sqlSession) fetchByIDs(ctx context.Context, ids []string) ([]*persistence.OutboxRecord, error) {
+// fetchByIDsTx hydrates records by ID using the canonical column list,
+// inside the caller's transaction.
+func fetchByIDsTx(ctx context.Context, tx *sql.Tx, ids []string) ([]*persistence.OutboxRecord, error) {
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
 	}
 
-	rows, err := s.db.QueryContext(ctx, selectByIDsSQL(len(ids)), args...)
+	rows, err := tx.QueryContext(ctx, selectByIDsSQL(len(ids)), args...)
 	if err != nil {
 		return nil, wrapErr(err, "sqliteoutbox: fetch by ids", "recordCount", len(ids))
 	}
@@ -421,6 +463,24 @@ func (s *sqlSession) expire(ctx context.Context, before time.Time) (int, error) 
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// compact physically deletes terminal rows (completed/expired) older than
+// recordCutoff and fence rows untouched since fenceCutoff. Mirrors the
+// DynamoDB backend's TTL-based cleanup so the single-file production
+// backend does not grow unboundedly (retention contract documented on
+// WithRetention).
+func (s *sqlSession) compact(ctx context.Context, recordCutoff, fenceCutoff time.Time) error {
+	if _, err := s.db.ExecContext(ctx, deleteCompletedSQL, recordCutoff.UnixMilli()); err != nil {
+		return wrapErr(err, "sqliteoutbox: compact completed")
+	}
+	if _, err := s.db.ExecContext(ctx, deleteExpiredSQL, recordCutoff.UnixMilli()); err != nil {
+		return wrapErr(err, "sqliteoutbox: compact expired")
+	}
+	if _, err := s.db.ExecContext(ctx, deleteStaleFencesSQL, fenceCutoff.UnixMilli()); err != nil {
+		return wrapErr(err, "sqliteoutbox: compact fences")
+	}
+	return nil
 }
 
 // queryPending returns up to limit pending records under partition pk.

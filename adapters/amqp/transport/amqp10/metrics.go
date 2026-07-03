@@ -19,4 +19,9 @@ const (
 	// means the configured retry backoff is effectively broker-driven on this
 	// transport (see acl_delivery.go Retry, finding 2 / G-N2).
 	MetricAMQP10DelayedRetryUnhonored = "AMQP10DelayedRetryUnhonored"
+	// MetricAMQP10IngressRejected counts inbound messages that failed
+	// envelope conversion at ingress and were rejected back to the
+	// broker (poison messages). The receive loop keeps running — this
+	// counter is the only signal that malformed input is arriving.
+	MetricAMQP10IngressRejected = "AMQP10IngressRejected"
 )

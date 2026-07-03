@@ -302,6 +302,14 @@ type RouteSessionDef struct {
 	// Empty means derive as LeaseTTL / MaxRenewFails.
 	RenewInterval string `yaml:"renew_interval,omitempty" json:"renew_interval,omitempty"`
 
+	// RenewJitter adds bounded random jitter to each renewal timer to avoid a
+	// thundering herd of renewals across a cluster (e.g. "2s"). Empty means
+	// the session manager derives it from RenewInterval. When BOTH
+	// renew_interval and lease_ttl are set explicitly, cross-field validation
+	// requires renewInterval*maxRenewFails + jitter < leaseTTL so a renewal
+	// storm can never outlast the lease (contract C3).
+	RenewJitter string `yaml:"lease_renew_jitter,omitempty" json:"lease_renew_jitter,omitempty"`
+
 	// MaxRenewFails is consecutive renewal failures before step-down.
 	// Zero means use the runtime default (3).
 	MaxRenewFails int `yaml:"max_renew_fails,omitempty" json:"max_renew_fails,omitempty"`

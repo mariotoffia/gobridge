@@ -413,8 +413,12 @@ func TestDeliveryHook_DirectHold_ExpiredMessage_NoEgressHook(t *testing.T) {
 	if egressCount != 0 {
 		t.Errorf("expected 0 egress OnAttempt for expired, got %d", egressCount)
 	}
-	if hook.SettledCount() != 0 {
-		t.Errorf("expected 0 OnSettled for expired, got %d", hook.SettledCount())
+	// Finding 7: every terminal path emits exactly one OnSettled. Route
+	// expiry is a terminal ingress outcome, so the ingress side settles
+	// once (with ErrMessageExpired). No egress hook fires because the
+	// message never reaches a target.
+	if hook.SettledCount() != 1 {
+		t.Errorf("expected exactly 1 OnSettled for expired terminal, got %d", hook.SettledCount())
 	}
 }
 

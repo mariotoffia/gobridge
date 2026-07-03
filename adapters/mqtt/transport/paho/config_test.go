@@ -21,8 +21,8 @@ func TestSessionOptionsFromMap_Defaults(t *testing.T) {
 	if opts.ConnectTimeout != 30*time.Second {
 		t.Errorf("ConnectTimeout = %v, want 30s", opts.ConnectTimeout)
 	}
-	if !opts.CleanStart {
-		t.Error("CleanStart should default to true")
+	if opts.CleanStart {
+		t.Error("CleanStart should default to false: persistent/exclusive sessions exist to resume broker-side state, and ephemeral sessions ignore the flag (Start forces CleanStart=true)")
 	}
 }
 

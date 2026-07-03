@@ -289,12 +289,18 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 	}
 }
 
-// TestValidator_SharedOutbox_NonExclusiveNoLeaseStore verifies non-exclusive session allows missing LeaseStore.
-func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
+// TestValidator_SharedOutbox_NonExclusiveSession_Rejected verifies that
+// finding 11 is enforced: a shared_outbox route bound to a non-exclusive
+// session is rejected at validation. A non-exclusive session never acquires
+// a lease, so its outbox drainer's TokenFn reports "not held" every cycle and
+// the partition never drains — persisted records would silently strand. The
+// combo must therefore fail fast instead of ACKing the source into a black hole.
+func TestValidator_SharedOutbox_NonExclusiveSession_Rejected(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
 		runtime.WithOutboxStore(outbox),
+		runtime.WithLeaseStore(NewFakeLeaseStore()),
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
@@ -311,12 +317,14 @@ func TestValidator_SharedOutbox_NonExclusiveNoLeaseStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := rt.Start(ctx)
-	if err != nil && !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("shared_outbox with non-exclusive session and no lease store should pass, got: %v", err)
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for shared_outbox on a non-exclusive session")
 	}
+	if !strings.Contains(err.Error(), "non-exclusive") {
+		t.Fatalf("expected non-exclusive rejection, got: %v", err)
+	}
+	_ = rt.Stop(context.Background())
 }
 
 // TestValidationError_Errors_ReturnsAllErrors validates that Errors() returns a copy
@@ -483,6 +491,7 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
 		runtime.WithOutboxStore(outbox),
+		runtime.WithLeaseStore(NewFakeLeaseStore()),
 		runtime.WithDLQStore(NewFakeDLQStore()),
 	)
 
@@ -502,7 +511,9 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 		},
 		Bindings: bindings,
 	}
-	sessCfg := session.DefaultConfig("sess", false)
+	// shared_outbox requires an exclusive session with a lease store
+	// (finding 11); the subject here is the fan-out cardinality limit.
+	sessCfg := session.DefaultConfig("sess", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
 		t.Fatal(err)
@@ -767,7 +778,9 @@ func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 			{ID: "b-inherit", Address: "topic/a"}, // no SessionID → inherits route session
 		},
 	}
-	sessCfg := session.DefaultConfig("route-sess", false)
+	// shared_outbox requires an exclusive session (finding 11); the subject
+	// here is that an empty binding session inherits the route session.
+	sessCfg := session.DefaultConfig("route-sess", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
 		t.Fatal(err)

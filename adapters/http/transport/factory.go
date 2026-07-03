@@ -12,6 +12,7 @@ import (
 )
 
 var _ ports.TransportFactory = (*Factory)(nil)
+var _ ports.ContextCloser = (*Factory)(nil)
 
 // Factory implements ports.TransportFactory for the HTTP transport. It
 // creates HTTP source receivers and SSE target senders, exposing them
@@ -27,6 +28,7 @@ type Factory struct {
 	clock           clock.Clock
 	mu              sync.Mutex
 	registeredPaths map[string]bool
+	sseSenders      []*SSESender
 }
 
 // FactoryOption configures a Factory.
@@ -122,6 +124,13 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 	if path == "" {
 		path = f.pathPrefix + "/receivers/" + spec.ID + "/messages"
 	}
+	// Validate the EFFECTIVE path (configured or generated) so a bad
+	// operator path — or a spec ID carrying ServeMux metacharacters —
+	// fails the build with an error instead of panicking the process
+	// inside mux.HandleFunc (HTTP-M4).
+	if err := validateMountPath(path); err != nil {
+		return nil, err
+	}
 
 	recv := newReceiver(receiverConfig{
 		id:           spec.ID,
@@ -129,6 +138,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 		maxBodySize:  cfg.effectiveMaxBody(),
 		apiKey:       cfg.APIKey.Reveal(),
 		forwardToken: f.forwardToken,
+		dedupWindow:  cfg.effectiveDedupWindow(),
 		locator:      f.locator,
 		forwarder:    f.forwarder,
 		metrics:      f.metrics,
@@ -136,15 +146,9 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 		clock:        f.clock,
 	})
 
-	pattern := "POST " + path
-	f.mu.Lock()
-	if f.registeredPaths[pattern] {
-		f.mu.Unlock()
-		return nil, fmt.Errorf("http transport: duplicate receiver path %q", path)
+	if err := f.registerHandler("POST "+path, path, recv.ServeHTTP); err != nil {
+		return nil, err
 	}
-	f.registeredPaths[pattern] = true
-	f.mux.HandleFunc(pattern, recv.ServeHTTP)
-	f.mu.Unlock()
 
 	return recv, nil
 }
@@ -163,6 +167,10 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 	if path == "" {
 		path = f.pathPrefix + "/senders/" + spec.ID + "/events"
 	}
+	// See NewReceiver: fail the build instead of panicking ServeMux.
+	if err := validateMountPath(path); err != nil {
+		return nil, err
+	}
 
 	sender := newSSESender(sseSenderConfig{
 		id:                spec.ID,
@@ -171,23 +179,62 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 		writeTimeout:      cfg.effectiveWriteTimeout(),
 		maxClients:        cfg.MaxClients,
 		apiKey:            cfg.APIKey.Reveal(),
+		redirectEndpoint:  cfg.RedirectEndpoint,
 		locator:           f.locator,
 		metrics:           f.metrics,
 		logger:            f.logger,
 		clock:             f.clock,
 	})
 
-	pattern := "GET " + path
-	f.mu.Lock()
-	if f.registeredPaths[pattern] {
-		f.mu.Unlock()
-		return nil, fmt.Errorf("http transport: duplicate sender path %q", path)
+	if err := f.registerHandler("GET "+path, path, sender.ServeHTTP); err != nil {
+		return nil, err
 	}
-	f.registeredPaths[pattern] = true
-	f.mux.HandleFunc(pattern, sender.ServeHTTP)
+	f.mu.Lock()
+	f.sseSenders = append(f.sseSenders, sender)
 	f.mu.Unlock()
 
 	return sender, nil
+}
+
+// registerHandler mounts a handler on the internal mux, mapping the two
+// build-time failure modes to errors: duplicate registration and a
+// ServeMux pattern panic. The recover is defense in depth behind
+// validateMountPath — ServeMux panics on malformed or conflicting
+// patterns, and an operator-supplied path must fail the BUILD, never
+// crash the process.
+func (f *Factory) registerHandler(pattern, path string, h http.HandlerFunc) (err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.registeredPaths[pattern] {
+		return fmt.Errorf("http transport: duplicate path %q", path)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("http transport: cannot register path %q: %v", path, r)
+		}
+	}()
+	f.mux.HandleFunc(pattern, h)
+	f.registeredPaths[pattern] = true
+	return nil
+}
+
+// Close drains every SSE sender this factory created (unblocking their
+// long-lived client handlers) so a fronting http.Server.Shutdown can
+// complete instead of hanging on open event streams. It satisfies
+// ports.ContextCloser; the composition root must call it BEFORE
+// http.Server.Shutdown. Safe to call multiple times.
+func (f *Factory) Close(ctx context.Context) error {
+	f.mu.Lock()
+	senders := make([]*SSESender, len(f.sseSenders))
+	copy(senders, f.sseSenders)
+	f.mu.Unlock()
+	var firstErr error
+	for _, s := range senders {
+		if err := s.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Capabilities returns the transport capabilities.

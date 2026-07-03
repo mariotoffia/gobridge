@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
@@ -20,62 +21,126 @@ import (
 
 // streamLoop consumes DynamoDB Streams records for the watched table
 // and emits parsed BridgeConfig values on ch when a modification
-// matches the loader's PK/SK. The loop owns ch and closes it on exit.
+// matches the loader's PK/SK. The loop owns ch and closes it on exit —
+// either directly, or by handing ownership to pollLoop when streams
+// become persistently unavailable.
 //
 // Shard handling is intentionally simple: the configuration table is
-// expected to have a single active shard most of the time. When the
-// current shard closes (NextShardIterator == nil) or the iterator
-// expires (GetRecords returns an error), the loop re-discovers the
-// latest open shard on the next iteration. Cadence between GetRecords
-// calls is governed by streamPollInterval through the injected clock,
-// so tests can drive it deterministically.
-func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, streamArn string) {
-	defer close(ch)
+// expected to have a single active shard most of the time. Cadence
+// between GetRecords calls is governed by streamPollInterval through
+// the injected clock, so tests can drive it deterministically.
+//
+// Failure semantics (the cluster-safety rules):
+//
+//   - GetRecords failures back off exponentially up to maxStreamBackoff
+//     WITHOUT discarding the iterator, so a throttle (the ~5 TPS shard
+//     budget is shared across all instances) never loses stream
+//     position.
+//   - The iterator is discarded only when it is genuinely invalid
+//     (expired/trimmed/gone) or after streamErrorsBeforeIteratorReset
+//     consecutive unknown failures. Every re-acquire lands at LATEST,
+//     which skips records written in between — so each re-acquire is
+//     followed by a version reconciliation that reloads when the stored
+//     version advanced past the last delivered one.
+//   - Persistent acquisition failure (stream disabled/deleted) falls
+//     back to poll mode with a single Warn instead of warn-spamming at
+//     stream cadence forever.
+func (l *Loader) streamLoop(ctx context.Context, ch chan *ports.BridgeConfig, streamArn string) {
+	if l.runStreams(ctx, ch, streamArn) {
+		if l.logger != nil {
+			l.logger.Warn("dynamodb config loader: streams persistently unavailable; falling back to poll mode",
+				"stream_arn", streamArn,
+				"table", l.session.tableName,
+				"poll_interval", l.pollInterval.String(),
+			)
+		}
+		// pollLoop takes over channel ownership and closes it on exit.
+		l.pollLoop(ctx, ch, l.clk.NewTicker(l.pollInterval))
+		return
+	}
+	close(ch)
+}
 
+// runStreams is the streams consumption body. It returns true when the
+// caller should fall back to poll mode, false when ctx was cancelled.
+func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, streamArn string) bool {
 	var shardIter string
+	acquireFailures := 0
+	recordFailures := 0
+	backoff := l.streamPollInterval
+
 	for {
 		if shardIter == "" {
 			iter, err := l.session.acquireLatestIterator(ctx, streamArn)
-			if err != nil {
+			if err != nil || iter == "" {
+				acquireFailures++
 				if l.logger != nil {
-					l.logger.Warn("dynamodb config loader: stream shard discovery failed",
+					l.logger.Warn("dynamodb config loader: stream shard acquisition failed",
 						"error", err,
 						"stream_arn", streamArn,
+						"consecutive_failures", acquireFailures,
 					)
 				}
-				if !l.waitTick(ctx) {
-					return
+				if acquireFailures >= streamAcquireFallbackAfter {
+					return true
 				}
+				if !l.wait(ctx, backoff) {
+					return false
+				}
+				backoff = nextBackoff(backoff)
 				continue
 			}
-			if iter == "" {
-				if !l.waitTick(ctx) {
-					return
-				}
-				continue
-			}
+			acquireFailures = 0
+			backoff = l.streamPollInterval
 			shardIter = iter
+			// A freshly acquired LATEST iterator skips anything written
+			// while no iterator was held — reconcile via version check.
+			l.reloadIfVersionAdvanced(ctx, ch)
 		}
 
 		records, nextIter, err := l.session.getRecords(ctx, shardIter)
 		if err != nil {
+			recordFailures++
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: GetRecords failed",
 					"error", err,
 					"stream_arn", streamArn,
+					"consecutive_failures", recordFailures,
+					"backoff", backoff.String(),
 				)
 			}
-			shardIter = ""
-			if !l.waitTick(ctx) {
-				return
+			switch {
+			case isStreamIteratorInvalid(err):
+				// Iterator lost: re-acquire (at LATEST) and reconcile.
+				shardIter = ""
+				recordFailures = 0
+			case isStreamThrottle(err):
+				// Throttle: KEEP the iterator so stream position is
+				// preserved — backoff alone sheds load. If the iterator
+				// expires while backing off, the next call surfaces
+				// ExpiredIteratorException and is handled above.
+			case recordFailures >= streamErrorsBeforeIteratorReset:
+				// Persistent unknown failure: force a re-acquire.
+				shardIter = ""
+				recordFailures = 0
 			}
+			if !l.wait(ctx, backoff) {
+				return false
+			}
+			backoff = nextBackoff(backoff)
 			continue
 		}
+		recordFailures = 0
+		backoff = l.streamPollInterval
 
+		matched := false
 		for _, rec := range records {
-			if !matchesWatchedKey(rec, l.pk()) {
-				continue
+			if matchesWatchedKey(rec, l.pk()) {
+				matched = true
+				break
 			}
+		}
+		if matched {
 			cfg, err := l.Load(ctx)
 			if err != nil {
 				if l.logger != nil {
@@ -83,57 +148,121 @@ func (l *Loader) streamLoop(ctx context.Context, ch chan<- *ports.BridgeConfig, 
 						"error", err,
 					)
 				}
-				continue
-			}
-			select {
-			case ch <- cfg:
-			default:
+			} else {
+				l.deliverLatest(ch, cfg)
 			}
 		}
 
-		shardIter = nextIter
+		if nextIter == "" {
+			// Shard closed: the next acquisition starts at LATEST on a
+			// new shard, so reconcile covers the gap.
+			shardIter = ""
+		} else {
+			shardIter = nextIter
+		}
 
-		if !l.waitTick(ctx) {
-			return
+		if !l.wait(ctx, l.streamPollInterval) {
+			return false
 		}
 	}
 }
 
-// waitTick blocks for streamPollInterval using the injected clock. It
-// returns false when ctx is cancelled so the caller can terminate.
-func (l *Loader) waitTick(ctx context.Context) bool {
+// reloadIfVersionAdvanced closes the gap a LATEST iterator opens: any
+// Save committed while no iterator was held produced no observable
+// stream record for this consumer. Compare the stored version to the
+// last loaded one and deliver a fresh config when it advanced. A zero
+// lastVersion means no baseline Load has happened yet — the initial
+// config is the caller's Load, not the watcher's, so nothing is
+// delivered in that case.
+func (l *Loader) reloadIfVersionAdvanced(ctx context.Context, ch chan *ports.BridgeConfig) {
+	l.mu.Lock()
+	lastSeen := l.lastVersion
+	l.mu.Unlock()
+	if lastSeen == 0 {
+		return
+	}
+
+	v, err := l.currentVersion(ctx)
+	if err != nil {
+		if l.logger != nil {
+			l.logger.Warn("dynamodb config loader: post-gap version reconciliation failed",
+				"error", err,
+				"table", l.session.tableName,
+			)
+		}
+		return
+	}
+	if v == lastSeen {
+		return
+	}
+
+	cfg, err := l.Load(ctx)
+	if err != nil {
+		if l.logger != nil {
+			l.logger.Warn("dynamodb config loader: post-gap reload failed",
+				"error", err,
+				"table", l.session.tableName,
+			)
+		}
+		return
+	}
+	l.deliverLatest(ch, cfg)
+}
+
+// wait blocks for d using the injected clock. It returns false when
+// ctx is cancelled so the caller can terminate.
+func (l *Loader) wait(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-l.clk.After(l.streamPollInterval):
+	case <-l.clk.After(d):
 		return true
 	}
 }
 
-// acquireLatestIterator finds the first open shard on the stream and
-// returns a LATEST-type iterator for it. An empty string return (with
-// nil error) indicates there are currently no open shards and the
-// caller should retry later.
-func (s *session) acquireLatestIterator(ctx context.Context, streamArn string) (string, error) {
-	desc, err := s.streams.DescribeStream(ctx, &dynamodbstreams.DescribeStreamInput{
-		StreamArn: aws.String(streamArn),
-	})
-	if err != nil {
-		return "", fmt.Errorf("dynamodb config streams: describe stream: %w", err)
+// nextBackoff doubles d up to maxStreamBackoff.
+func nextBackoff(d time.Duration) time.Duration {
+	d *= 2
+	if d > maxStreamBackoff {
+		return maxStreamBackoff
 	}
-	if desc.StreamDescription == nil {
-		return "", nil
-	}
+	return d
+}
 
+// acquireLatestIterator finds the first open shard on the stream and
+// returns a LATEST-type iterator for it, paginating through the shard
+// list (DescribeStream returns at most 100 shards per page). An empty
+// string return (with nil error) indicates there are currently no open
+// shards and the caller should retry later.
+func (s *session) acquireLatestIterator(ctx context.Context, streamArn string) (string, error) {
 	var shardID *string
-	for _, sh := range desc.StreamDescription.Shards {
-		if sh.SequenceNumberRange != nil && sh.SequenceNumberRange.EndingSequenceNumber == nil {
-			shardID = sh.ShardId
+	var exclusiveStart *string
+
+	for {
+		desc, err := s.streams.DescribeStream(ctx, &dynamodbstreams.DescribeStreamInput{
+			StreamArn:             aws.String(streamArn),
+			ExclusiveStartShardId: exclusiveStart,
+		})
+		if err != nil {
+			return "", fmt.Errorf("dynamodb config streams: describe stream: %w", err)
+		}
+		if desc.StreamDescription == nil {
+			return "", nil
+		}
+
+		for _, sh := range desc.StreamDescription.Shards {
+			if sh.SequenceNumberRange != nil && sh.SequenceNumberRange.EndingSequenceNumber == nil {
+				shardID = sh.ShardId
+				break
+			}
+		}
+		if shardID != nil {
 			break
 		}
-	}
-	if shardID == nil {
-		return "", nil
+		if desc.StreamDescription.LastEvaluatedShardId == nil {
+			return "", nil
+		}
+		exclusiveStart = desc.StreamDescription.LastEvaluatedShardId
 	}
 
 	iter, err := s.streams.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{

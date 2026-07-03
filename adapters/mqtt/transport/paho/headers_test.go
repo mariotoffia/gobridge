@@ -529,9 +529,11 @@ func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
 	}
 }
 
-// verifies that a random ID is generated when no headers provide an ID,
-// and that each call produces a unique ID.
-func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
+// verifies that a deterministic ID is derived from topic+payload when no
+// header provides an ID: the same publish (e.g. a QoS 1 redelivery from
+// a non-bridge producer) derives the SAME ID so downstream dedup works,
+// while different topic or payload derives a different ID.
+func TestEnvelopeFromPublish_IDFallbackDeterministic(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "test/topic",
 		Payload: []byte("some-payload"),
@@ -543,11 +545,17 @@ func TestEnvelopeFromPublish_IDFallbackRandom(t *testing.T) {
 	if env1.ID() == "" {
 		t.Fatal("fallback ID should not be empty")
 	}
-	if env2.ID() == "" {
-		t.Fatal("fallback ID should not be empty")
+	if env1.ID() != env2.ID() {
+		t.Errorf("redelivery of the same publish must derive the same ID, got %q vs %q", env1.ID(), env2.ID())
 	}
-	if env1.ID() == env2.ID() {
-		t.Errorf("each call should produce a unique random ID, got same: %q", env1.ID())
+
+	otherPayload := EnvelopeFromPublish(&pahov5.Publish{Topic: "test/topic", Payload: []byte("other")}, nil)
+	if otherPayload.ID() == env1.ID() {
+		t.Error("different payload must derive a different ID")
+	}
+	otherTopic := EnvelopeFromPublish(&pahov5.Publish{Topic: "test/other", Payload: []byte("some-payload")}, nil)
+	if otherTopic.ID() == env1.ID() {
+		t.Error("different topic must derive a different ID")
 	}
 }
 

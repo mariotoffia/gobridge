@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -37,6 +39,26 @@ type ForwarderConfig struct {
 	// Empty disables the token (the receiver then ignores the forwarded
 	// marker entirely — see (*Receiver).forwardTrusted).
 	ForwardToken string
+	// ReceiverAPIKeys maps a receiver ID to the API key presented as
+	// X-API-Key when forwarding to that receiver on a peer. It exists
+	// because receiver API keys are configured PER RECEIVER: a single
+	// shared cluster key would 401 (permanent → DLQ) against any
+	// receiver protected by a different key. A receiver ID absent from
+	// the map falls back to the shared cluster key passed to the
+	// constructor.
+	ReceiverAPIKeys map[string]string
+	// Breaker, when non-nil, gates every forward attempt through the
+	// supplied circuit breaker so a dead peer fails fast (breaker-open
+	// rejection carrying ErrUnavailable + RetryAfter) instead of costing
+	// each inbound request the full retry × timeout budget. The
+	// implementation is supplied by the composition root — this adapter
+	// consumes only the ports.CircuitBreaker contract (same pattern as
+	// the MQTT CircuitBreakerSender).
+	Breaker ports.CircuitBreaker
+	// Metrics receives forwarder-side emissions (currently
+	// MetricHTTPForwardBreakerOpen). Nil falls back to the no-op
+	// exporter.
+	Metrics ports.MetricsExporter
 }
 
 // DefaultForwarderConfig returns production-safe defaults.
@@ -102,6 +124,9 @@ func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterK
 	if cfg.Clock == nil {
 		cfg.Clock = clock.System
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = &ports.NoopExporter{}
+	}
 	f := &HTTPForwarder{
 		cfg: cfg,
 		client: &http.Client{
@@ -148,7 +173,55 @@ func (f *HTTPForwarder) retryDelay(attempt int) time.Duration {
 	return d
 }
 
+// maxRetryAfter caps how long a peer-supplied Retry-After header may
+// stall a forward retry. The clamp bounds both a hostile/buggy peer
+// (Retry-After: 86400) and HTTP-date arithmetic gone wrong; anything
+// above the cap is clamped, not rejected, so the throttle hint is still
+// honoured in bounded form.
+const maxRetryAfter = 30 * time.Second
+
+// parseRetryAfter parses an RFC 9110 Retry-After value — either a
+// non-negative integer of seconds or an HTTP-date — and clamps the
+// result to [0, maxRetryAfter]. Returns (0, false) for absent or
+// malformed values, so callers fall back to their own retry delay.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return min(time.Duration(secs)*time.Second, maxRetryAfter), true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	d := when.Sub(now)
+	if d < 0 {
+		d = 0
+	}
+	return min(d, maxRetryAfter), true
+}
+
+// receiverKey returns the X-API-Key value for a given target receiver:
+// the per-receiver key when configured, else the shared cluster key.
+func (f *HTTPForwarder) receiverKey(receiverID string) string {
+	if key, ok := f.cfg.ReceiverAPIKeys[receiverID]; ok && key != "" {
+		return key
+	}
+	return f.clusterKey
+}
+
 // Forward sends an envelope to a remote instance's receiver endpoint.
+//
+// Delivery contract: AT-LEAST-ONCE. A timeout after the peer received
+// the body is retried as a fresh POST, so the peer can observe the same
+// envelope more than once. Every forward carries an Idempotency-Key
+// derived from the preserved envelope ID (the envelope's own key when
+// set, else the envelope ID), which the receiving side's bounded
+// idempotency window uses to absorb such duplicates — see doc.go.
 func (f *HTTPForwarder) Forward(
 	ctx context.Context, target *persistence.PeerInfo, receiverID string, env *messaging.Envelope,
 ) error {
@@ -157,6 +230,28 @@ func (f *HTTPForwarder) Forward(
 		return shared.ErrForwardFailed.WithMessage("target has no HTTP endpoint")
 	}
 
+	if f.cfg.Breaker != nil {
+		if err := f.cfg.Breaker.BeforeRequest(); err != nil {
+			f.cfg.Metrics.Counter(MetricHTTPForwardBreakerOpen, 1)
+			if logging.DebugEnabled(f.logger) {
+				f.logger.Log(ctx, logging.LevelDebug, "http: forward rejected by open circuit breaker",
+					"target_instance", target.InstanceID,
+					"receiver_id", receiverID,
+				)
+			}
+			return err
+		}
+	}
+	err := f.forward(ctx, target, httpEndpoint, receiverID, env)
+	if f.cfg.Breaker != nil {
+		f.cfg.Breaker.AfterRequest(err)
+	}
+	return err
+}
+
+func (f *HTTPForwarder) forward(
+	ctx context.Context, target *persistence.PeerInfo, httpEndpoint, receiverID string, env *messaging.Envelope,
+) error {
 	if logging.TraceEnabled(f.logger) {
 		f.logger.Log(ctx, logging.LevelTrace, "http: forwarding",
 			"target_instance", target.InstanceID,
@@ -190,8 +285,8 @@ func (f *HTTPForwarder) Forward(
 	if f.forwardToken != "" {
 		req.Header.Set(headerForwardToken, f.forwardToken)
 	}
-	if f.clusterKey != "" {
-		req.Header.Set("X-API-Key", f.clusterKey)
+	if key := f.receiverKey(receiverID); key != "" {
+		req.Header.Set("X-API-Key", key)
 	}
 	// Re-emit the first-class idempotency / dedup / ordering keys as the
 	// trusted external-producer HTTP headers so they survive the
@@ -202,11 +297,24 @@ func (f *HTTPForwarder) Forward(
 	setForwardedKeyHeader(req, headerIdempotencyKey, env, messaging.HeaderIdempotencyKey)
 	setForwardedKeyHeader(req, headerDeduplicationID, env, messaging.HeaderDeduplicationID)
 	setForwardedKeyHeader(req, headerOrderingKey, env, messaging.HeaderOrderingKey)
+	// Forward retries are at-least-once: a timeout after the peer read
+	// the body re-posts the same envelope. When the envelope carries no
+	// idempotency key of its own, derive one from the preserved envelope
+	// ID so the receiving side's idempotency window can drop the replay.
+	if req.Header.Get(headerIdempotencyKey) == "" {
+		req.Header.Set(headerIdempotencyKey, env.ID())
+	}
 
 	var lastErr error
+	var retryAfterHint time.Duration
 	for attempt := 0; attempt <= f.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := f.retryDelay(attempt)
+			// Honour the peer's (clamped) throttle hint when it exceeds
+			// our own backoff.
+			if retryAfterHint > delay {
+				delay = retryAfterHint
+			}
 			select {
 			case <-ctx.Done():
 				return shared.ErrForwardFailed.Wrap(ctx.Err())
@@ -215,6 +323,7 @@ func (f *HTTPForwarder) Forward(
 			req = req.Clone(ctx)
 			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
+		retryAfterHint = 0
 
 		var resp *http.Response
 		resp, lastErr = f.client.Do(req)
@@ -225,18 +334,19 @@ func (f *HTTPForwarder) Forward(
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 
-		if resp.StatusCode >= 500 {
+		if transientStatus(resp.StatusCode) {
 			if logging.DebugEnabled(f.logger) {
-				f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (server error)",
+				f.logger.Log(ctx, logging.LevelDebug, "http: forward failed (transient)",
 					"target_instance", target.InstanceID,
 					"receiver_id", receiverID,
 					"status_code", resp.StatusCode,
 					"attempt", attempt+1,
 				)
 			}
-			lastErr = shared.ErrUnavailable.WithMessage(
-				fmt.Sprintf("remote returned %d", resp.StatusCode),
-			)
+			if hint, ok := parseRetryAfter(resp.Header.Get("Retry-After"), f.cfg.Clock.Now()); ok {
+				retryAfterHint = hint
+			}
+			lastErr = transientStatusError(resp.StatusCode, retryAfterHint)
 			continue
 		}
 		if resp.StatusCode >= 400 {
@@ -255,5 +365,41 @@ func (f *HTTPForwarder) Forward(
 		return nil
 	}
 
-	return shared.ErrForwardFailed.Wrap(lastErr)
+	wrapped := shared.ErrForwardFailed.Wrap(lastErr)
+	if hint := shared.GetRetryAfter(lastErr); hint > 0 {
+		// Surface the throttle hint on the outermost error: GetRetryAfter
+		// stops at the first BridgeError in the chain.
+		wrapped = wrapped.WithRetryAfter(hint)
+	}
+	return wrapped
+}
+
+// transientStatus reports whether an HTTP status must be retried rather
+// than dead-lettered: every 5xx, plus 429 Too Many Requests (throttled
+// peer — RFC 6585) and 408 Request Timeout. Classifying 429/408 as
+// permanent would dead-letter messages a briefly throttled peer would
+// have accepted moments later.
+func transientStatus(code int) bool {
+	return code >= 500 || code == http.StatusTooManyRequests || code == http.StatusRequestTimeout
+}
+
+// transientStatusError maps a transient HTTP status onto the domain
+// error catalog: 429 → ErrThrottled, 408 → ErrTimeout, 5xx →
+// ErrUnavailable. The clamped Retry-After hint (when > 0) rides along so
+// upstream retry policies respect the peer's cool-down.
+func transientStatusError(code int, retryAfter time.Duration) error {
+	msg := fmt.Sprintf("remote returned %d", code)
+	var be *shared.BridgeError
+	switch code {
+	case http.StatusTooManyRequests:
+		be = shared.ErrThrottled.WithMessage(msg)
+	case http.StatusRequestTimeout:
+		be = shared.ErrTimeout.WithMessage(msg)
+	default:
+		be = shared.ErrUnavailable.WithMessage(msg)
+	}
+	if retryAfter > 0 {
+		be = be.WithRetryAfter(retryAfter)
+	}
+	return be
 }

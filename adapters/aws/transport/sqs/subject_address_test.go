@@ -370,6 +370,7 @@ func TestReceiver_SNSUnwrapEnabled_NonSNSBody_YieldsEmptySubject(t *testing.T) {
 // logical Subject.
 func TestReceiver_SNSUnwrap_TopicArnOnly_YieldsEmptySubject(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
+		"Type":     "Notification",
 		"TopicArn": "arn:aws:sns:us-west-1:123:my-topic",
 		"Message":  `{"inner":"data"}`,
 	})
@@ -399,6 +400,7 @@ func TestReceiver_SNSUnwrap_TopicArnOnly_YieldsEmptySubject(t *testing.T) {
 // preferred source when SNSUnwrap is enabled).
 func TestReceiver_SNSUnwrap_WithSubject_SetsSubject(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
+		"Type":     "Notification",
 		"TopicArn": "arn:aws:sns:us-west-1:123:my-topic",
 		"Subject":  "Logical-Subject",
 		"Message":  `{"inner":"data"}`,

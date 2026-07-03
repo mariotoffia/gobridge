@@ -2,6 +2,7 @@ package nativestore
 
 import (
 	"errors"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -35,15 +36,34 @@ type SQLiteConfig struct {
 	// Path is the SQLite database file path. ":memory:" selects an
 	// in-process database (used by tests).
 	Path string `mapstructure:"path" yaml:"path" json:"path"`
+
+	// StaleClaimDuration (outbox only) overrides the runtime-derived
+	// stale-claim reclaim window: how long a claim stranded by a
+	// crashed same-owner waits before another claim attempt may take
+	// it. Zero (unset) keeps the bridge-derived default; failover
+	// reclaim via a higher fencing version is always immediate and
+	// independent of this knob. Accepts duration strings ("30s").
+	StaleClaimDuration time.Duration `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
+
+	// Retention (outbox only) is the window completed/expired outbox
+	// rows are kept before piggybacked compaction deletes them. Zero
+	// (unset) keeps the store default (one hour); a negative value
+	// disables compaction (rows kept forever). Deleting a terminal
+	// row releases its duplicate-detection identity, so keep this
+	// comfortably above any upstream redelivery window.
+	Retention time.Duration `mapstructure:"retention" yaml:"retention" json:"retention"`
 }
 
 // Kind reports the registry discriminator.
 func (SQLiteConfig) Kind() string { return SQLiteKind }
 
-// Validate ensures Path is non-empty.
+// Validate ensures Path is non-empty and durations are sane.
 func (c SQLiteConfig) Validate() error {
 	if c.Path == "" {
 		return errors.New("nativestore: sqlite path is required")
+	}
+	if c.StaleClaimDuration < 0 {
+		return errors.New("nativestore: stale_claim_duration must not be negative")
 	}
 	return nil
 }

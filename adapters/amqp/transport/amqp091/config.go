@@ -74,6 +74,23 @@ type ReceiverConfig struct {
 	Clock         clock.Clock
 }
 
+// Delivery-mode knob values for SenderConfig.DeliveryMode /
+// SenderParams.DeliveryMode. The words mirror the SessionMode glossary
+// entry in UBIQUITOUS.md ("persistent" = survives broker restart).
+const (
+	// DeliveryModePersistent marks published messages persistent
+	// (AMQP delivery-mode 2): a durable queue writes them to disk, so
+	// they survive a broker restart. This is the default — the bridge
+	// acks the source once the destination broker confirms, and a
+	// confirm for a transient message only means "in memory".
+	DeliveryModePersistent = "persistent"
+	// DeliveryModeTransient marks published messages transient (AMQP
+	// delivery-mode 1): they are lost when the broker restarts, even
+	// on a durable classic queue. Opt-in for throughput-over-safety
+	// routes only.
+	DeliveryModeTransient = "transient"
+)
+
 // SenderConfig holds AMQP 0-9-1 sender-specific configuration.
 type SenderConfig struct {
 	Exchange   string
@@ -86,11 +103,17 @@ type SenderConfig struct {
 	//
 	// Deprecated: unsupported by RabbitMQ; has no effect.
 	Immediate bool
-	Timeout   time.Duration
-	Session   *Session
-	Logger    *slog.Logger
-	Metrics   ports.MetricsExporter
-	Clock     clock.Clock
+	// DeliveryMode selects the default AMQP delivery mode for every
+	// publish: DeliveryModePersistent (default) or DeliveryModeTransient.
+	// A per-message "amqp091.delivery-mode" envelope header overrides it
+	// (see envelopeToPublishing). Quorum queues always persist regardless
+	// of this knob; it matters for durable classic queues.
+	DeliveryMode string
+	Timeout      time.Duration
+	Session      *Session
+	Logger       *slog.Logger
+	Metrics      ports.MetricsExporter
+	Clock        clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
@@ -217,6 +240,9 @@ func SenderConfigFromOptions(m map[string]any) SenderConfig {
 	if v, ok := optBool(m, "immediate"); ok {
 		cfg.Immediate = v
 	}
+	if v, ok := optString(m, "delivery_mode"); ok {
+		cfg.DeliveryMode = v
+	}
 	if v, ok := optDuration(m, "timeout"); ok {
 		cfg.Timeout = v
 	}
@@ -253,12 +279,28 @@ func (o *SessionOptions) applyDefaults() {
 }
 
 func (c SenderConfig) validate() error {
-	return nil
+	return validateDeliveryMode(c.DeliveryMode)
+}
+
+// validateDeliveryMode accepts the empty string (defaulted to persistent)
+// and the two canonical knob values.
+func validateDeliveryMode(mode string) error {
+	switch mode {
+	case "", DeliveryModePersistent, DeliveryModeTransient:
+		return nil
+	default:
+		return fmt.Errorf(
+			"delivery_mode %q is invalid: must be %q or %q (default %q)",
+			mode, DeliveryModePersistent, DeliveryModeTransient, DeliveryModePersistent)
+	}
 }
 
 func (c *SenderConfig) applyDefaults() {
 	if c.Timeout == 0 {
 		c.Timeout = 30 * time.Second
+	}
+	if c.DeliveryMode == "" {
+		c.DeliveryMode = DeliveryModePersistent
 	}
 	if c.Clock == nil {
 		c.Clock = clock.System

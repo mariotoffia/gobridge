@@ -2,6 +2,7 @@ package amqp10
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -127,7 +128,15 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	err := link.SendEnvelope(sendCtx, env)
 	if err != nil {
-		s.handleSendFailure(ctx, link, linkConn, err)
+		// errNotAccepted marks a broker disposition failure (Released,
+		// Modified, Rejected): the transfer itself succeeded and the
+		// LINK IS HEALTHY — detaching it (and possibly escalating to a
+		// connection teardown) would punish the transport for a
+		// per-message outcome. Return the classified error and keep the
+		// link for the next attempt.
+		if !errors.Is(err, errNotAccepted) {
+			s.handleSendFailure(ctx, link, linkConn, err)
+		}
 		return MapError(err)
 	}
 
@@ -216,17 +225,20 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 }
 
 func (s *Sender) createLink(ctx context.Context) error {
-	sess := s.session.AMQPSession()
+	// Capture the (session, conn) pair atomically so the link is never
+	// associated with a stale connection identity (see
+	// Session.sessionAndConn).
+	sess, conn := s.session.sessionAndConn()
 	if sess == nil {
 		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
-	conn := s.session.Conn()
 
 	sender, err := sess.NewSenderLink(
 		ctx,
 		s.cfg.Address,
 		s.cfg.DurabilityMode,
 		s.cfg.Routing.capability(),
+		s.cfg.durable(),
 	)
 	if err != nil {
 		return MapError(err)
@@ -264,9 +276,14 @@ func closeLinkAsync(link senderLinkAPI, timeout time.Duration) {
 }
 
 // notifySessionIfConnectionLost signals the session for connection-level
-// errors (connection lost or unclassified unavailable).
+// errors (connection lost or unclassified unavailable). Link-scoped
+// faults (*amqp.LinkError on a live session) are excluded: only this
+// sender's link needs rebuilding, not the shared connection.
 func (s *Sender) notifySessionIfConnectionLost(failedConn amqpConn, err error) {
 	if s.session == nil {
+		return
+	}
+	if isLinkScopedError(err) {
 		return
 	}
 	bridgeErr := MapError(err)

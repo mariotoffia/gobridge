@@ -43,7 +43,7 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 	if v, ok := headers[HeaderAppID].(string); ok {
 		pub.AppId = v
 	}
-	if v, ok := headers[HeaderDeliveryMode].(uint8); ok {
+	if v, ok := deliveryModeFromHeader(headers[HeaderDeliveryMode]); ok {
 		pub.DeliveryMode = v
 	}
 	if v, ok := headers[HeaderPriority].(uint8); ok {
@@ -85,6 +85,76 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 	return pub
 }
 
+// deliveryModeFromHeader coerces a per-message "amqp091.delivery-mode"
+// header override into an AMQP delivery mode. Loop-back deliveries carry
+// a typed uint8, but headers decoded from YAML/JSON route configs (or
+// produced by another transport) arrive as int/int64/float64/string —
+// rejecting those silently downgraded every override to the transient
+// zero value. Accepted values are 1/2 (or "transient"/"persistent");
+// anything else is ignored so the sender's configured default applies.
+func deliveryModeFromHeader(v any) (uint8, bool) {
+	toMode := func(n int64) (uint8, bool) {
+		if n == int64(amqp.Transient) || n == int64(amqp.Persistent) {
+			return uint8(n), true
+		}
+		return 0, false
+	}
+	switch m := v.(type) {
+	case uint8:
+		return toMode(int64(m))
+	case int:
+		return toMode(int64(m))
+	case int8:
+		return toMode(int64(m))
+	case int16:
+		return toMode(int64(m))
+	case int32:
+		return toMode(int64(m))
+	case int64:
+		return toMode(m)
+	case uint16:
+		return toMode(int64(m))
+	case uint32:
+		return toMode(int64(m))
+	case uint64:
+		if m > 2 {
+			return 0, false
+		}
+		return toMode(int64(m))
+	case float64:
+		if m != float64(int64(m)) {
+			return 0, false
+		}
+		return toMode(int64(m))
+	case float32:
+		return deliveryModeFromHeader(float64(m))
+	case string:
+		switch strings.ToLower(strings.TrimSpace(m)) {
+		case DeliveryModeTransient, "1":
+			return amqp.Transient, true
+		case DeliveryModePersistent, "2":
+			return amqp.Persistent, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// defaultDeliveryMode maps the sender's delivery_mode knob to the AMQP
+// wire value applied when no per-message header override is present.
+// Anything other than an explicit "transient" — including the empty
+// string and invalid values that slipped past validation — resolves to
+// persistent, because a publisher confirm for a transient message only
+// means "in broker memory": the bridge would ack the source and the
+// message would die with the destination broker.
+func defaultDeliveryMode(cfg SenderConfig) uint8 {
+	if cfg.DeliveryMode == DeliveryModeTransient {
+		return amqp.Transient
+	}
+	return amqp.Persistent
+}
+
 // envelopeToPublishing builds an amqp091.Publishing from a messaging.Envelope.
 // It maps the envelope body, ID, subject, TTL, and headers.
 //
@@ -99,6 +169,14 @@ func envelopeToPublishing(env *messaging.Envelope, cfg SenderConfig, clk clock.C
 	}
 	pub := headersToPublishing(env.Headers())
 	pub.Body = env.Payload()
+
+	// Persistence: an explicit per-message header override (mapped by
+	// headersToPublishing) wins; otherwise the sender's configured
+	// delivery_mode default applies. Never publish with the unset zero
+	// value — the broker treats 0 as transient.
+	if pub.DeliveryMode == 0 {
+		pub.DeliveryMode = defaultDeliveryMode(cfg)
+	}
 
 	if env.ID() != "" && pub.MessageId == "" {
 		pub.MessageId = env.ID()
@@ -149,21 +227,30 @@ func (e *unroutableError) Error() string {
 }
 
 // senderChannel wraps the SDK channel + publisher-confirm bookkeeping for
-// the Sender. All SDK access — Confirm select-mode, NotifyPublish,
-// NotifyReturn, PublishWithContext — is encapsulated here so that the
-// Sender stays SDK-free.
+// the Sender. All SDK access — Confirm select-mode, deferred publisher
+// confirmations, NotifyReturn, PublishWithDeferredConfirmWithContext — is
+// encapsulated here so that the Sender stays SDK-free.
+//
+// Confirms are tracked via the SDK's DeferredConfirmation handles rather
+// than a NotifyPublish listener channel. This is what makes pipelining
+// safe: the SDK delivers confirmations to listener channels with a
+// BLOCKING send from the connection's reader goroutine, so N in-flight
+// publishes against a small listener buffer would stall the whole
+// connection. Deferred confirmations are resolved map-side under the
+// SDK's own lock and support any number of in-flight publishes.
 //
 // The wrapper deliberately preserves the original ordering guarantees
-// of basic.return-before-basic.ack documented on Sender.checkReturned:
-// it does NOT spawn forwarding goroutines; instead PublishConfirmed
-// reads the SDK confirm/return channels directly under the caller's
-// mutex, the same way the previous implementation did inline.
+// of basic.return-before-basic.ack documented on checkReturn: the SDK
+// dispatches basic.return to the (buffered) returns channel from the
+// same serialized reader goroutine that later resolves the deferred
+// confirmation, so by the time a confirm wait completes the matching
+// return is already buffered.
 //
-// Concurrency: PublishConfirmed is NOT safe for concurrent use. The
-// Sender serialises publish+confirm under its own mutex.
+// Concurrency: PublishConfirmed and PublishDeferred are NOT safe for
+// concurrent use. The Sender serialises all publishing under its own
+// mutex.
 type senderChannel struct {
 	ch        *amqpChannel
-	confirms  chan amqp.Confirmation
 	returns   chan amqp.Return
 	mandatory bool
 }
@@ -181,7 +268,6 @@ func openSenderChannel(conn amqpConnection, mandatory bool) (*senderChannel, err
 	}
 	sc := &senderChannel{
 		ch:        ch,
-		confirms:  ch.raw.NotifyPublish(make(chan amqp.Confirmation, 1)),
 		mandatory: mandatory,
 	}
 	if mandatory {
@@ -226,9 +312,9 @@ type publishResult struct {
 // confirm on this channel. The returned publishResult lets the caller
 // distinguish ack/nack/unroutable without ever observing SDK types.
 //
-// On any transport-level error (publish failure, ctx done, confirm
-// channel closed) the channel is unusable and must be discarded by the
-// caller (Sender.resetChannelLocked closes it).
+// On any transport-level error (publish failure, ctx done, channel
+// closed under the pending confirm) the channel is unusable and must be
+// discarded by the caller (Sender.resetChannelLocked closes it).
 func (sc *senderChannel) PublishConfirmed(
 	ctx context.Context,
 	exchange, routingKey string,
@@ -237,38 +323,84 @@ func (sc *senderChannel) PublishConfirmed(
 	cfg SenderConfig,
 	clk clock.Clock,
 ) (publishResult, error) {
+	pc, err := sc.PublishDeferred(ctx, exchange, routingKey, mandatory, env, cfg, clk)
+	if err != nil {
+		return publishResult{}, err
+	}
+	if err := pc.Wait(ctx); err != nil {
+		return publishResult{}, err
+	}
+	res := publishResult{PublishOK: true, ConfirmedTag: pc.DeliveryTag()}
+	if mandatory && sc.returns != nil {
+		if rerr := checkReturn(sc.returns); rerr != nil {
+			res.Returned = rerr
+		}
+	}
+	return res, nil
+}
+
+// pendingConfirm is the SDK-free handle for one in-flight publish
+// awaiting its broker confirmation. Obtained from PublishDeferred and
+// settled with Wait; it lets the Sender pipeline a batch (publish N,
+// then await N confirms) without observing SDK types.
+type pendingConfirm struct {
+	dc *amqp.DeferredConfirmation
+	ch *amqpChannel
+}
+
+// DeliveryTag returns the broker delivery tag assigned to this publish.
+func (p *pendingConfirm) DeliveryTag() uint64 { return p.dc.DeliveryTag }
+
+// Wait blocks until the broker settles this publish or ctx expires.
+// It returns nil on a positive confirm, errPublishNacked on a broker
+// nack, errConfirmChannelClosed when the channel died with the confirm
+// outstanding (the SDK nacks all pending confirms on channel close),
+// and a wrapped ctx error on cancellation.
+func (p *pendingConfirm) Wait(ctx context.Context) error {
+	acked, err := p.dc.WaitContext(ctx)
+	if err != nil {
+		return fmt.Errorf("wait for publish confirmation: %w", err)
+	}
+	if acked {
+		return nil
+	}
+	if p.ch.raw.IsClosed() {
+		return errConfirmChannelClosed
+	}
+	return errPublishNacked
+}
+
+// PublishDeferred publishes the envelope and returns a pendingConfirm
+// handle without waiting for the broker confirmation. Callers pipeline
+// throughput-critical batches by publishing every message first and
+// awaiting the handles afterwards, collapsing N broker round-trips
+// into one.
+//
+// On a publish error the channel is unusable and must be discarded by
+// the caller (Sender.resetChannelLocked closes it).
+func (sc *senderChannel) PublishDeferred(
+	ctx context.Context,
+	exchange, routingKey string,
+	mandatory bool,
+	env *messaging.Envelope,
+	cfg SenderConfig,
+	clk clock.Clock,
+) (*pendingConfirm, error) {
 	pub := envelopeToPublishing(env, cfg, clk)
 
 	// Defensive drain: under the deterministic ordering documented on
-	// Sender.checkReturned every prior Send fully consumes its own
+	// checkReturn every prior mandatory Send fully consumes its own
 	// basic.return, so this loop should never find anything. If it
 	// does, it indicates a code-path that bypassed the inspection
 	// (e.g., a publish path with Mandatory toggled at runtime); drop
 	// any such residue rather than mis-attribute it to the next Send.
 	sc.drainReturns()
 
-	if err := sc.ch.publishContext(ctx, exchange, routingKey, mandatory, pub); err != nil {
-		return publishResult{}, err
+	dc, err := sc.ch.publishDeferredContext(ctx, exchange, routingKey, mandatory, pub)
+	if err != nil {
+		return nil, err
 	}
-
-	select {
-	case <-ctx.Done():
-		return publishResult{}, ctx.Err()
-	case confirmation, ok := <-sc.confirms:
-		if !ok {
-			return publishResult{}, errConfirmChannelClosed
-		}
-		if !confirmation.Ack {
-			return publishResult{}, errPublishNacked
-		}
-		res := publishResult{PublishOK: true, ConfirmedTag: confirmation.DeliveryTag}
-		if mandatory && sc.returns != nil {
-			if rerr := checkReturn(sc.returns); rerr != nil {
-				res.Returned = rerr
-			}
-		}
-		return res, nil
-	}
+	return &pendingConfirm{dc: dc, ch: sc.ch}, nil
 }
 
 // checkReturn performs a non-blocking poll for a basic.return frame

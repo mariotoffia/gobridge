@@ -525,6 +525,11 @@ deps:
     mayDependOn:
       - domain_clock
       - domain_persistence
+      # domain_shared: the locator's exclusivity decisions fail CLOSED when
+      # ownership is unverifiable (breaker open / no cached owner) and must
+      # surface that as the canonical transient shared.ErrUnavailable so
+      # callers classify it like any other transient fault.
+      - domain_shared
       - ports
 
   # runtime_session owns the session-lifecycle primitives: lease
@@ -874,16 +879,18 @@ deps:
 
   # ---- Layer 3: Cluster resolver adapters ----
   #
-  # Narrowed to ACTUAL usage (M-23). Both endpoint resolvers are
-  # stdlib-only: the native resolver probes local interfaces (net) and
-  # the ECS resolver queries the task-metadata endpoint over net/http --
-  # neither imports ANY gobridge package or vendor SDK. The prior broad
-  # domain spread, the `ports` edge, and the AWS `canUse` on the ECS
-  # resolver were all entirely unused; they satisfy their endpoint
-  # resolver port structurally at the composition root.
+  # Narrowed to ACTUAL usage (M-23). The native resolver probes local
+  # interfaces (net) and is stdlib-only. The ECS resolver queries the
+  # task-metadata endpoint over net/http and additionally reads
+  # domain/clock: its bounded startup retry (finding 10) needs an
+  # injectable time source for deterministic backoff tests, and
+  # forbidigo bans direct time.Now/time.Sleep. Neither imports any
+  # vendor SDK; both satisfy their endpoint resolver port structurally
+  # at the composition root.
   adapter_cluster_native:
     canUse: [_no_external_deps_]
   adapter_cluster_aws:
+    mayDependOn: [domain_clock]
     canUse: [_no_external_deps_]
 
   # ---- Layer 4: Composition root ----

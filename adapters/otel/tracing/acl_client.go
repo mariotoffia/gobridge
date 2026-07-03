@@ -3,6 +3,7 @@ package oteltracing
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -180,15 +181,25 @@ func (c *otelTracerClient) Close(ctx context.Context) error {
 
 // headerCarrier adapts the bridge's map[string]any header bag to the
 // OTel propagation.TextMapCarrier interface. W3C keys ("traceparent",
-// "tracestate") are lowercase, matching the bridge header vocabulary.
+// "tracestate") are written lowercase, matching the bridge header
+// vocabulary, but lookup is case-insensitive per the W3C Trace Context
+// spec (MF-9): transports that stamp "Traceparent" (HTTP-style header
+// casing) must not silently break trace continuity.
 type headerCarrier map[string]any
 
 var _ propagation.TextMapCarrier = headerCarrier(nil)
 
 func (c headerCarrier) Get(key string) string {
-	if v, ok := c[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
+	// Fast path: exact match (bridge vocabulary is lowercase).
+	if s, ok := c[key].(string); ok {
+		return s
+	}
+	// Slow path: case-insensitive scan per W3C header semantics.
+	for k, v := range c {
+		if strings.EqualFold(k, key) {
+			if s, ok := v.(string); ok {
+				return s
+			}
 		}
 	}
 	return ""

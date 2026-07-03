@@ -18,6 +18,18 @@ import (
 // synchronously to apply backpressure. Messages are only dropped when
 // the context is cancelled (shutdown).
 //
+// When constructed with topic filters (WithTopicFilters — the factory
+// passes the route's subscription topics), the router dispatches only
+// publishes whose topic matches one of the filters (MQTT wildcards
+// supported), so multiple Receivers sharing one Session do not process
+// each other's messages. Without filters the Receiver handles every
+// publish on the session (legacy behaviour).
+//
+// Each Delivery carries the manual protocol-ack callback for its
+// originating publish: the MQTT PUBACK/PUBCOMP is sent when the runtime
+// settles the delivery via Delivery.Ack, not when emit returns (see
+// delivery.go).
+//
 // A Receiver is single-flight per instance: only one Run may be active
 // at any time. A second concurrent Run on the same Receiver returns
 // ErrUnavailable immediately and does NOT touch the router. This
@@ -28,6 +40,7 @@ type Receiver struct {
 	id          string
 	session     *Session
 	logger      *slog.Logger
+	filters     []string    // MQTT topic filters selecting this receiver's traffic; empty = all
 	running     atomic.Bool // true while a Run is in flight
 	started     chan struct{}
 	startedOnce sync.Once
@@ -35,14 +48,29 @@ type Receiver struct {
 
 var _ ports.Receiver = (*Receiver)(nil)
 
+// ReceiverOption customises a Receiver.
+type ReceiverOption func(*Receiver)
+
+// WithTopicFilters restricts the Receiver to publishes whose topic
+// matches at least one of the given MQTT topic filters (`+`/`#`
+// wildcards and $share prefixes supported). No filters means the
+// Receiver handles every publish on the session.
+func WithTopicFilters(filters ...string) ReceiverOption {
+	return func(r *Receiver) { r.filters = append(r.filters, filters...) }
+}
+
 // NewReceiver creates a Receiver bound to the given Session.
-func NewReceiver(id string, session *Session) *Receiver {
-	return &Receiver{
+func NewReceiver(id string, session *Session, opts ...ReceiverOption) *Receiver {
+	r := &Receiver{
 		id:      id,
 		session: session,
 		logger:  session.logger,
 		started: make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Started returns a channel that is closed once the receiver has
@@ -75,7 +103,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	errCh := make(chan error, 1)
 
-	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), func(env *messaging.Envelope) {
+	r.session.Router().RegisterEnvelope(r.id, r.session.clock(), r.filters, func(env *messaging.Envelope, ack func() error) {
 		if logging.TraceEnabled(r.logger) {
 			var transportTopic string
 			if env.Headers() != nil {
@@ -90,7 +118,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			)
 		}
 
-		del := NewDelivery(env)
+		del := NewDelivery(env, WithAckFunc(ack))
 		if err := emit(runCtx, del); err != nil {
 			if logging.DebugEnabled(r.logger) {
 				r.logger.Log(runCtx, logging.LevelDebug, "mqtt: emit error",

@@ -182,11 +182,18 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			}
 			poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
-			if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
-				r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
-				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			if r.dlq.HasStore() {
+				if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
+					r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
+					return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+				}
+				r.emitDLQ("max_retries")
+			} else {
+				// No DLQ store: dropping is the only terminal option (retrying
+				// forever is the very poison loop the cap prevents). Count it so
+				// the loss is observable, never silent.
+				r.emitDrop("max_retries")
 			}
-			r.emitDLQ("max_retries")
 			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 				Direction:   ports.DirectionEgress,
 				RouteID:     r.routeID,
@@ -204,18 +211,28 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
-	if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+	if r.dlq.HasStore() {
+		if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
+			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+		}
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
+				"route", r.routeID,
+				"envelope_id", env.ID(),
+				"binding_id", plan.BindingID,
+				"error", sendErr,
+			)
+		}
+		r.emitDLQ("permanent")
+	} else {
+		// Permanent send error with no DLQ store: drop-with-metric so the
+		// failed message is not silently ACKed as if delivered.
+		if r.logger != nil {
+			r.logger.Warn("permanent send error dropped: no DLQ configured",
+				"route", r.routeID, "envelope_id", env.ID(), "error", sendErr)
+		}
+		r.emitDrop("permanent")
 	}
-	if logging.DebugEnabled(r.logger) {
-		r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
-			"route", r.routeID,
-			"envelope_id", env.ID(),
-			"binding_id", plan.BindingID,
-			"error", sendErr,
-		)
-	}
-	r.emitDLQ("permanent")
 	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
@@ -293,45 +310,88 @@ func (r *RouteRunner) sessionIDForBinding(bindingID string) string {
 }
 
 func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
-	if r.policy.OnExpired == routing.ExpiredDLQ {
+	attempts := receiveCount(env) + 1
+	// DLQ the expiry only when the policy asks for it AND a store exists.
+	// Without a store, Router.Route is a silent no-op, so emitting a DLQ
+	// counter there would be a false signal; drop-with-metric instead.
+	if r.policy.OnExpired == routing.ExpiredDLQ && r.dlq.HasStore() {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
+		return r.settleTerminal(ctx, del, env, shared.ErrMessageExpired, attempts)
 	}
-	return r.ackDelivery(ctx, del)
+	// Drop path (OnExpired=drop, or dlq requested with no store configured):
+	// count the expiry-drop and settle terminally so the loss is never silent.
+	r.emitExpired()
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug, "message expired; dropped",
+			"route", r.routeID, "envelope_id", env.ID())
+	}
+	return r.settleTerminal(ctx, del, env, shared.ErrMessageExpired, attempts)
 }
 
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
+	attempts := receiveCount(env) + 1
 	if errors.Is(err, shared.ErrMessageFiltered) {
-		if r.policy.OnPermanentFailure == routing.FailureDLQ {
+		// A processor deliberately dropped the message. DLQ it only when the
+		// policy asks AND a store exists; otherwise it is an intentional
+		// filter-drop that must still be observable (metric + terminal hook).
+		if r.policy.OnPermanentFailure == routing.FailureDLQ && r.dlq.HasStore() {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
 			r.emitDLQ("filtered")
+			return r.settleTerminal(ctx, del, env, err, attempts)
 		}
-		return r.ackDelivery(ctx, del)
+		r.emitFiltered()
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "message filtered; dropped",
+				"route", r.routeID, "envelope_id", env.ID())
+		}
+		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
 	if shared.IsRecoverableError(err) {
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, err), err)
 	}
+	// Permanent failure. Honour OnPermanentFailure=drop and the no-store case
+	// by dropping-with-metric; otherwise write the DLQ record.
+	if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
+		r.emitDrop("permanent")
+		if r.logger != nil {
+			r.logger.Warn("permanent failure dropped",
+				"route", r.routeID, "envelope_id", env.ID(), "error", err)
+		}
+		return r.settleTerminal(ctx, del, env, err, attempts)
+	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
-	return r.ackDelivery(ctx, del)
+	return r.settleTerminal(ctx, del, env, err, attempts)
 }
 
 func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	be, ok := shared.AsBridgeError(err)
 	if ok && be.Class != shared.ErrorTransient {
+		attempts := receiveCount(env) + 1
+		if !r.dlq.HasStore() {
+			// No DLQ store: a rejected/permanent resolve error would otherwise be
+			// silently ACKed. Drop-with-metric and settle terminally instead.
+			r.emitDrop("rejected")
+			if r.logger != nil {
+				r.logger.Warn("resolve error dropped: no DLQ configured",
+					"route", r.routeID, "envelope_id", env.ID(), "error", err)
+			}
+			return r.settleTerminal(ctx, del, env, err, attempts)
+		}
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
-		return r.ackDelivery(ctx, del)
+		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
 	return r.retryOrFallback(ctx, del, env, 0, err)
 }
@@ -344,29 +404,26 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 	if retryErr == nil || !errors.Is(retryErr, shared.ErrNotSupported) {
 		return retryErr
 	}
-	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", reason, 0); dlqErr != nil {
-		r.emitDLQ("retry_unsupported_dlq_failed")
-		return fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
-	}
+	attempts := receiveCount(env) + 1
 	if !r.dlq.HasStore() {
-		r.metrics.Counter(shared.MetricMessagesDropped, 1,
-			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		// Source cannot retry and no DLQ store is configured: the message
+		// would otherwise be silently ACKed. Drop-with-metric and settle
+		// terminally (exactly one OnSettled). No emitDLQ here — a DLQEntries
+		// counter with no store behind it is a false signal.
+		r.emitDrop("retry_unsupported")
 		if r.logger != nil {
 			r.logger.Warn("message dropped: retry unsupported and no DLQ configured",
 				"route", r.routeID, "envelope_id", env.ID())
 		}
-		r.hook.OnSettled(ctx, ports.DeliveryOutcome{
-			Direction:   ports.DirectionEgress,
-			RouteID:     r.routeID,
-			Envelope:    env,
-			Attempt:     receiveCount(env) + 1,
-			MaxAttempts: r.policy.MaxReplayAttempts,
-			Err:         reason,
-			Terminal:    true,
-		})
+		return r.settleTerminal(ctx, del, env, reason, attempts)
+	}
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", reason, 0); dlqErr != nil {
+		// Write failed: return the error so the caller does NOT ack; the
+		// source redelivers. DLQWriteFailures is emitted inside the router.
+		return fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
 	}
 	r.emitDLQ("retry_unsupported")
-	return r.ackDelivery(ctx, del)
+	return r.settleTerminal(ctx, del, env, reason, attempts)
 }
 
 // Transport redelivery-count headers. Each source transport stamps its own
@@ -504,6 +561,52 @@ func (r *RouteRunner) emitDLQ(category string) {
 		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 		shared.Tag{Key: shared.TagKeyCategory, Value: category},
 	)
+}
+
+// emitDrop counts a terminal DROP: a message the runtime settled WITHOUT a DLQ
+// record and without a successful send (permanent/rejected/retry-unsupported
+// under a drop policy or a missing DLQ store). reason tags the cause so a
+// single MessagesDropped series is splittable. Together with MessagesSent,
+// MessagesFiltered, MessagesExpired and DLQEntries it closes the conservation
+// law received = sent + dropped + filtered + expired + dlq + inflight.
+func (r *RouteRunner) emitDrop(reason string) {
+	r.metrics.Counter(shared.MetricMessagesDropped, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
+		shared.Tag{Key: shared.TagKeyReason, Value: reason},
+	)
+}
+
+// emitFiltered counts a message a processor deliberately discarded
+// (ErrMessageFiltered) under OnPermanentFailure=drop — a policy discard, kept
+// distinct from a fault-driven drop.
+func (r *RouteRunner) emitFiltered() {
+	r.metrics.Counter(shared.MetricMessagesFiltered, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+}
+
+// emitExpired counts a message dropped because it expired before delivery
+// under OnExpired=drop.
+func (r *RouteRunner) emitExpired() {
+	r.metrics.Counter(shared.MetricMessagesExpired, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+}
+
+// settleTerminal records exactly one terminal outcome for an ingress delivery:
+// it fires a single OnSettled (Terminal=true) and ACKs the source. It is the
+// convergence point for ingress terminal drop/DLQ paths so the "exactly once
+// per terminal state" contract is enforced structurally rather than by
+// repeating the OnSettled+ack pair at every call site.
+func (r *RouteRunner) settleTerminal(ctx context.Context, del ports.Delivery, env *messaging.Envelope, cause error, attempts int) error {
+	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
+		Direction:   ports.DirectionIngress,
+		RouteID:     r.routeID,
+		Envelope:    env,
+		Attempt:     attempts,
+		MaxAttempts: r.policy.MaxReplayAttempts,
+		Err:         cause,
+		Terminal:    true,
+	})
+	return r.ackDelivery(ctx, del)
 }
 
 func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {

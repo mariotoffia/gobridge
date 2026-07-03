@@ -7,7 +7,12 @@ import (
 
 // DefaultMerge merges an overlay ports.BridgeConfig on top of a base config.
 // The merge follows these rules:
+//   - Version: overlay wins when non-zero, otherwise base is retained. Version
+//     is an optimistic-concurrency counter, so a merged config carries the
+//     newest committed version; a zero overlay means "unversioned overlay,
+//     keep the base's version" rather than resetting to 0.
 //   - Bridge settings: overlay non-zero fields override base
+//   - Bridge.Cluster: overlay replaces base if non-nil (endpoint map cloned)
 //   - ConfigWatch: overlay replaces base if non-nil
 //   - Stores: overlay replaces base per store role (lease/outbox/dlq individually)
 //   - Sessions, Receivers, Senders, Bindings, Routes: overlay adds new entries or
@@ -17,6 +22,13 @@ import (
 // The base is not modified; a new ports.BridgeConfig is returned.
 func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	out := *base
+
+	// Version is an optimistic-concurrency counter: a non-zero overlay version
+	// is the newer committed version and wins; a zero overlay leaves the base
+	// version intact instead of silently dropping it to 0 (Finding 8).
+	if overlay.Version != 0 {
+		out.Version = overlay.Version
+	}
 
 	mergeBridgeSettings(&out.Bridge, &overlay.Bridge)
 
@@ -87,6 +99,20 @@ func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 	}
 	if overlay.LogLevel != "" {
 		base.LogLevel = overlay.LogLevel
+	}
+	// Cluster was silently dropped: an overlay that added or changed cluster
+	// endpoints never took effect after a merge (Finding 8). Overlay replaces
+	// base when set; the endpoint map is cloned so the merged config never
+	// aliases the overlay's map.
+	if overlay.Cluster != nil {
+		c := *overlay.Cluster
+		if overlay.Cluster.Endpoints != nil {
+			c.Endpoints = make(map[string]string, len(overlay.Cluster.Endpoints))
+			for k, v := range overlay.Cluster.Endpoints {
+				c.Endpoints[k] = v
+			}
+		}
+		base.Cluster = &c
 	}
 }
 

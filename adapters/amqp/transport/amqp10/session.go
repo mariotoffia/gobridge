@@ -129,6 +129,18 @@ func (s *Session) AMQPSession() *amqpSessionLink {
 	return s.amqpSess
 }
 
+// sessionAndConn returns the session link wrapper together with the
+// connection that owns it, captured under a single lock hold. Callers
+// creating links MUST use this instead of separate AMQPSession()+Conn()
+// calls: a reconnect between the two reads would pair a link with the
+// WRONG connection identity, and a later notifyDisconnect carrying the
+// stale identity would be silently dropped.
+func (s *Session) sessionAndConn() (*amqpSessionLink, amqpConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.amqpSess, s.conn
+}
+
 // Start connects to the AMQP 1.0 broker, creates an AMQP session, and
 // starts a background goroutine to monitor connection health.
 //

@@ -57,20 +57,22 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)
 	if credsChanged {
 		s.liveCreds = mqttCredentials{Username: user, Password: pass}
-	}
-	cm := s.cm
-	s.mu.Unlock()
-
-	if credsChanged {
 		// Also update s.opts so subsequent Start() calls (e.g. after
-		// a restart by the Supervisor) see consistent values. This
-		// mirrors the user's configuration without reaching into the
-		// CM config.
+		// a restart by the Supervisor) see consistent values. Mutated
+		// under s.mu because a supervisor-restarted Start reads these
+		// fields concurrently.
 		s.opts.Username = user
 		s.opts.Password = shared.NewSecret(pass)
 	}
 
+	// TLS rotation is copy-on-write: applyTLSMaterial allocates a NEW
+	// *TLSConfig and swaps the pointer under s.mu, so a concurrent
+	// Start that snapshotted the previous pointer keeps reading
+	// immutable material (no torn tls.Config), and the next
+	// Start/Reload picks up the rotated pointer atomically.
 	tlsChanged := applyTLSMaterial(&s.opts.TLS, creds.TLS())
+	cm := s.cm
+	s.mu.Unlock()
 
 	if tlsChanged && cm != nil {
 		if logging.DebugEnabled(s.logger) {
@@ -113,9 +115,12 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 }
 
 // applyTLSMaterial compares incoming *connectivity.TLSMaterial PEM bytes
-// against the session's current TLS config and updates the config
-// in-place if any field differs. Returns true when an actual change
-// was applied, so the caller can decide whether to Reload.
+// against the session's current TLS config and, if any field differs,
+// swaps in a NEW *TLSConfig (copy-on-write — the existing struct is
+// never mutated). Returns true when a change was applied, so the
+// caller can decide whether to Reload. The caller must hold s.mu while
+// invoking this so the pointer swap is atomic with respect to Start's
+// snapshot of s.opts.TLS.
 //
 // Contract:
 //   - A nil or all-zero TLSMaterial is a no-op (returns false). The
@@ -123,11 +128,12 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 //     password material; those must not force a TLS rebuild.
 //   - When the session had no TLS at all (*opts.TLS == nil) and the
 //     incoming material is non-empty, a new TLSConfig{Enable: true}
-//     is allocated and the PEM fields are set. This is the "TLS
+//     is created and the PEM fields are set. This is the "TLS
 //     enabled for the first time by rotation" edge case.
-//   - Previously-set *File fields are left alone; the next BuildTLSConfig
-//     will prefer PEM material over them. This keeps rollback simple:
-//     clearing the PEM fields reverts to file-based material.
+//   - Previously-set *File fields are carried over unchanged; the next
+//     BuildTLSConfig will prefer PEM material over them. This keeps
+//     rollback simple: clearing the PEM fields reverts to file-based
+//     material.
 func applyTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
@@ -155,11 +161,13 @@ func applyTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 		cur.InsecureSkipVerify == mat.InsecureSkipVerify() {
 		return false
 	}
-	cur.CertPEM = shared.NewSecret(mat.CertPEM())
-	cur.KeyPEM = mat.KeyPEM()
-	cur.CACertPEM = shared.NewSecret(newCA)
-	cur.InsecureSkipVerify = mat.InsecureSkipVerify()
-	cur.Enable = true
+	next := *cur // copy-on-write: file paths etc. carry over
+	next.CertPEM = shared.NewSecret(mat.CertPEM())
+	next.KeyPEM = mat.KeyPEM()
+	next.CACertPEM = shared.NewSecret(newCA)
+	next.InsecureSkipVerify = mat.InsecureSkipVerify()
+	next.Enable = true
+	*opts = &next
 	return true
 }
 

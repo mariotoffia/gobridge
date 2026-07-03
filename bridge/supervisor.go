@@ -49,25 +49,37 @@ type SwapEvent struct {
 // supports pluggable ReconfigStrategy for debouncing and automatic
 // SwapMode detection based on transport capabilities.
 type Supervisor struct {
-	mu                           sync.RWMutex
-	rt                           *runtime.Runtime
-	cfg                          *ports.BridgeConfig
-	transports                   map[string]ports.TransportFactory
-	stores                       map[string]ports.StoreFactory
-	processors                   map[string]ports.Processor
-	credStore                    ports.CredentialStore
-	pushCredStore                ports.PushCredentialStore
-	pollCredStore                ports.PullCredentialStore
-	pollCredConfig               ports.PollBasedWrapperConfig
-	logger                       *slog.Logger
-	clk                          clock.Clock
-	swapMode                     SwapMode
-	strategy                     ReconfigStrategy
-	onSwap                       func(SwapEvent)
-	defaultDrainTimeout          time.Duration
-	defaultPerRecordDrainTimeout time.Duration
-	defaultMaxDrainTimeout       time.Duration
-	validator                    ports.BlueprintValidator
+	mu                  sync.RWMutex
+	rt                  *runtime.Runtime
+	cfg                 *ports.BridgeConfig
+	transports          map[string]ports.TransportFactory
+	stores              map[string]ports.StoreFactory
+	processors          map[string]ports.Processor
+	credStore           ports.CredentialStore
+	pushCredStore       ports.PushCredentialStore
+	pollCredStore       ports.PullCredentialStore
+	pollCredConfig      ports.PollBasedWrapperConfig
+	metrics             ports.MetricsExporter
+	tracer              ports.Tracer
+	auditLogger         ports.AuditLogger
+	logger              *slog.Logger
+	clk                 clock.Clock
+	swapMode            SwapMode
+	strategy            ReconfigStrategy
+	onSwap              func(SwapEvent)
+	defaultDrainTimeout time.Duration
+	validator           ports.BlueprintValidator
+
+	// wedged is set when a swap AND its recovery both failed, leaving no
+	// active runtime (s.rt == nil). It is a terminal state: the process is
+	// alive but routes nothing, so the composition-root backstop must treat
+	// it as terminal and exit non-zero (Finding 7).
+	wedged bool
+	// degraded records that live reconfiguration is no longer available
+	// (the config change stream closed unexpectedly) while the current
+	// runtime keeps serving. Not terminal (Finding 1).
+	degraded       bool
+	degradedReason string
 }
 
 // SupervisorOption configures a Supervisor.
@@ -133,18 +145,42 @@ func WithDefaultDrainTimeout(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.defaultDrainTimeout = d }
 }
 
-// WithDefaultPerRecordDrainTimeout sets the fallback per-record drain
-// timeout used by the scaled drain formula when the BridgeConfig does
-// not specify one. Zero means use the legacy fixed DrainTimeout.
-func WithDefaultPerRecordDrainTimeout(d time.Duration) SupervisorOption {
-	return func(s *Supervisor) { s.defaultPerRecordDrainTimeout = d }
+// WithDefaultPerRecordDrainTimeout was removed: it had zero effect and no
+// callers (the scaled drain formula is configured per-session via the
+// blueprint, not on the supervisor). See Finding 9.
+
+// WithDefaultMaxDrainTimeout was removed for the same reason (Finding 9).
+
+// WithSupervisorMetrics injects the metrics exporter forwarded to every
+// Builder (and thus every Runtime) the supervisor creates. Without it, a
+// config-driven deployment runs the Noop exporter and emits no metrics
+// (Finding 15). Nil is ignored.
+func WithSupervisorMetrics(m ports.MetricsExporter) SupervisorOption {
+	return func(s *Supervisor) {
+		if m != nil {
+			s.metrics = m
+		}
+	}
 }
 
-// WithDefaultMaxDrainTimeout sets the fallback max drain timeout used
-// by the scaled drain formula when the BridgeConfig does not specify
-// one. Zero means use the legacy fixed DrainTimeout.
-func WithDefaultMaxDrainTimeout(d time.Duration) SupervisorOption {
-	return func(s *Supervisor) { s.defaultMaxDrainTimeout = d }
+// WithSupervisorTracer injects the distributed tracer forwarded to every
+// Builder/Runtime the supervisor creates (Finding 15). Nil is ignored.
+func WithSupervisorTracer(t ports.Tracer) SupervisorOption {
+	return func(s *Supervisor) {
+		if t != nil {
+			s.tracer = t
+		}
+	}
+}
+
+// WithSupervisorAuditLogger injects the audit logger forwarded to every
+// Builder/Runtime the supervisor creates (Finding 15). Nil is ignored.
+func WithSupervisorAuditLogger(a ports.AuditLogger) SupervisorOption {
+	return func(s *Supervisor) {
+		if a != nil {
+			s.auditLogger = a
+		}
+	}
 }
 
 // WithSupervisorBlueprintValidator injects a config validator that
@@ -249,11 +285,68 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 			return s.stopCurrent(ctx)
 		case newCfg, ok := <-filtered:
 			if !ok {
+				// The config change stream closed WITHOUT a shutdown request
+				// (ctx still live). This is a watcher failure or an upstream
+				// close — NOT a reason to tear down a healthy runtime. Closing
+				// here used to drain+stop the whole bridge and exit 0, turning
+				// inotify exhaustion into a silent total outage (Finding 1).
+				// Keep the current runtime serving, mark degraded so operators
+				// can observe that live reconfiguration is gone, and block until
+				// ctx is actually cancelled.
+				select {
+				case <-ctx.Done():
+					return s.stopCurrent(ctx)
+				default:
+				}
+				s.markDegraded("config change stream closed; live reconfiguration unavailable")
+				if s.logger != nil {
+					s.logger.Error("supervisor: config change stream closed unexpectedly; " +
+						"keeping current runtime serving (live reconfiguration disabled until restart)")
+				}
+				<-ctx.Done()
 				return s.stopCurrent(ctx)
 			}
 			s.apply(ctx, newCfg)
 		}
 	}
+}
+
+// markDegraded records that the supervisor can no longer apply config
+// changes even though the current runtime keeps serving. Not terminal.
+func (s *Supervisor) markDegraded(reason string) {
+	s.mu.Lock()
+	s.degraded = true
+	s.degradedReason = reason
+	s.mu.Unlock()
+}
+
+// Degraded reports whether live reconfiguration is unavailable while the
+// current runtime keeps serving (e.g. the config change stream closed). It
+// is NOT terminal; use Terminal for the exit backstop. Safe for concurrent use.
+func (s *Supervisor) Degraded() (bool, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.degraded, s.degradedReason
+}
+
+// Terminal reports whether the supervisor is in an unrecoverable state that
+// warrants a process restart. It covers two cases (Finding 7):
+//
+//   - a wedged supervisor: a swap AND its recovery both failed, so there is
+//     no active runtime (s.rt == nil) and the process routes nothing;
+//   - the active runtime itself reporting Terminal().
+//
+// The composition-root liveness backstop polls this instead of only the
+// runtime, so a nil-runtime wedge no longer idles alive forever.
+func (s *Supervisor) Terminal() bool {
+	s.mu.RLock()
+	wedged := s.wedged
+	rt := s.rt
+	s.mu.RUnlock()
+	if wedged {
+		return true
+	}
+	return rt != nil && rt.Terminal()
 }
 
 func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
@@ -311,6 +404,9 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		s.mu.Lock()
 		s.rt = newRt
 		s.cfg = newCfg
+		s.wedged = false
+		s.degraded = false
+		s.degradedReason = ""
 		s.mu.Unlock()
 
 		if s.logger != nil {
@@ -359,25 +455,62 @@ func (s *Supervisor) applyOverlap(
 		if s.logger != nil {
 			s.logger.Error("supervisor: new runtime start failed, attempting recovery with old config", "error", err)
 		}
-		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
-		if recoverErr == nil {
-			recoverErr = recoveredRt.Start(ctx)
-		}
-		s.mu.Lock()
-		if recoverErr == nil {
-			s.rt = recoveredRt
-		} else {
-			s.rt = nil
-			if s.logger != nil {
-				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
-			}
-		}
-		s.cfg = oldCfg
-		s.mu.Unlock()
+		// The new runtime built its sessions/receivers/stores but never
+		// started; abandoning it here leaks every connection set forever.
+		// Stop it (idempotent, bounded) before recovering (Finding 2 / C1).
+		s.stopAbandoned(ctx, newRt, newCfg)
+		s.recoverOldOrWedge(ctx, oldCfg)
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
 	return newRt, nil
+}
+
+// stopAbandoned stops a built-but-abandoned runtime with a bounded, detached
+// context so its prep-opened sessions, receivers, and store handles are
+// released instead of leaked (Finding 2 / contract C1). Stop is idempotent
+// and safe on a never-started runtime.
+func (s *Supervisor) stopAbandoned(ctx context.Context, rt *runtime.Runtime, cfg *ports.BridgeConfig) {
+	if rt == nil {
+		return
+	}
+	drainTimeout := s.drainTimeoutFrom(cfg)
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
+	defer cancel()
+	if stopErr := rt.Stop(stopCtx); stopErr != nil && s.logger != nil {
+		s.logger.Warn("supervisor: stopping abandoned runtime", "error", stopErr)
+	}
+}
+
+// recoverOldOrWedge rebuilds and restarts the previous config after a failed
+// swap. On success the old runtime resumes; on failure the supervisor enters
+// the wedged terminal state (s.rt == nil) so the composition-root backstop can
+// restart the process (Finding 7). Any runtime it builds but cannot start is
+// stopped rather than leaked (Finding 2).
+func (s *Supervisor) recoverOldOrWedge(ctx context.Context, oldCfg *ports.BridgeConfig) {
+	recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
+	if recoverErr == nil {
+		if startErr := recoveredRt.Start(ctx); startErr != nil {
+			s.stopAbandoned(ctx, recoveredRt, oldCfg)
+			recoveredRt = nil
+			recoverErr = startErr
+		}
+	}
+
+	s.mu.Lock()
+	if recoverErr == nil {
+		s.rt = recoveredRt
+		s.wedged = false
+	} else {
+		s.rt = nil
+		s.wedged = true
+		if s.logger != nil {
+			s.logger.Error("supervisor: recovery with old config also failed; "+
+				"supervisor wedged (no active runtime, routing nothing)", "error", recoverErr)
+		}
+	}
+	s.cfg = oldCfg
+	s.mu.Unlock()
 }
 
 func (s *Supervisor) applyPrepareCommit(
@@ -408,21 +541,10 @@ func (s *Supervisor) applyPrepareCommit(
 		if s.logger != nil {
 			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)
 		}
-		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
-		if recoverErr == nil {
-			recoverErr = recoveredRt.Start(ctx)
-		}
-		s.mu.Lock()
-		if recoverErr == nil {
-			s.rt = recoveredRt
-		} else {
-			s.rt = nil
-			if s.logger != nil {
-				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
-			}
-		}
-		s.cfg = oldCfg
-		s.mu.Unlock()
+		// complete() failed after prepare() opened stores; its own defers
+		// close the sessions it created, and complete now also releases the
+		// prep-opened stores on failure (Finding 2). Recover the old config.
+		s.recoverOldOrWedge(ctx, oldCfg)
 		return nil, fmt.Errorf("complete: %w", err)
 	}
 
@@ -430,21 +552,8 @@ func (s *Supervisor) applyPrepareCommit(
 		if s.logger != nil {
 			s.logger.Error("supervisor: new runtime start failed (prepare-commit), attempting recovery", "error", err)
 		}
-		recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
-		if recoverErr == nil {
-			recoverErr = recoveredRt.Start(ctx)
-		}
-		s.mu.Lock()
-		if recoverErr == nil {
-			s.rt = recoveredRt
-		} else {
-			s.rt = nil
-			if s.logger != nil {
-				s.logger.Error("supervisor: recovery with old config also failed", "error", recoverErr)
-			}
-		}
-		s.cfg = oldCfg
-		s.mu.Unlock()
+		s.stopAbandoned(ctx, newRt, newCfg)
+		s.recoverOldOrWedge(ctx, oldCfg)
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
@@ -469,6 +578,27 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	}
 	if s.credStore != nil {
 		opts = append(opts, WithCredentialStore(s.credStore))
+	}
+	// Forward the rotation-capable credential stores so CredentialRefresher
+	// actually binds watchers under hot-reload. Previously these were stored
+	// on the supervisor but never forwarded, so rotation silently did nothing
+	// for supervisor-built runtimes (Finding 3).
+	if s.pushCredStore != nil {
+		opts = append(opts, WithPushCredentialStore(s.pushCredStore))
+	}
+	if s.pollCredStore != nil {
+		opts = append(opts, WithPolledCredentialStore(s.pollCredStore, s.pollCredConfig))
+	}
+	// Forward observability so config-driven deployments are not stuck on Noop
+	// everything (Finding 15).
+	if s.metrics != nil {
+		opts = append(opts, WithMetrics(s.metrics))
+	}
+	if s.tracer != nil {
+		opts = append(opts, WithTracer(s.tracer))
+	}
+	if s.auditLogger != nil {
+		opts = append(opts, WithAuditLogger(s.auditLogger))
 	}
 	if s.validator != nil {
 		opts = append(opts, WithBlueprintValidator(s.validator))
@@ -526,36 +656,17 @@ func (s *Supervisor) stopCurrent(ctx context.Context) error {
 }
 
 func (s *Supervisor) drainTimeoutFrom(cfg *ports.BridgeConfig) time.Duration {
-	if cfg != nil {
-		return cfg.Bridge.DrainTimeoutDuration()
+	// The blueprint wins only when it explicitly sets drain_timeout; otherwise
+	// the supervisor's configured default applies (Finding 9). Previously
+	// DrainTimeoutDuration() always returned 30s for an unset field, so
+	// WithDefaultDrainTimeout could never take effect.
+	if cfg != nil && cfg.Bridge.DrainTimeout != "" {
+		if d := cfg.Bridge.DrainTimeoutDuration(); d > 0 {
+			return d
+		}
 	}
 	if s.defaultDrainTimeout > 0 {
 		return s.defaultDrainTimeout
 	}
 	return 30 * time.Second
-}
-
-// PerRecordDrainTimeout returns the configured per-record drain
-// timeout from the supplied config, falling back to the supervisor
-// default when unset. Zero means the caller should use the legacy
-// fixed DrainTimeout instead of the scaled formula.
-func (s *Supervisor) PerRecordDrainTimeout(cfg *ports.BridgeConfig) time.Duration {
-	if cfg != nil {
-		if d := cfg.Bridge.PerRecordDrainTimeoutDuration(); d > 0 {
-			return d
-		}
-	}
-	return s.defaultPerRecordDrainTimeout
-}
-
-// MaxDrainTimeout returns the configured max drain timeout from the
-// supplied config, falling back to the supervisor default when unset.
-// Zero means the caller should use the legacy fixed DrainTimeout.
-func (s *Supervisor) MaxDrainTimeout(cfg *ports.BridgeConfig) time.Duration {
-	if cfg != nil {
-		if d := cfg.Bridge.MaxDrainTimeoutDuration(); d > 0 {
-			return d
-		}
-	}
-	return s.defaultMaxDrainTimeout
 }

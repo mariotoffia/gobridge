@@ -1,9 +1,8 @@
 package paho
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"time"
 	"unicode"
 
@@ -150,7 +149,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 		id, _ = headers[messaging.HeaderCorrelationID].(string)
 	}
 	if id == "" {
-		id = generateEnvelopeID()
+		id = deriveEnvelopeID(pub.Topic, pub.Payload)
 	}
 
 	// id is always non-empty (generate fallback above); now is non-zero.
@@ -307,12 +306,26 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 	return pub
 }
 
-// generateEnvelopeID returns a random 16-byte hex string used as a
-// last-resort Envelope.ID when no header or payload derivation is available.
-func generateEnvelopeID() string {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic("paho: crypto/rand unavailable: " + err.Error())
-	}
-	return hex.EncodeToString(b)
+// deriveEnvelopeID deterministically derives an Envelope.ID from the
+// publish topic and payload (SHA-256, 128-bit hex) when no header
+// provides one. Determinism is the point: a QoS 1 redelivery of the
+// same publish from a NON-bridge producer (no mqtt.message-id user
+// property, no correlation data) yields the SAME ID, so downstream
+// idempotency/dedup can detect exactly the duplicates that broker
+// redelivery creates. The MQTT packet identifier is deliberately NOT
+// included — packet IDs are a 16-bit per-connection resource that the
+// broker reuses, so mixing one in would make redeliveries look distinct
+// (DUP redeliveries keep the ID, but re-sends after session resume may
+// not) while adding no entropy across connections.
+//
+// Distinct application messages that share topic AND payload bytes
+// collapse to the same ID by design — without a producer-supplied
+// message ID they are indistinguishable on the wire anyway.
+func deriveEnvelopeID(topic string, payload []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(topic))
+	_, _ = h.Write([]byte{0}) // domain separator: topic vs payload bytes
+	_, _ = h.Write(payload)
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:16])
 }

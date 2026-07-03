@@ -258,7 +258,10 @@ func TestIntegration_Edge_SendBatchAllReceived(t *testing.T) {
 		}
 	}
 
-	assertLog091Contains(t, &buf, "amqp091: published", "amqp091: publish confirmed")
+	// The non-mandatory batch path is pipelined (deferred confirms
+	// awaited after all publishes) and logs a single batch trace line
+	// rather than per-message "published"/"publish confirmed" pairs.
+	assertLog091Contains(t, &buf, "amqp091: batch published")
 }
 
 // TestIntegration_Edge_HeaderRoundTrip validates that custom headers

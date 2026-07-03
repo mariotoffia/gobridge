@@ -238,16 +238,45 @@ func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelo
 	input.MessageDeduplicationId = aws.String(dedupID)
 }
 
+// egressAttributeRank orders eligible headers when the SQS attribute
+// count/size caps force a drop. Rationale: a peer bridge's SQS ingress
+// strips reserved x-bridge.* attributes unconditionally (see
+// attributesToHeaders and the messaging.NewEnvelope chokepoint), so
+// keeping every bridge header ahead of application data sacrifices real
+// payload metadata for headers the next hop discards. Only the truly
+// required propagation headers outrank application data:
+//
+//	rank 0 — essential propagation: traceparent / tracestate (W3C keys,
+//	         NOT x-bridge.*-prefixed, so they survive a peer bridge's
+//	         reserved-header strip) and x-bridge.idempotency-key (the
+//	         cross-hop identity/dedup contract). The ordering/dedup
+//	         keys ride the native MessageGroupId/MessageDeduplicationId
+//	         fields and never compete for an attribute slot.
+//	rank 1 — application headers: the payload's own metadata.
+//	rank 2 — remaining bridge-to-bridge reserved headers (correlation-id,
+//	         causation-id, tenant-id, forwarded-from/hop): best-effort,
+//	         sacrificed first under cap pressure.
+func egressAttributeRank(name string) int {
+	switch {
+	case strings.EqualFold(name, messaging.HeaderTraceParent),
+		strings.EqualFold(name, messaging.HeaderTraceState),
+		strings.EqualFold(name, messaging.HeaderIdempotencyKey):
+		return 0
+	case messaging.IsBridgeToBridgeHeader(name):
+		return 2
+	default:
+		return 1
+	}
+}
+
 // headersToAttributes converts envelope headers into SQS message
-// attributes, enforcing SQS limits deterministically (Findings 7 & 11):
+// attributes, enforcing SQS limits deterministically:
 //
 //   - INTERNAL-ONLY reserved headers (route-id, route-override,
 //     source-id, content-type) are stripped — they are bridge dispatch
 //     bookkeeping and must not leak to a consumer. BRIDGE-TO-BRIDGE
 //     reserved headers (correlation/causation/idempotency/tenant/
-//     forwarded/trace) are preserved AND prioritized: when a cap forces a
-//     drop they are kept ahead of application headers so a peer bridge can
-//     still correlate and deduplicate across a hop (Finding 7).
+//     forwarded/trace) are preserved as attributes.
 //   - FIFO ordering/dedup headers are skipped; they map to the native
 //     MessageGroupId / MessageDeduplicationId fields.
 //   - sqs.* receiver-injected system headers are skipped.
@@ -255,9 +284,11 @@ func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelo
 //     prefix, leading/trailing/consecutive periods) are dropped, since a
 //     single bad name fails the whole send.
 //   - At most maxAttrs attributes are emitted. Eligible keys are ranked
-//     bridge-to-bridge first then by name, and the highest-ranked maxAttrs
-//     kept, so selection is deterministic and never sacrifices a
-//     propagation header for application metadata.
+//     by egressAttributeRank (essential propagation first, application
+//     headers next, other bridge headers last) then by name, and the
+//     highest-ranked maxAttrs kept — selection is deterministic and
+//     never sacrifices application data for a bridge header the next
+//     hop's ingress strips anyway.
 //   - Cumulative size (message body + each attribute's name, type and
 //     value) is capped at sqsMaxMessageBytes. bodyBytes seeds the size
 //     accumulator so the 256 KiB budget SQS charges across body AND
@@ -275,10 +306,10 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 	}
 
 	type candidate struct {
-		name   string
-		value  sqstypes.MessageAttributeValue
-		size   int
-		bridge bool
+		name  string
+		value sqstypes.MessageAttributeValue
+		size  int
+		rank  int
 	}
 
 	eligible := make([]candidate, 0, len(headers))
@@ -292,7 +323,7 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 			continue
 		}
 		// Strip ONLY internal-only reserved headers; bridge-to-bridge
-		// reserved headers are preserved (Finding 7).
+		// reserved headers are preserved.
 		if messaging.IsInternalOnlyHeader(k) {
 			continue
 		}
@@ -304,10 +335,10 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 			continue
 		}
 		eligible = append(eligible, candidate{
-			name:   k,
-			value:  av,
-			size:   len(k) + sz,
-			bridge: messaging.IsBridgeToBridgeHeader(k),
+			name:  k,
+			value: av,
+			size:  len(k) + sz,
+			rank:  egressAttributeRank(k),
 		})
 	}
 
@@ -315,15 +346,16 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 		return nil, 0
 	}
 
-	// Rank bridge-to-bridge propagation headers (idempotency / correlation
-	// / causation / tenant / forwarded / trace) first so that when the
-	// count or size cap forces a drop, application metadata is sacrificed
-	// before a header a peer bridge needs to deduplicate or correlate
-	// across the hop. Within a class, sort by name so selection is
-	// deterministic regardless of Go's randomised map iteration order.
+	// Rank per egressAttributeRank: essential propagation headers
+	// (idempotency-key, traceparent/tracestate) first, application
+	// headers next, remaining bridge-to-bridge reserved headers last —
+	// they are stripped by a peer bridge's ingress, so they must not
+	// displace real application data under cap pressure. Within a rank,
+	// sort by name so selection is deterministic regardless of Go's
+	// randomised map iteration order.
 	sort.Slice(eligible, func(i, j int) bool {
-		if eligible[i].bridge != eligible[j].bridge {
-			return eligible[i].bridge
+		if eligible[i].rank != eligible[j].rank {
+			return eligible[i].rank < eligible[j].rank
 		}
 		return eligible[i].name < eligible[j].name
 	})

@@ -39,8 +39,15 @@ type Drainer struct {
 	maxDrainTimeout       time.Duration
 	useScaledTimeout      bool
 	batchTimeoutFloor     time.Duration
-	currentBatchSize      int
-	hasDrained            bool
+	// poisonMinAge is the minimum wall-clock age a record must reach BEFORE
+	// replay-count exhaustion is allowed to poison it to the DLQ (finding 8).
+	// Replay count alone poisons healthy records during an egress outage that
+	// outlasts the (small) replay budget; requiring a generous minimum age as
+	// well decouples poisoning from a transient outage that merely burned the
+	// count quickly. Default: max(5×SendTimeout, 2m).
+	poisonMinAge     time.Duration
+	currentBatchSize int
+	hasDrained       bool
 	// hadPending tracks whether the most recent Claim returned records.
 	// Used to ensure OnDrained fires only on the transition from
 	// "pending records" to "caught up", not on every empty cycle.
@@ -67,7 +74,23 @@ type Drainer struct {
 	// drain cycle entirely, preventing unnecessary Claim calls that would
 	// increment replay_count on records that cannot be sent anyway.
 	readyFn func(ctx context.Context) bool
+
+	// lastNoLeaseWarn rate-limits the "drain skipped: no lease" warning so a
+	// permanently lease-less drainer (e.g. a non-exclusive session paired with
+	// shared_outbox) is observable without flooding the log every poll cycle.
+	// Accessed only from the Run goroutine — no lock required.
+	lastNoLeaseWarn time.Time
+
+	// expireInterval bounds how often maybeExpire sweeps expired-but-unclaimed
+	// pending records (finding 19). lastExpire tracks the last sweep. Both are
+	// touched only from the Run goroutine — no lock required.
+	expireInterval time.Duration
+	lastExpire     time.Time
 }
+
+// noLeaseWarnInterval bounds how often the drain-skipped-no-lease warning is
+// emitted per drainer (finding 11).
+const noLeaseWarnInterval = 30 * time.Second
 
 // Config holds the configuration for a Drainer.
 type Config struct {
@@ -102,11 +125,20 @@ type Config struct {
 	// previous DrainTimeout default so the worst-case is unchanged).
 	MaxDrainTimeout   time.Duration
 	BatchTimeoutFloor time.Duration
-	Metrics           ports.MetricsExporter
-	Hook              ports.DeliveryHook
-	Logger            *slog.Logger
-	Clock             clock.Clock
-	TokenFn           func() (persistence.LeaseToken, bool)
+	// PoisonMinAge is the minimum record age required, IN ADDITION to
+	// replay-count exhaustion, before a record is poisoned to the DLQ
+	// (finding 8). Zero selects the default max(5×SendTimeout, 2m).
+	PoisonMinAge time.Duration
+	// ExpireInterval is how often the drainer sweeps expired-but-unclaimed
+	// pending records to the expired terminal state (finding 19). Zero
+	// selects defaultExpireInterval. The sweep runs only under lease
+	// ownership so exactly one instance expires per partition.
+	ExpireInterval time.Duration
+	Metrics        ports.MetricsExporter
+	Hook           ports.DeliveryHook
+	Logger         *slog.Logger
+	Clock          clock.Clock
+	TokenFn        func() (persistence.LeaseToken, bool)
 
 	// ReadyFn optionally gates drain cycles on egress transport
 	// readiness. When the MQTT session is disconnected, skipping
@@ -138,6 +170,13 @@ const (
 	// the legacy DrainTimeout default so the worst-case ceiling is
 	// unchanged.
 	defaultMaxDrainTimeout = 10 * time.Second
+
+	// defaultExpireInterval bounds how often the drainer sweeps
+	// expired-but-unclaimed pending records to the expired terminal state
+	// (finding 19). The sweep is a cheap indexed status+time scan; a slow
+	// cadence keeps expired records from lingering forever without adding
+	// per-cycle cost.
+	defaultExpireInterval = time.Minute
 )
 
 // New creates a Drainer from a Config.
@@ -170,6 +209,20 @@ func New(cfg Config) *Drainer {
 	}
 	if cfg.BatchTimeoutFloor <= 0 {
 		cfg.BatchTimeoutFloor = 2 * time.Second
+	}
+	if cfg.PoisonMinAge <= 0 {
+		// Generous default: a record must be at least this old before
+		// replay-count exhaustion may poison it. max(5×SendTimeout, 2m)
+		// comfortably clears a transient egress outage that slipped past
+		// ReadyFn and burned the replay budget in seconds.
+		poisonAge := 5 * cfg.Policy.SendTimeout
+		if poisonAge < 2*time.Minute {
+			poisonAge = 2 * time.Minute
+		}
+		cfg.PoisonMinAge = poisonAge
+	}
+	if cfg.ExpireInterval <= 0 {
+		cfg.ExpireInterval = defaultExpireInterval
 	}
 	if cfg.TokenFn == nil {
 		cfg.TokenFn = func() (persistence.LeaseToken, bool) { return persistence.LeaseToken{}, false }
@@ -208,16 +261,25 @@ func New(cfg Config) *Drainer {
 		maxDrainTimeout:       cfg.MaxDrainTimeout,
 		useScaledTimeout:      useScaledTimeout,
 		batchTimeoutFloor:     cfg.BatchTimeoutFloor,
-		currentBatchSize:      cfg.DrainBatchSize,
-		metrics:               m,
-		hook:                  hk,
-		logger:                cfg.Logger,
-		clk:                   clk,
-		tokenFn:               cfg.TokenFn,
-		readyFn:               cfg.ReadyFn,
-		onBatchComplete:       cfg.OnBatchComplete,
-		onDrained:             cfg.OnDrained,
-		idleCh:                make(chan struct{}),
+		poisonMinAge:          cfg.PoisonMinAge,
+		expireInterval:        cfg.ExpireInterval,
+		// Seed lastExpire to now so the first Expire sweep waits a full
+		// interval (finding 19). This gives the active drain path priority:
+		// freshly-claimable expired records are handled per-record by
+		// processRecord (which emits OutboxExpiredBeforeSend and honors the
+		// OnExpired policy — DLQ/drop) instead of being blanket-swept to the
+		// "expired" terminal state by the bulk Expire backstop.
+		lastExpire:       clk.Now(),
+		currentBatchSize: cfg.DrainBatchSize,
+		metrics:          m,
+		hook:             hk,
+		logger:           cfg.Logger,
+		clk:              clk,
+		tokenFn:          cfg.TokenFn,
+		readyFn:          cfg.ReadyFn,
+		onBatchComplete:  cfg.OnBatchComplete,
+		onDrained:        cfg.OnDrained,
+		idleCh:           make(chan struct{}),
 	}
 }
 
@@ -287,4 +349,19 @@ func (d *Drainer) log(ctx context.Context, level slog.Level, msg string, args ..
 	}
 	allArgs := append([]any{"partition", d.partitionKey, "route", d.routeID}, args...)
 	d.logger.Log(ctx, level, msg, allArgs...)
+}
+
+// warnDrainSkippedNoLease emits a rate-limited warning when a drain cycle is
+// skipped because the drainer holds no lease (finding 11). It fires at most
+// once per noLeaseWarnInterval per drainer so a permanently lease-less
+// configuration is visible without flooding the log.
+func (d *Drainer) warnDrainSkippedNoLease(ctx context.Context) {
+	now := d.clk.Now()
+	if !d.lastNoLeaseWarn.IsZero() && now.Sub(d.lastNoLeaseWarn) < noLeaseWarnInterval {
+		return
+	}
+	d.lastNoLeaseWarn = now
+	d.log(ctx, slog.LevelWarn,
+		"outbox drain skipped: no lease held for partition; a non-exclusive session never acquires a lease, so shared_outbox records for this partition will not drain until an exclusive owner exists",
+		"partition_key", d.partitionKey)
 }

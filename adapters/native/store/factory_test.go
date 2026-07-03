@@ -117,3 +117,42 @@ func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 		t.Fatal("expected error for empty Path in typed config")
 	}
 }
+
+// Verifies the typed config's stale_claim_duration and retention knobs
+// are accepted by the factory (typed stale-claim overrides the
+// runtime-derived value; deterministic behaviour of both knobs is pinned
+// with a fake clock inside the sqliteoutbox package).
+func TestSQLiteStoreFactory_TypedTuningKnobs(t *testing.T) {
+	f := nativestore.NewSQLiteStoreFactory()
+	cfg := &nativestore.SQLiteConfig{
+		Path:               ":memory:",
+		StaleClaimDuration: time.Minute,
+		Retention:          2 * time.Hour,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+
+	s, err := f.NewOutboxStore(context.Background(), cfg,
+		ports.OutboxRuntimeOptions{StaleClaimDuration: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected non-nil OutboxStore")
+	}
+}
+
+// Verifies a negative retention (compaction disabled) constructs, while a
+// negative stale_claim_duration is rejected by Validate.
+func TestSQLiteConfig_ValidateDurations(t *testing.T) {
+	ok := nativestore.SQLiteConfig{Path: ":memory:", Retention: -1}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("negative retention should validate (disables compaction): %v", err)
+	}
+
+	bad := nativestore.SQLiteConfig{Path: ":memory:", StaleClaimDuration: -time.Second}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("expected validation error for negative stale_claim_duration")
+	}
+}

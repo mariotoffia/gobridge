@@ -268,6 +268,32 @@ func TestWindowedStrategy_QuietWindow(t *testing.T) {
 	assert.Equal(t, "sparse", got.Bridge.ID)
 }
 
+// TestWindowedStrategy_InputChannelClosed_PendingConfig validates that closing
+// the input while a config is batched (before the quiet/max window elapses)
+// flushes the final pending config instead of dropping it (Finding 11). The
+// close happens well inside the quiet window, so the only path that can deliver
+// "last" is the close-time flush.
+func TestWindowedStrategy_InputChannelClosed_PendingConfig(t *testing.T) {
+	const (
+		quiet    = 500 * time.Millisecond
+		maxDelay = 2 * time.Second
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *ports.BridgeConfig, 1)
+	out := NewWindowedStrategy(quiet, maxDelay, nil).Filter(ctx, in)
+
+	in <- stratCfg("last")
+	close(in)
+
+	got := mustRecv(t, out, time.Second)
+	assert.Equal(t, "last", got.Bridge.ID)
+
+	mustClose(t, out, time.Second)
+}
+
 // TestWindowedStrategy_MaxDelay validates that a continuous stream forces emit at maxDelay even without a quiet window.
 func TestWindowedStrategy_MaxDelay(t *testing.T) {
 	const (

@@ -51,10 +51,19 @@ func (r *Receiver) pollAndConvert(
 	elapsed := r.clock().Since(pollStart)
 	r.metrics.Timer(MetricSQSPollLatency, elapsed,
 		shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+	// SQSReceiveLatency measures actual receive WORK per message, not
+	// the intentional long-poll idle: on a quiet queue a message that
+	// arrives 19s into a 20s wait would otherwise record ~19s of
+	// deliberate idling and drown the real signal. The idle portion is
+	// excluded per message via its broker SentTimestamp — see
+	// receiveWorkLatency. Emitted only when the poll returned messages.
 	if len(output.Messages) > 0 {
-		perMsg := elapsed / time.Duration(len(output.Messages))
-		r.metrics.Timer(MetricSQSReceiveLatency, perMsg,
-			shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+		receiveEnd := r.clock().Now()
+		for _, msg := range output.Messages {
+			r.metrics.Timer(MetricSQSReceiveLatency,
+				receiveWorkLatency(pollStart, receiveEnd, msg.Attributes),
+				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+		}
 	}
 
 	if logging.TraceEnabled(r.logger) {
@@ -88,6 +97,38 @@ func (r *Receiver) pollAndConvert(
 		results = append(results, rawInbound{env: env, receiptHandle: receiptHandle})
 	}
 	return results, nil
+}
+
+// headerSQSSentTimestamp is the envelope header carrying the broker's
+// SentTimestamp system attribute, parsed to time.Time by
+// attributesToHeaders.
+const headerSQSSentTimestamp = "sqs.SentTimestamp"
+
+// attrSentTimestamp is the raw SQS system-attribute key.
+const attrSentTimestamp = "SentTimestamp"
+
+// receiveWorkLatency returns the receive-work portion of a long poll
+// for one message: the interval from the moment the message could
+// first have been handed over — its broker SentTimestamp when it
+// arrived mid-poll, else the poll start — until the poll returned.
+// This excludes the intentional long-poll idle on a quiet queue, so
+// SQSReceiveLatency reflects work instead of echoing WaitTimeSeconds.
+// Broker/local clock skew can place SentTimestamp after receiveEnd;
+// the result is clamped at zero.
+func receiveWorkLatency(pollStart, receiveEnd time.Time, sysAttrs map[string]string) time.Duration {
+	start := pollStart
+	if v, ok := sysAttrs[attrSentTimestamp]; ok {
+		if ms, err := strconv.ParseInt(v, 10, 64); err == nil {
+			if ts := time.UnixMilli(ms); ts.After(start) {
+				start = ts
+			}
+		}
+	}
+	d := receiveEnd.Sub(start)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // convertMessage translates a single SDK message into a *messaging.Envelope
@@ -139,12 +180,22 @@ func (r *Receiver) convertMessage(
 	// Headers go through EnvelopeInput so NewEnvelope's
 	// StripReservedHeaders is the single chokepoint for reserved-prefix
 	// sanitation — see I4 in the round-1 reviewer notes.
+	//
+	// CreatedAt prefers the broker's SentTimestamp (parsed into the
+	// sqs.SentTimestamp header by attributesToHeaders) over the bridge
+	// receive time, so TTL/expiry policies measure the message's true
+	// age — including the time it spent queued — rather than restarting
+	// the clock at every hop.
+	createdAt := r.clock().Now()
+	if ts, ok := headers[headerSQSSentTimestamp].(time.Time); ok && !ts.IsZero() {
+		createdAt = ts
+	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   subject,
 		Payload:   payload,
 		Headers:   headers,
-		CreatedAt: r.clock().Now(),
+		CreatedAt: createdAt,
 	}, r.clock().Now())
 	if err != nil {
 		return nil, receiptHandle, wrapEnvelopeErr(err)
@@ -184,7 +235,7 @@ func attributesToHeaders(
 
 	for k, v := range sysAttrs {
 		key := "sqs." + k
-		if k == "SentTimestamp" {
+		if k == attrSentTimestamp {
 			if ms, err := strconv.ParseInt(v, 10, 64); err == nil {
 				h[key] = time.UnixMilli(ms)
 				continue
@@ -215,18 +266,27 @@ type snsPayload struct {
 }
 
 // trySNSUnwrap detects an SNS-over-SQS notification envelope and pulls
-// the inner subject/message out of it. The original SNS metadata is
-// preserved in headers under sns.* keys. When the SNS notification has
-// no Subject field, snsPayload.subject is empty and hasSubject=false so
-// callers leave Envelope.Subject untouched (T08: no fallback to
-// TopicArn or queue name).
+// the inner subject/message out of it. A body qualifies only when it is
+// JSON with Type == "Notification" AND a non-empty TopicArn — the shape
+// SNS actually delivers. Requiring the Type field prevents arbitrary
+// producer JSON that merely contains a TopicArn key from being
+// unwrapped with forged sns.* headers. (The transport-level guarantee
+// that the body really came from SNS is the queue policy restricting
+// sqs:SendMessage to the topic — an operator concern documented with
+// the sns_unwrap option, not enforceable here.) The original SNS
+// metadata is preserved in headers under sns.* keys. When the SNS
+// notification has no Subject field, snsPayload.subject is empty and
+// hasSubject=false so callers leave Envelope.Subject untouched (T08: no
+// fallback to TopicArn or queue name).
 func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
 	var raw struct {
+		Type     string `json:"Type"`
 		TopicArn string `json:"TopicArn"`
 		Subject  string `json:"Subject"`
 		Message  string `json:"Message"`
 	}
-	if err := json.Unmarshal([]byte(body), &raw); err != nil || raw.TopicArn == "" {
+	if err := json.Unmarshal([]byte(body), &raw); err != nil ||
+		raw.Type != "Notification" || raw.TopicArn == "" {
 		return snsPayload{}, false
 	}
 

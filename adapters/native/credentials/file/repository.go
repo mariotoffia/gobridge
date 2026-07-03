@@ -125,8 +125,14 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 		return nil, fmt.Errorf("basePath is required")
 	}
 
-	if err := os.MkdirAll(basePath, 0755); err != nil {
+	// 0700: the directory tree holds secret material — a group/world
+	// listable directory leaks the set of credential names even when
+	// the files themselves are 0600.
+	if err := os.MkdirAll(basePath, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create base path: %w", err)
+	}
+	if err := tightenDirPermissions(basePath); err != nil {
+		return nil, err
 	}
 
 	r := &Repository{basePath: basePath, clk: clock.System}
@@ -135,6 +141,25 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 	}
 
 	return r, nil
+}
+
+// tightenDirPermissions chmods a pre-existing credentials directory to
+// 0700 when its current mode grants any group/other access. MkdirAll
+// does not touch the mode of directories that already exist, so
+// without this a repository pointed at an old 0755 tree would keep
+// leaking credential names forever.
+func tightenDirPermissions(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("failed to stat base path: %w", err)
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to restrict base path permissions to 0700: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) Scheme() string    { return Scheme }
@@ -187,7 +212,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return shared.ErrUnavailable.WithMessage("failed to create directory").Wrap(err)
 	}
 
@@ -370,12 +395,61 @@ func (r *Repository) pathToURI(filePath string) (string, error) {
 	return fmt.Sprintf("%s://%s", Scheme, relPath), nil
 }
 
+// ensureUnderBasePath rejects paths that escape the credentials base
+// directory. The lexical prefix check catches ../ traversal in the URI;
+// the symlink resolution catches the case where a path component under
+// the base is a symlink pointing outside it (a lexical check alone is
+// blind to that). Both sides are resolved so a symlinked base directory
+// (e.g. macOS /tmp -> /private/tmp) compares consistently.
 func (r *Repository) ensureUnderBasePath(resolved string) error {
-	base := filepath.Clean(r.basePath) + string(filepath.Separator)
-	if !strings.HasPrefix(resolved, base) && resolved != filepath.Clean(r.basePath) {
+	cleanBase := filepath.Clean(r.basePath)
+	base := cleanBase + string(filepath.Separator)
+	if !strings.HasPrefix(resolved, base) && resolved != cleanBase {
+		return fmt.Errorf("path escapes base directory")
+	}
+
+	realBase, err := filepath.EvalSymlinks(cleanBase)
+	if err != nil {
+		return fmt.Errorf("file credentials: resolve base path: %w", err)
+	}
+	realPath, err := resolveExistingPrefix(resolved)
+	if err != nil {
+		return fmt.Errorf("file credentials: resolve path: %w", err)
+	}
+	if realPath != realBase && !strings.HasPrefix(realPath, realBase+string(filepath.Separator)) {
 		return fmt.Errorf("path escapes base directory")
 	}
 	return nil
+}
+
+// resolveExistingPrefix resolves symlinks in path even when its tail
+// components do not exist yet (Create writes new files): it walks up to
+// the nearest existing ancestor, resolves that through EvalSymlinks,
+// and rejoins the non-existing remainder lexically.
+func resolveExistingPrefix(path string) (string, error) {
+	existing := path
+	var tail []string
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("file credentials: lstat %s: %w", existing, err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			// Reached the filesystem root without finding an existing
+			// component; nothing to resolve.
+			break
+		}
+		tail = append([]string{filepath.Base(existing)}, tail...)
+		existing = parent
+	}
+
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("file credentials: resolve symlinks in %s: %w", existing, err)
+	}
+	return filepath.Join(append([]string{resolved}, tail...)...), nil
 }
 
 func (r *Repository) writeCredentials(filePath string, stored *storedCredentials) error {

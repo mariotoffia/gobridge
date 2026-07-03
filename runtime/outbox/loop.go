@@ -37,9 +37,23 @@ func (d *Drainer) Run(ctx context.Context) error {
 		case <-timer.C():
 			token, hasLease := d.tokenFn()
 			if !hasLease {
+				// Finding 11: a non-exclusive session never acquires a lease, so
+				// its shared_outbox drainer would skip EVERY cycle and never
+				// drain — previously a fully silent stall. Surface it: a counter
+				// on every skip and a rate-limited warning so the permanent
+				// stall is observable (validation also rejects the static combo).
+				d.metrics.Counter(shared.MetricDrainSkippedNoLease, 1,
+					shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey},
+					shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID})
+				d.warnDrainSkippedNoLease(ctx)
 				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}
+			// Finding 19: sweep expired-but-unclaimed pending records to the
+			// expired terminal state at a slow cadence. Runs under lease
+			// ownership (checked above) and independent of egress readiness —
+			// expiry is a durability-cleanup concern, not a send concern.
+			d.maybeExpire(ctx)
 			if d.readyFn != nil && !d.readyFn(ctx) {
 				if logging.TraceEnabled(d.logger) {
 					d.logger.Log(ctx, logging.LevelTrace, "egress not ready, skipping drain cycle",
@@ -116,6 +130,39 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 	return nil
 }
 
+// maybeExpire runs OutboxStore.Expire at most once per expireInterval, sweeping
+// pending records whose expires_at has passed into the expired terminal state
+// (finding 19). Without this the port's Expire method is dead code and expired
+// records that were never claimed linger pending forever. The caller has already
+// confirmed lease ownership, so exactly one instance performs the sweep per
+// partition. Expire is pending-only (claimed records are reclaimed via Claim,
+// never expired out from under a live owner), so the sweep never races an
+// in-flight send.
+func (d *Drainer) maybeExpire(ctx context.Context) {
+	if d.outboxStore == nil {
+		return
+	}
+	now := d.clk.Now()
+	if !d.lastExpire.IsZero() && now.Sub(d.lastExpire) < d.expireInterval {
+		return
+	}
+	d.lastExpire = now
+	n, err := d.outboxStore.Expire(ctx, now)
+	if err != nil {
+		d.log(ctx, slog.LevelWarn, "outbox expire sweep failed", "error", err)
+		return
+	}
+	if n > 0 {
+		// Expired records were received but will never be sent — count them as
+		// expired so the conservation law (received = sent + dropped + filtered
+		// + expired + dlq + inflight) can close.
+		d.metrics.Counter(shared.MetricMessagesExpired, int64(n),
+			shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey},
+			shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID})
+		d.log(ctx, slog.LevelInfo, "expired pending outbox records", "count", n)
+	}
+}
+
 func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
@@ -164,22 +211,29 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	var wg sync.WaitGroup
 	var successCount int64
 	var transientReleases int64
+	var deferredReleases int64
 	var staleDetected atomic.Bool
 
-	// workCtx gives in-flight goroutines a bounded deadline to finish
-	// their send+complete operations even after the parent ctx is cancelled.
-	// The timeout is derived from SendTimeout (plus a buffer for Complete)
-	// so that the configured SendTimeout is not silently capped.
+	// Group first so the batch budget can account for the longest ordering
+	// group (whose records send sequentially) as well as the concurrency waves.
+	// Records sharing a non-empty ordering key collapse into one group
+	// delivered sequentially by a single goroutine; keyless records form
+	// singleton groups that retain full concurrency up to maxConcurrency.
+	groups := groupByOrderingKey(records)
+
+	// workCtx gives in-flight goroutines a bounded deadline to finish their
+	// send+complete operations even after the parent ctx is cancelled. The
+	// budget must never undercut a single record's SendTimeout + Complete
+	// margin and it scales with the number of sequential send "waves" the batch
+	// needs (finding 10). The previous min(1.5×SendTimeout, 10s-ceiling)
+	// silently capped any SendTimeout above ~6.7s (and any batch too large for
+	// the ceiling), killing in-flight sends every cycle and stranding/poisoning
+	// healthy records. The configured MaxDrainTimeout/DrainTimeout may only
+	// RAISE this budget now — it can no longer cut it below one full send.
 	//
-	// The outer ceiling is the scaled batch deadline
-	// (batchCount * PerRecordDrainTimeout, capped by MaxDrainTimeout),
-	// which falls back to the legacy fixed DrainTimeout when the caller
-	// has not opted into the scaled formula.
-	ceiling := d.batchDeadline(len(records))
-	batchTimeout := max(time.Duration(float64(d.policy.SendTimeout)*1.5), d.batchTimeoutFloor)
-	batchTimeout = min(batchTimeout, ceiling)
 	// workCtx must survive caller ctx cancellation so in-flight sends can
 	// settle cleanly, but retains trace/correlation values from parent.
+	batchTimeout := d.batchTimeout(len(records), groups)
 	workCtx, workCancel := context.WithTimeout(context.WithoutCancel(ctx), batchTimeout)
 
 	// batchCtx is cancelled when a stale fencing token is detected so
@@ -187,24 +241,25 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	// send with an invalid token (preventing duplicate deliveries).
 	batchCtx, batchCancel := context.WithCancel(workCtx)
 
-	// Group claimed records by ordering key, preserving claim (persisted)
-	// order. Records sharing a non-empty ordering key collapse into one
-	// group delivered sequentially by a single goroutine; keyless records
-	// form singleton groups that retain full concurrency up to
-	// maxConcurrency. One semaphore slot is taken per GROUP.
-	groups := groupByOrderingKey(records)
+	// unlaunchedFrom records the first group index that was never launched
+	// because the batch deadline/cancel fired; those claimed-but-unattempted
+	// groups are released after wg.Wait (finding 9).
+	unlaunchedFrom := len(groups)
 
 loop:
 	for gi := range groups {
 		if ctx.Err() != nil || batchCtx.Err() != nil {
+			unlaunchedFrom = gi
 			break
 		}
 		group := groups[gi]
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
+			unlaunchedFrom = gi
 			break loop
 		case <-batchCtx.Done():
+			unlaunchedFrom = gi
 			break loop
 		}
 		wg.Go(func() {
@@ -224,6 +279,12 @@ loop:
 			// retried in order on a subsequent cycle.
 			for ri, rec := range group {
 				if ctx.Err() != nil || batchCtx.Err() != nil {
+					// Batch deadline fired before this record was attempted:
+					// release the unattempted tail (finding 9) so it retries
+					// next cycle instead of stranding claimed. Use a detached
+					// ctx since batchCtx is already done.
+					atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
+					d.releaseRemainder(context.WithoutCancel(ctx), group[ri:], token)
 					return
 				}
 				current = rec.ID()
@@ -232,6 +293,13 @@ loop:
 				}
 				if err := d.processRecord(batchCtx, rec, token); err != nil {
 					switch {
+					case errors.Is(err, errBatchDeadlineDeferred):
+						// processRecord already released THIS record; release the
+						// unsent tail too and count the whole run as deferred so
+						// the group is re-claimed and retried in order — never
+						// counted as success (finding 9).
+						atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
+						d.releaseRemainder(context.WithoutCancel(ctx), group[ri+1:], token)
 					case errors.Is(err, errReleasedForRetry):
 						// Transient egress failure: processRecord already
 						// released (or left claimed) this record for retry.
@@ -263,6 +331,22 @@ loop:
 	batchCancel()
 	workCancel()
 
+	// Release any groups never launched because the batch deadline/cancel
+	// fired — they were claimed this cycle but never attempted (finding 9).
+	for _, g := range groups[unlaunchedFrom:] {
+		atomic.AddInt64(&deferredReleases, int64(len(g)))
+		d.releaseRemainder(context.WithoutCancel(ctx), g, token)
+	}
+
+	deferredTotal := int(atomic.LoadInt64(&deferredReleases))
+	if deferredTotal > 0 {
+		// Deferred records are neither delivered nor lost: they were released
+		// back to pending and will be re-claimed. Surface them so a degraded
+		// batch (deadline strands) is observable and distinguishable from
+		// successful drains.
+		d.metrics.Counter(shared.MetricOutboxDeferred, int64(deferredTotal), routeTag)
+	}
+
 	duration := d.clk.Since(start)
 	d.metrics.Timer(shared.MetricOutboxDrainLatency, duration, sessionTag)
 
@@ -277,7 +361,7 @@ loop:
 				"owner", token.Owner,
 			)
 		}
-		return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)), shared.ErrStaleFencingToken
+		return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)) + deferredTotal, shared.ErrStaleFencingToken
 	}
 
 	if logging.DebugEnabled(d.logger) {
@@ -288,7 +372,7 @@ loop:
 		)
 	}
 
-	return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)), nil
+	return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)) + deferredTotal, nil
 }
 
 // orderingGroup is an ordered run of claimed outbox records delivered as

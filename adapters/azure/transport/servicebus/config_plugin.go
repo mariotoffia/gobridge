@@ -2,6 +2,7 @@ package servicebus
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -35,11 +36,13 @@ type ReceiverParams struct {
 	SessionID        string        `mapstructure:"session_id" yaml:"session_id" json:"session_id"`
 	MaxMessages      int           `mapstructure:"max_messages" yaml:"max_messages" json:"max_messages"`
 	MaxWaitTime      time.Duration `mapstructure:"max_wait_time" yaml:"max_wait_time" json:"max_wait_time"`
-	Prefetch         int32         `mapstructure:"prefetch" yaml:"prefetch" json:"prefetch"`
 	ReceiveMode      string        `mapstructure:"receive_mode" yaml:"receive_mode" json:"receive_mode"`
 	SubQueue         string        `mapstructure:"sub_queue" yaml:"sub_queue" json:"sub_queue"`
 	LockDuration     time.Duration `mapstructure:"lock_duration" yaml:"lock_duration" json:"lock_duration"`
 	AutoExtend       *bool         `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
+	// MaxLockRenewalDuration caps total per-delivery lock auto-renewal
+	// wall time (default 5m); see ReceiverConfig.MaxLockRenewalDuration.
+	MaxLockRenewalDuration time.Duration `mapstructure:"max_lock_renewal_duration" yaml:"max_lock_renewal_duration" json:"max_lock_renewal_duration"`
 }
 
 // SenderParams holds user-settable sender fields.
@@ -68,6 +71,23 @@ func (c Config) Validate() error {
 	if c.Receiver.LockDuration != 0 &&
 		(c.Receiver.LockDuration < 5*time.Second || c.Receiver.LockDuration > 5*time.Minute) {
 		return errors.New("servicebus: receiver.lock_duration must be in [5s,5m]")
+	}
+	// A sub-second max_wait_time turns the long-poll into a hot loop
+	// (an expired per-receive deadline is a normal empty poll, re-issued
+	// immediately). It is also the symptom of a bare-int YAML duration
+	// decoding as nanoseconds — reject with a hint. 0 selects the 30s
+	// default.
+	if c.Receiver.MaxWaitTime != 0 && c.Receiver.MaxWaitTime < time.Second {
+		return fmt.Errorf("servicebus: receiver.max_wait_time %v is below the 1s floor (a hot receive loop); use a duration string like \"30s\"", c.Receiver.MaxWaitTime)
+	}
+	if err := validateReceiveMode(c.Receiver.ReceiveMode); err != nil {
+		return err
+	}
+	if err := validateSubQueue(c.Receiver.SubQueue); err != nil {
+		return err
+	}
+	if c.Receiver.SessionID != "" && c.Receiver.SubQueue != "" {
+		return errors.New("servicebus: receiver.session_id cannot be combined with receiver.sub_queue (not supported by the Azure SDK)")
 	}
 	return nil
 }
@@ -99,18 +119,18 @@ func (c Config) AutoExtendEnabled() bool {
 
 func (c Config) toReceiverConfig() ReceiverConfig {
 	return ReceiverConfig{
-		QueueName:        c.Receiver.QueueName,
-		TopicName:        c.Receiver.TopicName,
-		SubscriptionName: c.Receiver.SubscriptionName,
-		SessionID:        c.Receiver.SessionID,
-		MaxMessages:      c.Receiver.MaxMessages,
-		MaxWaitTime:      c.Receiver.MaxWaitTime,
-		Prefetch:         c.Receiver.Prefetch,
-		ReceiveMode:      c.Receiver.ReceiveMode,
-		SubQueue:         c.Receiver.SubQueue,
-		LockDuration:     c.Receiver.LockDuration,
-		AutoExtend:       c.Receiver.AutoExtend,
-		Connection:       c.Connection,
+		QueueName:              c.Receiver.QueueName,
+		TopicName:              c.Receiver.TopicName,
+		SubscriptionName:       c.Receiver.SubscriptionName,
+		SessionID:              c.Receiver.SessionID,
+		MaxMessages:            c.Receiver.MaxMessages,
+		MaxWaitTime:            c.Receiver.MaxWaitTime,
+		ReceiveMode:            c.Receiver.ReceiveMode,
+		SubQueue:               c.Receiver.SubQueue,
+		LockDuration:           c.Receiver.LockDuration,
+		AutoExtend:             c.Receiver.AutoExtend,
+		MaxLockRenewalDuration: c.Receiver.MaxLockRenewalDuration,
+		Connection:             c.Connection,
 	}
 }
 

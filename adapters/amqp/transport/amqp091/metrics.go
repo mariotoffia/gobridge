@@ -25,4 +25,20 @@ const (
 	// bridge cannot own the exchange topology and an operator should pre-declare
 	// it (or grant configure permission).
 	MetricAMQP091PublisherDeclareFailed = "AMQP091PublisherDeclareFailed"
+	// MetricAMQP091ReconnectRaceRetried counts permanent-classified consume
+	// failures the receiver retried as transient reconnect races: a 403
+	// ACCESS_REFUSED on an exclusive consumer (the broker holds the stale
+	// consumer for ~2x heartbeat after a partition) and a 404 NOT_FOUND
+	// while the session is still re-declaring topology after a reconnect.
+	// A count that keeps climbing past the retry budget means the error is
+	// a genuine misconfiguration, not a race.
+	MetricAMQP091ReconnectRaceRetried = "AMQP091ReconnectRaceRetried"
+	// MetricAMQP091DelayedRetryUnhonored counts delayed (backoff) retries
+	// that could not be honored client-side. AMQP 0-9-1 has no native
+	// delayed-redelivery primitive, so Retry(after>0) nacks with immediate
+	// requeue: the runtime's requested spacing is silently lost and a
+	// poison message can hot-loop on a classic queue unless the queue has
+	// an x-delivery-limit / dead-letter-exchange guard. Mirrors
+	// AMQP10DelayedRetryUnhonored on the amqp10 adapter.
+	MetricAMQP091DelayedRetryUnhonored = "AMQP091DelayedRetryUnhonored"
 )

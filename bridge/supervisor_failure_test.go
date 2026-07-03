@@ -172,9 +172,14 @@ func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 	require.True(t, waitForRouteID(s, "r3", swapTimeout))
 }
 
-// TestSupervisor_StartFailure_Overlap validates that when Start fails in
+// TestSupervisor_SwapFailure_Overlap validates that when a swap fails in
 // overlap mode the supervisor recovers by rebuilding with the old config.
-func TestSupervisor_StartFailure_Overlap(t *testing.T) {
+//
+// Finding 5 / C2: static route validation now runs at build/complete time (via
+// Runtime.ValidateRoutes), so a statically-rejectable config fails during the
+// build phase of the overlap swap — BEFORE Start — and never even reaches
+// Start. The recovery contract is unchanged: the old runtime keeps serving.
+func TestSupervisor_SwapFailure_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
 	ch := make(chan *ports.BridgeConfig, 1)
@@ -191,20 +196,30 @@ func TestSupervisor_StartFailure_Overlap(t *testing.T) {
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
-	assert.Contains(t, ev.Error.Error(), "start")
-	assert.True(t, waitForRouteID(s, "r1", 2*time.Second), "supervisor should recover with old config after start failure")
-	require.NotNil(t, s.Runtime(), "overlap start failure must recover a non-nil runtime (old config), not leave rt nil")
+	assert.Contains(t, ev.Error.Error(), "build", "overlap swap failure must surface via the build phase")
+	assert.True(t, waitForRouteID(s, "r1", 2*time.Second), "supervisor should recover with old config after a failed swap")
+	require.NotNil(t, s.Runtime(), "overlap swap failure must recover a non-nil runtime (old config), not leave rt nil")
 }
 
-// TestSupervisor_StartFailure_PrepareCommit validates that when Start
-// fails in PrepareCommit mode the supervisor recovers with the old config.
-func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
+// TestSupervisor_SwapFailure_PrepareCommit validates that when a swap fails in
+// PrepareCommit mode the supervisor recovers with the old config.
+//
+// Finding 5 / C2: with static route validation moved to build/complete time, a
+// statically-rejectable config fails inside complete() (after prepare opened
+// its stores) BEFORE the new runtime is ever started, so the failure surfaces
+// via the "complete" phase, not "start". The old runtime is already stopped in
+// PrepareCommit mode, so the supervisor rebuilds the old config to recover.
+func TestSupervisor_SwapFailure_PrepareCommit(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer cancel()
 
+	// A session on the exclusive transport forces PrepareCommit swap mode; the
+	// direct_hold mutation against an exclusive session makes complete()'s
+	// route validation reject it (lease-handoff + visibility-extension), so the
+	// swap fails at the complete phase.
 	bad := supervisorTestConfigWithSession("r2", "s1")
 	bad.Bridge.DrainTimeout = "100ms"
 	bad.Receivers[0].Transport = "exclusive"
@@ -212,13 +227,14 @@ func TestSupervisor_StartFailure_PrepareCommit(t *testing.T) {
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
-	assert.Contains(t, ev.Error.Error(), "start")
+	assert.Contains(t, ev.Error.Error(), "complete", "prepare-commit swap failure must surface via the complete phase")
 	require.True(t, waitForRouteID(s, "r1", swapTimeout), "supervisor should recover with old config")
-	require.NotNil(t, s.Runtime(), "prepare-commit start failure must recover a non-nil runtime (old config), not leave rt nil")
+	require.NotNil(t, s.Runtime(), "prepare-commit swap failure must recover a non-nil runtime (old config), not leave rt nil")
 }
 
-// TestSupervisor_StartFailure_NextConfigRecovers validates recovery after a Start failure by sending a valid config.
-func TestSupervisor_StartFailure_NextConfigRecovers(t *testing.T) {
+// TestSupervisor_SwapFailure_NextConfigRecovers validates recovery after a
+// failed swap by sending a subsequent valid config.
+func TestSupervisor_SwapFailure_NextConfigRecovers(t *testing.T) {
 	onSwap, swaps := swapChan(2)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
 	ch := make(chan *ports.BridgeConfig, 2)
@@ -314,8 +330,12 @@ func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 	defer cancel()
 	oldRt := s.Runtime()
 
+	// The broken session MUST be referenced (here, by the receiver) so the
+	// builder actually constructs it — an unreferenced session is skipped
+	// (Finding 6), which would otherwise mask the broker-unreachable failure.
 	bad := quickCfg("r2")
 	bad.Sessions = []ports.SessionDef{{ID: "s1", Transport: "broken"}}
+	bad.Receivers[0] = ports.ReceiverDef{ID: "r2-rx", Transport: "broken", SessionID: "s1"}
 	require.True(t, sendConfig(ch, bad, time.Second))
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
@@ -448,7 +468,10 @@ func TestSupervisor_ContextCancel_DuringSwap(t *testing.T) {
 	}
 }
 
-// TestSupervisor_ChannelClosed_WhileApplying validates that closing the config channel causes Run to complete gracefully.
+// TestSupervisor_ChannelClosed_WhileApplying validates that closing the config
+// channel while a config is in flight keeps the current runtime serving and
+// marks the supervisor degraded rather than tearing the bridge down (Finding 1).
+// Run returns only on ctx cancellation.
 func TestSupervisor_ChannelClosed_WhileApplying(t *testing.T) {
 	s := newTestSupervisor()
 	ch := make(chan *ports.BridgeConfig, 1)
@@ -459,10 +482,24 @@ func TestSupervisor_ChannelClosed_WhileApplying(t *testing.T) {
 
 	sendConfig(ch, quickCfg("r2"), time.Second)
 	close(ch)
+
+	require.Eventually(t, func() bool {
+		degraded, _ := s.Degraded()
+		return degraded
+	}, swapTimeout, 10*time.Millisecond, "supervisor must mark degraded on channel close")
+
+	// Run must keep serving until ctx is cancelled.
+	select {
+	case err := <-errCh:
+		t.Fatalf("Run returned on channel close but must keep serving: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	cancel()
 	select {
 	case err := <-errCh:
 		assert.NoError(t, err)
 	case <-time.After(swapTimeout):
-		t.Fatal("Run did not return after channel close")
+		t.Fatal("Run did not return after ctx cancel")
 	}
 }

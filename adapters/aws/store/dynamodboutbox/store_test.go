@@ -10,12 +10,20 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
+
+// Compile-time assertion that the DynamoDB store implements the optional
+// OutboxReleaser capability the drainer type-asserts for the transient-
+// failure fast path. It lives in the test file because the production
+// package satisfies its ports structurally (no ports import).
+var _ ports.OutboxReleaser = (*dynamodboutbox.Store)(nil)
 
 func TestMain(m *testing.M) {
 	code := m.Run()
@@ -30,7 +38,9 @@ func newTestStore(t *testing.T) *dynamodboutbox.Store {
 	tableName := ddblocal.UniqueTable("outbox")
 	store := dynamodboutbox.NewStore(client,
 		dynamodboutbox.WithTableName(tableName),
-		dynamodboutbox.WithStaleClaimDuration(0), // immediate reclaim for tests
+		// Version-only reclaim: stale-claim recovery is pinned separately in
+		// TestOutboxStaleReclaimConformance with a fake clock.
+		dynamodboutbox.WithStaleClaimDuration(0),
 	)
 
 	if err := store.CreateTable(context.Background()); err != nil {
@@ -47,6 +57,34 @@ func newTestStore(t *testing.T) *dynamodboutbox.Store {
 func TestOutboxStoreConformance(t *testing.T) {
 	store := newTestStore(t)
 	storetest.RunOutboxStoreTests(t, store)
+}
+
+// Verifies the optional fast-release capability against the shared
+// conformance suite so release fencing matches memory/SQLite.
+func TestOutboxReleaseConformance(t *testing.T) {
+	store := newTestStore(t)
+	storetest.RunOutboxReleaseTests(t, store)
+}
+
+// Validates the wall-clock stale-claim reclaim behaviour against the shared
+// conformance suite, driven by a fake clock (TESTS.md: no time.Sleep).
+func TestOutboxStaleReclaimConformance(t *testing.T) {
+	const stale = 5 * time.Minute
+
+	client := ddblocal.Client(t)
+	tableName := ddblocal.UniqueTable("outbox")
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	store := dynamodboutbox.NewStore(client,
+		dynamodboutbox.WithTableName(tableName),
+		dynamodboutbox.WithClock(clk),
+		dynamodboutbox.WithStaleClaimDuration(stale),
+	)
+	if err := store.CreateTable(context.Background()); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	ddblocal.CleanupTable(t, client, tableName)
+
+	storetest.RunOutboxStaleReclaimTests(t, store, stale, clk.Advance)
 }
 
 // --- DynamoDB-Specific Tests ---
@@ -133,8 +171,11 @@ func TestFanOutAtomicity(t *testing.T) {
 	}
 }
 
-// Verifies partial duplicate fan-out persist rolls back and returns ErrDuplicateRecord.
-func TestFanOutDuplicateRejection(t *testing.T) {
+// Verifies the per-record Persist idempotency contract on fan-out: a batch
+// that partially overlaps already-persisted records persists the NEW legs
+// and silently skips the existing ones (no error, no rollback). This is
+// what makes fan-out re-persist after a partial failure safe.
+func TestFanOutPartialOverlapPersistsNewLegs(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
@@ -162,17 +203,19 @@ func TestFanOutDuplicateRejection(t *testing.T) {
 			SessionID: "sess-fo-dup", Address: "topic/y",
 			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-fo-dup", Subject: "test"}),
 		})}
-	err := store.Persist(ctx, second)
-	if !errors.Is(err, shared.ErrDuplicateRecord) {
-		t.Fatalf("expected ErrDuplicateRecord on fan-out with existing binding, got %v", err)
+	if err := store.Persist(ctx, second); err != nil {
+		t.Fatalf("partial-overlap persist must succeed (new leg persisted), got %v", err)
 	}
 
 	pending, err := store.QueryPending(ctx, "SESSION#sess-fo-dup", 10)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 record (transaction rolled back), got %d", len(pending))
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 records (original + new leg, duplicate skipped), got %d", len(pending))
+	}
+	if string(pending[0].ID()) != "fo-dup-1" {
+		t.Fatalf("original record must be preserved, got first ID %q", pending[0].ID())
 	}
 }
 
@@ -209,6 +252,12 @@ func TestConcurrentClaimSafety(t *testing.T) {
 	totalClaimed := 0
 	for i := 0; i < 3; i++ {
 		if errs[i] != nil {
+			// A concurrently raised fence legitimately preempts a
+			// lower-version claimer (ports.OutboxStore contract): the
+			// preempted claimer gets ErrStaleFencingToken, never records.
+			if errors.Is(errs[i], shared.ErrStaleFencingToken) {
+				continue
+			}
 			t.Fatalf("claim %d error: %v", i, errs[i])
 		}
 		totalClaimed += len(results[i])
@@ -243,8 +292,8 @@ func TestReplayCountIncrementsOnReclaim(t *testing.T) {
 		t.Fatalf("first claim replay_count: got %d, want 1", claimed1[0].ReplayCount())
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
+	// Version-monotonic preemption: token2 (v2) reclaims the record claimed
+	// at v1 without any wall-clock wait (TESTS.md: no time.Sleep).
 	token2 := persistence.LeaseToken{Version: 2, Owner: "owner-2"}
 	claimed2, err := store.Claim(ctx, "SESSION#sess-replay", token2, 10)
 	if err != nil || len(claimed2) != 1 {

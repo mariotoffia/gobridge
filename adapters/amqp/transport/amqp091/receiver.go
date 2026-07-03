@@ -81,7 +81,11 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	// failures counts consecutive rapid consume failures to drive the
 	// reconnect backoff; it resets after a healthy run (see loop body).
+	// raceRetries counts consecutive permanent-classified errors retried
+	// as transient reconnect races (see isReconnectRaceError); it shares
+	// the healthy-run reset.
 	var failures int
+	var raceRetries int
 	for {
 		loopStart := r.clock().Now()
 		err := r.consumeLoop(ctx, emit)
@@ -97,24 +101,44 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			return errors.Unwrap(err)
 		}
 
+		// Reset the failure counters once a consume loop has run long
+		// enough to be considered healthy, so an occasional reconnect
+		// after a long stable run does not inherit an escalated backoff
+		// or an exhausted race-retry budget.
+		if r.clock().Since(loopStart) >= receiverHealthyRun {
+			failures = 0
+			raceRetries = 0
+		}
+
 		// A permanent transport error (queue/exchange missing, access
 		// refused, unsupported, protocol error) recurs identically on
 		// every reconnect. Failing the component surfaces the
 		// misconfiguration instead of hot-looping forever on it.
+		//
+		// Exception: two permanent-classified codes are, in a reconnect
+		// window, transient broker races — retried with a bounded budget
+		// so a partition or broker restart does not turn into a route
+		// crash loop. See isReconnectRaceError.
 		if isPermanentError(err) {
-			if logging.DebugEnabled(r.logger) {
-				r.logger.Log(ctx, logging.LevelDebug,
-					"amqp091: receiver stopping on permanent error",
-					"queue", r.cfg.QueueName, "error", err)
+			if !isReconnectRaceError(err, r.cfg.Exclusive) || raceRetries >= reconnectRaceRetryBudget {
+				if logging.DebugEnabled(r.logger) {
+					r.logger.Log(ctx, logging.LevelDebug,
+						"amqp091: receiver stopping on permanent error",
+						"queue", r.cfg.QueueName, "error", err)
+				}
+				return err
 			}
-			return err
-		}
-
-		// Reset the failure counter once a consume loop has run long
-		// enough to be considered healthy, so an occasional reconnect
-		// after a long stable run does not inherit an escalated backoff.
-		if r.clock().Since(loopStart) >= receiverHealthyRun {
-			failures = 0
+			raceRetries++
+			r.metrics.Counter(MetricAMQP091ReconnectRaceRetried, 1,
+				shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.QueueName})
+			if r.logger != nil {
+				r.logger.Warn("amqp091: permanent-classified consume error retried as reconnect race",
+					"queue", r.cfg.QueueName,
+					"attempt", raceRetries,
+					"budget", reconnectRaceRetryBudget,
+					"error", err,
+				)
+			}
 		}
 
 		if logging.DebugEnabled(r.logger) {
@@ -170,6 +194,46 @@ func isPermanentError(err error) bool {
 		return be.Class == shared.ErrorPermanent
 	}
 	return false
+}
+
+// reconnectRaceRetryBudget bounds how many consecutive
+// permanent-classified consume errors are retried as transient
+// reconnect races before the receiver fails the component. With the
+// receiver backoff schedule (100ms doubling, capped at 5s) ten retries
+// span roughly 25-30s of wall clock — enough to outlive the two windows
+// this budget exists for (a stale exclusive consumer the broker holds
+// for ~2x heartbeat ≈ 20s at the 10s default, and the
+// topology-re-declare window after a broker restart) while a genuine
+// misconfiguration still surfaces within half a minute.
+const reconnectRaceRetryBudget = 10
+
+// isReconnectRaceError reports whether a permanent-classified consume
+// error is plausibly a transient broker race around a reconnect and
+// therefore worth a bounded retry instead of an immediate component
+// failure (which would crash-loop the pod on the next identical race):
+//
+//   - 403 ACCESS_REFUSED on an EXCLUSIVE consumer: after a network
+//     partition the broker still holds the previous (dead) exclusive
+//     consumer until missed heartbeats (~2x heartbeat interval) reap the
+//     stale connection; the re-consume is legitimately refused until then.
+//     Without exclusivity a 403 is a real permission error — not retried.
+//   - 404 NOT_FOUND: after a broker restart a non-durable queue is gone
+//     until the session's reconcile re-declares it; a consume that races
+//     that window sees NOT_FOUND even though the topology heals moments
+//     later.
+func isReconnectRaceError(err error, exclusive bool) bool {
+	var be *shared.BridgeError
+	if !errors.As(err, &be) {
+		return false
+	}
+	switch be.Code {
+	case shared.ErrCodeNotFound:
+		return true
+	case shared.ErrCodeNotAuthorized:
+		return exclusive
+	default:
+		return false
+	}
 }
 
 // receiverBackoff returns the bounded exponential backoff for the nth

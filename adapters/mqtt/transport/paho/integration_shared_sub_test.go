@@ -199,11 +199,11 @@ func TestIntegration_SharedSubscription_PayloadIntegrity(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			mu.Lock()
 			received = append(received, del.Envelope())
 			mu.Unlock()
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 	t.Cleanup(func() { recvCancel(); wg.Wait() })
@@ -300,9 +300,9 @@ func startSubscriber(t *testing.T, ctx context.Context, brokerURL, prefix, topic
 	sub.wg.Add(1)
 	go func() {
 		defer sub.wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, _ ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			sub.count.Add(1)
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 

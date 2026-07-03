@@ -174,12 +174,17 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, sess
 			fmt.Sprintf("amqp091 sender %q: immediate=true is not supported by RabbitMQ; remove it", spec.ID))
 	}
 	sc := SenderConfig{
-		Exchange:   cfg.Sender.Exchange,
-		RoutingKey: cfg.Sender.RoutingKey,
-		Mandatory:  cfg.Sender.Mandatory,
-		Timeout:    cfg.Sender.Timeout,
-		Session:    amqpSession,
-		Logger:     f.logger,
+		Exchange:     cfg.Sender.Exchange,
+		RoutingKey:   cfg.Sender.RoutingKey,
+		Mandatory:    cfg.Sender.Mandatory,
+		DeliveryMode: cfg.Sender.DeliveryMode,
+		Timeout:      cfg.Sender.Timeout,
+		Session:      amqpSession,
+		Logger:       f.logger,
+	}
+	if err := sc.validate(); err != nil {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 sender %q: %s", spec.ID, err))
 	}
 	return NewSender(sc), nil
 }

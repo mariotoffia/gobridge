@@ -17,12 +17,34 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
+// ValidateRoutes runs pre-start route validation and returns a
+// [ValidationError] describing every problem found, or nil when all routes are
+// valid. It is idempotent and side-effect-free (it never mutates route entries
+// or runtime state), so it is safe to call repeatedly and BEFORE Start — the
+// builder's complete() calls it at the end of construction (C2). Start invokes
+// the same validation internally, so a runtime that fails ValidateRoutes also
+// fails Start.
+func (rt *Runtime) ValidateRoutes() error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil)
+}
+
 // Start wires up all registered routes, session managers, and outbox
 // drainers, then spawns background goroutines. It returns immediately;
 // use Stop to shut down gracefully.
 func (rt *Runtime) Start(ctx context.Context) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+
+	if rt.terminal {
+		// Finding 3: Stop closes the outbox/DLQ/lease stores and cancels every
+		// drainer/manager, but the drainers/managers/entries are never rebuilt.
+		// A restart would append fresh drainers over CLOSED stores and duplicate
+		// work. The runtime is single-use: reject a restart with a clear error
+		// (the supervisor builds a NEW runtime for reconfiguration).
+		return errors.New("runtime: cannot start a stopped runtime (single-use lifecycle); build a new runtime")
+	}
 
 	if rt.running {
 		return errors.New("runtime already running")
@@ -164,6 +186,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainTimeout:          entry.sessCfg.DrainTimeout,
 					PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
 					MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
+					PoisonMinAge:          rt.outboxPoisonMinAge,
 					Metrics:               m,
 					Hook:                  rt.hook,
 					Logger:                rt.logger,
@@ -218,6 +241,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainTimeout:          sse.config.DrainTimeout,
 					PerRecordDrainTimeout: sse.config.PerRecordDrainTimeout,
 					MaxDrainTimeout:       sse.config.MaxDrainTimeout,
+					PoisonMinAge:          rt.outboxPoisonMinAge,
 					Metrics:               m,
 					Hook:                  rt.hook,
 					Logger:                rt.logger,
@@ -232,13 +256,40 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		}
 	}
 
+	// Finding 12: DLQ writes are fenced PER OWNING SESSION, not by an
+	// instance-global "any lease held" gate. Build the set of exclusive
+	// sessions (only they carry a lease) so the router can decide per DLQ entry:
+	//   - empty sessionID (ingress failure with no owning session): allow — no
+	//     lease governs it.
+	//   - non-exclusive session (not in the set): allow — there is no lease to
+	//     fence on, so a standby may DLQ-write its own ingress failures.
+	//   - exclusive session managed here: gate on THAT session's live lease, so a
+	//     standby that does not own the lease cannot DLQ (and an unrelated lease
+	//     cannot authorize a write for a route it does not own).
+	//   - exclusive session NOT managed here: refuse — the owning instance writes
+	//     the entry, avoiding a cross-instance duplicate.
+	exclusiveSessions := make(map[string]bool)
+	for _, entry := range rt.entries {
+		if entry.sessCfg != nil && entry.sessCfg.Exclusive {
+			exclusiveSessions[entry.sessCfg.SessionID] = true
+		}
+	}
+	for sid, sse := range rt.sessionSenders {
+		if sse.config.Exclusive {
+			exclusiveSessions[sid] = true
+		}
+	}
 	if len(rt.sessionMgrs) > 0 {
 		mgrs := rt.sessionMgrs
-		dlqRouter.SetTokenFn(func() (persistence.LeaseToken, bool) {
-			for _, mgr := range mgrs {
-				if tok, held := mgr.Token(); held {
-					return tok, true
-				}
+		dlqRouter.SetTokenFn(func(sessionID string) (persistence.LeaseToken, bool) {
+			if sessionID == "" {
+				return persistence.LeaseToken{}, true
+			}
+			if !exclusiveSessions[sessionID] {
+				return persistence.LeaseToken{}, true
+			}
+			if mgr, ok := mgrs[sessionID]; ok {
+				return mgr.Token()
 			}
 			return persistence.LeaseToken{}, false
 		})

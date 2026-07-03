@@ -23,6 +23,11 @@ var (
 // Service Bus. SDK access is concentrated in acl_*.go: this file
 // references only the unexported asbSenderAPI seam and the
 // *asbClientHandle wrapper.
+//
+// client / asbClient / cfg.Connection are guarded by initMu: a live
+// credential rotation (ApplyCredentials) swaps them while Send /
+// SendBatch may be in flight. Callers snapshot via currentClient();
+// an in-flight send finishes against the old link.
 type Sender struct {
 	cfg       SenderConfig
 	client    asbSenderAPI
@@ -66,6 +71,31 @@ func (s *Sender) entityName() string {
 	return s.cfg.TopicName
 }
 
+// currentClient returns the live sender seam under the swap lock so a
+// concurrent ApplyCredentials rotation is never observed half-applied.
+//
+//nolint:ireturn // asbSenderAPI is an adapter-internal mock seam (category 5).
+func (s *Sender) currentClient() asbSenderAPI {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	return s.client
+}
+
+// swapClient installs a new sender seam + client handle + connection
+// under the swap lock and returns the previous pair so the caller can
+// close it OUTSIDE the lock.
+//
+//nolint:ireturn // asbSenderAPI is an adapter-internal mock seam (category 5).
+func (s *Sender) swapClient(next asbSenderAPI, nextHandle *asbClientHandle, nextConn ConnectionConfig) (asbSenderAPI, *asbClientHandle) {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	oldClient, oldHandle := s.client, s.asbClient
+	s.client = next
+	s.asbClient = nextHandle
+	s.cfg.Connection = nextConn
+	return oldClient, oldHandle
+}
+
 // Send submits a single envelope to Service Bus.
 //
 // Address validation: a Service Bus Sender is bound to a single
@@ -104,7 +134,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	defer cancel()
 
 	start := s.clock().Now()
-	if err := sendOne(sendCtx, s.client, env, s.cfg.DefaultSessionID, s.clock()); err != nil {
+	if err := sendOne(sendCtx, s.currentClient(), env, s.cfg.DefaultSessionID, s.clock()); err != nil {
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "servicebus: send failed",
 				"entity", s.entityName(), "error", err)
@@ -164,8 +194,9 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 		envs[i] = m.Envelope
 	}
 
-	sendCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
+	// Snapshot once for the whole batch: a mid-batch credential rotation
+	// must not split the batch across two links.
+	client := s.currentClient()
 
 	results := make([]ports.BatchResult, len(envs))
 
@@ -183,10 +214,16 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 			)
 		}
 
+		// cfg.Timeout is a PER-CALL bound (see SenderConfig.Timeout): each
+		// chunk gets a fresh deadline. A single deadline across all chunks
+		// would starve the tail of a large batch.
+		chunkCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+
 		start := s.clock().Now()
-		for _, cr := range sendChunk(sendCtx, s.client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, entity) {
+		for _, cr := range sendChunk(chunkCtx, client, chunk, s.cfg.DefaultSessionID, s.clock(), s.logger, entity) {
 			results[i+cr.Index] = ports.BatchResult{Index: i + cr.Index, Err: cr.Err}
 		}
+		cancel()
 		s.metrics.Timer(MetricASBSendBatchLatency, s.clock().Since(start),
 			shared.Tag{Key: shared.TagKeyEntity, Value: entity})
 	}
@@ -201,16 +238,25 @@ func (s *Sender) Close(ctx context.Context) error {
 			"entity", s.entityName())
 	}
 
+	oldClient, oldHandle := s.swapClient(nil, nil, s.connectionSnapshot())
+
 	var firstErr error
-	if s.client != nil {
-		firstErr = s.client.Close(ctx)
+	if oldClient != nil {
+		firstErr = oldClient.Close(ctx)
 	}
-	if s.asbClient != nil {
-		if err := s.asbClient.Close(ctx); err != nil && firstErr == nil {
+	if oldHandle != nil {
+		if err := oldHandle.Close(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// connectionSnapshot reads cfg.Connection under the swap lock.
+func (s *Sender) connectionSnapshot() ConnectionConfig {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	return s.cfg.Connection
 }
 
 func (s *Sender) ensureClient(ctx context.Context) error {

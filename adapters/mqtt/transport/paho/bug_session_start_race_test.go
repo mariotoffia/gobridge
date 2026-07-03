@@ -7,25 +7,33 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-2: MQTT Session Start() TOCTOU Race
+// BUG-2: MQTT Session Start() TOCTOU Race — and its follow-up.
 //
 // Start() previously released the lock after the cm==nil check, performed
 // slow operations, then re-acquired. Two concurrent callers both passed the
 // guard, creating duplicate ConnectionManagers (the first leaked).
 //
-// Fix: a `starting` flag set under the same lock prevents the second caller
-// from entering the slow path. The second caller returns nil immediately.
+// First fix: a `starting` flag made the second caller return nil
+// immediately — but that nil was a FALSE SUCCESS: the winner might still
+// fail, and a racing Reload would silently skip its TLS rebuild.
+//
+// Current semantics (pinned here): concurrent Start callers WAIT for the
+// in-flight attempt's outcome. If the winner succeeds they return nil
+// (session really is up); if it fails they run their own attempt; if
+// their context expires while waiting they get a definite error. No
+// caller ever reports success for a session that is not connected.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug2_Start_ConcurrentCallers_OnlyOneEnters verifies that two
-// concurrent Start() calls do NOT both enter the slow connection path.
-// The `starting` guard ensures the second caller returns nil immediately.
-func TestBug2_Start_ConcurrentCallers_OnlyOneEnters(t *testing.T) {
+// TestBug2_Start_ConcurrentCallers_BothGetDefiniteOutcome verifies that
+// with an unreachable broker, NEITHER of two concurrent Start() calls
+// returns a false success: both must return an error.
+func TestBug2_Start_ConcurrentCallers_BothGetDefiniteOutcome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race test in -short mode (uses network timeout)")
 	}
@@ -38,7 +46,7 @@ func TestBug2_Start_ConcurrentCallers_OnlyOneEnters(t *testing.T) {
 		ConnectTimeout: 500 * time.Millisecond,
 	}, connectivity.SessionEphemeral, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var (
@@ -59,28 +67,62 @@ func TestBug2_Start_ConcurrentCallers_OnlyOneEnters(t *testing.T) {
 	close(barrier)
 	wg.Wait()
 
-	t.Logf("BUG-2 FIX: Start errors: [0]=%v, [1]=%v", errors[0], errors[1])
+	t.Logf("Start errors: [0]=%v, [1]=%v", errors[0], errors[1])
 
-	// With the starting guard, exactly one caller enters the slow path
-	// (and fails with timeout). The other returns nil immediately.
-	nilCount := 0
-	errCount := 0
-	for _, e := range errors {
-		if e == nil {
-			nilCount++
-		} else {
-			errCount++
-		}
+	// The broker is unreachable, so no caller may report success. The
+	// waiter must observe the winner's failure and fail its own retry —
+	// a nil here would be the false success that let a racing Reload
+	// silently skip its TLS rebuild.
+	for i, e := range errors {
+		assert.Error(t, e,
+			"caller %d must get a definite error for an unreachable broker (no false success)", i)
 	}
 
-	// One caller should return nil (guarded away), one should return error
-	// (entered slow path but broker unreachable).
-	assert.Equal(t, 1, nilCount,
-		"BUG-2 FIX: exactly one caller should return nil (guarded by starting flag)")
-	assert.Equal(t, 1, errCount,
-		"BUG-2 FIX: exactly one caller should return error (entered slow path)")
+	_ = sess.Close(context.Background())
+}
 
-	// Cleanup: close session if it was started.
+// TestBug2_Start_WaiterExpiresWhileWinnerConnecting verifies a waiting
+// Start caller whose context expires before the in-flight attempt
+// finishes gets a definite error (not nil, and without deadlocking).
+func TestBug2_Start_WaiterExpiresWhileWinnerConnecting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping race test in -short mode (uses network timeout)")
+	}
+
+	sess := NewSession(SessionOptions{
+		BrokerURLs:     []string{"tcp://192.0.2.1:1883"}, // RFC 5737
+		ClientID:       "bug2-waiter-expiry",
+		KeepAlive:      5,
+		ConnectTimeout: 2 * time.Second,
+	}, connectivity.SessionEphemeral, nil)
+
+	winnerCtx, winnerCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer winnerCancel()
+
+	winnerDone := make(chan error, 1)
+	go func() { winnerDone <- sess.Start(winnerCtx) }()
+
+	// Wait until the winner is inside the slow path.
+	require.Eventually(t, func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return sess.starting
+	}, 2*time.Second, 5*time.Millisecond, "winner never entered the connecting state")
+
+	// A second caller with an already-short deadline must return a
+	// definite error once its context expires — not a false nil.
+	waiterCtx, waiterCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer waiterCancel()
+	err := sess.Start(waiterCtx)
+	assert.Error(t, err, "waiter must get a definite error when its context expires while waiting")
+
+	select {
+	case err := <-winnerDone:
+		assert.Error(t, err, "winner should fail against the unreachable broker")
+	case <-time.After(5 * time.Second):
+		t.Fatal("winner Start did not return")
+	}
+
 	_ = sess.Close(context.Background())
 }
 

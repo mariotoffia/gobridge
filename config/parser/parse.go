@@ -204,6 +204,16 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 		out.Stores.DLQ = sc
 	}
 
+	// sessionKindByID resolves the transport a receiver/sender inherits when
+	// it omits its own `transport` and instead names a `session_id`. The
+	// builder already supports this inheritance (a receiver with no transport
+	// uses its session's), but the parser used to hard-require transport,
+	// making the feature unreachable from YAML (Finding 12).
+	sessionKindByID := make(map[string]string, len(s.Sessions))
+	for _, s1 := range s.Sessions {
+		sessionKindByID[s1.ID] = s1.Transport
+	}
+
 	for _, s1 := range s.Sessions {
 		sd, err := decodeSession(registry, s1)
 		if err != nil {
@@ -213,7 +223,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	}
 
 	for _, r1 := range s.Receivers {
-		rd, err := decodeReceiver(registry, r1)
+		rd, err := decodeReceiver(registry, r1, sessionKindByID)
 		if err != nil {
 			return nil, err
 		}
@@ -223,12 +233,15 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	// senderKindByID lets us resolve the inherited kind for bindings.
 	senderKindByID := make(map[string]string, len(s.Senders))
 	for _, s1 := range s.Senders {
-		sd, err := decodeSender(registry, s1)
+		sd, err := decodeSender(registry, s1, sessionKindByID)
 		if err != nil {
 			return nil, err
 		}
 		out.Senders = append(out.Senders, sd)
-		senderKindByID[s1.ID] = s1.Transport
+		// A sender that inherits its transport from a session exposes that
+		// resolved kind so bindings referencing it decode with the right
+		// decoder.
+		senderKindByID[s1.ID] = resolveTransportKind(s1.Transport, s1.SessionID, sessionKindByID)
 	}
 
 	for _, b1 := range s.Bindings {
@@ -293,8 +306,25 @@ func decodeSession(registry *ports.Registry, s stage1Session) (ports.SessionDef,
 	return out, nil
 }
 
-func decodeReceiver(registry *ports.Registry, r stage1Receiver) (ports.ReceiverDef, error) {
-	cfg, raw, err := decodePlugin(registry, "receiver", r.ID, r.Transport, r.Options)
+// resolveTransportKind returns the effective transport (plugin kind) for a
+// receiver/sender: its own transport when set, otherwise the transport of the
+// session it references (inheritance). Returns "" when neither resolves, which
+// the caller turns into a clear "missing transport" error. This makes the
+// session-inherited-transport feature the builder already supports reachable
+// from YAML (Finding 12).
+func resolveTransportKind(transport, sessionID string, sessionKind map[string]string) string {
+	if transport != "" {
+		return transport
+	}
+	if sessionID != "" {
+		return sessionKind[sessionID]
+	}
+	return ""
+}
+
+func decodeReceiver(registry *ports.Registry, r stage1Receiver, sessionKind map[string]string) (ports.ReceiverDef, error) {
+	kind := resolveTransportKind(r.Transport, r.SessionID, sessionKind)
+	cfg, raw, err := decodePlugin(registry, "receiver", r.ID, kind, r.Options)
 	if err != nil {
 		return ports.ReceiverDef{}, err
 	}
@@ -306,12 +336,12 @@ func decodeReceiver(registry *ports.Registry, r stage1Receiver) (ports.ReceiverD
 	out.SetDecoded(cfg, raw)
 
 	// SubscriptionDef inherits its kind from the parent receiver's
-	// transport; subscriptions have no own discriminator.
+	// effective transport; subscriptions have no own discriminator.
 	if len(r.Topics) > 0 {
 		out.Topics = make([]ports.SubscriptionDef, 0, len(r.Topics))
 		for i, t := range r.Topics {
 			subID := fmt.Sprintf("%s/topics[%d]", r.ID, i)
-			scfg, sraw, err := decodePlugin(registry, "subscription", subID, r.Transport, t.Options)
+			scfg, sraw, err := decodePlugin(registry, "subscription", subID, kind, t.Options)
 			if err != nil {
 				return ports.ReceiverDef{}, err
 			}
@@ -323,8 +353,9 @@ func decodeReceiver(registry *ports.Registry, r stage1Receiver) (ports.ReceiverD
 	return out, nil
 }
 
-func decodeSender(registry *ports.Registry, s stage1Sender) (ports.SenderDef, error) {
-	cfg, raw, err := decodePlugin(registry, "sender", s.ID, s.Transport, s.Options)
+func decodeSender(registry *ports.Registry, s stage1Sender, sessionKind map[string]string) (ports.SenderDef, error) {
+	kind := resolveTransportKind(s.Transport, s.SessionID, sessionKind)
+	cfg, raw, err := decodePlugin(registry, "sender", s.ID, kind, s.Options)
 	if err != nil {
 		return ports.SenderDef{}, err
 	}

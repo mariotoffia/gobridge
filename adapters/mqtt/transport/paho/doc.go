@@ -13,19 +13,47 @@
 // Session modes: Ephemeral, Persistent, Exclusive.
 //
 // Key design decisions:
+//   - Manual protocol acknowledgment (ack-after-durable-handoff): the Paho
+//     client runs with EnableManualAcknowledgment, so the PUBACK (QoS 1) /
+//     PUBCOMP (QoS 2) is sent only when the runtime SETTLES the delivery
+//     via Delivery.Ack — after outbox persist or pipeline completion — not
+//     when the message handler returns. A crash with N messages in flight
+//     leaves them un-acked on the broker; a persistent/exclusive session
+//     redelivers them to the next owner. The Paho client serialises acks
+//     in receive order internally, so concurrent out-of-order settlement
+//     is safe (head-of-line: acks queue behind the oldest unsettled
+//     message). See delivery.go for the full contract and residual
+//     boundaries.
 //   - No local message drops under load: the router dispatches each inbound
-//     publish SYNCHRONOUSLY — Route blocks on the emit callback — so a slow
-//     downstream fills the broker's Receive Maximum window and stops
-//     read-ahead instead of spawning unbounded goroutines (backpressure).
-//   - Deferred protocol ACK: because Route blocks until emit returns, the
-//     Paho PUBACK/PUBCOMP is sent only after the handler has taken
-//     ownership (e.g. outbox persist). MQTT QoS/retain remain broker<->
-//     client packet semantics, not end-to-end guarantees; see delivery.go
-//     for the at-least-once boundary and the residual loss windows.
+//     publish SYNCHRONOUSLY — the publish callback blocks on the emit
+//     callback — so a slow downstream fills the broker's Receive Maximum
+//     window (un-acked QoS 1/2 messages) and stops read-ahead instead of
+//     spawning unbounded goroutines (backpressure).
+//   - Startup buffering instead of startup loss: publishes arriving before
+//     a matching Receiver registers (persistent-session backlog delivered
+//     on CONNACK before route runners start) are held un-acked in a
+//     bounded buffer and flushed, in order, when the handler registers —
+//     never silently acked-and-dropped (see acl_router.go).
+//   - Per-receiver topic filtering: each Receiver registers the MQTT topic
+//     filters of its subscriptions (wildcards + and # supported); a
+//     publish is dispatched only to receivers whose filters match, so
+//     routes sharing one session do not process each other's traffic.
 //   - Header injection prevention: reserved x-bridge.* headers are stripped
 //     from incoming MQTT messages at ingress; on egress, INTERNAL-ONLY
 //     reserved headers are stripped so bridge bookkeeping does not leak to
 //     non-bridge subscribers (see acl_headers.go).
 //   - QoS completion: Sender.Send blocks until PUBACK (QoS 1) or PUBCOMP
 //     (QoS 2), so a nil return confirms broker acceptance.
+//   - QoS/retain are broker<->client packet semantics, not end-to-end
+//     guarantees.
+//
+// QoS 0 flood caveat: QoS 0 publishes are not bounded by Receive Maximum —
+// the broker may push them faster than downstream settles. Because
+// dispatch is synchronous, a QoS 0 flood fills the Paho client's internal
+// publish channel and can stall its incoming loop (delaying PINGRESP /
+// PUBACK processing) until downstream catches up; tuning receive_maximum
+// low makes the QoS 1/2 window smaller but does NOT throttle QoS 0. This
+// is the deliberate trade-off for not buffering unboundedly in memory:
+// prefer QoS 1 for traffic that matters, and keep QoS 0 flows behind a
+// downstream that keeps up.
 package paho

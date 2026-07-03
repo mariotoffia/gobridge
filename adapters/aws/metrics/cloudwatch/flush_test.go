@@ -191,7 +191,9 @@ func TestExporter_Flush_APIError(t *testing.T) {
 	}
 }
 
-// Verifies sendBatched splits data into batches of MaxBatchSize.
+// Verifies flush splits data into batches of MaxBatchSize datums.
+// Counters aggregate per (name, tags) (MF-6), so distinct gauge samples
+// are used to produce many datums.
 func TestExporter_SendBatched_Splits(t *testing.T) {
 	mock := &mockCloudWatch{}
 	ctx := context.Background()
@@ -200,6 +202,7 @@ func TestExporter_SendBatched_Splits(t *testing.T) {
 		WithClient(mock),
 		WithFlushInterval(time.Hour),
 		WithBufferSize(100),
+		WithMaxBatchSize(20),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -207,7 +210,7 @@ func TestExporter_SendBatched_Splits(t *testing.T) {
 	defer func() { _ = e.Close(ctx) }()
 
 	for i := 0; i < 45; i++ {
-		e.Counter("m", 1)
+		e.Gauge("m", float64(i))
 	}
 
 	if err := e.Flush(ctx); err != nil {

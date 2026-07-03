@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -25,8 +28,11 @@ type fakeDDB struct {
 	getItemFn    func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error)
 	updateItemFn func(*dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error)
 	queryFn      func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
+	putItemFn    func(*dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error)
+	transactFn   func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error)
 
-	getItemCalls int
+	getItemCalls  int
+	transactCalls int
 	// queryCalls counts calls per index name ("" == base table).
 	queryCalls map[string]int
 }
@@ -69,11 +75,24 @@ func (f *fakeDDB) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*d
 	return &dynamodb.QueryOutput{}, nil
 }
 
-func (f *fakeDDB) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+func (f *fakeDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	f.mu.Lock()
+	fn := f.putItemFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(in)
+	}
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func (f *fakeDDB) TransactWriteItems(_ context.Context, _ *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+func (f *fakeDDB) TransactWriteItems(_ context.Context, in *dynamodb.TransactWriteItemsInput, _ ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error) {
+	f.mu.Lock()
+	f.transactCalls++
+	fn := f.transactFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(in)
+	}
 	return &dynamodb.TransactWriteItemsOutput{}, nil
 }
 
@@ -238,5 +257,305 @@ func TestKeyCache_BoundedUnderClaimChurn(t *testing.T) {
 	}
 	if _, ok := s.lookupKey("rec-0"); ok {
 		t.Fatalf("oldest key must have been evicted under the cap")
+	}
+}
+
+// --- transactional claim (fence TOCTOU) unit coverage ---
+
+// pendingQueryItem builds a minimal base-table item a Claim query would
+// return for a pending record.
+func pendingQueryItem(pk, sk, recordID string) map[string]ddbtypes.AttributeValue {
+	return map[string]ddbtypes.AttributeValue{
+		"PK":            &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":            &ddbtypes.AttributeValueMemberS{Value: sk},
+		"record_id":     &ddbtypes.AttributeValueMemberS{Value: recordID},
+		"envelope_id":   &ddbtypes.AttributeValueMemberS{Value: "env-1"},
+		"binding_id":    &ddbtypes.AttributeValueMemberS{Value: "bind-1"},
+		"session_id":    &ddbtypes.AttributeValueMemberS{Value: "sess-1"},
+		"route_id":      &ddbtypes.AttributeValueMemberS{Value: "route-1"},
+		"address":       &ddbtypes.AttributeValueMemberS{Value: "t/a"},
+		"status":        &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
+		"claim_version": &ddbtypes.AttributeValueMemberN{Value: "0"},
+		"replay_count":  &ddbtypes.AttributeValueMemberN{Value: "0"},
+		"created_at":    &ddbtypes.AttributeValueMemberN{Value: "1700000000000"},
+		"seq":           &ddbtypes.AttributeValueMemberN{Value: "1"},
+	}
+}
+
+// fenceGetItem returns a getItemFn serving a fence row at version v.
+func fenceGetItem(v string) func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+	return func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+		return &dynamodb.GetItemOutput{Item: map[string]ddbtypes.AttributeValue{
+			attrMaxClaimVersion: &ddbtypes.AttributeValueMemberN{Value: v},
+		}}, nil
+	}
+}
+
+// transactCanceled fabricates the SDK error for a canceled claim
+// transaction with the given per-item cancellation codes.
+func transactCanceled(codes ...string) error {
+	reasons := make([]ddbtypes.CancellationReason, len(codes))
+	for i, c := range codes {
+		code := c
+		reasons[i] = ddbtypes.CancellationReason{Code: &code}
+	}
+	return &ddbtypes.TransactionCanceledException{CancellationReasons: reasons}
+}
+
+// Regression for the fence TOCTOU (finding: split-brain claims below a
+// concurrently raised high-water-mark): when the transaction's fence
+// ConditionCheck fails — a higher-version owner advanced the fence between
+// our fence read and this claim — Claim must surface ErrStaleFencingToken,
+// not keep claiming.
+func TestClaim_FenceRaceDetectedByTransaction_ReturnsStaleToken(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+		}}, nil
+	}
+	// Item 0 (fence check) failed: fence advanced past our version.
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return nil, transactCanceled("ConditionalCheckFailed", "None")
+	}
+	s := newFakeStore(f)
+
+	_, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("fence-check cancellation must map to ErrStaleFencingToken, got %v", err)
+	}
+	if f.transactCalls != 1 {
+		t.Fatalf("expected exactly 1 claim transaction, got %d", f.transactCalls)
+	}
+}
+
+// A record-level condition failure (another claimer won the record) is a
+// benign skip: Claim returns no error and no record.
+func TestClaim_RecordRaceLost_SkipsRecord(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+		}}, nil
+	}
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return nil, transactCanceled("None", "ConditionalCheckFailed")
+	}
+	s := newFakeStore(f)
+
+	claimed, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+	if err != nil {
+		t.Fatalf("record-race loss must not error: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("expected 0 claimed records, got %d", len(claimed))
+	}
+}
+
+// Every per-record claim must pair the record update with a ConditionCheck
+// on the partition FENCE row inside one TransactWriteItems — the shape that
+// closes the check-then-claim TOCTOU.
+func TestClaim_TransactionPairsFenceCheckWithRecordUpdate(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+		}}, nil
+	}
+	var captured *dynamodb.TransactWriteItemsInput
+	f.transactFn = func(in *dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		captured = in
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	claimed, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID() != "rec-1" {
+		t.Fatalf("expected rec-1 claimed, got %v", claimed)
+	}
+	if claimed[0].ClaimVersion() != 5 || claimed[0].ClaimedBy() != "a" {
+		t.Fatalf("synthesized claim state wrong: ver=%d owner=%q", claimed[0].ClaimVersion(), claimed[0].ClaimedBy())
+	}
+	if claimed[0].ReplayCount() != 1 {
+		t.Fatalf("synthesized replay count: got %d, want 1", claimed[0].ReplayCount())
+	}
+
+	if captured == nil || len(captured.TransactItems) != 2 {
+		t.Fatalf("claim must be a 2-item transaction, got %+v", captured)
+	}
+	check := captured.TransactItems[0].ConditionCheck
+	if check == nil || strAttr(check.Key, "SK") != fenceSK {
+		t.Fatalf("item 0 must be a ConditionCheck on the FENCE row, got %+v", captured.TransactItems[0])
+	}
+	upd := captured.TransactItems[1].Update
+	if upd == nil || strAttr(upd.Key, "SK") != "OUTBOX#env-1#bind-1" {
+		t.Fatalf("item 1 must be the record update, got %+v", captured.TransactItems[1])
+	}
+}
+
+// Regression for the poison-record deadlock (finding 1 / contract C2): the
+// store must never filter claimable records by replay count — poison
+// detection is the drainer's decision. A record whose replay_count is far
+// past any poison threshold must still be claimable so the drainer can
+// route it to the DLQ.
+func TestClaim_NoReplayCountFilter_HighReplayRecordStillClaimable(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.FilterExpression != nil && strings.Contains(*in.FilterExpression, "replay_count") {
+			t.Fatalf("claim query must not filter on replay_count: %s", *in.FilterExpression)
+		}
+		item := pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1")
+		item["replay_count"] = &ddbtypes.AttributeValueMemberN{Value: "97"}
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{item}}, nil
+	}
+	f.transactFn = func(in *dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		upd := in.TransactItems[1].Update
+		if upd.ConditionExpression != nil && strings.Contains(*upd.ConditionExpression, "replay_count <") {
+			t.Fatalf("claim condition must not gate on replay_count: %s", *upd.ConditionExpression)
+		}
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	claimed, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("high-replay record must be claimable, got %d records", len(claimed))
+	}
+	if claimed[0].ReplayCount() != 98 {
+		t.Fatalf("replay count: got %d, want 98", claimed[0].ReplayCount())
+	}
+}
+
+// Claim with limit <= 0 is a fencing no-op (ports.OutboxStore contract):
+// the fence is validated and raised, no partition scan happens and no
+// record transaction runs.
+func TestClaim_ZeroLimit_FenceOnlyNoScan(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("3")
+	var fenceRaised bool
+	f.updateItemFn = func(in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		if strAttr(in.Key, "SK") == fenceSK {
+			fenceRaised = true
+		}
+		return &dynamodb.UpdateItemOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	claimed, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 7, Owner: "a"}, 0)
+	if err != nil {
+		t.Fatalf("zero-limit claim: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("zero-limit claim must return no records, got %d", len(claimed))
+	}
+	if !fenceRaised {
+		t.Fatalf("zero-limit claim must still raise the fence high-water-mark")
+	}
+	if got := f.queryCalls[""]; got != 0 {
+		t.Fatalf("zero-limit claim must not scan the partition, got %d queries", got)
+	}
+	if f.transactCalls != 0 {
+		t.Fatalf("zero-limit claim must not run record transactions, got %d", f.transactCalls)
+	}
+}
+
+// --- Persist (per-record idempotency + seq allocation) unit coverage ---
+
+// Persist allocates monotonic per-partition seqs from the FENCE row's
+// atomic counter and stamps each written item; duplicate identities are
+// skipped per-record, and ErrDuplicateRecord surfaces only when the whole
+// batch already existed.
+func TestPersist_AllocatesSeqsAndSkipsDuplicates(t *testing.T) {
+	f := newFakeDDB()
+	var counter int64
+	f.updateItemFn = func(in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		if strAttr(in.Key, "SK") != fenceSK {
+			t.Fatalf("persist must only update the FENCE row, got SK %q", strAttr(in.Key, "SK"))
+		}
+		n, _ := strconv.ParseInt((in.ExpressionAttributeValues[":n"].(*ddbtypes.AttributeValueMemberN)).Value, 10, 64)
+		counter += n
+		return &dynamodb.UpdateItemOutput{Attributes: map[string]ddbtypes.AttributeValue{
+			attrSeqCounter: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(counter, 10)},
+		}}, nil
+	}
+	var seqs []string
+	putCalls := 0
+	f.putItemFn = func(in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		putCalls++
+		if in.ConditionExpression == nil || *in.ConditionExpression != "attribute_not_exists(SK)" {
+			t.Fatalf("persist put must be conditional on attribute_not_exists(SK)")
+		}
+		if n, ok := in.Item["seq"].(*ddbtypes.AttributeValueMemberN); ok {
+			seqs = append(seqs, n.Value)
+		}
+		if putCalls == 2 {
+			// Second record already exists: per-record skip, not an error.
+			return nil, &ddbtypes.ConditionalCheckFailedException{}
+		}
+		return &dynamodb.PutItemOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	records := []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{
+			ID: "p-1", RouteID: "r", EnvelopeID: "e1", BindingID: "b1", SessionID: "s1", Address: "a",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "t"}),
+		}),
+		persistence.MustOutboxRecord(persistence.OutboxSpec{
+			ID: "p-2", RouteID: "r", EnvelopeID: "e2", BindingID: "b1", SessionID: "s1", Address: "a",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e2", Subject: "t"}),
+		}),
+		persistence.MustOutboxRecord(persistence.OutboxSpec{
+			ID: "p-3", RouteID: "r", EnvelopeID: "e3", BindingID: "b1", SessionID: "s1", Address: "a",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e3", Subject: "t"}),
+		}),
+	}
+	if err := s.Persist(context.Background(), records); err != nil {
+		t.Fatalf("persist with one duplicate must succeed: %v", err)
+	}
+	if putCalls != 3 {
+		t.Fatalf("expected 3 conditional puts, got %d", putCalls)
+	}
+	want := []string{"1", "2", "3"}
+	for i, w := range want {
+		if seqs[i] != w {
+			t.Fatalf("seq[%d]: got %s, want %s (all seqs %v)", i, seqs[i], w, seqs)
+		}
+	}
+}
+
+// An all-duplicate batch returns ErrDuplicateRecord (the whole batch was a
+// replay); nothing else is treated as an error.
+func TestPersist_AllDuplicates_ReturnsErrDuplicateRecord(t *testing.T) {
+	f := newFakeDDB()
+	f.updateItemFn = func(in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		return &dynamodb.UpdateItemOutput{Attributes: map[string]ddbtypes.AttributeValue{
+			attrSeqCounter: &ddbtypes.AttributeValueMemberN{Value: "7"},
+		}}, nil
+	}
+	f.putItemFn = func(in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		return nil, &ddbtypes.ConditionalCheckFailedException{}
+	}
+	s := newFakeStore(f)
+
+	records := []*persistence.OutboxRecord{
+		persistence.MustOutboxRecord(persistence.OutboxSpec{
+			ID: "pd-1", RouteID: "r", EnvelopeID: "e1", BindingID: "b1", SessionID: "s1", Address: "a",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "t"}),
+		}),
+	}
+	err := s.Persist(context.Background(), records)
+	if !errors.Is(err, shared.ErrDuplicateRecord) {
+		t.Fatalf("all-duplicate batch must return ErrDuplicateRecord, got %v", err)
 	}
 }

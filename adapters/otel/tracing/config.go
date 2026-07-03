@@ -1,6 +1,7 @@
 package oteltracing
 
 import (
+	"log/slog"
 	"os"
 	"time"
 )
@@ -35,8 +36,13 @@ type Config struct {
 	MaxExportBatchSize int           `json:"maxExportBatchSize,omitempty"`
 
 	// errorHandler receives export/backpressure failures that would
-	// otherwise be invisible (K3). Not serialized.
+	// otherwise be invisible (K3). Defaults to a slog.Default() Warn
+	// logger (MF-5); explicitly installing nil suppresses reporting.
+	// Not serialized.
 	errorHandler func(error)
+	// errorHandlerSet distinguishes "never configured" (default warn
+	// logging applies) from an explicit WithErrorHandler(nil) opt-out.
+	errorHandlerSet bool
 }
 
 // Option is a functional option for configuring the tracer.
@@ -125,10 +131,12 @@ func WithMaxExportBatchSize(n int) Option {
 }
 
 // WithErrorHandler installs a callback invoked when a span export
-// fails. Without it, export/backpressure failures are invisible (K3).
+// fails. When never configured, failures are logged at Warn level via
+// slog.Default() (MF-5); pass nil to explicitly suppress reporting.
 func WithErrorHandler(fn func(error)) Option {
 	return func(t *Tracer) {
 		t.config.errorHandler = fn
+		t.config.errorHandlerSet = true
 	}
 }
 
@@ -142,6 +150,13 @@ func applyDefaults(cfg *Config) {
 	if cfg.SamplerRatio == nil {
 		one := 1.0
 		cfg.SamplerRatio = &one
+	}
+	if cfg.errorHandler == nil && !cfg.errorHandlerSet {
+		// Span-export failures must not be silent by default (MF-5).
+		// Opt out with WithErrorHandler(nil).
+		cfg.errorHandler = func(err error) {
+			slog.Default().Warn("otel-tracing: export failure", slog.String("error", err.Error()))
+		}
 	}
 }
 

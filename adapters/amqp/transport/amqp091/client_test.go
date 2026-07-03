@@ -26,11 +26,14 @@ func TestInjectCredentials(t *testing.T) {
 			want:   "amqp://guest:secret@localhost:5672/",
 		},
 		{
-			name:   "existing user-info is preserved",
+			// Explicit (or rotated) credentials WIN over URL userinfo,
+			// otherwise a credential rotation would silently keep
+			// redialling with the old embedded credentials (F8).
+			name:   "explicit credentials override existing user-info",
 			broker: "amqp://alice:pw@localhost:5672/",
 			user:   "bob",
 			pass:   "other",
-			want:   "amqp://alice:pw@localhost:5672/",
+			want:   "amqp://bob:other@localhost:5672/",
 		},
 		{
 			name:   "invalid URL returns original",

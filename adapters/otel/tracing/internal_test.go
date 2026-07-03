@@ -143,3 +143,39 @@ func (failingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan)
 }
 
 func (failingSpanExporter) Shutdown(context.Context) error { return nil }
+
+// MF-9: carrier lookup is case-insensitive per W3C; writes stay
+// lowercase (bridge header vocabulary).
+func TestHeaderCarrier_GetCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	c := headerCarrier{"Traceparent": "00-abc-def-01", "tracestate": "a=b"}
+	assert.Equal(t, "00-abc-def-01", c.Get("traceparent"), "case-insensitive fallback")
+	assert.Equal(t, "a=b", c.Get("tracestate"), "exact match fast path")
+	assert.Empty(t, c.Get("missing"))
+
+	// Non-string values are ignored, not panicked on.
+	c["baggage"] = 42
+	assert.Empty(t, c.Get("baggage"))
+
+	// Writes keep the lowercase bridge vocabulary.
+	c.Set("traceparent", "00-new-new-01")
+	assert.Equal(t, "00-new-new-01", c["traceparent"])
+}
+
+// MF-5: span-export failures must not be silent by default — an unset
+// error handler falls back to slog warn logging, and an explicit
+// WithErrorHandler(nil) opts out.
+func TestApplyDefaults_ErrorHandlerDefaultsToWarnLogger(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	applyDefaults(&cfg)
+	require.NotNil(t, cfg.errorHandler, "unset handler must default to slog warn logging")
+	// The default handler must be safe to invoke.
+	cfg.errorHandler(errors.New("synthetic export failure"))
+
+	tr := NewForTest(WithErrorHandler(nil))
+	assert.Nil(t, tr.config.errorHandler, "explicit nil handler must suppress reporting")
+	assert.True(t, tr.config.errorHandlerSet)
+}

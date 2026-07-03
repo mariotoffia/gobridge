@@ -546,8 +546,9 @@ func TestFileExistsAfterClose(t *testing.T) {
 	}
 }
 
-// Verifies List returns entries ordered by FailedAt descending.
-func TestListOrderByFailedAtDesc(t *testing.T) {
+// Verifies List returns entries oldest-first (ascending FailedAt), the
+// ports.DLQReader ordering contract shared by every backend.
+func TestListOrderByFailedAtAsc(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
 
@@ -568,19 +569,19 @@ func TestListOrderByFailedAtDesc(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d", len(got))
 	}
 
-	if got[0].ID() != "ord-3" {
-		t.Fatalf("first entry should be newest (ord-3), got %q", got[0].ID())
+	if got[0].ID() != "ord-1" {
+		t.Fatalf("first entry should be oldest (ord-1), got %q", got[0].ID())
 	}
 	if got[1].ID() != "ord-2" {
 		t.Fatalf("second entry should be middle (ord-2), got %q", got[1].ID())
 	}
-	if got[2].ID() != "ord-1" {
-		t.Fatalf("third entry should be oldest (ord-1), got %q", got[2].ID())
+	if got[2].ID() != "ord-3" {
+		t.Fatalf("third entry should be newest (ord-3), got %q", got[2].ID())
 	}
 
 	for i := 1; i < len(got); i++ {
-		if got[i].FailedAt().After(got[i-1].FailedAt()) {
-			t.Fatalf("entries not in descending order: [%d].FailedAt=%v > [%d].FailedAt=%v",
+		if got[i].FailedAt().Before(got[i-1].FailedAt()) {
+			t.Fatalf("entries not in ascending order: [%d].FailedAt=%v < [%d].FailedAt=%v",
 				i, got[i].FailedAt(), i-1, got[i-1].FailedAt())
 		}
 	}

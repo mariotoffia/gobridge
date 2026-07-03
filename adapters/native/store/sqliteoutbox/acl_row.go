@@ -24,6 +24,7 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 			envJSON     string
 			headersJSON sql.NullString
 			status      string
+			claimedAtMs int64
 			createdAtMs int64
 			expiresAtMs int64
 			completedMs int64
@@ -31,7 +32,7 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 		err := rows.Scan(
 			&snap.ID, &pk, &snap.RouteID, &snap.EnvelopeID, &snap.BindingID, &snap.SessionID,
 			&snap.Address, &envJSON, &headersJSON, &status, &snap.ClaimedBy, &snap.ClaimVersion,
-			&snap.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs,
+			&claimedAtMs, &snap.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs, &snap.Seq,
 		)
 		if err != nil {
 			return nil, wrapErr(err, "sqliteoutbox: scan record")
@@ -39,6 +40,9 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 
 		snap.Status = persistence.OutboxStatus(status)
 		snap.CreatedAt = time.UnixMilli(createdAtMs)
+		if claimedAtMs > 0 {
+			snap.ClaimedAt = time.UnixMilli(claimedAtMs)
+		}
 		if expiresAtMs > 0 {
 			snap.ExpiresAt = time.UnixMilli(expiresAtMs)
 		}

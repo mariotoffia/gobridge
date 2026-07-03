@@ -123,6 +123,30 @@ func run() int {
 	//   sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
 	//   sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 
+	// Observability wiring (Finding 15). This demo binary links no telemetry
+	// exporter, so metrics/traces/audit default to the runtime's Noop
+	// implementations. The Supervisor now forwards a MetricsExporter, Tracer,
+	// and AuditLogger into every runtime it builds (including hot-reloads) via
+	// the options below — pass a real exporter here to instrument a config-driven
+	// deployment. The adapters/otel and adapters/aws/metrics packages provide
+	// concrete exporters; they are omitted here to keep the demo dependency-free:
+	//
+	//   import otelmetrics "github.com/mariotoffia/gobridge/adapters/otel/metrics"
+	//   import oteltracing "github.com/mariotoffia/gobridge/adapters/otel/tracing"
+	//
+	//   me, _ := otelmetrics.New(ctx, /* exporter opts */)
+	//   tr, _ := oteltracing.New(ctx, /* exporter opts */)
+	//   sup := bridge.NewSupervisor(
+	//       // ... existing options ...
+	//       bridge.WithSupervisorMetrics(me),
+	//       bridge.WithSupervisorTracer(tr),
+	//       bridge.WithSupervisorAuditLogger(auditLogger),
+	//   )
+	//
+	// The runtime then instruments lease/outbox stores and honors the tracer and
+	// audit logger automatically. A production/deploy profile selects the
+	// exporter (env or config) and passes it here.
+
 	watchCh, err := mgr.Watch(ctx)
 	if err != nil {
 		logger.Error("failed to start config watcher", "error", err)
@@ -188,12 +212,15 @@ func run() int {
 	// watcher takes the process down so an external supervisor restarts it. The
 	// channel is buffered so the watcher never blocks if we exit for another
 	// reason first.
+	//
+	// The predicate polls sup.Terminal(), NOT sup.Runtime().Terminal(): when a
+	// swap AND its recovery both fail the supervisor is left WEDGED with no
+	// active runtime (sup.Runtime() == nil), routing nothing. A runtime-only
+	// check would miss that case and idle alive forever (Finding 7). sup.Terminal
+	// covers both the wedged nil-runtime case and an active-but-terminal runtime.
 	terminalCh := make(chan struct{}, 1)
 	go func() {
-		if watchTerminal(ctx, clock.System, terminalPollInterval, func() bool {
-			rt := sup.Runtime()
-			return rt != nil && rt.Terminal()
-		}) {
+		if watchTerminal(ctx, clock.System, terminalPollInterval, sup.Terminal) {
 			terminalCh <- struct{}{}
 		}
 	}()

@@ -65,28 +65,97 @@ func TestAnaRouter_UnregisterUnknown_NoPanic(t *testing.T) {
 	}
 }
 
-// TestAnaRouter_RouteWithNoHandlers_IncrementsDropCounterAndMetric
-// validates both the in-process drop counter and the emitted metric.
-func TestAnaRouter_RouteWithNoHandlers_IncrementsDropCounterAndMetric(t *testing.T) {
+// TestAnaRouter_RouteWithNoHandlers_BuffersAndCountsMetric validates
+// that publishes with no registered handler are buffered (pending) —
+// not dropped — and that the buffered metric is emitted per message.
+func TestAnaRouter_RouteWithNoHandlers_BuffersAndCountsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	r := newRouter(nil, rec)
 
 	const n = 7
 	for i := 0; i < n; i++ {
-		r.Route(newTestPacketPublish("test/drop", []byte("x")))
+		r.Route(newTestPacketPublish("test/buffer", []byte("x")))
 	}
 
 	received, dropped := r.Stats()
 	if received != n {
 		t.Fatalf("Stats received = %d, want %d", received, n)
 	}
-	if dropped != n {
-		t.Fatalf("Stats dropped = %d, want %d", dropped, n)
+	if dropped != 0 {
+		t.Fatalf("Stats dropped = %d, want 0 (pre-registration publishes are buffered, not dropped)", dropped)
+	}
+	if pc := r.PendingCount(); pc != n {
+		t.Fatalf("PendingCount = %d, want %d", pc, n)
 	}
 
-	entries := rec.FindEntries(MetricMQTTRouterDropped)
+	entries := rec.FindEntries(MetricMQTTRouterBuffered)
 	if len(entries) != n {
-		t.Fatalf("MetricMQTTRouterDropped entries = %d, want %d", len(entries), n)
+		t.Fatalf("MetricMQTTRouterBuffered entries = %d, want %d", len(entries), n)
+	}
+	if drops := rec.FindEntries(MetricMQTTRouterDropped); len(drops) != 0 {
+		t.Fatalf("MetricMQTTRouterDropped entries = %d, want 0", len(drops))
+	}
+}
+
+// TestAnaRouter_PendingOverflow_EvictsOldestQoS0 pins the bounded-buffer
+// overflow policy: at capacity a new QoS 1 publish evicts the oldest
+// QoS 0 entry (counted as a drop), and a new QoS 0 publish is itself
+// dropped.
+func TestAnaRouter_PendingOverflow_EvictsOldestQoS0(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	r := newRouter(nil, rec)
+	r.setPendingLimit(2)
+
+	pubQoS := func(topic string, qos byte, payload byte) *pahov5.Publish {
+		return &pahov5.Publish{Topic: topic, QoS: qos, Payload: []byte{payload}}
+	}
+
+	// Fill: [q0(0), q0(1)]
+	r.dispatch(pubQoS("t/a", 0, 0), nil)
+	r.dispatch(pubQoS("t/a", 0, 1), nil)
+	if pc := r.PendingCount(); pc != 2 {
+		t.Fatalf("PendingCount = %d, want 2", pc)
+	}
+
+	// New QoS 0 at capacity → dropped, buffer unchanged.
+	r.dispatch(pubQoS("t/a", 0, 2), nil)
+	if pc := r.PendingCount(); pc != 2 {
+		t.Fatalf("PendingCount after QoS0 overflow = %d, want 2", pc)
+	}
+	if _, dropped := r.Stats(); dropped != 1 {
+		t.Fatalf("dropped = %d, want 1 (new QoS0 dropped at capacity)", dropped)
+	}
+
+	// New QoS 1 at capacity → evicts oldest QoS 0 (payload 0), buffered.
+	r.dispatch(pubQoS("t/a", 1, 3), nil)
+	if pc := r.PendingCount(); pc != 2 {
+		t.Fatalf("PendingCount after QoS1 overflow = %d, want 2", pc)
+	}
+	if _, dropped := r.Stats(); dropped != 2 {
+		t.Fatalf("dropped = %d, want 2 (oldest QoS0 evicted)", dropped)
+	}
+
+	// Flush and verify the survivors are q0(1) then q1(3), in order.
+	var mu sync.Mutex
+	var seen []byte
+	done := make(chan struct{})
+	r.RegisterFiltered("late", nil, func(pub *pahov5.Publish, _ func() error) {
+		mu.Lock()
+		seen = append(seen, pub.Payload[0])
+		if len(seen) == 2 {
+			close(done)
+		}
+		mu.Unlock()
+	})
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("buffered messages were not flushed to the late handler")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen[0] != 1 || seen[1] != 3 {
+		t.Fatalf("flushed payloads = %v, want [1 3] (oldest QoS0 evicted, order preserved)", seen)
 	}
 }
 

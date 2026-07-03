@@ -2,13 +2,15 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +51,7 @@ type receiverConfig struct {
 	maxBodySize  int64
 	apiKey       string
 	forwardToken string
+	dedupWindow  int
 	locator      ports.RouteLocator
 	forwarder    ports.MessageForwarder
 	metrics      ports.MetricsExporter
@@ -57,6 +60,23 @@ type receiverConfig struct {
 }
 
 // Receiver implements ports.Receiver for HTTP ingress.
+//
+// EMIT-CONCURRENCY DEVIATION (documented per the ports.Receiver
+// emit-callback contract in ports/transport.go): this receiver emits
+// CONCURRENTLY, one emit per in-flight HTTP request goroutine — it does
+// NOT serialise deliveries through a single Run goroutine. Consequences
+// the wiring MUST account for:
+//
+//   - The downstream pipeline sees concurrent emit invocations; any
+//     component assuming serial invocation must add its own
+//     synchronisation.
+//   - Ordering is NEVER guaranteed, even when producers supply
+//     X-Ordering-Key: two concurrent POSTs race through independent
+//     handler goroutines. The ordering key is propagated as envelope
+//     metadata for ORDERED TARGETS (e.g. FIFO queues) to use; HTTP
+//     ingress itself provides no ordering.
+//   - Backpressure is bounded by the HTTP server's connection limits,
+//     not by the receiver.
 type Receiver struct {
 	cfg       receiverConfig
 	mu        sync.Mutex
@@ -64,6 +84,7 @@ type Receiver struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 	routeID   string
+	dedup     *dedupWindow
 }
 
 func newReceiver(cfg receiverConfig) *Receiver {
@@ -79,6 +100,7 @@ func newReceiver(cfg receiverConfig) *Receiver {
 	return &Receiver{
 		cfg:   cfg,
 		ready: make(chan struct{}),
+		dedup: newDedupWindow(cfg.dedupWindow),
 	}
 }
 
@@ -150,10 +172,17 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	req.Body = http.MaxBytesReader(w, req.Body, r.cfg.maxBodySize)
 
-	ct := req.Header.Get("Content-Type")
-	if ct != "" && !strings.HasPrefix(ct, "application/json") {
-		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
-		return
+	// RFC-compliant media-type check: mime.ParseMediaType canonicalises
+	// case ("Application/JSON" is accepted) and isolates the type from
+	// its parameters, so "application/json; charset=utf-8" passes while
+	// "application/jsonfoo" — which a naive prefix match over-accepts —
+	// is rejected.
+	if ct := req.Header.Get("Content-Type"); ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil || mediaType != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+			return
+		}
 	}
 
 	dec := json.NewDecoder(req.Body)
@@ -184,7 +213,8 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	env, err := body.toEnvelope(r.cfg.clock, externalKeysFromRequest(req))
+	keys := externalKeysFromRequest(req)
+	env, err := body.toEnvelope(r.cfg.clock, keys)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -249,8 +279,32 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Bounded ingress idempotency window: a key that was already
+	// processed successfully is acknowledged WITHOUT re-emitting, so a
+	// forward retry or client retry within the window does not become a
+	// duplicate delivery. Node-local and best-effort — see doc.go.
+	dedupKey := ingressDedupKey(keys)
+	if r.dedup.seen(dedupKey) {
+		r.cfg.metrics.Counter(MetricHTTPIngressDuplicates, 1)
+		if logging.DebugEnabled(r.cfg.logger) {
+			r.cfg.logger.Log(ctx, logging.LevelDebug, "http: duplicate ingress request acknowledged without re-emit",
+				"receiver_id", r.cfg.id, "envelope_id", env.ID())
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+		return
+	}
+
+	// Decouple pipeline processing from the client connection: once the
+	// envelope is accepted, a client disconnect MUST NOT abort dispatch
+	// mid-pipeline (which could cancel processing after side effects have
+	// begun). The dispatch runs on a context.WithoutCancel copy — values
+	// (trace, correlation) are preserved, the cancellation signal is not.
+	// The RESPONSE still honours the client context below: on disconnect
+	// or timeout the handler answers 504 while processing runs to
+	// completion in the pipeline.
+	dispatchCtx := context.WithoutCancel(ctx)
 	del := newHTTPDelivery(env)
-	if err := emit(ctx, del); err != nil {
+	if err := emit(dispatchCtx, del); err != nil {
 		if r.cfg.logger != nil {
 			r.cfg.logger.Error("emit failed", "error", err)
 		}
@@ -264,6 +318,9 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if result.err != nil {
 			writeError(w, http.StatusInternalServerError, "processing failed")
 		} else {
+			// Record the idempotency key ONLY on success so a client
+			// retry after a failure is re-processed rather than swallowed.
+			r.dedup.record(dedupKey)
 			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 		}
 	case <-ctx.Done():
@@ -325,6 +382,20 @@ func externalKeysFromRequest(req *http.Request) externalKeys {
 	}
 }
 
+// ingressDedupKey selects the key the receiver's idempotency window
+// tracks: the IETF-draft Idempotency-Key when present, else the
+// transport-level X-Dedup-Id. Namespaced per header so a producer using
+// both cannot alias one onto the other.
+func ingressDedupKey(keys externalKeys) string {
+	if keys.idempotencyKey != "" {
+		return "ik:" + keys.idempotencyKey
+	}
+	if keys.deduplicationID != "" {
+		return "dd:" + keys.deduplicationID
+	}
+	return ""
+}
+
 func (r *ingressRequest) toEnvelope(clk clock.Clock, keys externalKeys) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
@@ -360,10 +431,28 @@ func (r *ingressRequest) toEnvelope(clk clock.Clock, keys externalKeys) (*messag
 
 var httpIDCounter atomic.Uint64
 
+// httpIDInstance is a per-process random discriminator baked into every
+// generated envelope ID. Without it two bridge nodes generating
+// `http-<unixnano>-<counter>` can collide (same nanosecond, same counter
+// value after restart), clobbering downstream dedup/DLQ records keyed on
+// the envelope ID. 8 crypto/rand bytes give the cross-node uniqueness a
+// timestamp+counter pair cannot.
+var httpIDInstance = newHTTPIDInstance()
+
+func newHTTPIDInstance() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}
+
+// generateHTTPEnvelopeID returns a process-unique envelope ID of the
+// form "http-<instance-entropy>-<unixnano>-<counter>".
 func generateHTTPEnvelopeID(clk clock.Clock) string {
 	if clk == nil {
 		clk = clock.System
 	}
 	n := httpIDCounter.Add(1)
-	return fmt.Sprintf("http-%d-%d", clk.Now().UnixNano(), n)
+	return fmt.Sprintf("http-%s-%d-%d", httpIDInstance, clk.Now().UnixNano(), n)
 }

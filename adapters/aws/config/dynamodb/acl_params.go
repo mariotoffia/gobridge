@@ -153,10 +153,14 @@ func (s *session) describeStreamArn(ctx context.Context) (arn string, reason str
 }
 
 // ensureTable creates the configuration table if it does not already
-// exist. ResourceInUseException (table already present) is swallowed
-// via mapEnsureTableError.
-func (s *session) ensureTable(ctx context.Context) error {
-	_, err := s.ddb.CreateTable(ctx, &dynamodb.CreateTableInput{
+// exist. When withStreams is true the table is provisioned with a
+// KEYS_ONLY stream specification — the streams consumer only inspects
+// record keys (matchesWatchedKey), so image payloads would be wasted
+// throughput. ResourceInUseException (table already present) is
+// swallowed via mapEnsureTableError; note that an EXISTING table's
+// stream settings are left untouched.
+func (s *session) ensureTable(ctx context.Context, withStreams bool) error {
+	input := &dynamodb.CreateTableInput{
 		TableName: &s.tableName,
 		KeySchema: []ddbtypes.KeySchemaElement{
 			{AttributeName: aws.String(attrPK), KeyType: ddbtypes.KeyTypeHash},
@@ -167,7 +171,14 @@ func (s *session) ensureTable(ctx context.Context) error {
 			{AttributeName: aws.String(attrSK), AttributeType: ddbtypes.ScalarAttributeTypeS},
 		},
 		BillingMode: ddbtypes.BillingModePayPerRequest,
-	})
+	}
+	if withStreams {
+		input.StreamSpecification = &ddbtypes.StreamSpecification{
+			StreamEnabled:  aws.Bool(true),
+			StreamViewType: ddbtypes.StreamViewTypeKeysOnly,
+		}
+	}
+	_, err := s.ddb.CreateTable(ctx, input)
 	if err := mapEnsureTableError(err); err != nil {
 		return fmt.Errorf("dynamodb config ensure table: %w", err)
 	}

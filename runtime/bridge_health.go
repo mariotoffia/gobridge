@@ -90,6 +90,18 @@ func (rt *Runtime) LeaseStatus() map[string]bool {
 	return status
 }
 
+// Role classification strings returned by Role / DeepHealth.Role.
+const (
+	// roleActive: at least one exclusive session holds a lease — this
+	// instance is the primary dispatcher for its exclusive routes.
+	roleActive = "active"
+	// roleStandby: exclusive sessions are configured but none currently
+	// hold a lease — ready but not serving as primary (finding 22).
+	roleStandby = "standby"
+	// roleStandalone: no exclusive sessions configured — no failover role.
+	roleStandalone = "standalone"
+)
+
 // Role returns the operational role of this instance based on lease
 // ownership: "active" if at least one exclusive session holds a lease,
 // "standby" if exclusive sessions exist but none hold a lease,
@@ -104,14 +116,14 @@ func (rt *Runtime) Role() string {
 // roleUnlocked returns the role without acquiring the mutex (caller must hold it).
 func (rt *Runtime) roleUnlocked() string {
 	if len(rt.sessionMgrs) == 0 {
-		return "standalone"
+		return roleStandalone
 	}
 	for _, mgr := range rt.sessionMgrs {
 		if _, held := mgr.Token(); held {
-			return "active"
+			return roleActive
 		}
 	}
-	return "standby"
+	return roleStandby
 }
 
 // DeepHealth, SessionHealthDetail and RouteHealth are read-side

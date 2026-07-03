@@ -70,6 +70,13 @@ type OutboxRecord struct {
 	createdAt       time.Time
 	expiresAt       time.Time
 
+	// seq is the monotonic per-partition sequence assigned by the outbox
+	// store at Persist time. It is zero until the record has been
+	// persisted and rehydrated; the aggregate never assigns it. Stores
+	// use it as the claim-order tiebreaker when CreatedAt collides at
+	// millisecond resolution (UBIQUITOUS.md: Outbox / Drain ordering).
+	seq uint64
+
 	// Lifecycle state (mutated only through aggregate methods).
 	status       OutboxStatus
 	claimedBy    string
@@ -154,6 +161,13 @@ func (r *OutboxRecord) Address() string { return r.address }
 
 // CreatedAt returns the time the record was created.
 func (r *OutboxRecord) CreatedAt() time.Time { return r.createdAt }
+
+// Seq returns the monotonic per-partition persistence sequence assigned
+// by the outbox store when the record was persisted. Zero for records
+// that have not round-tripped through a store (or rows persisted before
+// the sequence column existed). Ordering is (CreatedAt, Seq): Seq only
+// breaks ties between records created within the same millisecond.
+func (r *OutboxRecord) Seq() uint64 { return r.seq }
 
 // ExpiresAt returns the record's expiry time; zero when it never expires.
 func (r *OutboxRecord) ExpiresAt() time.Time { return r.expiresAt }
@@ -290,6 +304,10 @@ type OutboxSnapshot struct {
 	CreatedAt       time.Time
 	ExpiresAt       time.Time
 	CompletedAt     time.Time
+	// Seq is the monotonic per-partition sequence the store assigned at
+	// Persist. Stores populate it when rehydrating; it is ignored on the
+	// initial Persist (the store allocates it).
+	Seq uint64
 }
 
 // Snapshot returns a deep copy of the aggregate's embedded envelope.
@@ -325,6 +343,7 @@ func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 		CreatedAt:       r.createdAt,
 		ExpiresAt:       r.expiresAt,
 		CompletedAt:     r.completedAt,
+		Seq:             r.seq,
 	}
 }
 
@@ -350,6 +369,7 @@ func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 		dispatchHeaders: messaging.Headers(s.DispatchHeaders).Snapshot(),
 		createdAt:       s.CreatedAt,
 		expiresAt:       s.ExpiresAt,
+		seq:             s.Seq,
 		status:          status,
 		claimedBy:       s.ClaimedBy,
 		claimedAt:       s.ClaimedAt,

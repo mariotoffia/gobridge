@@ -36,14 +36,14 @@ graph LR
     Delivery -->|Retry| Broker
 ```
 
-`Reconcile` declares exchanges, queues, and bindings from a `SessionPlan`. It runs on first connect and again after each reconnect.
+`Reconcile` declares exchanges, queues, and bindings from a `SessionPlan`. It runs on first connect and again after each reconnect. `Start` fails when the initial reconcile fails (the topology is not in place — messages would be silently unroutable), and after a reconnect the session reports `Connected`/emits `SessionConnected` only once reconcile has succeeded.
 
 ## Settlement Mapping
 
 | `ports.Delivery` Method | AMQP 0-9-1 Operation | Notes |
 |---|---|---|
 | `Ack(ctx)` | `delivery.Ack(false)` | Single-message acknowledgement |
-| `Retry(ctx, after, reason)` | `delivery.Nack(false, true)` | Requeue immediately; `after` is logged but not enforced (no native delayed redelivery) |
+| `Retry(ctx, after, reason)` | `delivery.Nack(false, true)` | Requeue **immediately**; AMQP 0-9-1 has no native delayed redelivery. When `after > 0` the adapter emits `AMQP091DelayedRetryUnhonored` (every occurrence) and a `Warn` log (once per consumer channel). Guard poison messages broker-side with `x-delivery-limit` (quorum queues) or a dead-letter exchange — without one, a message that always fails hot-loops on a classic queue. |
 | `Extend(ctx, deadline)` | — | Returns `ErrNotSupported`; AMQP 0-9-1 has no visibility timeout |
 
 Settlement is guaranteed at-most-once via `sync.Once`.
@@ -61,7 +61,7 @@ Settlement is guaranteed at-most-once via `sync.Once`.
 | `ReplyTo` | `amqp091.reply-to` | `string` |
 | `Type` | `amqp091.type` | `string` |
 | `AppId` | `amqp091.app-id` | `string` |
-| `DeliveryMode` | `amqp091.delivery-mode` | `uint8` |
+| `DeliveryMode` | `amqp091.delivery-mode` | `uint8` (egress also accepts `int`/`float`/`"1"`/`"2"`/`"transient"`/`"persistent"` — YAML/JSON header values coerce) |
 | `Priority` | `amqp091.priority` | `uint8` |
 | `Expiration` | `amqp091.expiration` | `string` |
 | `Timestamp` | `amqp091.timestamp` | `time.Time` |
@@ -95,6 +95,8 @@ User-defined AMQP headers pass through directly. Reserved `x-bridge.*` headers a
 
 Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canceled` maps to `ErrUnavailable`.
 
+**Reconnect-race exception:** the receiver retries two permanent-classified errors with a bounded budget (10 attempts, ~30 s of capped backoff) instead of failing the component immediately, because during a reconnect window they are transient broker races: `404` (consume racing the session's topology reconcile after a broker restart) and `403` on an **exclusive** consumer (the broker holds the stale exclusive consumer for ~2× heartbeat after a partition). Each retry emits `AMQP091ReconnectRaceRetried` and a `Warn`; once the budget is exhausted the original error fails the component.
+
 ## Configuration Reference
 
 ### SessionOptions
@@ -102,13 +104,17 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `BrokerURL` | `string` | — (required) | AMQP URI, e.g. `amqp://localhost:5672/` |
-| `Username` | `string` | `""` | Injected into broker URL if no userinfo present |
-| `Password` | `string` | `""` | Injected into broker URL if no userinfo present |
-| `Vhost` | `string` | `""` | AMQP virtual host |
+| `Username` | `string` | `""` | Broker username. When set, **overrides** any userinfo embedded in `BrokerURL` (so rotated credentials win — see Credentials) |
+| `Password` | `shared.Secret` | `""` | Broker password; redacted in logs/marshals. Same override semantics as `Username` |
+| `Vhost` | `string` | `""` | AMQP virtual host (overrides the URI path when set) |
 | `Heartbeat` | `time.Duration` | `10s` | Connection heartbeat interval |
 | `ConnectTimeout` | `time.Duration` | `30s` | Dial timeout per attempt |
-| `ReconnectDelay` | `time.Duration` | `1s` | Initial delay before reconnect (grows exponentially to 30 s) |
+| `ReconnectDelay` | `time.Duration` | `1s` | Initial delay before reconnect |
+| `ReconnectMaxDelay` | `time.Duration` | `30s` | Backoff cap for reconnect delays |
+| `ReconnectMultiplier` | `float64` | `2.0` | Backoff growth factor per failed attempt |
 | `TLS` | `*TLSConfig` | `nil` | TLS settings; when enabled, uses `amqp091.DialTLS` |
+
+In the plugin options map these live under the `session:` block (snake_case keys: `broker_url`, `heartbeat`, `connect_timeout`, `reconnect_delay`, `reconnect_max_delay`, `reconnect_multiplier`, `username`, `password`, `vhost`, `tls`). A top-level `credentials_uri` key selects the credential-store entry resolved at build time.
 
 #### TLSConfig
 
@@ -118,6 +124,9 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 | `CACertFile` | `string` | `""` | Path to CA certificate PEM |
 | `CertFile` | `string` | `""` | Path to client certificate PEM |
 | `KeyFile` | `string` | `""` | Path to client private key PEM |
+| `CACertPEM` | `shared.Secret` | `""` | In-memory CA PEM (overrides `CACertFile`; used by credential rotation) |
+| `CertPEM` | `shared.Secret` | `""` | In-memory client cert PEM (overrides `CertFile`) |
+| `KeyPEM` | `shared.Secret` | `""` | In-memory client key PEM (overrides `KeyFile`) |
 | `InsecureSkipVerify` | `bool` | `false` | Skip server certificate verification |
 
 ### ReceiverConfig
@@ -126,8 +135,8 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 |---|---|---|---|
 | `QueueName` | `string` | `""` | Queue to consume from |
 | `ConsumerTag` | `string` | `""` | Consumer tag; auto-generated if empty |
-| `AutoAck` | `bool` | `false` | Automatic acknowledgement (disables manual settlement) |
-| `Exclusive` | `bool` | `false` | Exclusive consumer |
+| `AutoAck` | `bool` | `false` | **Rejected for managed routes** (`Config.Validate` and the managed factory refuse it): broker auto-ack acknowledges on delivery and silently drops messages when a downstream step fails. The default (false) provides at-least-once settlement |
+| `Exclusive` | `bool` | `false` | Exclusive consumer. After a partition the broker may hold the stale exclusive consumer for ~2× heartbeat; the receiver retries the resulting `403` with a bounded budget (see Error Mapping) |
 | `PrefetchCount` | `int` | `10` | QoS prefetch count |
 | `PrefetchSize` | `int` | `0` | QoS prefetch size in bytes |
 
@@ -137,99 +146,125 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 |---|---|---|---|
 | `Exchange` | `string` | `""` | Target exchange |
 | `RoutingKey` | `string` | `""` | Routing key. When empty the sender uses `OutboundMessage.Address` from the dispatch plan. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
-| `Mandatory` | `bool` | `false` | Return unroutable messages |
-| `Immediate` | `bool` | `false` | Return messages when no consumer ready |
+| `Mandatory` | `bool` | `false` | Return unroutable messages. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering) |
+| `Immediate` | `bool` | `false` | **Deprecated / rejected**: RabbitMQ removed `basic.publish` `immediate` in 3.0 and closes the channel when it is set. `Config.Validate` refuses it |
+| `DeliveryMode` | `string` | `"persistent"` | Default persistence for every publish: `"persistent"` (AMQP delivery-mode 2 — survives a broker restart on a durable queue) or `"transient"` (delivery-mode 1 — lost on broker restart even on a durable classic queue). A per-message `amqp091.delivery-mode` envelope header overrides it. **Quorum queues** always persist messages regardless of this knob; it matters for durable classic queues |
 | `Timeout` | `time.Duration` | `30s` | Per-publish timeout (applied when context has no deadline) |
 
 ### Options Map Keys
 
-Configuration structs can be built from `map[string]any` via `SessionOptionsFromMap`, `ReceiverConfigFromOptions`, and `SenderConfigFromOptions`. Map keys use snake_case: `broker_url`, `heartbeat`, `connect_timeout`, `reconnect_delay`, `queue_name`, `consumer_tag`, `auto_ack`, `prefetch_count`, `exchange`, `routing_key`, etc.
+Configuration structs can be built from `map[string]any` via `SessionOptionsFromMap`, `ReceiverConfigFromOptions`, and `SenderConfigFromOptions`. Map keys use snake_case: `broker_url`, `heartbeat`, `connect_timeout`, `reconnect_delay`, `queue_name`, `consumer_tag`, `auto_ack`, `prefetch_count`, `exchange`, `routing_key`, `delivery_mode`, etc.
+
+In bridge YAML, transport options use the **nested** shape (the strict decoder rejects flat keys):
+
+```yaml
+options:
+  credentials_uri: "aws-secrets://gobridge/rabbit-a"   # optional
+  session:
+    broker_url: "amqp://rabbit-a.internal:5672/"
+    heartbeat: "10s"
+  receiver:
+    queue_name: "orders.inbound"
+    prefetch_count: 64
+  sender:
+    exchange: "orders"
+    routing_key: "orders.bridged"
+    delivery_mode: "persistent"
+  subscription:            # auto-declared topology for subscriptions
+    exchange: "orders"
+    exchange_type: "topic"
+    durable: true
+    queue_arguments:
+      x-queue-type: "quorum"
+      x-delivery-limit: 5   # poison-message guard for immediate-requeue retries
+```
 
 ## Capabilities
 
-The `BridgeFactory` advertises two capabilities:
+The `Factory` advertises three capabilities:
 
 | Capability | Constant | Meaning |
 |---|---|---|
 | Stateful session | `ports.CapStatefulSession` | Session maintains a persistent connection with reconnection |
 | Source redelivery | `ports.CapSourceRedelivery` | Failed messages can be requeued to the source queue via nack |
+| Plan-driven subscriptions | `ports.CapPlanDrivenSubscriptions` | Receivers subscribe (queue-declare + bind + consume) only when the session manager reconciles the `SessionPlan`; a receiver on an unmanaged session is inert, so the builder enforces a manager |
 
 ## Usage Example
 
+The example below is compile-checked by `example_readme_test.go` (a Go
+`Example` without an `Output:` comment — compiled by `go test`, never
+executed).
+
 ```go
-package main
+ctx := context.Background()
+logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-import (
-    "context"
-    "log/slog"
-    "os"
+// Create and start a session. Start dials AND reconciles: a nil return
+// means the connection is up and the declared topology (if a plan was
+// installed) is in place.
+sess := amqp091.NewSession(amqp091.SessionOptions{
+    BrokerURL:      "amqp://localhost:5672/",
+    Heartbeat:      10 * time.Second,
+    ConnectTimeout: 30 * time.Second,
+}, connectivity.SessionEphemeral, logger)
 
-    "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091"
-    "github.com/mariotoffia/gobridge/domain"
-    "github.com/mariotoffia/gobridge/ports"
-)
-
-func main() {
-    ctx := context.Background()
-    logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-
-    // Create and start a session.
-    sess := amqp091.NewSession(amqp091.SessionOptions{
-        BrokerURL:      "amqp://guest:guest@localhost:5672/",
-        Heartbeat:      10 * time.Second,
-        ConnectTimeout: 30 * time.Second,
-    }, domain.SessionModeReadWrite, logger)
-
-    if err := sess.Start(ctx); err != nil {
-        panic(err)
-    }
-    defer sess.Close(ctx)
-
-    // Declare exchange, queue, and binding.
-    err := sess.Reconcile(ctx, domain.SessionPlan{
-        Subscriptions: []domain.SubscriptionPlan{{
-            Topic:   "my-queue",
-            Options: map[string]any{
-                "exchange":      "my-exchange",
-                "exchange_type": "direct",
-                "routing_key":   "events",
-                "durable":       true,
-            },
-        }},
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // Create a sender.
-    sender := amqp091.NewSender(amqp091.SenderConfig{
-        Exchange:   "my-exchange",
-        RoutingKey: "events",
-        Session:    sess,
-        Logger:     logger,
-    })
-
-    // Publish a message.
-    _ = sender.Send(ctx, domain.MustEnvelope(domain.EnvelopeInput{
-        ID:      "msg-1",
-        Subject: "events",
-        Payload: []byte(`{"event":"created"}`),
-    }))
-
-    // Create a receiver and consume.
-    receiver := amqp091.NewReceiver(amqp091.ReceiverConfig{
-        QueueName:     "my-queue",
-        PrefetchCount: 10,
-        Session:       sess,
-        Logger:        logger,
-    })
-
-    _ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
-        env := del.Envelope()
-        logger.Info("received", "id", env.ID(), "payload", string(env.Payload()))
-        return del.Ack(ctx)
-    })
+if err := sess.Start(ctx); err != nil {
+    logger.Error("session start failed", "error", err)
+    return
 }
+defer func() { _ = sess.Close(ctx) }()
+
+// Declare exchange, queue, and binding (plan-driven; re-applied on
+// every reconnect before the session reports Connected again).
+err := sess.Reconcile(ctx, connectivity.SessionPlan{
+    Subscriptions: []connectivity.SubscriptionPlan{{
+        Topic: "my-queue",
+        Config: &amqp091.Config{Subscription: amqp091.SubscriptionParams{
+            Exchange:     "my-exchange",
+            ExchangeType: "direct",
+            RoutingKey:   "events",
+            Durable:      true,
+        }},
+    }},
+})
+if err != nil {
+    logger.Error("reconcile failed", "error", err)
+    return
+}
+
+// Create a sender. Publishes are persistent by default (survive a
+// broker restart on a durable queue); set DeliveryMode to
+// amqp091.DeliveryModeTransient to opt out.
+sender := amqp091.NewSender(amqp091.SenderConfig{
+    Exchange:   "my-exchange",
+    RoutingKey: "events",
+    Session:    sess,
+    Logger:     logger,
+})
+
+// Publish a message.
+env := messaging.MustEnvelope(messaging.EnvelopeInput{
+    ID:      "msg-1",
+    Subject: "events",
+    Payload: []byte(`{"event":"created"}`),
+})
+if err := sender.Send(ctx, ports.OutboundMessage{Envelope: env, Address: "events"}); err != nil {
+    logger.Error("send failed", "error", err)
+}
+
+// Create a receiver and consume.
+receiver := amqp091.NewReceiver(amqp091.ReceiverConfig{
+    QueueName:     "my-queue",
+    PrefetchCount: 10,
+    Session:       sess,
+    Logger:        logger,
+})
+
+_ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
+    e := del.Envelope()
+    logger.Info("received", "id", e.ID(), "payload", string(e.Payload()))
+    return del.Ack(ctx)
+})
 ```
 
 ## BridgeFactory
@@ -244,11 +279,21 @@ factory := amqp091.NewFactory(logger, metricsExporter)
 
 The session runs a background goroutine that monitors `NotifyClose` from the AMQP connection. On disconnect:
 
-1. Emits `SessionDisconnected` event.
-2. Retries with exponential backoff (1 s to 30 s) plus jitter.
-3. Re-runs `Reconcile` with the stored `SessionPlan`.
-4. Emits `SessionConnected` on success.
+1. Emits `SessionDisconnected`, then `SessionReconnecting` per attempt.
+2. Retries with exponential backoff (`reconnect_delay` → `reconnect_max_delay`, × `reconnect_multiplier`) plus jitter.
+3. Re-runs `Reconcile` with the stored `SessionPlan` **before** the session reports `Connected`. If reconcile fails, the freshly dialed connection is dropped and the whole attempt (dial + reconcile) retries with backoff — `Health().Connected` stays `false` and **no** `SessionConnected` is emitted, so consumers cannot race onto a connection whose queues/bindings are missing.
+4. Emits `SessionConnected` (and `SessionReconciled`) only after reconcile succeeds.
+
+`Close` is safe to race with `Start` or a reconnect in flight: a connection dialed after `Close` began is closed, never installed (no leaked TCP connections or ghost consumers).
 
 Receiver detects channel closure and waits for `SessionConnected` or `SessionReconciled` before re-establishing its consumer.
 
 Sender re-opens its channel (with publisher confirms) on the next `Send` call after a channel error.
+
+## Publishing & Confirms
+
+Every publish awaits a broker confirm. `SendBatch` (non-mandatory) is **pipelined**: all messages are published with deferred confirmations, then all confirms are awaited — throughput is no longer bounded to one confirm round-trip per message. Per-message error attribution is preserved. With `Mandatory: true`, batches fall back to sequential one-in-flight publishing so `basic.return` (which carries no delivery tag) can be attributed to the right message.
+
+## Credentials
+
+`credentials_uri` selects a credential-store entry resolved at build time; rotation re-applies it on the live session (`ApplyCredentials` → redial). Explicit `Username`/`Password` (including rotated material) **override any userinfo embedded in `BrokerURL`** — otherwise rotation would report success while the session kept redialing with the stale embedded credentials.

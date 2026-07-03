@@ -102,7 +102,7 @@ func TestRouter_ConcurrentRoute(t *testing.T) {
 func TestRouter_LeaseNotHeld_Refuses(t *testing.T) {
 	store := NewFakeStore()
 	router := dlq.NewFromConfig(dlq.Config{Store: store, WriteMaxAttempts: 1})
-	router.SetTokenFn(func() (persistence.LeaseToken, bool) { return persistence.LeaseToken{}, false })
+	router.SetTokenFn(func(string) (persistence.LeaseToken, bool) { return persistence.LeaseToken{}, false })
 
 	err := router.Route(
 		context.Background(), syncEnv("lease-1"),

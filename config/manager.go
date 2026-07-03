@@ -2,9 +2,13 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
+	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -19,6 +23,34 @@ type Layer struct {
 	Watcher ports.Watcher // nil if the source does not support watching
 }
 
+// watch (re)establishment backoff bounds. A layer whose watcher dies in
+// steady state is re-established on this schedule; the runtime keeps serving
+// the last good config throughout (never torn down for a watch failure).
+const (
+	watchRetryInitial = 500 * time.Millisecond
+	watchRetryMax     = 30 * time.Second
+)
+
+// WatchStartError indicates a config layer's change watcher could not be
+// established. It is returned from Watch when a watcher fails its FIRST
+// (boot-time) establishment attempt: watching is a hard requirement at boot,
+// so a composition root that cannot observe config changes must fail loudly
+// (non-zero exit) rather than run blind (previously the failure was logged at
+// Warn and the change channel closed, which drained and stopped the whole
+// bridge with exit code 0 — a silent total outage). In STEADY state the same
+// failure is NOT fatal — it is recorded (see Manager.WatchErrors) and retried
+// with backoff while the current config keeps serving.
+type WatchStartError struct {
+	Layer string
+	Err   error
+}
+
+func (e *WatchStartError) Error() string {
+	return fmt.Sprintf("config manager: layer %q watcher failed to start: %v", e.Layer, e.Err)
+}
+
+func (e *WatchStartError) Unwrap() error { return e.Err }
+
 // Manager coordinates multiple config sources in a layered stack.
 // A base layer is loaded first, then overlays are merged on top in order.
 // The merged result is validated before being returned.
@@ -29,12 +61,14 @@ type Manager struct {
 	overlays []Layer
 	mergeFn  MergeFunc
 	logger   *slog.Logger
+	clk      clock.Clock
 
-	mu      sync.Mutex
-	configs map[string]*ports.BridgeConfig // cached per-layer configs
-	stopCh  chan struct{}
-	doneCh  chan struct{} // closed when watchLoop exits
-	running bool
+	mu        sync.Mutex
+	configs   map[string]*ports.BridgeConfig // cached per-layer configs
+	watchErrs map[string]error               // layer name → current watch establishment error (degraded signal)
+	stopCh    chan struct{}
+	doneCh    chan struct{} // closed when watchLoop exits
+	running   bool
 }
 
 // ManagerOption configures a Manager.
@@ -58,12 +92,24 @@ func WithManagerLogger(l *slog.Logger) ManagerOption {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithManagerClock sets the clock used for watch re-establishment backoff.
+// Defaults to clock.System. Tests inject clocktest.FakeClock.
+func WithManagerClock(c clock.Clock) ManagerOption {
+	return func(m *Manager) {
+		if c != nil {
+			m.clk = c
+		}
+	}
+}
+
 // NewManager creates a Manager with the given base layer and options.
 func NewManager(base Layer, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		base:    base,
-		mergeFn: DefaultMerge,
-		configs: make(map[string]*ports.BridgeConfig),
+		base:      base,
+		mergeFn:   DefaultMerge,
+		clk:       clock.System,
+		configs:   make(map[string]*ports.BridgeConfig),
+		watchErrs: make(map[string]error),
 	}
 	for _, o := range opts {
 		o(m)
@@ -112,8 +158,14 @@ func (m *Manager) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // Watch starts watching all layers that have a ports.Watcher. On any change
 // it re-loads that layer, re-merges all layers, validates the merged
 // result, and emits it on the returned channel. Invalid merged configs
-// are logged and dropped (not emitted). The channel is closed when ctx
-// is cancelled or Stop is called.
+// are logged and dropped (not emitted).
+//
+// Boot vs steady-state (Finding 1): every layer watcher is established
+// SYNCHRONOUSLY here. A first-attempt establishment failure is FATAL and
+// returned as *WatchStartError so the composition root exits non-zero instead
+// of running blind. Once past boot, a watcher that dies is retried with
+// backoff and surfaced via WatchErrors; the change channel is NEVER closed on
+// a watch failure. It closes only when ctx is cancelled or Stop is called.
 func (m *Manager) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
 	m.mu.Lock()
 	if m.running {
@@ -125,13 +177,62 @@ func (m *Manager) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	m.doneCh = make(chan struct{})
 	stopCh := m.stopCh
 	doneCh := m.doneCh
+	m.watchErrs = make(map[string]error)
 	m.mu.Unlock()
 
-	out := make(chan *ports.BridgeConfig, 1)
-	ctx, cancel := context.WithCancel(ctx)
+	watchCtx, cancel := context.WithCancel(ctx)
 
-	go m.watchLoop(ctx, cancel, out, stopCh, doneCh)
+	established, err := m.establishInitialWatchers(watchCtx)
+	if err != nil {
+		cancel()
+		m.mu.Lock()
+		m.running = false
+		m.mu.Unlock()
+		// doneCh was created but watchLoop will not run; close it so a
+		// concurrent Stop waiting on it does not block forever.
+		close(doneCh)
+		return nil, err
+	}
+
+	out := make(chan *ports.BridgeConfig, 1)
+	go m.watchLoop(watchCtx, cancel, out, stopCh, doneCh, established)
 	return out, nil
+}
+
+// establishedWatch is a layer whose change channel has been opened once.
+type establishedWatch struct {
+	layer Layer
+	ch    <-chan *ports.BridgeConfig
+}
+
+// establishInitialWatchers opens every watchable layer's change channel
+// exactly once. A failure is a boot error (fatal): watching is a hard boot
+// requirement, so the caller must fail loudly rather than run blind.
+func (m *Manager) establishInitialWatchers(ctx context.Context) ([]establishedWatch, error) {
+	layers := m.watchableLayers()
+	established := make([]establishedWatch, 0, len(layers))
+	for _, layer := range layers {
+		ch, err := layer.Watcher.Watch(ctx)
+		if err != nil {
+			return nil, &WatchStartError{Layer: layer.Name, Err: err}
+		}
+		established = append(established, establishedWatch{layer: layer, ch: ch})
+	}
+	return established, nil
+}
+
+// watchableLayers returns the base plus every overlay that has a Watcher.
+func (m *Manager) watchableLayers() []Layer {
+	var out []Layer
+	if m.base.Watcher != nil {
+		out = append(out, m.base)
+	}
+	for _, ol := range m.overlays {
+		if ol.Watcher != nil {
+			out = append(out, ol)
+		}
+	}
+	return out
 }
 
 // Stop stops all active watchers and waits for the watch loop to exit.
@@ -152,7 +253,44 @@ func (m *Manager) Stop() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out chan *ports.BridgeConfig, stopCh <-chan struct{}, doneCh chan struct{}) {
+// WatchDegraded reports whether any config layer's change watcher is
+// currently failing to (re)establish. When true, live reconfiguration for at
+// least one layer is unavailable and the manager is retrying with backoff;
+// the last good config keeps serving. Safe for concurrent use.
+func (m *Manager) WatchDegraded() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.watchErrs) > 0
+}
+
+// WatchErrors returns a snapshot of the current per-layer watch
+// establishment errors (empty when healthy). Safe for concurrent use.
+func (m *Manager) WatchErrors() map[string]error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return maps.Clone(m.watchErrs)
+}
+
+func (m *Manager) setWatchError(layer string, err error) {
+	m.mu.Lock()
+	m.watchErrs[layer] = err
+	m.mu.Unlock()
+}
+
+func (m *Manager) clearWatchError(layer string) {
+	m.mu.Lock()
+	delete(m.watchErrs, layer)
+	m.mu.Unlock()
+}
+
+func (m *Manager) watchLoop(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	out chan *ports.BridgeConfig,
+	stopCh <-chan struct{},
+	doneCh chan struct{},
+	initial []establishedWatch,
+) {
 	defer func() {
 		cancel()
 		close(out)
@@ -167,34 +305,25 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 	fanIn := make(chan layerEvent, 4)
 	var wg sync.WaitGroup
 
-	startLayerWatch := func(layer Layer) {
-		if layer.Watcher == nil {
-			return
-		}
-		ch, err := layer.Watcher.Watch(ctx)
-		if err != nil {
-			if m.logger != nil {
-				m.logger.Warn("config manager: failed to start watcher",
-					"layer", layer.Name, "error", err)
-			}
-			return
-		}
+	// One supervisor goroutine per watchable layer. Each drains its change
+	// channel and, when that channel closes WITHOUT ctx cancellation (the
+	// underlying watcher died), re-establishes it with backoff. The
+	// supervisors only exit on ctx cancellation, so fanIn (and therefore out)
+	// is never closed because of a watch failure — that was the exit-0 bug.
+	for _, ew := range initial {
 		wg.Add(1)
-		go func(name string, ch <-chan *ports.BridgeConfig) {
+		go func(ew establishedWatch) {
 			defer wg.Done()
-			for cfg := range ch {
+			name := ew.layer.Name
+			m.superviseLayerWatch(ctx, ew.layer, ew.ch, func(cfg *ports.BridgeConfig) bool {
 				select {
 				case fanIn <- layerEvent{name: name, cfg: cfg}:
+					return true
 				case <-ctx.Done():
-					return
+					return false
 				}
-			}
-		}(layer.Name, ch)
-	}
-
-	startLayerWatch(m.base)
-	for _, ol := range m.overlays {
-		startLayerWatch(ol)
+			})
+		}(ew)
 	}
 
 	go func() {
@@ -211,6 +340,8 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 			return
 		case ev, ok := <-fanIn:
 			if !ok {
+				// Only reachable after ctx cancellation (all supervisors
+				// exited). A watch failure never closes fanIn.
 				return
 			}
 			m.mu.Lock()
@@ -233,6 +364,79 @@ func (m *Manager) watchLoop(ctx context.Context, cancel context.CancelFunc, out 
 			out <- merged
 		}
 	}
+}
+
+// superviseLayerWatch drains a layer's change channel and re-establishes it
+// with capped backoff whenever it closes before ctx is cancelled. forward
+// delivers one config event and reports whether the loop should continue.
+func (m *Manager) superviseLayerWatch(
+	ctx context.Context,
+	layer Layer,
+	ch <-chan *ports.BridgeConfig,
+	forward func(*ports.BridgeConfig) bool,
+) {
+	backoff := watchRetryInitial
+	for {
+		// Drain the current channel until it closes or ctx is cancelled.
+		drained := false
+		for !drained {
+			select {
+			case <-ctx.Done():
+				return
+			case cfg, ok := <-ch:
+				if !ok {
+					drained = true
+					break
+				}
+				if !forward(cfg) {
+					return
+				}
+				// Healthy activity: reset backoff.
+				backoff = watchRetryInitial
+			}
+		}
+
+		// Steady-state watch death (NOT a shutdown): record degraded state
+		// and re-establish with backoff. The runtime keeps serving throughout.
+		if layer.Watcher == nil {
+			return
+		}
+		m.setWatchError(layer.Name, errWatchEnded)
+		if m.logger != nil {
+			m.logger.Error("config manager: layer watcher ended; re-establishing with backoff "+
+				"(runtime keeps serving last good config)", "layer", layer.Name, "retry_in", backoff)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.clk.After(backoff):
+		}
+
+		newCh, err := layer.Watcher.Watch(ctx)
+		if err != nil {
+			m.setWatchError(layer.Name, err)
+			if m.logger != nil {
+				m.logger.Error("config manager: re-establishing layer watcher failed; will retry",
+					"layer", layer.Name, "error", err, "retry_in", backoff)
+			}
+			backoff = nextBackoff(backoff)
+			// ch is still the (closed) old channel; the drain loop above will
+			// return immediately and we retry after the next backoff.
+			continue
+		}
+		m.clearWatchError(layer.Name)
+		ch = newCh
+		backoff = watchRetryInitial
+	}
+}
+
+func nextBackoff(d time.Duration) time.Duration {
+	next := d * 2
+	if next > watchRetryMax {
+		return watchRetryMax
+	}
+	return next
 }
 
 // rebuild re-merges all layers from cached configs, re-loading any
@@ -284,7 +488,10 @@ func (m *Manager) rebuild(ctx context.Context) (*ports.BridgeConfig, error) {
 	return merged, nil
 }
 
-var errAlreadyRunning = errorf("config manager: already running")
+var (
+	errAlreadyRunning = errorf("config manager: already running")
+	errWatchEnded     = errorf("config manager: layer watcher change channel closed")
+)
 
 type configError string
 

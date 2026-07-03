@@ -172,7 +172,7 @@ func TestSender_Send_PreservesEnvelopeSubject(t *testing.T) {
 				t.Fatalf("captured envelopes = %+v, want one with Subject=%q", got, "logical.subject")
 			}
 			// Confirm Subject crosses the SDK seam intact.
-			msg := envelopeToMessage(got[0])
+			msg := envelopeToMessage(got[0], true)
 			if msg.Properties == nil || msg.Properties.Subject == nil || *msg.Properties.Subject != "logical.subject" {
 				t.Fatalf("Properties.Subject = %v, want %q", msg.Properties, "logical.subject")
 			}
@@ -320,7 +320,7 @@ func TestRoundTrip_SubjectIndependentOfAddress(t *testing.T) {
 		Payload: []byte("body"),
 	})
 
-	msg := envelopeToMessage(out)
+	msg := envelopeToMessage(out, true)
 	in, err := messageToEnvelope(msg, clock.System)
 	if err != nil {
 		t.Fatalf("messageToEnvelope: %v", err)

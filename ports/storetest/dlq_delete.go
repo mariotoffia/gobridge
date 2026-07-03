@@ -32,6 +32,9 @@ func dlqGetExisting(t *testing.T, store ports.DLQStore) {
 	if got.Category() != "timeout" {
 		t.Fatalf("Category: got %q, want %q", got.Category(), "timeout")
 	}
+	if got.Address() != "addr/ge-1" {
+		t.Fatalf("Address: got %q, want %q", got.Address(), "addr/ge-1")
+	}
 	env := got.Snapshot()
 	if env.ID() != "env-ge-1" {
 		t.Fatalf("Envelope.ID: got %q, want %q", env.ID(), "env-ge-1")
@@ -254,6 +257,48 @@ func dlqDeleteByFilterWithLimit(t *testing.T, store ports.DLQStore) {
 	}
 	if len(results) != 3 {
 		t.Fatalf("expected 3 remaining, got %d", len(results))
+	}
+	// Limited delete selects oldest-first (ports.DLQAdmin contract), so the
+	// two OLDEST entries are gone and the three newest remain.
+	want := []string{"dfl-3", "dfl-4", "dfl-5"}
+	for i, e := range results {
+		if e.ID() != want[i] {
+			t.Fatalf("remaining[%d]: got %q, want %q (limited delete must remove oldest-first)", i, e.ID(), want[i])
+		}
+	}
+}
+
+// dlqDeleteByFilterExhaustsScanPages proves DeleteByFilter with no limit
+// deletes EVERY matching entry even when the match count exceeds a backend's
+// internal scan/list page size (DynamoDB paged at 100), and reports the
+// accurate count. A backend that delegates to a single default-limited List
+// silently strands everything past the first page.
+func dlqDeleteByFilterExhaustsScanPages(t *testing.T, store ports.DLQStore) {
+	ctx := context.Background()
+	const total = 120 // larger than the largest internal page (100)
+
+	for i := 0; i < total; i++ {
+		e := makeDLQEntry("dfx-"+itoa(i+1), "route-dfx", "timeout",
+			dlqT1.Add(time.Duration(i)*time.Minute))
+		if err := store.Write(ctx, e); err != nil {
+			t.Fatalf("write dfx-%d: %v", i+1, err)
+		}
+	}
+
+	n, err := store.DeleteByFilter(ctx, routing.DLQFilter{RouteID: "route-dfx"})
+	if err != nil {
+		t.Fatalf("delete_by_filter: %v", err)
+	}
+	if n != total {
+		t.Fatalf("expected %d deleted, got %d", total, n)
+	}
+
+	remaining, err := store.List(ctx, routing.DLQFilter{RouteID: "route-dfx", Limit: total})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected 0 remaining after unlimited delete, got %d", len(remaining))
 	}
 }
 

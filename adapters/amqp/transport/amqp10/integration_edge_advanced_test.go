@@ -98,12 +98,14 @@ func TestIntegration_Edge_MulticastRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver1: %v", err)
 	}
+	defer func() { _ = recv1.Close(context.Background()) }() // run leaves link open; owner closes
 	recv2, err := NewReceiver(ReceiverConfig{
 		Address: addr, LinkCredit: 10, Session: sess, Routing: RoutingMulticast,
 	}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver2: %v", err)
 	}
+	defer func() { _ = recv2.Close(context.Background()) }() // run leaves link open; owner closes
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -204,6 +206,7 @@ func TestIntegration_Edge_SendBatchPartialVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	defer func() { _ = recv.Close(context.Background()) }() // run leaves link open; owner closes
 
 	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer recvCancel()

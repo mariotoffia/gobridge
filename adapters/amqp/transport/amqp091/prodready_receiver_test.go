@@ -69,12 +69,18 @@ func TestReceiverBackoff(t *testing.T) {
 }
 
 // TestReceiver_Run_PermanentError_FailsComponent verifies that a
-// permanent transport error (queue not found) causes Run to return that
-// error WITHOUT retrying — no hot loop, no infinite reconnect.
+// genuinely permanent transport error causes Run to return that error
+// WITHOUT retrying — no hot loop, no infinite reconnect.
+//
+// The probe error is a 403 ACCESS_REFUSED on a NON-exclusive consumer:
+// unlike 404 (queue re-declare window after a reconnect) and
+// 403-with-exclusive (stale exclusive consumer held for ~2x heartbeat),
+// it is never a reconnect race (see isReconnectRaceError) and must fail
+// the component on the first occurrence.
 func TestReceiver_Run_PermanentError_FailsComponent(t *testing.T) {
 	mc := newMockConnection()
 	mc.ChannelFn = func() (*amqpChannel, error) {
-		return nil, &amqp.Error{Code: 404, Reason: "NOT_FOUND - no queue 'q'"}
+		return nil, &amqp.Error{Code: 403, Reason: "ACCESS_REFUSED - permission denied"}
 	}
 	sess := newResilienceSession(func(string) (amqpConnection, error) { return mc, nil })
 	if err := sess.Start(context.Background()); err != nil {
@@ -83,7 +89,7 @@ func TestReceiver_Run_PermanentError_FailsComponent(t *testing.T) {
 	defer func() { _ = sess.Close(context.Background()) }()
 
 	r := &Receiver{
-		cfg:     ReceiverConfig{QueueName: "q"},
+		cfg:     ReceiverConfig{QueueName: "q"}, // Exclusive: false
 		session: sess,
 		logger:  slog.Default(),
 		metrics: &ports.NoopExporter{},
@@ -97,8 +103,8 @@ func TestReceiver_Run_PermanentError_FailsComponent(t *testing.T) {
 
 	err := wait.RequireReceive(t, done, 2*time.Second)
 	var be *shared.BridgeError
-	if !errors.As(err, &be) || be.Code != shared.ErrCodeNotFound {
-		t.Fatalf("Run returned %v, want ErrNotFound (permanent)", err)
+	if !errors.As(err, &be) || be.Code != shared.ErrCodeNotAuthorized {
+		t.Fatalf("Run returned %v, want ErrNotAuthorized (permanent)", err)
 	}
 	if calls := mc.channelCalls(); calls != 1 {
 		t.Fatalf("permanent error must not be retried: channelCalls = %d, want 1", calls)

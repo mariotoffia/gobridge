@@ -16,6 +16,13 @@
 //   - Retry:  delivery.Nack with requeue=true (immediate redelivery)
 //   - Extend: ErrNotSupported (AMQP 0-9-1 has no visibility timeout)
 //
+// AMQP 0-9-1 has no client-side delayed redelivery: Retry(after > 0)
+// nacks with IMMEDIATE requeue and surfaces the unhonored delay via the
+// AMQP091DelayedRetryUnhonored metric (every occurrence) and a Warn log
+// (once per consumer channel). Guard poison messages broker-side with
+// x-delivery-limit (quorum queues) or a dead-letter exchange; without
+// one, a message that always fails hot-loops on a classic queue.
+//
 // At-least-once is the default and only managed mode: a managed receiver
 // settles each delivery after the downstream step succeeds. Broker
 // auto-ack (receiver.auto_ack=true) is rejected by Config.Validate and by
@@ -36,6 +43,22 @@
 // supported: RabbitMQ removed it in 3.0 (it closes the channel), so
 // sender.immediate=true is rejected by Config.Validate and the sender
 // factory, and the publish path never sets it.
+//
+// Publishes are PERSISTENT by default (AMQP delivery-mode 2): a confirmed
+// transient message exists only in broker memory and dies with a broker
+// restart even on a durable classic queue — after the bridge has already
+// acked the source. sender.delivery_mode ("persistent"|"transient")
+// selects the default; a per-message "amqp091.delivery-mode" envelope
+// header (uint8, int, float, "1"/"2"/"transient"/"persistent") overrides
+// it. Quorum queues persist messages regardless of this knob; it matters
+// for durable classic queues.
+//
+// SendBatch pipelines non-mandatory batches: every message is published
+// with a deferred confirmation and the confirms are awaited afterwards,
+// so batch throughput is not bounded to one confirm round-trip per
+// message. Per-message error attribution is preserved. Mandatory batches
+// stay sequential (one in flight): a basic.return carries no delivery
+// tag, so return-to-message attribution relies on ordering.
 //
 // # Connection Flow Control
 //
@@ -103,4 +126,23 @@
 // recur identically on every reconnect) and applies a bounded backoff
 // between retries of transient failures, so a persistently failing
 // consumer neither hot-loops nor silently retries forever.
+//
+// Exception: two permanent-classified codes are, in a reconnect window,
+// transient broker races and are retried with a bounded budget (see
+// reconnectRaceRetryBudget) before failing the component: 404 (a consume
+// racing the session's topology reconcile after a broker restart) and
+// 403 on an EXCLUSIVE consumer (the broker holds the stale exclusive
+// consumer for ~2x heartbeat after a partition). Each retry emits the
+// AMQP091ReconnectRaceRetried metric and a Warn.
+//
+// # Session Lifecycle
+//
+// Start dials and, when a SessionPlan is installed, reconciles before
+// returning: a nil Start means connected AND declared topology in place.
+// A failed initial reconcile fails Start (the queue would be unbound and
+// messages silently unroutable). After a reconnect, the session reports
+// Connected and emits SessionConnected only once reconcile has succeeded;
+// a failed reconcile drops the fresh connection and retries the whole
+// attempt with backoff. Close is safe to race with Start or a reconnect:
+// a connection dialed after Close began is closed, never installed.
 package amqp091

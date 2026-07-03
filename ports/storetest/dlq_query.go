@@ -165,4 +165,52 @@ func dlqListRespectsLimit(t *testing.T, store ports.DLQStore) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(results))
 	}
+	// With a limit, every backend must return the same slice: the OLDEST
+	// entries (ports.DLQReader ordering contract), so pagination pages
+	// identically everywhere.
+	want := []string{"lrl-1", "lrl-2"}
+	for i, e := range results {
+		if e.ID() != want[i] {
+			t.Fatalf("limited list[%d]: got %q, want %q (oldest-first)", i, e.ID(), want[i])
+		}
+	}
+}
+
+// dlqListOldestFirst pins the cross-backend List ordering contract: ascending
+// FailedAt with ascending entry ID as the tiebreaker (oldest failures first,
+// so operators triage the oldest problems and pagination walks forward in
+// time on every backend).
+func dlqListOldestFirst(t *testing.T, store ports.DLQStore) {
+	ctx := context.Background()
+
+	// Written deliberately out of chronological order; lof-t2b/lof-t2a share
+	// one FailedAt to exercise the ID tiebreak.
+	writes := []struct {
+		id string
+		at time.Time
+	}{
+		{"lof-t3", dlqT3},
+		{"lof-t1", dlqT1},
+		{"lof-t2b", dlqT2},
+		{"lof-t2a", dlqT2},
+	}
+	for _, w := range writes {
+		if err := store.Write(ctx, makeDLQEntry(w.id, "route-lof", "timeout", w.at)); err != nil {
+			t.Fatalf("write %s: %v", w.id, err)
+		}
+	}
+
+	results, err := store.List(ctx, routing.DLQFilter{RouteID: "route-lof"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := []string{"lof-t1", "lof-t2a", "lof-t2b", "lof-t3"}
+	if len(results) != len(want) {
+		t.Fatalf("expected %d entries, got %d", len(want), len(results))
+	}
+	for i, e := range results {
+		if e.ID() != want[i] {
+			t.Fatalf("order[%d]: got %q, want %q (ascending FailedAt, then ID)", i, e.ID(), want[i])
+		}
+	}
 }

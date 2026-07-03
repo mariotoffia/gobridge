@@ -160,87 +160,6 @@ func TestSenderConfig_ApplyDefaults(t *testing.T) {
 	}
 }
 
-// verifies ReceiverConfigFromOptions maps option keys into ReceiverConfig and ConnectionConfig.
-func TestReceiverConfigFromOptions(t *testing.T) {
-	ae := true
-	opts := map[string]any{
-		"queue_name":           "my-queue",
-		"topic_name":           "my-topic",
-		"subscription_name":    "my-sub",
-		"session_id":           "sess-1",
-		"max_messages":         20,
-		"max_wait_time":        10 * time.Second,
-		"prefetch":             int32(5),
-		"receive_mode":         "ReceiveAndDelete",
-		"sub_queue":            "deadletter",
-		"auto_extend":          ae,
-		"connection_string":    "Endpoint=sb://test",
-		"namespace":            "myns",
-		"use_managed_identity": true,
-		"tenant_id":            "tid",
-		"client_id":            "cid",
-		"client_secret":        "csec",
-		"ca_pem":               "PEMDATA",
-		"insecure_skip_verify": true,
-	}
-
-	cfg := ReceiverConfigFromOptions(opts)
-
-	assertEqual(t, "QueueName", cfg.QueueName, "my-queue")
-	assertEqual(t, "TopicName", cfg.TopicName, "my-topic")
-	assertEqual(t, "SubscriptionName", cfg.SubscriptionName, "my-sub")
-	assertEqual(t, "SessionID", cfg.SessionID, "sess-1")
-	assertEqualInt(t, "MaxMessages", cfg.MaxMessages, 20)
-	if cfg.MaxWaitTime != 10*time.Second {
-		t.Errorf("MaxWaitTime = %v, want 10s", cfg.MaxWaitTime)
-	}
-	if cfg.Prefetch != 5 {
-		t.Errorf("Prefetch = %d, want 5", cfg.Prefetch)
-	}
-	assertEqual(t, "ReceiveMode", cfg.ReceiveMode, "ReceiveAndDelete")
-	assertEqual(t, "SubQueue", cfg.SubQueue, "deadletter")
-	if cfg.AutoExtend == nil || !*cfg.AutoExtend {
-		t.Error("AutoExtend should be true")
-	}
-	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString.Reveal(), "Endpoint=sb://test")
-	assertEqual(t, "Namespace", cfg.Connection.Namespace, "myns")
-	if !cfg.Connection.UseManagedIdentity {
-		t.Error("UseManagedIdentity should be true")
-	}
-	assertEqual(t, "TenantID", cfg.Connection.TenantID, "tid")
-	assertEqual(t, "ClientID", cfg.Connection.ClientID, "cid")
-	assertEqual(t, "ClientSecret", cfg.Connection.ClientSecret.Reveal(), "csec")
-	assertEqual(t, "CaPEM", cfg.Connection.CaPEM.Reveal(), "PEMDATA")
-	if !cfg.Connection.InsecureSkipVerify {
-		t.Error("InsecureSkipVerify should be true")
-	}
-}
-
-// verifies SenderConfigFromOptions maps option keys into SenderConfig and ConnectionConfig.
-func TestSenderConfigFromOptions(t *testing.T) {
-	opts := map[string]any{
-		"queue_name":         "send-queue",
-		"topic_name":         "send-topic",
-		"default_session_id": "dsess",
-		"batch_size":         25,
-		"timeout":            5 * time.Second,
-		"connection_string":  "Endpoint=sb://send",
-		"namespace":          "sendns",
-	}
-
-	cfg := SenderConfigFromOptions(opts)
-
-	assertEqual(t, "QueueName", cfg.QueueName, "send-queue")
-	assertEqual(t, "TopicName", cfg.TopicName, "send-topic")
-	assertEqual(t, "DefaultSessionID", cfg.DefaultSessionID, "dsess")
-	assertEqualInt(t, "BatchSize", cfg.BatchSize, 25)
-	if cfg.Timeout != 5*time.Second {
-		t.Errorf("Timeout = %v, want 5s", cfg.Timeout)
-	}
-	assertEqual(t, "ConnectionString", cfg.Connection.ConnectionString.Reveal(), "Endpoint=sb://send")
-	assertEqual(t, "Namespace", cfg.Connection.Namespace, "sendns")
-}
-
 // --- helpers ---
 
 // D2-FU2 — Config.Validate bounds receiver.lock_duration to the Service Bus
@@ -271,17 +190,3 @@ func TestConfig_Validate_LockDurationBounds(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
-
-func assertEqual(t *testing.T, field, got, want string) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s = %q, want %q", field, got, want)
-	}
-}
-
-func assertEqualInt(t *testing.T, field string, got, want int) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s = %d, want %d", field, got, want)
-	}
-}

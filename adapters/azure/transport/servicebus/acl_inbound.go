@@ -3,6 +3,7 @@ package servicebus
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,7 +28,14 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 	// receive-count extraction — whose type switch covers int/int64/
 	// float64/string — can read it once it learns the asb.delivery-count
 	// key. See the SHARED-DEFERRED note for runtime/route/dispatch.go.
-	h[asbHeaderDeliveryCount] = int(msg.DeliveryCount)
+	//
+	// The value is the EFFECTIVE receive count: broker DeliveryCount of
+	// the current wire message plus the accumulated bridge retry counter
+	// (x-bridge.retry-attempt) carried over from previous scheduled
+	// copies. A delayed Retry schedules a fresh message whose broker
+	// DeliveryCount restarts at 1; without the summation the runtime's
+	// MaxReplayAttempts gate would never fire for retried messages.
+	h[asbHeaderDeliveryCount] = effectiveReceiveCount(msg)
 
 	if msg.CorrelationID != nil {
 		h[asbHeaderCorrelationID] = *msg.CorrelationID
@@ -67,6 +75,55 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 	return h
 }
 
+// bridgeAttempts extracts the accumulated bridge retry counter stamped
+// by a delayed Retry (asbPropRetryAttempt) from the wire application
+// properties. Returns 0 when absent, non-numeric, or negative. The
+// AMQP round-trip may hand the value back in several numeric widths,
+// so all common ones are accepted.
+//
+// Spoofing note: the property lives in the reserved x-bridge.*
+// namespace, which ingress strips from envelope headers, and a forged
+// LARGE value only makes the message DLQ earlier — fail-safe.
+func bridgeAttempts(props map[string]any) int {
+	v, ok := props[asbPropRetryAttempt]
+	if !ok {
+		return 0
+	}
+	n := 0
+	switch t := v.(type) {
+	case int:
+		n = t
+	case int32:
+		n = int(t)
+	case int64:
+		n = int(t)
+	case uint32:
+		n = int(t)
+	case uint64:
+		n = int(t)
+	case float64:
+		n = int(t)
+	case string:
+		parsed, err := strconv.Atoi(t)
+		if err != nil {
+			return 0
+		}
+		n = parsed
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// effectiveReceiveCount is the total 1-based number of times the
+// LOGICAL message has been received: the broker DeliveryCount of the
+// current wire message plus the counter carried over from previous
+// bridge-scheduled retry copies.
+func effectiveReceiveCount(msg *azservicebus.ReceivedMessage) int {
+	return int(msg.DeliveryCount) + bridgeAttempts(msg.ApplicationProperties)
+}
+
 // receivedToEnvelope translates an inbound *azservicebus.ReceivedMessage
 // to a fresh messaging.Envelope. Envelope.Subject is populated solely
 // from the native Service Bus Subject; the queue/topic entity name is
@@ -81,6 +138,14 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*me
 		subject = *msg.Subject
 	}
 	id := msg.MessageID
+	if orig, ok := stringProp(msg.ApplicationProperties, asbPropOriginalMessageID); ok {
+		// A bridge-scheduled retry copy salts its wire MessageID (so
+		// broker duplicate detection never discards the copy) and
+		// preserves the FIRST delivery's ID in this reserved property.
+		// The envelope keeps the original ID so end-to-end idempotency
+		// and dedup see one logical message across retries.
+		id = orig
+	}
 	if id == "" {
 		id = generateEnvelopeID()
 	}
@@ -156,6 +221,30 @@ type asbDelivery struct {
 	cancel           context.CancelFunc // cancels autoExtendCtx (stops the goroutine)
 	processingCancel context.CancelFunc // cancels deliveryCtx (the ctx handed to emit)
 	once             sync.Once          // makes stop() idempotent
+
+	// renewalDeadline caps total lock auto-renewal wall time (zero =
+	// no cap). Computed once in newDelivery from
+	// deliveryTuning.maxLockRenewal; read only by the auto-extend
+	// goroutine.
+	renewalDeadline time.Time
+}
+
+// deliveryTuning groups the per-delivery lock-management knobs handed
+// from ReceiverConfig to newDelivery.
+type deliveryTuning struct {
+	// lockDuration seeds the auto-extend cadence when the message
+	// carries no LockedUntil (see newDelivery).
+	lockDuration time.Duration
+	// autoExtend starts the background lock-renewal goroutine.
+	autoExtend bool
+	// minAutoExtendInterval floors the computed renewal cadence
+	// (default 1s when zero).
+	minAutoExtendInterval time.Duration
+	// maxLockRenewal caps total renewal wall time per delivery; when
+	// exceeded processing is cancelled and renewal stops so a hung
+	// pipeline cannot hold the message invisible forever. Zero = no
+	// cap (tests); production configs default to 5m via applyDefaults.
+	maxLockRenewal time.Duration
 }
 
 // newDelivery constructs an asbDelivery. clk drives the auto-extend
@@ -170,13 +259,11 @@ func newDelivery(
 	client asbAPI,
 	scheduler retryScheduler,
 	msg *azservicebus.ReceivedMessage,
-	lockDuration time.Duration,
-	autoExtend bool,
+	tuning deliveryTuning,
 	processingCancel context.CancelFunc,
 	logger *slog.Logger,
 	metrics ports.MetricsExporter,
 	clk clock.Clock,
-	minAutoExtendInterval ...time.Duration,
 ) *asbDelivery {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
@@ -198,8 +285,11 @@ func newDelivery(
 		cancel:           cancel,
 		processingCancel: processingCancel,
 	}
+	if tuning.maxLockRenewal > 0 {
+		d.renewalDeadline = clk.Now().Add(tuning.maxLockRenewal)
+	}
 
-	if autoExtend && lockDuration > 0 {
+	if tuning.autoExtend && tuning.lockDuration > 0 {
 		// Renewal starts for any positive lock and derives its cadence from
 		// the broker's real deadline: LockedUntil (peek-lock always carries
 		// it) governs, so renewal self-corrects to the entity's true lock and
@@ -207,7 +297,7 @@ func newDelivery(
 		// applies on the no-LockedUntil fallback (mock/defensive path). This
 		// is why ASB needs no SQS-style below-floor guard: there is no fixed
 		// short window here — cf. sqs Config.AutoExtendEnabled.
-		interval := lockDuration / 2
+		interval := tuning.lockDuration / 2
 
 		if msg.LockedUntil != nil && msg.LockedUntil.After(clk.Now()) {
 			remaining := msg.LockedUntil.Sub(clk.Now())
@@ -215,8 +305,8 @@ func newDelivery(
 		}
 
 		floor := time.Second
-		if len(minAutoExtendInterval) > 0 && minAutoExtendInterval[0] > 0 {
-			floor = minAutoExtendInterval[0]
+		if tuning.minAutoExtendInterval > 0 {
+			floor = tuning.minAutoExtendInterval
 		}
 		if interval < floor {
 			interval = floor
@@ -307,7 +397,7 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 			)
 		}
 
-		newMsg := buildRetryMessage(d.msg)
+		newMsg := buildRetryMessage(d.msg, d.clk)
 
 		enqueueAt := d.clk.Now().Add(after)
 		schedStart := d.clk.Now()
@@ -398,6 +488,23 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			if !d.renewalDeadline.IsZero() && !d.clk.Now().Before(d.renewalDeadline) {
+				// Wall-time cap: a hung pipeline must not hold the message
+				// locked (invisible, never redelivered, never DLQ'd)
+				// indefinitely. Stop renewing and cancel processing; the
+				// lock lapses and the broker redelivers or dead-letters
+				// per MaxDeliveryCount.
+				d.metrics.Counter(MetricASBLockRenewalCapExceeded, 1)
+				if d.logger != nil {
+					d.logger.Error("servicebus: max lock renewal duration exceeded, cancelling processing",
+						"message_id", d.msg.MessageID,
+					)
+				}
+				if d.processingCancel != nil {
+					d.processingCancel()
+				}
+				return
+			}
 			if err := d.client.RenewMessageLock(ctx, d.msg, nil); err != nil {
 				if ctx.Err() != nil {
 					return
@@ -441,14 +548,18 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 	}
 }
 
-// rawInbound is a non-SDK pair returned by pollAndConvert: it bundles
+// rawInbound is a non-SDK tuple returned by pollAndConvert: it bundles
 // the translated envelope with the originating SDK message so the poll
 // loop in receiver.go can hand both to newDelivery without ever naming
 // an SDK type in its own imports (the asbDelivery settlement methods
-// need the whole *azservicebus.ReceivedMessage, not just an id).
+// need the whole *azservicebus.ReceivedMessage, not just an id). It
+// also pins the asbAPI client the message was received on: settlement
+// must target the SAME link even if a credential rotation swaps the
+// receiver stack between receive and settle.
 type rawInbound struct {
-	env *messaging.Envelope
-	msg *azservicebus.ReceivedMessage
+	env    *messaging.Envelope
+	msg    *azservicebus.ReceivedMessage
+	client asbAPI
 }
 
 // pollAndConvert performs a single ReceiveMessages call against the
@@ -470,7 +581,16 @@ func (r *Receiver) pollAndConvert(ctx context.Context) ([]rawInbound, error) {
 		defer cancel()
 	}
 
-	msgs, err := r.client.ReceiveMessages(recvCtx, r.cfg.MaxMessages, nil)
+	// Snapshot the client under the lock: ApplyCredentials may swap the
+	// receiver stack concurrently (credential rotation). The snapshot is
+	// used for the whole poll+abandon cycle so a mid-cycle swap can
+	// never yield a nil or half-initialised client.
+	client := r.currentClient()
+	if client == nil {
+		return nil, shared.ErrUnavailable.WithMessage("servicebus: receiver not started")
+	}
+
+	msgs, err := client.ReceiveMessages(recvCtx, r.cfg.MaxMessages, nil)
 	if err != nil {
 		// Our per-receive max_wait_time deadline fired (parent still
 		// live): an idle long-poll, not a transport failure.
@@ -507,7 +627,16 @@ func (r *Receiver) pollAndConvert(ctx context.Context) ([]rawInbound, error) {
 				)
 			}
 			if !r.cfg.receiveAndDelete() {
-				_ = r.client.AbandonMessage(ctx, msg, nil)
+				if abandonErr := client.AbandonMessage(ctx, msg, nil); abandonErr != nil && r.logger != nil {
+					// Non-fatal: the lock will lapse and the broker
+					// redelivers anyway — but surface it, a silent
+					// abandon failure hides settlement problems.
+					r.logger.Warn("servicebus: abandon of malformed delivery failed; lock will lapse",
+						"entity", r.entityName(),
+						"message_id", msg.MessageID,
+						"error", abandonErr,
+					)
+				}
 			}
 			continue
 		}
@@ -518,7 +647,7 @@ func (r *Receiver) pollAndConvert(ctx context.Context) ([]rawInbound, error) {
 				"body_len", len(msg.Body),
 			)
 		}
-		out = append(out, rawInbound{env: env, msg: msg})
+		out = append(out, rawInbound{env: env, msg: msg, client: client})
 	}
 	return out, nil
 }

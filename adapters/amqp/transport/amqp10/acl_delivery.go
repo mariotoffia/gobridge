@@ -38,11 +38,23 @@ type Delivery struct {
 	metrics ports.MetricsExporter
 	clk     clock.Clock
 
-	mu       sync.Mutex
-	settled  bool
-	settleOK bool
+	mu sync.Mutex
+	// settled: a settlement attempt has been claimed (may still be in
+	// flight). settleDone: that attempt has finished. settleOK: it
+	// finished successfully. The three flags let concurrent callers
+	// distinguish "in progress" from "previously failed" (finding 17).
+	settled    bool
+	settleDone bool
+	settleOK   bool
 
-	// delayWarnOnce dedupes the "delayed retry not honored" Warn to once
+	// onSettled, when set (by the owning Receiver), is invoked exactly
+	// once after the first settlement attempt completes — success or
+	// failure — so the receiver can track in-flight deliveries and
+	// bound its Close on graceful shutdown. Guarded by onSettledOnce.
+	onSettled     func()
+	onSettledOnce sync.Once
+
+	// delayWarnOnce dedupes the "delayed retry" Warn to once
 	// per receiver link. It is shared by every Delivery created from the
 	// same link (set by receiverLink.Receive) so an unhonored delayed
 	// retry warns once per link rather than once per message (G-N2). A nil
@@ -83,19 +95,53 @@ func NewDelivery(
 
 func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 
+// alreadySettledError reports the state of a delivery whose settlement
+// was already claimed by an earlier call. A concurrent second caller
+// used to get a misleading "already settled with error" while the first
+// attempt was merely still IN FLIGHT; the in-progress case now has its
+// own message (finding 17). Callers must hold no locks.
+func (d *Delivery) alreadySettledError() error {
+	d.mu.Lock()
+	done, ok := d.settleDone, d.settleOK
+	d.mu.Unlock()
+	if ok {
+		return nil
+	}
+	if !done {
+		return shared.ErrUnavailable.WithMessage("amqp10: delivery settlement already in progress")
+	}
+	return shared.ErrUnavailable.WithMessage("amqp10: delivery settlement previously failed")
+}
+
+// fireOnSettled invokes the receiver's in-flight tracking hook exactly
+// once. Safe to call multiple times and with a nil hook.
+func (d *Delivery) fireOnSettled() {
+	d.onSettledOnce.Do(func() {
+		if d.onSettled != nil {
+			d.onSettled()
+		}
+	})
+}
+
+// finishSettle records the outcome of a settlement attempt and fires
+// the in-flight tracking hook.
+func (d *Delivery) finishSettle(ok bool) {
+	d.mu.Lock()
+	d.settleDone = true
+	d.settleOK = ok
+	d.mu.Unlock()
+	d.fireOnSettled()
+}
+
 // Ack settles the message with an accepted disposition. The settlement
-// is idempotent — only the first successful call performs the operation.
-// If a prior settlement attempt failed, subsequent calls return
-// ErrUnavailable to signal the unsettled state.
+// is idempotent — only the first call performs the operation. If a
+// prior settlement attempt failed (or is still in flight), subsequent
+// calls return ErrUnavailable to signal the unsettled state.
 func (d *Delivery) Ack(ctx context.Context) error {
 	d.mu.Lock()
 	if d.settled {
-		ok := d.settleOK
 		d.mu.Unlock()
-		if ok {
-			return nil
-		}
-		return shared.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+		return d.alreadySettledError()
 	}
 	d.settled = true
 	d.mu.Unlock()
@@ -110,13 +156,10 @@ func (d *Delivery) Ack(ctx context.Context) error {
 	err := d.settle.AcceptMessage(ctx, d.msg)
 	d.metrics.Timer(MetricAMQP10AcceptLatency, d.clk.Since(start))
 
+	d.finishSettle(err == nil)
 	if err != nil {
 		return MapError(err)
 	}
-
-	d.mu.Lock()
-	d.settleOK = true
-	d.mu.Unlock()
 	return nil
 }
 
@@ -125,24 +168,24 @@ func (d *Delivery) Ack(ctx context.Context) error {
 // When after is zero, the message is released for immediate redelivery
 // (ReleaseMessage). When after is positive, the message is modified with
 // DeliveryFailed=true (ModifyMessage) to hand it back to the broker for
-// redelivery. AMQP 1.0 has no portable client-side delayed-redelivery
-// primitive, so the requested delay is ADVISORY: the broker — not this
-// client — controls when the message is redelivered. The message is
-// never dropped, which preserves at-least-once delivery (the safe choice
-// over returning ErrNotSupported, which would route every backed-off
-// retry straight to the DLQ).
+// redelivery, and the requested delay is attached as the
+// x-opt-delivery-time message annotation (absolute ms-epoch scheduled
+// delivery time) merged via the modified outcome. Brokers with
+// scheduled-delivery support (e.g. Artemis) honor the annotation;
+// brokers without it fall back to their redelivery-delay policy, so the
+// delay remains best-effort — surfaced via
+// MetricAMQP10DelayedRetryUnhonored and a once-per-link Warn. The
+// message is never dropped, which preserves at-least-once delivery (the
+// safe choice over returning ErrNotSupported, which would route every
+// backed-off retry straight to the DLQ).
 //
-// If a prior settlement attempt failed, subsequent calls return
-// ErrUnavailable.
+// If a prior settlement attempt failed (or is in flight), subsequent
+// calls return ErrUnavailable.
 func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) error {
 	d.mu.Lock()
 	if d.settled {
-		ok := d.settleOK
 		d.mu.Unlock()
-		if ok {
-			return nil
-		}
-		return shared.ErrUnavailable.WithMessage("amqp10: delivery already settled with error")
+		return d.alreadySettledError()
 	}
 	d.settled = true
 	d.mu.Unlock()
@@ -150,17 +193,20 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 	var err error
 	if after > 0 {
 		// Finding 2 (delayed-retry boundary): the broker, not this
-		// client, controls redelivery timing for a modified outcome, so
-		// the runtime's requested backoff is NOT honored here. This is a
-		// silent retry-spacing loss, so surface it two ways (G-N2): a
-		// per-message counter for rate/alerting and a once-per-link Warn
-		// (deduped via delayWarnOnce) so operators see it without
-		// per-message log spam.
+		// client, ultimately controls redelivery timing for a modified
+		// outcome. The x-opt-delivery-time annotation asks the broker to
+		// schedule redelivery at now+after; brokers that ignore it make
+		// the runtime's backoff effectively broker-driven. Surface that
+		// two ways (G-N2): a per-message counter for rate/alerting and a
+		// once-per-link Warn (deduped via delayWarnOnce).
 		d.metrics.Counter(MetricAMQP10DelayedRetryUnhonored, 1)
 		d.warnDelayedRetryUnhonored(after)
 		err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{
 			DeliveryFailed:    true,
 			UndeliverableHere: false,
+			Annotations: amqp.Annotations{
+				annotationDeliveryTime: d.clk.Now().Add(after).UnixMilli(),
+			},
 		})
 	} else {
 		if logging.TraceEnabled(d.logger) {
@@ -171,13 +217,10 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 		err = d.settle.ReleaseMessage(ctx, d.msg)
 	}
 
+	d.finishSettle(err == nil)
 	if err != nil {
 		return MapError(err)
 	}
-
-	d.mu.Lock()
-	d.settleOK = true
-	d.mu.Unlock()
 	return nil
 }
 
@@ -187,19 +230,26 @@ func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
 	return shared.ErrNotSupported
 }
 
+// annotationDeliveryTime is the broker message annotation carrying an
+// absolute scheduled-delivery time in milliseconds since epoch. Merged
+// into the message via the modified outcome's annotations so brokers
+// with scheduled-delivery support (e.g. ActiveMQ Artemis) space out the
+// redelivery per the runtime's requested backoff.
+const annotationDeliveryTime = "x-opt-delivery-time"
+
 // warnDelayedRetryUnhonored emits a single Warn per receiver link when a
-// delayed retry cannot be honored client-side. delayWarnOnce is shared by
-// every Delivery created from the same link, so the warning fires once
-// per link rather than once per message; MetricAMQP10DelayedRetryUnhonored
-// still records every occurrence. A nil guard (directly-constructed
-// deliveries) warns on each call.
+// delayed retry's spacing depends on broker cooperation. delayWarnOnce is
+// shared by every Delivery created from the same link, so the warning
+// fires once per link rather than once per message;
+// MetricAMQP10DelayedRetryUnhonored still records every occurrence. A nil
+// guard (directly-constructed deliveries) warns on each call.
 func (d *Delivery) warnDelayedRetryUnhonored(after time.Duration) {
 	if d.logger == nil {
 		return
 	}
 	emit := func() {
 		d.logger.Warn(
-			"amqp10: delayed retry not honored client-side; broker controls redelivery timing",
+			"amqp10: delayed retry not honored client-side; x-opt-delivery-time annotation attached, broker controls redelivery timing",
 			"envelope_id", d.env.ID(),
 			"requested_delay", after,
 		)

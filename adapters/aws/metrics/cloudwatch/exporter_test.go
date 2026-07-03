@@ -6,13 +6,23 @@ import (
 
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 
-	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
+// testBatcher builds a batcher with a deterministic fake clock and the
+// given flush-trigger threshold. maxBuffered/maxRetry stay unbounded
+// unless the test overrides cfg fields explicitly.
+func testBatcher(bufferSize int) *batcher {
+	return newBatcher(Config{
+		BufferSize: bufferSize,
+		Clock:      clocktest.NewAt(time.Unix(1700000000, 0)),
+	})
+}
+
 // Verifies batcher add stores a counter datum with correct name, value, unit, and dimensions.
 func TestBatcher_AddCounter(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 
 	full := b.add(metricData{
 		name:       "test.counter",
@@ -40,9 +50,38 @@ func TestBatcher_AddCounter(t *testing.T) {
 	}
 }
 
+// MF-6 regression: counter increments for the same (name, tags) aggregate
+// into ONE summed datum per flush window instead of one datum per increment.
+func TestBatcher_CounterAggregatesPerNameAndTags(t *testing.T) {
+	b := testBatcher(100)
+
+	for i := 0; i < 500; i++ {
+		b.addCounter("requests", 1, []shared.Tag{{Key: "route_id", Value: "orders"}})
+	}
+	b.addCounter("requests", 2, []shared.Tag{{Key: "route_id", Value: "invoices"}})
+
+	data := b.drain()
+	if len(data) != 2 {
+		t.Fatalf("expected 2 aggregated counter datums, got %d", len(data))
+	}
+	byDim := map[string]float64{}
+	for _, d := range data {
+		if len(d.Dimensions) != 1 {
+			t.Fatalf("expected 1 dimension, got %d", len(d.Dimensions))
+		}
+		byDim[*d.Dimensions[0].Value] = *d.Value
+	}
+	if byDim["orders"] != 500 {
+		t.Errorf("orders sum = %f, want 500", byDim["orders"])
+	}
+	if byDim["invoices"] != 2 {
+		t.Errorf("invoices sum = %f, want 2", byDim["invoices"])
+	}
+}
+
 // Verifies histogram samples aggregate into StatisticValues on drain.
 func TestBatcher_AddHistogram(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 
 	for _, v := range []float64{10, 20, 30, 40, 50} {
 		b.add(metricData{
@@ -78,11 +117,14 @@ func TestBatcher_AddHistogram(t *testing.T) {
 
 // Verifies default tags merge with per-metric tags in CloudWatch dimensions.
 func TestBatcher_DefaultTags(t *testing.T) {
-	defaults := []shared.Tag{
-		{Key: "service", Value: "bridge"},
-		{Key: "env", Value: "prod"},
-	}
-	b := newBatcher("Test", defaults, 100, clock.System, nil, 0)
+	b := newBatcher(Config{
+		BufferSize: 100,
+		Clock:      clocktest.NewAt(time.Unix(1700000000, 0)),
+		DefaultTags: []shared.Tag{
+			{Key: "service", Value: "bridge"},
+			{Key: "env", Value: "prod"},
+		},
+	})
 
 	b.add(metricData{
 		name:       "m",
@@ -110,24 +152,28 @@ func TestBatcher_DefaultTags(t *testing.T) {
 	}
 }
 
-// Verifies add returns full once the batcher reaches its capacity.
+// Verifies add returns full once the pending state reaches the trigger
+// threshold. Counters aggregate per (name, tags), so distinct names are
+// used to grow the pending series count.
 func TestBatcher_BufferFull(t *testing.T) {
-	b := newBatcher("Test", nil, 5, clock.System, nil, 0)
+	b := testBatcher(5)
 
-	for i := 0; i < 4; i++ {
-		if b.add(metricData{name: "m", value: float64(i), metricType: metricTypeCounter}) {
+	names := []string{"m1", "m2", "m3", "m4"}
+	for i, n := range names {
+		if b.add(metricData{name: n, value: float64(i), metricType: metricTypeCounter}) {
 			t.Errorf("buffer should not be full at %d", i)
 		}
 	}
-	if !b.add(metricData{name: "m", value: 4, metricType: metricTypeCounter}) {
+	if !b.add(metricData{name: "m5", value: 4, metricType: metricTypeCounter}) {
 		t.Error("buffer should be full at 5")
 	}
 }
 
-// Verifies drain empties mixed counter and histogram state.
+// Verifies drain empties mixed counter, gauge, and histogram state.
 func TestBatcher_DrainClears(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 	b.add(metricData{name: "c", value: 1, metricType: metricTypeCounter})
+	b.add(metricData{name: "g", value: 2, metricType: metricTypeGauge})
 	b.add(metricData{name: "h", value: 10, metricType: metricTypeHistogram})
 
 	if b.isEmpty() {
@@ -145,7 +191,11 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 	for i := 0; i < 35; i++ {
 		tags = append(tags, shared.Tag{Key: "k" + string(rune('A'+i)), Value: "v"})
 	}
-	b := newBatcher("Test", tags, 100, clock.System, nil, 0)
+	b := newBatcher(Config{
+		BufferSize:  100,
+		Clock:       clocktest.NewAt(time.Unix(1700000000, 0)),
+		DefaultTags: tags,
+	})
 	b.add(metricData{name: "m", value: 1, metricType: metricTypeCounter})
 
 	data := b.drain()
@@ -156,7 +206,7 @@ func TestBatcher_DimensionLimit(t *testing.T) {
 
 // Verifies histograms with different tag sets produce separate aggregated datums.
 func TestBatcher_MultipleHistogramKeys(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 
 	b.add(metricData{name: "latency", value: 10, tags: []shared.Tag{{Key: "r", Value: "A"}}, metricType: metricTypeHistogram})
 	b.add(metricData{name: "latency", value: 20, tags: []shared.Tag{{Key: "r", Value: "B"}}, metricType: metricTypeHistogram})
@@ -168,7 +218,46 @@ func TestBatcher_MultipleHistogramKeys(t *testing.T) {
 	}
 }
 
-// Verifies applyDefaults sets flush interval, buffer size, and max batch size.
+// MF-7 regression: the aggregation key must not fold distinct series whose
+// name/tag concatenations collide under a naive separator-joined encoding.
+func TestSeriesKey_NoAmbiguity(t *testing.T) {
+	a := seriesKey("m", []shared.Tag{{Key: "a", Value: "1|b=2"}}, false)
+	b := seriesKey("m", []shared.Tag{{Key: "a", Value: "1"}, {Key: "b", Value: "2"}}, false)
+	if a == b {
+		t.Errorf("distinct tag sets folded to the same key %q", a)
+	}
+
+	c := seriesKey("m|x=y", nil, false)
+	d := seriesKey("m", []shared.Tag{{Key: "x", Value: "y"}}, false)
+	if c == d {
+		t.Errorf("name containing separator folded with tagged series: %q", c)
+	}
+
+	// The rollup copy of a series must never collide with the primary.
+	e := seriesKey("m", nil, true)
+	f := seriesKey("m", nil, false)
+	if e == f {
+		t.Errorf("rollup key must differ from primary key: %q", e)
+	}
+}
+
+// MF-7: names and tags are preserved verbatim on the aggregate structs —
+// a metric name containing the old "|" separator survives drain intact.
+func TestBatcher_SeparatorInNameSurvivesDrain(t *testing.T) {
+	b := testBatcher(100)
+	b.add(metricData{name: "weird|name", value: 1, metricType: metricTypeHistogram})
+
+	data := b.drain()
+	if len(data) != 1 {
+		t.Fatalf("expected 1 datum, got %d", len(data))
+	}
+	if *data[0].MetricName != "weird|name" {
+		t.Errorf("name = %q, want weird|name", *data[0].MetricName)
+	}
+}
+
+// Verifies applyDefaults sets flush interval, buffer size, and the
+// real CloudWatch API batch limits (MF-6).
 func TestConfig_Defaults(t *testing.T) {
 	cfg := &Config{Namespace: "Test"}
 	applyDefaults(cfg)
@@ -179,8 +268,26 @@ func TestConfig_Defaults(t *testing.T) {
 	if cfg.BufferSize != 1000 {
 		t.Errorf("BufferSize = %d, want 1000", cfg.BufferSize)
 	}
-	if cfg.MaxBatchSize != 20 {
-		t.Errorf("MaxBatchSize = %d, want 20", cfg.MaxBatchSize)
+	if cfg.MaxBatchSize != apiMaxBatchDatums {
+		t.Errorf("MaxBatchSize = %d, want %d (CloudWatch API limit)", cfg.MaxBatchSize, apiMaxBatchDatums)
+	}
+	if cfg.MaxBatchBytes != 900_000 {
+		t.Errorf("MaxBatchBytes = %d, want 900000", cfg.MaxBatchBytes)
+	}
+	if cfg.MaxBufferedDatums != 10000 {
+		t.Errorf("MaxBufferedDatums = %d, want 10000", cfg.MaxBufferedDatums)
+	}
+}
+
+// MF-6: a configured MaxBatchSize above the API hard limit is clamped.
+func TestConfig_ClampsMaxBatchSizeToAPILimit(t *testing.T) {
+	cfg := &Config{MaxBatchSize: 5000, MaxBatchBytes: 5_000_000}
+	applyDefaults(cfg)
+	if cfg.MaxBatchSize != apiMaxBatchDatums {
+		t.Errorf("MaxBatchSize = %d, want clamped to %d", cfg.MaxBatchSize, apiMaxBatchDatums)
+	}
+	if cfg.MaxBatchBytes > apiMaxBatchBytes {
+		t.Errorf("MaxBatchBytes = %d, want clamped to <= %d", cfg.MaxBatchBytes, apiMaxBatchBytes)
 	}
 }
 
@@ -208,6 +315,16 @@ func TestOptions(t *testing.T) {
 		t.Errorf("BufferSize = %d, want 500", e.config.BufferSize)
 	}
 
+	WithMaxBatchSize(100)(e)
+	if e.config.MaxBatchSize != 100 {
+		t.Errorf("MaxBatchSize = %d, want 100", e.config.MaxBatchSize)
+	}
+
+	WithMaxBufferedDatums(2000)(e)
+	if e.config.MaxBufferedDatums != 2000 {
+		t.Errorf("MaxBufferedDatums = %d, want 2000", e.config.MaxBufferedDatums)
+	}
+
 	WithEndpoint("http://localhost:4566")(e)
 	if e.config.Endpoint != "http://localhost:4566" {
 		t.Errorf("Endpoint = %q", e.config.Endpoint)
@@ -217,29 +334,51 @@ func TestOptions(t *testing.T) {
 	if len(e.config.DefaultTags) != 1 {
 		t.Errorf("DefaultTags len = %d, want 1", len(e.config.DefaultTags))
 	}
+
+	WithRollupMetrics("OutboxDepth", "DLQEntries")(e)
+	if len(e.config.RollupMetrics) != 2 {
+		t.Errorf("RollupMetrics len = %d, want 2", len(e.config.RollupMetrics))
+	}
+
+	WithInstanceTag("bridge-1")(e)
+	if e.config.InstanceID != "bridge-1" {
+		t.Errorf("InstanceID = %q, want bridge-1", e.config.InstanceID)
+	}
 }
 
-// Verifies metricNameFromKey strips tag suffixes from composite metric keys.
-func TestMetricNameFromKey(t *testing.T) {
-	tests := []struct {
-		key  string
-		want string
-	}{
-		{"LeaseAcquireLatency|lease_id=test-1", "LeaseAcquireLatency"},
-		{"SomeMetric", "SomeMetric"},
-		{"A|B=C|D=E", "A"},
+// MF-8: WithInstanceTag("") auto-derives a hostname-pid identity.
+func TestWithInstanceTag_DerivesWhenEmpty(t *testing.T) {
+	e := &Exporter{config: Config{}}
+	WithInstanceTag("")(e)
+	if e.config.InstanceID == "" {
+		t.Fatal("expected derived non-empty InstanceID")
 	}
-	for _, tt := range tests {
-		got := metricNameFromKey(tt.key)
-		if got != tt.want {
-			t.Errorf("metricNameFromKey(%q) = %q, want %q", tt.key, got, tt.want)
+}
+
+// MF-8: an InstanceID becomes an instance_id dimension on every
+// dimensioned datum via DefaultTags.
+func TestApplyDefaults_InstanceTagJoinsDefaultTags(t *testing.T) {
+	cfg := &Config{InstanceID: "bridge-7"}
+	applyDefaults(cfg)
+	if !hasTagKey(cfg.DefaultTags, TagKeyInstanceID) {
+		t.Fatalf("expected %s in DefaultTags, got %v", TagKeyInstanceID, cfg.DefaultTags)
+	}
+	// Idempotent: applying twice must not duplicate the tag.
+	applyDefaults(cfg)
+	count := 0
+	for _, tag := range cfg.DefaultTags {
+		if tag.Key == TagKeyInstanceID {
+			count++
 		}
+	}
+	if count != 1 {
+		t.Errorf("instance_id tag appears %d times, want 1", count)
 	}
 }
 
 // Verifies histogram datums preserve the configured standard unit on drain.
 func TestBatcher_HistogramUnit(t *testing.T) {
-	b := newBatcher("Test", nil, 100, clock.System, nil, 0)
+	b := testBatcher(100)
 	b.add(metricData{
 		name:       "timer",
 		value:      42,

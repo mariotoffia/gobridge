@@ -28,19 +28,33 @@ func (s *amqpSessionLink) Close(ctx context.Context) error {
 // NewReceiverLink opens a new receiver link on this session for the
 // given address. Durability and capabilities are configured from
 // ReceiverConfig fields without leaking SDK types to callers.
+//
+// Durable subscriptions (durabilityMode > 0) require BOTH a durable
+// SOURCE terminus (SourceDurability — state the BROKER retains) and a
+// non-expiring source (SourceExpiryPolicy Never), plus a stable link
+// name: brokers identify a durable subscription by container-id + link
+// name, so a random per-attach name would orphan the old subscription
+// and silently lose everything published while detached. The
+// client-side Durability mirrors the mode for link-state symmetry.
 func (s *amqpSessionLink) NewReceiverLink(
 	ctx context.Context,
 	address string,
 	credit int32,
 	durabilityMode uint32,
 	capability string,
+	linkName string,
 ) (*receiverLink, error) {
 	opts := &amqp.ReceiverOptions{
 		Credit:             credit,
 		SourceCapabilities: []string{capability},
 	}
+	if linkName != "" {
+		opts.Name = linkName
+	}
 	if durabilityMode > 0 {
 		opts.Durability = amqp.Durability(durabilityMode)
+		opts.SourceDurability = amqp.Durability(durabilityMode)
+		opts.SourceExpiryPolicy = amqp.ExpiryPolicyNever
 	}
 	r, err := s.raw.NewReceiver(ctx, address, opts)
 	if err != nil {
@@ -50,12 +64,14 @@ func (s *amqpSessionLink) NewReceiverLink(
 }
 
 // NewSenderLink opens a new sender link on this session for the given
-// address.
+// address. msgDurable sets the message-header durable flag stamped on
+// every message sent over the returned link (see SenderConfig.Durable).
 func (s *amqpSessionLink) NewSenderLink(
 	ctx context.Context,
 	address string,
 	durabilityMode uint32,
 	capability string,
+	msgDurable bool,
 ) (*senderLink, error) {
 	opts := &amqp.SenderOptions{
 		TargetCapabilities: []string{capability},
@@ -67,5 +83,5 @@ func (s *amqpSessionLink) NewSenderLink(
 	if err != nil {
 		return nil, fmt.Errorf("amqp10: new sender: %w", err)
 	}
-	return &senderLink{raw: snd}, nil
+	return &senderLink{raw: snd, durable: msgDurable}, nil
 }

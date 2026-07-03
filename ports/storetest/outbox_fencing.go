@@ -241,17 +241,22 @@ func testClaimReturnsSameKeyRecordsInCreatedOrder(t *testing.T, store ports.Outb
 	}
 }
 
-// testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt verifies that records sharing
-// an ordering key AND an identical created_at are still claimed in a
-// deterministic order (ascending EnvelopeID), so equal-millisecond timestamps
-// never yield undefined intra-key ordering on any backend.
-func testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt(t *testing.T, store ports.OutboxStore) {
+// testClaimTieBreaksByPersistOrderOnEqualCreatedAt verifies that records
+// sharing an ordering key AND an identical created_at are claimed in persist
+// order: the store assigns a monotonic per-partition sequence at Persist
+// (persistence.OutboxSnapshot.Seq) and orders claims by ascending
+// (created_at, seq). Two same-key messages published within the same
+// millisecond must therefore drain in the order they were persisted on every
+// backend — never in envelope-ID (random hex) order.
+func testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	const orderingKey = "device-tie-1"
 	createdAt := time.Now().Add(-time.Hour).UTC()
 
-	// All records share one created_at; persisted with envelope IDs out of
-	// order. Expected claim order is ascending EnvelopeID.
+	// All records share one created_at; envelope IDs are deliberately in
+	// DESCENDING lexical order relative to persist order, so a backend that
+	// still tie-breaks by envelope ID fails. Expected claim order is persist
+	// order: tie-c, tie-a, tie-b.
 	ids := []string{"tie-c", "tie-a", "tie-b"}
 	for _, id := range ids {
 		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
@@ -285,10 +290,17 @@ func testClaimTieBreaksByEnvelopeIDOnEqualCreatedAt(t *testing.T, store ports.Ou
 		t.Fatalf("expected %d claimed, got %d", len(ids), len(claimed))
 	}
 
-	want := []string{"env-tie-a", "env-tie-b", "env-tie-c"}
 	for i, rec := range claimed {
-		if rec.EnvelopeID() != want[i] {
-			t.Fatalf("tie-break order at %d: got %q, want %q (equal created_at must order by EnvelopeID)", i, rec.EnvelopeID(), want[i])
+		if rec.ID() != ids[i] {
+			t.Fatalf("tie-break order at %d: got %q, want %q (equal created_at must order by persist sequence)", i, rec.ID(), ids[i])
+		}
+	}
+	// The store-assigned sequence must be strictly increasing in persist
+	// order — it is the durable tiebreaker, not an in-memory artifact.
+	for i := 1; i < len(claimed); i++ {
+		if claimed[i].Seq() <= claimed[i-1].Seq() {
+			t.Fatalf("seq not strictly increasing in persist order: seq[%d]=%d, seq[%d]=%d",
+				i-1, claimed[i-1].Seq(), i, claimed[i].Seq())
 		}
 	}
 }

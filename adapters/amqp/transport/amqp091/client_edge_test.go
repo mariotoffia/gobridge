@@ -10,12 +10,15 @@ import (
 	"testing"
 )
 
-// TestInjectCredentials_ExistingUserInfo validates that credentials
-// already present in the URL are not overwritten.
+// TestInjectCredentials_ExistingUserInfo validates that explicitly
+// configured (or rotated) credentials OVERRIDE userinfo embedded in the
+// broker URL. Before F8 the embedded userinfo won, which made a
+// credential rotation report success while every redial silently kept
+// the old embedded credentials.
 func TestInjectCredentials_ExistingUserInfo(t *testing.T) {
 	got := injectCredentials("amqp://existing:pass@host:5672/", "new", "new")
-	if got != "amqp://existing:pass@host:5672/" {
-		t.Fatalf("expected original URL preserved, got %s", got)
+	if got != "amqp://new:new@host:5672/" {
+		t.Fatalf("expected rotated credentials to override URL userinfo, got %s", got)
 	}
 }
 

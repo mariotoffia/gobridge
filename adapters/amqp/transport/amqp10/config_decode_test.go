@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/config/parser"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // These tests decode through the REAL production plugin-options decoder
@@ -76,4 +77,102 @@ func TestPluginOptionsDecode_UnknownKey_Errors(t *testing.T) {
 	err := parser.NewRawConfig(input).Decode(&cfg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bogus_key")
+}
+
+// TestPluginOptionsDecode_RoutingStringForms proves the typed config
+// accepts the documented string forms ("anycast"/"multicast") for the
+// routing key via RoutingType's TextUnmarshaler, while remaining
+// backward compatible with the original integer encoding (0/1).
+func TestPluginOptionsDecode_RoutingStringForms(t *testing.T) {
+	tests := []struct {
+		name    string
+		routing any
+		want    RoutingType
+		wantErr bool
+	}{
+		{name: "string_multicast", routing: "multicast", want: RoutingMulticast},
+		{name: "string_anycast", routing: "anycast", want: RoutingAnycast},
+		{name: "string_mixed_case", routing: "Multicast", want: RoutingMulticast},
+		{name: "int_zero", routing: 0, want: RoutingAnycast},
+		{name: "int_one", routing: 1, want: RoutingMulticast},
+		{name: "invalid_string", routing: "broadcast", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := map[string]any{
+				"receiver": map[string]any{
+					"address": "orders",
+					"routing": tc.routing,
+				},
+			}
+			var cfg Config
+			err := parser.NewRawConfig(input).Decode(&cfg)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Receiver.Routing)
+		})
+	}
+}
+
+// TestPluginOptionsDecode_CanonicalYAML pins the CANONICAL documented
+// YAML shape for the amqp10 transport: role configs nested under
+// session/receiver/sender (never flat keys). The YAML text below is the
+// docs' reference example — if this test fails, either the decoder or
+// the documentation contract changed.
+func TestPluginOptionsDecode_CanonicalYAML(t *testing.T) {
+	const canonical = `
+session:
+  address: "amqps://broker.example.com:5671"
+  container_id: "gobridge-replica-1"
+  connect_timeout: 10s
+  sasl_mechanism: plain
+  username: bridge
+  password: secret
+  tls:
+    enable: true
+receiver:
+  address: "orders"
+  link_credit: 50
+  durability_mode: 2
+  routing: multicast
+  subscription_name: "orders-sub"
+sender:
+  address: "orders-out"
+  timeout: 15s
+  routing: anycast
+  durable: false
+credentials_uri: "aws-secretsmanager://prod/amqp"
+`
+	var raw map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(canonical), &raw))
+
+	var cfg Config
+	require.NoError(t, parser.NewRawConfig(raw).Decode(&cfg))
+
+	require.Equal(t, "amqps://broker.example.com:5671", cfg.Session.Address)
+	require.Equal(t, "gobridge-replica-1", cfg.Session.ContainerID)
+	require.Equal(t, 10*time.Second, cfg.Session.ConnectTimeout)
+	require.Equal(t, "plain", cfg.Session.SASLMechanism)
+	require.Equal(t, "bridge", cfg.Session.Username)
+	require.Equal(t, "secret", cfg.Session.Password.Reveal())
+	require.NotNil(t, cfg.Session.TLS)
+	require.True(t, cfg.Session.TLS.Enable)
+
+	require.Equal(t, "orders", cfg.Receiver.Address)
+	require.Equal(t, uint32(50), cfg.Receiver.LinkCredit)
+	require.Equal(t, uint32(2), cfg.Receiver.DurabilityMode)
+	require.Equal(t, RoutingMulticast, cfg.Receiver.Routing)
+	require.Equal(t, "orders-sub", cfg.Receiver.SubscriptionName)
+
+	require.Equal(t, "orders-out", cfg.Sender.Address)
+	require.Equal(t, 15*time.Second, cfg.Sender.Timeout)
+	require.Equal(t, RoutingAnycast, cfg.Sender.Routing)
+	require.NotNil(t, cfg.Sender.Durable)
+	require.False(t, *cfg.Sender.Durable)
+
+	require.Equal(t, "aws-secretsmanager://prod/amqp", cfg.CredentialsURIRef)
+	require.NoError(t, cfg.Validate())
 }

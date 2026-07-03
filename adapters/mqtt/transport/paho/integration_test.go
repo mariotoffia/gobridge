@@ -198,11 +198,11 @@ func TestIntegration_PubSubRoundTrip(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			mu.Lock()
 			received = append(received, del.Envelope())
 			mu.Unlock()
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 
@@ -307,12 +307,12 @@ func TestIntegration_BackpressureNoDrops(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		_ = recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation
 			mu.Lock()
 			rxPayloads = append(rxPayloads, string(del.Envelope().Payload()))
 			mu.Unlock()
-			return nil
+			return del.Ack(ctx) // settle like the runtime does
 		})
 	}()
 

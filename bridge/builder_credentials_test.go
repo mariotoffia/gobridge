@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,7 +79,12 @@ func TestWithPushCredentialStore(t *testing.T) {
 }
 
 // TestWithPolledCredentialStore_WrapsPullStore verifies that the convenience
-// option both sets the pull store AND wraps it in a push store.
+// option registers the pull store AND that the push wrapper is produced at
+// build time (Finding 13). The wrapper is NOT constructed eagerly at
+// option-application time — doing so captured whatever logger was set so far,
+// making the result depend on option ordering. The pull store and poll config
+// are recorded and effectivePushStore builds the wrapper with the fully-resolved
+// logger, so option order is irrelevant.
 func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 	t.Parallel()
 
@@ -93,14 +100,43 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 	}))
 
 	require.Same(t, pull, b.credStore, "pull store must be registered")
-	require.NotNil(t, b.pushCredStore, "push store wrapper must be registered")
+	require.Nil(t, b.pushCredStore, "poll wrapper must NOT be built eagerly (Finding 13)")
+	require.Same(t, pull, b.pollCredStore, "pull store must be recorded for lazy wrapping")
 
-	// Sanity: the wrapper must be usable.
+	// The wrapper is resolved at build time and must be usable.
+	push := b.effectivePushStore()
+	require.NotNil(t, push, "effectivePushStore must build the poll wrapper")
+
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	ch, err := b.pushCredStore.Watch(ctx, "file://x")
+	ch, err := push.Watch(ctx, "file://x")
 	require.NoError(t, err)
 	require.NotNil(t, ch)
+}
+
+// TestWithPolledCredentialStore_OrderIndependent verifies the poll wrapper picks
+// up a logger set by a LATER option (Finding 13): before the fix, WithLogger
+// applied after WithPolledCredentialStore was silently ignored because the
+// wrapper had already captured a nil logger.
+func TestWithPolledCredentialStore_OrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	pull := &fakeCredentialStore{
+		creds: map[string]*connectivity.CredentialSet{
+			"file://x": connectivity.NewCredentialSet(pwCred("u", ""), nil),
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := &ports.BridgeConfig{}
+	// WithLogger applied AFTER WithPolledCredentialStore — the wrapper must
+	// still observe the logger because it is built lazily at build time.
+	b := NewBuilder(cfg,
+		WithPolledCredentialStore(pull, ports.PollBasedWrapperConfig{PollInterval: time.Second}),
+		WithLogger(logger),
+	)
+	require.Same(t, logger, b.logger)
+	require.NotNil(t, b.effectivePushStore(), "wrapper resolves regardless of option order")
 }
 
 // TestCredentialRefresher_NoopWithoutPush verifies the refresher is a
@@ -187,4 +223,71 @@ func TestCredentialRefresher_RoutesRotationToSession(t *testing.T) {
 func pwCred(username, password string) *connectivity.PasswordCredential {
 	c := connectivity.NewPasswordCredential(username, password)
 	return &c
+}
+
+// countingPushStore counts Watch calls and shares a single emit channel across
+// every Watch so a test can assert both how many pollers were spawned and that
+// a single rotation fans out to all shared targets.
+type countingPushStore struct {
+	watchCalls atomic.Int32
+	out        chan *connectivity.CredentialSet
+}
+
+func (p *countingPushStore) Watch(ctx context.Context, _ string) (<-chan *connectivity.CredentialSet, error) {
+	p.watchCalls.Add(1)
+	proxy := make(chan *connectivity.CredentialSet, 1)
+	go func() {
+		defer close(proxy)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case c, ok := <-p.out:
+				if !ok {
+					return
+				}
+				select {
+				case proxy <- c:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return proxy, nil
+}
+
+// TestCredentialRefresher_DedupesWatchPerURI validates Finding 14: two targets
+// that share the same credentials URI must spawn exactly ONE poller (not one
+// per Watch call), and a single rotation must fan out to BOTH targets. Before
+// the fix the watchers map was write-only, so every Watch spawned a duplicate
+// poller and the intended dedup did not exist.
+func TestCredentialRefresher_DedupesWatchPerURI(t *testing.T) {
+	t.Parallel()
+
+	push := &countingPushStore{out: make(chan *connectivity.CredentialSet, 1)}
+	r := NewCredentialRefresher(push, nil)
+	defer r.Close()
+
+	s1 := &credAwareFakeSession{fakeSession: &fakeSession{}, applied: make(chan *connectivity.CredentialSet, 2)}
+	s2 := &credAwareFakeSession{fakeSession: &fakeSession{}, applied: make(chan *connectivity.CredentialSet, 2)}
+
+	const uri = "file://shared-creds"
+	r.Watch(t.Context(), uri, s1)
+	r.Watch(t.Context(), uri, s2)
+
+	require.Equal(t, int32(1), push.watchCalls.Load(),
+		"a second Watch for the same URI must not spawn a duplicate poller")
+
+	want := connectivity.NewCredentialSet(pwCred("rotated", "secret"), nil)
+	push.out <- want
+
+	for i, s := range []*credAwareFakeSession{s1, s2} {
+		select {
+		case got := <-s.applied:
+			require.Equal(t, "rotated", got.Password().Username())
+		case <-time.After(2 * time.Second):
+			t.Fatalf("rotation not fanned out to shared target %d", i+1)
+		}
+	}
 }

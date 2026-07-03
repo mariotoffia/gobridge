@@ -2,6 +2,7 @@ package transport
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -45,8 +46,28 @@ type Config struct {
 	// falls through to 30s.
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval,omitempty" json:"heartbeat_interval,omitempty" mapstructure:"heartbeat_interval"`
 	// MaxClients caps concurrent SSE connections per sender. Zero
-	// means no cap.
+	// falls through to the 10000 default; there is no uncapped mode.
 	MaxClients int `yaml:"max_clients,omitempty" json:"max_clients,omitempty" mapstructure:"max_clients"`
+
+	// RedirectEndpoint names the PeerInfo.Endpoints key an SSE sender
+	// uses to build the 307 redirect target when the bound route is
+	// owned by a remote cluster node. Empty (the default) DISABLES the
+	// redirect: requests for a remote route are refused with 503 so the
+	// internal peer endpoint (the one the cluster forwarder uses) is
+	// never leaked to a possibly-external SSE client. Operators who
+	// publish an externally reachable endpoint per node (e.g.
+	// "http_public") opt in by naming that key here; setting it to
+	// "http" restores the pre-hardening behaviour of redirecting to the
+	// internal endpoint.
+	RedirectEndpoint string `yaml:"redirect_endpoint,omitempty" json:"redirect_endpoint,omitempty" mapstructure:"redirect_endpoint"`
+
+	// DedupWindow sizes the receiver's bounded in-memory idempotency
+	// window: the number of most-recently processed Idempotency-Key /
+	// X-Dedup-Id values remembered per receiver. A request presenting a
+	// remembered key is acknowledged without re-emitting the delivery.
+	// Zero falls through to the 4096 default. The window is node-local
+	// and best-effort — see doc.go "Ingress idempotency window".
+	DedupWindow int `yaml:"dedup_window,omitempty" json:"dedup_window,omitempty" mapstructure:"dedup_window"`
 
 	// WriteTimeout bounds each individual SSE frame write. The SSE
 	// handler re-arms this per-write deadline before every frame via
@@ -67,6 +88,11 @@ func (Config) Kind() string { return Kind }
 
 // Validate rejects clearly invalid values.
 func (c Config) Validate() error {
+	if c.Path != "" {
+		if err := validateMountPath(c.Path); err != nil {
+			return err
+		}
+	}
 	if c.MaxBodySize < 0 {
 		return fmt.Errorf("http: max_body_size must be >= 0")
 	}
@@ -78,6 +104,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxClients < 0 {
 		return fmt.Errorf("http: max_clients must be >= 0")
+	}
+	if c.DedupWindow < 0 {
+		return fmt.Errorf("http: dedup_window must be >= 0")
 	}
 	if key := c.APIKey.Reveal(); key != "" && len(key) < minAPIKeyLength {
 		// Name the 16-char minimum as the cause. A short inline key that
@@ -122,4 +151,37 @@ func (c Config) effectiveMode() string {
 		return "sse"
 	}
 	return c.Mode
+}
+
+// defaultDedupWindow is the fallback size of the receiver's bounded
+// ingress idempotency window (number of remembered keys).
+const defaultDedupWindow = 4096
+
+func (c Config) effectiveDedupWindow() int {
+	if c.DedupWindow <= 0 {
+		return defaultDedupWindow
+	}
+	return c.DedupWindow
+}
+
+// validateMountPath rejects operator-supplied paths that would panic
+// http.ServeMux registration at bridge build time (a mux pattern like
+// "POST <path>" panics on malformed input — HTTP-M4). A valid mount
+// path starts with '/', carries no whitespace or control characters,
+// and no ServeMux pattern metacharacters ('{', '}' wildcards): the
+// configured path is a LITERAL mount point, never a pattern.
+func validateMountPath(path string) error {
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("http: path %q must start with '/'", path)
+	}
+	for _, r := range path {
+		switch {
+		case r == '{' || r == '}':
+			return fmt.Errorf(
+				"http: path %q must not contain ServeMux pattern metacharacters '{' or '}'", path)
+		case r == ' ' || r == '\t' || r < 0x20 || r == 0x7f:
+			return fmt.Errorf("http: path %q must not contain whitespace or control characters", path)
+		}
+	}
+	return nil
 }

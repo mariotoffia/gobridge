@@ -38,8 +38,10 @@ var ErrTenantHeaderReserved = &shared.BridgeError{
 	Message: "tenant: TenantHeader must not be a reserved x-bridge.* header",
 }
 
-// Processor validates tenant identity and enforces per-tenant quotas
-// on messages flowing through the processing chain.
+// Processor resolves and validates tenant identity and tracks per-tenant
+// usage for messages flowing through the processing chain. Enforcement is
+// limited to tenant-active and MaxMessageSizeBytes checks; usage tracking
+// is observational (increment-only — no message-count quota ceiling).
 type Processor struct {
 	config    Config
 	validator ports.TenantValidator

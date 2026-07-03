@@ -61,7 +61,7 @@ func TestSQSInbound_MessageAttributes_StripsReservedMixedCase(t *testing.T) {
 // MessageAttributes are still stripped via the NewEnvelope chokepoint.
 func TestSQSInbound_SNSUnwrap_StripsReserved(t *testing.T) {
 	r := receiverForTest(t, true)
-	body := `{"TopicArn":"arn:aws:sns:us-east-1:111:t","Subject":"sns-subj","Message":"inner"}`
+	body := `{"Type":"Notification","TopicArn":"arn:aws:sns:us-east-1:111:t","Subject":"sns-subj","Message":"inner"}`
 	msg := sqstypes.Message{
 		MessageId:     aws.String("m-2"),
 		ReceiptHandle: aws.String("rh"),
@@ -113,7 +113,7 @@ func TestSQSInbound_ReplaceHeaders_DefensiveStrip(t *testing.T) {
 // metadata) survive the chokepoint.
 func TestSQSInbound_SNSStarHeadersPreserved(t *testing.T) {
 	r := receiverForTest(t, true)
-	body := `{"TopicArn":"arn:aws:sns:us-east-1:111:t","Subject":"s","Message":"m"}`
+	body := `{"Type":"Notification","TopicArn":"arn:aws:sns:us-east-1:111:t","Subject":"s","Message":"m"}`
 	msg := sqstypes.Message{
 		MessageId:     aws.String("m-3"),
 		ReceiptHandle: aws.String("rh"),

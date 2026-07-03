@@ -247,3 +247,68 @@ func TestDefaultMerge_ClusteredWithDistributedOverlay(t *testing.T) {
 	assert.Equal(t, "dynamodb", merged.Stores.Lease.Type)
 	assert.Equal(t, "dynamodb", merged.Stores.Outbox.Type)
 }
+
+// TestDefaultMerge_ClusterEndpointsOverlayMerged validates Finding 8: an
+// overlay that adds or changes bridge.cluster endpoints must take effect after
+// a merge (previously the Cluster block was silently dropped), and the merged
+// endpoint map must be cloned so it never aliases the overlay's map.
+func TestDefaultMerge_ClusterEndpointsOverlayMerged(t *testing.T) {
+	base := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "b1"}}
+	overlay := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
+			Cluster: &ports.ClusterConfig{
+				Endpoints: map[string]string{"node-a": "10.0.0.1:8080"},
+			},
+		},
+	}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Bridge.Cluster, "overlay cluster block must be merged, not dropped")
+	assert.Equal(t, "10.0.0.1:8080", merged.Bridge.Cluster.Endpoints["node-a"])
+
+	// Mutating the overlay after the merge must not affect the merged config.
+	overlay.Bridge.Cluster.Endpoints["node-a"] = "mutated"
+	assert.Equal(t, "10.0.0.1:8080", merged.Bridge.Cluster.Endpoints["node-a"],
+		"merged cluster endpoints must be cloned, not aliased")
+}
+
+// TestDefaultMerge_ClusterNilOverlayPreservesBase validates that a nil overlay
+// cluster leaves the base cluster intact (wholesale-replace only when set).
+func TestDefaultMerge_ClusterNilOverlayPreservesBase(t *testing.T) {
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
+			ID:      "b1",
+			Cluster: &ports.ClusterConfig{Endpoints: map[string]string{"node-a": "base:8080"}},
+		},
+	}
+	overlay := &ports.BridgeConfig{Bridge: ports.BridgeSettings{LogLevel: "debug"}}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Bridge.Cluster)
+	assert.Equal(t, "base:8080", merged.Bridge.Cluster.Endpoints["node-a"])
+}
+
+// TestDefaultMerge_Version validates the Finding 8 Version merge rule: a
+// non-zero overlay version (the newer committed version) wins; a zero overlay
+// version leaves the base version intact rather than resetting it to 0.
+func TestDefaultMerge_Version(t *testing.T) {
+	t.Run("non-zero overlay wins", func(t *testing.T) {
+		merged, err := DefaultMerge(
+			&ports.BridgeConfig{Version: 3},
+			&ports.BridgeConfig{Version: 7},
+		)
+		require.NoError(t, err)
+		assert.Equal(t, 7, merged.Version)
+	})
+
+	t.Run("zero overlay preserves base version", func(t *testing.T) {
+		merged, err := DefaultMerge(
+			&ports.BridgeConfig{Version: 3},
+			&ports.BridgeConfig{},
+		)
+		require.NoError(t, err)
+		assert.Equal(t, 3, merged.Version, "a zero overlay version must not reset the base version to 0")
+	})
+}

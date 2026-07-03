@@ -8,17 +8,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
-type credentialType int
-
-const (
-	credTypeUnknown credentialType = iota
-	credTypePassword
-	credTypeTLS
-)
-
 // parseCredentials parses a parameter value into a CredentialSet.
-// Supports JSON objects (username/password or TLS) and simple
-// username:password format.
+// Supports JSON objects (username/password, TLS, or both capabilities
+// combined) and simple username:password format.
 func parseCredentials(value string) (*connectivity.CredentialSet, error) {
 	value = strings.TrimSpace(value)
 
@@ -33,51 +25,84 @@ func parseCredentials(value string) (*connectivity.CredentialSet, error) {
 	return nil, fmt.Errorf("ssm: unsupported credentials format")
 }
 
+// parseJSONCredentials extracts EVERY capability present in the JSON
+// document: a credential set may carry password and TLS material at
+// the same time (e.g. SASL-over-TLS brokers), so parsing must never
+// dispatch to a single branch and silently drop the other capability.
+// A capability participates when the "type" field declares it (tokens
+// may be combined with '+', e.g. "password+tls") or when its fields
+// are present in the document.
 func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return nil, fmt.Errorf("ssm: invalid JSON credentials: %w", err)
 	}
 
-	ct := detectCredentialType(raw)
+	declaredPassword, declaredTLS := declaredCapabilities(raw)
+	wantPassword := declaredPassword || hasPasswordFields(raw)
+	wantTLS := declaredTLS || hasTLSFields(raw)
 
-	switch ct {
-	case credTypePassword:
-		return parseUsernamePasswordJSON(raw)
-	case credTypeTLS:
-		return parseTLSJSON(raw)
-	default:
+	if !wantPassword && !wantTLS {
 		return nil, fmt.Errorf("ssm: unable to determine credential type from JSON")
 	}
+
+	var password *connectivity.PasswordCredential
+	if wantPassword {
+		pw, err := parseUsernamePasswordJSON(raw)
+		if err != nil {
+			return nil, err
+		}
+		password = pw
+	}
+
+	var tls *connectivity.TLSMaterial
+	if wantTLS {
+		tls = parseTLSJSON(raw)
+	}
+
+	return connectivity.NewCredentialSet(password, tls), nil
 }
 
-func detectCredentialType(raw map[string]any) credentialType {
-	if typeStr, ok := raw["type"].(string); ok {
-		switch strings.ToLower(typeStr) {
+// declaredCapabilities reads the optional "type" field. Tokens may be
+// combined with '+' (the serializer emits "password+tls" for combined
+// sets).
+func declaredCapabilities(raw map[string]any) (password, tls bool) {
+	typeStr, ok := raw["type"].(string)
+	if !ok {
+		return false, false
+	}
+	for _, token := range strings.Split(strings.ToLower(typeStr), "+") {
+		switch strings.TrimSpace(token) {
 		case "usernamepassword", "username_password", "password":
-			return credTypePassword
+			password = true
 		case "tls", "certificate", "cert":
-			return credTypeTLS
+			tls = true
 		}
 	}
-
-	if _, ok := raw["username"]; ok {
-		return credTypePassword
-	}
-	if _, ok := raw["user"]; ok {
-		return credTypePassword
-	}
-	if _, ok := raw["certPem"]; ok {
-		return credTypeTLS
-	}
-	if _, ok := raw["cert"]; ok {
-		return credTypeTLS
-	}
-
-	return credTypeUnknown
+	return password, tls
 }
 
-func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
+// hasPasswordFields reports whether the document carries
+// username/password material.
+func hasPasswordFields(raw map[string]any) bool {
+	_, hasUsername := raw["username"]
+	_, hasUser := raw["user"]
+	return hasUsername || hasUser
+}
+
+// hasTLSFields reports whether the document carries TLS material.
+// Deliberately excludes the ambiguous bare "key" and "insecure" fields
+// so a password-only document can never be misread as TLS.
+func hasTLSFields(raw map[string]any) bool {
+	for _, k := range []string{"certPem", "cert", "certificate", "keyPem", "privateKey", "caPem", "ca"} {
+		if _, ok := raw[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.PasswordCredential, error) {
 	username := getStringField(raw, "username", "user")
 	password := getStringField(raw, "password", "pass", "secret")
 
@@ -86,10 +111,10 @@ func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.CredentialSet,
 	}
 
 	pw := connectivity.NewPasswordCredential(username, password)
-	return connectivity.NewCredentialSet(&pw, nil), nil
+	return &pw, nil
 }
 
-func parseTLSJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
+func parseTLSJSON(raw map[string]any) *connectivity.TLSMaterial {
 	certPEM := getStringField(raw, "certPem", "cert", "certificate")
 	keyPEM := getStringField(raw, "keyPem", "key", "privateKey")
 	insecure := getBoolField(raw, "insecure", "insecureSkipVerify")
@@ -112,7 +137,7 @@ func parseTLSJSON(raw map[string]any) (*connectivity.CredentialSet, error) {
 	}
 
 	tls := connectivity.NewTLSMaterial(certPEM, keyPEM, caPEMs, insecure)
-	return connectivity.NewCredentialSet(nil, &tls), nil
+	return &tls
 }
 
 func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
@@ -126,19 +151,21 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 }
 
 // serializeCredentialSet converts a CredentialSet to JSON for storage.
+// The "type" field enumerates every capability present (joined with
+// '+', e.g. "password+tls") so parseJSONCredentials round-trips a
+// combined set without losing either capability.
 func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	m := make(map[string]any)
+	var capabilities []string
 
 	if creds.Password() != nil {
-		m["type"] = "password"
+		capabilities = append(capabilities, "password")
 		m["username"] = creds.Password().Username()
 		m["password"] = creds.Password().Password().Reveal()
 	}
 
 	if creds.TLS() != nil {
-		if creds.Password() == nil {
-			m["type"] = "tls"
-		}
+		capabilities = append(capabilities, "tls")
 		m["certPem"] = creds.TLS().CertPEM()
 		m["keyPem"] = creds.TLS().KeyPEM().Reveal()
 		if caPEMs := creds.TLS().CAPEMs(); len(caPEMs) > 0 {
@@ -147,6 +174,10 @@ func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 		if creds.TLS().InsecureSkipVerify() {
 			m["insecure"] = true
 		}
+	}
+
+	if len(capabilities) > 0 {
+		m["type"] = strings.Join(capabilities, "+")
 	}
 
 	data, err := json.Marshal(m)

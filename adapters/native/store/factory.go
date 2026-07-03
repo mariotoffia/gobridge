@@ -56,37 +56,50 @@ func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConf
 }
 
 // NewOutboxStore creates a SQLite outbox store from the typed config.
-// The runtime-derived StaleClaimDuration is threaded into the store so a
-// claim stranded by a crashed owner is reclaimed once it goes stale (I1);
-// when zero the store stays strictly version-only.
+// The stale-claim window is threaded into the store so a claim stranded
+// by a crashed owner is reclaimed once it goes stale (I1); the typed
+// config's stale_claim_duration (when > 0) overrides the runtime-derived
+// value, and when both are zero the store stays strictly version-only.
+// A non-zero retention overrides the store's default compaction window
+// (negative disables compaction).
 func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, rt ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
-	path, err := requiredPath(cfg)
+	sc, err := requiredSQLiteConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return sqliteoutbox.NewStore(path, sqliteoutbox.WithStaleClaimDuration(rt.StaleClaimDuration)) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
+	staleClaim := rt.StaleClaimDuration
+	if sc.StaleClaimDuration > 0 {
+		staleClaim = sc.StaleClaimDuration
+	}
+
+	opts := []sqliteoutbox.Option{sqliteoutbox.WithStaleClaimDuration(staleClaim)}
+	if sc.Retention != 0 {
+		opts = append(opts, sqliteoutbox.WithRetention(sc.Retention))
+	}
+
+	return sqliteoutbox.NewStore(sc.Path, opts...) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
 }
 
 // NewDLQStore creates a SQLite DLQ store from the typed config.
 func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
-	path, err := requiredPath(cfg)
+	sc, err := requiredSQLiteConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return sqlitedlq.NewStore(path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
+	return sqlitedlq.NewStore(sc.Path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
 }
 
-func requiredPath(cfg ports.PluginConfig) (string, error) {
+func requiredSQLiteConfig(cfg ports.PluginConfig) (SQLiteConfig, error) {
 	sc, ok := sqliteConfigFrom(cfg)
 	if !ok {
-		return "", fmt.Errorf("nativestore: SQLite store requires a *SQLiteConfig, got %T", cfg)
+		return SQLiteConfig{}, fmt.Errorf("nativestore: SQLite store requires a *SQLiteConfig, got %T", cfg)
 	}
 	if sc.Path == "" {
-		return "", fmt.Errorf("nativestore: missing required option \"path\" in SQLite store config")
+		return SQLiteConfig{}, fmt.Errorf("nativestore: missing required option \"path\" in SQLite store config")
 	}
-	return sc.Path, nil
+	return sc, nil
 }
 
 func sqliteConfigFrom(cfg ports.PluginConfig) (SQLiteConfig, bool) {
