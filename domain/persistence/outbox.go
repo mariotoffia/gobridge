@@ -212,8 +212,18 @@ func (r *OutboxRecord) IsClaimable(currentTokenVersion uint64) bool {
 // Claim transitions the aggregate to Claimed for the supplied owner and
 // fencing-token version. Returns shared.ErrOutboxNotClaimable when the
 // record is in a terminal state or is already claimed under an equal-or-
-// newer fencing token. ReplayCount is incremented on every successful
-// claim so callers can enforce poison-message caps.
+// newer fencing token.
+//
+// ReplayCount is incremented on every successful claim. It counts the number
+// of times the record was CLAIMED, NOT the number of failed send attempts:
+// batch-deadline deferrals (claim → release → re-claim) and stale-claim
+// reclaims by a newer fencing token also increment it even though no send ever
+// failed. Consequently replay-count exhaustion alone is not proof the record is
+// poison — a chronically deferred record can cross the cap failure-free. That
+// is why the drainer's poison decision AND-gates replay exhaustion with a
+// minimum-age check (runtime/outbox: poisonMinAge); callers enforcing a
+// poison-message cap MUST apply the same age gate rather than poisoning on
+// replay count alone.
 func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint64) *shared.BridgeError {
 	if !r.IsClaimable(tokenVersion) {
 		return shared.ErrOutboxNotClaimable.

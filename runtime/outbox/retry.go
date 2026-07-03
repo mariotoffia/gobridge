@@ -26,6 +26,11 @@ var errReleasedForRetry = errors.New("outbox: record released for transient retr
 // delivered and has been released back to pending (finding 9): it must be
 // counted as DEFERRED, never as a success, and drives the transient backoff
 // floor so the next cycle does not immediately re-hammer an overloaded batch.
+//
+// Note the deferral re-claims the record on the next cycle, which increments
+// its ReplayCount even though no send failed. Replay count therefore counts
+// claims, not failures, which is why the poison gate (processRecord) AND-checks
+// poisonAgeReached — see poisonMinAge.
 var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadline aborted send")
 
 func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
@@ -104,6 +109,10 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 		return d.handleExpired(ctx, rec, token)
 	}
 
+	// ReplayCount counts CLAIMS, not failed sends (deferrals and reclaims bump
+	// it too), so replay exhaustion alone is not proof of poison. Poisoning is
+	// gated on replay exhaustion AND a minimum record age (poisonAgeReached);
+	// both must hold — see poisonMinAge.
 	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.poisonAgeReached(rec) {
 		return d.handlePoison(ctx, rec, token)
 	}

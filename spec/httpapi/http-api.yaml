@@ -853,7 +853,7 @@ paths:
       summary: Get current effective config
       description: >
         Returns the current merged configuration with sensitive fields
-        (API keys) redacted as "***". Enabled only when the server is
+        (API keys) redacted as "[REDACTED]". Enabled only when the server is
         configured with a config file path and config provider.
       tags: [Config]
       responses:
@@ -957,6 +957,18 @@ paths:
         but refused at commit (see the commit endpoint's 422
         `config_options_loss`), because the discriminator change cannot carry
         replacement options and would erase the existing ones.
+
+
+        PATCH is merge-only: omitted, empty-string, empty-list, and the
+        redaction marker "[REDACTED]" (the value echoed back by a redacted
+        read) all preserve the current value. A field cannot be cleared or
+        removed via PATCH — to clear a field, submit a full replacement
+        configuration. Fields that cannot be cleared this way include
+        http.cors_origins, http.tls_cert_file / http.tls_key_file,
+        http.admin_api_key / http.monitor_api_key (empty or "[REDACTED]" keeps
+        the stored secret; any other non-empty string overwrites the secret
+        verbatim), a receiver/sender/binding session_id, and a receiver's
+        topics list.
       tags: [Config]
       requestBody:
         required: true

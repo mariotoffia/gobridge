@@ -257,7 +257,7 @@ func (a *App) Start(ctx context.Context) error {
 	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, a.logger, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
-	watcher := newPollWatcher(a.cfg, a.pluginRegistry, a.logger)
+	watcher := newPollWatcher(ctx, a.cfg, a.pluginRegistry, a.logger)
 	a.manager = config.NewManager(
 		config.Layer{Name: "file", Loader: source, Watcher: watcher},
 		config.WithManagerLogger(a.logger),

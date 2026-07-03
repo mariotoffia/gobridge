@@ -146,8 +146,24 @@ type RoutePolicy struct {
 	MaxOutboxDepth       int
 	AllowUnfenced        bool
 	AllowRetryDrop       bool
-	SendTimeout          time.Duration
-	DepthCacheTTL        time.Duration
+	// TrustBridgeHeaders, when true, makes the route preserve the
+	// BRIDGE-TO-BRIDGE PROPAGATED reserved headers (correlation-id,
+	// causation-id, idempotency-key, dedup-id, ordering-key, tenant-id,
+	// forwarded-from/hop) carried by an inbound delivery instead of stripping
+	// every x-bridge.* header at ingress. It exists so a receiver fed
+	// EXCLUSIVELY by a trusted upstream bridge can continue a
+	// correlation/idempotency context across the hop. (W3C trace context —
+	// traceparent/tracestate — is NOT x-bridge.*-prefixed, is never stripped,
+	// and survives in BOTH modes.)
+	//
+	// Default false: the safe posture strips all reserved headers so an
+	// external producer cannot spoof bridge metadata (e.g. tenant-id).
+	// INTERNAL-ONLY headers (route-id, route-override, source-id,
+	// content-type) are stripped in BOTH modes — enabling this never lets an
+	// external message steer routing.
+	TrustBridgeHeaders bool
+	SendTimeout        time.Duration
+	DepthCacheTTL      time.Duration
 	// ProcessorTimeout bounds the execution time of a single processor in the
 	// chain. Zero means use DefaultProcessorTimeout (30s). A panicking processor
 	// returns shared.ErrProcessorPanic (Permanent). A processor that exceeds

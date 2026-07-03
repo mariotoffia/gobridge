@@ -23,6 +23,7 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		OnPermanentFailure: routing.FailureAction(r.Policy.OnPermanentFailure),
 		AllowUnfenced:      r.Policy.AllowUnfenced,
 		AllowRetryDrop:     r.Policy.AllowRetryDrop,
+		TrustBridgeHeaders: r.TrustBridgeHeaders,
 	}
 	if r.Policy.SendTimeout != "" {
 		d, err := time.ParseDuration(r.Policy.SendTimeout)

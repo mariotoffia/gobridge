@@ -58,15 +58,23 @@ type Runtime struct {
 
 	credRefresherClose func(context.Context)
 
-	mu              sync.Mutex
-	entries         []*routeEntry
-	sessionSenders  map[string]*sessionSenderEntry
-	sessionMgrs     map[string]*session.Manager
-	drainers        []*outbox.Drainer
-	globalSem       chan struct{}
-	running         bool
-	healthy         bool
-	terminal        bool
+	mu             sync.Mutex
+	entries        []*routeEntry
+	sessionSenders map[string]*sessionSenderEntry
+	sessionMgrs    map[string]*session.Manager
+	drainers       []*outbox.Drainer
+	globalSem      chan struct{}
+	running        bool
+	healthy        bool
+	terminal       bool
+	// stopDone is published by the Stop call that transitions the runtime to
+	// terminal, and closed as the very last action of that Stop (after every
+	// resource is released and errs is joined). A concurrent second Stop that
+	// observes terminal blocks on it, so "Stop returned ⇒ resources released"
+	// holds for every caller, not just the first (finding: double-Stop early
+	// return). nil when terminal was tripped by a background component rather
+	// than a Stop call.
+	stopDone        chan struct{}
 	componentErrors map[string]error
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
@@ -254,18 +262,43 @@ func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
 // Stop the runtime is terminal and cannot be restarted (finding 3).
 func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Lock()
-	if rt.terminal {
-		// Already fully stopped (or a background component tripped terminal and
-		// a prior Stop completed teardown): idempotent no-op.
-		if !rt.running {
+	if rt.terminal && !rt.running {
+		// A prior Stop already transitioned this runtime to terminal.
+		if rt.stopDone != nil {
+			// That Stop's teardown may still be in flight. Block until it has
+			// fully completed so a caller relying on "Stop returned ⇒ resources
+			// released" does not proceed early (e.g. reopen a store whose handle
+			// the first Stop is about to close) — finding: double-Stop early
+			// return.
+			stopDone := rt.stopDone
 			rt.mu.Unlock()
-			return nil
+			select {
+			case <-stopDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
+		// No stopDone recorded: terminal was tripped without a Stop-driven
+		// teardown ever starting. Idempotent no-op.
+		rt.mu.Unlock()
+		return nil
 	}
+	// This call performs the teardown (either the first Stop, or a Stop after a
+	// background component tripped terminal but left running=true). Publish a
+	// stopDone that any concurrent second Stop blocks on until we are done.
+	stopDone := make(chan struct{})
+	rt.stopDone = stopDone
 	rt.running = false
 	rt.terminal = true
 	cancel := rt.cancel
 	rt.mu.Unlock()
+
+	// close(stopDone) MUST be the very last thing Stop does. Registered first
+	// ⇒ runs last (LIFO), after closeCancel/flushCancel and after the return
+	// value (errors.Join) is computed — so a blocked second Stop only observes
+	// completion once every resource is released.
+	defer close(stopDone)
 
 	if logging.DebugEnabled(rt.logger) {
 		rt.logger.Log(ctx, logging.LevelDebug, "runtime stopping",
@@ -337,6 +370,28 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		errs = append(errs, ctx.Err())
 	}
 
+	// Finding: manager-close gating. A drainer's finalDrain (outbox/loop.go)
+	// runs under context.WithoutCancel plus a bounded grace, so it can still be
+	// mid-send after the caller ctx expired above. Closing a session manager
+	// (which releases the lease and closes the session) out from under such a
+	// send makes the drainer's subsequent Complete fail with a stale fencing
+	// token — the record resurfaces on restart as a duplicate send. So, exactly
+	// as the store-close does below, wait a bounded storeCloseGrace for the
+	// drainer wg to CONFIRM done BEFORE we close managers. If the grace elapses
+	// we still close managers (leases MUST release so another instance can take
+	// over — a stale-token Complete from a genuinely stuck drainer is the lesser
+	// evil), but in the common case finalDrain's Complete runs against a live
+	// manager/lease.
+	if !drainersDone {
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), storeCloseGrace)
+		select {
+		case <-waitDone:
+			drainersDone = true
+		case <-graceCtx.Done():
+		}
+		graceCancel()
+	}
+
 	// Close/flush must complete regardless of caller ctx cancellation,
 	// but we preserve values (trace/correlation) for logging.
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
@@ -386,21 +441,24 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// ctx by design. Closing the SQLite handle underneath an in-flight Complete
 	// would, after a SUCCESSFUL send, drop the terminal state update and
 	// resurface the record on restart as a duplicate. Only release store handles
-	// once the drainer wg has CONFIRMED done. If the caller ctx expired above
-	// before the wg drained, wait a bounded grace for it; should the grace also
-	// elapse (a genuinely stuck drainer) we skip the close and leak the handle
-	// rather than risk mid-send corruption — a fresh runtime opens its own
-	// handles on reload, so a leaked handle is the strictly safer failure.
+	// once the drainer wg has CONFIRMED done. The bounded grace-wait above
+	// (before manager close) already gave the drainers up to storeCloseGrace to
+	// confirm; if they still have not (a genuinely stuck drainer) we skip the
+	// close and leak the handle rather than risk mid-send corruption — a fresh
+	// runtime opens its own handles on reload, so a leaked handle is the strictly
+	// safer failure.
+	//
+	// Closing the managers/sessions above can take time; a drainer whose grace
+	// expired at the earlier wait may have finished during that window. Re-check
+	// non-blockingly here so we release the handles instead of leaking them when
+	// the drainer has, in fact, completed.
 	if !drainersDone {
-		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), storeCloseGrace)
 		select {
 		case <-waitDone:
 			drainersDone = true
-		case <-graceCtx.Done():
+		default:
 		}
-		graceCancel()
 	}
-
 	if drainersDone {
 		// Release store resources (e.g. SQLite file handles). Stores that hold
 		// OS resources implement io.Closer; in-memory stores do not and are

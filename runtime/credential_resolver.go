@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -111,41 +112,70 @@ func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*connecti
 		return r.fetch(ctx, uri)
 	}
 
-	if creds := r.getCached(uri); creds != nil {
-		return creds, nil
-	}
-
-	// Singleflight: join an in-progress fetch for this URI or become
-	// its leader.
-	r.flightMu.Lock()
-	if fl, ok := r.flight[uri]; ok {
-		r.flightMu.Unlock()
-		select {
-		case <-fl.done:
-			if fl.err != nil {
-				return nil, fl.err
-			}
-			return cloneCredentialSet(fl.creds), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	// Retry loop for the singleflight join: a follower must not inherit the
+	// LEADER's context cancellation. If the leader's fetch failed purely
+	// because the leader's own ctx died while this caller's ctx is still
+	// healthy, we loop back — re-check the cache, then either join a newer
+	// flight or become the new leader — instead of returning the leader's
+	// spurious cancellation (finding: singleflight leader-ctx propagation).
+	for {
+		if creds := r.getCached(uri); creds != nil {
+			return creds, nil
 		}
+
+		// This caller's own context is already dead: fail with OUR error
+		// rather than registering or joining a flight.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		// Singleflight: join an in-progress fetch for this URI or become
+		// its leader.
+		r.flightMu.Lock()
+		if fl, ok := r.flight[uri]; ok {
+			r.flightMu.Unlock()
+			select {
+			case <-fl.done:
+				if fl.err != nil {
+					// The leader failed. Only a CONTEXT error that belongs to
+					// the leader (not us) is retryable: our ctx is healthy, so
+					// re-run the loop and lead/join a fresh flight. Every other
+					// error is a genuine resolution failure and propagates to
+					// followers unchanged (deliberate).
+					if isContextErr(fl.err) && ctx.Err() == nil {
+						continue
+					}
+					return nil, fl.err
+				}
+				return cloneCredentialSet(fl.creds), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		fl := &credFlight{done: make(chan struct{})}
+		r.flight[uri] = fl
+		r.flightMu.Unlock()
+
+		creds, err := r.fetch(ctx, uri)
+		fl.creds, fl.err = creds, err
+
+		r.flightMu.Lock()
+		delete(r.flight, uri)
+		r.flightMu.Unlock()
+		close(fl.done)
+
+		if err != nil {
+			return nil, err
+		}
+		return cloneCredentialSet(creds), nil
 	}
-	fl := &credFlight{done: make(chan struct{})}
-	r.flight[uri] = fl
-	r.flightMu.Unlock()
+}
 
-	creds, err := r.fetch(ctx, uri)
-	fl.creds, fl.err = creds, err
-
-	r.flightMu.Lock()
-	delete(r.flight, uri)
-	r.flightMu.Unlock()
-	close(fl.done)
-
-	if err != nil {
-		return nil, err
-	}
-	return cloneCredentialSet(creds), nil
+// isContextErr reports whether err is (or wraps) a context cancellation or
+// deadline error. Used to distinguish a leader's own-ctx failure — which a
+// healthy follower must not inherit — from a genuine resolution error.
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // ResolveUncached bypasses the read side of the cache and fetches fresh

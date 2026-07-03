@@ -70,10 +70,20 @@ func run() int {
 		return 1
 	}
 
-	fileWatcher := fileconfig.NewWatcher(*configPath, reg,
+	watcherOpts := []fileconfig.WatcherOption{
 		fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
 		fileconfig.WithLogger(logger),
-	)
+	}
+	// Baseline the watcher's change detection from the hash of the exact bytes
+	// the initial Load parsed, rather than a disk re-read taken at Watch time.
+	// Otherwise a file edited between Load and Watch is absorbed into the
+	// baseline and never emitted, silently running stale config. LoadHash is
+	// populated only after the successful Load above.
+	if h, ok := fileSource.LoadHash(); ok {
+		watcherOpts = append(watcherOpts, fileconfig.WithBaselineHash(h))
+	}
+
+	fileWatcher := fileconfig.NewWatcher(*configPath, reg, watcherOpts...)
 
 	mgr := config.NewManager(
 		config.Layer{Name: "file", Loader: fileSource, Watcher: fileWatcher},
@@ -89,18 +99,15 @@ func run() int {
 		return 1
 	}
 
+	pipeline := newReloadPipeline(reg, logger)
+
 	sup := bridge.NewSupervisor(
 		bridge.WithSupervisorLogger(logger),
-		bridge.WithReconfigStrategy(bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil)),
-		bridge.WithOnSwap(func(ev bridge.SwapEvent) {
-			if ev.Error != nil {
-				logger.Error("reconfiguration failed",
-					"swap_mode", ev.SwapMode, "error", ev.Error, "duration", ev.Duration)
-			} else {
-				logger.Info("reconfiguration applied",
-					"swap_mode", ev.SwapMode, "duration", ev.Duration)
-			}
-		}),
+		// File-change debouncing is done by the reload pipeline (below) so
+		// admin commits can bypass the window and apply in-band; the Supervisor
+		// therefore applies each config the pipeline forwards immediately.
+		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
+		bridge.WithOnSwap(pipeline.onSwap),
 	)
 
 	// Demo adapter set: MQTT transport + native memory/SQLite stores only.
@@ -154,9 +161,16 @@ func run() int {
 	}
 	defer mgr.Stop()
 
+	// Debounce raw file-watcher changes here (moved out of the Supervisor) and
+	// merge them with in-band admin commits onto the single channel the
+	// Supervisor drains. The pipeline drops the watcher's re-emit of a config an
+	// admin commit already applied in-band, so a commit costs exactly one swap.
+	windowedFile := bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil).Filter(ctx, watchCh)
+	go pipeline.run(ctx, windowedFile)
+
 	supDone := make(chan error, 1)
 	go func() {
-		supDone <- sup.Run(ctx, cfg, watchCh)
+		supDone <- sup.Run(ctx, cfg, pipeline.changes())
 	}()
 
 	// Wait for the supervisor to build and start the initial runtime.
@@ -185,6 +199,13 @@ func run() int {
 			},
 			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider: sup.Config,
+			// Apply a committed config in-band by feeding it to the Supervisor's
+			// reload path (bypassing the debounce window) and blocking until the
+			// swap outcome is known — a failed apply surfaces as
+			// committed_not_applied instead of a false "committed". Without this
+			// the errConfigApplyFailed path is dead and commits rely solely on
+			// the (debounced) file watcher to converge.
+			ConfigApplier: pipeline.applyCommitted,
 		}
 		if apiCfg.AdminAddr == "" {
 			apiCfg.AdminAddr = ":8080"
