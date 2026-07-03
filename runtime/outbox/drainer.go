@@ -44,7 +44,11 @@ type Drainer struct {
 	// Replay count alone poisons healthy records during an egress outage that
 	// outlasts the (small) replay budget; requiring a generous minimum age as
 	// well decouples poisoning from a transient outage that merely burned the
-	// count quickly. Default: max(5×SendTimeout, 2m).
+	// count quickly. It is also the guard against a subtler over-count: a
+	// record's ReplayCount increments on EVERY claim — including batch-deadline
+	// deferrals and stale-claim reclaims where no send ever failed — so replay
+	// exhaustion is not by itself proof of poison. The age gate is therefore a
+	// hard AND-condition, never an OR. Default: max(5×SendTimeout, 2m).
 	poisonMinAge     time.Duration
 	currentBatchSize int
 	hasDrained       bool

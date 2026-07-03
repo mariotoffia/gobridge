@@ -256,3 +256,100 @@ func TestCredentialResolver_ResolveUncachedBypassesAndRefreshesCache(t *testing.
 	assert.Equal(t, "new-secret", got.Password().Password().Reveal())
 	assert.Equal(t, int32(2), repo.calls.Load(), "cache should have been refreshed by ResolveUncached")
 }
+
+// ctxBlockingRepo blocks every Get on release-or-ctx and signals entry, so a
+// test can hold a fetch in flight, cancel the leader's ctx (making Get return
+// ctx.Err()), and then release a subsequent re-leading fetch. entered is
+// buffered so overlapping Gets never block on the signal.
+type ctxBlockingRepo struct {
+	scheme  string
+	creds   *connectivity.CredentialSet
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *ctxBlockingRepo) Scheme() string    { return b.scheme }
+func (b *ctxBlockingRepo) Namespace() string { return "" }
+func (b *ctxBlockingRepo) Get(ctx context.Context, _ string) (*connectivity.CredentialSet, error) {
+	b.calls.Add(1)
+	b.entered <- struct{}{}
+	select {
+	case <-b.release:
+		return b.creds, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func waitEntered(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("repository Get was never reached")
+	}
+}
+
+// TestCredentialResolver_SingleflightFollowerSurvivesLeaderCtxCancel is the
+// regression for the singleflight leader-ctx propagation defect: a follower
+// with a HEALTHY context must not inherit the LEADER's cancellation. When the
+// leader's fetch fails with context.Canceled purely because the leader's own
+// ctx died, the healthy follower re-leads a fresh fetch instead of returning the
+// leader's spurious error.
+func TestCredentialResolver_SingleflightFollowerSurvivesLeaderCtxCancel(t *testing.T) {
+	repo := &ctxBlockingRepo{
+		scheme:  "file",
+		creds:   connectivity.NewCredentialSet(pwCred("u", "p"), nil),
+		entered: make(chan struct{}, 4),
+		release: make(chan struct{}),
+	}
+	r := NewCredentialResolver()
+	r.Register(repo)
+	const uri = "file://broker/main"
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	var leaderErr error
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, leaderErr = r.Resolve(leaderCtx, uri)
+	}()
+
+	// The leader is provably inside Get, so its flight is registered.
+	waitEntered(t, repo.entered)
+
+	// A follower with a healthy (never-cancelled) ctx joins the leader's flight.
+	type res struct {
+		creds *connectivity.CredentialSet
+		err   error
+	}
+	followerDone := make(chan res, 1)
+	go func() {
+		creds, err := r.Resolve(context.Background(), uri)
+		followerDone <- res{creds: creds, err: err}
+	}()
+
+	// Cancel the leader: its blocked Get returns context.Canceled and the flight
+	// fails with a context error that belongs to the LEADER, not the follower.
+	cancelLeader()
+	<-leaderDone
+	require.ErrorIs(t, leaderErr, context.Canceled, "leader must observe its own cancellation")
+
+	// The healthy follower re-leads a fresh fetch; wait until it reaches the
+	// repo, then release so its own Get completes with valid credentials.
+	waitEntered(t, repo.entered)
+	close(repo.release)
+
+	select {
+	case got := <-followerDone:
+		require.NoError(t, got.err, "healthy follower must NOT inherit the leader's cancellation")
+		require.NotNil(t, got.creds)
+		assert.Equal(t, "u", got.creds.Password().Username())
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower never completed")
+	}
+
+	assert.GreaterOrEqual(t, repo.calls.Load(), int32(2),
+		"follower must have re-fetched as the new leader after the leader's ctx cancel")
+}

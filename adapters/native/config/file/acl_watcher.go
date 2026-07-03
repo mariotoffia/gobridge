@@ -69,6 +69,14 @@ type Watcher struct {
 	// touches it, so no lock is needed.
 	lastHash [sha256.Size]byte
 
+	// baselineHash, when baselineHashSet, seeds lastHash at Watch time instead
+	// of hashing disk. Set via WithBaselineHash from the hash the caller
+	// actually Loaded (Source.LoadHash), closing the Load↔Watch window where a
+	// between-the-two edit would be absorbed into the baseline and never
+	// emitted.
+	baselineHash    [sha256.Size]byte
+	baselineHashSet bool
+
 	// coalescedReloads counts reloads whose predecessor was still queued and
 	// had to be evicted so the newest config could be enqueued (I4). It is a
 	// convergence signal, not a loss signal: the consumer still receives the
@@ -124,6 +132,19 @@ func WithClock(c clock.Clock) WatcherOption {
 		if c != nil {
 			w.clk = c
 		}
+	}
+}
+
+// WithBaselineHash seeds the watcher's change-detection baseline with a content
+// hash the caller already observed (typically Source.LoadHash), instead of
+// hashing the file at Watch time. This closes the Load↔Watch race: a change
+// written between the caller's initial Load and this Watch is then detected and
+// emitted, rather than silently folded into the baseline so the runtime keeps
+// running a stale config until the next edit.
+func WithBaselineHash(h [sha256.Size]byte) WatcherOption {
+	return func(w *Watcher) {
+		w.baselineHash = h
+		w.baselineHashSet = true
 	}
 }
 
@@ -200,8 +221,18 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	// Baseline: content as of Watch start, taken synchronously so no
 	// event/tick observed after Watch returns can race it. The initial
 	// config is the caller's Load; the watcher only reports changes.
-	if h, err := fileHash(w.path); err == nil {
-		w.lastHash = h
+	//
+	// When the caller supplied WithBaselineHash (the hash of the content it
+	// actually Loaded), use that rather than re-hashing disk here — otherwise a
+	// change written between Load and Watch is absorbed into the baseline and
+	// never emitted, and the runtime silently runs a stale config.
+	switch {
+	case w.baselineHashSet:
+		w.lastHash = w.baselineHash
+	default:
+		if h, err := fileHash(w.path); err == nil {
+			w.lastHash = h
+		}
 	}
 
 	switch w.mode {

@@ -93,6 +93,17 @@ than letting SQS reject every send at runtime with `MissingParameter`. When
 `fifo: true` is set without a default group, a message missing the ordering-key
 header is rejected per-message before the SDK call.
 
+**Address validation is deliberately lenient.** Parse-time `Validate` checks only
+field ranges and consistency — it does not require a queue reference, so a config
+naming a wrong or arbitrary queue URL parses cleanly
+(`adapters/aws/transport/sqs/config_plugin.go:87-123`). Queue identity is
+enforced later: `ValidateQueue` at build time (`config_plugin.go:129-134`) and
+the sender's `ValidateAddress`, which is offline and structural — a name-only
+sender accepts any URL whose trailing segment matches the queue name, so a wrong
+region or account passes the build and is only caught at first `Send` once the
+canonical URL resolves (`sender.go:124-150`). Do not rely on config parse errors
+to catch queue-URL typos.
+
 ## Resilience Behavior
 
 - **Long-poll default.** `wait_time_seconds` defaults to `20` (maximum SQS
@@ -100,10 +111,11 @@ header is rejected per-message before the SDK call.
   short-polling which causes excessive API costs.
 - **Receiver initialization timeout.** SQS receiver startup (client creation,
   queue URL resolution) is bounded by `init_timeout` (default 30s), preventing
-  indefinite hangs when AWS credentials or endpoints are unavailable. The
-  receiver's `Started()` channel is always closed even when initialization
-  fails, so a supervisor awaiting readiness never hangs — the failure surfaces
-  as `Run`'s error.
+  indefinite hangs when AWS credentials or endpoints are unavailable. An
+  initialization failure returns `Run`'s error **without** closing the receiver's
+  `Started()` channel, so a readiness probe never briefly observes a ready route
+  for a receiver that failed to start. Supervise on `Run`'s returned error, not
+  on `Started()` alone (`adapters/aws/transport/sqs/receiver.go:105-108`).
 - **Per-poll timeout.** Each `ReceiveMessage` call has an explicit timeout of
   `WaitTimeSeconds + 10` seconds, protecting against network-level stalls
   beyond the SQS long-poll window. Failed polls back off with

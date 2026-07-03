@@ -14,6 +14,7 @@ Routes define the message flow from a receiver through processors to bindings.
 | `receiver_id` | string | **yes** | -- | Reference to a receiver |
 | `delivery_mode` | string | no | `direct_hold` | `direct_hold` or `shared_outbox` |
 | `dispatch_mode` | string | no | `single` | `single` (first binding) or `fan_out` (all bindings) |
+| `trust_bridge_headers` | bool | no | false | Preserve bridge-to-bridge propagated headers (correlation/causation/idempotency/dedup/ordering/tenant/forwarded/trace) from inbound deliveries instead of stripping all `x-bridge.*` at ingress. **Enable only on receivers fed exclusively by a trusted upstream bridge** (see below) |
 | `policy` | object | no | -- | Delivery and retry policy |
 | `bindings` | string[] | **yes** | -- | References to binding IDs (at least one) |
 | `processors` | string[] | no | -- | Ordered list of processor names |
@@ -28,13 +29,32 @@ Routes define the message flow from a receiver through processors to bindings.
 - **`single`** -- Send to first matching binding (or resolver-selected binding).
 - **`fan_out`** -- Send to all bindings.
 
+**Trusting bridge-to-bridge headers (`trust_bridge_headers`):**
+
+By default every route strips all reserved `x-bridge.*` headers from an inbound
+delivery at ingress, so an external producer can never inject bridge metadata
+(spoofed `tenant-id`, forged routing) and the correlation ID is minted fresh.
+This is the safe posture and is correct for any receiver that faces untrusted
+producers.
+
+Set `trust_bridge_headers: true` **only** when the receiver is fed EXCLUSIVELY
+by a trusted upstream GoBridge instance. In that mode the BRIDGE-TO-BRIDGE
+PROPAGATED headers (`correlation-id`, `causation-id`, `idempotency-key`,
+`dedup-id`, `ordering-key`, `tenant-id`, `forwarded-from`/`forwarded-hop`, and
+the W3C trace context) survive the hop so cross-bridge correlation, idempotency
+and tracing are preserved. The INTERNAL-ONLY headers (`route-id`,
+`route-override`, `source-id`, `content-type`) are ALWAYS stripped regardless of
+this flag, so enabling it never lets an inbound header steer routing. Enabling
+it on a receiver reachable by untrusted producers would let them spoof
+`tenant-id` and the idempotency/dedup keys.
+
 ### `routes[].policy` -- Delivery Policy
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `max_in_flight` | int | no | 100 | Max concurrent messages in this route |
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
-| `max_replay_attempts` | int | no | 5 | Max retry attempts for failed messages |
+| `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires `poison_min_age`) |
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
@@ -417,6 +437,11 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   it to the DLQ, so a transient egress outage cannot burn the replay budget and
   poison healthy records in seconds. Zero (default) lets each drainer fall back
   to `max(5×send_timeout, 2m)`. This is a Go runtime option, not a YAML key.
+  Note that a record's replay count increments on every *claim* — including
+  batch-deadline deferrals and stale-claim reclaims where no send ever failed —
+  so `max_replay_attempts` counts claims, not failed sends, and replay
+  exhaustion alone is never sufficient to poison a record: the age gate is a hard
+  AND-condition.
 
 ## Validation Rules Summary
 

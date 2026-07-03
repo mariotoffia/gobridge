@@ -248,15 +248,26 @@ func (b *BindingDef) SetDecoded(cfg PluginConfig, raw RawConfig) {
 // RouteDef describes a message route from a receiver through an optional
 // processor chain to one or more sender bindings.
 type RouteDef struct {
-	ID           string           `yaml:"id" json:"id"`
-	ReceiverID   string           `yaml:"receiver_id" json:"receiver_id"`
-	DeliveryMode string           `yaml:"delivery_mode,omitempty" json:"delivery_mode,omitempty"`
-	DispatchMode string           `yaml:"dispatch_mode,omitempty" json:"dispatch_mode,omitempty"`
-	Policy       PolicyDef        `yaml:"policy,omitempty" json:"policy,omitempty"`
-	Bindings     []string         `yaml:"bindings,omitempty" json:"bindings,omitempty"`
-	Processors   []string         `yaml:"processors,omitempty" json:"processors,omitempty"`
-	Resolver     *ResolverDef     `yaml:"resolver,omitempty" json:"resolver,omitempty"`
-	Session      *RouteSessionDef `yaml:"session,omitempty" json:"session,omitempty"`
+	ID           string `yaml:"id" json:"id"`
+	ReceiverID   string `yaml:"receiver_id" json:"receiver_id"`
+	DeliveryMode string `yaml:"delivery_mode,omitempty" json:"delivery_mode,omitempty"`
+	DispatchMode string `yaml:"dispatch_mode,omitempty" json:"dispatch_mode,omitempty"`
+	// TrustBridgeHeaders preserves the BRIDGE-TO-BRIDGE PROPAGATED reserved
+	// headers (correlation-id, causation-id, idempotency-key, dedup-id,
+	// ordering-key, tenant-id, forwarded-from/hop) on inbound deliveries
+	// instead of stripping every x-bridge.* header at ingress. Enable ONLY on
+	// receivers fed exclusively by a trusted upstream bridge — otherwise an
+	// external producer could spoof bridge metadata. INTERNAL-ONLY headers
+	// (route-id, route-override, source-id, content-type) are stripped
+	// regardless, so routing can never be steered by an inbound header. (W3C
+	// trace context — traceparent/tracestate — is not x-bridge.*-prefixed,
+	// is never stripped, and survives in BOTH modes.)
+	TrustBridgeHeaders bool             `yaml:"trust_bridge_headers,omitempty" json:"trust_bridge_headers,omitempty"`
+	Policy             PolicyDef        `yaml:"policy,omitempty" json:"policy,omitempty"`
+	Bindings           []string         `yaml:"bindings,omitempty" json:"bindings,omitempty"`
+	Processors         []string         `yaml:"processors,omitempty" json:"processors,omitempty"`
+	Resolver           *ResolverDef     `yaml:"resolver,omitempty" json:"resolver,omitempty"`
+	Session            *RouteSessionDef `yaml:"session,omitempty" json:"session,omitempty"`
 }
 
 // ResolverDef configures content-based binding resolution for a route.

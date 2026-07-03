@@ -42,6 +42,22 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 
 	mergeBridgeSettings(&out.Bridge, &overlay.Bridge)
 
+	// Defensive deep-clone: when the overlay carries no cluster block,
+	// out.Bridge.Cluster is still the base's pointer (aliased via `out := *base`
+	// above, since mergeBridgeSettings only reassigns it when the overlay set
+	// one). Clone it so a later mutation of the merged config cannot reach back
+	// into the base. No observable behavior change.
+	if overlay.Bridge.Cluster == nil && out.Bridge.Cluster != nil {
+		c := *out.Bridge.Cluster
+		if out.Bridge.Cluster.Endpoints != nil {
+			c.Endpoints = make(map[string]string, len(out.Bridge.Cluster.Endpoints))
+			for k, v := range out.Bridge.Cluster.Endpoints {
+				c.Endpoints[k] = v
+			}
+		}
+		out.Bridge.Cluster = &c
+	}
+
 	if overlay.ConfigWatch != nil {
 		cw := *overlay.ConfigWatch
 		out.ConfigWatch = &cw

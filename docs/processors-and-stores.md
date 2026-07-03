@@ -340,6 +340,12 @@ stores:
 
 - Distributed and persistent. Uses conditional writes for fencing safety.
 - Required for clustered deployments with lease-based coordination.
+- **Retention is the deduplication window.** The outbox keeps completed and
+  expired rows for `retention` / `compaction_grace` before piggybacked compaction
+  (or the DynamoDB item TTL) deletes them. Deleting a terminal row releases its
+  duplicate-detection identity, so retention IS the duplicate-suppression cover:
+  shrinking it shrinks how far back the outbox can suppress a redelivered
+  message. Keep it comfortably above any upstream redelivery window.
 
 ### Decision Table
 

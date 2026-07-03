@@ -380,3 +380,38 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("snapshot round-trip lost state\norig=%+v\nclone=%+v", original.PersistenceSnapshot(), snap)
 	}
 }
+
+// TestOutboxRecord_ReplayCountCountsClaimsNotFailures pins the documented
+// semantics (finding: deferral-burns-ReplayCount): ReplayCount counts the
+// number of times a record was CLAIMED, not the number of failed sends. A
+// claim → release → re-claim cycle (a batch-deadline deferral, where no send
+// ever failed) increments it twice.
+func TestOutboxRecord_ReplayCountCountsClaimsNotFailures(t *testing.T) {
+	rec, err := persistence.NewOutboxRecord(validSpec())
+	if err != nil {
+		t.Fatalf("NewOutboxRecord: %v", err)
+	}
+	if rec.ReplayCount() != 0 {
+		t.Fatalf("fresh record ReplayCount: got %d, want 0", rec.ReplayCount())
+	}
+
+	now := time.Unix(1_700_000_100, 0)
+
+	// First claim.
+	if berr := rec.Claim(now, "owner-1", 1); berr != nil {
+		t.Fatalf("first Claim: %v", berr)
+	}
+	// Deferral: release back to pending WITHOUT any send (no failure occurred).
+	if berr := rec.Release(now); berr != nil {
+		t.Fatalf("Release: %v", berr)
+	}
+	// Re-claim on the next cycle.
+	if berr := rec.Claim(now.Add(time.Second), "owner-1", 1); berr != nil {
+		t.Fatalf("second Claim: %v", berr)
+	}
+
+	if got := rec.ReplayCount(); got != 2 {
+		t.Fatalf("ReplayCount after claim→release→claim: got %d, want 2 "+
+			"(replay count must track claims, including deferrals, not failed sends)", got)
+	}
+}

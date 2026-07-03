@@ -380,7 +380,28 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	r.metrics.Counter(shared.MetricMessagesReceived, 1,
 		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 
-	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
+	// Ingress reserved-header handling. The DEFAULT posture strips ALL
+	// x-bridge.* headers so an external producer can never inject bridge
+	// metadata (route steering, spoofed tenant/correlation).
+	//
+	// TrustBridgeHeaders relaxes this for a receiver fed exclusively by a
+	// trusted upstream bridge: the BRIDGE-TO-BRIDGE PROPAGATED class
+	// (correlation-id, causation-id, idempotency-key, dedup-id, ordering-key,
+	// tenant-id, forwarded-from/hop) survives the hop so cross-bridge
+	// correlation/idempotency is preserved. It MUST use StampHeaders (the
+	// trusted whole-map setter) — ReplaceHeaders re-strips every reserved key
+	// and would defeat the point. INTERNAL-ONLY headers (route-id,
+	// route-override, source-id, content-type) are stripped in BOTH modes via
+	// StripInternalOnlyHeaders, so a trusted-header route still cannot be
+	// steered by an inbound x-bridge.route-override; the bindingOverrider
+	// re-stamp below remains the only path that (re)introduces one. (W3C trace
+	// context — traceparent/tracestate — is not x-bridge.*-prefixed, is never
+	// stripped by StripReservedHeaders, and survives in BOTH modes.)
+	if r.policy.TrustBridgeHeaders {
+		env.StampHeaders(messaging.StripInternalOnlyHeaders(env.HeadersSnapshot()))
+	} else {
+		env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
+	}
 	r.injectHeaders(env)
 
 	// Re-stamp a binding-scoped route override carried out-of-band by a trusted

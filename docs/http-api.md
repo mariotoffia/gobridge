@@ -266,6 +266,17 @@ are not JSON-serialisable fields (`Config` carries `json:"-"`), a PATCH body
 containing an `options` key is an **unknown field → HTTP 400**. A PATCH may
 therefore only touch scalar/structural fields, never a plugin's option block.
 
+**PATCH is merge-only.** Omitted, empty-string, empty-list, and the redaction
+marker (`"[REDACTED]"`, the value echoed back by a redacted read) all
+**preserve the current value** — a field cannot be cleared or removed via PATCH.
+To clear a field, submit a full replacement configuration (open a transaction and
+PATCH the complete desired state, or use the DynamoDB/file profile's whole-document
+replace). Fields that cannot be cleared via PATCH include: `http.cors_origins`,
+`http.tls_cert_file` / `http.tls_key_file`, `http.admin_api_key` /
+`http.monitor_api_key` (empty **or** `"[REDACTED]"` keeps the stored secret; note
+that any *other* non-empty string overwrites the secret verbatim), a
+receiver/sender/binding `session_id`, and a receiver's `topics` list.
+
 Commit refuses to erase plugin options: if the merged config would drop the
 typed `Config` of any entry that previously had one -- most commonly by changing
 a `transport`/`type` discriminator via PATCH (which cannot carry replacement

@@ -148,8 +148,20 @@ schemas:
     type: object
     description: >
       Full GoBridge configuration. When returned in API responses, sensitive
-      fields (API keys) are redacted as "***". When sent as a PATCH overlay,
-      only the fields present are merged; absent fields are left unchanged.
+      fields (API keys) are redacted as "[REDACTED]". When sent as a PATCH
+      overlay, only the fields present are merged; absent fields are left
+      unchanged.
+
+
+      PATCH is merge-only: omitted, empty-string, empty-list, and the redaction
+      marker "[REDACTED]" (the value echoed back by a redacted read) all
+      preserve the current value. A field cannot be cleared or removed via
+      PATCH — to clear a field, submit a full replacement configuration. Fields
+      that cannot be cleared this way include http.cors_origins,
+      http.tls_cert_file / http.tls_key_file, http.admin_api_key /
+      http.monitor_api_key (empty or "[REDACTED]" keeps the stored secret; any
+      other non-empty string overwrites the secret verbatim), a
+      receiver/sender/binding session_id, and a receiver's topics list.
 
 
       The `version` field is an optimistic-concurrency counter. It is
@@ -393,7 +405,7 @@ schemas:
   HTTPConfig:
     type: object
     description: >
-      HTTP server configuration. API keys are redacted as "***" in responses.
+      HTTP server configuration. API keys are redacted as "[REDACTED]" in responses.
     properties:
       admin_addr:
         type: string
