@@ -238,12 +238,12 @@ func Test_TierB_Validation_StorePathOutsideMount(t *testing.T) {
 	}{
 		{
 			name:    "happy-under-default-mount",
-			payload: map[string]any{"path": "/mnt/gobridge/lease.db"},
+			payload: map[string]any{"path": "/var/lib/gobridge/lease.db"},
 			ok:      true,
 		},
 		{
 			name:    "happy-equal-to-mount",
-			payload: map[string]any{"path": "/mnt/gobridge"},
+			payload: map[string]any{"path": "/var/lib/gobridge"},
 			ok:      true,
 		},
 		{
@@ -328,7 +328,7 @@ func Test_TierB_Validation_WorkerControlOnly(t *testing.T) {
 		cfg := baseConfig()
 		cfg.Stores = ports.StoresConfig{
 			Outbox: storeWithRaw("sqlite", map[string]any{
-				"path": "/mnt/gobridge/control-only/outbox.db",
+				"path": "/var/lib/gobridge/control-only/outbox.db",
 			}),
 		}
 		in := baseInput(cfg)
@@ -351,7 +351,7 @@ func Test_TierB_Validation_WorkerControlOnly(t *testing.T) {
 		cfg := baseConfig()
 		cfg.Stores = ports.StoresConfig{
 			Outbox: storeWithRaw("sqlite", map[string]any{
-				"path": "/mnt/gobridge/control-only/outbox.db",
+				"path": "/var/lib/gobridge/control-only/outbox.db",
 			}),
 		}
 		in := baseInput(cfg)
@@ -366,7 +366,7 @@ func Test_TierB_Validation_WorkerControlOnly(t *testing.T) {
 		cfg := baseConfig()
 		cfg.Stores = ports.StoresConfig{
 			Outbox: storeWithRaw("sqlite", map[string]any{
-				"path": "/mnt/gobridge/workers/outbox.db",
+				"path": "/var/lib/gobridge/workers/outbox.db",
 			}),
 		}
 		in := baseInput(cfg)
@@ -381,7 +381,7 @@ func Test_TierB_Validation_WorkerControlOnly(t *testing.T) {
 		cfg := baseConfig()
 		cfg.Stores = ports.StoresConfig{
 			Outbox: storeWithRaw("sqlite", map[string]any{
-				"path": "/mnt/gobridge/control-only/outbox.db",
+				"path": "/var/lib/gobridge/control-only/outbox.db",
 			}),
 		}
 		in := baseInput(cfg)

@@ -380,10 +380,23 @@ type BlueprintValidator func(*BridgeConfig) error
 // serializer reveals them explicitly at the save boundary (so config-as-
 // code round-trips), and the admin config-read endpoint also redacts.
 // CORS is disabled by default and wildcard '*' is rejected.
+//
+// TLS is opt-in: when both TLSCertFile and TLSKeyFile are set the admin and
+// monitor servers serve HTTPS using that certificate pair; when either is
+// empty the servers stay plaintext (the historical default) on the assumption
+// an external terminator (LB/ingress/mesh) provides TLS. Supplying only one of
+// the pair is a configuration error the server rejects at startup.
 type HTTPConfig struct {
 	AdminAddr     string        `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
 	MonitorAddr   string        `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`
 	AdminAPIKey   shared.Secret `yaml:"admin_api_key,omitempty" json:"admin_api_key,omitempty"`
 	MonitorAPIKey shared.Secret `yaml:"monitor_api_key,omitempty" json:"monitor_api_key,omitempty"`
 	CORSOrigins   string        `yaml:"cors_origins,omitempty" json:"cors_origins,omitempty"`
+
+	// TLSCertFile and TLSKeyFile are filesystem paths to the PEM-encoded
+	// server certificate (with any intermediate chain) and its private key.
+	// Both must be set together to enable in-process TLS termination on both
+	// the admin and monitor listeners. Empty (the default) keeps plaintext.
+	TLSCertFile string `yaml:"tls_cert_file,omitempty" json:"tls_cert_file,omitempty"`
+	TLSKeyFile  string `yaml:"tls_key_file,omitempty" json:"tls_key_file,omitempty"`
 }

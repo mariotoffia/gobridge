@@ -108,7 +108,7 @@ fi
 # --- env -------------------------------------------------------------------
 MODE="${MODE:-SeedOnce}"
 case "$MODE" in
-  SeedOnce|Overwrite|AbortDeploy) ;;
+  SeedOnce|Overwrite|AbortDeploy|AdoptValid) ;;
   *) die 1 "invalid_mode" "value" "$MODE" ;;
 esac
 
@@ -156,12 +156,13 @@ PY
 }
 
 # --- writability probe + canon staging dir (exit 40) -----------------------
-# AbortDeploy runs as the Worker, which is granted ClientMount only on EFS
-# (no ClientWrite). Writing under TARGET_DIR — even a probe or a staged canon
-# file — would EACCES and fail the deploy. Skip the probe and stage the
-# canonical asset under /tmp; TARGET_DIR is still read for hash comparison.
+# AbortDeploy / AdoptValid run as the Worker, which is granted ClientMount
+# only on EFS (no ClientWrite). Writing under TARGET_DIR — even a probe or a
+# staged canon file — would EACCES and fail the deploy. Skip the probe and
+# stage the canonical asset under /tmp; TARGET_DIR is still read for hash
+# comparison.
 TARGET_DIR=$(dirname -- "$EFS_TARGET_PATH")
-if [ "$MODE" = "AbortDeploy" ]; then
+if [ "$MODE" = "AbortDeploy" ] || [ "$MODE" = "AdoptValid" ]; then
   STAGE_DIR="/tmp/seeder"
   mkdir -p -- "$STAGE_DIR" 2>/dev/null \
     || die 40 "tmp_not_writable" "path" "$STAGE_DIR"
@@ -213,6 +214,29 @@ case "$MODE" in
       die 10 "hash_mismatch" "expected" "sha256:$ASSET_HASH" "actual" "sha256:$EXIST_HASH"
     fi
     ok "hash_match" "hash" "sha256:$ASSET_HASH"
+    ;;
+
+  AdoptValid)
+    # Worker startup gate that COEXISTS with Admin-API hot reconfiguration.
+    # A worker cannot write EFS, so it must accept whatever config the
+    # control node (CDK seed OR an admin config-txn commit) last wrote — as
+    # long as it exists and parses. It never fails on hash drift vs the
+    # synth-time asset (that would wedge every scale-out / crash-replacement
+    # worker after any admin edit until the next CDK deploy). Absent or
+    # unparseable config still fails: a worker with no valid config bridges
+    # nothing.
+    if [ ! -e "$EFS_TARGET_PATH" ]; then
+      die 10 "target_absent" "expected" "sha256:$ASSET_HASH" "target" "$EFS_TARGET_PATH"
+    fi
+    if ! EXIST_HASH=$(canon_sha "$EFS_TARGET_PATH" 2>/dev/null); then
+      die 30 "yaml_unparseable" "source" "target"
+    fi
+    if [ "$EXIST_HASH" = "$ASSET_HASH" ]; then
+      ok "hash_match" "hash" "sha256:$ASSET_HASH"
+    else
+      warn_ok "adopted_existing_config" \
+        "expected" "sha256:$ASSET_HASH" "actual" "sha256:$EXIST_HASH" "target" "$EFS_TARGET_PATH"
+    fi
     ;;
 
   SeedOnce)

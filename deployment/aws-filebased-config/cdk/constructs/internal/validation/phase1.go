@@ -13,10 +13,13 @@ import (
 )
 
 // defaultMountPath is the EFS mount root assumed when Phase1Input.MountPath
-// is empty. The runtime construct applies its own default independently
-// (see internal/gobridgebase/base.go); Phase 1 is a pre-synth lint and does
-// not need to mirror that value byte-for-byte.
-const defaultMountPath = "/mnt/gobridge"
+// is empty. It MUST equal the runtime construct's mount path
+// (internal/gobridgebase/base.go) — both derive from the single canonical
+// infra.DefaultMountPath. A divergence here is split-brain: store paths that
+// validate against one root but mount at another silently write to ephemeral
+// Fargate storage instead of EFS, losing outbox/DLQ durability on every task
+// replacement.
+const defaultMountPath = infra.DefaultMountPath
 
 // controlOnlySubdir is the convention reserved for control-RW
 // directories under the mount root.
@@ -42,7 +45,7 @@ var pathFieldNames = map[string]struct{}{
 // Phase1Input bundles the inputs needed by Phase 1 validation. The
 // Materialized comes from internal/source; Bootstrap provides
 // topology + node role; MountPath is the EFS mount root used by
-// store-path checks (defaults to "/mnt/gobridge" when empty);
+// store-path checks (defaults to infra.DefaultMountPath when empty);
 // NodeRole is the role of the node currently being synthesised
 // (worker checks gated on this). When NodeRole is the zero value it
 // falls back to Bootstrap.NodeRole, which matches the runtime
@@ -146,13 +149,13 @@ func validateFilesystemProfile(boot infra.BootstrapConfig, cfg *ports.BridgeConf
 		if route.DeliveryMode == "shared_outbox" {
 			return &ErrFilesystemProfile{
 				RouteID: route.ID,
-				Reason:  "uses shared_outbox, which requires the HA/DynamoDB profile",
+				Reason:  "uses shared_outbox, which requires a distributed outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision",
 			}
 		}
 		if route.Session != nil {
 			return &ErrFilesystemProfile{
 				RouteID: route.ID,
-				Reason:  "uses route.session lease coordination, which requires the HA/DynamoDB profile",
+				Reason:  "uses route.session lease coordination, which requires a distributed lease store (e.g. DynamoDB) that the file-based EFS profile does not provision",
 			}
 		}
 	}

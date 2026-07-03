@@ -46,7 +46,7 @@ func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "route.session lease coordination")
-		assert.Contains(t, err.Error(), "HA/DynamoDB profile")
+		assert.Contains(t, err.Error(), "does not provision")
 	})
 
 	t.Run("allows bridge.cluster.endpoints on filesystem profile", func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -228,9 +229,28 @@ func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcom
 	})
 }
 
+// actorFromRequest derives the audit actor identity for a request. When the
+// API sits behind a trusted L7 proxy/load balancer, RemoteAddr is the LB's
+// address and would collapse every operator to one identity; the leftmost
+// X-Forwarded-For hop is preferred when present so per-client attribution
+// survives. NOTE: X-Forwarded-For is client-spoofable unless the edge proxy
+// overwrites it — deployments MUST terminate/normalise XFF at a trusted proxy
+// for this attribution to be authoritative.
 func actorFromRequest(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}
-	return r.RemoteAddr
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Leftmost entry is the originating client.
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = xff[:i]
+		}
+		if client := strings.TrimSpace(xff); client != "" {
+			return client
+		}
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "unknown"
 }

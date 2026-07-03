@@ -41,7 +41,7 @@ func (p ServiceProps) Normalized() ServiceProps {
 		out.MemoryMiB = 1024
 	}
 	if out.ConfigMountPath == "" {
-		out.ConfigMountPath = "/mnt/gobridge"
+		out.ConfigMountPath = DefaultMountPath
 	}
 	if out.AccessPointPath == "" {
 		out.AccessPointPath = "/gobridge"

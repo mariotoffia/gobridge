@@ -56,9 +56,9 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 		WithSQSSender("orders-out", qr.Ref("orders-out")).
 		WithMQTTBroker("iot", "tcp://broker:1883",
 			bridgecfg.MQTTCredsFromSSM(pr.Ref("/bridge/mqtt"))).
-		WithSQLiteOutbox("/mnt/gobridge/state/outbox.db").
-		WithSQLiteLease("/mnt/gobridge/state/lease.db").
-		WithSQLiteDLQ("/mnt/gobridge/state/dlq.db").
+		WithSQLiteOutbox("/var/lib/gobridge/state/outbox.db").
+		WithSQLiteLease("/var/lib/gobridge/state/lease.db").
+		WithSQLiteDLQ("/var/lib/gobridge/state/dlq.db").
 		WithRoute("orders-in", "orders-out").
 		Build()
 	if err != nil {
@@ -141,13 +141,13 @@ func TestBuilder_Canonical_RoundTrip(t *testing.T) {
 	if parsed.Stores.Outbox == nil || parsed.Stores.Outbox.Type != "sqlite" {
 		t.Fatalf("Outbox missing or wrong type: %+v", parsed.Stores.Outbox)
 	}
-	if parsed.Stores.Outbox.Config.(*nativestore.SQLiteConfig).Path != "/mnt/gobridge/state/outbox.db" {
+	if parsed.Stores.Outbox.Config.(*nativestore.SQLiteConfig).Path != "/var/lib/gobridge/state/outbox.db" {
 		t.Errorf("Outbox path mismatch")
 	}
-	if parsed.Stores.Lease.Config.(*nativestore.SQLiteConfig).Path != "/mnt/gobridge/state/lease.db" {
+	if parsed.Stores.Lease.Config.(*nativestore.SQLiteConfig).Path != "/var/lib/gobridge/state/lease.db" {
 		t.Errorf("Lease path mismatch")
 	}
-	if parsed.Stores.DLQ.Config.(*nativestore.SQLiteConfig).Path != "/mnt/gobridge/state/dlq.db" {
+	if parsed.Stores.DLQ.Config.(*nativestore.SQLiteConfig).Path != "/var/lib/gobridge/state/dlq.db" {
 		t.Errorf("DLQ path mismatch")
 	}
 

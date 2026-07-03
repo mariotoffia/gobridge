@@ -174,6 +174,8 @@ func run() int {
 			AdminAPIKey:   cfg.HTTP.AdminAPIKey,
 			MonitorAPIKey: cfg.HTTP.MonitorAPIKey,
 			CORSOrigins:   cfg.HTTP.CORSOrigins,
+			TLSCertFile:   cfg.HTTP.TLSCertFile,
+			TLSKeyFile:    cfg.HTTP.TLSKeyFile,
 			RuntimeProvider: func() ports.Runtime {
 				rt := sup.Runtime()
 				if rt == nil {

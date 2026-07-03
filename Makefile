@@ -9,9 +9,16 @@
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
+.PHONY: docker-build update-seeder-image
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
+
+# Container image coordinates (override on the command line, e.g.
+# `make docker-build IMAGE=ghcr.io/mariotoffia/gobridge IMAGE_TAG=v1.2.3`).
+IMAGE      ?= ghcr.io/mariotoffia/gobridge
+IMAGE_TAG  ?= dev
+GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # Default target
 all: build test
@@ -23,6 +30,20 @@ all: build test
 build: ## Build all modules
 	@echo "Building all modules..."
 	go build ./...
+
+# ============================================================================
+# Container image
+# ============================================================================
+
+docker-build: ## Build the production runtime image (gobridge-filebased, no push)
+	@echo "Building $(IMAGE):$(IMAGE_TAG) ..."
+	docker build \
+		--build-arg VERSION=$(IMAGE_TAG) \
+		--build-arg GIT_SHA=$(GIT_SHA) \
+		-t $(IMAGE):$(IMAGE_TAG) .
+
+update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-ready image.txt
+	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
 
 # ============================================================================
 # Test targets

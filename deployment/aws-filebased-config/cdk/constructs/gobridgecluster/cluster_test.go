@@ -3,6 +3,7 @@
 package gobridgecluster_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -211,6 +212,39 @@ func TestGoBridgeCluster_AutoScaling_Off_By_Default(t *testing.T) {
 	tpl := assertions.Template_FromStack(stack, nil)
 	tpl.ResourceCountIs(jsii.String("AWS::ApplicationAutoScaling::ScalableTarget"), jsii.Number(0))
 	tpl.ResourceCountIs(jsii.String("AWS::ApplicationAutoScaling::ScalingPolicy"), jsii.Number(0))
+}
+
+// TestGoBridgeCluster_Topology_Forced_FilesystemReplicated asserts the cluster
+// stamps topology=filesystem_replicated into the bootstrap JSON of BOTH task
+// definitions even when the caller left the default. Without this the synth
+// validator and runtime guard return early on "single" and shared_outbox /
+// session leases on SQLite-over-EFS are silently permitted.
+func TestGoBridgeCluster_Topology_Forced_FilesystemReplicated(t *testing.T) {
+	defer jsii.Close()
+	// Caller intentionally leaves Topology unset (normalizes to "single").
+	stack, _ := newClusterStack(t, nil)
+	tpl := assertions.Template_FromStack(stack, nil)
+	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
+	if len(*tds) != 2 {
+		t.Fatalf("expected 2 task defs, got %d", len(*tds))
+	}
+	for _, raw := range *tds {
+		m := mainContainer(t, *raw)
+		envs, _ := m["Environment"].([]any)
+		bj := envFor(envs, "GOBRIDGE_FILEBASED_BOOTSTRAP_JSON")
+		if bj == "" || bj == "<intrinsic>" {
+			t.Fatalf("bootstrap JSON env missing/intrinsic: %q", bj)
+		}
+		var cfg struct {
+			Topology string `json:"topology"`
+		}
+		if err := json.Unmarshal([]byte(bj), &cfg); err != nil {
+			t.Fatalf("unmarshal bootstrap JSON: %v", err)
+		}
+		if cfg.Topology != string(infra.TopologyFilesystemReplicated) {
+			t.Fatalf("topology = %q, want %q", cfg.Topology, infra.TopologyFilesystemReplicated)
+		}
+	}
 }
 
 func TestGoBridgeCluster_AutoScaling_On_When_Set(t *testing.T) {

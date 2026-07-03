@@ -204,7 +204,15 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 - All of the above, plus:
 - Worker ECS Fargate service (`WorkerDesiredCount` default `2`, standard rolling deploy, optional CPU target-tracking via `AutoScalingProps`).
 - Shared EFS file system with **two** access points (control RW, worker RO); RW/RO split enforced at IAM + ECS volume level.
-- Worker seeder runs in `AbortDeploy` mode — workers never write configuration.
+- Worker seeder runs in `AdoptValid` mode — workers never write configuration
+  but **adopt** whatever valid `bridge.yaml` the control node last wrote (CDK
+  seed *or* an Admin-API `config-txn` commit) instead of aborting on hash
+  drift. This lets the two reconfiguration paths coexist: an Admin-API edit no
+  longer wedges later worker scale-out / crash-replacement. Set
+  `ClusterProps.WorkerSeederMode = jsii.String("AbortDeploy")` for strict
+  lock-step (workers refuse to start on any drift from the synth-time asset;
+  never use the Admin API to reconfigure in that mode). See
+  [seeder/README.md](cdk/constructs/internal/seeder/README.md#reconfiguration-paths-why-adoptvalid-is-the-worker-default).
 - Separate task SGs (`ControlSecurityGroup`, `WorkerSecurityGroup`) both granted EFS ingress.
 
 **`GoBridgeEfsConfig`** — created automatically by either facade when `EfsConfig` is nil; can be passed in to share one filesystem across facades (within the singleton-per-stack rule) or to override KMS / throughput / removal policy / backup.
@@ -212,7 +220,7 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 ## Constraints
 
 - **Singleton**: see above.
-- **Topology = `filesystem_replicated`** rejects routes that need cross-instance write coordination (`shared_outbox`, `route.session` lease). For those, use the HA/DynamoDB profile.
+- **Topology = `filesystem_replicated`** rejects routes that need cross-instance write coordination (`shared_outbox`, `route.session` lease). Those routes require a distributed lease/outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision — remove them from `bridge.yaml`, or provision your own DynamoDB-backed lease/outbox store. `GoBridgeCluster` **forces** `filesystem_replicated` on both task definitions regardless of the caller's `Bootstrap.Topology`, so these guards always fire for a multi-instance cluster.
 - **`SSMEndpoint`** set without `DevMode = true` fails Bootstrap validation (production-bypass guard).
 - Bootstrap env payload capped at 1 MiB.
 - `GoBridgeALBAttachment` reserves listener-rule priorities `[BasePriority, BasePriority+99]`. Add the attachment last on a listener, or pick a `BasePriority` outside any consumer-managed range.
@@ -222,7 +230,31 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 `lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), polls `ConfigFilePath` on EFS, reloads bridge config without restart, resolves `pms://` SSM secrets, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite` stores. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when any transport advertises `CapExclusiveIdentity`.
 
-Options: `WithLogger`, `WithParameterResolver`, `WithCredentialStore`, `WithShutdownTimeout`. Binary: `lib/cmd/gobridge-filebased`.
+Options: `WithLogger`, `WithLogLevelVar`, `WithParameterResolver`, `WithCredentialStore`, `WithShutdownTimeout`, `WithTerminalPollInterval`. Binary: `lib/cmd/gobridge-filebased`.
+
+**Terminal-runtime backstop.** `App.Run` polls the active runtime and returns
+`ErrRuntimeTerminal` (exiting the process non-zero) once the runtime enters an
+unrecoverable terminal state, so the orchestrator restarts the task instead of
+leaving a "running" container that bridges nothing. The container image also
+ships a self-probing health check: the CDK task definition sets
+`HealthCheck.Command = ["CMD", "/usr/local/bin/gobridge-filebased", "-healthcheck"]`
+(the binary GETs its own monitor `/live` endpoint, which 503s on terminal) and
+`StopTimeout = 60s` (> the 30s drain budget, so in-flight drains are not
+SIGKILLed). Override via `HealthCheckCommand`, `DisableHealthCheck`,
+`StopTimeout` and `ContainerUser` on the base props (exposed through the
+facades' internal base).
+
+**Hot log level.** `bridge.log_level` in the reloaded `bridge.yaml` retunes
+verbosity at runtime when the binary wires a `*slog.LevelVar` via
+`WithLogLevelVar` (the production binary does this by default) — no redeploy
+needed. Recognized values: `debug`, `info`, `warn`, `error` (unknown/empty
+leaves the level unchanged).
+
+**Container image.** Built by the repository-root `Dockerfile`
+(`make docker-build`): a static, CGO-free `gobridge-filebased` on
+`distroless/static:nonroot` (runs as uid:gid `65532:65532`, no shell/curl/wget).
+Published to `ghcr.io/mariotoffia/gobridge:<tag>` by the release workflow on
+core `v*` tags.
 
 ## Integration Tests
 

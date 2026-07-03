@@ -149,7 +149,7 @@ func TestNew_Seeder_EnvAndDependency(t *testing.T) {
 		wantMode string
 	}{
 		{"control", gobridgebase.ModeControl, "SeedOnce"},
-		{"worker", gobridgebase.ModeWorker, "AbortDeploy"},
+		{"worker", gobridgebase.ModeWorker, "AdoptValid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stack, _ := newBuilt(t, tc.mode, sampleYAML)
@@ -397,6 +397,126 @@ func TestNew_PanicsOnInvalidProps(t *testing.T) {
 				}
 			}()
 			gobridgebase.New(stack, jsii.String("X"), p)
+		})
+	}
+}
+
+func mainContainer(t *testing.T, stack awscdk.Stack) map[string]any {
+	t.Helper()
+	tpl := assertions.Template_FromStack(stack, nil)
+	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
+	for _, raw := range *tds {
+		props := (*raw)["Properties"].(map[string]any)
+		for _, cd := range props["ContainerDefinitions"].([]any) {
+			m := cd.(map[string]any)
+			if m["Name"] == "gobridge" {
+				return m
+			}
+		}
+	}
+	t.Fatal("main (gobridge) container not found")
+	return nil
+}
+
+// TestNew_Main_HealthCheckStopTimeoutAndUser asserts the terminal-runtime
+// backstop wiring: a container HealthCheck that runs the static binary against
+// the monitor /live endpoint, a StopTimeout longer than the drain budget, and
+// a non-root User.
+func TestNew_Main_HealthCheckStopTimeoutAndUser(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
+	m := mainContainer(t, stack)
+
+	// StopTimeout must exceed Fargate's 30s default drain budget.
+	if got, _ := m["StopTimeout"].(float64); got < 45 {
+		t.Fatalf("StopTimeout = %v, want >= 45 (drain budget + margin)", m["StopTimeout"])
+	}
+
+	// Non-root user.
+	if got, _ := m["User"].(string); got != "65532:65532" {
+		t.Fatalf("User = %q, want %q", got, "65532:65532")
+	}
+
+	// HealthCheck reuses the binary (no curl/wget in the distroless image).
+	hc, ok := m["HealthCheck"].(map[string]any)
+	if !ok {
+		t.Fatalf("main container has no HealthCheck: %v", m["HealthCheck"])
+	}
+	cmd, _ := hc["Command"].([]any)
+	var parts []string
+	for _, c := range cmd {
+		parts = append(parts, c.(string))
+	}
+	joined := strings.Join(parts, " ")
+	if !strings.Contains(joined, "-healthcheck") || !strings.Contains(joined, "gobridge-filebased") {
+		t.Fatalf("HealthCheck.Command = %v, want binary + -healthcheck", parts)
+	}
+}
+
+// TestNew_Main_HealthCheckDisabled verifies DisableHealthCheck removes the
+// probe (for the ALB-target-health-check case).
+func TestNew_Main_HealthCheckDisabled(t *testing.T) {
+	defer jsii.Close()
+	stack, vpc, efs := newScope(t)
+	src := source.NewAsset(writeTempYAML(t, sampleYAML))
+	gobridgebase.New(stack, jsii.String("X"), &gobridgebase.Props{
+		Mode:               gobridgebase.ModeControl,
+		Vpc:                vpc,
+		EfsConfig:          efs,
+		Image:              awsecs.ContainerImage_FromRegistry(jsii.String("img:latest"), nil),
+		Bootstrap:          bootstrap(),
+		Source:             src,
+		DisableHealthCheck: jsii.Bool(true),
+	})
+	m := mainContainer(t, stack)
+	if _, ok := m["HealthCheck"]; ok {
+		t.Fatalf("expected no HealthCheck when DisableHealthCheck=true, got %v", m["HealthCheck"])
+	}
+}
+
+// TestNew_PanicsOnPlaceholderSeederDigest verifies the synth-time guard: a
+// SeederImage override pinned to the all-zeros placeholder digest (or an
+// unpinned ref) must panic rather than synth a dead-on-arrival task whose main
+// container waits forever on a seeder that can never be pulled.
+func TestNew_PanicsOnPlaceholderSeederDigest(t *testing.T) {
+	defer jsii.Close()
+	for _, tc := range []struct {
+		name    string
+		ref     string
+		wantSub string
+	}{
+		{
+			name:    "all-zeros",
+			ref:     "public.ecr.aws/aws-cli/aws-cli:2@sha256:" + strings.Repeat("0", 64),
+			wantSub: "all-zeros",
+		},
+		{
+			name:    "unpinned",
+			ref:     "public.ecr.aws/aws-cli/aws-cli:2",
+			wantSub: "fully-pinned",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stack, vpc, efs := newScope(t)
+			src := source.NewAsset(writeTempYAML(t, sampleYAML))
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic on invalid seeder digest")
+				}
+				if !strings.Contains(asString(r), tc.wantSub) {
+					t.Fatalf("panic %q does not mention %q", asString(r), tc.wantSub)
+				}
+			}()
+			gobridgebase.New(stack, jsii.String("X"), &gobridgebase.Props{
+				Mode:        gobridgebase.ModeControl,
+				Vpc:         vpc,
+				EfsConfig:   efs,
+				Image:       awsecs.ContainerImage_FromRegistry(jsii.String("img:latest"), nil),
+				Bootstrap:   bootstrap(),
+				Source:      src,
+				SeederImage: jsii.String(tc.ref),
+			})
 		})
 	}
 }

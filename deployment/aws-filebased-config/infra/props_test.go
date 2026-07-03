@@ -16,7 +16,7 @@ func TestServiceProps_Normalized_AppliesDefaults(t *testing.T) {
 	assertEqual(t, 1, p.Replicas)
 	assertEqual(t, 512, p.CPU)
 	assertEqual(t, 1024, p.MemoryMiB)
-	assertEqual(t, "/mnt/gobridge", p.ConfigMountPath)
+	assertEqual(t, "/var/lib/gobridge", p.ConfigMountPath)
 	assertEqual(t, "/gobridge", p.AccessPointPath)
 }
 

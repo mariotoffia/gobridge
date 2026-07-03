@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.3
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
@@ -16,6 +17,7 @@ require (
 	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/localstack v0.0.0
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -68,6 +70,7 @@ require (
 replace (
 	github.com/mariotoffia/gobridge => ../../..
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
+	github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch => ../../../adapters/aws/metrics/cloudwatch
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../../adapters/mqtt/transport/paho
 	github.com/mariotoffia/gobridge/adapters/native/config/file => ../../../adapters/native/config/file

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,11 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// adminWriteTimeoutMargin is added to AdminOperationTimeout to derive the admin
+// server WriteTimeout so a slow-but-successful admin operation can flush its
+// response before the write deadline fires.
+const adminWriteTimeoutMargin = 15 * time.Second
 
 // Config holds HTTP server configuration.
 type Config struct {
@@ -56,6 +62,31 @@ type Config struct {
 	// AdminOperationTimeout is the context timeout applied to admin
 	// start/stop operations. Defaults to 30s when zero.
 	AdminOperationTimeout time.Duration `json:"admin_operation_timeout,omitempty"`
+
+	// TLSCertFile and TLSKeyFile are filesystem paths to the PEM server
+	// certificate (with chain) and private key. When BOTH are set the admin
+	// and monitor listeners serve HTTPS and AdminURL/MonitorURL report the
+	// https scheme. When either is empty the servers stay plaintext (the
+	// default) and rely on an external TLS terminator. Setting only one is a
+	// startup error.
+	TLSCertFile string `json:"tls_cert_file,omitempty"`
+	TLSKeyFile  string `json:"tls_key_file,omitempty"`
+
+	// ConfigApplier, when set, is invoked by a successful config-transaction
+	// Commit AFTER the new blueprint is persisted, so the running runtime is
+	// reconfigured in-band rather than relying solely on the file watcher. A
+	// non-nil error fails the commit response (the durable write already
+	// happened; the operator must reconcile) instead of falsely reporting
+	// "committed" while the runtime diverges. When nil, application is
+	// delegated to the config watcher (historical behavior).
+	ConfigApplier func(ctx context.Context, cfg *ports.BridgeConfig) error `json:"-"`
+
+	// AuthFailureLimit bounds failed authentication attempts per client within
+	// AuthFailureWindow before further attempts from that client are rejected
+	// with 429. Zero uses defaultAuthFailureLimit. AuthFailureWindow zero uses
+	// defaultAuthFailureWindow.
+	AuthFailureLimit  int           `json:"auth_failure_limit,omitempty"`
+	AuthFailureWindow time.Duration `json:"auth_failure_window,omitempty"`
 }
 
 // DefaultConfig returns a Config with security-first defaults.
@@ -81,6 +112,7 @@ type Server struct {
 	clk                clock.Clock
 	idGen              idGenFn
 	configTxn          *configTxnManager // nil when config management is disabled
+	authThrottle       *authThrottle
 
 	admin    *http.Server
 	monitor  *http.Server
@@ -165,8 +197,9 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		s.cfg.AdminOperationTimeout = 30 * time.Second
 	}
 	if cfg.ConfigStore != nil && cfg.ConfigProvider != nil {
-		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, s.logger, s.clk)
+		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, cfg.ConfigApplier, s.logger, s.clk)
 	}
+	s.authThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)
 	return s
 }
 
@@ -212,22 +245,44 @@ func (s *Server) Start(_ context.Context) error {
 		return err
 	}
 
+	// TLS is opt-in via a cert/key pair. Loading here fails startup fast on a
+	// bad or unreadable pair rather than on the first request.
+	var tlsConf *tls.Config
+	if s.tlsEnabled() {
+		cert, err := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("httpapi: load TLS keypair: %w", err)
+		}
+		tlsConf = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
+
 	adminMux := http.NewServeMux()
 	s.registerAdminRoutes(adminMux)
 
 	monitorMux := http.NewServeMux()
 	s.registerMonitorRoutes(monitorMux)
 
+	// The admin WriteTimeout must exceed AdminOperationTimeout: a start/stop
+	// that legitimately runs up to AdminOperationTimeout server-side would
+	// otherwise have its response connection reset by an equal WriteTimeout,
+	// leaving the operator retrying against an ambiguous state.
+	adminWriteTimeout := s.cfg.AdminOperationTimeout + adminWriteTimeoutMargin
+
 	s.admin = &http.Server{
 		Addr:         s.cfg.AdminAddr,
 		Handler:      s.wrap(adminMux),
+		TLSConfig:    tlsConf,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: adminWriteTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 	s.monitor = &http.Server{
 		Addr:         s.cfg.MonitorAddr,
 		Handler:      s.wrap(monitorMux),
+		TLSConfig:    tlsConf,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -243,8 +298,14 @@ func (s *Server) Start(_ context.Context) error {
 		return fmt.Errorf("httpapi: monitor listen %s: %w", s.cfg.MonitorAddr, err)
 	}
 
-	s.adminURL = "http://" + adminLn.Addr().String()
-	s.monURL = "http://" + monitorLn.Addr().String()
+	scheme := "http://"
+	if tlsConf != nil {
+		scheme = "https://"
+		adminLn = tls.NewListener(adminLn, tlsConf)
+		monitorLn = tls.NewListener(monitorLn, tlsConf)
+	}
+	s.adminURL = scheme + adminLn.Addr().String()
+	s.monURL = scheme + monitorLn.Addr().String()
 
 	go func() {
 		if err := s.admin.Serve(adminLn); err != nil && err != http.ErrServerClosed {
@@ -265,13 +326,27 @@ func (s *Server) Start(_ context.Context) error {
 	return nil
 }
 
-// AdminURL returns the actual bound admin URL (e.g. "http://127.0.0.1:54321").
-// Only valid after Start returns successfully.
-func (s *Server) AdminURL() string { return s.adminURL }
+// AdminURL returns the actual bound admin URL (e.g. "http://127.0.0.1:54321",
+// or "https://..." when TLS is enabled). Only valid after Start returns
+// successfully. Reads are synchronised against Start's write.
+func (s *Server) AdminURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adminURL
+}
 
-// MonitorURL returns the actual bound monitor URL.
-// Only valid after Start returns successfully.
-func (s *Server) MonitorURL() string { return s.monURL }
+// MonitorURL returns the actual bound monitor URL. Only valid after Start
+// returns successfully. Reads are synchronised against Start's write.
+func (s *Server) MonitorURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.monURL
+}
+
+// tlsEnabled reports whether an in-process TLS keypair is configured.
+func (s *Server) tlsEnabled() bool {
+	return s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != ""
+}
 
 // Stop gracefully shuts down both HTTP servers.
 func (s *Server) Stop(ctx context.Context) error {
@@ -321,6 +396,9 @@ func (s *Server) validateConfig() error {
 		if strings.TrimSpace(o) == "*" {
 			return fmt.Errorf("httpapi: wildcard CORS origin '*' is not allowed; specify explicit origins or leave empty to disable CORS")
 		}
+	}
+	if (s.cfg.TLSCertFile == "") != (s.cfg.TLSKeyFile == "") {
+		return fmt.Errorf("httpapi: TLS requires both tls_cert_file and tls_key_file; set both to enable HTTPS or neither to stay plaintext")
 	}
 	return nil
 }
@@ -389,11 +467,15 @@ func (s *Server) corsMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		allowed := origin != "" && s.isAllowedOrigin(origin)
+		// The response body/headers depend on Origin whether or not the origin
+		// is allowed, so Vary: Origin MUST be set unconditionally to keep
+		// intermediary caches from serving an allow-listed response to a
+		// disallowed origin (or vice versa).
+		w.Header().Add("Vary", "Origin")
 		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
-			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			if !allowed {
@@ -418,17 +500,34 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 
 func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		client := actorFromRequest(r)
+		if s.authThrottle.throttled(client) {
+			s.emitAudit(r, "auth.throttled", "admin", "", "failure", nil)
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
+			return
+		}
 		if !s.checkAPIKey(r, s.currentAdminAPIKey()) {
+			s.authThrottle.recordFailure(client)
+			s.emitAudit(r, "auth.failure", "admin", "", "failure", nil)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
 			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}
+		s.authThrottle.recordSuccess(client)
 		next(w, r)
 	}
 }
 
 func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		client := actorFromRequest(r)
+		if s.authThrottle.throttled(client) {
+			s.emitAudit(r, "auth.throttled", "monitor", "", "failure", nil)
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
+			return
+		}
 		// Accept monitor key, or fall back to admin key (admin is a
 		// superset of monitor access).
 		ok := false
@@ -440,10 +539,13 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 			ok = s.checkAPIKey(r, s.currentAdminAPIKey())
 		}
 		if !ok {
+			s.authThrottle.recordFailure(client)
+			s.emitAudit(r, "auth.failure", "monitor", "", "failure", nil)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-monitor"`)
 			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 			return
 		}
+		s.authThrottle.recordSuccess(client)
 		next(w, r)
 	}
 }

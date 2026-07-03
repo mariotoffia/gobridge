@@ -1,0 +1,35 @@
+# Docker build context excludes. The image builds the gobridge-filebased
+# binary with GOWORK=off, which pulls in the repo-root module plus the
+# adapters/httpapi/processors/testutil/deployment-infra modules via relative
+# replace directives — so DO NOT exclude Go source directories here. Only
+# non-build artifacts are excluded to keep the context small.
+
+# VCS / tooling
+.git
+.gitignore
+.github
+*.md
+
+# Design docs and non-code assets
+docs
+_design
+spec
+reports
+
+# Build outputs / caches
+bin
+**/cdk.out
+**/node_modules
+**/*.test
+**/*.out
+coverage*
+*.log
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Local Docker files (not needed inside the build)
+.dockerignore
+Dockerfile

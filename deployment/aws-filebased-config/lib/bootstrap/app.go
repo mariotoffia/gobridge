@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -21,8 +23,35 @@ import (
 
 type Option func(*App)
 
+// ErrRuntimeTerminal is returned by App.Run when the active runtime enters a
+// terminal (unrecoverable) state — a background component failed fatally or
+// panicked and the runtime cancelled itself. Run exits with this error so the
+// process terminates non-zero and the orchestrator (ECS/Kubernetes) restarts
+// the task, rather than leaving a "running" container that bridges nothing.
+var ErrRuntimeTerminal = errors.New("bootstrap: runtime entered terminal state")
+
+// defaultTerminalPollInterval is how often the terminal backstop samples the
+// active runtime. Terminal state only follows a sustained failure, so a coarse
+// poll is cheap and sufficient.
+const defaultTerminalPollInterval = 5 * time.Second
+
 func WithLogger(logger *slog.Logger) Option {
 	return func(a *App) { a.logger = logger }
+}
+
+// WithLogLevelVar wires a *slog.LevelVar so bridge.log_level from the reloaded
+// bridge config takes effect at runtime (including hot reload) without a
+// redeploy. The same LevelVar must back the *slog.Logger handler passed via
+// WithLogger. When unset, bridge.log_level is parsed and merged but has no
+// effect on emitted log output.
+func WithLogLevelVar(v *slog.LevelVar) Option {
+	return func(a *App) { a.logLevelVar = v }
+}
+
+// WithTerminalPollInterval overrides the terminal-backstop poll interval.
+// Primarily for tests; production uses defaultTerminalPollInterval.
+func WithTerminalPollInterval(d time.Duration) Option {
+	return func(a *App) { a.terminalPollInterval = d }
 }
 
 func WithParameterResolver(resolver parameterResolver) Option {
@@ -40,6 +69,15 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 // inject a pre-configured client here.
 func WithDynamoDBClient(client *dynamodb.Client) Option {
 	return func(a *App) { a.dynamoDBClient = client }
+}
+
+// WithMetricsExporter overrides the runtime metrics exporter. When unset
+// (the default) the App builds one during Start from
+// BootstrapConfig.MetricsExporter (noop when empty). Tests and local
+// emulation inject a pre-configured or fake exporter here. The App takes
+// ownership: it Closes the exporter on Stop.
+func WithMetricsExporter(exporter ports.MetricsExporter) Option {
+	return func(a *App) { a.metricsExporter = exporter }
 }
 
 // WithPluginRegistry overrides the *ports.Registry used to decode
@@ -61,10 +99,17 @@ type App struct {
 	cfg deployinfra.BootstrapConfig
 
 	logger            *slog.Logger
+	logLevelVar       *slog.LevelVar
 	parameterResolver parameterResolver
 	credentialStore   ports.CredentialStore
 	pluginRegistry    *ports.Registry
 	dynamoDBClient    *dynamodb.Client
+
+	// metricsExporter is the runtime metrics backend passed to every
+	// bridge.Builder via newFactoryRegistry. nil selects noop (no metrics).
+	// Built once in Start from cfg.MetricsExporter (or injected via
+	// WithMetricsExporter) and Closed in Stop — the App owns its lifecycle.
+	metricsExporter ports.MetricsExporter
 
 	manager         *config.Manager
 	httpServer      *httpapi.Server
@@ -79,7 +124,20 @@ type App struct {
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
-	shutdownTimeout time.Duration
+	shutdownTimeout      time.Duration
+	terminalPollInterval time.Duration
+
+	// clk drives the terminal-backstop poll ticker. Defaults to
+	// clock.System; tests keep real time (poll interval is injectable).
+	clk clock.Clock
+
+	// terminalCh is signalled once by the terminal backstop when the active
+	// runtime goes terminal. Buffered so the backstop never blocks.
+	terminalCh chan struct{}
+
+	// terminalProbe is a test seam overriding the terminal check; nil in
+	// production (runtimeTerminal reads the active runtime).
+	terminalProbe func() bool
 
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
@@ -92,12 +150,17 @@ func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 		cfg:        cfg,
 		logger:     slog.Default(),
 		handlerRef: newTransportHandlerRef(),
+		terminalCh: make(chan struct{}, 1),
+		clk:        clock.System,
 	}
 	for _, opt := range opts {
 		opt(app)
 	}
 	if app.shutdownTimeout <= 0 {
 		app.shutdownTimeout = 30 * time.Second
+	}
+	if app.terminalPollInterval <= 0 {
+		app.terminalPollInterval = defaultTerminalPollInterval
 	}
 	if app.pluginRegistry == nil {
 		app.pluginRegistry = newDefaultPluginRegistry()
@@ -138,7 +201,27 @@ func (a *App) Start(ctx context.Context) error {
 		a.dynamoDBClient = client
 	}
 
-	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, func() *ports.BridgeConfig {
+	// Build the runtime metrics exporter once (noop => nil). It is shared by
+	// every bridge.Builder across config reloads and owns a flush goroutine,
+	// so it is created here (not in newFactoryRegistry, which runs per
+	// reload) and Closed in Stop. On a later Start failure the deferred
+	// cleanup below Closes it to avoid a goroutine leak.
+	if a.metricsExporter == nil {
+		exporter, err := newMetricsExporter(ctx, a.cfg, a.logger)
+		if err != nil {
+			return err
+		}
+		a.metricsExporter = exporter
+	}
+	startOK := false
+	defer func() {
+		if !startOK && a.metricsExporter != nil {
+			_ = a.metricsExporter.Close(context.Background())
+			a.metricsExporter = nil
+		}
+	}()
+
+	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, a.logger, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
 	watcher := newPollWatcher(a.cfg, a.pluginRegistry, a.logger)
@@ -213,7 +296,11 @@ func (a *App) Start(ctx context.Context) error {
 	a.watchWg.Go(func() {
 		a.watchLoop(watchCtx, watchCh)
 	})
+	a.watchWg.Go(func() {
+		a.watchTerminal(watchCtx)
+	})
 
+	startOK = true
 	return nil
 }
 
@@ -237,6 +324,7 @@ func (a *App) Stop(ctx context.Context) error {
 	manager := a.manager
 	httpServer := a.httpServer
 	transportServer := a.transportServer
+	metricsExporter := a.metricsExporter
 	currentRuntime := a.runtimeRef.Get()
 	currentApplied := a.appliedRef.Get()
 
@@ -260,6 +348,14 @@ func (a *App) Stop(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+	// Close the metrics exporter last so late runtime-shutdown metrics are
+	// flushed. Close stops the flush goroutine and performs a final flush;
+	// it is idempotent (safe if an injected exporter is also closed elsewhere).
+	if metricsExporter != nil {
+		if err := metricsExporter.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 
 	return firstErr
 }
@@ -268,10 +364,27 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.Start(ctx); err != nil {
 		return err
 	}
-	<-ctx.Done()
+
+	// Terminal backstop: the transport/admin/monitor servers keep serving
+	// (and /health keeps reporting) even when the runtime is unrecoverably
+	// dead, so waiting only on ctx.Done() would leave an ECS/Kubernetes task
+	// "running" forever while bridging nothing. Exit non-zero on terminal so
+	// the orchestrator restarts the task.
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case <-a.terminalCh:
+		runErr = ErrRuntimeTerminal
+		a.logger.Error("bootstrap: runtime entered terminal (unrecoverable) state; " +
+			"exiting non-zero so the orchestrator restarts the task")
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.shutdownTimeout)
 	defer cancel()
-	return a.Stop(shutdownCtx)
+	if err := a.Stop(shutdownCtx); err != nil && runErr == nil {
+		runErr = err
+	}
+	return runErr
 }
 
 func (a *App) AdminURL() string {
@@ -305,6 +418,37 @@ func (a *App) CurrentAppliedConfig() *ports.BridgeConfig {
 
 func (a *App) CurrentRuntime() *goruntime.Runtime {
 	return a.runtimeRef.Get()
+}
+
+func (a *App) watchTerminal(ctx context.Context) {
+	ticker := a.clk.NewTicker(a.terminalPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C():
+			if a.runtimeTerminal() {
+				select {
+				case a.terminalCh <- struct{}{}:
+				default:
+				}
+				return
+			}
+		}
+	}
+}
+
+// runtimeTerminal reports whether the active runtime is in an unrecoverable
+// terminal state. The App swaps runtimes directly, so a nil runtime during a
+// swap window is transient (not terminal) — only a live-but-terminal runtime
+// counts. terminalProbe is a test seam; production leaves it nil.
+func (a *App) runtimeTerminal() bool {
+	if a.terminalProbe != nil {
+		return a.terminalProbe()
+	}
+	rt := a.runtimeRef.Get()
+	return rt != nil && rt.Terminal()
 }
 
 func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig) {
@@ -349,6 +493,11 @@ type runtimePlan struct {
 }
 
 func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
+	// Apply bridge.log_level first so debug logging takes effect immediately
+	// on reload — even when the reload that raised the level is itself being
+	// diagnosed. A no-op when no LevelVar was wired (WithLogLevelVar).
+	a.applyLogLevel(logical)
+
 	if err := validateFilesystemProfile(a.cfg, logical); err != nil {
 		return err
 	}

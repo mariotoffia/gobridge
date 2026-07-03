@@ -1,6 +1,7 @@
 package gobridgebase
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -35,6 +36,20 @@ func applyKmsGrant(p *Props, role awsiam.IRole) {
 		return
 	}
 	grants.GrantKMSEfsCmkUse(role, p.EfsKmsKey)
+}
+
+// applyMetricsGrant emits the cloudwatch:PutMetricData grant when — and only
+// when — the bootstrap config selects a real metrics exporter
+// (MetricsExporter=cloudwatch). The construct knows the exporter selection
+// (it is a Bootstrap field serialized into the container env), so the grant
+// is conditioned on it for least privilege: a noop deployment gets no
+// CloudWatch permissions. The grant is scoped with the cloudwatch:namespace
+// condition to the SAME namespace the exporter publishes to.
+func applyMetricsGrant(p *Props, role awsiam.IRole) {
+	if !p.Bootstrap.MetricsExporterEnabled() {
+		return
+	}
+	grants.GrantCloudWatchMetrics(role, p.Bootstrap.EffectiveMetricsNamespace())
 }
 
 // applyAdapterGrants iterates over the adapter kinds present in the
@@ -86,12 +101,12 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	}
 
 	// DynamoDB stores (lease/outbox/DLQ). Grant read/write data on each
-	// table the config names. Stores that omit table_name fall back to
-	// the adapter's built-in default table name, which this profile
-	// cannot resolve to an ARN -- those are skipped here (supply
-	// table_name to receive an automatic grant, or wire the grant
-	// externally). Dedupe by name so a table shared across store roles
-	// yields a single import + grant.
+	// table the config names. Stores that omit table_name would fall back
+	// to the adapter's built-in default table name, which this profile
+	// cannot resolve to an ARN -- those FAIL AT SYNTH (see below) rather
+	// than silently deploying a task that AccessDenies at runtime. Dedupe
+	// by name so a table shared across store roles yields a single import +
+	// grant.
 	granted := map[string]struct{}{}
 	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
 		if sc == nil || !isKind(sc.Type, awsstore.DynamoDBKind) {
@@ -99,7 +114,18 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 		}
 		name := dynamoTableName(sc)
 		if name == "" {
-			continue
+			// A DynamoDB store with no explicit table_name would fall back to
+			// the adapter's built-in default table name, which this profile
+			// cannot resolve to an ARN — so no IAM grant is emitted and the
+			// runtime dies with AccessDenied on first use. Fail fast at synth
+			// with an actionable message instead of shipping a task that
+			// cannot reach its own store.
+			panic(fmt.Sprintf(
+				"gobridgebase: DynamoDB store %q omits table_name; the deployment cannot resolve a "+
+					"table ARN to grant and the runtime would fail with AccessDenied. Set an explicit "+
+					"table_name on the store config (or grant the table externally and remove the store "+
+					"from the parsed config).",
+				sc.Type))
 		}
 		if _, done := granted[name]; done {
 			continue

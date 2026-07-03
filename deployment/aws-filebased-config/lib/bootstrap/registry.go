@@ -28,6 +28,9 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	if a.credentialStore != nil {
 		opts = append(opts, bridge.WithCredentialStore(a.credentialStore))
 	}
+	if a.metricsExporter != nil {
+		opts = append(opts, bridge.WithMetrics(a.metricsExporter))
+	}
 	builder := bridge.NewBuilder(runtimeCfg, opts...)
 
 	transports := map[string]ports.TransportFactory{

@@ -101,7 +101,7 @@ func TestHandleConfigTxnCommit_SequentialVersionIncrement(t *testing.T) {
 	currentCfg := parsed
 
 	// Recreate the server's config provider to return the new version.
-	s.configTxn = newTxnManager(&parser.FileStore{Path: path, Registry: newTestRegistry(t)}, func() *ports.BridgeConfig { return currentCfg }, nil, s.clk)
+	s.configTxn = newTxnManager(&parser.FileStore{Path: path, Registry: newTestRegistry(t)}, func() *ports.BridgeConfig { return currentCfg }, nil, nil, s.clk)
 
 	// Second commit: version 1 → 2.
 	txnID2 := createTxn(t, s)

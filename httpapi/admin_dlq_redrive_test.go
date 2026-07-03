@@ -73,14 +73,14 @@ func redriveReq(body string) *http.Request {
 }
 
 // TestHandleDLQRedrive_AllSuccess validates that valid entries are
-// re-injected into their routes, deleted from the DLQ, and the
-// response reflects the correct counts.
+// claimed (deleted), re-injected into their routes, and the response
+// reflects the correct counts.
 //
-// Flow:
+// Flow (claim-before-inject):
 // ───────────────────────────────────────────────
 //
-//	store.Get("e1") → rt.Inject("test-route") → store.Delete("e1")
-//	store.Get("e2") → rt.Inject("test-route") → store.Delete("e2")
+//	store.Get("e1") → store.Delete("e1") → rt.Inject("test-route")
+//	store.Get("e2") → store.Delete("e2") → rt.Inject("test-route")
 //
 // ───────────────────────────────────────────────
 func TestHandleDLQRedrive_AllSuccess(t *testing.T) {
@@ -128,7 +128,7 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1","missing-id"]}`))
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusMultiStatus, rec.Code)
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
@@ -154,7 +154,7 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1"]}`))
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusMultiStatus, rec.Code)
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
@@ -164,6 +164,35 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	errs := body["errors"].([]any)
 	errObj := errs[0].(map[string]any)
 	assert.Equal(t, "route not found", errObj["error"])
+
+	// Claim-by-delete happens BEFORE inject; when inject fails the entry must
+	// be restored (best-effort) so failure evidence is not silently lost.
+	remaining, _ := dlq.List(context.Background(), routing.DLQFilter{})
+	assert.Len(t, remaining, 1, "failed-inject entry must be restored to the DLQ")
+}
+
+// TestHandleDLQRedrive_RetryDoesNotDoubleInject validates the claim-before-
+// inject ordering: a second (retried) redrive of already-redriven IDs finds
+// them gone and does NOT re-inject, matching the at-least-once/no-double-replay
+// bias the fix targets.
+func TestHandleDLQRedrive_RetryDoesNotDoubleInject(t *testing.T) {
+	mux, dlq, sender := redriveSetup(t)
+	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
+		ID: "e1", RouteID: "test-route",
+		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
+		FailedAt: time.Now(),
+	}))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1"]}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, sender.sentCount())
+
+	// Retry the same request: entry already claimed+deleted, so no re-inject.
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, redriveReq(`{"ids":["e1"]}`))
+	assert.Equal(t, http.StatusMultiStatus, rec2.Code)
+	assert.Equal(t, 1, sender.sentCount(), "retry must not double-inject")
 }
 
 // TestHandleDLQRedrive_DuplicateIDs validates that duplicate IDs in
@@ -223,7 +252,7 @@ func TestHandleDLQRedrive_AllFailed(t *testing.T) {
 	mux, _, _ := redriveSetup(t)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, redriveReq(`{"ids":["nope1","nope2"]}`))
-	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusMultiStatus, rec.Code)
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))

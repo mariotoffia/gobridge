@@ -46,3 +46,37 @@ jobs:
           name: lint-reports
           path: reports/
           if-no-files-found: ignore
+
+  # Smoke-build the production runtime image so the Dockerfile cannot rot.
+  # No push: this only proves the multi-stage build (static gobridge-filebased
+  # on distroless nonroot) still compiles and assembles.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: gobridge-filebased:ci
+          build-args: |
+            VERSION=ci
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-run healthcheck flag
+        run: |
+          # No monitor server is running, so the probe must exit non-zero
+          # rather than crash — this proves the -healthcheck flag is wired.
+          if docker run --rm -e GOBRIDGE_FILEBASED_BOOTSTRAP_JSON='{"bridge_id":"ci","config_file_path":"/var/lib/gobridge/bridge.yaml"}' gobridge-filebased:ci -healthcheck; then
+            echo "::error::healthcheck unexpectedly succeeded with no server"
+            exit 1
+          fi
+          echo "healthcheck flag wired (non-zero as expected)"

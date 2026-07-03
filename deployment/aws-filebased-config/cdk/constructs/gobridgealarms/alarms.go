@@ -60,6 +60,30 @@ type AlarmsProps struct {
 	DisableEfsIO          bool
 	DisableAlbUnhealthy   bool
 	DisableAlb5xx         bool
+
+	// EnableRollupAlarms opts in to alarms on the custom runtime rollup
+	// metrics (OutboxDepth, DLQEntries, LeaseExpiries, LeaseAcquireFailures)
+	// published by the cloudwatch metrics exporter when
+	// BootstrapConfig.MetricsExporter=cloudwatch with
+	// WithRollupMetrics(DefaultRollupMetrics()...). OFF by default: a
+	// deployment without that exporter emits no such metrics and the alarms
+	// would sit in INSUFFICIENT_DATA. The alarms carry NO dimensions and so
+	// only match the zero-dimension rollup series the exporter
+	// double-publishes (MF-4). They publish to AlarmTopic like every other
+	// alarm in the bundle.
+	EnableRollupAlarms bool
+
+	// RollupMetricsNamespace overrides the CloudWatch namespace the rollup
+	// alarms read. Empty defaults to rollupNamespaceDefault; it MUST equal
+	// BootstrapConfig.EffectiveMetricsNamespace() (the namespace the exporter
+	// publishes to) or the rollup alarms never leave INSUFFICIENT_DATA.
+	RollupMetricsNamespace *string
+
+	// OutboxDepthThreshold overrides the OutboxDepth alarm threshold
+	// (default 1000). LeaseAcquireFailuresThreshold overrides the
+	// LeaseAcquireFailures alarm threshold (default 3).
+	OutboxDepthThreshold          *float64
+	LeaseAcquireFailuresThreshold *float64
 }
 
 // GoBridgeAlarms is the bundle construct exposing each generated
@@ -76,7 +100,27 @@ type GoBridgeAlarms struct {
 	albUnhealthyWrk  awscloudwatch.IAlarm
 	alb5xxCtrl       awscloudwatch.IAlarm
 	alb5xxWrk        awscloudwatch.IAlarm
+
+	outboxDepth          awscloudwatch.IAlarm
+	dlqEntries           awscloudwatch.IAlarm
+	leaseExpiries        awscloudwatch.IAlarm
+	leaseAcquireFailures awscloudwatch.IAlarm
 }
+
+const (
+	// rollupNamespaceDefault mirrors infra.DefaultMetricsNamespace /
+	// domain/shared.MetricNamespace: the namespace the runtime exporter
+	// publishes to. Duplicated as a literal to avoid a dependency edge from
+	// the CDK constructs onto the runtime domain module.
+	rollupNamespaceDefault = "GoBridge/Runtime"
+
+	// Rollup metric names mirror domain/shared.Metric* (the strings the
+	// exporter emits). The rollup alarms match the zero-dimension copies.
+	metricOutboxDepth          = "OutboxDepth"
+	metricDLQEntries           = "DLQEntries"
+	metricLeaseExpiries        = "LeaseExpiries"
+	metricLeaseAcquireFailures = "LeaseAcquireFailures"
+)
 
 // NewGoBridgeAlarms wires the alarm bundle into scope.
 func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProps) *GoBridgeAlarms {
@@ -224,7 +268,71 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 		}
 	}
 
+	if props.EnableRollupAlarms {
+		ns := rollupNamespaceDefault
+		if props.RollupMetricsNamespace != nil && *props.RollupMetricsNamespace != "" {
+			ns = *props.RollupMetricsNamespace
+		}
+		outboxTh := jsii.Number(1000)
+		if props.OutboxDepthThreshold != nil {
+			outboxTh = props.OutboxDepthThreshold
+		}
+		leaseFailTh := jsii.Number(3)
+		if props.LeaseAcquireFailuresThreshold != nil {
+			leaseFailTh = props.LeaseAcquireFailuresThreshold
+		}
+
+		// OutboxDepth is emitted continuously while an outbox is configured,
+		// so silence means the drainer/bridge is dead -> BREACHING.
+		g.outboxDepth = newRollupAlarm(c, "OutboxDepth", ns, metricOutboxDepth,
+			"Maximum", outboxTh, period, evals, topicAction,
+			awscloudwatch.TreatMissingData_BREACHING,
+			"GoBridge outbox depth (fleet rollup) exceeded threshold — drainer backlog or stalled bridge.")
+
+		// Event counters: no events is the healthy state -> NOT_BREACHING.
+		g.dlqEntries = newRollupAlarm(c, "DLQEntries", ns, metricDLQEntries,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge dead-letter entries (fleet rollup) observed.")
+
+		g.leaseExpiries = newRollupAlarm(c, "LeaseExpiries", ns, metricLeaseExpiries,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge lease expiries (fleet rollup) observed — sessions lost their exclusive lease.")
+
+		g.leaseAcquireFailures = newRollupAlarm(c, "LeaseAcquireFailures", ns, metricLeaseAcquireFailures,
+			"Sum", leaseFailTh, period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge lease-acquire failures (fleet rollup) exceeded threshold.")
+	}
+
 	return g
+}
+
+// newRollupAlarm builds a dimensionless alarm on a custom runtime rollup
+// metric. The alarm carries no DimensionsMap so it matches only the
+// zero-dimension rollup series the exporter double-publishes (MF-4).
+func newRollupAlarm(scope constructs.Construct, id, namespace, metricName, statistic string,
+	threshold *float64, period awscdk.Duration, evals *float64,
+	action awscloudwatch.IAlarmAction, treatMissing awscloudwatch.TreatMissingData, desc string,
+) awscloudwatch.IAlarm {
+	metric := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+		Namespace:  jsii.String(namespace),
+		MetricName: jsii.String(metricName),
+		Statistic:  jsii.String(statistic),
+		Period:     period,
+	})
+	alarm := awscloudwatch.NewAlarm(scope, jsii.String(id), &awscloudwatch.AlarmProps{
+		Metric:             metric,
+		Threshold:          threshold,
+		EvaluationPeriods:  evals,
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		TreatMissingData:   treatMissing,
+		AlarmDescription:   jsii.String(desc),
+	})
+	alarm.AddAlarmAction(action)
+	alarm.AddOkAction(action)
+	return alarm
 }
 
 func newUnhealthyAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTargetGroup,
@@ -274,6 +382,13 @@ func (g *GoBridgeAlarms) AlbUnhealthyControlAlarm() awscloudwatch.IAlarm { retur
 func (g *GoBridgeAlarms) AlbUnhealthyWorkerAlarm() awscloudwatch.IAlarm  { return g.albUnhealthyWrk }
 func (g *GoBridgeAlarms) Alb5xxControlAlarm() awscloudwatch.IAlarm       { return g.alb5xxCtrl }
 func (g *GoBridgeAlarms) Alb5xxWorkerAlarm() awscloudwatch.IAlarm        { return g.alb5xxWrk }
+
+func (g *GoBridgeAlarms) OutboxDepthAlarm() awscloudwatch.IAlarm   { return g.outboxDepth }
+func (g *GoBridgeAlarms) DLQEntriesAlarm() awscloudwatch.IAlarm    { return g.dlqEntries }
+func (g *GoBridgeAlarms) LeaseExpiriesAlarm() awscloudwatch.IAlarm { return g.leaseExpiries }
+func (g *GoBridgeAlarms) LeaseAcquireFailuresAlarm() awscloudwatch.IAlarm {
+	return g.leaseAcquireFailures
+}
 
 func validateAlarmsProps(p *AlarmsProps) {
 	if p == nil {

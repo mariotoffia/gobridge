@@ -3,16 +3,21 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'                    # Core module: v1.0.0
-      - 'transport/mqtt/v*'     # MQTT module: transport/mqtt/v1.0.0
-      - 'transport/aws/v*'      # AWS module: transport/aws/v1.0.0
-      - 'transport/azure/v*'    # Azure module: transport/azure/v1.0.0
+      # Core module:            v1.2.3
+      - 'v*'
+      # Any adapter module:     adapters/aws/transport/sqs/v1.2.3
+      - 'adapters/**'
+      # Any processor module:   processors/filter/v1.2.3
+      - 'processors/**'
+      # Deployment modules:      deployment/aws-filebased-config/cdk/v1.2.3
+      - 'deployment/**'
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  release:
+  module-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,55 +27,109 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Determine module
         id: module
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          
-          if [[ "$TAG" == transport/mqtt/* ]]; then
-            echo "module=mqtt" >> $GITHUB_OUTPUT
-            echo "version=${TAG#transport/mqtt/}" >> $GITHUB_OUTPUT
-            echo "path=transport/mqtt" >> $GITHUB_OUTPUT
-          elif [[ "$TAG" == transport/aws/* ]]; then
-            echo "module=aws" >> $GITHUB_OUTPUT
-            echo "version=${TAG#transport/aws/}" >> $GITHUB_OUTPUT
-            echo "path=transport/aws" >> $GITHUB_OUTPUT
-          elif [[ "$TAG" == transport/azure/* ]]; then
-            echo "module=azure" >> $GITHUB_OUTPUT
-            echo "version=${TAG#transport/azure/}" >> $GITHUB_OUTPUT
-            echo "path=transport/azure" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # The version is always the final path segment (vX.Y.Z). Everything
+          # before it is the module path relative to the repo root; a bare
+          # vX.Y.Z tag releases the core (root) module.
+          VERSION="${TAG##*/}"
+          if [[ "$TAG" == "$VERSION" ]]; then
+            MODULE_PATH="."
+            IMPORT_PATH="github.com/mariotoffia/gobridge"
           else
-            echo "module=core" >> $GITHUB_OUTPUT
-            echo "version=$TAG" >> $GITHUB_OUTPUT
-            echo "path=." >> $GITHUB_OUTPUT
+            MODULE_PATH="${TAG%/*}"
+            IMPORT_PATH="github.com/mariotoffia/gobridge/${MODULE_PATH}"
           fi
 
-      - name: Verify build (${{ steps.module.outputs.module }})
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]]; then
+            echo "::error::tag '$TAG' does not end in a semantic version (vX.Y.Z)"
+            exit 1
+          fi
+          if [[ "$MODULE_PATH" != "." && ! -f "$MODULE_PATH/go.mod" ]]; then
+            echo "::error::no go.mod at '$MODULE_PATH' — tag does not match a module"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
+          echo "import=$IMPORT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build (${{ steps.module.outputs.path }})
         working-directory: ${{ steps.module.outputs.path }}
+        env:
+          GOWORK: off
         run: |
           go mod download
           go build ./...
-          go test -v ./...
+          go test ./...
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.module.outputs.module }} ${{ steps.module.outputs.version }}
+          name: ${{ steps.module.outputs.import }} ${{ steps.module.outputs.version }}
           body: |
-            ## ${{ steps.module.outputs.module }} Module Release
-            
+            ## Module Release
+
+            **Module:** `${{ steps.module.outputs.import }}`
             **Version:** ${{ steps.module.outputs.version }}
             **Tag:** ${{ steps.module.outputs.tag }}
-            
+
             ### Installation
-            
+
             ```bash
-            ${{ steps.module.outputs.module == 'core' && 'go get github.com/mariotoffia/gobridge@' || steps.module.outputs.module == 'aws' && 'go get github.com/mariotoffia/gobridge/transport/aws@' || 'go get github.com/mariotoffia/gobridge/transport/azure@' }}${{ steps.module.outputs.version }}
+            go get ${{ steps.module.outputs.import }}@${{ steps.module.outputs.version }}
             ```
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Publish the production runtime container image on core (root-module) tags.
+  # The seeder is the upstream public.ecr.aws/aws-cli image (pinned by digest in
+  # cdk/constructs/internal/seeder/image.txt via `make update-seeder-image`), so
+  # no seeder image is built here.
+  image:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: ver
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mariotoffia/gobridge:${{ steps.ver.outputs.version }}
+            ghcr.io/mariotoffia/gobridge:latest
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

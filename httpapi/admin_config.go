@@ -71,7 +71,7 @@ func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	txn, err := s.configTxn.Begin(ttl)
+	txn, err := s.configTxn.Begin(r.Context(), ttl)
 	if err != nil {
 		if errors.Is(err, errTxnActive) {
 			s.emitAudit(r, "config.txn.create", "config", "", "failure", map[string]any{
@@ -151,6 +151,21 @@ func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
 
 	newVersion, err := s.configTxn.Commit(r.Context(), txnID)
 	if err != nil {
+		// The durable write succeeded but the in-band apply failed: report the
+		// committed version explicitly so the operator knows disk and runtime
+		// diverged (must reconcile) rather than seeing a generic 500.
+		if errors.Is(err, errConfigApplyFailed) {
+			s.emitAudit(r, "config.txn.commit", "config", txnID, "partial_failure", map[string]any{
+				"error":   err.Error(),
+				"version": newVersion,
+			})
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "committed_not_applied",
+				"version": newVersion,
+				"error":   "config written to disk but not applied to the running runtime; reconcile required",
+			})
+			return
+		}
 		s.writeConfigTxnError(w, r, "config.txn.commit", txnID, err)
 		return
 	}
@@ -187,6 +202,10 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 	case errors.Is(err, errVersionConflict):
 		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusConflict, err.Error())
+
+	case errors.Is(err, errConfigOptionsLoss):
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusUnprocessableEntity, err.Error())
 
 	case isValidationError(err):
 		ve := extractValidationError(err)

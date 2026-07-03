@@ -82,10 +82,11 @@ type optionalFileSource struct {
 	path     string
 	registry *ports.Registry
 	fallback func() *ports.BridgeConfig
+	logger   *slog.Logger
 }
 
-func newOptionalFileSource(path string, registry *ports.Registry, fallback func() *ports.BridgeConfig) ports.Loader {
-	return &optionalFileSource{path: path, registry: registry, fallback: fallback}
+func newOptionalFileSource(path string, registry *ports.Registry, logger *slog.Logger, fallback func() *ports.BridgeConfig) ports.Loader {
+	return &optionalFileSource{path: path, registry: registry, fallback: fallback, logger: logger}
 }
 
 func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
@@ -94,6 +95,18 @@ func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error
 		return cfg, nil
 	}
 	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
+		// Loud fallback: a missing config file is almost always a
+		// misconfiguration (config_file_path not pointing at the seeded EFS
+		// target). The process would otherwise start, pass /health, and
+		// bridge nothing — so warn on every fallback rather than degrade
+		// silently.
+		if s.logger != nil {
+			s.logger.Warn(
+				"bootstrap: config file not found; falling back to empty default config "+
+					"(no routes will be bridged) — verify config_file_path matches the seeder EFS target",
+				"config_file_path", s.path,
+			)
+		}
 		return s.fallback(), nil
 	}
 	return nil, err
@@ -119,6 +132,42 @@ func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
 			ShutdownTimeout: "30s",
 			DrainTimeout:    "30s",
 		},
+	}
+}
+
+// applyLogLevel updates the wired slog.LevelVar from bridge.log_level so a
+// hot-reloaded config can raise/lower log verbosity without a redeploy. It is
+// a no-op when no LevelVar was wired or when log_level is empty/unknown
+// (unknown values keep the current level rather than silently defaulting).
+func (a *App) applyLogLevel(logical *ports.BridgeConfig) {
+	if a.logLevelVar == nil || logical == nil {
+		return
+	}
+	lvl, ok := parseLogLevel(logical.Bridge.LogLevel)
+	if !ok {
+		return
+	}
+	if a.logLevelVar.Level() != lvl {
+		a.logLevelVar.Set(lvl)
+		a.logger.Info("bootstrap: applied bridge.log_level", "level", logical.Bridge.LogLevel)
+	}
+}
+
+// parseLogLevel maps a bridge.log_level string to a slog.Level. The bool is
+// false for empty or unrecognized input so callers can leave the level
+// unchanged.
+func parseLogLevel(s string) (slog.Level, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error":
+		return slog.LevelError, true
+	default:
+		return slog.LevelInfo, false
 	}
 }
 
@@ -180,15 +229,17 @@ func validateFilesystemProfile(cfg deployinfra.BootstrapConfig, logical *ports.B
 	}
 
 	// Under the filesystem_replicated topology, features that require
-	// distributed coordination are not supported — use the HA/DynamoDB
-	// config profile instead. Clustered deployment_mode itself is allowed;
-	// only features that need cross-instance state are restricted.
+	// distributed coordination are not supported: the file-based EFS profile
+	// provisions no distributed lease/outbox store (e.g. DynamoDB), and
+	// SQLite-over-EFS cannot serialize cross-instance writers safely.
+	// Clustered deployment_mode itself is allowed; only features that need
+	// cross-instance state are restricted.
 	for _, route := range logical.Routes {
 		if route.DeliveryMode == "shared_outbox" {
-			return fmt.Errorf("bootstrap: route %q uses shared_outbox, which requires the HA/DynamoDB profile", route.ID)
+			return fmt.Errorf("bootstrap: route %q uses shared_outbox, which requires a distributed outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision", route.ID)
 		}
 		if route.Session != nil {
-			return fmt.Errorf("bootstrap: route %q uses route.session lease coordination, which requires the HA/DynamoDB profile", route.ID)
+			return fmt.Errorf("bootstrap: route %q uses route.session lease coordination, which requires a distributed lease store (e.g. DynamoDB) that the file-based EFS profile does not provision", route.ID)
 		}
 	}
 

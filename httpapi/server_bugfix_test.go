@@ -347,7 +347,7 @@ func TestBug8_DLQPurge_PassesUTCToStore(t *testing.T) {
 	mux := http.NewServeMux()
 	s.registerAdminRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", strings.NewReader(`{"confirm_purge_all":true}`))
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -381,7 +381,7 @@ func TestBug8_DLQPurge_AuditLogUsesInjectedClockUTC(t *testing.T) {
 	mux := http.NewServeMux()
 	s.registerAdminRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", strings.NewReader(`{"confirm_purge_all":true}`))
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -413,7 +413,7 @@ func TestBug8_DLQPurge_TimeUsesInjectedClockUTC(t *testing.T) {
 	mux := http.NewServeMux()
 	s.registerAdminRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/dlq/purge", strings.NewReader(`{"confirm_purge_all":true}`))
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

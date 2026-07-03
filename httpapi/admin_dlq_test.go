@@ -357,8 +357,9 @@ func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {
 // GET /dlq/messages (pagination)
 // ═══════════════════════════════════════════════════════════════════
 
-// TestHandleDLQMessages_Pagination validates total reflects pre-slice
-// count and offset/limit are applied correctly.
+// TestHandleDLQMessages_Pagination validates offset/limit are applied and
+// has_more reflects that further pages exist (there is no truthful total
+// without a Count port; has_more replaces the old lying total field).
 func TestHandleDLQMessages_Pagination(t *testing.T) {
 	entries := make([]routing.DLQEntry, 10)
 	for i := range entries {
@@ -379,7 +380,7 @@ func TestHandleDLQMessages_Pagination(t *testing.T) {
 
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	assert.Equal(t, float64(10), body["total"])
+	assert.Equal(t, true, body["has_more"])
 	assert.Equal(t, float64(3), body["limit"])
 	assert.Equal(t, float64(2), body["offset"])
 	msgs := body["messages"].([]any)

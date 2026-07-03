@@ -104,6 +104,10 @@ linters:
         - github.com/mariotoffia/gobridge/ports.Watcher
         - github.com/mariotoffia/gobridge/ports.Span
         - github.com/mariotoffia/gobridge/ports.Tracer
+        # Bootstrap exporter selection (deployment/aws-filebased-config/
+        # lib/bootstrap): the composition root picks a MetricsExporter
+        # implementation from config; callers must not know which.
+        - github.com/mariotoffia/gobridge/ports.MetricsExporter
         # FIX-003: PluginConfig is the typed plugin-options seam returned
         # by Registry.Decode; RawConfig is the stage-1 carrier the
         # config parser hands to adapter decoders. Both are polymorphic

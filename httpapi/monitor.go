@@ -35,11 +35,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 
+	// This probe is UNAUTHENTICATED (for LBs/orchestrators). It therefore
+	// exposes only a coarse status string and the HTTP status code — never
+	// instance_id, route count, or component-failure details, which are
+	// operational reconnaissance and belong behind auth (see /deephealth).
 	if rt == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"status":      "unavailable",
-			"instance_id": "",
-			"routes":      0,
+			"status": "unavailable",
 		})
 		return
 	}
@@ -53,15 +55,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "not_running"
 		httpStatus = http.StatusServiceUnavailable
 	}
-	resp := map[string]any{
-		"status":      status,
-		"instance_id": rt.InstanceID(),
-		"routes":      len(rt.Routes()),
-	}
-	if compErrs := rt.ComponentErrors(); len(compErrs) > 0 {
-		resp["failed_components"] = len(compErrs)
-	}
-	writeJSON(w, httpStatus, resp)
+	writeJSON(w, httpStatus, map[string]any{"status": status})
 }
 
 // handleLive reports process liveness. It returns 200 while the process is
@@ -88,7 +82,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 //	?level=full        — all routes have handler registered (ServiceLevelFull)
 //
 // Operators map probes to levels:
-//   - K8s liveness:   /live (always 200)
+//   - K8s liveness:   /live (200 while recoverable, 503 once terminal)
 //   - K8s readiness:  /ready?level=connected (tolerates intermittent broker hiccups)
 //   - Pre-traffic:    /ready?level=full (strict, every route ready to dispatch)
 //

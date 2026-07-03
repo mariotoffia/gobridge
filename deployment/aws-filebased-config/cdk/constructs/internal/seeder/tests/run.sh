@@ -99,6 +99,27 @@ MODE=AbortDeploy ASSET_S3_URI=s3://test/bridge.yaml EXPECTED_HASH="$EXPECTED" \
 MODE=SeedOnce ASSET_S3_URI=s3://test/bridge.yaml.bad \
   assert_run "SeedOnce-yaml-unparseable" 30 "yaml_unparseable"
 
+# 5) AdoptValid — hash match: worker sees the exact synth-time config.
+PRESEED="${FIXTURES_DIR}/bridge.yaml.equiv" \
+MODE=AdoptValid ASSET_S3_URI=s3://test/bridge.yaml \
+  assert_run "AdoptValid-hash-match" 0 "hash_match"
+
+# 6) AdoptValid — hash drift: the control node (admin config-txn commit)
+#    rewrote bridge.yaml. A worker MUST adopt it (exit 0), not AbortDeploy,
+#    so scale-out / crash-replacement keeps working after any admin edit.
+PRESEED="${FIXTURES_DIR}/bridge.yaml.alt" \
+MODE=AdoptValid ASSET_S3_URI=s3://test/bridge.yaml \
+  assert_run "AdoptValid-adopts-drift" 0 "adopted_existing_config"
+
+# 7) AdoptValid — target absent: a worker with no config bridges nothing.
+MODE=AdoptValid ASSET_S3_URI=s3://test/bridge.yaml \
+  assert_run "AdoptValid-target-absent" 10 "target_absent"
+
+# 8) AdoptValid — unparseable target: fail closed rather than adopt garbage.
+PRESEED="${FIXTURES_DIR}/bridge.yaml.bad" \
+MODE=AdoptValid ASSET_S3_URI=s3://test/bridge.yaml \
+  assert_run "AdoptValid-target-unparseable" 30 "yaml_unparseable"
+
 echo "------------"
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]

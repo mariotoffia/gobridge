@@ -47,8 +47,8 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | Term | Meaning |
 |---|---|
 | **Access point path** | POSIX path *inside* EFS exposed by the access point. Default `/gobridge`. Set on the access point at creation; immutable thereafter. |
-| **Config mount path** | Path *inside the container* where the EFS access point is mounted. Default `/mnt/gobridge`. |
-| **Config file path** | Absolute path the bootstrap polls for the bridge config. Combines mount path + filename, e.g. `/mnt/gobridge/bridge.yaml`. |
+| **Config mount path** | Path *inside the container* where the EFS access point is mounted. Default `/var/lib/gobridge` (single canonical constant `infra.DefaultMountPath`; the Phase-1 store-path validator, the ECS mount, and the seeder all derive from it). |
+| **Config file path** | Absolute path the bootstrap polls for the bridge config. Combines mount path + filename, e.g. `/var/lib/gobridge/bridge.yaml`. |
 
 ## CDK
 

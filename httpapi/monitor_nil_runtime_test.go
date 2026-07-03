@@ -56,10 +56,12 @@ func TestMonitorHealth_NilRuntime_ReturnsUnavailable(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "unavailable", body["status"],
 		"health status should be 'unavailable'")
-	assert.Equal(t, "", body["instance_id"],
-		"instance_id should be empty string")
-	assert.Equal(t, float64(0), body["routes"],
-		"routes should be 0")
+	// The unauthenticated /health probe must NOT expose instance_id or route
+	// count (operational reconnaissance behind auth on /deephealth).
+	_, hasInstanceID := body["instance_id"]
+	assert.False(t, hasInstanceID, "unauth /health must not leak instance_id")
+	_, hasRoutes := body["routes"]
+	assert.False(t, hasRoutes, "unauth /health must not leak route count")
 
 	// Verify it does NOT contain the error-response shape.
 	_, hasError := body["error"]

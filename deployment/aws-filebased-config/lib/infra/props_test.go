@@ -23,7 +23,7 @@ func TestServiceProps_Normalized_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, 1, p.Replicas)
 	assert.Equal(t, 512, p.CPU)
 	assert.Equal(t, 1024, p.MemoryMiB)
-	assert.Equal(t, "/mnt/gobridge", p.ConfigMountPath)
+	assert.Equal(t, "/var/lib/gobridge", p.ConfigMountPath)
 	assert.Equal(t, "/gobridge", p.AccessPointPath)
 	assert.Equal(t, model.NodeRoleControl, p.Bootstrap.NodeRole)
 	assert.Equal(t, model.TopologySingle, p.Bootstrap.Topology)

@@ -26,6 +26,11 @@ const (
 	DefaultPollInterval      = time.Second
 )
 
+// DefaultMountPath mirrors infra.DefaultMountPath: the single canonical EFS
+// mount root for the file-based profile. Kept in sync with the CDK task-def
+// mount and the Phase-1 store-path validator.
+const DefaultMountPath = "/var/lib/gobridge"
+
 // BootstrapConfig is deployment-owned runtime configuration for the
 // file-based AWS deployment profile. It is separate from ports.BridgeConfig
 // and is typically supplied via environment or a small bootstrap JSON file.

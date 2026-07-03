@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -33,8 +34,12 @@ import (
 //   - ModeControl: EFS mounted RW, seeder runs in MODE=SeedOnce (or
 //     the operator-supplied [Props.SeederMode] override).
 //   - ModeWorker:  EFS mounted RO at the ECS volume layer, seeder
-//     runs in MODE=AbortDeploy so worker startup gates on config
-//     drift without requiring write access.
+//     runs in MODE=AdoptValid (default): worker startup gates on the
+//     current EFS config being present + parseable, but tolerates
+//     hash drift from the synth-time asset so Admin-API hot
+//     reconfiguration and worker self-healing coexist. Override via
+//     [Props.WorkerSeederMode] (e.g. "AbortDeploy" for strict
+//     lock-step).
 type Mode string
 
 const (
@@ -51,14 +56,15 @@ const (
 )
 
 // defaultMountPath is the container directory where EFS is mounted.
-// "/var/lib/gobridge" is FHS-conformant for runtime state and matches
-// the expectation in BridgeConfig.ConfigFilePath defaults.
-const defaultMountPath = "/var/lib/gobridge"
+// Derived from the single canonical infra.DefaultMountPath so the mount, the
+// Phase-1 store-path validator and ServiceProps normalization never disagree
+// (a split path silently loses outbox/DLQ durability on task replacement).
+const defaultMountPath = infra.DefaultMountPath
 
 // defaultBridgeYamlName is the file the seeder writes onto EFS and
 // the runtime watches. Kept stable so admin tooling can reference a
 // well-known path.
-const defaultBridgeYamlName = "bridge.yaml"
+const defaultBridgeYamlName = infra.DefaultBridgeYamlName
 
 // volumeName is the ECS task-def volume key. Stable so tests can
 // assert mount points by name.
@@ -74,6 +80,35 @@ const ContainerNameMain = "gobridge"
 // containerNameSeeder is the logical container name of the seeder
 // init container.
 const containerNameSeeder = "seeder"
+
+// defaultBinaryPath is where the runtime container image installs the
+// production binary. The container HEALTHCHECK invokes this same static binary
+// with -healthcheck (the distroless image ships no curl/wget/shell), so it MUST
+// match the Dockerfile install path (root Dockerfile: /usr/local/bin/...).
+const defaultBinaryPath = "/usr/local/bin/gobridge-filebased"
+
+// defaultContainerUser is the non-root uid:gid the main container runs as.
+// Defense-in-depth beyond the EFS access-point POSIX enforcement (which only
+// governs EFS I/O); a compromised process should not run as root in the task.
+// Matches the "nonroot" user baked into the distroless base (65532).
+const defaultContainerUser = "65532:65532"
+
+// defaultStopTimeoutSeconds is the ECS StopTimeout for the main container.
+// Fargate's default is 30s which exactly equals the drain budget, so an
+// in-flight drain gets SIGKILLed mid-cleanup (outbox/DLQ flush lost). 60s =
+// 30s drain + 30s margin; docs instruct 45s so this comfortably covers it.
+const defaultStopTimeoutSeconds = 60.0
+
+// Container health-check timings. The probe runs the static binary against the
+// local monitor /live endpoint (which 503s once the runtime is terminal), so
+// ECS marks the task unhealthy and replaces it instead of leaving a "running"
+// task bridging nothing forever when there is no ALB target health check.
+const (
+	defaultHealthCheckIntervalSeconds    = 30.0
+	defaultHealthCheckTimeoutSeconds     = 5.0
+	defaultHealthCheckRetries            = 3.0
+	defaultHealthCheckStartPeriodSeconds = 60.0
+)
 
 // Props configures the shared base. The fields mirror what the
 // public GoBridgeSingle / GoBridgeCluster constructs need to forward.
@@ -153,9 +188,35 @@ type Props struct {
 	SeederImage *string
 
 	// SeederMode overrides the default seeder MODE for ModeControl
-	// (default "SeedOnce"). Ignored for ModeWorker, which always
-	// uses "AbortDeploy".
+	// (default "SeedOnce"). Ignored for ModeWorker — use WorkerSeederMode.
 	SeederMode *string
+
+	// WorkerSeederMode overrides the ModeWorker seeder MODE. Default
+	// "AdoptValid": a worker adopts whatever valid bridge.yaml the control
+	// node last wrote (CDK seed OR Admin-API config-txn commit) instead of
+	// aborting on hash drift, so hot reconfiguration and worker self-healing
+	// coexist. Set "AbortDeploy" for strict lock-step (workers refuse to
+	// start on any drift from the synth-time asset). Ignored for ModeControl.
+	WorkerSeederMode *string
+
+	// StopTimeout overrides the main container StopTimeout
+	// (defaultStopTimeoutSeconds). Must exceed the runtime drain budget with
+	// margin or in-flight drains are SIGKILLed.
+	StopTimeout awscdk.Duration
+
+	// HealthCheckCommand overrides the main container health-check command.
+	// Default: the static binary probing its own monitor /live endpoint
+	// ([]string{"CMD", defaultBinaryPath, "-healthcheck"}). Supply an explicit
+	// command only when a mirror image installs the binary elsewhere.
+	HealthCheckCommand *[]*string
+
+	// DisableHealthCheck removes the container health check. Off by default;
+	// set true only when an ALB target-group health check fully replaces it.
+	DisableHealthCheck *bool
+
+	// ContainerUser overrides the non-root uid:gid the main container runs as
+	// (defaultContainerUser). Set to "" to run as the image default.
+	ContainerUser *string
 }
 
 // Built is the result of constructing the base. The public facades
@@ -222,6 +283,23 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		mountPath = *props.MountPath
 	}
 
+	// seederTarget is the EFS path the seeder writes and the runtime watches.
+	// Cross-check it against the runtime's ConfigFilePath: on mismatch the
+	// container still starts and passes /health, but the runtime's
+	// optionalFileSource never finds the seeded file and silently falls back
+	// to an empty default config — a live-but-bridging-nothing task. Fail
+	// fast at synth instead. Empty ConfigFilePath is left to Bootstrap
+	// validation at container start.
+	seederTarget := joinPath(mountPath, defaultBridgeYamlName)
+	if cfp := props.Bootstrap.ConfigFilePath; cfp != "" && path.Clean(cfp) != path.Clean(seederTarget) {
+		panic(fmt.Sprintf(
+			"gobridgebase: Bootstrap.ConfigFilePath %q does not match the seeder EFS target %q "+
+				"(mount %q + %q); the runtime would watch a path the seeder never writes and bridge "+
+				"nothing while still reporting healthy. Set ConfigFilePath to the seeder target (or "+
+				"override MountPath consistently on both).",
+			cfp, seederTarget, mountPath, defaultBridgeYamlName))
+	}
+
 	taskDef := awsecs.NewFargateTaskDefinition(c, jsii.String("TaskDef"), &awsecs.FargateTaskDefinitionProps{
 		Cpu:            cpu,
 		MemoryLimitMiB: mem,
@@ -268,6 +346,12 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	seederImg := DefaultSeederImage()
 	if props.SeederImage != nil && *props.SeederImage != "" {
 		seederImg = *props.SeederImage
+		// An operator-supplied mirror must still be fully pinned — an
+		// unpinned or placeholder override is the same dead-on-arrival
+		// failure as the default (main container gates on seeder SUCCESS).
+		if err := validateSeederImageRef(seederImg); err != nil {
+			panic(err.Error())
+		}
 	}
 	seeder := taskDef.AddContainer(jsii.String("Seeder"), &awsecs.ContainerDefinitionOptions{
 		ContainerName: jsii.String(containerNameSeeder),
@@ -279,7 +363,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 			"MODE":              jsii.String(seederMode),
 			"EXPECTED_HASH":     jsii.String(expectedHash),
 			"ASSET_S3_URI":      asset.S3ObjectUrl(),
-			"EFS_TARGET_PATH":   jsii.String(joinPath(mountPath, defaultBridgeYamlName)),
+			"EFS_TARGET_PATH":   jsii.String(seederTarget),
 			"LOG_STREAM_PREFIX": jsii.String(scopeID + "/" + containerNameSeeder),
 		},
 		Logging: awsecs.LogDriver_AwsLogs(&awsecs.AwsLogDriverProps{
@@ -290,12 +374,12 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	seeder.AddMountPoints(&awsecs.MountPoint{
 		SourceVolume:  jsii.String(volumeName),
 		ContainerPath: jsii.String(mountPath),
-		// Seeder always mounts RW. AbortDeploy mode (worker) only
-		// reads, but the script's mkdir/mktemp probe in
-		// dirname(EFS_TARGET_PATH) needs write access. RO enforcement
-		// for workers happens on the *main* container mount below
-		// (and is doubly enforced by the GrantEFSWorker IAM scope —
-		// no ClientWrite action is granted on the worker task role).
+		// Seeder always mounts RW. Read-only worker modes (AdoptValid /
+		// AbortDeploy) never write EFS — the script stages under /tmp and
+		// only reads dirname(EFS_TARGET_PATH). RO enforcement for workers
+		// happens on the *main* container mount below (and is doubly
+		// enforced by the GrantEFSWorker IAM scope — no ClientWrite action
+		// is granted on the worker task role).
 		ReadOnly: jsii.Bool(false),
 	})
 
@@ -304,10 +388,34 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	if err != nil {
 		panic(fmt.Sprintf("gobridgebase: marshal bootstrap: %v", err))
 	}
-	main := taskDef.AddContainer(jsii.String("Main"), &awsecs.ContainerDefinitionOptions{
+
+	// StopTimeout: default 60s so the runtime drain (30s budget) plus cleanup
+	// completes before SIGKILL. Fargate's 30s default would kill mid-drain.
+	stopTimeout := props.StopTimeout
+	if stopTimeout == nil {
+		stopTimeout = awscdk.Duration_Seconds(jsii.Number(defaultStopTimeoutSeconds))
+	}
+
+	// User: non-root uid:gid by default (defense in depth beyond the EFS AP).
+	containerUser := jsii.String(defaultContainerUser)
+	if props.ContainerUser != nil {
+		if *props.ContainerUser == "" {
+			containerUser = nil
+		} else {
+			containerUser = props.ContainerUser
+		}
+	}
+
+	// HealthCheck: the static binary probes its own monitor /live endpoint,
+	// which returns 503 once the runtime is terminal — ECS then replaces the
+	// task instead of leaving it "running" but bridging nothing. The image is
+	// distroless (no curl/wget/shell) so the probe reuses the binary itself.
+	mainOpts := &awsecs.ContainerDefinitionOptions{
 		ContainerName: jsii.String(ContainerNameMain),
 		Image:         props.Image,
 		Essential:     jsii.Bool(true),
+		User:          containerUser,
+		StopTimeout:   stopTimeout,
 		Environment: &map[string]*string{
 			"GOBRIDGE_FILEBASED_BOOTSTRAP_JSON": jsii.String(string(bootstrapJSON)),
 			"GOBRIDGE_NODE_ROLE":                jsii.String(string(modeToNodeRole(props.Mode))),
@@ -316,7 +424,21 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 			LogGroup:     mainLG,
 			StreamPrefix: jsii.String(ContainerNameMain),
 		}),
-	})
+	}
+	if props.DisableHealthCheck == nil || !*props.DisableHealthCheck {
+		hcCommand := props.HealthCheckCommand
+		if hcCommand == nil {
+			hcCommand = jsii.Strings("CMD", defaultBinaryPath, "-healthcheck")
+		}
+		mainOpts.HealthCheck = &awsecs.HealthCheck{
+			Command:     hcCommand,
+			Interval:    awscdk.Duration_Seconds(jsii.Number(defaultHealthCheckIntervalSeconds)),
+			Timeout:     awscdk.Duration_Seconds(jsii.Number(defaultHealthCheckTimeoutSeconds)),
+			Retries:     jsii.Number(defaultHealthCheckRetries),
+			StartPeriod: awscdk.Duration_Seconds(jsii.Number(defaultHealthCheckStartPeriodSeconds)),
+		}
+	}
+	main := taskDef.AddContainer(jsii.String("Main"), mainOpts)
 	main.AddMountPoints(&awsecs.MountPoint{
 		SourceVolume:  jsii.String(volumeName),
 		ContainerPath: jsii.String(mountPath),
@@ -342,6 +464,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	asset.GrantRead(taskRole)
 	applyEfsGrants(props, taskRole)
 	applyKmsGrant(props, taskRole)
+	applyMetricsGrant(props, taskRole)
 	grants.GrantLogsWrite(taskRole, mainLG)
 	grants.GrantLogsWrite(taskRole, seederLG)
 	applyAdapterGrants(c, props, taskRole, mat)
@@ -390,7 +513,10 @@ func pickAccessPoint(efs *cdkconstructs.GoBridgeEfsConfig, m Mode) awsefs.IAcces
 
 func defaultSeederMode(p *Props) string {
 	if p.Mode == ModeWorker {
-		return "AbortDeploy"
+		if p.WorkerSeederMode != nil && *p.WorkerSeederMode != "" {
+			return *p.WorkerSeederMode
+		}
+		return "AdoptValid"
 	}
 	if p.SeederMode != nil && *p.SeederMode != "" {
 		return *p.SeederMode

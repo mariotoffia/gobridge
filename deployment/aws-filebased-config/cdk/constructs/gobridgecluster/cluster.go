@@ -131,9 +131,18 @@ type ClusterProps struct {
 	SeederImage *string
 
 	// ControlSeederMode overrides the control seeder MODE
-	// (default "SeedOnce"). Worker seeder MODE is always
-	// "AbortDeploy" and is not configurable.
+	// (default "SeedOnce").
 	ControlSeederMode *string
+
+	// WorkerSeederMode overrides the worker seeder MODE (default
+	// "AdoptValid" — workers adopt the current valid EFS bridge.yaml,
+	// whether written by CDK seed or an Admin-API config-txn commit,
+	// rather than aborting on hash drift from the synth-time asset).
+	// Set "AbortDeploy" for strict lock-step deployments where every
+	// worker must match the synth-time asset exactly. See the profile
+	// README "Reconfiguration paths" section for the coexistence
+	// semantics.
+	WorkerSeederMode *string
 
 	// ControlServiceName overrides the auto-generated control ECS
 	// service name.
@@ -222,6 +231,19 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	bootstrapWorker := props.Bootstrap
 	bootstrapWorker.NodeRole = infra.NodeRoleWorker
 
+	// A GoBridgeCluster is, by construction, a multi-instance topology:
+	// one control + N workers share a single EFS filesystem. Force
+	// Topology=filesystem_replicated on both copies (regardless of what the
+	// caller left in props.Bootstrap, whose zero value normalizes to
+	// "single"). This is load-bearing: both the Phase-1 synth validator and
+	// the runtime guard (lib/bootstrap.validateFilesystemProfile) return
+	// early on the "single" topology, so leaving the default in place would
+	// silently permit shared_outbox routes and route.session leases on
+	// SQLite-over-EFS — the exact cross-instance corruption those guards
+	// exist to prevent. Forcing it here makes the guards actually fire.
+	bootstrapControl.Topology = infra.TopologyFilesystemReplicated
+	bootstrapWorker.Topology = infra.TopologyFilesystemReplicated
+
 	// Phase 1 — fast-fail tier-B validation on the resolved config.
 	// Use the worker NodeRole so worker-specific checks fire (a
 	// strict superset for our purposes; the control task is gated
@@ -286,7 +308,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		SeederMode:       props.ControlSeederMode,
 	})
 
-	// Worker base (WORKER mode → RO EFS mount, AbortDeploy seeder).
+	// Worker base (WORKER mode → RO EFS mount, AdoptValid seeder).
 	workerBuilt := gobridgebase.New(c, jsii.String("WorkerBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeWorker,
 		Vpc:              props.Vpc,
@@ -303,6 +325,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
 		SeederImage:      props.SeederImage,
+		WorkerSeederMode: props.WorkerSeederMode,
 	})
 
 	// Per-service security groups.

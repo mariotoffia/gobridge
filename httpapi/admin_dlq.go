@@ -2,13 +2,14 @@ package httpapi
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -74,8 +75,15 @@ func toDLQEntryDetailView(e routing.DLQEntry) dlqEntryDetailView {
 const (
 	defaultDLQLimit = 100
 	maxDLQLimit     = 1000
-	maxRedriveIDs   = 100
-	maxDeleteIDs    = 1000
+	// maxDLQOffset bounds pagination offset so a caller cannot force the store
+	// to materialize an unbounded prefix (offset+limit) under its lock, and so
+	// offset+limit cannot overflow int.
+	maxDLQOffset  = 100_000
+	maxRedriveIDs = 100
+	maxDeleteIDs  = 1000
+	// dlqSummaryCap bounds the entries scanned for the /dlq summary count; when
+	// hit, the response flags count_capped so operators know depth exceeds it.
+	dlqSummaryCap = maxDLQLimit
 )
 
 func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
@@ -89,14 +97,19 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
-	entries, err := store.List(r.Context(), routing.DLQFilter{Limit: 100})
+	entries, err := store.List(r.Context(), routing.DLQFilter{Limit: dlqSummaryCap})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to list DLQ entries")
 		return
 	}
+	// count reflects entries scanned up to dlqSummaryCap. Without a Count port
+	// the true depth is unknown when the cap is hit; count_capped tells the
+	// operator the real backlog is at least this large so alerting is not
+	// silently clamped.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": true,
-		"count":      len(entries),
+		"configured":   true,
+		"count":        len(entries),
+		"count_capped": len(entries) >= dlqSummaryCap,
 	})
 }
 
@@ -133,13 +146,22 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "offset must be a non-negative integer")
 			return
 		}
+		if n > maxDLQOffset {
+			writeErr(w, http.StatusBadRequest,
+				fmt.Sprintf("offset exceeds maximum of %d", maxDLQOffset))
+			return
+		}
 		offset = n
 	}
 
+	// Fetch offset+limit+1 (bounded: both are capped, so no int overflow). The
+	// extra +1 lets us detect whether a further page exists without a Count
+	// port, so has_more is truthful (the old `total` reported min(matched,
+	// limit+offset), which lied once the backlog exceeded the page window).
 	filter := routing.DLQFilter{
 		RouteID:  q.Get("route_id"),
 		Category: q.Get("category"),
-		Limit:    limit + offset, // fetch enough to slice
+		Limit:    offset + limit + 1,
 	}
 
 	if v := q.Get("since"); v != "" {
@@ -165,24 +187,24 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	total := len(entries)
-
-	// Apply offset
-	if offset > len(entries) {
+	// Apply offset.
+	if offset >= len(entries) {
 		entries = nil
-	} else if offset > 0 {
+	} else {
 		entries = entries[offset:]
 	}
-	// Apply limit
+	// Detect and trim to the page; a surplus beyond limit means more pages.
+	hasMore := false
 	if len(entries) > limit {
+		hasMore = true
 		entries = entries[:limit]
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"messages": toDLQEntryViews(entries),
-		"total":    total,
 		"limit":    limit,
 		"offset":   offset,
+		"has_more": hasMore,
 	})
 }
 
@@ -209,6 +231,11 @@ func (s *Server) handleDLQMessageByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reading a single entry returns its full (base64) payload, which can carry
+	// PII/secrets. Config reads are audited; this equally sensitive read must
+	// be too, so payload disclosure is attributable.
+	s.emitAudit(r, "dlq.read_payload", "dlq", id, "success", nil)
+
 	writeJSON(w, http.StatusOK, toDLQEntryDetailView(entry))
 }
 
@@ -223,12 +250,20 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
+	// Nil-check the admin (write) side up front: redrive both injects AND
+	// deletes, so a runtime with a read-only DLQ must fail before any inject
+	// happens rather than panicking on a nil DLQAdmin mid-flight.
+	admin := rt.DLQAdmin()
+	if admin == nil {
+		writeErr(w, http.StatusNotFound, "no DLQ admin store configured")
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r.Body, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -256,6 +291,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[id] = struct{}{}
+
 		entry, err := reader.Get(r.Context(), id)
 		if err != nil {
 			redriveErrors = append(redriveErrors, redriveError{
@@ -264,10 +300,50 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if err := rt.Inject(r.Context(), entry.RouteID(), entry.Snapshot()); err != nil {
+		// Claim-by-delete BEFORE inject. Deleting first makes redrive safe
+		// under (a) client retries — a re-sent request finds the entry already
+		// gone (count==0) and skips it instead of re-injecting, and (b)
+		// concurrent admin instances — only the instance whose Delete returns 1
+		// owns the entry and injects it. This trades an at-most-once window (a
+		// crash between delete and inject drops the entry) for no double
+		// delivery, which is the correct bias for a manual redrive; the inject
+		// failure path below best-effort restores the entry to close most of
+		// that window.
+		deleted, err := admin.Delete(r.Context(), []string{id})
+		if err != nil {
+			redriveErrors = append(redriveErrors, redriveError{
+				ID: id, Error: "failed to claim entry for redrive",
+			})
+			continue
+		}
+		if deleted == 0 {
+			// Lost the race (or a retry): another actor already claimed it.
+			redriveErrors = append(redriveErrors, redriveError{
+				ID: id, Error: "entry already redriven or concurrently deleted",
+			})
+			continue
+		}
+
+		// Binding-scoped dispatch: the entry records the exact BindingID that
+		// failed. Setting HeaderRouteOverride confines the replay to that one
+		// binding (direct-hold routes honor it) so the N-1 healthy bindings on
+		// a fan-out route do not receive duplicate deliveries. Snapshot returns
+		// a fresh deep copy, so mutating its headers is safe.
+		env := entry.Snapshot()
+		if bid := entry.BindingID(); bid != "" {
+			env.SetHeader(messaging.HeaderRouteOverride, bid)
+		}
+
+		if err := rt.Inject(r.Context(), entry.RouteID(), env); err != nil {
 			msg := "inject failed"
 			if errors.Is(err, shared.ErrNotFound) {
 				msg = "route not found"
+			}
+			// Inject failed after we claimed the entry: best-effort restore so
+			// the failure evidence is not lost. If restore itself fails, flag
+			// the entry as dropped so the operator can investigate.
+			if restoreErr := admin.Write(r.Context(), entry); restoreErr != nil {
+				msg += " (entry lost: restore failed)"
 			}
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: msg,
@@ -278,25 +354,15 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		successIDs = append(successIDs, id)
 	}
 
-	// Delete successfully redriven entries
-	var deleteErr string
-	if len(successIDs) > 0 {
-		if _, err := rt.DLQAdmin().Delete(r.Context(), successIDs); err != nil {
-			deleteErr = "failed to delete redriven entries"
-			s.emitAudit(r, "dlq.redrive", "dlq", "", "partial_failure", map[string]any{
-				"redriven": len(successIDs),
-				"error":    deleteErr + ": " + err.Error(),
-			})
-		}
+	outcome := "success"
+	if len(redriveErrors) > 0 {
+		outcome = "partial_failure"
 	}
-
-	if deleteErr == "" {
-		s.emitAudit(r, "dlq.redrive", "dlq", "", "success", map[string]any{
-			"redriven": len(successIDs),
-			"failed":   len(redriveErrors),
-			"ids":      body.IDs,
-		})
-	}
+	s.emitAudit(r, "dlq.redrive", "dlq", "", outcome, map[string]any{
+		"redriven": len(successIDs),
+		"failed":   len(redriveErrors),
+		"ids":      body.IDs,
+	})
 
 	resp := map[string]any{
 		"redriven": len(successIDs),
@@ -305,11 +371,14 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	if len(redriveErrors) > 0 {
 		resp["errors"] = redriveErrors
 	}
-	if deleteErr != "" {
-		resp["warning"] = deleteErr
-	}
 
-	writeJSON(w, http.StatusOK, resp)
+	// 207 Multi-Status when any entry failed (the caller must inspect the
+	// per-entry errors array); 200 only when every requested entry redrove.
+	status := http.StatusOK
+	if len(redriveErrors) > 0 {
+		status = http.StatusMultiStatus
+	}
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) handleDLQDeleteByIDs(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +397,7 @@ func (s *Server) handleDLQDeleteByIDs(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r.Body, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -380,7 +449,7 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		Limit            int    `json:"limit"`
 		ConfirmDeleteAll bool   `json:"confirm_delete_all"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeStrictJSON(r.Body, &body); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -446,6 +515,21 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		ConfirmPurgeAll bool `json:"confirm_purge_all"`
+	}
+	if err := decodeStrictJSON(r.Body, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Purge destroys the ENTIRE DLQ (all failure evidence) unconditionally.
+	// Mirror delete-by-filter's confirm_delete_all guard so a single mistyped
+	// path cannot wipe the queue: require explicit confirm_purge_all=true.
+	if !body.ConfirmPurgeAll {
+		writeErr(w, http.StatusBadRequest,
+			"purge deletes the entire DLQ; set confirm_purge_all=true to proceed")
+		return
+	}
 	count, err := store.Purge(r.Context(), s.clk.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
