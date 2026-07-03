@@ -89,6 +89,9 @@ paths:
         - $ref: "#/components/parameters/ContentTypeJSON"
         - $ref: "#/components/parameters/ApiKeyHeader"
         - $ref: "#/components/parameters/BridgeForwarded"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DedupId"
+        - $ref: "#/components/parameters/OrderingKey"
       requestBody:
         required: true
         description: |
@@ -147,6 +150,27 @@ paths:
                     error: "invalid expires_at: must be RFC3339 format"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: |
+            Request body exceeds `max_body_size` (default 1 MiB). Distinct
+            from the 400 returned for malformed JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "request body exceeds maximum size"
+        "415":
+          description: |
+            Unsupported media type. A non-empty `Content-Type` whose media
+            type is not `application/json` (parameters such as
+            `; charset=utf-8` are allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Content-Type must be application/json"
         "500":
           description: |
             Internal processing failure. The message was received but the
@@ -178,6 +202,18 @@ paths:
                   summary: No forwarder configured
                   value:
                     error: "no forwarder configured for remote route"
+        "508":
+          description: |
+            Loop detected. The request already carried an `X-Bridge-Forwarded`
+            marker (or an untrusted forward marker) yet resolved to a route
+            this node does not own, so it is refused rather than re-forwarded
+            -- this fails the A->B->A forwarding loop closed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "already forwarded; this node does not own the route"
         "503":
           description: |
             Receiver not ready. The receiver's `Run` method has not been
@@ -222,10 +258,13 @@ paths:
 
         ### SSE Event Format
 
-        Each message event follows the standard SSE wire format:
+        Each message event follows the standard SSE wire format. Frames carry
+        NO `id:` field on purpose: emitting one would make EventSource clients
+        send `Last-Event-ID` on reconnect and expect a replay window that does
+        not exist (SSE egress is at-most-once). The envelope ID remains in the
+        JSON `data` payload.
 
         ```
-        id: msg-001
         event: message
         data: {"id":"msg-001","subject":"sensors/temp","payload":{"temp":22.5},"headers":{"source":"web-api"}}
         ```
@@ -284,7 +323,6 @@ paths:
                 messageEvent:
                   summary: A single message event
                   value: |
-                    id: msg-001
                     event: message
                     data: {"id":"msg-001","subject":"sensors/temp","payload":{"temp":22.5},"headers":{"source":"web-api"}}
                 heartbeat:
@@ -406,6 +444,48 @@ components:
         enum:
           - "true"
         example: "true"
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        First-class idempotency key. When present, its value is remembered in
+        the receiver's bounded per-node dedup window (`dedup_window`, default
+        4096 keys) AFTER successful processing; a later request presenting the
+        same key is acknowledged with 200 WITHOUT re-emitting the delivery.
+        Producers retrying on 504 (outcome unknown) should supply this so the
+        window absorbs the duplicate. The window is best-effort (per-node,
+        in-memory); ingress remains at-least-once. Also stamped on every
+        cluster forward so the receiving peer deduplicates the replay.
+      schema:
+        type: string
+        example: "b3f1c2a4-0001"
+
+    DedupId:
+      name: X-Dedup-Id
+      in: header
+      required: false
+      description: |
+        Alternative deduplication key, honoured by the same idempotency window
+        as `Idempotency-Key`. Accepted only through this dedicated header --
+        reserved `x-bridge.*` body/header keys are stripped at ingress.
+      schema:
+        type: string
+        example: "order-42"
+
+    OrderingKey:
+      name: X-Ordering-Key
+      in: header
+      required: false
+      description: |
+        Ordering hint propagated as envelope metadata for ordered TARGETS
+        (e.g. FIFO queues). HTTP ingress itself imposes NO ordering -- each
+        request is emitted from its own goroutine -- so this key does not
+        order HTTP processing; it only travels with the envelope.
+      schema:
+        type: string
+        example: "tenant-acme"
 
   schemas:
     IngressRequest:

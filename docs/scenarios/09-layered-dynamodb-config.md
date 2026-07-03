@@ -54,9 +54,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      client_id: bridge-01
-      keep_alive: 30
-      connect_timeout: 30s
+      session:
+        client_id: bridge-01
+        keep_alive: 30
+        connect_timeout: 30s
 
 stores:
   outbox:
@@ -387,6 +388,7 @@ mgr := config.NewManager(
 
 The instance-level overlay might contain only the `instance_id` and `client_id`:
 
+<!-- docs-example: skip -->
 ```yaml
 # /etc/gobridge/instance.yaml
 bridge:
@@ -395,8 +397,11 @@ bridge:
 sessions:
   - id: mqtt-conn
     options:
-      client_id: prod-bridge-03
+      session:
+        client_id: prod-bridge-03
 ```
+
+This overlay is a partial layer: it merges onto the base config above, so it omits `transport` and other required fields that the base already supplies. It does not decode on its own.
 
 This three-layer approach is useful when you have many instances in a cluster and each needs a unique identity, but all share the same environment-level config.
 

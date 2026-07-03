@@ -49,13 +49,15 @@ receivers:
   - id: asb-in
     transport: servicebus
     options:
-      namespace: myplatform.servicebus.windows.net
-      use_managed_identity: true
-      topic_name: platform-events
-      subscription_name: bridge-sub
-      max_messages: 50
-      receive_mode: PeekLock
-      auto_extend: true
+      connection:
+        namespace: myplatform.servicebus.windows.net
+        use_managed_identity: true
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
+        max_messages: 50
+        receive_mode: PeekLock
+        auto_extend: true
 
 senders:
   - id: sqs-out
@@ -93,15 +95,18 @@ Azure Service Bus is a **stateless** transport in GoBridge. Unlike MQTT, there i
 
 ### Receiver Options
 
+Receiver options split into a `connection` group (namespace, authentication) and a
+`receiver` group (entity and receive behavior):
+
 | Field | Value | Purpose |
 |-------|-------|---------|
-| `namespace` | `myplatform.servicebus.windows.net` | Service Bus namespace FQDN |
-| `use_managed_identity` | `true` | Authenticate via Azure Managed Identity |
-| `topic_name` | `platform-events` | Subscribe to this topic |
-| `subscription_name` | `bridge-sub` | Specific subscription on the topic |
-| `max_messages` | `50` | Receive up to 50 messages per call (ASB supports 1--100) |
-| `receive_mode` | `PeekLock` | Messages are locked, not deleted on receive |
-| `auto_extend` | `true` | Renew message lock at 50% of `lock_duration` |
+| `connection.namespace` | `myplatform.servicebus.windows.net` | Service Bus namespace FQDN |
+| `connection.use_managed_identity` | `true` | Authenticate via Azure Managed Identity |
+| `receiver.topic_name` | `platform-events` | Subscribe to this topic |
+| `receiver.subscription_name` | `bridge-sub` | Specific subscription on the topic |
+| `receiver.max_messages` | `50` | Receive up to 50 messages per call (ASB supports 1--100) |
+| `receiver.receive_mode` | `PeekLock` | Messages are locked, not deleted on receive |
+| `receiver.auto_extend` | `true` | Renew message lock at 50% of `lock_duration` |
 
 ### Cross-Cloud Delivery
 
@@ -161,10 +166,12 @@ receivers:
   - id: asb-in
     transport: servicebus
     options:
-      connection_string: "Endpoint=sb://myplatform.servicebus.windows.net/;SharedAccessKeyName=listen;SharedAccessKey=base64key=="
-      topic_name: platform-events
-      subscription_name: bridge-sub
-      receive_mode: PeekLock
+      connection:
+        connection_string: "Endpoint=sb://myplatform.servicebus.windows.net/;SharedAccessKeyName=listen;SharedAccessKey=base64key=="
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
+        receive_mode: PeekLock
 ```
 
 ### Managed Identity
@@ -176,10 +183,12 @@ receivers:
   - id: asb-in
     transport: servicebus
     options:
-      namespace: myplatform.servicebus.windows.net
-      use_managed_identity: true
-      topic_name: platform-events
-      subscription_name: bridge-sub
+      connection:
+        namespace: myplatform.servicebus.windows.net
+        use_managed_identity: true
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
 ```
 
 ### App Authentication (Service Principal)
@@ -191,12 +200,14 @@ receivers:
   - id: asb-in
     transport: servicebus
     options:
-      namespace: myplatform.servicebus.windows.net
-      tenant_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-      client_id: "ffffffff-0000-1111-2222-333333333333"
-      client_secret: "my-secret"
-      topic_name: platform-events
-      subscription_name: bridge-sub
+      connection:
+        namespace: myplatform.servicebus.windows.net
+        tenant_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        client_id: "ffffffff-0000-1111-2222-333333333333"
+        client_secret: "my-secret"
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
 ```
 
 ## Azure Service Bus Features
@@ -216,15 +227,17 @@ receivers:
   - id: topic-recv
     transport: servicebus
     options:
-      topic_name: platform-events
-      subscription_name: bridge-sub
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
 
 # Direct queue
 receivers:
   - id: queue-recv
     transport: servicebus
     options:
-      queue_name: orders
+      receiver:
+        queue_name: orders
 ```
 
 ### Receive Modes
@@ -318,10 +331,12 @@ receivers:
   - id: asb-in
     transport: servicebus
     options:
-      connection_string: "Endpoint=sb://localhost;SharedAccessKeyName=dev;SharedAccessKey=devkey=="
-      topic_name: platform-events
-      subscription_name: bridge-sub
-      receive_mode: PeekLock
+      connection:
+        connection_string: "Endpoint=sb://localhost;SharedAccessKeyName=dev;SharedAccessKey=devkey=="
+      receiver:
+        topic_name: platform-events
+        subscription_name: bridge-sub
+        receive_mode: PeekLock
 ```
 
 ### Dead-Letter Sub-Queue Processing
@@ -333,11 +348,13 @@ receivers:
   - id: dlq-reader
     transport: servicebus
     options:
-      namespace: myplatform.servicebus.windows.net
-      use_managed_identity: true
-      queue_name: orders
-      sub_queue: deadletter
-      receive_mode: PeekLock
+      connection:
+        namespace: myplatform.servicebus.windows.net
+        use_managed_identity: true
+      receiver:
+        queue_name: orders
+        sub_queue: deadletter
+        receive_mode: PeekLock
 
 senders:
   - id: alert-out

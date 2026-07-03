@@ -47,6 +47,14 @@ func (b *Builder) WithSQSReceiver(id string, ref registry.QueueRef, opts ...SQSR
 		b.fail(fmt.Errorf("bridgecfg: receiver %q: %w", id, err))
 		return b
 	}
+	// Synth-time completeness guard: a receiver must resolve a queue.
+	// Parse-time Validate no longer requires one (binding overrides
+	// share the Config shape), so enforce it here where the ref is
+	// known to be a top-level receiver.
+	if err := cfg.ValidateQueue(); err != nil {
+		b.fail(fmt.Errorf("bridgecfg: receiver %q: %w", id, err))
+		return b
+	}
 	def := ports.ReceiverDef{ID: id, Transport: sqsTransport}
 	def.SetDecoded(cfg, nil)
 	b.cfg.Receivers = append(b.cfg.Receivers, def)
@@ -66,6 +74,11 @@ func (b *Builder) WithSQSSender(id string, ref registry.QueueRef, opts ...SQSSen
 		}
 	}
 	if err := cfg.Validate(); err != nil {
+		b.fail(fmt.Errorf("bridgecfg: sender %q: %w", id, err))
+		return b
+	}
+	// Same synth-time queue guard as WithSQSReceiver.
+	if err := cfg.ValidateQueue(); err != nil {
 		b.fail(fmt.Errorf("bridgecfg: sender %q: %w", id, err))
 		return b
 	}

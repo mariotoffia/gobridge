@@ -81,7 +81,7 @@ do not set `NodeRole` yourself.
 |---------|---------|--------|--------|
 | `node_role` | `control` | `worker` | Forced by `GoBridgeCluster` |
 | EFS mount | RW (`ClientMount`+`ClientWrite`) | RO (`ClientMount` only) | Cluster IAM split |
-| Exposed ports | Admin + Monitor | Transport + Monitor | Bootstrap `Exposure` |
+| Exposed ports | Admin + Monitor + Transport | Admin + Monitor + Transport | Every node starts all three servers |
 | `DesiredCount` | `1` (hard-coded) | `WorkerDesiredCount` (default 2) | Runtime invariant |
 | Deploy strategy | `MinHealthy=0`, `MaxHealthy=100` | CDK rolling defaults | Single LeaseStore writer |
 
@@ -198,20 +198,20 @@ Both factories return the same opaque token. The yaml file (Snippet a) for a clu
 
 ```yaml
 bridge:
-  name: gobridge-cluster
+  id: gobridge-cluster
   deployment_mode: clustered
 
 receivers:
   - id: orders-in
     transport: sqs
     options:
-      queue: orders-in        # resolved via QueueRegistry
+      queue_name: orders-in        # resolved via QueueRegistry
 
 senders:
   - id: ingest
     transport: sqs
     options:
-      queue: orders-out       # resolved via QueueRegistry
+      queue_name: orders-out       # resolved via QueueRegistry
 
 bindings:
   - id: to-ingest
@@ -333,15 +333,16 @@ Workers can consume from MQTT and SQS simultaneously. Each worker runs all route
 
 ```yaml
 bridge:
-  name: gobridge-cluster
+  id: gobridge-cluster
   deployment_mode: clustered
 
 sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tls://mqtt.example.com:8883
-      client_id_prefix: gobridge-worker
+      session:
+        broker_url: tls://mqtt.example.com:8883
+        client_id: gobridge-worker   # give each worker task a unique id
 
 receivers:
   - id: mqtt-in
@@ -352,17 +353,18 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue: events            # resolved via QueueRegistry
+      queue_name: events            # resolved via QueueRegistry
 
 senders:
-  - id: http-out
+  - id: sse-out
     transport: http
     options:
-      url: https://api.example.com/ingest
+      path: /events
+      mode: sse
 
 bindings:
   - id: to-api
-    sender_id: http-out
+    sender_id: sse-out
 
 routes:
   - id: mqtt-forward

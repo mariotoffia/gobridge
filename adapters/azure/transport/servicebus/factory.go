@@ -3,6 +3,7 @@ package servicebus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -28,11 +29,17 @@ func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
 	return &ReceiverFactory{logger: logger}
 }
 
-// NewReceiver creates a Service Bus Receiver from a ReceiverSpec.
+// NewReceiver creates a Service Bus Receiver from a ReceiverSpec. The
+// receive entity is enforced here — the build boundary — because
+// parse-time Validate also runs on binding overrides that legitimately
+// omit it.
 func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	pc, err := configFromSpec(spec.Config)
 	if err != nil {
 		return nil, err
+	}
+	if err := pc.ValidateReceiverEntity(); err != nil {
+		return nil, fmt.Errorf("servicebus receiver %q: %w", spec.ID, err)
 	}
 	cfg := pc.toReceiverConfig()
 	return NewReceiver(cfg, f.logger)
@@ -48,11 +55,15 @@ func NewSenderFactory(logger *slog.Logger) *SenderFactory {
 	return &SenderFactory{logger: logger}
 }
 
-// NewSender creates a Service Bus Sender from a SenderSpec.
+// NewSender creates a Service Bus Sender from a SenderSpec. Entity
+// enforcement mirrors NewReceiver.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	pc, err := configFromSpec(spec.Config)
 	if err != nil {
 		return nil, err
+	}
+	if err := pc.ValidateSenderEntity(); err != nil {
+		return nil, fmt.Errorf("servicebus sender %q: %w", spec.ID, err)
 	}
 	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger

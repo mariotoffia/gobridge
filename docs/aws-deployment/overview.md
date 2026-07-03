@@ -79,9 +79,12 @@ actual message shapes and processor chains before finalizing.
 | 100 -- 1 000 msg/s | 512 | 1024 | Evaluate |
 | > 1 000 msg/s | 1024 | 2048 | No |
 
-The CDK construct defaults to **512 CPU / 1024 MiB** with auto-scaling up to
-4 tasks at a 70% CPU target. Override these via the `CPU`, `MemoryMiB`,
-`ScalingMaxCapacity`, and `CpuTargetPercent` props on `GoBridgeServiceProps`.
+The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
+(`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The clustered
+profile (`GoBridgeCluster`) runs one control task plus `WorkerDesiredCount`
+workers (default 2); worker CPU auto-scaling is opt-in by setting the
+`AutoScaling` prop (`AutoScalingProps{Min, Max, TargetCPU}`, where `TargetCPU`
+`0` is treated as 70). Override sizing via the `CPU` and `MemoryMiB` props.
 
 ---
 
@@ -111,8 +114,10 @@ defaults:
 | Access point path | `/gobridge` | `GoBridgeEfsConfigProps.AccessPointPath` |
 | Directory permissions | `755` | Set in `CreateAcl` |
 
-The Dockerfile should create a non-root user with UID/GID 1000 so the
-container identity matches the EFS access point owner.
+The EFS access point enforces this POSIX identity for every file operation
+regardless of the container's process UID, so the image need not run as UID
+1000 — the production image runs as the distroless nonroot user (65532:65532)
+and still reads and writes `bridge.yaml` through the access point.
 
 ### Mount Path vs. Access Point Path
 
@@ -121,12 +126,12 @@ These two paths serve different purposes:
 - **`AccessPointPath`** (`/gobridge` by default) -- the directory *inside* the
   EFS filesystem where config files live. This is set when the access point is
   created and is fixed for the life of the filesystem.
-- **`ConfigMountPath`** (`/mnt/gobridge` by default) -- the directory *inside
-  the container* where EFS is mounted. The container sees
-  `/mnt/gobridge/bridge.yaml`, but EFS stores it at `/gobridge/bridge.yaml`.
+- **`MountPath`** (`/var/lib/gobridge` by default, `infra.DefaultMountPath`) --
+  the directory *inside the container* where EFS is mounted. The container sees
+  `/var/lib/gobridge/bridge.yaml`, but EFS stores it at `/gobridge/bridge.yaml`.
 
 The `BootstrapConfig.ConfigFilePath` should reference the container mount path,
-for example `/mnt/gobridge/bridge.yaml`.
+for example `/var/lib/gobridge/bridge.yaml`.
 
 ### File Size Limit
 
@@ -205,35 +210,65 @@ LocalStack access works without real AWS credentials.
 
 ---
 
+## Runtime Metrics
+
+The bootstrap config selects the runtime metrics backend. The loader reads
+`BootstrapConfig` from `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` (or a file named by
+`GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`) as **JSON** — it is not YAML.
+
+| Bootstrap key | Values / default | Effect |
+|---------------|------------------|--------|
+| `metrics_exporter` | `""` / `"noop"` (default) / `"cloudwatch"` | `""`/`noop` emits nothing; `cloudwatch` publishes runtime metrics via the CloudWatch exporter. Any other value fails validation. |
+| `metrics_namespace` | default `GoBridge/Runtime` | CloudWatch namespace used when `metrics_exporter=cloudwatch`. |
+| `instance_id` | default empty | Stamps the `instance_id` metric dimension. Empty lets the exporter derive a per-task `<hostname>-<pid>`. |
+
+The CDK base grants `cloudwatch:PutMetricData` **only** when
+`metrics_exporter=cloudwatch`, scoped by the `cloudwatch:namespace` condition to
+the effective namespace. A `noop` deployment gets no CloudWatch permissions.
+`PutMetricData` has no resource-level restriction, so the namespace condition
+must match the exporter's namespace or every publish is denied. See
+[Monitoring and Observability](monitoring.md) for the exporter and alarm detail.
+
+---
+
 ## Container Image
 
-### Multi-Stage Dockerfile
+### Production Dockerfile
 
-We recommend a multi-stage build that produces a minimal Alpine image. The
-`CGO_ENABLED=1` flag is required because the SQLite store adapter uses cgo.
+The repository ships a multi-stage `Dockerfile` at the root that builds the
+`gobridge-filebased` binary as a static, **CGO-free** executable — the SQLite
+store uses `modernc.org/sqlite`, which is pure Go, so there is no cgo and no
+`CGO_ENABLED=1` — and ships it on `distroless/static-debian12:nonroot`:
 
 ```dockerfile
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN apk add --no-cache gcc musl-dev
-RUN CGO_ENABLED=1 go build -o /gobridge-filebased \
-    ./deployment/aws-filebased-config/lib/cmd/gobridge-filebased
+ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
+RUN cd deployment/aws-filebased-config/lib && \
+    go build -trimpath -ldflags="-s -w" \
+      -o /out/gobridge-filebased ./cmd/gobridge-filebased
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget
-RUN adduser -D -u 1000 gobridge
-COPY --from=builder /gobridge-filebased /usr/local/bin/
-USER gobridge
-ENTRYPOINT ["gobridge-filebased"]
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+COPY --from=build /out/gobridge-filebased /usr/local/bin/gobridge-filebased
+USER 65532:65532
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/usr/local/bin/gobridge-filebased", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/gobridge-filebased"]
 ```
+
+Build from the repository root — the binary module resolves the rest of
+GoBridge through relative `replace` directives (`docker build -t
+gobridge-filebased:latest .`).
 
 Key points:
 
-- **UID 1000** matches the EFS access point POSIX user.
-- **`ca-certificates`** is needed for TLS connections to AWS services.
-- **`wget`** is available for container health probes against the monitor
-  endpoint (`wget -q --spider http://localhost:8081/api/v1/monitor/health`).
+- The **EFS access point** enforces the POSIX file identity, so the container
+  runs as the distroless nonroot user (65532), not UID 1000.
+- **CA certificates** ship in the distroless base for TLS to AWS services.
+- The image has **no shell, curl, or wget**, so the health check reuses the
+  binary's `-healthcheck` flag (which probes the local monitor `/live`
+  endpoint) instead of an HTTP client.
 
 ### ECR Lifecycle Policy
 
@@ -288,13 +323,18 @@ github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
 
 ### Construct Overview
 
-The library provides two L2 constructs and one L3 stack:
+The library provides an EFS config construct plus two façade constructs, each
+deploying a complete profile:
 
-| Construct | Level | Purpose |
-|-----------|-------|---------|
-| `GoBridgeEfsConfig` | L2 | Creates an EFS filesystem with an access point for config mounting. |
-| `GoBridgeService` | L2 | Creates a Fargate service with EFS mount, SSM access, health checks, and auto-scaling. |
-| `GoBridgeStack` | L3 | Opinionated stack that wires VPC, EFS, and Fargate service in one call. |
+| Construct | Package | Purpose |
+|-----------|---------|---------|
+| `GoBridgeEfsConfig` | `cdk/constructs` | EFS filesystem + access point for config mounting. |
+| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, RW EFS mount, no worker, no clustering. |
+| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | One control task (RW EFS) plus `WorkerDesiredCount` worker tasks (RO EFS). |
+
+The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)` and
+`NewGoBridgeCluster(scope, id, *ClusterProps)`. There is no `GoBridgeService` or
+`GoBridgeStack` construct and no `GoBridgeServiceProps` type.
 
 ### GoBridgeEfsConfigProps
 
@@ -303,84 +343,89 @@ The library provides two L2 constructs and one L3 stack:
 | `Vpc` | `awsec2.IVpc` | *required* | VPC for EFS mount targets. |
 | `FileSystem` | `awsefs.IFileSystem` | new filesystem | Existing EFS filesystem to reuse. |
 | `AccessPointPath` | `*string` | `/gobridge` | POSIX path inside EFS. |
-| `PosixUID` | `*string` | `"1000"` | POSIX user ID for the access point. |
-| `PosixGID` | `*string` | `"1000"` | POSIX group ID for the access point. |
+| `PosixUID` | `*string` | `"1000"` | POSIX user ID for the access points. |
+| `PosixGID` | `*string` | `"1000"` | POSIX group ID for the access points. |
 | `RemovalPolicy` | `interface{}` | `RETAIN` | What happens to the filesystem on stack deletion. |
 
-### GoBridgeServiceProps
+### SingleProps (selected)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `Vpc` | `awsec2.IVpc` | *required* | VPC for the Fargate service. |
-| `Cluster` | `awsecs.ICluster` | new cluster | Existing ECS cluster. |
-| `ServiceName` | `string` | *required* | ECS service name. |
-| `Image` | `awsecs.ContainerImage` | *required* | Container image reference. |
-| `Bootstrap` | `infra.BootstrapConfig` | *required* | Bootstrap config serialized as `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` env var. |
+| `Vpc` | `awsec2.IVpc` | *required* | VPC for the task and EFS mount targets. |
+| `Image` | `awsecs.ContainerImage` | *required* | The `gobridge-filebased` runtime image. |
+| `Bootstrap` | `infra.BootstrapConfig` | *required* | Runtime config; `NodeRole` forced to `control`. |
+| `BridgeConfig` | `source.Source` | *required* | Sealed config from `gobridgecdk.BridgeYamlAsset`/`BridgeYamlInline`. |
+| `QueueRegistry` | `*registry.QueueRegistry` | conditionally required | Resolves SQS queue names in the config. |
+| `SsmParamRegistry` | `*registry.SsmParamRegistry` | conditionally required | Resolves SSM parameter URIs in the config. |
 | `CPU` | `*float64` | `512` | Fargate CPU units. |
-| `MemoryMiB` | `*float64` | `1024` | Fargate memory in MiB. |
-| `DesiredCount` | `*float64` | `1` | Initial task count. |
-| `EfsConfig` | `*GoBridgeEfsConfig` | new config | Pre-built EFS config construct. |
-| `ConfigMountPath` | `*string` | `/mnt/gobridge` | Container path for EFS mount. |
-| `SsmParameterArns` | `[]*string` | none | Additional SSM parameter ARNs for the task role. |
-| `Exposure` | `infra.Exposure` | none exposed | Which HTTP ports get ALB target groups. |
-| `LogRetention` | `awslogs.RetentionDays` | `ONE_WEEK` | CloudWatch log retention period. |
-| `ScalingMaxCapacity` | `*float64` | `4` | Max tasks for auto-scaling. Set to `0` to disable. |
-| `CpuTargetPercent` | `*float64` | `70` | CPU utilization target for auto-scaling. |
+| `MemoryMiB` | `*float64` | `1024` | Fargate memory (MiB). |
+| `MountPath` | `*string` | `/var/lib/gobridge` | Container EFS mount path. |
+| `SeederMode` | `*string` | `"SeedOnce"` | Control seeder mode. |
 
-### GoBridgeStackProps
+The single profile runs exactly one task (`DesiredCount` is not a prop) and has
+no auto-scaling.
+
+### ClusterProps (selected)
+
+`ClusterProps` shares `Vpc`, `Image`, `Bootstrap`, `BridgeConfig`, the
+registries, `CPU`, `MemoryMiB`, and `MountPath` with `SingleProps` (applied to
+both services), plus:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `StackProps` | `awscdk.StackProps` | -- | Standard CDK stack properties (account, region, etc.). |
-| `ServiceName` | `string` | *required* | ECS service name. |
-| `ImageURI` | `string` | *required* | Container image URI (e.g. ECR repo:tag). |
-| `Bootstrap` | `infra.BootstrapConfig` | *required* | Bootstrap configuration. |
-| `Exposure` | `infra.Exposure` | none exposed | Port exposure settings. |
-| `VpcID` | `string` | new VPC | Existing VPC ID to look up. |
-| `MaxAZs` | `*float64` | `2` | Max availability zones for a new VPC. |
+| `WorkerDesiredCount` | `*float64` | `2` | Worker task count (must be ≥ 1). |
+| `ControlSeederMode` | `*string` | `"SeedOnce"` | Control seeder mode. |
+| `WorkerSeederMode` | `*string` | `"AdoptValid"` | Worker seeder mode (see below). |
+| `AutoScaling` | `*AutoScalingProps` | `nil` (off) | Opt-in worker CPU target-tracking (`{Min, Max, TargetCPU}`, `TargetCPU` `0` → 70). |
+
+The control task always runs a single copy (`DesiredCount` is hard-coded to 1).
+Auto-scaling applies to the worker service only and is off unless `AutoScaling`
+is set.
+
+#### Worker seeder: AdoptValid vs AbortDeploy
+
+Workers mount EFS read-only and cannot write config, so their default seeder
+mode is **`AdoptValid`**: on startup a worker adopts whatever valid `bridge.yaml`
+the EFS filesystem currently holds — whether written by the CDK seed or by an
+Admin-API config-txn commit — and never fails on hash drift from the synth-time
+asset. This lets the two reconfiguration paths coexist: a CDK redeploy and a
+live admin edit both leave a valid file that scale-out and crash-replacement
+workers pick up without a redeploy. Set `WorkerSeederMode` to **`AbortDeploy`**
+for strict lock-step deployments where every worker must match the synth-time
+asset exactly (an absent or mismatched file aborts the task).
 
 ### Usage Example
 
-The following snippet creates a Fargate service using the L2 constructs
-directly, giving you full control over VPC and cluster configuration:
-
 ```go
 import (
-    gobridgecdk "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+    gobridgesingle "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
     "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
     "github.com/aws/jsii-runtime-go"
 )
 
-gobridgecdk.NewGoBridgeService(stack, jsii.String("Bridge"), &gobridgecdk.GoBridgeServiceProps{
-    Vpc:         vpc,
-    ServiceName: "my-bridge",
-    Image:       awsecs.ContainerImage_FromRegistry(jsii.String("123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"), nil),
+qr := registry.NewQueueRegistry()
+qr.AddQueue("inbound", inboundQueue)
+
+// cfg is a *ports.BridgeConfig (build it with the bridgecfg builder).
+single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
+    Vpc:   vpc,
+    Image: awsecs.ContainerImage_FromRegistry(jsii.String("123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"), nil),
     Bootstrap: infra.BootstrapConfig{
         BridgeID:         "my-bridge",
-        ConfigFilePath:   "/mnt/gobridge/bridge.yaml",
+        ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
         AdminAPIKeyParam: "/myapp/admin-key",
     },
-    Exposure: infra.Exposure{
-        Monitor: true,
-    },
+    BridgeConfig:  gobridgecdk.BridgeYamlInline(cfg),
+    QueueRegistry: qr,
 })
+_ = single
 ```
 
-For the quickest path, use the opinionated L3 stack:
-
-```go
-NewGoBridgeStack(app, "MyBridgeStack", &GoBridgeStackProps{
-    ServiceName: "my-bridge",
-    ImageURI:    "123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest",
-    Bootstrap: infra.BootstrapConfig{
-        BridgeID:         "my-bridge",
-        ConfigFilePath:   "/mnt/gobridge/bridge.yaml",
-        AdminAPIKeyParam: "/myapp/admin-key",
-    },
-    Exposure: infra.Exposure{Admin: true, Monitor: true},
-})
-```
+For a control + worker pair, use `gobridgecluster.NewGoBridgeCluster` with
+`ClusterProps` (add `WorkerDesiredCount` and, optionally, `AutoScaling`).
 
 See [CDK Scenarios](../scenarios/cdk/) for complete, runnable examples.
 

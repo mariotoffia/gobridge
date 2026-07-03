@@ -29,11 +29,12 @@ func (Config) Kind() string { return "mqtt.paho" }
 
 // Validate validates the unified config. Empty role-specific fields
 // are allowed because the same Config is reused across all three
-// specs and not all roles are populated for each spec.
+// specs and not all roles are populated for each spec: a receiver or
+// sender may inherit its connection identity from a session, so even
+// a fully empty options block is valid at parse time. The factory
+// enforces the real requirements (client_id, broker_urls) on the
+// effective merged config at build time.
 func (c Config) Validate() error {
-	if c.Session.ClientID == "" && len(c.Session.BrokerURLs) == 0 && c.Sender.DefaultTopic == "" {
-		return errors.New("mqtt: at least one of session.client_id, session.broker_urls, or sender.default_topic must be set")
-	}
 	if c.Sender.QoS > 2 {
 		return fmt.Errorf("mqtt: sender.qos must be 0, 1, or 2, got %d", c.Sender.QoS)
 	}

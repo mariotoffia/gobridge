@@ -33,8 +33,9 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: mqtt-forwarder-01
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: mqtt-forwarder-01
 
 receivers:
   - id: sensor-in
@@ -47,8 +48,9 @@ senders:
   - id: sensor-out
     session_id: mqtt-conn
     options:
-      default_topic: archive/sensors
-      qos: 1
+      sender:
+        default_topic: archive/sensors
+        qos: 1
 
 bindings:
   - id: to-archive
@@ -70,6 +72,7 @@ routes:
 
 ### `sessions`
 - **`transport: mqtt`** -- Uses the MQTT (Paho) transport adapter.
+- **`options.session`** -- Connection settings group under a `session` key.
 - **`broker_url`** -- Single broker endpoint. Use `broker_urls` for a list.
 - **`client_id`** -- Must be unique per MQTT connection. If two bridges connect with the same client_id, the broker disconnects one.
 - Session mode defaults to **`ephemeral`** (clean session), which is fine for a simple forwarder.
@@ -79,6 +82,7 @@ routes:
 - **`topics`** -- Subscribes to `sensors/#` (wildcard) at QoS 1 (at-least-once delivery).
 
 ### `senders`
+- **`options.sender`** -- Sender settings group under a `sender` key.
 - **`default_topic`** -- All messages published to this topic unless overridden by the binding address.
 - **`qos: 1`** -- Publish with QoS 1.
 
@@ -156,13 +160,14 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tls://mqtt.example.com:8883
-      client_id: mqtt-forwarder-01
-      tls:
-        enable: true
-        ca_cert_file: /etc/certs/ca.pem
-        cert_file: /etc/certs/client.crt
-        key_file: /etc/certs/client.key
+      session:
+        broker_url: tls://mqtt.example.com:8883
+        client_id: mqtt-forwarder-01
+        tls:
+          enable: true
+          ca_cert_file: /etc/certs/ca.pem
+          cert_file: /etc/certs/client.crt
+          key_file: /etc/certs/client.key
 ```
 
 ### Using a Persistent Session
@@ -175,10 +180,11 @@ sessions:
     transport: mqtt
     session_mode: persistent
     options:
-      broker_url: tcp://localhost:1883
-      client_id: mqtt-forwarder-01
-      clean_start: false
-      session_expiry_interval: 3600  # 1 hour
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: mqtt-forwarder-01
+        clean_start: false
+        session_expiry_interval: 3600  # 1 hour
 ```
 
 ### Multiple Subscriptions
@@ -205,7 +211,8 @@ senders:
   - id: sensor-out
     session_id: mqtt-conn
     options:
-      default_topic: archive/sensors
-      qos: 2
-      retain: true  # broker retains last message
+      sender:
+        default_topic: archive/sensors
+        qos: 2
+        retain: true  # broker retains last message
 ```

@@ -83,9 +83,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.example.com:1883
-      client_id: durable-ingest-01
-      keep_alive: 30
+      session:
+        broker_url: tcp://mqtt.example.com:1883
+        client_id: durable-ingest-01
+        keep_alive: 30
 
 stores:
   outbox:
@@ -142,6 +143,13 @@ routes:
 ### `delivery_mode: shared_outbox`
 
 Switches the route from synchronous hold to asynchronous outbox-based delivery. The route pipeline persists the envelope into the outbox store instead of sending directly to the target. A background drainer process handles actual delivery.
+
+Config validation (`ValidateBlueprintGraph`, run on every load) enforces two rules for a `shared_outbox` route:
+
+- `stores.outbox` must be configured.
+- If the route binds to an **exclusive** session, `stores.lease` must be configured -- exclusive drain needs a lease to fence single ownership.
+
+Outbox delivery is at-least-once, so design the downstream for deduplication: give each envelope a stable `Envelope.ID` (from the source) or stamp one with an idempotency-key processor. This is a design expectation, not a load-time check.
 
 ### `ack_after` -- When to Acknowledge the Source
 
@@ -202,7 +210,7 @@ policy:
   max_replay_attempts: 5
 ```
 
-The maximum number of times the drainer retries delivering an outbox record. After this limit, the record is moved to the DLQ (if `on_permanent_failure: dlq`) or dropped. The default is 5 attempts.
+The maximum number of times the drainer re-attempts an outbox record after a **transient** send failure. Reaching this count is not sufficient to poison a record: the drainer routes it to the DLQ only once it has BOTH exceeded `max_replay_attempts` AND reached a minimum wall-clock age (`PoisonMinAge`, default `max(5 × send_timeout, 2m)`). The age gate stops a short egress outage -- which can burn a small replay budget in seconds -- from poisoning otherwise-healthy messages. A **permanent** (non-transient) send error skips the replay budget and is DLQ'd on the spot. The drainer is the only component that poisons an outbox record; replay-count exhaustion is its sole poison trigger. The default is 5 attempts.
 
 ### Outbox Drainer
 
@@ -367,6 +375,8 @@ stores:
       region: us-west-1
 ```
 
+**Standby readiness.** Only the lease holder drains; standby instances hold their drainers idle until they win the lease. The active drainer also gates each cycle on egress-transport readiness -- when the target session is disconnected, it skips the drain instead of running failing Claim+Send cycles. This keeps a broker outage from silently burning the replay budget and poisoning healthy records while the target is simply unreachable.
+
 ### Adaptive Backoff Drain Strategy
 
 Reduce DynamoDB read costs during idle periods. When messages flow, the drainer polls every 100ms. When the outbox is empty, it backs off (200ms, 400ms, 800ms, ... up to 30s) and resets to 100ms when records reappear:
@@ -383,7 +393,7 @@ session:
 
 ### DLQ for Failed Deliveries
 
-After `max_replay_attempts` failed deliveries, records move to the DLQ store. Operators can inspect and replay entries via the HTTP admin API:
+A record reaches the DLQ store on a permanent send error (immediately) or on replay-count exhaustion once it has also passed `PoisonMinAge`. Operators can inspect and replay entries via the HTTP admin API:
 
 ```yaml
 stores:
@@ -406,6 +416,10 @@ routes:
       on_permanent_failure: dlq
       on_expired: dlq
 ```
+
+**DLQ writes are session-fenced.** Before writing an entry, the DLQ router checks the lease for the session that owns the failing route. The check is scoped to that session: a route with no exclusive session (empty session ID, or an ingress failure with no owning session) is never blocked, so a standby can DLQ its own unfenced ingress failures, while an unrelated instance's lease can no longer authorize a write for a route it does not own. The write is confirmed durable before the source delivery or outbox record is settled -- if the DLQ write fails, the record is left claimed for redelivery rather than lost. The gate is best-effort (the lease token is not passed to the store write), so a lease lost mid-write can produce a duplicate entry, never a lost one.
+
+**Conservation law.** Every received message ends in exactly one terminal state, and the runtime metrics account for all of them: `MessagesReceived = MessagesSent + MessagesDropped + MessagesFiltered + MessagesExpired + DLQEntries + in-flight`. A rising `MessagesDropped` (terminated with neither a send nor a DLQ record) is the single signal for silent loss. `MessagesExpired` covers TTL drops (route-expired ingress and the drainer's expire sweep); `MessagesFiltered` covers deliberate processor discards. Watch these series together to prove the outbox is losing nothing.
 
 ### Target Accept ACK for Strongest Guarantees
 

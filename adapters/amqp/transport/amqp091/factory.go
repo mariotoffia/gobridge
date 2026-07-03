@@ -141,6 +141,13 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 	if rc.QueueName == "" && len(spec.Subscriptions) > 0 {
 		rc.QueueName = spec.Subscriptions[0].Topic
 	}
+	// A consume on an empty queue name is a broker error at best;
+	// enforced here — the build boundary — because parse-time Validate
+	// also runs on binding overrides that legitimately omit the queue.
+	if rc.QueueName == "" {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 receiver %q: receiver.queue_name (or a subscription topic) is required", spec.ID))
+	}
 	return NewReceiver(rc), nil
 }
 

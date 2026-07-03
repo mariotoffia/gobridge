@@ -234,6 +234,11 @@ http:
   admin_api_key: "my-secret-api-key-min-16-chars"
   monitor_api_key: ""
   cors_origins: ""
+  # Opt-in in-process TLS: set BOTH to serve HTTPS on the admin and
+  # monitor listeners, or neither to stay plaintext behind an external
+  # terminator. Setting only one is a startup error.
+  tls_cert_file: ""
+  tls_key_file: ""
 ```
 
 | Field | YAML key | Type | Default | Description |
@@ -243,6 +248,36 @@ http:
 | AdminAPIKey | `admin_api_key` | string | *required* | API key for admin endpoints (min 16 chars) |
 | MonitorAPIKey | `monitor_api_key` | string | *optional* | Separate key for monitor; falls back to `admin_api_key` |
 | CORSOrigins | `cors_origins` | string | `""` | Comma-separated allowed origins; wildcard `*` is rejected |
+| TLSCertFile | `tls_cert_file` | string | `""` | PEM server certificate (+chain); enables HTTPS when set with the key |
+| TLSKeyFile | `tls_key_file` | string | `""` | PEM private key; **both** cert and key must be set, or neither |
+
+TLS is opt-in and applies to **both** the admin and monitor listeners. When
+both `tls_cert_file` and `tls_key_file` are present the servers serve HTTPS and
+the reported `AdminURL`/`MonitorURL` use the `https` scheme; when both are empty
+the servers stay plaintext (the historical default) on the assumption that an
+external terminator (LB/ingress/mesh) provides TLS. Supplying exactly one of the
+pair is rejected at startup.
+
+### Authentication failure throttling
+
+Both the admin and monitor auth middlewares throttle repeated failures **per
+client**. After `AuthFailureLimit` failed attempts within `AuthFailureWindow`,
+further attempts from that client are rejected with **HTTP 429** and a
+`Retry-After: 60` header until the window rolls over; a successful auth resets
+the client's counter. These knobs live on the programmatic `httpapi.Config`
+(they are not part of the YAML `http:` block):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `AuthFailureLimit` | int | `5` | Failed attempts per client per window before 429 |
+| `AuthFailureWindow` | duration | `1m` | Fixed window over which failures are counted |
+
+The client identity used for both throttling and audit attribution is derived
+by `actorFromRequest`: the leftmost `X-Forwarded-For` hop when present,
+otherwise `RemoteAddr`. **`X-Forwarded-For` is client-spoofable** unless a
+trusted edge proxy overwrites it, so deployments MUST terminate/normalise XFF at
+a trusted proxy for this attribution to be authoritative (and to prevent a
+spoofed XFF from evading or poisoning the throttle).
 
 ### Authentication
 
@@ -272,18 +307,25 @@ HTTP method receive HTTP 405 with a correct `Allow` header.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/bridge` | Instance info (ID, running status, route count) |
-| POST | `/api/v1/admin/bridge/start` | Start the bridge (30s server timeout) |
-| POST | `/api/v1/admin/bridge/stop` | Stop the bridge (30s server timeout) |
+| GET | `/api/v1/admin/bridge` | Instance info (`instance_id`, `running`, route count) |
+| POST | `/api/v1/admin/bridge/start` | Start the bridge (`AdminOperationTimeout`, default 30s) |
+| POST | `/api/v1/admin/bridge/stop` | Stop the bridge (`AdminOperationTimeout`, default 30s) |
 | GET | `/api/v1/admin/routes` | List all routes with delivery/dispatch mode |
 | POST | `/api/v1/admin/routes/{routeID}/inject` | Inject a test message (JSON payload, 1 MB limit) |
-| GET | `/api/v1/admin/dlq` | DLQ summary (configured, count) |
+| GET | `/api/v1/admin/dlq` | DLQ summary (`configured`, `count`, `count_capped`) |
 | GET | `/api/v1/admin/dlq/messages` | Paginated DLQ messages (filter by `route_id`, `category`, `since`, `before`) |
-| POST | `/api/v1/admin/dlq/redrive` | Redrive DLQ entries by ID (max 100) |
-| POST | `/api/v1/admin/dlq/purge` | Purge expired DLQ entries |
+| GET | `/api/v1/admin/dlq/messages/{id}` | Single DLQ entry with full payload (audited as `dlq.read_payload`) |
+| POST | `/api/v1/admin/dlq/redrive` | Redrive DLQ entries by ID (max 100); 207 on partial failure |
+| POST | `/api/v1/admin/dlq/delete` | Delete DLQ entries by ID (max 1000) |
+| POST | `/api/v1/admin/dlq/delete-by-filter` | Delete by filter (requires `confirm_delete_all` for an empty filter) |
+| POST | `/api/v1/admin/dlq/purge` | Purge the **entire** DLQ (requires `confirm_purge_all: true`) |
+
+Config-transaction endpoints (`/api/v1/admin/config...`) are registered only
+when a config transaction manager is wired; see [Config transactions](#config-transactions).
 
 All DLQ endpoints return HTTP 404 `{"error": "no DLQ store configured"}` when
-no DLQ store is present. This is consistent across all four DLQ endpoints.
+no DLQ store is present. Redrive additionally returns 404
+`{"error": "no DLQ admin store configured"}` when the DLQ is read-only.
 
 ### Route list response
 
@@ -318,8 +360,13 @@ stripped automatically. Request body limited to 1 MB.
 ### DLQ summary response
 
 ```json
-{ "configured": true, "count": 42 }
+{ "configured": true, "count": 42, "count_capped": false }
 ```
+
+The summary scans up to 1000 entries. When that cap is hit, `count` is `1000`
+and `count_capped` is `true`, signalling that the true backlog is at least that
+large (there is no exact Count port, so alerting must treat a capped count as a
+lower bound).
 
 ### DLQ messages -- pagination
 
@@ -328,7 +375,7 @@ The `/api/v1/admin/dlq/messages` endpoint supports pagination and filtering:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | int | 100 | Max messages to return (clamped to 1000) |
-| `offset` | int | 0 | Number of messages to skip |
+| `offset` | int | 0 | Number of messages to skip (max 100000) |
 | `route_id` | string | -- | Filter by route ID |
 | `category` | string | -- | Filter by error category |
 | `since` | RFC 3339 | -- | Only messages failed at or after this time |
@@ -352,11 +399,17 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
       "failed_at": "2026-03-28T10:15:30Z", "attempts": 3
     }
   ],
-  "total": 1, "limit": 10, "offset": 0
+  "limit": 10, "offset": 0, "has_more": false
 }
 ```
 
-The `total` field reflects the count in the current page, not the global total.
+The response no longer carries a `total` field (the old `total` reported
+`min(matched, limit+offset)`, which under-reported once the backlog exceeded the
+page window). Instead, **`has_more`** is a truthful "another page exists" flag,
+computed by over-fetching one entry beyond the page. The list view omits the
+payload; fetch a single entry via `GET /api/v1/admin/dlq/messages/{id}` to see
+the full base64 payload -- that read is audited as `dlq.read_payload` because it
+can disclose PII/secrets.
 
 ### DLQ redrive
 
@@ -371,15 +424,34 @@ curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
 { "redriven": 2, "failed": 0 }
 ```
 
-Maximum 100 IDs per request. Request body limited to 1 MB. Successfully
-redriven entries are automatically deleted from the DLQ store; the response
-`failed` count reports entries that could not be redriven (e.g. entry or route
-not found).
+On partial failure the endpoint returns **HTTP 207 Multi-Status** with a
+per-entry `errors` array (200 only when every requested entry redrove):
+
+```json
+{
+  "redriven": 1,
+  "failed": 1,
+  "errors": [
+    { "id": "dlq-002", "error": "entry already redriven or concurrently deleted" }
+  ]
+}
+```
+
+Maximum 100 IDs per request (duplicates are de-duplicated); request body limited
+to 1 MB and strict-decoded (unknown JSON fields are rejected). Redrive is
+**claim-by-delete before inject**: the entry is deleted first so a client retry
+or a concurrent admin instance cannot double-deliver (a crash between delete and
+inject accepts an at-most-once drop; an inject failure best-effort restores the
+entry). Replay is **binding-scoped** -- the entry's originating `binding_id` is
+pinned via a route-override header so a fan-out route re-delivers only to the
+binding that failed, not to its healthy siblings.
 
 ### DLQ purge
 
 ```bash
 curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm_purge_all": true}' \
   "http://localhost:8080/api/v1/admin/dlq/purge" | jq .
 ```
 
@@ -387,13 +459,62 @@ curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
 { "purged": 5 }
 ```
 
-Request body limited to 1 MB.
+Purge deletes the **entire** DLQ (all failure evidence), so it requires an
+explicit `{"confirm_purge_all": true}` body; omitting or setting it false
+returns HTTP 400. Request body limited to 1 MB.
+
+### Config transactions
+
+When a config transaction manager is wired, the admin server exposes
+`/api/v1/admin/config` (GET the redacted effective config) plus a transaction
+lifecycle under `/api/v1/admin/config/transactions`:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| POST | `.../transactions` | Open a transaction against the current version |
+| GET | `.../transactions/{txnID}` | Inspect the pending (redacted) preview |
+| PATCH | `.../transactions/{txnID}` | Apply a partial `BridgeConfig` overlay |
+| POST | `.../transactions/{txnID}/commit` | Validate, CAS on version, persist, apply |
+| DELETE | `.../transactions/{txnID}` | Roll back / discard |
+
+The overlay is strict-decoded as a `BridgeConfig`; because typed plugin options
+are not JSON-serialisable fields (`Config` carries `json:"-"`), a PATCH body
+containing an `options` key is an **unknown field → HTTP 400**. A PATCH may
+therefore only touch scalar/structural fields, never a plugin's option block.
+
+Commit refuses to erase plugin options: if the merged config would drop the
+typed `Config` of any entry that previously had one -- most commonly by changing
+a `transport`/`type` discriminator via PATCH (which cannot carry replacement
+options) -- the commit fails with **HTTP 422** and `errConfigOptionsLoss`
+("config commit would erase plugin options"). Other outcomes: `404`
+(transaction not found/expired), `409` (version conflict / concurrent write),
+`422` (config validation failed, with `validation_errors`).
+
+Commit is **write-then-apply**. On success it returns
+`{"status": "committed", "version": N}`. When a `ConfigApplier` is wired and the
+durable write succeeds but the in-band apply fails, commit returns **HTTP 500**
+with `{"status": "committed_not_applied", "version": N, ...}` -- disk and the
+running runtime have diverged and an operator must reconcile (the version is on
+disk).
 
 ### Audit logging
 
-All admin endpoints emit audit events with timestamp, action, actor
-(`RemoteAddr`), resource type, resource ID, outcome (success/failure), and an
-optional detail map.
+All admin endpoints emit audit events with timestamp, action, actor, resource
+type, resource ID, outcome (`success` / `failure` / `partial_failure`), and an
+optional detail map. The **actor** is derived by `actorFromRequest`: the
+leftmost `X-Forwarded-For` hop when present (so a shared edge proxy does not
+collapse every operator to the LB address), else `RemoteAddr`. This is only
+authoritative when a trusted proxy normalises `X-Forwarded-For`.
+
+Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
+`route.inject`, `dlq.redrive`, `dlq.purge`, `config.txn.patch` /
+`config.txn.commit` / `config.txn.rollback`, and -- new in this release:
+
+| Action | Emitted when |
+|--------|--------------|
+| `auth.failure` | An API key check fails (also increments the per-client throttle) |
+| `auth.throttled` | A request is rejected with 429 because the client is over its failure limit |
+| `dlq.read_payload` | A single DLQ entry (with full payload) is read via `GET .../dlq/messages/{id}` |
 
 ## Monitor API Endpoints
 
@@ -406,14 +527,17 @@ caching by load balancers and CDNs.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/monitor/health` | Health check (status, instance ID, route count, failed components) |
-| GET | `/api/v1/monitor/live` | Liveness probe (always `{"status":"alive"}`) |
-| GET | `/api/v1/monitor/ready` | Readiness probe (`{"status":"ready","role":"standalone"}` or 503) |
+| GET | `/api/v1/monitor/health` | Coarse health check -- returns **only** `{"status": ...}` |
+| GET | `/api/v1/monitor/live` | Liveness probe (`{"status":"alive"}`, or `{"status":"terminal"}` + 503) |
+| GET | `/api/v1/monitor/ready` | Readiness probe (`{"status":"ready","role":...}` or 503) |
 
-The `health` endpoint returns HTTP 200 when healthy, HTTP 503 when unhealthy
-or not running. The `status` field is one of: `ok`, `unhealthy`,
-`not_running`. When components have errors, a `failed_components` count is
-included.
+The `health` endpoint is **unauthenticated** (for load balancers/orchestrators)
+and therefore exposes only a coarse `status` string plus the HTTP status code --
+never `instance_id`, route count, or component-failure detail, which are
+reconnaissance and live behind auth on `/deephealth`. It returns HTTP 200 with
+`{"status":"ok"}` when healthy, and HTTP 503 with `{"status": ...}` otherwise,
+where `status` is one of `ok`, `unhealthy`, `not_running`, or `unavailable`
+(runtime not wired).
 
 ### Authenticated
 
@@ -503,11 +627,25 @@ sessions:
   - id: mqtt-tls
     transport: mqtt
     options:
-      broker_url: tls://mqtt.example.com:8883
-      client_id: bridge-secure
+      session:
+        client_id: bridge-secure
+        broker_urls: ["tls://mqtt.example.com:8883"]
       credentials_uri: file://prod/mqtt/broker-creds
 
+receivers:
+  - id: http-in
+    transport: http
+    options:
+      api_key: "http-ingress-api-key-16"
+
 senders:
+  - id: mqtt-out
+    session_id: mqtt-tls
+    options:
+      sender:
+        default_topic: events/out
+        qos: 1
+
   - id: sqs-out
     transport: sqs
     options:
@@ -515,30 +653,19 @@ senders:
       credentials_uri: pms://prod/aws/sqs-creds
 
 bindings:
+  - id: to-mqtt
+    sender_id: mqtt-out
+    address: events/out
+
   - id: to-sqs
     sender_id: sqs-out
     address: events
 
-receivers:
-  - id: mqtt-in
-    session_id: mqtt-tls
-    topics:
-      - topic: "events/#"
-        qos: 1
-
-  - id: http-in
-    transport: http
-    options:
-      api_key: "http-ingress-api-key-16"
-
 routes:
-  - id: forward-mqtt
-    receiver_id: mqtt-in
-    bindings: [to-sqs]
-
   - id: forward-http
     receiver_id: http-in
-    bindings: [to-sqs]
+    dispatch_mode: all
+    bindings: [to-mqtt, to-sqs]
 
 http:
   admin_addr: ":8080"
@@ -548,12 +675,22 @@ http:
   cors_origins: "https://dashboard.example.com"
 ```
 
-This configuration demonstrates:
+This configuration ingests over HTTP and fans out to an MQTT (TLS) sender and
+an SQS sender, demonstrating:
 - **Credential URI** on the MQTT session (`file://`) and SQS sender (`pms://`)
-  for transport-level authentication
-- **API key** on the HTTP receiver for endpoint-level protection
-- **Separate admin and monitor keys** for management API access control
-- **CORS** restricted to a specific dashboard origin
+  for transport-level authentication. The URI is a top-level `options` key
+  (sibling of the nested `session:` / `sender:` role blocks).
+- **API key** on the HTTP receiver for endpoint-level protection (minimum 16
+  characters).
+- **Separate admin and monitor keys** for management API access control (each
+  must be at least 16 characters).
+- **CORS** restricted to a specific dashboard origin (a literal `*` wildcard is
+  rejected).
+
+> MQTT transport options nest under `session:` / `sender:`. MQTT is used here on
+> the **egress** (sender) side; an MQTT *receiver* would additionally require a
+> connection option on every receiver and subscription entry (see the
+> [Transport Configuration](transport-configuration.md) guide).
 
 ## Programmatic Setup
 

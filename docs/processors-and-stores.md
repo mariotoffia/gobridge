@@ -5,7 +5,10 @@ backends for lease coordination, outbox persistence, and dead-letter queuing.
 
 ## Processor Chain Overview
 
-Processors are registered by name and referenced from route definitions:
+Processors are registered by name in Go and referenced from route definitions.
+There is no top-level `processors:` config map — a processor's type and settings
+are supplied when you construct it in Go (see [Programmatic Registration](#programmatic-registration));
+the only processor-related YAML is the per-route `processors` list of registered names:
 
 ```yaml
 routes:
@@ -16,11 +19,11 @@ routes:
 Every processor implements `ports.Processor`:
 
 ```go
-type ProcessorFunc func(ctx context.Context, env *domain.Envelope) error
+type ProcessorFunc func(ctx context.Context, env *messaging.Envelope) error
 
 type Processor interface {
     Name() string
-    Process(ctx context.Context, env *domain.Envelope, next ProcessorFunc) error
+    Process(ctx context.Context, env *messaging.Envelope, next ProcessorFunc) error
 }
 ```
 
@@ -57,6 +60,7 @@ message through, drop it, or reroute it.
 | `Action` | `Action` | Yes | One of `pass`, `drop`, `route`. |
 | `RouteTo` | `string` | Only when `Action` is `route` | Target route ID for rerouting. |
 | `Invert` | `bool` | No | Inverts the combined condition result. |
+| `MaxPayloadBytes` | `int` | No | Caps the JSON payload the filter will parse. Non-positive selects `DefaultMaxPayloadBytes`. |
 
 ### Condition Fields
 
@@ -76,25 +80,11 @@ message through, drop it, or reroute it.
 **Operators:** `eq`, `ne`, `contains`, `regex`, `gt`, `lt`, `gte`, `lte`,
 `exists`, `in`
 
-### YAML Example
-
-```yaml
-processors:
-  my-filter:
-    type: filter
-    config:
-      name: my-filter
-      action: drop
-      conditions:
-        - field: header.x-env
-          operator: eq
-          value: staging
-        - field: $.priority
-          operator: lt
-          value: 3
-```
-
 ### Go Example
+
+A dropped message returns `shared.ErrMessageFiltered`, which the runtime
+classifies as an intentional filter discard (counted as `MessagesFiltered`,
+not a route error).
 
 ```go
 proc, err := filter.New(filter.Config{
@@ -128,6 +118,7 @@ Reshapes JSON payloads using JSONPath extraction and field mappings.
 | `Mappings` | `[]FieldMapping` | -- | Field transformation rules (required). |
 | `DropUnmapped` | `bool` | `false` | Drop fields not covered by mappings. |
 | `FailOnError` | `bool` | `false` | Fail the message on any transform error. |
+| `MaxPayloadBytes` | `int` | `DefaultMaxPayloadBytes` | Caps the JSON payload this processor will parse. |
 
 ### FieldMapping Fields
 
@@ -141,30 +132,6 @@ Reshapes JSON payloads using JSONPath extraction and field mappings.
 
 **Transform types:** `string`, `int`, `float`, `bool`, `base64encode`,
 `base64decode`
-
-### YAML Example
-
-```yaml
-processors:
-  my-transform:
-    type: transform
-    config:
-      name: my-transform
-      dropUnmapped: true
-      failOnError: false
-      mappings:
-        - source: $.user.name
-          target: username
-          transform: string
-        - source: $.user.age
-          target: userAge
-          transform: int
-          defaultValue: 0
-        - source: $.metadata.token
-          target: auth.token
-          transform: base64encode
-          required: true
-```
 
 ### Go Example
 
@@ -232,41 +199,44 @@ Circuit breakers are partitioned by key. The key extractor determines granularit
 | `WithKeyExtractor(SubjectKey)` | Separate breaker per `Envelope.Subject`. |
 | `WithKeyExtractor(HeaderKey("tenant-id"))` | Separate breaker per header value. |
 
-### YAML Example
-
-```yaml
-processors:
-  my-cb:
-    type: circuitbreaker
-    config:
-      failureThreshold: 10
-      successThreshold: 3
-      resetTimeout: 60s
-      halfOpenMaxProbes: 2
-```
-
 ### Go Example
 
+The processor wrapper lives in `processors/circuitbreaker`; `Config`, `State`,
+and `BreakerMetrics` come from the root `circuitbreaker` state-machine package,
+so a program imports both and aliases one:
+
 ```go
-proc := circuitbreaker.New("my-cb", circuitbreaker.Config{
+import (
+    cb "github.com/mariotoffia/gobridge/circuitbreaker"
+    cbproc "github.com/mariotoffia/gobridge/processors/circuitbreaker"
+)
+
+proc := cbproc.New("my-cb", cb.Config{
     FailureThreshold:  10,
     SuccessThreshold:  3,
     ResetTimeout:      60 * time.Second,
     HalfOpenMaxProbes: 2,
 },
-    circuitbreaker.WithKeyExtractor(circuitbreaker.HeaderKey("tenant-id")),
-    circuitbreaker.WithOnStateChange(func(key string, from, to circuitbreaker.State) {
+    cbproc.WithKeyExtractor(cbproc.HeaderKey("tenant-id")),
+    cbproc.WithOnStateChange(func(key string, from, to cb.State) {
         slog.Info("breaker state change", "key", key, "from", from, "to", to)
     }),
 )
 ```
 
+Each distinct key gets its own breaker instance, cached per-processor. The cache
+is bounded by `WithMaxBreakers` (default 10000) with LRU eviction; evictions are
+counted in `Stats().OpenEvictions`. An eviction bumps a generation token so any
+late outcome recorded against a stale generation is discarded (see
+`StaleOutcomes` below) instead of mutating a fresh breaker under the same key.
+
 ### Metrics
 
 Retrieve per-key metrics at runtime via `proc.Metrics()`, which returns
-`map[string]circuitbreaker.BreakerMetrics` with fields: `Key`, `State`,
-`TotalRequests`, `TotalSuccesses`, `TotalFailures`, `ConsecutiveFailures`,
-`ConsecutiveSuccesses`, and `LastFailureTime`.
+`map[string]cb.BreakerMetrics` with fields: `Key`, `State`, `TotalRequests`,
+`TotalSuccesses`, `TotalFailures`, `ConsecutiveFailures`, `ConsecutiveSuccesses`,
+`StaleOutcomes` (outcomes discarded because their generation token was stale),
+and `LastFailureTime`.
 
 ---
 
@@ -274,7 +244,7 @@ Retrieve per-key metrics at runtime via `proc.Metrics()`, which returns
 
 **Package:** `processors/tenant` | **Config type:** `tenant.Config`
 
-Validates tenant identity and enforces per-tenant quotas. Reads the tenant ID
+Validates tenant identity and tracks per-tenant usage. Reads the tenant ID
 from a configurable header (default: `x-tenant-id`).
 
 ### Configuration Fields
@@ -282,27 +252,16 @@ from a configurable header (default: `x-tenant-id`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Name` | `string` | `"tenant"` | Unique processor instance name. |
-| `TenantHeader` | `string` | `"x-tenant-id"` | Header name containing the tenant ID. |
+| `TenantHeader` | `string` | `"x-tenant-id"` | Header name containing the tenant ID. A reserved `x-bridge.*` header is rejected. |
 | `RequireTenant` | `bool` | `false` | Reject messages that lack a tenant header. |
+| `InFlightDecrementTimeout` | `time.Duration` | `2s` | Timeout used to decrement the in-flight counter after a cancelled delivery. |
 
 ### Optional Integrations (Go Only)
 
 | Option | Interface | Purpose |
 |--------|-----------|---------|
-| `WithValidator(v)` | `ports.TenantValidator` | Tenant lookup, active checks, and message size quota enforcement. |
-| `WithUsageTracker(t)` | `ports.TenantUsageTracker` | In-flight counter and per-tenant message count tracking. |
-
-### YAML Example
-
-```yaml
-processors:
-  my-tenant:
-    type: tenant
-    config:
-      name: my-tenant
-      tenantHeader: x-tenant-id
-      requireTenant: true
-```
+| `WithValidator(v)` | `ports.TenantValidator` | Tenant lookup, active check, and the `MaxMessageSizeBytes` limit — the only enforced per-tenant limit. |
+| `WithUsageTracker(t)` | `ports.TenantUsageTracker` | In-flight and processed-message counters. Observational only: the tracker port is increment-only, so no message-count quota ceiling is enforced. |
 
 ### Go Example
 
@@ -318,9 +277,10 @@ proc, err := tenant.New(tenant.Config{
 ```
 
 When a validator is set, the processor rejects inactive tenants and payloads
-exceeding `TenantInfo.MaxMessageSizeBytes`. When a usage tracker is set,
-in-flight counts are managed around dispatch and successful deliveries
-increment the message counter.
+exceeding `TenantInfo.MaxMessageSizeBytes` — the only enforced per-tenant limit.
+When a usage tracker is set, in-flight counts are managed around dispatch and
+successful deliveries increment the message counter, but that tracking is
+observational: the port is increment-only, so it enforces no message-count ceiling.
 
 ---
 
@@ -418,9 +378,9 @@ transformProc, _ := transform.New(transform.Config{
 })
 builder.RegisterProcessor("my-transform", transformProc)
 
-cbProc := circuitbreaker.New("my-cb", circuitbreaker.Config{
+cbProc := cbproc.New("my-cb", cb.Config{
     FailureThreshold: 10, ResetTimeout: 60 * time.Second,
-}, circuitbreaker.WithKeyExtractor(circuitbreaker.SubjectKey()))
+}, cbproc.WithKeyExtractor(cbproc.SubjectKey))
 builder.RegisterProcessor("my-cb", cbProc)
 
 tenantProc, _ := tenant.New(tenant.Config{Name: "my-tenant", RequireTenant: true})

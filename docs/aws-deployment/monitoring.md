@@ -180,13 +180,21 @@ rt := runtime.New(
 | `WithEndpoint(url)` | AWS default | Custom endpoint (for LocalStack) |
 | `WithLogger(l)` | nil (silent) | Structured logger for dropped/requeued metrics & invalid dimensions |
 | `WithMaxRetryDatums(n)` | 10000 | Bound on datums requeued after a failed `PutMetricData` before the oldest are dropped |
+| `WithRollupMetrics(names...)` | none | Emit a second, **dimensionless** copy of each named metric so zero-dimension alarms can match. Pass `DefaultRollupMetrics()...`. |
+| `WithInstanceTag(id)` | none | Add the `instance_id` dimension (never applied to rollup copies) so per-task series in a fleet do not collide. |
+
+A single background flusher goroutine drains the buffer on the flush interval,
+governed so a slow `PutMetricData` cannot stack overlapping flushes.
+
+`DefaultRollupMetrics()` returns `OutboxDepth`, `LeaseExpiries`, `DLQEntries`,
+`LeaseAcquireFailures`, and `SQSVisibilityExtensions`.
 
 ### Key Metrics
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `MessagesReceived` | `route_id`, `transport` | Count | Messages received from transports |
-| `MessagesSent` | `route_id`, `transport` | Count | Messages successfully sent |
+| `MessagesReceived` | `route_id` | Count | Messages received from transports |
+| `MessagesSent` | `route_id` | Count | Messages successfully sent |
 | `MessagesDropped` | `route_id` | Count | Messages dropped (filter, expired) |
 | `RouteErrors` | `route_id` | Count | Delivery errors by route |
 | `DeliveryE2ELatency` | `route_id` | Milliseconds | End-to-end delivery latency |
@@ -194,23 +202,31 @@ rt := runtime.New(
 | `DLQEntries` | `route_id`, `category` | Count | Messages written to DLQ |
 | `LeaseAcquireFailures` | `lease_id` | Count | Failed lease acquisitions |
 | `LeaseExpiries` | `lease_id` | Count | Leases that expired without renewal |
-| `SQSVisibilityExtensions` | `transport` | Count | SQS visibility timeout extensions |
+| `SQSVisibilityExtensions` | `queue_url` | Count | SQS visibility timeout extensions |
 
-Dimensions map directly to `domain.Tag` key-value pairs. Standard dimension keys
-include `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
-`transport`.
+Dimensions map directly to `domain.Tag` key-value pairs. The dimension keys in
+use are `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
+`queue_url`.
 
 > **Dimension cardinality warning.** CloudWatch bills and indexes per unique
 > dimension-value combination, and each distinct combination is a separate
-> metric. Do **not** use unbounded/high-cardinality values such as `queue_url`
-> (full ARNs/URLs), message IDs, or per-request identifiers as dimensions — they
-> explode cost and make dashboards unusable. Prefer low-cardinality keys
-> (`route_id`, `transport`, `category`). The exporter enforces the CloudWatch
+> metric. Do **not** use unbounded/high-cardinality values such as message IDs,
+> correlation IDs, or per-request identifiers as dimensions — they explode cost
+> and make dashboards unusable. Prefer low-cardinality keys (`route_id`,
+> `category`, `partition`). The exporter enforces the CloudWatch
 > hard limits defensively: dimensions with an empty name or value are dropped,
 > name/value are truncated to 256 bytes, and at most 30 dimensions are kept per
 > metric; excess/invalid dimensions are dropped with a logged warning rather
 > than silently truncated. Configure a logger via `WithLogger` to observe these
 > events.
+
+### Rollup and Self-Metrics
+
+`WithRollupMetrics` emits a second copy of each named metric with **no
+dimensions** so a dimensionless alarm can match it; rollup copies never carry the
+`instance_id` tag. The exporter also emits its own health counters:
+`ExporterDroppedDatums` (datums dropped under buffer pressure) and
+`ExporterRejectedDatums` (datums CloudWatch rejected on `PutMetricData`).
 
 ---
 
@@ -233,7 +249,11 @@ include `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
 The CloudWatch adapter provides `DefaultAlarms` and `EnsureAlarms` to create
 alarms programmatically. `DefaultAlarms` returns pre-defined alarm definitions
 for outbox depth, DLQ entries, lease expiries, lease acquire failures, and SQS
-visibility extensions:
+visibility extensions. These alarm definitions carry **no dimensions**, so they
+match only the zero-dimension **rollup** series. Configure the exporter with
+`WithRollupMetrics(cwmetrics.DefaultRollupMetrics()...)` and the **same
+namespace** you pass to `DefaultAlarms`, or every alarm sits at
+`INSUFFICIENT_DATA`.
 
 ```go
 import cwmetrics "github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch"
@@ -247,6 +267,12 @@ if err != nil {
     log.Fatalf("alarm setup: %v", err)
 }
 ```
+
+The runtime does **not** call `EnsureAlarms` for you — alarm provisioning is a
+deploy-time concern. In CDK, the `GoBridgeAlarms` construct exposes the same set
+declaratively via `EnableRollupAlarms` (opt-in, off by default). It requires an
+exporter configured with rollup metrics whose namespace matches the construct's
+`RollupMetricsNamespace`; a mismatch leaves the alarms at `INSUFFICIENT_DATA`.
 
 ### CDK Alarm Examples
 
@@ -327,11 +353,15 @@ widgets into four rows.
 | 1 | Throughput | `MessagesReceived`, `MessagesSent` | Line graph |
 | 1 | Error Rate | `RouteErrors` / `MessagesReceived` | Number (%) |
 | 2 | Delivery Latency | `DeliveryE2ELatency` (p50, p99) | Line graph |
-| 2 | In-Flight Messages | `bridge.inflight` | Gauge |
+| 2 | In-Flight Messages | per-route `in_flight` (monitor deep-health JSON) | Gauge |
 | 3 | Outbox Depth | `OutboxDepth` | Area chart |
 | 3 | DLQ Entries | `DLQEntries` | Bar chart |
 | 4 | ECS CPU/Memory | ECS `CPUUtilization`, `MemoryUtilization` | Stacked area |
 | 4 | Task Count | ECS `RunningTaskCount` | Number |
+
+In-flight count is not published to CloudWatch. The monitor deep-health
+response reports it per route as `in_flight` (backed by `RouteRunner.InFlight()`
+in `runtime/route/runner.go`); scrape that endpoint if you want it on a widget.
 
 ### Dashboard JSON (Abbreviated)
 
@@ -449,10 +479,11 @@ rt := runtime.New(
 
 ### Trace Propagation
 
-The runtime creates a `bridge.deliver` span around each message delivery. The
-span carries `route_id`, `envelope_id`, and `subject` as attributes. W3C
-`traceparent` headers are extracted from ingress messages and propagated through
-the bridge. If no trace context exists, the tracer starts a new root span.
+The runtime creates a `bridge.handleDelivery` span around each message delivery.
+The span carries `route_id`, `envelope_id`, and — when an ingress `traceparent`
+is present — `trace_id` as attributes. W3C `traceparent` headers are extracted
+from ingress messages and propagated through the bridge. If no trace context
+exists, the tracer starts a new root span.
 
 ### Sampling Strategy
 

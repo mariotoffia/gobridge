@@ -65,8 +65,9 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.factory.local:1883
-      client_id: factory-router-01
+      session:
+        broker_url: tcp://mqtt.factory.local:1883
+        client_id: factory-router-01
 
 receivers:
   - id: sqs-in
@@ -79,7 +80,8 @@ senders:
   - id: mqtt-out
     session_id: mqtt-conn
     options:
-      qos: 1
+      sender:
+        qos: 1
 
 bindings:
   - id: to-factory-topic
@@ -136,8 +138,9 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: topic-router-01
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: topic-router-01
 
 receivers:
   - id: mqtt-in
@@ -150,7 +153,8 @@ senders:
   - id: mqtt-out
     session_id: mqtt-conn
     options:
-      qos: 1
+      sender:
+        qos: 1
 
 bindings:
   - id: to-region-topic
@@ -303,18 +307,24 @@ senders:
   - id: sb-acme
     transport: servicebus
     options:
-      connection_string: "${ACME_SB_CONN}"
-      queue: acme-events
+      connection:
+        connection_string: "${ACME_SB_CONN}"
+      sender:
+        queue_name: acme-events
   - id: sb-globex
     transport: servicebus
     options:
-      connection_string: "${GLOBEX_SB_CONN}"
-      queue: globex-events
+      connection:
+        connection_string: "${GLOBEX_SB_CONN}"
+      sender:
+        queue_name: globex-events
   - id: sb-default
     transport: servicebus
     options:
-      connection_string: "${DEFAULT_SB_CONN}"
-      queue: unrouted-events
+      connection:
+        connection_string: "${DEFAULT_SB_CONN}"
+      sender:
+        queue_name: unrouted-events
 
 bindings:
   - id: bind-acme

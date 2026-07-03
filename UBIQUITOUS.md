@@ -16,6 +16,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **RetryAfter** | Hint on a transient error telling the runtime how long to wait before retrying. |
 | **Tag** | Key-value dimension attached to an emitted metric. |
 | **MetricNamespace** | Single namespace `GoBridge/Runtime` under which every bridge metric is reported. |
+| **instance_id tag** | Metric dimension (`TagKeyInstanceID = "instance_id"`) added by the CloudWatch exporter's `WithInstanceTag` so per-instance series in a fleet do not collide. Sourced from `BridgeSettings.InstanceID`; never applied to rollup-metric copies. |
+| **Exporter self-metrics** | The CloudWatch exporter's own health counters: `ExporterDroppedDatums` (datums dropped under buffer pressure) and `ExporterRejectedDatums` (datums CloudWatch rejected on `PutMetricData`). |
 
 ## Messaging (`domain/messaging`)
 
@@ -33,6 +35,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Ordering key** | `x-bridge.ordering-key`. Hint to ordered transports (e.g. SQS FIFO group). |
 | **Dedup ID** | `x-bridge.dedup-id`. Transport-level deduplication identifier. |
 | **Forwarded-from / Forwarded-hop** | Cluster-forwarding lineage headers. |
+| **`x-bridge.retry-attempt`** | Reserved Service Bus header carrying the receive/attempt count across a delayed (scheduled) retry. Written on outbound and read back on inbound by the ASB adapter. |
+| **`x-bridge.original-message-id`** | Reserved Service Bus header preserving the first-attempt `MessageID` across scheduled retries so end-to-end dedup survives re-enqueue. |
 | **TraceContext** | W3C Trace Context (`traceparent` + `tracestate`). Parsed/formatted via the helpers in `messaging` (the domain path). The `adapters/otel/tracing` adapter additionally bridges the same lowercase `traceparent`/`tracestate` keys into the OpenTelemetry span context via the OTel `propagation.TraceContext` propagator — it may not import `domain/messaging` (`.go-arch-lint.yml`) yet round-trips the identical wire format. |
 
 ## Persistence (`domain/persistence`)
@@ -53,6 +57,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Stale fencing token** | A write attempted with an older `Version` than the current lease. Rejected with `shared.ErrCodeStaleFencingToken`. |
 | **Replay** | Re-attempting outbox dispatch of a previously claimed record. Counted by `ReplayCount`, capped by `RoutePolicy.MaxReplayAttempts`. |
 | **PeerInfo** | Remote bridge instance discovered via lease ownership history. |
+| **Seq** | Monotonic per-partition persistence sequence the store assigns at persist time (`OutboxRecord.Seq()`). Outbox claim ordering is `(CreatedAt, Seq)`; `Seq` breaks ties within the same `CreatedAt`. |
+| **PoisonMinAge** | Minimum wall-clock record age (from `CreatedAt`), required in addition to exceeding `RoutePolicy.MaxReplayAttempts`, before the outbox drainer routes a record to the DLQ as poison. Guards against an outage DLQ-ing an otherwise-good record. |
 
 ## Routing (`domain/routing`)
 
@@ -140,3 +146,13 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Bridge** | The composition factory in `bridge/` that turns a parsed `BridgeConfig` into a running `Runtime`. |
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
+
+## Deployment / seeding (`deployment/aws-filebased-config`)
+
+Deploy-time constructs and worker/control seeding for the AWS file-based topology. See [docs/aws-deployment/overview.md](docs/aws-deployment/overview.md).
+
+| Term | Meaning |
+|---|---|
+| **AdoptValid** | Worker seeder mode (the worker default). Requires the EFS `bridge.yaml` to exist and parse, then adopts it as-is — from either the CDK seed or an Admin-API config-txn commit — never failing on hash drift versus the synth-time asset. Absent or unparseable config still fails. |
+| **AbortDeploy** | Strict opt-in worker seeder mode (`WorkerSeederMode`). The task aborts unless the EFS `bridge.yaml` exists and its canonical hash matches the deployed asset exactly, forcing lock-step config across the fleet. |
+| **SeedOnce** | Control-node default seeder mode. Writes the asset only when the target is absent; otherwise keeps the existing config (warns on hash drift). |

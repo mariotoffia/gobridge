@@ -1,6 +1,10 @@
 # Configuration Model Reference
 
-Complete field-by-field reference for the `BridgeConfig` YAML/JSON model. All field names match the YAML struct tags in `config/config.go`.
+Complete field-by-field reference for the `BridgeConfig` YAML/JSON model. All field names match the YAML/JSON struct tags in `ports/blueprint.go`.
+
+> **Duration format.** Every duration field takes a string with a unit
+> (`"30s"`, `"5m"`, `"1h30m"`). A bare number (`30`) is **rejected** by the
+> strict decoder -- it would be read as nanoseconds, which is never intended.
 
 ## Config Model Overview
 
@@ -155,10 +159,53 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 | `options` | map | no | Backend-specific options |
 
 **Memory**: no options required.
-**SQLite**: `options.path` (string) -- database file path.
-**DynamoDB**: `options.table_name`, `options.region`, `options.endpoint`.
 
-Outbox option `options.stale_claim_duration` (duration) -- how long a *same-owner* stranded claim waits before another claim attempt may take it (failover reclaim is immediate via the higher fencing version, independent of this). Honoured by the DynamoDB and native SQLite outboxes; the in-memory outbox is version-only. Set it above your worst-case drain-batch timeout; `step_down_grace + 15s` (~20s) is a safe rule of thumb.
+**SQLite** (`type: sqlite`):
+
+| Option | Type | Applies to | Default | Description |
+|--------|------|------------|---------|-------------|
+| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` for an in-process DB) |
+| `stale_claim_duration` | duration | outbox | runtime-derived | How long a same-owner stranded claim waits before another claim attempt may take it. Failover reclaim via a higher fencing version is always immediate and independent of this. |
+| `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
+
+**DynamoDB** (`type: dynamodb`):
+
+| Option | Type | Applies to | Default | Description |
+|--------|------|------------|---------|-------------|
+| `table_name` | string | all roles | store built-in | Overrides the DynamoDB table name. |
+| `stale_claim_duration` | duration | outbox | runtime-derived | Same semantics as the SQLite outbox key above. |
+| `compaction_grace` | duration | outbox | store default | Window completed/expired outbox items are kept before the DynamoDB item TTL deletes them. Keep above any upstream redelivery window. |
+| `retention` | duration | DLQ | none (kept until deleted) | TTL on dead-letter entries (`ttl = failed_at + retention`). Use a days-scale value so investigators have time to inspect dead-lettered messages. |
+| `max_scan_pages` | int | DLQ | `100` | Bounds the number of DynamoDB pages an index-less List/Purge reads before stopping, preventing an unbounded full-table scan. Negative disables the bound. |
+
+> The AWS region and endpoint are NOT store options: they come from the standard
+> AWS SDK configuration chain (environment, shared config, IAM role). Supplying
+> `options.region` or `options.endpoint` is rejected by the strict decoder.
+
+**DLQ read ordering** is oldest-first (`failed_at ASC`) across all backends, so
+operators triage the earliest failures first.
+
+**Fence retention floor (30 days).** Independently of `retention` /
+`compaction_grace`, the outbox keeps each partition's *fence* row (its dedup /
+ordering high-water-mark) for at least `max(retention_or_compaction_grace, 30d)`
+past the last write that touches the partition. Setting a shorter `retention`
+does not shorten this floor: it bounds how aggressively terminal *record* rows
+are compacted, not the fence. The floor stops ephemeral/rotating session
+partitions from accreting one immortal fence row each, while 30 days of
+abandonment is deemed safe because such a partition has no competing owner left
+to fence (`sqliteoutbox/outbox.go:35`, `dynamodboutbox/acl_store.go:72`).
+
+**DynamoDB outbox GSI change (breaking for existing tables).** The outbox table's
+secondary indexes changed: the former `StatusIndex` (a table-wide hot partition
+rewritten on every state transition) and the never-queried `ClaimedByIndex` were
+removed, and a sparse `ExpiryIndex` (hash `has_expiry`, range `expires_at`,
+`KEYS_ONLY`) was added alongside the existing `RecordIDIndex`. A freshly created
+table (`Store.CreateTable`) provisions the new shape automatically; a table
+created by an earlier build must be migrated. See
+[DynamoDB outbox GSI migration](runbooks/dynamodb-outbox-gsi-migration.md).
+
+Set `stale_claim_duration` above your worst-case drain-batch timeout;
+`step_down_grace + 15s` (~20s) is a safe rule of thumb.
 
 ```yaml
 stores:
@@ -197,8 +244,10 @@ sessions:
     transport: mqtt
     session_mode: exclusive
     options:
-      broker_url: tcp://mqtt.example.com:1883
-      client_id: bridge-primary
+      session:
+        broker_urls:
+          - tcp://mqtt.example.com:1883
+        client_id: bridge-primary
 ```
 
 ## `receivers` -- Message Ingress
@@ -342,6 +391,7 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `sender_id` | string | **yes** | -- | Reference to a sender on that session |
 | `lease_ttl` | duration | no | `360s` | Lease validity duration |
 | `renew_interval` | duration | no | derived | Lease renewal interval (default: lease_ttl / max_renew_fails) |
+| `lease_renew_jitter` | duration | no | derived | Bounded random jitter added to each renewal timer to avoid a cluster-wide renewal thundering herd. Empty means the session manager derives it from `renew_interval`. |
 | `max_renew_fails` | int | no | 3 | Consecutive renewal failures before step-down |
 | `step_down_grace` | duration | no | `15s` | Grace period before releasing lease |
 | `drain_interval` | duration | no | -- | Fixed outbox drain poll interval (mutually exclusive with drain_strategy) |
@@ -350,6 +400,12 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_max_concurrency` | int | no | 10 | Max concurrent send goroutines per drain cycle |
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | false | Delay transport connection until lease acquired |
+
+When `renew_interval` is set explicitly, cross-field validation requires
+`(renew_interval + lease_renew_jitter/2) × max_renew_fails < lease_ttl` so a
+renewal storm can never outlast the lease (a split-brain guard). When
+`renew_interval` is left empty the interval and jitter are both derived and this
+check is skipped.
 
 **High-availability profile.** The defaults above (`lease_ttl` 360s) favor low renewal traffic, so worst-case failover approaches 6 minutes. For HA deployments that need failover in the 30--60s band, use the ready-made preset `session.HAConfig` (Go API) or its equivalent recipe -- `lease_ttl: 45s`, `max_renew_fails: 3`, `step_down_grace: 5s` (derived `renew_interval` 15s), paired with the outbox store's `stale_claim_duration: 20s`. The preset encodes the required relationship between these knobs (`step_down_grace < lease_ttl` and `renew_interval × max_renew_fails ≤ lease_ttl`); hand-tuning that gets it wrong won't break single-owner safety -- the lease store and outbox version fencing guarantee that -- but it does cause spurious failovers, slower recovery, or a wider duplicate-send window. See [Scenario 8: High-Availability Profile](scenarios/08-clustered-exclusive-sessions.md#high-availability-profile) for the failover math, the invariants, and the aggressive/conservative variants.
 
@@ -520,6 +576,14 @@ When using a `rules` resolver with `direct_hold` delivery mode, each binding may
 | `admin_api_key` | string | **yes** | -- | API key (minimum 16 characters) |
 | `monitor_api_key` | string | no | admin key | Separate monitor API key (min 16 chars when set) |
 | `cors_origins` | string | no | disabled | CORS allowed origins (wildcard `*` rejected) |
+| `tls_cert_file` | string | no | -- | Path to the PEM server certificate (with any intermediate chain). Enables in-process TLS on both listeners when paired with `tls_key_file`. |
+| `tls_key_file` | string | no | -- | Path to the PEM private key for `tls_cert_file`. |
+
+TLS is opt-in and both-or-none: when `tls_cert_file` and `tls_key_file` are both
+set, the admin and monitor servers serve HTTPS with that pair; when either is
+empty the servers stay plaintext (the historical default, assuming an external
+LB/ingress/mesh terminates TLS). Supplying only one of the pair is a startup
+error.
 
 API keys are compared using SHA-256 constant-time hashing. Monitor endpoints
 accept the monitor key or fall back to the admin key (admin is a superset).
@@ -654,6 +718,35 @@ func (h *auditHook) OnSettled(ctx context.Context, evt ports.DeliveryOutcome) {
     )
 }
 ```
+
+## Programmatic Builder & Lifecycle Notes
+
+These affect the Go composition root (`bridge.Builder` / `bridge.Supervisor`),
+not the YAML shape, but they change *when* and *how* config errors surface:
+
+- **Route validation runs at Build time.** `Builder.Build` runs the runtime's
+  static route validation (`Runtime.ValidateRoutes`) during construction --
+  while any previous runtime is still serving -- so a statically-rejectable
+  config fails at `Build(ctx)` rather than later at `Start`. `Start` re-runs the
+  same checks as a backstop. *(Breaking: errors that previously surfaced at
+  `Start` now surface at `Build`.)*
+- **Removed supervisor knobs.** `WithDefaultPerRecordDrainTimeout` and
+  `WithDefaultMaxDrainTimeout` were removed (they had no effect). The scaled
+  drain formula is configured through the blueprint's
+  `bridge.per_record_drain_timeout` / `bridge.max_drain_timeout` instead.
+- **Observability wiring.** Inject exporters via `bridge.WithMetrics`,
+  `bridge.WithTracer`, and `bridge.WithAuditLogger` on the `Builder` (or the
+  `WithSupervisor*` equivalents on the `Supervisor`, which forward to every
+  `Builder`/`Runtime` it creates). Without them a config-driven deployment runs
+  the no-op exporters and emits nothing.
+- **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
+  the last reconfiguration failed (with a reason) while the previous runtime
+  keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.
+- **Outbox poison quarantine.** `runtime.WithOutboxPoisonMinAge` sets the minimum
+  wall-clock age a record must reach *before* replay-count exhaustion may poison
+  it to the DLQ, so a transient egress outage cannot burn the replay budget and
+  poison healthy records in seconds. Zero (default) lets each drainer fall back
+  to `max(5×send_timeout, 2m)`. This is a Go runtime option, not a YAML key.
 
 ## Validation Rules Summary
 

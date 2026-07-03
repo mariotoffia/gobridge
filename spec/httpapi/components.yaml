@@ -66,6 +66,24 @@ responses:
           $ref: "#/schemas/ErrorResponse"
         example: { "error": "no DLQ store configured" }
 
+  TooManyRequests:
+    description: >
+      The client exceeded the authentication-failure limit (AuthFailureLimit,
+      default 5) within the failure window (AuthFailureWindow, default 1m) and
+      is temporarily throttled. Applies to every authenticated admin and
+      monitor endpoint. The client identity is the leftmost X-Forwarded-For hop
+      (when present) else RemoteAddr.
+    headers:
+      Retry-After:
+        schema:
+          type: string
+          example: "60"
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorResponse"
+        example: { "error": "too many failed authentication attempts" }
+
   RuntimeUnavailable:
     description: >
       Runtime is not available. Returned during startup before the first
@@ -239,8 +257,12 @@ schemas:
 
   HealthResponse:
     type: object
-    required: [status, instance_id, routes]
-    description: Health check response for load balancer probes.
+    required: [status]
+    description: >
+      Unauthenticated health probe response for load balancers. To avoid
+      leaking operational detail to unauthenticated callers it carries ONLY
+      the coarse status string -- never instance_id, route count, or
+      component-failure detail (those live behind auth on /deephealth).
     properties:
       status:
         type: string
@@ -250,24 +272,10 @@ schemas:
           is stopped, `unavailable` when the runtime is not yet initialized.
         enum: [ok, unhealthy, not_running, unavailable]
         example: ok
-      instance_id:
-        type: string
-        description: Unique identifier for this bridge instance.
-        example: gobridge-1
-      routes:
-        type: integer
-        description: Number of configured routes.
-        example: 3
-      failed_components:
-        type: integer
-        description: >
-          Number of components reporting errors. Only present when at least
-          one component has failed.
-        example: 1
 
   DLQSummary:
     type: object
-    required: [configured, count]
+    required: [configured, count, count_capped]
     description: Summary of dead-letter queue state.
     properties:
       configured:
@@ -276,8 +284,16 @@ schemas:
         example: true
       count:
         type: integer
-        description: Number of messages currently in the DLQ.
+        description: >
+          Number of messages scanned, up to a cap of 1000. When `count_capped`
+          is true this is a lower bound, not the exact depth.
         example: 42
+      count_capped:
+        type: boolean
+        description: >
+          True when the 1000-entry scan cap was hit, so the real backlog is at
+          least `count`. Alerting must treat a capped count as a lower bound.
+        example: false
 
   DLQEntryView:
     type: object
@@ -341,18 +357,14 @@ schemas:
 
   DLQMessagesResponse:
     type: object
-    required: [messages, total, limit, offset]
+    required: [messages, limit, offset, has_more]
     description: Paginated list of DLQ messages.
     properties:
       messages:
         type: array
-        description: DLQ entries matching the filter criteria.
+        description: DLQ entries matching the filter criteria (payload omitted).
         items:
           $ref: "#/schemas/DLQEntryView"
-      total:
-        type: integer
-        description: Number of messages in this page (not the global total).
-        example: 1
       limit:
         type: integer
         description: Effective limit used for this query.
@@ -361,6 +373,13 @@ schemas:
         type: integer
         description: Offset applied to this query.
         example: 0
+      has_more:
+        type: boolean
+        description: >
+          True when at least one more entry exists beyond this page (computed
+          by over-fetching one entry). Replaces the former `total`, which
+          under-reported once the backlog exceeded the page window.
+        example: false
 
   InjectRequest:
     type: object
@@ -423,7 +442,10 @@ schemas:
   DLQRedriveResponse:
     type: object
     required: [redriven, failed]
-    description: Result of a DLQ redrive. Partial success is possible.
+    description: >
+      Result of a DLQ redrive. Returned with HTTP 200 when every requested
+      entry redrove, or HTTP 207 Multi-Status when any entry failed (inspect
+      the `errors` array).
     properties:
       redriven:
         type: integer
@@ -438,10 +460,6 @@ schemas:
         description: Per-entry error details. Present only when failed > 0.
         items:
           $ref: "#/schemas/DLQRedriveError"
-      warning:
-        type: string
-        description: Warning when redriven entries could not be deleted from the DLQ.
-        example: failed to delete redriven entries
 
   DLQRedriveError:
     type: object

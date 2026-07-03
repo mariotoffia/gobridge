@@ -57,13 +57,13 @@ type SenderParams struct {
 // Kind reports the registry discriminator.
 func (Config) Kind() string { return "azure.servicebus" }
 
-// Validate checks the unified config.
+// Validate checks field ranges and internal consistency. It runs at
+// parse time on EVERY attachment point that reuses this Config shape
+// (receiver, sender, binding override), so it deliberately does not
+// require an entity name: a binding carries only overrides. The
+// factory enforces role-specific completeness (ValidateReceiverEntity
+// / ValidateSenderEntity) at build time.
 func (c Config) Validate() error {
-	hasRecv := c.Receiver.QueueName != "" || (c.Receiver.TopicName != "" && c.Receiver.SubscriptionName != "")
-	hasSend := c.Sender.QueueName != "" || c.Sender.TopicName != ""
-	if !hasRecv && !hasSend {
-		return errors.New("servicebus: at least one of receiver.{queue_name|topic+subscription} or sender.{queue_name|topic_name} must be set")
-	}
 	// Service Bus accepts a message lock duration of 5s..5min; 0 means
 	// "use the 30s default" (see EffectiveVisibilityTimeout). A value
 	// outside the broker range is rejected at entity/receiver setup, so
@@ -88,6 +88,27 @@ func (c Config) Validate() error {
 	}
 	if c.Receiver.SessionID != "" && c.Receiver.SubQueue != "" {
 		return errors.New("servicebus: receiver.session_id cannot be combined with receiver.sub_queue (not supported by the Azure SDK)")
+	}
+	return nil
+}
+
+// ValidateReceiverEntity enforces that the config names a receive
+// entity: a queue, or a topic + subscription pair. Called where a
+// concrete Receiver is built (factory) — not from Validate, which
+// also runs on binding overrides that legitimately omit the entity.
+func (c Config) ValidateReceiverEntity() error {
+	if c.Receiver.QueueName == "" && (c.Receiver.TopicName == "" || c.Receiver.SubscriptionName == "") {
+		return errors.New("servicebus: receiver requires queue_name, or topic_name with subscription_name")
+	}
+	return nil
+}
+
+// ValidateSenderEntity enforces that the config names a send entity:
+// a queue or a topic. Same build-boundary rationale as
+// ValidateReceiverEntity.
+func (c Config) ValidateSenderEntity() error {
+	if c.Sender.QueueName == "" && c.Sender.TopicName == "" {
+		return errors.New("servicebus: sender requires queue_name or topic_name")
 	}
 	return nil
 }

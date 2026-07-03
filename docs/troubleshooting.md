@@ -425,6 +425,48 @@ the bridge cannot meaningfully retain).
 
 ---
 
+---
+
+## Adapter & runtime diagnostic metrics
+
+These counters were added to make specific failure and degradation modes
+observable. The names below are the **verbatim** OTel instrument names emitted
+by the transport adapters (namespace `GoBridge/Runtime`) -- the bridge does not
+add a `gobridge_` prefix or a `_total` suffix; a Prometheus backend may apply
+its own normalization downstream. Each has a real emission site; alert on a
+sustained non-zero rate.
+
+### MQTT (`adapters/mqtt/transport/paho`)
+
+| Metric | When it increments | What a rising value means |
+|--------|--------------------|---------------------------|
+| `MQTTRouterBuffered` | A publish arrived before any matching handler was registered (e.g. a persistent-session backlog delivered on CONNACK before `Receiver.Run`) and was held in the router's bounded pending buffer instead of being dropped (`acl_router.go:188`). | Normal in small bursts at reconnect; a large or growing value means handlers register too slowly or the backlog exceeds the buffer. |
+| `MQTTSessionTakeover` | A server disconnect with reason code `0x8E`/`0x8F` (*session taken over*): another client connected with the same ClientID (`session_lifecycle.go:189,223`). | Two instances share a `client_id` and keep kicking each other -- give each replica a distinct ClientID or use an exclusive session. |
+
+### AMQP 0-9-1 (`adapters/amqp/transport/amqp091`)
+
+| Metric | When it increments | What a rising value means |
+|--------|--------------------|---------------------------|
+| `AMQP091DelayedRetryUnhonored` | A `Retry(after > 0)` was requested but AMQP 0-9-1 has no native delayed-redelivery primitive, so the nack requeues immediately and the requested backoff spacing is lost (`acl_delivery.go:130`). | Poison messages can hot-loop on a classic queue. Add an `x-delivery-limit` / dead-letter-exchange guard, or move retry spacing to the broker. |
+| `AMQP091ReconnectRaceRetried` | A permanent-classified consume failure (403 `ACCESS_REFUSED` on an exclusive consumer, or 404 `NOT_FOUND` mid-topology-redeclare) was retried as a transient reconnect race (`receiver.go:132`). | Expected briefly after a reconnect/partition; climbing past the retry budget means a genuine misconfiguration, not a race. |
+
+### AMQP 1.0 (`adapters/amqp/transport/amqp10`)
+
+| Metric | When it increments | What a rising value means |
+|--------|--------------------|---------------------------|
+| `AMQP10DelayedRetryUnhonored` | A `Retry` with a positive delay was handed back to the broker (`ModifyMessage`) because AMQP 1.0 has no portable client-side delayed-redelivery primitive; the broker decides when to redeliver (`acl_delivery.go:202`). | The configured retry backoff is effectively broker-driven on this transport. |
+
+### HTTP (`adapters/http/transport`)
+
+| Metric | When it increments | What a rising value means |
+|--------|--------------------|---------------------------|
+| `HTTPIngressDuplicates` | An ingress request was short-circuited by the receiver's bounded idempotency window: the presented `Idempotency-Key` / `X-Dedup-Id` was already processed, so the request is acked (200) without re-emitting (`receiver.go:288`). | Healthy dedup of producer retries; a spike may indicate an aggressively retrying client. |
+| `HTTPForwardLoopRefused` | A request already carrying `X-Bridge-Forwarded` resolved to a remote route and was refused with 508 instead of re-forwarded (`receiver.go:251`). | A cluster routing disagreement (A->B->A). Reconcile ownership/routing or wire the forward token. |
+| `HTTPForwardBreakerOpen` | A cluster forward was rejected by the forwarder's circuit breaker without a network attempt (peer considered down) (`forwarder.go:235`). | A peer node is down or flapping; the breaker is failing fast. |
+| `SSENoSubscribers` | A `Send` completed with zero connected SSE clients -- at-most-once, so the source is still acked but nobody received it (`sender_sse.go:215`). | Alert when subscribers are expected; the event is gone. |
+| `SSEAllDropped` | A `Send` where every connected client's buffer was full, so the event was dropped for 100% of subscribers (`sender_sse.go:241`). | All SSE clients are too slow; the broadcast reached nobody. |
+| `SSEDeadlineUnsupported` | An SSE stream whose `ResponseWriter` chain cannot set per-write deadlines (`sender_sse.go:358`). | Slow-client eviction is inert for those streams; a stalled reader can pin a goroutine. Front SSE with a writer that supports deadlines. |
+
 ## Quick reference
 
 | Code | Class | DLQ? |

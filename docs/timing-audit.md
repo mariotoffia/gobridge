@@ -67,18 +67,18 @@ signals.
 | `runtime.Runtime` | `AtLeast(ctx, want) bool` | Snapshot bool | Has reached requested level | `runtime/bridge.go` |
 | HTTP `/api/v1/monitor/ready?level=` | level= query param | HTTP 200/503 | live, running, connected, subscribed, full | `httpapi/monitor.go` |
 | HTTP `/api/v1/monitor/deephealth` | JSON body | Per-session `active_topics`, per-route `ready` + `in_flight`, current `level` | exposed in response | `httpapi/monitor.go` |
-| `runtime.RouteRunner` | `Started() <-chan struct{}` | Channel close | `Run()` entered | `runtime/route_runner.go` |
-| `runtime.RouteRunner` | `InFlight() int64` | Atomic counter | Per delivery enter/exit | `runtime/route_runner.go` |
-| `runtime.RouteRunner` | `IdleChanged() <-chan struct{}` | Channel close + swap | InFlight transitions → 0 | `runtime/route_runner.go` |
+| `runtime.RouteRunner` | `Started() <-chan struct{}` | Channel close | `Run()` entered | `runtime/route/runner.go` |
+| `runtime.RouteRunner` | `InFlight() int64` | Atomic counter | Per delivery enter/exit | `runtime/route/runner.go` |
+| `runtime.RouteRunner` | `IdleChanged() <-chan struct{}` | Channel close + swap | InFlight transitions → 0 | `runtime/route/runner.go` |
 | `runtime.RouteHealth` | `Ready bool` / `InFlight int` | Struct fields | From `DeepHealth()` | `runtime/bridge.go` |
-| `runtime.OutboxDrainer` | `IdleSince() (time.Time, bool)` | Atomic timestamp | Pending → empty transition | `runtime/outbox_drainer.go` |
-| `runtime.OutboxDrainer` | `WaitIdle(ctx, minQuiet) error` | Blocking wait | Continuously idle for `minQuiet` | `runtime/outbox_drainer.go` |
-| `runtime.SessionManager` | `LeaseStateChanged() <-chan LeaseStateEvent` | Event push | Acquire/renew/release/stepdown/loss | `runtime/session_manager.go` |
+| `runtime.OutboxDrainer` | `IdleSince() (time.Time, bool)` | Atomic timestamp | Pending → empty transition | `runtime/outbox/drainer.go` |
+| `runtime.OutboxDrainer` | `WaitIdle(ctx, minQuiet) error` | Blocking wait | Continuously idle for `minQuiet` | `runtime/outbox/drainer.go` |
+| `runtime.SessionManager` | `LeaseStateChanged() <-chan LeaseStateEvent` | Event push | Acquire/renew/release/stepdown/loss | `runtime/session/manager.go` |
 | `paho.Receiver` | `Started() <-chan struct{}` | Channel close | Handler registered on router | `adapters/mqtt/transport/paho/receiver.go` |
 | `paho.Session` | `Health()` / `Events()` | Poll + event | Connect/reconcile/disconnect | `adapters/mqtt/transport/paho/session.go` |
 | `http.SSESender` | `WaitClientConnected(ctx, n) error` | Blocking wait | N clients connected | `adapters/http/transport/sender_sse.go` |
-| `file.Watcher` | `Started() <-chan struct{}` | Channel close | fsnotify registered | `adapters/native/config/file/watcher.go` |
-| `file.Watcher` | `LastApplied() time.Time` | Atomic timestamp | Config successfully applied | `adapters/native/config/file/watcher.go` |
+| `file.Watcher` | `Started() <-chan struct{}` | Channel close | fsnotify registered | `adapters/native/config/file/acl_watcher.go` |
+| `file.Watcher` | `LastApplied() time.Time` | Atomic timestamp | Config successfully applied | `adapters/native/config/file/acl_watcher.go` |
 
 ## Integration-test content verification
 

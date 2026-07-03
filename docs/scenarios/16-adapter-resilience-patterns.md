@@ -59,11 +59,10 @@ sessions:
   - id: mqtt-session
     transport: mqtt
     options:
-      broker_urls: ["tcp://broker:1883"]
-      client_id: resilient-bridge
-      keep_alive: 30
-      # Timeout applies to both publish and subscribe operations.
-      # When 0, a 60s safety-net fallback is used.
+      session:
+        broker_urls: ["tcp://broker:1883"]
+        client_id: resilient-bridge
+        keep_alive: 30
 
 receivers:
   - id: sqs-in
@@ -76,26 +75,29 @@ receivers:
 senders:
   - id: mqtt-out
     transport: mqtt
-    session: mqtt-session
+    session_id: mqtt-session
     options:
-      qos: 1
-      # timeout defaults to 30s; 0 uses 60s safety-net
+      sender:
+        qos: 1
+        # timeout defaults to 30s; 0 uses 60s safety-net
+
+bindings:
+  - id: to-mqtt
+    sender_id: mqtt-out
+    address: devices/commands
 
 routes:
   - id: resilient-route
-    receiver: sqs-in
+    receiver_id: sqs-in
     delivery_mode: direct_hold
-    bindings: [mqtt-out]
-    processors:
-      - transform:
-          mappings:
-            - source: "$.data.value"
-              target: "value"
-      - circuitbreaker:
-          failure_threshold: 5
-          success_threshold: 2
-          reset_timeout: 30s
+    bindings: [to-mqtt]
+    processors: [transform, circuitbreaker]
 ```
+
+`processors` lists names, not inline config. `transform` and `circuitbreaker` are
+registered programmatically in Go (see [processors-and-stores.md](../processors-and-stores.md));
+the runtime resolves each name against the registry. There is no YAML surface for
+processor options.
 
 ## Resilience Behavior Summary
 

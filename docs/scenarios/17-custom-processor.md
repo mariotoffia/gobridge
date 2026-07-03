@@ -168,8 +168,9 @@ sessions:
   - id: mqtt-session
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: rate-bridge-01
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: rate-bridge-01
 
 receivers:
   - id: mqtt-in

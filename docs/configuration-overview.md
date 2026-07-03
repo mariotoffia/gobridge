@@ -98,11 +98,14 @@ flowchart TD
     V --> Merged["Merged BridgeConfig"]
 ```
 
-**Merge rules:**
-- `bridge` settings: overlay non-zero fields replace base
-- `config_watch`, `http`: overlay replaces base entirely if non-nil
-- `stores`: overlay replaces per-role (lease, outbox, dlq individually)
-- `sessions`, `receivers`, `senders`, `bindings`, `routes`: **merge by ID** -- matching IDs are replaced, new IDs are appended
+**Merge rules** (`config.DefaultMerge`):
+- `version`: overlay wins when non-zero; a zero overlay keeps the base version (it is an optimistic-concurrency counter, not reset to 0).
+- `bridge` settings: overlay non-empty scalar fields win field-level; `bridge.cluster` is replaced wholesale when the overlay sets it.
+- `config_watch`: overlay replaces base entirely if non-nil.
+- `stores`: overlay replaces per-role (lease, outbox, dlq individually).
+- `sessions`, `receivers`, `senders`, `bindings`: **merge by ID, field-level** -- new IDs are appended and a matching ID is merged field-by-field on top of the base entry. The base entry's typed plugin options (broker URLs, credentials) are **carried forward** unless the overlay changes the transport discriminator, so a partial patch (e.g. only `session_mode`) does not erase the plugin options the wire format drops (`json:"-"`).
+- `routes`: **merge by ID, wholesale** -- a matching route is replaced entirely (routes carry no plugin options, so nothing can be lost); new IDs are appended.
+- `http`: **merged field-level** (not wholesale) -- non-empty overlay scalars win, and the `admin_api_key` / `monitor_api_key` secrets are preserved when the overlay omits them or echoes back the `[REDACTED]` marker, so a partial patch cannot lock the operator out.
 
 ```go
 mgr := config.NewManager(
@@ -117,7 +120,10 @@ cfg, err := mgr.Load(ctx)
 
 ### 1. Declarative (YAML file)
 
-Write a YAML file and let the framework do the rest:
+Write a YAML file and let the framework do the rest. MQTT connection
+options are nested under `session:` (and `sender:` for publish defaults).
+Receivers, topics, and bindings inherit their transport from the referenced
+session and carry no connection details of their own.
 
 ```yaml
 bridge:
@@ -127,8 +133,9 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: bridge-01
+      session:
+        client_id: bridge-01
+        broker_urls: ["tcp://localhost:1883"]
 
 receivers:
   - id: sensor-in
@@ -141,8 +148,9 @@ senders:
   - id: sensor-out
     session_id: mqtt-conn
     options:
-      default_topic: archive/sensors
-      qos: 1
+      sender:
+        default_topic: archive/sensors
+        qos: 1
 
 bindings:
   - id: to-archive
@@ -186,8 +194,9 @@ sessions:
   - id: mqtt
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: minimal-bridge
+      session:
+        client_id: minimal-bridge
+        broker_urls: ["tcp://localhost:1883"]
 
 receivers:
   - id: in
@@ -199,7 +208,8 @@ senders:
   - id: out
     session_id: mqtt
     options:
-      default_topic: destination/all
+      sender:
+        default_topic: destination/all
 
 bindings:
   - id: fwd

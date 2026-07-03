@@ -80,9 +80,10 @@ sessions:
   - id: mqtt-tls
     transport: mqtt
     options:
-      broker_url: tls://mqtt.internal:8883
-      client_id: webhook-bridge-01
       credentials_uri: file://prod/mqtt/broker-creds
+      session:
+        broker_url: tls://mqtt.internal:8883
+        client_id: webhook-bridge-01
 
 receivers:
   - id: webhook-in
@@ -277,9 +278,10 @@ sessions:
   - id: mqtt-tls
     transport: mqtt
     options:
-      broker_url: tls://mqtt.internal:8883
-      client_id: webhook-bridge-01
       credentials_uri: pms://prod/mqtt/broker-creds
+      session:
+        broker_url: tls://mqtt.internal:8883
+        client_id: webhook-bridge-01
 ```
 
 ```go
@@ -310,8 +312,9 @@ sessions:
   - id: mqtt-tls
     transport: mqtt
     options:
-      broker_url: tls://mqtt.internal:8883
       credentials_uri: file://dev/mqtt/creds  # switch to pms:// in prod
+      session:
+        broker_url: tls://mqtt.internal:8883
 ```
 
 ### HTTP Receiver with SSE Fan-Out

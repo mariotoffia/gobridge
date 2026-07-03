@@ -67,18 +67,23 @@ tells the runtime where to find the bridge config and how to resolve secrets.
    file mounts are awkward.
 
 3. **Remote config store** -- Use the DynamoDB config loader or a custom
-   `config.Loader` implementation. The bridge config is fetched from a
+   `ports.Loader` implementation. The bridge config is fetched from a
    remote store at startup and watched for changes.
 
 ### Bootstrap Config Fields
 
-```yaml
-bridge_id: my-bridge
-config_file_path: /mnt/gobridge/bridge.yaml
-admin_api_key_param: /gobridge/admin-key
-poll_interval: 5s
-node_role: control
-topology: single
+The bootstrap loader reads **JSON** (from `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON`
+or the file named by `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`) — it is not YAML:
+
+```json
+{
+  "bridge_id": "my-bridge",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
+  "admin_api_key_param": "/gobridge/admin-key",
+  "poll_interval": "5s",
+  "node_role": "control",
+  "topology": "single"
+}
 ```
 
 | Field | Required | Default | Description |
@@ -156,7 +161,7 @@ flowchart LR
 ```json
 {
   "bridge_id": "production",
-  "config_file_path": "/mnt/efs/bridge.yaml",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
   "admin_api_key_param": "/gobridge/prod/admin-key",
   "monitor_api_key_param": "/gobridge/prod/monitor-key",
   "http_receiver_api_key_params": {
@@ -228,12 +233,15 @@ All health endpoints live on the monitor server (default `:8081`) and are
 | Endpoint | Purpose | Healthy | Unhealthy |
 |----------|---------|---------|-----------|
 | `GET /api/v1/monitor/health` | Overall health | 200 `{"status":"ok"}` | 503 `{"status":"unhealthy"}` |
-| `GET /api/v1/monitor/live` | Liveness probe | 200 `{"status":"alive"}` | Always 200 |
+| `GET /api/v1/monitor/live` | Liveness probe | 200 `{"status":"alive"}` | 503 `{"status":"terminal"}` once terminal |
 | `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready"}` | 503 `{"error":"not ready"}` |
 
 The `health` endpoint checks runtime state, session connectivity, and route
-health. The `live` endpoint always returns 200 -- it confirms the process is
-running. The bare `ready` endpoint returns 200 once the runtime is started
+health. The `live` endpoint returns 200 while the process is running and the
+runtime is still recoverable (including before the runtime is wired), and 503
+`{"status":"terminal"}` once the runtime has entered a terminal, unrecoverable
+state — so an orchestrator restarts the task instead of leaving it wedged. The
+bare `ready` endpoint returns 200 once the runtime is started
 and healthy; it does **not** guarantee transport sessions are connected or
 subscriptions acknowledged. Gate production traffic with the `?level=`
 parameter described under "Readiness levels" below.
@@ -279,15 +287,19 @@ headroom for transport and HTTP server cleanup.
 ```json
 {
   "healthCheck": {
-    "command": ["CMD-SHELL", "curl -f http://localhost:8081/api/v1/monitor/health || exit 1"],
+    "command": ["CMD", "/usr/local/bin/gobridge-filebased", "-healthcheck"],
     "interval": 10,
     "timeout": 5,
     "retries": 3,
-    "startPeriod": 30
+    "startPeriod": 60
   },
-  "stopTimeout": 45
+  "stopTimeout": 60
 }
 ```
+
+The image ships no shell, `curl`, or `wget`, so the health check invokes the
+binary's `-healthcheck` flag (which probes the local monitor `/live` endpoint).
+The CDK facades set `stopTimeout` to 60s; size it above `shutdown_timeout`.
 
 **Kubernetes Pod Spec:**
 
@@ -334,6 +346,21 @@ genuinely ready to carry traffic. An unknown level returns `400`.
 Set the orchestrator's stop/termination timeout higher than `shutdown_timeout`
 to give GoBridge enough time to drain before the orchestrator sends `SIGKILL`.
 
+### Kubernetes ConfigMap Config
+
+When the bridge config comes from a ConfigMap, mount the **volume** (not a
+`subPath`) and point `config_file_path` at the file inside it. Kubernetes
+updates a ConfigMap volume by writing a new timestamped directory and swapping
+the `..data` symlink atomically. The file watcher in `notify` mode watches the
+mount **directory**, so it sees the symlink swap; a `subPath` mount is a copy
+that Kubernetes **never** updates in place, so hot-reload will not fire. As a
+backstop the watcher re-hashes on a resync ticker (30s default) even in notify
+mode, which also covers network filesystems that drop inotify events.
+
+To serve the admin and monitor APIs over TLS, set `tls_cert_file` and
+`tls_key_file` under the config's `http` block. See
+[Configuration Reference](configuration-reference.md) for the field details.
+
 ## Observability
 
 GoBridge provides structured logging, metrics, and distributed tracing through
@@ -372,25 +399,26 @@ Two built-in adapters are available:
 | OTLP | `adapters/otel/metrics` | Any OTLP-compatible collector |
 
 The runtime emits metrics automatically when a `MetricsExporter` is
-registered. Key metrics include `bridge.delivery.latency`,
-`bridge.delivery.success`, `bridge.delivery.error`, `bridge.inflight`,
-and `bridge.dlq.write`. See [Scenario 18: Observability](scenarios/18-observability.md)
+registered. Key metrics include `DeliveryE2ELatency`, `MessagesReceived`,
+`MessagesSent`, `RouteErrors`, `DLQEntries`, and `OutboxDepth`. See
+[Scenario 18: Observability](scenarios/18-observability.md)
 for the full metrics table and Go bootstrap code.
 
 ### Distributed Tracing
 
-The OTLP tracing adapter creates spans around each message delivery with
-attributes for `route_id`, `envelope_id`, and `subject`. W3C `traceparent`
-headers are propagated through the bridge. Use a sampling ratio of 0.1
-(10%) in production to control costs.
+The runtime creates a `bridge.handleDelivery` span around each message delivery
+with attributes for `route_id`, `envelope_id`, and (when an ingress
+`traceparent` is present) `trace_id`. W3C `traceparent` headers are propagated
+through the bridge. Use a sampling ratio of 0.1 (10%) in production to control
+costs.
 
 ### Recommended Alerts
 
 | Alert | Condition | Severity |
 |-------|-----------|----------|
 | Bridge unhealthy | Health check failing > 1 min | Critical |
-| High error rate | `MessagesFailed` / `MessagesProcessed` > 5% | High |
-| DLQ growing | DLQ depth > 100 | High |
+| High error rate | `RouteErrors` / `MessagesReceived` > 5% | High |
+| DLQ growing | `DLQEntries` sum > 100 | High |
 | Config reload failure | Reload rejected | Medium |
 | Circuit breaker open | State = open > 5 min | Medium |
 
@@ -433,11 +461,12 @@ Add more replicas with `filesystem_replicated` topology when a single instance
 cannot handle the throughput. Each replica processes messages independently
 from the shared config file:
 
-```yaml
-# Bootstrap config for each replica
-topology: filesystem_replicated
-config_file_path: /mnt/shared/bridge.yaml
-poll_interval: 5s
+```json
+{
+  "topology": "filesystem_replicated",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
+  "poll_interval": "5s"
+}
 ```
 
 When using SQS as the source, horizontal scaling works naturally -- each

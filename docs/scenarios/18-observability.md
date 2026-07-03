@@ -100,8 +100,9 @@ sessions:
   - id: mqtt-session
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: observable-01
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: observable-01
 
 receivers:
   - id: mqtt-in
@@ -141,14 +142,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/observability"
-	"github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/ports"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	sqs  "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
@@ -195,19 +197,30 @@ func main() {
 	}
 
 	// --- Bridge ---
-	cfg, err := config.ParseFile("bridge.yaml", config.FormatAuto)
+	// The parser needs a plugin registry to decode each transport's
+	// options block. Register the same transports you wire below.
+	reg := ports.NewRegistry()
+	if err := errors.Join(
+		paho.Register(reg),
+		sqs.Register(reg),
+	); err != nil {
+		logger.Error("failed to register plugin decoders", "error", err)
+		os.Exit(1)
+	}
+
+	cfg, err := parser.ParseFile("bridge.yaml", parser.FormatAuto, reg)
 	if err != nil {
 		logger.Error("failed to parse config", "error", err)
 		os.Exit(1)
 	}
 
 	rt, err := bridge.NewBuilder(cfg,
-		runtime.WithLogger(logger),
-		runtime.WithMetrics(metrics),
-		runtime.WithTracer(tracer),
+		bridge.WithLogger(logger),
+		bridge.WithMetrics(metrics),
+		bridge.WithTracer(tracer),
 	).
-		RegisterTransport("mqtt", paho.NewFactory()).
-		RegisterTransport("sqs", sqs.NewFactory()).
+		RegisterTransport("mqtt", paho.NewFactory(logger)).
+		RegisterTransport("sqs", sqs.NewFactory(logger)).
 		Build(ctx)
 	if err != nil {
 		logger.Error("failed to build runtime", "error", err)
@@ -268,8 +281,7 @@ Replace the OTel metrics exporter with the CloudWatch adapter:
 ```go
 import cwmetrics "github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch"
 
-metrics, err := cwmetrics.New(ctx,
-    cwmetrics.WithNamespace("GoBridge"),
+metrics, err := cwmetrics.New(ctx, "GoBridge",
     cwmetrics.WithRegion("us-west-1"),
 )
 ```

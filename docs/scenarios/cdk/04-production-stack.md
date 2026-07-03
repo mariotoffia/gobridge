@@ -13,7 +13,7 @@ You are deploying GoBridge to handle **business-critical messages** with defined
 SLA requirements. Operators need dashboards, alarms, and structured logs to
 diagnose issues without SSH access. Specific requirements:
 
-- **99.9% uptime** -- multi-AZ Fargate tasks with auto-scaling.
+- **99.9% uptime** -- multi-AZ Fargate tasks with worker autoscaling (cluster facade).
 - **Alerting within 5 minutes** -- CloudWatch alarms fire to SNS, routing to
   PagerDuty or Slack.
 - **Audit trail** -- structured JSON logs retained for 30 days.
@@ -85,8 +85,9 @@ taskRole.AddToPrincipalPolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementP
 }))
 ```
 
-The `GoBridgeService` construct automatically grants `elasticfilesystem:ClientMount`
-and `elasticfilesystem:ClientRead` on the EFS filesystem.
+The GoBridge facade (single or cluster) automatically grants
+`elasticfilesystem:ClientMount` and `elasticfilesystem:ClientRead` on the EFS
+filesystem to its task roles.
 
 ### VPC Endpoints
 
@@ -122,14 +123,22 @@ Each interface endpoint costs ~$7.30/month. The S3 gateway endpoint is free.
 
 ## Auto-Scaling
 
-The `GoBridgeService` construct has built-in CPU target-tracking. Configure it:
+Autoscaling is a property of the **cluster** facade and applies to the worker
+service only (the control task is always a single EFS RW writer, `DesiredCount`
+hard-coded to 1). It is opt-in: pass `AutoScaling` on `ClusterProps`. When
+`TargetCPU` is 0 it defaults to 70. The single facade has no autoscaling.
 
 ```go
-svc := constructs.NewGoBridgeService(stack, jsii.String("Bridge"),
-    &constructs.GoBridgeServiceProps{
-        DesiredCount:       jsii.Number(2),
-        ScalingMaxCapacity: jsii.Number(8),
-        CpuTargetPercent:   jsii.Number(70),
+workers := float64(2)
+
+bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
+    &gobridgecluster.ClusterProps{
+        WorkerDesiredCount: &workers,
+        AutoScaling: &gobridgecluster.AutoScalingProps{
+            Min:       2,
+            Max:       8,
+            TargetCPU: 70,
+        },
         // ... other props
     },
 )
@@ -137,10 +146,10 @@ svc := constructs.NewGoBridgeService(stack, jsii.String("Bridge"),
 
 | Behavior | Detail |
 |----------|--------|
-| Scale out | Average CPU > 70% for 3 consecutive minutes; ~90s launch time |
-| Scale in | 5-minute cooldown to prevent flapping |
-| Min tasks | 2 -- ensures availability during deployments |
-| Max tasks | 8 -- prevents runaway scaling; adjust to your ceiling |
+| Scaling target | Worker service average ECS CPU utilization at `TargetCPU` (70%) |
+| Min workers | `AutoScaling.Min` (2) -- floor on the worker `DesiredCount` |
+| Max workers | `AutoScaling.Max` (8) -- ceiling on the worker `DesiredCount` |
+| Control task | Always 1 (not autoscaled) |
 
 ---
 
@@ -212,7 +221,7 @@ Reference them in the bootstrap config:
 
 ```go
 Bootstrap: infra.BootstrapConfig{
-    BridgeID: "gobridge-prod", ConfigFilePath: "/mnt/gobridge/bridge.yaml",
+    BridgeID: "gobridge-prod", ConfigFilePath: "/var/lib/gobridge/bridge.yaml",
     PollInterval: "5s", AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
     MonitorAPIKeyParam: "/gobridge/prod/monitor-api-key",
 },
@@ -382,7 +391,8 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    gobridge "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+    gobridgecluster "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
@@ -420,44 +430,55 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
         EnableKeyRotation: jsii.Bool(true),
     })
 
-    // --- GoBridge Service (auto-scaling, EFS, log retention built in) ---
-    svc := gobridge.NewGoBridgeService(stack, jsii.String("Bridge"),
-        &gobridge.GoBridgeServiceProps{
-            Vpc: vpc, ServiceName: "gobridge-prod",
+    // --- GoBridge cluster (control + autoscaled workers, EFS, log retention built in) ---
+    workers := float64(2)
+    src := gobridgecdk.BridgeYamlAsset("bridge.yaml")
+    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
+        &gobridgecluster.ClusterProps{
+            Vpc: vpc,
             Image: awsecs.ContainerImage_FromRegistry(
                 jsii.String("123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"), nil,
             ),
             Bootstrap: infra.BootstrapConfig{
-                BridgeID: "gobridge-prod", ConfigFilePath: "/mnt/gobridge/bridge.yaml",
+                BridgeID: "gobridge-prod", ConfigFilePath: "/var/lib/gobridge/bridge.yaml",
                 PollInterval: "5s", AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
                 MonitorAPIKeyParam: "/gobridge/prod/monitor-api-key",
+                Topology: infra.TopologyFilesystemReplicated,
+                // Publish runtime metrics to CloudWatch (grants PutMetricData
+                // scoped to the namespace).
+                MetricsExporter: "cloudwatch",
             },
-            CPU: jsii.Number(512), MemoryMiB: jsii.Number(1024),
-            DesiredCount: jsii.Number(2), ScalingMaxCapacity: jsii.Number(8),
-            CpuTargetPercent: jsii.Number(70), LogRetention: awslogs.RetentionDays_ONE_MONTH,
-            SsmParameterArns: []*string{
-                jsii.String("arn:aws:ssm:*:*:parameter/gobridge/prod/*"),
+            BridgeConfig:       src,
+            CPU:                jsii.Number(512),
+            MemoryMiB:          jsii.Number(1024),
+            WorkerDesiredCount: &workers,
+            AutoScaling: &gobridgecluster.AutoScalingProps{
+                Min: 2, Max: 8, TargetCPU: 70,
             },
-            Exposure: infra.Exposure{Admin: true, Monitor: true},
+            LogRetention: awslogs.RetentionDays_ONE_MONTH,
         },
     )
 
-    // --- IAM: KMS decrypt + X-Ray ---
-    svc.TaskDefinition().TaskRole().AddToPrincipalPolicy(
-        awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
-            Actions:   &[]*string{jsii.String("kms:Decrypt")},
-            Resources: &[]*string{kmsKey.KeyArn()},
-        }),
-    )
-    svc.TaskDefinition().TaskRole().AddToPrincipalPolicy(
-        awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
-            Actions: &[]*string{
-                jsii.String("xray:PutTraceSegments"), jsii.String("xray:PutTelemetryRecords"),
-                jsii.String("xray:GetSamplingRules"), jsii.String("xray:GetSamplingTargets"),
-            },
-            Resources: &[]*string{jsii.String("*")},
-        }),
-    )
+    // --- IAM: KMS decrypt + X-Ray on BOTH task roles ---
+    for _, td := range []awsecs.FargateTaskDefinition{
+        bridge.ControlTaskDefinition(), bridge.WorkerTaskDefinition(),
+    } {
+        td.TaskRole().AddToPrincipalPolicy(
+            awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+                Actions:   &[]*string{jsii.String("kms:Decrypt")},
+                Resources: &[]*string{kmsKey.KeyArn()},
+            }),
+        )
+        td.TaskRole().AddToPrincipalPolicy(
+            awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+                Actions: &[]*string{
+                    jsii.String("xray:PutTraceSegments"), jsii.String("xray:PutTelemetryRecords"),
+                    jsii.String("xray:GetSamplingRules"), jsii.String("xray:GetSamplingTargets"),
+                },
+                Resources: &[]*string{jsii.String("*")},
+            }),
+        )
+    }
 
     // --- X-Ray sampling rule ---
     awsxray.NewCfnSamplingRule(stack, jsii.String("Sampling"),
@@ -491,7 +512,7 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
         }),
         awscloudwatch.NewAlarm(stack, jsii.String("CPU"), &awscloudwatch.AlarmProps{
             AlarmName: jsii.String("GoBridge-HighCPU"),
-            Metric: svc.Service().MetricCpuUtilization(nil),
+            Metric: bridge.WorkerService().(awsecs.BaseService).MetricCpuUtilization(nil),
             Threshold: jsii.Number(80), EvaluationPeriods: jsii.Number(3),
             ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
         }),
@@ -522,8 +543,8 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
         awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
             Title: jsii.String("ECS Health"), Width: jsii.Number(12),
             Left: &[]awscloudwatch.IMetric{
-                svc.Service().MetricCpuUtilization(nil),
-                svc.Service().MetricMemoryUtilization(nil),
+                bridge.WorkerService().(awsecs.BaseService).MetricCpuUtilization(nil),
+                bridge.WorkerService().(awsecs.BaseService).MetricMemoryUtilization(nil),
             },
         }),
     )

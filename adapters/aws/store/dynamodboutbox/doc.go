@@ -10,10 +10,10 @@
 // and supports fan-out (same envelope to different bindings).
 //
 // GSIs:
-//   - StatusIndex: PK=status, SK=created_at (for expire sweeps)
-//   - ClaimedByIndex: PK=claimed_by, SK=claimed_at (for crash recovery)
+//   - ExpiryIndex: PK=has_expiry (sparse), SK=expires_at (for expire sweeps;
+//     only expiry-carrying records enter the index)
 //   - RecordIDIndex: PK=record_id (for Complete record lookup)
 //
-// See ARCHITECTURE_NEW-STORES.md for table schema, GSI design, and
-// operational guidance.
+// See docs/runbooks/dynamodb-outbox-gsi-migration.md for migrating
+// tables created with the former StatusIndex/ClaimedByIndex layout.
 package dynamodboutbox

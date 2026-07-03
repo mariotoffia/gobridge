@@ -84,11 +84,14 @@ func (c *Config) ApplyCredentials(_ *connectivity.CredentialSet) error {
 // Kind reports the registry discriminator.
 func (Config) Kind() string { return "aws.sqs" }
 
-// Validate checks for required fields and consistency.
+// Validate checks field ranges and internal consistency. It runs at
+// parse time on EVERY attachment point that reuses this Config shape
+// (receiver, sender, binding override), so it deliberately does not
+// require a queue reference: a binding carries only overrides and a
+// receiver/sender may leave the queue to its own spec. Completeness
+// (queue_url or queue_name) is enforced by ValidateQueue at the
+// points that actually build a Receiver/Sender.
 func (c Config) Validate() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either queue_url or queue_name is required")
-	}
 	if c.MaxMessages < 0 || c.MaxMessages > 10 {
 		return errors.New("sqs: max_messages must be in [1,10]")
 	}
@@ -115,6 +118,17 @@ func (c Config) Validate() error {
 	}
 	if c.PollBackoffInitial > 0 && c.PollBackoffMax > 0 && c.PollBackoffMax < c.PollBackoffInitial {
 		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
+	}
+	return nil
+}
+
+// ValidateQueue enforces that the config carries a queue reference.
+// Called where a concrete Receiver/Sender is built from this Config
+// (factory, CDK bridgecfg builder) — not from Validate, which also
+// runs on binding overrides that legitimately omit the queue.
+func (c Config) ValidateQueue() error {
+	if c.QueueURL == "" && c.QueueName == "" {
+		return errors.New("sqs: either queue_url or queue_name is required")
 	}
 	return nil
 }

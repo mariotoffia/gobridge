@@ -182,11 +182,14 @@ func stableArgs(args map[string]any) string {
 // Validate checks the unified config. Empty role-specific fields are
 // allowed because the same Config is reused across all three specs
 // and not all roles are populated for each spec.
+// Validate checks field ranges and internal consistency. It runs at
+// parse time on EVERY attachment point that reuses this Config shape
+// (session, receiver, sender, binding override), so it deliberately
+// does not require connection or entity identity: a binding carries
+// only overrides, and an empty sender.exchange is the default
+// exchange. The factory enforces role-specific completeness
+// (session.broker_url, receiver queue) at build time.
 func (c Config) Validate() error {
-	if c.Session.BrokerURL == "" && c.Receiver.QueueName == "" && c.Sender.Exchange == "" &&
-		c.Subscription.Exchange == "" && c.Publisher.Exchange == "" {
-		return errors.New("amqp091: at least one of session.broker_url, receiver.queue_name, sender.exchange, subscription.exchange, or publisher.exchange must be set")
-	}
 	if c.Session.BrokerURL != "" {
 		if err := c.Session.validate(); err != nil {
 			return err

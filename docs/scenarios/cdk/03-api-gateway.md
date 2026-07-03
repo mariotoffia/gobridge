@@ -44,7 +44,7 @@ Key observations:
   (8081) traffic. The NLB serves only the transport port (8082) for API Gateway.
 - **VPC Link** -- Connects the public API Gateway to the private NLB without
   exposing the NLB to the internet.
-- **EFS** -- Bridge configuration is mounted at `/mnt/gobridge` as in
+- **EFS** -- Bridge configuration is mounted at `/var/lib/gobridge` as in
   previous scenarios.
 
 ## Why API Gateway
@@ -185,8 +185,8 @@ https://api.example.com/v1/transport/http/receivers/{id}/messages
 
 ## Complete CDK Code
 
-Below is the full stack combining `GoBridgeService`, NLB, VPC Link, REST API,
-usage plans, and custom domain.
+Below is the full stack combining the `GoBridgeSingle` facade, NLB, VPC Link,
+REST API, usage plans, and custom domain.
 
 ```go
 package main
@@ -203,7 +203,8 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    gbcdk "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
@@ -221,34 +222,23 @@ func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
         VpcId: jsii.String("vpc-0abc1234def56789a"),
     })
 
-    // --- GoBridge Fargate service ---
+    // --- GoBridge single facade (auto-creates EFS, cluster, seeder) ---
 
-    efsConfig := gbcdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
-        &gbcdk.GoBridgeEfsConfigProps{Vpc: vpc},
-    )
-
-    svc := gbcdk.NewGoBridgeService(stack, jsii.String("Bridge"),
-        &gbcdk.GoBridgeServiceProps{
-            Vpc:         vpc,
-            EfsConfig:   efsConfig,
-            ServiceName: "gobridge-api",
+    bridge := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"),
+        &gobridgesingle.SingleProps{
+            Vpc: vpc,
             Image: awsecs.ContainerImage_FromRegistry(
                 jsii.String("123456789012.dkr.ecr.us-west-1.amazonaws.com/gobridge:latest"),
                 nil,
             ),
             Bootstrap: infra.BootstrapConfig{
                 BridgeID:         "gobridge-api",
-                ConfigFilePath:   "/mnt/gobridge/bridge.yaml",
+                ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
                 AdminAPIKeyParam: "/gobridge/admin-api-key",
             },
-            Exposure: infra.Exposure{
-                Admin:         true,
-                Monitor:       true,
-                TransportHTTP: true,
-            },
+            BridgeConfig: gobridgecdk.BridgeYamlAsset("bridge.yaml"),
             CPU:          jsii.Number(1024),
             MemoryMiB:    jsii.Number(2048),
-            DesiredCount: jsii.Number(2),
         },
     )
 
@@ -269,10 +259,12 @@ func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
         },
     )
 
+    // The facade exposes the control ECS service via ControlService(); a
+    // BaseService is itself an INetworkLoadBalancerTarget.
     nlbListener.AddTargets(jsii.String("TransportTG"),
         &elbv2.AddNetworkTargetsProps{
             Port:    jsii.Number(8082),
-            Targets: &[]elbv2.INetworkLoadBalancerTarget{svc.Service()},
+            Targets: &[]elbv2.INetworkLoadBalancerTarget{bridge.ControlService().(awsecs.BaseService)},
             HealthCheck: &elbv2.HealthCheck{
                 Port:     jsii.String("8081"),
                 Protocol: elbv2.Protocol_HTTP,
@@ -399,16 +391,17 @@ func main() {
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | VPC lookup | `Vpc_FromLookup` | Import existing VPC by ID |
-| GoBridge service | `NewGoBridgeService` | Fargate task with EFS, SSM, auto-scaling |
+| GoBridge service | `NewGoBridgeSingle` | Fargate task with EFS, SSM, config seeder |
 | NLB + target group | `NewNetworkLoadBalancer` | Internal NLB on port 8082, health check on 8081 |
 | VPC Link | `NewVpcLink` | Connects API Gateway to the private NLB |
 | REST API + proxy | `NewRestApi`, `AddProxy` | Catches all paths, requires API key |
 | Usage plan | `AddUsagePlan` | 50 req/s rate, 100 burst, 10K/day quota |
 | Custom domain | `NewDomainName`, `NewARecord` | ACM cert + Route 53 alias for `api.example.com` |
 
-The `Exposure` struct enables port 8082 on the container. Without
-`TransportHTTP: true`, the container would not map that port and the NLB
-health checks would fail.
+The facade maps the transport HTTP port (8082) on the container by default, so
+the NLB target on 8082 with the health check on 8081 lines up out of the box.
+The single facade runs one task and has no autoscaling; use the cluster facade
+([Scenario 5](05-multi-bridge-cluster.md)) when you need multiple replicas.
 
 ## Testing
 

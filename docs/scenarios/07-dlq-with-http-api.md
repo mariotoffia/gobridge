@@ -48,8 +48,9 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.example.com:1883
-      client_id: dlq-bridge-01
+      session:
+        broker_url: tcp://mqtt.example.com:1883
+        client_id: dlq-bridge-01
 
 receivers:
   - id: mqtt-in
@@ -338,7 +339,6 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-dlq
-      region: us-west-1
 ```
 
 ```go

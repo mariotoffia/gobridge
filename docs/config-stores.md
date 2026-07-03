@@ -50,15 +50,16 @@ classDiagram
     Manager o-- Watcher : watches all layers
 ```
 
-Configuration loader/watcher contracts are owned by the `config` package
-because their signatures intrinsically depend on `*config.BridgeConfig`.
-Adapters and external consumers implement these directly:
+The loader/watcher contracts live in `ports` (`ports/blueprint_loader.go`) and
+operate on `*ports.BridgeConfig`. Adapters and external consumers implement them
+directly; the `config` package owns only the orchestration and on-disk write path:
 
-| Package | Types | Used by |
-|---------|-------|---------|
-| `config` | `Loader`, `Watcher`, `Reloader` | Adapters, `Manager`, external consumers |
+| Package | Types | Role |
+|---------|-------|------|
+| `ports` | `Loader`, `Watcher`, `Reloader`, `BridgeConfig` | Contracts implemented by adapters, consumed by `Manager` and `httpapi` |
+| `config` | `Manager`, `Layer`, `MergeFunc`, `DefaultMerge`, `WriteFile` | Layered orchestration, merge strategy, atomic file persistence |
 
-This keeps `ports` free of any `config` dependency.
+This keeps the contracts free of any `config` dependency.
 
 ---
 
@@ -71,9 +72,15 @@ Reads a YAML or JSON configuration file from disk. Format is auto-detected from 
 ### API
 
 ```go
-import fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+import (
+    fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+    "github.com/mariotoffia/gobridge/ports"
+)
 
-source := fileconfig.NewSource("bridge.yaml")
+// registry carries the plugin decoders (transports, stores, processors) that
+// decode each options block. It is a required argument; build it once at the
+// composition root and register each adapter's decoder.
+source := fileconfig.NewSource("bridge.yaml", registry)
 cfg, err := source.Load(ctx)
 ```
 
@@ -81,13 +88,13 @@ cfg, err := source.Load(ctx)
 
 | Option | Description |
 |--------|-------------|
-| `WithSourceFormat(f)` | Override format auto-detection (`config.FormatYAML`, `config.FormatJSON`) |
+| `WithSourceFormat(f)` | Override format auto-detection (`parser.FormatYAML`, `parser.FormatJSON`) |
 
 ### Behaviour
 
-- Implements `config.Loader` (load only, no watch).
-- Maximum file size: **4 MiB** (enforced by `config.ParseFile`).
-- Returns `*config.BridgeConfig` on success.
+- Implements `ports.Loader` (load only, no watch).
+- Maximum file size: **4 MiB** (enforced by `parser.ParseFile`).
+- Returns `*ports.BridgeConfig` on success.
 - Honours the caller's `context`: a cancelled context short-circuits before any filesystem work.
 - A missing file surfaces as `shared.ErrNotFound`; parse errors pass through with the parser's file/stage annotation.
 
@@ -102,12 +109,12 @@ Watches a configuration file for changes and re-parses it when modifications are
 ### API
 
 ```go
-watcher := fileconfig.NewWatcher("bridge.yaml",
+watcher := fileconfig.NewWatcher("bridge.yaml", registry,
     fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
     fileconfig.WithLogger(logger),
 )
 ch, err := watcher.Watch(ctx)
-// ch receives *config.BridgeConfig on each detected change
+// ch receives *ports.BridgeConfig on each detected change
 ```
 
 ### Options
@@ -130,7 +137,7 @@ ch, err := watcher.Watch(ctx)
 
 ### Behaviour
 
-- Implements `config.Watcher` (watch only, no initial load).
+- Implements `ports.Watcher` (watch only, no initial load).
 - The initial config is **not** emitted on the channel; use `Source.Load` for the first load.
 - Invalid configs (parse failures) are logged and dropped -- never emitted.
 - Call `Stop()` to halt watching. The channel is closed on stop or context cancellation.
@@ -188,7 +195,18 @@ err = loader.EnsureTable(ctx)
 |--------|-------------|---------|
 | `WithTableName(name)` | DynamoDB table name | `"gobridge-config"` |
 | `WithBridgeID(id)` | Bridge identifier (partition key prefix) | `"default"` |
-| `WithPollInterval(d)` | Watch polling interval | `30s` |
+| `WithPollInterval(d)` | Watch polling interval in `ModePoll` | `30s` |
+| `WithWatchMode(m)` | `ModePoll` or `ModeStreams` change detection | `ModePoll` |
+| `WithStreamPollInterval(d)` | GetRecords interval in `ModeStreams` | — |
+| `WithStreamsClient(c)` | DynamoDB Streams client (required for `ModeStreams`) | `nil` |
+| `WithRegistry(r)` | Plugin registry used to decode the stored config's options blocks | `nil` |
+
+### Watch Modes
+
+| Mode | Mechanism | Notes |
+|------|-----------|-------|
+| **Poll** (default) | One strongly-consistent `GetItem` per instance per interval, comparing the `version` attribute | Predictable cost; use for clustered deployments |
+| **Streams** | DynamoDB Streams `GetRecords`, sub-second propagation | Streams throughput is ~5 `GetRecords`/sec per shard **shared across all consumers**; falls back to `ModePoll` (with a warning) when a streams client is absent or streams are not enabled on the table |
 
 ### Table Schema
 
@@ -203,19 +221,19 @@ The table uses **pay-per-request** billing. `EnsureTable` creates the table idem
 
 ### Behaviour
 
-- Implements `config.Loader` and `config.Reloader`.
-- **Load**: `GetItem` by PK/SK, parse JSON from `data` attribute, track `version`.
-- **Watch**: Polls `version` attribute only (projected read, minimal RCU). Full item is loaded only when the version changes. Channel is closed on context cancellation.
+- Implements `ports.Loader` and `ports.Reloader`.
+- **Load**: `GetItem` by PK/SK (strongly consistent), parse JSON from `data` attribute, track `version`.
+- **Watch** (`ModePoll`): a strongly-consistent `GetItem` at each poll interval compares the `version` attribute; the full item is re-parsed only when the version changes. `ModeStreams` consumes Streams records instead. Channel is closed on context cancellation.
 - **Save**: Marshals `BridgeConfig` to JSON, `PutItem` with incremented `version`.
-- Returns `domain.ErrNotFound` when no config item exists.
+- Returns `shared.ErrNotFound` when no config item exists.
 - The initial config is **not** emitted on the watch channel.
 
 ### Cost Characteristics
 
 | Operation | DynamoDB Cost |
 |-----------|---------------|
-| Watch poll (no change) | ~0.5 RCU per poll (projected `version` only) |
-| Watch poll (change detected) | ~0.5 RCU + full item read |
+| Watch poll (no change) | ~1 RCU per poll (strongly-consistent read of the item, ≤ 4 KB) |
+| Watch poll (change detected) | ~1 RCU + full item re-parse |
 | Save | 1 WCU per save |
 
 ---
@@ -273,7 +291,7 @@ type Layer struct {
 
 ### Behaviour
 
-- Implements both `config.Loader` and `config.Watcher`.
+- Implements both `ports.Loader` and `ports.Watcher`.
 - **Load**: Loads base, then each overlay in order. Merges with `MergeFunc`. Validates merged result. Individual layers are not validated independently (a layer may be intentionally incomplete).
 - **Watch**: Starts watchers on all layers that have one. On any layer change, updates the cached layer config, re-merges all layers, validates, and emits. Invalid merged configs are logged and dropped.
 - **Rebuild**: When a layer changes, other layers use their cached configs (no redundant re-loads).
@@ -297,14 +315,15 @@ flowchart TD
 **Example: File base + DynamoDB overlay**
 
 ```go
-fileSource := fileconfig.NewSource("defaults.yaml")
-fileWatcher := fileconfig.NewWatcher("defaults.yaml",
+fileSource := fileconfig.NewSource("defaults.yaml", registry)
+fileWatcher := fileconfig.NewWatcher("defaults.yaml", registry,
     fileconfig.WithMode(fileconfig.ModePoll),
     fileconfig.WithPollInterval(30*time.Second),
 )
 
 ddbLoader := ddbconfig.NewLoader(ddbClient,
     ddbconfig.WithBridgeID("staging"),
+    ddbconfig.WithRegistry(registry),
 )
 
 mgr := config.NewManager(
@@ -355,21 +374,21 @@ See [Credentials & HTTP API](credentials-and-http-api.md) for authentication and
 
 ## Custom Configuration Sources
 
-Implement the `config.Loader` and optionally `config.Watcher` interfaces:
+Implement the `ports.Loader` and optionally `ports.Watcher` interfaces:
 
 ```go
 type Loader interface {
-    Load(ctx context.Context) (*config.BridgeConfig, error)
+    Load(ctx context.Context) (*ports.BridgeConfig, error)
 }
 
 type Watcher interface {
-    Watch(ctx context.Context) (<-chan *config.BridgeConfig, error)
+    Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 }
 ```
 
 **Guidelines:**
 
-- `Load` must return a fully parsed `*config.BridgeConfig`.
+- `Load` must return a fully parsed `*ports.BridgeConfig`.
 - `Watch` must not emit the initial config -- callers use `Load` for the first read.
 - The watch channel should be closed when the context is cancelled.
 - Invalid configs should be logged and dropped, not emitted on the channel.
@@ -378,12 +397,15 @@ type Watcher interface {
 **Example: Consul-backed loader (sketch)**
 
 ```go
-type ConsulLoader struct { /* ... */ }
+type ConsulLoader struct {
+    client   *consulapi.Client
+    registry *ports.Registry
+}
 
-func (l *ConsulLoader) Load(ctx context.Context) (*config.BridgeConfig, error) {
+func (l *ConsulLoader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
     kv, _, err := l.client.KV().Get("gobridge/config", nil)
     if err != nil { return nil, err }
-    return config.Parse(bytes.NewReader(kv.Value), config.FormatJSON)
+    return parser.Parse(bytes.NewReader(kv.Value), parser.FormatJSON, l.registry)
 }
 ```
 

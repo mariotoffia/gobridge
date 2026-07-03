@@ -57,8 +57,9 @@ sessions:
   - id: mqtt
     transport: mqtt
     options:
-      broker_url: tcp://localhost:1883
-      client_id: dynamic-01
+      session:
+        broker_url: tcp://localhost:1883
+        client_id: dynamic-01
 
 receivers:
   - id: in
@@ -70,7 +71,8 @@ senders:
   - id: out
     session_id: mqtt
     options:
-      default_topic: processed/events
+      sender:
+        default_topic: processed/events
 
 bindings:
   - id: fwd

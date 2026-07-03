@@ -57,10 +57,13 @@ func (Config) Kind() string { return "amqp.amqp10" }
 // Validate checks required fields per role. Empty role-specific
 // fields are allowed because the same Config is reused across all
 // three specs and not all roles are populated for each spec.
+// Validate checks field ranges and consistency. It runs at parse time
+// on EVERY attachment point that reuses this Config shape (session,
+// receiver, sender, binding override), so it deliberately does not
+// require an address: a binding carries only overrides. The factory
+// enforces role-specific completeness (session, receiver, and sender
+// addresses) at build time.
 func (c Config) Validate() error {
-	if c.Session.Address == "" && c.Receiver.Address == "" && c.Sender.Address == "" {
-		return errors.New("amqp10: at least one of session.address, receiver.address, or sender.address is required")
-	}
 	if c.Session.Address != "" {
 		if err := c.Session.validate(); err != nil {
 			return err

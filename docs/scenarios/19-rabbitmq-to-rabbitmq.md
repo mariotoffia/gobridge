@@ -44,8 +44,9 @@ sessions:
   - id: rabbit-conn
     transport: amqp091
     options:
-      broker_url: "amqp://guest:guest@localhost:5672/"
-      heartbeat: "10s"
+      session:
+        broker_url: "amqp://guest:guest@localhost:5672/"
+        heartbeat: "10s"
 
 receivers:
   - id: order-in
@@ -54,26 +55,29 @@ receivers:
     topics:
       - topic: "order-events"
         options:
-          exchange: "orders"
-          exchange_type: "direct"
-          routing_key: "new"
-          durable: true
+          subscription:
+            exchange: "orders"
+            exchange_type: "direct"
+            routing_key: "new"
+            durable: true
     options:
-      queue_name: "order-events"
-      prefetch_count: 20
+      receiver:
+        queue_name: "order-events"
+        prefetch_count: 20
 
 senders:
   - id: analytics-out
     transport: amqp091
     session_id: rabbit-conn
     options:
-      exchange: "analytics"
-      routing_key: "order"
+      sender:
+        exchange: "analytics"
+        routing_key: "order"
 
 bindings:
   - id: to-analytics
     sender_id: analytics-out
-    address: analytics-events
+    address: order
 
 routes:
   - id: forward
@@ -88,14 +92,14 @@ routes:
 ### Session
 
 - **`transport: amqp091`** -- Uses the RabbitMQ (AMQP 0-9-1) transport adapter.
-- **`broker_url`** -- Standard AMQP URI with credentials. Supports `amqps://` for TLS.
-- **`heartbeat: 10s`** -- The connection heartbeat interval. RabbitMQ uses this to detect dead connections.
+- **`session.broker_url`** -- Standard AMQP URI with credentials. Supports `amqps://` for TLS. All connection knobs live under the nested `session:` block.
+- **`session.heartbeat: 10s`** -- The connection heartbeat interval. RabbitMQ uses this to detect dead connections.
 
 Both receiver and sender share this session, which means one TCP connection and one reconnect loop for both.
 
 ### Topology Declaration
 
-The `topics[].options` block tells the session what to declare during `Reconcile`:
+The `topics[].options.subscription` block tells the session what to declare during `Reconcile`:
 
 | Field | Value | Purpose |
 |-------|-------|---------|
@@ -113,13 +117,14 @@ After a reconnect, it redeclares the same topology. This is safe -- RabbitMQ tre
 
 ### Receiver
 
-- **`queue_name: order-events`** -- Consume from this queue.
-- **`prefetch_count: 20`** -- The broker pushes up to 20 unacknowledged messages to the consumer. Higher values increase throughput at the cost of memory.
+- **`receiver.queue_name: order-events`** -- Consume from this queue.
+- **`receiver.prefetch_count: 20`** -- The broker pushes up to 20 unacknowledged messages to the consumer. Higher values increase throughput at the cost of memory. Omitting it applies the bounded default of `10` (a zero prefetch is treated as this default, never "unlimited").
 
 ### Sender
 
-- **`exchange: analytics`** -- Publish to this exchange. The exchange must already exist or be declared by another session topic.
-- **`routing_key: order`** -- Used to route the published message.
+- **`sender.exchange: analytics`** -- Publish to this exchange. The exchange must already exist or be declared by another session topic.
+- **`sender.routing_key: order`** -- The fallback routing key used only when a binding provides no `address`. Here the `to-analytics` binding sets `address: order`, and the binding address *is* the AMQP routing key (it takes precedence over `sender.routing_key`). The binding carries only its `address`; transport settings live on the sender.
+
 
 ## Component Relationship
 
@@ -162,12 +167,13 @@ sessions:
   - id: rabbit-conn
     transport: amqp091
     options:
-      broker_url: "amqps://rabbit.example.com:5671/"
-      tls:
-        enable: true
-        ca_cert_file: /etc/certs/ca.pem
-        cert_file: /etc/certs/client.pem
-        key_file: /etc/certs/client.key
+      session:
+        broker_url: "amqps://rabbit.example.com:5671/"
+        tls:
+          enable: true
+          ca_cert_file: /etc/certs/ca.pem
+          cert_file: /etc/certs/client.pem
+          key_file: /etc/certs/client.key
 ```
 
 ### Virtual Hosts
@@ -179,8 +185,9 @@ sessions:
   - id: rabbit-conn
     transport: amqp091
     options:
-      broker_url: "amqp://guest:guest@localhost:5672/"
-      vhost: "/production"
+      session:
+        broker_url: "amqp://guest:guest@localhost:5672/"
+        vhost: "/production"
 ```
 
 ### Fanout Exchange
@@ -195,11 +202,13 @@ receivers:
     topics:
       - topic: "broadcast-queue"
         options:
-          exchange: "events"
-          exchange_type: "fanout"
-          durable: true
+          subscription:
+            exchange: "events"
+            exchange_type: "fanout"
+            durable: true
     options:
-      queue_name: "broadcast-queue"
+      receiver:
+        queue_name: "broadcast-queue"
 ```
 
 With a fanout exchange, the `routing_key` is ignored. Every queue bound to the exchange receives a copy.
@@ -214,12 +223,14 @@ receivers:
     topics:
       - topic: "order-updates"
         options:
-          exchange: "events"
-          exchange_type: "topic"
-          routing_key: "order.*.updated"
-          durable: true
+          subscription:
+            exchange: "events"
+            exchange_type: "topic"
+            routing_key: "order.*.updated"
+            durable: true
     options:
-      queue_name: "order-updates"
+      receiver:
+        queue_name: "order-updates"
 ```
 
 RabbitMQ topic exchanges support `*` (one word) and `#` (zero or more words) wildcards in routing keys.

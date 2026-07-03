@@ -67,9 +67,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.platform.local:1883
-      client_id: tenant-router-01
-      keep_alive: 60
+      session:
+        broker_url: tcp://mqtt.platform.local:1883
+        client_id: tenant-router-01
+        keep_alive: 60
 
 receivers:
   - id: sqs-in
@@ -84,12 +85,14 @@ senders:
   - id: mqtt-enterprise
     session_id: mqtt-conn
     options:
-      qos: 1
+      sender:
+        qos: 1
 
   - id: mqtt-tenants
     session_id: mqtt-conn
     options:
-      qos: 1
+      sender:
+        qos: 1
 
   - id: sqs-high-priority
     transport: sqs

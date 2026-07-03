@@ -42,26 +42,29 @@ sessions:
   - id: artemis-conn
     transport: amqp10
     options:
-      address: "amqp://localhost:5672"
-      container_id: "bridge-node-01"
-      username: "admin"
-      password: "admin"
+      session:
+        address: "amqp://localhost:5672"
+        container_id: "bridge-node-01"
+        username: "admin"
+        password: "admin"
 
 receivers:
   - id: order-in
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "queue://orders"
-      link_credit: 20
+      receiver:
+        address: "queue://orders"
+        link_credit: 20
 
 senders:
   - id: notify-out
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "queue://notifications"
-      timeout: "30s"
+      sender:
+        address: "queue://notifications"
+        timeout: "30s"
 
 bindings:
   - id: to-notifications
@@ -81,9 +84,9 @@ routes:
 ### Session
 
 - **`transport: amqp10`** -- Uses the AMQP 1.0 transport adapter.
-- **`address`** -- Broker endpoint. Use `amqps://` for TLS connections.
-- **`container_id`** -- Identifies this client to the broker. Artemis uses it for logging and connection tracking.
-- **`username` / `password`** -- SASL PLAIN authentication.
+- **`options.session.address`** -- Broker endpoint. Use `amqps://` for TLS connections.
+- **`options.session.container_id`** -- Identifies this client to the broker. Artemis uses it for logging and connection tracking.
+- **`options.session.username` / `options.session.password`** -- SASL PLAIN authentication.
 
 ### No Topology Declaration
 
@@ -96,13 +99,13 @@ declares exchanges, queues, and bindings automatically.
 
 ### Receiver
 
-- **`address: queue://orders`** -- The AMQP 1.0 link address. Address format depends on the broker. Artemis uses `queue://name` for queues and `topic://name` for multicast addresses.
-- **`link_credit: 20`** -- The receiver grants 20 credits to the broker, allowing it to push up to 20 messages ahead. Higher values improve throughput. Lower values reduce memory pressure on slow consumers.
+- **`options.receiver.address: queue://orders`** -- The AMQP 1.0 link address. Address format depends on the broker. Artemis uses `queue://name` for queues and `topic://name` for multicast addresses.
+- **`options.receiver.link_credit: 20`** -- The receiver grants 20 credits to the broker, allowing it to push up to 20 messages ahead. Higher values improve throughput. Lower values reduce memory pressure on slow consumers.
 
 ### Sender
 
-- **`address: queue://notifications`** -- Publish target.
-- **`timeout: 30s`** -- Per-message send timeout. Applied when the context has no deadline.
+- **`options.sender.address: queue://notifications`** -- Publish target.
+- **`options.sender.timeout: 30s`** -- Per-message send timeout. Applied when the context has no deadline.
 
 ### Settlement
 
@@ -150,12 +153,13 @@ sessions:
   - id: aws-mq-conn
     transport: amqp10
     options:
-      address: "amqps://b-xxxx-xxxx.mq.eu-west-1.amazonaws.com:5671"
-      container_id: "bridge-aws-mq"
-      username: "admin"
-      password: "your-password"
-      tls:
-        enable: true
+      session:
+        address: "amqps://b-xxxx-xxxx.mq.eu-west-1.amazonaws.com:5671"
+        container_id: "bridge-aws-mq"
+        username: "admin"
+        password: "your-password"
+        tls:
+          enable: true
 ```
 
 Queues and topics are created through the AWS MQ console or the ActiveMQ web console. The bridge connects as a standard AMQP 1.0 client -- no AWS SDK required.
@@ -169,18 +173,20 @@ sessions:
   - id: solace-conn
     transport: amqp10
     options:
-      address: "amqp://solace.example.com:5672"
-      container_id: "bridge-solace"
-      username: "default"
-      password: "default"
+      session:
+        address: "amqp://solace.example.com:5672"
+        container_id: "bridge-solace"
+        username: "default"
+        password: "default"
 
 receivers:
   - id: solace-in
     transport: amqp10
     session_id: solace-conn
     options:
-      address: "queue/orders"
-      link_credit: 50
+      receiver:
+        address: "queue/orders"
+        link_credit: 50
 ```
 
 ### TLS with Client Certificates
@@ -190,13 +196,14 @@ sessions:
   - id: artemis-tls
     transport: amqp10
     options:
-      address: "amqps://artemis.example.com:5671"
-      container_id: "bridge-tls"
-      tls:
-        enable: true
-        ca_cert_file: /etc/certs/ca.pem
-        cert_file: /etc/certs/client.pem
-        key_file: /etc/certs/client.key
+      session:
+        address: "amqps://artemis.example.com:5671"
+        container_id: "bridge-tls"
+        tls:
+          enable: true
+          ca_cert_file: /etc/certs/ca.pem
+          cert_file: /etc/certs/client.pem
+          key_file: /etc/certs/client.key
 ```
 
 ### Topic Subscriptions (Artemis)
@@ -209,8 +216,9 @@ receivers:
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "topic://events"
-      link_credit: 10
+      receiver:
+        address: "topic://events"
+        link_credit: 10
 ```
 
 The broker creates a temporary subscription for the receiver's link. For durable subscriptions, configure them on the broker side.
@@ -224,34 +232,38 @@ sessions:
   - id: source-broker
     transport: amqp10
     options:
-      address: "amqp://artemis-a:5672"
-      container_id: "bridge-source"
-      username: "admin"
-      password: "admin"
+      session:
+        address: "amqp://artemis-a:5672"
+        container_id: "bridge-source"
+        username: "admin"
+        password: "admin"
 
   - id: target-broker
     transport: amqp10
     options:
-      address: "amqp://artemis-b:5672"
-      container_id: "bridge-target"
-      username: "admin"
-      password: "admin"
+      session:
+        address: "amqp://artemis-b:5672"
+        container_id: "bridge-target"
+        username: "admin"
+        password: "admin"
 
 receivers:
   - id: source-in
     transport: amqp10
     session_id: source-broker
     options:
-      address: "queue://orders"
-      link_credit: 50
+      receiver:
+        address: "queue://orders"
+        link_credit: 50
 
 senders:
   - id: target-out
     transport: amqp10
     session_id: target-broker
     options:
-      address: "queue://orders-replica"
-      timeout: "30s"
+      sender:
+        address: "queue://orders-replica"
+        timeout: "30s"
 
 bindings:
   - id: to-replica

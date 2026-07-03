@@ -77,6 +77,13 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 receiver %q: %s", spec.ID, err))
 	}
+	// AMQP 1.0 receiver links are address-bound; enforced here — the
+	// build boundary — because parse-time Validate also runs on binding
+	// overrides that legitimately omit the address.
+	if cfg.Receiver.Address == "" {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp10 receiver %q: receiver.address is required", spec.ID))
+	}
 	rc := ReceiverConfig{
 		Address:          cfg.Receiver.Address,
 		LinkCredit:       cfg.Receiver.LinkCredit,
@@ -101,6 +108,12 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if err != nil {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 sender %q: %s", spec.ID, err))
+	}
+	// Sender links are address-bound; same build-boundary enforcement
+	// as NewReceiver.
+	if cfg.Sender.Address == "" {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp10 sender %q: sender.address is required", spec.ID))
 	}
 	sc := SenderConfig{
 		Address:        cfg.Sender.Address,

@@ -274,8 +274,12 @@ This produces three security group relationships:
 
 ## Complete CDK Code
 
-Below is the full stack wiring all imported resources together with the
-`NewGoBridgeService` L2 construct.
+The full stack wires the imported VPC and ECS cluster into the
+`gobridgecluster.NewGoBridgeCluster` facade (control + worker tasks sharing one
+EFS filesystem, chosen here because we want more than one replica), then binds
+it to the shared ALB listener with the `gobridgealbattachment` construct — the
+attachment owns the target groups and listener rules, so you do not wire them by
+hand.
 
 ```go
 package main
@@ -288,11 +292,13 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    gbcdk "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
+    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
-func NewGoBridgeStack(scope constructs.Construct, id string) awscdk.Stack {
+func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
     stack := awscdk.NewStack(scope, &id, &awscdk.StackProps{
         Env: &awscdk.Environment{
             Account: jsii.String("123456789012"),
@@ -314,49 +320,39 @@ func NewGoBridgeStack(scope constructs.Construct, id string) awscdk.Stack {
         },
     )
 
-    // --- EFS for bridge config ---
+    // --- GoBridge cluster facade (control + workers, shared EFS) ---
 
-    efsConfig := gbcdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
-        &gbcdk.GoBridgeEfsConfigProps{
-            Vpc: vpc,
-        },
-    )
+    src := gobridgecdk.BridgeYamlAsset("bridge.yaml")
+    workers := float64(2)
 
-    // --- GoBridge Fargate service ---
-
-    svc := gbcdk.NewGoBridgeService(stack, jsii.String("Bridge"),
-        &gbcdk.GoBridgeServiceProps{
-            Vpc:         vpc,
-            Cluster:     cluster,
-            EfsConfig:   efsConfig,
-            ServiceName: "gobridge-mqtt",
+    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
+        &gobridgecluster.ClusterProps{
+            Vpc:     vpc,
+            Cluster: cluster, // reuse the imported ECS cluster
             Image: awsecs.ContainerImage_FromRegistry(
                 jsii.String("123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"),
                 nil,
             ),
             Bootstrap: infra.BootstrapConfig{
                 BridgeID:         "gobridge-mqtt",
-                ConfigFilePath:   "/mnt/gobridge/bridge.yaml",
+                ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
                 AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
                 Topology:         infra.TopologyFilesystemReplicated,
             },
-            Exposure: infra.Exposure{
-                Admin:         true,
-                Monitor:       true,
-                TransportHTTP: true,
-            },
+            BridgeConfig:       src,
             CPU:                jsii.Number(1024),
             MemoryMiB:          jsii.Number(2048),
-            DesiredCount:       jsii.Number(2),
-            ScalingMaxCapacity: jsii.Number(6),
-            CpuTargetPercent:   jsii.Number(65),
-            SsmParameterArns: []*string{
-                jsii.String("arn:aws:ssm:eu-west-1:123456789012:parameter/gobridge/prod/*"),
+            WorkerDesiredCount: &workers,
+            // Autoscaling is opt-in and applies to the worker service only.
+            AutoScaling: &gobridgecluster.AutoScalingProps{
+                Min:       2,
+                Max:       6,
+                TargetCPU: 65,
             },
         },
     )
 
-    // --- ALB integration (import existing) ---
+    // --- Bind to the shared ALB listener ---
 
     listener := elbv2.ApplicationListener_FromLookup(stack, jsii.String("Listener"),
         &elbv2.ApplicationListenerLookupOptions{
@@ -365,58 +361,12 @@ func NewGoBridgeStack(scope constructs.Construct, id string) awscdk.Stack {
         },
     )
 
-    adminTg := elbv2.NewApplicationTargetGroup(stack, jsii.String("AdminTG"),
-        &elbv2.ApplicationTargetGroupProps{
-            Port:       jsii.Number(8080),
-            Protocol:   elbv2.ApplicationProtocol_HTTP,
-            Vpc:        vpc,
-            TargetType: elbv2.TargetType_IP,
-            HealthCheck: &elbv2.HealthCheck{
-                Path: jsii.String("/api/v1/monitor/health"),
-                Port: jsii.String("8081"),
-            },
-            StickinessCookieDuration: awscdk.Duration_Minutes(jsii.Number(5)),
-        },
-    )
-
-    monitorTg := elbv2.NewApplicationTargetGroup(stack, jsii.String("MonitorTG"),
-        &elbv2.ApplicationTargetGroupProps{
-            Port:       jsii.Number(8081),
-            Protocol:   elbv2.ApplicationProtocol_HTTP,
-            Vpc:        vpc,
-            TargetType: elbv2.TargetType_IP,
-            HealthCheck: &elbv2.HealthCheck{
-                Path: jsii.String("/api/v1/monitor/health"),
-                Port: jsii.String("8081"),
-            },
-        },
-    )
-
-    // Register the Fargate service with target groups.
-    svc.Service().AttachToApplicationTargetGroup(adminTg)
-    svc.Service().AttachToApplicationTargetGroup(monitorTg)
-
-    listener.AddTargetGroups(jsii.String("AdminRule"),
-        &elbv2.AddApplicationTargetGroupsProps{
-            TargetGroups: &[]elbv2.IApplicationTargetGroup{adminTg},
-            Conditions: &[]elbv2.ListenerCondition{
-                elbv2.ListenerCondition_PathPatterns(
-                    &[]*string{jsii.String("/api/v1/admin/*")},
-                ),
-            },
-            Priority: jsii.Number(10),
-        },
-    )
-
-    listener.AddTargetGroups(jsii.String("MonitorRule"),
-        &elbv2.AddApplicationTargetGroupsProps{
-            TargetGroups: &[]elbv2.IApplicationTargetGroup{monitorTg},
-            Conditions: &[]elbv2.ListenerCondition{
-                elbv2.ListenerCondition_PathPatterns(
-                    &[]*string{jsii.String("/api/v1/monitor/*")},
-                ),
-            },
-            Priority: jsii.Number(20),
+    gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
+        &gobridgealbattachment.AttachmentProps{
+            Cluster:      bridge,
+            Listener:     listener,
+            Vpc:          vpc,
+            BridgeConfig: src,
         },
     )
 
@@ -425,16 +375,16 @@ func NewGoBridgeStack(scope constructs.Construct, id string) awscdk.Stack {
 
 func main() {
     app := awscdk.NewApp(nil)
-    NewGoBridgeStack(app, "GoBridgeCustomVpc")
+    NewCustomVpcStack(app, "GoBridgeCustomVpc")
     app.Synth(nil)
 }
 ```
 
-The `NewGoBridgeService` construct handles task definitions, EFS volume mounts,
-IAM policies, security groups for EFS access, container port mappings, and
-auto-scaling. You only need to wire the ALB target groups and listener rules
-externally because the ALB is shared infrastructure outside the construct's
-scope.
+The cluster facade handles task definitions, EFS volume mounts, IAM policies,
+security groups for EFS access, container port mappings, the config seeder, and
+(when `AutoScaling` is set) worker CPU target-tracking. The attachment construct
+creates the admin/monitor/transport target groups and listener rules against the
+shared ALB. Exactly one of `Single` or `Cluster` is set on the attachment.
 
 ## EFS in a Shared VPC
 

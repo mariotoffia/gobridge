@@ -56,16 +56,18 @@ sessions:
   - id: rabbit-conn
     transport: amqp091
     options:
-      broker_url: "amqp://user:pass@rabbitmq.internal:5672/"
-      heartbeat: "10s"
+      session:
+        broker_url: "amqp://user:pass@rabbitmq.internal:5672/"
+        heartbeat: "10s"
 
   - id: artemis-conn
     transport: amqp10
     options:
-      address: "amqp://artemis.external:5672"
-      container_id: "cross-bridge-01"
-      username: "bridge-user"
-      password: "bridge-pass"
+      session:
+        address: "amqp://artemis.external:5672"
+        container_id: "cross-bridge-01"
+        username: "bridge-user"
+        password: "bridge-pass"
 
 receivers:
   - id: rabbit-in
@@ -74,44 +76,49 @@ receivers:
     topics:
       - topic: "internal-orders"
         options:
-          exchange: "orders"
-          exchange_type: "direct"
-          routing_key: "outbound"
-          durable: true
+          subscription:
+            exchange: "orders"
+            exchange_type: "direct"
+            routing_key: "outbound"
+            durable: true
     options:
-      queue_name: "internal-orders"
-      prefetch_count: 50
+      receiver:
+        queue_name: "internal-orders"
+        prefetch_count: 50
 
   - id: artemis-in
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "queue://partner-responses"
-      link_credit: 20
+      receiver:
+        address: "queue://partner-responses"
+        link_credit: 20
 
 senders:
   - id: artemis-out
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "queue://partner-orders"
-      timeout: "30s"
+      sender:
+        address: "queue://partner-orders"
+        timeout: "30s"
 
   - id: rabbit-out
     transport: amqp091
     session_id: rabbit-conn
     options:
-      exchange: "responses"
-      routing_key: "inbound"
+      sender:
+        exchange: "responses"
+        routing_key: "inbound"
 
 bindings:
   - id: to-artemis
     sender_id: artemis-out
-    address: partner-orders
+    address: "queue://partner-orders"
 
   - id: to-rabbit
     sender_id: rabbit-out
-    address: external-responses
+    address: inbound
 
 routes:
   - id: orders-out
@@ -181,6 +188,15 @@ Two routes run in parallel:
 
 Each route operates independently with its own concurrency limit (`max_in_flight`).
 
+> **Binding addresses and the nested `options:` shape.** Transport options now
+> nest under role blocks (`session:` / `receiver:` / `sender:`); the flat form
+> no longer decodes. A binding needs no `options:` block -- it carries only its
+> `address`, which the runtime propagates as `OutboundMessage.Address`. For AMQP
+> 1.0 the binding `address` **must equal** the sender's `sender.address` exactly
+> (or be empty) -- the sender link is address-bound and rejects a mismatched
+> per-dispatch address. For AMQP 0-9-1 the binding `address` is used as the
+> publish **routing key** (it overrides `sender.routing_key`).
+
 ### Settlement Differences
 
 The two protocols settle messages differently, but the bridge abstracts this behind the `Delivery` interface:
@@ -219,12 +235,13 @@ sessions:
   - id: aws-mq-conn
     transport: amqp10
     options:
-      address: "amqps://b-xxxx-xxxx.mq.eu-west-1.amazonaws.com:5671"
-      container_id: "cross-bridge-aws"
-      username: "admin"
-      password: "aws-mq-password"
-      tls:
-        enable: true
+      session:
+        address: "amqps://b-xxxx-xxxx.mq.eu-west-1.amazonaws.com:5671"
+        container_id: "cross-bridge-aws"
+        username: "admin"
+        password: "aws-mq-password"
+        tls:
+          enable: true
 ```
 
 All receivers and senders referencing `artemis-conn` switch to `aws-mq-conn`. Everything else stays the same.
@@ -307,7 +324,8 @@ senders:
     transport: amqp10
     session_id: artemis-conn
     options:
-      address: "queue://partner-orders"
+      sender:
+        address: "queue://partner-orders"
 
   - id: sqs-archive
     transport: sqs
@@ -319,7 +337,7 @@ senders:
 bindings:
   - id: to-artemis
     sender_id: artemis-out
-    address: partner-orders
+    address: "queue://partner-orders"
   - id: to-archive
     sender_id: sqs-archive
     address: order-archive

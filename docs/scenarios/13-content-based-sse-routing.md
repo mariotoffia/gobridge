@@ -64,9 +64,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.iot.local:1883
-      client_id: sensor-sse-router-01
-      keep_alive: 30
+      session:
+        broker_url: tcp://mqtt.iot.local:1883
+        client_id: sensor-sse-router-01
+        keep_alive: 30
 
 receivers:
   - id: sensor-in

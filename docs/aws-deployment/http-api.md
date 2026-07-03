@@ -29,9 +29,11 @@ Override default addresses with the `admin_addr`, `monitor_addr`, and
 > **Health check note:** The health probe endpoints (`/health`, `/live`,
 > `/ready`) are registered only on the **monitor server** (port 8081). For
 > ALB target groups on ports 8080 and 8082, configure the health check to
-> use port 8081 with path `/api/v1/monitor/health`. The CDK defines no
-> ECS container-level health check; if you add one, target the same monitor
-> endpoint (`wget -q --spider http://localhost:8081/api/v1/monitor/health`).
+> use port 8081 with path `/api/v1/monitor/health`. The root `Dockerfile`
+> defines a container `HEALTHCHECK` that runs the binary directly
+> (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`) — the distroless
+> image ships no shell, `curl`, or `wget`, so probe the binary, not a URL
+> tool. The `-healthcheck` flag hits the local monitor `/live` endpoint.
 
 ---
 
@@ -156,6 +158,16 @@ sequenceDiagram
 
 Transactions auto-expire after 5 minutes by default (max 30 minutes). Only one
 transaction can be active at a time per instance.
+
+### Plugin-Options Guard on Commit
+
+A config overlay is a partial document merged over the current config. If a
+`PATCH` overlay respecifies a receiver, sender, or session entry but omits its
+typed plugin `options` (broker URL, credentials, and other transport settings),
+the merge would erase them. The transaction manager refuses that commit and
+returns **422** with `config commit would erase plugin options`, naming the
+entry that would lose its options. Include the full `options` block for any
+entry you respecify, or leave the entry out of the overlay entirely.
 
 ### Approaches for Multi-Instance Deployments
 
@@ -385,6 +397,21 @@ You can combine multiple layers. For example:
 The API Gateway key and the GoBridge `api_key` are independent secrets.
 Configure the GoBridge key via `HTTPReceiverAPIKeyParams` in the bootstrap
 config, which resolves the key from SSM at startup.
+
+### Auth-Failure Throttling
+
+Failed authentication attempts against the admin and monitor servers are
+counted per actor in a fixed window. After 5 failures within 1 minute the
+server returns **429** `too many failed authentication attempts` and emits an
+`auth.throttled` audit event; each failed attempt before that emits
+`auth.failure`. Tune the window with `auth_failure_limit` and
+`auth_failure_window` in the server config (0 uses the defaults above).
+
+The actor for throttling and audit is derived from the request. Behind an ALB,
+`RemoteAddr` is the load balancer, so the leftmost `X-Forwarded-For` hop is used
+when present. `X-Forwarded-For` is client-spoofable unless a trusted edge
+overwrites it — terminate and normalize XFF at the ALB so per-client
+attribution and throttling are authoritative.
 
 ---
 

@@ -72,6 +72,9 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `http_sender_api_key_params` | `map[string]string` | No | `{}` | Map of sender ID to SSM parameter name. Resolves API keys for HTTP sender (SSE) endpoints. |
 | `aws_region` | `string` | No | `""` | Override AWS region for SSM calls. Normally inherited from the task role / environment. |
 | `ssm_endpoint` | `string` | No | `""` | Custom SSM endpoint URL. Requires `dev_mode: true`. Used for LocalStack or other local emulators. |
+| `metrics_exporter` | `string` | No | `""` | Runtime metrics backend. `""` or `"noop"` emits nothing; `"cloudwatch"` publishes runtime metrics through the `adapters/aws/metrics/cloudwatch` exporter. Any other value fails validation. |
+| `metrics_namespace` | `string` | No | `"GoBridge/Runtime"` | CloudWatch namespace used when `metrics_exporter` is `"cloudwatch"`. Empty defaults to `GoBridge/Runtime` (mirrors `domain/shared.MetricNamespace`). |
+| `instance_id` | `string` | No | `""` | Value of the per-task `instance_id` metric dimension. Empty lets the exporter derive `"<hostname>-<pid>"`, already unique per Fargate task; set it for a deterministic operator-chosen identity. |
 | `dev_mode` | `bool` | No | `false` | Enables local development features. Required when `ssm_endpoint` is set. Injects static test credentials for SSM. |
 
 ### Validation Rules
@@ -84,7 +87,13 @@ Validation fails if:
 - `admin_api_key_param` is empty.
 - `node_role` is not `"control"` or `"worker"` (after normalization).
 - `topology` is not `"single"` or `"filesystem_replicated"` (after normalization).
+- `metrics_exporter` is set to anything other than `""`, `"noop"`, or `"cloudwatch"`.
 - `ssm_endpoint` is set but `dev_mode` is `false`.
+
+When `metrics_exporter` is `"cloudwatch"`, the CDK base grants
+`cloudwatch:PutMetricData` scoped by a `cloudwatch:namespace` condition to the
+effective metrics namespace (`metrics_namespace`, or `GoBridge/Runtime` when
+empty). No CloudWatch write permission is granted for the `noop` exporter.
 
 ---
 
@@ -433,8 +442,9 @@ sessions:
   - id: mqtt-session
     transport: mqtt
     options:
-      broker: "ssl://broker.example.com:8883"
-      client_id: "orders-bridge"
+      session:
+        broker_url: "ssl://broker.example.com:8883"
+        client_id: "orders-bridge"
       credentials_uri: "pms://gobridge/prod/mqtt-credentials"
 
 receivers:

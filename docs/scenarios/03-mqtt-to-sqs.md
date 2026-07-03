@@ -50,9 +50,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.example.com:1883
-      client_id: iot-bridge-01
-      keep_alive: 30
+      session:
+        broker_url: tcp://mqtt.example.com:1883
+        client_id: iot-bridge-01
+        keep_alive: 30
 
 receivers:
   - id: mqtt-in
@@ -223,12 +224,13 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tls://mqtt.example.com:8883
-      client_id: iot-bridge-01
       credentials_uri: file://prod/mqtt/broker
-      tls:
-        enable: true
-        ca_cert_file: /etc/certs/ca.pem
+      session:
+        broker_url: tls://mqtt.example.com:8883
+        client_id: iot-bridge-01
+        tls:
+          enable: true
+          ca_cert_file: /etc/certs/ca.pem
 ```
 
 The `credentials_uri` resolves username/password and optionally TLS certificates from a credential store. See [Credentials & HTTP API](../credentials-and-http-api.md).

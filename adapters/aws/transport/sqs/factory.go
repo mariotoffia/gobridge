@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -107,11 +108,16 @@ func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
 }
 
 // NewReceiver creates a Receiver from a ReceiverSpec. SQS is stateless
-// so the session parameter is ignored.
+// so the session parameter is ignored. The queue reference is enforced
+// here — the build boundary — because parse-time Validate also runs on
+// binding overrides that legitimately omit it.
 func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
 	pc, err := configFromSpec(spec.Config)
 	if err != nil {
 		return nil, err
+	}
+	if err := pc.ValidateQueue(); err != nil {
+		return nil, fmt.Errorf("sqs receiver %q: %w", spec.ID, err)
 	}
 	cfg := pc.toReceiverConfig()
 	return NewReceiver(cfg, f.logger)
@@ -128,11 +134,15 @@ func NewSenderFactory(logger *slog.Logger) *SenderFactory {
 }
 
 // NewSender creates a Sender from a SenderSpec. SQS is stateless so
-// the session parameter is ignored.
+// the session parameter is ignored. Queue enforcement mirrors
+// NewReceiver.
 func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Session) (ports.Sender, error) {
 	pc, err := configFromSpec(spec.Config)
 	if err != nil {
 		return nil, err
+	}
+	if err := pc.ValidateQueue(); err != nil {
+		return nil, fmt.Errorf("sqs sender %q: %w", spec.ID, err)
 	}
 	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger

@@ -5,9 +5,10 @@ Deploy GoBridge on AWS ECS Fargate in under 10 minutes with zero existing infras
 ## Use Case
 
 You are a developer evaluating GoBridge and want a running instance as quickly as possible. You
-have an AWS account but no existing VPC, ECS cluster, or EFS filesystem. The L3
-`NewGoBridgeStack` construct creates everything for you -- VPC, EFS, ECS cluster, and a single
-Fargate task -- so you can focus on bridge configuration instead of infrastructure plumbing.
+have an AWS account and a VPC (or let your CDK app create one), but no ECS cluster or EFS
+filesystem. The `gobridgesingle.NewGoBridgeSingle` facade construct creates the ECS service, EFS
+filesystem, mount, IAM, and config seeder for you -- so you can focus on bridge configuration
+instead of infrastructure plumbing.
 
 ## Architecture
 
@@ -26,19 +27,23 @@ flowchart LR
 
     Client["Developer\ncurl / browser"] -->|HTTP| ALB
     ALB --> Task
-    Task -->|NFS mount\n/mnt/gobridge| EFS
+    Task -->|NFS mount\n/var/lib/gobridge| EFS
 
     style Task fill:#f96,stroke:#333
     style EFS fill:#6bf,stroke:#333
 ```
 
-The stack provisions:
+The construct provisions:
 
-- A new VPC with public and private subnets across 2 availability zones.
-- An encrypted EFS filesystem with an access point at `/gobridge`.
+- An encrypted EFS filesystem with an access point, shared into the task.
 - A single Fargate task running the gobridge container image.
 - Port mappings for the admin API (8080) and monitor API (8081).
-- Auto-scaling from 1 to 4 tasks based on CPU utilization (70% target).
+- A config seeder that writes `bridge.yaml` to EFS on first deploy.
+
+The single facade runs exactly one task (`DesiredCount` is hard-coded to 1, a
+runtime invariant of the single EFS RW writer) and has **no** autoscaling.
+Scale horizontally with the cluster facade instead ([Scenario 5](05-multi-bridge-cluster.md)).
+You supply the VPC — the single facade does not create or look one up.
 
 ## Prerequisites
 
@@ -60,23 +65,19 @@ export CDK_DEFAULT_REGION=us-west-1
 
 ## Build and Push Container Image
 
-GoBridge ships as a Go binary. Use a multi-stage Dockerfile to produce a minimal container.
+GoBridge ships as a Go binary. The repository root already contains a production `Dockerfile`
+that builds the `gobridge-filebased` binary as a multi-stage, `CGO_ENABLED=0` (pure-Go SQLite via
+`modernc.org/sqlite`), distroless/static-debian12 image running as nonroot UID 65532. Use it as-is
+— do not hand-roll an Alpine image:
 
-Create `Dockerfile` in the repository root:
-
-```dockerfile
-FROM golang:1.25-alpine AS build
-WORKDIR /src
-COPY go.work go.work.sum ./
-COPY . .
-RUN go build -o /gobridge ./cmd/gobridge
-
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget
-COPY --from=build /gobridge /usr/local/bin/gobridge
-ENTRYPOINT ["gobridge"]
-CMD ["--config", "/mnt/gobridge/bridge.yaml"]
+```bash
+# From the repository root
+docker build -t gobridge:latest .
 ```
+
+The image has no shell, `curl`, or `wget`; its `HEALTHCHECK` runs the binary directly
+(`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`), which probes the local monitor
+`/live` endpoint.
 
 Create an ECR repository, build the image, and push it:
 
@@ -117,63 +118,73 @@ The value must be at least 16 characters. Choose a strong, random string for pro
 
 ## CDK Stack
 
-The CDK application lives in `deployment/aws-filebased-config/cdk/`. The provided `main.go`
-reads all configuration from environment variables, so you do not need to edit Go source code.
+There is no prebuilt env-driven CDK entrypoint; you write a small CDK app that instantiates the
+`gobridgesingle.NewGoBridgeSingle` facade. The facade takes a `*SingleProps`. Its four required
+fields are `Vpc`, `Image`, `Bootstrap`, and `BridgeConfig`; everything else falls back to
+documented defaults (CPU 512, MemoryMiB 1024, MountPath `/var/lib/gobridge`, SeederMode
+`SeedOnce`).
 
-### Environment variables
+### App
 
-| Variable                   | Default                       | Description                        |
-|----------------------------|-------------------------------|------------------------------------|
-| `GOBRIDGE_STACK_NAME`      | `GoBridge`                    | CloudFormation stack name          |
-| `GOBRIDGE_SERVICE_NAME`    | `gobridge`                    | ECS service name                   |
-| `GOBRIDGE_IMAGE_URI`       | `gobridge:latest`             | Container image URI (ECR)          |
-| `GOBRIDGE_BRIDGE_ID`       | `gobridge-main`               | Bridge instance identifier         |
-| `GOBRIDGE_CONFIG_PATH`     | `/mnt/gobridge/bridge.yaml`   | Config file path inside container  |
-| `GOBRIDGE_ADMIN_KEY_PARAM` | `/gobridge/admin-api-key`     | SSM parameter name for admin key   |
-| `GOBRIDGE_VPC_ID`          | *(empty -- creates new VPC)*  | Existing VPC ID to reuse           |
+```go
+package main
+
+import (
+	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
+	"github.com/aws/jsii-runtime-go"
+
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+)
+
+func main() {
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("GoBridgeQuickstart"), &awscdk.StackProps{
+		Env: &awscdk.Environment{
+			Account: jsii.String("<account>"),
+			Region:  jsii.String("us-west-1"),
+		},
+	})
+
+	// Provide a VPC (create one, or look up an existing VPC by ID/tags).
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
+
+	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
+		Vpc:   vpc,
+		Image: awsecs.ContainerImage_FromRegistry(jsii.String("<account>.dkr.ecr.us-west-1.amazonaws.com/gobridge:latest"), nil),
+		Bootstrap: infra.BootstrapConfig{
+			BridgeID:         "gobridge-main",
+			ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
+			AdminAPIKeyParam: "/gobridge/admin-api-key",
+		},
+		// BridgeYamlAsset seeds bridge.yaml onto EFS from a local file;
+		// BridgeYamlInline seeds a programmatically built *ports.BridgeConfig.
+		BridgeConfig: gobridgecdk.BridgeYamlAsset("bridge.yaml"),
+	})
+
+	app.Synth(nil)
+}
+```
 
 ### Deploy
 
 ```bash
-cd deployment/aws-filebased-config/cdk
-
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-REGION=us-west-1
-
-export GOBRIDGE_IMAGE_URI="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/gobridge:latest"
-export GOBRIDGE_ADMIN_KEY_PARAM="/gobridge/admin-api-key"
-
+cd <your-cdk-app>
 cdk deploy --require-approval broadening
 ```
 
-Because `GOBRIDGE_VPC_ID` is unset, the stack calls `awsec2.NewVpc` with `MaxAzs: 2` to create
-a brand-new VPC. The `GoBridgeStackProps` struct drives this behaviour:
-
-```go
-type GoBridgeStackProps struct {
-    awscdk.StackProps
-
-    ServiceName string
-    ImageURI    string
-    Bootstrap   infra.BootstrapConfig
-    Exposure    infra.Exposure
-
-    // VpcID is an existing VPC to look up. If empty, a new VPC is created.
-    VpcID  string
-    MaxAZs *float64
-}
-```
-
-The bootstrap configuration passed to the task container as the
-`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable looks like this after defaults are
-applied:
+The facade serializes the `BootstrapConfig` (after defaults are applied) into the task container
+as the `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable:
 
 ```json
 {
   "bridge_id": "gobridge-main",
   "node_role": "control",
   "topology": "single",
-  "config_file_path": "/mnt/gobridge/bridge.yaml",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
   "admin_addr": ":8080",
   "monitor_addr": ":8081",
   "transport_http_addr": ":8082",
@@ -183,9 +194,11 @@ applied:
 
 ## Write Bridge Config to EFS
 
-The Fargate task expects a bridge configuration file at `/mnt/gobridge/bridge.yaml` on the
-EFS mount. Create a minimal config that accepts HTTP requests and forwards them to an external
-HTTP endpoint for testing.
+With `BridgeYamlAsset`/`BridgeYamlInline` the facade seeds `bridge.yaml` onto EFS on first deploy
+(SeederMode `SeedOnce`), so you normally do not touch EFS by hand. This section shows the manual
+path for updating the file out-of-band. The Fargate task reads the config at
+`/var/lib/gobridge/bridge.yaml` on the EFS mount. Create a minimal config that accepts HTTP POST
+requests and republishes them as Server-Sent Events for testing.
 
 ### Bridge configuration
 
@@ -203,23 +216,24 @@ receivers:
       path: /ingest
 
 senders:
-  - id: http-out
+  - id: sse-out
     transport: http
     options:
-      url: https://httpbin.org/post
+      path: /events
+      mode: sse
 
 bindings:
-  - id: to-httpbin
-    sender_id: http-out
+  - id: to-sse
+    sender_id: sse-out
 
 routes:
   - id: forward
     receiver_id: http-in
-    bindings: [to-httpbin]
+    bindings: [to-sse]
 ```
 
 This config creates a single route: HTTP POST requests to `/ingest` on the transport HTTP port
-(8082) are forwarded to `https://httpbin.org/post`.
+(8082) are republished as Server-Sent Events to clients streaming from `/events`.
 
 ### Upload to EFS
 
@@ -266,10 +280,10 @@ cat > /tmp/efs-writer-task.json <<EOF
     "name": "writer",
     "image": "alpine:3.20",
     "essential": true,
-    "command": ["sh", "-c", "echo '${CONFIG_B64}' | base64 -d > /mnt/gobridge/bridge.yaml && echo 'Config written.' && sleep 2"],
+    "command": ["sh", "-c", "echo '${CONFIG_B64}' | base64 -d > /var/lib/gobridge/bridge.yaml && echo 'Config written.' && sleep 2"],
     "mountPoints": [{
       "sourceVolume": "gobridge-config",
-      "containerPath": "/mnt/gobridge"
+      "containerPath": "/var/lib/gobridge"
     }]
   }]
 }
@@ -332,7 +346,14 @@ curl -s -H "X-API-Key: my-secret-admin-key-min16chars" \
 
 ### Send a test message
 
-Post a message to the HTTP transport port (8082) and verify it reaches httpbin:
+The receiver accepts an HTTP POST at `/ingest`; the SSE sender republishes it to clients
+streaming from `/events`. Stream the sender output in one terminal:
+
+```bash
+curl -N "http://${TASK_IP}:8082/events"
+```
+
+Then POST a message to the ingress in another:
 
 ```bash
 curl -s -X POST \
@@ -341,7 +362,7 @@ curl -s -X POST \
   "http://${TASK_IP}:8082/ingest"
 ```
 
-A successful response means the message was forwarded to `https://httpbin.org/post`.
+The `/events` stream emits the posted message as a `data:` event.
 
 ## Clean Up
 

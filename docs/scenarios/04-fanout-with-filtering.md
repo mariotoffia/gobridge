@@ -45,9 +45,10 @@ sessions:
   - id: mqtt-conn
     transport: mqtt
     options:
-      broker_url: tcp://mqtt.example.com:1883
-      client_id: sensor-fanout-01
-      keep_alive: 30
+      session:
+        broker_url: tcp://mqtt.example.com:1883
+        client_id: sensor-fanout-01
+        keep_alive: 30
 
 receivers:
   - id: sensor-in

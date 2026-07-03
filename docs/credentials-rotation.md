@@ -171,6 +171,25 @@ receiver/sender variants are typically unused; for transports where
 each endpoint has its own auth (HTTP per-route, some per-queue ASB
 setups), they are the primary path.
 
+### Rotation callbacks (cache invalidation)
+
+Both refresher layers expose a post-rotation callback so a caller can
+invalidate a downstream cache the instant a new secret is applied:
+
+- `bridge.WithRotationCallback(fn func(uri string))`
+  (`bridge/credential_refresh.go:56-60`) -- invoked with the URI after each
+  **applied** rotation on the builder's refresher.
+- `runtime/credentials.WithOnRotation(fn func(uri string))`
+  (`runtime/credentials/poll.go:87-108`) -- the same hook on the polled
+  pull-to-push wrapper. It fires only on an actual rotation, never on the
+  initial fetch (`poll.go:184`).
+
+The composition root wires this automatically: when a credential resolver with
+a cache is in play, the builder registers the resolver's `InvalidateCache` as
+the rotation callback (`bridge/builder_complete.go:90`), so a rotated URI is
+evicted from the resolver cache and the next lookup re-resolves the fresh
+secret rather than serving a stale one.
+
 ## Transport change interface: `bridge.CredentialAware`
 
 ```go
@@ -234,6 +253,17 @@ For ASB the field names are `CaPEM` / `ClientCertPEM` /
 caller-supplied `TLSConfig`. When `TLSConfig` is non-nil it wins;
 when nil, `buildClientOptions` constructs a fresh `tls.Config` from
 the PEM fields.
+
+### AMQP 0-9-1: explicit credentials override URL userinfo
+
+When an amqp091 session has an explicitly configured (or rotated) username, it
+**always** wins over any userinfo embedded in `broker_url`
+(`adapters/amqp/transport/amqp091/acl_client.go:152-169`). URL userinfo is used
+only when no explicit username is configured. This precedence is what makes
+rotation correct: without it a rotation would report success while every redial
+silently re-authenticated with the old, soon-to-be-revoked credentials baked
+into the URL. Prefer supplying credentials via `credentials_uri` (or the
+session's `username`/`password`) and keeping `broker_url` credential-free.
 
 ## Operator workflow
 
