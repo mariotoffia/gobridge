@@ -414,7 +414,23 @@ func (m *configTxnManager) checkTxn(txnID string) error {
 // computeMerged builds the merged config from the current effective config
 // plus all accumulated patches. Must be called with mu held.
 func (m *configTxnManager) computeMerged(ctx context.Context) (*ports.BridgeConfig, error) {
-	base := m.configProvider()
+	// Base the merge on the ON-DISK config -- the same source of truth the
+	// commit-time CAS reads (readDiskVersion) and Begin baselines against.
+	// Basing it on the in-memory applied config (configProvider) instead lets
+	// a disk edit that the watcher has not yet applied be silently clobbered:
+	// the version-only CAS compares disk versions and passes, but the merged
+	// CONTENT is computed from stale memory, so the operator's newer file is
+	// overwritten. Reading disk here keeps version AND content consistent.
+	base, err := m.store.Load(ctx)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("config txn: load disk config: %w", err)
+		}
+		// First-write semantics: nothing on disk yet (baseVersion==0). Fall
+		// back to the in-memory config so a fresh deployment can still stage
+		// and commit its initial configuration.
+		base = m.configProvider()
+	}
 	if base == nil {
 		return nil, fmt.Errorf("no current config available")
 	}

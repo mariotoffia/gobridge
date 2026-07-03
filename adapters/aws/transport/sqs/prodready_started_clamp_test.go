@@ -2,9 +2,13 @@ package sqs
 
 // Production-readiness regression tests:
 //
-//   - Started() must reach a terminal state (closed) even when Run
-//     fails during initialisation, so a readiness probe selecting only
-//     on Started() never hangs.
+//   - Started() must NOT be closed when Run fails during initialisation:
+//     Run's returned error is the authoritative failure signal, and a
+//     premature Started() close would let a readiness probe briefly observe
+//     a ready route for a receiver that never started (matching the
+//     paho/amqp10/servicebus receivers, which also only close Started on
+//     the happy path). WaitRouteReady does not deadlock on a never-closed
+//     Started() — it re-checks on a periodic timer and honours ctx.
 //   - Visibility-duration conversions clamp in int64 BEFORE narrowing
 //     to int32 — a naive int32 conversion of a huge duration is
 //     unspecified in Go and can wrap negative, turning a "hold this
@@ -19,6 +23,8 @@ import (
 
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -26,13 +32,15 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Started() closes on init failure
+// Started() is NOT closed on init failure
 // ---------------------------------------------------------------------------
 
-// Verifies Started() is closed when Run fails before the poll loop
-// starts (here: queue URL resolution fails), instead of leaving a
-// readiness probe hanging forever.
-func TestReceiver_StartedClosesOnInitFailure(t *testing.T) {
+// FIX 5: Verifies Started() stays OPEN when Run fails before the poll loop
+// starts (here: queue URL resolution fails). A premature close would let a
+// readiness probe selecting on Started() briefly report a ready route for a
+// receiver that never started; Run's returned error is the authoritative
+// failure signal. This mirrors the paho/amqp10/servicebus receivers.
+func TestReceiver_StartedNotClosedOnInitFailure(t *testing.T) {
 	mock := &mockSQSClient{
 		GetQueueUrlFn: func(_ context.Context, _ *awssqs.GetQueueUrlInput, _ ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error) {
 			return nil, errors.New("AccessDenied: not allowed")
@@ -51,8 +59,43 @@ func TestReceiver_StartedClosesOnInitFailure(t *testing.T) {
 		t.Fatal("Run must return the init error")
 	}
 
-	// Run has returned, so the deferred signal must already have fired.
+	// Run has returned an init error: Started() must still be OPEN.
+	select {
+	case <-r.Started():
+		t.Fatal("Started() must NOT be closed when Run fails during initialisation")
+	default:
+	}
+}
+
+// FIX 5: Verifies Started() IS closed once the poll loop is live. Run is
+// cancelled shortly after start; Started must have been signalled.
+func TestReceiver_StartedClosedOnSuccessfulInit(t *testing.T) {
+	mock := &mockSQSClient{
+		GetQueueUrlFn: func(_ context.Context, _ *awssqs.GetQueueUrlInput, _ ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error) {
+			return &awssqs.GetQueueUrlOutput{QueueUrl: aws.String("https://sqs.local/orders")}, nil
+		},
+		ReceiveMessageFn: func(ctx context.Context, _ *awssqs.ReceiveMessageInput, _ ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	r, err := NewReceiver(ReceiverConfig{QueueName: "orders", Client: mock}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.Run(ctx, func(context.Context, ports.Delivery) error { return nil })
+	}()
+
+	// The poll loop signals Started() as soon as it is live.
 	wait.RequireClosed(t, r.Started(), time.Second)
+
+	cancel()
+	wait.RequireClosed(t, done, time.Second)
 }
 
 // ---------------------------------------------------------------------------

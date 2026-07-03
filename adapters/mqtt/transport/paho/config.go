@@ -68,6 +68,18 @@ type SessionOptions struct {
 	// autopaho default (10s). Shorter values speed up reconnection in
 	// test environments but increase load on the broker in production.
 	ReconnectDelay time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
+	// UnmatchedGrace bounds the startup window during which an incoming
+	// publish that matches NO registered receiver filter is BUFFERED
+	// (un-acked) rather than acked-and-dropped. It exists because on a
+	// resumed clean_start=false session the broker starts delivering the
+	// queued backlog on CONNACK before the route runners have registered
+	// their topic filters (the runtime session manager Starts, then
+	// Reconciles, then the receivers register — see runtime/session).
+	// After the grace window a still-unmatched publish is treated as an
+	// orphan broker subscription: acked, dropped, and its exact topic
+	// unsubscribed (see acl_router.go / doc.go). The window RESTARTS on
+	// every (re)connect. Zero falls back to DefaultUnmatchedGrace (30s).
+	UnmatchedGrace time.Duration `mapstructure:"unmatched_grace" yaml:"unmatched_grace" json:"unmatched_grace"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
@@ -166,6 +178,17 @@ type TLSConfig struct {
 // (0xFFFFFFFF "never expire" was deliberately rejected).
 const DefaultPersistentSessionExpiry uint32 = 86400
 
+// DefaultUnmatchedGrace is the UnmatchedGrace applied by NewSession /
+// the router when the session does not configure unmatched_grace. It is
+// sized to comfortably cover the legitimate startup window on a resumed
+// (clean_start=false) session: the broker starts pushing the queued
+// backlog on CONNACK, while the runtime session manager is still walking
+// Start → Reconcile → receiver registration, so briefly some publishes
+// match no handler yet. 30s absorbs that reconciliation without letting
+// a genuine orphan subscription pin the broker's in-flight window for
+// long.
+const DefaultUnmatchedGrace = 30 * time.Second
+
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
 //
 // CleanStart defaults to FALSE: only Persistent/Exclusive sessions
@@ -177,6 +200,7 @@ func DefaultSessionOptions() SessionOptions {
 		ConnectTimeout:   30 * time.Second,
 		ReconnectTimeout: 30 * time.Second,
 		CleanStart:       false,
+		UnmatchedGrace:   DefaultUnmatchedGrace,
 		Clock:            clock.System,
 	}
 }
@@ -261,6 +285,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
+	}
+	if v, ok := optDuration(m, "unmatched_grace"); ok {
+		opts.UnmatchedGrace = v
 	}
 	if v, ok := m["clean_start"].(bool); ok {
 		opts.CleanStart = v

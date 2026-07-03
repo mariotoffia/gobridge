@@ -47,7 +47,7 @@ Recreating is the simplest and safest option **once the outbox is empty**.
 1. **Stop writers.** Scale the bridge fleet to zero, or route the affected
    routes to `direct_hold` so nothing new is persisted to this outbox.
 2. **Drain to empty.** Let the drainers deliver all pending records. Confirm
-   with a `Scan` count (or `gobridge_outbox_pending` if exported) reaching 0.
+   with a `Scan` count (or the `OutboxDepth` gauge) reaching 0.
 3. **Delete the table**, then let the bridge recreate it: `Store.CreateTable`
    is idempotent and provisions the new GSI shape on first start
    (`acl_store.go:197-248`). Or apply the new schema via your IaC.
@@ -86,13 +86,37 @@ one-time backfill job: `Scan` the table and, for each item with a positive
 not yet elapsed; already-past-expiry records are handled by your normal DLQ or
 cleanup process.
 
+## Rollback
+
+The base table (persist / claim / complete) keeps working throughout either
+path -- those operations use only the base keys and `RecordIDIndex`, neither of
+which this migration touches. Safe abort points:
+
+**Preferred (drain) path.**
+
+- Before step 3 (table delete) nothing has changed: abort freely and resume
+  writers.
+- After step 3 the table is gone; the only "rollback" is letting the bridge
+  recreate it (idempotent) or restoring from a backup. Take an on-demand backup
+  or enable PITR **before** deleting if the outbox contents matter.
+
+**In-place (`UpdateTable`) path.** Each GSI edit is individually reversible, but
+mind the ordering:
+
+- A half-created `ExpiryIndex` can be deleted at any point; the new binary
+  simply recreates it on the next `CreateTable`.
+- Once you have deleted `StatusIndex` / `ClaimedByIndex` you have removed the
+  indexes the **old** binary queried. Reverting the binary to a build that reads
+  `StatusIndex` therefore requires **recreating `StatusIndex` first** (former key
+  schema: PK `status`, SK `created_at`, projection matching the old build) and
+  waiting for its backfill to reach `ACTIVE` before starting the old binary.
+- Do not run the old and new binaries against the same table concurrently: the
+  new binary maintains the `has_expiry` attribute the old one ignores, and the
+  old binary's Expire sweep fails outright when `ExpiryIndex` is absent.
+
 ## Verification
 
 - `DescribeTable` shows exactly two GSIs: `ExpiryIndex` and `RecordIDIndex`,
   both `ACTIVE`, both `KEYS_ONLY`.
 - Persist a test message with a short TTL and confirm the Expire sweep moves it
   to the DLQ after expiry.
-- The stale package comment
-  `adapters/aws/store/dynamodboutbox/doc.go:12-15` still lists the OLD GSIs and
-  is a documentation-only discrepancy (tracked separately); the authoritative
-  schema is `CreateTable` in `acl_store.go`.

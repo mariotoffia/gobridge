@@ -81,16 +81,18 @@ func (r *Receiver) clock() clock.Clock {
 	return clock.System
 }
 
-// Started returns a channel that is closed once the receiver reaches a
-// terminal startup state: either the poll loop is live and ready to
-// process messages, or Run returned with an initialisation error. The
-// failure-path close prevents a readiness probe that selects only on
-// Started() from hanging forever when init fails (Run's error is the
-// authoritative failure signal). It satisfies
+// Started returns a channel that is closed once the poll loop is live and
+// ready to process messages. If Run returns before reaching the poll loop
+// (an initialisation error), Started() is NOT closed — Run's returned error
+// is the authoritative failure signal, matching the paho/amqp10/servicebus
+// receivers. Readiness paths must therefore also honour the terminal/error
+// path and not select solely on Started() (see runtime WaitRouteReady, which
+// re-checks on a periodic timer and on ctx cancellation). It satisfies
 // ports.ReceiverStartedSignaler.
 func (r *Receiver) Started() <-chan struct{} { return r.started }
 
-// signalStarted closes the Started channel exactly once.
+// signalStarted closes the Started channel exactly once. It is invoked only
+// once the poll loop is live (never on an initialisation-failure return).
 func (r *Receiver) signalStarted() {
 	r.startedOnce.Do(func() { close(r.started) })
 }
@@ -99,13 +101,12 @@ func (r *Receiver) signalStarted() {
 // creates a Delivery and calls emit synchronously, providing natural
 // backpressure. Run blocks until ctx is cancelled or an unrecoverable
 // error occurs.
+//
+// Started() is signalled only after successful initialisation, once the
+// poll loop is live. An initialisation error returns without signalling
+// Started() so a readiness probe never briefly observes a ready route for
+// a receiver that failed to start.
 func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	// Guarantee Started() unblocks even when initialisation fails below:
-	// pollLoop closes it on the happy path; this defer covers every
-	// error return so a probe never waits on a receiver that already
-	// gave up.
-	defer r.signalStarted()
-
 	initCtx, initCancel := context.WithTimeout(ctx, r.cfg.InitTimeout)
 	defer initCancel()
 

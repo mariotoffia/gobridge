@@ -44,7 +44,7 @@ flowchart LR
 
 ## Direct Hold vs Shared Outbox
 
-The two delivery modes represent fundamentally different trade-offs.
+The two delivery modes represent different trade-offs.
 
 ```mermaid
 flowchart TD
@@ -351,7 +351,7 @@ fallback, matching the DynamoDB backend.
 
 > **Note on `lease: memory`.** The in-memory lease store resets its fencing
 > version on restart, so it cannot guarantee version continuity across a crash.
-> For a single instance whose lease returns to the same version this is fine and
+> For a single instance whose lease returns to the same version this is safe and
 > the stale-claim fallback above still recovers stranded work; for
 > multi-instance or strict crash-recovery guarantees use a durable lease store
 > (DynamoDB). `memory` lease and outbox remain development/test grade — see the

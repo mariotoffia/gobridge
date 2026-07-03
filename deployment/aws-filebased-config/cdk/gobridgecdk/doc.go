@@ -1,10 +1,23 @@
 // Package gobridgecdk is the top-level facade of the
-// aws-filebased-config CDK profile. It exposes the public
-// constructors (GoBridgeSingle / GoBridgeCluster / GoBridgeAlarms),
-// the two BridgeConfigSource factories (BridgeYamlAsset and
-// BridgeYamlInline), and the consumer-side cross-stack lookup
-// helpers (LookupBridge / BridgeRef) for the GoBridgeALBAttachment
-// SSM-export contract.
+// aws-filebased-config CDK profile. It exposes the two
+// BridgeConfigSource factories (BridgeYamlAsset and BridgeYamlInline)
+// with their sealed BridgeConfigSource return type, and the
+// consumer-side cross-stack lookup helpers (LookupBridge / BridgeRef)
+// for the GoBridgeALBAttachment SSM-export contract.
+//
+// This facade deliberately does NOT re-export the constructs. The
+// public constructors live in their own sub-packages under
+// cdk/constructs/ and are imported directly by consumers:
+//
+//   - GoBridgeSingle       — cdk/constructs/gobridgesingle
+//   - GoBridgeCluster      — cdk/constructs/gobridgecluster
+//   - GoBridgeAlarms       — cdk/constructs/gobridgealarms
+//   - GoBridgeALBAttachment — cdk/constructs/gobridgealbattachment
+//
+// Keeping the constructs in sub-packages (rather than aliasing them
+// here) avoids an import cycle: the constructs need typed access to
+// the internal source contract this facade wraps, so the dependency
+// must point from constructs → facade, never the reverse.
 //
 // # Sealed BridgeConfigSource
 //
@@ -24,11 +37,12 @@
 // The concrete Source implementations live under
 // cdk/internal/source/ rather than as unexported types in this
 // file. The constructs/ sub-tree (GoBridgeSingle / GoBridgeCluster)
-// needs typed access to Materialize but cannot import the top-level
-// facade without an import cycle, since the facade re-exports the
-// constructs. Putting the contract in an internal sub-package gives
-// every cdk/... package access while keeping it invisible to
-// consumers of the module.
+// needs typed access to Materialize, and this facade itself imports
+// a construct (gobridgealbattachment, via LookupBridge). Housing the
+// sealed Source contract in the facade would therefore risk an
+// import cycle the moment a construct imported it back. Putting the
+// contract in an internal sub-package gives every cdk/... package
+// access while keeping it invisible to consumers of the module.
 //
 // # Deferred bundling
 //

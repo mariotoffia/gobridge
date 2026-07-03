@@ -112,11 +112,13 @@ The overlay is stored as a single DynamoDB item. Only the fields that differ fro
       "id": "mqtt-conn",
       "session_mode": "exclusive",
       "options": {
-        "broker_url": "tls://mqtt.prod.example.com:8883",
-        "client_id": "prod-bridge-01",
-        "tls": {
-          "enable": true,
-          "ca_cert_file": "/etc/certs/ca.pem"
+        "session": {
+          "broker_url": "tls://mqtt.prod.example.com:8883",
+          "client_id": "prod-bridge-01",
+          "tls": {
+            "enable": true,
+            "ca_cert_file": "/etc/certs/ca.pem"
+          }
         }
       }
     }
@@ -271,22 +273,22 @@ Collections are merged by matching the `id` field. When an overlay entry has the
 ```mermaid
 flowchart LR
     subgraph Base ["Base Layer"]
-        BS["mqtt-conn\n(no broker_url,\nephemeral)"]
+        BS["mqtt-conn\n(no session.broker_url,\nephemeral)"]
     end
 
     subgraph Overlay ["DynamoDB Overlay"]
-        OS["mqtt-conn\n(broker_url: tls://...,\nexclusive)"]
+        OS["mqtt-conn\n(session.broker_url: tls://...,\nexclusive)"]
     end
 
     subgraph Merged ["Merged Result"]
-        MS["mqtt-conn\n(broker_url: tls://...,\nexclusive,\nclient_id: prod-bridge-01)"]
+        MS["mqtt-conn\n(session.broker_url: tls://...,\nexclusive,\nsession.client_id: prod-bridge-01)"]
     end
 
-    BS -->|"ID match: replace"| MS
+    BS -->|"ID match: field-merge"| MS
     OS -->|"overlay wins"| MS
 ```
 
-**Important:** When IDs match, the overlay entry replaces the base entry as a whole unit. The options maps are not deep-merged -- the overlay's options map replaces the base's options map entirely. This means the overlay session must include all required options (like `client_id`), not just the ones being changed.
+**Important:** When IDs match, scalar fields merge field-level -- a non-empty overlay scalar (like `session_mode`) wins, and a scalar the overlay omits is inherited from the base. The typed plugin `options` map is not deep-merged: an overlay that supplies an `options` block replaces the base's `options` for that entry wholesale, so it must include every required option (like `client_id`), not just the ones being changed. An overlay that omits `options` entirely carries the base options forward -- this is how a scalar-only patch (e.g. only `session_mode`) avoids erasing broker URLs and credentials (see `config.DefaultMerge`).
 
 In the example above, the overlay session includes both `broker_url` (new) and `client_id: prod-bridge-01` (overriding the base value of `bridge-01`). If the overlay omitted `client_id`, the merged session would have no `client_id` and validation would fail.
 

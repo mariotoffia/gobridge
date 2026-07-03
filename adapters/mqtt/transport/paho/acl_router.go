@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -50,17 +51,28 @@ import (
 // each other's messages. A handler registered WITHOUT filters matches
 // everything (legacy behaviour).
 //
-// Startup buffering: a publish that matches NO registered handler
-// (e.g. the queued backlog a persistent session receives on CONNACK
-// before Receiver.Run has registered) is held in a bounded pending
-// buffer instead of being dropped, and is flushed — in arrival order —
-// to the first handler whose filters cover it. Buffered QoS 1/2
-// publishes stay un-acked while buffered, so even a crash while
-// buffered leads to broker redelivery, not loss. On overflow the
-// oldest QoS 0 entry is evicted (QoS 0 has no redelivery contract);
-// QoS 1/2 entries are never evicted-and-acked — the buffer capacity is
-// sized to the session's Receive Maximum, which bounds how many
-// un-acked QoS 1/2 publishes the broker may have in flight.
+// Startup buffering vs orphan ack-and-drop: a publish that matches NO
+// registered handler is handled by the STARTUP GRACE WINDOW. During the
+// grace window (restarted on every (re)connect via beginGrace) the
+// publish is the queued backlog a resumed clean_start=false session
+// receives on CONNACK before Receiver.Run has registered its filters, so
+// it is held — un-acked, in arrival order — in a bounded pending buffer
+// and flushed to the first handler whose filters cover it (a crash while
+// buffered leads to broker redelivery, not loss). AFTER the grace window
+// a still-unmatched publish is treated as an ORPHAN broker subscription
+// (a route removed from config whose subscription survives on the
+// persistent session): it is ACKED and DROPPED, so its un-acked slot no
+// longer pins the broker's Receive-Maximum in-flight window nor
+// head-of-line-blocks in-order acking for every later message on the
+// shared session, and its exact topic is UNSUBSCRIBED (deduped,
+// best-effort) to converge broker state. Publishes buffered near the end
+// of the window that never gain a handler are swept by the grace timer
+// with the same ack-drop-unsubscribe treatment.
+//
+// On overflow of the pending buffer (within grace) the oldest QoS 0
+// entry is evicted (QoS 0 has no redelivery contract); the buffer
+// capacity is sized to the session's Receive Maximum, which bounds how
+// many un-acked QoS 1/2 publishes the broker may have in flight.
 type router struct {
 	mu       sync.RWMutex
 	wg       sync.WaitGroup
@@ -71,11 +83,42 @@ type router struct {
 	pending      []pendingPublish
 	pendingLimit int
 
-	logger        *slog.Logger
-	metrics       ports.MetricsExporter
-	routeCount    atomic.Int64 // total messages received by dispatch
-	dropCount     atomic.Int64 // messages dropped (pending-buffer overflow)
-	bufferedCount atomic.Int64 // messages held for a not-yet-registered handler
+	// clk sources time for the startup grace window. Defaults to
+	// clock.System; the Session injects its (possibly fake) clock.
+	clk clock.Clock
+	// graceWindow is how long unmatched publishes are buffered after a
+	// (re)connect before being treated as orphans. Immutable after
+	// construction.
+	graceWindow time.Duration
+	// graceDeadline is the instant after which an unmatched publish is
+	// acked-and-dropped rather than buffered. Guarded by mu; reset on
+	// every beginGrace.
+	graceDeadline time.Time
+	// graceTimer fires graceWindow after each beginGrace so buffered
+	// orphans are swept even when the broker stops delivering (its
+	// in-flight window is full of un-acked orphans). Guarded by mu.
+	graceTimer   clock.Timer
+	graceStarted bool // grace worker goroutine started; guarded by mu
+	// unsubscribe issues a best-effort UNSUBSCRIBE for an orphan topic.
+	// Set by NewSession; nil in tests / the legacy Route path.
+	unsubscribe func(topic string)
+	// unsubscribed dedups the orphan warn log + unsubscribe per topic.
+	// Guarded by mu.
+	unsubscribed map[string]struct{}
+	// unsubCh feeds orphan topics to the single grace worker goroutine so
+	// the (network-blocking) UNSUBSCRIBE never runs on the paho publish
+	// callback. Created by beginGrace; nil until then. Guarded by mu.
+	unsubCh chan string
+	// stop terminates the grace worker goroutine; closed once by shutdown.
+	stop     chan struct{}
+	stopOnce sync.Once
+
+	logger           *slog.Logger
+	metrics          ports.MetricsExporter
+	routeCount       atomic.Int64 // total messages received by dispatch
+	dropCount        atomic.Int64 // messages dropped (pending-buffer overflow)
+	bufferedCount    atomic.Int64 // messages held for a not-yet-registered handler
+	unmatchedDropped atomic.Int64 // orphan messages acked-and-dropped past grace
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -99,16 +142,58 @@ type pendingPublish struct {
 // acknowledgement.
 const defaultPendingLimit = 65535
 
-func newRouter(logger *slog.Logger, metrics ports.MetricsExporter) *router {
+// routerOption customises a router at construction (functional options
+// so new knobs do not churn the newRouter signature).
+type routerOption func(*router)
+
+// withRouterClock injects the clock sourcing the startup grace window.
+// A nil clock keeps the clock.System default.
+func withRouterClock(clk clock.Clock) routerOption {
+	return func(r *router) {
+		if clk != nil {
+			r.clk = clk
+		}
+	}
+}
+
+// withUnmatchedGrace sets the startup grace window. Values <= 0 keep the
+// DefaultUnmatchedGrace default.
+func withUnmatchedGrace(d time.Duration) routerOption {
+	return func(r *router) {
+		if d > 0 {
+			r.graceWindow = d
+		}
+	}
+}
+
+// withUnsubscribe installs the callback the router uses to unsubscribe an
+// orphan topic identified past the grace window. Nil disables the
+// unsubscribe-on-resume hygiene (ack-and-drop still happens).
+func withUnsubscribe(fn func(topic string)) routerOption {
+	return func(r *router) { r.unsubscribe = fn }
+}
+
+func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
 	}
-	return &router{
+	r := &router{
 		handlers:     make(map[string]routerHandler),
 		pendingLimit: defaultPendingLimit,
+		clk:          clock.System,
+		graceWindow:  DefaultUnmatchedGrace,
+		unsubscribed: make(map[string]struct{}),
+		stop:         make(chan struct{}),
 		logger:       logger,
 		metrics:      metrics,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	// Seed the grace deadline so an unmatched publish arriving before the
+	// first beginGrace (no connection yet) is buffered, not dropped.
+	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
+	return r
 }
 
 // setPendingLimit bounds the pending buffer; values < 1 keep the
@@ -121,6 +206,141 @@ func (r *router) setPendingLimit(n int) {
 	r.mu.Lock()
 	r.pendingLimit = n
 	r.mu.Unlock()
+}
+
+// beginGrace (re)starts the unmatched-publish grace window for the
+// current broker connection. It is called on every OnConnectionUp so a
+// resumed session gets a fresh window covering re-subscription and
+// receiver re-registration; without the restart, the second connection's
+// backlog would be judged against a long-expired deadline and dropped as
+// orphan traffic. The single grace worker goroutine is started lazily on
+// the first call and re-armed (Timer.Reset) on subsequent calls, so a
+// router that never connects (unit tests constructing it directly) spawns
+// no goroutine.
+func (r *router) beginGrace() {
+	r.mu.Lock()
+	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
+	if r.graceStarted {
+		if r.graceTimer != nil {
+			r.graceTimer.Reset(r.graceWindow)
+		}
+		r.mu.Unlock()
+		return
+	}
+	r.graceStarted = true
+	r.graceTimer = r.clk.NewTimer(r.graceWindow)
+	r.unsubCh = make(chan string, orphanUnsubBuffer)
+	timerC := r.graceTimer.C()
+	unsubCh := r.unsubCh
+	r.mu.Unlock()
+
+	go r.graceLoop(timerC, unsubCh)
+}
+
+// orphanUnsubBuffer bounds the in-memory queue of orphan topics awaiting
+// an UNSUBSCRIBE. Orphan topics are few (one per removed route) and the
+// send is non-blocking, so this only needs to absorb a burst; on overflow
+// the topic is not marked seen, so a later orphan publish retries it.
+const orphanUnsubBuffer = 256
+
+// graceLoop is the SINGLE background goroutine of the grace subsystem. It
+// sweeps buffered orphans when the grace timer fires and drains the
+// orphan-unsubscribe queue, until shutdown. Both channels are captured by
+// value so the select never races beginGrace (the timer is only Reset,
+// never reassigned; unsubCh is set once). Owning the network-blocking
+// UNSUBSCRIBE here keeps it off the paho publish-callback goroutine and
+// avoids the WaitGroup Add/Wait hazard of per-topic goroutines.
+func (r *router) graceLoop(timerC <-chan time.Time, unsubCh <-chan string) {
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-timerC:
+			r.sweepUnmatched()
+		case topic := <-unsubCh:
+			if r.unsubscribe != nil {
+				r.unsubscribe(topic)
+			}
+		}
+	}
+}
+
+// sweepUnmatched acks-and-drops every publish still buffered when the
+// grace window ends. After grace, a pending entry matches no registered
+// handler (a matching registration would have flushed it), so it is an
+// orphan: acking frees the broker's Receive-Maximum slot and unblocks
+// in-order acking for the rest of the session even when no further
+// traffic arrives to drive the dispatch path. Each orphan's exact topic
+// is queued for a single (deduped) UNSUBSCRIBE. Runs on the grace worker.
+func (r *router) sweepUnmatched() {
+	r.mu.Lock()
+	if len(r.pending) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	orphans := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+
+	for i := range orphans {
+		r.dropUnmatched(orphans[i].pub, orphans[i].ack)
+	}
+	for i := range orphans {
+		r.enqueueUnsub(orphans[i].pub.Topic)
+	}
+}
+
+// enqueueUnsub records topic as a seen orphan and queues a single
+// best-effort UNSUBSCRIBE for it (deduped, one warn per topic — a natural
+// rate limit). The queue send is non-blocking; on overflow, or before the
+// grace worker exists (nil channel), the topic is left unseen so a later
+// orphan publish retries. Ack-and-drop of the publish itself is
+// unconditional and handled separately by dropUnmatched.
+func (r *router) enqueueUnsub(topic string) {
+	r.mu.Lock()
+	if _, seen := r.unsubscribed[topic]; seen {
+		r.mu.Unlock()
+		return
+	}
+	// A nil channel makes this select fall through to default (send on a
+	// nil channel blocks forever) — the no-worker / legacy path.
+	select {
+	case r.unsubCh <- topic:
+		r.unsubscribed[topic] = struct{}{}
+		r.mu.Unlock()
+		if r.logger != nil {
+			r.logger.Warn("mqtt: unmatched publish past startup grace — orphan broker subscription; "+
+				"acking, dropping, and unsubscribing to converge broker state",
+				"topic", topic,
+			)
+		}
+	default:
+		r.mu.Unlock()
+	}
+}
+
+// dropUnmatched acks (freeing the broker in-flight slot) and drops one
+// publish that matched no registered handler past the grace window. The
+// ack is exactly the PUBACK/PUBCOMP the buffered orphan would otherwise
+// never send; QoS 0 carries no ack. Metric + counter make the otherwise
+// silent drop observable.
+func (r *router) dropUnmatched(pub *pahov5.Publish, ack func() error) {
+	r.unmatchedDropped.Add(1)
+	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1)
+	if ack != nil {
+		if err := ack(); err != nil {
+			logging.Debug(r.logger, "mqtt: ack of dropped unmatched (orphan) publish failed",
+				"topic", pub.Topic,
+				"error", err,
+			)
+		}
+	}
+}
+
+// shutdown terminates the grace worker goroutine. Idempotent; called by
+// Session.Close.
+func (r *router) shutdown() {
+	r.stopOnce.Do(func() { close(r.stop) })
 }
 
 // onPublishReceived is the Paho client's publish callback (installed
@@ -165,8 +385,9 @@ func (r *router) Route(pb *packets.Publish) {
 // dispatch). Each handler receives an independent copy of the Publish
 // — struct, Payload and Properties are copied so handlers can safely
 // inspect the data without racing on shared backing arrays. When no
-// handler matches, the publish is buffered (bounded) until a matching
-// handler registers.
+// handler matches, the publish is buffered (bounded) within the startup
+// grace window, or acked-and-dropped (and its topic unsubscribed) as an
+// orphan broker subscription once the window has elapsed.
 func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 	if pub == nil {
 		return
@@ -181,25 +402,37 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 		}
 	}
 	if len(matching) == 0 {
-		buffered := r.bufferLocked(pub, ack)
-		r.mu.Unlock()
-		if buffered {
-			r.bufferedCount.Add(1)
-			r.metrics.Counter(MetricMQTTRouterBuffered, 1)
-			logging.Debug(r.logger, "mqtt: buffered message (no matching handler registered yet)",
-				"topic", pub.Topic,
-				"qos", pub.QoS,
-			)
-		} else {
-			r.dropCount.Add(1)
-			r.metrics.Counter(MetricMQTTRouterDropped, 1)
-			if r.logger != nil {
-				r.logger.Warn("mqtt: dropped message (pending buffer full)",
+		// Within the startup grace window an unmatched publish is the
+		// legitimate CONNACK backlog racing receiver registration: buffer
+		// it (un-acked) for a handler that is about to register. Past the
+		// window it is an orphan broker subscription: ack + drop it so its
+		// un-acked slot stops pinning the broker's in-flight window and
+		// head-of-line-blocking in-order acks, then unsubscribe its topic.
+		if r.clk.Now().Before(r.graceDeadline) {
+			buffered := r.bufferLocked(pub, ack)
+			r.mu.Unlock()
+			if buffered {
+				r.bufferedCount.Add(1)
+				r.metrics.Counter(MetricMQTTRouterBuffered, 1)
+				logging.Debug(r.logger, "mqtt: buffered message (no matching handler registered yet)",
 					"topic", pub.Topic,
 					"qos", pub.QoS,
 				)
+			} else {
+				r.dropCount.Add(1)
+				r.metrics.Counter(MetricMQTTRouterDropped, 1)
+				if r.logger != nil {
+					r.logger.Warn("mqtt: dropped message (pending buffer full)",
+						"topic", pub.Topic,
+						"qos", pub.QoS,
+					)
+				}
 			}
+			return
 		}
+		r.mu.Unlock()
+		r.dropUnmatched(pub, ack)
+		r.enqueueUnsub(pub.Topic)
 		return
 	}
 	r.mu.Unlock()
@@ -466,6 +699,12 @@ func (r *router) PendingCount() int {
 // Stats returns diagnostic counters for the message router.
 func (r *router) Stats() (received, dropped int64) {
 	return r.routeCount.Load(), r.dropCount.Load()
+}
+
+// UnmatchedDroppedCount returns the number of orphan publishes acked and
+// dropped after the startup grace window elapsed.
+func (r *router) UnmatchedDroppedCount() int64 {
+	return r.unmatchedDropped.Load()
 }
 
 // RegisterEnvelope adapts a domain-shaped handler so port-side files

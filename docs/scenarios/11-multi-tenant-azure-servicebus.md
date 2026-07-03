@@ -284,19 +284,20 @@ receivers:
   - id: ordered-recv
     transport: servicebus
     options:
-      queue_name: ordered-tasks
-      session_id: "partition-1"
+      receiver:
+        queue_name: ordered-tasks
+        session_id: "partition-1"
 ```
 
-### Prefetch Tuning
+### Receiver Batch Size
 
-The `prefetch` option controls the AMQP link credit -- how many messages the broker pushes to the client proactively. Higher values improve throughput but increase memory usage and risk lock expiration for slow consumers.
+`receiver.max_messages` bounds how many messages a single `ReceiveMessages` poll pulls from the broker (default 10, capped at 100); `receiver.max_wait_time` bounds how long that poll waits before returning idle (floored at 1s). There is no prefetch knob -- `azservicebus` manages AMQP link credit internally, so tuning happens through the receive batch size.
 
-| Scenario | Recommended `prefetch` |
-|----------|----------------------|
-| Low-latency, small messages | 50--100 |
-| Large messages, slow processing | 0--10 |
-| High-throughput batch processing | 100--250 |
+| Workload | `receiver.max_messages` |
+|----------|------------------------|
+| Low-latency, small messages | 1--10 |
+| Large messages, slow processing | 1--5 |
+| High-throughput batch processing | 50--100 |
 
 ## Go Bootstrap
 

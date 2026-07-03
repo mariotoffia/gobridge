@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // fakeDDB is an in-package dynamoAPI seam that lets unit tests drive the
@@ -117,6 +118,7 @@ func newFakeStore(f *fakeDDB) *Store {
 		clk:                clock.System,
 		resolveMaxAttempts: defaultResolveMaxAttempts,
 		resolveBackoff:     0, // deterministic: no wall-clock backoff in tests
+		metrics:            &ports.NoopExporter{},
 		keys:               newKeyCache(defaultMaxKeyCache),
 	}
 }
@@ -352,6 +354,80 @@ func TestClaim_RecordRaceLost_SkipsRecord(t *testing.T) {
 	if len(claimed) != 0 {
 		t.Fatalf("expected 0 claimed records, got %d", len(claimed))
 	}
+}
+
+// FIX 4: a per-record claim aborted by a DynamoDB TransactionConflict is still
+// a benign skip (no error, no record), but it must be COUNTED via
+// shared.MetricOutboxClaimConflicts so a Claim under-filling because of contention is
+// observable — and a plain record-level ConditionalCheckFailed (a normal lost
+// race) must NOT be counted.
+func TestClaim_TransactionConflict_CountsMetricAndSkips(t *testing.T) {
+	t.Run("conflict is counted with partition tag", func(t *testing.T) {
+		f := newFakeDDB()
+		f.getItemFn = fenceGetItem("5")
+		f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+				pendingQueryItem("PART#hot", "OUTBOX#env-1#bind-1", "rec-1"),
+			}}, nil
+		}
+		// Fence check passed (item 0 "None"); the record update lost to a
+		// concurrent writer with a transaction conflict (item 1).
+		f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, transactCanceled("None", "TransactionConflict")
+		}
+		rec := &ports.RecordingExporter{}
+		s := newFakeStore(f)
+		s.metrics = rec
+
+		claimed, err := s.Claim(context.Background(), "PART#hot", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+		if err != nil {
+			t.Fatalf("transaction conflict must not error: %v", err)
+		}
+		if len(claimed) != 0 {
+			t.Fatalf("expected 0 claimed records on conflict, got %d", len(claimed))
+		}
+
+		entries := rec.FindEntries(shared.MetricOutboxClaimConflicts)
+		if len(entries) != 1 {
+			t.Fatalf("expected exactly 1 %s counter, got %d", shared.MetricOutboxClaimConflicts, len(entries))
+		}
+		if entries[0].Kind != "counter" || entries[0].IValue != 1 {
+			t.Fatalf("conflict metric must be a counter incremented by 1, got %+v", entries[0])
+		}
+		var tagged bool
+		for _, tag := range entries[0].Tags {
+			if tag.Key == shared.TagKeyPartition && tag.Value == "PART#hot" {
+				tagged = true
+			}
+		}
+		if !tagged {
+			t.Fatalf("conflict metric must carry the partition tag %q=PART#hot, tags=%v",
+				shared.TagKeyPartition, entries[0].Tags)
+		}
+	})
+
+	t.Run("record-level condition failure is NOT counted", func(t *testing.T) {
+		f := newFakeDDB()
+		f.getItemFn = fenceGetItem("5")
+		f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+				pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+			}}, nil
+		}
+		f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+			return nil, transactCanceled("None", "ConditionalCheckFailed")
+		}
+		rec := &ports.RecordingExporter{}
+		s := newFakeStore(f)
+		s.metrics = rec
+
+		if _, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10); err != nil {
+			t.Fatalf("record-race loss must not error: %v", err)
+		}
+		if got := len(rec.FindEntries(shared.MetricOutboxClaimConflicts)); got != 0 {
+			t.Fatalf("a benign record-level lost race must not emit %s, got %d", shared.MetricOutboxClaimConflicts, got)
+		}
+	})
 }
 
 // Every per-record claim must pair the record update with a ConditionCheck

@@ -21,9 +21,9 @@ GoBridge splits credentials along **two orthogonal axes**:
    `ports.PushCredentialStore` (both defined in
    [`ports/credentials.go`](../ports/credentials.go)).
 2. **Scope** -- what the credential controls on the transport. The
-   rotation payload is the single struct `domain.CredentialSet`,
+   rotation payload is the single struct `connectivity.CredentialSet`,
    which currently carries two capability fields: `Password` and
-   `TLS` ([`domain/credentials.go`](../domain/credentials.go)).
+   `TLS` ([`domain/connectivity/credentials.go`](../domain/connectivity/credentials.go)).
 
 ```mermaid
 flowchart LR
@@ -55,7 +55,7 @@ need to rebuild** when that event arrives.
 
 ```go
 type PullCredentialStore interface {
-    Resolve(ctx context.Context, uri string) (*domain.CredentialSet, error)
+    Resolve(ctx context.Context, uri string) (*connectivity.CredentialSet, error)
 }
 ```
 
@@ -72,7 +72,7 @@ compatibility; the builder still accepts either name via
 
 ```go
 type PushCredentialStore interface {
-    Watch(ctx context.Context, uri string) (<-chan *domain.CredentialSet, error)
+    Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error)
 }
 ```
 
@@ -82,7 +82,7 @@ whenever the backing material changes. Required contract:
 1. The channel is **closed** when `ctx` is cancelled, the store is
    closed, or a terminal backend error occurs.
 2. Implementations **MUST dedup** using `CredentialSet.Equal` -- only
-   emit when credentials actually differ from the previous snapshot.
+   emit when credentials differ from the previous snapshot.
 3. The first value MAY be emitted eagerly (initial snapshot) or
    lazily (on first rotation). Callers don't rely on the timing.
 
@@ -194,7 +194,7 @@ secret rather than serving a stale one.
 
 ```go
 type CredentialAware interface {
-    ApplyCredentials(ctx context.Context, creds *domain.CredentialSet) error
+    ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error
 }
 ```
 
@@ -299,14 +299,14 @@ session's `username`/`password`) and keeping `broker_url` credential-free.
 Structured logs are emitted at `DEBUG` level by each transport's
 `ApplyCredentials`, for example:
 
-```
+```text
 msg="mqtt: applying rotated credentials; reconnecting" client_id=...
 msg="amqp091: credentials rotated; forcing reconnect" password_changed=true tls_changed=false
 ```
 
 Failed applies log at `WARN`:
 
-```
+```text
 msg="credential refresh: ApplyCredentials failed" uri=... error=...
 ```
 
@@ -317,7 +317,7 @@ surface the rotation impact on operational dashboards.
 
 Suppose you want to support OAuth2 bearer tokens:
 
-1. **Domain.** Add the field to `domain.CredentialSet`:
+1. **Domain.** Add the field to `connectivity.CredentialSet`:
    ```go
    type CredentialSet struct {
        Password *PasswordCredential
@@ -348,7 +348,7 @@ Suppose you want to support OAuth2 bearer tokens:
 2. Add `ApplyCredentials(ctx, *CredentialSet) error` on the same
    type. The type now satisfies `bridge.CredentialAware`.
 3. Inside `ApplyCredentials`:
-   - Accept nil/empty sets without error (returning nil is fine).
+   - Accept nil/empty sets without error (returning nil is accepted).
    - Dedup against last-applied material.
    - Perform the transport-appropriate rebuild (close conn,
      rebuild client, etc.).
@@ -382,7 +382,7 @@ Suppose you want to support OAuth2 bearer tokens:
 ## References
 
 - [`ports/credentials.go`](../ports/credentials.go) -- interface definitions
-- [`domain/credentials.go`](../domain/credentials.go) -- `CredentialSet`, `Equal`
+- [`domain/connectivity/credentials.go`](../domain/connectivity/credentials.go) -- `CredentialSet`, `Equal`
 - [`bridge/credential_refresh.go`](../bridge/credential_refresh.go) -- `CredentialRefresher`, `CredentialAware`
 - [`runtime/credentials/poll.go`](../runtime/credentials/poll.go) -- `PollBasedWrapper`
 - [`docs/credentials-and-http-api.md`](credentials-and-http-api.md) -- build-time resolution, URI schemes

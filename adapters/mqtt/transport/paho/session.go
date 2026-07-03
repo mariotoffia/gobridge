@@ -110,22 +110,30 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			)
 		}
 	}
-	r := newRouter(logger, m)
-	if opts.ReceiveMaximum > 0 {
-		// Bound the pre-registration pending buffer by the same window
-		// that bounds the broker's un-acked QoS 1/2 in-flight publishes.
-		r.setPendingLimit(int(opts.ReceiveMaximum))
-	}
-	return &Session{
+	s := &Session{
 		opts:       opts,
 		mode:       mode,
 		logger:     logger,
 		metrics:    m,
 		clk:        opts.Clock,
 		events:     make(chan ports.SessionEvent, 16),
-		router:     r,
 		activeSubs: make(map[string]byte),
 	}
+	// The router shares the session's (possibly fake) clock so the startup
+	// grace window is deterministic under test, and calls back through
+	// s.unsubscribeOrphan to converge broker state for orphan topics.
+	r := newRouter(logger, m,
+		withRouterClock(opts.Clock),
+		withUnmatchedGrace(opts.UnmatchedGrace),
+		withUnsubscribe(s.unsubscribeOrphan),
+	)
+	if opts.ReceiveMaximum > 0 {
+		// Bound the pre-registration pending buffer by the same window
+		// that bounds the broker's un-acked QoS 1/2 in-flight publishes.
+		r.setPendingLimit(int(opts.ReceiveMaximum))
+	}
+	s.router = r
+	return s
 }
 
 // ConnectionManager returns the underlying autopaho.ConnectionManager.

@@ -140,15 +140,23 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 //     immediately with a version-fenced UpdateItem. This is skew-immune: no
 //     wall-clock comparison is involved.
 //
-//   - An ACTIVELY-HELD lease is taken over through a local-clock OBSERVATION
-//     window (finding M5): the taker seizes only after it has seen the owner's
-//     liveness tuple (owner, version, renewed_at) unchanged for at least the
-//     lease's own declared TTL, measured on the TAKER's clock. The seize is
-//     fenced on that exact tuple, so a renewal that lands after observation
-//     began aborts the takeover. The previous implementation compared the
-//     owner-written expires_at to the taker's clock, so a taker with a fast
-//     clock could seize an unexpired lease; the observation window removes that
-//     cross-clock comparison entirely.
+//   - An ACTIVELY-HELD lease whose owner is THIS ownerID (a crashed-and-
+//     restarted node whose row still names it) is seized immediately, fenced on
+//     the current (owner, version). A node cannot race itself — duplicate
+//     ownerIDs across nodes are a fatal misconfiguration, not a supported
+//     topology — so the observation window is skipped, sparing the restarted
+//     owner from watching its OWN stale tuple for a full TTL (which would leave
+//     the partition ownerless for up to ~2×TTL).
+//
+//   - An ACTIVELY-HELD lease held by a DIFFERENT owner is taken over through a
+//     local-clock OBSERVATION window (finding M5): the taker seizes only after
+//     it has seen the owner's liveness tuple (owner, version, renewed_at)
+//     unchanged for at least the lease's own declared TTL, measured on the
+//     TAKER's clock. The seize is fenced on that exact tuple, so a renewal that
+//     lands after observation began aborts the takeover. The previous
+//     implementation compared the owner-written expires_at to the taker's
+//     clock, so a taker with a fast clock could seize an unexpired lease; the
+//     observation window removes that cross-clock comparison entirely.
 //
 // Residual assumption: a standby that starts observing only AFTER the owner has
 // already died needs up to ~2×TTL to seize (it must observe the now-final tuple
@@ -228,6 +236,29 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 // observeOrSeize implements the local-clock observation-based takeover of an
 // actively-held lease (finding M5).
 func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string, now, expiresAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
+	// Same-owner fast path: the lease row still names THIS ownerID as owner.
+	// The only writer that ever stamps owner=ownerID is this node — duplicate
+	// ownerIDs across distinct nodes are a fatal misconfiguration, not a
+	// supported topology (a fencing token cannot protect against two live
+	// processes claiming one identity). A node therefore cannot race itself,
+	// so seize immediately, fenced on the exact (owner, version) just read: a
+	// concurrent takeover by a DIFFERENT owner (which increments version) still
+	// aborts this claim via the ConditionExpression and falls back to
+	// ErrAlreadyExists. This spares a crashed-and-restarted owner (fresh
+	// process, empty observation map) from observing its OWN stale tuple for a
+	// full TTL before reclaiming — otherwise the partition stays ownerless for
+	// up to ~2×TTL.
+	if row.owner == ownerID {
+		s.clearObservation(leaseID)
+		return s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
+			"#own = :cur_own AND #ver = :cur_ver",
+			nil,
+			map[string]ddbtypes.AttributeValue{
+				":cur_own": &ddbtypes.AttributeValueMemberS{Value: row.owner},
+				":cur_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(row.version)},
+			})
+	}
+
 	obs, ok := s.observationFor(leaseID)
 	tupleChanged := !ok || obs.owner != row.owner || obs.version != row.version || obs.renewedAt != row.renewedAt
 	if tupleChanged {

@@ -25,6 +25,18 @@ const (
 	// router's bounded pending buffer instead of being dropped.
 	MetricMQTTRouterBuffered = "MQTTRouterBuffered"
 
+	// MetricMQTTRouterUnmatchedDropped counts publishes that matched NO
+	// registered topic filter AFTER the startup grace window elapsed — the
+	// signature of an orphan broker-side subscription (a route removed from
+	// config whose subscription survives on the resumed clean_start=false
+	// session). Such a publish is acked-and-dropped so its un-acked slot no
+	// longer pins the broker's Receive-Maximum in-flight window and no
+	// longer head-of-line-blocks in-order acking for the rest of the
+	// session. A steadily rising count means the broker is still delivering
+	// for a subscription no configured route covers; see the router's
+	// unsubscribe-on-resume hygiene (acl_router.go, doc.go).
+	MetricMQTTRouterUnmatchedDropped = "MQTTRouterUnmatchedDropped"
+
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
 	// 0x8E/0x8F (session taken over): another client connected with the
 	// same ClientID. A steadily increasing count signals two instances

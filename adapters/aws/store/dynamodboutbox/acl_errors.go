@@ -36,6 +36,18 @@ func transactCancellationCodes(err error) ([]string, bool) {
 	return codes, true
 }
 
+// hasCode reports whether any per-item cancellation reason equals code (e.g.
+// "TransactionConflict"). Used to distinguish contention (a concurrent write
+// touched the same item) from a benign lost race on the record condition.
+func hasCode(codes []string, code string) bool {
+	for _, c := range codes {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
+
 func isResourceInUse(err error) bool {
 	var riue *ddbtypes.ResourceInUseException
 	return errors.As(err, &riue)

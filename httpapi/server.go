@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -500,10 +501,12 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 
 func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		client := actorFromRequest(r)
+		// Throttle key is the transport peer (RemoteAddr host), never the
+		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
+		client := throttleKeyFromRequest(r)
 		if s.authThrottle.throttled(client) {
 			s.emitAudit(r, "auth.throttled", "admin", "", "failure", nil)
-			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}
@@ -521,10 +524,12 @@ func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		client := actorFromRequest(r)
+		// Throttle key is the transport peer (RemoteAddr host), never the
+		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
+		client := throttleKeyFromRequest(r)
 		if s.authThrottle.throttled(client) {
 			s.emitAudit(r, "auth.throttled", "monitor", "", "failure", nil)
-			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}

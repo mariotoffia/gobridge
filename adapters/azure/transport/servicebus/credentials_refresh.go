@@ -148,68 +148,115 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 // ApplyCredentials rotates the Receiver's Service Bus credentials.
 // Same contract as Sender.ApplyCredentials: a complete replacement
 // stack (client handle + receiver seam + retry scheduler) is built
-// from the new material and atomically swapped in under the stack
-// lock; the poll loop's next snapshot (currentClient) picks it up.
-// The live client is NEVER nilled — if the rebuild fails, the old
-// stack stays in place (its credentials may keep working until
-// expiry) and the error is returned for the supervisor to retry.
+// from the new material and swapped in, and cfg.Connection is advanced
+// ONLY after a successful build (commitStack). The live client is
+// NEVER nilled on a build failure of a non-session receiver — the old
+// stack stays in place (its credentials may keep working until expiry)
+// and a re-push of the same credentials retries the build because
+// cfg.Connection was never mutated.
 //
 // In-flight deliveries keep settling against the link they were
 // received on (rawInbound pins the client); once the old link closes,
 // their unsettled locks lapse and the broker redelivers — normal
 // at-least-once semantics.
 //
-// Ordering: for non-session receivers the new stack is built FIRST and
-// the old one closed after the swap. A session receiver is the
-// opposite corner: the new accept cannot succeed while the old link
-// still holds the session lock, so the old stack is closed first and
-// the accept (with its rolling-deploy retry) runs after; during that
-// gap the poll loop sees transient receive errors on the closed link
-// and backs off — degraded but never nil, never a panic.
+// Ordering differs by mode:
+//
+//   - Non-session: build the new stack FIRST, then commit-and-swap on
+//     success and close the old stack. If the build fails the old stack
+//     keeps polling and cfg.Connection is unchanged — a degraded-but-
+//     alive receiver that a retry (same credentials) can heal.
+//
+//   - Session: the new accept cannot win the exclusive session lock
+//     while the old link still holds it, so the old stack is closed
+//     FIRST (beginSessionRebuild) and the new accept — with its
+//     rolling-deploy retry — runs after. cfg.Connection stays
+//     UNCOMMITTED and the receiver is left in a rebuild-pending state
+//     until the build succeeds: re-pushing the SAME credentials is not
+//     short-circuited (cfg.Connection never advanced), and the poll
+//     loop (rebuildPendingStack) retries the build with the pending
+//     connection, so a build failure during rotation self-heals instead
+//     of bricking the receiver until restart.
 func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
 
 	r.initMu.Lock()
-	newConn, changed := credentialsToConnection(r.cfg.Connection, set)
-	if !changed {
-		r.initMu.Unlock()
-		return nil
+	// When a session rebuild is already pending, compute the new
+	// connection against the (uncommitted) pending target so an
+	// identical re-push is recognised as "no further change" yet still
+	// drives the outstanding rebuild rather than short-circuiting.
+	base := r.cfg.Connection
+	if r.rebuildPending {
+		base = r.pendingConn
 	}
-	r.cfg.Connection = newConn
+	newConn, changed := credentialsToConnection(base, set)
 	injected := r.cfg.Client != nil
-	started := r.client != nil
+	started := r.client != nil || r.rebuildPending
 	sessionMode := r.cfg.SessionID != ""
+	pending := r.rebuildPending
 	r.initMu.Unlock()
 
+	if !changed && !pending {
+		return nil
+	}
+
 	if injected || !started {
-		// Injected test client: nothing to rebuild. Not started yet:
-		// ensureClient builds from the updated Connection on Run.
+		// Injected test client: nothing to rebuild (Connection is
+		// ignored). Not started yet: stash the new connection so the
+		// cold build on Run uses it. cfg.Connection is safe to commit
+		// here because there is no live stack to invalidate.
+		r.initMu.Lock()
+		r.cfg.Connection = newConn
+		r.initMu.Unlock()
 		return nil
 	}
 
 	if sessionMode {
-		old := r.swapStack(receiverStack{})
+		// Exclusive session semantics: close the old link before the
+		// rebuild, recording the target as pending WITHOUT committing
+		// cfg.Connection.
+		old := r.beginSessionRebuild(newConn)
 		old.close(ctx)
+
+		stack, err := r.build(ctx, newConn)
+		if err != nil {
+			// cfg.Connection stays uncommitted and rebuildPending stays
+			// set: the poll loop (or a re-push of the same credentials)
+			// retries with pendingConn — visible, recoverable, never a
+			// nil-panic, never short-circuited.
+			return fmt.Errorf("servicebus: rebuild session receiver stack for %q: %w", r.entityName(), err)
+		}
+
+		old = r.commitStack(stack, newConn)
+		old.close(ctx)
+
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug,
+				"servicebus: receiver session stack rotated",
+				"entity", r.entityName(),
+				"session_id", r.cfg.SessionID,
+			)
+		}
+		return nil
 	}
 
-	stack, err := r.buildStack(ctx, newConn)
+	// Non-session: build FIRST, commit-and-swap only on success so a
+	// failed build leaves the old stack polling and cfg.Connection
+	// unchanged.
+	stack, err := r.build(ctx, newConn)
 	if err != nil {
-		// Non-session: old stack still installed and polling. Session:
-		// the poll loop errors with backoff until a later rotation (or
-		// restart) succeeds — visible, recoverable, no nil panic.
-		return err
+		return fmt.Errorf("servicebus: rebuild receiver stack for %q: %w", r.entityName(), err)
 	}
 
-	old := r.swapStack(stack)
+	old := r.commitStack(stack, newConn)
 	old.close(ctx)
 
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug,
 			"servicebus: receiver stack rotated",
 			"entity", r.entityName(),
-			"session_id", r.cfg.SessionID,
 		)
 	}
 	return nil

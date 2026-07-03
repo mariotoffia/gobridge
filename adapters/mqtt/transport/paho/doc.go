@@ -29,11 +29,34 @@
 //     callback — so a slow downstream fills the broker's Receive Maximum
 //     window (un-acked QoS 1/2 messages) and stops read-ahead instead of
 //     spawning unbounded goroutines (backpressure).
-//   - Startup buffering instead of startup loss: publishes arriving before
-//     a matching Receiver registers (persistent-session backlog delivered
-//     on CONNACK before route runners start) are held un-acked in a
-//     bounded buffer and flushed, in order, when the handler registers —
-//     never silently acked-and-dropped (see acl_router.go).
+//   - Startup buffering, then orphan ack-and-drop: publishes arriving
+//     before a matching Receiver registers (persistent-session backlog
+//     delivered on CONNACK before route runners start) are held un-acked
+//     in a bounded buffer during a startup GRACE WINDOW (session
+//     unmatched_grace, default 30s, restarted on every (re)connect) and
+//     flushed, in order, when the handler registers — never silently
+//     acked-and-dropped. AFTER the window a still-unmatched publish is an
+//     ORPHAN broker subscription (a route removed from config whose
+//     subscription survives on the resumed clean_start=false session): it
+//     is acked-and-dropped (MetricMQTTRouterUnmatchedDropped) so its
+//     un-acked slot stops pinning the broker's Receive-Maximum in-flight
+//     window and head-of-line-blocking in-order acks for the whole
+//     session, and its exact topic is unsubscribed to converge broker
+//     state (see acl_router.go). Without this, one permanently-un-acked
+//     orphan publish stalls ingress for every route on the shared session.
+//     Unsubscribe-on-resume hygiene: MQTT offers no way to list a
+//     session's server-side subscriptions, so an orphan cannot be
+//     detected by diffing a subscription list. Instead the delta is
+//     tracked the only way the protocol allows — a publish that is still
+//     unmatched AFTER the grace window (i.e. after the session plan
+//     reconciliation has settled and every receiver has registered its
+//     filters) identifies its own topic as orphaned, and the adapter
+//     issues UNSUBSCRIBE for that exact topic (deduped per topic,
+//     rate-limited to one warn + one unsubscribe per topic). A wildcard
+//     orphan subscription may survive the concrete-topic UNSUBSCRIBE, but
+//     its publishes keep being acked-and-dropped, so the stall cannot
+//     recur. The mechanism converges broker state without a
+//     subscription-listing API.
 //   - Per-receiver topic filtering: each Receiver registers the MQTT topic
 //     filters of its subscriptions (wildcards + and # supported); a
 //     publish is dispatched only to receivers whose filters match, so

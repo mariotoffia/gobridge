@@ -52,6 +52,7 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("PersistBatchInternalDuplicate", func(t *testing.T) { testPersistBatchInternalDuplicate(t, store) })
 	t.Run("ClaimTransitionsStatus", func(t *testing.T) { testClaimTransitionsStatus(t, store) })
 	t.Run("ClaimRespectsLimit", func(t *testing.T) { testClaimRespectsLimit(t, store) })
+	t.Run("ClaimLimitReturnsOldestN", func(t *testing.T) { testClaimLimitReturnsOldestN(t, store) })
 	t.Run("ClaimVersionPreemptsPriorOwner", func(t *testing.T) { testClaimVersionPreemptsPriorOwner(t, store) })
 	t.Run("CompleteWithValidToken", func(t *testing.T) { testCompleteWithValidToken(t, store) })
 	t.Run("CompleteWithWrongToken", func(t *testing.T) { testCompleteWithWrongToken(t, store) })
@@ -257,6 +258,118 @@ func testClaimRespectsLimit(t *testing.T, store ports.OutboxStore) {
 	}
 	if len(claimed) != 3 {
 		t.Fatalf("expected 3, got %d", len(claimed))
+	}
+}
+
+// testClaimLimitReturnsOldestN pins WHICH records a limited Claim selects, not
+// merely how many (that is testClaimRespectsLimit). When more records are
+// claimable than `limit`, Claim must return exactly the OLDEST-N by ascending
+// (created_at, seq) — the same set `ORDER BY created_at, seq LIMIT ?` yields on
+// the SQL backends — and in ascending order. The envelope IDs here are
+// deliberately assigned in DESCENDING lexical order relative to age, so a
+// backend that selects the first-N in key/envelope-ID order (as a naive
+// DynamoDB Query+Limit does) returns the NEWEST records and fails: under a
+// sustained backlog that starves the oldest records indefinitely and reorders
+// ordering-sensitive partitions. A same-created_at pair (olderN-1/olderN-2)
+// forces the seq tiebreak to decide the boundary, not the timestamp alone.
+func testClaimLimitReturnsOldestN(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour).UTC()
+
+	// Persist order fixes seq (ascending). offset is the created_at delta in
+	// seconds; env is the envelope ID, assigned so lexical order is the INVERSE
+	// of age (env-oldn-8 is oldest, env-oldn-4 is newest).
+	type spec struct {
+		id     string
+		offset int
+		env    string
+	}
+	// olderN-1 and olderN-2 share created_at (offset 10); seq (persist order)
+	// breaks the tie so olderN-1 (persisted first) sorts before olderN-2.
+	specs := []spec{
+		{"oldn-1", 10, "env-oldn-8"},
+		{"oldn-2", 10, "env-oldn-7"},
+		{"oldn-3", 20, "env-oldn-6"},
+		{"oldn-4", 30, "env-oldn-5"},
+		{"oldn-5", 40, "env-oldn-4"},
+	}
+	for _, s := range specs {
+		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
+			ID:         s.id,
+			EnvelopeID: s.env,
+			BindingID:  "bind-" + s.id,
+			SessionID:  "sess-oldn",
+			Address:    "test/topic",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
+				ID:      s.env,
+				Subject: "test-subject",
+				Payload: []byte(`{"data":"value"}`),
+			}),
+			CreatedAt: base.Add(time.Duration(s.offset) * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("new record %s: %v", s.id, err)
+		}
+		if err := store.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
+			t.Fatalf("persist %s: %v", s.id, err)
+		}
+	}
+
+	token := persistence.LeaseToken{Version: 1, Owner: "owner-oldn"}
+	claimed, err := store.Claim(ctx, "SESSION#sess-oldn", token, 3)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("expected 3 claimed, got %d", len(claimed))
+	}
+
+	// Exactly the oldest 3 by (created_at, seq), in ascending order.
+	wantOldest := []string{"oldn-1", "oldn-2", "oldn-3"}
+	for i, rec := range claimed {
+		if rec.ID() != wantOldest[i] {
+			gotIDs := make([]string, len(claimed))
+			for j, r := range claimed {
+				gotIDs[j] = r.ID()
+			}
+			t.Fatalf("limited Claim must return the oldest-N by (created_at, seq) ascending: got %v, want %v",
+				gotIDs, wantOldest)
+		}
+	}
+	// Ascending (created_at, seq): each record is not-older than its predecessor,
+	// and same-timestamp pairs are ordered by strictly increasing seq.
+	for i := 1; i < len(claimed); i++ {
+		prev, cur := claimed[i-1], claimed[i]
+		if cur.CreatedAt().Before(prev.CreatedAt()) {
+			t.Fatalf("claim order not ascending by created_at at %d: %v before %v",
+				i, cur.CreatedAt(), prev.CreatedAt())
+		}
+		if cur.CreatedAt().Equal(prev.CreatedAt()) && cur.Seq() <= prev.Seq() {
+			t.Fatalf("equal created_at at %d must order by strictly increasing seq: seq[%d]=%d seq[%d]=%d",
+				i, i-1, prev.Seq(), i, cur.Seq())
+		}
+	}
+
+	// Anti-starvation: the two NEWEST records were left unclaimed and remain
+	// claimable. A second claim (same token version — the oldest 3 are now
+	// claimed at this version and no longer claimable) drains exactly them,
+	// proving the lexically-late envelope IDs were not starved.
+	rest, err := store.Claim(ctx, "SESSION#sess-oldn", token, 3)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	wantRest := []string{"oldn-4", "oldn-5"}
+	if len(rest) != len(wantRest) {
+		gotIDs := make([]string, len(rest))
+		for j, r := range rest {
+			gotIDs[j] = r.ID()
+		}
+		t.Fatalf("second claim must drain the remaining newest records: got %v, want %v", gotIDs, wantRest)
+	}
+	for i, rec := range rest {
+		if rec.ID() != wantRest[i] {
+			t.Fatalf("second claim order at %d: got %q, want %q", i, rec.ID(), wantRest[i])
+		}
 	}
 }
 

@@ -116,6 +116,23 @@ func (rt *Runtime) RouteLocator() ports.RouteLocator {
 // envelope is cloned to prevent caller mutation. An ID is assigned if
 // the envelope's ID field is empty.
 func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.Envelope) error {
+	return rt.injectToBinding(ctx, routeID, "", env)
+}
+
+// InjectToBinding is Inject with the dispatch confined to a single binding.
+// The binding ID travels out-of-band on the synthetic delivery (never as a
+// message header), so it survives the ingress reserved-header strip that
+// removes any external x-bridge.route-override. Only trusted internal callers
+// reach this path: the admin DLQ redrive uses it so replaying one failed
+// fan-out leg re-persists a record (shared_outbox) or dispatches (direct_hold)
+// for that binding ALONE, never the N-1 healthy destinations. An empty
+// bindingID is equivalent to Inject. Returns shared.ErrNotFound when the route
+// does not exist.
+func (rt *Runtime) InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
+	return rt.injectToBinding(ctx, routeID, bindingID, env)
+}
+
+func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
 	rt.mu.Lock()
 	if !rt.running {
 		rt.mu.Unlock()
@@ -141,13 +158,17 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 		}
 	}
 
-	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env})
+	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env, binding: bindingID})
 }
 
 // syntheticDelivery implements ports.Delivery for programmatically
 // injected messages that have no underlying transport.
 type syntheticDelivery struct {
 	env *messaging.Envelope
+	// binding, when non-empty, confines dispatch to the named binding. It is
+	// read by the route runner via the bindingOverrider interface AFTER the
+	// ingress reserved-header strip, keeping this a trusted internal-only steer.
+	binding string
 }
 
 func (d *syntheticDelivery) Envelope() *messaging.Envelope { return d.env }
@@ -156,3 +177,7 @@ func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) e
 	return shared.ErrNotSupported
 }
 func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }
+
+// BindingOverride satisfies the route runner's bindingOverrider contract,
+// exposing the binding-scoped route override out-of-band (not via a header).
+func (d *syntheticDelivery) BindingOverride() string { return d.binding }

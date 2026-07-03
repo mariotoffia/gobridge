@@ -75,7 +75,7 @@ routes:
 - **`options.session`** -- Connection settings group under a `session` key.
 - **`broker_url`** -- Single broker endpoint. Use `broker_urls` for a list.
 - **`client_id`** -- Must be unique per MQTT connection. If two bridges connect with the same client_id, the broker disconnects one.
-- Session mode defaults to **`ephemeral`** (clean session), which is fine for a simple forwarder.
+- Session mode defaults to **`ephemeral`** (clean session), which suits a simple forwarder.
 
 ### `receivers`
 - **`session_id: mqtt-conn`** -- Shares the MQTT connection defined above. No need to repeat `transport`.

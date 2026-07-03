@@ -3,12 +3,20 @@ package paho
 import (
 	"context"
 	"maps"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// orphanUnsubscribeTimeout bounds a single best-effort UNSUBSCRIBE issued
+// for an orphan topic (a broker-retained subscription for a route removed
+// from config). It is deliberately short: the ack-and-drop in the router
+// already unblocked the in-flight window, so this converge step must not
+// hang Close.
+const orphanUnsubscribeTimeout = 10 * time.Second
 
 // Reconcile diffs the desired SessionPlan against current subscriptions and
 // issues Subscribe / Unsubscribe to reach the desired state.
@@ -49,6 +57,59 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// delta was already satisfied) still signals reconciled.
 	s.pushEvent(ports.SessionReconciled, nil)
 	return nil
+}
+
+// unsubscribeOrphan issues a best-effort UNSUBSCRIBE for a topic whose
+// publishes matched no configured receiver filter after the router's
+// startup grace window — a broker-retained subscription for a route
+// removed from config. Because clean_start=false resumes the persistent
+// session, the broker keeps such an orphan subscription and keeps
+// delivering QoS 1/2 publishes for it; the router already acks-and-drops
+// those to free the in-flight window, and this call converges the broker
+// state so redelivery stops.
+//
+// MQTT exposes no subscription listing, so the orphan is identified only
+// by its own post-grace publish and unsubscribed by that EXACT topic
+// name. A wildcard orphan subscription may therefore survive (UNSUBSCRIBE
+// matches the filter, not a concrete topic), but its publishes keep being
+// acked-and-dropped, so the stall cannot recur. The router dedups per
+// topic, so this runs at most once per orphan topic per process.
+//
+// It is invoked from the router's own goroutine (never the paho publish
+// callback), tracked by the router WaitGroup so Session.Close awaits it.
+func (s *Session) unsubscribeOrphan(topic string) {
+	s.mu.Lock()
+	cm := s.cm
+	closed := s.closed
+	s.mu.Unlock()
+	if cm == nil || closed {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), orphanUnsubscribeTimeout)
+	defer cancel()
+
+	if err := cm.Unsubscribe(ctx, []string{topic}); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("mqtt: failed to unsubscribe orphan topic",
+				"client_id", s.opts.ClientID,
+				"topic", topic,
+				"error", MapError(err),
+			)
+		}
+		return
+	}
+
+	s.mu.Lock()
+	delete(s.activeSubs, topic)
+	s.mu.Unlock()
+
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: unsubscribed orphan topic",
+			"client_id", s.opts.ClientID,
+			"topic", topic,
+		)
+	}
 }
 
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {

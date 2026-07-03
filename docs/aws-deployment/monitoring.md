@@ -103,7 +103,7 @@ sends each line to CloudWatch Logs as-is:
 
 Find errors in the last hour:
 
-```
+```text
 fields @timestamp, @message
 | filter level = "ERROR"
 | sort @timestamp desc
@@ -112,7 +112,7 @@ fields @timestamp, @message
 
 Track configuration reload events:
 
-```
+```text
 fields @timestamp, msg, error
 | filter msg like /config reload/
 | sort @timestamp desc
@@ -120,7 +120,7 @@ fields @timestamp, msg, error
 
 Trace a single request by correlation ID:
 
-```
+```text
 fields @timestamp, msg, correlation_id, route_id
 | filter correlation_id = "abc-123"
 | sort @timestamp asc
@@ -128,7 +128,7 @@ fields @timestamp, msg, correlation_id, route_id
 
 Count errors by route over the last 24 hours:
 
-```
+```text
 fields route_id
 | filter level = "ERROR"
 | stats count(*) as error_count by route_id

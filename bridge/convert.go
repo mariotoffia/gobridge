@@ -79,6 +79,15 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 	// configures renew_interval, letting the session manager derive it from
 	// LeaseTTL otherwise (contract C3).
 	sc.RenewInterval = 0
+	// DefaultConfig also pins RenewJitter (5s). The manager derives jitter only
+	// when BOTH RenewInterval and RenewJitter are zero (manager.go: derived
+	// only if RenewJitter==0 && renewIntervalDerived); leaving the pinned 5s
+	// suppresses derivation, so a lease_ttl-only session gets a fixed 5s jitter
+	// instead of the derived renew/4 -- and with a small lease_ttl the
+	// expiry-margin clamp then fires on every boot. Reset it to zero for the
+	// same reason as RenewInterval, overriding only when lease_renew_jitter is
+	// set explicitly (contract C3: the production path leaves both zero).
+	sc.RenewJitter = 0
 
 	if rs.LeaseTTL != "" {
 		d, err := time.ParseDuration(rs.LeaseTTL)

@@ -427,8 +427,13 @@ schemas:
     required: [ids]
     description: >
       Request body for redriving specific DLQ messages. Each entry is
-      looked up, re-injected into its original route, and deleted from
-      the DLQ on success. Duplicate IDs are deduplicated automatically.
+      claimed by deleting it from the DLQ FIRST, then re-injected into its
+      original route — confined to the single binding that failed, so
+      redriving one leg of a fan-out route does not duplicate deliveries to
+      the healthy bindings. Claim-before-inject gives at-most-once semantics:
+      if the process crashes between the delete and the inject the entry is
+      dropped rather than delivered twice (a best-effort restore closes most
+      of that window). Duplicate IDs are deduplicated automatically.
     properties:
       ids:
         type: array
@@ -449,7 +454,9 @@ schemas:
     properties:
       redriven:
         type: integer
-        description: Messages successfully re-injected and deleted from the DLQ.
+        description: >
+          Messages claimed (deleted from the DLQ) and successfully re-injected
+          into their original route.
         example: 2
       failed:
         type: integer

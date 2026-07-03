@@ -129,7 +129,7 @@ graph TD
 
 1. MQTT broker delivers a message on `telemetry/temperature/sensor-42`
 2. Receiver wraps it in an `Envelope` with:
-   - `Subject` = the logical event subject from the publisher's `gobridge.subject` MQTT user property when present, otherwise empty for plain MQTT producers
+   - `Subject` = the logical event subject from the publisher's `gobridge.subject` MQTT user property when present, otherwise empty for producers that set no user properties
    - `Payload` = raw message bytes
    - `Headers` = bridge metadata (`mqtt.topic` = `telemetry/temperature/sensor-42`, plus correlation-id, traceparent, etc.)
 3. Route processes it (no processors in this example)

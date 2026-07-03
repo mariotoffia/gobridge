@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -12,7 +13,40 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
+
+// redriveTimeout bounds the detached claim→inject→restore sequence for a single
+// redrive batch so a stuck inject or store cannot hang the handler forever once
+// the request context is severed from cancellation.
+const redriveTimeout = 30 * time.Second
+
+// bindingInjector is the optional capability a Runtime exposes for
+// binding-scoped synthetic injection. The concrete runtime implements
+// InjectToBinding so the admin DLQ redrive can confine a replay to the single
+// binding that failed (carried out-of-band, surviving the ingress reserved-
+// header strip). The ports.Runtime contract stays minimal; adapters type-assert
+// for the capability and fall back to a plain Inject when it is absent.
+type bindingInjector interface {
+	InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error
+}
+
+// injectRedrive injects env into routeID, confining dispatch to the entry's
+// binding when the runtime supports binding-scoped injection. Redriving one
+// failed leg of a fan-out shared_outbox route must NOT re-persist records for
+// the N-1 healthy bindings, so a non-empty bindingID takes the out-of-band
+// InjectToBinding path. A header cannot carry the binding: doHandleDelivery
+// strips x-bridge.route-override at ingress before any consumption site reads
+// it, which is exactly the security property that keeps external messages from
+// steering routing.
+func injectRedrive(ctx context.Context, rt ports.RuntimeCommand, routeID, bindingID string, env *messaging.Envelope) error {
+	if bindingID != "" {
+		if bi, ok := rt.(bindingInjector); ok {
+			return bi.InjectToBinding(ctx, routeID, bindingID, env)
+		}
+	}
+	return rt.Inject(ctx, routeID, env)
+}
 
 // dlqEntryView is the HTTP-layer representation of a DLQ entry.
 // It uses snake_case JSON tags consistent with the rest of the API.
@@ -285,6 +319,14 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	var successIDs []string
 	var redriveErrors []redriveError
 
+	// Detach the claim→inject→restore sequence from the request context so an
+	// operator disconnect mid-batch cannot cancel an in-flight restore and
+	// permanently lose a claimed (already-deleted) entry — the claim-by-delete
+	// below makes that loss irreversible. A bounded timeout still caps a stuck
+	// inject or store call.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveTimeout)
+	defer cancel()
+
 	seen := make(map[string]struct{}, len(body.IDs))
 	for _, id := range body.IDs {
 		if _, dup := seen[id]; dup {
@@ -292,7 +334,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[id] = struct{}{}
 
-		entry, err := reader.Get(r.Context(), id)
+		entry, err := reader.Get(opCtx, id)
 		if err != nil {
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: "entry not found",
@@ -309,7 +351,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		// delivery, which is the correct bias for a manual redrive; the inject
 		// failure path below best-effort restores the entry to close most of
 		// that window.
-		deleted, err := admin.Delete(r.Context(), []string{id})
+		deleted, err := admin.Delete(opCtx, []string{id})
 		if err != nil {
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: "failed to claim entry for redrive",
@@ -325,16 +367,14 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Binding-scoped dispatch: the entry records the exact BindingID that
-		// failed. Setting HeaderRouteOverride confines the replay to that one
-		// binding (direct-hold routes honor it) so the N-1 healthy bindings on
-		// a fan-out route do not receive duplicate deliveries. Snapshot returns
-		// a fresh deep copy, so mutating its headers is safe.
+		// failed. injectRedrive carries that binding out-of-band via
+		// Runtime.InjectToBinding (NOT a header — the ingress reserved-header
+		// strip in doHandleDelivery removes any x-bridge.route-override before a
+		// consumption site reads it), confining the replay to that one binding so
+		// the N-1 healthy bindings on a fan-out route do not receive duplicate
+		// deliveries. Snapshot returns a fresh deep copy.
 		env := entry.Snapshot()
-		if bid := entry.BindingID(); bid != "" {
-			env.SetHeader(messaging.HeaderRouteOverride, bid)
-		}
-
-		if err := rt.Inject(r.Context(), entry.RouteID(), env); err != nil {
+		if err := injectRedrive(opCtx, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
 			msg := "inject failed"
 			if errors.Is(err, shared.ErrNotFound) {
 				msg = "route not found"
@@ -342,7 +382,7 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			// Inject failed after we claimed the entry: best-effort restore so
 			// the failure evidence is not lost. If restore itself fails, flag
 			// the entry as dropped so the operator can investigate.
-			if restoreErr := admin.Write(r.Context(), entry); restoreErr != nil {
+			if restoreErr := admin.Write(opCtx, entry); restoreErr != nil {
 				msg += " (entry lost: restore failed)"
 			}
 			redriveErrors = append(redriveErrors, redriveError{
@@ -358,10 +398,15 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	if len(redriveErrors) > 0 {
 		outcome = "partial_failure"
 	}
+	failedIDs := make([]string, len(redriveErrors))
+	for i := range redriveErrors {
+		failedIDs[i] = redriveErrors[i].ID
+	}
 	s.emitAudit(r, "dlq.redrive", "dlq", "", outcome, map[string]any{
-		"redriven": len(successIDs),
-		"failed":   len(redriveErrors),
-		"ids":      body.IDs,
+		"redriven":   len(successIDs),
+		"failed":     len(redriveErrors),
+		"ids":        body.IDs,
+		"failed_ids": failedIDs,
 	})
 
 	resp := map[string]any{

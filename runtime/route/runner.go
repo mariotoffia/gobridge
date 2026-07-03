@@ -324,6 +324,20 @@ func (r *RouteRunner) fireIdle() {
 	close(old)
 }
 
+// bindingOverrider is an out-of-band, trusted channel for a binding-scoped
+// route override. Only internally-constructed synthetic deliveries (the admin
+// DLQ redrive via Runtime.InjectToBinding) implement it; transport-created
+// deliveries never do. doHandleDelivery re-stamps HeaderRouteOverride from this
+// source AFTER the ingress reserved-header strip, so an external message can
+// never steer routing through x-bridge.route-override (the strip removes any it
+// carried), while an operator redriving a single failed fan-out leg still
+// confines the replay to that one binding.
+type bindingOverrider interface {
+	// BindingOverride returns the binding ID the delivery must be confined to,
+	// or "" when no override applies.
+	BindingOverride() string
+}
+
 // HandleDelivery is the synchronous entry point used by Runtime.Inject.
 func (r *RouteRunner) HandleDelivery(ctx context.Context, del ports.Delivery) error {
 	if err := r.acquireSlots(ctx); err != nil {
@@ -368,6 +382,22 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 	r.injectHeaders(env)
+
+	// Re-stamp a binding-scoped route override carried out-of-band by a trusted
+	// synthetic delivery (operator DLQ redrive via Runtime.InjectToBinding). The
+	// StripReservedHeaders call above removed any x-bridge.route-override an
+	// external payload may have carried, so external messages can never steer
+	// routing; only a delivery that implements bindingOverrider — constructed
+	// inside the runtime, never by a transport adapter — can re-introduce it. The
+	// stamp precedes the chain clone below so it flows through the processor
+	// chain and survives mergeProcessedEnvelope onto the dispatch envelope, where
+	// directHold / sharedOutbox consume it and confine the replay to that one
+	// binding (no duplicate deliveries to the N-1 healthy fan-out legs).
+	if bo, ok := del.(bindingOverrider); ok {
+		if bid := bo.BindingOverride(); bid != "" {
+			env.SetHeader(messaging.HeaderRouteOverride, bid)
+		}
+	}
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "delivery received",

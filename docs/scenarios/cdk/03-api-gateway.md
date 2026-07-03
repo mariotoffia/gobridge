@@ -179,14 +179,14 @@ and ACM. The CDK code below:
 
 After deployment, partners reach the API at:
 
-```
+```text
 https://api.example.com/v1/transport/http/receivers/{id}/messages
 ```
 
 ## Complete CDK Code
 
-Below is the full stack combining the `GoBridgeSingle` facade, NLB, VPC Link,
-REST API, usage plans, and custom domain.
+The full stack combines the `GoBridgeSingle` facade, NLB, VPC Link,
+REST API, usage plans, and custom domain:
 
 ```go
 package main

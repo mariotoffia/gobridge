@@ -21,8 +21,10 @@ canonical names, see the **shared kernel** rows in
 
 ## How to use this page
 
-1. Find the `code` field in your structured log line, DLQ entry
-   (`DLQEntry.ErrorCode`), or metric tag (`gobridge_errors_total{code="…"}`).
+1. Find the `code` field in your structured log line or DLQ entry
+   (`DLQEntry.ErrorCode`). Error codes are **not** exposed as a metric
+   tag; the runtime emits a single route-scoped counter, `RouteErrors`
+   (tagged `route_id`), for the aggregate error rate per route.
 2. Jump to the matching section below.
 3. Apply the recovery action; if a metric is listed under "Related metrics",
    verify the fix by watching it return to baseline.
@@ -46,7 +48,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   config block (transport `options`, processor `timeout`, store driver
   config) — but only after confirming the latency is legitimate, not a
   symptom of a broken peer.
-* **Related metrics.** `gobridge_errors_total{code="TIMEOUT"}`,
+* **Related metrics.** `RouteErrors{route_id="…"}`,
   per-route latency histograms.
 
 ### `CONNECTION_LOST`
@@ -59,7 +61,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   reconnect loop, ASB SDK). If reconnects loop, check broker logs for
   rejected credentials, duplicate `client_id`, or TLS issues.
 * **Related metrics.** Session reconnect counters,
-  `gobridge_errors_total{code="CONNECTION_LOST"}`.
+  `RouteErrors{route_id="…"}`.
 
 ### `UNAVAILABLE`
 
@@ -70,7 +72,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   region-wide throttling.
 * **Recovery.** Wait through the backoff window. Escalate to the
   dependency's status page if duration exceeds your SLO budget.
-* **Related metrics.** `gobridge_errors_total{code="UNAVAILABLE"}`,
+* **Related metrics.** `RouteErrors{route_id="…"}`,
   upstream/downstream success ratios.
 
 ### `THROTTLED`
@@ -83,7 +85,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Inspect the `RetryAfter` hint on the error; the runtime
   honours it. If chronic, request a quota increase, enable batching, or
   reduce per-route `MaxInFlight` to smooth the burst pattern.
-* **Related metrics.** `gobridge_errors_total{code="THROTTLED"}`,
+* **Related metrics.** `RouteErrors{route_id="…"}`,
   outbox depth gauge (rises when egress is throttled).
 
 ### `BROKER_BUSY`
@@ -120,7 +122,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   owner. If chronic, inspect the `LeaseStore` (DynamoDB) for stuck or
   stale lease records and verify all instances see the same store.
 * **Related metrics.** Lease churn counters,
-  `gobridge_errors_total{code="NO_ROUTE_OWNER"}`.
+  `RouteErrors{route_id="…"}`.
 
 ### `FORWARD_FAILED`
 
@@ -131,7 +133,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Verify peer connectivity (the endpoints stored on
   `LeaseInfo.Endpoints` must be routable). Check the cluster
   endpoint resolver configuration.
-* **Related metrics.** `gobridge_errors_total{code="FORWARD_FAILED"}`,
+* **Related metrics.** `RouteErrors{route_id="…"}`,
   cluster forward latency.
 
 ### `PROCESSOR_TIMEOUT`
@@ -143,7 +145,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   if the latency is legitimate and bounded. Otherwise refactor to push
   the slow work asynchronously or behind a circuit breaker.
 * **Related metrics.** Per-processor latency histograms,
-  `gobridge_errors_total{code="PROCESSOR_TIMEOUT"}`.
+  `RouteErrors{route_id="…"}`.
 
 ---
 
@@ -327,7 +329,7 @@ the source of the failure.
 * **Recovery.** Treat as a P1 bug — the DLQ entry's `LastError` carries
   the panic message and stack. Fix the processor and replay the affected
   DLQ entries.
-* **Related metrics.** `gobridge_errors_total{code="PROCESSOR_PANIC"}`.
+* **Related metrics.** `RouteErrors{route_id="…"}`.
 
 ### `INTERNAL`
 
@@ -370,7 +372,7 @@ the source of the failure.
 * **Recovery.** Indicates a logic error. For native / managed stores
   this should not occur; for custom store adapters, verify the store
   implements the [`OutboxStore` contract test
-  suite](../adapters/native/store/sqlite).
+  suite](../adapters/native/store/sqliteoutbox).
 
 ### `OUTBOX_ALREADY_TERMINAL`
 
@@ -425,8 +427,6 @@ the bridge cannot meaningfully retain).
 
 ---
 
----
-
 ## Adapter & runtime diagnostic metrics
 
 These counters were added to make specific failure and degradation modes
@@ -440,7 +440,8 @@ sustained non-zero rate.
 
 | Metric | When it increments | What a rising value means |
 |--------|--------------------|---------------------------|
-| `MQTTRouterBuffered` | A publish arrived before any matching handler was registered (e.g. a persistent-session backlog delivered on CONNACK before `Receiver.Run`) and was held in the router's bounded pending buffer instead of being dropped (`acl_router.go:188`). | Normal in small bursts at reconnect; a large or growing value means handlers register too slowly or the backlog exceeds the buffer. |
+| `MQTTRouterBuffered` | A publish arrived before any matching handler was registered (e.g. a persistent-session backlog delivered on CONNACK before `Receiver.Run`) and was held in the router's bounded pending buffer during the `unmatched_grace` window instead of being immediately acked-and-dropped (`acl_router.go:416`). | Normal in small bursts at reconnect; a large or growing value means handlers register too slowly or the backlog exceeds the buffer. Publishes still unmatched when the grace window closes graduate to `MQTTRouterUnmatchedDropped`. |
+| `MQTTRouterUnmatchedDropped` | A publish still matched **no** registered topic filter after the `unmatched_grace` window elapsed: it was acked, dropped, and its exact topic UNSUBSCRIBEd (deduped, one warn per topic) to converge broker state (`acl_router.go:329`). | The signature of an orphan broker-side subscription -- a route removed from config whose subscription survived on the resumed `clean_start=false` session. Expected as a one-shot right after a route removal; a continuously rising value means the broker keeps delivering for a subscription no configured route covers -- investigate the removed route (or a surviving wildcard subscription that the concrete-topic UNSUBSCRIBE cannot clear). |
 | `MQTTSessionTakeover` | A server disconnect with reason code `0x8E`/`0x8F` (*session taken over*): another client connected with the same ClientID (`session_lifecycle.go:189,223`). | Two instances share a `client_id` and keep kicking each other -- give each replica a distinct ClientID or use an exclusive session. |
 
 ### AMQP 0-9-1 (`adapters/amqp/transport/amqp091`)

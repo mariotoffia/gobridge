@@ -211,7 +211,7 @@ JSON layout in detail.
 
 Organize parameters under a path prefix for clean IAM scoping:
 
-```
+```text
 /gobridge/prod/admin-api-key        (SecureString)
 /gobridge/prod/monitor-api-key      (SecureString)
 /gobridge/prod/mqtt-password         (SecureString)
@@ -257,7 +257,7 @@ awslogs.NewMetricFilter(stack, jsii.String("ConfigReloadFilter"),
 
 ### CloudWatch Logs Insights Queries
 
-```
+```text
 -- Find errors in the last hour
 fields @timestamp, msg, route_id, error | filter level = "ERROR"
 | sort @timestamp desc | limit 50

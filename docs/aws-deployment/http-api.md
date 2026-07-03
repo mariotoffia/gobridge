@@ -197,7 +197,7 @@ patches, and retry the commit.
 
 On network filesystems the check-read and write are **not perfectly atomic**.
 The version CAS provides best-effort protection against concurrent updates from
-multiple instances, but there is a small race window. For truly concurrent
+multiple instances, but there is a small race window. For concurrent
 config management, use the **DynamoDB-backed config profile** instead, which
 provides atomic conditional writes.
 

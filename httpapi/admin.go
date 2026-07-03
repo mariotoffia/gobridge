@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -235,7 +236,10 @@ func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcom
 // X-Forwarded-For hop is preferred when present so per-client attribution
 // survives. NOTE: X-Forwarded-For is client-spoofable unless the edge proxy
 // overwrites it — deployments MUST terminate/normalise XFF at a trusted proxy
-// for this attribution to be authoritative.
+// for this attribution to be authoritative. This value is for AUDIT DISPLAY
+// ONLY; it must never key a security control (see throttleKeyFromRequest for
+// the rate-limiter key), because a spoofable header lets an attacker rotate
+// identities to defeat throttling or spoof a victim's identity to lock them out.
 func actorFromRequest(r *http.Request) string {
 	if r == nil {
 		return "unknown"
@@ -253,4 +257,25 @@ func actorFromRequest(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return "unknown"
+}
+
+// throttleKeyFromRequest returns the auth-throttle key for a request: the host
+// portion of r.RemoteAddr (the transport peer), with the ephemeral port
+// stripped so all connections from one peer share a window. It deliberately
+// IGNORES X-Forwarded-For — that header is client-controlled and, in the shipped
+// AWS ALB topology, APPENDED to rather than overwritten, so keying on it lets an
+// attacker (a) rotate XFF values to evade the limiter entirely, (b) spoof an
+// operator's IP to lock them out, and (c) spray thousands of forged identities
+// to exhaust the tracked-client map and fail the limiter open. RemoteAddr cannot
+// be forged over an established TCP connection, so it is the only trustworthy key.
+func throttleKeyFromRequest(r *http.Request) string {
+	if r == nil || r.RemoteAddr == "" {
+		return "unknown"
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		return host
+	}
+	// RemoteAddr had no port (unusual, e.g. a synthetic test request); use it
+	// verbatim rather than dropping the identity.
+	return r.RemoteAddr
 }

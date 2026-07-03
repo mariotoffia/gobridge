@@ -35,6 +35,14 @@ const (
 	// failures; a rising value under load flags a drain budget too small for the
 	// batch size (see Drainer.drainBatch batch-deadline handling).
 	MetricOutboxDeferred = "OutboxDeferred"
+	// MetricOutboxClaimConflicts counts per-record claim transactions aborted
+	// because a concurrent Persist/Claim/Complete touched the same item — as
+	// distinct from a record-level conditional failure (another claimer
+	// legitimately won the record, which is normal). A rising value explains
+	// why a Claim returned fewer than `limit` records because of CONTENTION
+	// rather than an empty backlog (lag), which is otherwise silent. Tagged
+	// with the partition (TagKeyPartition).
+	MetricOutboxClaimConflicts = "OutboxClaimConflicts"
 	// MetricDrainSkippedNoLease counts drain cycles skipped because the drainer's
 	// TokenFn reported no held lease. A continuously-rising value on a route that
 	// is supposed to drain flags a misconfiguration (e.g. shared_outbox bound to

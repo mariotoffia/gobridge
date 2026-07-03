@@ -41,7 +41,7 @@ flowchart LR
 
 Binding addresses can contain `{placeholder}` tokens. At runtime, GoBridge replaces each placeholder with the corresponding value from the envelope's headers:
 
-```
+```text
 Template:  factory/{factory_id}/orders/{device_id}
 Headers:   factory_id = "A", device_id = "42"
 Result:    factory/A/orders/42

@@ -354,7 +354,20 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	if shared.IsRecoverableError(err) {
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
-		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, err), err)
+
+		// Replay-cap gate. A deterministically-transient chain failure — a
+		// ProcessorTimeout (shared.ErrProcessorTimeout) from an oversized
+		// payload, a catastrophic regex, or a hung transform — would otherwise
+		// retry forever, each attempt holding a concurrency slot for the full
+		// ProcessorTimeout and eventually wedging the route semaphore on brokers
+		// without a native redrive cap. Mirror the sendDirectHold / recoverDelivery
+		// gate: at or above MaxReplayAttempts, poison to the DLQ (or drop-with-
+		// metric under OnPermanentFailure=drop / no store) and settle terminally.
+		rc := receiveCount(env)
+		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+			return r.poisonReplayCapExceeded(ctx, del, env, rc, err, "max_retries")
+		}
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, rc+1, err), err)
 	}
 	// Permanent failure. Honour OnPermanentFailure=drop and the no-store case
 	// by dropping-with-metric; otherwise write the DLQ record.
@@ -371,6 +384,36 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	}
 	r.emitDLQ("permanent")
 	return r.settleTerminal(ctx, del, env, err, attempts)
+}
+
+// poisonReplayCapExceeded terminally sinks a delivery that has reached the
+// MaxReplayAttempts cap on a deterministically-transient failure path (e.g. a
+// repeating processor-chain timeout). It writes a poison record to the DLQ, or
+// drops-with-metric under OnPermanentFailure=drop or when no DLQ store is
+// configured, and settles the delivery exactly once. category tags both the
+// poison message and the DLQ/drop metric. It returns a non-nil error only when
+// the DLQ write itself failed, in which case the delivery is left unsettled and
+// routed through retryOrFallback so the source redelivers rather than silently
+// dropping a poison message that could not be persisted.
+func (r *RouteRunner) poisonReplayCapExceeded(ctx context.Context, del ports.Delivery, env *messaging.Envelope, rc int, cause error, category string) error {
+	attempts := rc + 1
+	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
+		fmt.Sprintf("%s: receive count %d >= max replay attempts %d: %v", category, rc, r.policy.MaxReplayAttempts, cause))
+
+	if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
+		r.emitDrop(category)
+		if r.logger != nil {
+			r.logger.Warn("replay cap reached; dropped",
+				"route", r.routeID, "envelope_id", env.ID(),
+				"receive_count", rc, "category", category, "error", cause)
+		}
+		return r.settleTerminal(ctx, del, env, poisonErr, attempts)
+	}
+	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", poisonErr, rc); dlqErr != nil {
+		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write poison dlq: %w", dlqErr))
+	}
+	r.emitDLQ(category)
+	return r.settleTerminal(ctx, del, env, poisonErr, attempts)
 }
 
 func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {

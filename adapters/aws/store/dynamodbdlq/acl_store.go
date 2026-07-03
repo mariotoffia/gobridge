@@ -533,6 +533,12 @@ const deleteBatchSize = 100
 // DeleteByFilter removes DLQ entries matching the filter criteria and
 // returns the count of entries deleted.
 //
+// The returned count is EXACT even when the eventually-consistent GSI backing
+// List re-surfaces an entry already deleted in an earlier pass: each delete
+// uses ReturnValues ALL_OLD and only deletions that echoed an item (i.e.
+// actually removed a row) are counted, so a redundant idempotent delete of a
+// phantom re-listed entry does not inflate the total.
+//
 // Per the ports.DLQAdmin contract: with filter.Limit <= 0 it deletes EVERY
 // matching entry — it loops List+delete until a pass finds nothing, so the
 // internal List page size (100) never truncates the delete. With a positive
@@ -569,16 +575,26 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 		}
 
 		for _, e := range entries {
-			_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			out, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 				TableName: aws.String(s.tableName),
 				Key: map[string]ddbtypes.AttributeValue{
 					attrPK: &ddbtypes.AttributeValueMemberS{Value: dlqKey(e.ID())},
 				},
+				// ReturnValues ALL_OLD makes DeleteItem echo the item it removed.
+				// DeleteItem is idempotent, so an entry re-listed by the
+				// eventually-consistent GSI after it was already deleted this
+				// pass deletes a second time as a no-op and returns EMPTY
+				// Attributes; counting only non-empty results keeps the returned
+				// total the exact number of entries actually removed rather than
+				// the number of delete calls issued.
+				ReturnValues: ddbtypes.ReturnValueAllOld,
 			})
 			if err != nil {
 				return total, wrapErr(err, "dlq delete_by_filter delete failed", "entryID", e.ID())
 			}
-			total++
+			if len(out.Attributes) > 0 {
+				total++
+			}
 		}
 
 		if remaining > 0 {

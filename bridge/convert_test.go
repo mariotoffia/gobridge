@@ -159,6 +159,29 @@ func TestToSessionConfig_DerivesRenewIntervalFromTTL(t *testing.T) {
 	}
 }
 
+// TestToSessionConfig_DerivesRenewJitterFromTTL is the regression for FIX 6:
+// session.DefaultConfig pins RenewJitter to a fixed 5s, and toSessionConfig only
+// reset RenewInterval, leaving the 5s jitter in place. The session manager
+// derives jitter (renew/4) ONLY when BOTH RenewInterval and RenewJitter are
+// zero, so a lease_ttl-only session got a fixed 5s jitter instead of the derived
+// value — and with a small lease_ttl the expiry-margin clamp fired on every
+// boot. When only lease_ttl is configured, RenewJitter must be left ZERO so the
+// manager derives it downstream.
+func TestToSessionConfig_DerivesRenewJitterFromTTL(t *testing.T) {
+	rs := &ports.RouteSessionDef{SessionID: "s1", LeaseTTL: "45s"}
+
+	sc := toSessionConfig(rs)
+	if sc == nil {
+		t.Fatal("expected non-nil SessionConfig")
+	}
+	if sc.RenewInterval != 0 {
+		t.Fatalf("RenewInterval must be zero (derived from TTL downstream) when only lease_ttl is set; got %v", sc.RenewInterval)
+	}
+	if sc.RenewJitter != 0 {
+		t.Fatalf("RenewJitter must be zero (derived as renew/4 downstream) when only lease_ttl is set; got %v (DefaultConfig's pinned 5s leaked through)", sc.RenewJitter)
+	}
+}
+
 // TestToSessionConfig_LeaseRenewJitter validates that the lease_renew_jitter
 // YAML field is plumbed into session.Config.RenewJitter (contract C3).
 func TestToSessionConfig_LeaseRenewJitter(t *testing.T) {

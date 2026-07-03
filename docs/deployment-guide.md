@@ -1,12 +1,9 @@
 # Deployment Guide
 
-This guide covers deployment considerations for GoBridge regardless of the
-target platform. Whether you deploy on AWS, GCP, Kubernetes, or bare metal,
-the topics here apply universally: deployment topology, configuration delivery,
-secret management, networking, health checks, observability, and scaling.
-
-For cloud-specific guidance, see the [What's Next](#whats-next) section at the
-end.
+This guide covers deployment considerations for GoBridge on any platform --
+AWS, GCP, Kubernetes, or bare metal: deployment topology, configuration
+delivery, secret management, networking, health checks, observability, and
+scaling. For cloud-specific guidance, see [What's Next](#whats-next).
 
 ## Deployment Models
 
@@ -137,24 +134,16 @@ flowchart LR
 
 ### What Gets Resolved
 
-1. **Admin API key** -- The `admin_api_key_param` field points to an SSM
-   `SecureString` parameter. The runtime reads this at startup and uses it
-   to authenticate admin API requests.
-
-2. **Monitor API key** -- Optional. When `monitor_api_key_param` is set, it
-   provides a separate key for the monitor API. Otherwise, the admin key is
-   used for both.
-
-3. **HTTP receiver/sender API keys** -- The `http_receiver_api_key_params`
-   and `http_sender_api_key_params` maps associate receiver/sender IDs with
-   SSM parameter paths. These are resolved and injected into the transport
-   options before the runtime builds.
-
-4. **Transport credentials** -- Sessions, receivers, and senders can specify
-   a `credentials_uri` in their options. The `pms://` scheme resolves
-   credentials from SSM Parameter Store; the `file://` scheme reads from
-   disk. See [Credentials & HTTP API](credentials-and-http-api.md) for
-   the full credential URI reference.
+1. **Admin API key** -- `admin_api_key_param` points to an SSM `SecureString`
+   read at startup to authenticate admin API requests.
+2. **Monitor API key** -- Optional `monitor_api_key_param` gives the monitor
+   API a separate key; otherwise the admin key covers both.
+3. **HTTP receiver/sender API keys** -- `http_receiver_api_key_params` and
+   `http_sender_api_key_params` map receiver/sender IDs to SSM paths, resolved
+   into the transport options before the runtime builds.
+4. **Transport credentials** -- A `credentials_uri` in session/receiver/sender
+   options resolves from SSM (`pms://`) or disk (`file://`). See
+   [Credentials & HTTP API](credentials-and-http-api.md).
 
 ### Bootstrap Config Example with Secrets
 
@@ -174,9 +163,8 @@ flowchart LR
 
 ## Networking and Ports
 
-GoBridge runs three independent HTTP servers on separate ports. This
-separation enables fine-grained network policies: management traffic stays
-internal while transport traffic can be selectively exposed.
+GoBridge runs three independent HTTP servers on separate ports, so network
+policies can keep management traffic internal while exposing transport traffic.
 
 ### Port Architecture
 
@@ -221,9 +209,8 @@ flowchart TD
 
 ## Health Checks and Graceful Shutdown
 
-GoBridge provides health, liveness, and readiness probes on the monitor
-server, plus configurable shutdown behavior for clean container lifecycle
-management.
+GoBridge exposes health, liveness, and readiness probes on the monitor server,
+plus configurable shutdown behavior for clean container lifecycle management.
 
 ### Health Endpoints
 
@@ -386,8 +373,7 @@ jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 logger := slog.New(observability.NewCorrelationHandler(jsonHandler))
 ```
 
-We recommend `info` level for production and `debug` for staging. Set the
-level via the `bridge.log_level` config field.
+We recommend `info` level for production and `debug` for staging, set via `bridge.log_level`.
 
 ### Metrics Export
 
@@ -408,7 +394,7 @@ for the full metrics table and Go bootstrap code.
 
 The runtime creates a `bridge.handleDelivery` span around each message delivery
 with attributes for `route_id`, `envelope_id`, and (when an ingress
-`traceparent` is present) `trace_id`. W3C `traceparent` headers are propagated
+`traceparent` is present) `trace_id`; W3C `traceparent` headers propagate
 through the bridge. Use a sampling ratio of 0.1 (10%) in production to control
 costs.
 

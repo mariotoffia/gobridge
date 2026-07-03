@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -139,6 +140,17 @@ type App struct {
 	// production (runtimeTerminal reads the active runtime).
 	terminalProbe func() bool
 
+	// wedged is set once when a prepare/commit swap AND its recoverPrevious
+	// both fail, leaving the App with no active runtime (runtimeRef == nil)
+	// and no path back on its own. Unlike a transient nil during a swap
+	// window, a wedged App bridges nothing and cannot self-heal, so it must
+	// be restarted by the orchestrator. runtimeTerminal reports true while
+	// wedged (so watchTerminal fires and Run exits non-zero) and the monitor
+	// /live probe fails closed via the RuntimeProvider sentinel. This mirrors
+	// cmd/gobridge polling sup.Terminal(), which likewise covers the wedged
+	// nil-runtime case the concrete *runtime.Runtime check alone misses.
+	wedged atomic.Bool
+
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
 	started bool
@@ -255,11 +267,22 @@ func (a *App) Start(ctx context.Context) error {
 		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
 		RuntimeProvider: func() ports.Runtime {
-			rt := a.runtimeRef.Get()
-			if rt == nil {
-				return nil
+			if rt := a.runtimeRef.Get(); rt != nil {
+				return rt
 			}
-			return rt
+			// No active runtime. During a normal swap window this is
+			// transient — return nil so /live stays 200 and the process is
+			// not restarted. Once WEDGED (a prepare/commit swap AND its
+			// recovery both failed) there is no self-recovery path, so
+			// expose a sentinel terminal runtime: the monitor /live probe
+			// (503 only when rt != nil && rt.Terminal()) then fails closed
+			// and the orchestrator restarts the task. This closes the
+			// wedged-nil blind spot on the /live side, matching the terminal
+			// backstop's coverage via runtimeTerminal().
+			if a.wedged.Load() {
+				return terminalRuntime{}
+			}
+			return nil
 		},
 		ConfigStore: &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
 		// ConfigProvider must expose the *effective* (currently running)
@@ -271,6 +294,15 @@ func (a *App) Start(ctx context.Context) error {
 		// live. appliedRef is nil only when nothing is cleanly running, and
 		// every configProvider consumer handles nil (GET /config -> 503).
 		ConfigProvider: a.appliedRef.Get,
+		// ConfigApplier converges the running runtime in-band when a config
+		// is committed through the admin transactions API, reusing the exact
+		// reload path the file watcher drives (applyLogicalConfig) instead of
+		// waiting for the next poll. httpapi invokes it AFTER the durable
+		// write, so a returned error surfaces as committed_not_applied (the
+		// operator reconciles) rather than a false "committed" while the
+		// runtime diverges. Without this wiring the committed_not_applied /
+		// errConfigApplyFailed path is dead in the shipped binary.
+		ConfigApplier: a.applyCommittedConfig,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),
@@ -441,11 +473,15 @@ func (a *App) watchTerminal(ctx context.Context) {
 
 // runtimeTerminal reports whether the active runtime is in an unrecoverable
 // terminal state. The App swaps runtimes directly, so a nil runtime during a
-// swap window is transient (not terminal) — only a live-but-terminal runtime
-// counts. terminalProbe is a test seam; production leaves it nil.
+// swap window is transient (not terminal) — only a live-but-terminal runtime,
+// or a WEDGED App (swap + recovery both failed, leaving no runtime), counts.
+// terminalProbe is a test seam; production leaves it nil.
 func (a *App) runtimeTerminal() bool {
 	if a.terminalProbe != nil {
 		return a.terminalProbe()
+	}
+	if a.wedged.Load() {
+		return true
 	}
 	rt := a.runtimeRef.Get()
 	return rt != nil && rt.Terminal()
@@ -611,18 +647,14 @@ func (a *App) applyPrepareCommit(
 
 func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) {
 	if logical == nil {
-		a.runtimeRef.Set(nil)
-		a.appliedRef.Set(nil)
-		a.handlerRef.Set(http.NotFoundHandler())
+		a.enterWedgedState()
 		return
 	}
 
 	plan, err := a.prepareRuntimePlan(ctx, logical)
 	if err != nil {
 		a.logger.Error("bootstrap: failed to rebuild previous runtime after prepare/commit failure", "error", err)
-		a.runtimeRef.Set(nil)
-		a.appliedRef.Set(nil)
-		a.handlerRef.Set(http.NotFoundHandler())
+		a.enterWedgedState()
 		return
 	}
 
@@ -637,18 +669,50 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 	}
 	if err != nil {
 		a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
-		a.runtimeRef.Set(nil)
-		a.appliedRef.Set(nil)
-		a.handlerRef.Set(http.NotFoundHandler())
+		a.enterWedgedState()
 		return
 	}
 
 	a.installPlan(plan)
 }
 
+// enterWedgedState records that a prepare/commit swap AND its recovery both
+// failed, leaving the App with no active runtime and no self-recovery path. It
+// tears the request-facing surface down to a clean "nothing running" state and
+// latches the wedged flag so runtimeTerminal reports terminal (watchTerminal
+// takes the process down) and the monitor /live probe fails closed via the
+// RuntimeProvider sentinel. The flag is cleared by installPlan if a later
+// reload succeeds.
+func (a *App) enterWedgedState() {
+	a.wedged.Store(true)
+	a.runtimeRef.Set(nil)
+	a.appliedRef.Set(nil)
+	a.handlerRef.Set(http.NotFoundHandler())
+}
+
 func (a *App) installPlan(plan *runtimePlan) {
+	// A successful apply/recovery clears any prior wedged latch: the App now
+	// has an active runtime again and can self-heal.
+	a.wedged.Store(false)
 	a.runtimeRef.Set(plan.runtime)
 	a.appliedRef.Set(plan.logical)
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
+}
+
+// applyCommittedConfig is the httpapi ConfigApplier hook. It converges the
+// running runtime on a config committed through the admin transactions API by
+// driving the same reload path the file watcher uses (applyLogicalConfig),
+// serialized under mu against watchLoop's reloads. httpapi calls it after the
+// durable write, so a returned error is surfaced as committed_not_applied
+// (disk and runtime diverged; the operator reconciles). The subsequent file
+// watcher poll observes the same on-disk version and re-applies idempotently.
+func (a *App) applyCommittedConfig(ctx context.Context, cfg *ports.BridgeConfig) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.logicalRef.Set(cfg)
+	if err := a.applyLogicalConfig(ctx, cfg); err != nil {
+		return fmt.Errorf("bootstrap: apply committed config: %w", err)
+	}
+	return nil
 }

@@ -189,7 +189,7 @@ The `$share/` prefix activates MQTT v5 shared subscriptions. In a shared subscri
 
 **Validation rule:** In clustered mode, MQTT receivers must use either a `$share/` topic prefix or an exclusive session (or both). Without one of these mechanisms, every instance would receive every message, causing duplicates. The config validator enforces this:
 
-```
+```text
 requires $share/ topic prefix or exclusive session
 ```
 
@@ -201,7 +201,7 @@ When set, the bridge does not open the MQTT connection until the lease is acquir
 
 1. **Client ID uniqueness.** MQTT brokers disconnect existing connections when a new client connects with the same `client_id`. Without `connect_after_lease`, both instances would connect simultaneously and fight over the client ID.
 
-2. **Resource conservation.** The standby instance consumes no broker resources until it actually needs to take over.
+2. **Resource conservation.** The standby instance consumes no broker resources until it takes over.
 
 The connection lifecycle is **symmetric**: just as the session connects only *after* the lease is acquired, it is **closed when the lease is lost**. On step-down the instance closes its source session, so it immediately stops consuming and acknowledging source messages while the new owner takes over — this prevents split-brain consumption where a former owner keeps draining the source. In-flight outbox `Send`+`Complete` still drains during `step_down_grace` (that settlement runs on the destination side and does not need the source connection); a source acknowledgement lost on close is redelivered under the at-least-once contract.
 

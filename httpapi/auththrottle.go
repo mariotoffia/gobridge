@@ -114,6 +114,23 @@ func (t *authThrottle) recordSuccess(client string) {
 	t.mu.Unlock()
 }
 
+// retryAfterSeconds returns the Retry-After hint (in whole seconds) a throttled
+// client should wait, derived from the configured failure window rather than a
+// hardcoded constant so it tracks AuthFailureWindow. The window is rounded up so
+// the hint never advises a retry before the window can actually elapse, and it
+// is floored at 1 so a sub-second window still yields a valid header value.
+func (t *authThrottle) retryAfterSeconds() int {
+	window := defaultAuthFailureWindow
+	if t != nil && t.window > 0 {
+		window = t.window
+	}
+	secs := int((window + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
 // pruneLocked drops entries whose window has fully elapsed. Caller holds mu.
 func (t *authThrottle) pruneLocked(now time.Time) {
 	for k, w := range t.clients {

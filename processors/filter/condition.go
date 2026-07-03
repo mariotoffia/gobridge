@@ -443,6 +443,23 @@ func toFloat64(v any) (float64, error) {
 		return float64(val), nil
 	case int32:
 		return float64(val), nil
+	case int16:
+		return float64(val), nil
+	case int8:
+		return float64(val), nil
+	case uint:
+		return float64(val), nil
+	case uint64:
+		// uint64 values above math.MaxInt64 have no int64 representation;
+		// float64(val) converts them directly (with the usual float
+		// precision loss beyond 2^53, which is acceptable for gt/lt).
+		return float64(val), nil
+	case uint32:
+		return float64(val), nil
+	case uint16:
+		return float64(val), nil
+	case uint8:
+		return float64(val), nil
 	case string:
 		f, err := strconv.ParseFloat(val, 64)
 		if err != nil {

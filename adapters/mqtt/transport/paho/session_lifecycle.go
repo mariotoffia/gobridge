@@ -97,6 +97,13 @@ func (s *Session) Close(ctx context.Context) error {
 		cmCancel()
 	}
 
+	// Stop the router's grace-sweep worker before awaiting in-flight
+	// dispatch handlers. shutdown signals the worker to exit; a best-effort
+	// orphan UNSUBSCRIBE already in flight completes on its own (bounded by
+	// orphanUnsubscribeTimeout) and is intentionally NOT awaited here, so
+	// Close latency stays decoupled from a network round-trip.
+	s.router.shutdown()
+
 	done := make(chan struct{})
 	go func() { s.router.Wait(); close(done) }()
 	select {
@@ -159,6 +166,13 @@ func (s *Session) handleConnectionUp() {
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.activeSubs = make(map[string]byte)
 	s.mu.Unlock()
+
+	// Restart the router's unmatched-publish grace window for this
+	// connection: a resumed clean_start=false session begins delivering
+	// its queued backlog on CONNACK before the receivers re-register their
+	// filters, so unmatched publishes must be buffered (not judged orphan)
+	// for one fresh window per connection.
+	s.router.beginGrace()
 
 	s.pushEvent(ports.SessionConnected, nil)
 

@@ -61,6 +61,26 @@ const (
 	expiryIndexName   = "ExpiryIndex"
 	recordIDIndexName = "RecordIDIndex"
 
+	// claimCandidateWindowFactor bounds how many claimable candidates a
+	// single Claim gathers before sorting them oldest-first: up to
+	// claimCandidateWindowFactor*limit items. DynamoDB Query returns items in
+	// SK order (OUTBOX#<envelope_id>#<binding_id> — lexicographic by envelope
+	// ID, which is effectively random with respect to record age), so
+	// claiming the first N items encountered starves records whose envelope
+	// IDs sort late and violates the ascending-(CreatedAt, Seq) claim-ordering
+	// contract that memory/sqlite honour via `ORDER BY created_at, seq LIMIT`.
+	// Collecting a window and sorting it client-side restores oldest-first
+	// selection.
+	//
+	// ponytail: the window is filled in SK order, so a partition whose ready
+	// backlog exceeds claimCandidateWindowFactor*limit can still leave an old
+	// record whose envelope ID sorts beyond the window waiting a few claim
+	// cycles (progress stays oldest-first WITHIN each window). Eliminating that
+	// residual entirely requires the query itself to return records in
+	// created_at order: add a created_at range key (or a per-partition
+	// created_at GSI) and shrink the window to `limit`.
+	claimCandidateWindowFactor = 3
+
 	// fenceRetentionFloor is the minimum TTL horizon stamped on FENCE
 	// rows: fences live for max(compactGrace, fenceRetentionFloor) past
 	// the last write that touches them (Persist seq allocation and Claim
@@ -71,6 +91,32 @@ const (
 	// immortal leaks one row per ephemeral session forever.
 	fenceRetentionFloor = 30 * 24 * time.Hour
 )
+
+// The claim-conflict counter emitted by claimOne is the shared kernel's
+// shared.MetricOutboxClaimConflicts, tagged with the partition
+// (shared.TagKeyPartition). It distinguishes per-record claim transactions
+// aborted by a DynamoDB TransactionConflict — a concurrent
+// Persist/Claim/Complete touched the same item — from a record-level
+// ConditionalCheckFailed (another claimer legitimately won the record, which
+// is normal). Under concurrent Persist+Claim on one hot partition a rising
+// value explains why a Claim returned fewer than `limit` records because of
+// CONTENTION rather than an empty backlog (lag), which is otherwise silent.
+
+// counterMeter is the minimal metrics surface this store needs: a single
+// Counter method. It is declared locally (rather than importing
+// ports.MetricsExporter) so this driven-adapter leaf keeps depending only on
+// domain/shared per the architecture rules; ports.MetricsExporter and its
+// Noop/Recording implementations satisfy it structurally, so the composition
+// root can inject a real exporter through WithMetrics with no adapter glue.
+type counterMeter interface {
+	Counter(name string, value int64, tags ...shared.Tag)
+}
+
+// noopMeter is the default counterMeter: it discards every counter so the
+// store never depends on a configured backend.
+type noopMeter struct{}
+
+func (noopMeter) Counter(string, int64, ...shared.Tag) {}
 
 // Store implements ports.OutboxStore using DynamoDB with partitioned
 // persistence, conditional writes, and TTL-based compaction. It also
@@ -100,6 +146,11 @@ type Store struct {
 
 	resolveMaxAttempts int
 	resolveBackoff     time.Duration
+
+	// metrics receives store-level observability signals. It defaults to a
+	// no-op meter so the store never depends on a configured backend; the
+	// composition root injects a real exporter via WithMetrics.
+	metrics counterMeter
 
 	// keys maps an application record ID to its base-table (PK, SK),
 	// populated on Claim so Complete can address the base table directly
@@ -153,6 +204,18 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithMetrics sets the metrics exporter the store emits store-level counters
+// to (e.g. shared.MetricOutboxClaimConflicts). A nil exporter leaves the default
+// no-op in place. The parameter is the minimal counterMeter surface; a
+// ports.MetricsExporter satisfies it structurally.
+func WithMetrics(m counterMeter) Option {
+	return func(s *Store) {
+		if m != nil {
+			s.metrics = m
+		}
+	}
+}
+
 // WithCompleteResolveRetry tunes how Complete tolerates RecordIDIndex GSI
 // replication lag when the Claim-populated key cache misses (e.g. after a
 // process restart with in-flight claimed records). attempts is the total
@@ -186,6 +249,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 
 		resolveMaxAttempts: defaultResolveMaxAttempts,
 		resolveBackoff:     defaultResolveBackoff,
+		metrics:            noopMeter{},
 		keys:               newKeyCache(defaultMaxKeyCache),
 	}
 	for _, o := range opts {
@@ -498,10 +562,33 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleMs)},
 	}
 
-	var claimed []*persistence.OutboxRecord
+	// Gather a bounded window of claimable candidates, sort it oldest-first by
+	// (CreatedAt, Seq), then claim the oldest N. DynamoDB Query returns items
+	// in SK order (lexicographic by envelope ID, unrelated to record age), so
+	// claiming the first N encountered would starve records with
+	// lexicographically-late envelope IDs and break the ascending-(CreatedAt,
+	// Seq) claim-ordering contract memory/sqlite honour via ORDER BY
+	// created_at, seq LIMIT. See claimCandidateWindowFactor for the window
+	// ceiling and its documented upgrade path.
+	candidateCap := limit * claimCandidateWindowFactor
+	if candidateCap < limit {
+		// Overflow guard for a pathologically large limit: never scan fewer
+		// than `limit` candidates.
+		candidateCap = limit
+	}
+
+	type claimCandidate struct {
+		item       map[string]ddbtypes.AttributeValue
+		pk, sk     string
+		createdAt  int64 // epoch millis
+		seq        uint64
+		envelopeID string
+	}
+
+	candidates := make([]claimCandidate, 0, candidateCap)
 	var startKey map[string]ddbtypes.AttributeValue
 
-	for len(claimed) < limit {
+	for len(candidates) < candidateCap {
 		input := &dynamodb.QueryInput{
 			TableName:                 aws.String(s.table),
 			KeyConditionExpression:    aws.String("PK = :pk AND begins_with(SK, :prefix)"),
@@ -520,27 +607,17 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		}
 
 		for _, item := range queryOut.Items {
-			if len(claimed) >= limit {
+			candidates = append(candidates, claimCandidate{
+				item:       item,
+				pk:         strAttr(item, "PK"),
+				sk:         strAttr(item, "SK"),
+				createdAt:  numAttrI64(item, "created_at"),
+				seq:        numAttrU64(item, "seq"),
+				envelopeID: strAttr(item, "envelope_id"),
+			})
+			if len(candidates) >= candidateCap {
 				break
 			}
-			if err := ctx.Err(); err != nil {
-				return claimed, err
-			}
-
-			pk := strAttr(item, "PK")
-			sk := strAttr(item, "SK")
-
-			rec, err := s.claimOne(ctx, item, pk, sk, token, now, staleMs)
-			if err != nil {
-				return nil, err
-			}
-			if rec == nil {
-				continue // lost the per-record race; not an error
-			}
-			// Cache the base-table keys so Complete can address this record
-			// directly instead of resolving through the lagging GSI.
-			s.cacheKey(rec.ID(), pk, sk)
-			claimed = append(claimed, rec)
 		}
 
 		if queryOut.LastEvaluatedKey == nil {
@@ -549,21 +626,48 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		startKey = queryOut.LastEvaluatedKey
 	}
 
-	// Return claimed records in per-partition persist order — ascending
-	// (CreatedAt, Seq) per the ports.OutboxStore claim-ordering contract.
-	// Records persisted before the sequence existed carry Seq 0 and sort
-	// first within their millisecond; envelopeID is the final fallback so
-	// legacy ties stay deterministic.
-	sort.Slice(claimed, func(i, j int) bool {
-		ci, cj := claimed[i].CreatedAt(), claimed[j].CreatedAt()
-		if !ci.Equal(cj) {
-			return ci.Before(cj)
+	// Oldest-first: ascending (CreatedAt, Seq) with envelopeID as the legacy
+	// tiebreak (records persisted before the sequence existed carry Seq 0 and
+	// sort first within their millisecond), matching QueryPending and the
+	// ports.OutboxStore claim-ordering contract.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].createdAt != candidates[j].createdAt {
+			return candidates[i].createdAt < candidates[j].createdAt
 		}
-		if claimed[i].Seq() != claimed[j].Seq() {
-			return claimed[i].Seq() < claimed[j].Seq()
+		if candidates[i].seq != candidates[j].seq {
+			return candidates[i].seq < candidates[j].seq
 		}
-		return claimed[i].EnvelopeID() < claimed[j].EnvelopeID()
+		return candidates[i].envelopeID < candidates[j].envelopeID
 	})
+
+	// Claim the oldest candidates first, up to limit. A per-record claim can
+	// lose the fencing/condition race (claimOne returns nil): skip it and try
+	// the next-oldest so contention never returns a short batch while older
+	// claimable records remain in the window. Because candidates are already
+	// sorted oldest-first and claimOne preserves CreatedAt/Seq, the resulting
+	// slice is returned in ascending (CreatedAt, Seq) order without a re-sort.
+	claimed := make([]*persistence.OutboxRecord, 0, limit)
+	for i := range candidates {
+		if len(claimed) >= limit {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return claimed, err
+		}
+
+		c := candidates[i]
+		rec, err := s.claimOne(ctx, c.item, c.pk, c.sk, token, now, staleMs)
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			continue // lost the per-record race; not an error
+		}
+		// Cache the base-table keys so Complete can address this record
+		// directly instead of resolving through the lagging GSI.
+		s.cacheKey(rec.ID(), c.pk, c.sk)
+		claimed = append(claimed, rec)
+	}
 
 	return claimed, nil
 }
@@ -643,7 +747,16 @@ func (s *Store) claimOne(
 					With("partitionKey", pk)
 			}
 			// Record-level condition failure or a transient transaction
-			// conflict: another claimer won this record. Skip it.
+			// conflict: another claimer won this record. Skip it. A
+			// TransactionConflict (a concurrent Persist/Claim/Complete touched
+			// the same item) is counted so a Claim that returns fewer than
+			// `limit` records because of CONTENTION is distinguishable from an
+			// empty backlog (lag); a record-level ConditionalCheckFailed is a
+			// normal lost race and is not counted.
+			if hasCode(reasons, "TransactionConflict") {
+				s.metrics.Counter(shared.MetricOutboxClaimConflicts, 1,
+					shared.Tag{Key: shared.TagKeyPartition, Value: pk})
+			}
 			return nil, nil
 		}
 		return nil, wrapErr(err, "outbox claim update failed", "partitionKey", pk, "ownerID", token.Owner)

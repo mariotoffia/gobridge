@@ -330,7 +330,7 @@ For example, a strategy that only applies changes during maintenance windows, or
 
 When the Manager re-merges layers and the result fails validation, it logs a warning and drops the invalid config. The watch channel does not receive the invalid config, so the Supervisor continues running with the last known good configuration.
 
-```
+```text
 WARN config manager: rebuild failed trigger=file error="bridge.id is required"
 ```
 

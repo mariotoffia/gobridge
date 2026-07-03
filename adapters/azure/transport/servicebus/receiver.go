@@ -28,18 +28,36 @@ var _ ports.Receiver = (*Receiver)(nil)
 // replace the whole stack while the poll loop is running — the loop
 // only ever observes either the complete old stack or the complete new
 // one, never nil.
+//
+// rebuildPending / pendingConn track a deferred session-mode rebuild:
+// a session rotation must close the old link before the new accept can
+// win the exclusive session lock, so if that rebuild then fails the
+// stack is left empty and rebuildPending is set with the (uncommitted)
+// target connection. cfg.Connection is NOT advanced until a rebuild
+// succeeds, so re-pushing the SAME credentials is never short-circuited
+// to a no-op; the poll loop (rebuildPendingStack) retries the build
+// with pendingConn until it succeeds, so the receiver self-heals
+// without an external re-push.
 type Receiver struct {
-	cfg         ReceiverConfig
-	client      asbAPI
-	scheduler   retryScheduler
-	asbClient   *asbClientHandle
-	logger      *slog.Logger
-	metrics     ports.MetricsExporter
-	clk         clock.Clock
-	initMu      sync.Mutex
-	closeOnce   sync.Once
-	started     chan struct{}
-	startedOnce sync.Once
+	cfg       ReceiverConfig
+	client    asbAPI
+	scheduler retryScheduler
+	asbClient *asbClientHandle
+	// pendingConn holds the connection a deferred session-mode rebuild
+	// must use; rebuildPending reports whether such a rebuild is
+	// outstanding. Both are guarded by initMu.
+	pendingConn    ConnectionConfig
+	rebuildPending bool
+	// buildStackFn overrides buildStack for tests that need to simulate
+	// build failures/successes deterministically; nil in production.
+	buildStackFn func(context.Context, ConnectionConfig) (receiverStack, error)
+	logger       *slog.Logger
+	metrics      ports.MetricsExporter
+	clk          clock.Clock
+	initMu       sync.Mutex
+	closeOnce    sync.Once
+	started      chan struct{}
+	startedOnce  sync.Once
 }
 
 // receiverStack bundles the SDK client handle with the receiver and
@@ -132,6 +150,52 @@ func (r *Receiver) swapStack(next receiverStack) receiverStack {
 	return old
 }
 
+// commitStack installs next as the live stack, commits conn as the
+// active connection, and clears any pending-rebuild state — all under
+// the stack lock. It is the success path for both cold init and
+// credential rotation: cfg.Connection only ever advances here, AFTER a
+// successful build, mirroring Sender.swapClient. Returns the previous
+// stack so the caller can close it OUTSIDE the lock.
+func (r *Receiver) commitStack(next receiverStack, conn ConnectionConfig) receiverStack {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	old := receiverStack{client: r.client, scheduler: r.scheduler, handle: r.asbClient}
+	r.client = next.client
+	r.scheduler = next.scheduler
+	r.asbClient = next.handle
+	r.cfg.Connection = conn
+	r.rebuildPending = false
+	r.pendingConn = ConnectionConfig{}
+	return old
+}
+
+// beginSessionRebuild performs the close-before-build step of a
+// session-mode rotation: it swaps in an EMPTY stack, records conn as
+// the pending rebuild target WITHOUT committing cfg.Connection, and
+// marks rebuildPending so a later re-push of the same credentials is
+// not short-circuited and the poll loop can retry the build. Returns
+// the previous stack for the caller to close OUTSIDE the lock.
+func (r *Receiver) beginSessionRebuild(conn ConnectionConfig) receiverStack {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	old := receiverStack{client: r.client, scheduler: r.scheduler, handle: r.asbClient}
+	r.client = nil
+	r.scheduler = nil
+	r.asbClient = nil
+	r.rebuildPending = true
+	r.pendingConn = conn
+	return old
+}
+
+// build constructs a receiver stack from conn, honouring the optional
+// buildStackFn test seam. Production builds via buildStack.
+func (r *Receiver) build(ctx context.Context, conn ConnectionConfig) (receiverStack, error) {
+	if r.buildStackFn != nil {
+		return r.buildStackFn(ctx, conn)
+	}
+	return r.buildStack(ctx, conn)
+}
+
 // Started returns a channel that is closed once the receiver's poll
 // loop is live and ready to process messages. It satisfies
 // ports.ReceiverStartedSignaler.
@@ -186,7 +250,7 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		return nil
 	}
 
-	stack, err := r.buildStack(ctx, r.cfg.Connection)
+	stack, err := r.build(ctx, r.cfg.Connection)
 	if err != nil {
 		return err
 	}
@@ -395,7 +459,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 		if floor := r.cfg.MinAutoExtendInterval; floor > 0 && interval < floor {
 			interval = floor
 		}
-		go r.runSessionRenewer(renewCtx, r.currentClient(), interval)
+		go r.runSessionRenewer(renewCtx, interval)
 	}
 
 	tuning := deliveryTuning{
@@ -408,6 +472,35 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		// Session-mode rotation closes the old link before rebuilding
+		// (exclusive session lock). If a prior ApplyCredentials left that
+		// rebuild pending (its build failed), retry it here with the
+		// pending connection so the receiver self-heals without an
+		// external re-push. A failed retry is treated like a poll failure:
+		// count it, back off, and try again.
+		if sessionMode {
+			if err := r.rebuildPendingStack(ctx); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				r.metrics.Counter(MetricASBReceiveFailures, 1,
+					shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
+				delay := backoff.next()
+				if r.logger != nil {
+					r.logger.Warn("servicebus: pending session rebuild failed, retrying",
+						"error", err,
+						"retry_after", delay,
+					)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-r.clock().After(delay):
+				}
+				continue
+			}
 		}
 
 		pollStart := r.clock().Now()
@@ -498,6 +591,41 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 	}
 }
 
+// rebuildPendingStack completes a deferred session-mode rebuild: when a
+// prior rotation closed the old stack (beginSessionRebuild) but the
+// build failed, it retries the build with the pending connection and
+// commits it on success. It is a no-op when nothing is pending. Only
+// invoked from the session poll loop, so at most one rebuild runs from
+// here at a time; a concurrent ApplyCredentials re-push is safe — the
+// loser's freshly built stack is returned as the "old" stack and
+// closed.
+func (r *Receiver) rebuildPendingStack(ctx context.Context) error {
+	r.initMu.Lock()
+	if !r.rebuildPending {
+		r.initMu.Unlock()
+		return nil
+	}
+	conn := r.pendingConn
+	r.initMu.Unlock()
+
+	stack, err := r.build(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("servicebus: retry pending session rebuild for %q: %w", r.entityName(), err)
+	}
+
+	old := r.commitStack(stack, conn)
+	old.close(ctx)
+
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug,
+			"servicebus: pending session rebuild completed",
+			"entity", r.entityName(),
+			"session_id", r.cfg.SessionID,
+		)
+	}
+	return nil
+}
+
 // runSessionRenewer renews the shared session lock at interval until
 // ctx is done. One instance per poll loop in session mode; replaces
 // the per-delivery auto-extend goroutines (which would all renew the
@@ -505,10 +633,15 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 // consecutive errors, then stops: the session lock will lapse and the
 // subsequent ReceiveMessages failures surface through the poll loop's
 // error path (backoff + MetricASBReceiveFailures).
-func (r *Receiver) runSessionRenewer(ctx context.Context, client asbAPI, interval time.Duration) {
-	if client == nil {
-		return
-	}
+//
+// It resolves the live receiver seam via currentClient() on EVERY tick
+// rather than pinning a snapshot: a credential rotation swaps the stack
+// under the still-running poll loop, and renewing the OLD (closed)
+// client's session would leave the NEW session's lock unrenewed
+// (lock-lost on in-flight deliveries). A nil snapshot — the brief
+// window while a session rebuild is pending — is skipped without
+// counting as a failure; the next tick renews the rebuilt session.
+func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration) {
 	ticker := r.clock().NewTicker(interval)
 	defer ticker.Stop()
 
@@ -518,6 +651,12 @@ func (r *Receiver) runSessionRenewer(ctx context.Context, client asbAPI, interva
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			client := r.currentClient()
+			if client == nil {
+				// Stack swap in progress (session rebuild pending): the
+				// rebuilt session's lock is renewed on a later tick.
+				continue
+			}
 			// The message argument is unused by sessionReceiverAdapter:
 			// session receivers renew the session lock, not a message lock.
 			if err := client.RenewMessageLock(ctx, nil, nil); err != nil {

@@ -311,13 +311,13 @@ enough history for rollbacks.
 
 The GoBridge CDK constructs are written in Go and live at:
 
-```
+```text
 github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs
 ```
 
 The shared infrastructure types (zero external dependencies) live at:
 
-```
+```text
 github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
 ```
 

@@ -258,7 +258,7 @@ func main() {
 
 **Metrics** (pushed to OTel Collector every 60s):
 
-```
+```text
 DeliveryE2ELatency{route_id="ingest"} p50=8ms p99=45ms
 MessagesSent{route_id="ingest"} count=12847
 MessagesReceived{route_id="ingest"} count=12870
@@ -266,7 +266,7 @@ MessagesReceived{route_id="ingest"} count=12870
 
 **Traces** (visible in Jaeger, Tempo, or any OTLP-compatible backend):
 
-```
+```text
 trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
   └─ bridge.handleDelivery (12ms)
        route_id=ingest, envelope_id=e-abc123, trace_id=4bf92f35...
