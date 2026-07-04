@@ -149,6 +149,13 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
 | **SpanIdentity** | Optional `ports.Span` capability (`ports/tracer.go`) exposing the active span's W3C identity (`TraceID()`/`SpanID()`) so the runtime stamps `trace_id`/`span_id` log fields from the ACTIVE span instead of the upstream `traceparent`. Both return `""` for no-op spans and unsampled traces; the correlation ID remains the always-present join key. |
 
+## Tenancy (`processors/tenant` + `ports/tenant.go`)
+
+| Term | Meaning |
+|---|---|
+| **TenantUsageReader** | Optional read-back extension of `ports.TenantUsageTracker` (`ports/tenant.go`): `Usage(ctx, tenantID) (TenantUsage, error)`, returning a `TenantUsage` snapshot `{Messages, InFlight}`. The tenant processor type-asserts for it; present alongside a non-zero `TenantInfo.MaxInFlight`, it drives per-tenant in-flight quota enforcement. Kept separate from the increment-only tracker so existing trackers keep compiling. |
+| **TenantInfo.MaxInFlight** | Per-tenant ceiling on concurrent in-flight deliveries (`0` = unlimited). Supplied on `TenantInfo` by the embedder's `TenantValidator`, never via YAML. Enforced by the tenant processor only when the usage tracker also implements `TenantUsageReader`; an over-ceiling delivery is rejected transiently with `TENANT_QUOTA_EXCEEDED` (`shared.ErrTenantQuotaExceeded`), so the route retry policy applies backpressure rather than dropping. Distinct from routing's `MaxInFlight` (per-route concurrency cap). |
+
 ## Transport adapters (`adapters/*/transport`)
 
 Adapter-owned names that surface in config keys, headers, or metrics.

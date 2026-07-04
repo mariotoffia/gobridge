@@ -28,6 +28,7 @@ const (
 	ErrCodeThrottled            ErrorCode = "THROTTLED"
 	ErrCodeBrokerBusy           ErrorCode = "BROKER_BUSY"
 	ErrCodeTemporaryAuthFailure ErrorCode = "TEMPORARY_AUTH_FAILURE"
+	ErrCodeTenantQuotaExceeded  ErrorCode = "TENANT_QUOTA_EXCEEDED"
 )
 
 // Permanent error codes -- retry will not help.
@@ -178,6 +179,14 @@ var (
 	ErrTemporaryAuthFailure = &BridgeError{
 		Code: ErrCodeTemporaryAuthFailure, Class: ErrorTransient,
 		Message: "authentication temporarily failed",
+	}
+	// ErrTenantQuotaExceeded signals that a tenant has hit a usage ceiling
+	// (e.g. its max in-flight deliveries). Transient by design: the tenant
+	// becomes deliverable again as its in-flight count drains, so the route
+	// retry policy is the correct pressure valve rather than a DLQ.
+	ErrTenantQuotaExceeded = &BridgeError{
+		Code: ErrCodeTenantQuotaExceeded, Class: ErrorTransient,
+		Message: "tenant quota exceeded",
 	}
 )
 

@@ -39,13 +39,17 @@ var ErrTenantHeaderReserved = &shared.BridgeError{
 }
 
 // Processor resolves and validates tenant identity and tracks per-tenant
-// usage for messages flowing through the processing chain. Enforcement is
-// limited to tenant-active and MaxMessageSizeBytes checks; usage tracking
-// is observational (increment-only — no message-count quota ceiling).
+// usage for messages flowing through the processing chain. Enforcement
+// covers tenant-active, MaxMessageSizeBytes, and — when the configured
+// usage tracker also implements ports.TenantUsageReader and the tenant's
+// MaxInFlight > 0 — a per-tenant in-flight ceiling (transient reject,
+// fail-open on read error). Message-count usage tracking remains
+// observational (increment-only — no message-count quota ceiling).
 type Processor struct {
 	config    Config
 	validator ports.TenantValidator
 	tracker   ports.TenantUsageTracker
+	reader    ports.TenantUsageReader
 	metrics   ports.MetricsExporter
 	logger    *slog.Logger
 }
@@ -74,6 +78,13 @@ func New(cfg Config, opts ...Option) (*Processor, error) {
 	if p.metrics == nil {
 		p.metrics = &ports.NoopExporter{}
 	}
+	// Type-assert the optional read-back capability once at construction,
+	// not per message. A tracker that also implements TenantUsageReader
+	// unlocks in-flight quota enforcement; increment-only trackers leave
+	// p.reader nil and enforcement is skipped.
+	if p.tracker != nil {
+		p.reader, _ = p.tracker.(ports.TenantUsageReader)
+	}
 	return p, nil
 }
 
@@ -95,11 +106,18 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		return next(ctx, env)
 	}
 
+	var (
+		info      ports.TenantInfo
+		validated bool
+	)
+
 	if p.validator != nil {
-		info, err := p.validator.Validate(ctx, tenantID)
+		var err error
+		info, err = p.validator.Validate(ctx, tenantID)
 		if err != nil {
 			return fmt.Errorf("tenant validation failed for %q: %w", tenantID, err)
 		}
+		validated = true
 
 		if !info.Active {
 			p.observeReject(ctx, "disabled", tenantID)
@@ -118,6 +136,32 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	}
 
 	if p.tracker != nil {
+		// Enforce the per-tenant in-flight ceiling before incrementing.
+		// MaxInFlight lives on TenantInfo, so enforcement is gated on a
+		// validator having produced info (validated); the read-back requires
+		// the tracker to also implement ports.TenantUsageReader.
+		//
+		// ponytail: check-then-increment races under concurrency; overshoot is
+		// bounded by the tenant's total concurrent in-flight admissions across
+		// all routes and instances sharing the usage store, not a single
+		// route's parallelism. Upgrade path if exact ceilings are ever
+		// required: optional conditional-increment extension
+		// (IncrementInFlightIfBelow) on the tracker.
+		if p.reader != nil && validated && info.MaxInFlight > 0 {
+			usage, err := p.reader.Usage(ctx, tenantID)
+			if err != nil {
+				// Fail open: quota is a fairness control, not a security
+				// boundary. Failing closed would turn a usage-store blip into
+				// a full-tenant outage. Surface for observability, then proceed.
+				p.observeTrackerError(ctx, "usage_read", tenantID, err)
+			} else if usage.InFlight >= info.MaxInFlight {
+				p.observeThrottle(ctx, "quota_inflight", tenantID)
+				return shared.ErrTenantQuotaExceeded.WithMessage(
+					fmt.Sprintf("tenant %s in-flight quota exceeded: %d >= %d",
+						tenantID, usage.InFlight, info.MaxInFlight))
+			}
+		}
+
 		if err := p.tracker.IncrementInFlight(ctx, tenantID, 1); err != nil {
 			p.observeTrackerError(ctx, "increment", tenantID, err)
 			// Transient dependency failure: classify so the runtime
@@ -155,8 +199,8 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 
 // observeTrackerError emits a metric and a structured warning when a
 // per-tenant usage-tracker call fails. op is a low-cardinality dimension
-// (increment / decrement / message_count); the tenant ID is kept out of
-// the metric tags (unbounded cardinality) and logged instead.
+// (increment / decrement / message_count / usage_read); the tenant ID is
+// kept out of the metric tags (unbounded cardinality) and logged instead.
 func (p *Processor) observeTrackerError(ctx context.Context, op, tenantID string, err error) {
 	p.metrics.Counter(metricTenantTrackerErrors, 1, shared.Tag{Key: "op", Value: op})
 	if p.logger != nil {
@@ -172,6 +216,21 @@ func (p *Processor) observeReject(ctx context.Context, reason, tenantID string) 
 	p.metrics.Counter(metricTenantRejects, 1, shared.Tag{Key: "reason", Value: reason})
 	if p.logger != nil {
 		p.logger.WarnContext(ctx, "tenant message rejected",
+			"processor", p.Name(), "reason", reason, "tenant", tenantID)
+	}
+}
+
+// observeThrottle emits the same reject counter as observeReject but logs at
+// Debug rather than Warn. It is used for the quota-ceiling path, which — unlike
+// disabled/oversize/missing_required (rare anomalies) — is an EXPECTED
+// steady-state outcome under a runaway tenant and is amplified by redelivery
+// (each retry re-rejects). Warn-per-event there is a log-ingestion DoS caused
+// by exactly the condition the quota targets; the metricTenantRejects counter
+// (tagged reason) remains the signal.
+func (p *Processor) observeThrottle(ctx context.Context, reason, tenantID string) {
+	p.metrics.Counter(metricTenantRejects, 1, shared.Tag{Key: "reason", Value: reason})
+	if p.logger != nil {
+		p.logger.DebugContext(ctx, "tenant message throttled",
 			"processor", p.Name(), "reason", reason, "tenant", tenantID)
 	}
 }
