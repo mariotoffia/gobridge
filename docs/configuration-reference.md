@@ -69,6 +69,7 @@ classDiagram
         max_in_flight: int
         ack_after: string
         max_replay_attempts: int
+        replay_budget: string
         backoff: BackoffDef
         on_expired: string
         on_permanent_failure: string

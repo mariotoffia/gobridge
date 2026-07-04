@@ -78,9 +78,21 @@ type OutboxRecord struct {
 	seq uint64
 
 	// Lifecycle state (mutated only through aggregate methods).
-	status       OutboxStatus
-	claimedBy    string
-	claimedAt    time.Time
+	status    OutboxStatus
+	claimedBy string
+	claimedAt time.Time
+
+	// firstAttemptedAt is the wall-clock instant the drainer FIRST claimed
+	// this record. It is stamped exactly once, inside Claim, the first time
+	// the record leaves Pending, and is never moved by a later Release,
+	// re-claim, or stale-claim reclaim by a newer fencing token. A claim
+	// proves the drainer was alive and took ownership to attempt delivery —
+	// even a claim that ends in a batch-deadline deferral counts — so this is
+	// the honest clock the replay budget runs from. Zero for records
+	// persisted before the replay-budget schema or never yet claimed; those
+	// fall back to the CreatedAt age gate (poisonMinAge).
+	firstAttemptedAt time.Time
+
 	claimVersion uint64
 	replayCount  int
 	completedAt  time.Time
@@ -129,6 +141,13 @@ func (r *OutboxRecord) ClaimedBy() string { return r.claimedBy }
 
 // ClaimedAt returns the timestamp of the last successful claim.
 func (r *OutboxRecord) ClaimedAt() time.Time { return r.claimedAt }
+
+// FirstAttemptedAt returns the instant the drainer FIRST claimed this record,
+// stamped once inside Claim and never moved by a later release or reclaim. It
+// is the clock the replay budget runs from. Zero for records persisted before
+// the replay-budget schema or never yet claimed; the drainer falls those back
+// to the CreatedAt age gate (poisonMinAge).
+func (r *OutboxRecord) FirstAttemptedAt() time.Time { return r.firstAttemptedAt }
 
 // ClaimVersion returns the fencing-token version recorded by the last
 // successful claim. Used by stores to detect stale completers.
@@ -221,8 +240,11 @@ func (r *OutboxRecord) IsClaimable(currentTokenVersion uint64) bool {
 // failed. Consequently replay-count exhaustion alone is not proof the record is
 // poison — a chronically deferred record can cross the cap failure-free. That
 // is why the drainer's poison decision AND-gates replay exhaustion with a
-// minimum-age check (runtime/outbox: poisonMinAge); callers enforcing a
-// poison-message cap MUST apply the same age gate rather than poisoning on
+// replay-budget check (runtime/outbox: replayBudgetExhausted): a record is only
+// routed to the DLQ once wall-clock time since FirstAttemptedAt exceeds
+// RoutePolicy.ReplayBudget. Legacy records with a zero FirstAttemptedAt fall
+// back to the older CreatedAt age gate (poisonMinAge). Callers enforcing a
+// poison-message cap MUST apply the same budget gate rather than poisoning on
 // replay count alone.
 func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint64) *shared.BridgeError {
 	if !r.IsClaimable(tokenVersion) {
@@ -236,6 +258,13 @@ func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint6
 	r.status = OutboxClaimed
 	r.claimedBy = claimedBy
 	r.claimedAt = now
+	if r.firstAttemptedAt.IsZero() {
+		// Stamp the first-attempt instant exactly once, at the first claim.
+		// A deferring claim still proves the drainer was alive and took
+		// ownership, so the first claim — not the first successful send —
+		// anchors the replay budget. Never moved by a later release/reclaim.
+		r.firstAttemptedAt = now
+	}
 	r.claimVersion = tokenVersion
 	r.replayCount++
 	return nil
@@ -309,11 +338,16 @@ type OutboxSnapshot struct {
 	Status          OutboxStatus
 	ClaimedBy       string
 	ClaimedAt       time.Time
-	ClaimVersion    uint64
-	ReplayCount     int
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	CompletedAt     time.Time
+	// FirstAttemptedAt is the instant the drainer first claimed the record.
+	// Zero for records persisted before the replay-budget schema or never
+	// yet claimed. Stores must round-trip it verbatim (zero stays zero) and
+	// MUST NOT now-stamp it on marshal/unmarshal.
+	FirstAttemptedAt time.Time
+	ClaimVersion     uint64
+	ReplayCount      int
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	CompletedAt      time.Time
 	// Seq is the monotonic per-partition sequence the store assigned at
 	// Persist. Stores populate it when rehydrating; it is ignored on the
 	// initial Persist (the store allocates it).
@@ -337,23 +371,24 @@ func (r *OutboxRecord) Snapshot() *messaging.Envelope {
 // aggregate's internal state.
 func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 	return OutboxSnapshot{
-		ID:              r.id,
-		RouteID:         r.routeID,
-		EnvelopeID:      r.envelopeID,
-		BindingID:       r.bindingID,
-		SessionID:       r.sessionID,
-		Address:         r.address,
-		Envelope:        *r.envelope.Clone(),
-		DispatchHeaders: messaging.Headers(r.dispatchHeaders).Snapshot(),
-		Status:          r.status,
-		ClaimedBy:       r.claimedBy,
-		ClaimedAt:       r.claimedAt,
-		ClaimVersion:    r.claimVersion,
-		ReplayCount:     r.replayCount,
-		CreatedAt:       r.createdAt,
-		ExpiresAt:       r.expiresAt,
-		CompletedAt:     r.completedAt,
-		Seq:             r.seq,
+		ID:               r.id,
+		RouteID:          r.routeID,
+		EnvelopeID:       r.envelopeID,
+		BindingID:        r.bindingID,
+		SessionID:        r.sessionID,
+		Address:          r.address,
+		Envelope:         *r.envelope.Clone(),
+		DispatchHeaders:  messaging.Headers(r.dispatchHeaders).Snapshot(),
+		Status:           r.status,
+		ClaimedBy:        r.claimedBy,
+		ClaimedAt:        r.claimedAt,
+		FirstAttemptedAt: r.firstAttemptedAt,
+		ClaimVersion:     r.claimVersion,
+		ReplayCount:      r.replayCount,
+		CreatedAt:        r.createdAt,
+		ExpiresAt:        r.expiresAt,
+		CompletedAt:      r.completedAt,
+		Seq:              r.seq,
 	}
 }
 
@@ -369,23 +404,24 @@ func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 		status = OutboxPending
 	}
 	return &OutboxRecord{
-		id:              s.ID,
-		routeID:         s.RouteID,
-		envelopeID:      s.EnvelopeID,
-		bindingID:       s.BindingID,
-		sessionID:       s.SessionID,
-		address:         s.Address,
-		envelope:        *s.Envelope.Clone(),
-		dispatchHeaders: messaging.Headers(s.DispatchHeaders).Snapshot(),
-		createdAt:       s.CreatedAt,
-		expiresAt:       s.ExpiresAt,
-		seq:             s.Seq,
-		status:          status,
-		claimedBy:       s.ClaimedBy,
-		claimedAt:       s.ClaimedAt,
-		claimVersion:    s.ClaimVersion,
-		replayCount:     s.ReplayCount,
-		completedAt:     s.CompletedAt,
+		id:               s.ID,
+		routeID:          s.RouteID,
+		envelopeID:       s.EnvelopeID,
+		bindingID:        s.BindingID,
+		sessionID:        s.SessionID,
+		address:          s.Address,
+		envelope:         *s.Envelope.Clone(),
+		dispatchHeaders:  messaging.Headers(s.DispatchHeaders).Snapshot(),
+		createdAt:        s.CreatedAt,
+		expiresAt:        s.ExpiresAt,
+		seq:              s.Seq,
+		status:           status,
+		claimedBy:        s.ClaimedBy,
+		claimedAt:        s.ClaimedAt,
+		firstAttemptedAt: s.FirstAttemptedAt,
+		claimVersion:     s.ClaimVersion,
+		replayCount:      s.ReplayCount,
+		completedAt:      s.CompletedAt,
 	}
 }
 

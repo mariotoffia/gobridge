@@ -15,21 +15,21 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A4-R1: premature-DLQ-from-outage is observable at the point of loss
+// A4-R1: budget-exhaustion poison is observable at the point of loss
 //
-// The age-based root-cause decoupling of replay_count is a deferred
-// cross-store change (aggregate + snapshot + Dynamo). The ship-gate
-// mitigation is the 5s transientRetryFloor, which bounds how fast a
-// transient outage burns the replay budget but does NOT stop a long enough
-// outage from DLQ'ing an otherwise-good message once the budget is spent.
+// The age-based root-cause decoupling of replay_count is now IMPLEMENTED
+// (WP-REPLAY-BUDGET): a record is poisoned only once wall-clock time since its
+// FirstAttemptedAt has reached ReplayBudget, in addition to crossing
+// MaxReplayAttempts. The 5s transientRetryFloor still throttles how fast a
+// transient outage burns replay_count, but it is the budget that bounds TOTAL
+// burn.
 //
-// This test pins the small, self-contained observability improvement that
-// accompanies the deferral: the drainer emits an explicit WARN at the
-// replay-exhaustion poison site so operators can see a good message being
-// DLQ'd by budget exhaustion instead of it surfacing only as a generic,
-// reason-less DLQ entry. Replay-count exhaustion is the ONLY route to this
-// poison path (permanent errors DLQ immediately), so the WARN is a faithful
-// signal of premature-DLQ-from-outage.
+// This test pins the observability at the poison site: when a record has both
+// exhausted its replay attempts AND spent its wall-clock budget, the drainer
+// emits an explicit WARN so operators can see a good message being DLQ'd by
+// budget exhaustion instead of it surfacing only as a generic, reason-less DLQ
+// entry. Replay exhaustion is the ONLY route to this poison path (permanent
+// errors DLQ immediately), so the WARN is a faithful signal of the loss.
 // ---------------------------------------------------------------------------
 
 const poisonWarnMsg = "outbox record poisoned: replay attempts exhausted, routing to DLQ"
@@ -70,18 +70,22 @@ func TestOutboxDrainer_PoisonReplayExhaustion_EmitsObservableWarn(t *testing.T) 
 	})
 
 	ctx := context.Background()
-	// Rehydrate already past the replay budget so the first claim tips it
-	// over MaxReplayAttempts and the drainer routes it straight to the
-	// poison DLQ without ever attempting a send.
+	// Rehydrate already past MaxReplayAttempts AND with a FirstAttemptedAt far
+	// enough in the past that the wall-clock ReplayBudget (15m default) is
+	// spent, so the first claim routes it straight to the poison DLQ without
+	// ever attempting a send. FirstAttemptedAt is pre-set (non-zero), so the
+	// claim's stamp-once leaves it untouched and the budget — not the legacy
+	// CreatedAt gate — decides.
 	poison := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-		ID:          "rec-poison",
-		RouteID:     "poison-route",
-		EnvelopeID:  "env-poison",
-		BindingID:   "bind-1",
-		SessionID:   "sess-poison",
-		Envelope:    *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-poison", Payload: []byte("good-message")}),
-		Status:      persistence.OutboxPending,
-		ReplayCount: policy.MaxReplayAttempts + 1,
+		ID:               "rec-poison",
+		RouteID:          "poison-route",
+		EnvelopeID:       "env-poison",
+		BindingID:        "bind-1",
+		SessionID:        "sess-poison",
+		Envelope:         *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-poison", Payload: []byte("good-message")}),
+		Status:           persistence.OutboxPending,
+		ReplayCount:      policy.MaxReplayAttempts + 1,
+		FirstAttemptedAt: time.Now().Add(-time.Hour),
 	})
 	if err := outbox.Persist(ctx, []*persistence.OutboxRecord{poison}); err != nil {
 		t.Fatalf("persist poison record: %v", err)

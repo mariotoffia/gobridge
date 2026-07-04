@@ -73,6 +73,10 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 		_ = db.Close()
 		return nil, wrapErr(err, "sqliteoutbox: migrate claimed_at", "path", path)
 	}
+	if err := migrateColumn(db, "outbox", "first_attempted_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqliteoutbox: migrate first_attempted_at", "path", path)
+	}
 	if err := migrateColumn(db, "outbox", "seq", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
 		return nil, wrapErr(err, "sqliteoutbox: migrate seq", "path", path)
@@ -329,9 +333,10 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 	}
 
 	// Bind order mirrors updateClaimSQL: claimed_by, claim_version, claimed_at,
-	// ids..., claim_version (fence guard), [stale_cutoff_ms].
-	args := make([]any, 0, len(ids)+5)
-	args = append(args, token.Owner, token.Version, now.UnixMilli())
+	// first_attempted_at (CASE-WHEN stamp-once "now"), ids..., claim_version
+	// (fence guard), [stale_cutoff_ms].
+	args := make([]any, 0, len(ids)+6)
+	args = append(args, token.Owner, token.Version, now.UnixMilli(), now.UnixMilli())
 	for _, id := range ids {
 		args = append(args, id)
 	}

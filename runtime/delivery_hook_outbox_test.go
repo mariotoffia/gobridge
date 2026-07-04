@@ -105,6 +105,9 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 		BindingID: "bind-1", SessionID: "sess-1",
 		Envelope: env, ReplayCount: 5,
 		Status: persistence.OutboxPending, CreatedAt: time.Now().Add(-10 * time.Minute),
+		// Past the wall-clock ReplayBudget (15m default) so replay exhaustion
+		// poisons under WP-REPLAY-BUDGET; pre-set so the claim stamp-once keeps it.
+		FirstAttemptedAt: time.Now().Add(-time.Hour),
 	})})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

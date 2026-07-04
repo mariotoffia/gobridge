@@ -60,6 +60,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **PeerInfo** | Remote bridge instance discovered via lease ownership history. |
 | **Seq** | Monotonic per-partition persistence sequence the store assigns at persist time (`OutboxRecord.Seq()`). Outbox claim ordering is `(CreatedAt, Seq)`; `Seq` breaks ties within the same `CreatedAt`. |
 | **PoisonMinAge** | Minimum wall-clock record age (from `CreatedAt`), required in addition to exceeding `RoutePolicy.MaxReplayAttempts`, before the outbox drainer routes a record to the DLQ as poison. Guards against an outage DLQ-ing an otherwise-good record. |
+| **Replay budget** | Wall-clock budget, measured from a record's first delivery attempt (`FirstAttemptedAt`), that bounds total redelivery time before the outbox drainer poisons the record to the DLQ. Policy field `RoutePolicy.ReplayBudget` (YAML `replay_budget`), default 15m (`DefaultReplayBudget`). Distinct from `MaxReplayAttempts`, now the minimum-attempts floor: poison requires the floor exceeded, a non-zero first attempt, and the budget elapsed, together. |
+| **First attempt timestamp** | `OutboxRecord.FirstAttemptedAt`: the instant the drainer first claimed the record, stamped once and never moved by a later release or reclaim. Proves a delivery attempt was made, so it is the clock the replay budget runs from. Zero for records persisted before the first-attempt schema or never yet claimed; those fall back to the `CreatedAt` age gate (`PoisonMinAge`). |
 
 ## Routing (`domain/routing`)
 
@@ -148,6 +150,21 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
 | **SpanIdentity** | Optional `ports.Span` capability (`ports/tracer.go`) exposing the active span's W3C identity (`TraceID()`/`SpanID()`) so the runtime stamps `trace_id`/`span_id` log fields from the ACTIVE span instead of the upstream `traceparent`. Both return `""` for no-op spans and unsampled traces; the correlation ID remains the always-present join key. |
+
+## Tenancy (`processors/tenant` + `ports/tenant.go`)
+
+| Term | Meaning |
+|---|---|
+| **TenantUsageReader** | Optional read-back extension of `ports.TenantUsageTracker` (`ports/tenant.go`): `Usage(ctx, tenantID) (TenantUsage, error)`, returning a `TenantUsage` snapshot `{Messages, InFlight}`. The tenant processor type-asserts for it; present alongside a non-zero `TenantInfo.MaxInFlight`, it drives per-tenant in-flight quota enforcement. Kept separate from the increment-only tracker so existing trackers keep compiling. |
+| **TenantInfo.MaxInFlight** | Per-tenant ceiling on concurrent in-flight deliveries (`0` = unlimited). Supplied on `TenantInfo` by the embedder's `TenantValidator`, never via YAML. Enforced by the tenant processor only when the usage tracker also implements `TenantUsageReader`; an over-ceiling delivery is rejected transiently with `TENANT_QUOTA_EXCEEDED` (`shared.ErrTenantQuotaExceeded`), so the route retry policy applies backpressure rather than dropping. Distinct from routing's `MaxInFlight` (per-route concurrency cap). |
+
+## Admin HTTP API (`httpapi`)
+
+Driving-adapter names for the admin/monitor HTTP servers. See [docs/http-api.md](docs/http-api.md).
+
+| Term | Meaning |
+|---|---|
+| **Named admin key** | An admin API key registered under a name in `httpapi.Config.AdminAPIKeys` (or rotated via `AdminAPIKeysProvider`). Possession of the key is the identity: on a successful match the key's name becomes the audit `Actor` — a stable, non-spoofable principal — while the network address (leftmost `X-Forwarded-For` else `RemoteAddr`) demotes to `Detail["client_addr"]`, which stays display-only and spoofable unless a trusted proxy normalises XFF. The legacy single `AdminAPIKey` folds in under the name `admin`; an explicit `admin` entry in the map overrides it. |
 
 ## Transport adapters (`adapters/*/transport`)
 

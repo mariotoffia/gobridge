@@ -116,6 +116,10 @@ const (
 	DefaultDepthCacheTTL     = 1 * time.Second
 	DefaultStepDownGrace     = 15 * time.Second
 	DefaultProcessorTimeout  = 30 * time.Second
+	// DefaultReplayBudget is the wall-clock budget, measured from a record's
+	// FirstAttemptedAt, before the outbox drainer poisons it to the DLQ. It is
+	// the age half of the poison AND-gate; the count half is MaxReplayAttempts.
+	DefaultReplayBudget = 15 * time.Minute
 )
 
 // NewDefaultBackoffPolicy returns a fresh BackoffPolicy with the
@@ -143,9 +147,15 @@ type RoutePolicy struct {
 	DispatchMode         DispatchMode
 	AckAfter             AckBoundary
 	MaxReplayAttempts    int
-	MaxOutboxDepth       int
-	AllowUnfenced        bool
-	AllowRetryDrop       bool
+	// ReplayBudget bounds the total wall-clock time, measured from a record's
+	// FirstAttemptedAt, that the drainer keeps redelivering before poisoning it
+	// to the DLQ. It is the age half of the poison AND-gate (the count half is
+	// MaxReplayAttempts). Zero means DefaultReplayBudget (15m): WithDefaults
+	// fills it; Validate rejects a negative value. YAML: replay_budget.
+	ReplayBudget   time.Duration
+	MaxOutboxDepth int
+	AllowUnfenced  bool
+	AllowRetryDrop bool
 	// TrustBridgeHeaders, when true, makes the route preserve the
 	// BRIDGE-TO-BRIDGE PROPAGATED reserved headers (correlation-id,
 	// causation-id, idempotency-key, dedup-id, ordering-key, tenant-id,
@@ -181,6 +191,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	}
 	if p.MaxReplayAttempts <= 0 {
 		p.MaxReplayAttempts = DefaultMaxReplayAttempts
+	}
+	if p.ReplayBudget <= 0 {
+		p.ReplayBudget = DefaultReplayBudget
 	}
 	if p.MaxOutboxDepth <= 0 {
 		p.MaxOutboxDepth = DefaultMaxOutboxDepth
@@ -232,12 +245,13 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	return p
 }
 
-// Validate reports the first invalid enum value carried by p as a
-// permanent BridgeError with code shared.ErrCodeInvalidPayload. A
-// zero-valued enum is treated as "use default" (handled by WithDefaults)
-// and is NOT considered invalid here. Callers that want strict
-// rejection of typos like RoutePolicy{DeliveryMode: "wat"} should call
-// Validate before (or instead of) WithDefaults.
+// Validate reports the first invalid enum value or negative duration carried by
+// p as a permanent BridgeError with code shared.ErrCodeInvalidPayload. A
+// zero-valued enum or duration is treated as "use default" (handled by
+// WithDefaults) and is NOT considered invalid here; only a NEGATIVE ReplayBudget
+// is rejected. Callers that want strict rejection of typos like
+// RoutePolicy{DeliveryMode: "wat"} should call Validate before (or instead of)
+// WithDefaults.
 func (p RoutePolicy) Validate() error {
 	if p.DeliveryMode != "" && !p.DeliveryMode.IsValid() {
 		return invalidEnum("DeliveryMode", string(p.DeliveryMode))
@@ -254,6 +268,9 @@ func (p RoutePolicy) Validate() error {
 	if p.OnPermanentFailure != "" && !p.OnPermanentFailure.IsValid() {
 		return invalidEnum("OnPermanentFailure", string(p.OnPermanentFailure))
 	}
+	if p.ReplayBudget < 0 {
+		return invalidDuration("ReplayBudget", p.ReplayBudget)
+	}
 	return nil
 }
 
@@ -262,6 +279,14 @@ func invalidEnum(field, value string) *shared.BridgeError {
 		Code:    shared.ErrCodeInvalidPayload,
 		Class:   shared.ErrorPermanent,
 		Message: fmt.Sprintf("routing: invalid %s value %q", field, value),
+	}
+}
+
+func invalidDuration(field string, value time.Duration) *shared.BridgeError {
+	return &shared.BridgeError{
+		Code:    shared.ErrCodeInvalidPayload,
+		Class:   shared.ErrorPermanent,
+		Message: fmt.Sprintf("routing: invalid %s value %s (must not be negative)", field, value),
 	}
 }
 

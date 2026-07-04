@@ -339,11 +339,13 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	// Finding 8: poisoning now requires the record to reach poisonMinAge in
-	// addition to exhausting its replay budget. This real-time test cannot wait
-	// the generous production default (max(5×SendTimeout, 2m)), so shrink the age
-	// gate to effectively-immediate; the test still exercises the
-	// MaxReplayAttempts → PoisonMessage DLQ transition after the ~5s retry.
+	// WP-REPLAY-BUDGET: poisoning now requires the record to spend its
+	// wall-clock ReplayBudget (measured from FirstAttemptedAt) in addition to
+	// exhausting MaxReplayAttempts; poisonMinAge is only the legacy fallback for
+	// zero-first-attempt records. This real-time test cannot wait the 15m
+	// production budget, so the route policy below shrinks ReplayBudget to
+	// effectively-immediate. The poisonMinAge option is likewise shrunk so the
+	// legacy fallback stays fast too.
 	rt := newTestRuntime("bridge-poison", outbox, lease, dlq, goruntime.WithOutboxPoisonMinAge(time.Millisecond))
 
 	receiver := NewFakeReceiver()
@@ -361,6 +363,10 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 			// (poison after the first 5s retry) while still exercising the
 			// MaxReplayAttempts → PoisonMessage DLQ transition.
 			MaxReplayAttempts: 1,
+			// Effectively-immediate budget so the record poisons as soon as it
+			// is re-claimed past MaxReplayAttempts (WithDefaults preserves this
+			// non-zero value; the drainer derives its budget from it).
+			ReplayBudget: time.Millisecond,
 		},
 		Bindings: []routing.DestinationBinding{
 			{ID: "b1", SessionID: "mqtt-poison"},

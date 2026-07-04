@@ -127,6 +127,9 @@ func TestOutboxDrainer_PoisonMessage(t *testing.T) {
 		Envelope:    *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-poison", Payload: []byte("bad")}),
 		Status:      persistence.OutboxPending,
 		ReplayCount: 3,
+		// Past the wall-clock ReplayBudget (15m default) so replay exhaustion
+		// actually poisons; pre-set (non-zero) so the claim stamp-once keeps it.
+		FirstAttemptedAt: time.Now().Add(-time.Hour),
 	})
 	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
 

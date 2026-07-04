@@ -274,8 +274,8 @@ from a configurable header (default: `x-tenant-id`).
 
 | Option | Interface | Purpose |
 |--------|-----------|---------|
-| `WithValidator(v)` | `ports.TenantValidator` | Tenant lookup, active check, and the `MaxMessageSizeBytes` limit — the only enforced per-tenant limit. |
-| `WithUsageTracker(t)` | `ports.TenantUsageTracker` | In-flight and processed-message counters. Observational only: the tracker port is increment-only, so no message-count quota ceiling is enforced. |
+| `WithValidator(v)` | `ports.TenantValidator` | Resolves `TenantInfo`: active check, the `MaxMessageSizeBytes` limit, and the `MaxInFlight` quota ceiling. |
+| `WithUsageTracker(t)` | `ports.TenantUsageTracker` | In-flight and processed-message counters. Increment-only, so observational by default; a tracker that also implements `ports.TenantUsageReader` enables the in-flight ceiling (see [Quota enforcement](#quota-enforcement)). |
 
 ### Go Example
 
@@ -291,10 +291,73 @@ proc, err := tenant.New(tenant.Config{
 ```
 
 When a validator is set, the processor rejects inactive tenants and payloads
-exceeding `TenantInfo.MaxMessageSizeBytes` — the only enforced per-tenant limit.
-When a usage tracker is set, in-flight counts are managed around dispatch and
-successful deliveries increment the message counter, but that tracking is
-observational: the port is increment-only, so it enforces no message-count ceiling.
+exceeding `TenantInfo.MaxMessageSizeBytes`. When a usage tracker is set,
+in-flight counts are managed around dispatch and successful deliveries increment
+the message counter. An increment-only tracker is observational; one that
+also implements `ports.TenantUsageReader` enables the in-flight ceiling
+described below. Message-count quotas stay unenforced (Phase 2).
+
+### Quota enforcement
+
+The tenant processor can enforce a per-tenant ceiling on concurrent in-flight
+deliveries. It stays off unless two conditions hold together:
+
+- **Capability** — the tracker passed to `WithUsageTracker` also implements
+  `ports.TenantUsageReader`, the optional read-back extension of
+  `ports.TenantUsageTracker`: `Usage(ctx, tenantID) (TenantUsage, error)`,
+  returning a `{Messages, InFlight}` snapshot.
+- **Data** — the tenant's `TenantInfo.MaxInFlight` is greater than `0` (`0`
+  means unlimited, matching the `MaxMessageSizeBytes` convention).
+
+There is no YAML for the ceiling. `TenantInfo`, `MaxInFlight` included, comes
+from the embedder's `TenantValidator`, so nothing changes until a validator
+returns a ceiling and the tracker implements the reader. An increment-only
+tracker, or a zero ceiling, leaves delivery unchanged — the feature is backward
+compatible.
+
+When both conditions hold, the processor reads `Usage` before it increments the
+in-flight counter. If `InFlight` is at or above `MaxInFlight`, the delivery is
+rejected with the transient error `TENANT_QUOTA_EXCEEDED`
+(`shared.ErrTenantQuotaExceeded`) and the `TenantRejects` counter records reason
+`quota_inflight`. The rejection is transient by design: an over-quota tenant
+becomes deliverable again the moment its in-flight count drains, so the route
+retry policy — backoff, then DLQ only on exhaustion — is the pressure valve, not
+a permanent drop.
+
+**Retry and DLQ tail.** Because the reject is transient, an over-quota delivery
+re-enters the route's normal retry pipeline (backoff-driven redelivery), not a
+drop. A tenant that stays over its ceiling longer than `MaxReplayAttempts`
+backoff cycles has its messages sunk to the DLQ as poison — error code
+`POISON_MESSAGE` (`shared.ErrCodePoisonMessage`), DLQ category `max_retries` — so
+valid-but-throttled messages are indistinguishable there from genuinely poison
+ones. On source transports without delayed-retry support, with a DLQ store
+configured, a single quota reject routes straight to the DLQ under category
+`retry_unsupported`, with no backoff wait. Size `MaxReplayAttempts` and backoff
+for the throttle duration you are willing to tolerate before shedding to the DLQ,
+and note that throttled-shed is not currently labeled separately from poison in
+the DLQ.
+
+**Fail-open on read error.** When `Usage` returns an error — a usage-store
+outage, say — the processor logs a warning, counts it, and proceeds without
+enforcing. The quota is a fairness control, not a security boundary; failing
+closed would turn a usage-store blip into a full-tenant outage.
+
+**Overshoot bound.** The read and the increment are not atomic, so concurrent
+deliveries can each read `InFlight = MaxInFlight - 1` and all pass. The in-flight
+counter is per-tenant, but routing is tenant-agnostic — routes match on
+subject/binding, not tenant — so a single tenant's traffic spans multiple routes,
+each with its own concurrency semaphore, and a shared usage store spans instances
+as well. Overshoot is bounded by the tenant's total concurrent in-flight
+admissions across every route and instance sharing the usage store, not by one
+route's `MaxInFlight`. Acceptable for a fairness quota; exact ceilings would
+require a conditional-increment port method, a recorded upgrade path rather than
+current behavior.
+
+Windowed message-count quotas (per hour or day) are Phase 2. They need windowed
+counter schemas and cross-instance aggregation — the same
+per-instance-versus-global question the
+[circuit breaker](#circuit-breaker-processor) already answers with per-instance
+state.
 
 ---
 
@@ -378,6 +441,21 @@ stores:
 > `memoryoutbox`/`memorydlq` option (dev store). `WithMaxReplayCount` no longer
 > exists -- the store-side replay cap was removed; poison detection is
 > drainer-owned per the `ports.OutboxStore` contract.
+
+### Outbox Replay Budget
+
+Poison needs all three: the replay count past `max_replay_attempts`, a non-zero
+first-attempt timestamp, and `replay_budget` elapsed since that first attempt:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `replay_budget` | duration | `15m` | Route policy field. Wall-clock budget from a record's first delivery attempt, bounding total redelivery time before poison. `max_replay_attempts` is the attempt floor; `replay_budget` is the time, so a transient egress outage shorter than the budget never poisons a healthy record. |
+
+The first attempt is stored per record: SQLite adds a `first_attempted_at`
+column (Unix millis, `0` = zero) via an idempotent migration and the
+`CREATE TABLE` DDL; DynamoDB writes a per-item `first_attempted_at` attribute,
+omitted when zero. Values absent before this schema read as zero and fall back
+to the older `CreatedAt` age gate, so an upgrade never poisons a backlog.
 
 ### Decision Table
 

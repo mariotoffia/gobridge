@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     claimed_by     TEXT NOT NULL DEFAULT '',
     claim_version  INTEGER NOT NULL DEFAULT 0,
     claimed_at     INTEGER NOT NULL DEFAULT 0,
+    first_attempted_at INTEGER NOT NULL DEFAULT 0,
     replay_count   INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL DEFAULT 0,
@@ -45,9 +46,11 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 
 // outboxColumns is the canonical column list used for SELECTs that
 // hydrate full persistence.OutboxRecord values via scanRecords.
+// first_attempted_at is appended last so scanOutboxRecords can bind it
+// at the tail without shifting any existing scan positions.
 const outboxColumns = `id, partition_key, route_id, envelope_id, binding_id, session_id,
         address, envelope_json, headers_json, status, claimed_by, claim_version,
-        claimed_at, replay_count, created_at, expires_at, completed_at, seq`
+        claimed_at, replay_count, created_at, expires_at, completed_at, seq, first_attempted_at`
 
 const (
 	// insertOutboxSQL persists one record with per-record idempotency
@@ -57,7 +60,20 @@ const (
 	// all-duplicate batch. seq is the monotonic per-partition persist
 	// sequence: MAX(seq)+1 within the partition is race-free here because
 	// the pool is capped at a single writer connection (I2) and the batch
-	// runs in one transaction. Bind order: ..., created_at, expires_at,
+	// runs in one transaction.
+	//
+	// first_attempted_at is intentionally omitted from the column list, so a
+	// freshly persisted row always starts at DEFAULT 0 and the store-side claim
+	// CASE-WHEN (updateClaimSQL) is the single authority that stamps it. This is
+	// safe because records are only ever Persisted with a zero first attempt:
+	// they are created via NewOutboxRecord, and re-Persist is INSERT OR IGNORE
+	// (no overwrite, so a re-Persisted row cannot backfill the column either).
+	// A future author who rehydrates then re-Persists an already-stamped record
+	// must add first_attempted_at here AND to the bind order, or the budget
+	// clock would silently reset. The memory and DynamoDB stores preserve a
+	// non-zero FirstAttemptedAt through Persist; SQLite relies on this invariant.
+	//
+	// Bind order: ..., created_at, expires_at,
 	// partition_key (again, for the seq subselect).
 	insertOutboxSQL = `INSERT OR IGNORE INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
 		 session_id, address, envelope_json, headers_json, status, created_at, expires_at, seq)
@@ -149,15 +165,32 @@ func selectClaimableIDsSQL(staleEnabled bool) string {
 
 // updateClaimSQL builds the UPDATE statement that flips n records
 // from pending/claimed to claimed under a new owner+version and stamps
-// claimed_at so a later stale-claim reclaim can find a stranded row. The
-// WHERE clause repeats the claimableWhere fence (I2: the claim UPDATE is
-// guarded, not a blind id-list write) so a row that stopped being claimable
-// between select and update is never stolen. Bind order:
-// claimed_by, claim_version, claimed_at, ids..., claim_version, [stale_cutoff_ms].
+// claimed_at so a later stale-claim reclaim can find a stranded row. It
+// also stamps first_attempted_at with a CASE-WHEN "stamp once" write: the
+// replay-budget clock is set the FIRST time a row is claimed (first_attempted_at
+// still 0) and never moved by a later reclaim. The SQLite store claims via SQL
+// without rehydrating and calling OutboxRecord.Claim, so this CASE mirrors the
+// aggregate's stamp-once guard on the store side. The WHERE clause repeats the
+// claimableWhere fence (I2: the claim UPDATE is guarded, not a blind id-list
+// write) so a row that stopped being claimable between select and update is
+// never stolen.
+//
+// ponytail: an in-place upgrade leaves existing in-flight rows at
+// first_attempted_at = 0, so their replay-budget clock starts at the FIRST
+// post-upgrade claim rather than their true first attempt. This is fail-safe —
+// it only ever grants MORE budget, never a premature poison — and legacy rows
+// still fall back to the CreatedAt/poisonMinAge gate until re-claimed. Upgrade
+// path if exactness is ever required: a one-time backfill of first_attempted_at
+// from created_at for rows where first_attempted_at = 0.
+//
+// Bind order:
+// claimed_by, claim_version, claimed_at, first_attempted_at, ids..., claim_version, [stale_cutoff_ms].
 func updateClaimSQL(n int, staleEnabled bool) string {
 	return fmt.Sprintf(
 		`UPDATE outbox SET status = 'claimed', claimed_by = ?, claim_version = ?,
-			 claimed_at = ?, replay_count = replay_count + 1
+			 claimed_at = ?,
+			 first_attempted_at = CASE WHEN first_attempted_at = 0 THEN ? ELSE first_attempted_at END,
+			 replay_count = replay_count + 1
 			 WHERE id IN (%s) AND `+claimableWhere(staleEnabled),
 		placeholders(n),
 	)

@@ -234,6 +234,9 @@ func TestUC71_PoisonMessageAttemptCount(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: maxReplayAttempts,
+			// Poison as soon as attempts are exhausted; the 15m default budget
+			// would outlast this test's DLQ wait (WP-REPLAY-BUDGET).
+			ReplayBudget: time.Millisecond,
 		},
 		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc71-bind",
@@ -301,6 +304,9 @@ func TestUC72_DLQEntryFieldIntegrity(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:      routing.DeliverySharedOutbox,
 			MaxReplayAttempts: 1,
+			// Poison as soon as attempts are exhausted; the 15m default budget
+			// would outlast this test's DLQ wait (WP-REPLAY-BUDGET).
+			ReplayBudget: time.Millisecond,
 		},
 		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{
 			BindingID: "uc72-bind",

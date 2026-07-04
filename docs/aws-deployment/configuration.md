@@ -59,7 +59,7 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 |-------|------|----------|---------|-------------|
 | `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when no bridge config file exists yet. |
 | `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. |
-| `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. |
+| `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
 | `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. **Reserved / non-operative at runtime** -- every node starts the transport, admin, and monitor servers regardless of this value. Validated for shape and consumed only at deploy time by the CDK single/cluster facades (per-service role + synth validation). Reserved for future multi-node coordination. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica) or `"filesystem_replicated"` (N replicas sharing EFS). |
 | `poll_interval` | `string` | No | `"1s"` | Go duration string for how often the poll watcher checks the bridge config file for changes. |
@@ -76,6 +76,28 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `metrics_namespace` | `string` | No | `"GoBridge/Runtime"` | CloudWatch namespace used when `metrics_exporter` is `"cloudwatch"`. Empty defaults to `GoBridge/Runtime` (mirrors `domain/shared.MetricNamespace`). |
 | `instance_id` | `string` | No | `""` | Value of the per-task `instance_id` metric dimension. Empty lets the exporter derive `"<hostname>-<pid>"`, already unique per Fargate task; set it for a deterministic operator-chosen identity. |
 | `dev_mode` | `bool` | No | `false` | Enables local development features. Required when `ssm_endpoint` is set. Injects static test credentials for SSM. |
+
+### Admin key parameter value
+
+`admin_api_key_param` resolves to one string, read by shape so a single parameter
+can carry either one operator key or a set of named keys:
+
+| Value | Interpretation |
+|-------|----------------|
+| Plain string (first non-space byte is not `{`) | Legacy single admin key, folded under the name `admin`. |
+| JSON object `{"alice":"<key>","bob":"<key>"}` | Named admin keys (name → key). Each name becomes the audit `Actor` when that key authenticates. |
+
+Every key, including the folded `admin`, must be at least 16 characters; every
+name must match `[a-z0-9._-]+` and be at most 64 characters. Malformed JSON whose
+first non-space byte is `{` is a **hard startup error** — it is never treated as
+a literal key. The same detection runs on reload, so rotating the parameter to a
+JSON map (or back to a single key) needs no redeploy; a malformed value at
+rotation time fails closed — the server then matches no key and rejects every
+admin request until the value is corrected.
+
+You populate the parameter (SecureString); the CDK constructs do not write it.
+See [named admin keys](../http-api.md#named-admin-keys) for the audit and matching
+semantics.
 
 ### Validation Rules
 

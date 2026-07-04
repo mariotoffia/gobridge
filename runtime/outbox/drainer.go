@@ -49,7 +49,17 @@ type Drainer struct {
 	// deferrals and stale-claim reclaims where no send ever failed — so replay
 	// exhaustion is not by itself proof of poison. The age gate is therefore a
 	// hard AND-condition, never an OR. Default: max(5×SendTimeout, 2m).
-	poisonMinAge     time.Duration
+	poisonMinAge time.Duration
+	// replayBudget bounds the TOTAL wall-clock time, measured from a record's
+	// FirstAttemptedAt, that redelivery may span before the record is poisoned
+	// to the DLQ (WP-REPLAY-BUDGET). It is the age half of the poison AND-gate:
+	// a transient egress outage that merely burns the replay COUNT quickly can
+	// no longer poison a healthy record until real time — replayBudget — has
+	// elapsed since the first attempt. poisonMinAge remains the LEGACY fallback,
+	// used only for records whose FirstAttemptedAt is zero (pre-budget schema).
+	// Default: cfg.Policy.ReplayBudget, itself defaulting to
+	// routing.DefaultReplayBudget (15m).
+	replayBudget     time.Duration
 	currentBatchSize int
 	hasDrained       bool
 	// hadPending tracks whether the most recent Claim returned records.
@@ -133,6 +143,13 @@ type Config struct {
 	// replay-count exhaustion, before a record is poisoned to the DLQ
 	// (finding 8). Zero selects the default max(5×SendTimeout, 2m).
 	PoisonMinAge time.Duration
+	// ReplayBudget bounds the total wall-clock time from a record's
+	// FirstAttemptedAt before it is poisoned to the DLQ (WP-REPLAY-BUDGET).
+	// Zero derives it from Policy.ReplayBudget, which itself defaults to
+	// routing.DefaultReplayBudget (15m). This is the primary poison age gate;
+	// PoisonMinAge is retained as the fallback for legacy records that carry a
+	// zero FirstAttemptedAt.
+	ReplayBudget time.Duration
 	// ExpireInterval is how often the drainer sweeps expired-but-unclaimed
 	// pending records to the expired terminal state (finding 19). Zero
 	// selects defaultExpireInterval. The sweep runs only under lease
@@ -225,6 +242,15 @@ func New(cfg Config) *Drainer {
 		}
 		cfg.PoisonMinAge = poisonAge
 	}
+	if cfg.ReplayBudget <= 0 {
+		// Derive from the route policy (WithDefaults sets 15m); the second
+		// guard falls back to the package default so a bare Config still
+		// bounds total replay burn.
+		cfg.ReplayBudget = cfg.Policy.ReplayBudget
+	}
+	if cfg.ReplayBudget <= 0 {
+		cfg.ReplayBudget = routing.DefaultReplayBudget
+	}
 	if cfg.ExpireInterval <= 0 {
 		cfg.ExpireInterval = defaultExpireInterval
 	}
@@ -266,6 +292,7 @@ func New(cfg Config) *Drainer {
 		useScaledTimeout:      useScaledTimeout,
 		batchTimeoutFloor:     cfg.BatchTimeoutFloor,
 		poisonMinAge:          cfg.PoisonMinAge,
+		replayBudget:          cfg.ReplayBudget,
 		expireInterval:        cfg.ExpireInterval,
 		// Seed lastExpire to now so the first Expire sweep waits a full
 		// interval (finding 19). This gives the active drain path priority:

@@ -19,20 +19,22 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 	var result []*persistence.OutboxRecord
 	for rows.Next() {
 		var (
-			snap        persistence.OutboxSnapshot
-			pk          string
-			envJSON     string
-			headersJSON sql.NullString
-			status      string
-			claimedAtMs int64
-			createdAtMs int64
-			expiresAtMs int64
-			completedMs int64
+			snap             persistence.OutboxSnapshot
+			pk               string
+			envJSON          string
+			headersJSON      sql.NullString
+			status           string
+			claimedAtMs      int64
+			createdAtMs      int64
+			expiresAtMs      int64
+			completedMs      int64
+			firstAttemptedMs int64
 		)
 		err := rows.Scan(
 			&snap.ID, &pk, &snap.RouteID, &snap.EnvelopeID, &snap.BindingID, &snap.SessionID,
 			&snap.Address, &envJSON, &headersJSON, &status, &snap.ClaimedBy, &snap.ClaimVersion,
 			&claimedAtMs, &snap.ReplayCount, &createdAtMs, &expiresAtMs, &completedMs, &snap.Seq,
+			&firstAttemptedMs,
 		)
 		if err != nil {
 			return nil, wrapErr(err, "sqliteoutbox: scan record")
@@ -42,6 +44,12 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 		snap.CreatedAt = time.UnixMilli(createdAtMs)
 		if claimedAtMs > 0 {
 			snap.ClaimedAt = time.UnixMilli(claimedAtMs)
+		}
+		if firstAttemptedMs > 0 {
+			// 0 encodes the zero time (legacy row or never-claimed): leave
+			// FirstAttemptedAt as the zero value so the drainer falls back to
+			// the CreatedAt age gate. Never now-stamp it here.
+			snap.FirstAttemptedAt = time.UnixMilli(firstAttemptedMs)
 		}
 		if expiresAtMs > 0 {
 			snap.ExpiresAt = time.UnixMilli(expiresAtMs)

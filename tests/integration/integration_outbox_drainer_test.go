@@ -261,7 +261,9 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	// Claim and release multiple times to drive up ReplayCount beyond max (2).
+	// Claim multiple times to drive ReplayCount beyond max (2). The first claim
+	// also stamps FirstAttemptedAt (WP-REPLAY-BUDGET), so the tiny ReplayBudget
+	// set on the drainer below is already spent by the time it drains.
 	for i := 1; i <= 3; i++ {
 		tok := persistence.LeaseToken{Version: uint64(i), Owner: "pumper"}
 		_, err := store.Claim(ctx, pk, tok, 10)
@@ -281,7 +283,7 @@ func TestIntegration_OutboxDrainer_PoisonMessageRoutesDLQ(t *testing.T) {
 		DLQ:            dlqRouter,
 		RouteID:        "route-od4",
 		PartitionKey:   pk,
-		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2},
+		Policy:         routing.RoutePolicy{SendTimeout: 5 * time.Second, MaxReplayAttempts: 2, ReplayBudget: time.Millisecond},
 		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize: 10,
 		TokenFn:        func() (persistence.LeaseToken, bool) { return finalTok, true },

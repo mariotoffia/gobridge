@@ -35,6 +35,16 @@ func TestOutboxReleaseConformance(t *testing.T) {
 	storetest.RunOutboxReleaseTests(t, store)
 }
 
+// Validates the replay-budget first-attempt contract against the shared
+// conformance suite, driven by a fake clock (TESTS.md: no time.Sleep). The
+// memory store holds full aggregates, so Claim's stamp-once flows through the
+// snapshot round-trip end-to-end.
+func TestOutboxFirstAttemptConformance(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	store := memoryoutbox.NewStore(memoryoutbox.WithClock(clk))
+	storetest.RunOutboxFirstAttemptTests(t, store, clk.Advance)
+}
+
 // newClockStore builds a memory store driven by an injected fake clock so
 // the Release tests are deterministic and free of any wall-clock or sleep
 // dependence.
