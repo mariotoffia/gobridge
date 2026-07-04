@@ -261,6 +261,53 @@ func TestToRoutePolicy_InvalidSendTimeout(t *testing.T) {
 	}
 }
 
+// TestToRoutePolicy_ReplayBudget validates that the replay_budget duration
+// string is parsed and mapped onto RoutePolicy.ReplayBudget.
+func TestToRoutePolicy_ReplayBudget(t *testing.T) {
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{ReplayBudget: "15m"},
+	}
+	p, err := toRoutePolicyE(rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ReplayBudget != 15*time.Minute {
+		t.Fatalf("ReplayBudget: got %v, want 15m", p.ReplayBudget)
+	}
+}
+
+// TestToRoutePolicy_InvalidReplayBudget validates that an invalid replay_budget
+// duration string returns an error naming the field.
+func TestToRoutePolicy_InvalidReplayBudget(t *testing.T) {
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{ReplayBudget: "banana"},
+	}
+	_, err := toRoutePolicyE(rd)
+	if err == nil {
+		t.Fatal("expected error for invalid replay_budget")
+	}
+	if !strings.Contains(err.Error(), "replay_budget") {
+		t.Fatalf("error should name the replay_budget field; got %v", err)
+	}
+}
+
+// TestToRoutePolicy_NegativeReplayBudget validates that a negative replay_budget
+// duration is rejected on the config load path rather than silently coerced to
+// the default by WithDefaults. time.ParseDuration accepts "-5m", so the guard
+// must live at the parse boundary (spec §4.2: negative -> validation error).
+func TestToRoutePolicy_NegativeReplayBudget(t *testing.T) {
+	rd := ports.RouteDef{
+		Policy: ports.PolicyDef{ReplayBudget: "-5m"},
+	}
+	_, err := toRoutePolicyE(rd)
+	if err == nil {
+		t.Fatal("expected error for negative replay_budget")
+	}
+	if !strings.Contains(err.Error(), "replay_budget") {
+		t.Fatalf("error should name the replay_budget field; got %v", err)
+	}
+}
+
 // TestToSessionConfig_DrainMaxFields validates that DrainMaxBatchSize and
 // DrainMaxConcurrency are wired from config to runtime.
 func TestToSessionConfig_DrainMaxFields(t *testing.T) {

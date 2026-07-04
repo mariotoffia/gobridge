@@ -717,7 +717,9 @@ func (s *Store) claimOne(
 					},
 					UpdateExpression: aws.String(
 						"SET #st = :claimed, claimed_by = :owner, claim_version = :ver, " +
-							"claimed_at = :now, replay_count = if_not_exists(replay_count, :zero) + :one"),
+							"claimed_at = :now, " +
+							"first_attempted_at = if_not_exists(first_attempted_at, :fa), " +
+							"replay_count = if_not_exists(replay_count, :zero) + :one"),
 					ConditionExpression: aws.String(
 						"(#st = :pending) OR (#st = :claimed AND (claim_version < :ver OR claimed_at < :stale))"),
 					ExpressionAttributeNames: map[string]string{"#st": "status"},
@@ -727,9 +729,12 @@ func (s *Store) claimOne(
 						":owner":   &ddbtypes.AttributeValueMemberS{Value: token.Owner},
 						":ver":     &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)},
 						":now":     &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
-						":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleMs)},
-						":zero":    &ddbtypes.AttributeValueMemberN{Value: "0"},
-						":one":     &ddbtypes.AttributeValueMemberN{Value: "1"},
+						// :fa stamps the first-attempt clock only when absent
+						// (if_not_exists), so a reclaim never moves it.
+						":fa":    &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())},
+						":stale": &ddbtypes.AttributeValueMemberN{Value: i64(staleMs)},
+						":zero":  &ddbtypes.AttributeValueMemberN{Value: "0"},
+						":one":   &ddbtypes.AttributeValueMemberN{Value: "1"},
 					},
 				},
 			},
@@ -763,7 +768,7 @@ func (s *Store) claimOne(
 	}
 
 	// Synthesize the post-claim state on a copy of the queried item.
-	updated := make(map[string]ddbtypes.AttributeValue, len(item)+4)
+	updated := make(map[string]ddbtypes.AttributeValue, len(item)+5)
 	for k, v := range item {
 		updated[k] = v
 	}
@@ -772,6 +777,12 @@ func (s *Store) claimOne(
 	updated["claim_version"] = &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)}
 	updated["claimed_at"] = &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())}
 	updated["replay_count"] = &ddbtypes.AttributeValueMemberN{Value: i64(numAttrI64(item, "replay_count") + 1)}
+	// Mirror the if_not_exists(first_attempted_at, :fa) write: stamp it only
+	// when the queried item had no first_attempted_at, so a reclaim of an
+	// already-attempted record keeps the original instant.
+	if _, ok := updated["first_attempted_at"]; !ok {
+		updated["first_attempted_at"] = &ddbtypes.AttributeValueMemberN{Value: i64(now.UnixMilli())}
+	}
 
 	return unmarshalRecord(updated)
 }

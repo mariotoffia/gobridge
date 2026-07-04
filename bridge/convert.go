@@ -39,6 +39,21 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		}
 		p.DepthCacheTTL = d
 	}
+	if r.Policy.ReplayBudget != "" {
+		d, err := time.ParseDuration(r.Policy.ReplayBudget)
+		if err != nil {
+			return p, fmt.Errorf("invalid replay_budget %q: %w", r.Policy.ReplayBudget, err)
+		}
+		// time.ParseDuration accepts a leading '-', but a negative budget is
+		// nonsensical and WithDefaults would silently coerce it to the 15m
+		// default on the real load path (Validate is not called there). Reject
+		// it at the parse boundary so the operator sees the misconfiguration
+		// (spec §4.2: negative -> validation error).
+		if d < 0 {
+			return p, fmt.Errorf("invalid replay_budget %q: must not be negative", r.Policy.ReplayBudget)
+		}
+		p.ReplayBudget = d
+	}
 	if r.Policy.Backoff.InitialInterval != "" {
 		d, err := time.ParseDuration(r.Policy.Backoff.InitialInterval)
 		if err != nil {

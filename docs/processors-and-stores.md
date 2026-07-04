@@ -442,6 +442,21 @@ stores:
 > exists -- the store-side replay cap was removed; poison detection is
 > drainer-owned per the `ports.OutboxStore` contract.
 
+### Outbox Replay Budget
+
+Poison needs all three: the replay count past `max_replay_attempts`, a non-zero
+first-attempt timestamp, and `replay_budget` elapsed since that first attempt:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `replay_budget` | duration | `15m` | Route policy field. Wall-clock budget from a record's first delivery attempt, bounding total redelivery time before poison. `max_replay_attempts` is the attempt floor; `replay_budget` is the time, so a transient egress outage shorter than the budget never poisons a healthy record. |
+
+The first attempt is stored per record: SQLite adds a `first_attempted_at`
+column (Unix millis, `0` = zero) via an idempotent migration and the
+`CREATE TABLE` DDL; DynamoDB writes a per-item `first_attempted_at` attribute,
+omitted when zero. Values absent before this schema read as zero and fall back
+to the older `CreatedAt` age gate, so an upgrade never poisons a backlog.
+
 ### Decision Table
 
 | Scenario | Lease | Outbox | DLQ |

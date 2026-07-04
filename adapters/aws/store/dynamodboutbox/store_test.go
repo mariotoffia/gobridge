@@ -87,6 +87,25 @@ func TestOutboxStaleReclaimConformance(t *testing.T) {
 	storetest.RunOutboxStaleReclaimTests(t, store, stale, clk.Advance)
 }
 
+// Validates the replay-budget first-attempt contract against the shared
+// conformance suite, driven by a fake clock (TESTS.md: no time.Sleep). Proves
+// the claimOne if_not_exists stamp and the marshal/unmarshal round-trip.
+func TestOutboxFirstAttemptConformance(t *testing.T) {
+	client := ddblocal.Client(t)
+	tableName := ddblocal.UniqueTable("outbox")
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	store := dynamodboutbox.NewStore(client,
+		dynamodboutbox.WithTableName(tableName),
+		dynamodboutbox.WithClock(clk),
+	)
+	if err := store.CreateTable(context.Background()); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	ddblocal.CleanupTable(t, client, tableName)
+
+	storetest.RunOutboxFirstAttemptTests(t, store, clk.Advance)
+}
+
 // --- DynamoDB-Specific Tests ---
 
 // Verifies duplicate persist for the same envelope ID returns ErrDuplicateRecord without altering the first record.

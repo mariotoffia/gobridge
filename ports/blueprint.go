@@ -353,6 +353,7 @@ type PolicyDef struct {
 	MaxInFlight        int        `yaml:"max_in_flight,omitempty" json:"max_in_flight,omitempty"`
 	AckAfter           string     `yaml:"ack_after,omitempty" json:"ack_after,omitempty"`
 	MaxReplayAttempts  int        `yaml:"max_replay_attempts,omitempty" json:"max_replay_attempts,omitempty"`
+	ReplayBudget       string     `yaml:"replay_budget,omitempty" json:"replay_budget,omitempty"`
 	MaxOutboxDepth     int        `yaml:"max_outbox_depth,omitempty" json:"max_outbox_depth,omitempty"`
 	OnExpired          string     `yaml:"on_expired,omitempty" json:"on_expired,omitempty"`
 	OnPermanentFailure string     `yaml:"on_permanent_failure,omitempty" json:"on_permanent_failure,omitempty"`

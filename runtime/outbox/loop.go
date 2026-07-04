@@ -76,14 +76,15 @@ func (d *Drainer) Run(ctx context.Context) error {
 			d.adaptBatchSize(n)
 			interval := d.strategy.NextInterval(n)
 			if transient > 0 {
-				// ponytail: the 5s floor stops broker hammering and the
-				// sub-30s poison-DLQ on typical restarts, but transient
-				// retries still increment replay_count, so an outage longer
-				// than the poison budget still DLQs good messages (memory/
-				// SQLite ~6x sooner than DynamoDB's stale-claim path). The
-				// real fix — bounding delivery attempts by record age rather
-				// than claim count — is a larger follow-up across the
-				// aggregate, snapshot, and Dynamo store.
+				// The 5s floor stops broker hammering and the sub-30s
+				// poison-DLQ on typical restarts. It throttles the RATE at
+				// which transient retries burn replay_count; the wall-clock
+				// ReplayBudget (measured from FirstAttemptedAt in
+				// replayBudgetExhausted) now bounds the TOTAL burn, so an
+				// outage no longer DLQs a good message merely by exhausting
+				// the claim count quickly. The age-based root-cause fix
+				// (WP-REPLAY-BUDGET) is implemented across the aggregate,
+				// snapshot, and all three stores.
 				interval = max(interval, transientRetryFloor)
 			}
 			timer.Reset(interval)

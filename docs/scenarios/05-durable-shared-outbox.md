@@ -210,7 +210,16 @@ policy:
   max_replay_attempts: 5
 ```
 
-The maximum number of times the drainer re-attempts an outbox record after a **transient** send failure. Reaching this count is not sufficient to poison a record: the drainer routes it to the DLQ only once it has BOTH exceeded `max_replay_attempts` AND reached a minimum wall-clock age (`PoisonMinAge`, default `max(5 × send_timeout, 2m)`). The age gate stops a short egress outage -- which can burn a small replay budget in seconds -- from poisoning otherwise-healthy messages. A **permanent** (non-transient) send error skips the replay budget and is DLQ'd on the spot. The drainer is the only component that poisons an outbox record; replay-count exhaustion is its sole poison trigger. The default is 5 attempts.
+The minimum number of times the drainer must claim an outbox record before it becomes eligible for poison after a **transient** send failure. Reaching this count is not sufficient to poison a record: the drainer routes it to the DLQ only once all three conditions hold -- the replay count has passed `max_replay_attempts`, the record has a recorded first delivery attempt, and the wall-clock since that first attempt has reached `replay_budget` (default 15m; see below). `max_replay_attempts` is the minimum-attempts floor; `replay_budget` is the wall-clock that bounds total delivery time. Together they stop a transient egress outage -- a broker restart, node replacement, or deploy rollover -- from poisoning otherwise-healthy messages before the budget runs out. A record persisted before the first-attempt schema (no recorded first attempt) falls back to the older age gate measured from `CreatedAt`, so an upgrade never poisons a backlog. A **permanent** (non-transient) send error skips the budget and is DLQ'd on the spot. The drainer is the only component that poisons an outbox record. The default is 5 attempts.
+
+### `replay_budget`
+
+```yaml
+policy:
+  replay_budget: 15m
+```
+
+The wall-clock budget, measured from a record's first delivery attempt, that bounds how long the drainer keeps retrying a **transient** failure before it poisons the record to the DLQ. It sizes for the outages a healthy target recovers from -- a broker restart, node replacement, or deploy rollover -- so those never DLQ a good message before it drains. `max_replay_attempts` sets the attempt floor; this sets the time. Legacy records with no recorded first attempt fall back to the older `CreatedAt` age gate. The default is 15m.
 
 ### Outbox Drainer
 
@@ -393,7 +402,7 @@ session:
 
 ### DLQ for Failed Deliveries
 
-A record reaches the DLQ store on a permanent send error (immediately) or on replay-count exhaustion once it has also passed `PoisonMinAge`. Operators can inspect and replay entries via the HTTP admin API:
+A record reaches the DLQ store on a permanent send error (immediately) or on replay-count exhaustion once it has also spent its `replay_budget` -- the wall-clock from the first delivery attempt, default 15m (legacy records without a recorded first attempt fall back to the `CreatedAt` age gate). Operators can inspect and replay entries via the HTTP admin API:
 
 ```yaml
 stores:

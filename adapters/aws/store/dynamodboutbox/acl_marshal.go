@@ -58,6 +58,14 @@ func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time
 	// claimed_by and claimed_at are omitted for unclaimed records; Claim
 	// sets them and Release removes them again. The seq attribute is
 	// stamped by Persist after allocating the per-partition sequence.
+	//
+	// first_attempted_at is likewise omitted while zero (never claimed):
+	// Claim stamps it once via if_not_exists and it is never moved after.
+	// A legacy item that predates this attribute simply has no such key, so
+	// unmarshalRecord reads it back as the zero time (numAttrI64 → 0).
+	if fa := r.FirstAttemptedAt(); !fa.IsZero() {
+		item["first_attempted_at"] = &ddbtypes.AttributeValueMemberN{Value: i64(fa.UnixMilli())}
+	}
 
 	// has_expiry is the sparse ExpiryIndex hash key: present only on
 	// records that can ever expire, so Expire scans exactly its candidate
@@ -98,7 +106,10 @@ func unmarshalRecord(item map[string]ddbtypes.AttributeValue) (*persistence.Outb
 		Seq:          numAttrU64(item, "seq"),
 		CreatedAt:    timeFromMillis(numAttrI64(item, "created_at")),
 		ClaimedAt:    timeFromMillis(numAttrI64(item, "claimed_at")),
-		CompletedAt:  timeFromMillis(numAttrI64(item, "completed_at")),
+		// Missing attribute (legacy or never-claimed) → numAttrI64 returns 0 →
+		// timeFromMillis(0) is the zero time. Never now-stamped here.
+		FirstAttemptedAt: timeFromMillis(numAttrI64(item, "first_attempted_at")),
+		CompletedAt:      timeFromMillis(numAttrI64(item, "completed_at")),
 	}
 
 	if expiresMs := numAttrI64(item, "expires_at"); expiresMs > 0 {

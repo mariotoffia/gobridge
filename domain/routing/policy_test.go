@@ -1,11 +1,13 @@
 package routing_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestRoutePolicy_WithDefaults verifies WithDefaults applies package defaults to all zero-valued RoutePolicy fields.
@@ -17,6 +19,9 @@ func TestRoutePolicy_WithDefaults(t *testing.T) {
 	}
 	if p.MaxReplayAttempts != routing.DefaultMaxReplayAttempts {
 		t.Fatalf("MaxReplayAttempts: got %d, want %d", p.MaxReplayAttempts, routing.DefaultMaxReplayAttempts)
+	}
+	if p.ReplayBudget != routing.DefaultReplayBudget {
+		t.Fatalf("ReplayBudget: got %v, want %v", p.ReplayBudget, routing.DefaultReplayBudget)
 	}
 	if p.MaxOutboxDepth != routing.DefaultMaxOutboxDepth {
 		t.Fatalf("MaxOutboxDepth: got %d, want %d", p.MaxOutboxDepth, routing.DefaultMaxOutboxDepth)
@@ -49,6 +54,7 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	p := routing.RoutePolicy{
 		MaxInFlight:        50,
 		MaxReplayAttempts:  10,
+		ReplayBudget:       42 * time.Minute,
 		OnExpired:          routing.ExpiredDrop,
 		OnPermanentFailure: routing.FailureDrop,
 		DispatchMode:       routing.DispatchFanOut,
@@ -65,6 +71,9 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	}
 	if p.MaxReplayAttempts != 10 {
 		t.Fatalf("explicit MaxReplayAttempts should be preserved, got %d", p.MaxReplayAttempts)
+	}
+	if p.ReplayBudget != 42*time.Minute {
+		t.Fatalf("explicit ReplayBudget should be preserved, got %v", p.ReplayBudget)
 	}
 	if p.OnExpired != routing.ExpiredDrop {
 		t.Fatal("explicit OnExpired should be preserved")
@@ -250,6 +259,17 @@ func TestRoutePolicy_WithDefaults_NegativeValues(t *testing.T) {
 			},
 		},
 		{
+			name: "negative ReplayBudget clamped to default",
+			build: func() routing.RoutePolicy {
+				return routing.RoutePolicy{ReplayBudget: -1 * time.Minute}.WithDefaults()
+			},
+			check: func(t *testing.T, p routing.RoutePolicy) {
+				if p.ReplayBudget != routing.DefaultReplayBudget {
+					t.Fatalf("ReplayBudget = %v, want %v (negative clamped)", p.ReplayBudget, routing.DefaultReplayBudget)
+				}
+			},
+		},
+		{
 			name: "negative MaxOutboxDepth clamped to default",
 			build: func() routing.RoutePolicy {
 				return routing.RoutePolicy{MaxOutboxDepth: -100}.WithDefaults()
@@ -264,6 +284,46 @@ func TestRoutePolicy_WithDefaults_NegativeValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.check(t, tt.build())
+		})
+	}
+}
+
+// TestRoutePolicy_Validate_ReplayBudget verifies the strict-validation contract:
+// a NEGATIVE ReplayBudget is a permanent BridgeError, while zero (means default)
+// and any positive value validate cleanly. WithDefaults leniently clamps a
+// negative to the default; Validate is the strict gate that rejects it.
+func TestRoutePolicy_Validate_ReplayBudget(t *testing.T) {
+	tests := []struct {
+		name    string
+		budget  time.Duration
+		wantErr bool
+	}{
+		{name: "negative rejected", budget: -1 * time.Second, wantErr: true},
+		{name: "zero allowed (use default)", budget: 0, wantErr: false},
+		{name: "positive allowed", budget: 10 * time.Minute, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := routing.RoutePolicy{ReplayBudget: tt.budget}.Validate()
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error for a negative ReplayBudget")
+			}
+			var be *shared.BridgeError
+			if !errors.As(err, &be) {
+				t.Fatalf("want *shared.BridgeError, got %T", err)
+			}
+			if be.Class != shared.ErrorPermanent {
+				t.Fatalf("error class = %v, want %v", be.Class, shared.ErrorPermanent)
+			}
+			if be.Code != shared.ErrCodeInvalidPayload {
+				t.Fatalf("error code = %v, want %v", be.Code, shared.ErrCodeInvalidPayload)
+			}
 		})
 	}
 }

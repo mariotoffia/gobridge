@@ -74,6 +74,19 @@ func TestOutboxStaleReclaimConformance(t *testing.T) {
 	storetest.RunOutboxStaleReclaimTests(t, s, stale, clk.Advance)
 }
 
+// Validates the replay-budget first-attempt contract against the shared
+// conformance suite, driven by a fake clock (TESTS.md: no time.Sleep). Proves
+// the store-side CASE-WHEN stamp and the millis row round-trip.
+func TestOutboxFirstAttemptConformance(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	s, err := sqliteoutbox.NewStore(":memory:", sqliteoutbox.WithClock(clk))
+	if err != nil {
+		t.Fatalf("NewStore(:memory:): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	storetest.RunOutboxFirstAttemptTests(t, s, clk.Advance)
+}
+
 // Verifies persisted outbox records survive closing and reopening the database file.
 func TestDurability_CloseAndReopen(t *testing.T) {
 	dir := t.TempDir()

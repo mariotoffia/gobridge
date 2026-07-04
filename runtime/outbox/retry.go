@@ -78,6 +78,25 @@ func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
 	return d.clk.Since(created) >= d.poisonMinAge
 }
 
+// replayBudgetExhausted reports whether a replay-exhausted record has ALSO spent
+// its wall-clock replay budget and may therefore be poisoned to the DLQ
+// (WP-REPLAY-BUDGET). The budget is measured from the record's FIRST delivery
+// attempt (FirstAttemptedAt), so a transient egress outage that merely burns the
+// replay COUNT quickly cannot poison an otherwise-healthy record until real time
+// — replayBudget — has actually elapsed since delivery was first attempted.
+//
+// Records with a zero FirstAttemptedAt (persisted before the replay-budget
+// schema, or never yet claimed) fall back BIT-FOR-BIT to the legacy CreatedAt
+// age gate (poisonAgeReached / poisonMinAge), so upgrading in place changes no
+// poison decision for pre-existing records.
+func (d *Drainer) replayBudgetExhausted(rec *persistence.OutboxRecord) bool {
+	first := rec.FirstAttemptedAt()
+	if first.IsZero() {
+		return d.poisonAgeReached(rec)
+	}
+	return d.clk.Since(first) >= d.replayBudget
+}
+
 // releaseOne best-effort returns a single claimed record to pending using the
 // optional OutboxReleaser capability (finding 9). Stores without the capability
 // keep the legacy leave-claimed behavior and recover via version/stale reclaim.
@@ -111,9 +130,13 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 
 	// ReplayCount counts CLAIMS, not failed sends (deferrals and reclaims bump
 	// it too), so replay exhaustion alone is not proof of poison. Poisoning is
-	// gated on replay exhaustion AND a minimum record age (poisonAgeReached);
-	// both must hold — see poisonMinAge.
-	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.poisonAgeReached(rec) {
+	// gated on replay exhaustion AND the replay budget being spent
+	// (replayBudgetExhausted): both must hold. A record is poisoned only once
+	// wall-clock time since its FIRST attempt (FirstAttemptedAt) has reached
+	// ReplayBudget; legacy records carrying a zero FirstAttemptedAt fall back
+	// bit-for-bit to the CreatedAt/poisonMinAge age gate. Both conditions are a
+	// hard AND, never an OR.
+	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.replayBudgetExhausted(rec) {
 		return d.handlePoison(ctx, rec, token)
 	}
 
@@ -318,21 +341,25 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 
 func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := rec.Snapshot()
-	// Replay-count exhaustion is the ONLY route to this poison DLQ: a
-	// permanent send error DLQs immediately (see the non-transient branch
-	// in processRecord), so a record only crosses MaxReplayAttempts by
-	// being re-claimed and re-attempted repeatedly — i.e. by successive
-	// TRANSIENT egress failures. An outage that outlasts the replay budget
-	// therefore DLQs an otherwise-good message (A4-R1). The
-	// transientRetryFloor bounds how fast that budget burns but does not
-	// decouple it from wall-clock age; the age-based root-cause fix is a
-	// deferred cross-store change. Emit an explicit WARN so this
-	// premature-DLQ-from-outage is observable at the point of loss instead
-	// of surfacing only as a generic, reason-less DLQ entry.
+	// A record reaches this poison DLQ only by crossing MaxReplayAttempts AND
+	// spending its wall-clock ReplayBudget since FirstAttemptedAt (a permanent
+	// send error DLQs immediately via the non-transient branch in
+	// processRecord). The replay budget is the A4-R1 root-cause fix: a transient
+	// egress outage that merely burns the replay COUNT quickly no longer poisons
+	// a healthy record, because poisoning now requires real time — measured from
+	// the FIRST attempt — to have elapsed. The transientRetryFloor still bounds
+	// how fast the count burns (rate); the budget bounds the TOTAL burn. Legacy
+	// records with a zero FirstAttemptedAt fall back to the CreatedAt/poisonMinAge
+	// age gate. Emit an explicit WARN carrying the age evidence
+	// (first_attempted_at, replay_budget) so a genuine budget-exhaustion loss is
+	// observable at the point of loss instead of surfacing only as a generic,
+	// reason-less DLQ entry.
 	d.log(ctx, slog.LevelWarn, "outbox record poisoned: replay attempts exhausted, routing to DLQ",
 		"record_id", rec.ID(),
 		"replay_count", rec.ReplayCount(),
-		"max_replay_attempts", d.policy.MaxReplayAttempts)
+		"max_replay_attempts", d.policy.MaxReplayAttempts,
+		"first_attempted_at", rec.FirstAttemptedAt(),
+		"replay_budget", d.replayBudget)
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
 	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", poisonErr, rec.ReplayCount()); dlqErr != nil {
 		return dlqErr
