@@ -147,6 +147,26 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Bridge** | The composition factory in `bridge/` that turns a parsed `BridgeConfig` into a running `Runtime`. |
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
+| **SpanIdentity** | Optional `ports.Span` capability (`ports/tracer.go`) exposing the active span's W3C identity (`TraceID()`/`SpanID()`) so the runtime stamps `trace_id`/`span_id` log fields from the ACTIVE span instead of the upstream `traceparent`. Both return `""` for no-op spans and unsampled traces; the correlation ID remains the always-present join key. |
+
+## Transport adapters (`adapters/*/transport`)
+
+Adapter-owned names that surface in config keys, headers, or metrics.
+
+| Term | Meaning |
+|---|---|
+| **`mqtt.topic`** | Envelope-headers key (`paho.HeaderMQTTTopic`) exposing the MQTT publish topic the broker delivered on. Distinct from the logical subject carried in the `gobridge.subject` user property (`paho.HeaderGobridgeSubject`). |
+| **DefaultPersistentSessionExpiry** | MQTT: the `session_expiry_interval` (86400 s / 24 h) substituted at Start when a Persistent/Exclusive session leaves the option at `0` — a literal zero would give no offline retention. |
+| **Unmatched grace** | MQTT config key `unmatched_grace` (default `DefaultUnmatchedGrace`, 30 s, restarted per (re)connect): window during which a publish matching no registered receiver filter is buffered un-acked. Past the window it is acked, dropped, and its topic unsubscribed. |
+| **WillOptions** | MQTT Last Will and Testament block (`session.will.{topic,payload,qos,retain}`), published by the broker on ungraceful disconnect only. Topic required, no `+`/`#` wildcards, QoS 0–2. |
+| **MQTTSessionTakeover** | Metric counting server disconnects with reason 0x8E/0x8F — another client connected with the same ClientID. A rising count signals two instances sharing a `client_id`. |
+| **MQTTRouterBuffered** | Metric counting publishes held in the MQTT router's bounded pending buffer because they arrived before a matching handler registered. |
+| **MQTTRouterUnmatchedDropped** | Metric counting publishes acked-and-dropped after the unmatched grace elapsed — the signature of an orphan broker-side subscription. |
+| **`use_sessions`** | Service Bus receiver flag: consume a session-enabled entity by accepting the next available session and rotating between sessions (rotate on idle, quiet backoff when none available). Mutually exclusive with `session_id` (pins one session) and `sub_queue`. |
+| **`max_lock_renewal_duration`** | Service Bus receiver key (default 5 m): caps total per-delivery lock auto-renewal wall time; on breach the delivery is cancelled and `ASBLockRenewalCapExceeded` increments. |
+| **Forward token** | HTTP: shared secret carried in `X-Bridge-Forward-Token` authenticating a peer's `X-Bridge-Forwarded` loop marker (`Factory.WithForwardToken` / `ForwarderConfig.ForwardToken`). Distinct from `api_key` by mandate: it authorises trusting the forwarding marker, not message submission. |
+| **Ingress idempotency window** | HTTP: bounded node-local LRU of `Idempotency-Key`/`X-Dedup-Id` values of successfully processed requests (config key `dedup_window`, default 4096). A request presenting a remembered key is acknowledged without re-emitting the delivery. |
+| **Redirect endpoint** | HTTP config key `redirect_endpoint`: names the `PeerInfo.Endpoints` key used for opt-in SSE 307 redirects to the route owner. Empty (default) refuses with 503 so the internal peer endpoint never leaks to an external client. |
 
 ## Deployment / seeding (`deployment/aws-filebased-config`)
 

@@ -32,10 +32,11 @@ import (
 //
 // Failure semantics (the cluster-safety rules):
 //
-//   - GetRecords failures back off exponentially up to maxStreamBackoff
-//     WITHOUT discarding the iterator, so a throttle (the ~5 TPS shard
-//     budget is shared across all instances) never loses stream
-//     position.
+//   - GetRecords failures back off exponentially (equal-jittered, up
+//     to maxStreamBackoff) WITHOUT discarding the iterator, so a
+//     throttle (the ~5 TPS shard budget is shared across all
+//     instances) never loses stream position and simultaneously
+//     throttled instances do not retry in lockstep.
 //   - The iterator is discarded only when it is genuinely invalid
 //     (expired/trimmed/gone) or after streamErrorsBeforeIteratorReset
 //     consecutive unknown failures. Every re-acquire lands at LATEST,
@@ -84,7 +85,7 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 				if acquireFailures >= streamAcquireFallbackAfter {
 					return true
 				}
-				if !l.wait(ctx, backoff) {
+				if !l.wait(ctx, l.jitteredBackoff(backoff)) {
 					return false
 				}
 				backoff = nextBackoff(backoff)
@@ -124,7 +125,7 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 				shardIter = ""
 				recordFailures = 0
 			}
-			if !l.wait(ctx, backoff) {
+			if !l.wait(ctx, l.jitteredBackoff(backoff)) {
 				return false
 			}
 			backoff = nextBackoff(backoff)

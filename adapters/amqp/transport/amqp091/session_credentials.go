@@ -73,6 +73,13 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 			"password_changed", credsChanged,
 			"tls_changed", tlsChanged)
 	}
+	// Rotation over a broker_url that still embeds userinfo works (the
+	// rotated material overrides it on every dial — see
+	// injectCredentials) but the embedded, presumably stale secret keeps
+	// sitting in the config. Tell the operator instead of staying silent.
+	if credsChanged && brokerURLEmbedsUserinfo(s.opts.BrokerURL) {
+		s.warnEmbeddedBrokerURLCredentials("the rotated")
+	}
 
 	if conn == nil {
 		// Not connected yet or already disconnected; nothing to tear

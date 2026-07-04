@@ -24,6 +24,19 @@
 //   - Extend:         ErrNotSupported (AMQP 1.0 uses credit-based flow control,
 //     not visibility timeouts)
 //
+// # Delayed Retry Requires Broker-Side redelivery-delay
+//
+// A delayed Retry attaches the x-opt-delivery-time annotation via the
+// modified outcome, but the BROKER owns redelivery timing. On brokers
+// that do not honor the annotation for redeliveries, a broker-side
+// redelivery delay is MANDATORY for the runtime's retry backoff to have
+// any effect: ActiveMQ Artemis defaults redelivery-delay to 0, so
+// without address-settings configuring redelivery-delay (and ideally
+// redelivery-delay-multiplier/max-redelivery-delay) every delayed retry
+// is redelivered immediately and max-delivery-attempts can be exhausted
+// in milliseconds. Each unhonorable delay increments
+// MetricAMQP10DelayedRetryUnhonored and warns once per link.
+//
 // # Subject vs Address
 //
 // AMQP 1.0 sender links are address-bound: the link's target is fixed

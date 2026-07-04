@@ -52,6 +52,26 @@ func (s *InstrumentedSender) Send(ctx context.Context, msg ports.OutboundMessage
 	return err
 }
 
+// SetRouteID forwards the optional ports.RouteIDSetter capability (finding 14
+// family: instrumentation wrappers must not strip optional interfaces). When
+// inner does not implement it, the call is a no-op — behaviourally identical
+// to the runtime's capability probe failing on the unwrapped sender.
+func (s *InstrumentedSender) SetRouteID(routeID string) {
+	if setter, ok := s.inner.(ports.RouteIDSetter); ok {
+		setter.SetRouteID(routeID)
+	}
+}
+
+// Close forwards the optional ports.ContextCloser capability. A no-op when
+// inner does not implement it (closing nothing is indistinguishable from not
+// being closable).
+func (s *InstrumentedSender) Close(ctx context.Context) error {
+	if closer, ok := s.inner.(ports.ContextCloser); ok {
+		return closer.Close(ctx)
+	}
+	return nil
+}
+
 // InstrumentedReceiver wraps a Receiver and records per-delivery
 // receive latency (the time between delivery emission and the emit
 // callback returning).
@@ -67,6 +87,10 @@ type InstrumentedReceiver struct {
 var _ ports.Receiver = (*InstrumentedReceiver)(nil)
 
 // NewInstrumentedReceiver decorates inner with receive-latency metrics.
+// Library consumers wiring their own composition root should prefer
+// NewInstrumentedReceiverCapabilityPreserving: this constructor's concrete
+// return type never satisfies ports.ReceiverStartedSignaler, so a wrapped
+// receiver's started signal is invisible to readiness probing.
 func NewInstrumentedReceiver(
 	inner ports.Receiver,
 	metrics ports.MetricsExporter,
@@ -97,6 +121,71 @@ func (r *InstrumentedReceiver) Run(ctx context.Context, emit func(context.Contex
 			shared.Tag{Key: r.tagKey, Value: r.tagValue})
 		return err
 	})
+}
+
+// Close forwards the optional ports.ContextCloser capability (finding 14
+// family): the route runner probes `Close(context.Context) error` on shutdown,
+// and a bare wrapper would strip it, leaking the inner receiver's resources.
+// A no-op when inner does not implement it.
+func (r *InstrumentedReceiver) Close(ctx context.Context) error {
+	if closer, ok := r.inner.(ports.ContextCloser); ok {
+		return closer.Close(ctx)
+	}
+	return nil
+}
+
+// SetRouteID forwards the optional ports.RouteIDSetter capability so the inner
+// receiver still learns its route ID for metric/log labelling when wrapped.
+// A no-op when inner does not implement it.
+func (r *InstrumentedReceiver) SetRouteID(routeID string) {
+	if setter, ok := r.inner.(ports.RouteIDSetter); ok {
+		setter.SetRouteID(routeID)
+	}
+}
+
+// NewInstrumentedReceiverCapabilityPreserving decorates inner with
+// receive-latency metrics while preserving its optional
+// ports.ReceiverStartedSignaler capability (finding 14 family). This is the
+// constructor library consumers should prefer; the bridge's own composition
+// root never wraps receivers (adapters self-instrument), so nothing in-repo
+// exercises either constructor in production.
+//
+// Started cannot be forwarded unconditionally on InstrumentedReceiver: the
+// health prober treats a successful `receiver.(ports.ReceiverStartedSignaler)`
+// assertion as "a start signal WILL arrive" and waits on the channel, so a
+// wrapper faking the capability over an inner receiver that never closes any
+// channel would wedge readiness. The capability must therefore be re-exported
+// only when inner actually has it — the same construction-time variant
+// selection as NewInstrumentedOutboxStoreCapabilityPreserving. Close and
+// SetRouteID forwarding are safe unconditionally (no-op when absent) and live
+// on the base wrapper.
+func NewInstrumentedReceiverCapabilityPreserving(
+	inner ports.Receiver,
+	metrics ports.MetricsExporter,
+	metricName, tagKey, tagValue string,
+	clk clock.Clock,
+) ports.Receiver {
+	base := NewInstrumentedReceiver(inner, metrics, metricName, tagKey, tagValue, clk)
+	if signaler, ok := inner.(ports.ReceiverStartedSignaler); ok {
+		return &instrumentedReceiverStartedSignaler{InstrumentedReceiver: base, signaler: signaler}
+	}
+	return base
+}
+
+// instrumentedReceiverStartedSignaler re-exports the optional
+// ports.ReceiverStartedSignaler capability of a wrapped receiver that has it.
+type instrumentedReceiverStartedSignaler struct {
+	*InstrumentedReceiver
+	signaler ports.ReceiverStartedSignaler
+}
+
+var (
+	_ ports.Receiver                = (*instrumentedReceiverStartedSignaler)(nil)
+	_ ports.ReceiverStartedSignaler = (*instrumentedReceiverStartedSignaler)(nil)
+)
+
+func (r *instrumentedReceiverStartedSignaler) Started() <-chan struct{} {
+	return r.signaler.Started()
 }
 
 // instrumentedDelivery wraps a Delivery to count visibility extensions

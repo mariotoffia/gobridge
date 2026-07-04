@@ -375,6 +375,10 @@ func TestCORS_UnlistedOriginRejected(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+	// Vary: Origin must be present even for a disallowed origin: the response
+	// differs by Origin either way, and an intermediary cache must not serve
+	// an allow-listed response to a disallowed origin (or vice versa).
+	assert.Equal(t, "Origin", rec.Header().Get("Vary"))
 }
 
 // Verifies OPTIONS preflight for an allowed origin returns 204 No Content with CORS headers.

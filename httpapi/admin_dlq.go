@@ -41,6 +41,19 @@ type bindingInjector interface {
 	InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error
 }
 
+// redriveInjector is the optional capability a Runtime exposes for
+// DLQ-redrive-safe injection: the message is re-issued under a FRESH envelope
+// ID with the original ID stamped as provenance (x-bridge.causation-id).
+// Reusing the original ID is a verified silent-loss path on shared_outbox
+// routes: the outbox retains completed/poisoned rows as dedup evidence keyed
+// on (envelope_id, binding_id), so re-persisting the same ID returns
+// duplicate → the dispatch ACKs → the redrive reports success → the DLQ entry
+// is deleted — and the message is never sent again. Adapters type-assert for
+// this capability first and fall back to the legacy paths when absent.
+type redriveInjector interface {
+	InjectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error
+}
+
 // injectRedrive injects env into routeID, confining dispatch to the entry's
 // binding when the runtime supports binding-scoped injection. Redriving one
 // failed leg of a fan-out shared_outbox route must NOT re-persist records for
@@ -50,6 +63,17 @@ type bindingInjector interface {
 // it, which is exactly the security property that keeps external messages from
 // steering routing.
 func injectRedrive(ctx context.Context, logger *slog.Logger, rt ports.RuntimeCommand, routeID, bindingID string, env *messaging.Envelope) error {
+	if ri, ok := rt.(redriveInjector); ok {
+		return ri.InjectRedrive(ctx, routeID, bindingID, env)
+	}
+	// No redrive-safe injection: the replay keeps the original envelope ID.
+	// On a shared_outbox route whose store retains completed rows for dedup,
+	// the re-persist is swallowed as a duplicate and the message is silently
+	// lost while this redrive still reports success. Surface the hazard.
+	if logger != nil {
+		logger.Warn("dlq redrive: runtime lacks redrive-safe injection; replay keeps the original envelope ID and may be swallowed by outbox dedup",
+			"route_id", routeID, "binding_id", bindingID)
+	}
 	if bindingID != "" {
 		if bi, ok := rt.(bindingInjector); ok {
 			return bi.InjectToBinding(ctx, routeID, bindingID, env)

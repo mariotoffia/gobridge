@@ -338,6 +338,21 @@ type bindingOverrider interface {
 	BindingOverride() string
 }
 
+// redriveProvenancer is the out-of-band, trusted channel for DLQ-redrive
+// provenance. Only internally-constructed synthetic deliveries
+// (Runtime.InjectRedrive) implement it; transport-created deliveries never do.
+// A redriven message is re-issued under a FRESH envelope ID (reusing the
+// original would collide with the outbox's retained dedup row — see
+// Runtime.InjectRedrive), so the original ID is stamped as
+// messaging.HeaderCausationID AFTER the ingress reserved-header strip below.
+// An external message can never spoof it: the strip removes any inbound
+// x-bridge.causation-id on untrusted routes before this re-stamp runs.
+type redriveProvenancer interface {
+	// RedrivenFrom returns the original envelope ID the delivery re-issues,
+	// or "" when the delivery is not a redrive.
+	RedrivenFrom() string
+}
+
 // HandleDelivery is the synchronous entry point used by Runtime.Inject.
 func (r *RouteRunner) HandleDelivery(ctx context.Context, del ports.Delivery) error {
 	if err := r.acquireSlots(ctx); err != nil {
@@ -420,6 +435,16 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		}
 	}
 
+	// Stamp DLQ-redrive provenance (the ORIGINAL envelope ID this delivery
+	// re-issues under a fresh ID) after the strip, for the same trust reason
+	// as the binding override above. HeaderCausationID is BRIDGE-TO-BRIDGE
+	// PROPAGATED, so the audit link survives persistence and downstream hops.
+	if rp, ok := del.(redriveProvenancer); ok {
+		if from := rp.RedrivenFrom(); from != "" {
+			env.SetHeader(messaging.HeaderCausationID, from)
+		}
+	}
+
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "delivery received",
 			"route", r.routeID,
@@ -449,7 +474,23 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	if corrID, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID); ok {
 		ctx = observability.WithCorrelationID(ctx, corrID)
 	}
-	if hasTrace {
+	// Log-correlation fields come from the ACTIVE span when the tracer
+	// exposes its identity (ports.SpanIdentity): logs then carry THIS
+	// hop's span_id, and root deliveries get a trace_id at all. The
+	// upstream traceparent stays the span parent (Extract above) and
+	// span attribute; it is only the stamping fallback for tracers
+	// without the capability (NoopTracer) or unsampled traces.
+	stamped := false
+	if ident, ok := span.(ports.SpanIdentity); ok {
+		if tid := ident.TraceID(); tid != "" {
+			ctx = observability.WithTraceID(ctx, tid)
+			if sid := ident.SpanID(); sid != "" {
+				ctx = observability.WithSpanID(ctx, sid)
+			}
+			stamped = true
+		}
+	}
+	if !stamped && hasTrace {
 		ctx = observability.WithTraceID(ctx, tc.TraceID)
 		ctx = observability.WithSpanID(ctx, tc.SpanID)
 	}

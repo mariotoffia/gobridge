@@ -96,7 +96,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		m = metrics[0]
 	}
 	opts.applyDefaults()
-	return &Session{
+	s := &Session{
 		opts:        opts,
 		mode:        mode,
 		logger:      logger,
@@ -111,6 +111,30 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			Password: opts.Password.Reveal(),
 		},
 	}
+	// Surface a config conflict that is otherwise silent: explicit
+	// credentials override any userinfo embedded in broker_url on every
+	// dial (see injectCredentials), so embedded userinfo alongside a
+	// configured username is dead config — likely a stale secret sitting
+	// in YAML that misleads the next reader.
+	if opts.Username != "" && brokerURLEmbedsUserinfo(opts.BrokerURL) {
+		s.warnEmbeddedBrokerURLCredentials("the configured")
+	}
+	return s
+}
+
+// warnEmbeddedBrokerURLCredentials warns that broker_url embeds userinfo
+// which the explicit/rotated credentials override (F8): the embedded
+// values are never sent to the broker, so they should be removed from
+// the URL. Emitted once at construction (config conflict) and once per
+// credential rotation (rotation over a stale embedded secret). Only the
+// redacted URL is logged.
+func (s *Session) warnEmbeddedBrokerURLCredentials(source string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn("amqp091: broker_url embeds credentials (userinfo) that are overridden by "+
+		source+" username/password on every dial; remove the userinfo from broker_url",
+		"broker", redactURL(s.opts.BrokerURL))
 }
 
 // brokerURL returns the broker URL with credentials injected from the

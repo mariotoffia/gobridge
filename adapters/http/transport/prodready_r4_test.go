@@ -301,6 +301,81 @@ func TestReceiver_ClientDisconnectDoesNotAbortDispatch(t *testing.T) {
 	}
 }
 
+// TestReceiver_DispatchKeepsServerDeadlineWhenDetached pins the second
+// half of the HTTP-H3 contract: the dispatch context is detached from
+// the client's CANCELLATION (context.WithoutCancel) but must NOT become
+// unbounded — when the inbound request context carries a deadline (the
+// server's own timeout, installed by http.TimeoutHandler or timeout
+// middleware at the composition root), that deadline must survive onto
+// the detached dispatch context. Client disconnect still must not abort
+// the dispatch.
+func TestReceiver_DispatchKeepsServerDeadlineWhenDetached(t *testing.T) {
+	factory := transport.NewFactory()
+	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "bound"}, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	type emitted struct {
+		ctx context.Context
+		del ports.Delivery
+	}
+	emitCh := make(chan emitted, 1)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	t.Cleanup(cancelRun)
+	go func() {
+		_ = recv.Run(runCtx, func(ctx context.Context, d ports.Delivery) error {
+			emitCh <- emitted{ctx: ctx, del: d}
+			return nil
+		})
+	}()
+	waitReceiverReady(t, recv, 2*time.Second)
+
+	// Far-future absolute deadline: asserted by round-trip equality
+	// only, so wall-clock load cannot flake the test.
+	deadline := time.Now().Add(time.Hour)
+	clientCtx, cancelClient := context.WithDeadline(context.Background(), deadline)
+	t.Cleanup(cancelClient)
+
+	body := strings.NewReader(`{"subject":"t.bound","payload":{}}`)
+	req := httptest.NewRequest("POST", "/transport/http/receivers/bound/messages", body).
+		WithContext(clientCtx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		factory.Handler().ServeHTTP(rec, req)
+		close(served)
+	}()
+
+	got := wait.RequireReceive(t, emitCh, 2*time.Second)
+
+	gotDeadline, ok := got.ctx.Deadline()
+	if !ok {
+		t.Fatal("dispatch context dropped the server's own deadline: detached dispatch must stay bounded")
+	}
+	if !gotDeadline.Equal(deadline) {
+		t.Fatalf("dispatch deadline = %v, want the server's own %v", gotDeadline, deadline)
+	}
+
+	// Client disconnect (before the server deadline) must still not
+	// abort the detached-but-bounded dispatch.
+	cancelClient()
+	wait.RequireClosed(t, served, 2*time.Second)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 to the disconnected client, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := got.ctx.Err(); err != nil {
+		t.Fatalf("client disconnect aborted the bounded dispatch context: %v", err)
+	}
+	// Late settlement must not error and releases the dispatch deadline.
+	if err := got.del.Ack(context.Background()); err != nil {
+		t.Fatalf("late Ack after client disconnect: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Finding HTTP-M4: operator paths fail the build, never panic
 // ---------------------------------------------------------------------------

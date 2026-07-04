@@ -208,6 +208,16 @@ func (c Config) Validate() error {
 	if err := validateDeliveryMode(c.Sender.DeliveryMode); err != nil {
 		return fmt.Errorf("amqp091: sender.%w", err)
 	}
+	// Duration floors run UNCONDITIONALLY (unlike the broker_url gate
+	// above): a binding override may carry only timing knobs, and a
+	// bare-int decode accident (heartbeat: 30 → 30ns) must be caught on
+	// every attachment point. See minConfigDuration.
+	if err := c.Session.validateDurations(); err != nil {
+		return fmt.Errorf("amqp091: %w", err)
+	}
+	if err := validateDurationFloor("sender.timeout", c.Sender.Timeout); err != nil {
+		return fmt.Errorf("amqp091: %w", err)
+	}
 	return nil
 }
 

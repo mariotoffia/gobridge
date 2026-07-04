@@ -8,7 +8,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-var _ ports.Span = (*otelSpan)(nil)
+var (
+	_ ports.Span         = (*otelSpan)(nil)
+	_ ports.SpanIdentity = (*otelSpan)(nil)
+)
 
 // otelSpan adapts an OpenTelemetry [trace.Span] to [ports.Span]. It
 // lives in the ACL because the embedded SDK Span is the boundary
@@ -39,4 +42,26 @@ func (s *otelSpan) SetAttributes(attrs ...shared.Tag) {
 	if len(attrs) > 0 {
 		s.span.SetAttributes(tagsToAttributes(attrs)...)
 	}
+}
+
+// TraceID implements the OPTIONAL [ports.SpanIdentity] capability: the
+// runtime stamps log-correlation fields from the ACTIVE span so logs
+// carry this hop's identity (and root deliveries a trace_id at all).
+// Returns "" when the span context is invalid or the trace is unsampled
+// — an unsampled trace exports no spans, so the logged id would dangle.
+func (s *otelSpan) TraceID() string {
+	sc := s.span.SpanContext()
+	if !sc.IsValid() || !sc.IsSampled() {
+		return ""
+	}
+	return sc.TraceID().String()
+}
+
+// SpanID implements [ports.SpanIdentity]; see [otelSpan.TraceID].
+func (s *otelSpan) SpanID() string {
+	sc := s.span.SpanContext()
+	if !sc.IsValid() || !sc.IsSampled() {
+		return ""
+	}
+	return sc.SpanID().String()
 }

@@ -26,12 +26,15 @@ nothing).
 |------|---------------|-----------------------------------|----------|
 | Ephemeral | `ephemeral` (default) | always `true` (the `clean_start` option is ignored) | No state survives disconnect |
 | Persistent | `persistent` | honours `clean_start` (default `false`) | Broker retains subscriptions and queued messages |
-| Exclusive | `exclusive` | honours `clean_start` (default `false`) | Lease-based single holder; requires a lease store |
+| Exclusive | `exclusive` | always `false` (`clean_start: true` is overridden to `false` with a warning) | Lease-based single holder; requires a lease store |
 
 The `clean_start` option defaults to **`false`** and is consulted only for
 Persistent and Exclusive sessions — the modes that exist to *resume* broker
 session state. Ephemeral sessions always connect with clean-start regardless of
-the option.
+the option. `clean_start: true` on an Exclusive session is a misconfiguration
+(autopaho would reconnect with the same client ID and clean-start, producing a
+session-takeover loop); the adapter overrides it to `false` and logs a warning
+(`acl_session.go`).
 
 On a resumed (`clean_start=false`) session the broker replays its queued
 backlog on CONNACK before the route runners have registered their topic
@@ -112,7 +115,7 @@ senders:
 | `reconnect_delay` | duration | autopaho default (10s) | Constant delay between failed reconnect attempts after the first immediate retry |
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at Start with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
-| `receive_maximum` | int | `0` (paho default 65535) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs |
+| `receive_maximum` | int | `0` (paho default 65535) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is acked, dropped, counted (`MQTTRouterUnmatchedDropped`), and its exact topic is UNSUBSCRIBEd (deduped, one warn per topic) to converge orphan broker-side subscriptions on a resumed session. `0` → `DefaultUnmatchedGrace` (30s). |
 | `username` | string | -- | Authentication username |
 | `password` | string | -- | Authentication password (redacted on marshal) |
@@ -143,8 +146,10 @@ senders:
 
 MQTT deliveries are acknowledged **after** the bridge settles them, not on
 receipt. The adapter connects with manual acknowledgement and holds the PUBACK
-until the downstream send/persist succeeds, so an in-flight message survives a
-crash and is redelivered by the broker for Persistent/Exclusive sessions.
+(QoS 1) / PUBCOMP (QoS 2) until the runtime acks the delivery — after the
+downstream send or outbox persist succeeds. Acks are released in receive order,
+so an in-flight message survives a crash and is redelivered by the broker when
+a Persistent/Exclusive session resumes.
 
 ## Resilience Behavior
 

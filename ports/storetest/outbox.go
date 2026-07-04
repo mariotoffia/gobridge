@@ -71,6 +71,7 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
 	t.Run("ClaimTieBreaksByPersistOrderOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t, store) })
 	t.Run("ClaimZeroLimitAdvancesFenceOnly", func(t *testing.T) { testClaimZeroLimitAdvancesFenceOnly(t, store) })
+	t.Run("ClaimBeyondReplayCapRemainsClaimable", func(t *testing.T) { testClaimBeyondReplayCapRemainsClaimable(t, store) })
 	t.Run("ClaimFenceInterleaving", func(t *testing.T) { testClaimFenceInterleaving(t, store) })
 	t.Run("ConcurrentClaimersClaimEachRecordOnce", func(t *testing.T) { testConcurrentClaimersClaimEachRecordOnce(t, store) })
 }

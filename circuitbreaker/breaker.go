@@ -15,13 +15,22 @@ import (
 type Breaker struct {
 	mu    sync.Mutex
 	state State
-	// generation counts state transitions. Every admitted request
-	// captures the generation it was admitted in (see Token); an outcome
-	// reported for an older generation is stale evidence about a
-	// previous circuit epoch and is discarded instead of corrupting the
-	// current state (e.g. a Closed-era success closing a half-open
-	// circuit, or a stale completion stealing a half-open probe slot).
-	generation           uint64
+	// generation counts state transitions and starts at 1 so the zero
+	// Token (generation 0) can never match a live generation, not even
+	// on a fresh breaker. Every admitted request captures the generation
+	// it was admitted in (see Token); an outcome reported for another
+	// generation is stale evidence about a previous circuit epoch and is
+	// discarded instead of corrupting the current state (e.g. a
+	// Closed-era success closing a half-open circuit, or a stale
+	// completion stealing a half-open probe slot).
+	generation uint64
+	// legacyOutstanding counts half-open probe slots taken through the
+	// token-less BeforeRequest so the token-less AfterRequest can only
+	// release a slot the legacy surface actually took. Without it, a
+	// legacy outcome landing during half-open released a slot it never
+	// acquired, underflowing the probe accounting and admitting extra
+	// concurrent probes past HalfOpenMaxProbes. Guarded by mu.
+	legacyOutstanding    int
 	config               Config
 	consecutiveFailures  int
 	consecutiveSuccesses int
@@ -42,10 +51,15 @@ type Breaker struct {
 // Token is the request handle returned by BeforeRequestToken. It pins
 // the breaker generation the request was admitted in so AfterRequestToken
 // can discard outcomes that arrive after the circuit has since changed
-// state (stale evidence from a previous epoch). The zero Token never
-// matches a live generation.
+// state (stale evidence from a previous epoch), and records whether the
+// admission took a half-open probe slot so only genuine probe outcomes
+// release one. The zero Token never matches a live generation (breaker
+// generations start at 1).
 type Token struct {
 	generation uint64
+	// probe is true when the admission consumed a half-open probe slot;
+	// AfterRequestToken releases a slot only for such tokens.
+	probe bool
 }
 
 // BreakerOption configures a Breaker.
@@ -86,6 +100,9 @@ func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)
 		config:        cfg.WithDefaults(),
 		onStateChange: onStateChange,
 		clk:           clock.System,
+		// Start at 1 so the zero Token can never match a live
+		// generation (see Token).
+		generation: 1,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -103,7 +120,7 @@ func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)
 // while the request was in flight, so a stale outcome is applied to the
 // current generation.
 func (b *Breaker) BeforeRequest() error {
-	_, err := b.BeforeRequestToken()
+	_, err := b.beforeRequest(true)
 	return err
 }
 
@@ -115,6 +132,15 @@ func (b *Breaker) BeforeRequest() error {
 // RetryAfter hint when the circuit is open or the half-open probe quota
 // is exhausted.
 func (b *Breaker) BeforeRequestToken() (Token, error) {
+	return b.beforeRequest(false)
+}
+
+// beforeRequest implements admission for both API surfaces. legacy is
+// true for the token-less BeforeRequest, whose half-open probe slots
+// are counted in legacyOutstanding — inside the same critical section
+// as the admission — so the token-less AfterRequest can only release a
+// slot this surface actually took.
+func (b *Breaker) beforeRequest(legacy bool) (Token, error) {
 	b.mu.Lock()
 
 	switch b.state {
@@ -126,14 +152,14 @@ func (b *Breaker) BeforeRequestToken() (Token, error) {
 			return Token{}, shared.ErrUnavailable.WithRetryAfter(remaining)
 		}
 		notify := b.transitionTo(StateHalfOpen)
-		tok, err := b.tryHalfOpenProbeLocked()
+		tok, err := b.tryHalfOpenProbeLocked(legacy)
 		b.mu.Unlock()
 		if notify != nil {
 			notify()
 		}
 		return tok, err
 	case StateHalfOpen:
-		tok, err := b.tryHalfOpenProbeLocked()
+		tok, err := b.tryHalfOpenProbeLocked(legacy)
 		b.mu.Unlock()
 		return tok, err
 	default: // StateClosed and any unknown state admit the request.
@@ -145,24 +171,35 @@ func (b *Breaker) BeforeRequestToken() (Token, error) {
 
 // tryHalfOpenProbeLocked admits a half-open probe when a slot is free.
 // Must be called with b.mu held so the slot accounting and the returned
-// generation are consistent with the admission decision.
-func (b *Breaker) tryHalfOpenProbeLocked() (Token, error) {
+// generation are consistent with the admission decision. legacy probes
+// are additionally counted in legacyOutstanding (see beforeRequest).
+func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 	if b.halfOpenInFlight.Load() >= int32(b.config.HalfOpenMaxProbes) {
 		return Token{}, shared.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
 	}
 	b.halfOpenInFlight.Add(1)
-	return Token{generation: b.generation}, nil
+	if legacy {
+		b.legacyOutstanding++
+	}
+	return Token{generation: b.generation, probe: true}, nil
 }
 
 // AfterRequest records the outcome of a request and transitions state.
 //
 // Legacy companion to BeforeRequest (ports.CircuitBreaker): the outcome
 // is applied to the CURRENT generation because no Token identifies the
-// admission generation. Concurrent callers should use
+// admission generation. A half-open probe slot is released only when
+// this legacy surface has one outstanding (taken by BeforeRequest), so
+// a token-less outcome can never underflow the probe accounting and
+// admit extra concurrent probes. Concurrent callers should use
 // BeforeRequestToken / AfterRequestToken.
 func (b *Breaker) AfterRequest(err error) {
 	b.mu.Lock()
 	tok := Token{generation: b.generation}
+	if b.state == StateHalfOpen && b.legacyOutstanding > 0 {
+		b.legacyOutstanding--
+		tok.probe = true
+	}
 	b.mu.Unlock()
 	b.AfterRequestToken(tok, err)
 }
@@ -184,7 +221,13 @@ func (b *Breaker) AfterRequestToken(tok Token, err error) {
 		b.mu.Unlock()
 		return
 	}
-	if b.state == StateHalfOpen {
+	if tok.probe {
+		// The generation matched, so no transition has happened since
+		// the admission: the breaker is still half-open and this token
+		// holds one of its probe slots. Only probe tokens release a
+		// slot, so an outcome that never took one (a closed-era
+		// admission or a token-less legacy call) cannot underflow the
+		// accounting and admit extra concurrent probes.
 		b.halfOpenInFlight.Add(-1)
 	}
 	b.totalRequests++
@@ -237,6 +280,7 @@ func (b *Breaker) transitionTo(newState State) func() {
 
 	if old == StateHalfOpen {
 		b.halfOpenInFlight.Store(0)
+		b.legacyOutstanding = 0
 	}
 
 	switch newState {
@@ -279,11 +323,16 @@ func (b *Breaker) GetMetrics() BreakerMetrics {
 
 // ForceStateForTest sets the breaker state directly. Intended for test code
 // only. Advances the generation like a real transition so outcomes admitted
-// before the forced state change are treated as stale.
+// before the forced state change are treated as stale, and resets the
+// half-open probe accounting when leaving half-open.
 func (b *Breaker) ForceStateForTest(state State, openedAt time.Time) {
 	b.mu.Lock()
 	if b.state != state {
 		b.generation++
+		if b.state == StateHalfOpen {
+			b.halfOpenInFlight.Store(0)
+			b.legacyOutstanding = 0
+		}
 	}
 	b.state = state
 	b.openedAt = openedAt

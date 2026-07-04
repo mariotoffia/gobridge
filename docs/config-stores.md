@@ -121,9 +121,12 @@ ch, err := watcher.Watch(ctx)
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `WithMode(m)` | `ModeNotify` (fsnotify) or `ModePoll` (SHA-256 hash) | `ModeNotify` |
+| `WithMode(m)` | `ModeNotify` (hybrid: directory-scoped fsnotify + periodic hash-resync backstop) or `ModePoll` (SHA-256 hash) | `ModeNotify` |
 | `WithDebounce(d)` | Debounce interval for `ModeNotify` | `100ms` |
 | `WithPollInterval(d)` | Poll interval for `ModePoll` | `30s` |
+| `WithResyncInterval(d)` | Notify-mode hash-reconciliation cadence: periodic SHA-256 comparison catching changes fsnotify missed. Non-positive values are ignored | `30s` |
+| `WithBaselineHash(h)` | Seed the change-detection baseline with the hash the caller actually loaded (`Source.LoadHash`), closing the Load↔Watch race | hash file at `Watch` |
+| `WithClock(c)` | Inject the clock used for timers and tickers (`nil` ignored) | `clock.System` |
 | `WithFormat(f)` | Override format auto-detection | `FormatAuto` |
 | `WithLogger(l)` | Logger for diagnostics | `nil` |
 | `WithWatchConfig(def)` | Apply settings from a `ConfigWatchDef` (from the YAML `config_watch` section) | -- |
@@ -132,8 +135,8 @@ ch, err := watcher.Watch(ctx)
 
 | Mode | Mechanism | Best for |
 |------|-----------|----------|
-| **Notify** (default) | Filesystem events via `fsnotify`, debounced to coalesce rapid writes | Local disks, fast change detection |
-| **Poll** | Periodic SHA-256 content hash comparison | NFS, EFS, network mounts, containers |
+| **Notify** (default) | Hybrid: filesystem events via `fsnotify` on the containing **directory**, debounced to coalesce rapid writes, plus a periodic SHA-256 hash-resync backstop (default 30s) that catches changes fsnotify missed — this makes Kubernetes ConfigMap `..data` symlink swaps and kernel event-queue overflow safe | Local disks and K8s ConfigMap volume mounts, fast change detection |
+| **Poll** | Periodic SHA-256 content hash comparison | NFS, EFS, network mounts, `subPath` mounts |
 
 ### Behaviour
 
@@ -150,11 +153,12 @@ The watcher can be configured directly from the YAML config file itself:
 
 ```yaml
 config_watch:
-  mode: poll          # "notify" or "poll"
-  poll_interval: 30s  # for poll mode
+  mode: notify        # hybrid: fsnotify + hash-resync backstop
+  poll_interval: 30s  # notify mode: resync cadence; poll mode: poll cadence
   debounce: 200ms     # for notify mode
 ```
 
+In notify mode `poll_interval` doubles as the hash-resync cadence.
 Pass this to the watcher with `WithWatchConfig(baseCfg.ConfigWatch)`.
 
 ---
@@ -206,7 +210,7 @@ err = loader.EnsureTable(ctx)
 | Mode | Mechanism | Notes |
 |------|-----------|-------|
 | **Poll** (default) | One strongly-consistent `GetItem` per instance per interval, comparing the `version` attribute | Predictable cost; use for clustered deployments |
-| **Streams** | DynamoDB Streams `GetRecords`, sub-second propagation | Streams throughput is ~5 `GetRecords`/sec per shard **shared across all consumers**; falls back to `ModePoll` (with a warning) when a streams client is absent or streams are not enabled on the table |
+| **Streams** | DynamoDB Streams `GetRecords`, sub-second propagation | Streams throughput is ~5 `GetRecords`/sec per shard **shared across all consumers**; falls back to `ModePoll` (with a warning) when a streams client is absent or streams are not enabled on the table. Failure semantics: a throttled `GetRecords` **keeps** the iterator (no LATEST reset) and sheds load via equal-jittered exponential backoff up to 30s; a genuinely invalid iterator (or 3 consecutive unknown failures) is re-acquired at LATEST followed by a version-check reconciliation covering the gap; 5 consecutive acquisition failures switch to poll fallback for the rest of the Watch with a single Warn |
 
 ### Table Schema
 
@@ -217,13 +221,14 @@ err = loader.EnsureTable(ctx)
 | `data` | String | Full `BridgeConfig` serialized as JSON |
 | `version` | Number | Monotonically increasing version counter |
 
-The table uses **pay-per-request** billing. `EnsureTable` creates the table idempotently (safe to call multiple times).
+The table uses **pay-per-request** billing. `EnsureTable` creates the table idempotently (safe to call multiple times). When the loader runs in `ModeStreams`, `EnsureTable` provisions the new table with a `KEYS_ONLY` stream specification so a self-provisioned deployment actually gets the streams-based Watch it configured; an existing table's stream settings are left untouched.
 
 ### Behaviour
 
 - Implements `ports.Loader` and `ports.Reloader`.
 - **Load**: `GetItem` by PK/SK (strongly consistent), parse JSON from `data` attribute, track `version`.
 - **Watch** (`ModePoll`): a strongly-consistent `GetItem` at each poll interval compares the `version` attribute; the full item is re-parsed only when the version changes. `ModeStreams` consumes Streams records instead. Channel is closed on context cancellation.
+- Poll-cycle failures (version read or Load) are logged at **Warn**, rate-limited to one per minute, and escalate to **Error** after 10 consecutive failures — the Error states that config updates are NOT being applied, so a broken IAM policy or deleted table does not hide at Warn forever.
 - **Save**: Marshals `BridgeConfig` to JSON, `PutItem` with incremented `version`.
 - Returns `shared.ErrNotFound` when no config item exists.
 - The initial config is **not** emitted on the watch channel.
@@ -416,8 +421,8 @@ func (l *ConsulLoader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 | Implementation | Load | Watch | Persist | Watch Mechanism |
 |----------------|:----:|:-----:|:-------:|-----------------|
 | `file.Source` | Yes | -- | -- | -- |
-| `file.Watcher` | -- | Yes | -- | fsnotify or SHA-256 poll |
-| `dynamodb.Loader` | Yes | Yes | Yes (`Save`) | Version-number poll |
+| `file.Watcher` | -- | Yes | -- | Hybrid fsnotify + hash-resync, or SHA-256 poll |
+| `dynamodb.Loader` | Yes | Yes | Yes (`Save`) | Version-number poll (default) or DynamoDB Streams (opt-in, auto-fallback to poll) |
 | `config.Manager` | Yes | Yes | -- | Multiplexes all layer watchers |
 | `config.WriteFile` | -- | -- | Yes | -- |
 

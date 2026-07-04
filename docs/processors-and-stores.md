@@ -28,8 +28,12 @@ type Processor interface {
 ```
 
 Processors execute as an **onion model** -- each wraps the next and calls
-`next(ctx, env)` to continue the chain. Omitting the `next` call stops the
-message.
+`next(ctx, env)` to continue the chain. A processor that does not call `next`
+short-circuits the *remaining* chain successfully -- the envelope still
+dispatches to the sender. Only returning an error stops dispatch; only
+`shared.ErrMessageFiltered` marks an intentional drop (counted as
+`MessagesFiltered`, settled `OnSettled(Terminal: true)`, acked, not a route
+error).
 
 ```mermaid
 flowchart LR
@@ -225,10 +229,20 @@ proc := cbproc.New("my-cb", cb.Config{
 ```
 
 Each distinct key gets its own breaker instance, cached per-processor. The cache
-is bounded by `WithMaxBreakers` (default 10000) with LRU eviction; evictions are
-counted in `Stats().OpenEvictions`. An eviction bumps a generation token so any
-late outcome recorded against a stale generation is discarded (see
-`StaleOutcomes` below) instead of mutating a fresh breaker under the same key.
+is bounded by `WithMaxBreakers` (default 10000) with LRU eviction. All evictions
+are counted in `Stats().Evictions`; an eviction that drops an OPEN breaker
+additionally increments `Stats().OpenEvictions` (the churn red-flag). Eviction
+never drops a busy breaker: entries with in-flight requests are skipped
+(in-flight pinning), so a concurrent outcome is never lost to an orphan.
+Generation tokens are unrelated to eviction -- they advance only on breaker
+**state transitions**, which is what makes a late outcome recorded against a
+previous circuit epoch stale (see `StaleOutcomes` below).
+
+**Cluster semantics: per-instance state.** Breaker state is held per bridge
+instance and never shared. A fleet of N instances needs up to
+N × `FailureThreshold` failures before every breaker has tripped, and instances
+open/close out of phase (independent cooldowns) -- the downstream sees
+staggered probe traffic from the fleet, not one coordinated circuit.
 
 ### Metrics
 
@@ -322,6 +336,13 @@ stores:
 
 - **Type:** `sqlite`
 - **Required option:** `path` (string) -- file path for the database
+- **Optional options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `stale_claim_duration` | duration | runtime-derived | Outbox only -- same semantics as the DynamoDB row below. |
+| `retention` | duration | `1h` | Outbox only -- window completed/expired rows are kept before piggybacked compaction deletes them. Negative disables compaction. Keep above any upstream redelivery window. |
+
 - Persistent across restarts. Single-instance only.
 - Suitable for single-instance production with disk durability.
 - WAL journalling is always on; a single writer connection plus `busy_timeout` serialises in-process writers safely.
@@ -336,7 +357,10 @@ stores:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `table_name` | `string` | `"gobridge-leases"` / `"gobridge-outbox"` / `"gobridge-dlq"` | DynamoDB table name (per role). |
-| `stale_claim_duration` | `string` (duration) | `30s` (outbox only) | How long before an uncompleted outbox claim is reclaimed. Auto-derived from session `StepDownGrace` when omitted. |
+| `stale_claim_duration` | `string` (duration) | runtime-derived (outbox only) | How long before an uncompleted outbox claim is reclaimed. Explicit value wins; when omitted, derived as `maxStepDownGrace + max(2 × maxStepDownGrace, 15s)` across all sessions (see [Configuration Reference](configuration-reference.md)). Failover reclaim via a higher fencing version is always immediate. |
+| `compaction_grace` | duration | store default (`1h`) | Outbox only -- window terminal items are kept before the DynamoDB item TTL deletes them. |
+| `retention` | duration | none (keep forever) | DLQ only -- TTL on dead-letter entries (`failed_at + retention`). |
+| `max_scan_pages` | int | `100` | DLQ only -- bounds index-less List/Purge scans; negative disables. |
 
 - Distributed and persistent. Uses conditional writes for fencing safety.
 - Required for clustered deployments with lease-based coordination.
@@ -346,6 +370,14 @@ stores:
   duplicate-detection identity, so retention IS the duplicate-suppression cover:
   shrinking it shrinks how far back the outbox can suppress a redelivered
   message. Keep it comfortably above any upstream redelivery window.
+
+> **Embedder-only knobs.** Some store options are programmatic by design and
+> have no YAML key: `WithClock`, `WithLogger` (all stores); `WithMetrics`,
+> `WithCompleteResolveRetry` (dynamodboutbox); `WithGracePeriod` (deprecated
+> alias of `WithRetention`, both DynamoDB stores); and every
+> `memoryoutbox`/`memorydlq` option (dev store). `WithMaxReplayCount` no longer
+> exists -- the store-side replay cap was removed; poison detection is
+> drainer-owned per the `ports.OutboxStore` contract.
 
 ### Decision Table
 

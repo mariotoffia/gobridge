@@ -54,6 +54,22 @@ type Delivery interface {
 //     delivery. Transport prefetch / visibility windows (AMQP
 //     PrefetchCount, SQS in-flight limit) bound the working set; a
 //     Receiver MUST NOT buffer deliveries unboundedly ahead of emit.
+//
+//   - Settlement ordering: settlement (Ack/Retry/Extend) is invoked
+//     through the Delivery handle from the processing pipeline's own
+//     goroutines, NOT from the receive loop. The pipeline gives no
+//     ordering guarantee relative to emit order — deliveries emitted
+//     1, 2 may settle 2 then 1 — and a settlement MAY arrive after Run
+//     has returned (e.g. an in-flight send completing during shutdown
+//     under a detached drain context). A Receiver MUST tolerate
+//     out-of-order settlement, and each Delivery handle MUST remain
+//     safe to settle independent of the receive loop's state.
+//
+//   - Emit lifetime: the Receiver MUST NOT invoke emit after Run has
+//     returned. Once Run returns, the runtime releases the resources
+//     behind the emit callback; a late emit is a Receiver bug (the
+//     runtime guards this defensively and rejects the delivery, which
+//     then falls back to transport redelivery).
 type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }

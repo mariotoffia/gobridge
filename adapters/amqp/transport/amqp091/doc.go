@@ -100,6 +100,17 @@
 // length limits, and headers-exchange bindings. Numeric values should be
 // integers; the broker rejects a float where it expects an integer.
 //
+// # Configuration Durations
+//
+// Every duration knob (session heartbeat/connect_timeout/reconnect_*,
+// sender timeout) must be zero (use the default) or at least 1ms:
+// Config.Validate rejects sub-millisecond values because a YAML/JSON
+// bare number decoded into a time.Duration is interpreted as
+// NANOSECONDS (heartbeat: 30 → 30ns). The bridge's strict root config
+// parser already rejects bare-number durations outright; the Validate
+// floor is defense in depth for decode paths that bypass it. Always
+// write durations as strings with a unit, e.g. "30s".
+//
 // # Failover Boundary
 //
 // A Session connects to a single broker_url. High availability is

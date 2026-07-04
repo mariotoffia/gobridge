@@ -30,16 +30,21 @@ type Config struct {
 
 // ReceiverParams holds user-settable receiver fields.
 type ReceiverParams struct {
-	QueueName        string        `mapstructure:"queue_name" yaml:"queue_name" json:"queue_name"`
-	TopicName        string        `mapstructure:"topic_name" yaml:"topic_name" json:"topic_name"`
-	SubscriptionName string        `mapstructure:"subscription_name" yaml:"subscription_name" json:"subscription_name"`
-	SessionID        string        `mapstructure:"session_id" yaml:"session_id" json:"session_id"`
-	MaxMessages      int           `mapstructure:"max_messages" yaml:"max_messages" json:"max_messages"`
-	MaxWaitTime      time.Duration `mapstructure:"max_wait_time" yaml:"max_wait_time" json:"max_wait_time"`
-	ReceiveMode      string        `mapstructure:"receive_mode" yaml:"receive_mode" json:"receive_mode"`
-	SubQueue         string        `mapstructure:"sub_queue" yaml:"sub_queue" json:"sub_queue"`
-	LockDuration     time.Duration `mapstructure:"lock_duration" yaml:"lock_duration" json:"lock_duration"`
-	AutoExtend       *bool         `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
+	QueueName        string `mapstructure:"queue_name" yaml:"queue_name" json:"queue_name"`
+	TopicName        string `mapstructure:"topic_name" yaml:"topic_name" json:"topic_name"`
+	SubscriptionName string `mapstructure:"subscription_name" yaml:"subscription_name" json:"subscription_name"`
+	SessionID        string `mapstructure:"session_id" yaml:"session_id" json:"session_id"`
+	// UseSessions consumes a session-enabled entity by accepting the
+	// next available session and rotating between sessions; see
+	// ReceiverConfig.UseSessions. Mutually exclusive with session_id
+	// and sub_queue.
+	UseSessions  bool          `mapstructure:"use_sessions" yaml:"use_sessions" json:"use_sessions"`
+	MaxMessages  int           `mapstructure:"max_messages" yaml:"max_messages" json:"max_messages"`
+	MaxWaitTime  time.Duration `mapstructure:"max_wait_time" yaml:"max_wait_time" json:"max_wait_time"`
+	ReceiveMode  string        `mapstructure:"receive_mode" yaml:"receive_mode" json:"receive_mode"`
+	SubQueue     string        `mapstructure:"sub_queue" yaml:"sub_queue" json:"sub_queue"`
+	LockDuration time.Duration `mapstructure:"lock_duration" yaml:"lock_duration" json:"lock_duration"`
+	AutoExtend   *bool         `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
 	// MaxLockRenewalDuration caps total per-delivery lock auto-renewal
 	// wall time (default 5m); see ReceiverConfig.MaxLockRenewalDuration.
 	MaxLockRenewalDuration time.Duration `mapstructure:"max_lock_renewal_duration" yaml:"max_lock_renewal_duration" json:"max_lock_renewal_duration"`
@@ -88,6 +93,12 @@ func (c Config) Validate() error {
 	}
 	if c.Receiver.SessionID != "" && c.Receiver.SubQueue != "" {
 		return errors.New("servicebus: receiver.session_id cannot be combined with receiver.sub_queue (not supported by the Azure SDK)")
+	}
+	if c.Receiver.UseSessions && c.Receiver.SessionID != "" {
+		return errors.New("servicebus: receiver.use_sessions cannot be combined with receiver.session_id (session_id already pins the receiver to one session)")
+	}
+	if c.Receiver.UseSessions && c.Receiver.SubQueue != "" {
+		return errors.New("servicebus: receiver.use_sessions cannot be combined with receiver.sub_queue (not supported by the Azure SDK)")
 	}
 	return nil
 }
@@ -144,6 +155,7 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 		TopicName:              c.Receiver.TopicName,
 		SubscriptionName:       c.Receiver.SubscriptionName,
 		SessionID:              c.Receiver.SessionID,
+		UseSessions:            c.Receiver.UseSessions,
 		MaxMessages:            c.Receiver.MaxMessages,
 		MaxWaitTime:            c.Receiver.MaxWaitTime,
 		ReceiveMode:            c.Receiver.ReceiveMode,

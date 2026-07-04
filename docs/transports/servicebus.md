@@ -74,16 +74,26 @@ senders:
 | `queue_name` | string | -- | Service Bus queue name |
 | `topic_name` | string | -- | Service Bus topic name |
 | `subscription_name` | string | -- | Subscription on the topic |
-| `session_id` | string | -- | Lock to a specific ASB session (cannot combine with `sub_queue`) |
-| `max_messages` | int | 10 | Messages per receive call (1--100). Forced to 1 in `ReceiveAndDelete` mode. |
+| `session_id` | string | -- | Pin the receiver to ONE ASB session (cannot combine with `sub_queue` or `use_sessions`) |
+| `use_sessions` | bool | `false` | Consume a session-enabled entity by accepting the **next available** session and rotating between sessions (cannot combine with `session_id` or `sub_queue`) |
+| `max_messages` | int | 10 | Messages per receive call (1--100). Forced to 1 in `ReceiveAndDelete` mode (warned). |
 | `max_wait_time` | duration | `30s` | Maximum wait for messages (>= 1s; a bare int decodes as nanoseconds and is rejected) |
-| `receive_mode` | string | `PeekLock` | `PeekLock` or `ReceiveAndDelete` (case-insensitive) |
+| `receive_mode` | string | `PeekLock` | `PeekLock` or `ReceiveAndDelete` (case-insensitive; unknown values rejected). `ReceiveAndDelete` settles at the broker on receive — **at-most-once** delivery. |
 | `sub_queue` | string | -- | `""`, `"deadletter"`, or `"transferdeadletter"` (case-insensitive) |
 | `lock_duration` | duration | `30s` | Expected lock duration (for auto-extend). Accepted range 5s--5m; `0` → 30s default. |
 | `auto_extend` | bool | `true` | Renew lock at 50% of duration |
 | `max_lock_renewal_duration` | duration | `5m` | Caps total wall-clock time a single delivery's lock is auto-renewed. When the cap is hit the delivery's context is cancelled and renewal stops, so a hung pipeline cannot hold a message locked forever. Counted by `ASBLockRenewalCapExceeded`. |
 
 Either `queue_name` or both `topic_name` + `subscription_name` are required.
+
+> **Session-required entities.** A session-enabled queue or subscription needs
+> either `session_id` (pin one session) or `use_sessions` (rotate over
+> available sessions); with neither, the receiver fails fast with
+> `ErrNotSupported` naming both remedies. `use_sessions` accepts the next
+> available session, rotates to another when the held session idles **and**
+> every outstanding delivery has settled, backs off quietly when no session is
+> available (not counted as a failure), and sheds the held session on a
+> receive error.
 
 > **Removed:** the flat `prefetch` key no longer exists. The receiver runs at
 > `max_messages` credit with no separate prefetch knob.

@@ -28,6 +28,15 @@ type ReceiverConfig struct {
 	// no sub-queue selector (azservicebus v1.10.0).
 	SessionID string
 
+	// UseSessions consumes a session-enabled entity WITHOUT pinning a
+	// session id: the receiver accepts the next available session
+	// (AcceptNextSessionForQueue / ...ForSubscription), drains it, and
+	// rotates to the next session when a poll comes back empty with no
+	// deliveries in flight — the SDK's round-robin pattern. Cannot be
+	// combined with SessionID (which pins ONE session) or SubQueue
+	// (the SDK's SessionReceiverOptions has no sub-queue selector).
+	UseSessions bool
+
 	// MaxMessages is the maximum number of messages per
 	// ReceiveMessages call. Default 10, capped at 100. Forced to 1 in
 	// ReceiveAndDelete mode: the broker deletes at receive time, so
@@ -183,6 +192,12 @@ func (c *ReceiverConfig) validate() error {
 		// selector: a session receiver cannot target a sub-queue, and
 		// silently ignoring sub_queue would consume the wrong entity.
 		return errors.New("servicebus: session_id cannot be combined with sub_queue (not supported by the Azure SDK)")
+	}
+	if c.UseSessions && c.SessionID != "" {
+		return errors.New("servicebus: use_sessions cannot be combined with session_id (session_id already pins the receiver to one session)")
+	}
+	if c.UseSessions && c.SubQueue != "" {
+		return errors.New("servicebus: use_sessions cannot be combined with sub_queue (not supported by the Azure SDK)")
 	}
 	return nil
 }

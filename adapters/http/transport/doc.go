@@ -108,7 +108,12 @@
 // Dispatch is decoupled from the client connection. Once a request body
 // has been converted to an envelope, the delivery is emitted on a
 // context.WithoutCancel copy of the request context: a client
-// disconnect can no longer abort the pipeline mid-dispatch. The HTTP
+// disconnect can no longer abort the pipeline mid-dispatch. Detached is
+// not unbounded — when the request context carries a deadline (the
+// server's own timeout, e.g. an http.TimeoutHandler installed at the
+// composition root) that deadline is re-armed on the detached dispatch
+// context and released when the delivery settles, so a hung pipeline
+// stays bounded by the server's own timeout. The HTTP
 // RESPONSE still honours the client context (504 on timeout/disconnect)
 // — meaning a 504 tells the producer "outcome unknown", not "not
 // processed". Producers that retry on 504 should supply Idempotency-Key

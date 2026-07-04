@@ -250,6 +250,14 @@ func (s *FakeSession) PushEvent(ev ports.SessionEvent) {
 	s.events <- ev
 }
 
+// IsClosed reports whether Close has been called, under the fake's lock so
+// callers can assert from any goroutine without racing Close.
+func (s *FakeSession) IsClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Closed
+}
+
 func (s *FakeSession) SetReconcileErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

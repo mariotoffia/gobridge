@@ -167,6 +167,68 @@ func TestBreaker_StalePreOpenFailure_DoesNotReopenHalfOpen(t *testing.T) {
 	}
 }
 
+// TestBreaker_ZeroToken_NeverMatchesLiveGeneration: the Token contract
+// says the zero Token never matches a live generation — including on a
+// FRESH breaker that has never transitioned. A zero Token (kept from a
+// rejected admission, or a zero-value struct field) must be discarded
+// as stale, not counted as current-epoch evidence.
+func TestBreaker_ZeroToken_NeverMatchesLiveGeneration(t *testing.T) {
+	cfg := circuitbreaker.Config{FailureThreshold: 2, SuccessThreshold: 1, ResetTimeout: time.Second}
+	b := circuitbreaker.NewBreaker("zero-token", cfg, nil)
+
+	for i := 0; i < 2; i++ {
+		b.AfterRequestToken(circuitbreaker.Token{}, errors.New("boom"))
+	}
+
+	m := b.GetMetrics()
+	if m.State != "closed" {
+		t.Fatalf("zero Tokens tripped a fresh breaker: state = %s, want closed", m.State)
+	}
+	if m.StaleOutcomes != 2 {
+		t.Fatalf("StaleOutcomes = %d, want 2 (zero Token discarded as stale)", m.StaleOutcomes)
+	}
+	if m.TotalFailures != 0 {
+		t.Fatalf("TotalFailures = %d, want 0", m.TotalFailures)
+	}
+}
+
+// TestBreaker_LegacyAfterRequest_HalfOpen_DoesNotUnderflowProbeSlot: a
+// legacy (token-less) AfterRequest landing while HALF-OPEN must not
+// release a probe slot it never took. Before the fix the slot count
+// went negative, admitting extra concurrent probes past
+// HalfOpenMaxProbes onto a still-recovering dependency.
+func TestBreaker_LegacyAfterRequest_HalfOpen_DoesNotUnderflowProbeSlot(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold: 1, SuccessThreshold: 5,
+		ResetTimeout: time.Second, HalfOpenMaxProbes: 1,
+	}
+	fake := clocktest.New()
+	b := circuitbreaker.NewBreaker("legacy-underflow", cfg, nil, circuitbreaker.WithBreakerClock(fake))
+
+	tripOpenAndCoolDown(t, b, fake, cfg)
+
+	// The single probe slot is taken by a tokened admission.
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("half-open probe not admitted: %v", err)
+	}
+	if got := b.HalfOpenInFlight(); got != 1 {
+		t.Fatalf("HalfOpenInFlight = %d, want 1", got)
+	}
+
+	// A legacy outcome that never took a probe slot completes now
+	// (SuccessThreshold=5 keeps the circuit half-open).
+	b.AfterRequest(nil)
+	if got := b.HalfOpenInFlight(); got < 0 {
+		t.Fatalf("probe slot count underflowed: %d", got)
+	}
+
+	// The real probe is still in flight, so a second probe must still
+	// be rejected — an underflow would admit it.
+	if _, err := b.BeforeRequestToken(); !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("second probe admitted past HalfOpenMaxProbes=1, err = %v", err)
+	}
+}
+
 // TestBreaker_LegacyAfterRequest_StillCounts: the ports.CircuitBreaker
 // two-call surface (no token) keeps its sequential-use semantics.
 func TestBreaker_LegacyAfterRequest_StillCounts(t *testing.T) {

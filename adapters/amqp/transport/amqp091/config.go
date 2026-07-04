@@ -254,6 +254,51 @@ func (o SessionOptions) validate() error {
 	if o.BrokerURL == "" {
 		return fmt.Errorf("broker_url is required")
 	}
+	return o.validateDurations()
+}
+
+// minConfigDuration is the smallest accepted non-zero configured
+// duration. A YAML/JSON decoder that bypasses the bridge's strict root
+// parser (direct yaml.Unmarshal into Config, a programmatic spec, an
+// embedder's own decode) turns a bare number into NANOSECONDS when the
+// target is time.Duration: `heartbeat: 30` becomes 30ns. No duration
+// knob in this adapter has a legitimate sub-millisecond value, so
+// anything non-zero below this floor is treated as that decode accident
+// and rejected with a message naming the key and the unit requirement.
+const minConfigDuration = time.Millisecond
+
+// validateDurationFloor rejects a non-zero duration below
+// minConfigDuration (which also covers negative values). Zero is
+// allowed and means "use the default" (see applyDefaults).
+func validateDurationFloor(key string, d time.Duration) error {
+	if d == 0 || d >= minConfigDuration {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s is %v: a configured duration must be zero (use the default) or at least 1ms — "+
+			"a bare YAML/JSON number decodes as nanoseconds, so write a duration string "+
+			"with a unit such as \"30s\"",
+		key, d)
+}
+
+// validateDurations applies the sub-millisecond floor to every duration
+// knob on the session block. Split from validate() so Config.Validate
+// can run it even when the block carries no broker_url (e.g. a binding
+// override that only tunes timings).
+func (o SessionOptions) validateDurations() error {
+	for _, f := range []struct {
+		key string
+		d   time.Duration
+	}{
+		{"session.heartbeat", o.Heartbeat},
+		{"session.connect_timeout", o.ConnectTimeout},
+		{"session.reconnect_delay", o.ReconnectDelay},
+		{"session.reconnect_max_delay", o.ReconnectMaxDelay},
+	} {
+		if err := validateDurationFloor(f.key, f.d); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -279,7 +324,10 @@ func (o *SessionOptions) applyDefaults() {
 }
 
 func (c SenderConfig) validate() error {
-	return validateDeliveryMode(c.DeliveryMode)
+	if err := validateDeliveryMode(c.DeliveryMode); err != nil {
+		return err
+	}
+	return validateDurationFloor("sender.timeout", c.Timeout)
 }
 
 // validateDeliveryMode accepts the empty string (defaulted to persistent)

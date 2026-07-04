@@ -262,7 +262,7 @@ The monitor server (`:8081`) exposes unauthenticated probes and authenticated ob
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
 | `GET /api/v1/monitor/health` | Full health check | `{"status":"ok", "instance_id":"...", "routes":3}` (200 or 503) |
-| `GET /api/v1/monitor/live` | Liveness probe | `{"status":"alive"}` -- always 200 while process runs |
+| `GET /api/v1/monitor/live` | Liveness probe | `{"status":"alive"}` -- 200 while the runtime is recoverable; `{"status":"terminal"}` with 503 once the runtime is terminal |
 | `GET /api/v1/monitor/ready` | Readiness probe | `{"status":"ready", "role":"standalone"}` -- 200 when processing |
 
 The `health` endpoint returns `status` as `ok`, `unhealthy`, or `not_running`. When components have errors, a `failed_components` count is included. The `role` field reflects the deployment mode: `standalone`, `active` (lease holder), or `standby` (waiting for lease).

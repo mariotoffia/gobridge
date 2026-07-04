@@ -205,6 +205,29 @@ func (h *asbClientHandle) AcceptSessionForSubscription(ctx context.Context, topi
 	return &sessionReceiverAdapter{inner: sr}, nil
 }
 
+// AcceptNextSessionForQueue accepts the next available session on a
+// queue (round-robin session consumption, use_sessions mode). The
+// error is wrapped verbatim so callers can classify it via MapError —
+// notably azservicebus.CodeTimeout, the SDK's "no sessions available"
+// signal.
+func (h *asbClientHandle) AcceptNextSessionForQueue(ctx context.Context, queue string, opts asbSessionOptions) (asbAPI, error) {
+	sr, err := h.raw.AcceptNextSessionForQueue(ctx, queue, buildSessionOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: accept next session on queue %q: %w", queue, err)
+	}
+	return &sessionReceiverAdapter{inner: sr}, nil
+}
+
+// AcceptNextSessionForSubscription accepts the next available session
+// on a topic subscription. See AcceptNextSessionForQueue.
+func (h *asbClientHandle) AcceptNextSessionForSubscription(ctx context.Context, topic, subscription string, opts asbSessionOptions) (asbAPI, error) {
+	sr, err := h.raw.AcceptNextSessionForSubscription(ctx, topic, subscription, buildSessionOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("servicebus: accept next session on subscription %q/%q: %w", topic, subscription, err)
+	}
+	return &sessionReceiverAdapter{inner: sr}, nil
+}
+
 func buildReceiverOptions(o asbReceiverOptions) *azservicebus.ReceiverOptions {
 	out := &azservicebus.ReceiverOptions{}
 	if o.ReceiveAndDelete {
