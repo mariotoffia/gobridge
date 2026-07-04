@@ -1,5 +1,7 @@
 # AWS File-Based Config CDK Redesign — Design
 
+> **Historical note (2026-07):** paths in this document reference the original `/mnt/gobridge` EFS mount; the canonical mount path in the shipped implementation is `/var/lib/gobridge`.
+
 Status: Approved (grilling complete 2026-05-07)
 Scope: `deployment/aws-filebased-config/` (cdk + infra; lib runtime unchanged)
 Compatibility: **No backward compatibility.** This module has never been deployed; old constructs are deleted outright.

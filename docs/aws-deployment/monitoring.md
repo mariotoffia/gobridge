@@ -178,7 +178,7 @@ rt := runtime.New(
 | `WithBufferSize(n)` | 1000 | Max buffered non-histogram metrics before async flush |
 | `WithDefaultTags(tags...)` | none | Tags added to every metric as dimensions |
 | `WithEndpoint(url)` | AWS default | Custom endpoint (for LocalStack) |
-| `WithLogger(l)` | nil (silent) | Structured logger for dropped/requeued metrics & invalid dimensions |
+| `WithLogger(l)` | `slog.Default()` | Structured logger for dropped/requeued metrics & invalid dimensions. `WithLogger(nil)` suppresses this logging. |
 | `WithMaxRetryDatums(n)` | 10000 | Bound on datums requeued after a failed `PutMetricData` before the oldest are dropped |
 | `WithRollupMetrics(names...)` | none | Emit a second, **dimensionless** copy of each named metric so zero-dimension alarms can match. Pass `DefaultRollupMetrics()...`. |
 | `WithInstanceTag(id)` | none | Add the `instance_id` dimension (never applied to rollup copies) so per-task series in a fleet do not collide. |
@@ -208,6 +208,12 @@ Dimensions map directly to `domain.Tag` key-value pairs. The dimension keys in
 use are `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
 `queue_url`.
 
+The generic `AckLatency` and `VisibilityExtensions` metrics are emitted **only**
+by the opt-in `runtime.NewInstrumentedReceiver` /
+`runtime.NewInstrumentedReceiverCapabilityPreserving` wrappers (a library API
+for embedders); the SQS and Service Bus adapters self-instrument under
+adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibilityExtensions`, …).
+
 > **Dimension cardinality warning.** CloudWatch bills and indexes per unique
 > dimension-value combination, and each distinct combination is a separate
 > metric. Do **not** use unbounded/high-cardinality values such as message IDs,
@@ -217,8 +223,8 @@ use are `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
 > hard limits defensively: dimensions with an empty name or value are dropped,
 > name/value are truncated to 256 bytes, and at most 30 dimensions are kept per
 > metric; excess/invalid dimensions are dropped with a logged warning rather
-> than silently truncated. Configure a logger via `WithLogger` to observe these
-> events.
+> than silently truncated. These events are logged via `slog.Default()` unless
+> a logger is set with `WithLogger` (or suppressed with `WithLogger(nil)`).
 
 ### Rollup and Self-Metrics
 
@@ -433,6 +439,11 @@ in `runtime/route/runner.go`); scrape that endpoint if you want it on a widget.
 GoBridge supports distributed tracing through the `ports.Tracer` interface. The
 OTLP tracing adapter (`adapters/otel/tracing/`) exports spans over HTTP to any
 OTLP-compatible collector.
+
+> **Not wired in the `aws-filebased-config` profile.** That deployment profile
+> has no `traces_exporter` surface and provisions no OTLP collector; wiring a
+> tracer requires a custom composition root (the wiring point is documented in
+> `deployment/aws-filebased-config/lib/bootstrap/registry.go`).
 
 ### ADOT Sidecar on Fargate
 

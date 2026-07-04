@@ -138,7 +138,7 @@ Routes are returned wrapped in an object:
 }
 ```
 
-The `payload` field is base64-encoded. Reserved `X-Bridge-*` headers are
+The `payload` field is base64-encoded. Reserved `x-bridge.*` header keys are
 stripped automatically. Request body limited to 1 MB.
 
 ### DLQ summary response

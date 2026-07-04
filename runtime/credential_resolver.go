@@ -152,6 +152,19 @@ func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*connecti
 				return nil, ctx.Err()
 			}
 		}
+		// Double-check the cache before leading. A caller can lose the race
+		// twice: its unsynchronized getCached above runs BEFORE the current
+		// leader's setCached, yet its flight lookup here runs AFTER that
+		// leader's delete(flight) — observing neither the cached value nor the
+		// flight, and re-leading a redundant repository fetch. The leader
+		// deletes its flight entry under flightMu strictly AFTER setCached, so
+		// a caller that observes flight-absence here is guaranteed (release/
+		// acquire on flightMu) to observe the leader's cache write: this
+		// re-check under the lock closes the window deterministically.
+		if creds := r.getCached(uri); creds != nil {
+			r.flightMu.Unlock()
+			return creds, nil
+		}
 		fl := &credFlight{done: make(chan struct{})}
 		r.flight[uri] = fl
 		r.flightMu.Unlock()

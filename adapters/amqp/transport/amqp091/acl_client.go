@@ -179,3 +179,16 @@ func redactURL(raw string) string {
 	}
 	return u.String()
 }
+
+// brokerURLEmbedsUserinfo reports whether the broker URL carries
+// userinfo (username[:password]). Explicit/rotated credentials override
+// embedded userinfo on every dial (see injectCredentials), so when both
+// are present the embedded values are dead config; the session Warns
+// about the conflict (see Session.warnEmbeddedBrokerURLCredentials).
+func brokerURLEmbedsUserinfo(brokerURL string) bool {
+	u, err := url.Parse(brokerURL)
+	if err != nil {
+		return false
+	}
+	return u.User != nil && u.User.String() != ""
+}

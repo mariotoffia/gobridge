@@ -64,16 +64,29 @@
 //
 // # Sessions
 //
-// ReceiverConfig.SessionID locks the receiver to one ASB session.
-// Session accept retries with backoff (up to sessionAcceptMaxAttempts):
-// com.microsoft:session-cannot-be-locked is expected during rolling
-// deploys while the outgoing pod still holds the session lock, and must
-// not crash-loop the bridge. SessionID cannot be combined with SubQueue
-// (the SDK's SessionReceiverOptions has no sub-queue selector); the
-// combination is rejected at validation. A NON-session receiver on a
-// session-enabled entity fails fast with shared.ErrNotSupported instead
-// of warn-looping forever; accept-next-session polling is not
-// implemented. In session mode all in-flight deliveries share ONE
+// Two session modes are supported, both validated as mutually
+// exclusive with each other and with SubQueue (the SDK's
+// SessionReceiverOptions has no sub-queue selector):
+//
+//   - ReceiverConfig.SessionID pins the receiver to ONE ASB session.
+//     Session accept retries with backoff (up to
+//     sessionAcceptMaxAttempts): com.microsoft:session-cannot-be-locked
+//     is expected during rolling deploys while the outgoing pod still
+//     holds the session lock, and must not crash-loop the bridge.
+//   - ReceiverConfig.UseSessions consumes a session-enabled entity
+//     WITHOUT pinning: the poll loop accepts the next available session
+//     (AcceptNextSessionForQueue / ...ForSubscription), drains it, and
+//     rotates to the next session once a poll comes back empty and every
+//     delivery from the session has settled — the SDK's round-robin
+//     pattern. "No session available" (the SDK reports CodeTimeout) is
+//     an idle entity, handled with quiet backoff, not an error. A
+//     receive error sheds the held session and re-accepts a fresh one,
+//     so a lost session lock self-heals; unsettled deliveries redeliver
+//     (at-least-once).
+//
+// A NON-session receiver on a session-enabled entity fails fast with
+// shared.ErrNotSupported naming both remedies instead of warn-looping
+// forever. In either session mode all in-flight deliveries share ONE
 // session lock, so a single session-renewer goroutine replaces the
 // per-delivery auto-extend goroutines; MaxLockRenewalDuration does not
 // apply to the session renewer (the session lock must be held for the

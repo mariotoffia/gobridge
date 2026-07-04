@@ -8,11 +8,19 @@ import (
 )
 
 // Config holds the tenant processor configuration.
+//
+// The yaml/json tags define the serialized key names so a future
+// configuration surface (file, blueprint, HTTP API) can decode directly
+// into this struct — same convention as circuitbreaker.Config. No YAML
+// decoding pipeline exists today; processors are constructed in Go and
+// referenced by name from route definitions. The validator, tracker,
+// metrics, and logger dependencies are Go-only options and are never
+// serialized.
 type Config struct {
-	Name                     string
-	TenantHeader             string
-	RequireTenant            bool
-	InFlightDecrementTimeout time.Duration
+	Name                     string        `json:"name" yaml:"name"`
+	TenantHeader             string        `json:"tenantHeader,omitempty" yaml:"tenantHeader,omitempty"`
+	RequireTenant            bool          `json:"requireTenant,omitempty" yaml:"requireTenant,omitempty"`
+	InFlightDecrementTimeout time.Duration `json:"inFlightDecrementTimeout,omitempty" yaml:"inFlightDecrementTimeout,omitempty"`
 }
 
 // Option configures the tenant processor.

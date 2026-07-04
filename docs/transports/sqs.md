@@ -59,7 +59,7 @@ senders:
 | `wait_time_seconds` | int | 20 | Long-poll duration in seconds (0--20) |
 | `visibility_timeout` | int | 30 | Visibility timeout in seconds (0--43200) |
 | `auto_extend` | bool | `true` | Renew visibility at 50% of timeout |
-| `sns_unwrap` | bool | `false` | Extract inner message from an SNS-to-SQS wrapper. Only bodies whose JSON `Type` is `Notification` are unwrapped; a raw body is passed through unchanged. |
+| `sns_unwrap` | bool | `false` | Extract inner message from an SNS-to-SQS wrapper. Only bodies whose JSON `Type` is `Notification` **and** whose `TopicArn` is non-empty are unwrapped; a raw body is passed through unchanged. The bridge cannot verify the wrapper genuinely came from SNS — that guarantee is the queue policy restricting `sqs:SendMessage` to the topic (operator responsibility). |
 | `init_timeout` | duration | `30s` | Bounds receiver startup (client creation + queue-URL resolution) |
 | `poll_backoff_initial` | duration | `1s` | Starting delay after a failed `ReceiveMessage` call |
 | `poll_backoff_max` | duration | `30s` | Maximum delay between poll retries (must be >= `poll_backoff_initial`) |

@@ -130,6 +130,56 @@ func testClaimFenceInterleaving(t *testing.T, store ports.OutboxStore) {
 	}
 }
 
+// testClaimBeyondReplayCapRemainsClaimable pins the poison-DLQ reachability
+// guarantee from the ports.OutboxStore contract: stores MUST NOT filter
+// claimable records by replay count. The drainer's poison gate
+// (runtime/outbox: ReplayCount() > MaxReplayAttempts) can only dead-letter a
+// record it can CLAIM, so a store-side replay ceiling makes exhausted records
+// permanently unreachable — stuck claimed forever and, on TTL-compacting
+// backends, silently deleted with no DLQ entry (the DynamoDB store shipped
+// exactly this bug with a replay_count < 5 claim filter).
+//
+// The record's ReplayCount is driven well past both the historical store-side
+// cap (5) and the runtime default MaxReplayAttempts (3) through real Claim
+// transitions (version-monotonic preemption), then the record must STILL be
+// returned by the next Claim.
+func testClaimBeyondReplayCapRemainsClaimable(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-rcap"
+
+	r := makeRecord(t, "rcap-1", "env-rcap-1", "bind-rcap-1", "sess-rcap", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// Seven claims: versions 1..7. Every claim after the first reclaims the
+	// record via version preemption and increments ReplayCount, so the final
+	// claim must see ReplayCount 7 — beyond any replay cap a store might be
+	// tempted to enforce.
+	const claims = 7
+	var last *persistence.OutboxRecord
+	for v := uint64(1); v <= claims; v++ {
+		token := persistence.LeaseToken{Version: v, Owner: "owner-rcap"}
+		got, err := store.Claim(ctx, pk, token, 10)
+		if err != nil {
+			t.Fatalf("claim v%d: %v", v, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("claim v%d: record with ReplayCount %d became unclaimable (got %d records); "+
+				"a store must never filter claims by replay count — poison DLQ routing depends on it",
+				v, v-1, len(got))
+		}
+		last = got[0]
+	}
+
+	if got := last.ReplayCount(); got != claims {
+		t.Fatalf("replay count after %d claims: got %d, want %d", claims, got, claims)
+	}
+	if last.ID() != "rcap-1" {
+		t.Fatalf("claimed record ID: got %q, want %q", last.ID(), "rcap-1")
+	}
+}
+
 // testConcurrentClaimersClaimEachRecordOnce proves claim atomicity under
 // concurrency: two claimers racing with the SAME token must partition the
 // pending set — every record is claimed exactly once, none twice, none lost.

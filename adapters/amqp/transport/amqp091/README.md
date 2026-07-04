@@ -155,7 +155,7 @@ In the plugin options map these live under the `session:` block (snake_case keys
 
 Configuration structs can be built from `map[string]any` via `SessionOptionsFromMap`, `ReceiverConfigFromOptions`, and `SenderConfigFromOptions`. Map keys use snake_case: `broker_url`, `heartbeat`, `connect_timeout`, `reconnect_delay`, `queue_name`, `consumer_tag`, `auto_ack`, `prefetch_count`, `exchange`, `routing_key`, `delivery_mode`, etc.
 
-In bridge YAML, transport options use the **nested** shape (the strict decoder rejects flat keys):
+In bridge YAML, transport options use the **nested** shape (the strict decoder rejects flat keys), and **durations must be strings with a unit** (`"30s"`, `"500ms"`). A bare number is rejected by the strict decoder (a bare `heartbeat: 30` would decode as 30 *nanoseconds*); as defense in depth for decode paths that bypass it, `Config.Validate` also rejects any non-zero duration below `1ms`.
 
 ```yaml
 options:
@@ -296,4 +296,4 @@ Every publish awaits a broker confirm. `SendBatch` (non-mandatory) is **pipeline
 
 ## Credentials
 
-`credentials_uri` selects a credential-store entry resolved at build time; rotation re-applies it on the live session (`ApplyCredentials` → redial). Explicit `Username`/`Password` (including rotated material) **override any userinfo embedded in `BrokerURL`** — otherwise rotation would report success while the session kept redialing with the stale embedded credentials.
+`credentials_uri` selects a credential-store entry resolved at build time; rotation re-applies it on the live session (`ApplyCredentials` → redial). Explicit `Username`/`Password` (including rotated material) **override any userinfo embedded in `BrokerURL`** — otherwise rotation would report success while the session kept redialing with the stale embedded credentials. When both are present the session emits a `Warn` (at construction and on each rotation, with the URL redacted): the embedded userinfo is dead config and should be removed from `broker_url`.

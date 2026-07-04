@@ -84,10 +84,14 @@ The `observability.CorrelationHandler` wraps any `slog.Handler` to inject three 
 | Field | Source |
 |---|---|
 | `correlation_id` | `x-bridge.correlation-id` header (auto-generated if missing) |
-| `trace_id` | W3C `traceparent` header |
-| `span_id` | Active span from the `Tracer` |
+| `trace_id` | Active span's W3C trace-id when the tracer exposes `ports.SpanIdentity` (OTel); the upstream `traceparent` header is the fallback (NoopTracer, unsampled) |
+| `span_id` | Active span's W3C span-id (same capability); upstream `traceparent` fallback |
 
-This links every log line to a specific message and trace without manual instrumentation.
+This links every log line to a specific message and trace without manual
+instrumentation. Root deliveries -- which have no upstream `traceparent` --
+still get a `trace_id` when an OTel tracer is wired. Note the cross-hop join
+key: `x-bridge.correlation-id` is stripped at ingress and re-generated on each
+hop unless the downstream receiver's route sets `trust_bridge_headers: true`.
 
 ## Configuration
 
@@ -219,8 +223,8 @@ func main() {
 		bridge.WithMetrics(metrics),
 		bridge.WithTracer(tracer),
 	).
-		RegisterTransport("mqtt", paho.NewFactory(logger)).
-		RegisterTransport("sqs", sqs.NewFactory(logger)).
+		RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+		RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
 		Build(ctx)
 	if err != nil {
 		logger.Error("failed to build runtime", "error", err)
@@ -281,11 +285,13 @@ Replace the OTel metrics exporter with the CloudWatch adapter:
 ```go
 import cwmetrics "github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch"
 
-metrics, err := cwmetrics.New(ctx, "GoBridge",
+metrics, err := cwmetrics.New(ctx, "GoBridge/Runtime",
     cwmetrics.WithRegion("us-west-1"),
 )
 ```
 
+The namespace must be `shared.MetricNamespace` (`GoBridge/Runtime`) -- a
+mismatched namespace leaves every CloudWatch alarm in `INSUFFICIENT_DATA`.
 The runtime doesn't care which backend you use -- it only talks to `ports.MetricsExporter`.
 
 ### Sampling Traces in Production
@@ -303,8 +309,10 @@ Unsampled messages still get correlation IDs in logs, so you can always search b
 
 ### Surfacing Telemetry Export Failures
 
-By default, OTLP export and backpressure failures are invisible. Install an
-error handler (and, optionally, bound the batch/queue) so drops are logged:
+By default, OTLP export and backpressure failures are logged at Warn level via
+`slog.Default()`; pass `WithErrorHandler(nil)` to opt out. Install a custom
+error handler (and, optionally, bound the batch/queue) to route drops to your
+own logger:
 
 ```go
 metrics, _ := otelmetrics.New(ctx,

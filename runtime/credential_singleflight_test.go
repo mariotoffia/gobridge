@@ -125,18 +125,18 @@ func TestCredentialResolver_SingleflightErrorPropagatesAndIsNotCached(t *testing
 		r.Register(repo)
 		const uri = "file://broker/main"
 
-		fl := &credFlight{done: make(chan struct{})}
+		// Inject an already-SETTLED failed flight (err set, done closed)
+		// and keep it in the map so Resolve's join is deterministic: a
+		// goroutine that raced delete(flight) against Resolve's lookup let
+		// Resolve miss the flight entirely and re-lead a fresh fetch
+		// against an error-free repo (observed under -count=300 -cpu=1).
+		// A joiner that found the flight just before the leader's delete
+		// observes exactly this state: done closed, err populated.
+		fl := &credFlight{done: make(chan struct{}), err: fetchErr}
+		close(fl.done)
 		r.flightMu.Lock()
 		r.flight[uri] = fl
 		r.flightMu.Unlock()
-
-		go func() {
-			fl.err = fetchErr
-			r.flightMu.Lock()
-			delete(r.flight, uri)
-			r.flightMu.Unlock()
-			close(fl.done)
-		}()
 
 		_, err := r.Resolve(context.Background(), uri)
 		require.ErrorIs(t, err, fetchErr)

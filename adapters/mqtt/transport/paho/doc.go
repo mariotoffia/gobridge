@@ -74,13 +74,13 @@
 //   - QoS/retain are broker<->client packet semantics, not end-to-end
 //     guarantees.
 //
-// QoS 0 flood caveat: QoS 0 publishes are not bounded by Receive Maximum —
-// the broker may push them faster than downstream settles. Because
-// dispatch is synchronous, a QoS 0 flood fills the Paho client's internal
-// publish channel and can stall its incoming loop (delaying PINGRESP /
-// PUBACK processing) until downstream catches up; tuning receive_maximum
-// low makes the QoS 1/2 window smaller but does NOT throttle QoS 0. This
-// is the deliberate trade-off for not buffering unboundedly in memory:
-// prefer QoS 1 for traffic that matters, and keep QoS 0 flows behind a
-// downstream that keeps up.
+// ponytail: QoS 0 flood ceiling. QoS 0 publishes are not bounded by
+// Receive Maximum — the broker may push them faster than downstream
+// settles. Because dispatch is synchronous, a QoS 0 flood fills the Paho
+// client's internal publish channel and can stall its incoming loop
+// (delaying PINGRESP / PUBACK processing) until downstream catches up;
+// tuning receive_maximum low makes the QoS 1/2 window smaller but does
+// NOT throttle QoS 0. This is the deliberate trade-off for not buffering
+// unboundedly in memory: prefer QoS 1 for traffic that matters, and keep
+// QoS 0 flows behind a downstream that keeps up.
 package paho

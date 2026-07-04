@@ -105,7 +105,24 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.locator = cluster.NewLocator(rt.instanceID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
 	}
 
-	drainerSessions := make(map[string]bool)
+	// drainerOwner maps a session ID to the route whose configuration
+	// (policy, sender, RouteID) its shared-outbox drainer was built from.
+	// Exactly one drainer exists per session partition, so when SEVERAL
+	// shared_outbox routes reference the same session, every route's records
+	// drain under the FIRST route's configuration — a silent config bleed
+	// (send timeouts, replay budget, drain strategy, metrics route tag).
+	// warnDrainerConfigBleed surfaces it.
+	drainerOwner := make(map[string]string)
+	warnDrainerConfigBleed := func(sid, owner, routeID string) {
+		if owner == routeID || rt.logger == nil {
+			return
+		}
+		rt.logger.Warn("shared outbox drainer config bleed: session drainer was built from another route's policy/sender; this route's records drain under that configuration",
+			"session_id", sid,
+			"drainer_route_id", owner,
+			"route_id", routeID,
+		)
+	}
 
 	for _, entry := range rt.entries {
 		// A1: For shared_outbox routes with a primary session, bindings that
@@ -166,37 +183,41 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				rt.locator.RegisterRoute(entry.config.ID, sid)
 			}
 
-			if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil && !drainerSessions[sid] {
-				drainerSessions[sid] = true
-				mgr := rt.sessionMgrs[sid]
-				sess := entry.session
-				drainer := outbox.New(outbox.Config{
-					OutboxStore:           rt.outboxStore,
-					LeaseStore:            rt.leaseStore,
-					Sender:                entry.sender,
-					DLQ:                   dlqRouter,
-					RouteID:               entry.config.ID,
-					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
-					LeaseID:               sid,
-					Policy:                entry.config.Policy.WithDefaults(),
-					Strategy:              entry.sessCfg.DrainStrategy,
-					DrainBatchSize:        entry.sessCfg.DrainBatchSize,
-					DrainMaxBatchSize:     entry.sessCfg.DrainMaxBatchSize,
-					DrainMaxConcurrency:   entry.sessCfg.DrainMaxConcurrency,
-					DrainTimeout:          entry.sessCfg.DrainTimeout,
-					PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
-					MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
-					PoisonMinAge:          rt.outboxPoisonMinAge,
-					Metrics:               m,
-					Hook:                  rt.hook,
-					Logger:                rt.logger,
-					TokenFn:               mgr.Token,
-					Clock:                 rt.clk,
-					ReadyFn: func(ctx context.Context) bool {
-						return sess.Health(ctx).Connected
-					},
-				})
-				rt.drainers = append(rt.drainers, drainer)
+			if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
+				if owner, exists := drainerOwner[sid]; exists {
+					warnDrainerConfigBleed(sid, owner, entry.config.ID)
+				} else {
+					drainerOwner[sid] = entry.config.ID
+					mgr := rt.sessionMgrs[sid]
+					sess := entry.session
+					drainer := outbox.New(outbox.Config{
+						OutboxStore:           rt.outboxStore,
+						LeaseStore:            rt.leaseStore,
+						Sender:                entry.sender,
+						DLQ:                   dlqRouter,
+						RouteID:               entry.config.ID,
+						PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
+						LeaseID:               sid,
+						Policy:                entry.config.Policy.WithDefaults(),
+						Strategy:              entry.sessCfg.DrainStrategy,
+						DrainBatchSize:        entry.sessCfg.DrainBatchSize,
+						DrainMaxBatchSize:     entry.sessCfg.DrainMaxBatchSize,
+						DrainMaxConcurrency:   entry.sessCfg.DrainMaxConcurrency,
+						DrainTimeout:          entry.sessCfg.DrainTimeout,
+						PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
+						MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
+						PoisonMinAge:          rt.outboxPoisonMinAge,
+						Metrics:               m,
+						Hook:                  rt.hook,
+						Logger:                rt.logger,
+						TokenFn:               mgr.Token,
+						Clock:                 rt.clk,
+						ReadyFn: func(ctx context.Context) bool {
+							return sess.Health(ctx).Connected
+						},
+					})
+					rt.drainers = append(rt.drainers, drainer)
+				}
 			}
 		}
 
@@ -206,7 +227,11 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
 			for _, binding := range entry.config.Bindings {
 				sid := binding.SessionID
-				if sid == "" || drainerSessions[sid] {
+				if sid == "" {
+					continue
+				}
+				if owner, exists := drainerOwner[sid]; exists {
+					warnDrainerConfigBleed(sid, owner, entry.config.ID)
 					continue
 				}
 
@@ -222,7 +247,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					rt.sessionMgrs[sid] = mgr
 				}
 
-				drainerSessions[sid] = true
+				drainerOwner[sid] = entry.config.ID
 				mgr := rt.sessionMgrs[sid]
 				fanSess := sse.session
 				drainer := outbox.New(outbox.Config{

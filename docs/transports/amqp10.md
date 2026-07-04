@@ -64,7 +64,7 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `address` | string | -- (required) | SINGLE broker URL to dial, e.g. `amqp://host:5672` or `amqps://host:5671`. No client-side broker list / failover -- resolve to a load balancer or DNS for HA. |
-| `container_id` | string | -- | AMQP container ID identifying this client. **Must be unique per replica** -- two replicas sharing a container ID collide on the broker (esp. for durable subscriptions, which are keyed by container-id + link name). |
+| `container_id` | string | generated `gobridge-<16 hex chars>` | AMQP container ID identifying this client. When omitted, generated **once per session** with `crypto/rand` entropy — unique per replica and stable across reconnects, but NOT across process restarts. Durable subscriptions (`durability_mode > 0`) are keyed by container-id + link name, so they still require an explicit, per-replica-unique `container_id`. |
 | `connect_timeout` | duration | `30s` | Dial timeout per connection attempt |
 | `reconnect_delay` | duration | `1s` | Initial delay before reconnect |
 | `reconnect_max_delay` | duration | `30s` | Reconnect backoff ceiling |
@@ -80,7 +80,21 @@ senders:
 | `tls.ca_cert_file` | string | -- | CA certificate PEM file path |
 | `tls.cert_file` | string | -- | Client certificate PEM file path |
 | `tls.key_file` | string | -- | Client private key PEM file path |
+| `tls.ca_cert_pem` | string | -- | CA certificate PEM material (in-memory; non-empty wins over `ca_cert_file`). Secret-typed, redacted on marshal. Typically supplied by credential rotation. |
+| `tls.cert_pem` | string | -- | Client certificate PEM material (non-empty wins over `cert_file`; requires `key_pem`). Secret-typed, redacted on marshal. |
+| `tls.key_pem` | string | -- | Client private key PEM material (requires `cert_pem`). Secret-typed, redacted on marshal. |
 | `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
+
+A top-level `credentials_uri` key sits directly under `options:` (a sibling of
+`session`, not inside it) and is resolved by the bridge credential store at
+build time:
+
+```yaml
+options:
+  credentials_uri: "aws-secrets://gobridge/artemis"
+  session:
+    address: "amqp://localhost:5672"
+```
 
 ## Receiver Options Reference (`options.receiver.*`)
 
@@ -90,7 +104,7 @@ senders:
 | `link_credit` | int | `10` | Prefetch credit; how many messages the broker sends ahead |
 | `durability_mode` | int | `0` | AMQP terminus durability for the receiver link (`0` none, `1` configuration, `2` unsettled-state). `> 0` makes the subscription **durable**. |
 | `subscription_name` | string | -- | Pins the AMQP link name so a durable subscription survives reconnects. When empty and `durability_mode > 0`, a stable name is derived from `container_id` + `address`. |
-| `routing` | string | `anycast` | `anycast` or `multicast` (Artemis routing type; case-insensitive) |
+| `routing` | string | `anycast` | `anycast` or `multicast` (Artemis routing type; case-insensitive). The typed decoder also accepts the legacy numeric forms `0` (anycast) and `1` (multicast). |
 
 > **Durable subscription identity.** A durable subscription
 > (`durability_mode > 0`) is identified by **container-id + link name**. A
@@ -108,7 +122,7 @@ senders:
 | `timeout` | duration | `30s` | Send timeout per message |
 | `durability_mode` | int | `0` | AMQP terminus durability for the sender link |
 | `durable` | bool | `true` | Sets the AMQP message `durable` header on outbound messages. **Unset defaults to `true` (persistent)** -- set `false` to opt into non-persistent (faster, lost on broker restart) sends. |
-| `routing` | string | `anycast` | `anycast` or `multicast` (Artemis routing type; case-insensitive) |
+| `routing` | string | `anycast` | `anycast` or `multicast` (Artemis routing type; case-insensitive). The typed decoder also accepts the legacy numeric forms `0` (anycast) and `1` (multicast). |
 
 ## Settlement Mapping
 
@@ -147,7 +161,13 @@ disposition; subsequent calls are no-ops.
   (`DeliveryFailed=true`) and attaches the `x-opt-delivery-time` message
   annotation (absolute ms-epoch) asking the broker to schedule redelivery; the
   broker owns the timing. Brokers that ignore the annotation redeliver
-  immediately -- the deferral is counted on `AMQP10DelayedRetryUnhonored`.
+  immediately -- the deferral is counted on `AMQP10DelayedRetryUnhonored` and
+  warned once per link. Such brokers **require a broker-side redelivery
+  delay**: ActiveMQ Artemis defaults `redelivery-delay` to `0`, so without
+  address-settings configuring `redelivery-delay` (and ideally
+  `redelivery-delay-multiplier` / `max-redelivery-delay`) every delayed retry
+  burns through `max-delivery-attempts` in milliseconds. Alert on a climbing
+  `AMQP10DelayedRetryUnhonored`.
 
 ## AWS MQ (Managed AMQP 1.0)
 

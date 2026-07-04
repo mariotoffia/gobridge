@@ -468,6 +468,82 @@ func TestAcquireLatestIteratorPaginatesShardPages(t *testing.T) {
 	}
 }
 
+// Verifies jitteredBackoff applies equal-jitter: the wait is uniformly
+// distributed in [d/2, d) so a fleet of instances throttled at the same
+// instant desynchronises instead of retrying in lockstep and
+// re-throttling each other on the shared ~5 TPS shard budget.
+func TestJitteredBackoffEqualJitterBounds(t *testing.T) {
+	const d = 8 * time.Second
+
+	tests := []struct {
+		name string
+		rand float64
+		want time.Duration
+	}{
+		{name: "rand 0 floors at half", rand: 0, want: d / 2},
+		{name: "rand mid", rand: 0.5, want: d/2 + time.Duration(0.5*float64(d/2))},
+		{name: "rand near 1 stays below full", rand: 0.999, want: d/2 + time.Duration(0.999*float64(d/2))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &Loader{randFloat: func() float64 { return tc.rand }}
+			got := l.jitteredBackoff(d)
+			if got != tc.want {
+				t.Errorf("jitteredBackoff(%v) with rand=%v: got %v, want %v", d, tc.rand, got, tc.want)
+			}
+			if got < d/2 || got >= d {
+				t.Errorf("jitteredBackoff(%v): %v outside equal-jitter bounds [%v, %v)", d, got, d/2, d)
+			}
+		})
+	}
+
+	// Nil rand source (test-constructed loaders) falls back to a real
+	// uniform source; the bounds still hold.
+	l := &Loader{}
+	for i := 0; i < 100; i++ {
+		if got := l.jitteredBackoff(d); got < d/2 || got >= d {
+			t.Fatalf("jitteredBackoff(%v) with default rand: %v outside [%v, %v)", d, got, d/2, d)
+		}
+	}
+}
+
+// Verifies the throttle backoff wait is actually jittered: with an
+// injected rand source of 0 the first post-throttle wait must be
+// streamPollInterval/2, not the full deterministic streamPollInterval —
+// advancing the fake clock by exactly half the interval must release
+// the retry. Pre-fix (deterministic lockstep backoff) the timer only
+// fired at the full interval and this test times out.
+func TestStreamThrottleBackoffIsJittered(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ddb := &fakeDDB{}
+	ddb.setRow(`{"bridge":{"id":"stream-test"}}`, 1)
+
+	throttle := &smithy.GenericAPIError{Code: "ProvisionedThroughputExceededException", Message: "slow down"}
+	streams := &fakeStreams{}
+	streams.enqueueRecordErr(throttle)
+
+	fc := clocktest.New()
+	l := newFailureTestLoader(t, ddb, streams, fc, nil)
+	l.lastVersion = 1
+	l.randFloat = func() float64 { return 0 } // jitter floor: wait = backoff/2
+
+	ch := make(chan *ports.BridgeConfig, 1)
+	go l.streamLoop(ctx, ch, "arn:test")
+
+	waitUntil(t, "first throttled GetRecords and backoff timer", func() bool {
+		return streams.getRecordsCalls.Load() >= 1 && fc.TimerCount() >= 1
+	})
+
+	// Equal-jitter floor: half the base cadence must be enough.
+	fc.Advance(l.streamPollInterval / 2)
+
+	waitUntil(t, "jittered retry after half the base backoff", func() bool {
+		return streams.getRecordsCalls.Load() >= 2
+	})
+}
+
 // Verifies nextBackoff doubles and caps at maxStreamBackoff.
 func TestNextBackoffDoublesAndCaps(t *testing.T) {
 	tests := []struct {

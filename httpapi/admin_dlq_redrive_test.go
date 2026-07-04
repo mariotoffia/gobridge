@@ -433,3 +433,50 @@ func TestHandleDLQRedrive_FanoutFallback_LogsWarnWhenBindingScopeUnavailable(t *
 	assert.Contains(t, logOut, "runtime lacks binding-scoped injection")
 	assert.Contains(t, logOut, "binding-A")
 }
+
+// sentSnapshots returns clones of every envelope the stub sender delivered.
+func (s *stubSender) sentSnapshots() []*messaging.Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*messaging.Envelope, len(s.sent))
+	for i, e := range s.sent {
+		out[i] = e.Clone()
+	}
+	return out
+}
+
+// TestHandleDLQRedrive_UsesRedriveSafeInjection_FreshIDWithProvenance pins the
+// D1 (CRITICAL) wiring: against a real runtime the redrive takes the
+// redriveInjector capability, so the replay is re-issued under a FRESH
+// envelope ID with the original ID preserved as x-bridge.causation-id.
+// Reusing the original ID is a verified silent-loss path on shared_outbox
+// routes (the outbox's retained dedup row swallows the re-persist while the
+// redrive reports success and the DLQ entry is deleted).
+func TestHandleDLQRedrive_UsesRedriveSafeInjection_FreshIDWithProvenance(t *testing.T) {
+	mux, dlq, sender := redriveSetup(t)
+	seedDLQ(t, dlq,
+		routing.NewDLQEntry(routing.DLQEntrySpec{
+			ID: "e1", RouteID: "test-route",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{
+				ID: "orig-env-redrive-1", Subject: "s1", Payload: []byte("p1"),
+			}),
+			FailedAt: time.Now(),
+		}),
+	)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, redriveReq(`{"ids":["e1"]}`))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, float64(1), body["redriven"])
+
+	sent := sender.sentSnapshots()
+	require.Len(t, sent, 1)
+	assert.NotEqual(t, "orig-env-redrive-1", sent[0].ID(),
+		"redrive must re-issue under a fresh envelope ID (original collides with the outbox dedup row)")
+	got, ok := sent[0].Header(messaging.HeaderCausationID)
+	require.True(t, ok, "redriven message must carry provenance in %s", messaging.HeaderCausationID)
+	assert.Equal(t, "orig-env-redrive-1", got)
+}

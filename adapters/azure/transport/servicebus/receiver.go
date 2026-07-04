@@ -2,11 +2,13 @@ package servicebus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -56,13 +58,23 @@ type Receiver struct {
 	// buildStackFn overrides buildStack for tests that need to simulate
 	// build failures/successes deterministically; nil in production.
 	buildStackFn func(context.Context, ConnectionConfig) (receiverStack, error)
-	logger       *slog.Logger
-	metrics      ports.MetricsExporter
-	clk          clock.Clock
-	initMu       sync.Mutex
-	closeOnce    sync.Once
-	started      chan struct{}
-	startedOnce  sync.Once
+	// acceptNextFn overrides the accept-next-session dial for tests
+	// (use_sessions mode); nil in production, where ensureSessionSeam
+	// dials via the live asbClient handle. Guarded by initMu.
+	acceptNextFn func(context.Context) (asbAPI, error)
+	// inFlightDeliveries counts built-but-unsettled deliveries in
+	// use_sessions mode. Idle session rotation (releaseSessionSeam) is
+	// deferred while it is non-zero: the outstanding deliveries settle
+	// against the current seam, and closing it under them would fail
+	// their Ack/Retry and force redelivery churn.
+	inFlightDeliveries atomic.Int64
+	logger             *slog.Logger
+	metrics            ports.MetricsExporter
+	clk                clock.Clock
+	initMu             sync.Mutex
+	closeOnce          sync.Once
+	started            chan struct{}
+	startedOnce        sync.Once
 }
 
 // receiverStack bundles the SDK client handle with the receiver and
@@ -283,7 +295,10 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	r.initMu.Lock()
 	defer r.initMu.Unlock()
 
-	if r.client != nil {
+	// A live handle with a nil client seam is the normal idle state of a
+	// use_sessions receiver (no session currently held), so the handle —
+	// not the seam — is the "already initialised" signal.
+	if r.client != nil || r.asbClient != nil {
 		return nil
 	}
 	if r.cfg.Client != nil {
@@ -329,7 +344,15 @@ func (r *Receiver) buildStack(ctx context.Context, conn ConnectionConfig) (recei
 
 	stack := receiverStack{handle: asbClient}
 
-	if r.cfg.SessionID != "" {
+	switch {
+	case r.cfg.UseSessions:
+		// use_sessions: no receiver seam is built here — holding no
+		// session is this mode's normal idle state. The poll loop accepts
+		// the next available session lazily (ensureSessionSeam) and
+		// rotates to another session when the current one idles. A cold
+		// Run on an idle entity must not block waiting for a session to
+		// appear, so the build succeeds with a nil seam.
+	case r.cfg.SessionID != "":
 		sessOpts := asbSessionOptions{
 			ReceiveAndDelete: r.cfg.receiveAndDelete(),
 		}
@@ -351,7 +374,7 @@ func (r *Receiver) buildStack(ctx context.Context, conn ConnectionConfig) (recei
 			return receiverStack{}, shared.ErrUnavailable.Wrap(err)
 		}
 		stack.client = seam
-	} else {
+	default:
 		var seam asbAPI
 		if r.cfg.QueueName != "" {
 			seam, err = asbClient.NewReceiverForQueue(r.cfg.QueueName, recvOpts)
@@ -482,7 +505,9 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 	delayedRetryDisabled := r.cfg.QueueName == ""
 	receiveAndDelete := r.cfg.receiveAndDelete()
 
-	sessionMode := r.cfg.SessionID != ""
+	pinnedSession := r.cfg.SessionID != ""
+	useSessions := r.cfg.UseSessions
+	sessionMode := pinnedSession || useSessions
 	if sessionMode && autoExtend {
 		// In session mode every in-flight delivery shares ONE session
 		// lock (sessionReceiverAdapter.RenewMessageLock renews the
@@ -520,8 +545,10 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 		// rebuild pending (its build failed), retry it here with the
 		// pending connection so the receiver self-heals without an
 		// external re-push. A failed retry is treated like a poll failure:
-		// count it, back off, and try again.
-		if sessionMode {
+		// count it, back off, and try again. Only a PINNED session rotates
+		// close-before-build; use_sessions rotates build-first like a
+		// non-session receiver (no exclusive lock held at handle level).
+		if pinnedSession {
 			if err := r.rebuildPendingStack(ctx); err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -544,6 +571,44 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			}
 		}
 
+		// use_sessions: make sure a session is held before polling. "No
+		// session available right now" (SDK CodeTimeout) is an idle
+		// entity, not a failure — back off quietly without counting a
+		// receive failure.
+		if useSessions {
+			if err := r.ensureSessionSeam(ctx); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				delay := backoff.next()
+				if errors.Is(MapError(err), shared.ErrTimeout) {
+					if logging.DebugEnabled(r.logger) {
+						r.logger.Log(ctx, logging.LevelDebug,
+							"servicebus: no session available, retrying",
+							"entity", r.entityName(),
+							"retry_after", delay,
+						)
+					}
+				} else {
+					r.metrics.Counter(MetricASBReceiveFailures, 1,
+						shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
+					if r.logger != nil {
+						r.logger.Warn("servicebus: accept next session failed, retrying",
+							"entity", r.entityName(),
+							"error", err,
+							"retry_after", delay,
+						)
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-r.clock().After(delay):
+				}
+				continue
+			}
+		}
+
 		pollStart := r.clock().Now()
 		raws, err := r.pollAndConvert(ctx)
 		if err != nil {
@@ -553,11 +618,17 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			if !sessionMode && isSessionRequiredError(err) {
 				// A non-session receiver on a session-enabled entity can
 				// never succeed: fail fast with a clear remedy instead of
-				// warn-looping forever. AcceptNextSession-style rotating
-				// session consumption is not implemented.
+				// warn-looping forever.
 				return shared.ErrNotSupported.Wrap(fmt.Errorf(
-					"servicebus: entity %q requires sessions but no session_id is configured; set receiver.session_id (accept-next-session polling is not supported): %w",
+					"servicebus: entity %q requires sessions but the receiver is not session-aware; set receiver.session_id to pin one session or receiver.use_sessions to rotate over available sessions: %w",
 					r.entityName(), err))
+			}
+			if useSessions {
+				// The session link is suspect (session lock lost, link
+				// detached): shed it so the next iteration accepts a fresh
+				// session instead of erroring forever on a dead seam.
+				// Unsettled deliveries redeliver — at-least-once semantics.
+				r.releaseSessionSeam(ctx)
 			}
 			r.metrics.Counter(MetricASBReceiveFailures, 1,
 				shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
@@ -579,6 +650,18 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 		r.metrics.Timer(MetricASBReceiveLatency, r.clock().Since(pollStart),
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.entityName()})
 		backoff.reset()
+
+		if useSessions && len(raws) == 0 {
+			// The held session is idle: rotate to the next available one
+			// (the SDK's round-robin pattern) — but only once every
+			// delivery received from it has settled; the outstanding
+			// deliveries settle against this seam and closing it under
+			// them would fail their Ack/Retry.
+			if r.inFlightDeliveries.Load() == 0 {
+				r.releaseSessionSeam(ctx)
+			}
+			continue
+		}
 
 		scheduler := r.currentScheduler()
 
@@ -615,6 +698,15 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			)
 			del.receiveAndDelete = receiveAndDelete
 			del.delayedRetryDisabled = delayedRetryDisabled
+			if useSessions {
+				// Track settlement so idle rotation cannot close the seam
+				// under an unsettled delivery. deliveryCtx is cancelled on
+				// EVERY path — Ack/Retry (cleanupContext), emit failure
+				// (cancel below), parent cancellation — so the counter
+				// always drains.
+				r.inFlightDeliveries.Add(1)
+				context.AfterFunc(deliveryCtx, func() { r.inFlightDeliveries.Add(-1) })
+			}
 			pending = append(pending, pendingDelivery{del: del, ctx: deliveryCtx, cancel: deliveryCancel})
 		}
 
@@ -670,6 +762,89 @@ func (r *Receiver) rebuildPendingStack(ctx context.Context) error {
 		)
 	}
 	return nil
+}
+
+// ensureSessionSeam makes sure the poll loop holds a session receiver
+// in use_sessions mode, accepting the NEXT available session when none
+// is held. Holding no session is a normal state (idle entity, just
+// rotated, a receive error shed the seam). The install is fenced on the
+// client-handle identity: a credential rotation that swapped the stack
+// while the accept dialled must not have its fresh handle paired with a
+// session accepted on the OLD connection — the stale seam is discarded
+// and the next iteration re-accepts on the live handle.
+func (r *Receiver) ensureSessionSeam(ctx context.Context) error {
+	r.initMu.Lock()
+	if r.client != nil {
+		r.initMu.Unlock()
+		return nil
+	}
+	handle := r.asbClient
+	accept := r.acceptNextFn
+	r.initMu.Unlock()
+
+	if accept == nil {
+		if handle == nil {
+			return shared.ErrUnavailable.WithMessage("servicebus: receiver not started")
+		}
+		sessOpts := asbSessionOptions{ReceiveAndDelete: r.cfg.receiveAndDelete()}
+		if r.cfg.QueueName != "" {
+			accept = func(ctx context.Context) (asbAPI, error) {
+				return handle.AcceptNextSessionForQueue(ctx, r.cfg.QueueName, sessOpts)
+			}
+		} else {
+			accept = func(ctx context.Context) (asbAPI, error) {
+				return handle.AcceptNextSessionForSubscription(ctx, r.cfg.TopicName, r.cfg.SubscriptionName, sessOpts)
+			}
+		}
+	}
+
+	seam, err := accept(ctx)
+	if err != nil {
+		return err
+	}
+
+	r.initMu.Lock()
+	if r.client == nil && r.asbClient == handle {
+		r.client = seam
+		r.initMu.Unlock()
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "servicebus: accepted next session",
+				"entity", r.entityName(),
+			)
+		}
+		return nil
+	}
+	r.initMu.Unlock()
+
+	// Superseded: a rotation swapped the stack (or Close emptied it)
+	// while the accept dialled. Discard the stale session; nothing is
+	// committed.
+	if closer, ok := seam.(ports.ContextCloser); ok {
+		_ = closer.Close(ctx)
+	}
+	return nil
+}
+
+// releaseSessionSeam drops and closes the currently held session
+// receiver (use_sessions mode) so the next poll iteration accepts the
+// NEXT available session — the rotation step of round-robin session
+// consumption, also used to shed a seam whose link erred. It never
+// touches an injected cfg.Client stack (no accept capability, so
+// nothing to rotate to). The close runs outside the lock (closing an
+// AMQP link can block).
+func (r *Receiver) releaseSessionSeam(ctx context.Context) {
+	r.initMu.Lock()
+	if r.asbClient == nil && r.acceptNextFn == nil {
+		r.initMu.Unlock()
+		return
+	}
+	seam := r.client
+	r.client = nil
+	r.initMu.Unlock()
+
+	if closer, ok := seam.(ports.ContextCloser); ok {
+		_ = closer.Close(ctx)
+	}
 }
 
 // runSessionRenewer renews the shared session lock at interval until

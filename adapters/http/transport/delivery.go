@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -17,6 +18,14 @@ type deliveryResult struct {
 type httpDelivery struct {
 	env  *messaging.Envelope
 	done chan deliveryResult
+	// onSettle, when non-nil, runs exactly once on the first Ack or
+	// Retry. The receiver wires the dispatch-deadline CancelFunc here so
+	// the detached dispatch context (context.WithoutCancel + the
+	// server's own deadline re-armed — see (*Receiver).ServeHTTP) is
+	// released when the pipeline settles the delivery, not when the
+	// handler returns.
+	onSettle   func()
+	settleOnce sync.Once
 }
 
 func newHTTPDelivery(env *messaging.Envelope) *httpDelivery {
@@ -28,7 +37,17 @@ func newHTTPDelivery(env *messaging.Envelope) *httpDelivery {
 
 func (d *httpDelivery) Envelope() *messaging.Envelope { return d.env }
 
+// settled runs the onSettle hook exactly once across Ack/Retry calls.
+func (d *httpDelivery) settled() {
+	d.settleOnce.Do(func() {
+		if d.onSettle != nil {
+			d.onSettle()
+		}
+	})
+}
+
 func (d *httpDelivery) Ack(_ context.Context) error {
+	d.settled()
 	select {
 	case d.done <- deliveryResult{}:
 	default:
@@ -45,6 +64,7 @@ func (d *httpDelivery) Retry(_ context.Context, _ time.Duration, reason error) e
 	if reason == nil {
 		reason = shared.ErrUnavailable.WithMessage("http: delivery retry requested without reason")
 	}
+	d.settled()
 	select {
 	case d.done <- deliveryResult{err: reason}:
 	default:

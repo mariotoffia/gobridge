@@ -62,6 +62,13 @@ type SessionOptions struct {
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
 	// broker can send before receiving PUBACKs. Default 0 means use the
 	// paho library default (65535). Set higher for high-throughput scenarios.
+	//
+	// ponytail: Receive Maximum bounds ONLY the QoS 1/2 un-acked window —
+	// it does not throttle QoS 0, so a QoS 0 flood can still outrun a slow
+	// downstream regardless of this setting (see the package doc's QoS 0
+	// flood ceiling). Lowering it trades ingress throughput for a smaller
+	// redelivery blast radius after a crash (and a smaller startup pending
+	// buffer, which is sized to this value).
 	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
 	// ReconnectDelay is the constant delay between failed reconnection
 	// attempts after the first immediate retry. Zero means use the

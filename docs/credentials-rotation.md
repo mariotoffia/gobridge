@@ -264,6 +264,9 @@ rotation correct: without it a rotation would report success while every redial
 silently re-authenticated with the old, soon-to-be-revoked credentials baked
 into the URL. Prefer supplying credentials via `credentials_uri` (or the
 session's `username`/`password`) and keeping `broker_url` credential-free.
+When `broker_url` userinfo and explicit/managed credentials conflict, the
+session logs a **Warn** — once at construction and once per rotation, with the
+URL redacted — because the embedded userinfo is dead config.
 
 ## Operator workflow
 

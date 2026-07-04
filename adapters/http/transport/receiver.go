@@ -299,12 +299,28 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// mid-pipeline (which could cancel processing after side effects have
 	// begun). The dispatch runs on a context.WithoutCancel copy — values
 	// (trace, correlation) are preserved, the cancellation signal is not.
+	// Detached is NOT unbounded: when the request context carries a
+	// deadline (the server's own timeout, e.g. http.TimeoutHandler
+	// installed at the composition root), that deadline is re-armed on
+	// the detached context so a hung pipeline is still bounded by the
+	// server's own timeout. The deadline is released when the delivery
+	// settles (Ack/Retry) — releasing it on handler return would abort
+	// the dispatch the moment a disconnected client got its 504, which
+	// is exactly the mid-dispatch abort this decoupling removes.
 	// The RESPONSE still honours the client context below: on disconnect
 	// or timeout the handler answers 504 while processing runs to
 	// completion in the pipeline.
 	dispatchCtx := context.WithoutCancel(ctx)
+	cancelDispatch := context.CancelFunc(func() {})
+	if deadline, ok := ctx.Deadline(); ok {
+		dispatchCtx, cancelDispatch = context.WithDeadline(dispatchCtx, deadline)
+	}
 	del := newHTTPDelivery(env)
+	del.onSettle = cancelDispatch
 	if err := emit(dispatchCtx, del); err != nil {
+		// Ownership never transferred: nobody will settle the delivery,
+		// so release the dispatch deadline here.
+		cancelDispatch()
 		if r.cfg.logger != nil {
 			r.cfg.logger.Error("emit failed", "error", err)
 		}

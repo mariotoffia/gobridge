@@ -80,7 +80,7 @@ The receiver accepts a single JSON POST value (trailing tokens are rejected with
 |-------|------|----------|-------------|
 | `subject` | string | **yes** | Logical event subject. Mapped 1:1 to `Envelope.Subject`. Not a topic or routing key. |
 | `payload` | any JSON | no | Message content (stored as raw bytes) |
-| `id` | string | no | Caller-provided message ID (auto-assigned a UUID when omitted) |
+| `id` | string | no | Caller-provided message ID (auto-assigned as `http-<instance-entropy>-<unixnano>-<counter>` when omitted -- 8 crypto/rand bytes hex; NOT a UUID) |
 | `headers` | object | no | Custom metadata (reserved `x-bridge.*` keys stripped at ingress) |
 | `expires_at` | RFC 3339 | no | Message TTL (drives `on_expired` policy) |
 
@@ -117,9 +117,10 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
 - **Body limit → 413.** A body exceeding `max_body_size` returns
   `413 Request Entity Too Large`, distinct from the `400` used for malformed
   JSON or trailing tokens.
-- **Automatic envelope ID.** HTTP ingress generates a unique UUID envelope ID
-  when the request omits `id`, ensuring every message has a traceable
-  identifier through the pipeline.
+- **Automatic envelope ID.** HTTP ingress generates a process-unique envelope
+  ID of the form `http-<instance-entropy>-<unixnano>-<counter>` when the
+  request omits `id`; the 8-byte crypto/rand instance entropy prevents
+  cross-node collisions in dedup/DLQ records keyed on the ID.
 - **Ingress is at-least-once with a best-effort dedup window.** Each receiver
   keeps a bounded, node-local LRU of `Idempotency-Key` / `X-Dedup-Id` values of
   *successfully* processed requests (`dedup_window`, default 4096). A request
@@ -137,7 +138,13 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   the request context: a client disconnect cannot abort the pipeline
   mid-dispatch. The HTTP response still honours the client context (`504` on
   timeout/disconnect) -- a `504` means "outcome unknown", not "not processed".
-  Producers that retry on `504` should supply `Idempotency-Key`.
+  Producers that retry on `504` should supply `Idempotency-Key`. Detached is
+  not unbounded: when the request context carries a deadline (e.g. an
+  `http.TimeoutHandler` installed by the composition root), that deadline is
+  re-armed on the detached dispatch context and released when the delivery
+  settles (Ack/Retry). Servers wanting a hard pipeline bound for HTTP ingress
+  must install a request-timeout handler; a bare `http.Server`
+  Read/WriteTimeout does not set a request-context deadline.
 - **Cluster forwarding is at-least-once.** A forward timeout after the peer
   received the body is retried as a fresh POST. Every forward carries an
   `Idempotency-Key` (the envelope's own or derived from its ID) so the peer's
@@ -219,6 +226,7 @@ The HTTP factory accepts functional options at registration time:
 | `WithPathPrefix(prefix)` | Override URL prefix (default `/transport/http`) |
 | `WithRouteLocator(l)` | Set cluster-aware route locator |
 | `WithMessageForwarder(fw)` | Set cluster message forwarder |
+| `WithForwardToken(token)` | Shared secret receivers require in `X-Bridge-Forward-Token` before trusting an `X-Bridge-Forwarded` marker; must match `ForwarderConfig.ForwardToken` |
 | `WithFactoryMetrics(m)` | Set metrics exporter |
 | `WithFactoryLogger(l)` | Set structured logger |
 

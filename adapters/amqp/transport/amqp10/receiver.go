@@ -322,9 +322,12 @@ func (r *Receiver) linkName() string {
 		cid = r.session.opts.ContainerID
 	}
 	if cid == "" {
-		// Still stable across restarts of the same configuration, but
-		// shared by every replica lacking a distinct container_id —
-		// operators should set container_id per replica.
+		// Only reachable for directly-constructed sessions (tests):
+		// SessionOptions.applyDefaults generates a per-instance
+		// container-id when none is configured, so sessions built via
+		// NewSession always have one. Operators using durable
+		// subscriptions should still set container_id explicitly — the
+		// generated identity does not survive process restarts.
 		return "gobridge:" + r.cfg.Address
 	}
 	return cid + ":" + r.cfg.Address

@@ -15,6 +15,27 @@ type Span interface {
 	SetAttributes(attrs ...shared.Tag)
 }
 
+// SpanIdentity is an OPTIONAL Span capability. A Span that knows its
+// own W3C trace-context identity implements it so the runtime can stamp
+// the trace_id/span_id log-correlation fields from the ACTIVE span
+// (observability.WithTraceID/WithSpanID) instead of the upstream
+// traceparent header: logs then carry THIS hop's span id, and root
+// deliveries — which have no upstream traceparent — get a trace_id at
+// all. The runtime probes the capability with a type assertion and
+// falls back to the upstream traceparent when it is absent (NoopTracer)
+// or when both accessors return "".
+//
+// TraceID returns the 32-hex-digit lowercase W3C trace-id and SpanID
+// the 16-hex-digit lowercase W3C span-id of the active span. Both
+// return "" when the identity is unavailable (no-op span, invalid span
+// context) or the trace is unsampled — an unsampled trace exports no
+// spans, so a logged trace_id would dangle; the correlation ID
+// (UBIQUITOUS.md "Correlation ID") remains the always-present join key.
+type SpanIdentity interface {
+	TraceID() string
+	SpanID() string
+}
+
 // Tracer creates spans for distributed tracing. Implementations must
 // be safe for concurrent use from multiple goroutines.
 type Tracer interface {

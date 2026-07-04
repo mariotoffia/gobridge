@@ -142,7 +142,10 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		rtOpts = append(rtOpts, runtime.WithAuditLogger(b.auditLogger))
 	}
 
-	endpoints := b.resolveClusterEndpoints(ctx)
+	endpoints, err := b.resolveClusterEndpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(endpoints) > 0 {
 		rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))
 	}
@@ -293,9 +296,20 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 	return res, nil
 }
 
-func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string {
+// resolveClusterEndpoints returns the endpoints that identify this instance
+// to its cluster peers. Explicitly configured cluster.endpoints win; otherwise
+// a registered EndpointResolver is consulted.
+//
+// Posture on resolution failure (cluster finding C11): in a clustered
+// deployment (deployment_mode: clustered) a failed resolution is a STARTUP
+// ERROR — continuing with nil endpoints would silently disable cluster
+// forwarding for the whole process lifetime, leaving peers unable to forward
+// exclusive-route traffic to this instance. Outside clustered mode the
+// failure is logged as a warning and forwarding is simply unavailable
+// (single-instance deployments do not need it).
+func (b *Builder) resolveClusterEndpoints(ctx context.Context) (map[string]string, error) {
 	if b.cfg.Bridge.Cluster != nil && len(b.cfg.Bridge.Cluster.Endpoints) > 0 {
-		return b.cfg.Bridge.Cluster.Endpoints
+		return b.cfg.Bridge.Cluster.Endpoints, nil
 	}
 
 	if b.endpointResolver != nil {
@@ -305,15 +319,20 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) map[string]string
 		}
 		endpoints, err := b.endpointResolver.Resolve(ctx, listenAddr)
 		if err != nil {
+			if b.cfg.Bridge.DeploymentMode == "clustered" {
+				return nil, fmt.Errorf("bridge: clustered deployment: endpoint resolution failed; "+
+					"refusing to start with cluster forwarding silently disabled for the process lifetime "+
+					"(peers could not reach this instance): %w", err)
+			}
 			if b.logger != nil {
 				b.logger.Warn("endpoint resolution failed, cluster routing may be unavailable", "error", err)
 			}
-			return nil
+			return nil, nil
 		}
-		return endpoints
+		return endpoints, nil
 	}
 
-	return nil
+	return nil, nil
 }
 
 // outboxRuntimeOptions derives the runtime tuning passed to outbox

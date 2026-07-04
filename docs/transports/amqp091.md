@@ -84,11 +84,20 @@ senders:
 | `tls.key_file` | string | -- | Client private key PEM file path |
 | `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
 
+> **Duration keys need a unit.** Every duration option must be written as a
+> string with a unit (`"30s"`, `"500ms"`). A bare number decodes as
+> **nanoseconds** when the target is `time.Duration` (`heartbeat: 30` = 30 ns)
+> and is rejected by the strict decoder; `Config.Validate` additionally rejects
+> any non-zero duration below 1 ms as a decode accident. Zero means "use the
+> default".
+
 > **Credential precedence.** An explicitly configured `username`/`password`
 > (or credential-store material) **overrides** userinfo embedded in
 > `broker_url`. A URL carrying stale userinfo paired with an explicit
 > `username` connects as the explicit credential, so a rotated secret is not
-> silently defeated by stale URL userinfo.
+> silently defeated by stale URL userinfo. When both are present the embedded
+> userinfo is dead config: the session logs a **Warn** at construction and on
+> each rotation (with the URL redacted). Keep `broker_url` credential-free.
 
 ## Receiver Options Reference (`options.receiver.*`)
 

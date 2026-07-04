@@ -103,12 +103,14 @@ The bridge config file watcher supports two modes configured via the
 
 | Mode | Mechanism | Best for |
 |------|-----------|----------|
-| `notify` | Filesystem events (fsnotify), debounced | Local disks, fast change detection |
-| `poll` | Periodic SHA-256 content comparison | NFS, network mounts, containers |
+| `notify` | Hybrid: filesystem events (fsnotify) on the containing directory, debounced, plus a periodic hash-resync backstop (30s default) | Local disks and Kubernetes ConfigMap volume mounts, fast change detection |
+| `poll` | Periodic SHA-256 content comparison | NFS/EFS, network mounts, `subPath` mounts |
 
-We recommend `poll` mode for container deployments where the config file
-lives on a network filesystem (EFS, NFS). Use `notify` for local disk or
-development setups where low-latency reload matters.
+`notify` mode is safe for Kubernetes ConfigMap volume mounts: the watcher sees
+the atomic `..data` symlink swap, and the hash-resync backstop catches anything
+fsnotify misses (see [Kubernetes ConfigMap Config](#kubernetes-configmap-config)).
+Keep `poll` mode for network filesystems (EFS, NFS) and `subPath` mounts, which
+do not deliver reliable inotify events.
 
 ```yaml
 config_watch:
@@ -363,8 +365,12 @@ fields into every log record:
 | Field | Source |
 |-------|--------|
 | `correlation_id` | `x-bridge.correlation-id` header (auto-generated if missing) |
-| `trace_id` | W3C `traceparent` header |
-| `span_id` | Active span from the tracer |
+| `trace_id` | Active span's W3C trace-id when the tracer exposes `ports.SpanIdentity` (OTel); upstream `traceparent` fallback |
+| `span_id` | Active span's W3C span-id (same capability); upstream `traceparent` fallback |
+
+The cross-hop log join key `x-bridge.correlation-id` resets per hop unless the
+downstream receiver's route sets `trust_bridge_headers: true` (ingress strips
+and re-generates it otherwise).
 
 ```go
 jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -409,7 +415,13 @@ costs.
 | Circuit breaker open | State = open > 5 min | Medium |
 
 Configure these alerts in your monitoring system (CloudWatch Alarms, Grafana,
-PagerDuty) using the metrics emitted by the bridge runtime.
+PagerDuty) using the metrics emitted by the bridge runtime. For consumers not
+using the CDK constructs, the programmatic path is
+`cloudwatch.EnsureAlarms(ctx, client, cloudwatch.DefaultAlarms(ns, snsTopic))`
+alongside an exporter constructed with
+`WithRollupMetrics(DefaultRollupMetrics()...)` and the **same namespace** --
+see [Monitoring](aws-deployment/monitoring.md). The CDK constructs provision
+the rollup alarms declaratively (`gobridgealarms`, `EnableRollupAlarms`).
 
 ## Scaling Considerations
 

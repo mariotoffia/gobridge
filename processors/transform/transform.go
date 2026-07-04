@@ -301,7 +301,14 @@ func (p *Processor) resolveMapping(data any, pm parsedMapping) (value any, ok bo
 		}
 	}
 
-	return value, true, nil
+	// Detach the resolved value from everything the caller must not
+	// mutate: the pristine parsed document (a later nested-target write
+	// walking through an aliased submap would corrupt the source every
+	// subsequent mapping reads) and the config-owned DefaultValue (an
+	// aliased default written into the output would be poisoned by
+	// per-message writes and leak one message's data into every later
+	// one). Scalars pass through without allocation.
+	return deepCopyValue(value), true, nil
 }
 
 // Ensure Processor implements ports.Processor

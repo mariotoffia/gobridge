@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -619,9 +620,22 @@ func TestReceiver_LinkName(t *testing.T) {
 		require.Equal(t, r.linkName(), r.linkName(), "name must be deterministic")
 	})
 
-	t.Run("durable_without_container_id_still_stable", func(t *testing.T) {
+	t.Run("durable_without_container_id_uses_generated_instance_id", func(t *testing.T) {
+		// Finding 16: an unset container_id is defaulted to a
+		// per-instance "gobridge-<entropy>" id by applyDefaults, so the
+		// derived link name is deterministic WITHIN the session (every
+		// reconnect resumes the same durable subscription) while two
+		// replicas never collide.
 		r := newRecv(ReceiverConfig{Address: "topic/a", DurabilityMode: 2}, "")
-		require.Equal(t, "gobridge:topic/a", r.linkName())
+		name := r.linkName()
+		require.True(t, strings.HasPrefix(name, defaultContainerIDPrefix),
+			"derived name must embed the generated per-instance container-id, got %q", name)
+		require.True(t, strings.HasSuffix(name, ":topic/a"))
+		require.Equal(t, name, r.linkName(), "name must be deterministic within the session")
+
+		other := newRecv(ReceiverConfig{Address: "topic/a", DurabilityMode: 2}, "")
+		require.NotEqual(t, name, other.linkName(),
+			"two sessions without container_id must not share a durable subscription identity")
 	})
 
 	t.Run("non_durable_uses_sdk_random_name", func(t *testing.T) {

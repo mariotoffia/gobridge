@@ -1,9 +1,12 @@
 package amqp10
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -323,9 +326,39 @@ func (o *SessionOptions) applyDefaults() {
 	if o.ConnectionMonitorFallback <= 0 {
 		o.ConnectionMonitorFallback = 30 * time.Second
 	}
+	if o.ContainerID == "" {
+		// Finding 16: an empty container-id must NOT fall through to the
+		// SDK, which generates a NEW random container-id on every dial.
+		// Brokers key durable subscriptions on container-id + link name,
+		// so a per-dial identity orphans the subscription on every
+		// reconnect; and replicas copying a static documented example
+		// would collide. Generating "gobridge-<entropy>" ONCE here makes
+		// the identity stable across reconnects for this session's
+		// lifetime and unique per instance. It still changes across
+		// process restarts — operators using durable subscriptions
+		// (durability_mode > 0) should set container_id explicitly.
+		o.ContainerID = generateContainerID()
+	}
 	if o.Clock == nil {
 		o.Clock = clock.System
 	}
+}
+
+// defaultContainerIDPrefix prefixes generated AMQP container-ids so
+// operators can recognize bridge connections without a configured
+// container_id on the broker console.
+const defaultContainerIDPrefix = "gobridge-"
+
+// generateContainerID returns a per-instance AMQP container-id with
+// crypto/rand entropy. Called once per SessionOptions defaulting, so
+// the identity is stable for the session's lifetime (every reconnect
+// re-dials with the same container-id) but unique per replica.
+func generateContainerID() string {
+	b := make([]byte, 8)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("amqp10: crypto/rand unavailable: " + err.Error())
+	}
+	return defaultContainerIDPrefix + hex.EncodeToString(b)
 }
 
 func (c *ReceiverConfig) validate() error {

@@ -167,16 +167,25 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 //     keeps polling and cfg.Connection is unchanged — a degraded-but-
 //     alive receiver that a retry (same credentials) can heal.
 //
-//   - Session: the new accept cannot win the exclusive session lock
-//     while the old link still holds it, so the old stack is closed
-//     FIRST (beginSessionRebuild) and the new accept — with its
-//     rolling-deploy retry — runs after. cfg.Connection stays
-//     UNCOMMITTED and the receiver is left in a rebuild-pending state
-//     until the build succeeds: re-pushing the SAME credentials is not
-//     short-circuited (cfg.Connection never advanced), and the poll
-//     loop (rebuildPendingStack) retries the build with the pending
-//     connection, so a build failure during rotation self-heals instead
-//     of bricking the receiver until restart.
+//   - Session (pinned session_id): the new accept cannot win the
+//     exclusive session lock while the old link still holds it, so the
+//     old stack is closed FIRST (beginSessionRebuild) and the new
+//     accept — with its rolling-deploy retry — runs after.
+//     cfg.Connection stays UNCOMMITTED and the receiver is left in a
+//     rebuild-pending state until the build succeeds: re-pushing the
+//     SAME credentials is not short-circuited (cfg.Connection never
+//     advanced), and the poll loop (rebuildPendingStack) retries the
+//     build with the pending connection, so a build failure during
+//     rotation self-heals instead of bricking the receiver until
+//     restart.
+//
+//   - use_sessions: follows the NON-session ordering. The rotated build
+//     produces a handle with a nil receiver seam (buildStack accepts no
+//     session in this mode), commitStack swaps it in and closes the old
+//     stack including the currently held session, and the poll loop
+//     accepts the next available session on the new handle
+//     (ensureSessionSeam). No exclusive lock is contested at the handle
+//     level, so close-before-build is unnecessary.
 func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
@@ -193,7 +202,10 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 	}
 	newConn, changed := credentialsToConnection(base, set)
 	injected := r.cfg.Client != nil
-	started := r.client != nil || r.rebuildPending
+	// A use_sessions receiver is live with a nil client seam between
+	// sessions (ensureSessionSeam accepts lazily), so the handle — not
+	// only the seam — marks the receiver as started.
+	started := r.client != nil || r.asbClient != nil || r.rebuildPending
 	sessionMode := r.cfg.SessionID != ""
 	pending := r.rebuildPending
 	r.initMu.Unlock()

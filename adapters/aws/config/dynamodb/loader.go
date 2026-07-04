@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -24,7 +25,9 @@ const (
 	// stream calls after throttles/errors. GetRecords shares a ~5 TPS
 	// per-shard budget across ALL consumers of the stream, so backing
 	// off far beyond the base cadence is what lets a fleet of bridge
-	// instances coexist on one config table.
+	// instances coexist on one config table. The actual wait is
+	// equal-jittered (see jitteredBackoff) so instances throttled at
+	// the same instant desynchronise instead of retrying in lockstep.
 	maxStreamBackoff = 30 * time.Second
 
 	// streamAcquireFallbackAfter is the number of consecutive shard/
@@ -116,6 +119,11 @@ type Loader struct {
 	logger             *slog.Logger
 	clk                clock.Clock
 	registry           *ports.Registry
+
+	// randFloat supplies uniform values in [0,1) for backoff jitter
+	// (jitteredBackoff). Production leaves it nil, which falls back to
+	// math/rand/v2.Float64; tests inject a deterministic source.
+	randFloat func() float64
 
 	mu          sync.Mutex
 	lastVersion int64
@@ -371,6 +379,24 @@ func (l *Loader) deliverLatest(ch chan *ports.BridgeConfig, cfg *ports.BridgeCon
 
 func (l *Loader) currentVersion(ctx context.Context) (int64, error) {
 	return l.session.getCurrentVersion(ctx, l.pk())
+}
+
+// jitteredBackoff applies equal-jitter to a computed backoff base d:
+// the returned wait is uniformly distributed in [d/2, d). Without
+// jitter, every instance of a fleet throttled by the shared ~5 TPS
+// GetRecords shard budget retries at the same deterministic instant
+// and the fleet re-throttles itself in lockstep forever; equal-jitter
+// spreads the retries across the window while still guaranteeing at
+// least half the base backoff is honoured. A nil randFloat (loaders
+// constructed as struct literals in tests) falls back to
+// math/rand/v2.Float64.
+func (l *Loader) jitteredBackoff(d time.Duration) time.Duration {
+	rf := l.randFloat
+	if rf == nil {
+		rf = rand.Float64
+	}
+	half := d / 2
+	return half + time.Duration(rf()*float64(half))
 }
 
 // Save writes a BridgeConfig to DynamoDB using an optimistic

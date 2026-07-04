@@ -376,6 +376,7 @@ func (m *Manager) superviseLayerWatch(
 	forward func(*ports.BridgeConfig) bool,
 ) {
 	backoff := watchRetryInitial
+	established := true
 	for {
 		// Drain the current channel until it closes or ctx is cancelled.
 		drained := false
@@ -398,13 +399,19 @@ func (m *Manager) superviseLayerWatch(
 
 		// Steady-state watch death (NOT a shutdown): record degraded state
 		// and re-establish with backoff. The runtime keeps serving throughout.
+		// Only record the generic "channel closed" error when a LIVE watcher
+		// just died: on the retry path ch is still the stale closed channel,
+		// and overwriting here would clobber the more specific establishment
+		// error recorded below — the one operators need to diagnose the outage.
 		if layer.Watcher == nil {
 			return
 		}
-		m.setWatchError(layer.Name, errWatchEnded)
-		if m.logger != nil {
-			m.logger.Error("config manager: layer watcher ended; re-establishing with backoff "+
-				"(runtime keeps serving last good config)", "layer", layer.Name, "retry_in", backoff)
+		if established {
+			m.setWatchError(layer.Name, errWatchEnded)
+			if m.logger != nil {
+				m.logger.Error("config manager: layer watcher ended; re-establishing with backoff "+
+					"(runtime keeps serving last good config)", "layer", layer.Name, "retry_in", backoff)
+			}
 		}
 
 		select {
@@ -423,11 +430,13 @@ func (m *Manager) superviseLayerWatch(
 			backoff = nextBackoff(backoff)
 			// ch is still the (closed) old channel; the drain loop above will
 			// return immediately and we retry after the next backoff.
+			established = false
 			continue
 		}
 		m.clearWatchError(layer.Name)
 		ch = newCh
 		backoff = watchRetryInitial
+		established = true
 	}
 }
 

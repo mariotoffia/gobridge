@@ -116,7 +116,7 @@ func (rt *Runtime) RouteLocator() ports.RouteLocator {
 // envelope is cloned to prevent caller mutation. An ID is assigned if
 // the envelope's ID field is empty.
 func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.Envelope) error {
-	return rt.injectToBinding(ctx, routeID, "", env)
+	return rt.injectToBinding(ctx, routeID, "", env, "")
 }
 
 // InjectToBinding is Inject with the dispatch confined to a single binding.
@@ -129,10 +129,52 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 // bindingID is equivalent to Inject. Returns shared.ErrNotFound when the route
 // does not exist.
 func (rt *Runtime) InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
-	return rt.injectToBinding(ctx, routeID, bindingID, env)
+	return rt.injectToBinding(ctx, routeID, bindingID, env, "")
 }
 
-func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
+// InjectRedrive is the DLQ-redrive-safe variant of InjectToBinding: it
+// re-issues the message under a FRESH envelope ID and carries the original ID
+// out-of-band so the route runner stamps it as provenance
+// (messaging.HeaderCausationID) after the ingress reserved-header strip.
+//
+// A redrive MUST NOT reuse the original envelope ID. The outbox retains
+// completed/poisoned rows keyed UNIQUE(envelope_id, binding_id) as dedup
+// evidence, so re-persisting under the original ID yields
+// shared.ErrDuplicateRecord — which the shared_outbox dispatch path correctly
+// treats as "already persisted" and ACKs. The redrive then reports success,
+// the DLQ entry is deleted, and the message is never sent again: silent loss
+// of both message and evidence. A fresh ID bypasses the dedup row (this is a
+// NEW delivery attempt, deliberately re-issued by an operator) while the
+// causation header preserves the audit link to the original envelope.
+// Subject, payload, timestamps and ALL headers (including propagated reserved
+// headers such as ordering/dedup keys) are preserved from the source envelope.
+func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
+	originalID := env.ID()
+	if originalID == "" {
+		// Nothing to collide with in the outbox dedup index; a plain
+		// binding-scoped inject (which assigns a fresh ID) is equivalent.
+		return rt.injectToBinding(ctx, routeID, bindingID, env, "")
+	}
+	src := env.Clone()
+	fresh, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+		ID:        generateID(),
+		Subject:   src.Subject(),
+		Payload:   src.Payload(),
+		CreatedAt: src.CreatedAt(),
+		ExpiresAt: src.ExpiresAt(),
+	}, rt.clk.Now())
+	if err != nil {
+		return fmt.Errorf("runtime: inject redrive: fresh envelope: %w", err)
+	}
+	// StampHeaders is the trusted whole-map setter (no reserved-prefix strip):
+	// propagated reserved headers (correlation-id, ordering-key, dedup-id, …)
+	// on the DLQ'd envelope survive onto the re-issued one. The ingress strip
+	// in doHandleDelivery still applies its normal posture afterwards.
+	fresh.StampHeaders(src.HeadersSnapshot())
+	return rt.injectToBinding(ctx, routeID, bindingID, fresh, originalID)
+}
+
+func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope, redrivenFrom string) error {
 	rt.mu.Lock()
 	if !rt.running {
 		rt.mu.Unlock()
@@ -158,7 +200,7 @@ func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID strin
 		}
 	}
 
-	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env, binding: bindingID})
+	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env, binding: bindingID, redrivenFrom: redrivenFrom})
 }
 
 // syntheticDelivery implements ports.Delivery for programmatically
@@ -169,6 +211,12 @@ type syntheticDelivery struct {
 	// read by the route runner via the bindingOverrider interface AFTER the
 	// ingress reserved-header strip, keeping this a trusted internal-only steer.
 	binding string
+	// redrivenFrom, when non-empty, is the ORIGINAL envelope ID of a DLQ
+	// redrive re-issued under a fresh ID (Runtime.InjectRedrive). It travels
+	// out-of-band for the same reason as binding: the runner stamps it as
+	// provenance (HeaderCausationID) AFTER the ingress reserved-header strip,
+	// so external messages can never spoof it.
+	redrivenFrom string
 }
 
 func (d *syntheticDelivery) Envelope() *messaging.Envelope { return d.env }
@@ -181,3 +229,7 @@ func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { retur
 // BindingOverride satisfies the route runner's bindingOverrider contract,
 // exposing the binding-scoped route override out-of-band (not via a header).
 func (d *syntheticDelivery) BindingOverride() string { return d.binding }
+
+// RedrivenFrom satisfies the route runner's redriveProvenancer contract,
+// exposing the original envelope ID of a redriven message out-of-band.
+func (d *syntheticDelivery) RedrivenFrom() string { return d.redrivenFrom }
