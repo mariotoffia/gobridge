@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -135,6 +136,22 @@ func receiveWorkLatency(pollStart, receiveEnd time.Time, sysAttrs map[string]str
 // plus the receipt handle the delivery uses for Ack/Retry/Extend. Returns
 // a wrapped *shared.BridgeError when NewEnvelope rejects the input so the
 // poll loop can surface a malformed-message metric and skip the message.
+//
+// Bridge-to-bridge identity: a peer bridge's egress deliberately propagates
+// HeaderIdempotencyKey as the x-bridge.idempotency-key SQS message attribute
+// — this attribute is bridge-set (see headersToAttributes). The dedup and
+// ordering keys, by contrast, are lifted from the message's NATIVE FIFO
+// coordinates MessageDeduplicationId / MessageGroupId: a peer bridge sets
+// them deliberately (see extractFIFOFields on the egress side), but they are
+// the queue's own FIFO fields and are lifted from ANY FIFO producer, not
+// only a bridge.
+// NewEnvelope strips every x-bridge.* key from untrusted Headers, so those
+// values are LIFTED into EnvelopeInput's first-class fields — the trusted,
+// anti-spoof-safe path — before the strip; otherwise dedup and ordering
+// silently vanish at the receiving hop of a bridge→SQS→bridge topology.
+// The lift reads THIS SQS message's own attributes and system fields; the
+// SNS-unwrap path does not interact, since a peer bridge never publishes
+// via SNS (it sends directly to SQS).
 func (r *Receiver) convertMessage(
 	ctx context.Context,
 	queueURL string,
@@ -191,11 +208,14 @@ func (r *Receiver) convertMessage(
 		createdAt = ts
 	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
-		ID:        id,
-		Subject:   subject,
-		Payload:   payload,
-		Headers:   headers,
-		CreatedAt: createdAt,
+		ID:              id,
+		Subject:         subject,
+		Payload:         payload,
+		Headers:         headers,
+		CreatedAt:       createdAt,
+		IdempotencyKey:  bridgeAttrString(msg.MessageAttributes, messaging.HeaderIdempotencyKey),
+		DeduplicationID: msg.Attributes[string(sqstypes.MessageSystemAttributeNameMessageDeduplicationId)],
+		OrderingKey:     msg.Attributes[string(sqstypes.MessageSystemAttributeNameMessageGroupId)],
 	}, r.clock().Now())
 	if err != nil {
 		return nil, receiptHandle, wrapEnvelopeErr(err)
@@ -210,6 +230,27 @@ func (r *Receiver) convertMessage(
 	}
 
 	return env, receiptHandle, nil
+}
+
+// bridgeAttrString reads a reserved bridge-to-bridge header from the message
+// attributes as a string (case-insensitive on the x-bridge. namespace,
+// consistent with messaging.IsReservedHeader and the amqp10 adapter's
+// bridgeHeaderString). Returns "" when absent or not a plain String attribute.
+func bridgeAttrString(attrs map[string]sqstypes.MessageAttributeValue, key string) string {
+	for k, v := range attrs {
+		if strings.EqualFold(k, key) {
+			// Exact "String" match is deliberate: egress emits the
+			// idempotency key with the plain "String" DataType (see
+			// attributeValue in acl_outbound.go). SQS custom labels like
+			// "String.custom" are intentionally NOT accepted — honouring
+			// them would widen ingress beyond the shape egress produces.
+			if aws.ToString(v.DataType) == "String" {
+				return aws.ToString(v.StringValue)
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // attributesToHeaders converts SQS message attributes and system attributes

@@ -16,6 +16,7 @@ behavior that already ships, not proposals.
 | [0005](0005-outbox-partition-claim-design.md) | Outbox partition design: claim selection, fence rows, seq allocation | accepted |
 | [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | accepted |
 | [0007](0007-cluster-worker-seeding-adoptvalid.md) | Cluster worker seeding: AdoptValid default | accepted |
+| [0008](0008-cross-hop-identity-lift.md) | Cross-hop bridge-to-bridge identity lift | accepted |
 
 ## Numbering
 

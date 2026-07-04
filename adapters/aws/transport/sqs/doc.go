@@ -57,6 +57,24 @@
 // attributes from a verified source requires shared ports configuration
 // and is intentionally out of scope for this adapter (see Phase 1b).
 //
+// Cross-hop identity lift (the exception to the wholesale strip above):
+// while the header MAP still drops every x-bridge.* attribute, SQS ingress
+// (convertMessage) additionally LIFTS the bridge-to-bridge IDENTITY a peer
+// bridge's egress propagates — the idempotency key from the
+// x-bridge.idempotency-key message attribute, and the dedup/ordering keys
+// from the native FIFO fields MessageDeduplicationId / MessageGroupId —
+// into the envelope's first-class IdempotencyKey / DeduplicationID /
+// OrderingKey fields. messaging.NewEnvelope re-stamps those into their
+// reserved headers AFTER the anti-spoof strip, so a peer bridge on the next
+// hop can deduplicate and preserve message ordering across an SQS hop even
+// though the raw x-bridge.* attributes never survive the header map. The
+// dedup/ordering keys are lifted ONLY from the native FIFO fields, never
+// from x-bridge.dedup-id / x-bridge.ordering-key attributes (egress never
+// emits those as attributes). This mirrors the amqp10 adapter and is a
+// deliberately narrow identity lift, distinct from the broader "trusted
+// peer" ingress mode (correlation, causation, tenant, trace) that remains
+// out of scope.
+//
 // # Attribute Limits
 //
 // SQS rejects a send that carries more than 10 message attributes, an

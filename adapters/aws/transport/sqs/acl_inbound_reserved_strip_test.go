@@ -131,16 +131,26 @@ func TestSQSInbound_SNSStarHeadersPreserved(t *testing.T) {
 	}
 }
 
-// TestSQSInbound_ReservedConstants_Table iterates every documented
-// reserved header constant to guarantee none can be smuggled through
-// MessageAttributes. A new reserved constant added without test
-// coverage will be caught here automatically because the table is
-// derived from the messaging package's exported sentinels.
+// TestSQSInbound_ReservedConstants_Table iterates the documented reserved
+// header constants to guarantee none can be smuggled through
+// MessageAttributes into the envelope's header map.
+//
+// HeaderIdempotencyKey is deliberately EXCLUDED from the table: as of
+// WP-SQS-LIFT the idempotency key supplied as an x-bridge.idempotency-key
+// message attribute is LIFTED into the envelope's first-class field on
+// ingress (the sanctioned producer-supplied path — see messaging.NewEnvelope
+// and the amqp10 adapter), so it legitimately appears on the envelope rather
+// than being stripped. That lift is pinned by dedup_lift_test.go.
+// HeaderOrderingKey and HeaderDeduplicationID REMAIN in the table because
+// dedup/ordering ride the native FIFO fields (MessageDeduplicationId /
+// MessageGroupId), never a message attribute, so a spoofed x-bridge.* dedup
+// or ordering attribute must still be stripped.
 func TestSQSInbound_ReservedConstants_Table(t *testing.T) {
 	reserved := []string{
 		messaging.HeaderCorrelationID,
 		messaging.HeaderCausationID,
-		messaging.HeaderIdempotencyKey,
+		// HeaderIdempotencyKey intentionally omitted — lifted on ingress
+		// (WP-SQS-LIFT); its survival is asserted in dedup_lift_test.go.
 		messaging.HeaderContentType,
 		messaging.HeaderSourceID,
 		messaging.HeaderRouteID,

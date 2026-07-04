@@ -104,6 +104,67 @@ region or account passes the build and is only caught at first `Send` once the
 canonical URL resolves (`sender.go:124-150`). Do not rely on config parse errors
 to catch queue-URL typos.
 
+## Bridge-to-bridge identity across an SQS hop
+
+The idempotency key travels as the `x-bridge.idempotency-key` message attribute,
+which only a bridge egress emits. The dedup ID and ordering key are not carried
+in a bridge attribute — they are the message's native FIFO coordinates,
+`MessageDeduplicationId` and `MessageGroupId`, present on any FIFO message
+whatever the producer: a peer bridge sets them deliberately, and a non-bridge
+FIFO producer's coordinates are lifted the same way. See **Egress attribute
+priority** under [Resilience Behavior](#resilience-behavior). These terms are
+defined in the [Ubiquitous Language](../../UBIQUITOUS.md).
+
+The `x-bridge.idempotency-key` attribute is subject to SQS's message-attribute
+count and 256 KiB size caps on egress. It holds rank-0 priority (dropped last),
+but a near-maximum-size payload can still evict it — counted on the
+dropped-attributes metric. The native FIFO fields are not charged against the
+attribute budget and always survive, so idempotency propagation is best-effort
+under cap pressure while deduplication and ordering are not.
+
+The receiving bridge lifts these values into the envelope's first-class fields at
+ingress, before `messaging.NewEnvelope` strips every `x-bridge.*` key from the
+untrusted header map. Without the lift the identity vanishes at the receiving
+hop, and deduplication and ordering suppression break across a
+bridge → SQS → bridge relay. The lift mirrors the AMQP 1.0 adapter, which raises
+the same identity out of application properties on its own ingress. The values
+land in first-class fields, so they survive the header strip regardless of the
+route's `trust_bridge_headers` flag — that flag governs whether the `x-bridge.*`
+header *keys* are kept, not the identity fields.
+
+The lift reads this SQS message's own attributes and system fields. A
+`bridge → SNS → SQS` path delivered non-raw (JSON) buries `x-bridge.idempotency-key`
+inside the SNS envelope body, where the lift cannot reach it, so cross-hop
+idempotency relies on direct bridge → SQS sends or raw-delivery SNS
+subscriptions.
+
+| Envelope field | Source on the SQS message | Notes |
+|---|---|---|
+| **Idempotency key** | message attribute `x-bridge.idempotency-key` (case-insensitive, `DataType=String`) | mirror of the AMQP 1.0 adapter |
+| **Dedup ID** | **system** attribute `MessageDeduplicationId` | FIFO only; absent on standard queues |
+| **Ordering key** | **system** attribute `MessageGroupId` | FIFO only; absent on standard queues |
+
+**Trust model.** The bridge cannot verify the `x-bridge.idempotency-key`
+attribute genuinely came from a peer bridge — anyone holding `sqs:SendMessage` on
+the queue can set it. This is the same trust boundary as AMQP 1.0 (broker access
+is trust) and the same operator responsibility the `sns_unwrap` note names above.
+
+**Blast radius.** The lifted idempotency key propagates to downstream
+idempotency-keyed dedup points — the HTTP receiver's ingress dedup window
+(`adapters/http/transport/dedup.go`: a node-local, capacity-bounded LRU with no
+time expiry, keyed on the idempotency key and shared across producers), or a
+re-emitted FIFO dedup ID on a subsequent hop. A spoofed — or predicted, or
+colliding — idempotency key can therefore suppress a *different, legitimate*
+message downstream, not only the spoofer's own duplicate. This is an availability
+consideration, not message forgery: write access to the queue already implies
+message injection. Mitigate by (a) restricting `sqs:SendMessage` on the queue to
+trusted principals, and (b) using unguessable idempotency keys so an attacker
+cannot predict a legitimate message's key.
+
+Dedup ID and ordering key are read **only** from the native FIFO fields;
+`x-bridge.dedup-id` and `x-bridge.ordering-key` message attributes are ignored,
+so neither can be injected through an attribute.
+
 ## Resilience Behavior
 
 - **Long-poll default.** `wait_time_seconds` defaults to `20` (maximum SQS
