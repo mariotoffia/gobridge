@@ -219,6 +219,20 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {
+	// When a named admin key authenticated this request, the audit Actor is the
+	// key name (see actorFromRequest). Demote the spoofable network address into
+	// a display-only Detail field so attribution is preserved without losing it.
+	// Unauthenticated events (e.g. auth.failure emitted before any match) carry
+	// no context actor, so the network address stays the Actor and no demotion
+	// happens here.
+	if name, ok := r.Context().Value(ctxKeyActor{}).(string); ok && name != "" {
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		if _, exists := detail["client_addr"]; !exists {
+			detail["client_addr"] = clientAddrFromRequest(r)
+		}
+	}
 	s.audit.Log(r.Context(), ports.AuditEvent{
 		Timestamp:  s.clk.Now().UTC(),
 		Action:     action,
@@ -230,9 +244,25 @@ func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcom
 	})
 }
 
-// actorFromRequest derives the audit actor identity for a request. When the
-// API sits behind a trusted L7 proxy/load balancer, RemoteAddr is the LB's
-// address and would collapse every operator to one identity; the leftmost
+// actorFromRequest derives the audit actor identity for a request. When a named
+// admin key authenticated the request, requireAdminAuth (and the admin fallback
+// in requireMonitorAuth) stashes the matched key NAME in the context under
+// ctxKeyActor; that possession-based name is the authoritative, non-spoofable
+// actor and is returned first. Absent a matched key — unauthenticated requests,
+// e.g. auth.failure events emitted before any match — it falls back to the
+// display-only network identity from clientAddrFromRequest.
+func actorFromRequest(r *http.Request) string {
+	if r != nil {
+		if name, ok := r.Context().Value(ctxKeyActor{}).(string); ok && name != "" {
+			return name
+		}
+	}
+	return clientAddrFromRequest(r)
+}
+
+// clientAddrFromRequest derives a display-only network identity for a request.
+// When the API sits behind a trusted L7 proxy/load balancer, RemoteAddr is the
+// LB's address and would collapse every operator to one identity; the leftmost
 // X-Forwarded-For hop is preferred when present so per-client attribution
 // survives. NOTE: X-Forwarded-For is client-spoofable unless the edge proxy
 // overwrites it — deployments MUST terminate/normalise XFF at a trusted proxy
@@ -240,7 +270,7 @@ func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcom
 // ONLY; it must never key a security control (see throttleKeyFromRequest for
 // the rate-limiter key), because a spoofable header lets an attacker rotate
 // identities to defeat throttling or spoof a victim's identity to lock them out.
-func actorFromRequest(r *http.Request) string {
+func clientAddrFromRequest(r *http.Request) string {
 	if r == nil {
 		return "unknown"
 	}

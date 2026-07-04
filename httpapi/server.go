@@ -40,6 +40,18 @@ type Config struct {
 	// returns in a redacting shared.Secret before any comparison.
 	AdminAPIKeyProvider func() string `json:"-"`
 
+	// AdminAPIKeys maps operator-facing key NAMES to admin API keys. Each name
+	// becomes the audit Actor when that key authenticates. The legacy single
+	// AdminAPIKey folds in under the name "admin"; an explicit "admin" entry
+	// here overrides it. At least one admin key must exist after folding.
+	AdminAPIKeys map[string]shared.Secret `json:"-"`
+
+	// AdminAPIKeysProvider returns the current named admin keys as raw strings
+	// (e.g. fetched/rotated from a secret manager). When set it replaces the
+	// static AdminAPIKeys per request; each value is wrapped in a redacting
+	// shared.Secret before comparison. Mirrors AdminAPIKeyProvider.
+	AdminAPIKeysProvider func() map[string]string `json:"-"`
+
 	// MonitorAPIKeyProvider returns the current monitor API key as a raw
 	// string. When nil, the static MonitorAPIKey is used. The server
 	// wraps the returned value in a redacting shared.Secret before use.
@@ -106,6 +118,7 @@ type Server struct {
 	rt                 ports.Runtime
 	rtProvider         func() ports.Runtime
 	adminKeyProvider   func() shared.Secret
+	adminKeysProvider  func() map[string]shared.Secret
 	monitorKeyProvider func() shared.Secret
 	cfg                Config
 	logger             *slog.Logger
@@ -189,6 +202,16 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	} else {
 		s.adminKeyProvider = func() shared.Secret { return cfg.AdminAPIKey }
 	}
+	if cfg.AdminAPIKeysProvider != nil {
+		s.adminKeysProvider = func() map[string]shared.Secret {
+			raw := cfg.AdminAPIKeysProvider()
+			out := make(map[string]shared.Secret, len(raw))
+			for name, k := range raw {
+				out[name] = shared.NewSecret(k)
+			}
+			return out
+		}
+	}
 	if cfg.MonitorAPIKeyProvider != nil {
 		s.monitorKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.MonitorAPIKeyProvider()) }
 	} else {
@@ -216,12 +239,36 @@ func (s *Server) currentRuntime() ports.Runtime { //nolint:ireturn // intentiona
 func (s *Server) currentAdminAPIKey() shared.Secret {
 	if s.adminKeyProvider != nil {
 		key := s.adminKeyProvider()
-		if key.IsZero() && s.logger != nil {
+		// Warn only when an explicit single-key provider was configured and
+		// returned empty (a rotation failure). The default wrapper returns the
+		// static AdminAPIKey, which is legitimately empty when only the named
+		// AdminAPIKeys map is configured — that path must not warn per request.
+		if key.IsZero() && s.cfg.AdminAPIKeyProvider != nil && s.logger != nil {
 			s.logger.Warn("admin API key provider returned empty key; all admin requests will be rejected")
 		}
 		return key
 	}
 	return s.cfg.AdminAPIKey
+}
+
+// currentAdminAPIKeys folds the legacy single admin key (as name "admin")
+// with the named keys (static or from the provider). Named keys win on a
+// name collision. Zero-value secrets are skipped.
+func (s *Server) currentAdminAPIKeys() map[string]shared.Secret {
+	out := make(map[string]shared.Secret)
+	if k := s.currentAdminAPIKey(); !k.IsZero() {
+		out["admin"] = k
+	}
+	named := s.cfg.AdminAPIKeys
+	if s.adminKeysProvider != nil {
+		named = s.adminKeysProvider()
+	}
+	for name, k := range named {
+		if !k.IsZero() {
+			out[name] = k
+		}
+	}
+	return out
 }
 
 func (s *Server) currentMonitorAPIKey() shared.Secret {
@@ -379,12 +426,14 @@ func (s *Server) Stop(ctx context.Context) error {
 const minAPIKeyLen = 16
 
 func (s *Server) validateConfig() error {
-	adminKey := s.currentAdminAPIKey()
-	if adminKey.IsZero() {
-		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey in Config")
+	adminKeys := s.currentAdminAPIKeys()
+	if len(adminKeys) == 0 {
+		return fmt.Errorf("httpapi: admin API key is required; set AdminAPIKey or AdminAPIKeys in Config")
 	}
-	if len(adminKey.Reveal()) < minAPIKeyLen {
-		return fmt.Errorf("httpapi: admin API key must be at least %d characters", minAPIKeyLen)
+	for name, key := range adminKeys {
+		if err := validateAdminKeyEntry(name, len(key.Reveal())); err != nil {
+			return err
+		}
 	}
 	monitorKey := s.currentMonitorAPIKey()
 	if !monitorKey.IsZero() && len(monitorKey.Reveal()) < minAPIKeyLen {
@@ -402,6 +451,61 @@ func (s *Server) validateConfig() error {
 		return fmt.Errorf("httpapi: TLS requires both tls_cert_file and tls_key_file; set both to enable HTTPS or neither to stay plaintext")
 	}
 	return nil
+}
+
+// validateAdminKeyEntry checks one folded admin key's NAME (tag-safe) and its
+// length (>= minAPIKeyLen). Shared by validateConfig (startup, over
+// shared.Secret values) and ValidateAdminKeys (reload, over raw strings) so
+// both boundaries enforce identical rules. It never returns key material — only
+// the name and the length bound appear in the error text.
+func validateAdminKeyEntry(name string, keyLen int) error {
+	if !validAdminKeyName(name) {
+		return fmt.Errorf("httpapi: invalid admin key name %q; must match [a-z0-9._-]+ and be 1-64 chars", name)
+	}
+	if keyLen < minAPIKeyLen {
+		return fmt.Errorf("httpapi: admin API key %q must be at least %d characters", name, minAPIKeyLen)
+	}
+	return nil
+}
+
+// ValidateAdminKeys validates a raw name->key admin map against the same rules
+// validateConfig enforces at startup (tag-safe names, per-key minAPIKeyLen
+// floor). The composition root MUST call this on every resolved/rotated
+// admin-key set so a hot reload cannot install a below-floor key or an unsafe
+// name that startup would have rejected. It never logs or returns key material
+// (only the name and the length bound). An empty map is allowed here (the
+// startup "at least one key" guard belongs to validateConfig); callers that
+// require a non-empty set check that separately.
+func ValidateAdminKeys(keys map[string]string) error {
+	for name, k := range keys {
+		if err := validateAdminKeyEntry(name, len(k)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validAdminKeyName reports whether name is safe to use as an audit Actor and
+// potential metric tag: non-empty, at most 64 bytes, and composed only of
+// bytes in the set [a-z0-9._-]. Uppercase, whitespace, slashes, and other
+// punctuation are rejected so a key name can never inject structure into a log
+// line or a metric tag. All allowed bytes are single-byte ASCII, so a byte
+// scan is equivalent to the documented per-rune rule.
+func validAdminKeyName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) wrap(h http.Handler) http.Handler {
@@ -515,7 +619,8 @@ func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}
-		if !s.checkAPIKey(r, s.currentAdminAPIKey()) {
+		name, ok := s.matchAPIKey(r, s.currentAdminAPIKeys())
+		if !ok {
 			s.authThrottle.recordFailure(client)
 			s.emitAudit(r, "auth.failure", "admin", "", "failure", nil)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
@@ -523,7 +628,7 @@ func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.authThrottle.recordSuccess(client)
-		next(w, r)
+		next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name)))
 	}
 }
 
@@ -551,7 +656,10 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 			ok = s.checkAPIKey(r, monitorKey)
 		}
 		if !ok {
-			ok = s.checkAPIKey(r, s.currentAdminAPIKey())
+			if name, matched := s.matchAPIKey(r, s.currentAdminAPIKeys()); matched {
+				ok = true
+				r = r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name))
+			}
 		}
 		if !ok {
 			s.authThrottle.recordFailure(client)
@@ -565,21 +673,74 @@ func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// ctxKeyActor is the context key under which requireAdminAuth (and the admin
+// fallback in requireMonitorAuth) stashes the matched admin-key NAME after a
+// successful authentication. emitAudit reads it so the audit Actor is a stable,
+// possession-based identity (the key name) instead of the spoofable network
+// address. It is absent for unauthenticated / failed requests, so auth.failure
+// events keep the network-address actor by definition.
+type ctxKeyActor struct{}
+
+// presentedCredentials extracts candidate API-key credentials from a request:
+// the X-API-Key header value (when non-empty) and the Bearer token from the
+// Authorization header (when it carries the "Bearer " prefix and is non-empty).
+// The returned slice holds only non-empty credentials and may be empty.
+func presentedCredentials(r *http.Request) []string {
+	creds := make([]string, 0, 2)
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		creds = append(creds, k)
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		if token := strings.TrimPrefix(auth, "Bearer "); token != "" {
+			creds = append(creds, token)
+		}
+	}
+	return creds
+}
+
+// matchAPIKey returns the name of the first admin key whose SHA-256 matches a
+// presented credential (X-API-Key or Bearer). Each presented credential is
+// hashed once into a fixed 32-byte digest, then every stored key is compared
+// with subtle.ConstantTimeCompare over those digests. The comparison timing is
+// therefore independent of the presented credential's length and content (the
+// variable-length secret is absorbed into a fixed-width digest before any
+// compare). The only data-dependent branch is the early return on a match,
+// whose iteration count leaks at most the number of configured keys and which
+// of the (≤2) credential slots matched — never any key material.
+func (s *Server) matchAPIKey(r *http.Request, keys map[string]shared.Secret) (string, bool) {
+	presented := presentedCredentials(r)
+	if len(presented) == 0 || len(keys) == 0 {
+		return "", false
+	}
+	hashes := make([][32]byte, len(presented))
+	for i, c := range presented {
+		hashes[i] = sha256.Sum256([]byte(c))
+	}
+	for name, key := range keys {
+		if key.IsZero() {
+			continue
+		}
+		kHash := sha256.Sum256([]byte(key.Reveal()))
+		for i := range hashes {
+			if subtle.ConstantTimeCompare(hashes[i][:], kHash[:]) == 1 {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// checkAPIKey reports whether a request presents a credential matching the
+// single expected key. It backs the monitor single-key path; the admin path
+// uses matchAPIKey to also recover the matched key name.
 func (s *Server) checkAPIKey(r *http.Request, expected shared.Secret) bool {
 	if expected.IsZero() {
 		return false
 	}
 	expHash := sha256.Sum256([]byte(expected.Reveal()))
-	if k := r.Header.Get("X-API-Key"); k != "" {
-		kHash := sha256.Sum256([]byte(k))
-		if subtle.ConstantTimeCompare(kHash[:], expHash[:]) == 1 {
-			return true
-		}
-	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimPrefix(auth, "Bearer ")
-		tHash := sha256.Sum256([]byte(token))
-		if subtle.ConstantTimeCompare(tHash[:], expHash[:]) == 1 {
+	for _, c := range presentedCredentials(r) {
+		cHash := sha256.Sum256([]byte(c))
+		if subtle.ConstantTimeCompare(cHash[:], expHash[:]) == 1 {
 			return true
 		}
 	}

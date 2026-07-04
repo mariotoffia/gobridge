@@ -56,12 +56,15 @@ the client's counter. These knobs live on the programmatic `httpapi.Config`
 | `AuthFailureLimit` | int | `5` | Failed attempts per client per window before 429 |
 | `AuthFailureWindow` | duration | `1m` | Fixed window over which failures are counted |
 
-The client identity used for both throttling and audit attribution is derived
-by `actorFromRequest`: the leftmost `X-Forwarded-For` hop when present,
-otherwise `RemoteAddr`. **`X-Forwarded-For` is client-spoofable** unless a
-trusted edge proxy overwrites it, so deployments MUST terminate/normalise XFF at
-a trusted proxy for this attribution to be authoritative (and to prevent a
-spoofed XFF from evading or poisoning the throttle).
+The throttle key is the transport peer: the host portion of `RemoteAddr`, port
+stripped so every connection from one peer shares a window. It **ignores
+`X-Forwarded-For`** and never uses an admin key name, so a client cannot partition
+or evade the throttle by rotating a spoofed XFF hop or enumerating key names.
+
+Audit attribution is separate: on a successful admin match the actor is the
+matched key name (see [Named admin keys](#named-admin-keys)), else the network
+address (leftmost `X-Forwarded-For` hop else `RemoteAddr`). **`X-Forwarded-For`
+is client-spoofable** and authoritative only where a trusted proxy normalises it.
 
 ### Authentication
 
@@ -72,9 +75,81 @@ All authenticated endpoints accept credentials via:
 
 Key comparison uses **SHA-256 hashing followed by constant-time comparison**
 (`crypto/subtle.ConstantTimeCompare`) to prevent both timing attacks and
-length-based information leaks. Failed authentication returns HTTP 401 with a
+length-based information leaks. With several [named admin keys](#named-admin-keys)
+configured, each is compared the same way, so match timing leaks at most the
+number of keys, never key material. Failed authentication returns HTTP 401 with a
 `WWW-Authenticate: Bearer realm="gobridge-admin"` (or `gobridge-monitor`)
 header per RFC 9110.
+
+### Named admin keys
+
+The admin API supports multiple **named** admin keys, so each operator carries a
+distinct credential. Possession of a key is the identity: on a successful match
+the audit `Actor` becomes the key's name (for example `alice`) — a stable principal
+that survives a shared proxy and can be revoked one operator at a time.
+
+Named keys are programmatic `httpapi.Config` fields — like the throttle knobs
+above, they are not part of the YAML `http:` block:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `AdminAPIKeys` | `map[string]shared.Secret` | Key name → key. Each name becomes the audit `Actor` when that key authenticates. |
+| `AdminAPIKeysProvider` | `func() map[string]string` | Rotation hook. When set, it replaces the static `AdminAPIKeys` per request; each value is wrapped in a redacting `shared.Secret` before comparison. Mirrors `AdminAPIKeyProvider`. |
+
+The legacy single `AdminAPIKey` / `AdminAPIKeyProvider` remain supported and
+**fold in under the name `admin`**. When both are set, the map wins on a name
+collision — an explicit `admin` entry in `AdminAPIKeys` overrides the legacy
+field. At least one admin key must exist after folding, or `Start` fails with
+`admin API key is required`.
+
+Validation runs at `Start` over the folded set:
+
+- Every key, including the folded `admin`, must be at least 16 characters.
+- Every name must be non-empty, match `[a-z0-9._-]+`, and be at most 64 characters.
+  They appear in audit logs and metric tags, so non-conforming names are rejected.
+
+Matching is constant-time. The presented credential (from `X-API-Key` or the
+bearer token) is hashed once into a 32-byte digest, then compared against each
+stored key's SHA-256 with `crypto/subtle.ConstantTimeCompare`. The iteration
+leaks at most the number of configured keys — never key material or key length.
+
+On a successful admin match the audit `Actor` is the matched key name, and the
+network address (leftmost `X-Forwarded-For` hop else `RemoteAddr`) moves to
+`Detail["client_addr"]`. `client_addr` is display-only and spoofable unless a
+trusted edge proxy normalises `X-Forwarded-For`. A failed authentication has no
+key identity, so its `auth.failure` actor stays the network address (see
+[Audit logging](#audit-logging)).
+
+**Monitor endpoints stay single-key.** The monitor API is read-only telemetry
+(monitor key, or the admin key as a superset); it is not per-operator attributed.
+When an admin named key is used there, its name still flows to the audit context.
+
+#### Named keys from an SSM parameter
+
+The `aws-filebased-config` deployment profile can populate named keys from the
+single admin SSM parameter. The resolved value is read by shape:
+
+- A value whose first non-space byte is `{` is parsed as a JSON object of
+  name → key and feeds `AdminAPIKeys` / `AdminAPIKeysProvider`:
+
+  ```json
+  { "alice": "alice-key-min-16-chars", "bob": "bob-key-min-16-chars" }
+  ```
+
+- Any other value is the legacy single key under the name `admin`.
+- Malformed JSON whose first non-space byte is `{` is a hard startup error; it is
+  never treated as a literal key (which would silently create a key equal to the
+  JSON text).
+
+The same detection runs on rotation; see the
+[AWS deployment configuration](aws-deployment/configuration.md#admin-key-parameter-value).
+
+#### Upgrade path
+
+Named shared keys are the deliberate minimal step toward operator identity:
+attribution and revocation without an identity provider. OIDC / mTLS / JWT operator
+auth is a **non-goal** here — the next step once an IdP dependency is acceptable.
+There are no per-key scopes (every key is full admin); the map value can grow a struct.
 
 ### Middleware chain
 
@@ -296,10 +371,20 @@ disk).
 
 All admin endpoints emit audit events with timestamp, action, actor, resource
 type, resource ID, outcome (`success` / `failure` / `partial_failure`), and an
-optional detail map. The **actor** is derived by `actorFromRequest`: the
-leftmost `X-Forwarded-For` hop when present (so a shared edge proxy does not
-collapse every operator to the LB address), else `RemoteAddr`. This is only
-authoritative when a trusted proxy normalises `X-Forwarded-For`.
+optional detail map. On a successful admin authentication the **actor** is the
+matched admin key name (see [Named admin keys](#named-admin-keys)); the network
+address — the leftmost `X-Forwarded-For` hop when present, else `RemoteAddr` — is
+recorded separately as `Detail["client_addr"]`. `client_addr` is display-only and
+spoofable unless a trusted proxy normalises `X-Forwarded-For`.
+
+An `auth.failure` (or `auth.throttled`) event is emitted before any successful
+match, so it has no key identity: its actor stays the network address.
+
+**Migration note.** Deployments that used the single `AdminAPIKey` previously
+recorded the client network address as the audit `Actor`. After upgrading, those
+requests record `Actor: "admin"` (the reserved fold-in name) and the address moves
+to `Detail["client_addr"]`. Audit consumers that parse `Actor` as an IP must read
+`Detail["client_addr"]` instead.
 
 Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
 `route.inject`, `dlq.redrive`, `dlq.purge`, `config.txn.patch` /

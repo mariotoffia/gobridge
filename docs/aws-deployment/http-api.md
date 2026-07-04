@@ -386,6 +386,13 @@ security requirements and operational model.
 | Cognito User Pool | Transport (via APIGW) | APIGW validates Cognito JWT directly | AWS-native user management |
 | Mutual TLS (mTLS) | Transport (via APIGW) | Client certificate validated by APIGW or NLB | High-security machine-to-machine |
 
+The admin server accepts a single key or several **named** keys: set
+`AdminAPIKeyParam` to one value (folded under the name `admin`) or to a JSON
+object of named keys. A named key attributes each admin action to the operator's
+key name in the audit log. See
+[named admin keys](../http-api.md#named-admin-keys) and
+[admin key parameter value](configuration.md#admin-key-parameter-value).
+
 ### Layered Authentication
 
 You can combine multiple layers. For example:
@@ -407,11 +414,13 @@ server returns **429** `too many failed authentication attempts` and emits an
 `auth.failure`. Tune the window with `auth_failure_limit` and
 `auth_failure_window` in the server config (0 uses the defaults above).
 
-The actor for throttling and audit is derived from the request. Behind an ALB,
-`RemoteAddr` is the load balancer, so the leftmost `X-Forwarded-For` hop is used
-when present. `X-Forwarded-For` is client-spoofable unless a trusted edge
-overwrites it — terminate and normalize XFF at the ALB so per-client
-attribution and throttling are authoritative.
+The throttle key is the transport peer (`RemoteAddr` host); it ignores
+`X-Forwarded-For` and key names, so a client cannot partition the throttle.
+Audit attribution is separate: a successful admin request is attributed to the
+matched admin key name, and the network address (leftmost `X-Forwarded-For` hop
+else `RemoteAddr`) is recorded as `client_addr`. `X-Forwarded-For` is
+client-spoofable unless a trusted edge overwrites it — terminate and normalize
+XFF at the ALB so `client_addr` and the failure-path actor are authoritative.
 
 ---
 

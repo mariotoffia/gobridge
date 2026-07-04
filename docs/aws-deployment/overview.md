@@ -162,6 +162,12 @@ into the runtime configuration.
 `AdminAPIKeyParam` is **required**; the bootstrap validator rejects configs
 without it. All other parameters are optional.
 
+The `AdminAPIKeyParam` value is either a single key (folded under the name
+`admin`) or a JSON object of named keys (`{"alice":"<key>","bob":"<key>"}`).
+Named keys attribute each admin action to the operator's key name in the audit
+log; a plain string keeps the legacy single-key behaviour. See
+[configuration](configuration.md#admin-key-parameter-value).
+
 ### KMS Encryption
 
 The default AWS-managed SSM key (`alias/aws/ssm`) works without additional

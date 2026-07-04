@@ -285,7 +285,7 @@ func (a *App) Start(ctx context.Context) error {
 		AdminAddr:             a.cfg.AdminAddr,
 		MonitorAddr:           a.cfg.MonitorAddr,
 		CORSOrigins:           a.cfg.CORSOrigins,
-		AdminAPIKeyProvider:   a.apiKeysRef.AdminKey,
+		AdminAPIKeysProvider:  a.apiKeysRef.AdminKeys,
 		MonitorAPIKeyProvider: a.apiKeysRef.MonitorKey,
 		RuntimeProvider: func() ports.Runtime {
 			if rt := a.runtimeRef.Get(); rt != nil {

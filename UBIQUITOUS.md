@@ -156,6 +156,14 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **TenantUsageReader** | Optional read-back extension of `ports.TenantUsageTracker` (`ports/tenant.go`): `Usage(ctx, tenantID) (TenantUsage, error)`, returning a `TenantUsage` snapshot `{Messages, InFlight}`. The tenant processor type-asserts for it; present alongside a non-zero `TenantInfo.MaxInFlight`, it drives per-tenant in-flight quota enforcement. Kept separate from the increment-only tracker so existing trackers keep compiling. |
 | **TenantInfo.MaxInFlight** | Per-tenant ceiling on concurrent in-flight deliveries (`0` = unlimited). Supplied on `TenantInfo` by the embedder's `TenantValidator`, never via YAML. Enforced by the tenant processor only when the usage tracker also implements `TenantUsageReader`; an over-ceiling delivery is rejected transiently with `TENANT_QUOTA_EXCEEDED` (`shared.ErrTenantQuotaExceeded`), so the route retry policy applies backpressure rather than dropping. Distinct from routing's `MaxInFlight` (per-route concurrency cap). |
 
+## Admin HTTP API (`httpapi`)
+
+Driving-adapter names for the admin/monitor HTTP servers. See [docs/http-api.md](docs/http-api.md).
+
+| Term | Meaning |
+|---|---|
+| **Named admin key** | An admin API key registered under a name in `httpapi.Config.AdminAPIKeys` (or rotated via `AdminAPIKeysProvider`). Possession of the key is the identity: on a successful match the key's name becomes the audit `Actor` — a stable, non-spoofable principal — while the network address (leftmost `X-Forwarded-For` else `RemoteAddr`) demotes to `Detail["client_addr"]`, which stays display-only and spoofable unless a trusted proxy normalises XFF. The legacy single `AdminAPIKey` folds in under the name `admin`; an explicit `admin` entry in the map overrides it. |
+
 ## Transport adapters (`adapters/*/transport`)
 
 Adapter-owned names that surface in config keys, headers, or metrics.

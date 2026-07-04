@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -159,6 +161,21 @@ func resolveInputs(
 	if err != nil {
 		return nil, err
 	}
+	// Validate the admin-key parameter at startup AND on every reload so a
+	// malformed, below-floor, or unsafe-named value fails fast rather than
+	// installing a key that startup would have rejected. On the reload path a
+	// returned error makes watchLoop discard the plan and keep the last-good
+	// runtime. parseAdminKeys enforces the JSON SHAPE (a leading '{' is a
+	// name->key map; malformed JSON is a hard error, never a literal key);
+	// httpapi.ValidateAdminKeys then enforces the SAME tag-safe name and
+	// minAPIKeyLen rules as httpapi's startup validateConfig (DRY).
+	parsedAdminKeys, err := parseAdminKeys(adminKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := httpapi.ValidateAdminKeys(parsedAdminKeys); err != nil {
+		return nil, err
+	}
 
 	monitorKey := ""
 	if bootstrapCfg.MonitorAPIKeyParam != "" {
@@ -220,6 +237,22 @@ func resolveInputs(
 		MonitorAPIKey: monitorKey,
 		RuntimeConfig: resolvedCfg,
 	}, nil
+}
+
+// parseAdminKeys interprets a resolved admin-key parameter value. A value whose
+// first non-space byte is '{' is parsed as a JSON object of name->key; any other
+// value is the legacy single key under the name "admin". Malformed JSON starting
+// with '{' is a hard error — never fall back to treating the JSON text as a
+// literal key (that would silently create a key equal to the JSON blob).
+func parseAdminKeys(raw string) (map[string]string, error) {
+	if strings.HasPrefix(strings.TrimSpace(raw), "{") {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil, fmt.Errorf("bootstrap: admin API key parameter is malformed JSON: %w", err)
+		}
+		return m, nil
+	}
+	return map[string]string{"admin": raw}, nil
 }
 
 func normalizeParameterRef(ref string) (string, error) {
