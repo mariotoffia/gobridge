@@ -90,14 +90,19 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_max_concurrency` | int | no | 10 | Max concurrent send goroutines per drain cycle |
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | false | Delay transport connection until lease acquired |
+| `renew_call_timeout` | duration | no | derived | Bounds a single lease-renew store call, so a hung backend cannot stretch step-down and takeover unboundedly. Folded into the failover-safety invariant below. Empty derives `min(renew_interval/2, 5s)` (floor 1s). |
+| `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)` (floor 1ms) -- decoupled from renew so a standby polls faster than the owner renews and failover stays bounded by ~`lease_ttl`. |
 
 When `renew_interval` is set explicitly, cross-field validation requires
-`(renew_interval + lease_renew_jitter/2) × max_renew_fails < lease_ttl` so a
-renewal storm can never outlast the lease (a split-brain guard). When
-`renew_interval` is left empty the interval and jitter are both derived and this
-check is skipped.
+`(renew_interval + lease_renew_jitter/2 + renew_call_timeout) × max_renew_fails
+< lease_ttl` so a renewal storm can never outlast the lease (a split-brain
+guard). The per-call `renew_call_timeout` is part of the span because the renew
+loop resets its timer only **after** each renew call returns, so a hung backend
+that burns the full timeout on every attempt widens the real detection window.
+When `renew_interval` is left empty the interval, jitter, and call timeout are
+all derived and this check is skipped.
 
-**High-availability profile.** The defaults above (`lease_ttl` 360s) favor low renewal traffic, so worst-case failover approaches 6 minutes. For HA deployments that need failover in the 30--60s band, use the ready-made preset `session.HAConfig` (Go API) or its equivalent recipe -- `lease_ttl: 45s`, `max_renew_fails: 3`, `step_down_grace: 5s` (derived `renew_interval` 15s), paired with the outbox store's `stale_claim_duration: 20s`. The preset encodes the required relationship between these knobs (`step_down_grace < lease_ttl` and `renew_interval × max_renew_fails ≤ lease_ttl`); hand-tuning that gets it wrong won't break single-owner safety -- the lease store and outbox version fencing guarantee that -- but it does cause spurious failovers, slower recovery, or a wider duplicate-send window. See [Scenario 8: High-Availability Profile](scenarios/08-clustered-exclusive-sessions.md#high-availability-profile) for the failover math, the invariants, and the aggressive/conservative variants.
+**High-availability profile.** The defaults above (`lease_ttl` 360s) favor low renewal traffic, so worst-case failover approaches 6 minutes. For HA deployments that need failover in the 30--60s band, use the ready-made preset `session.HAConfig` (Go API) or its equivalent recipe -- `lease_ttl: 45s`, `renew_interval: 10s`, `lease_renew_jitter: 1s`, `renew_call_timeout: 3s`, `max_renew_fails: 3`, `step_down_grace: 5s`, paired with the outbox store's `stale_claim_duration: 20s`. The preset encodes the required relationship between these knobs (`step_down_grace < lease_ttl` and `(renew_interval + lease_renew_jitter/2 + renew_call_timeout) × max_renew_fails < lease_ttl`, i.e. `3 × (10 + 0.5 + 3) = 40.5s < 45s`, a ~10% margin); hand-tuning that gets it wrong won't break single-owner safety -- the lease store and outbox version fencing guarantee that -- but it does cause spurious failovers, slower recovery, or a wider duplicate-send window. See [Scenario 8: High-Availability Profile](scenarios/08-clustered-exclusive-sessions.md#high-availability-profile) for the failover math, the invariants, and the aggressive/conservative variants.
 
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
 

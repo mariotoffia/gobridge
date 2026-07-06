@@ -329,6 +329,19 @@ type RouteSessionDef struct {
 	// releasing the lease (e.g. "15s"). Empty means use the runtime default.
 	StepDownGrace string `yaml:"step_down_grace,omitempty" json:"step_down_grace,omitempty"`
 
+	// AcquirePollInterval is how often a standby retries acquiring the lease
+	// while another instance owns it (e.g. "5s"). Empty means use the runtime
+	// default.
+	AcquirePollInterval string `yaml:"acquire_poll_interval,omitempty" json:"acquire_poll_interval,omitempty"`
+
+	// RenewCallTimeout bounds a single lease-renew store call (e.g. "3s"). It is
+	// part of the failover-safety invariant: because renewLoop resets its timer
+	// AFTER the renew call returns, real attempt spacing is
+	// renewInterval + jitter/2 + renewCallTimeout, so the worst-case detection
+	// span folds this in and must stay below lease_ttl (finding C3-HIGH). Empty
+	// means the session manager derives it from RenewInterval.
+	RenewCallTimeout string `yaml:"renew_call_timeout,omitempty" json:"renew_call_timeout,omitempty"`
+
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
 	DrainMaxBatchSize   int               `yaml:"drain_max_batch_size,omitempty" json:"drain_max_batch_size,omitempty"`

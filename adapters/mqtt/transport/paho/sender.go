@@ -100,7 +100,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	if resp != nil && resp.ReasonCode != 0 {
-		if berr := MapPublishReasonCode(resp.ReasonCode); berr != nil {
+		if berr := s.publishReasonError(resp.ReasonCode, topic); berr != nil {
 			s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
 			s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
 			if logging.DebugEnabled(s.logger) {
@@ -108,17 +108,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 					"topic", topic,
 					"reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
 			}
-			result := berr.With("topic", topic).
-				With("reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
-			// Hint the route runner to back off on quota/throttle errors.
-			if resp.ReasonCode == 0x93 || resp.ReasonCode == 0x97 || resp.ReasonCode == 0xA1 {
-				hint := s.opts.ThrottleRetryAfter
-				if hint <= 0 {
-					hint = 500 * time.Millisecond
-				}
-				result = result.WithRetryAfter(hint)
-			}
-			return result
+			return berr
 		}
 	}
 
@@ -133,6 +123,31 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	return nil
+}
+
+// publishReasonError maps a non-zero PUBACK/PUBREC reason code to a
+// classified BridgeError (nil for success codes 0x00 / 0x10), tagging it
+// with the topic and reason code. It attaches a ThrottleRetryAfter hint
+// ONLY for 0x97 (Quota exceeded) — the single PUBACK/PUBREC reason code
+// that signals throttling. 0x93 (Receive Maximum exceeded) and 0xA1
+// (Subscription Identifiers not supported) are NOT valid PUBACK/PUBREC
+// reason codes, so they get no back-off hint (they classify as generic
+// errors); the old dead checks for them were removed (finding 7).
+func (s *Sender) publishReasonError(code byte, topic string) *shared.BridgeError {
+	berr := MapPublishReasonCode(code)
+	if berr == nil {
+		return nil
+	}
+	result := berr.With("topic", topic).
+		With("reason_code", fmt.Sprintf("0x%02X", code))
+	if code == 0x97 {
+		hint := s.opts.ThrottleRetryAfter
+		if hint <= 0 {
+			hint = 500 * time.Millisecond
+		}
+		result = result.WithRetryAfter(hint)
+	}
+	return result
 }
 
 // defaultSendTimeout is the safety-net fallback used when

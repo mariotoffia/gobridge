@@ -62,6 +62,18 @@ backend applies its own name normalization (e.g. Prometheus lowercases and
 `_`-separates), so dashboard queries use the backend-normalized form of these
 names.
 
+**Transport-adapter metrics.** Some adapters self-instrument under names
+declared in their own package rather than in `domain/shared/metrics.go`. The
+MQTT (paho) router emits two backpressure counters (both untagged):
+
+| Metric | Kind | Description |
+|---|---|---|
+| `MQTTRouterDropped` | Counter | A publish dropped under backpressure -- the dispatch queue was full under flood (QoS 0), or the pending buffer was full / over its byte ceiling. QoS 1/2 publishes block rather than drop, so a rising count is almost always shed QoS-0 traffic. |
+| `MQTTRouterBuffered` | Counter | A publish held in the bounded pending buffer because it arrived before a matching handler registered (the CONNACK backlog racing receiver registration). |
+
+A rising `MQTTRouterDropped` is the backpressure signal detailed under
+[MQTT backpressure and dispatch](../transports/mqtt.md#backpressure-and-dispatch).
+
 ### Traces
 
 When a `Tracer` is configured, the runtime creates a span around each `handleDelivery` call:

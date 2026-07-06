@@ -177,6 +177,17 @@ Enables cluster-aware behavior across the bridge. In clustered mode the builder 
 
 A stable, unique identifier for this instance. Used as the lease holder identity in DynamoDB and as part of outbox fencing tokens. Each instance in the cluster must have a distinct value. Typically injected via environment variable or instance-specific config overlay.
 
+> **Replicated-config warning (Kubernetes).** A Deployment that mounts one
+> ConfigMap into `replicas: 2+` gives every pod the **same** `instance_id` -- the
+> value is baked into the shared file. GoBridge no longer lets that ping-pong the
+> lease: the lease ownership token is `instance_id#<boot-nonce>`, where the nonce
+> is generated per process, so two pods sharing an `instance_id` still derive
+> distinct lease owners and one wins cleanly instead of each re-seizing the
+> other's lease. `instance_id` stays the human-facing display identity (logs,
+> health, the source-id header), so make it distinct anyway -- inject it from the
+> pod identity (a StatefulSet ordinal, or `metadata.name` via the downward API)
+> so dashboards and logs can tell the replicas apart.
+
 ### `session_mode: exclusive`
 
 On the session, `exclusive` means that only one instance in the cluster may own this session at a time. Ownership is determined by a lease stored in `stores.lease`. The instance that acquires the lease becomes the active consumer. All other instances remain in standby, periodically checking whether the lease has expired.
@@ -208,7 +219,7 @@ The connection lifecycle is **symmetric**: just as the session connects only *af
 When the instance later re-acquires the lease it re-establishes the session. How depends on the transport:
 
 - **Restartable transports** reconnect the source session **in-process** and resume immediately.
-- The **MQTT (Paho) session is deliberately single-use** (once `Close` runs, `Start` returns `ErrUnavailable` rather than reconnecting, to avoid a zombie state where a freshly attached connection manager coexists with an already-closed events channel). Re-establishing it in-process is therefore impossible: the session manager surfaces `ErrUnavailable` and the runtime enters a **terminal** state. The process then **restarts** with a fresh session — driven either by the liveness probe (`GET /api/v1/monitor/live` fails closed once terminal) or, on any deployment, by the built-in backstop that **exits the process with a non-zero code** when the runtime goes terminal.
+- The **MQTT (Paho) session is deliberately single-use** (once `Close` runs, `Start` returns `ErrUnavailable` rather than reconnecting, to avoid a zombie state where a freshly attached connection manager coexists with an already-closed events channel). Re-establishing it in-process is therefore impossible: the session manager releases the lease and surfaces the terminal sentinel `ErrSessionUnrecoverable` (wrapping the permanent `ErrUnavailable`) so a standby can take over, and the supervisor escalates that to a **terminal** runtime state rather than looping on the dead instance. The process then **restarts** with a fresh session — driven either by the liveness probe (`GET /api/v1/monitor/live` fails closed once terminal) or, on any deployment, by the built-in backstop that **exits the process with a non-zero code** when the runtime goes terminal.
 
 Either way **no message is lost**: un-acknowledged source messages are redelivered to whichever instance next holds the lease, and outbox fencing tokens prevent duplicate destination sends. The single-use path costs one process restart on re-acquisition rather than an in-process reconnect. A restart policy is therefore required: on Kubernetes the default `restartPolicy: Always` covers it (wiring a `livenessProbe` to `/api/v1/monitor/live` gives faster, more granular detection and is recommended); under systemd use `Restart=on-failure` (or `always`). Readiness alone is insufficient — it only removes the pod from the load balancer, it does not restart a terminal runtime.
 
@@ -249,7 +260,7 @@ sequenceDiagram
     B1->>B1: Connect MQTT (connect_after_lease)
     B1->>B1: Subscribe $share/bridge-group/telemetry/#
 
-    loop Every ~75s (~0.75 × lease_ttl / max_renew_fails)
+    loop Every ~62s (derived from lease_ttl / max_renew_fails)
         B1->>LS: RenewLease(bridge-01, fencing_token=1)
         LS-->>B1: Renewed
     end
@@ -297,12 +308,12 @@ The lease, renewal, and grace period settings form an interconnected system. Cha
 flowchart LR
     TTL["lease_ttl\n300s"]
     MRF["max_renew_fails\n3"]
-    RI["renew_interval\n(derived: ~75s)"]
+    RI["renew_interval\n(derived: ~62s)"]
     SDG["step_down_grace\n20s"]
     SCD["stale_claim_duration\n35s"]
 
     TTL -->|"divided by"| MRF
-    MRF -->|"× 0.75 ="| RI
+    MRF -->|"derive"| RI
     SDG -->|"+ ~15s ="| SCD
 
     style TTL fill:#6bf,stroke:#333
@@ -313,13 +324,16 @@ flowchart LR
 
 How long a lease remains valid after acquisition or last renewal. This is the failover detection window. Shorter values mean faster failover but more frequent renewal traffic. A lease holder that fails to renew within this window loses the lease.
 
-### `renew_interval` (derived: ~0.75 × lease_ttl / max_renew_fails = 75s)
+### `renew_interval` (derived: ~62s)
 
 How often the active instance renews its lease. When left unset, the session
-manager derives it as `(lease_ttl × 3) / (max_renew_fails × 4)` — placing the
-`max_renew_fails`-th attempt at ~75% of the TTL and reserving ~25% as headroom
-for jitter and clock slack. For `lease_ttl=300s`, `max_renew_fails=3` that is
-75s. You can set `renew_interval` explicitly to override the derivation.
+manager derives it from `lease_ttl` and `max_renew_fails`: it first computes a
+per-attempt budget `(lease_ttl × 3) / (max_renew_fails × 4)` — placing the
+`max_renew_fails`-th attempt at ~75% of the TTL — then **reserves** the per-call
+`renew_call_timeout` (capped at 5s) out of that budget and leaves an `interval/8`
+slice for jitter, so `renew_interval = (budget − reserve) × 8/9`. For
+`lease_ttl=300s`, `max_renew_fails=3` the budget is 75s and the derived interval
+is ~62s. Set `renew_interval` explicitly to override the derivation.
 
 ### `max_renew_fails` (3)
 
@@ -347,9 +361,9 @@ Each lease acquisition generates a new fencing token (an incrementing integer). 
 4. **bridge-02** acquires lease with `fencing_token=2`.
 5. **bridge-02** claims R1: conditional update sets `fencing_token=2, status: claimed`.
 6. **bridge-01** recovers momentarily and tries to complete R1 with `fencing_token=1`. The conditional write fails because the record now has `fencing_token=2`.
-7. **bridge-02** delivers R1 to SQS exactly once.
+7. **bridge-02** delivers R1 to SQS. Because bridge-01 crashed *before* its own send (step 3), this interleaving yields a single delivery; the general contract is at-least-once (below).
 
-The DynamoDB conditional expression ensures that only the current lease holder can modify outbox records. Stale holders are fenced out, preventing duplicate deliveries.
+The DynamoDB conditional expression ensures that only the current lease holder can commit outbox records. Stale holders are fenced out of the *commit*, not the *send*: had bridge-01 reached SQS before crashing, bridge-02's redelivery would be a duplicate at the destination. Fencing guarantees at-most-once **commit**, while delivery stays at-least-once, so downstream consumers must be idempotent.
 
 ## Variations
 
@@ -407,7 +421,7 @@ The `sqs-to-sqs` route runs on both instances simultaneously (SQS handles compet
 
 ### High-Availability Profile
 
-The default lease timing trades fast failover for low renewal traffic: a dead owner is not detected until its `lease_ttl` (360s) lapses, so worst-case failover approaches 6 minutes. High-availability deployments usually want failover inside the 30--60s band. GoBridge ships a named preset that encodes the *correct interrelationship* between the four timing knobs. Getting that relationship wrong cannot break single-owner safety -- the lease store admits one non-expired lease at a time and the outbox fences every send by fencing-token version -- but it does cause spurious failovers, slower recovery, or a wider at-least-once duplicate-*send* window, so prefer the preset (or the recipe below) over hand-tuning.
+The default lease timing trades fast failover for low renewal traffic: a dead owner is not detected until its `lease_ttl` (360s) lapses, so worst-case failover approaches 6 minutes. High-availability deployments usually want failover inside the 30--60s band. GoBridge ships a named preset that encodes the *correct interrelationship* between the lease-timing knobs. Getting that relationship wrong cannot break single-owner safety -- the lease store admits one non-expired lease at a time and the outbox fences every send by fencing-token version -- but it does cause spurious failovers, slower recovery, or a wider at-least-once duplicate-*send* window, so prefer the preset (or the recipe below) over hand-tuning.
 
 **Code preset.** When you build the runtime programmatically, start from `session.HAConfig` instead of `session.DefaultConfig`:
 
@@ -418,7 +432,7 @@ cfg := session.HAConfig("mqtt-exclusive", true)
 mgr := session.NewFromConfig(cfg, sess, leaseStore, ownerID, logger)
 ```
 
-It sets `LeaseTTL=45s`, `RenewInterval=14s` (pinned explicitly, not derived — `14×3=42s < 45s` keeps the third renew off the expiry boundary), `MaxRenewFails=3`, `RenewJitter=1s`, and `StepDownGrace=5s`.
+It sets `LeaseTTL=45s`, `RenewInterval=10s`, `RenewJitter=1s`, `RenewCallTimeout=3s`, `MaxRenewFails=3`, and `StepDownGrace=5s` (all pinned explicitly, not derived). The worst-case renew span folds in the per-call timeout: `MaxRenewFails × (RenewInterval + RenewJitter/2 + RenewCallTimeout) = 3 × (10 + 0.5 + 3) = 40.5s < 45s`, a ~10% margin under the TTL. (An earlier 14s/2s preset with no call-timeout summed to 58.5s -- past the TTL.)
 
 **Blueprint recipe.** YAML deployments express the same profile with the existing session knobs:
 
@@ -427,11 +441,12 @@ routes:
   - id: ingest
     session:
       lease_ttl: 45s
+      renew_interval: 10s
+      lease_renew_jitter: 1s
+      renew_call_timeout: 3s      # folded into the failover-safety invariant
       max_renew_fails: 3
       step_down_grace: 5s
-      # renew_interval left unset -> derived ~0.75 x 45s / 3 = 11.25s.
-      # To match the code preset exactly, pin renew_interval: 14s and
-      # lease_renew_jitter: 1s.
+      # acquire_poll_interval left unset -> derived min(renew_interval, lease_ttl/4, 5s)
 
 stores:
   outbox:
@@ -441,12 +456,13 @@ stores:
       stale_claim_duration: 20s   # step_down_grace (5s) + 15s
 ```
 
-> The blueprint exposes jitter as the `lease_renew_jitter` session field. Leaving
-> both `renew_interval` and `lease_renew_jitter` unset lets the session manager
-> derive them from `lease_ttl`: `renew_interval ≈ 0.75 × lease_ttl / max_renew_fails`
-> (~11.25s here) and jitter = `renew_interval / 4` (~2.8s). The renew timer runs
-> at `renew_interval ± jitter/2`, well inside the 45s TTL. To reproduce the code
-> preset's exact 14s interval / 1s jitter in YAML, set both fields explicitly.
+> The blueprint exposes jitter as `lease_renew_jitter` and the per-call bound as
+> `renew_call_timeout`. Leaving `renew_interval`, `lease_renew_jitter`, and
+> `renew_call_timeout` unset lets the session manager derive them from
+> `lease_ttl`; the derivation now **reserves** the per-call timeout so the full
+> worst-case span (interval + jitter/2 + call-timeout) still lands inside the
+> TTL. To reproduce the code preset's exact 10s interval / 1s jitter / 3s
+> call-timeout in YAML, pin all three fields explicitly as shown above.
 
 **Failover math.** Worst-case failover for a warm (continuously polling) standby
 is approximately `lease_ttl` (45s) plus takeover: a standby retries `Acquire`
@@ -460,22 +476,22 @@ takeover observation window above. During the window the broker retains messages
 **Invariants the preset preserves** (and any hand-tuned profile must too):
 
 - `step_down_grace < lease_ttl` (5s vs 45s) -- the only step-down trigger is involuntary (`max_renew_fails` consecutive renew failures, detected at roughly `lease_ttl`); the owner then stops claiming and drains in-flight work for `step_down_grace` before releasing. Keeping it well under `lease_ttl` bounds that drain -- it does *not* order the old owner's last send ahead of the new owner's first. Single-owner safety comes from lease-store mutual exclusion plus version fencing on every outbox `Complete`/`Claim`, independent of these timings; a brief duplicate *send* (never a duplicate commit) during the overlap is the inherent at-least-once window, so downstream must be idempotent.
-- `renew_interval × max_renew_fails < lease_ttl` (14s × 3 = 42s < 45s in the code preset) -- the owner gets `max_renew_fails` renewal attempts inside one TTL, so it tolerates two consecutive transient renewal failures before stepping down. Folding in jitter, the worst-case span is `max_renew_fails × (renew_interval + jitter/2) = 3 × (14 + 0.5) = 43.5s`, still under the 45s TTL.
+- `(renew_interval + jitter/2 + renew_call_timeout) × max_renew_fails < lease_ttl` -- the owner gets `max_renew_fails` renewal attempts inside one TTL, so it tolerates two consecutive transient renewal failures before stepping down. The worst-case span folds in the per-call timeout, because the renew loop resets its timer only *after* each call returns: `max_renew_fails × (renew_interval + jitter/2 + renew_call_timeout) = 3 × (10 + 0.5 + 3) = 40.5s`, under the 45s TTL with a ~10% margin. Omitting `renew_call_timeout` under-counts the span and, in the 30--60s band, would push real detection past the TTL.
 - `stale_claim_duration` above the worst-case drain-batch timeout (≈20s) -- this bounds recovery of a *same-owner* stranded claim; it does not gate failover (a new owner reclaims immediately via its higher fencing version). Both the DynamoDB and native SQLite outboxes honour it; only the in-memory outbox is version-only. `step_down_grace + 15s` (20s) is a convenient rule of thumb that clears the drain ceiling (see [tuning relationships](#tuning-relationships) above).
 
-**Tradeoff.** Failover drops from ~360s to ~45s, but the ~14s renewal interval raises the lease-store write rate roughly 8× over the default (~14s vs ~110s renewals). For most workloads this is negligible DynamoDB traffic; factor it into capacity planning anyway. The tighter timing also tolerates fewer transient renewal failures, so blip-prone networks will see more spurious step-downs -- relax `lease_ttl` toward 60s if renewals are unreliable.
+**Tradeoff.** Failover drops from ~360s to ~45s, but the ~10s renewal interval raises the lease-store write rate roughly 11× over the default (~10s vs ~110s renewals). For most workloads this is negligible DynamoDB traffic; factor it into capacity planning anyway. The tighter timing also tolerates fewer transient renewal failures, so blip-prone networks will see more spurious step-downs -- relax `lease_ttl` toward 60s if renewals are unreliable.
 
-**Pick a point in the band.** The preset's 45s is a defensible midpoint; the relationships above hold across the whole 30--60s band. The `renew_interval` column shows the value derived when unset (`~0.75 × lease_ttl / max_renew_fails`); the HA code preset instead pins 14s:
+**Pick a point in the band.** The preset's 45s is a defensible midpoint; the relationships above hold across the whole 30--60s band. The `renew_interval` column shows the value derived when unset (which reserves the per-call timeout, so it lands below `0.75 × lease_ttl / max_renew_fails`); the HA code preset instead pins 10s:
 
 | Profile | `lease_ttl` | `renew_interval` | `step_down_grace` | `stale_claim_duration` | Worst-case failover |
 |---|---|---|---|---|---|
-| Aggressive | 30s | ~7.5s (derived) | 5s | 20s | ~30s + takeover |
-| **HA (`session.HAConfig`)** | **45s** | **14s (pinned)** | **5s** | **20s** | **~45s + takeover** |
-| Conservative | 60s | 15s (derived) | 10s | 25s | ~60s + takeover |
+| Aggressive | 30s | ~3.3s (derived) | 5s | 20s | ~30s + takeover |
+| **HA (`session.HAConfig`)** | **45s** | **10s (pinned)** | **5s** | **20s** | **~45s + takeover** |
+| Conservative | 60s | ~8.9s (derived) | 10s | 25s | ~60s + takeover |
 
 Faster rows fail over sooner but renew more often and tolerate fewer network blips. Start at the HA row and move up or down only with evidence from your lease-store latency and renewal-failure metrics.
 
-> Via the blueprint (YAML), leaving both `renew_interval` and `lease_renew_jitter` unset derives jitter as `renew_interval / 4`. The Aggressive row's derived ~7.5s interval therefore pairs with ~1.9s jitter, so renewals span ~6.6--8.4s -- comfortably inside a 30s TTL. There is no fixed 5s jitter default on the derive path; that value belongs to the `session.DefaultConfig` code preset. Pin `renew_interval: 14s` and `lease_renew_jitter: 1s`, or call `session.HAConfig`, to reproduce the HA preset's exact cadence.
+> Via the blueprint (YAML), leaving both `renew_interval` and `lease_renew_jitter` unset derives jitter as `renew_interval / 4`. The Aggressive row's derived interval therefore pairs with a proportional jitter, comfortably inside a 30s TTL. There is no fixed 5s jitter default on the derive path; that value belongs to the `session.DefaultConfig` code preset. Pin `renew_interval: 10s`, `lease_renew_jitter: 1s`, and `renew_call_timeout: 3s`, or call `session.HAConfig`, to reproduce the HA preset's exact cadence.
 
 ### Ownership Under Lease-Store Failure
 

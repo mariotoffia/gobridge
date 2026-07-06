@@ -529,3 +529,69 @@ func TestSessionManager_LeaseEventOverflow_EvictsOldestAndCounts(t *testing.T) {
 			"tail, got %d", leaseEventBuffer+extra, last.Token.Version)
 	}
 }
+
+// TestEscalatesToUnrecoverable pins the finding SR-B/N-1 escalation predicate: a
+// connect failure escalates to a terminal ErrSessionUnrecoverable (release lease +
+// restart pod) ONLY when it carries the permanent shared.ErrTransportClosedPermanently
+// marker AND the path is escalatable (a re-acquire reconnect). A plain transient
+// ErrUnavailable — which is ALSO a multi-use transport's momentary "broker
+// unreachable" — must NOT escalate, so a future multi-use exclusive transport keeps
+// recovering via capped-backoff retry instead of a needless process restart.
+//
+// Before the fix the gate matched the broad shared.ErrUnavailable, so the
+// second case below would wrongly escalate.
+func TestEscalatesToUnrecoverable(t *testing.T) {
+	// Model the real single-use Start-after-Close error: transient ErrUnavailable
+	// WRAPPING the permanent marker.
+	permanentClosure := shared.ErrUnavailable.
+		WithMessage("single-use session closed").
+		Wrap(shared.ErrTransportClosedPermanently)
+
+	tests := []struct {
+		name        string
+		err         error
+		escalatable bool
+		want        bool
+	}{
+		{
+			name:        "permanent closure on escalatable path escalates",
+			err:         permanentClosure,
+			escalatable: true,
+			want:        true,
+		},
+		{
+			// The KEY new guarantee: a transient broker blip on the re-acquire
+			// path stays a retry, never a terminal restart.
+			name:        "transient ErrUnavailable on escalatable path does NOT escalate",
+			err:         shared.ErrUnavailable.WithMessage("broker momentarily unreachable"),
+			escalatable: true,
+			want:        false,
+		},
+		{
+			name:        "permanent closure on non-escalatable first-connect path does NOT escalate",
+			err:         permanentClosure,
+			escalatable: false,
+			want:        false,
+		},
+		{
+			name:        "nil error never escalates",
+			err:         nil,
+			escalatable: true,
+			want:        false,
+		},
+		{
+			name:        "unrelated transient error does not escalate",
+			err:         shared.ErrConnectionLost,
+			escalatable: true,
+			want:        false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := escalatesToUnrecoverable(tc.err, tc.escalatable); got != tc.want {
+				t.Fatalf("escalatesToUnrecoverable(%v, escalatable=%v) = %v, want %v",
+					tc.err, tc.escalatable, got, tc.want)
+			}
+		})
+	}
+}

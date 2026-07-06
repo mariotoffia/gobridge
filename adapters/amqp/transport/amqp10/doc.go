@@ -34,8 +34,8 @@
 // without address-settings configuring redelivery-delay (and ideally
 // redelivery-delay-multiplier/max-redelivery-delay) every delayed retry
 // is redelivered immediately and max-delivery-attempts can be exhausted
-// in milliseconds. Each unhonorable delay increments
-// MetricAMQP10DelayedRetryUnhonored and warns once per link.
+// in milliseconds. Each delayed retry deferred to broker scheduling
+// increments MetricAMQP10DelayedRetryDeferred and warns once per link.
 //
 // # Subject vs Address
 //

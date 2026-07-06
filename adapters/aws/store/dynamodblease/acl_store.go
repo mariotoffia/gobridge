@@ -240,14 +240,26 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 	// The only writer that ever stamps owner=ownerID is this node — duplicate
 	// ownerIDs across distinct nodes are a fatal misconfiguration, not a
 	// supported topology (a fencing token cannot protect against two live
-	// processes claiming one identity). A node therefore cannot race itself,
-	// so seize immediately, fenced on the exact (owner, version) just read: a
-	// concurrent takeover by a DIFFERENT owner (which increments version) still
-	// aborts this claim via the ConditionExpression and falls back to
-	// ErrAlreadyExists. This spares a crashed-and-restarted owner (fresh
-	// process, empty observation map) from observing its OWN stale tuple for a
-	// full TTL before reclaiming — otherwise the partition stays ownerless for
-	// up to ~2×TTL.
+	// processes claiming one identity). The store itself cannot defend against
+	// this, so the runtime that DERIVES ownerID guards it upstream: it suffixes
+	// the human-facing instance_id with a per-process boot nonce
+	// (Runtime.leaseOwnerID), so two replicas that share an instance_id still
+	// present DISTINCT ownerIDs here and take the observation path against each
+	// other instead of instantly counter-seizing via this fast path — the
+	// permanent lease ping-pong of finding C3-HIGH. Given distinct-owner
+	// invariant, a node cannot race itself, so seize immediately, fenced on the
+	// exact (owner, version) just read: a concurrent takeover by a DIFFERENT
+	// owner (which increments version) still aborts this claim via the
+	// ConditionExpression and falls back to ErrAlreadyExists. This spares a
+	// crashed-and-restarted owner (fresh process, empty observation map) from
+	// observing its OWN stale tuple for a full TTL before reclaiming — otherwise
+	// the partition stays ownerless for up to ~2×TTL.
+	//
+	// NOTE (finding C3-CRITICAL): the runtime no longer hammers this fast path in
+	// a zombie retry loop. A single-use session that cannot re-Start after a
+	// step-down Close now RELEASES the lease and escalates to a process restart
+	// instead of re-Acquiring here on every supervised retry (which bumped the
+	// version and reset every standby's observation window perpetually).
 	if row.owner == ownerID {
 		s.clearObservation(leaseID)
 		return s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,

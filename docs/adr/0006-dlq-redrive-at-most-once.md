@@ -50,6 +50,17 @@ contract is documented in `spec/httpapi/components.yaml:425-455`.
   binding (`admin_dlq.go:389-397`). The N-1 healthy bindings on a fan-out route
   receive no duplicate.
 
+- **Missing binding preserves the entry.** When the recorded `BindingID` no
+  longer exists on a still-present but reconfigured route, `InjectToBinding`
+  refuses **before** the pipeline runs and returns `ErrNotFound` (permanent)
+  rather than falling back to a full-route fan-out that would duplicate-deliver
+  to the N-1 healthy legs (`runtime/route/runner.go:415-421`). The redrive is
+  reported as failed with the per-entry message `route or binding not found`,
+  and the claimed DLQ entry is best-effort restored so the failure evidence is
+  kept for a later re-file (`admin_dlq.go:421-440`). This is deliberately
+  distinct from an in-band processor `ActionRoute` override, whose
+  unknown-binding fall-through to normal resolution is intentional.
+
 - **Partial-failure status.** A redrive returns HTTP 200 when every requested
   entry redrove, or HTTP 207 Multi-Status when any entry failed, so the caller
   inspects the per-entry result (`admin_dlq.go:426`, `:447-451`;

@@ -160,8 +160,20 @@ adapters/mycloud/transport/myqueue/
    - `CapVisibilityExtension` -- supports deadline extension (e.g. SQS)
    - `CapSourceRedelivery` -- transport redelivers on nack (e.g. SQS)
    - `CapDelayedSend` -- supports delayed delivery
-   - `CapSharedConsumer` -- multiple consumers share messages
-   - `CapExclusiveIdentity` -- session owns a unique client identity
+   - `CapSharedConsumer` -- broker load-balances one subscription across a consumer group (e.g. MQTT `$share`)
+   - `CapExclusiveIdentity` -- session owns a unique client identity (lease-based single holder); **must be single-use** -- see the lifecycle note below
+
+**Exclusive sessions are single-use.** A transport that declares
+`CapExclusiveIdentity` must treat `Start`-after-`Close` as a permanent error:
+once `Close` runs, a later `Start` returns `shared.ErrUnavailable` rather than
+reconnecting. The runtime depends on this -- when a lease-owning session cannot
+renew, it escalates to a terminal state (`ErrSessionUnrecoverable`), releases the
+lease so a standby takes over, and lets the orchestrator restart the process with
+a fresh session. A transport that silently reconnected a closed exclusive session
+would break lease fencing. `CapExclusiveIdentity` is declared by paho MQTT
+(always) and amqp091 (latched on first exclusive use); amqp10 does not advertise
+the capability but is subject to the same single-use rule when run as an
+exclusive session.
 
 **Compile-time interface checks:**
 
@@ -470,6 +482,40 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 - **transform**: `processors/transform/` -- JSON field mapping with JSONPath, type coercion
 - **circuitbreaker**: `processors/circuitbreaker/` -- per-key state machine, returns `shared.ErrUnavailable.WithRetryAfter()`. Wraps the `circuitbreaker/` package via the `ports.CircuitBreaker` resilience port; adapters that need protection consume the port (never the package). See [ARCHITECTURE.md §2.2 Resilience Ports](ARCHITECTURE.md#22-resilience-ports).
 - **tenant**: `processors/tenant/` -- header-based tenant extraction, validation, usage tracking
+
+### Concurrency and timeout contract
+
+Every processor runs under a **per-processor time budget** (route policy
+`ProcessorTimeout`, default 30s). The budget bounds a processor's **own**
+execution time, not the whole downstream chain: the runtime disarms the timer
+while the processor is blocked inside `next(...)` and rearms it when `next`
+returns, so an outer processor is never charged for time spent deeper in the
+chain. It is not a single shared budget that shrinks as the chain descends.
+
+When a processor overruns its own budget the runtime cancels its context and the
+delivery fails with `shared.ErrProcessorTimeout` (transient). A genuine overrun
+is tagged `reason=processor-timeout` and increments the `ProcessorTimeouts`
+metric. An overrun observed only because the route is shutting down is tagged
+`reason=shutdown-grace-exceeded` and is **not** counted -- that is shutdown, not
+a slow processor. A panicking processor returns `shared.ErrProcessorPanic`
+(permanent).
+
+Two hard rules for custom processors:
+
+- **Honour context cancellation.** When the passed `ctx` is cancelled, stop work
+  and return. The runtime cancels an over-budget processor's context to unwind
+  it; a processor that ignores cancellation is abandoned as a leaked goroutine
+  while the route refuses to merge its result.
+- **Do not mutate the envelope after calling `next()`.** Read or write
+  `env.Headers` only *before* you delegate to `next(ctx, env)`. Once you have
+  called `next`, treat the envelope as read-only.
+
+Both rules exist for the same reason. An abandoned, timed-out processor goroutine
+still holds this frame's shared envelope clone. A processor that ignores
+cancellation **and** keeps writing headers after `next()` can race a live outer
+frame writing the same header map -- a concurrent map write, which crashes the
+process. The shipped processors obey both rules, so the hazard is unreachable in
+practice; a third-party processor that breaks the contract reintroduces it.
 
 ## Module Conventions
 

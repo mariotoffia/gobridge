@@ -11,14 +11,19 @@ const (
 	MetricAMQP10AcceptLatency    = "AMQP10AcceptLatency"
 	MetricAMQP10Reconnects       = "AMQP10Reconnects"
 	MetricAMQP10EventDropped     = "AMQP10EventDropped"
-	// MetricAMQP10DelayedRetryUnhonored counts delayed (backoff) retries
-	// whose requested spacing the client could not honor. AMQP 1.0 has no
-	// portable client-side delayed-redelivery primitive, so a Retry with a
-	// positive delay is handed back to the broker (ModifyMessage) and the
-	// broker — not the bridge — decides when to redeliver. A climbing count
-	// means the configured retry backoff is effectively broker-driven on this
-	// transport (see acl_delivery.go Retry, finding 2 / G-N2).
-	MetricAMQP10DelayedRetryUnhonored = "AMQP10DelayedRetryUnhonored"
+	// MetricAMQP10DelayedRetryDeferred counts delayed (backoff) retries
+	// whose redelivery timing was DEFERRED to the broker. AMQP 1.0 has no
+	// portable client-side delayed-redelivery primitive, so a Retry with
+	// a positive delay is handed back to the broker (ModifyMessage with
+	// an x-opt-delivery-time annotation) and the broker decides when to
+	// redeliver. On a broker that honors the annotation (e.g. Artemis)
+	// the requested spacing IS applied; on one that ignores it the
+	// spacing falls back to the broker's redelivery policy. This counter
+	// therefore measures broker-delegated retry scheduling, NOT a failure
+	// — the previous name ("Unhonored") asserted a non-honoring broker on
+	// every delayed retry, a 100% false positive on honoring brokers
+	// (finding 5 / G-N2). See acl_delivery.go Retry.
+	MetricAMQP10DelayedRetryDeferred = "AMQP10DelayedRetryDeferred"
 	// MetricAMQP10IngressRejected counts inbound messages that failed
 	// envelope conversion at ingress and were rejected back to the
 	// broker (poison messages). The receive loop keeps running — this

@@ -7,6 +7,7 @@
 package amqp10
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -70,7 +71,8 @@ func TestReceiver_ConvertMessage_WithID(t *testing.T) {
 	}
 }
 
-// TestReceiver_ConvertMessage_ValueBodyExtraction validates value-body extraction.
+// TestReceiver_ConvertMessage_ValueBodyExtraction validates []byte
+// value-body extraction.
 func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 	sess := newTestSession()
 	r := &Receiver{
@@ -94,28 +96,77 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 	}
 }
 
-// TestReceiver_ConvertMessage_ValueBodyNonBytes validates that a non-[]byte
-// Value results in nil payload.
-func TestReceiver_ConvertMessage_ValueBodyNonBytes(t *testing.T) {
-	sess := newTestSession()
-	r := &Receiver{
-		cfg:     ReceiverConfig{Address: "queue/test", LinkCredit: 10},
-		session: sess,
-		logger:  slog.Default(),
-		metrics: &ports.NoopExporter{},
-	}
+// TestReceiver_ConvertMessage_ValueBodyString validates that a STRING
+// amqp-value body (what Qpid-JMS/Artemis TextMessage produces) is
+// converted to bytes rather than forwarded as an empty payload
+// (finding 1).
+func TestReceiver_ConvertMessage_ValueBodyString(t *testing.T) {
+	msg := &amqp.Message{Value: "hello-text"}
 
-	msg := &amqp.Message{
-		Value: "not-bytes",
-	}
-
-	env, err := messageToEnvelope(msg, r.clock())
+	env, err := messageToEnvelope(msg, nil)
 	if err != nil {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
+	if string(env.Payload()) != "hello-text" {
+		t.Fatalf("Payload = %q, want %q", env.Payload(), "hello-text")
+	}
+}
 
-	if env.Payload() != nil {
-		t.Fatalf("Payload = %v, want nil for non-[]byte Value", env.Payload())
+// TestReceiver_ConvertMessage_MultiSectionData validates that a body
+// carried in MULTIPLE data sections is concatenated, not truncated to
+// the first section (finding 1: previously Data[0] silently dropped the
+// remaining sections).
+func TestReceiver_ConvertMessage_MultiSectionData(t *testing.T) {
+	msg := &amqp.Message{
+		Data: [][]byte{[]byte("part-one:"), []byte("part-two:"), []byte("part-three")},
+	}
+
+	env, err := messageToEnvelope(msg, nil)
+	if err != nil {
+		t.Fatalf("messageToEnvelope: %v", err)
+	}
+	if got, want := string(env.Payload()), "part-one:part-two:part-three"; got != want {
+		t.Fatalf("Payload = %q, want %q (all data sections concatenated)", got, want)
+	}
+}
+
+// TestReceiver_ConvertMessage_ValueBodyUnrepresentable pins the corrected
+// behaviour for finding 1: a non-string/[]byte amqp-value body cannot be
+// represented as a byte payload, so conversion REJECTS the message
+// (errUnrepresentableBody) instead of forwarding an empty envelope and
+// Acking-then-deleting the source (irrecoverable body loss). The receive
+// loop settles such a message through the errIngressRejected path.
+func TestReceiver_ConvertMessage_ValueBodyUnrepresentable(t *testing.T) {
+	cases := map[string]any{
+		"map":    map[string]any{"k": "v"},
+		"number": int64(42),
+		"list":   []any{1, 2, 3},
+	}
+	for name, val := range cases {
+		t.Run(name, func(t *testing.T) {
+			msg := &amqp.Message{Value: val}
+			env, err := messageToEnvelope(msg, nil)
+			if err == nil {
+				t.Fatalf("messageToEnvelope returned nil error and env=%v; want rejection for unrepresentable body", env)
+			}
+			if !errors.Is(err, errUnrepresentableBody) {
+				t.Fatalf("error = %v, want errUnrepresentableBody", err)
+			}
+			if env != nil {
+				t.Fatalf("env = %v, want nil (message rejected, never forwarded empty)", env)
+			}
+		})
+	}
+}
+
+// TestReceiver_ConvertMessage_SequenceBodyUnrepresentable pins that an
+// amqp-sequence-only body is rejected rather than forwarded empty
+// (finding 1).
+func TestReceiver_ConvertMessage_SequenceBodyUnrepresentable(t *testing.T) {
+	msg := &amqp.Message{Sequence: [][]any{{"a", "b"}}}
+	_, err := messageToEnvelope(msg, nil)
+	if !errors.Is(err, errUnrepresentableBody) {
+		t.Fatalf("error = %v, want errUnrepresentableBody", err)
 	}
 }
 

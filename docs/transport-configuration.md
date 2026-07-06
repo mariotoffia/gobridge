@@ -76,7 +76,7 @@ Each transport carries the logical subject over the wire in a transport-native f
 | Transport | Outbound destination from `OutboundMessage.Address` | Subject carrier on the wire | Ingress: what sets `Envelope.Subject` |
 |-----------|------------------------------------------------------|-----------------------------|---------------------------------------|
 | MQTT | Publish topic (or `default_topic` when address is empty). Never derived from `Envelope.Subject`. | MQTT user property `gobridge.subject` | The `gobridge.subject` user property. The publish topic the broker delivered on is exposed in `Headers["mqtt.topic"]`. |
-| AMQP 0-9-1 | Routing key (when sender `routing_key` is empty). Never derived from `Envelope.Subject`. | AMQP header `gobridge.subject` | The `gobridge.subject` AMQP header. The broker's `Delivery.RoutingKey` is preserved in `Headers["amqp091.routing-key"]`. |
+| AMQP 0-9-1 | Routing key. The per-dispatch `Address` **wins**; the configured `routing_key` is only the fallback used when `Address` is empty. Never derived from `Envelope.Subject`. | AMQP header `gobridge.subject` | The `gobridge.subject` AMQP header. The broker's `Delivery.RoutingKey` is preserved in `Headers["amqp091.routing-key"]`. |
 | AMQP 1.0 | Validated against the configured sender link address (empty allowed; mismatch fails fast). Per-address dynamic links are deferred. | `Message.Properties.Subject` | `Message.Properties.Subject`. There is no fallback from the link address. |
 | SQS | Reserved for future dynamic queue selection. Today the queue is sender-state. | `Subject` message attribute | The `Subject` message attribute. There is no fallback from the queue URL/name. When the producer supplies no explicit `MessageDeduplicationId`, FIFO dedup is derived from an md5 hash of the payload, subject and id (or creation time when id is empty) — not the subject alone. |
 | Azure Service Bus | Reserved for future dynamic entity selection. Today the entity is sender-state. | `Message.Subject` | `Message.Subject`. There is no fallback from the queue/topic name. |
@@ -94,15 +94,28 @@ uses these to validate routes and enable transport-specific features.
 | Capability | MQTT | SQS | Azure SB | AMQP 0-9-1 | AMQP 1.0 | HTTP | Description |
 |------------|:----:|:---:|:--------:|:----------:|:--------:|:----:|-------------|
 | `stateful_session` | Yes | -- | -- | Yes | Yes | -- | Persistent session across reconnects |
-| `exclusive_identity` | Yes | -- | -- | -- | -- | -- | Lease-based single-holder session |
+| `exclusive_identity` | Yes | -- | -- | Yes¹ | -- | -- | Lease-based single-holder session |
+| `shared_consumer` | Yes | -- | -- | -- | -- | -- | Broker load-balances one subscription across a consumer group (`$share`) |
 | `plan_driven_subscriptions` | Yes | -- | -- | Yes | -- | -- | Subscribes only when the session manager reconciles the plan |
 | `visibility_extension` | -- | Yes | Yes | -- | -- | -- | Auto-renew message lock / visibility |
 | `source_redelivery` | -- | Yes | -- | Yes | Yes | -- | Broker redelivers unacknowledged messages |
 | `delayed_send` | -- | Yes | -- | -- | -- | -- | Native delayed delivery (SQS `delay_seconds`) |
 | `http_endpoint` | -- | -- | -- | -- | -- | Yes | Exposes HTTP endpoints |
 
-Additional capabilities defined in `ports.Capability` but not currently
-declared by any built-in transport: `shared_consumer`.
+¹ AMQP 0-9-1 advertises `exclusive_identity` only **after** it has built an
+exclusive consumer -- the capability latches on first exclusive use. The
+supervisor also detects an exclusive receiver config up front through the
+factory hook `ConfigRequiresExclusiveIdentity`, so it can select the serialized
+identity-swap path before any receiver exists.
+
+> **Exclusive transports are single-use.** A transport that declares
+> `exclusive_identity` (MQTT paho, amqp091) is single-use: once its session is
+> `Close`d it cannot be re-`Start`ed -- Start-after-Close returns a permanent
+> `ErrUnavailable` rather than reconnecting. The runtime's session-zombie
+> terminal escalation and the orchestrator process-restart backstop depend on
+> it: a standby instance takes over the lease and this pod restarts with a fresh
+> session. amqp10 does not advertise `exclusive_identity` but is subject to the
+> same single-use rule when it runs as an exclusive session.
 
 ---
 

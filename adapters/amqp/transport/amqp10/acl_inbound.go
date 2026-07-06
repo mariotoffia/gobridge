@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,14 +97,22 @@ type linkReceiver interface {
 // poison message must not tear down the route or the whole bridge.
 var errIngressRejected = errors.New("amqp10: inbound message rejected at ingress")
 
+// errUnrepresentableBody marks an inbound message whose body cannot be
+// represented as a byte payload (a non-string/[]byte amqp-value, or an
+// amqp-sequence-only body). messageToEnvelope returns it so the receive
+// loop settles the message via the errIngressRejected path (counted +
+// warned) instead of silently forwarding an EMPTY envelope while Acking
+// and deleting the source — irrecoverable body loss (finding 1).
+var errUnrepresentableBody = errors.New("amqp10: message body cannot be represented as bytes")
+
 // receiverLink wraps a *amqp.Receiver, exposing only the operations
 // the adapter's Receiver needs and converting incoming messages to
 // domain-typed *Delivery values inside the ACL.
 type receiverLink struct {
 	raw *amqp.Receiver
-	// delayUnhonoredWarn dedupes the delayed-retry-unhonored Warn to once
+	// delayDeferredWarn dedupes the delayed-retry-deferred Warn to once
 	// per link (G-N2). It is shared with every Delivery this link creates.
-	delayUnhonoredWarn sync.Once
+	delayDeferredWarn sync.Once
 }
 
 var _ linkReceiver = (*receiverLink)(nil)
@@ -142,9 +151,9 @@ func (r *receiverLink) Receive(
 		return nil, fmt.Errorf("%w: %w", errIngressRejected, err)
 	}
 	d := NewDelivery(env, msg, r.raw, logger, metrics, clk)
-	// Share the per-link warn guard so an unhonored delayed retry warns
+	// Share the per-link warn guard so a deferred delayed retry warns
 	// once per link, not once per message (G-N2).
-	d.delayWarnOnce = &r.delayUnhonoredWarn
+	d.delayWarnOnce = &r.delayDeferredWarn
 	if metrics != nil {
 		metrics.Timer(MetricAMQP10ReceiveLatency, clk.Since(arrived),
 			shared.Tag{Key: shared.TagKeyEntity, Value: r.raw.Address()})
@@ -187,9 +196,7 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 
 	var msgID string
 	if msg.Properties != nil && msg.Properties.MessageID != nil {
-		if s, ok := msg.Properties.MessageID.(string); ok {
-			msgID = s
-		}
+		msgID = messageIDToString(msg.Properties.MessageID)
 	}
 	if msgID == "" {
 		msgID = generateEnvelopeID()
@@ -200,13 +207,9 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 		subject = *msg.Properties.Subject
 	}
 
-	var body []byte
-	if len(msg.Data) > 0 {
-		body = msg.Data[0]
-	} else if msg.Value != nil {
-		if b, ok := msg.Value.([]byte); ok {
-			body = b
-		}
+	body, err := messageBody(msg)
+	if err != nil {
+		return nil, err
 	}
 
 	// A received broker absolute-expiry is stamped at construction (permissive):
@@ -256,6 +259,73 @@ func bridgeHeaderString(msg *amqp.Message, key string) string {
 		}
 	}
 	return ""
+}
+
+// messageBody extracts the byte payload from an inbound AMQP 1.0
+// message. Body sections are handled per AMQP 1.0 §3.2:
+//
+//   - Data sections: the payload is the concatenation of ALL data
+//     sections, not just the first — a multi-section body is the
+//     logical concatenation of its parts (the previous code silently
+//     truncated to Data[0]).
+//   - amqp-value section: []byte is taken as-is; string is converted via
+//     []byte(s) (what Qpid-JMS/Artemis TextMessage produces). Any OTHER
+//     value type (map, list, number, null, amqp-sequence) cannot be
+//     faithfully represented as bytes and is REJECTED via
+//     errUnrepresentableBody so the message is settled through the
+//     ingress-rejected path (counted + warned) rather than Acked-and-
+//     forwarded empty (finding 1).
+//   - No body sections at all: a legitimately empty message → nil body.
+func messageBody(msg *amqp.Message) ([]byte, error) {
+	switch {
+	case len(msg.Data) == 1:
+		return msg.Data[0], nil
+	case len(msg.Data) > 1:
+		total := 0
+		for _, d := range msg.Data {
+			total += len(d)
+		}
+		body := make([]byte, 0, total)
+		for _, d := range msg.Data {
+			body = append(body, d...)
+		}
+		return body, nil
+	case msg.Value != nil:
+		switch v := msg.Value.(type) {
+		case []byte:
+			return v, nil
+		case string:
+			return []byte(v), nil
+		default:
+			return nil, fmt.Errorf("%w: unrepresentable amqp-value body of type %T", errUnrepresentableBody, msg.Value)
+		}
+	case len(msg.Sequence) > 0:
+		return nil, fmt.Errorf("%w: amqp-sequence body of %d section(s)", errUnrepresentableBody, len(msg.Sequence))
+	default:
+		return nil, nil
+	}
+}
+
+// messageIDToString renders an AMQP 1.0 message-id (which may be a
+// string, uuid, ulong, or binary per the spec) into the string form the
+// envelope ID uses. A deterministic rendering (uuid canonical form,
+// ulong decimal, binary hex) preserves downstream message-id dedup for
+// non-string ids instead of substituting a random envelope ID
+// (finding 6). Returns "" for an unrecognised type so the caller falls
+// back to a generated ID.
+func messageIDToString(id any) string {
+	switch v := id.(type) {
+	case string:
+		return v
+	case amqp.UUID:
+		return v.String()
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case []byte:
+		return hex.EncodeToString(v)
+	default:
+		return ""
+	}
 }
 
 func generateEnvelopeID() string {

@@ -305,6 +305,12 @@ entry). Replay is **binding-scoped** -- the entry's originating `binding_id` is
 pinned via a route-override header so a fan-out route re-delivers only to the
 binding that failed, not to its healthy siblings.
 
+If the recorded `binding_id` no longer exists on a still-present but
+reconfigured route, the redrive fails that entry with `route or binding not
+found` (a permanent `ErrNotFound`) and the DLQ entry is preserved by a
+best-effort restore, rather than being fanned out to the route's current
+bindings. Re-file the entry against a binding that exists.
+
 ### DLQ purge
 
 ```bash

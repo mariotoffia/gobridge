@@ -69,6 +69,34 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 	ctx, rt.cancel = context.WithCancel(ctx)
 
+	// Watch the caller-supplied Start context. If it is cancelled WITHOUT a Stop
+	// (the caller cancels the ctx it passed to Start, rather than calling Stop),
+	// every background goroutine exits on the derived ctx — but running/healthy
+	// stay advertised, leaving a dead runtime that still reports healthy on /live
+	// and ready on /ready (finding L9). Drive Stop so resources are released and
+	// health flips. A Stop that itself cancelled the ctx already set terminal, so
+	// this observes terminal and does nothing (no double teardown). The watcher
+	// is deliberately NOT in rt.wg (Stop waits on rt.wg, so enrolling it would
+	// deadlock); it always terminates because ctx is cancelled by either Stop or
+	// the caller.
+	watchCtx := ctx
+	go func() {
+		<-watchCtx.Done()
+		rt.mu.Lock()
+		stopping := rt.terminal || !rt.running
+		rt.mu.Unlock()
+		if stopping {
+			return
+		}
+		stopBudget := rt.shutdownTimeout
+		if stopBudget <= 0 {
+			stopBudget = 5 * time.Second
+		}
+		stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
 	// The DLQ write is on the settle-critical path: it runs inside the route
 	// runner's per-delivery goroutine, which holds the global in-flight slot
 	// until it returns. Keep the budget small and well under typical source
@@ -102,7 +130,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = cluster.NewLocator(rt.instanceID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
+		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
 	}
 
 	// drainerOwner maps a session ID to the route whose configuration
@@ -173,7 +201,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
 			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
 				mgr.SetEndpoints(rt.clusterEndpoints)
 				rt.sessionMgrs[sid] = mgr
@@ -241,7 +269,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				}
 
 				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.instanceID, rt.logger, m, rt.clk)
+					mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 					mgr.SetAudit(rt.audit)
 					mgr.SetEndpoints(rt.clusterEndpoints)
 					rt.sessionMgrs[sid] = mgr
@@ -350,24 +378,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, name, drainer.Run)
 	}
 
-	// Route runners run under startBackground (terminal-on-error) — correct
-	// AS-IS: RouteRunner.Run returns whatever Receiver.Run returns, and by the
-	// Receiver contract (ports/transport.go) that is ctx.Err()/nil on shutdown
-	// or an UNRECOVERABLE error. Each adapter isolates transient transport
-	// faults inside its own bounded reconnect loop (amqp091 waitForReconnect,
-	// sqs poll backoff, mqtt session reconnect) and surfaces only permanent /
-	// misconfig errors (queue missing, access refused, protocol error). Nor can
-	// the emit callback (route/runner.go) inject a transient error: message
-	// PROCESSING runs in a detached goroutine whose failures never propagate
-	// back through emit, and emit itself only returns ctx.Err() (backpressure /
-	// shutdown — acquireSlots blocks, it does not fail transiently) or a
-	// defensive "callback after receiver stopped" guard (a receiver bug). All of
-	// these SHOULD fail-fast → pod restart; blanket-wrapping them in unbounded
-	// retry would mask a real fatal bug and hot-loop on a fault the adapter
-	// deliberately declined to retry. Transient isolation belongs in the
-	// adapter, not here (REV-3-routeiso).
+	// Route runners run under superviseRoute (per-route isolation) — NOT the
+	// terminal-on-error startBackground the sessions' pre-fix path used. A
+	// runtime hosts MANY routes, and a fault that is permanent for ONE route
+	// (its source queue deleted, its credential revoked, a protocol mismatch on
+	// that link) is NOT a global fault: crashing the whole pod would punish every
+	// healthy co-tenant route and, since the fault is permanent, just
+	// CrashLoopBackOff without fixing anything (findings C1-MED, C2-HIGH). This
+	// supersedes the former REV-3-routeiso fail-fast rationale (which assumed
+	// every receiver error is global-and-unrecoverable); superviseRoute isolates
+	// the failing route with jittered capped backoff, keeps global healthy/
+	// terminal untouched, and keeps the fault observable via MetricRouteRestarts
+	// + failed_components + per-route readiness. See superviseRoute for the full
+	// weighing of the replaced argument and its honest tradeoff (single-use
+	// receivers settle at the backoff cap rather than reconnect).
 	for _, entry := range rt.entries {
-		rt.startBackground(ctx, "route:"+entry.config.ID, entry.runner.Run)
+		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
 	}
 
 	return nil

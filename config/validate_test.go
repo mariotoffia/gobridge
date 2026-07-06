@@ -200,6 +200,30 @@ func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
 	assert.Contains(t, err.Error(), "worst-case renew span")
 }
 
+// TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease proves the
+// per-attempt renew_call_timeout term participates in the C3 invariant (finding
+// H2). All other terms are safe on their own — the operator-set
+// renew_call_timeout alone pushes the worst-case span over lease_ttl. Without
+// the fix (old formula (renew+jitter/2)*maxFails, omitting call_timeout) this
+// combo PASSES: (14+0.5)*3 = 43.5s < 45s. With the fix it is rejected:
+// (14+0.5+5)*3 = 58.5s >= 45s — the exact HIGH-1 gap.
+func TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = "14s"
+	cfg.Routes[0].Session.RenewJitter = "1s"
+	cfg.Routes[0].Session.LeaseTTL = "45s"
+	cfg.Routes[0].Session.MaxRenewFails = 3
+
+	// The explicit 5s renew_call_timeout is the term that pushes the worst case
+	// over the TTL. Without the fix the formula omits this term entirely and the
+	// combo passes (43.5s < 45s); with the fix it is folded in and rejected.
+	cfg.Routes[0].Session.RenewCallTimeout = "5s"
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worst-case renew span")
+	assert.Contains(t, err.Error(), "renew_call_timeout=5s")
+}
+
 // TestValidate_SessionRenewTiming_OK accepts a correctly-sized renew/lease combo.
 func TestValidate_SessionRenewTiming_OK(t *testing.T) {
 	cfg := validConfig()

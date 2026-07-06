@@ -34,6 +34,13 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{
 		ports.CapStatefulSession,
 		ports.CapExclusiveIdentity,
+		// MQTT supports shared subscriptions ($share/<group>/<filter>): the
+		// broker load-balances a topic's deliveries across the group members,
+		// so multiple bridge instances can scale-out consumption of one
+		// logical subscription. topic_match.go strips the $share prefix for
+		// dispatch; advertise the capability so the runtime/operators can
+		// discover the scale-out path.
+		ports.CapSharedConsumer,
 		// MQTT receivers subscribe ONLY when the session manager reconciles the
 		// SessionPlan, so a receiver on an unmanaged session is silently inert;
 		// the builder enforces a manager for these (ADV-P4-FU1).

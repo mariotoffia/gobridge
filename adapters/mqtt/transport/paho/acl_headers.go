@@ -40,6 +40,21 @@ const HeaderGobridgeSubject = "gobridge.subject"
 // spoofing the recorded transport address.
 const HeaderMQTTTopic = "mqtt.topic"
 
+// HeaderMQTTRetained is the envelope-headers key recording whether the
+// inbound MQTT publish carried the RETAIN flag (a broker-retained
+// message replayed on subscribe, not a fresh event). It is set
+// unconditionally by EnvelopeFromPublish (bool value) and is
+// adapter-controlled: inbound user properties literally named
+// "mqtt.retained" are dropped so a peer cannot spoof retained state.
+const HeaderMQTTRetained = "mqtt.retained"
+
+// HeaderMQTTQoS is the envelope-headers key recording the MQTT QoS level
+// (0, 1 or 2) the publish was delivered at. It is set unconditionally by
+// EnvelopeFromPublish (int value) and is adapter-controlled: inbound user
+// properties literally named "mqtt.qos" are dropped so a peer cannot
+// spoof the delivery QoS.
+const HeaderMQTTQoS = "mqtt.qos"
+
 const maxHeaderValueLen = 256
 
 // isPrintableASCII reports whether every byte in s is printable ASCII (0x20–0x7E).
@@ -79,7 +94,9 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 	now := clk.Now()
 
 	headers := map[string]any{
-		HeaderMQTTTopic: pub.Topic,
+		HeaderMQTTTopic:    pub.Topic,
+		HeaderMQTTRetained: pub.Retain,
+		HeaderMQTTQoS:      int(pub.QoS),
 	}
 	var mqttMsgID string
 	var subject string
@@ -115,9 +132,10 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 				}
 				continue
 			}
-			if u.Key == HeaderMQTTTopic {
+			if u.Key == HeaderMQTTTopic || u.Key == HeaderMQTTRetained || u.Key == HeaderMQTTQoS {
 				// Adapter-controlled: never let an inbound user property
-				// override the recorded transport-level topic.
+				// override the recorded transport-level topic, retained
+				// flag, or delivery QoS.
 				continue
 			}
 			if u.Key == HeaderMessageID {
@@ -268,7 +286,8 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		for k, v := range env.Headers() {
 			if k == messaging.HeaderCorrelationID || k == messaging.HeaderContentType ||
 				k == headerMQTTResponseTopic || k == HeaderMessageID ||
-				k == HeaderGobridgeSubject || k == HeaderMQTTTopic {
+				k == HeaderGobridgeSubject || k == HeaderMQTTTopic ||
+				k == HeaderMQTTRetained || k == HeaderMQTTQoS {
 				continue
 			}
 			// Egress header policy: strip INTERNAL-ONLY reserved headers

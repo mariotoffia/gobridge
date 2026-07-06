@@ -72,6 +72,15 @@ type Session struct {
 	// rotated credentials take effect on the NEXT CONNECT packet
 	// without rebuilding the ConnectionManager. Protected by mu.
 	liveCreds mqttCredentials
+
+	// connectOverride, when non-nil, replaces the real autopaho dial in
+	// Start (build ClientConfig → NewConnection → AwaitConnection) with a
+	// test double. It returns the connection seam plus the cancel func
+	// Close/Reload use to tear down the CM's background context. Kept
+	// SDK-free (pahoConnection, not *autopaho.ConnectionManager) so this
+	// file need not import the vendor SDK. Production leaves it nil; the
+	// real dial lives in acl_session.go.
+	connectOverride func(ctx context.Context) (pahoConnection, context.CancelFunc, error)
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be

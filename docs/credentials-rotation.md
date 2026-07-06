@@ -219,7 +219,7 @@ What each transport does with each capability today:
 
 | Transport | `set.Password()` | `set.TLS()` server trust (CA) | `set.TLS()` client cert |
 |-----------|------------------|-------------------------------|------------------------|
-| **MQTT paho** | mutate `liveCreds`; autopaho `Disconnect()`; reconnect picks up new creds via `ConnectPacketBuilder` | `applyTLSMaterial` updates `opts.TLS.CACertPEM`; triggers `Session.Reload()` (full CM rebuild) | same path as CA; `Reload()` rebuilds |
+| **MQTT paho** | mutate `liveCreds`; `Session.Reload()` rebuilds the connection manager and the fresh CONNECT pulls new creds via `ConnectPacketBuilder` (a bare `Disconnect()` is **not** used -- it is terminal in paho.golang v0.23.0) | `applyTLSMaterial` updates `opts.TLS.CACertPEM`; triggers `Session.Reload()` (full CM rebuild) | same path as CA; `Reload()` rebuilds |
 | **AMQP 0-9-1** | mutate `liveCreds`; `conn.Close()` -> reconnect loop | `applyAMQPTLSMaterial` updates `opts.TLS.CACertPEM`; `conn.Close()`; also rebuilds `s.dial` closure when TLS is newly enabled | same path |
 | **AMQP 1.0** | mutate `liveCreds`; `conn.Close()` -> monitor-loop reconnect | `applyAMQP10TLSMaterial`; `connect()` re-reads `opts.TLS` each dial, so mutation + close is enough | same path |
 | **Azure Service Bus** | `credentialsToConnection` swaps SAS `ConnectionString` or AAD `ClientID`/`ClientSecret`; Sender rebuilds `*azservicebus.Client` + sender link | same function sets `CaPEM`, nils cached `TLSConfig` so `buildClientOptions` rebuilds `tls.Config` from PEM | same function sets `ClientCertPEM`/`ClientKeyPEM`; same rebuild path |
@@ -234,6 +234,15 @@ What each transport does with each capability today:
 | AMQP 1.0 | yes | yes (PEM) | yes (PEM) | yes |
 | Azure Service Bus | yes | yes (PEM) | yes (PEM) | yes |
 | SQS | yes | no | no | no |
+
+> **SQS accepts static keys only.** The SQS credential path builds a
+> `credentials.NewStaticCredentialsProvider`, which has no field for a session
+> token. A resolved credential set whose access-key ID is temporary/STS (an
+> `ASIA…` prefix) is rejected with `ErrTemporaryCredentialsUnsupported`, surfaced
+> as `NOT_AUTHORIZED` (permanent) -- at build-time resolution of `credentials_uri`
+> and on any later rotation. Use long-lived IAM user keys through the credential
+> store, or leave the credential unset (`creds == nil`) and let the SDK provider
+> chain supply an instance/task role, which may itself be STS-backed.
 
 ### TLS dispatch rule (applies to MQTT, AMQP 0-9-1, AMQP 1.0)
 
@@ -303,7 +312,7 @@ Structured logs are emitted at `DEBUG` level by each transport's
 `ApplyCredentials`, for example:
 
 ```text
-msg="mqtt: applying rotated credentials; reconnecting" client_id=...
+msg="mqtt: applying rotated credentials; reloading session" client_id=...
 msg="amqp091: credentials rotated; forcing reconnect" password_changed=true tls_changed=false
 ```
 

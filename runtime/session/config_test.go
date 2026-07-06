@@ -22,8 +22,10 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.StepDownGrace, "StepDownGrace")
 	assert.Equal(t, 1*time.Second, cfg.RenewJitter, "RenewJitter")
 	assert.Equal(t, 3, cfg.MaxRenewFails, "MaxRenewFails")
-	assert.Equal(t, 14*time.Second, cfg.RenewInterval,
-		"RenewInterval pinned to 14s so RenewInterval*MaxRenewFails < LeaseTTL (A8-R1)")
+	assert.Equal(t, 10*time.Second, cfg.RenewInterval,
+		"RenewInterval pinned to 10s so the full worst-case span (incl. call timeout) < LeaseTTL (H2)")
+	assert.Equal(t, 3*time.Second, cfg.RenewCallTimeout,
+		"RenewCallTimeout pinned to 3s and folded into the worst-case span (H2)")
 
 	// Invariant 1: a graceful step-down must finish before the lease would
 	// expire, so the old owner stops sending before a new owner takes over.
@@ -36,15 +38,18 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.Less(t, cfg.RenewInterval*time.Duration(cfg.MaxRenewFails), cfg.LeaseTTL,
 		"RenewInterval * MaxRenewFails must be < LeaseTTL")
 
-	// Invariant 3: the JITTERED worst-case renew span must stay STRICTLY under
-	// the TTL. Each of the MaxRenewFails attempts can be delayed by up to
-	// RenewInterval + RenewJitter/2 (max positive jitter), so the owner must
-	// detect loss and step down before its own lease expires (A9-J5). At 1s
-	// jitter: 3 × (14 + 0.5) = 43.5s < 45s. At the old 2s: 3 × 15 = 45s = TTL,
-	// which left no margin.
-	jitteredWorstCase := time.Duration(cfg.MaxRenewFails) * (cfg.RenewInterval + cfg.RenewJitter/2)
+	// Invariant 3: the FULL worst-case renew span must stay STRICTLY under the
+	// TTL. Each of the MaxRenewFails attempts can be delayed by up to
+	// RenewInterval + RenewJitter/2 (max positive jitter) PLUS the per-call
+	// renew timeout, because renewLoop resets its timer AFTER the renew call
+	// returns and a hung call burns the full RenewCallTimeout (finding H2). So
+	// the owner must detect loss and step down before its own lease expires
+	// (A9-J5): 3 × (10 + 0.5 + 3) = 40.5s < 45s. Omitting the call timeout
+	// under-counted by 3 × 3 = 9s and, for the old 14s/5s preset, landed at
+	// 58.5s — 13.5s PAST the TTL.
+	jitteredWorstCase := time.Duration(cfg.MaxRenewFails) * (cfg.RenewInterval + cfg.RenewJitter/2 + cfg.RenewCallTimeout)
 	assert.Less(t, jitteredWorstCase, cfg.LeaseTTL,
-		"jittered worst-case renew span (%s) must be < LeaseTTL (%s)", jitteredWorstCase, cfg.LeaseTTL)
+		"full worst-case renew span (%s) must be < LeaseTTL (%s)", jitteredWorstCase, cfg.LeaseTTL)
 
 	// Invariant 4: jitter stays small relative to the renew interval (well
 	// under half) so a jittered renewal cannot drift toward the TTL.

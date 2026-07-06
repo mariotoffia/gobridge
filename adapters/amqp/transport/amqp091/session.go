@@ -26,7 +26,12 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	dial    dialFunc
-	clk     clock.Clock
+	// dialBuilder rebuilds the dial closure from options when credential or
+	// TLS rotation changes the material (see ApplyCredentials). Defaults to
+	// defaultDialFromOpts; kept as a field so tests can inject a hermetic
+	// builder that reads TLS material without opening a real socket.
+	dialBuilder func(SessionOptions) dialFunc
+	clk         clock.Clock
 
 	mu        sync.Mutex
 	conn      amqpConnection
@@ -146,6 +151,16 @@ func (s *Session) clock() clock.Clock {
 	return clock.System
 }
 
+// buildDial rebuilds the dial closure from opts, honouring an injected
+// dialBuilder when present (tests) and otherwise using the SDK-backed
+// defaultDialFromOpts.
+func (s *Session) buildDial(opts SessionOptions) dialFunc {
+	if s.dialBuilder != nil {
+		return s.dialBuilder(opts)
+	}
+	return defaultDialFromOpts(opts)
+}
+
 func (s *Session) brokerURL() string {
 	s.mu.Lock()
 	u, p := s.liveCreds.Username, s.liveCreds.Password
@@ -185,7 +200,9 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return shared.ErrUnavailable.WithMessage("amqp091: session already closed")
+		return shared.ErrUnavailable.
+			WithMessage("amqp091: session already closed").
+			Wrap(shared.ErrTransportClosedPermanently)
 	}
 	if s.starting {
 		startDone := s.startDone
@@ -784,6 +801,21 @@ func (s *Session) setBlocked(conn amqpConnection, active bool, reason string) bo
 	return true
 }
 
+// blockedState reports whether the broker currently has flow control
+// (connection.blocked) engaged, together with the server-supplied
+// reason. The sender consults it to fail fast with ErrBrokerBusy instead
+// of wedging on a publish the SDK cannot cancel: v1.10.0's
+// PublishWithDeferredConfirmWithContext ignores ctx, so while the broker
+// holds TCP backpressure a publish blocks indefinitely — and, done under
+// the sender mutex, wedges every other publisher past its deadline. Health
+// already surfaces the same state (see Health); this exposes it on the hot
+// path without duplicating the mutex bookkeeping.
+func (s *Session) blockedState() (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blocked, s.blockedReason
+}
+
 func (s *Session) reconnectLoop(ctx context.Context) {
 	for {
 		s.mu.Lock()
@@ -991,9 +1023,17 @@ func (s *Session) dialWithTimeout(ctx context.Context) (amqpConnection, error) {
 		err  error
 	}
 
+	// Snapshot the dial func under the lock before spawning: ApplyCredentials
+	// reassigns s.dial (credential/TLS rotation rebuilds the dialer) under the
+	// same lock. Reading the field from the goroutine below without this
+	// snapshot races that write. brokerURL() takes the lock itself.
+	s.mu.Lock()
+	dial := s.dial
+	s.mu.Unlock()
+
 	ch := make(chan result, 1)
 	go func() {
-		conn, err := s.dial(s.brokerURL())
+		conn, err := dial(s.brokerURL())
 		ch <- result{conn, err}
 	}()
 

@@ -48,7 +48,6 @@ func TestSenderFactory_NewSender_OptionsPassthrough(t *testing.T) {
 		Config: Config{
 			QueueURL:       "https://sqs.us-west-1.amazonaws.com/123/test.fifo",
 			BatchSize:      3,
-			DelaySeconds:   10,
 			MessageGroupID: "grp-a",
 			FIFO:           true,
 		},

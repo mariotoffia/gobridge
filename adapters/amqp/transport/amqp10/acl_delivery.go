@@ -174,7 +174,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 // scheduled-delivery support (e.g. Artemis) honor the annotation;
 // brokers without it fall back to their redelivery-delay policy, so the
 // delay remains best-effort — surfaced via
-// MetricAMQP10DelayedRetryUnhonored and a once-per-link Warn. The
+// MetricAMQP10DelayedRetryDeferred and a once-per-link Warn. The
 // message is never dropped, which preserves at-least-once delivery (the
 // safe choice over returning ErrNotSupported, which would route every
 // backed-off retry straight to the DLQ).
@@ -195,12 +195,13 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 		// Finding 2 (delayed-retry boundary): the broker, not this
 		// client, ultimately controls redelivery timing for a modified
 		// outcome. The x-opt-delivery-time annotation asks the broker to
-		// schedule redelivery at now+after; brokers that ignore it make
-		// the runtime's backoff effectively broker-driven. Surface that
-		// two ways (G-N2): a per-message counter for rate/alerting and a
-		// once-per-link Warn (deduped via delayWarnOnce).
-		d.metrics.Counter(MetricAMQP10DelayedRetryUnhonored, 1)
-		d.warnDelayedRetryUnhonored(after)
+		// schedule redelivery at now+after; a honoring broker applies the
+		// spacing, a non-honoring one falls back to its own policy.
+		// Surface the broker-delegated scheduling two ways (G-N2): a
+		// per-message counter for rate/alerting and a once-per-link Warn
+		// (deduped via delayWarnOnce).
+		d.metrics.Counter(MetricAMQP10DelayedRetryDeferred, 1)
+		d.warnDelayedRetryDeferred(after)
 		err = d.settle.ModifyMessage(ctx, d.msg, &amqp.ModifyMessageOptions{
 			DeliveryFailed:    true,
 			UndeliverableHere: false,
@@ -237,19 +238,19 @@ func (d *Delivery) Extend(_ context.Context, _ time.Time) error {
 // redelivery per the runtime's requested backoff.
 const annotationDeliveryTime = "x-opt-delivery-time"
 
-// warnDelayedRetryUnhonored emits a single Warn per receiver link when a
-// delayed retry's spacing depends on broker cooperation. delayWarnOnce is
-// shared by every Delivery created from the same link, so the warning
+// warnDelayedRetryDeferred emits a single Warn per receiver link when a
+// delayed retry's spacing is deferred to broker scheduling. delayWarnOnce
+// is shared by every Delivery created from the same link, so the warning
 // fires once per link rather than once per message;
-// MetricAMQP10DelayedRetryUnhonored still records every occurrence. A nil
+// MetricAMQP10DelayedRetryDeferred still records every occurrence. A nil
 // guard (directly-constructed deliveries) warns on each call.
-func (d *Delivery) warnDelayedRetryUnhonored(after time.Duration) {
+func (d *Delivery) warnDelayedRetryDeferred(after time.Duration) {
 	if d.logger == nil {
 		return
 	}
 	emit := func() {
 		d.logger.Warn(
-			"amqp10: delayed retry not honored client-side; x-opt-delivery-time annotation attached, broker controls redelivery timing",
+			"amqp10: delayed retry deferred to broker scheduling; x-opt-delivery-time annotation attached, broker controls redelivery timing",
 			"envelope_id", d.env.ID(),
 			"requested_delay", after,
 		)

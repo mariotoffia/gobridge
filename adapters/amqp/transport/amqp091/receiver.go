@@ -13,7 +13,29 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-var _ ports.Receiver = (*Receiver)(nil)
+var (
+	_ ports.Receiver      = (*Receiver)(nil)
+	_ ports.ContextCloser = (*Receiver)(nil)
+)
+
+// receiverChannel is the minimal AMQP channel surface the Receiver drives.
+// *amqpChannel satisfies it; keeping it an interface lets the consume loop
+// hand channel ownership to the receiver (for drain-then-close on graceful
+// shutdown) and lets tests substitute a fake to assert that ordering
+// without a live broker.
+type receiverChannel interface {
+	Qos(prefetchCount, prefetchSize int) error
+	Consume(
+		ctx context.Context,
+		queue, consumerTag string,
+		autoAck, exclusive bool,
+		logger *slog.Logger,
+		metrics ports.MetricsExporter,
+		clk clock.Clock,
+	) (<-chan *Delivery, error)
+	NotifyClose() <-chan error
+	Close() error
+}
 
 // Receiver implements ports.Receiver for AMQP 0-9-1. It consumes
 // messages from a queue via the Session's connection and emits
@@ -26,6 +48,14 @@ type Receiver struct {
 	clk         clock.Clock
 	started     chan struct{}
 	startedOnce sync.Once
+
+	// chMu guards activeCh, the channel the live consume loop handed off on
+	// graceful shutdown. Close (invoked by the route runner AFTER it drains
+	// in-flight deliveries) closes it so those Acks land on an open channel
+	// instead of failing and forcing the broker to requeue settled work as
+	// duplicates on the next start.
+	chMu     sync.Mutex
+	activeCh receiverChannel
 }
 
 // NewReceiver creates a Receiver bound to the given Session.
@@ -147,7 +177,19 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		}
 
 		if !r.waitForReconnect(ctx) {
-			return ctx.Err()
+			// waitForReconnect returns false either because the caller
+			// cancelled (ctx.Err() != nil — a clean stop) OR because the
+			// session's event stream closed under us (the session was closed
+			// while this route's ctx is still live). In the latter case
+			// ctx.Err() is nil, so returning it would report a silent clean
+			// stop: the route dies while the runtime still believes it
+			// healthy. Return a non-nil transient error instead so the stop
+			// is attributable and not swallowed.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return shared.ErrConnectionLost.WithMessage(
+				"amqp091: session closed while receiver active")
 		}
 
 		// Bounded backoff before re-establishing the consumer. When the
@@ -265,7 +307,33 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 	if err != nil {
 		return err
 	}
-	defer func() { _ = ch.Close() }()
+	return r.runChannel(ctx, ch, emit)
+}
+
+// runChannel drives one consume attempt on ch. It takes ownership of the
+// channel for the lifetime of the attempt:
+//
+//   - On any error/reconnect return it closes the channel so the next
+//     attempt (Run's loop) opens a fresh one.
+//   - On a graceful stop (ctx cancelled) it HANDS the channel off to
+//     Receiver.Close instead of closing it here. The route runner drains
+//     in-flight deliveries and only then calls Close, so those deliveries'
+//     Acks settle on a still-open channel. Closing here (the previous
+//     `defer ch.Close()`) tore the channel down while up to prefetch_count
+//     deliveries were mid-pipeline, failing their Acks and forcing the
+//     broker to requeue settled work as duplicates on every shutdown.
+//
+// Because a graceful stop hands the channel off rather than closing it,
+// callers driving Run directly MUST call Receiver.Close after Run returns,
+// or the channel and its forwarder goroutine leak.
+func (r *Receiver) runChannel(ctx context.Context, ch receiverChannel, emit func(context.Context, ports.Delivery) error) error {
+	r.setActiveChannel(ch)
+	handOff := false
+	defer func() {
+		if !handOff {
+			r.closeActiveChannel(ch)
+		}
+	}()
 
 	if r.cfg.PrefetchCount > 0 || r.cfg.PrefetchSize > 0 {
 		if err := ch.Qos(r.cfg.PrefetchCount, r.cfg.PrefetchSize); err != nil {
@@ -283,7 +351,7 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		consumerTag = r.cfg.ConsumerTag + "-" + consumerTag
 	}
 
-	// Derive a per-attempt context so that when this consumeLoop returns
+	// Derive a per-attempt context so that when this consume attempt returns
 	// for ANY reason (broker channel close, delivery-channel close, a
 	// consume error, or caller cancellation) the forwarding goroutine
 	// started inside ch.Consume is released from a blocked send on its
@@ -325,11 +393,13 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 		// graceful shutdown under load.
 		select {
 		case <-ctx.Done():
+			handOff = true
 			return nil
 		default:
 		}
 		select {
 		case <-ctx.Done():
+			handOff = true
 			return nil
 		case chanErr, ok := <-chanClose:
 			if ok && chanErr != nil {
@@ -344,6 +414,64 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 				return err
 			}
 		}
+	}
+}
+
+// setActiveChannel records ch as the channel the current consume attempt
+// owns, so Receiver.Close can settle in-flight deliveries before tearing
+// it down on graceful shutdown.
+func (r *Receiver) setActiveChannel(ch receiverChannel) {
+	r.chMu.Lock()
+	r.activeCh = ch
+	r.chMu.Unlock()
+}
+
+// closeActiveChannel closes ch and clears the active reference if it still
+// points at ch. Called on every error/reconnect return from runChannel so
+// the next consume attempt opens a fresh channel.
+func (r *Receiver) closeActiveChannel(ch receiverChannel) {
+	r.chMu.Lock()
+	if r.activeCh == ch {
+		r.activeCh = nil
+	}
+	r.chMu.Unlock()
+	_ = ch.Close()
+}
+
+// Close releases the consumer channel handed off on graceful shutdown.
+// The route runner (runtime/route/runner.go) invokes it AFTER draining
+// in-flight deliveries, so their Acks land on the still-open channel and
+// the broker does not requeue settled work as duplicates on the next
+// start. Safe to call when no channel is outstanding (nil activeCh).
+//
+// Close honours ctx (ports.ContextCloser): the SDK's Channel.Close issues a
+// channel.close RPC and BLOCKS on close-ok, which on a half-dead/unresponsive
+// connection only resolves via missed-heartbeat detection (~2× heartbeat).
+// The runner caps teardown with a bounded ctx, so the close is detached onto
+// a background goroutine and raced against ctx.Done: when ctx expires Close
+// returns promptly while the goroutine still completes the channel.Close (the
+// broker requeues any unacked deliveries on that channel — at-least-once).
+//
+// Embedders driving Run directly MUST call Close after Run returns on a
+// graceful stop; otherwise the handed-off consumer channel and its forwarder
+// goroutine leak (Run no longer self-closes the channel — see runChannel).
+func (r *Receiver) Close(ctx context.Context) error {
+	r.chMu.Lock()
+	ch := r.activeCh
+	r.activeCh = nil
+	r.chMu.Unlock()
+	if ch == nil {
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- ch.Close() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// The detached goroutine still completes ch.Close(); the broker
+		// requeues any unacked deliveries on that channel.
+		return ctx.Err()
 	}
 }
 

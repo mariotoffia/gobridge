@@ -40,6 +40,7 @@ type SessionHealthDetail struct {
 	SessionID           string
 	Connected           bool
 	HasLease            bool
+	ConnectAfterLease   bool // source session defers Start until this instance wins the lease
 	SubscriptionsWanted int
 	SubscriptionsActive int
 	ActiveTopics        []string // topics the broker has ACK'd subscriptions for

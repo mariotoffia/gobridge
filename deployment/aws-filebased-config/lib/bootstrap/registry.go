@@ -59,9 +59,16 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// wired here via bridge.WithTracer.
 	builder := bridge.NewBuilder(runtimeCfg, opts...)
 
+	// The metrics exporter is threaded into the MQTT and SQS transport
+	// factories (nil keeps each adapter's internal Noop fallback) so their
+	// self-instrumented metrics actually emit on this config-driven path —
+	// previously both factories were constructed logger-only, leaving every
+	// SQS and MQTT adapter metric dead (Finding 8; the paho factory carried
+	// the same dead-metrics wiring bug). Mirrors the HTTP factory wiring
+	// below.
 	transports := map[string]ports.TransportFactory{
-		"mqtt": paho.NewFactory(a.logger),
-		"sqs":  sqsadapter.NewFactory(a.logger),
+		"mqtt": paho.NewFactory(a.logger, a.metricsExporter),
+		"sqs":  sqsadapter.NewFactory(a.logger, a.metricsExporter),
 	}
 
 	// The metrics exporter reaches HTTP receivers/SSE senders through the

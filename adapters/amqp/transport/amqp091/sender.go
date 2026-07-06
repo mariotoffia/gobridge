@@ -94,6 +94,20 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return err
 	}
 
+	// Fail fast when the broker has flow control engaged (connection.blocked
+	// resource alarm). The SDK's PublishWithDeferredConfirmWithContext
+	// discards ctx, so a publish issued while the broker is not reading the
+	// socket blocks indefinitely — and it blocks while holding s.mu, wedging
+	// every subsequent sender past its deadline. Refusing up front turns an
+	// unbounded stall into a prompt, retryable ErrBrokerBusy the runtime can
+	// act on. See Session.blockedState / watchBlocked.
+	if s.session != nil {
+		if blocked, reason := s.session.blockedState(); blocked {
+			return shared.ErrBrokerBusy.WithMessage(
+				"amqp091: broker flow control engaged, refusing publish: " + reason)
+		}
+	}
+
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp091: publishing",
 			"exchange", exchange,
@@ -192,6 +206,21 @@ func mapPublishError(err error) error {
 // return-before-confirm ordering of one in-flight publish at a time
 // (basic.return carries no delivery tag to match against).
 func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
+	// Fail fast under broker flow control (see Send): a blocked broker
+	// wedges every publish under the sender mutex. Attribute ErrBrokerBusy
+	// to each message so the caller retries the whole batch rather than
+	// stalling past its deadline. Mirrors the per-message guard in Send.
+	if s.session != nil {
+		if blocked, reason := s.session.blockedState(); blocked {
+			results := make([]ports.BatchResult, len(msgs))
+			busy := shared.ErrBrokerBusy.WithMessage(
+				"amqp091: broker flow control engaged, refusing publish: " + reason)
+			for i := range msgs {
+				results[i] = ports.BatchResult{Index: i, Err: busy}
+			}
+			return results, nil
+		}
+	}
 	if s.cfg.Mandatory {
 		results := make([]ports.BatchResult, len(msgs))
 		for i, m := range msgs {

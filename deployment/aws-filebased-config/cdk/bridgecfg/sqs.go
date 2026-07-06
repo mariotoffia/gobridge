@@ -113,14 +113,21 @@ const sqsTransport = "sqs"
 // empty for the zero-value ref; that surfaces as a sqs.Validate error
 // when the option chain finishes, which the builder converts into a
 // receiver/sender-scoped Build error.
+//
+// The seed is sqs.DefaultConfig() (max_messages=10, wait_time_seconds=20),
+// not a bare Config{}: the canonical config the builder marshals is the
+// authoritative deployment artifact, and the plugin decode surface rejects
+// an EXPLICIT wait_time_seconds:0 / max_messages:0 (short-polling is
+// unsupported — see sqs/register.go). Emitting the documented defaults
+// keeps the produced YAML valid on round-trip.
 func newSQSConfig(ref registry.QueueRef) *sqs.Config {
-	cfg := &sqs.Config{}
+	cfg := sqs.DefaultConfig()
 	if ref.IsResolved() {
 		if u := ref.Queue().QueueUrl(); u != nil {
 			cfg.QueueURL = *u
-			return cfg
+			return &cfg
 		}
 	}
 	cfg.QueueName = ref.Name()
-	return cfg
+	return &cfg
 }

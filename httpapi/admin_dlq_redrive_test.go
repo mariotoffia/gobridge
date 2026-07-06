@@ -146,7 +146,7 @@ func TestHandleDLQRedrive_EntryNotFound(t *testing.T) {
 }
 
 // TestHandleDLQRedrive_RouteNotFound validates that entries whose
-// route_id does not exist get a "route not found" error.
+// route_id does not exist get a "route or binding not found" error.
 func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 	mux, dlq, _ := redriveSetup(t)
 	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
@@ -166,7 +166,7 @@ func TestHandleDLQRedrive_RouteNotFound(t *testing.T) {
 
 	errs := body["errors"].([]any)
 	errObj := errs[0].(map[string]any)
-	assert.Equal(t, "route not found", errObj["error"])
+	assert.Equal(t, "route or binding not found", errObj["error"])
 
 	// Claim-by-delete happens BEFORE inject; when inject fails the entry must
 	// be restored (best-effort) so failure evidence is not silently lost.

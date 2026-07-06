@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -25,6 +26,15 @@ type Factory struct {
 
 	receivers *ReceiverFactory
 	senders   *SenderFactory
+
+	// exclusiveSeen latches once this factory has built an exclusive
+	// consumer. It drives the CapExclusiveIdentity advertisement so the
+	// supervisor serializes (PrepareCommit) rather than overlaps old/new
+	// instances on reconfig — overlapping exclusive consumers race a 403
+	// ACCESS_REFUSED against the reconnect budget and can trip terminal
+	// teardown. Latching (never cleared) is deliberately conservative:
+	// once a route was exclusive, treat reconfig as identity-sensitive.
+	exclusiveSeen atomic.Bool
 }
 
 // NewFactory creates an AMQP 0-9-1 transport factory.
@@ -46,7 +56,16 @@ func (f *Factory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, sess
 	if f.receivers == nil {
 		f.receivers = NewReceiverFactory(f.Logger)
 	}
-	return f.receivers.NewReceiver(ctx, spec, session)
+	r, err := f.receivers.NewReceiver(ctx, spec, session)
+	if err != nil {
+		return nil, err
+	}
+	// Latch the exclusive-identity advertisement so a later reconfig is
+	// serialized rather than overlapped (see Factory.exclusiveSeen).
+	if rr, ok := r.(*Receiver); ok && rr.cfg.Exclusive {
+		f.exclusiveSeen.Store(true)
+	}
+	return r, nil
 }
 
 // NewSender delegates to the inner SenderFactory.
@@ -59,7 +78,7 @@ func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session 
 
 // Capabilities returns the transport capabilities for AMQP 0-9-1.
 func (f *Factory) Capabilities() []ports.Capability {
-	return []ports.Capability{
+	caps := []ports.Capability{
 		ports.CapStatefulSession,
 		ports.CapSourceRedelivery,
 		// amqp091 receivers subscribe (queue-declare + bind + consume) ONLY when
@@ -68,6 +87,35 @@ func (f *Factory) Capabilities() []ports.Capability {
 		// for these (ADV-P4-FU1).
 		ports.CapPlanDrivenSubscriptions,
 	}
+	// Advertise exclusive-identity once an exclusive consumer has been built
+	// so the supervisor picks the serialized (PrepareCommit) swap mode: an
+	// Overlap reconfig would run the old and new exclusive consumers against
+	// the same queue concurrently, and the new one burns its 403 reconnect
+	// budget waiting for the old to drain — tripping terminal teardown.
+	if f.exclusiveSeen.Load() {
+		caps = append(caps, ports.CapExclusiveIdentity)
+	}
+	return caps
+}
+
+// ConfigRequiresExclusiveIdentity reports whether the given RECEIVER plugin
+// config declares an exclusive consumer, letting the supervisor pick the
+// serialized swap mode on the FIRST reconfig that introduces exclusivity —
+// before any receiver (and thus the exclusiveSeen latch) exists. Decode
+// failure or nil cfg => false (no false positive).
+//
+// This complements — not replaces — the exclusiveSeen latch and the
+// Capabilities() advertisement: the latch still covers the steady-state
+// exclusive→exclusive reconfig where no config is available to inspect.
+func (f *Factory) ConfigRequiresExclusiveIdentity(cfg ports.PluginConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	c, err := configFromSpec(cfg)
+	if err != nil {
+		return false
+	}
+	return c.Receiver.Exclusive
 }
 
 // AddressValidator returns nil — AMQP 0-9-1 routing keys have no

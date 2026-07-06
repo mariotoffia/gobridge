@@ -18,6 +18,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **MetricNamespace** | Single namespace `GoBridge/Runtime` under which every bridge metric is reported. |
 | **instance_id tag** | Metric dimension (`TagKeyInstanceID = "instance_id"`) added by the CloudWatch exporter's `WithInstanceTag` so per-instance series in a fleet do not collide. Sourced from `BridgeSettings.InstanceID`; never applied to rollup-metric copies. |
 | **Exporter self-metrics** | The CloudWatch exporter's own health counters: `ExporterDroppedDatums` (datums dropped under buffer pressure) and `ExporterRejectedDatums` (datums CloudWatch rejected on `PutMetricData`). |
+| **MetricRouteRestarts** | Metric `RouteRestarts` (`domain/shared`) counting per-route supervised restarts: a route runner returned an error and was restarted in isolation under jittered capped backoff instead of tearing down the runtime. Tagged `route_id`. Mirrors `SessionRestarts` for the ingress/route side; alert on the rate, not on liveness. |
+| **ErrBrokerBusy** | Transient error `shared.ErrBrokerBusy` (code `BROKER_BUSY`) raised when a broker has flow control engaged. The amqp091 sender returns it to fail fast on a `connection.blocked` resource alarm instead of wedging every publisher on a publish the SDK cannot cancel. |
 
 ## Messaging (`domain/messaging`)
 
@@ -102,6 +104,9 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **PasswordCredential** | `Username` + `Password`. Redacts in `String`/`GoString`. |
 | **TLSMaterial** | `CertPEM`, `KeyPEM`, `CAPEMs`, `InsecureSkipVerify`. Redacts in `String`/`GoString`. |
 | **Push credential / Pull credential** | Two delivery modes for credential rotation: push stores emit on change; pull stores are polled. `CredentialSet.Equal` is the canonical change check. |
+| **Single-use exclusive session** | Invariant that the session-based source transports (paho MQTT, amqp091, amqp10) are single-use: once `Close` runs, `Start` returns a permanent `shared.ErrUnavailable` rather than reconnecting. `CapExclusiveIdentity` is declared only by paho MQTT and amqp091; amqp10 does not advertise it but obeys the same single-use rule when run as an exclusive session. The session-zombie terminal escalation (`ErrSessionUnrecoverable`) and the orchestrator process-restart backstop rely on it. |
+| **ErrSessionUnrecoverable** | `session.ErrSessionUnrecoverable` (`runtime/session`): a lease-owning term failed because a single-use exclusive session cannot be re-`Start`ed in this process after a step-down `Close` (Start-after-Close surfaces `shared.ErrUnavailable`). The lease is released first, then the supervisor escalates to terminal so a standby takes over and the orchestrator restarts this pod with a fresh session. |
+| **SessionHealthDetail.ConnectAfterLease** | Read-side health flag (`ports.SessionHealthDetail`) marking a source session that defers `Start` until this instance wins the lease (deferred-connect standby). |
 
 ## Clock (`domain/clock`)
 
@@ -136,6 +141,8 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **BlueprintValidationError** | Structured outcome of blueprint validation. Splits hard `Errors` (block startup or commit) from advisory `Warnings` (surface in admin UI but allow). Returned by the validator and inspected directly by `httpapi`. |
 | **ConfigStore** | Port (`ports.ConfigStore`) consumed by the admin HTTP layer for `Load` / `Save` / `Validate` / `Merge` over a `*BridgeConfig`. Decouples `httpapi` from the parser package; composition root supplies the implementation (file-backed, DynamoDB, Vault, …). |
 | **Blueprint** | Synonym for an in-memory `*BridgeConfig`: a parsed-but-not-yet-built configuration shape. The blueprint validator runs invariants before `bridge.Builder` is invoked. |
+| **RouteSessionDef.AcquirePollInterval** | Blueprint session field (`acquire_poll_interval`, e.g. `"5s"`): how often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)` (floor 1 ms), decoupled from renew so a standby detects a freed lease faster than the owner renews. |
+| **RouteSessionDef.RenewCallTimeout** | Blueprint session field (`renew_call_timeout`, e.g. `"3s"`): bounds a single lease-renew store call. Part of the failover-safety invariant — effective renew spacing is `renew_interval + jitter/2 + renew_call_timeout`, so the worst-case loss-detection span folds it in and must stay below `lease_ttl`. Empty derives `min(renew_interval/2, 5s)` (floor 1 s). |
 
 ## Cross-cutting (Layer 2)
 
@@ -150,6 +157,7 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |
 | **SpanIdentity** | Optional `ports.Span` capability (`ports/tracer.go`) exposing the active span's W3C identity (`TraceID()`/`SpanID()`) so the runtime stamps `trace_id`/`span_id` log fields from the ACTIVE span instead of the upstream `traceparent`. Both return `""` for no-op spans and unsampled traces; the correlation ID remains the always-present join key. |
+| **WithStopQuiesce** | Runtime `Option` (`runtime.WithStopQuiesce(budget)`) enabling a bounded pre-cancel drain in `Stop`: the runtime waits up to `budget` for every route to reach `InFlight==0` before cancelling the context, so in-flight deliveries settle instead of aborting into redeliveries. Off by default (abort-style `Stop`). |
 
 ## Tenancy (`processors/tenant` + `ports/tenant.go`)
 
@@ -173,6 +181,8 @@ Adapter-owned names that surface in config keys, headers, or metrics.
 | Term | Meaning |
 |---|---|
 | **`mqtt.topic`** | Envelope-headers key (`paho.HeaderMQTTTopic`) exposing the MQTT publish topic the broker delivered on. Distinct from the logical subject carried in the `gobridge.subject` user property (`paho.HeaderGobridgeSubject`). |
+| **`mqtt.retained`** | Envelope-headers key (`paho.HeaderMQTTRetained` = `"mqtt.retained"`) recording whether the broker delivered the publish with the retained flag set. Bridge-populated at ingress; an inbound user property literally named `mqtt.retained` is dropped so a peer cannot spoof retained state. |
+| **`mqtt.qos`** | Envelope-headers key (`paho.HeaderMQTTQoS` = `"mqtt.qos"`) recording the delivered MQTT QoS level. Bridge-populated at ingress; an inbound user property named `mqtt.qos` is dropped. |
 | **DefaultPersistentSessionExpiry** | MQTT: the `session_expiry_interval` (86400 s / 24 h) substituted at Start when a Persistent/Exclusive session leaves the option at `0` — a literal zero would give no offline retention. |
 | **Unmatched grace** | MQTT config key `unmatched_grace` (default `DefaultUnmatchedGrace`, 30 s, restarted per (re)connect): window during which a publish matching no registered receiver filter is buffered un-acked. Past the window it is acked, dropped, and its topic unsubscribed. |
 | **WillOptions** | MQTT Last Will and Testament block (`session.will.{topic,payload,qos,retain}`), published by the broker on ungraceful disconnect only. Topic required, no `+`/`#` wildcards, QoS 0–2. |
@@ -184,6 +194,11 @@ Adapter-owned names that surface in config keys, headers, or metrics.
 | **Forward token** | HTTP: shared secret carried in `X-Bridge-Forward-Token` authenticating a peer's `X-Bridge-Forwarded` loop marker (`Factory.WithForwardToken` / `ForwarderConfig.ForwardToken`). Distinct from `api_key` by mandate: it authorises trusting the forwarding marker, not message submission. |
 | **Ingress idempotency window** | HTTP: bounded node-local LRU of `Idempotency-Key`/`X-Dedup-Id` values of successfully processed requests (config key `dedup_window`, default 4096). A request presenting a remembered key is acknowledged without re-emitting the delivery. |
 | **Redirect endpoint** | HTTP config key `redirect_endpoint`: names the `PeerInfo.Endpoints` key used for opt-in SSE 307 redirects to the route owner. Empty (default) refuses with 503 so the internal peer endpoint never leaks to an external client. |
+| **CapExclusiveIdentity** | Transport capability `exclusive_identity` (`ports.CapExclusiveIdentity`) marking a lease-based single-holder session whose reconfig is identity-sensitive (the supervisor serializes the swap). Declared by MQTT (paho) always and by amqp091 once it has built an exclusive consumer (latched); see also `ConfigRequiresExclusiveIdentity`. Exclusive-identity transports are subject to the Single-use exclusive session invariant. |
+| **CapSharedConsumer** | Transport capability `shared_consumer` (`ports.CapSharedConsumer`) marking a broadcast/scale-out source where the broker load-balances one logical subscription across a consumer group. Declared by MQTT (paho) for `$share/<group>/<filter>` shared subscriptions; deliberately omitted by SQS. |
+| **ConfigRequiresExclusiveIdentity** | amqp091 `Factory` hook (`ConfigRequiresExclusiveIdentity(cfg)`) reporting whether a receiver plugin config declares an exclusive consumer, so the supervisor selects the serialized swap mode on the first reconfig that introduces exclusivity — before any receiver (and the internal `exclusive_identity` latch) exists. |
+| **MetricAMQP10DelayedRetryDeferred** | AMQP 1.0 metric `AMQP10DelayedRetryDeferred` counting delayed (backoff) retries whose redelivery timing was deferred to the broker (a `ModifyMessage` carrying an `x-opt-delivery-time` annotation). It measures broker-delegated retry scheduling, not a failure. Renamed from `AMQP10DelayedRetryUnhonored`, which wrongly implied the broker ignored the request on every delayed retry. |
+| **ErrTemporaryCredentialsUnsupported** | SQS adapter error (`sqs.ErrTemporaryCredentialsUnsupported`) rejecting temporary/STS material — an `ASIA`-prefixed access key that needs a session token the static password credential cannot carry. Wrapped as `shared.ErrNotAuthorized` (code `NOT_AUTHORIZED`, permanent) so callers do not retry it. |
 
 ## Deployment / seeding (`deployment/aws-filebased-config`)
 

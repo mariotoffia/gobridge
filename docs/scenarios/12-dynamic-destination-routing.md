@@ -256,7 +256,7 @@ How `OutboundMessage.Address` (resolved from the binding template) is used depen
 | Transport | Where `OutboundMessage.Address` goes | Where `Envelope.Subject` rides |
 |-----------|--------------------------------------|--------------------------------|
 | **MQTT** | Publish topic. Overrides `default_topic`; validated for wildcards. | MQTT user property `gobridge.subject` |
-| **AMQP 0-9-1** | Routing key (when sender `routing_key` is empty). | AMQP header `gobridge.subject` |
+| **AMQP 0-9-1** | Routing key -- takes precedence; the sender `routing_key` is the fallback when `Address` is empty. | AMQP header `gobridge.subject` |
 | **AMQP 1.0** | Validated against the configured sender link address (mismatch fails fast). Per-address dynamic links are deferred. | `Message.Properties.Subject` |
 | **SQS** | Reserved for future dynamic queue selection. The queue URL/name remains static on the sender today. | `Subject` message attribute |
 | **Azure SB** | Reserved for future dynamic entity selection. The queue/topic remains static on the sender today. | `Message.Subject` |

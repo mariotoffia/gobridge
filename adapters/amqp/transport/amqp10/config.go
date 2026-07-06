@@ -449,6 +449,20 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		tc.CACertFile, _ = optString(sub, "ca_cert_file")
 		tc.CertFile, _ = optString(sub, "cert_file")
 		tc.KeyFile, _ = optString(sub, "key_file")
+		// In-memory PEM material (documented ca_cert_pem/cert_pem/key_pem)
+		// was silently dropped by this map path, so programmatic callers
+		// that passed PEM bytes ended up with no client cert / CA at all
+		// (finding 8). Honor them here; BuildTLSConfig gives PEM precedence
+		// over the file fields.
+		if v, ok := optString(sub, "ca_cert_pem"); ok {
+			tc.CACertPEM = shared.NewSecret(v)
+		}
+		if v, ok := optString(sub, "cert_pem"); ok {
+			tc.CertPEM = shared.NewSecret(v)
+		}
+		if v, ok := optString(sub, "key_pem"); ok {
+			tc.KeyPEM = shared.NewSecret(v)
+		}
 		tc.InsecureSkipVerify, _ = optBool(sub, "insecure_skip_verify")
 		opts.TLS = tc
 	}

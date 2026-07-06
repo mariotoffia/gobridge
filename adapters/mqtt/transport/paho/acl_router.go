@@ -79,9 +79,39 @@ type router struct {
 	handlers map[string]routerHandler
 
 	// pending buffers publishes that matched no registered handler,
-	// bounded by pendingLimit. Guarded by mu.
+	// bounded by pendingLimit (entries) AND pendingBytesLimit (payload
+	// bytes). Guarded by mu.
 	pending      []pendingPublish
 	pendingLimit int
+	// pendingBytes is the running sum of buffered payload sizes; capped
+	// by pendingBytesLimit so a flood of large publishes cannot buffer
+	// multiple gigabytes during a grace window. Guarded by mu.
+	pendingBytes      int64
+	pendingBytesLimit int64
+
+	// dispatchCh decouples the paho publish-callback goroutine from the
+	// (synchronous, possibly slow) dispatch path: onPublishReceived
+	// enqueues here and a single dispatchLoop worker drains it in arrival
+	// order. Bounded so a QoS 0 flood cannot grow unbounded — on a full
+	// queue QoS 0 is dropped (no delivery contract) to keep paho's read
+	// loop moving (PINGRESP/PUBACK), while QoS 1/2 blocks (bounded anyway
+	// by the broker's Receive-Maximum window). Created lazily by beginGrace;
+	// nil until then (unit tests driving dispatch/Route directly bypass it
+	// and run inline). Guarded by mu.
+	dispatchCh   chan dispatchItem
+	dispatchSize int
+	// dispatchDone is closed by dispatchLoop when it exits, so Close can
+	// JOIN the worker (awaitDispatchLoop) before r.wg.Wait(). Without the
+	// join, a dispatchLoop draining a buffered item after r.stop is closed
+	// would call r.wg.Add via fanout CONCURRENTLY with the in-flight Wait
+	// (WaitGroup Add-during-Wait → panic). Created with dispatchCh in
+	// beginGrace; nil until then. Guarded by mu.
+	dispatchDone chan struct{}
+	// closing is set true by shutdown (under mu) so RegisterFiltered's
+	// pending-flush path — the other r.wg producer — skips its r.wg.Add
+	// once Close has begun. The mutex orders that skip against Close's
+	// subsequent Wait, so no flush Add can race the Wait. Guarded by mu.
+	closing bool
 
 	// clk sources time for the startup grace window. Defaults to
 	// clock.System; the Session injects its (possibly fake) clock.
@@ -123,9 +153,24 @@ type router struct {
 
 // routerHandler pairs a dispatch function with the topic filters that
 // select it. Empty filters match every topic.
+//
+// emitMu serializes every emit to this handler — the live dispatch path
+// and the pending-flush path both acquire it, so a handler never sees
+// concurrent or out-of-order emit (ports.Receiver requires sequential,
+// in-order emit). inflight tracks currently-dispatching invocations so
+// Unregister can await them and guarantee emit is never called after
+// Run has returned.
 type routerHandler struct {
-	fn      func(pub *pahov5.Publish, ack func() error)
-	filters []string
+	fn       func(pub *pahov5.Publish, ack func() error)
+	filters  []string
+	emitMu   *sync.Mutex
+	inflight *sync.WaitGroup
+}
+
+// dispatchItem is one publish queued for the serialized dispatch worker.
+type dispatchItem struct {
+	pub *pahov5.Publish
+	ack func() error
 }
 
 // pendingPublish is one buffered pre-registration publish together
@@ -141,6 +186,19 @@ type pendingPublish struct {
 // broker's un-acked QoS 1/2 in-flight window under manual
 // acknowledgement.
 const defaultPendingLimit = 65535
+
+// defaultPendingBytesLimit caps the pre-registration pending buffer in
+// payload bytes (independent of entry count). Without a byte cap the
+// default 65535-entry buffer could hold multiple gigabytes of large
+// publishes during a grace window; 64 MiB is a generous ceiling that
+// still bounds memory under a large-message flood.
+const defaultPendingBytesLimit int64 = 64 << 20
+
+// defaultDispatchSize bounds the serialized dispatch queue that decouples
+// the paho publish-callback goroutine from the synchronous dispatch path.
+// It absorbs a burst without unbounded growth; on overflow QoS 0 is
+// dropped and QoS 1/2 applies backpressure (see dispatchCh).
+const defaultDispatchSize = 1024
 
 // routerOption customises a router at construction (functional options
 // so new knobs do not churn the newRouter signature).
@@ -178,14 +236,16 @@ func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...route
 		metrics = &ports.NoopExporter{}
 	}
 	r := &router{
-		handlers:     make(map[string]routerHandler),
-		pendingLimit: defaultPendingLimit,
-		clk:          clock.System,
-		graceWindow:  DefaultUnmatchedGrace,
-		unsubscribed: make(map[string]struct{}),
-		stop:         make(chan struct{}),
-		logger:       logger,
-		metrics:      metrics,
+		handlers:          make(map[string]routerHandler),
+		pendingLimit:      defaultPendingLimit,
+		pendingBytesLimit: defaultPendingBytesLimit,
+		dispatchSize:      defaultDispatchSize,
+		clk:               clock.System,
+		graceWindow:       DefaultUnmatchedGrace,
+		unsubscribed:      make(map[string]struct{}),
+		stop:              make(chan struct{}),
+		logger:            logger,
+		metrics:           metrics,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -230,11 +290,71 @@ func (r *router) beginGrace() {
 	r.graceStarted = true
 	r.graceTimer = r.clk.NewTimer(r.graceWindow)
 	r.unsubCh = make(chan string, orphanUnsubBuffer)
+	// Start the serialized dispatch worker alongside the grace worker so
+	// the production ingress path (onPublishReceived → dispatchCh) is
+	// decoupled from paho's callback goroutine. Lazy start keeps
+	// direct-dispatch unit tests goroutine-free. dispatchDone lets Close
+	// join this worker before r.wg.Wait() (see awaitDispatchLoop).
+	r.dispatchCh = make(chan dispatchItem, r.dispatchSize)
+	r.dispatchDone = make(chan struct{})
 	timerC := r.graceTimer.C()
 	unsubCh := r.unsubCh
+	dispatchCh := r.dispatchCh
+	dispatchDone := r.dispatchDone
 	r.mu.Unlock()
 
 	go r.graceLoop(timerC, unsubCh)
+	go r.dispatchLoop(dispatchCh, dispatchDone)
+}
+
+// rearmGrace restarts the unmatched-publish grace window WITHOUT starting
+// the grace subsystem if it never ran. It is called on Unregister so a
+// publish arriving in the unregister→re-register gap (a supervisor-
+// restarted receiver) is BUFFERED for the replacement handler instead of
+// acked-and-dropped past a long-expired grace deadline — the covered-topic
+// QoS 1/2 loss window. When no connection has ever come up (graceStarted
+// == false, e.g. a unit test) it is a no-op so no worker goroutine leaks.
+func (r *router) rearmGrace() {
+	r.mu.Lock()
+	if r.graceStarted {
+		r.graceDeadline = r.clk.Now().Add(r.graceWindow)
+		if r.graceTimer != nil {
+			r.graceTimer.Reset(r.graceWindow)
+		}
+	}
+	r.mu.Unlock()
+}
+
+// dispatchLoop is the SINGLE serialized dispatch worker. It drains
+// dispatchCh in arrival order and runs the (synchronous) dispatch for
+// each publish, off the paho publish-callback goroutine, until shutdown.
+// It closes done on exit so Close can join it (awaitDispatchLoop) before
+// r.wg.Wait() — guaranteeing its final fanout r.wg.Add has completed and
+// therefore never races the Wait.
+func (r *router) dispatchLoop(ch <-chan dispatchItem, done chan struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-r.stop:
+			return
+		case item := <-ch:
+			r.dispatch(item.pub, item.ack)
+		}
+	}
+}
+
+// awaitDispatchLoop blocks until the serialized dispatch worker has fully
+// exited (its final r.wg.Add/Done pair complete), or returns immediately
+// when the worker was never started (dispatchDone nil — a session that
+// never began grace). Callers MUST invoke this before r.wg.Wait() so no
+// dispatchLoop Add can race the Wait.
+func (r *router) awaitDispatchLoop() {
+	r.mu.Lock()
+	done := r.dispatchDone
+	r.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // orphanUnsubBuffer bounds the in-memory queue of orphan topics awaiting
@@ -280,6 +400,7 @@ func (r *router) sweepUnmatched() {
 	}
 	orphans := r.pending
 	r.pending = nil
+	r.pendingBytes = 0
 	r.mu.Unlock()
 
 	for i := range orphans {
@@ -337,9 +458,14 @@ func (r *router) dropUnmatched(pub *pahov5.Publish, ack func() error) {
 	}
 }
 
-// shutdown terminates the grace worker goroutine. Idempotent; called by
-// Session.Close.
+// shutdown terminates the grace and dispatch worker goroutines and marks
+// the router closing so RegisterFiltered's pending-flush stops producing
+// into r.wg. Idempotent; called by Session.Close BEFORE awaitDispatchLoop
+// + Wait.
 func (r *router) shutdown() {
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
 	r.stopOnce.Do(func() { close(r.stop) })
 }
 
@@ -368,8 +494,50 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 			return nil
 		}
 	}
-	r.dispatch(pub, ack)
+	r.enqueueDispatch(pub, ack)
 	return true, nil
+}
+
+// enqueueDispatch hands a publish to the serialized dispatch worker
+// (dispatchCh) so the paho publish-callback goroutine returns promptly
+// and keeps processing PINGRESP/PUBACK. On a full queue a QoS 0 publish
+// is dropped (no delivery contract) so a QoS 0 flood cannot stall the
+// connection into keepalive death; a QoS 1/2 publish blocks (bounded by
+// the broker's Receive-Maximum window) so at-least-once is preserved.
+// When the worker has not started (dispatchCh == nil — direct-dispatch
+// unit tests) it dispatches inline so behaviour is unchanged there.
+func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
+	if pub == nil {
+		return
+	}
+	r.mu.Lock()
+	ch := r.dispatchCh
+	r.mu.Unlock()
+	if ch == nil {
+		r.dispatch(pub, ack)
+		return
+	}
+	item := dispatchItem{pub: pub, ack: ack}
+	select {
+	case ch <- item:
+		return
+	default:
+	}
+	if pub.QoS == 0 {
+		r.dropCount.Add(1)
+		r.metrics.Counter(MetricMQTTRouterDropped, 1)
+		if r.logger != nil {
+			r.logger.Warn("mqtt: dropped QoS 0 publish (dispatch queue full under flood)",
+				"topic", pub.Topic)
+		}
+		return
+	}
+	// QoS 1/2: block until the worker drains a slot or the router stops.
+	// The un-acked publish is redelivered by the broker if we stop first.
+	select {
+	case ch <- item:
+	case <-r.stop:
+	}
 }
 
 // Route implements paho.Router for compatibility with tests and the
@@ -398,6 +566,11 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 	matching := make([]routerHandler, 0, len(r.handlers))
 	for _, h := range r.handlers {
 		if matchesAnyFilter(h.filters, pub.Topic) {
+			// Mark in-flight UNDER r.mu so it pairs with Unregister's
+			// delete-then-Wait: once Unregister has removed a handler, no
+			// new dispatch can add to its inflight WaitGroup, so Wait
+			// drains only the already-started emits.
+			h.inflight.Add(1)
 			matching = append(matching, h)
 		}
 	}
@@ -452,19 +625,26 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 // bufferLocked appends the publish to the pending buffer, evicting the
 // oldest QoS 0 entry on overflow. Returns false when the publish had
 // to be dropped (buffer full of QoS 1/2 entries, or the new publish is
-// QoS 0 and there is no room). QoS 1/2 entries are never evicted: they
-// are un-acked, so dropping them silently would either lose them (if
-// acked) or head-of-line-block the ack stream (if not); capacity is
-// sized to the broker's Receive Maximum window so QoS 1/2 overflow
-// cannot occur in practice.
+// QoS 0 and there is no room). The buffer is bounded by BOTH an entry
+// count (pendingLimit, sized to Receive Maximum) AND a payload-byte
+// ceiling (pendingBytesLimit) so a flood of large publishes cannot
+// buffer gigabytes. QoS 1/2 entries are never evicted: they are
+// un-acked, so dropping them silently would either lose them (if acked)
+// or head-of-line-block the ack stream (if not).
 func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
-	if len(r.pending) >= r.pendingLimit {
+	size := pubBytes(pub)
+	overLimit := len(r.pending) >= r.pendingLimit ||
+		(r.pendingBytesLimit > 0 && r.pendingBytes+size > r.pendingBytesLimit)
+	if overLimit {
 		if pub.QoS == 0 {
 			return false
 		}
+		// Evict the oldest QoS 0 entry to make room for a QoS 1/2 publish
+		// (which carries a delivery contract and must not be dropped).
 		evicted := false
 		for i := range r.pending {
 			if r.pending[i].pub.QoS == 0 {
+				r.pendingBytes -= pubBytes(r.pending[i].pub)
 				r.pending = append(r.pending[:i], r.pending[i+1:]...)
 				evicted = true
 				break
@@ -477,7 +657,18 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 		r.metrics.Counter(MetricMQTTRouterDropped, 1)
 	}
 	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+	r.pendingBytes += size
 	return true
+}
+
+// pubBytes estimates the retained memory of a buffered publish: topic +
+// payload bytes. It is intentionally cheap (ignores property overhead);
+// it only needs to bound the buffer, not account exactly.
+func pubBytes(pub *pahov5.Publish) int64 {
+	if pub == nil {
+		return 0
+	}
+	return int64(len(pub.Topic) + len(pub.Payload))
 }
 
 // fanout dispatches one publish to the given handlers and blocks until
@@ -532,6 +723,14 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 		go func(handler routerHandler, ackPart func() error) {
 			defer r.wg.Done()
 			defer local.Done()
+			// inflight was incremented under r.mu in dispatch (or in
+			// RegisterFiltered for the flush path); release it here so
+			// Unregister's Wait unblocks once this emit returns —
+			// guaranteeing emit is never in flight after Unregister
+			// returns (ports.Receiver emit lifetime).
+			if handler.inflight != nil {
+				defer handler.inflight.Done()
+			}
 			defer func() {
 				if rv := recover(); rv != nil {
 					r.metrics.Counter(MetricMQTTHandlerPanics, 1)
@@ -545,6 +744,13 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 					// redelivered on session resume (at-least-once).
 				}
 			}()
+			// emitMu serializes this handler's live dispatch with its
+			// pending-flush so a handler never sees concurrent or
+			// out-of-order emit (ports.Receiver sequential-emit contract).
+			if handler.emitMu != nil {
+				handler.emitMu.Lock()
+				defer handler.emitMu.Unlock()
+			}
 			handler.fn(&p, ackPart)
 		}(h, acks[i])
 	}
@@ -621,34 +827,85 @@ func (r *router) Register(id string, h func(*pahov5.Publish)) {
 // (pre-registration) publishes matching the filters are flushed to the
 // new handler in arrival order.
 func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Publish, func() error)) {
-	entry := routerHandler{fn: h, filters: filters}
+	entry := routerHandler{
+		fn:       h,
+		filters:  filters,
+		emitMu:   &sync.Mutex{},
+		inflight: &sync.WaitGroup{},
+	}
 	r.mu.Lock()
 	r.handlers[id] = entry
 	flush := r.takePendingLocked(filters)
-	if len(flush) > 0 {
-		// Track the flush goroutine on the shared WaitGroup so
-		// Session.Close awaits an in-progress flush.
+	// Skip the flush once Close has begun (r.closing set under r.mu by
+	// shutdown): the flush goroutine's r.wg.Add would otherwise race
+	// Close's r.wg.Wait. The mutex orders this decision against shutdown,
+	// so either we Add before shutdown-before-Wait (safe) or we observe
+	// closing and skip entirely. Skipped pending stays un-acked → the
+	// broker redelivers to the next owner (at-least-once preserved).
+	doFlush := len(flush) > 0 && !r.closing
+	if doFlush {
+		// Lock emitMu WHILE still holding r.mu (uncontended — brand-new
+		// handler) so any live dispatch that observes this handler after
+		// r.mu is released blocks on emitMu until the flush of the (older)
+		// buffered publishes completes. That funnels flush and live
+		// dispatch through ONE serialized, in-order path (ports.Receiver
+		// sequential-emit contract). inflight/wg track the flush so
+		// Unregister and Session.Close both await it.
+		entry.emitMu.Lock()
+		entry.inflight.Add(1)
 		r.wg.Add(1)
 	}
 	r.mu.Unlock()
 
-	if len(flush) > 0 {
+	if doFlush {
 		go func() {
 			defer r.wg.Done()
+			defer entry.inflight.Done()
+			defer entry.emitMu.Unlock()
 			for _, p := range flush {
-				r.fanout(p.pub, p.ack, []routerHandler{entry})
+				r.emitOne(entry, p.pub, p.ack)
 			}
 		}()
 	}
 
 	if logging.DebugEnabled(r.logger) {
+		flushed := 0
+		if doFlush {
+			flushed = len(flush)
+		}
 		r.logger.Log(context.Background(), logging.LevelDebug, "mqtt: handler registered",
 			"handler_id", id,
 			"filter_count", len(filters),
-			"flushed_pending", len(flush),
+			"flushed_pending", flushed,
 			"total_handlers", r.HandlerCount(),
 		)
 	}
+}
+
+// emitOne invokes handler.fn with an independent copy of pub (payload
+// copied so the handler cannot race the shared backing array), recovering
+// panics into the handler-panic metric. It does NOT touch emitMu,
+// inflight or the shared WaitGroup — the caller owns that bookkeeping.
+// Used by the pending-flush path, where a single handler consumes the
+// publish so its Properties pointer may be shared safely.
+func (r *router) emitOne(handler routerHandler, pub *pahov5.Publish, ack func() error) {
+	p := *pub
+	if pub.Payload != nil {
+		p.Payload = make([]byte, len(pub.Payload))
+		copy(p.Payload, pub.Payload)
+	}
+	defer func() {
+		if rv := recover(); rv != nil {
+			r.metrics.Counter(MetricMQTTHandlerPanics, 1)
+			if r.logger != nil {
+				r.logger.Error("mqtt: handler panicked",
+					"recovered", rv,
+					"topic", p.Topic,
+				)
+			}
+		}
+	}()
+	handler.fn(&p, ack)
 }
 
 // takePendingLocked removes and returns — preserving arrival order —
@@ -662,6 +919,7 @@ func (r *router) takePendingLocked(filters []string) []pendingPublish {
 	for _, p := range r.pending {
 		if matchesAnyFilter(filters, p.pub.Topic) {
 			flush = append(flush, p)
+			r.pendingBytes -= pubBytes(p.pub)
 		} else {
 			keep = append(keep, p)
 		}
@@ -672,8 +930,27 @@ func (r *router) takePendingLocked(filters []string) []pendingPublish {
 
 func (r *router) Unregister(id string) {
 	r.mu.Lock()
+	entry, ok := r.handlers[id]
 	delete(r.handlers, id)
 	r.mu.Unlock()
+
+	if ok && entry.inflight != nil {
+		// Await any in-flight dispatch to this handler so emit is never
+		// invoked after Unregister returns — and therefore never after
+		// the owning Receiver.Run has returned (ports.Receiver emit
+		// lifetime). The delete above (under r.mu) guarantees no new
+		// dispatch can add to inflight, so this Wait drains only the
+		// already-started emits.
+		entry.inflight.Wait()
+	}
+
+	// Re-arm the unmatched grace window: a receiver being unregistered is
+	// often a restart (its Run exited and the supervisor will re-register),
+	// so publishes arriving in the unregister→re-register gap must be
+	// BUFFERED for the replacement handler, not acked-and-dropped past a
+	// long-expired grace deadline (covered-topic QoS 1/2 loss window).
+	r.rearmGrace()
+
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(context.Background(), logging.LevelDebug, "mqtt: handler unregistered",
 			"handler_id", id,

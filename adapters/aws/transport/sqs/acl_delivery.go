@@ -33,25 +33,32 @@ const (
 	// the auto-extend goroutine is worthwhile at all.
 	minAutoExtendVisibilitySeconds int32 = 2
 
-	// sqsSettlementTimeout bounds the final Ack/Retry SQS call when the
-	// caller's context is already cancelled at settlement time (typically
-	// graceful shutdown racing a completed send). See settlementContext.
+	// sqsSettlementTimeout bounds every settlement/extend SQS call
+	// (Ack/Retry/Extend/auto-extend). The SDK HTTP client has no overall
+	// request timeout, so this is the only guard against a black-holed
+	// connection wedging the delivery goroutine for the TCP RTO. See
+	// settlementContext (Finding 5).
 	sqsSettlementTimeout = 10 * time.Second
 )
 
-// settlementContext returns the context for the final Ack/Retry SQS
-// call. A live ctx is used as-is. When ctx is already cancelled —
-// shutdown cancelled the delivery context after the send completed —
-// cancellation is stripped with context.WithoutCancel (values such as
-// trace/correlation are kept) and the call is bounded by
-// sqsSettlementTimeout instead, mirroring the runtime's panic-path
-// settlement pattern (runtime/route/runner.go). Without this, a
-// delivery whose egress finished at shutdown would fail its
-// DeleteMessage on the cancelled ctx, guaranteeing duplicate egress on
-// restart for every in-flight message.
+// settlementContext returns the context for a settlement/extend SQS call
+// (Ack/Retry/Extend/auto-extend). It ALWAYS bounds the call with
+// sqsSettlementTimeout, even while ctx is still live (Finding 5): the SDK
+// HTTP client has no overall request timeout, so a black-holed connection
+// during DeleteMessage/ChangeMessageVisibility would otherwise wedge the
+// delivery goroutine for the TCP RTO (tens of minutes) — holding a
+// MaxInFlight slot and, for auto-extend, never incrementing the failure
+// counter so processingCancel never fires.
+//
+// When ctx is already cancelled — shutdown cancelled the delivery context
+// after the send completed — cancellation is stripped with
+// context.WithoutCancel (values such as trace/correlation are kept) so the
+// bounded call still reaches SQS and a successfully egressed message is
+// not redelivered on restart, mirroring the runtime's panic-path
+// settlement pattern (runtime/route/runner.go).
 func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx.Err() == nil {
-		return ctx, func() {}
+		return context.WithTimeout(ctx, sqsSettlementTimeout)
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), sqsSettlementTimeout)
 }
@@ -82,13 +89,20 @@ func clampVisibilitySeconds(seconds int64) int32 {
 }
 
 // autoExtendInterval returns the tick interval for the auto-extend loop
-// given the current visibility timeout (seconds): half the visibility
-// window, floored at 1s so the clock Ticker never receives a
-// non-positive duration (NewTicker / Reset panic on d <= 0). It is the
-// defensive counterpart to clampVisibilitySeconds — even if a degenerate
-// visibility ever reached the loop, the ticker stays valid.
+// given the current visibility timeout (seconds): a THIRD of the
+// visibility window (Finding 5), floored at 1s so the clock Ticker never
+// receives a non-positive duration (NewTicker / Reset panic on d <= 0).
+//
+// Ticking at vis/3 (rather than vis/2) leaves margin after a single
+// transient ChangeMessageVisibility failure: the first tick fires at
+// vis/3, so a retry at the next tick (2·vis/3) still lands strictly
+// before the window lapses at vis. At vis/2 the retry would fall at
+// exactly the expiry instant, letting the message resurface to another
+// consumer. It is also the defensive counterpart to
+// clampVisibilitySeconds — even a degenerate visibility keeps the ticker
+// valid.
 func autoExtendInterval(visSeconds int32) time.Duration {
-	d := time.Duration(visSeconds) * time.Second / 2
+	d := time.Duration(visSeconds) * time.Second / 3
 	if d < time.Second {
 		return time.Second
 	}
@@ -308,7 +322,12 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 		)
 	}
 
-	_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+	// Bound the CMV call unconditionally (Finding 5): a hung connection
+	// must not wedge the caller for the TCP RTO.
+	callCtx, callCancel := settlementContext(ctx)
+	defer callCancel()
+
+	_, err := d.client.ChangeMessageVisibility(callCtx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(d.queueURL),
 		ReceiptHandle:     aws.String(d.receiptHandle),
 		VisibilityTimeout: timeout,
@@ -393,10 +412,19 @@ const autoExtendMaxFailures = 3
 // via stopAutoExtend() in Ack/Retry, or via parent context cancellation
 // during graceful shutdown.
 func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
-	interval := autoExtendInterval(d.visibilityTimeout.Load())
+	vis := d.visibilityTimeout.Load()
+	interval := autoExtendInterval(vis)
 
 	ticker := d.clk.NewTicker(interval)
 	defer ticker.Stop()
+
+	// deadline is the wall-clock instant the CURRENT visibility window
+	// lapses — the message became invisible at receive for `vis` seconds,
+	// and each successful extend resets the window to `vis` from that
+	// moment. Tracking it lets a transient failure retry until (but not
+	// past) the true expiry, instead of relying solely on a fixed failure
+	// count that could fire a full interval after the lapse (Finding 5).
+	deadline := d.clk.Now().Add(time.Duration(vis) * time.Second)
 
 	consecutiveFailures := 0
 
@@ -405,12 +433,18 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
-			vis := d.visibilityTimeout.Load()
-			_, err := d.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+			vis = d.visibilityTimeout.Load()
+			// Bound the CMV call unconditionally (Finding 5): a hung
+			// connection must increment the failure counter within
+			// sqsSettlementTimeout, not stall the loop for the TCP RTO.
+			callCtx, callCancel := context.WithTimeout(ctx, sqsSettlementTimeout)
+			_, err := d.client.ChangeMessageVisibility(callCtx, &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          aws.String(d.queueURL),
 				ReceiptHandle:     aws.String(d.receiptHandle),
 				VisibilityTimeout: vis,
 			})
+			callCancel()
+			now := d.clk.Now()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -423,12 +457,23 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 						"consecutive_failures", consecutiveFailures,
 					)
 				}
-				if consecutiveFailures >= autoExtendMaxFailures {
+				// Cancel processing when the window has actually lapsed
+				// (the message may already be visible to another consumer)
+				// OR after the defensive consecutive-failure ceiling. The
+				// windowLapsed check is a small-visibility backstop: for
+				// vis>=3 the failure ceiling (autoExtendMaxFailures) is
+				// reached at or before the deadline, so it leads; only at
+				// the minimum visibility (vis==2, interval floored to 1s)
+				// does windowLapsed fire first, cancelling the instant the
+				// lock is genuinely lost.
+				windowLapsed := !now.Before(deadline)
+				if windowLapsed || consecutiveFailures >= autoExtendMaxFailures {
 					if d.logger != nil {
-						d.logger.Error("sqs: auto-extend max failures reached, cancelling processing",
+						d.logger.Error("sqs: auto-extend giving up, cancelling processing",
 							"queue", d.queueURL,
 							"message_id", d.env.ID,
 							"consecutive_failures", consecutiveFailures,
+							"window_lapsed", windowLapsed,
 						)
 					}
 					if d.processingCancel != nil {
@@ -436,9 +481,25 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 					}
 					return
 				}
+				// Retry with deadline tracking. On the FIRST failure the
+				// retry interval equals the regular cadence — retry =
+				// (vis - vis/3)/2 = vis/3 = interval — so the ticker is
+				// left unchanged. From the SECOND failure on the remaining
+				// window shrinks and the retry (half the remaining window,
+				// floored at 1s) becomes shorter than the cadence, so the
+				// ticker is Reset to give several tries before the window
+				// lapses.
+				retry := autoExtendRetryInterval(deadline.Sub(now))
+				if retry != interval {
+					ticker.Reset(retry)
+					interval = retry
+				}
 				continue
 			}
 			consecutiveFailures = 0
+			// A successful extend resets the visibility window to `vis`
+			// from now; update the deadline and restore the normal cadence.
+			deadline = now.Add(time.Duration(vis) * time.Second)
 			newInterval := autoExtendInterval(vis)
 			if newInterval != interval {
 				ticker.Reset(newInterval)
@@ -455,4 +516,17 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// autoExtendRetryInterval derives the retry cadence after a failed
+// auto-extend: half the remaining window to the visibility deadline,
+// floored at 1s so the clock Ticker never receives a non-positive
+// duration. Retrying at half the remaining window packs several attempts
+// in before the lock is lost while never busy-looping (Finding 5).
+func autoExtendRetryInterval(remaining time.Duration) time.Duration {
+	retry := remaining / 2
+	if retry < time.Second {
+		return time.Second
+	}
+	return retry
 }

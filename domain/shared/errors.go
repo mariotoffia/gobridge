@@ -53,6 +53,7 @@ const (
 	ErrCodeAlreadyExists     ErrorCode = "ALREADY_EXISTS"
 	ErrCodeStaleFencingToken ErrorCode = "STALE_FENCING_TOKEN"
 	ErrCodeDuplicateRecord   ErrorCode = "DUPLICATE_RECORD"
+	ErrCodeTransportClosed   ErrorCode = "TRANSPORT_CLOSED"
 )
 
 // Cluster routing error codes.
@@ -259,6 +260,20 @@ var (
 	ErrDuplicateRecord = &BridgeError{
 		Code: ErrCodeDuplicateRecord, Class: ErrorPermanent,
 		Message: "duplicate record",
+	}
+	// ErrTransportClosedPermanently is a definitive "this transport instance is
+	// closed for good" marker. Single-use exclusive transports (paho MQTT, AMQP
+	// 0-9-1, AMQP 1.0) cannot be Started again after Close: the receiver/sender
+	// still reference the dead instance and no in-process rebuild path exists.
+	// They surface that as the transient ErrUnavailable (so first-connect broker
+	// blips stay retriable) but WRAP this permanent marker as the cause, so
+	// escalation logic can tell a definitive Start-after-Close from a momentary
+	// "broker unreachable". It is only ever a wrapped cause — the outermost error
+	// stays ErrUnavailable, so failure CLASSIFICATION is unchanged; discover it
+	// with errors.Is(err, ErrTransportClosedPermanently), never by class.
+	ErrTransportClosedPermanently = &BridgeError{
+		Code: ErrCodeTransportClosed, Class: ErrorPermanent,
+		Message: "transport closed permanently",
 	}
 )
 

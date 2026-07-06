@@ -269,9 +269,31 @@ func (r *RouteRunner) invokeOnAck(env *messaging.Envelope, err error) {
 	r.onAck(env, err)
 }
 
-// ackDelivery wraps del.Ack so OnAck observes the result.
+// settleContext returns the context to use for a TERMINAL settle (the Ack after
+// a successful send, or a DLQ-write→ack). When the delivery context is still
+// live it is returned unchanged. When it has already been cancelled — the common
+// shutdown case, where a send has JUST succeeded and honouring cancellation
+// would abort the Ack and force an avoidable transport redelivery — its
+// cancellation is stripped (values, incl. trace/correlation, preserved) and a
+// short bound applied so a stuck transport cannot hang teardown. This mirrors
+// the panic-recovery settle model in the Run loop (runner.go): a successful send
+// always gets its Ack within the shutdown window. The returned CancelFunc is
+// always non-nil and must be called by the caller.
+func (r *RouteRunner) settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), r.panicRetryTimeout)
+}
+
+// ackDelivery wraps del.Ack so OnAck observes the result. The Ack is issued on a
+// settleContext so a successful send always acks in the shutdown window instead
+// of being aborted by a cancelled delivery ctx (which would trigger an avoidable
+// transport redelivery / duplicate).
 func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error {
-	err := del.Ack(ctx)
+	settleCtx, cancel := r.settleContext(ctx)
+	defer cancel()
+	err := del.Ack(settleCtx)
 	r.invokeOnAck(del.Envelope(), err)
 	return err
 }

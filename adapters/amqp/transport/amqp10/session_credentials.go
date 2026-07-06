@@ -21,10 +21,11 @@ import (
 //
 // Scope:
 //   - PasswordCredential → liveCreds + opts.
-//   - TLSMaterial → opts.TLS PEM fields. The AMQP10 connect() path
-//     re-reads s.opts.TLS on every dial and calls BuildTLSConfig
-//     freshly, so mutating fields in place suffices for both
-//     cert/CA swap and first-time TLS enable.
+//   - TLSMaterial → opts.TLS. The AMQP10 connect() path re-reads
+//     s.opts.TLS on every dial and calls BuildTLSConfig freshly.
+//     applyAMQP10TLSMaterial swaps in a fresh *TLSConfig (rather than
+//     mutating the current one in place) so an in-flight dial keeps
+//     reading its immutable snapshot — see finding 2.
 func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("amqp10: nil credential set")
@@ -79,8 +80,12 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 	return nil
 }
 
-// applyAMQP10TLSMaterial mirrors the paho/amqp091 helpers. See the
-// paho analogue for the full rationale.
+// applyAMQP10TLSMaterial applies rotated TLS material to *opts. To stay
+// race-free with an in-flight connect() reading the current *TLSConfig,
+// it NEVER mutates the pointed-to config in place: on a change it builds
+// a fresh *TLSConfig (preserving any file-based fields) and swaps the
+// pointer, so a concurrent dial keeps reading its immutable snapshot
+// (finding 2). Returns true when a swap occurred.
 func applyAMQP10TLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
@@ -89,25 +94,31 @@ func applyAMQP10TLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) boo
 	if len(mat.CAPEMs()) > 0 {
 		newCA = joinAMQP10PEMs(mat.CAPEMs())
 	}
-	if *opts == nil {
+	cur := *opts
+	if cur == nil {
 		if mat.CertPEM() == "" && mat.KeyPEM().Reveal() == "" && newCA == "" && !mat.InsecureSkipVerify() {
 			return false
 		}
-		*opts = &TLSConfig{Enable: true}
-	}
-	cur := *opts
-	if cur.CertPEM.Reveal() == mat.CertPEM() &&
+	} else if cur.CertPEM.Reveal() == mat.CertPEM() &&
 		cur.KeyPEM.Equal(mat.KeyPEM()) &&
 		cur.CACertPEM.Reveal() == newCA &&
 		cur.InsecureSkipVerify == mat.InsecureSkipVerify() &&
 		cur.Enable {
 		return false
 	}
-	cur.CertPEM = shared.NewSecret(mat.CertPEM())
-	cur.KeyPEM = mat.KeyPEM()
-	cur.CACertPEM = shared.NewSecret(newCA)
-	cur.InsecureSkipVerify = mat.InsecureSkipVerify()
-	cur.Enable = true
+	// Build a NEW config rather than mutating cur in place. Copy the
+	// existing struct first so file-based fields (CACertFile/CertFile/
+	// KeyFile) survive a PEM rotation.
+	next := &TLSConfig{}
+	if cur != nil {
+		*next = *cur
+	}
+	next.Enable = true
+	next.CertPEM = shared.NewSecret(mat.CertPEM())
+	next.KeyPEM = mat.KeyPEM()
+	next.CACertPEM = shared.NewSecret(newCA)
+	next.InsecureSkipVerify = mat.InsecureSkipVerify()
+	*opts = next
 	return true
 }
 

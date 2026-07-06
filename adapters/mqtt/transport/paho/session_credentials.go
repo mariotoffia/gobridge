@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -20,10 +19,13 @@ import (
 //   - If the credentials are identical to the current ones (dedup),
 //     the call is a no-op — callers are expected to dedup too, but we
 //     belt-and-brace here.
-//   - Otherwise, liveCreds is updated and Disconnect() is invoked on
-//     the ConnectionManager. autopaho's reconnect loop kicks in and
-//     issues a fresh CONNECT, which pulls the new username/password
-//     via ConnectPacketBuilder.
+//   - Otherwise, liveCreds is updated and Session.Reload rebuilds the
+//     ConnectionManager, issuing a fresh CONNECT that pulls the new
+//     username/password via ConnectPacketBuilder. Reload — NOT a bare
+//     cm.Disconnect — is required: in paho.golang v0.23.0 Disconnect
+//     cancels the CM root context terminally (autopaho never reconnects
+//     and skips OnConnectionDown), which would silently kill the session
+//     while Health() still reported Full.
 //
 // TLS rotation is supported: when creds.TLS is non-nil and differs
 // from s.opts.TLS's PEM material, the session's TLS options are
@@ -37,7 +39,8 @@ import (
 // an API to rewrite CONNECT properties on a live connection; MQTT
 // itself has no "re-authenticate with a new CONNECT" mechanism without
 // enhanced authentication packets, which Paho does not surface here.
-// A brief disconnect/reconnect is the portable, correct option.
+// A Reload (disconnect + rebuild + reconnect) is the portable, correct
+// option.
 func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error {
 	if creds == nil {
 		return shared.ErrInvalidPayload.WithMessage("nil credential set")
@@ -98,20 +101,21 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug,
-			"mqtt: applying rotated credentials; reconnecting",
+			"mqtt: applying rotated credentials; reloading session",
 			"client_id", s.opts.ClientID)
 	}
 
-	// Bounded disconnect timeout — we don't want to block the credential
-	// watcher indefinitely if the broker is unresponsive. Reconnect is
-	// driven by autopaho's own loop after Disconnect returns.
-	disconnectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if err := cm.Disconnect(disconnectCtx); err != nil {
-		return MapError(err)
-	}
-	return nil
+	// Reload rebuilds the ConnectionManager and issues a fresh CONNECT
+	// that pulls the rotated username/password via ConnectPacketBuilder.
+	//
+	// Why Reload and NOT cm.Disconnect: in paho.golang v0.23.0
+	// ConnectionManager.Disconnect cancels the CM root context, which is
+	// TERMINAL — autopaho's mainLoop breaks and never reconnects, and it
+	// skips OnConnectionDown so s.connected would stay true. The session
+	// would be silently dead while Health() still reported Full. Reload
+	// tears the old CM down (Disconnect + cmCancel) AND rebuilds a fresh
+	// one, matching the TLS-rotation path above.
+	return s.Reload(ctx)
 }
 
 // applyTLSMaterial compares incoming *connectivity.TLSMaterial PEM bytes

@@ -633,7 +633,42 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 			return SwapPrepareCommit
 		}
 	}
+	// Capabilities() only reports exclusivity once a factory has already
+	// BUILT an exclusive receiver, so the loop above misses the FIRST reconfig
+	// that INTRODUCES one (config A: no exclusive → config B: exclusive on the
+	// same queue). That swap would still run Overlap, attaching the new
+	// exclusive consumer while the old consumer holds the queue → broker 403 →
+	// terminal teardown. Detect it up front from the incoming receiver configs
+	// via the optional per-transport hook.
+	for i := range cfg.Receivers {
+		recv := &cfg.Receivers[i]
+		transport := recv.Transport
+		if transport == "" {
+			if sd := findSession(cfg, recv.SessionID); sd != nil {
+				transport = sd.Transport
+			}
+		}
+		tf, ok := transports[transport]
+		if !ok {
+			continue
+		}
+		if d, ok := tf.(exclusiveIdentityConfigDetector); ok &&
+			d.ConfigRequiresExclusiveIdentity(recv.Config) {
+			return SwapPrepareCommit
+		}
+	}
 	return SwapOverlap
+}
+
+// exclusiveIdentityConfigDetector is an optional transport-factory hook that
+// reports, from an incoming receiver config alone, whether that receiver will
+// be an exclusive-identity consumer — before any receiver (and thus the
+// factory's post-build CapExclusiveIdentity latch) exists. It lets
+// detectSwapMode pick the serialized swap mode on the first reconfig that
+// introduces exclusivity. Factories that do not implement it are simply not
+// consulted (the Capabilities() latch still covers steady-state swaps).
+type exclusiveIdentityConfigDetector interface {
+	ConfigRequiresExclusiveIdentity(cfg ports.PluginConfig) bool
 }
 
 func (s *Supervisor) stopCurrent(ctx context.Context) error {

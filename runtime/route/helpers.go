@@ -154,12 +154,15 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 
 // mergeProcessedEnvelope copies the mutable, processor-owned state — subject,
 // payload and headers (the documented processor extension points: SetSubject,
-// SetPayload, and the header mutators) — from the quiescent chain clone back
-// onto the source envelope after a SUCCESSFUL processor chain. It must be
-// called only when RunChain returned nil, guaranteeing every processor
-// goroutine has already returned, so src has no live concurrent writer.
-// StampHeaders is the trusted whole-map setter (no reserved-prefix strip) so a
-// processor-set reserved header such as HeaderRouteOverride survives the merge.
+// SetPayload, and the header mutators) — from a quiescent chain clone back onto
+// a destination envelope. It is called (a) per-frame in route/chain.go, merging
+// a frame's private clone onto its caller's envelope once the processor
+// goroutine has cleanly returned, and (b) once by RunChain's caller, merging the
+// whole-chain clone onto the source after RunChain returns nil. Both callers
+// invoke it only when the source goroutine has already returned, so src has no
+// live concurrent writer. StampHeaders is the trusted whole-map setter (no
+// reserved-prefix strip) so a processor-set reserved header such as
+// HeaderRouteOverride survives the merge.
 func mergeProcessedEnvelope(dst, src *messaging.Envelope) {
 	dst.SetSubject(src.Subject())
 	dst.SetPayload(src.Payload())

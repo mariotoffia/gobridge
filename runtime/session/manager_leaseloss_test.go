@@ -29,6 +29,7 @@ type leaseLossStore struct {
 	owner          string
 	renews         int32
 	releases       int32
+	releasedVers   []uint64
 	failRenewAfter int32
 	onRenew        chan struct{}
 }
@@ -60,8 +61,11 @@ func (s *leaseLossStore) Renew(_ context.Context, _ string, token persistence.Le
 	return persistence.LeaseToken{Version: token.Version, Owner: owner}, nil
 }
 
-func (s *leaseLossStore) Release(context.Context, string, persistence.LeaseToken) error {
+func (s *leaseLossStore) Release(_ context.Context, _ string, token persistence.LeaseToken) error {
 	atomic.AddInt32(&s.releases, 1)
+	s.mu.Lock()
+	s.releasedVers = append(s.releasedVers, token.Version)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -72,6 +76,26 @@ func (s *leaseLossStore) Current(_ context.Context, leaseID string) (persistence
 }
 
 func (s *leaseLossStore) releaseCount() int32 { return atomic.LoadInt32(&s.releases) }
+
+// currentVersion is the version of the most recently acquired lease (the
+// re-acquired lease after step-down).
+func (s *leaseLossStore) currentVersion() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
+}
+
+// wasReleased reports whether the given lease version was ever Released.
+func (s *leaseLossStore) wasReleased(v uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rv := range s.releasedVers {
+		if rv == v {
+			return true
+		}
+	}
+	return false
+}
 
 // countingSession is a ports.Session that counts Start/Close calls and exposes
 // them over buffered channels so tests can synchronize without polling. Its
@@ -307,7 +331,9 @@ func (s *singleUseSession) Start(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return shared.ErrUnavailable.WithMessage("single-use session is closed; Start not allowed after Close")
+		return shared.ErrUnavailable.
+			WithMessage("single-use session is closed; Start not allowed after Close").
+			Wrap(shared.ErrTransportClosedPermanently)
 	}
 	s.connected = true
 	return nil
@@ -409,11 +435,37 @@ func TestSessionManager_SingleUseSession_ReacquireSurfacesError(t *testing.T) {
 			}
 
 			// On re-acquire ensureConnected cannot restart a single-use
-			// session; Run must surface ErrUnavailable.
+			// session; Run must surface ErrUnavailable, classified as
+			// ErrSessionUnrecoverable so superviseSession escalates to a process
+			// restart instead of looping on the zombie (finding C3-CRITICAL).
 			select {
 			case err := <-runErr:
 				if !errors.Is(err, shared.ErrUnavailable) {
 					t.Fatalf("expected Run to surface ErrUnavailable on single-use re-acquire, got %v", err)
+				}
+				if !errors.Is(err, shared.ErrTransportClosedPermanently) {
+					t.Fatalf("expected the permanent-closure marker to propagate from the single-use "+
+						"Start-after-Close, got %v", err)
+				}
+				if !errors.Is(err, ErrSessionUnrecoverable) {
+					t.Fatalf("expected re-acquire connect failure to be classified ErrSessionUnrecoverable, got %v", err)
+				}
+				// The just-acquired lease MUST be released on the connect-failure
+				// path so a healthy standby takes over immediately instead of the
+				// zombie re-seizing it via the store's same-owner fast path. Assert
+				// the RE-ACQUIRED lease version specifically is released: step-down
+				// already releases the OLD version once, so a weaker releaseCount()>=1
+				// check would stay green even if the re-acquire-path release (the
+				// actual C3-CRITICAL fix in releaseAndReturn) were removed.
+				reacquired := store.currentVersion()
+				if !store.wasReleased(reacquired) {
+					t.Fatalf("expected the re-acquired lease (version %d) to be released on the "+
+						"re-acquire connect failure; released versions=%v (step-down release must not "+
+						"mask a missing re-acquire release)", reacquired, store.releasedVers)
+				}
+				if store.releaseCount() < 2 {
+					t.Fatalf("expected both the step-down release and the re-acquire connect-failure "+
+						"release, releases=%d", store.releaseCount())
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("Run did not return after single-use re-acquire failure " +
