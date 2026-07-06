@@ -87,7 +87,27 @@ func (s *Session) Close(ctx context.Context) error {
 	s.cm = nil
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
+	// Snapshot any in-flight Start so we can wait for it to observe
+	// s.closed and tear down its own freshly built CM before we finish
+	// closing — otherwise Close could return while a half-built CM is
+	// still connecting, which would then install/leak as a zombie CM.
+	starting := s.starting
+	startDone := s.startDone
 	s.mu.Unlock()
+
+	// Wait (bounded by ctx) for the in-flight Start to finish. With
+	// s.closed already set, that Start's post-AwaitConnection re-check
+	// discards its CM instead of installing it, so once startDone closes
+	// no zombie ConnectionManager can survive this Close.
+	if starting && startDone != nil {
+		select {
+		case <-startDone:
+		case <-ctx.Done():
+			if s.logger != nil {
+				s.logger.Warn("Close: context expired while waiting for in-flight Start")
+			}
+		}
+	}
 
 	var disconnErr error
 	if cm != nil {
@@ -97,15 +117,25 @@ func (s *Session) Close(ctx context.Context) error {
 		cmCancel()
 	}
 
-	// Stop the router's grace-sweep worker before awaiting in-flight
-	// dispatch handlers. shutdown signals the worker to exit; a best-effort
-	// orphan UNSUBSCRIBE already in flight completes on its own (bounded by
-	// orphanUnsubscribeTimeout) and is intentionally NOT awaited here, so
-	// Close latency stays decoupled from a network round-trip.
+	// Stop the router's grace-sweep and dispatch workers before awaiting
+	// in-flight dispatch handlers. shutdown signals the workers to exit and
+	// marks the router closing; a best-effort orphan UNSUBSCRIBE already in
+	// flight completes on its own (bounded by orphanUnsubscribeTimeout) and
+	// is intentionally NOT awaited here, so Close latency stays decoupled
+	// from a network round-trip.
 	s.router.shutdown()
 
 	done := make(chan struct{})
-	go func() { s.router.Wait(); close(done) }()
+	go func() {
+		// Join the serialized dispatch worker FIRST: its final fanout
+		// r.wg.Add must complete before r.wg.Wait, otherwise a buffered
+		// item drained after shutdown would Add concurrently with Wait
+		// (WaitGroup Add-during-Wait → panic). Then await the handler
+		// WaitGroup. Both are bounded by the outer ctx via this select.
+		s.router.awaitDispatchLoop()
+		s.router.Wait()
+		close(done)
+	}()
 	select {
 	case <-done:
 	case <-ctx.Done():

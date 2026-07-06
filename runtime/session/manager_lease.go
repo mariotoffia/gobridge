@@ -26,6 +26,68 @@ var errLeaseLostAfterRenewal = errors.New("lease lost after renewal failures")
 // L14).
 var errSessionEventsClosed = errors.New("session events channel closed unexpectedly")
 
+// ErrSessionUnrecoverable marks a lease-owning term that failed because the
+// underlying session cannot be re-established IN THIS PROCESS. A single-use
+// transport session (e.g. Paho MQTT) is closed by step-down; on the next
+// lease re-acquisition ensureConnected cannot Start it again ("Start is not
+// allowed after Close", surfaced as shared.ErrUnavailable wrapping the permanent
+// shared.ErrTransportClosedPermanently marker) and no in-process rebuild path
+// exists (the receiver/sender still reference the dead instance).
+//
+// superviseSession treats this as NON-recoverable-in-process and ESCALATES to
+// terminal (documented process-restart backstop, scenario-08) instead of
+// retrying the same dead session forever — the pre-fix behaviour that wedged the
+// cluster: each capped-backoff retry re-Acquired via the store's same-owner
+// fast path, bumped the lease version, and perpetually reset every standby's
+// observation window (finding C3-CRITICAL). The lease is RELEASED before this is
+// returned, so a healthy standby takes over immediately while the orchestrator
+// restarts this pod with a fresh session instance.
+var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
+
+// releaseAndReturn is the connect-failure recovery path (finding C3-CRITICAL /
+// M12): a term acquired the lease but could not make the session usable
+// (Start/ensureConnected/Reconcile failed while we hold the lease). It releases
+// the just-acquired lease best-effort — otherwise a restarted Run would block in
+// Acquire against our own unexpired lease until self-expiry, AND (on the
+// single-use re-acquire path) each retry would re-seize via the store's
+// same-owner fast path and fence out every standby forever.
+//
+// When escalatable is set (the re-acquire reconnect path) and the failure carries
+// the permanent shared.ErrTransportClosedPermanently marker (a single-use session
+// refusing Start-after-Close), the returned error is tagged ErrSessionUnrecoverable
+// so superviseSession escalates to terminal rather than looping on the dead
+// instance. All other failures (a first-connect broker blip, a transient reconcile
+// rejection, a plain transient ErrUnavailable) are returned as-is for isolated
+// capped-backoff retry.
+func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseToken, err error, phase string, escalatable bool) error {
+	m.mu.Lock()
+	m.hasLease = false
+	m.mu.Unlock()
+	m.releaseOwnedLeaseBestEffort(ctx, token, phase)
+	if escalatesToUnrecoverable(err, escalatable) {
+		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
+	}
+	return err
+}
+
+// escalatesToUnrecoverable reports whether a connect failure on an escalatable
+// path (the re-acquire reconnect, where the session was closed by a prior term's
+// step-down) proves the transport instance is permanently closed in THIS process
+// and must therefore escalate to a terminal ErrSessionUnrecoverable — releasing
+// the lease and restarting the pod — rather than loop forever on the zombie.
+//
+// It gates strictly on the shared.ErrTransportClosedPermanently marker that
+// single-use transports (paho/amqp091/amqp10) wrap into their Start-after-Close
+// error, NOT the broad transient shared.ErrUnavailable. ErrUnavailable is also a
+// transport's momentary "broker unreachable"; gating on it would turn a
+// recoverable blip on a future MULTI-USE exclusive transport into a needless
+// process restart, so those failures stay isolated capped-backoff retries. A
+// first-connect failure (escalatable=false) never escalates: its Start hit a
+// fresh, never-closed session, so it cannot carry the marker anyway.
+func escalatesToUnrecoverable(err error, escalatable bool) bool {
+	return escalatable && errors.Is(err, shared.ErrTransportClosedPermanently)
+}
+
 // isDefinitiveLeaseLoss reports whether a Renew error PROVES the lease is no
 // longer ours (another owner has taken over, or the row is gone). These are the
 // permanent fencing signals; the owner must step down IMMEDIATELY rather than
@@ -116,15 +178,24 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 
 		if !sessionStarted {
 			if err := m.session.Start(ctx); err != nil {
-				return err
+				// First connect after acquiring the lease: a fresh session that
+				// has not been closed yet. Release the lease and let
+				// superviseSession retry in isolation (a broker blip is
+				// transient); do NOT escalate to terminal.
+				return m.releaseAndReturn(ctx, token, err, "deferred connect failure", false)
 			}
 			sessionStarted = true
 		} else if err := m.ensureConnected(ctx); err != nil {
-			return err
+			// Re-acquire reconnect: the source session was closed by a prior
+			// term's step-down. For a single-use session this Start cannot
+			// succeed (it wraps ErrTransportClosedPermanently) — escalate to
+			// terminal so the pod restarts with a fresh session instead of
+			// looping on the zombie (finding C3-CRITICAL). Lease released either way.
+			return m.releaseAndReturn(ctx, token, err, "deferred reconnect failure", true)
 		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return err
+			return m.releaseAndReturn(ctx, token, err, "reconcile failure", false)
 		}
 
 		err = m.renewLoop(ctx)
@@ -173,14 +244,19 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 		if reacquired {
 			// A previous term's stepDown closed the source session to stop a
 			// non-owner from consuming/ACKing source messages. Now that we own
-			// the lease again, re-establish the session before reconciling.
+			// the lease again, re-establish the session before reconciling. For
+			// a single-use session this Start cannot succeed (it wraps
+			// ErrTransportClosedPermanently); escalate to terminal so the pod
+			// restarts with a fresh session instead of looping on the zombie,
+			// releasing the lease so a healthy standby takes over immediately
+			// (finding C3-CRITICAL).
 			if err := m.ensureConnected(ctx); err != nil {
-				return err
+				return m.releaseAndReturn(ctx, token, err, "reconnect failure", true)
 			}
 		}
 
 		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return err
+			return m.releaseAndReturn(ctx, token, err, "reconcile failure", false)
 		}
 
 		err = m.renewLoop(ctx)

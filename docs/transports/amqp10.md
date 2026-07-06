@@ -114,6 +114,16 @@ options:
 > `container_id`+`address` name) and keep `container_id` stable and unique per
 > replica.
 
+> **Multicast fans out duplicates.** `routing: multicast` uses pub-sub (topic)
+> semantics: the broker copies each message to **every** active subscription at
+> send time, so N subscribers each receive their own copy. `routing: anycast`
+> (the default) is point-to-point -- exactly one receiver consumes each message.
+> Under multicast a subscriber only receives messages sent **while it is
+> attached** unless the subscription is durable (`durability_mode > 0`) and
+> resumes under a stable container-id + link name. A detached non-durable
+> subscription -- or a durable one orphaned by an unstable link name -- silently
+> misses everything sent in the gap.
+
 ## Sender Options Reference (`options.sender.*`)
 
 | Key | Type | Default | Description |
@@ -133,8 +143,13 @@ options:
 | `Retry(ctx, >0, err)` | `ModifyMessage` (delivery-failed=true) | Signals broker to schedule retry |
 | `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
 
-Settlement is idempotent. Only the first call on a `Delivery` performs the
-disposition; subsequent calls are no-ops.
+Settlement is single-shot. The first `Ack` or `Retry` on a `Delivery` performs
+the disposition and records the outcome. A later call is a safe no-op (returns
+`nil`) **only** when that first attempt succeeded; a repeat call while the first
+is still in flight returns `ErrUnavailable` (`amqp10: delivery settlement
+already in progress`), and a repeat call after the first attempt **failed**
+returns `ErrUnavailable` (`amqp10: delivery settlement previously failed`). A
+failed settlement is surfaced, not silently swallowed.
 
 ## AMQP 1.0 vs AMQP 0-9-1
 
@@ -154,20 +169,27 @@ disposition; subsequent calls are no-ops.
 - **Link lifecycle.** Receivers and senders detect link errors and notify
   the session, which triggers reconnection. After reconnect, `Reconcile`
   runs again if a plan exists.
-- **Idempotent settlement.** A `Delivery` can only be settled once. Repeat
-  calls to `Ack` or `Retry` are safe no-ops.
+- **Single-shot settlement.** A `Delivery` settles once. A repeat `Ack` or
+  `Retry` is a safe no-op **only** after a successful first settlement; a repeat
+  after a failed or still-in-flight first attempt returns `ErrUnavailable`
+  rather than silently succeeding (see [Settlement Mapping](#settlement-mapping)).
 - **Delayed retry is broker-controlled.** A `Retry(ctx, after>0, err)` cannot
   hold the message client-side. The adapter settles with `ModifyMessage`
   (`DeliveryFailed=true`) and attaches the `x-opt-delivery-time` message
   annotation (absolute ms-epoch) asking the broker to schedule redelivery; the
-  broker owns the timing. Brokers that ignore the annotation redeliver
-  immediately -- the deferral is counted on `AMQP10DelayedRetryUnhonored` and
-  warned once per link. Such brokers **require a broker-side redelivery
-  delay**: ActiveMQ Artemis defaults `redelivery-delay` to `0`, so without
-  address-settings configuring `redelivery-delay` (and ideally
-  `redelivery-delay-multiplier` / `max-redelivery-delay`) every delayed retry
-  burns through `max-delivery-attempts` in milliseconds. Alert on a climbing
-  `AMQP10DelayedRetryUnhonored`.
+  broker owns the timing. Every delayed retry deferred this way increments
+  `AMQP10DelayedRetryDeferred` (once per message) and emits a Warn once per
+  link. The counter measures broker-delegated retry scheduling, **not** a
+  failure: on a broker that honors the annotation (Artemis) the requested
+  spacing is applied; on one that ignores it the spacing falls back to the
+  broker's own redelivery policy. Ignoring brokers therefore **require a
+  broker-side redelivery delay**: ActiveMQ Artemis defaults `redelivery-delay`
+  to `0`, so without address-settings configuring `redelivery-delay` (and
+  ideally `redelivery-delay-multiplier` / `max-redelivery-delay`) every delayed
+  retry burns through `max-delivery-attempts` in milliseconds. A climbing
+  `AMQP10DelayedRetryDeferred` is expected under retry load -- correlate it with
+  delivery-attempt exhaustion rather than treating the counter itself as an
+  error signal.
 
 ## AWS MQ (Managed AMQP 1.0)
 

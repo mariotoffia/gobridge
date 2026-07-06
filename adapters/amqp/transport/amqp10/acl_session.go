@@ -44,9 +44,30 @@ func (s *amqpSessionLink) NewReceiverLink(
 	capability string,
 	linkName string,
 ) (*receiverLink, error) {
+	opts := receiverLinkOptions(credit, durabilityMode, capability, linkName)
+	r, err := s.raw.NewReceiver(ctx, address, opts)
+	if err != nil {
+		return nil, fmt.Errorf("amqp10: new receiver: %w", err)
+	}
+	return &receiverLink{raw: r}, nil
+}
+
+// receiverLinkOptions builds the SDK receiver options for a link. It is
+// split out from NewReceiverLink so the negotiated settlement mode is
+// unit-testable without a live broker.
+//
+// RequestedSenderSettleMode is pinned to SenderSettleModeUnsettled: left
+// nil, go-amqp silently accepts whatever the broker offers, so a broker
+// attaching snd-settle-mode=settled would deliver PRE-SETTLED messages
+// (at-most-once) — a crash between receive and process would lose them
+// while the adapter docs promise at-least-once. Requesting Unsettled
+// makes a downgrading broker fail the attach LOUDLY instead of silently
+// weakening the delivery guarantee (finding 3).
+func receiverLinkOptions(credit int32, durabilityMode uint32, capability, linkName string) *amqp.ReceiverOptions {
 	opts := &amqp.ReceiverOptions{
-		Credit:             credit,
-		SourceCapabilities: []string{capability},
+		Credit:                    credit,
+		SourceCapabilities:        []string{capability},
+		RequestedSenderSettleMode: amqp.SenderSettleModeUnsettled.Ptr(),
 	}
 	if linkName != "" {
 		opts.Name = linkName
@@ -56,11 +77,7 @@ func (s *amqpSessionLink) NewReceiverLink(
 		opts.SourceDurability = amqp.Durability(durabilityMode)
 		opts.SourceExpiryPolicy = amqp.ExpiryPolicyNever
 	}
-	r, err := s.raw.NewReceiver(ctx, address, opts)
-	if err != nil {
-		return nil, fmt.Errorf("amqp10: new receiver: %w", err)
-	}
-	return &receiverLink{raw: r}, nil
+	return opts
 }
 
 // NewSenderLink opens a new sender link on this session for the given

@@ -55,8 +55,8 @@ senders:
 | `region` | string | SDK default | AWS region |
 | `endpoint` | string | -- | Override endpoint (for LocalStack) |
 | `profile` | string | -- | AWS shared-config profile name |
-| `max_messages` | int | 10 | Messages per ReceiveMessage call (1--10). **Forced to 1 for FIFO queues** (`.fifo` suffix) so per-`MessageGroupId` order is preserved under the concurrent route runner. |
-| `wait_time_seconds` | int | 20 | Long-poll duration in seconds (0--20) |
+| `max_messages` | int | 10 | Messages per ReceiveMessage call (1--10). An explicit `0` is rejected by the plugin decoder -- omit the key for the default of 10. **Forced to 1 for FIFO queues** (`.fifo` suffix) so per-`MessageGroupId` order is preserved under the concurrent route runner. |
+| `wait_time_seconds` | int | 20 | Long-poll duration in seconds (1--20). An explicit `0` (short-polling) is rejected by the plugin decoder -- omit the key for the 20s long-poll default. |
 | `visibility_timeout` | int | 30 | Visibility timeout in seconds (0--43200) |
 | `auto_extend` | bool | `true` | Renew visibility at 50% of timeout |
 | `sns_unwrap` | bool | `false` | Extract inner message from an SNS-to-SQS wrapper. Only bodies whose JSON `Type` is `Notification` **and** whose `TopicArn` is non-empty are unwrapped; a raw body is passed through unchanged. The bridge cannot verify the wrapper genuinely came from SNS — that guarantee is the queue policy restricting `sqs:SendMessage` to the topic (operator responsibility). |
@@ -77,7 +77,7 @@ Either `queue_url` or `queue_name` must be provided.
 | `region` | string | SDK default | AWS region |
 | `endpoint` | string | -- | Override endpoint (for LocalStack) |
 | `profile` | string | -- | AWS shared-config profile name |
-| `delay_seconds` | int | 0 | Delivery delay in seconds (0--900). Backs the `delayed_send` capability. |
+| `delay_seconds` | int | 0 | Delivery delay in seconds (0--900). Backs the `delayed_send` capability. **Rejected on FIFO queues** -- see the FIFO delay rule below. |
 | `batch_size` | int | 10 | Messages per SendMessageBatch (1--10) |
 | `timeout` | duration | `30s` | Per-call send timeout |
 | `message_group_id` | string | -- | Default FIFO message group ID |
@@ -93,6 +93,13 @@ than letting SQS reject every send at runtime with `MissingParameter`. When
 `fifo: true` is set without a default group, a message missing the ordering-key
 header is rejected per-message before the SDK call.
 
+**FIFO rejects per-message delay.** `delay_seconds > 0` on a FIFO queue fails the
+build: AWS refuses per-message `DelaySeconds` on a FIFO `SendMessage` /
+`SendMessageBatch`, so every send would DLQ at runtime as `ErrInvalidPayload`.
+FIFO is detected from the explicit `fifo: true` flag, a default
+`message_group_id`, or the `.fifo` suffix. Use a per-queue delay, or a standard
+(non-FIFO) queue.
+
 **Address validation is deliberately lenient.** Parse-time `Validate` checks only
 field ranges and consistency — it does not require a queue reference, so a config
 naming a wrong or arbitrary queue URL parses cleanly
@@ -103,6 +110,24 @@ sender accepts any URL whose trailing segment matches the queue name, so a wrong
 region or account passes the build and is only caught at first `Send` once the
 canonical URL resolves (`sender.go:124-150`). Do not rely on config parse errors
 to catch queue-URL typos.
+
+## Credential resolution
+
+`credentials_uri` is resolved by the bridge credential store at build time and
+threaded into the adapter as the **initial** credentials: the receiver and
+sender build their first SQS client from a
+`credentials.NewStaticCredentialsProvider` seeded with the resolved key. A later
+rotation swaps the client atomically -- SQS is stateless per request, so there
+is no connection to churn.
+
+Only long-lived static keys are supported on this path. A resolved access-key ID
+with an `ASIA…` prefix (temporary/STS material) is rejected with
+`ErrTemporaryCredentialsUnsupported`, surfaced as `NOT_AUTHORIZED` (permanent):
+the credential model carries no session token, so a static provider built from
+it would fail every request. Leave `credentials_uri` unset to fall back to the
+SDK default provider chain (environment, shared config, or an instance/task
+role), which may itself be STS-backed. See
+[Credential Rotation](../credentials-rotation.md).
 
 ## Bridge-to-bridge identity across an SQS hop
 

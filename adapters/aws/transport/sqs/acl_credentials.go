@@ -2,7 +2,9 @@ package sqs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -13,16 +15,46 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// rebuildClientWithStatic loads a fresh AWS config with the given
-// static credentials provider applied. SQS is stateless per-request,
-// so swapping the client on the next call picks up rotated keys with
-// no connection churn.
+// ErrTemporaryCredentialsUnsupported is returned when a credential set
+// carries STS/temporary material (an access-key id with the "ASIA"
+// prefix, which is only valid together with a session token) that
+// gobridge's username/password connectivity.CredentialSet cannot
+// represent. Building a static provider with an empty session token
+// would produce a client that fails every request with
+// InvalidClientTokenId, so rotation would *degrade* a previously working
+// ambient-role client. The adapter rejects the material up front and
+// leaves the existing client in place instead (Finding 6). Surface it as
+// shared.ErrNotAuthorized so callers classify it consistently.
+var ErrTemporaryCredentialsUnsupported = errors.New(
+	"sqs: temporary/STS credentials (ASIA-prefixed access key) are unsupported; " +
+		"the credential set carries no session token")
+
+// isTemporaryAccessKeyID reports whether an AWS access-key id denotes
+// temporary (STS-issued) credentials. AWS long-term keys are prefixed
+// "AKIA"; temporary keys use "ASIA" and require an accompanying session
+// token that gobridge's password credential cannot carry.
 //
-// The session token is left empty: gobridge's connectivity.CredentialSet
-// models only username/password; SSO/STS rotation requires richer
-// material, which should be added alongside a CredentialKind when
-// needed. This keeps the MVP safe: existing static-key users see
-// rotation work; SSO users keep using the SDK's own provider chain.
+// Detection is PREFIX-based (ASIA), not token-based: it cannot see a
+// session token because connectivity.PasswordCredential has no field for
+// one. A temporary credential presented without the "ASIA" prefix would
+// therefore slip through and produce a client that fails every request —
+// but AWS always issues STS keys with the "ASIA" prefix, so in practice
+// the prefix check catches every temporary credential shape.
+func isTemporaryAccessKeyID(id string) bool {
+	return strings.HasPrefix(id, "ASIA")
+}
+
+// rebuildSQSClient loads a fresh AWS config with the given static
+// credentials provider applied. SQS is stateless per-request, so
+// swapping the client on the next call picks up rotated keys with no
+// connection churn.
+//
+// Temporary (STS) material is rejected — see
+// ErrTemporaryCredentialsUnsupported — because the connectivity model
+// carries only username/password, so a session token cannot be applied
+// and a static provider with an empty token would brick the client.
+// Long-term static-key users see rotation work; ambient-role/SSO users
+// keep using the SDK's own provider chain (creds == nil).
 func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, creds *connectivity.PasswordCredential) (sqsAPI, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if region != "" {
@@ -32,6 +64,9 @@ func rebuildSQSClient(ctx context.Context, region, endpoint, profile string, cre
 		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
 	}
 	if creds != nil {
+		if isTemporaryAccessKeyID(creds.Username()) {
+			return nil, shared.ErrNotAuthorized.Wrap(ErrTemporaryCredentialsUnsupported)
+		}
 		provider := credentials.NewStaticCredentialsProvider(creds.Username(), creds.Password().Reveal(), "")
 		opts = append(opts, awsconfig.WithCredentialsProvider(provider))
 	}

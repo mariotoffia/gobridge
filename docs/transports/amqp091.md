@@ -6,6 +6,14 @@
 **Factory:** `amqp091.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `source_redelivery`, `plan_driven_subscriptions`
 
+> amqp091 also latches `exclusive_identity` once it builds an exclusive consumer,
+> so that capability is absent from the static list above until first exclusive
+> use. Like the other session transports it is **single-use** -- an explicit
+> `Close` is permanent (Start-after-Close returns `ErrUnavailable`), and the
+> automatic reconnection described below recovers only from transient connection
+> drops, not from an explicit `Close`. See
+> [Exclusive transports are single-use](../transport-configuration.md#transport-capabilities-matrix).
+
 RabbitMQ uses a stateful session. A `Session` owns a single AMQP connection
 with automatic reconnection. Receivers and senders each open their own
 channel on that connection. `Reconcile` declares exchanges, queues, and
@@ -78,7 +86,7 @@ senders:
 | `reconnect_delay` | duration | `1s` | Initial delay before reconnect |
 | `reconnect_max_delay` | duration | `30s` | Reconnect backoff ceiling |
 | `reconnect_multiplier` | float | `2.0` | Reconnect backoff growth factor |
-| `tls.enable` | bool | `false` | Enable TLS (`amqp091.DialTLS`) |
+| `tls.enable` | bool | `false` | Enable TLS. The session dials with `amqp.DialConfig` and a `TLSClientConfig` assembled from the PEM material below; there is no `amqp091.DialTLS` call. |
 | `tls.ca_cert_file` | string | -- | CA certificate PEM file path |
 | `tls.cert_file` | string | -- | Client certificate PEM file path |
 | `tls.key_file` | string | -- | Client private key PEM file path |
@@ -119,7 +127,7 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `exchange` | string | `""` | Target exchange name |
-| `routing_key` | string | `""` | Routing key. When empty the sender uses `OutboundMessage.Address` (resolved from the dispatch plan). The routing key is **never** taken from `Envelope.Subject`. |
+| `routing_key` | string | `""` | Static fallback routing key. The per-dispatch `OutboundMessage.Address` (resolved from the dispatch plan) **wins**; `routing_key` applies only when `Address` is empty. If both are empty the publish is rejected with `ErrInvalidTopic`. The routing key is **never** taken from `Envelope.Subject` — Subject travels as a header, not as a transport address. |
 | `delivery_mode` | string | `persistent` | `persistent` (AMQP delivery-mode 2, survives a broker restart on a durable queue) or `transient` (delivery-mode 1, lost on restart). A per-message `amqp091.delivery-mode` header overrides it; quorum queues persist regardless. Empty/invalid resolves to `persistent`. |
 | `mandatory` | bool | `false` | Return unroutable messages |
 | `timeout` | duration | `30s` | Per-publish timeout (applied when context has no deadline) |
@@ -208,6 +216,24 @@ Two rules govern the declaration:
 - **Channel isolation.** Each receiver and sender opens its own channel.
   A channel-level error (e.g., queue deleted) does not affect other
   receivers and senders on the same connection.
+
+### Flow control (`BROKER_BUSY`)
+
+When RabbitMQ raises a resource alarm (memory or disk watermark) it stops
+reading from publisher connections and sends a `connection.blocked` notification.
+The session tracks that state; while it is engaged the sender **fails fast**: a
+`Send` returns `shared.ErrBrokerBusy` (code `BROKER_BUSY`, transient) with the
+broker-supplied reason instead of issuing the publish.
+
+The fail-fast is deliberate. The amqp091-go call
+`PublishWithDeferredConfirmWithContext` ignores the context once the broker is
+not draining the socket, so a publish issued during an alarm blocks
+indefinitely -- and it blocks while holding the session mutex, wedging every
+other sender on the connection past its own deadline. Refusing up front converts
+an unbounded stall into a prompt, retryable error the runtime can back off on.
+`BROKER_BUSY` clears on its own when the broker lifts the alarm; treat it as
+backpressure, not a failure. See [Troubleshooting](../troubleshooting.md) for
+the alarm-clearing checklist.
 
 ---
 

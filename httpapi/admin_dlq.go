@@ -421,7 +421,10 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		if err := injectRedrive(opCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
 			msg := "inject failed"
 			if errors.Is(err, shared.ErrNotFound) {
-				msg = "route not found"
+				// ErrNotFound from redrive now most often means the recorded
+				// binding no longer exists on a still-present (reconfigured)
+				// route, not that the route itself is gone.
+				msg = "route or binding not found"
 			}
 			// Inject failed after we claimed the entry: best-effort restore so
 			// the failure evidence is not lost. The restore runs under its OWN

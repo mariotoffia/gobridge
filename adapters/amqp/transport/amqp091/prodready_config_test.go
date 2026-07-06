@@ -54,6 +54,28 @@ func TestConfig_Validate_RejectsImmediate(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_RejectsNegativePrefetch verifies that a negative
+// prefetch_count (or prefetch_size) is rejected. A negative value skips
+// ch.Qos entirely (QoS is gated on > 0), disabling broker-side flow
+// control: the SDK consumer buffer is unbounded, so the broker streams the
+// whole queue to one manual-settle consumer and OOMs on a deep queue.
+func TestConfig_Validate_RejectsNegativePrefetch(t *testing.T) {
+	if err := (Config{Receiver: ReceiverParams{QueueName: "q", PrefetchCount: -1}}).Validate(); err == nil {
+		t.Fatal("expected Validate to reject negative prefetch_count")
+	}
+	if err := (Config{Receiver: ReceiverParams{QueueName: "q", PrefetchSize: -1}}).Validate(); err == nil {
+		t.Fatal("expected Validate to reject negative prefetch_size")
+	}
+
+	// 0 (bounded default) and a positive window both validate.
+	if err := (Config{Receiver: ReceiverParams{QueueName: "q", PrefetchCount: 0}}).Validate(); err != nil {
+		t.Fatalf("prefetch_count=0 (bounded default) should validate, got %v", err)
+	}
+	if err := (Config{Receiver: ReceiverParams{QueueName: "q", PrefetchCount: 50}}).Validate(); err != nil {
+		t.Fatalf("positive prefetch_count should validate, got %v", err)
+	}
+}
+
 // TestReceiverParams_ApplyDefaults_Prefetch verifies a zero prefetch on
 // the typed config path is replaced by the bounded default rather than
 // left as 0 (which would mean unbounded broker push).

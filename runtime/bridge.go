@@ -28,6 +28,7 @@ import (
 // closes sessions.
 type Runtime struct {
 	instanceID        string
+	leaseOwnerID      string
 	clk               clock.Clock
 	leaseStore        ports.LeaseStore
 	outboxStore       ports.OutboxStore
@@ -49,6 +50,14 @@ type Runtime struct {
 	outboxPoisonMinAge time.Duration
 
 	shutdownTimeout time.Duration
+
+	// stopQuiesce, when > 0, makes Stop drain in-flight deliveries BEFORE it
+	// cancels the runtime context (finding L8): Stop waits up to this budget for
+	// every route to reach InFlight==0 (via WaitQuiescent) so a rolling restart
+	// lets current work settle instead of aborting mid-delivery and forcing a
+	// duplicate on redelivery. Zero (default) preserves the historical
+	// abort-style Stop.
+	stopQuiesce time.Duration
 
 	// randFloat supplies the [0,1) value used to jitter session-restart
 	// backoff (superviseSession). Production leaves it nil and the supervisor
@@ -110,6 +119,20 @@ func WithInstanceID(id string) Option {
 // WithLeaseStore sets the lease store for cluster ownership.
 func WithLeaseStore(store ports.LeaseStore) Option {
 	return func(rt *Runtime) { rt.leaseStore = store }
+}
+
+// WithStopQuiesce enables a bounded pre-cancel drain in Stop. When budget > 0,
+// Stop waits up to budget for all routes to reach InFlight==0 BEFORE cancelling
+// the runtime context, so in-flight deliveries settle rather than being aborted
+// mid-flight (which would resurface them as duplicates on redelivery). It is
+// opt-in and default-off (abort-style Stop) so existing callers are unaffected.
+//
+// NOTE: a rolling restart should already have removed this instance from ingress
+// (e.g. pod marked NotReady) before Stop; the quiesce then drains the residual
+// in-flight set. Under continuous ingress the drain relies on the budget cap
+// (an independent receiver-pause lives in the route stream, out of this scope).
+func WithStopQuiesce(budget time.Duration) Option {
+	return func(rt *Runtime) { rt.stopQuiesce = budget }
 }
 
 // WithOutboxStore sets the durable outbox store for SharedOutbox delivery.
@@ -227,6 +250,15 @@ func New(opts ...Option) *Runtime {
 	if rt.clk == nil {
 		rt.clk = clock.System
 	}
+	// The lease ownerID carries a per-process boot nonce so two replicas that
+	// share the SAME instance_id (e.g. a mis-set env var, a cloned deployment)
+	// derive DISTINCT lease owners. Without it their identical ownerID matched
+	// the lease store's same-owner fast path and each replica instantly
+	// re-seized the other's lease — a permanent ping-pong that reset every
+	// standby's observation window and starved failover (finding C3-HIGH).
+	// instance_id remains the human-facing display identity (logs, health, the
+	// source-id header); only the lease ownership token is nonce-suffixed.
+	rt.leaseOwnerID = rt.instanceID + "#" + generateID()
 	return rt
 }
 
@@ -308,6 +340,18 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	// cancel is nil for a built-but-never-started runtime (Start assigns it).
 	if cancel != nil {
+		// Optional pre-cancel quiesce (finding L8): drain in-flight deliveries
+		// under a bounded budget BEFORE cancelling, so a graceful/rolling stop
+		// settles current work instead of aborting it into duplicate
+		// redeliveries. Default-off; only runs when WithStopQuiesce was set.
+		if rt.stopQuiesce > 0 {
+			qCtx, qCancel := context.WithTimeout(context.WithoutCancel(ctx), rt.stopQuiesce)
+			if err := rt.WaitQuiescent(qCtx, QuiescenceOptions{Timeout: rt.stopQuiesce}); err != nil && rt.logger != nil {
+				rt.logger.Warn("stop quiesce did not fully drain; proceeding to cancel",
+					"instance_id", rt.instanceID, "budget", rt.stopQuiesce, "error", err)
+			}
+			qCancel()
+		}
 		cancel()
 	}
 
@@ -397,10 +441,39 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 	defer closeCancel()
 
+	// Snapshot the managers, sessions and stores under the lock, then RELEASE it
+	// before invoking the (potentially blocking) plugin Close calls. A wedged
+	// broker client's Close must not hold rt.mu — that would stall Role(),
+	// DeepHealth and the /live+/ready probes for the whole Stop duration
+	// (finding L-M).
 	rt.mu.Lock()
 	managed := make(map[string]bool, len(rt.sessionMgrs))
+	mgrs := make([]*session.Manager, 0, len(rt.sessionMgrs))
 	for sid, mgr := range rt.sessionMgrs {
 		managed[sid] = true
+		mgrs = append(mgrs, mgr)
+	}
+	type sessRef struct {
+		sid  string
+		sess ports.Session
+	}
+	sessRefs := make([]sessRef, 0, len(rt.entries)+len(rt.sessionSenders))
+	for _, entry := range rt.entries {
+		sid := ""
+		if entry.sessCfg != nil {
+			sid = entry.sessCfg.SessionID
+		}
+		sessRefs = append(sessRefs, sessRef{sid: sid, sess: entry.session})
+	}
+	for sid, sse := range rt.sessionSenders {
+		sessRefs = append(sessRefs, sessRef{sid: sid, sess: sse.session})
+	}
+	metrics := rt.metrics
+	tracer := rt.tracer
+	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
+	rt.mu.Unlock()
+
+	for _, mgr := range mgrs {
 		if err := mgr.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
@@ -411,29 +484,15 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// (session senders never promoted to a drainer). Dedupe by pointer so a
 	// session shared across entries/binding-senders is closed exactly once.
 	closedSessions := make(map[ports.Session]bool)
-	closeSession := func(sid string, sess ports.Session) {
-		if sess == nil || managed[sid] || closedSessions[sess] {
-			return
+	for _, ref := range sessRefs {
+		if ref.sess == nil || managed[ref.sid] || closedSessions[ref.sess] {
+			continue
 		}
-		closedSessions[sess] = true
-		if err := sess.Close(closeCtx); err != nil {
+		closedSessions[ref.sess] = true
+		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	for _, entry := range rt.entries {
-		sid := ""
-		if entry.sessCfg != nil {
-			sid = entry.sessCfg.SessionID
-		}
-		closeSession(sid, entry.session)
-	}
-	for sid, sse := range rt.sessionSenders {
-		closeSession(sid, sse.session)
-	}
-	metrics := rt.metrics
-	tracer := rt.tracer
-	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
-	rt.mu.Unlock()
 
 	// Finding 13: the durable stores must NOT be released while a drainer's
 	// finalDrain is still mid-send. finalDrain runs under context.WithoutCancel
@@ -597,10 +656,18 @@ var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unex
 //   - Equal-jitter spreads N sessions recovering from a shared broker/lease-store
 //     outage so they do not reconnect in lockstep (thundering herd).
 //
-// A ErrStaleFencingToken is a clean stop (another instance owns the lease), not a
-// fault to retry. A PANIC is intentionally NOT recovered here so it still
-// propagates to startBackground's recover and remains terminal — a panic is a
-// bug, fail-fast; only clean errors are isolated.
+// A ErrStaleFencingToken (another instance currently owns the lease) is treated
+// as RESTARTABLE, not a clean stop: the manager is re-run so a standby keeps
+// supervising and can re-acquire on the next transfer, instead of silently
+// abandoning failover duty (finding L11). A ErrSessionUnrecoverable (a single-use
+// session that can no longer Start after a step-down Close) is ESCALATED to
+// terminal — the manager has already released the lease, so a standby takes over
+// while the orchestrator restarts this pod with a fresh session instance; looping
+// on the dead instance would re-seize the lease via the store's same-owner fast
+// path and wedge the cluster (finding C3-CRITICAL). A PANIC is intentionally NOT
+// recovered here so it still propagates to startBackground's recover and remains
+// terminal — a panic is a bug, fail-fast; only transient errors are isolated and
+// retried.
 func (rt *Runtime) superviseSession(sid string, run func(context.Context) error) func(context.Context) error {
 	const (
 		minBackoff = 1 * time.Second
@@ -650,10 +717,26 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				err = errSessionUnexpectedStop
 			}
 			rt.setComponentError(name, err)
-			if errors.Is(err, shared.ErrStaleFencingToken) {
-				// Another instance won the lease; stop cleanly (unchanged
-				// pre-existing semantics), leaving the recorded reason.
-				return nil
+			// A ErrStaleFencingToken means another instance currently owns the
+			// lease. This is NOT a reason to abandon the session supervisor: a
+			// standby that stops supervising can never re-acquire when the active
+			// instance later steps down, silently removing the only failover
+			// target (finding L11). It falls through to the jittered capped
+			// backoff below and re-runs the manager, which re-enters its
+			// acquire/standby loop — keeping standby duty alive.
+			if errors.Is(err, session.ErrSessionUnrecoverable) {
+				// A single-use session was closed by a prior step-down and
+				// cannot be re-Started in this process. Retrying the dead
+				// instance forever is the C3-CRITICAL zombie loop: each retry
+				// re-Acquired the lease via the store's same-owner fast path,
+				// bumped the version and reset every standby's observation
+				// window, wedging the whole cluster while liveness stayed green.
+				// Escalate to terminal instead: the manager already RELEASED the
+				// lease (a healthy standby takes over immediately) and returning
+				// the error flips startBackground terminal so the orchestrator
+				// restarts this pod with a fresh session instance (documented
+				// process-restart backstop, scenario-08).
+				return err
 			}
 			metrics.Counter(shared.MetricSessionRestarts, 1,
 				shared.Tag{Key: shared.TagKeySessionID, Value: sid})
@@ -679,6 +762,107 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 			// and stays healthy leaves no permanent phantom in componentErrors /
 			// failed_components. A still-broken session re-records on its next
 			// failure; MetricSessionRestarts is the authoritative flap signal.
+			rt.clearComponentError(name)
+			if backoff < maxBackoff {
+				backoff = min(backoff*2, maxBackoff)
+			}
+		}
+	}
+}
+
+// errRouteUnexpectedStop marks a route runner's Run returning nil while the
+// runtime is still live — the receiver's receive loop ended without a shutdown
+// signal (e.g. a broker stream closed and the adapter returned nil instead of an
+// error). superviseRoute converts a live-ctx nil return into this error so the
+// stop is surfaced as a per-route degradation and the route restarts in
+// isolation, rather than being silently stranded while the runtime keeps
+// advertising it ready.
+var errRouteUnexpectedStop = errors.New("runtime: route runner stopped unexpectedly while runtime is running")
+
+// superviseRoute wraps a route runner's Run so a failing route is isolated with
+// jittered, capped exponential backoff instead of tearing down the whole runtime
+// (findings C1-MED "one permanent link error kills every route" and C2-HIGH "one
+// permanently-failing route tears down the entire runtime"). It MIRRORS
+// superviseSession's isolation contract:
+//
+//   - The global healthy/terminal flags are NEVER flipped, so one route with a
+//     deleted queue or a revoked permission cannot trip /live (a whole-pod
+//     CrashLoopBackOff) or sink every healthy co-tenant route sharing the pod.
+//   - A genuinely-permanent route fault stays OBSERVABLE without a global signal:
+//     MetricRouteRestarts fires on every restart (a continuous, rate-based flap
+//     signal, tagged by route_id), the route is recorded in componentErrors
+//     (surfaced as failed_components), and DeepHealth marks that route not-ready
+//     (bridge_health.go ANDs the recorded fault into RouteHealth.Ready) so a
+//     level=full readiness probe pulls the pod from rotation for that route while
+//     healthy routes keep serving.
+//   - Backoff resets to minBackoff after a run stays healthy for stabilityWindow;
+//     componentErrors is cleared before each retry so a recovered route leaves no
+//     phantom fault; equal-jitter avoids lockstep reconnection.
+//
+// This REPLACES the previous fail-fast rationale (the old REV-3-routeiso comment
+// at the route start site). That argument held that every non-ctx error a
+// receiver surfaces is unrecoverable-and-global and SHOULD crash the pod, on the
+// premise that adapters isolate all transient faults internally. Weighed
+// honestly, its fatal flaw is co-tenancy: a runtime hosts MANY routes, and a
+// fault that is permanent for ONE route (its queue deleted, its credential
+// revoked, a protocol mismatch on that link) is NOT global — crashing the pod
+// punishes every healthy route and, because the fault is permanent, the restart
+// just CrashLoopBackOffs without fixing anything. Per-route isolation keeps the
+// blast radius at the faulty route while preserving full observability, which is
+// strictly better for a multi-route pod. The honest tradeoff: a single-use
+// receiver whose Run cannot be re-entered (its Close already ran) will fail fast
+// on restart and settle at the backoff cap rather than reconnect — that is the
+// same capped-flap behaviour superviseSession already accepts, and it stays
+// visible via MetricRouteRestarts + readiness rather than being masked.
+func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) error) func(context.Context) error {
+	const (
+		minBackoff      = 1 * time.Second
+		maxBackoff      = 30 * time.Second
+		stabilityWindow = maxBackoff
+	)
+	name := "route:" + routeID
+	metrics := rt.metrics
+	if metrics == nil {
+		metrics = &ports.NoopExporter{}
+	}
+	randFloat := rt.randFloat
+	if randFloat == nil {
+		randFloat = rand.Float64
+	}
+	return func(ctx context.Context) error {
+		backoff := minBackoff
+		for {
+			runStart := rt.clk.Now()
+			err := run(ctx)
+			if ctx.Err() != nil {
+				// Runtime shutting down: a clean stop. Drop any prior fault.
+				rt.clearComponentError(name)
+				return nil
+			}
+			if err == nil {
+				// Receiver loop ended without a shutdown signal — surface it as a
+				// per-route degradation and restart in isolation rather than
+				// stranding a dead route while the runtime advertises it ready.
+				err = errRouteUnexpectedStop
+			}
+			rt.setComponentError(name, err)
+			metrics.Counter(shared.MetricRouteRestarts, 1,
+				shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
+			if rt.clk.Since(runStart) >= stabilityWindow {
+				backoff = minBackoff
+			}
+			wait := equalJitter(backoff, randFloat)
+			if rt.logger != nil {
+				rt.logger.Warn("route component failed; restarting in isolation",
+					"component", name, "error", err, "backoff", wait)
+			}
+			timer := rt.clk.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C():
+			}
 			rt.clearComponentError(name)
 			if backoff < maxBackoff {
 				backoff = min(backoff*2, maxBackoff)

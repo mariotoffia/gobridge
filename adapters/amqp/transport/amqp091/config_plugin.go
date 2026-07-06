@@ -201,6 +201,21 @@ func (c Config) Validate() error {
 			"whereas broker auto-ack acknowledges on delivery and silently drops messages when a " +
 			"downstream step fails. Remove auto_ack — the default (false) provides at-least-once settlement")
 	}
+	// A negative prefetch skips ch.Qos entirely (QoS is gated on > 0), which
+	// disables broker-side flow control: the SDK's consumers.buffer is
+	// unbounded, so the broker streams the whole queue to one manual-settle
+	// consumer and the process OOMs on a deep queue. 0 is the safe bounded
+	// default (see ReceiverParams.applyDefaults); negatives are never valid.
+	if c.Receiver.PrefetchCount < 0 {
+		return fmt.Errorf("amqp091: receiver.prefetch_count must not be negative (got %d): "+
+			"a negative prefetch disables QoS and lets the broker push the entire queue to one "+
+			"manual-settlement consumer, exhausting memory. Use 0 for the bounded default or a "+
+			"positive window", c.Receiver.PrefetchCount)
+	}
+	if c.Receiver.PrefetchSize < 0 {
+		return fmt.Errorf("amqp091: receiver.prefetch_size must not be negative (got %d)",
+			c.Receiver.PrefetchSize)
+	}
 	if c.Sender.Immediate {
 		return errors.New("amqp091: sender.immediate=true is not supported by RabbitMQ: the broker " +
 			"removed basic.publish 'immediate' in 3.0 and closes the channel when it is set. Remove it")

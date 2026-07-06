@@ -340,5 +340,8 @@ bindings:
 The remainder of the configuration model -- `routes`, the `http` API block, the
 ID reference graph, delivery hooks, programmatic builder/lifecycle notes, and
 the validation-rules summary -- is documented in
-[Routes, Runtime & Validation Reference](routes-and-runtime-reference.md).
+[Routes, Runtime & Validation Reference](routes-and-runtime-reference.md). That
+reference also covers the per-route lease-timing knobs under `routes[].session`,
+including `renew_call_timeout` and `acquire_poll_interval` and their role in the
+failover-latency budget.
 

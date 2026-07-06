@@ -50,14 +50,16 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 		}
 	}
 
-	tlsNewlyEnabled := set.TLS() != nil && (s.opts.TLS == nil || !s.opts.TLS.Enable)
 	tlsChanged := applyAMQPTLSMaterial(&s.opts.TLS, set.TLS())
 
-	if tlsNewlyEnabled && tlsChanged {
-		// Rebuild the dial closure so it actually goes through the TLS
-		// code path. The existing dial was built when TLS was disabled
-		// and would otherwise ignore the new material.
-		s.dial = defaultDialFromOpts(s.opts)
+	if tlsChanged {
+		// applyAMQPTLSMaterial swapped in a fresh *TLSConfig (copy-on-write).
+		// Rebuild the dial closure so it captures the new pointer: this
+		// covers both first-time TLS enablement (the previous dialer skipped
+		// the handshake) and an in-place cert/key/CA rotation (the previous
+		// dialer still holds the old snapshot). The old closure keeps its
+		// consistent snapshot until any dial in flight completes.
+		s.dial = s.buildDial(s.opts)
 	}
 
 	if !credsChanged && !tlsChanged {
@@ -95,8 +97,18 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 }
 
 // applyAMQPTLSMaterial mirrors the paho helper: returns true when the
-// session's TLS config was mutated, signalling the caller needs to
+// session's TLS config was replaced, signalling the caller needs to
 // force a reconnect. See the paho analogue for the full rationale.
+//
+// Copy-on-write: the new material is written into a FRESH *TLSConfig and
+// the pointer is swapped, never mutating the struct a live dial closure
+// may be reading. defaultDialFromOpts captures opts by value, but
+// opts.TLS is a pointer — an in-flight reconnect dial (session.go
+// dialWithTimeout) reads its cert/key/CA fields without the session lock.
+// Mutating them in place while ApplyCredentials rotates them is a data
+// race that can hand the SDK a torn cert/key pair. Swapping the pointer
+// keeps the old snapshot internally consistent for any dial still using
+// it and makes the new material visible atomically.
 func applyAMQPTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false
@@ -105,25 +117,28 @@ func applyAMQPTLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool 
 	if len(mat.CAPEMs()) > 0 {
 		newCA = joinAMQPPEMs(mat.CAPEMs())
 	}
-	if *opts == nil {
+	cur := *opts
+	if cur == nil {
 		if mat.CertPEM() == "" && mat.KeyPEM().Reveal() == "" && newCA == "" && !mat.InsecureSkipVerify() {
 			return false
 		}
-		*opts = &TLSConfig{Enable: true}
-	}
-	cur := *opts
-	if cur.CertPEM.Reveal() == mat.CertPEM() &&
+	} else if cur.CertPEM.Reveal() == mat.CertPEM() &&
 		cur.KeyPEM.Equal(mat.KeyPEM()) &&
 		cur.CACertPEM.Reveal() == newCA &&
 		cur.InsecureSkipVerify == mat.InsecureSkipVerify() &&
 		cur.Enable {
 		return false
 	}
-	cur.CertPEM = shared.NewSecret(mat.CertPEM())
-	cur.KeyPEM = mat.KeyPEM()
-	cur.CACertPEM = shared.NewSecret(newCA)
-	cur.InsecureSkipVerify = mat.InsecureSkipVerify()
-	cur.Enable = true
+	next := &TLSConfig{}
+	if cur != nil {
+		*next = *cur
+	}
+	next.CertPEM = shared.NewSecret(mat.CertPEM())
+	next.KeyPEM = mat.KeyPEM()
+	next.CACertPEM = shared.NewSecret(newCA)
+	next.InsecureSkipVerify = mat.InsecureSkipVerify()
+	next.Enable = true
+	*opts = next
 	return true
 }
 

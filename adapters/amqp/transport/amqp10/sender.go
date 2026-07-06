@@ -43,6 +43,12 @@ type Sender struct {
 	mu       sync.Mutex
 	link     senderLinkAPI
 	linkConn amqpConn
+
+	// attach creates a new sender link on the current session connection.
+	// It defaults to defaultAttach (session-backed); tests may override it
+	// to exercise the attach path — notably the SendBatch attach timeout
+	// (finding 4) — without a live broker.
+	attach func(ctx context.Context) (senderLinkAPI, amqpConn, error)
 }
 
 // NewSender creates an AMQP 1.0 Sender.
@@ -172,6 +178,12 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 			timeout = s.session.opts.LinkCloseTimeout
 		}
 		closeLinkAsync(failed, timeout)
+		// The link is down until Send re-establishes it: reflect that in
+		// Session.Health and record the cause (finding 9).
+		if s.session != nil {
+			s.session.markSenderLink(s, false)
+			s.session.noteLinkError(err)
+		}
 		s.notifySessionIfConnectionLost(failedConn, err)
 	}
 	if logging.DebugEnabled(s.logger) {
@@ -202,7 +214,15 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 		}
 	}
 
-	if err := s.ensureLink(ctx); err != nil {
+	// Bound the initial link attach the same way Send bounds its own
+	// attach: without this, a broker that accepts TCP but never answers
+	// the attach hangs the batch caller indefinitely (finding 4). Only
+	// the attach is bounded here — each per-message Send below applies
+	// its own cfg.Timeout.
+	attachCtx, cancel := s.applyTimeout(ctx)
+	err := s.ensureLink(attachCtx)
+	cancel()
+	if err != nil {
 		return nil, err
 	}
 
@@ -225,12 +245,46 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 }
 
 func (s *Sender) createLink(ctx context.Context) error {
-	// Capture the (session, conn) pair atomically so the link is never
-	// associated with a stale connection identity (see
-	// Session.sessionAndConn).
+	attach := s.attach
+	if attach == nil {
+		attach = s.defaultAttach
+	}
+	link, conn, err := attach(ctx)
+	if err != nil {
+		return err
+	}
+
+	s.link = link
+	s.linkConn = conn
+
+	// Register this sender's link for health reporting: a subsequent
+	// failure marks it down and degrades Session.Health (finding 9).
+	if s.session != nil {
+		s.session.registerSender(s)
+	}
+
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp10: sender link created",
+			"address", s.cfg.Address)
+	}
+
+	return nil
+}
+
+// defaultAttach is the production link-attach: it captures the
+// (session, conn) pair atomically so the link is never associated with a
+// stale connection identity (see Session.sessionAndConn) and opens a new
+// sender link on it.
+//
+// (ireturn allow-list category 5): defaultAttach must return the
+// senderLinkAPI interface so unit tests can inject a fake attach that
+// exercises the SendBatch attach timeout (finding 4) without a broker.
+//
+//nolint:ireturn // senderLinkAPI is an adapter-internal mock seam
+func (s *Sender) defaultAttach(ctx context.Context) (senderLinkAPI, amqpConn, error) {
 	sess, conn := s.session.sessionAndConn()
 	if sess == nil {
-		return shared.ErrUnavailable.WithMessage("amqp10: session not connected")
+		return nil, nil, shared.ErrUnavailable.WithMessage("amqp10: session not connected")
 	}
 
 	sender, err := sess.NewSenderLink(
@@ -241,18 +295,9 @@ func (s *Sender) createLink(ctx context.Context) error {
 		s.cfg.durable(),
 	)
 	if err != nil {
-		return MapError(err)
+		return nil, nil, MapError(err)
 	}
-
-	s.link = sender
-	s.linkConn = conn
-
-	if logging.DebugEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelDebug, "amqp10: sender link created",
-			"address", s.cfg.Address)
-	}
-
-	return nil
+	return sender, conn, nil
 }
 
 func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -300,6 +345,10 @@ func (s *Sender) Close(ctx context.Context) error {
 	s.link = nil
 	s.linkConn = nil
 	s.mu.Unlock()
+
+	if s.session != nil {
+		s.session.unregisterSender(s)
+	}
 
 	if link != nil {
 		if err := link.Close(ctx); err != nil {

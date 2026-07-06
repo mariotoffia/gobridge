@@ -112,7 +112,7 @@ Network errors and `context.DeadlineExceeded` map to `ErrTimeout`. `context.Canc
 | `ReconnectDelay` | `time.Duration` | `1s` | Initial delay before reconnect |
 | `ReconnectMaxDelay` | `time.Duration` | `30s` | Backoff cap for reconnect delays |
 | `ReconnectMultiplier` | `float64` | `2.0` | Backoff growth factor per failed attempt |
-| `TLS` | `*TLSConfig` | `nil` | TLS settings; when enabled, uses `amqp091.DialTLS` |
+| `TLS` | `*TLSConfig` | `nil` | TLS settings; when enabled, dials with `amqp.DialConfig` using `cfg.TLSClientConfig` (there is no `amqp091.DialTLS`) |
 
 In the plugin options map these live under the `session:` block (snake_case keys: `broker_url`, `heartbeat`, `connect_timeout`, `reconnect_delay`, `reconnect_max_delay`, `reconnect_multiplier`, `username`, `password`, `vhost`, `tls`). A top-level `credentials_uri` key selects the credential-store entry resolved at build time.
 
@@ -145,7 +145,7 @@ In the plugin options map these live under the `session:` block (snake_case keys
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `Exchange` | `string` | `""` | Target exchange |
-| `RoutingKey` | `string` | `""` | Routing key. When empty the sender uses `OutboundMessage.Address` from the dispatch plan. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
+| `RoutingKey` | `string` | `""` | Fallback routing key. The per-dispatch `OutboundMessage.Address` from the dispatch plan wins; `RoutingKey` applies only when `Address` is empty. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
 | `Mandatory` | `bool` | `false` | Return unroutable messages. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering) |
 | `Immediate` | `bool` | `false` | **Deprecated / rejected**: RabbitMQ removed `basic.publish` `immediate` in 3.0 and closes the channel when it is set. `Config.Validate` refuses it |
 | `DeliveryMode` | `string` | `"persistent"` | Default persistence for every publish: `"persistent"` (AMQP delivery-mode 2 — survives a broker restart on a durable queue) or `"transient"` (delivery-mode 1 — lost on broker restart even on a durable classic queue). A per-message `amqp091.delivery-mode` envelope header overrides it. **Quorum queues** always persist messages regardless of this knob; it matters for durable classic queues |

@@ -174,10 +174,13 @@ type RoutePolicy struct {
 	TrustBridgeHeaders bool
 	SendTimeout        time.Duration
 	DepthCacheTTL      time.Duration
-	// ProcessorTimeout bounds the execution time of a single processor in the
-	// chain. Zero means use DefaultProcessorTimeout (30s). A panicking processor
-	// returns shared.ErrProcessorPanic (Permanent). A processor that exceeds
-	// this deadline returns shared.ErrProcessorTimeout (Transient).
+	// ProcessorTimeout bounds a single processor's OWN execution time: the
+	// budget is disarmed while the processor delegates to next() and rearmed
+	// when next() returns, so an outer processor is not charged for time spent
+	// in the downstream chain. Zero means use DefaultProcessorTimeout (30s). A
+	// panicking processor returns shared.ErrProcessorPanic (Permanent); a
+	// processor that overruns its own budget returns shared.ErrProcessorTimeout
+	// (Transient).
 	ProcessorTimeout time.Duration
 }
 

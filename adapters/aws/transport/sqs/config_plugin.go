@@ -54,6 +54,15 @@ type Config struct {
 	Timeout        time.Duration `mapstructure:"timeout" yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	MessageGroupID string        `mapstructure:"message_group_id" yaml:"message_group_id" json:"message_group_id"`
 	FIFO           bool          `mapstructure:"fifo" yaml:"fifo" json:"fifo"`
+
+	// resolvedCreds holds the static credential material resolved from
+	// CredentialsURIRef at build time (ApplyCredentials). It is projected
+	// into ReceiverConfig/SenderConfig.InitialCredentials so the INITIAL
+	// SQS client is built with it — previously ApplyCredentials discarded
+	// the material and the first client always fell back to the ambient
+	// SDK chain (Finding 3/HIGH). It is unexported and never decoded from
+	// config; the redaction-safe PasswordCredential keeps it log-safe.
+	resolvedCreds *connectivity.PasswordCredential
 }
 
 // CredentialsURI implements ports.CredentialedConfig.
@@ -64,18 +73,29 @@ func (c *Config) CredentialsURI() string {
 	return c.CredentialsURIRef
 }
 
-// ApplyCredentials implements ports.CredentialedConfig. SQS does not
-// consume password material from the typed Config at build time —
-// runtime rotation lives on Sender/Receiver via the CredentialAware
-// path. Apply therefore only clears the URI to mark resolution as
-// done so the URI is not re-resolved on subsequent passes.
+// ApplyCredentials implements ports.CredentialedConfig. The bridge
+// resolves CredentialsURIRef through the credential store and hands the
+// material here BEFORE the factory builds the Receiver/Sender. The
+// resolved password credential is retained (resolvedCreds) and threaded
+// into the initial SQS client via toReceiverConfig/toSenderConfig →
+// ensureClient, so a `credentials_uri` actually changes the identity of
+// the first client instead of being silently dropped in favour of the
+// ambient SDK chain (Finding 3). The URI is then cleared to mark
+// resolution done so it is not re-resolved on subsequent passes.
 //
-// Pre-existing inline values would take precedence here too, but
-// since SQS Config carries no inline auth fields the contract is
-// degenerate.
-func (c *Config) ApplyCredentials(_ *connectivity.CredentialSet) error {
+// Temporary/STS material (ASIA-prefixed access key) is rejected up front
+// (fail the build) rather than producing a client that would fail every
+// request — see ErrTemporaryCredentialsUnsupported (Finding 6).
+func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("sqs: nil config")
+	}
+	if set != nil && set.Password() != nil {
+		pw := set.Password()
+		if isTemporaryAccessKeyID(pw.Username()) {
+			return ErrTemporaryCredentialsUnsupported
+		}
+		c.resolvedCreds = pw
 	}
 	c.CredentialsURIRef = ""
 	return nil
@@ -83,6 +103,21 @@ func (c *Config) ApplyCredentials(_ *connectivity.CredentialSet) error {
 
 // Kind reports the registry discriminator.
 func (Config) Kind() string { return "aws.sqs" }
+
+// DefaultConfig returns a Config pre-filled with the documented receiver
+// defaults that are otherwise indistinguishable from an explicit zero on
+// the typed YAML path: wait_time_seconds (20, long-poll) and max_messages
+// (10). The registry decoder (register.go) decodes into this value so an
+// OMITTED key keeps the default while an EXPLICIT `wait_time_seconds: 0`
+// (or `max_messages: 0`) survives decode as 0 and is rejected with a
+// clear error instead of being silently coerced back to the default
+// (Finding 12). Mirrors paho.DefaultConfig().
+func DefaultConfig() Config {
+	return Config{
+		MaxMessages:     10,
+		WaitTimeSeconds: 20,
+	}
+}
 
 // Validate checks field ranges and internal consistency. It runs at
 // parse time on EVERY attachment point that reuses this Config shape
@@ -151,6 +186,7 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 		PollBackoffInitial:    c.PollBackoffInitial,
 		PollBackoffMax:        c.PollBackoffMax,
 		PollBackoffMultiplier: c.PollBackoffMultiplier,
+		InitialCredentials:    c.resolvedCreds,
 	}
 }
 
@@ -191,15 +227,16 @@ func (c Config) AutoExtendEnabled() bool {
 // SenderConfig used by the SQS sender.
 func (c Config) toSenderConfig() SenderConfig {
 	return SenderConfig{
-		QueueURL:       c.QueueURL,
-		QueueName:      c.QueueName,
-		Region:         c.Region,
-		Endpoint:       c.Endpoint,
-		Profile:        c.Profile,
-		DelaySeconds:   c.DelaySeconds,
-		BatchSize:      c.BatchSize,
-		Timeout:        c.Timeout,
-		MessageGroupID: c.MessageGroupID,
-		FIFO:           c.FIFO,
+		QueueURL:           c.QueueURL,
+		QueueName:          c.QueueName,
+		Region:             c.Region,
+		Endpoint:           c.Endpoint,
+		Profile:            c.Profile,
+		DelaySeconds:       c.DelaySeconds,
+		BatchSize:          c.BatchSize,
+		Timeout:            c.Timeout,
+		MessageGroupID:     c.MessageGroupID,
+		FIFO:               c.FIFO,
+		InitialCredentials: c.resolvedCreds,
 	}
 }

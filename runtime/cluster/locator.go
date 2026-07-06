@@ -156,10 +156,18 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		}
 
 		rl.recordFailure(now)
-		if hasCached {
-			// A transient store error with a last-known owner: serve the cached
-			// owner rather than fail, so a brief blip does not disrupt routing.
-			// Fencing on the data path still rejects a stale forward.
+		if hasCached && now.Before(cached.info.ExpiresAt) {
+			// A transient store error with a last-known owner that has NOT yet
+			// passed its own lease expiry: serve the cached owner rather than
+			// fail, so a brief blip does not disrupt routing. Fencing on the data
+			// path still rejects a stale forward.
+			//
+			// The ExpiresAt bound is essential: a store outage can outlast the
+			// lease, after which the cached owner may have stepped down and a new
+			// owner (or none) taken over. Serving an age-unbounded stale owner
+			// then forwards exclusive traffic to an instance that no longer holds
+			// the lease indefinitely (finding C3-M). Past expiry we fall through
+			// to the ownership-unknown posture instead.
 			if cached.info.Owner == rl.instanceID {
 				return nil, true, nil
 			}

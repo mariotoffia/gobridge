@@ -485,6 +485,8 @@ SSM, and any transport-specific services (e.g. SQS).
         "sqs:SendMessage",
         "sqs:ReceiveMessage",
         "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
         "sqs:GetQueueAttributes"
       ],
       "Resource": "arn:aws:sqs:REGION:ACCOUNT:my-queue-*"
@@ -496,6 +498,15 @@ SSM, and any transport-specific services (e.g. SQS).
 The SQS statement is optional and should be scoped to the exact queue ARNs
 your bridge routes reference. Omit it entirely if your deployment does not use
 SQS transport.
+
+`sqs:ChangeMessageVisibility` backs the receiver's `auto_extend` (visibility
+renewal at 50% of the timeout); a missing grant surfaces as `NOT_AUTHORIZED`
+only after the first extension attempt, not at startup. `sqs:GetQueueUrl` backs
+queue-name resolution -- a receiver or sender configured with `queue_name`
+(rather than a full `queue_url`) resolves the canonical URL at build time. The
+adapter does not call `GetQueueAttributes`; the action is retained here as a
+harmless allowance for operators who inspect queues out-of-band, and can be
+dropped from a least-privilege policy.
 
 ### Execution Role
 

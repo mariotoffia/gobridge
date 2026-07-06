@@ -359,6 +359,18 @@ func (r *RouteRunner) HandleDelivery(ctx context.Context, del ports.Delivery) er
 		return err
 	}
 	defer r.releaseSlots()
+	// Count a synchronous inject in the SAME in-flight accounting the Run
+	// receive loop uses (r.inFlight + fireIdle), so Runtime.InFlight() /
+	// WaitQuiescent observes an in-progress admin inject/redrive and a reconfig
+	// cannot declare the route quiescent mid-redrive. Increment BEFORE
+	// processing; fire the idle signal on the count→0 transition exactly as the
+	// Run loop does.
+	r.inFlight.Add(1)
+	defer func() {
+		if r.inFlight.Add(-1) == 0 {
+			r.fireIdle()
+		}
+	}()
 	return r.doHandleDelivery(ctx, del)
 }
 
@@ -385,6 +397,27 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	start := r.clk.Now()
 
 	env := del.Envelope()
+
+	// Confine an OUT-OF-BAND binding override (an operator DLQ redrive via
+	// Runtime.InjectToBinding / InjectRedrive, carried on a runtime-internal
+	// bindingOverrider delivery) to the ONE recorded binding. If that binding no
+	// longer exists on the (possibly reconfigured) route, reject the replay as a
+	// PERMANENT not-found BEFORE it enters the pipeline — emitting no
+	// MessagesReceived and running no chain/dispatch — so the admin DLQ redrive
+	// path restores/keeps the DLQ entry instead of fanning the replay out to
+	// every current binding (duplicate deliveries to the N-1 healthy legs). This
+	// is deliberately distinct from an IN-BAND processor override (a filter
+	// ActionRoute stamps HeaderRouteOverride during the chain), whose
+	// unknown-binding fall-through to normal resolution in directHold /
+	// sharedOutbox is intentional and separately tested. Only the out-of-band
+	// origin — a delivery implementing bindingOverrider, constructed inside the
+	// runtime and never by a transport adapter — is confined here.
+	if bo, ok := del.(bindingOverrider); ok {
+		if bid := bo.BindingOverride(); bid != "" && !r.hasBinding(bid) {
+			return shared.ErrNotFound.WithMessage(
+				fmt.Sprintf("runtime: route-runner: route %q: redrive binding %q not found", r.routeID, bid))
+		}
+	}
 
 	// Finding 15: count every delivery that ENTERS the pipeline here — the sole
 	// choke point shared by both the Run receive loop and Runtime.Inject
@@ -495,11 +528,19 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		ctx = observability.WithSpanID(ctx, tc.SpanID)
 	}
 
+	// Attempt reflects the source transport's redelivery count when present
+	// (e.g. SQS ApproximateReceiveCount): a transport redelivery is attempt 2+,
+	// not attempt 1. receiveCount is 1-based (1 == first delivery) and returns 0
+	// when no known counter header is present, so fall back to 1.
+	ingressAttempt := receiveCount(env)
+	if ingressAttempt < 1 {
+		ingressAttempt = 1
+	}
 	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
 		Direction:   ports.DirectionIngress,
 		RouteID:     r.routeID,
 		Envelope:    env,
-		Attempt:     1,
+		Attempt:     ingressAttempt,
 		MaxAttempts: r.policy.MaxReplayAttempts,
 	})
 

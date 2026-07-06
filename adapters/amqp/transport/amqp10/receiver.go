@@ -460,6 +460,7 @@ func (r *Receiver) handleLinkError(err error) {
 	r.mu.Unlock()
 
 	if r.session != nil {
+		r.session.noteLinkError(err)         // finding 9: surface cause in Health
 		r.session.markReceiverLink(r, false) // finding 4: link is down
 	}
 

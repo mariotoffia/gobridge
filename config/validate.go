@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -63,16 +64,20 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 // validateSessionRenewTiming enforces the renew/lease invariant for every
 // route session that sets renew_interval explicitly:
 //
-//	(renewInterval + jitter/2) * maxRenewFails < leaseTTL
+//	(renewInterval + jitter/2 + renewCallTimeout) * maxRenewFails < leaseTTL
 //
 // If it does not hold, the owner can burn through all its tolerated renewal
-// failures (plus worst-case jitter) before the lease expires is detected — the
-// lease can lapse and a standby take over while the old owner still believes it
-// holds it, risking split-brain. This mirrors the invariant runtime/session
-// Config.Validate enforces (renewWorstCaseSpan); duplicating it in the config
-// layer fails a statically-rejectable blueprint before any runtime is built
-// (contract C3). renew_interval left empty is derived downstream and is safe,
-// so it is not checked here; lease_ttl empty falls back to the runtime default.
+// failures (plus worst-case jitter AND the time each renew store call may burn
+// before it fails) before the lease-loss is detected — the lease can lapse and
+// a standby take over while the old owner still believes it holds it, risking
+// split-brain. The per-attempt renewCallTimeout term matters because renewLoop
+// resets its timer AFTER the renew call returns, so a hung backend adds up to
+// renew_call_timeout to every attempt (finding H2). This mirrors the invariant
+// runtime/session Config.Validate enforces (renewWorstCaseSpan); duplicating it
+// in the config layer fails a statically-rejectable blueprint before any
+// runtime is built (contract C3). renew_interval left empty is derived
+// downstream and is safe, so it is not checked here; lease_ttl empty falls back
+// to the runtime default.
 func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
 	// Mirrors runtime/session.DefaultConfig defaults so the config-layer check
 	// rejects exactly the set the runtime would (never more, never less). The
@@ -115,16 +120,56 @@ func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
 		if maxFails <= 0 {
 			maxFails = defaultMaxRenewFails
 		}
-		worst := (renew + jitter/2) * time.Duration(maxFails)
+		// renew_call_timeout is an operator-settable blueprint field (finding
+		// H2 folded it into the safety invariant). When unset/zero the runtime
+		// derives it as min(renewInterval/2, 5s) floored at 1s
+		// (runtime/session.deriveRenewCallTimeout); the literals below duplicate
+		// that derivation so the config-layer worst case matches the runtime's.
+		callTimeout, err := parseRenewCallTimeout(s, renew)
+		if err != nil {
+			ve.Addf("routes[%s].session.renew_call_timeout: invalid duration %q: %v", r.ID, s.RenewCallTimeout, err)
+			continue
+		}
+		worst := (renew + jitter/2 + callTimeout) * time.Duration(maxFails)
 		if worst >= lease {
 			ve.Addf("routes[%s].session: worst-case renew span %s "+
-				"((renew_interval=%s + lease_renew_jitter/2=%s) * max_renew_fails=%d) must be < "+
+				"((renew_interval=%s + lease_renew_jitter/2=%s + renew_call_timeout=%s) * max_renew_fails=%d) must be < "+
 				"lease_ttl (%s); otherwise the owner can exhaust all tolerated renewal failures before "+
-				"the lease expires, risking split-brain takeover — lower renew_interval/max_renew_fails "+
+				"the lease expires, risking split-brain takeover — lower renew_interval/max_renew_fails/renew_call_timeout "+
 				"or raise lease_ttl",
-				r.ID, worst, renew, jitter/2, maxFails, lease)
+				r.ID, worst, renew, jitter/2, callTimeout, maxFails, lease)
 		}
 	}
+}
+
+// parseRenewCallTimeout returns the per-attempt renew-call-timeout term used in
+// the worst-case span. It parses the operator-set renew_call_timeout, or, when
+// unset/zero, duplicates runtime/session.deriveRenewCallTimeout's fallback
+// (min(renewInterval/2, 5s) floored at 1s) so the config-layer invariant folds
+// in exactly the term the runtime uses. The config package must not import
+// runtime/session (layering), so the literals are duplicated with this note.
+func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration) (time.Duration, error) {
+	const (
+		maxDerivedTimeout = 5 * time.Second
+		minDerivedTimeout = 1 * time.Second
+	)
+	if s.RenewCallTimeout != "" {
+		ct, err := time.ParseDuration(s.RenewCallTimeout)
+		if err != nil {
+			return 0, fmt.Errorf("parse renew_call_timeout %q: %w", s.RenewCallTimeout, err)
+		}
+		if ct > 0 {
+			return ct, nil
+		}
+	}
+	t := renewInterval / 2
+	if t > maxDerivedTimeout {
+		t = maxDerivedTimeout
+	}
+	if t < minDerivedTimeout {
+		t = minDerivedTimeout
+	}
+	return t, nil
 }
 
 func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {

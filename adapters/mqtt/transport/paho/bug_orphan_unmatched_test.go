@@ -223,11 +223,38 @@ func TestOrphan_GraceTimerSweep_AcksBufferedOrphans(t *testing.T) {
 // backlog rather than judging it against a long-expired deadline.
 func TestOrphan_GraceRestartsPerConnection(t *testing.T) {
 	clk := testClock()
-	r := newRouter(nil, nil, withRouterClock(clk), withUnmatchedGrace(testGrace))
+	// swept signals the exact topic each grace sweep unsubscribes, giving a
+	// deterministic "the first window's async sweep has run" edge — without
+	// it the first timer fire can drain LATE and eat the second window's
+	// freshly-buffered backlog (a test-only compressed-timeline race; in
+	// production the grace worker consumes the fire long before a reconnect).
+	swept := make(chan string, 1)
+	r := newRouter(nil, nil,
+		withRouterClock(clk),
+		withUnmatchedGrace(testGrace),
+		withUnsubscribe(func(topic string) { swept <- topic }),
+	)
 	defer r.shutdown()
 
 	r.beginGrace() // first connection up
-	clk.Advance(testGrace + time.Second)
+
+	// Seed an orphan under window 1 so its expiry sweep is observable.
+	r.dispatch(&pahov5.Publish{Topic: "orphan/first", QoS: 1, Payload: []byte("x")},
+		func() error { return nil })
+	require.Equal(t, 1, r.PendingCount())
+
+	clk.Advance(testGrace + time.Second) // fire window 1 → sweep drops orphan/first
+
+	// Block until the window-1 sweep has fully run (it unsubscribes the exact
+	// orphan topic from the grace worker AFTER dropping it). This drains the
+	// timer fire so no stale sweep survives into the second window.
+	select {
+	case topic := <-swept:
+		require.Equal(t, "orphan/first", topic)
+	case <-time.After(3 * time.Second):
+		t.Fatal("window-1 grace sweep never ran")
+	}
+	require.Equal(t, int64(1), r.UnmatchedDroppedCount(), "only the window-1 orphan is dropped")
 
 	// Second connection up: a fresh window must begin from "now".
 	r.beginGrace()
@@ -240,7 +267,8 @@ func TestOrphan_GraceRestartsPerConnection(t *testing.T) {
 	require.Equal(t, 1, r.PendingCount(),
 		"the reconnect backlog is buffered under the fresh grace window, not dropped as orphan")
 	require.Equal(t, int32(0), acked.Load())
-	require.Equal(t, int64(0), r.UnmatchedDroppedCount())
+	require.Equal(t, int64(1), r.UnmatchedDroppedCount(),
+		"the fresh-window backlog is not swept (only the window-1 orphan was dropped)")
 }
 
 // recordingUnsubConn is a pahoConnection double that records the topics

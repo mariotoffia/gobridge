@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // newSuperviseTestRuntime builds the smallest Runtime that superviseSession
@@ -129,11 +130,81 @@ func TestSuperviseSession_RestartsTransientErrorWithoutTerminating(t *testing.T)
 	}
 }
 
-// A ErrStaleFencingToken means another instance won the lease: the session must
-// stop cleanly (pre-existing semantics), NOT restart — restarting would fight
-// the rightful owner. It is still recorded, but emits no restart metric and does
-// not touch terminal/healthy.
-func TestSuperviseSession_StaleFencingTokenStopsCleanlyNoRestart(t *testing.T) {
+// Finding L11: a ErrStaleFencingToken means another instance currently owns the
+// lease. Previously the supervisor stopped cleanly, which permanently abandoned
+// standby duty — the instance could never re-acquire when the active one later
+// stepped down, silently removing the only failover target. The corrected
+// contract treats a stale token as RESTARTABLE: the manager is re-run under
+// jittered capped backoff so the instance keeps standby duty. It is metered and
+// recorded like any isolated fault, and NEVER flips terminal/healthy.
+func TestSuperviseSession_StaleFencingTokenRestartsKeepingStandbyDuty(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+
+	var calls atomic.Int32
+	callCh := make(chan int, 8)
+	run := func(ctx context.Context) error {
+		n := int(calls.Add(1))
+		callCh <- n
+		if n <= 2 {
+			// Wrapped to prove errors.Is unwrapping (not identity) is what the
+			// supervisor keys on.
+			return fmt.Errorf("run failed: %w", shared.ErrStaleFencingToken)
+		}
+		<-ctx.Done() // 3rd attempt (won standby back / re-acquired) stays up
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fn := rt.superviseSession("s1", run)
+	done := make(chan error, 1)
+	go func() { done <- fn(ctx) }()
+
+	// Two stale-token exits, each RESTARTED after its backoff — proving the
+	// supervisor no longer abandons the session on a stale token.
+	for attempt := 1; attempt <= 2; attempt++ {
+		select {
+		case got := <-callCh:
+			require.Equal(t, attempt, got)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run attempt %d not observed", attempt)
+		}
+		waitForBackoffTimer(t, clk)
+		clk.Advance(30 * time.Second)
+	}
+
+	select {
+	case got := <-callCh:
+		require.Equal(t, 3, got, "stale token must restart, keeping standby duty")
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor abandoned the session on a stale fencing token")
+	}
+
+	// Each isolated stale-token exit is metered as a restart.
+	restarts := rec.FindEntries(shared.MetricSessionRestarts)
+	require.Len(t, restarts, 2)
+	// Isolation invariant preserved: never terminal, never unhealthy.
+	assert.False(t, rt.Terminal())
+	assert.True(t, rt.Healthy())
+
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not return after ctx cancel")
+	}
+}
+
+// Finding C3-CRITICAL: a ErrSessionUnrecoverable (a single-use session that
+// cannot re-Start after a step-down Close) must be ESCALATED to terminal — the
+// supervisor RETURNS the error (so startBackground flips terminal and the pod
+// restarts with a fresh session) instead of looping on the dead instance, which
+// would re-seize the lease via the store's same-owner fast path and wedge the
+// cluster. It must NOT be metered as an ordinary restart.
+func TestSuperviseSession_UnrecoverableSessionEscalatesToTerminal(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(0, 0))
 	rec := &ports.RecordingExporter{}
 	rt := newSuperviseTestRuntime(clk, rec)
@@ -141,9 +212,8 @@ func TestSuperviseSession_StaleFencingTokenStopsCleanlyNoRestart(t *testing.T) {
 	var calls atomic.Int32
 	run := func(_ context.Context) error {
 		calls.Add(1)
-		// Wrapped to prove errors.Is unwrapping (not identity) drives the
-		// clean-stop decision.
-		return fmt.Errorf("run failed: %w", shared.ErrStaleFencingToken)
+		// Wrapped both ways, exactly like Manager.releaseAndReturn does.
+		return fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrUnavailable)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -154,16 +224,18 @@ func TestSuperviseSession_StaleFencingTokenStopsCleanlyNoRestart(t *testing.T) {
 
 	select {
 	case err := <-done:
-		assert.NoError(t, err) // clean stop: no backoff, no restart
+		// The supervisor RETURNS the error (does not swallow/retry) so
+		// startBackground escalates to terminal.
+		require.Error(t, err)
+		assert.ErrorIs(t, err, session.ErrSessionUnrecoverable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("supervisor did not stop on stale fencing token")
+		t.Fatal("supervisor did not escalate an unrecoverable session; it must not loop on the zombie")
 	}
 
-	assert.Equal(t, int32(1), calls.Load(), "stale token must not be retried")
-	assert.Empty(t, rec.FindEntries(shared.MetricSessionRestarts))
-	assert.ErrorIs(t, rt.ComponentErrors()["session:s1"], shared.ErrStaleFencingToken)
-	assert.False(t, rt.Terminal())
-	assert.True(t, rt.Healthy())
+	assert.Equal(t, int32(1), calls.Load(), "an unrecoverable session must not be retried")
+	assert.Empty(t, rec.FindEntries(shared.MetricSessionRestarts),
+		"escalation is not an ordinary restart and must not meter one")
+	assert.ErrorIs(t, rt.ComponentErrors()["session:s1"], session.ErrSessionUnrecoverable)
 }
 
 // Shutdown mid-run must be a clean stop: when ctx is cancelled while run is

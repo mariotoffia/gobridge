@@ -124,28 +124,37 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 	if cfg.RenewJitter == 0 && renewIntervalDerived {
 		cfg.RenewJitter = deriveRenewJitter(cfg.RenewInterval)
 	}
+	// Resolve RenewCallTimeout BEFORE the expiry-margin clamp so it participates
+	// in the worst-case renew span (finding H2): renewLoop resets its timer
+	// AFTER each renew call, so a hung call's full RenewCallTimeout adds to the
+	// spacing between attempts and must be counted before deciding whether the
+	// timings fit under the TTL.
+	if cfg.RenewCallTimeout <= 0 {
+		cfg.RenewCallTimeout = deriveRenewCallTimeout(cfg.RenewInterval)
+	}
 	// Defensively enforce the expiry-margin invariant even for explicit configs
-	// so a hand-tuned combination can never produce a renew span that reaches
-	// the TTL (Config.Validate reports the same violation as a hard error).
-	renewInterval, renewJitter, clamped := clampRenewTimings(cfg.LeaseTTL, cfg.RenewInterval, cfg.RenewJitter, cfg.MaxRenewFails)
+	// so a hand-tuned combination can never produce a renew span (interval +
+	// jitter/2 + call-timeout) that reaches the TTL (Config.Validate reports the
+	// same violation as a hard error).
+	renewInterval, renewJitter, renewCallTimeout, clamped := clampRenewTimings(cfg.LeaseTTL, cfg.RenewInterval, cfg.RenewJitter, cfg.RenewCallTimeout, cfg.MaxRenewFails)
 	if clamped && logger != nil {
 		logger.Warn("session lease timings clamped to satisfy the expiry-margin invariant",
 			"session_id", cfg.SessionID,
 			"lease_ttl", cfg.LeaseTTL,
 			"requested_renew_interval", cfg.RenewInterval,
 			"requested_renew_jitter", cfg.RenewJitter,
+			"requested_renew_call_timeout", cfg.RenewCallTimeout,
 			"clamped_renew_interval", renewInterval,
 			"clamped_renew_jitter", renewJitter,
+			"clamped_renew_call_timeout", renewCallTimeout,
 			"max_renew_fails", cfg.MaxRenewFails,
 		)
 	}
 	cfg.RenewInterval = renewInterval
 	cfg.RenewJitter = renewJitter
+	cfg.RenewCallTimeout = renewCallTimeout
 	if cfg.AcquirePollInterval <= 0 {
 		cfg.AcquirePollInterval = deriveAcquirePollInterval(cfg.RenewInterval, cfg.LeaseTTL)
-	}
-	if cfg.RenewCallTimeout <= 0 {
-		cfg.RenewCallTimeout = deriveRenewCallTimeout(cfg.RenewInterval)
 	}
 	if cfg.StepDownGrace <= 0 {
 		cfg.StepDownGrace = defaults.StepDownGrace
@@ -266,7 +275,12 @@ func (m *Manager) Token() (persistence.LeaseToken, bool) {
 	return m.token, m.hasLease
 }
 
-// Close closes the underlying session.
+// Close closes the underlying session. When the manager still holds the lease
+// it is released best-effort under a DETACHED, bounded context (finding M-close)
+// so that an embedder calling Close AFTER cancelling the ctx it passed still
+// releases the lease — otherwise a cancelled ctx silently skips Release and the
+// partition stays owned for a full TTL/observation window before a standby can
+// take over. Mirrors releaseOwnedLeaseBestEffort's WithoutCancel discipline.
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	hadLease := m.hasLease
@@ -275,9 +289,11 @@ func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if hadLease && m.leaseStore != nil {
-		if err := m.leaseStore.Release(ctx, m.sessionID, token); err != nil {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.releaseTimeout())
+		if err := m.leaseStore.Release(releaseCtx, m.sessionID, token); err != nil {
 			m.log(ctx, slog.LevelWarn, "lease release failed during close", "error", err)
 		}
+		cancel()
 	}
 	return m.session.Close(ctx)
 }

@@ -97,6 +97,14 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   high load, head-of-line blocking from another producer.
 * **Recovery.** Verify broker dashboards. Reduce route `MaxInFlight` or
   enable `shared_outbox` delivery so persistence absorbs the burst.
+* **AMQP 0-9-1 fail-fast.** When RabbitMQ raises a memory or disk resource
+  alarm it sends `connection.blocked` and stops reading publisher sockets.
+  The amqp091 sender refuses to publish while that alarm is engaged and
+  returns `BROKER_BUSY` at once rather than blocking on a publish the SDK
+  cannot cancel (which would wedge every sender on the connection past its
+  deadline). It clears on its own when the broker lifts the alarm -- fix the
+  broker resource (grow the node, drain a backed-up queue, raise the
+  watermark) rather than tuning the bridge.
 * **Related metrics.** Broker queue depth, outbox depth gauge.
 
 ### `TEMPORARY_AUTH_FAILURE`
@@ -165,7 +173,7 @@ the source of the failure.
 * **Recovery.** Verify the credential resolver returned the expected
   identity (`pms://`, `file://`, role chain). Ensure the IAM / RBAC policy
   grants the action the failing call needs (e.g. `sqs:ReceiveMessage`,
-  `dynamodb:UpdateItem`, MQTT `subscribe` ACL).
+  `sqs:ChangeMessageVisibility`, `dynamodb:UpdateItem`, MQTT `subscribe` ACL).
 
 ### `FORBIDDEN`
 
@@ -441,6 +449,7 @@ sustained non-zero rate.
 | Metric | When it increments | What a rising value means |
 |--------|--------------------|---------------------------|
 | `MQTTRouterBuffered` | A publish arrived before any matching handler was registered (e.g. a persistent-session backlog delivered on CONNACK before `Receiver.Run`) and was held in the router's bounded pending buffer during the `unmatched_grace` window instead of being immediately acked-and-dropped (`acl_router.go:416`). | Normal in small bursts at reconnect; a large or growing value means handlers register too slowly or the backlog exceeds the buffer. Publishes still unmatched when the grace window closes graduate to `MQTTRouterUnmatchedDropped`. |
+| `MQTTRouterDropped` | A **QoS 0** publish was dropped under backpressure: the serialized dispatch queue was full (`defaultDispatchSize=1024`) under a flood, or the pre-registration pending buffer hit its entry/byte ceiling (`defaultPendingBytesLimit=64 MiB`) (`acl_router.go:528,657`). QoS 1/2 is never dropped here -- it blocks on the dispatch queue or evicts an older QoS 0 entry from the pending buffer. | A QoS 0 flood is outrunning handler dispatch, or a large CONNACK backlog exceeded the pending cap before handlers registered. QoS 0 carries no delivery contract, so drops are expected under overload; a sustained rate means the consumer cannot keep up -- add capacity or shed load upstream. |
 | `MQTTRouterUnmatchedDropped` | A publish still matched **no** registered topic filter after the `unmatched_grace` window elapsed: it was acked, dropped, and its exact topic UNSUBSCRIBEd (deduped, one warn per topic) to converge broker state (`acl_router.go:329`). | The signature of an orphan broker-side subscription -- a route removed from config whose subscription survived on the resumed `clean_start=false` session. Expected as a one-shot right after a route removal; a continuously rising value means the broker keeps delivering for a subscription no configured route covers -- investigate the removed route (or a surviving wildcard subscription that the concrete-topic UNSUBSCRIBE cannot clear). |
 | `MQTTSessionTakeover` | A server disconnect with reason code `0x8E`/`0x8F` (*session taken over*): another client connected with the same ClientID (`session_lifecycle.go:189,223`). | Two instances share a `client_id` and keep kicking each other -- give each replica a distinct ClientID or use an exclusive session. |
 
@@ -455,7 +464,7 @@ sustained non-zero rate.
 
 | Metric | When it increments | What a rising value means |
 |--------|--------------------|---------------------------|
-| `AMQP10DelayedRetryUnhonored` | A `Retry` with a positive delay was handed back to the broker (`ModifyMessage`) because AMQP 1.0 has no portable client-side delayed-redelivery primitive; the broker decides when to redeliver (`acl_delivery.go:202`). | The configured retry backoff is effectively broker-driven on this transport. |
+| `AMQP10DelayedRetryDeferred` | A `Retry` with a positive delay was handed back to the broker (`ModifyMessage` + `x-opt-delivery-time`) because AMQP 1.0 has no portable client-side delayed-redelivery primitive; the broker decides when to redeliver (`acl_delivery.go:203`). Increments once per deferred retry; a Warn fires once per link. | Broker-delegated retry scheduling, **not** a failure -- a honoring broker (Artemis) applies the requested spacing, a non-honoring one falls back to its own redelivery policy. Expected under retry load; correlate with delivery-attempt exhaustion rather than alerting on the counter alone. |
 
 ### HTTP (`adapters/http/transport`)
 

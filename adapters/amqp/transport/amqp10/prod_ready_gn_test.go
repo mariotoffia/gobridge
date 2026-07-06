@@ -16,12 +16,12 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestDelivery_DelayedRetryUnhonored_MetricAndWarn covers G-N2: an
-// unhonored delayed retry (after > 0) increments
-// MetricAMQP10DelayedRetryUnhonored once per message and emits the Warn
+// TestDelivery_DelayedRetryDeferred_MetricAndWarn covers G-N2: a
+// delayed retry (after > 0) deferred to broker scheduling increments
+// MetricAMQP10DelayedRetryDeferred once per message and emits the Warn
 // once per link (shared delayWarnOnce), while an immediate retry
 // (after == 0) touches neither.
-func TestDelivery_DelayedRetryUnhonored_MetricAndWarn(t *testing.T) {
+func TestDelivery_DelayedRetryDeferred_MetricAndWarn(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	rec := &ports.RecordingExporter{}
@@ -44,8 +44,8 @@ func TestDelivery_DelayedRetryUnhonored_MetricAndWarn(t *testing.T) {
 		t.Fatalf("Retry(5s) #2 error = %v", err)
 	}
 
-	// Counter fires once per unhonored delayed retry (per message).
-	got := rec.FindEntries(MetricAMQP10DelayedRetryUnhonored)
+	// Counter fires once per deferred delayed retry (per message).
+	got := rec.FindEntries(MetricAMQP10DelayedRetryDeferred)
 	if len(got) != 2 {
 		t.Fatalf("counter emitted %d times, want 2 (one per message)", len(got))
 	}
@@ -54,16 +54,16 @@ func TestDelivery_DelayedRetryUnhonored_MetricAndWarn(t *testing.T) {
 	}
 
 	// Warn fires once per link, not once per message.
-	if n := strings.Count(buf.String(), "delayed retry not honored"); n != 1 {
+	if n := strings.Count(buf.String(), "delayed retry deferred to broker scheduling"); n != 1 {
 		t.Fatalf("warn emitted %d times, want 1 (once per link)", n)
 	}
 
-	// An immediate retry (after == 0) must not touch the unhonored counter.
+	// An immediate retry (after == 0) must not touch the deferred counter.
 	rec.Reset()
 	if err := newDel(newMockSettler()).Retry(context.Background(), 0, nil); err != nil {
 		t.Fatalf("Retry(0) error = %v", err)
 	}
-	if n := len(rec.FindEntries(MetricAMQP10DelayedRetryUnhonored)); n != 0 {
+	if n := len(rec.FindEntries(MetricAMQP10DelayedRetryDeferred)); n != 0 {
 		t.Fatalf("immediate retry emitted counter %d times, want 0", n)
 	}
 }

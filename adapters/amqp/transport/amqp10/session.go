@@ -46,6 +46,20 @@ type Session struct {
 	// down while the session connection itself is still alive.
 	receivers map[*Receiver]bool
 
+	// senders tracks live sender links for health reporting, mirroring
+	// receivers. A Sender registers when its link is first established
+	// and flips the entry down on a link failure (finding 9). A down
+	// sender link degrades ServiceLevel even while the connection and all
+	// receivers are healthy, so a broker refusing publishes is visible to
+	// readiness probes.
+	senders map[*Sender]bool
+
+	// lastErr records the most recent link/connection error observed by
+	// a receiver or sender, surfaced via SessionHealth.LastError on any
+	// non-Full state so operators see the CAUSE of a degrade, not merely
+	// the level (finding 9). Cleared on a successful (re)connect.
+	lastErr error
+
 	// stopMonitor cancels the background health-monitoring goroutine.
 	stopMonitor context.CancelFunc
 	// monitorDone is closed when the monitor goroutine exits.
@@ -72,8 +86,9 @@ type Session struct {
 }
 
 // amqp10Credentials is the mutable subset of SessionOptions that can
-// be rotated at runtime. TLS material requires a new tls.Config and
-// is handled via Session.Reload (see FIX_PLAN Item 7).
+// be rotated at runtime. SASL username/password live here; TLS material
+// is rotated separately via ApplyCredentials, which swaps s.opts.TLS
+// (see applyAMQP10TLSMaterial).
 type amqp10Credentials struct {
 	Username string
 	Password string
@@ -98,6 +113,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		events:      make(chan ports.SessionEvent, eventChannelSize),
 		reconnectCh: make(chan struct{}, 1),
 		receivers:   make(map[*Receiver]bool),
+		senders:     make(map[*Sender]bool),
 		liveCreds: amqp10Credentials{
 			Username: opts.Username,
 			Password: opts.Password.Reveal(),
@@ -152,7 +168,9 @@ func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return shared.ErrUnavailable.WithMessage("amqp10: session already closed")
+		return shared.ErrUnavailable.
+			WithMessage("amqp10: session already closed").
+			Wrap(shared.ErrTransportClosedPermanently)
 	}
 	if s.conn != nil {
 		s.mu.Unlock()
@@ -234,14 +252,21 @@ func (s *Session) Start(ctx context.Context) error {
 }
 
 func (s *Session) connect(ctx context.Context) error {
+	// Snapshot the mutable dial inputs under the lock: ApplyCredentials
+	// (runtime credential refresher goroutine) writes s.opts.Username/
+	// Password and swaps the s.opts.TLS pointer concurrently. Copying the
+	// SessionOptions struct here — and never mutating a *TLSConfig in
+	// place (see applyAMQP10TLSMaterial) — means the dial reads a stable,
+	// immutable options value with no torn cert/key pair (finding 2).
 	s.mu.Lock()
 	creds := s.liveCreds
+	opts := s.opts
 	s.mu.Unlock()
 
-	connectCtx, connectCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
+	connectCtx, connectCancel := context.WithTimeout(ctx, opts.ConnectTimeout)
 	defer connectCancel()
 
-	conn, err := s.dial(connectCtx, s.opts, creds)
+	conn, err := s.dial(connectCtx, opts, creds)
 	if err != nil {
 		return MapError(err)
 	}
@@ -264,6 +289,11 @@ func (s *Session) connect(ctx context.Context) error {
 	s.conn = conn
 	s.amqpSess = sess
 	s.connected = true
+	s.lastErr = nil // a fresh connection clears the last recorded fault
+	// Senders have no background reattach loop; drop their stale down
+	// state so the benign post-reconnect lazy-reattach window does not
+	// report the session Degraded (finding 9 regression).
+	s.resetSendersForReconnectLocked()
 	s.mu.Unlock()
 
 	if oldSess != nil {
@@ -328,6 +358,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	connected := s.connected
 	plan := s.plan
+	lastErr := s.lastErr
 	wanted := 0
 	if plan != nil {
 		wanted = len(plan.Subscriptions)
@@ -340,6 +371,13 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	for _, up := range s.receivers {
 		if !up {
 			downCount++
+		}
+	}
+	senderDown := false
+	for _, up := range s.senders {
+		if !up {
+			senderDown = true
+			break
 		}
 	}
 	s.mu.Unlock()
@@ -356,9 +394,11 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	case !connected:
 		sl = ports.ServiceLevelNone
 		active = 0
-	case downCount == 0:
+	case downCount == 0 && !senderDown:
 		sl = ports.ServiceLevelFull
 	default:
+		// A down receiver OR a down sender link degrades the session even
+		// while the connection is alive (finding 9).
 		sl = ports.ServiceLevelDegraded
 		active = wanted - downCount
 		if active < 0 {
@@ -369,13 +409,20 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		active = linkUp
 	}
 
-	return ports.SessionHealth{
+	health := ports.SessionHealth{
 		Connected:           connected,
 		SubscriptionsWanted: wanted,
 		SubscriptionsActive: active,
 		Ready:               connected,
 		ServiceLevel:        sl,
 	}
+	// Surface the underlying cause on any non-Full state so a readiness
+	// probe / operator sees WHY the session degraded, not just that it did
+	// (finding 9).
+	if sl != ports.ServiceLevelFull {
+		health.LastError = lastErr
+	}
+	return health
 }
 
 // registerReceiver records r as a live receiver whose link health feeds
@@ -418,6 +465,76 @@ func (s *Session) markAllReceiversDownLocked() {
 	for r := range s.receivers {
 		s.receivers[r] = false
 	}
+}
+
+// registerSender records sn as a live sender whose link health feeds
+// Session.Health (finding 9). Called when a Sender establishes its link;
+// the entry is removed by unregisterSender on Close.
+func (s *Session) registerSender(sn *Sender) {
+	s.mu.Lock()
+	if s.senders == nil {
+		s.senders = make(map[*Sender]bool)
+	}
+	s.senders[sn] = true
+	s.mu.Unlock()
+}
+
+// unregisterSender removes sn from health tracking when it is closed.
+func (s *Session) unregisterSender(sn *Sender) {
+	s.mu.Lock()
+	delete(s.senders, sn)
+	s.mu.Unlock()
+}
+
+// markSenderLink updates the link-up state of an already-registered
+// sender. Unknown senders are ignored, mirroring markReceiverLink.
+func (s *Session) markSenderLink(sn *Sender, up bool) {
+	s.mu.Lock()
+	if _, ok := s.senders[sn]; ok {
+		s.senders[sn] = up
+	}
+	s.mu.Unlock()
+}
+
+// markAllSendersDownLocked flips every registered sender to link-down.
+// The caller must hold s.mu. Used on connection loss.
+func (s *Session) markAllSendersDownLocked() {
+	for sn := range s.senders {
+		s.senders[sn] = false
+	}
+}
+
+// resetSendersForReconnectLocked drops every registered sender entry on
+// a fresh connection. The caller must hold s.mu.
+//
+// Unlike receivers — whose Run loop re-attaches and calls
+// markReceiverLink(r, true) with no traffic after a reconnect — a Sender
+// has NO background reattach path: its link is re-created lazily on the
+// next application Send. Leaving senders in the down state stamped by
+// notifyDisconnect would therefore report the session Degraded (with a
+// nil LastError, since connect() clears it) for the entire post-reconnect
+// window until the next Send — a false positive that could pull a healthy
+// low-traffic egress pod out of rotation on a ServiceLevel readiness
+// probe. Cleared entries re-register (up) on the next Send via
+// createLink; only a genuine handleSendFailure (broker refusing a
+// publish) then degrades the session — exactly what finding 9 targets.
+func (s *Session) resetSendersForReconnectLocked() {
+	for sn := range s.senders {
+		delete(s.senders, sn)
+	}
+}
+
+// noteLinkError records the classified cause of a link/connection fault
+// so Session.Health can surface it via LastError on a non-Full state
+// (finding 9). A nil error is ignored.
+func (s *Session) noteLinkError(err error) {
+	if err == nil {
+		return
+	}
+	be := MapError(err)
+	s.mu.Lock()
+	s.lastErr = be
+	s.mu.Unlock()
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
@@ -743,7 +860,11 @@ func (s *Session) notifyDisconnect(failedConn amqpConn, err error) {
 	s.conn = nil
 	s.amqpSess = nil
 	s.connected = false
+	if err != nil {
+		s.lastErr = MapError(err)
+	}
 	s.markAllReceiversDownLocked()
+	s.markAllSendersDownLocked()
 	s.mu.Unlock()
 
 	_ = conn.Close()

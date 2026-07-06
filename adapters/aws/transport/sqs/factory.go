@@ -28,11 +28,21 @@ type Factory struct {
 	send *SenderFactory
 }
 
-// NewFactory creates a stateless SQS TransportFactory.
-func NewFactory(logger *slog.Logger) *Factory {
+// NewFactory creates a stateless SQS TransportFactory. The optional
+// variadic metrics exporter is threaded into every Receiver and Sender
+// the factory builds so the adapter's nine SQS metrics actually emit on
+// the config-driven/plugin path — without it the factory left cfg.Metrics
+// nil and each adapter fell back to a Noop exporter (Finding 8/HIGH). The
+// signature mirrors paho.NewFactory; the variadic keeps existing
+// single-arg callers compiling.
+func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
 	return &Factory{
-		recv: NewReceiverFactory(logger),
-		send: NewSenderFactory(logger),
+		recv: NewReceiverFactory(logger, m),
+		send: NewSenderFactory(logger, m),
 	}
 }
 
@@ -99,12 +109,20 @@ func (f *Factory) VisibilityTimeout() time.Duration {
 
 // ReceiverFactory creates SQS Receiver instances from ReceiverSpec.
 type ReceiverFactory struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
 }
 
-// NewReceiverFactory returns a factory that creates SQS receivers.
-func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
-	return &ReceiverFactory{logger: logger}
+// NewReceiverFactory returns a factory that creates SQS receivers. The
+// optional metrics exporter is applied to every ReceiverConfig so the
+// receiver's poll/receive/malformed metrics emit (Finding 8). The
+// variadic keeps existing single-arg callers compiling.
+func NewReceiverFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *ReceiverFactory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &ReceiverFactory{logger: logger, metrics: m}
 }
 
 // NewReceiver creates a Receiver from a ReceiverSpec. SQS is stateless
@@ -120,17 +138,26 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 		return nil, fmt.Errorf("sqs receiver %q: %w", spec.ID, err)
 	}
 	cfg := pc.toReceiverConfig()
+	cfg.Metrics = f.metrics
 	return NewReceiver(cfg, f.logger)
 }
 
 // SenderFactory creates SQS Sender instances from SenderSpec.
 type SenderFactory struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
 }
 
-// NewSenderFactory returns a factory that creates SQS senders.
-func NewSenderFactory(logger *slog.Logger) *SenderFactory {
-	return &SenderFactory{logger: logger}
+// NewSenderFactory returns a factory that creates SQS senders. The
+// optional metrics exporter is applied to every SenderConfig so the
+// sender's send/batch/dropped-attribute metrics emit (Finding 8). The
+// variadic keeps existing single-arg callers compiling.
+func NewSenderFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *SenderFactory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &SenderFactory{logger: logger, metrics: m}
 }
 
 // NewSender creates a Sender from a SenderSpec. SQS is stateless so
@@ -146,6 +173,7 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ po
 	}
 	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger
+	cfg.Metrics = f.metrics
 	return NewSender(cfg)
 }
 

@@ -5,14 +5,18 @@ import (
 	"time"
 )
 
-// TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract C3: when an
-// operator supplies ONLY LeaseTTL (bridge/convert.go no longer seeds
-// DefaultConfig, so RenewInterval/RenewJitter arrive zero), the derived renew
-// interval and jitter must satisfy the expiry-margin invariant with margin:
+// TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract C3 and
+// finding H2: when an operator supplies ONLY LeaseTTL (bridge/convert.go no
+// longer seeds DefaultConfig, so RenewInterval/RenewJitter arrive zero), the
+// derived-then-clamped renew interval, jitter, and per-call timeout must satisfy
+// the expiry-margin invariant with margin:
 //
-//	MaxRenewFails × (RenewInterval + RenewJitter/2) < LeaseTTL
+//	MaxRenewFails × (RenewInterval + RenewJitter/2 + RenewCallTimeout) < LeaseTTL
 //
-// for a spread of realistic TTLs including the documented 45s HA value.
+// for a spread of realistic TTLs including the documented 45s HA value. The
+// derivation goes through clampRenewTimings — the same construction path
+// newManager takes — because the raw 75%-of-TTL derivation does not itself
+// reserve headroom for the per-call timeout (finding H2).
 func TestDeriveRenewTimings_SatisfyInvariant(t *testing.T) {
 	ttls := []time.Duration{
 		30 * time.Second,
@@ -24,10 +28,12 @@ func TestDeriveRenewTimings_SatisfyInvariant(t *testing.T) {
 		for _, ttl := range ttls {
 			interval := deriveRenewInterval(ttl, maxFails)
 			jitter := deriveRenewJitter(interval)
-			worst := renewWorstCaseSpan(interval, jitter, maxFails)
+			callTimeout := deriveRenewCallTimeout(interval)
+			interval, jitter, callTimeout, _ = clampRenewTimings(ttl, interval, jitter, callTimeout, maxFails)
+			worst := renewWorstCaseSpan(interval, jitter, callTimeout, maxFails)
 			if worst >= ttl {
-				t.Errorf("ttl=%s maxFails=%d: derived worst-case span %s (interval=%s jitter=%s) must be < ttl",
-					ttl, maxFails, worst, interval, jitter)
+				t.Errorf("ttl=%s maxFails=%d: derived worst-case span %s (interval=%s jitter=%s callTimeout=%s) must be < ttl",
+					ttl, maxFails, worst, interval, jitter, callTimeout)
 			}
 			// Require real margin (>=10%% of the TTL), not a hair under.
 			if margin := ttl - worst; margin < ttl/10 {
@@ -53,7 +59,7 @@ func TestNewManager_DerivesFromTTLOnly(t *testing.T) {
 	if m.renewJitter < 0 {
 		t.Fatalf("renewJitter negative: %s", m.renewJitter)
 	}
-	worst := renewWorstCaseSpan(m.renewInterval, m.renewJitter, m.maxRenewFails)
+	worst := renewWorstCaseSpan(m.renewInterval, m.renewJitter, m.renewCallTimeout, m.maxRenewFails)
 	if worst >= m.leaseTTL {
 		t.Fatalf("derived worst-case span %s must be < leaseTTL %s", worst, m.leaseTTL)
 	}
@@ -81,15 +87,15 @@ func TestNewManager_HonorsPinnedIntervalWithZeroJitter(t *testing.T) {
 		SessionID:     "s-pinned",
 		Exclusive:     true,
 		LeaseTTL:      45 * time.Second,
-		RenewInterval: 10 * time.Second,
+		RenewInterval: 8 * time.Second,
 		MaxRenewFails: 3,
 		// RenewJitter deliberately left zero.
 	}
 
 	m := newManager(cfg, nil, nil, "owner-1", nil)
 
-	if m.renewInterval != 10*time.Second {
-		t.Fatalf("pinned renewInterval changed: got %s want 10s", m.renewInterval)
+	if m.renewInterval != 8*time.Second {
+		t.Fatalf("pinned renewInterval changed: got %s want 8s", m.renewInterval)
 	}
 	if m.renewJitter != 0 {
 		t.Fatalf("pinned interval with zero jitter must stay zero, got %s", m.renewJitter)
@@ -129,13 +135,26 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "safe explicit combo accepted",
 			cfg: Config{
-				SessionID:     "good",
-				LeaseTTL:      45 * time.Second,
-				RenewInterval: 14 * time.Second,
-				RenewJitter:   1 * time.Second, // 3 × (14 + 0.5) = 43.5s < 45s
-				MaxRenewFails: 3,
+				SessionID:        "good",
+				LeaseTTL:         45 * time.Second,
+				RenewInterval:    8 * time.Second,
+				RenewJitter:      1 * time.Second,
+				RenewCallTimeout: 3 * time.Second, // 3 × (8 + 0.5 + 3) = 34.5s < 45s
+				MaxRenewFails:    3,
 			},
 			wantErr: false,
+		},
+		{
+			name: "explicit combo safe on jitter but unsafe once call timeout folded in",
+			cfg: Config{
+				SessionID:     "call-timeout-unsafe",
+				LeaseTTL:      45 * time.Second,
+				RenewInterval: 14 * time.Second,
+				RenewJitter:   1 * time.Second, // 3 × (14 + 0.5) = 43.5s < 45s WITHOUT call timeout
+				// RenewCallTimeout left zero derives to 5s: 3 × (14 + 0.5 + 5) = 58.5s >= 45s (finding H2).
+				MaxRenewFails: 3,
+			},
+			wantErr: true,
 		},
 		{
 			name:    "zero (derive) config accepted",
@@ -179,26 +198,50 @@ func TestConfigValidate(t *testing.T) {
 }
 
 // TestClampRenewTimings pins the defensive construction-time clamp: an unsafe
-// explicit combination is shrunk until the worst-case span fits under the TTL,
-// while a safe combination is left untouched.
+// explicit combination is shrunk until the worst-case span (including the
+// per-call renew timeout, finding H2) fits under the TTL, while a safe
+// combination is left untouched.
 func TestClampRenewTimings(t *testing.T) {
 	ttl := 45 * time.Second
 
-	// Unsafe: 3 × 20 = 60s >= 45s.
-	interval, jitter, clamped := clampRenewTimings(ttl, 20*time.Second, 0, 3)
+	// Unsafe: 3 × (20 + 0 + 5) = 75s >= 45s.
+	interval, jitter, callTimeout, clamped := clampRenewTimings(ttl, 20*time.Second, 0, 5*time.Second, 3)
 	if !clamped {
 		t.Fatal("expected an unsafe combo to be clamped")
 	}
-	if worst := renewWorstCaseSpan(interval, jitter, 3); worst >= ttl {
+	if worst := renewWorstCaseSpan(interval, jitter, callTimeout, 3); worst >= ttl {
 		t.Fatalf("clamped worst-case span %s must be < ttl %s", worst, ttl)
 	}
 
-	// Safe: 3 × (14 + 0.5) = 43.5s < 45s.
-	interval, jitter, clamped = clampRenewTimings(ttl, 14*time.Second, 1*time.Second, 3)
+	// Safe: 3 × (8 + 0.5 + 3) = 34.5s < 45s.
+	interval, jitter, callTimeout, clamped = clampRenewTimings(ttl, 8*time.Second, 1*time.Second, 3*time.Second, 3)
 	if clamped {
 		t.Fatal("safe combo must not be clamped")
 	}
-	if interval != 14*time.Second || jitter != 1*time.Second {
-		t.Fatalf("safe combo altered: interval=%s jitter=%s", interval, jitter)
+	if interval != 8*time.Second || jitter != 1*time.Second || callTimeout != 3*time.Second {
+		t.Fatalf("safe combo altered: interval=%s jitter=%s callTimeout=%s", interval, jitter, callTimeout)
+	}
+}
+
+// TestRenewWorstCaseSpan_FoldsInCallTimeout pins finding H2: the invariant must
+// count the per-call renew timeout, because renewLoop resets its timer AFTER the
+// renew call returns, so a hung call adds its full RenewCallTimeout to the
+// spacing between attempts. The pre-fix HA preset (14s/1s/5s call timeout)
+// summed to 58.5s — 13.5s PAST the 45s TTL — precisely because the call timeout
+// was omitted.
+func TestRenewWorstCaseSpan_FoldsInCallTimeout(t *testing.T) {
+	const maxFails = 3
+	withTimeout := renewWorstCaseSpan(14*time.Second, 1*time.Second, 5*time.Second, maxFails)
+	if want := 58500 * time.Millisecond; withTimeout != want {
+		t.Fatalf("worst-case with call timeout = %s, want %s", withTimeout, want)
+	}
+	if withTimeout < 45*time.Second {
+		t.Fatalf("expected the pre-fix HA preset to exceed the 45s TTL, got %s", withTimeout)
+	}
+	// The corrected HAConfig preset must land strictly under its 45s TTL.
+	ha := HAConfig("ha", true)
+	haWorst := renewWorstCaseSpan(ha.RenewInterval, ha.RenewJitter, ha.RenewCallTimeout, ha.MaxRenewFails)
+	if haWorst >= ha.LeaseTTL {
+		t.Fatalf("HAConfig worst-case span %s must be < LeaseTTL %s", haWorst, ha.LeaseTTL)
 	}
 }

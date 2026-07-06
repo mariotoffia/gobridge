@@ -136,6 +136,23 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 		}
 		sc.StepDownGrace = d
 	}
+	if rs.AcquirePollInterval != "" {
+		d, err := time.ParseDuration(rs.AcquirePollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid acquire_poll_interval %q: %w", rs.AcquirePollInterval, err)
+		}
+		sc.AcquirePollInterval = d
+	}
+	// RenewCallTimeout is part of the failover-safety invariant (finding
+	// C3-HIGH): renewWorstCaseSpan folds it in, so exposing it lets a deployment
+	// tune the safety margin. Zero (unset) keeps the manager's derived default.
+	if rs.RenewCallTimeout != "" {
+		d, err := time.ParseDuration(rs.RenewCallTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid renew_call_timeout %q: %w", rs.RenewCallTimeout, err)
+		}
+		sc.RenewCallTimeout = d
+	}
 
 	ds, err := toDrainStrategyE(rs)
 	if err != nil {

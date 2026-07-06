@@ -42,7 +42,12 @@ func (r *Receiver) pollAndConvert(
 		WaitTimeSeconds:       r.cfg.WaitTimeSeconds,
 		VisibilityTimeout:     r.cfg.VisibilityTimeout,
 		MessageAttributeNames: []string{"All"},
-		AttributeNames:        []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameAll},
+		// MessageSystemAttributeNames replaces the deprecated
+		// AttributeNames field (Finding 9). It requests every system
+		// attribute — including ApproximateReceiveCount, which the runtime
+		// retry cap reads (attributesToHeaders → "sqs.ApproximateReceiveCount")
+		// and the FIFO dedup/ordering lift below relies on.
+		MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{sqstypes.MessageSystemAttributeNameAll},
 	})
 	pollCancel()
 	if err != nil {
@@ -357,11 +362,22 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 		return nil
 	}
 
-	cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
-	if err != nil {
-		return err
+	// A resolved `credentials_uri` builds the initial client with static
+	// material instead of the ambient SDK chain (Finding 3). Temporary
+	// (STS) material is rejected by rebuildSQSClient (Finding 6).
+	if r.cfg.InitialCredentials != nil {
+		client, err := rebuildSQSClient(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile, r.cfg.InitialCredentials)
+		if err != nil {
+			return err
+		}
+		r.storeClient(client)
+	} else {
+		cfg, err := buildAWSConfig(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile)
+		if err != nil {
+			return err
+		}
+		r.storeClient(awssqs.NewFromConfig(cfg))
 	}
-	r.storeClient(awssqs.NewFromConfig(cfg))
 
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver initialized",

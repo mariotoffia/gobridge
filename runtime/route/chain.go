@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	goruntimedebug "runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -23,6 +24,23 @@ type chainOptions struct {
 	shutdownGrace time.Duration
 	clk           clock.Clock
 	routeID       string
+	// root is the ORIGINAL caller context. Each processor frame runs under a
+	// per-frame child (the caller's cancellation and any caller deadline still
+	// propagate), but the per-processor timeout is enforced by an independent
+	// budget timer — NOT a per-frame context deadline — so a slow processor 0
+	// no longer caps the whole chain. root lets a frame tell a genuine shutdown
+	// (root cancelled) apart from its own budget overrun, so a real
+	// per-processor timeout is classified processor-timeout (and emits
+	// MetricProcessorTimeouts) instead of being misread as shutdown-grace.
+	root context.Context
+	// outstanding counts processor goroutines spawned but not yet returned,
+	// INCLUDING any abandoned on a timeout or shutdown-grace. RunChain refuses
+	// the success-path merge while this is > 0: an OUTER processor may swallow an
+	// inner ErrProcessorTimeout and return nil, but an abandoned inner goroutine
+	// is still running (mutating only its own per-frame clone). Declaring that a
+	// success would dispatch a half-processed message, so the chain returns a
+	// transient timeout instead and the delivery is retried.
+	outstanding *atomic.Int64
 }
 
 // ChainOption configures RunChain.
@@ -95,13 +113,30 @@ func RunChain(ctx context.Context, processors []ports.Processor, env *messaging.
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
 	}
+	cfg.root = ctx
+	cfg.outstanding = new(atomic.Int64)
 
 	var terminal ports.ProcessorFunc = func(_ context.Context, _ *messaging.Envelope) error {
 		return nil
 	}
 
 	chain := buildChain(processors, 0, terminal, &cfg)
-	return chain(ctx, env)
+	if err := chain(ctx, env); err != nil {
+		return err
+	}
+	// Refuse the success path when a processor goroutine was abandoned on a
+	// timeout / shutdown-grace and is still running: an OUTER "best-effort"
+	// processor may have swallowed the inner ErrProcessorTimeout and returned
+	// nil. The abandoned goroutine only ever mutates its own per-frame clone
+	// (never chainEnv), so there is no data race — but merging chainEnv would
+	// still dispatch a message the chain did not finish processing. Treat it as a
+	// transient processing failure so the delivery is retried, never merged.
+	if cfg.outstanding.Load() > 0 {
+		return shared.ErrProcessorTimeout.
+			With("reason", "processor-abandoned").
+			With("envelope_id", env.ID())
+	}
+	return nil
 }
 
 func buildChain(processors []ports.Processor, index int, terminal ports.ProcessorFunc, cfg *chainOptions) ports.ProcessorFunc {
@@ -116,8 +151,17 @@ func buildChain(processors []ports.Processor, index int, terminal ports.Processo
 }
 
 // invokeProcessor runs a single processor with panic recovery and a
-// per-call deadline. It returns sentinel domain errors on panic / timeout
-// and otherwise passes through the processor's own return value.
+// per-processor time budget. It returns sentinel domain errors on panic /
+// timeout and otherwise passes through the processor's own return value.
+//
+// The per-processor budget measures the processor's OWN time: it is disarmed
+// while the processor delegates to next() (so the outermost processor is not
+// charged for the whole downstream chain) and rearmed when next() returns. A
+// chain of N processors, each within the per-processor timeout, therefore
+// succeeds even when their combined wall-clock time exceeds it. A processor that
+// blows its own budget is classified processor-timeout (emitting
+// MetricProcessorTimeouts); a genuine route shutdown is classified
+// shutdown-grace and never counted as a processor timeout.
 func invokeProcessor(
 	ctx context.Context,
 	p ports.Processor,
@@ -125,68 +169,158 @@ func invokeProcessor(
 	env *messaging.Envelope,
 	next ports.ProcessorFunc,
 	cfg *chainOptions,
-) (err error) {
+) error {
 	name := processorName(p, index)
 
-	callCtx, cancel := context.WithTimeout(ctx, cfg.timeout)
-	defer cancel()
+	// Per-frame child context. It propagates the caller's cancellation (route
+	// shutdown) and any caller deadline, but adds NO per-frame deadline of its
+	// own — the per-processor timeout is the budget timer below, so processor 0
+	// is not capped by time spent inside next().
+	procCtx, cancelProc := context.WithCancel(ctx)
+	defer cancelProc()
 
-	// The processor runs on the calling goroutine so recover() here catches
-	// panics raised by Process itself. Blocking processors are bounded by
-	// callCtx -- they are expected to honour ctx.Done(). If they do not,
-	// we still return ErrProcessorTimeout to the caller once callCtx
-	// expires; the runaway goroutine is leaked (best-effort) but the
-	// in-flight slot is released.
 	done := make(chan struct{})
 	var procErr error
-	go func() {
-		defer close(done)
-		defer func() {
-			if rv := recover(); rv != nil {
-				procErr = buildPanicError(name, rv, cfg, env)
-			}
-		}()
-		procErr = p.Process(callCtx, env, next)
-	}()
+
+	// frameEnv is THIS frame's private working clone. The processor mutates
+	// frameEnv, never the caller's env; its processor-owned mutations (subject,
+	// payload, headers) are merged back onto env ONLY once the goroutine has
+	// cleanly returned (done observed) — never when it is abandoned on a timeout
+	// or shutdown grace. An abandoned processor that ignores cancellation and
+	// keeps writing headers is thereby confined to a clone no other frame
+	// touches, so a sibling frame writing concurrently can never trigger a fatal
+	// concurrent map write (finding 2, closed structurally rather than by
+	// contract). Cost is one clone per frame per message; routes carry few
+	// processors and the dispatch path already clones per message.
+	frameEnv := env.Clone()
+
+	// Fast path: the route is already shutting down. Do NOT arm a per-processor
+	// budget (a processor overrun is meaningless once cancelled, and arming a
+	// timer here would perturb the shutdown-grace timer accounting the shutdown
+	// tests rely on). Cancel the child at once so a cancellation-honouring
+	// processor unwinds immediately, then bound the wait by the shutdown grace.
+	if cfg.root.Err() != nil {
+		cancelProc()
+		cfg.outstanding.Add(1)
+		go runProcessor(procCtx, p, frameEnv, next, cfg, name, &procErr, done)
+		return awaitShutdownGrace(ctx, done, &procErr, cfg, name, env, frameEnv)
+	}
+
+	// Steady state: the budget timer bounds the processor's OWN execution time.
+	// wrappedNext disarms it for the duration of the delegation to next() and
+	// rearms it afterwards, so only own-time is charged against the budget.
+	budget := cfg.clk.NewTimer(cfg.timeout)
+	defer budget.Stop()
+	wrappedNext := func(nctx context.Context, nenv *messaging.Envelope) error {
+		budget.Stop()
+		defer budget.Reset(cfg.timeout)
+		return next(nctx, nenv)
+	}
+
+	cfg.outstanding.Add(1)
+	go runProcessor(procCtx, p, frameEnv, wrappedNext, cfg, name, &procErr, done)
 
 	select {
 	case <-done:
+		// The processor goroutine has fully returned (its LIFO defers ran:
+		// recover, outstanding--, close(done)), so frameEnv has no live writer.
+		// Merge its processor-owned mutations back onto env single-threaded.
+		mergeProcessedEnvelope(env, frameEnv)
 		return procErr
-	case <-callCtx.Done():
-		// Distinguish between the chain's own timeout (DeadlineExceeded with
-		// no parent cancellation) and upstream cancellation. Only the former
-		// is a processor-timeout; a cancelled parent context means the route
-		// is shutting down and we should let that propagate.
-		if ctx.Err() != nil {
-			// Parent cancelled: the route is shutting down. Give the
-			// processor a BOUNDED grace period to observe cancellation and
-			// unwind. If it finishes within the grace, return its own
-			// error; if the grace elapses it is ignoring ctx.Done(), so
-			// release the in-flight slot and classify the failure as a
-			// shutdown-grace timeout (distinct from a processor FAILURE)
-			// rather than blocking shutdown indefinitely.
-			graceTimer := cfg.clk.NewTimer(cfg.shutdownGrace)
-			defer graceTimer.Stop()
-			select {
-			case <-done:
-				return procErr
-			case <-graceTimer.C():
-				logShutdownGrace(ctx, cfg, name, env)
-				return shared.ErrProcessorTimeout.
-					With("processor", name).
-					With("reason", "shutdown-grace-exceeded").
-					With("grace", cfg.shutdownGrace.String()).
-					With("envelope_id", env.ID())
-			}
+	case <-budget.C():
+		// The processor exceeded its OWN per-processor time budget. Cancel it so
+		// a cancellation-honouring processor unwinds; otherwise the goroutine is
+		// abandoned. It keeps writing ONLY frameEnv (this frame's private clone),
+		// which is not merged on this path and which no other frame touches, so
+		// an abandoned writer can never race a sibling frame's header write
+		// (finding 2, closed structurally by the per-frame clone above).
+		// outstanding stays > 0 so the caller also refuses the top-level merge.
+		// Contract for third-party processors is unchanged but no longer
+		// load-bearing for memory safety: honour cancellation, and do not mutate
+		// the envelope after calling next().
+		cancelProc()
+		if cfg.root.Err() != nil {
+			// Shutting down as well: do not emit a processor-timeout metric for a
+			// message we are abandoning to shutdown.
+			logShutdownGrace(ctx, cfg, name, env)
+			return shared.ErrProcessorTimeout.
+				With("processor", name).
+				With("reason", "shutdown-grace-exceeded").
+				With("grace", cfg.shutdownGrace.String()).
+				With("envelope_id", env.ID())
 		}
-		// Chain-induced timeout (deadline exceeded with no parent cancel).
 		logTimeout(ctx, cfg, name, env)
 		emitTimeoutMetric(cfg)
-		// Do not wait for the runaway processor; the goroutine will exit when
-		// callCtx propagates or be leaked if it ignores cancellation.
 		return shared.ErrProcessorTimeout.
 			With("processor", name).
+			With("reason", "processor-timeout").
 			With("timeout", cfg.timeout.String()).
+			With("envelope_id", env.ID())
+	case <-cfg.root.Done():
+		// Route shutting down mid-processing. Disarm the budget and give the
+		// processor a bounded grace to observe cancellation and unwind before
+		// abandoning it (distinct from a processor FAILURE).
+		cancelProc()
+		budget.Stop()
+		return awaitShutdownGrace(ctx, done, &procErr, cfg, name, env, frameEnv)
+	}
+}
+
+// runProcessor executes p.Process on its own goroutine, recovering panics into
+// procErr, decrementing the outstanding counter, and finally closing done. The
+// defer order is deliberate (LIFO): recover runs first (so a panic populates
+// procErr), THEN outstanding is decremented, THEN done is closed — guaranteeing
+// that once a waiter observes done closed, procErr is final and this goroutine
+// no longer counts as outstanding.
+func runProcessor(
+	ctx context.Context,
+	p ports.Processor,
+	env *messaging.Envelope,
+	next ports.ProcessorFunc,
+	cfg *chainOptions,
+	name string,
+	procErr *error,
+	done chan struct{},
+) {
+	defer close(done)
+	defer cfg.outstanding.Add(-1)
+	defer func() {
+		if rv := recover(); rv != nil {
+			*procErr = buildPanicError(name, rv, cfg, env)
+		}
+	}()
+	*procErr = p.Process(ctx, env, next)
+}
+
+// awaitShutdownGrace waits for an already-cancelled processor to unwind, bounded
+// by the shutdown grace. If it returns within the grace its own error is
+// propagated (and its frame clone merged, single-threaded); if the grace elapses
+// the processor is ignoring cancellation, so it is abandoned (its goroutine keeps
+// outstanding > 0, and frameEnv is NOT merged — the abandoned writer stays
+// confined to it) and a shutdown-grace-exceeded timeout is returned — distinct,
+// via the reason tag, from a steady-state processor timeout so it is never
+// counted as one.
+func awaitShutdownGrace(
+	ctx context.Context,
+	done <-chan struct{},
+	procErr *error,
+	cfg *chainOptions,
+	name string,
+	env *messaging.Envelope,
+	frameEnv *messaging.Envelope,
+) error {
+	graceTimer := cfg.clk.NewTimer(cfg.shutdownGrace)
+	defer graceTimer.Stop()
+	select {
+	case <-done:
+		mergeProcessedEnvelope(env, frameEnv)
+		return *procErr
+	case <-graceTimer.C():
+		logShutdownGrace(ctx, cfg, name, env)
+		return shared.ErrProcessorTimeout.
+			With("processor", name).
+			With("reason", "shutdown-grace-exceeded").
+			With("grace", cfg.shutdownGrace.String()).
 			With("envelope_id", env.ID())
 	}
 }

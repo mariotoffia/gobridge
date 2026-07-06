@@ -214,6 +214,21 @@ by the opt-in `runtime.NewInstrumentedReceiver` /
 for embedders); the SQS and Service Bus adapters self-instrument under
 adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibilityExtensions`, …).
 
+> **Adapter metrics now emit on the config-driven path (SQS).** The SQS
+> factory threads a `MetricsExporter` into every receiver and sender it builds,
+> so the adapter's nine SQS metrics (`SQSReceiveLatency`, `SQSPollLatency`,
+> `SQSDeleteLatency`, `SQSSendLatency`, `SQSSendBatchLatency`,
+> `SQSVisibilityExtensions`, `SQSAutoExtends`, `SQSMalformedMessages`,
+> `SQSDroppedAttributes`) now report when the transport is built from
+> configuration or a plugin — not only on the programmatic path. Earlier
+> builds left `cfg.Metrics` nil on the factory path and each adapter fell back
+> to a no-op exporter, so these series were silently absent on config-driven
+> deployments. Pass the exporter as `sqs.NewFactory(logger, metrics)` (the
+> runtime wires this for you). The Service Bus factory does **not** yet thread
+> a metrics exporter, so `ASBReceiveLatency` and the other ASB series still
+> emit only when the adapter is constructed programmatically with an explicit
+> `cfg.Metrics`; on the factory path they fall back to no-op.
+
 > **Dimension cardinality warning.** CloudWatch bills and indexes per unique
 > dimension-value combination, and each distinct combination is a separate
 > metric. Do **not** use unbounded/high-cardinality values such as message IDs,

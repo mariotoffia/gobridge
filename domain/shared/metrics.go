@@ -130,6 +130,15 @@ const (
 	// A rising value flags a session that keeps failing to reconnect/re-acquire
 	// its lease while the rest of the bridge stays up — alert on it.
 	MetricSessionRestarts = "SessionRestarts"
+	// MetricRouteRestarts counts per-route supervised restarts: a route runner
+	// returned an error and was restarted in ISOLATION (jittered capped backoff)
+	// instead of tearing down the whole runtime (per-route supervision). It
+	// mirrors MetricSessionRestarts for the ingress/route side: a permanently
+	// failing route (deleted queue, revoked permission) keeps restarting at the
+	// backoff cap and stays visible here without crash-looping the pod or
+	// killing healthy co-tenant routes. Alert on the rate (tag route_id), not on
+	// liveness.
+	MetricRouteRestarts = "RouteRestarts"
 )
 
 // Standard dimension key names for metric tags.

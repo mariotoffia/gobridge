@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // InstanceID returns the bridge instance identifier.
@@ -143,28 +144,36 @@ type (
 // determine if all sessions are connected and subscribed before
 // sending messages through the bridge.
 func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-
-	dh := ports.DeepHealth{
-		Running:    rt.running,
-		Healthy:    rt.healthy,
-		InstanceID: rt.instanceID,
-		Role:       rt.roleUnlocked(),
+	// A blocking plugin Session.Health can take arbitrarily long (a wedged
+	// broker client). Holding rt.mu across it would stall every other lock user
+	// — including Stop, Role, and the /live+/ready probes — for the whole
+	// duration, turning one slow session into a runtime-wide health outage
+	// (finding L-M). So snapshot the immutable references under the lock, RELEASE
+	// it, and invoke the plugin calls (Health, runner reads) lock-free.
+	type sessionSnap struct {
+		sess              ports.Session
+		sid               string
+		hasLease          bool
+		connectAfterLease bool
+	}
+	type routeSnap struct {
+		id           string
+		deliveryMode string
+		runner       *route.RouteRunner
 	}
 
-	allReady := rt.running && rt.healthy
-	aggSL := ports.ServiceLevelFull
+	rt.mu.Lock()
+	running := rt.running
+	healthy := rt.healthy
+	instanceID := rt.instanceID
+	role := rt.roleUnlocked()
 
-	// Collect session health from route entries.
+	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders))
 	seen := make(map[string]bool)
 	for _, e := range rt.entries {
 		// Routes whose AddRoute caller passed a nil *session.Config
 		// (e.g. SQS->SQS routes that have no MQTT session at all)
 		// are intentionally excluded from session-health aggregation.
-		// Test authors: passing nil sessCfg for an MQTT route means
-		// gobridgesync will report "ready" without ever observing
-		// that session — use requireMQTTSessionReady to catch this.
 		if e.session == nil || e.sessCfg == nil {
 			continue
 		}
@@ -173,64 +182,85 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		sh := e.session.Health(ctx)
-
-		detail := ports.SessionHealthDetail{
-			SessionID:           sid,
-			Connected:           sh.Connected,
-			SubscriptionsWanted: sh.SubscriptionsWanted,
-			SubscriptionsActive: sh.SubscriptionsActive,
-			ActiveTopics:        sh.ActiveTopics,
-			Ready:               sh.Ready,
-			ServiceLevel:        sh.ServiceLevel,
-		}
+		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: e.sessCfg.ConnectAfterLease}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			_, detail.HasLease = mgr.Token()
+			_, snap.hasLease = mgr.Token()
 		}
-		dh.Sessions = append(dh.Sessions, detail)
-		if !sh.Ready {
-			allReady = false
-		}
-		aggSL = minServiceLevel(aggSL, sh.ServiceLevel)
+		sessSnaps = append(sessSnaps, snap)
 	}
-
-	// Also include sessionSenders (fan-out targets).
 	for sid, sse := range rt.sessionSenders {
 		if seen[sid] {
 			continue
 		}
 		seen[sid] = true
-		sh := sse.session.Health(ctx)
-		detail := ports.SessionHealthDetail{
-			SessionID:           sid,
+		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: sse.config.ConnectAfterLease}
+		if mgr, ok := rt.sessionMgrs[sid]; ok {
+			_, snap.hasLease = mgr.Token()
+		}
+		sessSnaps = append(sessSnaps, snap)
+	}
+
+	routeSnaps := make([]routeSnap, 0, len(rt.entries))
+	for _, e := range rt.entries {
+		routeSnaps = append(routeSnaps, routeSnap{
+			id:           e.config.ID,
+			deliveryMode: string(e.config.Policy.DeliveryMode),
+			runner:       e.runner,
+		})
+	}
+	// componentErrors snapshot for per-route supervision readiness (finding
+	// L12): a route whose supervisor has recorded a fault is NOT ready even if
+	// its close-once Started channel fired on the first (now-failed) run.
+	routeErr := make(map[string]bool, len(routeSnaps))
+	for _, rs := range routeSnaps {
+		if rt.componentErrors["route:"+rs.id] != nil {
+			routeErr[rs.id] = true
+		}
+	}
+	rt.mu.Unlock()
+
+	dh := ports.DeepHealth{
+		Running:    running,
+		Healthy:    healthy,
+		InstanceID: instanceID,
+		Role:       role,
+	}
+	allReady := running && healthy
+	aggSL := ports.ServiceLevelFull
+
+	for _, snap := range sessSnaps {
+		sh := snap.sess.Health(ctx)
+		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
+			SessionID:           snap.sid,
 			Connected:           sh.Connected,
+			HasLease:            snap.hasLease,
+			ConnectAfterLease:   snap.connectAfterLease,
 			SubscriptionsWanted: sh.SubscriptionsWanted,
 			SubscriptionsActive: sh.SubscriptionsActive,
 			ActiveTopics:        sh.ActiveTopics,
 			Ready:               sh.Ready,
 			ServiceLevel:        sh.ServiceLevel,
-		}
-		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			_, detail.HasLease = mgr.Token()
-		}
-		dh.Sessions = append(dh.Sessions, detail)
-		if !sh.Ready {
+		})
+		// A deferred-connect standby's source session intentionally stays
+		// disconnected until this instance wins the lease; excluding it from the
+		// ready aggregate keeps a healthy standby reportable rather than
+		// permanently un-ready (finding C3-M readiness).
+		deferredStandby := snap.connectAfterLease && !snap.hasLease
+		if !sh.Ready && !deferredStandby {
 			allReady = false
 		}
 		aggSL = minServiceLevel(aggSL, sh.ServiceLevel)
 	}
 
-	// Routes.
-	for _, e := range rt.entries {
-		rr := e.runner
+	for _, rs := range routeSnaps {
 		ready := false
-		if rr != nil {
+		if rs.runner != nil {
 			select {
-			case <-rr.Started():
+			case <-rs.runner.Started():
 				ready = true
 			default:
 			}
-			if rss, ok := rr.Receiver().(ports.ReceiverStartedSignaler); ok {
+			if rss, ok := rs.runner.Receiver().(ports.ReceiverStartedSignaler); ok {
 				select {
 				case <-rss.Started():
 				default:
@@ -238,16 +268,20 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 				}
 			}
 		}
+		// A supervised route that has recorded a fault is not ready even though
+		// its Started signal already fired (finding L12).
+		if routeErr[rs.id] {
+			ready = false
+		}
+		inFlight := 0
+		if rs.runner != nil {
+			inFlight = int(rs.runner.InFlight())
+		}
 		dh.Routes = append(dh.Routes, ports.RouteHealth{
-			ID:           e.config.ID,
-			DeliveryMode: string(e.config.Policy.DeliveryMode),
+			ID:           rs.id,
+			DeliveryMode: rs.deliveryMode,
 			Ready:        ready,
-			InFlight: func() int {
-				if rr != nil {
-					return int(rr.InFlight())
-				}
-				return 0
-			}(),
+			InFlight:     inFlight,
 		})
 	}
 

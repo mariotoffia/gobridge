@@ -359,8 +359,8 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 }
 
 // TestEnvelopeFromPublish_NilProperties validates that a publish with
-// nil properties produces an envelope whose only header is the
-// recorded transport topic.
+// nil properties produces an envelope carrying only the adapter-controlled
+// transport headers: the recorded topic plus the retained flag and QoS.
 func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "t",
@@ -369,11 +369,17 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 
 	env := EnvelopeFromPublish(pub, nil)
 
-	if got := len(env.Headers()); got != 1 {
-		t.Errorf("expected exactly 1 header (mqtt.topic) for nil properties, got %d: %v", got, env.Headers())
+	if got := len(env.Headers()); got != 3 {
+		t.Errorf("expected exactly 3 headers (mqtt.topic, mqtt.retained, mqtt.qos) for nil properties, got %d: %v", got, env.Headers())
 	}
 	if v, _ := messaging.GetHeaderString(env.Headers(), HeaderMQTTTopic); v != "t" {
 		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "t")
+	}
+	if v, ok := env.Headers()[HeaderMQTTRetained].(bool); !ok || v {
+		t.Errorf("headers[%q] = %v, want false", HeaderMQTTRetained, env.Headers()[HeaderMQTTRetained])
+	}
+	if v, ok := env.Headers()[HeaderMQTTQoS].(int); !ok || v != 0 {
+		t.Errorf("headers[%q] = %v, want 0", HeaderMQTTQoS, env.Headers()[HeaderMQTTQoS])
 	}
 }
 

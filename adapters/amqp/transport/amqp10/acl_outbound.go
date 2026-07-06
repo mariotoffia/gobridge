@@ -152,7 +152,14 @@ func envelopeToMessage(env *messaging.Envelope, durable bool) *amqp.Message {
 	if msg.Properties == nil {
 		msg.Properties = &amqp.MessageProperties{}
 	}
-	if env.ID() != "" {
+	// Preserve a typed message-id (uuid/ulong/binary) carried through
+	// from ingress via headerMessageID: headersToMessage already set
+	// Properties.MessageID to the original value. Only stamp the string
+	// envelope ID when no message-id survived, so a non-string id (whose
+	// envelope ID is a deterministic RENDERING of it, not the value
+	// itself) is not clobbered and downstream message-id dedup keeps
+	// working (finding 6).
+	if msg.Properties.MessageID == nil && env.ID() != "" {
 		msg.Properties.MessageID = env.ID()
 	}
 	if s := env.Subject(); s != "" {

@@ -89,7 +89,9 @@ func (s *Session) Start(ctx context.Context) error {
 	for {
 		if s.closed {
 			s.mu.Unlock()
-			return shared.ErrUnavailable.WithMessage("mqtt session is closed; Start is not allowed after Close")
+			return shared.ErrUnavailable.
+				WithMessage("mqtt session is closed; Start is not allowed after Close").
+				Wrap(shared.ErrTransportClosedPermanently)
 		}
 		if s.cm != nil {
 			s.mu.Unlock()
@@ -114,15 +116,6 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	s.starting = true
 	s.startDone = make(chan struct{})
-	// Snapshot the TLS options pointer under the mutex: ApplyCredentials
-	// swaps in a NEW *TLSConfig on rotation (copy-on-write), so holding
-	// this snapshot gives Start immutable TLS material even if a
-	// rotation lands mid-connect.
-	tlsOpts := s.opts.TLS
-	// Seed liveCreds from the current options so the first CONNECT picks
-	// them up via the ConnectPacketBuilder. ApplyCredentials can later
-	// mutate this record without touching the cfg struct.
-	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
 	s.mu.Unlock()
 
 	// finishStart publishes the attempt's outcome: clears the in-flight
@@ -144,10 +137,82 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	connectStart := s.clock().Now()
 
-	serverURLs, err := parseURLs(s.opts.BrokerURLs)
+	// Dial: build the ClientConfig, create the ConnectionManager and await
+	// the initial CONNACK. Overridable in tests (connectOverride) so the
+	// closed-during-Start re-check and credential-driven Reload can be
+	// exercised without a live broker.
+	dial := s.dial
+	if s.connectOverride != nil {
+		dial = s.connectOverride
+	}
+	conn, cmCancel, err := dial(ctx)
 	if err != nil {
 		finishStart()
-		return shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
+		if logging.DebugEnabled(s.logger) {
+			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
+				"client_id", s.opts.ClientID, "error", err)
+		}
+		return err
+	}
+
+	// Close/Start race guard: dial released s.mu and may have blocked for
+	// up to connect_timeout inside AwaitConnection. If Close ran while we
+	// were connecting, s.closed is now true — installing this CM would
+	// leak a zombie ConnectionManager that autopaho reconnects forever,
+	// fighting the replacement session for the ClientID. Tear it down
+	// instead. The check + install are one atomic section under s.mu, so
+	// it cannot interleave with Close's (closed=true; read cm) section.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cmCancel()
+		_ = conn.Disconnect(context.Background())
+		finishStart()
+		return shared.ErrUnavailable.WithMessage(
+			"mqtt session closed during Start; discarded the freshly connected ConnectionManager")
+	}
+	s.cm = conn
+	s.cmCancel = cmCancel
+	s.connected = true
+	s.starting = false
+	close(s.startDone)
+	s.mu.Unlock()
+
+	elapsed := s.clock().Since(connectStart)
+	s.metrics.Timer(MetricMQTTConnectLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connected",
+			"client_id", s.opts.ClientID, "connect_latency", elapsed)
+	}
+
+	return nil
+}
+
+// dial builds the autopaho ClientConfig, creates the ConnectionManager
+// and blocks until the initial CONNACK (bounded by connect_timeout). It
+// returns the SDK-free pahoConnection seam plus the cancel func that
+// tears down the CM's background context. This is the production
+// implementation of the Start dial seam (see Session.connectOverride);
+// it lives in the ACL because the whole body is SDK-typed. Returning the
+// pahoConnection interface is the whole point of the seam — it keeps the
+// SDK ConnectionManager out of session.go — so the ireturn rule is waived.
+//
+//nolint:ireturn // adapter-internal dial seam; returning the interface is its purpose (category 5)
+func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc, error) {
+	// Snapshot the TLS options pointer under the mutex: ApplyCredentials
+	// swaps in a NEW *TLSConfig on rotation (copy-on-write), so holding
+	// this snapshot gives dial immutable TLS material even if a rotation
+	// lands mid-connect. Seed liveCreds from the current options so the
+	// first CONNECT picks them up via the ConnectPacketBuilder.
+	s.mu.Lock()
+	tlsOpts := s.opts.TLS
+	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
+	s.mu.Unlock()
+
+	serverURLs, err := parseURLs(s.opts.BrokerURLs)
+	if err != nil {
+		return nil, nil, shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
 	cfg := autopaho.ClientConfig{
@@ -336,8 +401,7 @@ func (s *Session) Start(ctx context.Context) error {
 	if tlsOpts != nil && tlsOpts.Enable {
 		tlsCfg, err := BuildTLSConfig(tlsOpts)
 		if err != nil {
-			finishStart()
-			return shared.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
+			return nil, nil, shared.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
 		}
 		cfg.TlsCfg = tlsCfg
 	}
@@ -349,8 +413,7 @@ func (s *Session) Start(ctx context.Context) error {
 	cm, err := autopaho.NewConnection(cmCtx, cfg)
 	if err != nil {
 		cmCancel()
-		finishStart()
-		return MapError(err)
+		return nil, nil, MapError(err)
 	}
 
 	connectTimeout := s.opts.ConnectTimeout
@@ -363,29 +426,8 @@ func (s *Session) Start(ctx context.Context) error {
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		cmCancel()
 		_ = cm.Disconnect(context.Background())
-		finishStart()
-		if logging.DebugEnabled(s.logger) {
-			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
-				"client_id", s.opts.ClientID, "error", err)
-		}
-		return MapError(err)
+		return nil, nil, MapError(err)
 	}
 
-	s.mu.Lock()
-	s.cm = newPahoConn(cm)
-	s.cmCancel = cmCancel
-	s.connected = true
-	s.starting = false
-	close(s.startDone)
-	s.mu.Unlock()
-
-	elapsed := s.clock().Since(connectStart)
-	s.metrics.Timer(MetricMQTTConnectLatency, elapsed,
-		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
-	if logging.DebugEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connected",
-			"client_id", s.opts.ClientID, "connect_latency", elapsed)
-	}
-
-	return nil
+	return newPahoConn(cm), cmCancel, nil
 }

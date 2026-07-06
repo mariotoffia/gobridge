@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -79,6 +80,13 @@ type ReceiverConfig struct {
 	// to clock.System (wall clock). Tests may inject a clocktest.Fake
 	// to control tick firing deterministically.
 	Clock clock.Clock
+
+	// InitialCredentials, when set, builds the initial SQS client with a
+	// static credentials provider instead of the ambient SDK chain. It
+	// carries the material resolved from a plugin `credentials_uri` at
+	// build time (Config.ApplyCredentials → toReceiverConfig). Temporary
+	// (STS) material is rejected when the client is built (Finding 3/6).
+	InitialCredentials *connectivity.PasswordCredential
 }
 
 // SenderConfig configures an SQS Sender.
@@ -131,6 +139,13 @@ type SenderConfig struct {
 	// Clock provides message timestamps and operation timing.
 	// When nil defaults to clock.System.
 	Clock clock.Clock
+
+	// InitialCredentials, when set, builds the initial SQS client with a
+	// static credentials provider instead of the ambient SDK chain. It
+	// carries the material resolved from a plugin `credentials_uri` at
+	// build time (Config.ApplyCredentials → toSenderConfig). Temporary
+	// (STS) material is rejected when the client is built (Finding 3/6).
+	InitialCredentials *connectivity.PasswordCredential
 }
 
 func (c *ReceiverConfig) validate() error {
@@ -205,6 +220,18 @@ func (c *SenderConfig) validate() error {
 			"sqs: FIFO queue (\".fifo\" suffix) requires message_group_id " +
 				"(default message group) or fifo: true (per-envelope group " +
 				"via the x-bridge.ordering-key header)")
+	}
+	// FIFO + per-message DelaySeconds fail-fast: AWS rejects a non-zero
+	// DelaySeconds on a FIFO SendMessage/SendMessageBatch entry, so every
+	// send would DLQ at runtime as ErrInvalidPayload. Reject the
+	// combination at build instead (Finding 5), mirroring the FIFO
+	// message-group cross-validation above. FIFO is detected from the
+	// explicit flag, a default group, or the ".fifo" suffix.
+	if c.DelaySeconds > 0 && c.isFIFO() {
+		return errors.New(
+			"sqs: delay_seconds is not supported on FIFO queues; AWS rejects " +
+				"per-message DelaySeconds on a FIFO send (use a per-queue delay " +
+				"or a standard queue)")
 	}
 	return nil
 }

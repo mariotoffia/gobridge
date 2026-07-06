@@ -406,3 +406,58 @@ func batchSent(results []ports.BatchResult) int {
 	}
 	return n
 }
+
+// TestSendBatch_StandardQueue_DelaySecondsPassthrough verifies a non-zero
+// delay configured on the plugin Config is projected through
+// toSenderConfig into the built Sender and applied to EVERY batch entry's
+// DelaySeconds on a STANDARD queue. This keeps the batch-path delay
+// passthrough covered after the invalid FIFO+DelaySeconds factory fixture
+// was removed (delay_seconds is rejected on FIFO — Finding 5 — so the
+// passthrough can only be exercised on a standard queue).
+func TestSendBatch_StandardQueue_DelaySecondsPassthrough(t *testing.T) {
+	var entryDelays []int32
+	mock := &mockSQSClient{
+		SendMessageBatchFn: func(_ context.Context, in *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
+			result := make([]sqstypes.SendMessageBatchResultEntry, len(in.Entries))
+			for i := range in.Entries {
+				entryDelays = append(entryDelays, in.Entries[i].DelaySeconds)
+				result[i] = sqstypes.SendMessageBatchResultEntry{Id: in.Entries[i].Id}
+			}
+			return &awssqs.SendMessageBatchOutput{Successful: result}, nil
+		},
+	}
+
+	// Build the SenderConfig via the plugin Config projection (the path the
+	// factory uses) so the full delay-threading is exercised, not a
+	// hand-built SenderConfig.
+	pc := Config{QueueURL: "https://q", DelaySeconds: 12, BatchSize: 5}
+	sc := pc.toSenderConfig()
+	sc.Client = mock
+	sender, err := NewSender(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	envs := makeEnvelopes(3)
+	results, err := sender.SendBatch(context.Background(), func() []ports.OutboundMessage {
+		msgs := make([]ports.OutboundMessage, len(envs))
+		for i, e := range envs {
+			msgs[i] = ports.OutboundMessage{Envelope: e}
+		}
+		return msgs
+	}())
+	if err != nil {
+		t.Fatalf("SendBatch: %v", err)
+	}
+	if sent := batchSent(results); sent != 3 {
+		t.Fatalf("expected 3 sent, got %d", sent)
+	}
+	if len(entryDelays) != 3 {
+		t.Fatalf("expected 3 captured entries, got %d", len(entryDelays))
+	}
+	for i, d := range entryDelays {
+		if d != 12 {
+			t.Fatalf("entry %d DelaySeconds = %d, want 12", i, d)
+		}
+	}
+}

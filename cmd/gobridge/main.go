@@ -127,7 +127,10 @@ func run() int {
 	//
 	//   awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	//   ddbClient := dynamodb.NewFromConfig(awsCfg)
-	//   sup.RegisterTransport("sqs", sqs.NewBridgeFactory(logger))
+	//   // sqs.NewFactory(logger, metrics...) — the optional variadic
+	//   // metrics exporter is threaded into every SQS receiver/sender so
+	//   // the adapter's metrics emit; omit it for the Noop fallback.
+	//   sup.RegisterTransport("sqs", sqs.NewFactory(logger))
 	//   sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 
 	// Observability wiring (Finding 15). This demo binary links no telemetry

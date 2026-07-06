@@ -81,7 +81,10 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	// newDelivery so it is available before the auto-extend goroutine starts.
 	processingCtx, processingCancel := context.WithCancel(context.Background())
 
-	// visibilityTimeout=2 → ticker fires at 1s intervals
+	// visibilityTimeout=30 → tick at vis/3 = 10s, then a 5s retry after
+	// the second failure; three consecutive failures land before the 30s
+	// window lapses so the consecutive-failure ceiling (not the deadline)
+	// drives the give-up (Finding 5).
 	// autoExtend=true → goroutine starts immediately
 	// processingCancel is set at construction — the fix.
 	fake := clocktest.New()
@@ -91,7 +94,7 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		mock,
 		"https://q",
 		"receipt-handle",
-		2,    // visibilityTimeout=2 → 1s ticker
+		30,   // visibilityTimeout=30 → 10s tick, 5s retry
 		true, // autoExtend
 		processingCancel,
 		nil,
@@ -108,9 +111,10 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 		return fake.TickerCount() >= 1
 	})
 
-	// SYNC: advance to trigger autoExtendMaxFailures (3) failure cycles.
-	for i := 0; i < autoExtendMaxFailures; i++ {
-		fake.Advance(1 * time.Second)
+	// SYNC: advance along the exact failure cadence (10s, 10s, 5s) to
+	// trigger autoExtendMaxFailures (3) consecutive failure cycles.
+	for i, adv := range []time.Duration{10 * time.Second, 10 * time.Second, 5 * time.Second} {
+		fake.Advance(adv)
 		want := int32(i + 1)
 		wait.Until(t, time.Second, "failure tick", func() bool {
 			return extendCalls.Load() >= want

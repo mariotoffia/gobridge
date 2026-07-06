@@ -524,6 +524,15 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 	if client == nil {
 		if s.cfg.Client != nil {
 			client = s.cfg.Client
+		} else if s.cfg.InitialCredentials != nil {
+			// A resolved `credentials_uri` builds the initial client with
+			// static material instead of the ambient SDK chain (Finding 3).
+			// Temporary (STS) material is rejected here (Finding 6).
+			c, err := rebuildSQSClient(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, s.cfg.InitialCredentials)
+			if err != nil {
+				return err
+			}
+			client = c
 		} else {
 			cfg, err := buildAWSConfig(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
 			if err != nil {

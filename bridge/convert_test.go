@@ -130,6 +130,28 @@ func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
 	}
 }
 
+// Finding C3-7: AcquirePollInterval and RenewCallTimeout are now blueprint-
+// exposed. RenewCallTimeout in particular is part of the failover-safety
+// invariant (folded into renewWorstCaseSpan), so it must be tunable from a
+// blueprint. Verify both parse into the session config.
+func TestToSessionConfig_ExposesAcquirePollAndRenewCallTimeout(t *testing.T) {
+	rs := &ports.RouteSessionDef{
+		SessionID:           "s1",
+		AcquirePollInterval: "5s",
+		RenewCallTimeout:    "3s",
+	}
+	sc := toSessionConfig(rs)
+	if sc == nil {
+		t.Fatal("expected non-nil SessionConfig")
+	}
+	if sc.AcquirePollInterval != 5*time.Second {
+		t.Fatalf("AcquirePollInterval: got %v, want 5s", sc.AcquirePollInterval)
+	}
+	if sc.RenewCallTimeout != 3*time.Second {
+		t.Fatalf("RenewCallTimeout: got %v, want 3s", sc.RenewCallTimeout)
+	}
+}
+
 // TestToSessionConfig_NilReturnsNil validates that nil input returns nil.
 func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 	sc := toSessionConfig(nil)

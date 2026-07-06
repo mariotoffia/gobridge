@@ -77,6 +77,16 @@ func (rt *Runtime) readinessFromSnapshot(dh ports.DeepHealth) ports.ReadinessLev
 	allConnected := true
 	allSubscribed := true
 	for _, sh := range dh.Sessions {
+		// A deferred-connect standby (ConnectAfterLease with no lease held) is
+		// EXPECTED to be disconnected: its source session does not Start until
+		// this instance wins the lease. Requiring it to be connected pinned a
+		// ready standby at LevelRunning, which a level=connected readiness probe
+		// then marked permanently unready — ejecting the only failover target
+		// (finding C3-M). Skip it from the connectivity aggregate so the standby
+		// reaches its LevelSubscribed cap.
+		if sh.ConnectAfterLease && !sh.HasLease {
+			continue
+		}
 		if !sh.Connected {
 			allConnected = false
 			allSubscribed = false

@@ -4,7 +4,7 @@
 
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
-**Capabilities:** `stateful_session`, `exclusive_identity`, `plan_driven_subscriptions`
+**Capabilities:** `stateful_session`, `exclusive_identity`, `shared_consumer`, `plan_driven_subscriptions`
 
 MQTT requires a session. Multiple receivers and senders can share one session
 (one TCP connection). Session mode controls lifecycle and ownership semantics.
@@ -140,7 +140,7 @@ senders:
 | `qos` | int | `1` | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
 | `timeout` | duration | `30s` | Per-publish timeout |
-| `throttle_retry_after` | duration | `500ms` | Retry-after hint surfaced when the broker signals QoS-0 back-pressure |
+| `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
 ## Settlement Semantics
 
@@ -164,6 +164,71 @@ a Persistent/Exclusive session resumes.
   MQTT session, each handler goroutine receives an independent deep-copy of the
   MQTT Properties (User properties, CorrelationData, ContentType, etc.),
   preventing data races under concurrent dispatch.
+- **Password rotation rebuilds the session.** Applying a rotated password calls
+  `Session.Reload`, which tears down and rebuilds the connection manager so a
+  fresh CONNECT carries the new credentials. It does **not** call
+  `ConnectionManager.Disconnect`: in paho.golang v0.23.0 that cancels the CM
+  root context and is terminal -- the client never reconnects and `Health()`
+  would still report the session up. TLS material rotates through the same
+  `Reload` path. See [Credential Rotation](../credentials-rotation.md).
+
+## Backpressure and dispatch
+
+The publish callback paho invokes must return quickly or the client stops
+servicing PINGRESP/PUBACK and the connection dies of keepalive starvation. The
+adapter therefore hands each inbound publish to a serialized dispatch queue and
+returns:
+
+- The **dispatch queue** holds up to `defaultDispatchSize` (1024) items. When it
+  is full under a flood, a **QoS 0** publish is dropped (`MQTTRouterDropped`,
+  logged) because QoS 0 carries no delivery contract; a **QoS 1/2** publish
+  blocks until a slot drains (bounded by the broker's Receive-Maximum window), so
+  at-least-once is preserved as broker backpressure.
+- The **pre-registration pending buffer** absorbs the CONNACK backlog that
+  arrives before receivers register (see [Session Modes](#session-modes)). It is
+  bounded by both an entry count (65535) and a **64 MiB** payload ceiling
+  (`defaultPendingBytesLimit`). Publishes held here count on `MQTTRouterBuffered`;
+  a QoS 0 publish that would overflow the buffer is dropped (`MQTTRouterDropped`),
+  while a QoS 1/2 publish evicts the oldest QoS 0 entry to make room.
+
+> **Byte accounting is partial.** The dispatch queue is bounded by **count**
+> (1024 items), and paho's in-flight `publishPackets` window is bounded by
+> `receive_maximum` -- neither is byte-bounded. Only the pending buffer enforces
+> a byte ceiling. A burst of large-payload QoS 1/2 publishes can therefore pin
+> roughly `(1024 + receive_maximum) × payload` bytes in memory before the
+> blocking backpressure engages. Bound it operationally: cap `receive_maximum`
+> and the upstream payload size for large-message workloads.
+
+## Shared subscriptions (`$share`)
+
+MQTT declares the `shared_consumer` capability. A subscription filter of the
+form `$share/<group>/<filter>` is a shared subscription: the broker
+load-balances the topic's deliveries across every client in `<group>`, so
+several bridge instances (or several receivers) consume one logical subscription
+as a scale-out group rather than each receiving a full copy.
+
+Declare the shared filter in the receiver's `topics[]` exactly as the broker
+expects it (`$share/<group>/<filter>`). The adapter strips the `$share/<group>/`
+prefix before matching, so routing keys off the concrete topic the broker
+delivers on, not the `$share` wrapper. Ordinary (non-shared) subscriptions are
+unaffected.
+
+## Ingress headers (`mqtt.*`)
+
+At ingress the adapter stamps the delivered MQTT metadata onto the envelope
+headers under the reserved `mqtt.*` namespace:
+
+| Header | Value | Meaning |
+|--------|-------|---------|
+| `mqtt.topic` | string | The concrete topic the broker delivered on (distinct from the logical subject carried in the `gobridge.subject` user property). |
+| `mqtt.retained` | bool | Whether the broker delivered the publish with the retained flag set. |
+| `mqtt.qos` | int | The delivered QoS level (0, 1, or 2). |
+
+These keys are bridge-owned. An inbound MQTT user property whose name collides
+with `mqtt.topic`, `mqtt.retained`, or `mqtt.qos` is dropped during conversion,
+so a remote publisher cannot spoof the delivered topic, retained state, or QoS.
+Read them downstream to branch on retained snapshots or on the QoS a message
+arrived at.
 
 ## Receiver Options
 
