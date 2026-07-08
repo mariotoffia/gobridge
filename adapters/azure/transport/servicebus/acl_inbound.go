@@ -43,6 +43,9 @@ func messageToHeaders(msg *azservicebus.ReceivedMessage) map[string]any {
 	if msg.SessionID != nil {
 		h[asbHeaderSessionID] = *msg.SessionID
 	}
+	if msg.PartitionKey != nil {
+		h[asbHeaderPartitionKey] = *msg.PartitionKey
+	}
 	if msg.ContentType != nil {
 		h[asbHeaderContentType] = *msg.ContentType
 	}
@@ -510,6 +513,7 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 					return
 				}
 				consecutiveFailures++
+				d.metrics.Counter(MetricASBLockRenewalFailures, 1)
 				if d.logger != nil {
 					d.logger.Warn("servicebus: auto-extend lock failed",
 						"message_id", d.msg.MessageID,
@@ -518,6 +522,8 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 					)
 				}
 				if consecutiveFailures >= autoExtendMaxFailures {
+					d.metrics.Counter(MetricASBLockRenewerStopped, 1,
+						shared.Tag{Key: asbTagKeyRenewerScope, Value: asbRenewerScopeDelivery})
 					if d.logger != nil {
 						d.logger.Error("servicebus: auto-extend max failures reached, cancelling processing",
 							"message_id", d.msg.MessageID,

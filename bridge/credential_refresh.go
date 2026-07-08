@@ -2,13 +2,33 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// DefaultCredentialApplyTimeout bounds a single ApplyCredentials call during a
+// rotation fan-out. A transport whose ApplyCredentials honours ctx but is slow
+// (or wedged) is cancelled after this so it cannot stall the rotation for other
+// targets sharing the URI. Values <= 0 (via WithApplyTimeout) disable the
+// per-apply deadline and use the refresher's parent context directly.
+const DefaultCredentialApplyTimeout = 15 * time.Second
+
+// reactiveCredentialStore is an optional capability of a
+// ports.PushCredentialStore: forcing an immediate, out-of-band re-resolve of a
+// URI (bypassing the poll timer). runtime/credentials.PollBasedWrapper
+// implements it. The refresher detects it structurally to avoid importing the
+// runtime package, mirroring the InvalidateCache capability detection in the
+// builder.
+type reactiveCredentialStore interface {
+	Refresh(uri string)
+}
 
 // CredentialAware is implemented by transport sessions that can rotate
 // their authentication material at runtime. When a PushCredentialStore
@@ -28,8 +48,12 @@ type CredentialAware interface {
 // Refresher is created per Build() when a PushCredentialStore is
 // registered; it is torn down by Close.
 type CredentialRefresher struct {
-	push   ports.PushCredentialStore
-	logger *slog.Logger
+	push    ports.PushCredentialStore
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
+
+	// applyTimeout bounds each ApplyCredentials call in a rotation fan-out.
+	applyTimeout time.Duration
 
 	// onRotation, when set, is invoked with the URI after each rotation is
 	// applied. The builder wires it to the CredentialResolver's InvalidateCache
@@ -65,6 +89,26 @@ func WithRotationCallback(fn func(uri string)) RefresherOption {
 	}
 }
 
+// WithRefresherMetrics sets the metrics exporter used to emit
+// MetricCredentialRotationApplied (one per successful target ApplyCredentials).
+// Defaults to a no-op exporter. nil is ignored.
+func WithRefresherMetrics(m ports.MetricsExporter) RefresherOption {
+	return func(r *CredentialRefresher) {
+		if m != nil {
+			r.metrics = m
+		}
+	}
+}
+
+// WithApplyTimeout overrides DefaultCredentialApplyTimeout, the per-target
+// ApplyCredentials deadline used during a rotation fan-out. A value <= 0
+// disables the deadline (the parent context is used directly).
+func WithApplyTimeout(d time.Duration) RefresherOption {
+	return func(r *CredentialRefresher) {
+		r.applyTimeout = d
+	}
+}
+
 // NewCredentialRefresher creates a refresher bound to the given push
 // store. push may be nil, in which case Watch is a no-op — callers
 // should always construct one and delegate the nil-check here so the
@@ -72,16 +116,45 @@ func WithRotationCallback(fn func(uri string)) RefresherOption {
 func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger, opts ...RefresherOption) *CredentialRefresher {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &CredentialRefresher{
-		push:     push,
-		logger:   logger,
-		ctx:      ctx,
-		cancel:   cancel,
-		watchers: make(map[string][]CredentialAware),
+		push:         push,
+		logger:       logger,
+		metrics:      &ports.NoopExporter{},
+		applyTimeout: DefaultCredentialApplyTimeout,
+		ctx:          ctx,
+		cancel:       cancel,
+		watchers:     make(map[string][]CredentialAware),
 	}
 	for _, o := range opts {
 		o(r)
 	}
 	return r
+}
+
+// NotifyAuthFailure is the reactive-recovery hook (F2). A live transport that
+// observes a broker authorization failure (shared.ErrNotAuthorized) on a
+// watched URI calls this to force an IMMEDIATE credential re-resolve instead of
+// leaving the session stuck on the revoked credentials for up to a full poll
+// interval (default 5m) after a hard rotation.
+//
+// It is a no-op when err is not an authorization failure, when uri is empty, or
+// when the push store does not support reactive refresh. Idempotency and
+// per-URI rate limiting live in the push store's Refresh, so a reconnect storm
+// (every session on the URI reporting NOT_AUTHORIZED at once) collapses into at
+// most one out-of-band backend fetch.
+func (r *CredentialRefresher) NotifyAuthFailure(uri string, err error) {
+	if r == nil || uri == "" || err == nil {
+		return
+	}
+	if !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if rc, ok := r.push.(reactiveCredentialStore); ok {
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(context.Background(), logging.LevelDebug,
+				"credential refresh: auth failure -> forcing reactive re-resolve", "uri", shared.RedactURI(uri))
+		}
+		rc.Refresh(uri)
+	}
 }
 
 // Watch registers a (uri, session) pair for refresh. If the same URI
@@ -123,7 +196,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(r.ctx, logging.LevelDebug,
 				"credential refresh: target does not implement CredentialAware; skipping",
-				"uri", uri, "kind", kind)
+				"uri", shared.RedactURI(uri), "kind", kind)
 		}
 		return
 	}
@@ -148,7 +221,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 	ch, err := r.push.Watch(parent, uri)
 	if err != nil {
 		if r.logger != nil {
-			r.logger.Warn("credential refresh: Watch failed", "uri", uri, "error", err)
+			r.logger.Warn("credential refresh: Watch failed", "uri", shared.RedactURI(uri), "error", shared.RedactURIError(err))
 		}
 		// Drop the key so a later Watch for the same URI can retry
 		// establishing a poller rather than being suppressed as a duplicate.
@@ -186,18 +259,20 @@ func (r *CredentialRefresher) run(
 			copy(targets, r.watchers[uri])
 			r.mu.Unlock()
 
+			// Fan out CONCURRENTLY with a per-target deadline so one slow or
+			// wedged ApplyCredentials cannot delay the rotation for the other
+			// targets sharing this URI (previously serial). Each apply gets its
+			// own bounded context derived from the parent, so Close (which
+			// cancels the parent) still stops every apply promptly.
+			var applyWG sync.WaitGroup
 			for _, aware := range targets {
-				if err := aware.ApplyCredentials(parent, creds); err != nil {
-					if r.logger != nil {
-						r.logger.Warn("credential refresh: ApplyCredentials failed",
-							"uri", uri, "error", err)
-					}
-				} else if logging.DebugEnabled(r.logger) {
-					r.logger.Log(parent, logging.LevelDebug,
-						"credential refresh: applied rotated credentials",
-						"uri", uri)
-				}
+				applyWG.Add(1)
+				go func(aware CredentialAware) {
+					defer applyWG.Done()
+					r.applyOne(parent, uri, aware, creds)
+				}(aware)
 			}
+			applyWG.Wait()
 
 			// Invalidate the pull cache so subsequent synchronous resolves see
 			// the rotated material (contract C4). Done once per rotation, after
@@ -206,6 +281,43 @@ func (r *CredentialRefresher) run(
 				r.onRotation(uri)
 			}
 		}
+	}
+}
+
+// applyOne applies creds to a single target under a bounded context and records
+// the outcome: MetricCredentialRotationApplied on success, a WARN log plus a
+// reactive re-resolve trigger (F2) when the transport rejects the credentials
+// with an authorization failure.
+func (r *CredentialRefresher) applyOne(
+	parent context.Context,
+	uri string,
+	aware CredentialAware,
+	creds *connectivity.CredentialSet,
+) {
+	ctx := parent
+	if r.applyTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, r.applyTimeout)
+		defer cancel()
+	}
+
+	if err := aware.ApplyCredentials(ctx, creds); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("credential refresh: ApplyCredentials failed",
+				"uri", shared.RedactURI(uri), "error", shared.RedactURIError(err))
+		}
+		// The transport rejected the credentials as unauthorized: force an
+		// out-of-band re-resolve so the next attempt uses freshly fetched
+		// material rather than waiting for the poll timer (F2).
+		r.NotifyAuthFailure(uri, err)
+		return
+	}
+
+	r.metrics.Counter(shared.MetricCredentialRotationApplied, 1)
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(parent, logging.LevelDebug,
+			"credential refresh: applied rotated credentials",
+			"uri", shared.RedactURI(uri))
 	}
 }
 

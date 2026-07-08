@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strings"
@@ -44,6 +45,27 @@ func WithCredentialClock(clk clock.Clock) CredentialResolverOption {
 	}
 }
 
+// WithCredentialMetrics sets the metrics exporter used to emit the
+// resolve-failure (MetricCredentialResolveFailure) and stale-served
+// (MetricCredentialStaleServed) counters. Defaults to a no-op exporter.
+func WithCredentialMetrics(m ports.MetricsExporter) CredentialResolverOption {
+	return func(r *CredentialResolver) {
+		if m != nil {
+			r.metrics = m
+		}
+	}
+}
+
+// WithCredentialResolverLogger sets the logger used for stale-while-error
+// WARN lines. Defaults to nil (no logging). URIs are redacted before logging.
+func WithCredentialResolverLogger(l *slog.Logger) CredentialResolverOption {
+	return func(r *CredentialResolver) {
+		if l != nil {
+			r.logger = l
+		}
+	}
+}
+
 // CredentialResolver implements ports.CredentialStore by dispatching to
 // registered CredentialRepository backends based on URI scheme and
 // longest namespace prefix match.
@@ -58,6 +80,8 @@ type CredentialResolver struct {
 	cacheTTL      time.Duration
 	cacheDisabled bool
 	clk           clock.Clock
+	metrics       ports.MetricsExporter
+	logger        *slog.Logger
 
 	// flightMu guards flight, the in-progress cache-miss fetches.
 	// Separate from mu because repository Gets block on I/O and must
@@ -86,6 +110,7 @@ func NewCredentialResolver(opts ...CredentialResolverOption) *CredentialResolver
 		cache:    make(map[string]*credCacheEntry),
 		cacheTTL: DefaultCredentialCacheTTL,
 		clk:      clock.System,
+		metrics:  &ports.NoopExporter{},
 		flight:   make(map[string]*credFlight),
 	}
 	for _, o := range opts {
@@ -207,14 +232,49 @@ func (r *CredentialResolver) ResolveUncached(ctx context.Context, uri string) (*
 // fetch resolves the repository, gets the credentials and refreshes the
 // cache (unless caching is disabled). Callers own singleflight; fetch
 // itself performs exactly one repository Get.
+//
+// It is the single choke point every resolve path funnels through
+// (build-time synchronous resolve, uncached rotation polls, reactive
+// re-resolves), so it owns credential-resolve observability (F4) and the
+// stale-while-error policy (F5):
+//
+//   - On any repository error it emits MetricCredentialResolveFailure tagged
+//     with the error code.
+//   - On a RETRYABLE (transient) error — throttled / timeout / unavailable —
+//     it serves the last-known-good but EXPIRED cached entry instead of
+//     failing the rebuild, logs WARN and emits MetricCredentialStaleServed.
+//     The stale entry's TTL is deliberately NOT extended, so the next resolve
+//     re-probes the backend and recovery is immediate once it returns.
+//   - On a PERMANENT error (NOT_FOUND / INVALID_PAYLOAD / NOT_AUTHORIZED) it
+//     propagates — stale credentials must never mask a revocation or a
+//     misconfiguration.
+//
+// F10: a repository that returns (nil, nil) is treated as a contract
+// violation (INVALID_PAYLOAD) rather than cached as a permanent miss, so the
+// hot path cannot hammer the backend and a transport never connects anonymously.
 func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	repo, err := r.resolveRepo(uri)
 	if err != nil {
+		r.metrics.Counter(shared.MetricCredentialResolveFailure, 1, shared.Tag{Key: shared.TagKeyCode, Value: credentialErrorCode(err)})
 		return nil, err
 	}
 
 	creds, err := repo.Get(ctx, uri)
+	if err == nil && creds == nil {
+		// F10: defensive. A repository must return an error when it has no
+		// credentials; (nil, nil) would otherwise be cached as a permanent
+		// miss (hammering the backend every call) and let a transport connect
+		// anonymously. Convert it to a hard, non-retryable error.
+		err = shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("credential resolver: repository returned no credentials and no error for %q", shared.RedactURI(uri)),
+		)
+		creds = nil
+	}
 	if err != nil {
+		r.metrics.Counter(shared.MetricCredentialResolveFailure, 1, shared.Tag{Key: shared.TagKeyCode, Value: credentialErrorCode(err)})
+		if stale := r.serveStaleOnError(uri, err); stale != nil {
+			return stale, nil
+		}
 		return nil, err
 	}
 
@@ -226,11 +286,58 @@ func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivi
 	return creds, nil
 }
 
+// serveStaleOnError implements the F5 stale-while-error policy: if err is a
+// RETRYABLE (transient) failure and a last-known-good — even expired — cached
+// entry exists, it returns a clone of that entry (WARN + metric) so the caller
+// survives a bounded source outage. It returns nil (propagate the error) for
+// permanent errors, when caching is disabled, or when no cached entry exists.
+func (r *CredentialResolver) serveStaleOnError(uri string, err error) *connectivity.CredentialSet {
+	if r.cacheDisabled || !isRetryableCredentialError(err) {
+		return nil
+	}
+	stale := r.getStale(uri)
+	if stale == nil {
+		return nil
+	}
+	r.metrics.Counter(shared.MetricCredentialStaleServed, 1, shared.Tag{Key: shared.TagKeyCode, Value: credentialErrorCode(err)})
+	if r.logger != nil {
+		r.logger.Warn("credential resolver: serving stale credentials after retryable fetch error",
+			"uri", shared.RedactURI(uri),
+			"error", shared.RedactURIError(err),
+		)
+	}
+	return stale
+}
+
+// credentialErrorCode extracts the bounded BridgeError code for metric tagging.
+// Unknown (non-BridgeError) errors map to "UNKNOWN" so the tag stays low-cardinality.
+func credentialErrorCode(err error) string {
+	if be, ok := shared.AsBridgeError(err); ok {
+		return string(be.Code)
+	}
+	return "UNKNOWN"
+}
+
+// isRetryableCredentialError reports whether err is a KNOWN transient
+// BridgeError (throttled / timeout / unavailable / temporary-auth). Unknown
+// errors are deliberately treated as NON-retryable here — the conservative
+// choice for stale-serving, so a misclassified permanent failure never masks
+// a revocation with stale credentials.
+func isRetryableCredentialError(err error) bool {
+	be, ok := shared.AsBridgeError(err)
+	if !ok {
+		return false
+	}
+	return be.Class == shared.ErrorTransient
+}
+
 // resolveRepo finds the best matching repository for the URI.
 func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return nil, fmt.Errorf("credential resolver: invalid URI %q: %w", uri, err)
+		// Redact: the raw URI may embed userinfo (user:pass@…); never echo it
+		// verbatim into an error string or log line.
+		return nil, fmt.Errorf("credential resolver: invalid URI %q: %w", shared.RedactURI(uri), shared.RedactURIError(err))
 	}
 
 	scheme := u.Scheme
@@ -266,12 +373,19 @@ func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository
 
 	if best == nil {
 		return nil, shared.ErrNotFound.WithMessage(
-			fmt.Sprintf("no credential repository for URI %q", uri),
+			fmt.Sprintf("no credential repository for URI %q", shared.RedactURI(uri)),
 		)
 	}
 	return best, nil
 }
 
+// getCached returns a fresh (non-expired) cached CredentialSet or nil.
+//
+// Unlike a plain expiry cache it does NOT delete the entry on expiry: the
+// expired-but-known-good value is retained so serveStaleOnError (F5) can
+// return it during a bounded source outage. Memory stays bounded by the
+// setCached eviction path (which prefers expired entries) and explicit
+// InvalidateCache calls.
 func (r *CredentialResolver) getCached(uri string) *connectivity.CredentialSet {
 	r.mu.RLock()
 	entry, ok := r.cache[uri]
@@ -281,11 +395,20 @@ func (r *CredentialResolver) getCached(uri string) *connectivity.CredentialSet {
 		return nil
 	}
 	if r.clk.Now().After(entry.expiresAt) {
-		r.mu.Lock()
-		if current, exists := r.cache[uri]; exists && current == entry {
-			delete(r.cache, uri)
-		}
-		r.mu.Unlock()
+		return nil
+	}
+	return cloneCredentialSet(entry.creds)
+}
+
+// getStale returns a clone of the cached CredentialSet for uri REGARDLESS of
+// expiry, or nil when no entry exists. Used only by the F5 stale-while-error
+// path; the returned value is deliberately not re-cached, so the TTL is not
+// extended and the next resolve re-probes the backend.
+func (r *CredentialResolver) getStale(uri string) *connectivity.CredentialSet {
+	r.mu.RLock()
+	entry, ok := r.cache[uri]
+	r.mu.RUnlock()
+	if !ok {
 		return nil
 	}
 	return cloneCredentialSet(entry.creds)

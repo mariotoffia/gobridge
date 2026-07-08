@@ -3,6 +3,7 @@ package file
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -22,10 +23,18 @@ func TestEmitParsed_CoalescesLatestWins(t *testing.T) {
 	ch := make(chan *ports.BridgeConfig, 1)
 
 	writeYAML(t, path, "A")
-	w.emitParsed(ch) // queues A; slot now full and no consumer reads it
+	dataA, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.emitParsed(dataA, ch) // queues A; slot now full and no consumer reads it
 
 	writeYAML(t, path, "B")
-	w.emitParsed(ch) // must coalesce to B, not drop it
+	dataB, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.emitParsed(dataB, ch) // must coalesce to B, not drop it
 
 	if got := w.CoalescedReloads(); got != 1 {
 		t.Fatalf("CoalescedReloads = %d, want 1", got)
@@ -50,13 +59,21 @@ func TestEmitParsed_NoCoalesceWhenConsumerKeepsUp(t *testing.T) {
 	ch := make(chan *ports.BridgeConfig, 1)
 
 	writeYAML(t, path, "A")
-	w.emitParsed(ch)
+	dataA, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.emitParsed(dataA, ch)
 	if cfg := <-ch; cfg.Bridge.ID != "A" {
 		t.Fatalf("got %q, want A", cfg.Bridge.ID)
 	}
 
 	writeYAML(t, path, "B")
-	w.emitParsed(ch)
+	dataB, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.emitParsed(dataB, ch)
 	if cfg := <-ch; cfg.Bridge.ID != "B" {
 		t.Fatalf("got %q, want B", cfg.Bridge.ID)
 	}

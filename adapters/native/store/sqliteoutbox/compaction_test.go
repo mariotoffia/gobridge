@@ -144,11 +144,11 @@ func TestRetentionCompactsExpiredRowsAndStaleFences(t *testing.T) {
 
 	// Mark it expired, then jump past 31 days so both the expired row
 	// (terminal since t0+1m) and the untouched fence (30d floor) are stale.
-	if _, err := s.Expire(ctx, t0.Add(2*time.Minute)); err != nil {
+	if _, err := s.Expire(ctx, t0.Add(2*time.Minute), "SESSION#sess-exp"); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 	clk.Advance(31 * 24 * time.Hour)
-	if _, err := s.Expire(ctx, clk.Now()); err != nil {
+	if _, err := s.Expire(ctx, clk.Now(), "SESSION#sess-exp"); err != nil {
 		t.Fatalf("expire trigger: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestRetentionDisabledKeepsTerminalRows(t *testing.T) {
 	}
 
 	clk.Advance(365 * 24 * time.Hour)
-	if _, err := s.Expire(ctx, clk.Now()); err != nil {
+	if _, err := s.Expire(ctx, clk.Now(), "SESSION#sess-keep"); err != nil {
 		t.Fatalf("expire trigger: %v", err)
 	}
 

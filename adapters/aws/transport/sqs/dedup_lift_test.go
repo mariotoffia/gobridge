@@ -221,7 +221,7 @@ func TestConvertMessage_RoundTripsEgressIdentity(t *testing.T) {
 	require.NoError(t, err)
 
 	// REAL egress mapping — do not hand-fake the attribute map.
-	attrs, dropped := headersToAttributes(src.Headers(), sqsMaxMessageAttributes, 0)
+	attrs, dropped := headersToAttributes(src.Headers(), sqsMaxMessageAttributes, 0, sqsMaxMessageBytes)
 	require.Zero(t, dropped)
 	idemAttr, ok := attrs[messaging.HeaderIdempotencyKey]
 	require.True(t, ok, "egress must emit the idempotency key as a message attribute")

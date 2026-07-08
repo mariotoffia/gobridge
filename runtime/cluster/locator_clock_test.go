@@ -71,8 +71,12 @@ func TestLocator_CacheTTL_FakeClock(t *testing.T) {
 
 	store := &stubLeaseStore{}
 	store.setInfo(persistence.LeaseInfo{
-		Owner:     "instance-remote",
-		Version:   1,
+		Owner:   "instance-remote",
+		Version: 1,
+		// A live lease always carries a future ExpiresAt (both real stores set
+		// it); required so the fresh-read expiry bound (finding F3) treats this
+		// as a live row rather than an expired corpse.
+		ExpiresAt: fake.Now().Add(time.Hour),
 		Endpoints: map[string]string{"http": "http://remote:8080"},
 	})
 
@@ -181,7 +185,7 @@ func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 	}
 
 	store.setErrForNCalls(nil, 0)
-	store.setInfo(persistence.LeaseInfo{Owner: "instance-local"})
+	store.setInfo(persistence.LeaseInfo{Owner: "instance-local", ExpiresAt: fake.Now().Add(time.Hour)})
 
 	fake.Advance(2 * time.Millisecond)
 	_, local, err = rl.Locate(ctx, "route-1")

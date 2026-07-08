@@ -46,7 +46,11 @@ graph LR
 | `Retry(ctx, after, reason)` | `delivery.Nack(false, true)` | Requeue **immediately**; AMQP 0-9-1 has no native delayed redelivery. When `after > 0` the adapter emits `AMQP091DelayedRetryUnhonored` (every occurrence) and a `Warn` log (once per consumer channel). Guard poison messages broker-side with `x-delivery-limit` (quorum queues) or a dead-letter exchange — without one, a message that always fails hot-loops on a classic queue. |
 | `Extend(ctx, deadline)` | — | Returns `ErrNotSupported`; AMQP 0-9-1 has no visibility timeout |
 
-Settlement is guaranteed at-most-once via `sync.Once`.
+Settlement is guaranteed at-most-once via a mutex-guarded flag on each
+`Delivery` (`mu sync.Mutex` + `settled bool`): the first Ack/Retry wins and
+every subsequent settlement call on the same delivery is a no-op. (It is not
+a `sync.Once`; the only `sync.Once` on a delivery dedups the delayed-retry
+warning, not settlement.)
 
 ## Header Mapping
 
@@ -63,8 +67,17 @@ Settlement is guaranteed at-most-once via `sync.Once`.
 | `AppId` | `amqp091.app-id` | `string` |
 | `DeliveryMode` | `amqp091.delivery-mode` | `uint8` (egress also accepts `int`/`float`/`"1"`/`"2"`/`"transient"`/`"persistent"` — YAML/JSON header values coerce) |
 | `Priority` | `amqp091.priority` | `uint8` |
-| `Expiration` | `amqp091.expiration` | `string` |
-| `Timestamp` | `amqp091.timestamp` | `time.Time` |
+| `Expiration` | `amqp091.expiration` | `string` (ingress: relative TTL in ms → absolute envelope `ExpiresAt`; empty/negative/**over-range** → no expiry) |
+| `Timestamp` | `amqp091.timestamp` | `time.Time` (egress also accepts POSIX-seconds `int`/`float64` or an RFC3339 `string`; **out-of-range seconds → ignored**) |
+
+> **End-to-end TTL.** An inbound AMQP per-message `Expiration` (a *relative*
+> TTL) is mapped to the envelope's *absolute* `ExpiresAt`, so the countdown is
+> not restarted at each bridge hop (egress re-derives the remaining relative
+> TTL from `ExpiresAt`). A message whose in-bridge dwell (outbox persistence +
+> retry backoff) outlives its remaining TTL is therefore handled by the
+> route's expiry disposition (`OnExpired=dlq` dead-letters it, `OnExpired=drop`
+> drops-with-metric) — correct and observable, never silent — where a
+> per-hop-restarted TTL previously let it flow through.
 
 ### Delivery-only Properties (ingress)
 
@@ -146,7 +159,7 @@ In the plugin options map these live under the `session:` block (snake_case keys
 |---|---|---|---|
 | `Exchange` | `string` | `""` | Target exchange |
 | `RoutingKey` | `string` | `""` | Fallback routing key. The per-dispatch `OutboundMessage.Address` from the dispatch plan wins; `RoutingKey` applies only when `Address` is empty. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
-| `Mandatory` | `bool` | `false` | Return unroutable messages. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering) |
+| `Mandatory` | `bool` | `false` | Return unroutable messages so a publish that matches no binding fails instead of vanishing. **⚠️ Silent-drop warning:** with the default `false`, a publish to an exchange with **no matching binding** is *confirmed and then discarded by the broker* — the bridge sees a successful confirm and acks the source, so the message is **gone with zero telemetry**. The `basic.return` listener only engages when `Mandatory: true`. Enable it on any route where an unroutable message must not be lost silently. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering) |
 | `Immediate` | `bool` | `false` | **Deprecated / rejected**: RabbitMQ removed `basic.publish` `immediate` in 3.0 and closes the channel when it is set. `Config.Validate` refuses it |
 | `DeliveryMode` | `string` | `"persistent"` | Default persistence for every publish: `"persistent"` (AMQP delivery-mode 2 — survives a broker restart on a durable queue) or `"transient"` (delivery-mode 1 — lost on broker restart even on a durable classic queue). A per-message `amqp091.delivery-mode` envelope header overrides it. **Quorum queues** always persist messages regardless of this knob; it matters for durable classic queues |
 | `Timeout` | `time.Duration` | `30s` | Per-publish timeout (applied when context has no deadline) |
@@ -181,13 +194,16 @@ options:
 
 ## Capabilities
 
-The `Factory` advertises three capabilities:
+The `Factory` advertises three base capabilities, plus a conditional fourth
+(`CapExclusiveIdentity`) that appears only once an exclusive consumer has
+been built:
 
 | Capability | Constant | Meaning |
 |---|---|---|
 | Stateful session | `ports.CapStatefulSession` | Session maintains a persistent connection with reconnection |
 | Source redelivery | `ports.CapSourceRedelivery` | Failed messages can be requeued to the source queue via nack |
 | Plan-driven subscriptions | `ports.CapPlanDrivenSubscriptions` | Receivers subscribe (queue-declare + bind + consume) only when the session manager reconciles the `SessionPlan`; a receiver on an unmanaged session is inert, so the builder enforces a manager |
+| Exclusive identity (conditional) | `ports.CapExclusiveIdentity` | Advertised **only after** an exclusive consumer has been built, so the supervisor picks the serialized (PrepareCommit) swap mode instead of overlapping two exclusive consumers on the same queue |
 
 ## Usage Example
 
@@ -265,11 +281,20 @@ _ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
     logger.Info("received", "id", e.ID(), "payload", string(e.Payload()))
     return del.Ack(ctx)
 })
+// After Run returns, release the consumer with Close. A direct embedder's
+// graceful stop already self-closes the consumer channel, so Close is an
+// idempotent safety call here (the managed runtime calls it for you after
+// draining in-flight deliveries).
+_ = receiver.Close(ctx)
 ```
 
-## BridgeFactory
+## Factory
 
-`BridgeFactory` implements `ports.TransportFactory` and creates sessions, receivers, and senders from declarative `config.*Def` definitions. It wraps the lower-level factories (`Factory`, `ReceiverFactory`, `SenderFactory`) for use with the bridge runtime.
+`Factory` implements `ports.TransportFactory`: it advertises `Capabilities`,
+validates addresses (`AddressValidator`), reports whether a config requires
+exclusive identity, and creates sessions (`NewSession`). Receivers and senders
+are built by the sibling `ReceiverFactory` and `SenderFactory`. Construct the
+transport factory with `NewFactory`:
 
 ```go
 factory := amqp091.NewFactory(logger, metricsExporter)

@@ -34,6 +34,42 @@ func (s *Session) Reload(ctx context.Context) error {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
 	}
+	// FIX 1: await any in-flight Start BEFORE snapshotting s.cm. A
+	// supervisor-driven Start (superviseSession re-Run) can be mid-dial with
+	// s.cm not yet installed; if Reload snapshotted s.cm now it would see nil,
+	// SKIP the teardown, then call its own Start — which the Start guard
+	// (acl_session.go) makes PIGGYBACK on the in-flight dial (returns nil for
+	// the second caller). The rotation's teardown+rebuild would be DEFEATED and
+	// the previously-dialed connection — carrying the OLD per-dial TLS snapshot
+	// (dial captures tls.Config per attempt) — would stay live. Mirror Close's
+	// in-flight-Start wait: snapshot starting+startDone, release mu, wait on
+	// startDone bounded by ctx, then re-acquire mu and tear the now-installed cm
+	// down. Handles both outcomes: the in-flight Start SUCCEEDED (we now see and
+	// tear down its freshly installed cm, then rebuild) or FAILED (cm is nil →
+	// we proceed to a fresh Start below, exactly as before).
+	starting := s.starting
+	startDone := s.startDone
+	s.mu.Unlock()
+
+	if starting && startDone != nil {
+		select {
+		case <-startDone:
+		case <-ctx.Done():
+			// Abort BEFORE any teardown — nothing was disconnected, so the
+			// session is left intact (the in-flight Start completes on its
+			// own). This does not regress F-1, which only fires once our own
+			// post-teardown rebuild Start fails.
+			return MapError(ctx.Err()).
+				WithMessage("mqtt reload: context expired awaiting in-flight Start")
+		}
+	}
+
+	s.mu.Lock()
+	// A Close may have landed while we awaited the in-flight Start.
+	if s.closed {
+		s.mu.Unlock()
+		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
+	}
 	cm := s.cm
 	s.cm = nil
 	cmCancel := s.cmCancel
@@ -48,7 +84,44 @@ func (s *Session) Reload(ctx context.Context) error {
 		cmCancel()
 	}
 
-	return s.Start(ctx)
+	if err := s.Start(ctx); err != nil {
+		// F-1: the old CM was already torn down above, and this re-Start
+		// failed (e.g. the broker is down during a credential-rotation
+		// Reload). The session is now DEAD — with no CM there is no
+		// autopaho reconnect and no further SessionEvent, so the runtime
+		// manager's handleEvents would block on <-events forever and the
+		// supervisor would never restart it (readiness red, liveness
+		// green — a permanent zombie). Signal terminal death by CLOSING
+		// the events channel: the runtime session manager treats an
+		// unexpected events-channel close as a session FAILURE
+		// (errSessionEventsClosed) and superviseSession re-invokes
+		// Manager.Run, which re-Starts this session and rebuilds the CM.
+		// autopaho then retries the connection to recovery once the broker
+		// returns. The re-Start re-materialises a fresh events channel
+		// (see Start's eventsClosed handling), so handleEvents does not
+		// spin on a closed channel. The close is guarded (closeEventsLocked)
+		// so a concurrent/subsequent Close cannot double-close it.
+		s.mu.Lock()
+		s.closeEventsLocked()
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// closeEventsLocked closes the session's lifecycle-event channel exactly
+// once. TWO paths close it — Close (terminal shutdown) and Reload's
+// Start-failure terminal signal (F-1) — so a guard is required to avoid a
+// double-close panic when both run (e.g. a Close landing after a
+// Reload-failure already closed events). pushEvent also checks
+// s.eventsClosed under s.mu, so no concurrent send can race this close.
+// Callers MUST hold s.mu.
+func (s *Session) closeEventsLocked() {
+	if s.eventsClosed {
+		return
+	}
+	s.eventsClosed = true
+	close(s.events)
 }
 
 // Close gracefully disconnects the MQTT session. It is safe to call
@@ -143,7 +216,13 @@ func (s *Session) Close(ctx context.Context) error {
 			s.logger.Warn("Close: context expired while waiting for in-flight handlers")
 		}
 	}
-	close(s.events)
+	// Close under s.mu via the shared guard: a prior Reload-failure may
+	// already have closed s.events (F-1), so an unguarded close here would
+	// double-close and panic. s.closed (set above) has already stopped every
+	// pushEvent, so this only finalises the channel.
+	s.mu.Lock()
+	s.closeEventsLocked()
+	s.mu.Unlock()
 
 	if disconnErr != nil {
 		return MapError(disconnErr)

@@ -137,6 +137,9 @@ func TestReceiver_Run_TransientWhileConnected_BacksOff_NoHotLoop(t *testing.T) {
 		metrics: &ports.NoopExporter{},
 		clk:     fake,
 		started: make(chan struct{}),
+		// Un-jittered backoff so Advance(receiverRetryInitial) fires the
+		// pending timer exactly (jitter would make the deadline 0.75-1.25x).
+		randFloat: func() float64 { return 0.5 },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

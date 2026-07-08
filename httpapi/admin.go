@@ -51,31 +51,81 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleStart resumes the bridge after a deliberate stop. When a
+// BridgeController (the supervisor) is wired it rebuilds and starts a FRESH
+// runtime — the runtime is single-use, so an in-place restart of a
+// stopped/terminal runtime would always fail. Without a controller it falls
+// back to the runtime's own Start (legacy single-runtime deployments).
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.AdminOperationTimeout)
+	defer cancel()
+
+	if s.bridgeController != nil {
+		if err := s.bridgeController.StartBridge(ctx); err != nil {
+			// StartBridge is idempotent (already-running returns nil), so a
+			// non-nil error is a genuine build/start failure, not a conflict.
+			s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "bridge start failed")
+			return
+		}
+		s.emitAudit(r, "bridge.start", "bridge", "", "success", nil)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+		return
+	}
+
 	rt := s.currentRuntime()
 	if rt == nil {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.AdminOperationTimeout)
-	defer cancel()
+	// Legacy single-runtime path. The runtime returns plain (non-sentinel)
+	// errors for "already running" and "cannot start a stopped runtime", so
+	// distinguish the conflict up front via IsRunning rather than string-
+	// matching: an already-running bridge is a 409, any other Start failure is a
+	// 500. The generic "bridge start failed" message is kept in both cases so
+	// internal error text is never leaked to the client.
+	if rt.IsRunning() {
+		s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": "already running"})
+		writeErr(w, http.StatusConflict, "bridge start failed")
+		return
+	}
 	if err := rt.Start(ctx); err != nil {
 		s.emitAudit(r, "bridge.start", "bridge", "", "failure", map[string]any{"error": err.Error()})
-		writeErr(w, http.StatusConflict, "bridge start failed")
+		writeErr(w, http.StatusInternalServerError, "bridge start failed")
 		return
 	}
 	s.emitAudit(r, "bridge.start", "bridge", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 }
 
+// handleStop pauses the bridge. This is a CLEAN, deliberate stop: it does NOT
+// mark the runtime terminal, so /live stays 200 and the liveness backstop does
+// NOT restart the process (CRITICAL 1 — a prior implementation called
+// rt.Stop directly, tripping terminal and killing the process within seconds of
+// returning 200). When a BridgeController (the supervisor) is wired the stop is
+// routed through it so the paused runtime can later be resumed by handleStart
+// (which rebuilds a fresh single-use runtime). Without a controller it falls
+// back to the runtime's own Stop (now also clean, non-terminal).
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.AdminOperationTimeout)
+	defer cancel()
+
+	if s.bridgeController != nil {
+		if err := s.bridgeController.StopBridge(ctx); err != nil {
+			s.emitAudit(r, "bridge.stop", "bridge", "", "failure", map[string]any{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "bridge stop failed")
+			return
+		}
+		s.emitAudit(r, "bridge.stop", "bridge", "", "success", nil)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+		return
+	}
+
 	rt := s.currentRuntime()
 	if rt == nil {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.AdminOperationTimeout)
-	defer cancel()
 	if err := rt.Stop(ctx); err != nil {
 		s.emitAudit(r, "bridge.stop", "bridge", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "bridge stop failed")
@@ -163,6 +213,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	envelopeID := ""
+	callerSuppliedID := false
 	switch {
 	case body.ID == nil:
 		envelopeID = s.idGen()
@@ -174,6 +225,7 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		envelopeID = *body.ID
+		callerSuppliedID = true
 	}
 
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
@@ -208,14 +260,25 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.emitAudit(r, "route.inject", "route", routeID, "success", map[string]any{
+	detail := map[string]any{
 		"envelope_id": env.ID(),
 		"subject":     body.Subject,
-	})
-	writeJSON(w, http.StatusOK, map[string]string{
+	}
+	resp := map[string]string{
 		"status":      "injected",
 		"envelope_id": env.ID(),
-	})
+	}
+	// A caller-supplied envelope ID can collide with a completed/poisoned outbox
+	// row on a shared_outbox route: the re-persist is swallowed as a duplicate,
+	// the dispatch ACKs, and this endpoint reports success while nothing is sent.
+	// Flag it so a bare 200 does not hide the possible no-op (server-generated
+	// IDs are unique, so this only applies to caller-supplied IDs).
+	if callerSuppliedID {
+		detail["caller_supplied_id"] = true
+		resp["warning"] = "caller-supplied envelope id may be silently deduplicated by the outbox on shared_outbox routes; a duplicate id is swallowed without error"
+	}
+	s.emitAudit(r, "route.inject", "route", routeID, "success", detail)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) emitAudit(r *http.Request, action, resource, resourceID, outcome string, detail map[string]any) {

@@ -163,7 +163,7 @@ linters:
 
     # forbidigo bans direct time.Now() and other unabstracted time
     # primitives in production code. Exempt paths:
-    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/, testutil/.
+    # domain/clock/real.go, domain/clock/clocktest/, _test.go, ports/storetest/, ports/transporttest/, testutil/.
     forbidigo:
       forbid:
         - pattern: '^time\.Now$'
@@ -423,6 +423,7 @@ linters:
     paths:
       # Conformance test fixtures: not production code.
       - "ports/storetest/.*"
+      - "ports/transporttest/.*"
 
     rules:
       # ireturn: test files (_test.go) routinely declare local fakes

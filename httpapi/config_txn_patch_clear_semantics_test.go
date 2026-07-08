@@ -87,7 +87,7 @@ func TestConfigTxn_Patch_ClearSemantics_ByteLevel(t *testing.T) {
 		_, _, err = mgr.Patch(ctx, txn.ID, overlay)
 		require.NoError(t, err)
 
-		preview, err := mgr.Preview(ctx, txn.ID)
+		preview, _, err := mgr.Preview(ctx, txn.ID)
 		require.NoError(t, err)
 		assert.Equal(t, "https://ops.example.com", preview.HTTP.CORSOrigins)
 		assert.Equal(t, "super-secret-admin-key-1234", preview.HTTP.AdminAPIKey.Reveal(),
@@ -105,7 +105,7 @@ func TestConfigTxn_Patch_ClearSemantics_ByteLevel(t *testing.T) {
 		_, _, err = mgr.Patch(ctx, txn.ID, overlay)
 		require.NoError(t, err)
 
-		preview, err := mgr.Preview(ctx, txn.ID)
+		preview, _, err := mgr.Preview(ctx, txn.ID)
 		require.NoError(t, err)
 		assert.Equal(t, "rotated-key-9999", preview.HTTP.AdminAPIKey.Reveal(),
 			"a real (non-marker) secret value must overwrite — PATCH is not read-only for secrets")

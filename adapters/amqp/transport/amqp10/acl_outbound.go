@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -64,16 +65,14 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 		}
 	}
 	if v, ok := headers[headerGroupSequence]; ok {
-		switch n := v.(type) {
-		case uint32:
-			props.GroupSequence = &n
+		// F12 / FIX 5: group-sequence is a uint32 on the wire. JSON headers
+		// arrive as float64 and cross-bridge headers may be int/int64/uint;
+		// accept the common numeric carriers, bounded to [0, MaxUint32], and
+		// drop an out-of-range or non-integral value (leaving it unset)
+		// rather than silently wrapping to a small, wrong sequence number.
+		if seq, ok := amqp10GroupSequence(v); ok {
+			props.GroupSequence = &seq
 			hasProps = true
-		case int:
-			if n >= 0 {
-				u := uint32(n)
-				props.GroupSequence = &u
-				hasProps = true
-			}
 		}
 	}
 	if v, ok := headers[headerReplyToGroupID]; ok {
@@ -132,6 +131,41 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 	return msg
 }
 
+// amqp10GroupSequence normalises a group-sequence header value to the
+// uint32 the AMQP 1.0 wire uses (F12 / FIX 5). It accepts the numeric
+// carriers a header can arrive as — uint32, int, int64, uint, uint64 and
+// float64 (JSON decodes integers as float64) — and reports ok only when
+// the value is a non-negative integer within [0, MaxUint32]. A fractional
+// or out-of-range value returns ok=false so the caller leaves the sequence
+// unset instead of silently wrapping or truncating.
+func amqp10GroupSequence(v any) (uint32, bool) {
+	switch n := v.(type) {
+	case uint32:
+		return n, true
+	case int:
+		if n >= 0 && uint64(n) <= math.MaxUint32 {
+			return uint32(n), true
+		}
+	case int64:
+		if n >= 0 && uint64(n) <= math.MaxUint32 {
+			return uint32(n), true
+		}
+	case uint:
+		if uint64(n) <= math.MaxUint32 {
+			return uint32(n), true
+		}
+	case uint64:
+		if n <= math.MaxUint32 {
+			return uint32(n), true
+		}
+	case float64:
+		if n >= 0 && n <= math.MaxUint32 && math.Trunc(n) == n {
+			return uint32(n), true
+		}
+	}
+	return 0, false
+}
+
 // envelopeToMessage builds an outbound *amqp.Message from an envelope,
 // merging headers, payload, and any envelope-level fields (ID, subject,
 // expiry, creation time) into a single SDK message.
@@ -152,13 +186,15 @@ func envelopeToMessage(env *messaging.Envelope, durable bool) *amqp.Message {
 	if msg.Properties == nil {
 		msg.Properties = &amqp.MessageProperties{}
 	}
-	// Preserve a typed message-id (uuid/ulong/binary) carried through
-	// from ingress via headerMessageID: headersToMessage already set
-	// Properties.MessageID to the original value. Only stamp the string
-	// envelope ID when no message-id survived, so a non-string id (whose
-	// envelope ID is a deterministic RENDERING of it, not the value
-	// itself) is not clobbered and downstream message-id dedup keeps
-	// working (finding 6).
+	// headerMessageID, when present, carries the DETERMINISTIC STRING
+	// rendering of the inbound message-id: messageToHeaders renders a
+	// typed uuid/ulong/binary id via messageIDToString so no go-amqp SDK
+	// type ever reaches the domain envelope headers (ACL purity,
+	// finding F9). headersToMessage therefore set Properties.MessageID to
+	// that string, and egress emits a string message-id. Downstream
+	// message-id dedup still holds because the rendering is stable
+	// (same id → same string). Only stamp the (string) envelope ID when
+	// no message-id survived the hop.
 	if msg.Properties.MessageID == nil && env.ID() != "" {
 		msg.Properties.MessageID = env.ID()
 	}

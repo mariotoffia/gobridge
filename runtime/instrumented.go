@@ -191,8 +191,8 @@ func (s *InstrumentedOutboxStore) Complete(ctx context.Context, recordIDs []stri
 	return s.inner.Complete(ctx, recordIDs, token)
 }
 
-func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time) (int, error) {
-	return s.inner.Expire(ctx, before)
+func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
+	return s.inner.Expire(ctx, before, partition)
 }
 
 func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {

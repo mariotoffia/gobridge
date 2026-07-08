@@ -32,6 +32,13 @@ const (
 	DefaultPollInterval      = time.Second
 )
 
+// DefaultCredentialPollInterval is the fallback poll cadence for the
+// credential poll-based wrapper when CredentialPollInterval is unset. It
+// MUST mirror runtime/credentials.DefaultCredentialPollInterval; the literal
+// is duplicated because this package is intentionally zero-dependency and
+// cannot import the runtime module (Finding 2).
+const DefaultCredentialPollInterval = 5 * time.Minute
+
 // DefaultMountPath is the SINGLE canonical container directory where the
 // deployment mounts EFS and where the runtime reads/writes bridge.yaml plus
 // outbox/DLQ state. It is FHS-conformant for runtime state.
@@ -84,6 +91,33 @@ type BootstrapConfig struct {
 
 	ConfigFilePath string `json:"config_file_path"`
 	PollInterval   string `json:"poll_interval,omitempty"`
+
+	// Credential poll-based wrapper knobs (Finding 2). These control how the
+	// runtime lifts a pull-style credential store (SSM, file) into the
+	// push-style rotation source that reaches long-lived transport sessions.
+	// Exposing them here lets an operator shrink the auth-failure blast radius
+	// of a hard credential rotation (default cadence is 5 minutes) without a
+	// code change.
+	//
+	//   CredentialFilePath  - base directory backing file:// credential URIs.
+	//                         Empty (default) registers NO file store; set it
+	//                         to enable file:// credentials in this profile
+	//                         (Finding 11). SSM (pms://) is always registered.
+	//   CredentialPollInterval - poll cadence (e.g. "1m"); empty falls back to
+	//                         DefaultCredentialPollInterval.
+	//   CredentialPollJitter - +/- jitter applied per poll to de-synchronize a
+	//                         fleet; empty defaults to ~10% of the interval so
+	//                         many sessions do not stampede the backend on the
+	//                         same tick (LOW-severity finding).
+	//   CredentialEmitOnStart - when nil (default) the wrapper emits on start
+	//                         so a rotation that landed in the build->watch
+	//                         window is surfaced on the first tick rather than
+	//                         silently baselined (Finding 1). Set to false only
+	//                         to restore the legacy silent-baseline behaviour.
+	CredentialFilePath     string `json:"credential_file_path,omitempty"`
+	CredentialPollInterval string `json:"credential_poll_interval,omitempty"`
+	CredentialPollJitter   string `json:"credential_poll_jitter,omitempty"`
+	CredentialEmitOnStart  *bool  `json:"credential_emit_on_start,omitempty"`
 
 	AdminAddr         string `json:"admin_addr,omitempty"`
 	MonitorAddr       string `json:"monitor_addr,omitempty"`
@@ -162,6 +196,47 @@ func (c BootstrapConfig) EffectivePollInterval() time.Duration {
 		return DefaultPollInterval
 	}
 	return d
+}
+
+// EffectiveCredentialPollInterval returns the credential poll cadence as a
+// time.Duration, falling back to DefaultCredentialPollInterval on parse error
+// or non-positive values (Finding 2).
+func (c BootstrapConfig) EffectiveCredentialPollInterval() time.Duration {
+	if c.CredentialPollInterval == "" {
+		return DefaultCredentialPollInterval
+	}
+	d, err := time.ParseDuration(c.CredentialPollInterval)
+	if err != nil || d <= 0 {
+		return DefaultCredentialPollInterval
+	}
+	return d
+}
+
+// EffectiveCredentialPollJitter returns the per-poll jitter as a
+// time.Duration. When unset (or invalid) it defaults to ~10% of the effective
+// credential poll interval so a fleet does not stampede the credential backend
+// on the same tick (LOW-severity finding). A parseable zero disables jitter.
+func (c BootstrapConfig) EffectiveCredentialPollJitter() time.Duration {
+	if c.CredentialPollJitter == "" {
+		return c.EffectiveCredentialPollInterval() / 10
+	}
+	d, err := time.ParseDuration(c.CredentialPollJitter)
+	if err != nil || d < 0 {
+		return c.EffectiveCredentialPollInterval() / 10
+	}
+	return d
+}
+
+// EffectiveCredentialEmitOnStart reports whether the credential poll-based
+// wrapper should emit an initial rotation on start. It defaults to true so a
+// rotation that landed in the build->watch window is surfaced on the first
+// tick rather than silently adopted as the dedup baseline (Finding 1); set
+// CredentialEmitOnStart to false to restore the legacy behaviour.
+func (c BootstrapConfig) EffectiveCredentialEmitOnStart() bool {
+	if c.CredentialEmitOnStart == nil {
+		return true
+	}
+	return *c.CredentialEmitOnStart
 }
 
 // Validate checks that all required fields are set and enum values are valid.

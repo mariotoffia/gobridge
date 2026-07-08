@@ -539,7 +539,7 @@ flowchart LR
 
 The `OutboxDrainer` loop:
 
-1. Claims pending outbox records with lease fencing (prevents duplicate sends across cluster members).
+1. Claims pending outbox records with lease fencing (single-active ownership: two cluster members cannot both durably claim or complete the same record — at-least-once delivery, not duplicate-send elimination).
 2. Sends each record via the appropriate `Sender`.
 3. Marks records as completed on success.
 4. Supports clustering via `LeaseStore` for single-active ownership of outbox partitions.
@@ -1122,7 +1122,7 @@ All errors in the bridge pipeline are structured as `shared.BridgeError` with an
 | Class | Behavior | Example |
 |---|---|---|
 | `Transient` | Retriable -- may succeed on retry | Connection lost, timeout, throttled |
-| `Permanent` | Not retriable -- retry will not help | Bad payload, not authorized |
+| `Permanent` | Not retriable -- retry will not help | Not authorized, invalid config |
 | `Expired` | Message TTL exceeded | Stale message past ExpiresAt |
 | `Rejected` | Payload-level rejection | Payload too large, filtered, schema violation |
 
@@ -1130,7 +1130,11 @@ All errors in the bridge pipeline are structured as `shared.BridgeError` with an
 
 **Recoverable (transient):** `TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`, `BROKER_BUSY`, `TEMPORARY_AUTH_FAILURE`
 
-**Permanent:** `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `PROTOCOL_ERROR`, `SCHEMA_VIOLATION`, `MESSAGE_EXPIRED`, `QOS_NOT_SUPPORTED`, `MESSAGE_FILTERED`
+**Permanent (not retriable; DLQ per route `FailureAction`):** `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`
+
+**Rejected (payload-level; dropped without DLQ):** `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED`
+
+**Expired (per route `ExpiredAction`):** `MESSAGE_EXPIRED`
 
 **Infrastructure / fencing:** `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`
 

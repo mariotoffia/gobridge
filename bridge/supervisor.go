@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -68,18 +69,54 @@ type Supervisor struct {
 	strategy            ReconfigStrategy
 	onSwap              func(SwapEvent)
 	defaultDrainTimeout time.Duration
+	swapDeadline        time.Duration
 	validator           ports.BlueprintValidator
+
+	// regErrs accumulates deferred registration errors (e.g. a duplicate
+	// transport/store/processor name) under s.mu. The CLI registers plugins on
+	// the Supervisor, whose deduped maps would otherwise silently drop a
+	// collision before the Builder's own guard could see it; newBuilder forwards
+	// these into every Builder it makes so prepare() fails the build naming the
+	// offender rather than routing through a silently-replaced plugin.
+	regErrs []error
 
 	// wedged is set when a swap AND its recovery both failed, leaving no
 	// active runtime (s.rt == nil). It is a terminal state: the process is
 	// alive but routes nothing, so the composition-root backstop must treat
 	// it as terminal and exit non-zero (Finding 7).
 	wedged bool
+	// swapping is true for the whole duration of apply(): a reconfiguration is
+	// in progress. During a swap the old runtime is being stopped and a new one
+	// built, so a momentary read of a stopping/absent runtime is NOT death.
+	// Terminal() returns false while swapping so the liveness backstop never
+	// kills the process mid-swap (CRITICAL 3).
+	swapping bool
 	// degraded records that live reconfiguration is no longer available
 	// (the config change stream closed unexpectedly) while the current
 	// runtime keeps serving. Not terminal (Finding 1).
 	degraded       bool
 	degradedReason string
+
+	// lifecycleMu serializes control-plane mutations: apply() (config-driven
+	// swaps, run from the Run goroutine) and StartBridge/StopBridge (admin,
+	// called from HTTP handler goroutines). Without it two control ops can each
+	// build+start a runtime and both publish s.rt — the loser is a fully-started
+	// runtime (live consumers, held lease, open store handles) that nothing
+	// references and nothing will ever Stop, causing duplicate delivery, lease
+	// contention, and leaks. It is DISTINCT from mu, which stays free for fast
+	// Terminal()/health reads, so liveness probes never block on a swap/drain.
+	lifecycleMu sync.Mutex
+	// baseCtx is the long-lived Run context. StartBridge starts a resumed runtime
+	// under it, NOT the ephemeral admin-request ctx: Runtime.Start binds the
+	// runtime's lifetime to the ctx it is given, so starting under a request ctx
+	// would self-Stop the runtime the instant the HTTP handler returns and its
+	// defer cancels that ctx (CRITICAL 1).
+	baseCtx context.Context
+	// paused records a deliberate admin StopBridge. While paused a config reload
+	// records the new config but does NOT start a runtime, so an operator's
+	// maintenance pause is not silently undone by a config-file edit. Cleared by
+	// StartBridge.
+	paused bool
 }
 
 // SupervisorOption configures a Supervisor.
@@ -143,6 +180,20 @@ func WithOnSwap(fn func(SwapEvent)) SupervisorOption {
 // BridgeConfig does not specify one. Defaults to 30s.
 func WithDefaultDrainTimeout(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.defaultDrainTimeout = d }
+}
+
+// WithSwapDeadline bounds the synchronous build/complete phase of a
+// reconfiguration swap (session/receiver/sender construction and credential
+// resolve are external calls with no inherent timeout). A hung broker during a
+// SwapPrepareCommit — where the old runtime is stopped BEFORE complete() runs —
+// would otherwise leave the bridge routing nothing forever. Zero uses
+// defaultSwapDeadline.
+func WithSwapDeadline(d time.Duration) SupervisorOption {
+	return func(s *Supervisor) {
+		if d > 0 {
+			s.swapDeadline = d
+		}
+	}
 }
 
 // WithDefaultPerRecordDrainTimeout was removed: it had zero effect and no
@@ -211,8 +262,16 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 
 // RegisterTransport registers a transport factory for reuse across
 // rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
+// A duplicate name is NOT silently overwritten (which would make the losing
+// factory vanish from every route using it): the first registration is kept
+// and the duplicate is recorded as a deferred error surfaced at the next build.
 func (s *Supervisor) RegisterTransport(name string, factory ports.TransportFactory) *Supervisor {
 	s.mu.Lock()
+	if _, exists := s.transports[name]; exists {
+		s.regErrs = append(s.regErrs, fmt.Errorf("bridge: transport factory %q already registered", name))
+		s.mu.Unlock()
+		return s
+	}
 	s.transports[name] = factory
 	s.mu.Unlock()
 	return s
@@ -220,8 +279,14 @@ func (s *Supervisor) RegisterTransport(name string, factory ports.TransportFacto
 
 // RegisterStoreFactory registers a store factory for reuse across
 // rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
+// A duplicate name is recorded as a deferred error surfaced at the next build.
 func (s *Supervisor) RegisterStoreFactory(name string, factory ports.StoreFactory) *Supervisor {
 	s.mu.Lock()
+	if _, exists := s.stores[name]; exists {
+		s.regErrs = append(s.regErrs, fmt.Errorf("bridge: store factory %q already registered", name))
+		s.mu.Unlock()
+		return s
+	}
 	s.stores[name] = factory
 	s.mu.Unlock()
 	return s
@@ -229,8 +294,14 @@ func (s *Supervisor) RegisterStoreFactory(name string, factory ports.StoreFactor
 
 // RegisterProcessor registers a named processor for reuse across
 // rebuilds. Returns the supervisor for chaining. Safe for concurrent use.
+// A duplicate name is recorded as a deferred error surfaced at the next build.
 func (s *Supervisor) RegisterProcessor(name string, proc ports.Processor) *Supervisor {
 	s.mu.Lock()
+	if _, exists := s.processors[name]; exists {
+		s.regErrs = append(s.regErrs, fmt.Errorf("bridge: processor %q already registered", name))
+		s.mu.Unlock()
+		return s
+	}
 	s.processors[name] = proc
 	s.mu.Unlock()
 	return s
@@ -258,12 +329,23 @@ func (s *Supervisor) Config() *ports.BridgeConfig {
 // error occurs during initial startup. Config change failures are
 // logged but do not stop Run.
 func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, changes <-chan *ports.BridgeConfig) error {
+	// Capture the process-lifetime context so admin StartBridge can start a
+	// resumed runtime under it rather than an ephemeral request ctx (CRITICAL 1).
+	s.mu.Lock()
+	s.baseCtx = ctx
+	s.mu.Unlock()
+
 	rt, err := s.buildRuntime(ctx, initial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial build: %w", err)
 	}
 
 	if err := rt.Start(ctx); err != nil {
+		// The initial runtime built its sessions/receivers/stores but never
+		// started; returning here without releasing them leaks every connection
+		// set (HIGH: initial Start failure leaks the built runtime). Mirror the
+		// swap paths' careful stopAbandoned before returning.
+		s.stopAbandoned(ctx, rt, initial)
 		return fmt.Errorf("supervisor: initial start: %w", err)
 	}
 
@@ -318,6 +400,38 @@ func (s *Supervisor) markDegraded(reason string) {
 	s.degraded = true
 	s.degradedReason = reason
 	s.mu.Unlock()
+
+	// Export the degraded state so operators can alert on a bridge running
+	// blind on its last good config (previously this was invisible outside the
+	// logs). Emitted after releasing the lock so the exporter is never called
+	// under s.mu.
+	s.emitConfigDegradedGauge(true)
+}
+
+// emitConfigDegradedGauge exports the 0/1 config-degraded gauge. No-op when no
+// metrics exporter is wired (WithSupervisorMetrics not supplied).
+func (s *Supervisor) emitConfigDegradedGauge(degraded bool) {
+	if s.metrics == nil {
+		return
+	}
+	value := 0.0
+	if degraded {
+		value = 1
+	}
+	s.metrics.Gauge(shared.MetricConfigDegraded, value)
+}
+
+// emitConfigReload counts a live reconfiguration outcome, tagged success|failure.
+// No-op when no metrics exporter is wired.
+func (s *Supervisor) emitConfigReload(success bool) {
+	if s.metrics == nil {
+		return
+	}
+	state := "failure"
+	if success {
+		state = "success"
+	}
+	s.metrics.Counter(shared.MetricConfigReloads, 1, shared.Tag{Key: shared.TagKeyState, Value: state})
 }
 
 // Degraded reports whether live reconfiguration is unavailable while the
@@ -341,15 +455,138 @@ func (s *Supervisor) Degraded() (bool, string) {
 func (s *Supervisor) Terminal() bool {
 	s.mu.RLock()
 	wedged := s.wedged
+	swapping := s.swapping
 	rt := s.rt
 	s.mu.RUnlock()
+	// A swap in progress is not death: the old runtime is being stopped and a
+	// new one built, so a transient stopping/absent-runtime read during the swap
+	// window must not trip the backstop (CRITICAL 3).
+	if swapping {
+		return false
+	}
 	if wedged {
 		return true
 	}
 	return rt != nil && rt.Terminal()
 }
 
+// StopBridge performs a clean, DELIBERATE stop of the current runtime (an admin
+// pause). Unlike a component-failure trip this leaves the runtime non-terminal,
+// so /live stays 200 and the liveness backstop does NOT restart the process
+// (CRITICAL 1). The runtime is single-use once stopped; StartBridge builds a
+// fresh runtime to resume. Calling StopBridge when no runtime is active is a
+// no-op. The stopped runtime reference is retained so StartBridge can rebuild
+// from the same config.
+func (s *Supervisor) StopBridge(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.mu.RLock()
+	rt := s.rt
+	cfg := s.cfg
+	s.mu.RUnlock()
+	if rt == nil {
+		return nil
+	}
+	drainTimeout := s.drainTimeoutFrom(cfg)
+	// Detach caller cancellation so the drain completes, preserving values.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
+	defer cancel()
+	stopErr := rt.Stop(stopCtx)
+	// Latch the deliberate pause regardless of drain outcome: rt.Stop has already
+	// marked the runtime stopped/single-use, so a subsequent config reload must
+	// not silently resume the bridge while an operator intends it paused.
+	s.mu.Lock()
+	s.paused = true
+	s.mu.Unlock()
+	return stopErr
+}
+
+// StartBridge resumes a deliberately-stopped bridge by building and starting a
+// FRESH runtime from the current config. The runtime is single-use, so a
+// stopped runtime cannot be restarted in place — "resume" means build+start a
+// new instance (CRITICAL 1: /bridge/start after /bridge/stop must succeed, not
+// return a permanent 409). If a runtime is already running this is an
+// idempotent no-op. A build/start failure releases any half-built runtime
+// rather than leaking it, and leaves the previous (stopped) runtime reference
+// in place so a retry is possible.
+func (s *Supervisor) StartBridge(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.mu.RLock()
+	rt := s.rt
+	cfg := s.cfg
+	baseCtx := s.baseCtx
+	s.mu.RUnlock()
+	if rt != nil && rt.IsRunning() {
+		return nil
+	}
+	if cfg == nil {
+		return fmt.Errorf("supervisor: no config available to start bridge")
+	}
+	if baseCtx == nil {
+		// Run has not been entered, so there is no process-scoped context to own
+		// the runtime's lifetime. Refuse rather than bind it to the request ctx.
+		return fmt.Errorf("supervisor: not running; cannot start bridge")
+	}
+	// Bound the BUILD by the admin-request ctx (so the handler stays responsive to
+	// its operation timeout), but START the runtime under the long-lived Run ctx:
+	// binding the runtime's lifetime to the request ctx would self-Stop it the
+	// instant the handler returns and cancels that ctx (CRITICAL 1).
+	newRt, err := s.buildRuntimeBounded(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("supervisor: start bridge build: %w", err)
+	}
+	if err := newRt.Start(baseCtx); err != nil {
+		s.stopAbandoned(ctx, newRt, cfg)
+		return fmt.Errorf("supervisor: start bridge: %w", err)
+	}
+	s.mu.Lock()
+	s.rt = newRt
+	s.wedged = false
+	s.paused = false
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
+	// Serialize against admin StartBridge/StopBridge so two control-plane
+	// operations never both build and publish a runtime (HIGH: control-plane
+	// TOCTOU leaks a fully-started runtime).
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	// While an operator has deliberately paused the bridge (StopBridge), a config
+	// reload must NOT silently resume it. Record the new config so a later
+	// StartBridge resumes on the latest desired state, but do not build or start
+	// a runtime now.
+	s.mu.RLock()
+	paused := s.paused
+	s.mu.RUnlock()
+	if paused {
+		s.mu.Lock()
+		s.cfg = newCfg
+		s.mu.Unlock()
+		if s.logger != nil {
+			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
+				"config_version", newCfg.Version)
+		}
+		return
+	}
+
+	// Mark a swap in progress for its whole duration so Terminal() reports false
+	// while the old runtime is being stopped and the new one built — a swap is
+	// not death (CRITICAL 3). Cleared on every exit path (success and error).
+	s.mu.Lock()
+	s.swapping = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.swapping = false
+		s.mu.Unlock()
+	}()
+
 	start := s.clk.Now()
 	mode := s.detectSwapMode(newCfg)
 
@@ -400,6 +637,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 				"swap_mode", mode, "error", err, "duration", ev.Duration,
 				"config_version", oldVersion, "attempted_config_version", newCfg.Version)
 		}
+		s.emitConfigReload(false)
 	} else {
 		s.mu.Lock()
 		s.rt = newRt
@@ -414,6 +652,10 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 				"swap_mode", mode, "duration", ev.Duration,
 				"config_version", newCfg.Version, "old_config_version", oldVersion)
 		}
+		// A successful reload clears any prior degraded state; export both the
+		// gauge reset and the success counter so operators see recovery.
+		s.emitConfigDegradedGauge(false)
+		s.emitConfigReload(true)
 	}
 
 	if s.onSwap != nil {
@@ -436,7 +678,7 @@ func (s *Supervisor) applyOverlap(
 	oldCfg *ports.BridgeConfig,
 	newCfg *ports.BridgeConfig,
 ) (*runtime.Runtime, error) {
-	newRt, err := s.buildRuntime(ctx, newCfg)
+	newRt, err := s.buildRuntimeBounded(ctx, newCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build: %w", err)
 	}
@@ -488,7 +730,14 @@ func (s *Supervisor) stopAbandoned(ctx context.Context, rt *runtime.Runtime, cfg
 // restart the process (Finding 7). Any runtime it builds but cannot start is
 // stopped rather than leaked (Finding 2).
 func (s *Supervisor) recoverOldOrWedge(ctx context.Context, oldCfg *ports.BridgeConfig) {
-	recoveredRt, recoverErr := s.buildRuntime(ctx, oldCfg)
+	// Bound the recovery build by the swap deadline. If the swap failed because a
+	// broker is partitioned, rebuilding the OLD config hits the same broker and
+	// NewSession can hang; an UNBOUNDED build here would keep apply() from
+	// returning, leaving swapping=true (and thus Terminal()==false) forever — a
+	// permanent silent outage with the liveness backstop disabled (BLOCKER 2). A
+	// bounded build fails within the deadline, wedges, and lets Terminal() report
+	// the wedge so the composition-root backstop restarts the process.
+	recoveredRt, recoverErr := s.buildRuntimeBounded(ctx, oldCfg)
 	if recoverErr == nil {
 		if startErr := recoveredRt.Start(ctx); startErr != nil {
 			s.stopAbandoned(ctx, recoveredRt, oldCfg)
@@ -521,7 +770,16 @@ func (s *Supervisor) applyPrepareCommit(
 ) (*runtime.Runtime, error) {
 	builder := s.newBuilder(newCfg)
 
-	prep, err := builder.prepare(ctx)
+	// Bound the synchronous build/complete phase so a hung external construction
+	// call (NewSession against a partitioned broker, credential resolve) cannot
+	// strand the bridge. This is critical for prepare-commit: complete() runs
+	// AFTER the old runtime is stopped, so an unbounded hang there routes nothing
+	// forever. On deadline the error routes into recoverOldOrWedge below (HIGH:
+	// no deadline on swap build/complete phase).
+	phaseCtx, phaseCancel := s.swapPhaseCtx(ctx)
+	defer phaseCancel()
+
+	prep, err := builder.prepare(phaseCtx)
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
@@ -536,7 +794,7 @@ func (s *Supervisor) applyPrepareCommit(
 		cancel()
 	}
 
-	newRt, err := builder.complete(ctx, prep)
+	newRt, err := builder.complete(phaseCtx, prep)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)
@@ -565,11 +823,22 @@ func (s *Supervisor) buildRuntime(ctx context.Context, cfg *ports.BridgeConfig) 
 	return builder.Build(ctx)
 }
 
+// buildRuntimeBounded builds a runtime under the swap-phase deadline so a hung
+// external construction call during an overlap swap cannot block forever. The
+// overlap build runs BEFORE the old runtime is stopped, so a deadline here
+// simply fails the swap and leaves the old runtime serving.
+func (s *Supervisor) buildRuntimeBounded(ctx context.Context, cfg *ports.BridgeConfig) (*runtime.Runtime, error) {
+	phaseCtx, cancel := s.swapPhaseCtx(ctx)
+	defer cancel()
+	return s.buildRuntime(phaseCtx, cfg)
+}
+
 func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	s.mu.RLock()
 	transports := maps.Clone(s.transports)
 	stores := maps.Clone(s.stores)
 	procs := maps.Clone(s.processors)
+	regErrs := append([]error(nil), s.regErrs...)
 	s.mu.RUnlock()
 
 	var opts []BuilderOption
@@ -613,6 +882,11 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	for name, p := range procs {
 		b.RegisterProcessor(name, p)
 	}
+	// Surface any Supervisor-level registration errors (duplicate names) that the
+	// deduped maps above would otherwise hide, so prepare() fails the build
+	// naming the offender. These are permanent until the registration code is
+	// fixed, so re-forwarding them on every rebuild is intentional.
+	b.regErrs = append(b.regErrs, regErrs...)
 	return b
 }
 
@@ -704,4 +978,24 @@ func (s *Supervisor) drainTimeoutFrom(cfg *ports.BridgeConfig) time.Duration {
 		return s.defaultDrainTimeout
 	}
 	return 30 * time.Second
+}
+
+// defaultSwapDeadline bounds the synchronous build/complete phase of a
+// reconfiguration swap when WithSwapDeadline is unset. Session/receiver/sender
+// construction and credential resolve are external calls with no inherent
+// timeout; without this ceiling a hung NewSession (e.g. a partitioned broker)
+// during a SwapPrepareCommit — where the old runtime is stopped BEFORE
+// complete() runs — leaves the bridge routing nothing forever.
+const defaultSwapDeadline = 60 * time.Second
+
+// swapPhaseCtx derives a deadline-bounded context for the build/complete phase
+// of a swap, so a hung external construction call cannot strand the bridge. The
+// returned context is used ONLY for construction; a started runtime's
+// background goroutines keep using the long-lived Run ctx.
+func (s *Supervisor) swapPhaseCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := s.swapDeadline
+	if d <= 0 {
+		d = defaultSwapDeadline
+	}
+	return context.WithTimeout(ctx, d)
 }

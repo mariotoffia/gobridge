@@ -20,6 +20,9 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Exporter self-metrics** | The CloudWatch exporter's own health counters: `ExporterDroppedDatums` (datums dropped under buffer pressure) and `ExporterRejectedDatums` (datums CloudWatch rejected on `PutMetricData`). |
 | **MetricRouteRestarts** | Metric `RouteRestarts` (`domain/shared`) counting per-route supervised restarts: a route runner returned an error and was restarted in isolation under jittered capped backoff instead of tearing down the runtime. Tagged `route_id`. Mirrors `SessionRestarts` for the ingress/route side; alert on the rate, not on liveness. |
 | **ErrBrokerBusy** | Transient error `shared.ErrBrokerBusy` (code `BROKER_BUSY`) raised when a broker has flow control engaged. The amqp091 sender returns it to fail fast on a `connection.blocked` resource alarm instead of wedging every publisher on a publish the SDK cannot cancel. |
+| **MetricCredentialRotationApplied** | Metric `CredentialRotationApplied` (`domain/shared`) counting credential rotations applied to a live transport — one per target whose `ApplyCredentials` returned without error (`bridge.CredentialRefresher`). Success counterpart to `CredentialRefreshFailures`; the URI is never a dimension because it may carry secrets. |
+| **MetricCredentialResolveFailure** | Metric `CredentialResolveFailure` (`domain/shared`) counting credential repository fetch failures at the resolver choke point (`runtime.CredentialResolver`), tagged with the bounded error `code` (e.g. `NOT_AUTHORIZED`, `UNAVAILABLE`, `NOT_FOUND`). Covers build-time resolves, rotation polls, and reactive re-resolves. |
+| **MetricCredentialStaleServed** | Metric `CredentialStaleServed` (`domain/shared`) counting stale-while-error serves: the resolver returned an expired but last-known-good `CredentialSet` after a retryable fetch error, tagged with the error `code`. Never emitted for permanent errors. |
 
 ## Messaging (`domain/messaging`)
 
@@ -74,9 +77,10 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **BackoffPolicy** | Retry backoff parameters: `InitialInterval`, `MaxInterval`, `Multiplier`. |
 | **DeliveryMode** | `direct_hold` (hold source ack until target accepts) or `shared_outbox` (persist then ack source). |
 | **DispatchMode** | `single` (one binding per envelope) or `fan_out` (every matching binding). |
-| **AckBoundary** | `target_accept` (ack source after target accepts) or `outbox_persist` (ack source after outbox persists). Together with `DeliveryMode` determines the at-least-once / once-and-only contract per route. |
+| **AckBoundary** | `target_accept` (ack source after target accepts) or `outbox_persist` (ack source after outbox persists). With `DeliveryMode`, sets the per-route at-least-once contract — lease/version fencing bounds but does not eliminate the duplicate window (in-flight sends at lease transfer), so downstream consumers dedup on `x-bridge.idempotency-key` / `x-bridge.dedup-id` (see [docs/troubleshooting.md](docs/troubleshooting.md)). |
 | **ExpiredAction** | What happens to expired envelopes: `drop` or `dlq`. |
 | **FailureAction** | What happens on permanent failure: `dlq` or `drop`. |
+| **FilteredAction** | What happens to an intentionally filtered envelope: `drop` (default) or `dlq`. |
 | **DestinationBinding** | A concrete target an envelope can be sent to: `Transport`, `SessionID`, `SenderID`, `Address`, plugin `Config`, optional static `Headers`. `Address` is the transport destination, not the logical subject. |
 | **DispatchPlan** | Result of resolving destinations for one envelope: which `BindingID`, which `Address` (the per-message transport destination passed to the sender via `OutboundMessage.Address`), merged `Headers`. |
 | **DLQ** | Dead-letter queue. Permanent record of envelopes that could not be delivered. |
@@ -107,6 +111,9 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Single-use exclusive session** | Invariant that the session-based source transports (paho MQTT, amqp091, amqp10) are single-use: once `Close` runs, `Start` returns a permanent `shared.ErrUnavailable` rather than reconnecting. `CapExclusiveIdentity` is declared only by paho MQTT and amqp091; amqp10 does not advertise it but obeys the same single-use rule when run as an exclusive session. The session-zombie terminal escalation (`ErrSessionUnrecoverable`) and the orchestrator process-restart backstop rely on it. |
 | **ErrSessionUnrecoverable** | `session.ErrSessionUnrecoverable` (`runtime/session`): a lease-owning term failed because a single-use exclusive session cannot be re-`Start`ed in this process after a step-down `Close` (Start-after-Close surfaces `shared.ErrUnavailable`). The lease is released first, then the supervisor escalates to terminal so a standby takes over and the orchestrator restarts this pod with a fresh session. |
 | **SessionHealthDetail.ConnectAfterLease** | Read-side health flag (`ports.SessionHealthDetail`) marking a source session that defers `Start` until this instance wins the lease (deferred-connect standby). |
+| **Stale-while-error** | Resolver policy (`runtime.CredentialResolver`): on a retryable (transient) repository error it serves the last-known-good but expired cached `CredentialSet` instead of failing the rebuild, and does not extend its TTL so the next resolve re-probes the backend. Permanent errors (`NOT_FOUND`, `INVALID_PAYLOAD`, `NOT_AUTHORIZED`) always propagate so a revocation is never masked. Emits `CredentialStaleServed`. |
+| **Reactive re-resolve** | Out-of-band credential re-resolve triggered when a live transport reports `NOT_AUTHORIZED` (`CredentialRefresher.NotifyAuthFailure` → `PollBasedWrapper.Refresh`), bypassing the poll timer. Rate-limited per URI to one honoured fetch per `DefaultReactiveReResolveInterval` (5s) so a reconnect storm cannot hammer the backend. |
+| **Build-window rotation** | A credential rotation that lands between a session's build-time resolve and its first watch poll. The `PollBasedWrapper` seed compares the cached build value against a fresh uncached read and surfaces the difference as a rotation on start, even when `EmitOnStart` is false. |
 
 ## Clock (`domain/clock`)
 

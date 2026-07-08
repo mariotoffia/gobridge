@@ -98,6 +98,7 @@ Layered configuration sources and live reconfiguration without restart.
 Credential providers, rotation, and TLS termination.
 
 - **15. HTTP Ingress with Credential-Based TLS Egress** ([15-http-ingress-with-credentials.md](15-http-ingress-with-credentials.md)) — Accepts HTTP ingress and forwards over TLS using a credential provider for client certs.
+- **22. Kubernetes Secret-Mount Credentials** ([22-k8s-secret-mount-credentials.md](22-k8s-secret-mount-credentials.md)) — Backs `file://` credentials with a read-only Kubernetes Secret volume and rotates on Secret update.
 
 ### Observability
 
@@ -152,7 +153,7 @@ Reverse index for readers who know which capability they need to evaluate.
 - **Custom processor** — [17](17-custom-processor.md)
 - **Dynamic reconfiguration** — [10](10-dynamic-reconfiguration.md)
 - **Layered configuration** — [9](09-layered-dynamodb-config.md)
-- **Credentials & rotation** — [15](15-http-ingress-with-credentials.md)
+- **Credentials & rotation** — [15](15-http-ingress-with-credentials.md), [22](22-k8s-secret-mount-credentials.md)
 - **Clustered exclusive sessions** — [8](08-clustered-exclusive-sessions.md)
 - **Priority routing** — [14](14-multi-tenant-priority-routing.md)
 - **Content-based routing** — [4](04-fanout-with-filtering.md), [13](13-content-based-sse-routing.md)

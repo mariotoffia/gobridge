@@ -16,8 +16,6 @@ import (
 // holds no lease from the connectivity aggregate so the standby reaches its
 // LevelSubscribed cap.
 func TestReadinessFromSnapshot_DeferredConnectStandbyNotPinnedAtRunning(t *testing.T) {
-	rt := &Runtime{}
-
 	dh := ports.DeepHealth{
 		Running: true,
 		Healthy: true,
@@ -31,7 +29,7 @@ func TestReadinessFromSnapshot_DeferredConnectStandbyNotPinnedAtRunning(t *testi
 		},
 	}
 
-	level := rt.readinessFromSnapshot(dh)
+	level := ports.ReadinessLevelFromDeepHealth(dh)
 	assert.Greater(t, int(level), int(ports.LevelRunning),
 		"a deferred-connect standby must not be pinned at LevelRunning")
 	assert.GreaterOrEqual(t, int(level), int(ports.LevelSubscribed),
@@ -42,10 +40,8 @@ func TestReadinessFromSnapshot_DeferredConnectStandbyNotPinnedAtRunning(t *testi
 // normal disconnected session (or a deferred one that DOES hold the lease, i.e.
 // the active instance) still gates readiness at LevelRunning.
 func TestReadinessFromSnapshot_NonDeferredDisconnectedStillGated(t *testing.T) {
-	rt := &Runtime{}
-
 	// Ordinary disconnected session.
-	assert.Equal(t, ports.LevelRunning, rt.readinessFromSnapshot(ports.DeepHealth{
+	assert.Equal(t, ports.LevelRunning, ports.ReadinessLevelFromDeepHealth(ports.DeepHealth{
 		Running:  true,
 		Healthy:  true,
 		Sessions: []ports.SessionHealthDetail{{SessionID: "s", Connected: false}},
@@ -53,7 +49,7 @@ func TestReadinessFromSnapshot_NonDeferredDisconnectedStillGated(t *testing.T) {
 
 	// Deferred-connect session that WON the lease (active) must be connected; a
 	// disconnected active session is a genuine fault, so it stays gated.
-	assert.Equal(t, ports.LevelRunning, rt.readinessFromSnapshot(ports.DeepHealth{
+	assert.Equal(t, ports.LevelRunning, ports.ReadinessLevelFromDeepHealth(ports.DeepHealth{
 		Running: true,
 		Healthy: true,
 		Sessions: []ports.SessionHealthDetail{

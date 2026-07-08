@@ -66,8 +66,8 @@ func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
 	for id, raw := range *tgs {
 		props := (*raw)["Properties"].(map[string]any)
-		if got := props["HealthCheckPath"]; got != "/api/v1/monitor/health" {
-			t.Fatalf("TG %s HealthCheckPath = %v, want /api/v1/monitor/health", id, got)
+		if got := props["HealthCheckPath"]; got != "/api/v1/monitor/live" {
+			t.Fatalf("TG %s HealthCheckPath = %v, want /api/v1/monitor/live", id, got)
 		}
 		// Every TG probes the monitor port (8081) via the health-check
 		// port override, regardless of its own traffic port.

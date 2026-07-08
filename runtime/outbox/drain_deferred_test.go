@@ -36,10 +36,21 @@ type deferredFakeStore struct {
 	completed []string
 	released  []string
 
+	// expireCalls records the partition each Expire call was scoped to, so
+	// H1 tests can assert the bulk sweep is deferred for dlq-policy drainers
+	// and runs (scoped to the drainer's partition) for drop-policy drainers.
+	expireCalls []string
+	// expireCount is the count Expire returns (default 0).
+	expireCount int
+
 	// completeGate, when non-nil, is received from before Complete returns;
 	// completeErr is then returned. Used to sequence the stale-cancel subtest.
 	completeGate <-chan struct{}
 	completeErr  error
+
+	// releaseErr, when non-nil, is returned by Release. Used by the M4 test to
+	// simulate a store I/O error on Release (distinct from a stale token).
+	releaseErr error
 }
 
 func (s *deferredFakeStore) Persist(context.Context, []*persistence.OutboxRecord) error {
@@ -64,7 +75,18 @@ func (s *deferredFakeStore) Complete(_ context.Context, ids []string, _ persiste
 	return s.completeErr
 }
 
-func (s *deferredFakeStore) Expire(context.Context, time.Time) (int, error) { return 0, nil }
+func (s *deferredFakeStore) Expire(_ context.Context, _ time.Time, partition string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expireCalls = append(s.expireCalls, partition)
+	return s.expireCount, nil
+}
+
+func (s *deferredFakeStore) expiredPartitions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.expireCalls...)
+}
 
 func (s *deferredFakeStore) QueryPending(context.Context, string, int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
@@ -72,8 +94,13 @@ func (s *deferredFakeStore) QueryPending(context.Context, string, int) ([]*persi
 
 func (s *deferredFakeStore) Release(_ context.Context, ids []string, _ persistence.LeaseToken) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.releaseErr != nil {
+		// A failed Release leaves the record claimed; do not record it as
+		// released. Mirrors the real stores' fail-closed behavior (M4).
+		return s.releaseErr
+	}
 	s.released = append(s.released, ids...)
-	s.mu.Unlock()
 	return nil
 }
 

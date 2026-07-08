@@ -333,6 +333,16 @@ func TestPathToURI(t *testing.T) {
 	assert.Equal(t, "pms://single", pathToURI("/single"))
 }
 
+// TestParseURI_ErrorRedactsUserinfo verifies a URI that fails to parse never
+// echoes embedded userinfo (user:pass@) into the returned error (MINOR).
+func TestParseURI_ErrorRedactsUserinfo(t *testing.T) {
+	// Control character forces url.Parse to fail; the raw URL would otherwise
+	// be echoed verbatim (with the secret) by the wrapped *url.Error.
+	_, err := parseURI("pms://user:s3cr3t@ns/\x7fbad")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "s3cr3t", "userinfo must be redacted from the parse error")
+}
+
 // ---------------------------------------------------------------------------
 // Scheme and Namespace
 // ---------------------------------------------------------------------------

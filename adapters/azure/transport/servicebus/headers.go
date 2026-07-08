@@ -10,6 +10,7 @@ const (
 	asbHeaderMessageID     = "asb.message-id"
 	asbHeaderCorrelationID = "asb.correlation-id"
 	asbHeaderSessionID     = "asb.session-id"
+	asbHeaderPartitionKey  = "asb.partition-key"
 	asbHeaderContentType   = "asb.content-type"
 	asbHeaderSubject       = "asb.subject"
 	asbHeaderTo            = "asb.to"
@@ -35,7 +36,7 @@ const (
 	// the broker's own MaxDeliveryCount would never fire — a poison
 	// message would ping-pong forever. Ingress adds this value to the
 	// broker DeliveryCount when stamping asb.delivery-count.
-	asbPropRetryAttempt = "x-bridge.retry-attempt"
+	asbPropRetryAttempt = "x-bridge.retry-attempt" // x-bridge-local: minted by servicebus egress, added to broker DeliveryCount and stripped at ingress; not a domain-registered header
 
 	// asbPropOriginalMessageID preserves the FIRST delivery's MessageID
 	// across retry copies. The copy's own MessageID is salted with the
@@ -43,13 +44,14 @@ const (
 	// discards a scheduled retry; ingress restores this value as the
 	// envelope ID so end-to-end (envelope-ID / idempotency) dedup still
 	// sees one logical message.
-	asbPropOriginalMessageID = "x-bridge.original-message-id"
+	asbPropOriginalMessageID = "x-bridge.original-message-id" // x-bridge-local: minted by servicebus egress, restored as envelope ID and stripped at ingress; not a domain-registered header
 )
 
 var asbWellKnownHeaders = map[string]bool{
 	asbHeaderMessageID:     true,
 	asbHeaderCorrelationID: true,
 	asbHeaderSessionID:     true,
+	asbHeaderPartitionKey:  true,
 	asbHeaderContentType:   true,
 	asbHeaderSubject:       true,
 	asbHeaderTo:            true,

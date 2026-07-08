@@ -144,6 +144,70 @@ func TestExporter_Timer(t *testing.T) {
 	assert.InDelta(t, 250.0, hist.DataPoints[0].Sum, 1.0)
 }
 
+// Finding 8: Timer instruments carry unit "ms" and explicit sub-5ms
+// latency buckets (not the SDK defaults), so fast in-process hops are
+// distinguishable instead of collapsing into the first default bucket.
+func TestExporter_Timer_UnitAndBuckets(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	e := otelmetrics.NewFromProvider(mp)
+	e.Timer("test.latency.ms", 3*time.Millisecond)
+
+	rm := collectMetrics(t, reader)
+
+	var found *metricdata.Metrics
+	for _, sm := range rm.ScopeMetrics {
+		for i := range sm.Metrics {
+			if sm.Metrics[i].Name == "test.latency.ms" {
+				found = &sm.Metrics[i]
+			}
+		}
+	}
+	require.NotNil(t, found, "timer metric not collected")
+	assert.Equal(t, "ms", found.Unit)
+
+	hist, ok := found.Data.(metricdata.Histogram[float64])
+	require.True(t, ok, "timer must aggregate as a float64 histogram")
+	require.Len(t, hist.DataPoints, 1)
+	assert.Equal(t, otelmetrics.LatencyBucketBoundariesMsForTest(), hist.DataPoints[0].Bounds)
+
+	// The 3ms sample lands in the (2.5, 5] bucket, proving the sub-5ms
+	// boundaries are actually applied (default buckets have no 2.5 edge).
+	require.Equal(t, len(otelmetrics.LatencyBucketBoundariesMsForTest())+1, len(hist.DataPoints[0].BucketCounts))
+	bounds := otelmetrics.LatencyBucketBoundariesMsForTest()
+	idx := 0
+	for idx < len(bounds) && bounds[idx] < 3 {
+		idx++
+	}
+	assert.Equal(t, uint64(1), hist.DataPoints[0].BucketCounts[idx], "3ms sample must fall in the sub-5ms bucket")
+}
+
+// Verifies plain Histogram instruments are NOT stamped with the Timer
+// unit/buckets — only Timer opts in.
+func TestExporter_Histogram_NoTimerUnit(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	e := otelmetrics.NewFromProvider(mp)
+	e.Histogram("test.sizes", 42)
+
+	rm := collectMetrics(t, reader)
+	for _, sm := range rm.ScopeMetrics {
+		for i := range sm.Metrics {
+			if sm.Metrics[i].Name == "test.sizes" {
+				assert.Empty(t, sm.Metrics[i].Unit, "plain histogram must not carry the ms unit")
+			}
+		}
+	}
+}
+
 // Verifies domain tags are forwarded as OTel attributes.
 func TestExporter_Counter_WithTags(t *testing.T) {
 	t.Parallel()

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -63,6 +64,38 @@ func TestRegistry_Register_ReturnsErrNilDecoderOnNil(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ports.ErrNilDecoder)
 	assert.Contains(t, err.Error(), `"x"`)
+}
+
+// TestPortsSentinels_CodeClass pins the (Code, Class) pairing of the two
+// ports-level BridgeError sentinels so the contract layer stays code→class
+// consistent with the domain (finding 3). ErrNilDecoder was migrated off the
+// message-payload code onto the dedicated config code: a nil ConfigDecoder is a
+// registration/config defect, not a rejected message payload. Keeping it on
+// ErrCodeInvalidConfig preserves "INVALID_PAYLOAD is uniquely ErrorRejected"
+// across domain + ports.
+func TestPortsSentinels_CodeClass(t *testing.T) {
+	cases := []struct {
+		name     string
+		sentinel *shared.BridgeError
+		code     shared.ErrorCode
+		class    shared.ErrorClass
+	}{
+		{"ErrDuplicateKind", ports.ErrDuplicateKind, shared.ErrCodeAlreadyExists, shared.ErrorPermanent},
+		{"ErrNilDecoder", ports.ErrNilDecoder, shared.ErrCodeInvalidConfig, shared.ErrorPermanent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sentinel.Code != tc.code {
+				t.Fatalf("%s code = %q, want %q", tc.name, tc.sentinel.Code, tc.code)
+			}
+			if tc.sentinel.Class != tc.class {
+				t.Fatalf("%s class = %q, want %q", tc.name, tc.sentinel.Class, tc.class)
+			}
+			if tc.sentinel.Code == shared.ErrCodeInvalidPayload {
+				t.Fatalf("%s must not reuse INVALID_PAYLOAD (that code is uniquely ErrorRejected)", tc.name)
+			}
+		})
+	}
 }
 
 // Verifies Decode returns a clear "unknown plugin kind" error when no decoder is registered.

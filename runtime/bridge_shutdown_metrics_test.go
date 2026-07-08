@@ -13,17 +13,16 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// slowFlushExporter models the OTEL-N5 scenario: a metrics exporter whose Flush
-// is slow-but-successful (it consumes the whole flush budget, then returns nil)
-// and whose Close (provider.Shutdown) reports whatever ctx it is handed. It
-// records the ctx error observed at Close entry so a test can prove Close was
-// given a LIVE budget rather than Flush's already-exhausted one.
+// slowFlushExporter models a metrics exporter whose Flush is slow-but-successful
+// (it consumes the whole flush budget, then returns nil) and records whether
+// Close was ever called. The runtime is a SHARED-exporter borrower: it must
+// Flush buffered data on Stop but must NOT Close the exporter (the composition
+// root owns Close). See CRITICAL 2.
 type slowFlushExporter struct {
 	ports.NoopExporter
 	mu          sync.Mutex
 	flushCalled bool
 	closeCalled bool
-	closeCtxErr error
 }
 
 func (e *slowFlushExporter) Flush(ctx context.Context) error {
@@ -39,43 +38,34 @@ func (e *slowFlushExporter) Flush(ctx context.Context) error {
 func (e *slowFlushExporter) Close(ctx context.Context) error {
 	e.mu.Lock()
 	e.closeCalled = true
-	e.closeCtxErr = ctx.Err()
 	e.mu.Unlock()
-	// Return the ctx error the way an OTel provider Shutdown would when its
-	// deadline has already passed. With a live budget this is nil.
-	return ctx.Err()
+	return nil
 }
 
-// TestStop_MetricsCloseGetsOwnBudget_NoSpuriousError is the regression guard for
-// OTEL-N5: metrics Close must get its OWN shutdown budget, not share the halved
-// flush budget with a slow Flush. A slow-but-successful Flush that consumes the
-// flush budget must NOT push Close to an already-expired deadline and make an
-// otherwise-clean provider shutdown append a spurious ctx error to Stop's
-// result.
-func TestStop_MetricsCloseGetsOwnBudget_NoSpuriousError(t *testing.T) {
+// TestStop_FlushesButDoesNotCloseSharedExporter is the regression guard for
+// CRITICAL 2: the metrics exporter (and tracer) are SHARED by every runtime
+// across config reloads and are owned by the composition root. runtime.Stop must
+// FLUSH buffered data on every stop but must NOT Close the exporter — a
+// per-runtime Close killed the shared CloudWatch flush goroutine on the FIRST
+// reload, silently dropping all later metrics for the process lifetime.
+func TestStop_FlushesButDoesNotCloseSharedExporter(t *testing.T) {
 	exp := &slowFlushExporter{}
 
-	// shutdownTimeout 200ms => flush budget 100ms, close budget 200ms. Flush
-	// blocks for the full 100ms flush budget; before the fix Close then inherited
-	// that exhausted ctx. The close budget (200ms) is created before Flush yet
-	// still leaves ~100ms of slack when Close runs — ample for a loaded CI box.
 	rt := goruntime.New(
-		goruntime.WithInstanceID("otel-n5"),
+		goruntime.WithInstanceID("critical-2"),
 		goruntime.WithMetrics(exp),
 		goruntime.WithShutdownTimeout(200*time.Millisecond),
 	)
 
 	require.NoError(t, rt.Start(context.Background()))
 
-	// Caller ctx is never cancelled: any error on Stop's result would be the
-	// spurious Close deadline error this fix removes.
+	// Caller ctx is never cancelled: a clean shutdown must not error.
 	err := rt.Stop(context.Background())
-	require.NoError(t, err, "clean shutdown must not append a spurious metrics Close error")
+	require.NoError(t, err, "clean shutdown must not error")
 
 	exp.mu.Lock()
 	defer exp.mu.Unlock()
-	assert.True(t, exp.flushCalled, "Flush must be invoked during Stop")
-	assert.True(t, exp.closeCalled, "Close must be invoked during Stop so the provider shuts down")
-	assert.NoError(t, exp.closeCtxErr,
-		"Close must receive its own live budget, not Flush's exhausted flush ctx")
+	assert.True(t, exp.flushCalled, "Flush must be invoked during Stop so buffered data flushes")
+	assert.False(t, exp.closeCalled,
+		"Stop must NOT Close a shared exporter — the composition root owns Close (CRITICAL 2)")
 }

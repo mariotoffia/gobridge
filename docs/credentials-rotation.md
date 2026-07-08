@@ -104,6 +104,23 @@ push := credentials.NewPollBasedWrapper(pullStore, cfg)
 Each `Watch` call gets its own ticker goroutine. Dedup happens
 inside the wrapper so a quiet source does not trigger reconnects.
 
+`EmitOnStart` controls the first emission. The library zero value is `false`
+(adopt the current value as the dedup baseline, emit only on a later change).
+The shipped deployments default it to **true**: the stock `cmd/gobridge` binary
+sets it directly, and the AWS file-based profile derives it via
+`EffectiveCredentialEmitOnStart` (nil → true). The rationale is Finding 1 -- a
+rotation that landed in the build→watch window is surfaced on the first tick
+rather than silently baselined. Set `credential_emit_on_start: false` to restore
+the legacy silent-baseline behavior.
+
+Regardless of `EmitOnStart`, the wrapper closes the build→watch blind window: its
+seed compares the value the session was built with (a cache hit, not an extra
+round-trip) against a fresh uncached read, and if they differ it surfaces a
+**build-window rotation** immediately so the new session is corrected off the
+rotated-out secret. When the wrapped store exposes `ResolveUncached` (the runtime
+`CredentialResolver` does), every poll bypasses the store's TTL cache, so a
+rotation is detected within one `PollInterval` regardless of the cache TTL.
+
 ## Scope: `CredentialSet`
 
 ```go
@@ -189,6 +206,26 @@ a cache is in play, the builder registers the resolver's `InvalidateCache` as
 the rotation callback (`bridge/builder_complete.go:90`), so a rotated URI is
 evicted from the resolver cache and the next lookup re-resolves the fresh
 secret rather than serving a stale one.
+
+### Reactive re-resolve on auth failure
+
+Polling bounds rotation-detection latency to one `PollInterval` (default 5m). A
+*hard* rotation -- the old secret revoked the instant the new one is written --
+would otherwise leave every session on the URI stuck on rejected credentials for
+up to that interval. To shrink the blast radius, the refresher exposes a reactive
+hook: when a rotation apply is itself rejected as unauthorized, `applyOne` calls
+`CredentialRefresher.NotifyAuthFailure(uri, err)`, and for a
+`shared.ErrNotAuthorized` error that forces an immediate out-of-band re-resolve
+(`PollBasedWrapper.Refresh`) instead of waiting for the poll timer.
+`NotifyAuthFailure` is also the public hook a live transport can call when its
+own connection reports `NOT_AUTHORIZED`.
+
+`Refresh` is idempotent (a nudge already pending is coalesced) and rate-limited
+per URI to at most one honoured fetch per `DefaultReactiveReResolveInterval`
+(5s), so a reconnect storm -- every session on the URI reporting `NOT_AUTHORIZED`
+at once -- collapses into a single backend fetch rather than hammering the
+secrets store. It is a no-op for a store that does not support reactive refresh,
+for an empty URI, or for a non-authorization error.
 
 ## Transport change interface: `bridge.CredentialAware`
 
@@ -323,7 +360,23 @@ msg="credential refresh: ApplyCredentials failed" uri=... error=...
 ```
 
 Metrics from the session itself (connect latency, reconnect counter)
-surface the rotation impact on operational dashboards.
+surface the rotation impact on operational dashboards. The credential
+subsystem emits its own counters so rotation is observable instead of
+log-only:
+
+| Metric | Dimensions | Emitted when |
+|--------|-----------|--------------|
+| `CredentialRotationApplied` | none | A target's `ApplyCredentials` returned without error (one per target per rotation). |
+| `CredentialRefreshFailures` | none | A poll resolve failed (initial seed or periodic tick). |
+| `CredentialResolveFailure` | `code` | A repository fetch failed on any resolve path, tagged with the error code. |
+| `CredentialStaleServed` | `code` | The resolver served an expired last-known-good credential after a retryable error. |
+
+`CredentialResolveFailure` and `CredentialStaleServed` come from the
+`CredentialResolver` (see
+[credentials-and-http-api.md](credentials-and-http-api.md#resolver-caching-and-failure-behavior)),
+`CredentialRotationApplied` from the refresher, and `CredentialRefreshFailures`
+from the poll wrapper. Dimensions, units, and alarm guidance:
+[AWS monitoring](aws-deployment/monitoring.md#key-metrics).
 
 ## Extension: adding a new rotatable capability
 

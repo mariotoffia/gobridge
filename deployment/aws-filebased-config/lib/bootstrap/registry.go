@@ -30,12 +30,22 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 		// store (synchronous initial resolve at session construction) and as
 		// the polled source of a runtime-owned PushCredentialStore, so
 		// credential rotation reaches long-lived transport sessions. The
-		// zero PollBasedWrapperConfig selects the default poll interval;
-		// the production store (runtime.CredentialResolver) exposes
-		// ResolveUncached, so every poll bypasses its TTL cache. This
-		// profile has no push-capable credential backend (SSM is pull-only),
-		// so no WithPushCredentialStore is registered.
-		opts = append(opts, bridge.WithPolledCredentialStore(a.credentialStore, ports.PollBasedWrapperConfig{}))
+		// production store (runtime.CredentialResolver) exposes
+		// ResolveUncached, so every poll bypasses its TTL cache.
+		//
+		// The poll config is now driven by BootstrapConfig (Finding 2) instead
+		// of a zero-value: EmitOnStart defaults true so a rotation that landed
+		// in the build->watch window is surfaced on the first tick rather than
+		// silently baselined (Finding 1); PollInterval is operator-tunable to
+		// shrink hard-rotation auth-failure downtime; Jitter defaults to ~10%
+		// of the interval so a fleet does not stampede the credential backend
+		// on the same tick (LOW-severity finding).
+		credPollCfg := ports.PollBasedWrapperConfig{
+			PollInterval: a.cfg.EffectiveCredentialPollInterval(),
+			Jitter:       a.cfg.EffectiveCredentialPollJitter(),
+			EmitOnStart:  a.cfg.EffectiveCredentialEmitOnStart(),
+		}
+		opts = append(opts, bridge.WithPolledCredentialStore(a.credentialStore, credPollCfg))
 	}
 	if a.metricsExporter != nil {
 		opts = append(opts, bridge.WithMetrics(a.metricsExporter))

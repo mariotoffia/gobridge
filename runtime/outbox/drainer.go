@@ -311,6 +311,13 @@ func New(cfg Config) *Drainer {
 		onBatchComplete:  cfg.OnBatchComplete,
 		onDrained:        cfg.OnDrained,
 		idleCh:           make(chan struct{}),
+		// Min1: seed idleSince at construction so a drainer that NEVER sees a
+		// pending record still reports idle after minQuiet. idleSince was
+		// previously set only on a pending->empty transition, so an always-empty
+		// drainer never satisfied WaitIdle. A later Claim that returns records
+		// clears this (drainBatch sets idleSince = zero) and the normal
+		// transition machinery takes over.
+		idleSince: clk.Now(),
 	}
 }
 

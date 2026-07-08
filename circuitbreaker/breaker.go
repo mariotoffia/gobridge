@@ -44,8 +44,30 @@ type Breaker struct {
 	key                  string
 	clk                  clock.Clock
 	// halfOpenInFlight is mutated only under mu; it stays atomic so the
-	// HalfOpenInFlight observability accessor can read it lock-free.
+	// HalfOpenInFlight observability accessor can read it lock-free. It is
+	// kept equal to len(halfOpenProbes) after every mutation.
 	halfOpenInFlight atomic.Int32
+	// halfOpenProbes tracks one entry per outstanding half-open probe slot,
+	// each stamped with an admission deadline, so an abandoned probe (a
+	// caller that took a slot via BeforeRequest[Token] but never reported an
+	// outcome) cannot wedge the breaker half-open forever. Expired slots are
+	// reclaimed on the next admission attempt (reclaimExpiredProbesLocked).
+	// Ordered by admission, hence by deadline (the clock is monotonic), so
+	// the expired entries form a prefix. Guarded by mu.
+	halfOpenProbes []probeSlot
+	// probeTimeout is how long a half-open probe slot may stay outstanding
+	// before it is reclaimed. Defaults to 2×ResetTimeout (see NewBreaker) and
+	// is overridable via WithHalfOpenProbeTimeout.
+	probeTimeout time.Duration
+}
+
+// probeSlot records one outstanding half-open probe admission: the
+// deadline after which the slot is reclaimed, and whether it was taken
+// through the token-less legacy surface (so reclaim keeps legacyOutstanding
+// consistent).
+type probeSlot struct {
+	deadline time.Time
+	legacy   bool
 }
 
 // Token is the request handle returned by BeforeRequestToken. It pins
@@ -70,6 +92,28 @@ func WithBreakerClock(c clock.Clock) BreakerOption {
 	return func(b *Breaker) {
 		if c != nil {
 			b.clk = c
+		}
+	}
+}
+
+// WithHalfOpenProbeTimeout sets how long a half-open probe slot may stay
+// outstanding before it is reclaimed (so an abandoned probe cannot wedge
+// the breaker half-open forever). A non-positive value is ignored, leaving
+// the default of 2×ResetTimeout.
+//
+// PRECONDITION: callers MUST bound their own request timeout below this
+// value. Reclaim treats a slot past its deadline as an abandoned caller and
+// frees it; if a probe is genuinely still in flight when that happens (a
+// downstream slower than probeTimeout and a caller with no shorter timeout),
+// the freed slot admits another probe and HalfOpenMaxProbes stops capping
+// concurrency — the breaker can then pile probes onto a slow-but-alive
+// dependency, the exact thundering herd it exists to prevent. Keep
+// probeTimeout larger than the worst-case admitted call so a live probe
+// always reports before its deadline.
+func WithHalfOpenProbeTimeout(d time.Duration) BreakerOption {
+	return func(b *Breaker) {
+		if d > 0 {
+			b.probeTimeout = d
 		}
 	}
 }
@@ -107,6 +151,13 @@ func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)
 	for _, opt := range opts {
 		opt(b)
 	}
+	// Default the probe-slot reclaim deadline to 2×ResetTimeout: long enough
+	// that a legitimately slow probe is not reclaimed out from under a
+	// recovering dependency, short enough that an abandoned probe (a missing
+	// AfterRequest[Token]) cannot wedge the breaker half-open indefinitely.
+	if b.probeTimeout <= 0 {
+		b.probeTimeout = 2 * b.config.ResetTimeout
+	}
 	return b
 }
 
@@ -119,6 +170,10 @@ func NewBreaker(key string, cfg Config, onStateChange func(string, State, State)
 // Token, AfterRequest cannot detect that the circuit changed state
 // while the request was in flight, so a stale outcome is applied to the
 // current generation.
+//
+// Every admitted request MUST be paired with exactly one AfterRequest
+// (ideally via defer): an admitted half-open probe that never reports an
+// outcome holds its slot until the probe timeout elapses.
 func (b *Breaker) BeforeRequest() error {
 	_, err := b.beforeRequest(true)
 	return err
@@ -131,6 +186,11 @@ func (b *Breaker) BeforeRequest() error {
 // against a generation it never observed. Returns ErrUnavailable with a
 // RetryAfter hint when the circuit is open or the half-open probe quota
 // is exhausted.
+//
+// Every admitted request MUST be paired with exactly one AfterRequestToken
+// (ideally via defer): an admitted half-open probe that never reports an
+// outcome holds its slot until the probe timeout elapses (see
+// WithHalfOpenProbeTimeout).
 func (b *Breaker) BeforeRequestToken() (Token, error) {
 	return b.beforeRequest(false)
 }
@@ -173,15 +233,73 @@ func (b *Breaker) beforeRequest(legacy bool) (Token, error) {
 // Must be called with b.mu held so the slot accounting and the returned
 // generation are consistent with the admission decision. legacy probes
 // are additionally counted in legacyOutstanding (see beforeRequest).
+//
+// It first reclaims any probe slots whose admission deadline has elapsed
+// so an abandoned probe (a caller that never reported an outcome) cannot
+// hold a slot — and thus wedge the breaker half-open — forever.
 func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
-	if b.halfOpenInFlight.Load() >= int32(b.config.HalfOpenMaxProbes) {
+	b.reclaimExpiredProbesLocked()
+	if len(b.halfOpenProbes) >= b.config.HalfOpenMaxProbes {
 		return Token{}, shared.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
 	}
-	b.halfOpenInFlight.Add(1)
+	b.halfOpenProbes = append(b.halfOpenProbes, probeSlot{
+		deadline: b.clk.Now().Add(b.probeTimeout),
+		legacy:   legacy,
+	})
+	b.halfOpenInFlight.Store(int32(len(b.halfOpenProbes)))
 	if legacy {
 		b.legacyOutstanding++
 	}
 	return Token{generation: b.generation, probe: true}, nil
+}
+
+// reclaimExpiredProbesLocked drops probe slots whose admission deadline
+// has elapsed. A caller that takes a half-open probe but never reports an
+// outcome (a missing AfterRequestToken/AfterRequest — see their godoc)
+// would otherwise hold its slot forever and wedge the breaker half-open,
+// rejecting every request. Slots are admission-ordered, hence
+// deadline-ordered (the clock is monotonic), so the expired ones form a
+// prefix. Reclaiming does NOT advance the generation: a healthy concurrent
+// probe (with HalfOpenMaxProbes>1) keeps its slot and its outcome still
+// counts. By the same token, an outcome that arrives AFTER its slot was
+// reclaimed still matches the generation and is counted — a belated success
+// is still a success, a belated failure still real evidence; reclaim frees
+// the slot for concurrency, it does not disqualify the vote. Must be called
+// with b.mu held.
+func (b *Breaker) reclaimExpiredProbesLocked() {
+	if len(b.halfOpenProbes) == 0 {
+		return
+	}
+	now := b.clk.Now()
+	n := 0
+	for n < len(b.halfOpenProbes) && !b.halfOpenProbes[n].deadline.After(now) {
+		if b.halfOpenProbes[n].legacy && b.legacyOutstanding > 0 {
+			b.legacyOutstanding--
+		}
+		n++
+	}
+	if n == 0 {
+		return
+	}
+	b.halfOpenProbes = b.halfOpenProbes[n:]
+	b.halfOpenInFlight.Store(int32(len(b.halfOpenProbes)))
+}
+
+// releaseProbeLocked releases the oldest outstanding half-open probe slot,
+// if any. It is a no-op when no slots remain — e.g. the slot was already
+// reclaimed by reclaimExpiredProbesLocked after an abandoned probe's
+// deadline elapsed — so a late outcome can never underflow the probe
+// accounting. Must be called with b.mu held.
+func (b *Breaker) releaseProbeLocked() {
+	if len(b.halfOpenProbes) == 0 {
+		return
+	}
+	slot := b.halfOpenProbes[0]
+	b.halfOpenProbes = b.halfOpenProbes[1:]
+	if slot.legacy && b.legacyOutstanding > 0 {
+		b.legacyOutstanding--
+	}
+	b.halfOpenInFlight.Store(int32(len(b.halfOpenProbes)))
 }
 
 // AfterRequest records the outcome of a request and transitions state.
@@ -193,12 +311,23 @@ func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 // a token-less outcome can never underflow the probe accounting and
 // admit extra concurrent probes. Concurrent callers should use
 // BeforeRequestToken / AfterRequestToken.
+//
+// Callers MUST invoke AfterRequest exactly once for every admitted
+// BeforeRequest (ideally via defer). A missing call leaves a half-open
+// probe slot outstanding; it is only reclaimed after the probe timeout
+// elapses (see WithHalfOpenProbeTimeout), during which the breaker admits
+// no further probes.
 func (b *Breaker) AfterRequest(err error) {
 	b.mu.Lock()
 	tok := Token{generation: b.generation}
-	if b.state == StateHalfOpen && b.legacyOutstanding > 0 {
-		b.legacyOutstanding--
-		tok.probe = true
+	if b.state == StateHalfOpen {
+		// Reclaim first so a stale slot does not make this outcome look
+		// like it holds a probe, then release only if the legacy surface
+		// actually has one outstanding.
+		b.reclaimExpiredProbesLocked()
+		if b.legacyOutstanding > 0 {
+			tok.probe = true
+		}
 	}
 	b.mu.Unlock()
 	b.AfterRequestToken(tok, err)
@@ -210,6 +339,12 @@ func (b *Breaker) AfterRequest(err error) {
 // counted in BreakerMetrics.StaleOutcomes and otherwise discarded, so
 // it can neither steal a half-open probe slot, nor close the circuit on
 // pre-outage successes, nor re-open it on pre-probe failures.
+//
+// Callers MUST invoke AfterRequestToken exactly once for every Token
+// returned by BeforeRequestToken (ideally via defer). A missing call
+// leaves a half-open probe slot outstanding; it is only reclaimed after
+// the probe timeout elapses (see WithHalfOpenProbeTimeout), during which
+// the breaker admits no further probes.
 func (b *Breaker) AfterRequestToken(tok Token, err error) {
 	countable := err != nil && b.config.CountError(err)
 
@@ -225,10 +360,11 @@ func (b *Breaker) AfterRequestToken(tok Token, err error) {
 		// The generation matched, so no transition has happened since
 		// the admission: the breaker is still half-open and this token
 		// holds one of its probe slots. Only probe tokens release a
-		// slot, so an outcome that never took one (a closed-era
-		// admission or a token-less legacy call) cannot underflow the
-		// accounting and admit extra concurrent probes.
-		b.halfOpenInFlight.Add(-1)
+		// slot, and releaseProbeLocked no-ops when the slot was already
+		// reclaimed, so an outcome that never took one (a closed-era
+		// admission or a token-less legacy call) — or a late outcome for
+		// an already-reclaimed probe — cannot underflow the accounting.
+		b.releaseProbeLocked()
 	}
 	b.totalRequests++
 
@@ -281,6 +417,7 @@ func (b *Breaker) transitionTo(newState State) func() {
 	if old == StateHalfOpen {
 		b.halfOpenInFlight.Store(0)
 		b.legacyOutstanding = 0
+		b.halfOpenProbes = nil
 	}
 
 	switch newState {
@@ -332,6 +469,7 @@ func (b *Breaker) ForceStateForTest(state State, openedAt time.Time) {
 		if b.state == StateHalfOpen {
 			b.halfOpenInFlight.Store(0)
 			b.legacyOutstanding = 0
+			b.halfOpenProbes = nil
 		}
 	}
 	b.state = state

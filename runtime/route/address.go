@@ -8,7 +8,8 @@ import (
 )
 
 // RenderAddress replaces {key} placeholders in template with values from vars.
-// Returns an error if a placeholder references a missing key or if the rendered
+// Returns an error if a placeholder references a missing key, if a placeholder
+// is left unterminated (an opening '{' with no closing '}'), or if the rendered
 // result is empty. Substituted values are never re-expanded, preventing
 // infinite loops and header-value injection.
 func RenderAddress(template string, vars map[string]any) (string, error) {
@@ -26,8 +27,11 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 		}
 		end := strings.Index(remaining[start:], "}")
 		if end < 0 {
-			b.WriteString(remaining)
-			break
+			// An unterminated placeholder ('{' with no matching '}') is a
+			// malformed template, symmetric with the missing-key case below: fail
+			// loudly rather than silently appending the raw '{...' remainder and
+			// returning a partially-rendered address (F6).
+			return "", fmt.Errorf("unterminated placeholder in address template %q (missing '}')", template)
 		}
 		end += start
 

@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,6 +60,13 @@ type ForwarderConfig struct {
 	// MetricHTTPForwardBreakerOpen). Nil falls back to the no-op
 	// exporter.
 	Metrics ports.MetricsExporter
+	// TLSClientConfig, when non-nil, is applied to the forwarder's
+	// http.Transport so a peer reachable only over HTTPS with a private
+	// CA — or one requiring mTLS — can be forwarded to. Nil keeps Go's
+	// default TLS behaviour (system roots, no client certificate), which
+	// is correct for plain-HTTP or public-CA peers. The composition root
+	// supplies it; this adapter only wires it through.
+	TLSClientConfig *tls.Config
 }
 
 // DefaultForwarderConfig returns production-safe defaults.
@@ -135,6 +143,16 @@ func NewHTTPForwarderWithConfig(pathPrefix string, cfg ForwarderConfig, clusterK
 				MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
 				MaxConnsPerHost:     cfg.MaxConnsPerHost,
 				IdleConnTimeout:     cfg.IdleConnTimeout,
+				TLSClientConfig:     cfg.TLSClientConfig,
+			},
+			// A forward is a POST with a body. Following a 3xx would drop
+			// that body (301/302/303 become a bodyless GET), so the peer
+			// sees an empty body → 400 → permanent → DLQ. Refuse to follow:
+			// http.ErrUseLastResponse surfaces the 3xx as its own response
+			// to forward(), which classifies it explicitly instead of
+			// silently mangling the request.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
 			},
 		},
 		pathPrefix:   pathPrefix,
@@ -331,7 +349,12 @@ func (f *HTTPForwarder) forward(
 			continue
 		}
 
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		// Drain the response body FULLY before Close so the keep-alive
+		// connection can be reused: a LimitReader that stops short (the
+		// former 4096-byte cap) leaves unread bytes that force the pool
+		// to discard the connection. Bodies here are small status
+		// envelopes, so the full read is cheap.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
 		if transientStatus(resp.StatusCode) {
@@ -360,6 +383,27 @@ func (f *HTTPForwarder) forward(
 			return shared.NewBridgeError(
 				shared.ErrCodeForwardFailed, shared.ErrorPermanent,
 				fmt.Sprintf("remote returned %d", resp.StatusCode),
+			)
+		}
+		if resp.StatusCode >= 300 {
+			// Only reachable because CheckRedirect returns
+			// ErrUseLastResponse — the client did NOT follow the redirect,
+			// so the POST body was never silently replayed as a bodyless
+			// GET. A forward target that redirects is misconfigured (the
+			// same URL will redirect again), so classify it PERMANENT and
+			// dead-letter rather than the false success a sub-400 status
+			// would otherwise imply.
+			if logging.DebugEnabled(f.logger) {
+				f.logger.Log(ctx, logging.LevelDebug, "http: forward returned redirect (not followed)",
+					"target_instance", target.InstanceID,
+					"receiver_id", receiverID,
+					"status_code", resp.StatusCode,
+					"location", resp.Header.Get("Location"),
+				)
+			}
+			return shared.NewBridgeError(
+				shared.ErrCodeForwardFailed, shared.ErrorPermanent,
+				fmt.Sprintf("remote returned redirect %d (not followed)", resp.StatusCode),
 			)
 		}
 		return nil

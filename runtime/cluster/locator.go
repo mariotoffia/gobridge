@@ -125,7 +125,14 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 	cached, hasCached := rl.cache[sessionID]
 	rl.mu.RUnlock()
 
-	if hasCached && now.Sub(cached.fetchedAt) < rl.cacheTTL {
+	// Serve the cached owner only while the entry is BOTH fresh (within CacheTTL)
+	// AND still unexpired. The ExpiresAt bound mirrors the fresh-read and
+	// stale-fallback paths below: a lease can expire inside its CacheTTL window
+	// (nothing pins CacheTTL below lease_ttl), and serving an expired cached owner
+	// would forward exclusive traffic to a corpse for the rest of the CacheTTL —
+	// the same hazard the fresh-read bound closes (finding C3-M). Past expiry we
+	// fall through to a fresh read.
+	if hasCached && now.Sub(cached.fetchedAt) < rl.cacheTTL && now.Before(cached.info.ExpiresAt) {
 		if cached.info.Owner == rl.instanceID {
 			return nil, true, nil
 		}
@@ -180,6 +187,21 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 	}
 
 	rl.recordSuccess()
+
+	if !now.Before(info.ExpiresAt) {
+		// The freshly-read lease row has already passed its own expiry but has
+		// not yet been seized by a standby: the named owner is a corpse. Serving
+		// it as authoritative forwards exclusive traffic to a dead owner for up
+		// to TTL+observation. Apply the same ExpiresAt bound the cached
+		// stale-fallback path enforces above and fall back to the
+		// ownership-unknown posture (503 + Retry-After) instead (finding C3-M).
+		//
+		// The corpse is intentionally NOT cached: caching an already-expired row
+		// is pointless — the cache-hit path above now re-checks ExpiresAt and
+		// would skip it anyway — and leaving the cache untouched forces the next
+		// call to re-read until a live owner (or none) is observed.
+		return rl.onOwnershipUnknown(shared.ErrNoRouteOwner)
+	}
 
 	rl.mu.Lock()
 	rl.cache[sessionID] = cachedLease{info: info, fetchedAt: now}

@@ -345,6 +345,69 @@ func isExpectedAcquireContention(err error) bool {
 	return errors.Is(err, shared.ErrAlreadyExists)
 }
 
+// eventReconcileTimeout bounds a reconnect-driven Reconcile invoked from the
+// renew loop. A single-owner MQTT session re-runs Reconcile (re-Subscribe) on
+// the caller's context after every reconnect; a broker that answers keepalive
+// but stalls SUBACK would otherwise block the renew select loop indefinitely,
+// so the renew timer.C() case is never selected and the lease silently expires
+// while the broker-resumed subscription keeps delivering to this now-non-owner
+// alongside the new owner — two live consumers for unbounded time (finding F1).
+//
+// Bounding the call at min(RenewCallTimeout, LeaseTTL/4) caps how long the loop
+// can be blocked so the renew timer still fires before expiry; a hung Reconcile
+// times out and its error is surfaced on the existing session-failure path
+// (afterRenewLoopExit releases the lease and the session restarts) rather than
+// continuing blind. LeaseTTL/4 is only the CEILING — in practice RenewCallTimeout
+// (default min(RenewInterval/2, 5s)) is the smaller term and thus the effective
+// bound. That is deliberate: keeping the reconcile bound well under LeaseTTL/4
+// preserves the renew-expiry margin even for a large-RenewInterval,
+// MaxRenewFails=1 config, where a full LeaseTTL/4 stall could push the next
+// renewal past expiry. The cost is that a legitimately slow re-Subscribe (many
+// filters / laggy broker) exceeding RenewCallTimeout is cut off and the session
+// restarts rather than eventually succeeding — a bounded, observable degradation
+// chosen over the silent lease-expiry + dual-consumer hazard this bound prevents.
+// Operators raising RenewCallTimeout should note it also relaxes this bound. The
+// bound relies on the transport honoring context cancellation (paho's
+// ConnectionManager Subscribe/Unsubscribe do); a transport that ignores ctx
+// cannot be unblocked this way.
+func (m *Manager) eventReconcileTimeout() time.Duration {
+	d := m.leaseTTL / 4
+	if m.renewCallTimeout > 0 && m.renewCallTimeout < d {
+		d = m.renewCallTimeout
+	}
+	return d
+}
+
+// eventReconcileContext derives the per-event context that bounds a
+// reconnect-driven Reconcile (see eventReconcileTimeout). It mirrors
+// withCallTimeout: a non-positive bound yields a plain cancellable child so the
+// caller can always cancel() unconditionally.
+func (m *Manager) eventReconcileContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d := m.eventReconcileTimeout(); d > 0 {
+		return context.WithTimeout(ctx, d)
+	}
+	return context.WithCancel(ctx)
+}
+
+// leaseStillHeld does one authoritative Current read to decide whether a run of
+// TRANSIENT renew failures actually cost us the lease (finding F7). It returns
+// true ONLY when the store is reachable AND still names us as the unexpired
+// owner. A Current error (store unreachable) or an other-owner / expired /
+// absent row returns false: ownership is then lost or unverifiable, and the
+// exclusive-safety posture is to step down (fail-closed), consistent with the
+// locator's ownership-unknown default. The read reuses the per-call timeout so
+// a hung store cannot stretch step-down. m.ownerID is immutable after
+// construction, so this is safe to call from the renew loop without locking.
+func (m *Manager) leaseStillHeld(ctx context.Context) bool {
+	callCtx, cancel := m.withCallTimeout(ctx)
+	info, err := m.leaseStore.Current(callCtx, m.sessionID)
+	cancel()
+	if err != nil {
+		return false
+	}
+	return info.Owner == m.ownerID && m.clk.Now().Before(info.ExpiresAt)
+}
+
 func (m *Manager) renewLoop(ctx context.Context) error {
 	consecutiveFailures := 0
 	events := m.session.Events()
@@ -365,7 +428,15 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 				// (finding L14).
 				return fmt.Errorf("runtime: session-manager: %w", errSessionEventsClosed)
 			}
-			if err := m.handleSessionEvent(ctx, ev); err != nil {
+			// F1: bound the reconnect-driven Reconcile so a stalled SUBACK
+			// cannot block this select and starve lease renewal. On timeout the
+			// wrapped ctx error propagates and the session is cleanly restarted.
+			// cancel() is called explicitly (not deferred) so the per-event
+			// contexts do not accumulate across a long-lived renew loop.
+			evCtx, cancel := m.eventReconcileContext(ctx)
+			err := m.handleSessionEvent(evCtx, ev)
+			cancel()
+			if err != nil {
 				return fmt.Errorf("runtime: session-manager: handle session event: %w", err)
 			}
 
@@ -411,8 +482,36 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 				m.log(ctx, slog.LevelWarn, "lease renewal failed (transient)",
 					"failures", consecutiveFailures, "error", err)
 				if consecutiveFailures >= m.maxRenewFails {
-					m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
-					return m.stepDown(ctx)
+					// F7: before surrendering the lease on a run of TRANSIENT
+					// failures, do ONE authoritative Current read. A transient
+					// store blip that never actually cost us the lease would
+					// otherwise force a step-down — and for a single-use MQTT
+					// owner that means a process restart, turning a brief store
+					// wobble (e.g. a DynamoDB throttle) into a fleet-wide
+					// reconnect herd. If the read still shows us as the live
+					// owner, treat the streak as a no-op and keep renewing; a
+					// Current error or any other-owner/expired row is treated as
+					// loss (fail-closed, per the exclusive-safety posture).
+					if m.leaseStillHeld(ctx) {
+						m.log(ctx, slog.LevelWarn,
+							"lease renewal failing but authoritative read still shows us as owner; not stepping down",
+							"failures", consecutiveFailures)
+						// Re-arm to one BELOW the threshold, not zero, so the next
+						// failed renew re-runs the authoritative Current check
+						// instead of granting a fresh full MaxRenewFails budget.
+						// During a sustained write-failing / read-succeeding
+						// partition this bounds the past-expiry dual-owner window to
+						// ~one renew interval (a polling standby seizes at ~TTL); a
+						// zero reset would let a stale owner keep consuming for up to
+						// MaxRenewFails×renewInterval past its own expiry. The window
+						// stays fenced on the data path (no loss / no double-commit);
+						// this only tightens it. maxRenewFails is floored to 1 at
+						// construction, so this is >= 0.
+						consecutiveFailures = m.maxRenewFails - 1
+					} else {
+						m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
+						return m.stepDown(ctx)
+					}
 				}
 			}
 
@@ -489,9 +588,22 @@ func (m *Manager) stepDown(ctx context.Context) error {
 	// it out unconditionally — reaching stepDown already means the lease is lost,
 	// not that the caller is shutting down (a shutdown cancels renewLoop via its
 	// ctx.Done() case before any renewal-failure step-down) (finding M13).
-	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), m.stepDownGrace)
-	defer graceCancel()
-	<-graceCtx.Done()
+	//
+	// F9: skip the wait entirely when the destination drainer reports idle — no
+	// claimable pending outbox work remains to settle, so the grace would add
+	// only takeover latency. "Idle" means no CLAIMABLE pending records, not
+	// "nothing in flight at the store": a record already claimed whose Send
+	// succeeded but Complete failed is momentarily invisible to the idle check
+	// and is re-sent (fenced) by the new owner after its claim lapses. That, and
+	// a source message ACKed just after this check landing in the outbox (stale
+	// idle), both settle via the new owner's fenced retry — within the documented
+	// at-least-once window (Config.StepDownGrace / AckBoundary): no loss, no
+	// double-commit.
+	if m.drainIdle == nil || !m.drainIdle() {
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), m.stepDownGrace)
+		defer graceCancel()
+		<-graceCtx.Done()
+	}
 
 	m.releaseOwnedLeaseBestEffort(ctx, token, "step-down")
 

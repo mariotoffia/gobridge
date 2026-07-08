@@ -55,6 +55,16 @@ type Config struct {
 	MessageGroupID string        `mapstructure:"message_group_id" yaml:"message_group_id" json:"message_group_id"`
 	FIFO           bool          `mapstructure:"fifo" yaml:"fifo" json:"fifo"`
 
+	// MaxMessageBytes surfaces the sender's message-size ceiling (body +
+	// attributes) to config-driven (YAML) deployments — mirroring the
+	// PollBackoff* knobs that likewise had no plugin surface. 0/omitted keeps
+	// the 262144 (256 KiB) default; raise it only to match a queue whose
+	// MaximumMessageSize has been provisioned above 256 KiB. Without this an
+	// operator who raises a queue's limit via YAML cannot lift the ceiling, so
+	// a body over 256 KiB silently drops ALL egress attributes — including the
+	// rank-0 x-bridge.idempotency-key / traceparent headers (Finding 4).
+	MaxMessageBytes int `mapstructure:"max_message_bytes" yaml:"max_message_bytes,omitempty" json:"max_message_bytes,omitempty"`
+
 	// resolvedCreds holds the static credential material resolved from
 	// CredentialsURIRef at build time (ApplyCredentials). It is projected
 	// into ReceiverConfig/SenderConfig.InitialCredentials so the INITIAL
@@ -237,6 +247,7 @@ func (c Config) toSenderConfig() SenderConfig {
 		Timeout:            c.Timeout,
 		MessageGroupID:     c.MessageGroupID,
 		FIFO:               c.FIFO,
+		MaxMessageBytes:    c.MaxMessageBytes,
 		InitialCredentials: c.resolvedCreds,
 	}
 }

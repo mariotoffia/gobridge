@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -54,11 +55,16 @@ type SessionOptions struct {
 	LinkCloseTimeout time.Duration `mapstructure:"link_close_timeout" yaml:"link_close_timeout" json:"link_close_timeout"`
 
 	// ConnectionMonitorFallback is the cadence at which the session
-	// monitor loop re-checks connection liveness as a sanity fallback
-	// when the underlying Conn.Done() signal is missed. Real disconnects
-	// are detected immediately via Conn.Done(); this ticker only guards
-	// against a broker that silently drops without closing. Defaults to
-	// 30s if zero.
+	// monitor loop wakes to RETRY a reconnect while the connection is
+	// already known to be down (Conn.Done() has fired but a prior
+	// reconnect attempt has not yet succeeded). Real disconnects are
+	// detected immediately via Conn.Done(). This ticker is only a
+	// reconnect backstop: it does NOT probe a live connection, so it
+	// cannot by itself detect a broker that silently half-drops the TCP
+	// connection without closing it — tryReconnect no-ops whenever
+	// s.conn is still non-nil. Silent half-open drops are surfaced by the
+	// AMQP idle_timeout (see IdleTimeout), not by this ticker. Defaults
+	// to 30s if zero.
 	ConnectionMonitorFallback time.Duration `mapstructure:"connection_monitor_fallback" yaml:"connection_monitor_fallback" json:"connection_monitor_fallback"`
 
 	// Clock drives the reconnect backoff wait. When nil defaults to
@@ -226,17 +232,87 @@ func DefaultSenderOptions() SenderConfig {
 	}
 }
 
-func (o *SessionOptions) validate() error {
+// validate checks the session options. When credentialsPending is true
+// the caller has an unresolved credentials_uri whose resolved set may
+// still supply the SASL EXTERNAL client certificate, so the EXTERNAL
+// cert-material check is deferred to Config.ApplyCredentials (F10 deferred
+// path). Every other check still runs at parse time.
+func (o *SessionOptions) validate(credentialsPending bool) error {
 	if o.Address == "" {
 		return shared.ErrInvalidPayload.WithMessage("amqp10: Address is required")
 	}
-	switch strings.ToLower(o.SASLMechanism) {
+	mechanism := strings.ToLower(o.SASLMechanism)
+	switch mechanism {
 	case "", saslMechanismPlain, saslMechanismExternal, saslMechanismAnonymous:
 	default:
 		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
 			"amqp10: invalid sasl_mechanism %q (want plain, external, or anonymous)", o.SASLMechanism))
 	}
+
+	// F1: tls.enable is a silent no-op unless the address scheme selects
+	// TLS. go-amqp applies ConnOptions.TLSConfig only for the "amqps" and
+	// "amqp+ssl" schemes; on a plaintext "amqp" (or schemeless) address
+	// the dial — and any SASL PLAIN credentials — travel in CLEARTEXT
+	// while Health still reports Full. Reject the downgrade trap at config
+	// time rather than connect insecurely.
+	if o.TLS != nil && o.TLS.Enable && !schemeUsesTLS(o.Address) {
+		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"amqp10: tls.enable is set but address %q is not a TLS scheme; "+
+				"use amqps:// or amqp+ssl:// (refusing to connect in cleartext)", o.Address))
+	}
+
+	// F10: SASL EXTERNAL authenticates via the mTLS client certificate.
+	// Without enabled TLS and client key-pair material it surfaces only as
+	// an opaque broker SASL failure at dial; reject it up front. When
+	// credentialsPending, the certificate may still arrive via the
+	// resolved credentials_uri set, so defer this check to
+	// Config.ApplyCredentials, which re-runs it post-resolution.
+	if !credentialsPending && mechanism == saslMechanismExternal && !hasClientCertMaterial(o.TLS) {
+		return shared.ErrInvalidPayload.WithMessage(
+			"amqp10: sasl_mechanism=external requires TLS client certificate material " +
+				"(tls.enable with cert_file/key_file or cert_pem/key_pem)")
+	}
+
+	// F11: the AMQP 1.0 spec fixes the smallest permissible max-frame-size
+	// at 512 octets (MIN-MAX-FRAME-SIZE). A smaller positive value is
+	// rejected by the peer at open; catch it here. Zero means "unset" so
+	// applyDefaults can supply the default.
+	if o.MaxFrameSize != 0 && o.MaxFrameSize < amqpMinFrameSize {
+		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"amqp10: max_frame_size %d is below the AMQP 1.0 minimum of %d octets",
+			o.MaxFrameSize, amqpMinFrameSize))
+	}
 	return nil
+}
+
+// amqpMinFrameSize is the smallest max-frame-size permitted by the AMQP
+// 1.0 spec (§2.7.1 open.max-frame-size, MIN-MAX-FRAME-SIZE).
+const amqpMinFrameSize = 512
+
+// schemeUsesTLS reports whether address carries a scheme for which
+// go-amqp negotiates TLS ("amqps" or "amqp+ssl"). It mirrors the SDK's
+// own dialConn scheme test exactly: url.Parse lower-cases the scheme, so
+// a case-variant such as "AMQPS://" is handled identically to go-amqp. A
+// missing or unparyable scheme is treated as plaintext.
+func schemeUsesTLS(address string) bool {
+	u, err := url.Parse(address)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "amqps" || u.Scheme == "amqp+ssl"
+}
+
+// hasClientCertMaterial reports whether cfg carries a usable client
+// key-pair (file paths or in-memory PEM) over an enabled TLS layer — the
+// material SASL EXTERNAL needs to present a client certificate.
+func hasClientCertMaterial(cfg *TLSConfig) bool {
+	if cfg == nil || !cfg.Enable {
+		return false
+	}
+	if cfg.CertFile != "" && cfg.KeyFile != "" {
+		return true
+	}
+	return !cfg.CertPEM.IsZero() && !cfg.KeyPEM.IsZero()
 }
 
 // Recognized sasl_mechanism values (lowercase canonical form).
@@ -467,7 +543,10 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		opts.TLS = tc
 	}
 
-	if err := opts.validate(); err != nil {
+	// No deferred-credentials path here: SessionOptionsFromMap has no
+	// production callers and no credentials_uri resolution, so validate
+	// strictly (credentialsPending=false).
+	if err := opts.validate(false); err != nil {
 		return opts, err
 	}
 

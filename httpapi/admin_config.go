@@ -100,19 +100,18 @@ func (s *Server) handleConfigTxnCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfigTxnGet(w http.ResponseWriter, r *http.Request) {
 	txnID := r.PathValue("txnID")
 
-	preview, err := s.configTxn.Preview(r.Context(), txnID)
+	preview, meta, err := s.configTxn.Preview(r.Context(), txnID)
 	if err != nil {
 		s.writeConfigTxnError(w, r, "config.txn.read", txnID, err)
 		return
 	}
 
-	txn := s.configTxn.Active()
 	s.emitAudit(r, "config.txn.read", "config", txnID, "success", nil)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"txn_id":      txn.ID,
-		"created_at":  txn.CreatedAt.Format(time.RFC3339),
-		"expires_at":  txn.ExpiresAt.Format(time.RFC3339),
-		"patch_count": txn.PatchCount,
+		"txn_id":      meta.ID,
+		"created_at":  meta.CreatedAt.Format(time.RFC3339),
+		"expires_at":  meta.ExpiresAt.Format(time.RFC3339),
+		"patch_count": meta.PatchCount,
 		"preview":     sanitizeConfig(preview),
 	})
 }
@@ -151,9 +150,25 @@ func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
 
 	newVersion, err := s.configTxn.Commit(r.Context(), txnID)
 	if err != nil {
-		// The durable write succeeded but the in-band apply failed: report the
-		// committed version explicitly so the operator knows disk and runtime
-		// diverged (must reconcile) rather than seeing a generic 500.
+		// Apply failed but the previous on-disk config was restored: a restart
+		// recovers the last good config (no crash-loop). Report rolled_back with
+		// the restored version so the operator knows disk is safe.
+		if errors.Is(err, errConfigRolledBack) {
+			s.emitAudit(r, "config.txn.commit", "config", txnID, "rolled_back", map[string]any{
+				"error":   err.Error(),
+				"version": newVersion,
+			})
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "rolled_back",
+				"version": newVersion,
+				"error":   "config apply failed; on-disk config restored to the previous version (safe to restart)",
+			})
+			return
+		}
+		// The durable write succeeded but the in-band apply failed and the
+		// previous config could NOT be restored: report the committed version
+		// explicitly so the operator knows disk and runtime diverged (must
+		// reconcile) rather than seeing a generic 500.
 		if errors.Is(err, errConfigApplyFailed) {
 			s.emitAudit(r, "config.txn.commit", "config", txnID, "partial_failure", map[string]any{
 				"error":   err.Error(),

@@ -26,7 +26,7 @@ func partitionKey(r *persistence.OutboxRecord) string {
 	return persistence.OutboxPartitionKey(r.SessionID(), r.BindingID())
 }
 
-func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time.Duration) (map[string]ddbtypes.AttributeValue, error) {
+func marshalRecord(r *persistence.OutboxRecord, now time.Time) (map[string]ddbtypes.AttributeValue, error) {
 	createdAt := r.CreatedAt()
 	if createdAt.IsZero() {
 		createdAt = now
@@ -82,11 +82,15 @@ func marshalRecord(r *persistence.OutboxRecord, now time.Time, compactGrace time
 		item["headers_json"] = &ddbtypes.AttributeValueMemberS{Value: string(hdrJSON)}
 	}
 
-	if !expiresAt.IsZero() {
-		item["ttl"] = &ddbtypes.AttributeValueMemberN{
-			Value: i64(expiresAt.Add(compactGrace).Unix()),
-		}
-	}
+	// Pending (and claimed) records carry NO ttl. DynamoDB item-TTL is a
+	// physical-compaction convenience for TERMINAL records only: Complete and
+	// Expire each stamp a fresh #ttl (now + compactGrace) at the terminal
+	// transition. A ttl on a still-undelivered record would let DynamoDB reap
+	// live work — e.g. an on_expired=dlq record that expired during an egress
+	// outage, which the drainer defers to the claim path instead of sweeping
+	// (runtime/outbox/loop.go maybeExpire). memory and sqlite never evict pending
+	// rows either; omitting the pending ttl keeps the three outbox stores
+	// consistent and loss-free.
 
 	return item, nil
 }

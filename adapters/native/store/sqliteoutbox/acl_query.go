@@ -12,9 +12,19 @@ import (
 // lives in acl_row.go and lifecycle/exec wiring lives in
 // acl_session.go.
 
-// schemaSQL is the DDL run on every NewStore. Idempotent.
-const schemaSQL = `
-CREATE TABLE IF NOT EXISTS outbox (
+// outboxColumnDefs is the column-definition block shared by the fresh-DB
+// CREATE TABLE (schemaSQL) and the identity-migration table rebuild
+// (createOutboxRebuildTableSQL) so the two can never drift.
+//
+// It carries NO inline UNIQUE(envelope_id, binding_id): that pre-fix GLOBAL
+// constraint diverged from the ports.OutboxStore Persist identity — which is
+// (partition key, EnvelopeID, BindingID) — and silently swallowed a
+// re-persist of the same envelope+binding under a NEW partition key as a
+// duplicate (a silent-loss edge on a session-identity change; the DynamoDB
+// backend delivers it). Duplicate detection is now the partition-scoped
+// UNIQUE INDEX idx_outbox_identity (see outboxIndexSQL), matching the
+// DynamoDB backend and the contract.
+const outboxColumnDefs = `
     id             TEXT PRIMARY KEY,
     partition_key  TEXT NOT NULL,
     route_id       TEXT NOT NULL,
@@ -33,16 +43,67 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL DEFAULT 0,
     completed_at   INTEGER NOT NULL DEFAULT 0,
-    seq            INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(envelope_id, binding_id)
+    seq            INTEGER NOT NULL DEFAULT 0`
+
+// schemaSQL is the DDL run on every NewStore. Idempotent. It creates the
+// base tables ONLY; indexes (including the partition-scoped identity index)
+// are (re)created by outboxIndexSQL after the identity migration, so a table
+// rebuild cannot leave a stale or missing index behind.
+const schemaSQL = `
+CREATE TABLE IF NOT EXISTS outbox (` + outboxColumnDefs + `
 );
-CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
 CREATE TABLE IF NOT EXISTS outbox_partition_fence (
     partition_key TEXT PRIMARY KEY,
     max_version   INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0
 );
 `
+
+// outboxIndexSQL creates every index on the outbox table. Run on every open
+// AFTER migrateOutboxIdentity (idempotent) so fresh, legacy, and rebuilt
+// databases converge on the same index set:
+//
+//   - idx_outbox_partition_status backs the Claim/QueryPending partition scans.
+//   - idx_outbox_identity is the partition-scoped duplicate-detection identity
+//     (partition_key, envelope_id, binding_id) that INSERT OR IGNORE keys on.
+//     It REPLACES the legacy global UNIQUE(envelope_id, binding_id) so the same
+//     envelope+binding re-persisted under a new partition is a distinct
+//     claimable record (contract parity with DynamoDB).
+//   - idx_outbox_completed / idx_outbox_expired are PARTIAL indexes that turn
+//     the retention-compaction DELETEs (deleteCompletedSQL / deleteExpiredSQL)
+//     from full-table scans into narrow index range scans.
+const outboxIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_identity ON outbox(partition_key, envelope_id, binding_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_completed ON outbox(completed_at) WHERE status = 'completed';
+CREATE INDEX IF NOT EXISTS idx_outbox_expired ON outbox(expires_at) WHERE status = 'expired';
+`
+
+// rebuildOutboxColumns is the explicit column list copied by the identity
+// migration table rebuild. It MUST enumerate every column in outboxColumnDefs
+// so the rebuild is a faithful row-for-row copy of the live table.
+//
+// ponytail: this hard-codes the modern column set. A legacy DB missing a column
+// that is NOT backfilled by the migrateColumn calls in openSession (only
+// claimed_at/first_attempted_at/seq are backfilled there) would fail the
+// rebuild SELECT — but LOUD (NewStore errors, no corruption), never silent. No
+// shipped schema hits this today. A future column addition must add its
+// migrateColumn backfill (or this list must derive from PRAGMA table_info
+// intersected with the target columns) before it can appear in a rebuilt
+// legacy DB.
+const rebuildOutboxColumns = `id, partition_key, route_id, envelope_id, binding_id,
+    session_id, address, envelope_json, headers_json, status, claimed_by,
+    claim_version, claimed_at, first_attempted_at, replay_count, created_at,
+    expires_at, completed_at, seq`
+
+// createOutboxRebuildTableSQL creates the transient rebuild table used by
+// migrateOutboxIdentity. Same columns as outbox, NO inline UNIQUE.
+const createOutboxRebuildTableSQL = `CREATE TABLE outbox_rebuild (` + outboxColumnDefs + `
+)`
+
+// copyIntoOutboxRebuildSQL copies every existing row into the rebuild table.
+const copyIntoOutboxRebuildSQL = `INSERT INTO outbox_rebuild (` + rebuildOutboxColumns + `)
+    SELECT ` + rebuildOutboxColumns + ` FROM outbox`
 
 // outboxColumns is the canonical column list used for SELECTs that
 // hydrate full persistence.OutboxRecord values via scanRecords.
@@ -55,7 +116,8 @@ const outboxColumns = `id, partition_key, route_id, envelope_id, binding_id, ses
 const (
 	// insertOutboxSQL persists one record with per-record idempotency
 	// (ports.OutboxStore Persist contract): OR IGNORE skips a row whose
-	// identity (id primary key or UNIQUE(envelope_id, binding_id)) already
+	// identity (id primary key or the partition-scoped idx_outbox_identity
+	// unique index — partition_key, envelope_id, binding_id) already
 	// exists, letting the caller count RowsAffected to detect an
 	// all-duplicate batch. seq is the monotonic per-partition persist
 	// sequence: MAX(seq)+1 within the partition is race-free here because
@@ -114,15 +176,17 @@ const (
 		 LIMIT ?`
 
 	expireOutboxSQL = `UPDATE outbox SET status = 'expired'
-		 WHERE expires_at > 0 AND expires_at < ? AND status = 'pending'`
+		 WHERE partition_key = ? AND expires_at > 0 AND expires_at < ? AND status = 'pending'`
 
 	// Retention compaction (mirrors the DynamoDB backend's TTL grace):
 	// terminal rows — completed or expired — older than the retention window
 	// are physically deleted so the single-file production backend does not
-	// grow unboundedly. Deleting a terminal row also releases its
-	// UNIQUE(envelope_id, binding_id) dedup identity, so the retention window
-	// must comfortably exceed any upstream redelivery window (same tradeoff
-	// as DynamoDB item TTL).
+	// grow unboundedly. The idx_outbox_completed / idx_outbox_expired partial
+	// indexes back these DELETEs so a sweep is an index range scan, not a
+	// full-table scan. Deleting a terminal row also releases its
+	// (partition_key, envelope_id, binding_id) dedup identity, so the
+	// retention window must comfortably exceed any upstream redelivery window
+	// (same tradeoff as DynamoDB item TTL).
 	deleteCompletedSQL = `DELETE FROM outbox
 		 WHERE status = 'completed' AND completed_at > 0 AND completed_at < ?`
 	deleteExpiredSQL = `DELETE FROM outbox

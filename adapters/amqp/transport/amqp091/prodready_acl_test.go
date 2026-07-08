@@ -37,7 +37,7 @@ func TestForwardDeliveries_CtxCancel_NacksAndExits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		forwardDeliveries(ctx, deliveries, out, false, slog.Default(), &ports.NoopExporter{}, clock.System)
+		forwardDeliveries(ctx, "testq", deliveries, out, false, slog.Default(), &ports.NoopExporter{}, clock.System)
 		close(done)
 	}()
 
@@ -61,7 +61,7 @@ func TestForwardDeliveries_AutoAck_NoNackOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		forwardDeliveries(ctx, deliveries, out, true /*autoAck*/, slog.Default(), &ports.NoopExporter{}, clock.System)
+		forwardDeliveries(ctx, "testq", deliveries, out, true /*autoAck*/, slog.Default(), &ports.NoopExporter{}, clock.System)
 		close(done)
 	}()
 
@@ -85,7 +85,7 @@ func TestForwardDeliveries_HappyPath_ForwardsThenCloses(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		forwardDeliveries(context.Background(), deliveries, out, false, slog.Default(), &ports.NoopExporter{}, clock.System)
+		forwardDeliveries(context.Background(), "testq", deliveries, out, false, slog.Default(), &ports.NoopExporter{}, clock.System)
 		close(done)
 	}()
 

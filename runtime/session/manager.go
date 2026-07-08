@@ -61,6 +61,7 @@ type Manager struct {
 	maxRenewFails     int
 	stepDownGrace     time.Duration
 	endpoints         map[string]string
+	drainIdle         func() bool
 	metrics           ports.MetricsExporter
 	audit             ports.AuditLogger
 	logger            *slog.Logger
@@ -227,6 +228,19 @@ func (m *Manager) SetAudit(audit ports.AuditLogger) {
 // use with Run.
 func (m *Manager) SetEndpoints(endpoints map[string]string) {
 	m.endpoints = endpoints
+}
+
+// SetDrainIdleCheck installs an optional predicate that reports whether the
+// destination outbox drainer for this session is idle (no in-flight records
+// left to settle). stepDown consults it to early-complete the StepDownGrace
+// wait: when there is nothing in flight, waiting the full grace only adds
+// takeover latency (a new owner keys off the lease store, not this wait).
+// When unset (nil), stepDown waits the full grace as before (finding F9).
+// Must be called before Run; not safe for concurrent use with Run. The
+// predicate itself may be invoked concurrently with the drainer and must be
+// safe for that (Drainer.IdleSince is).
+func (m *Manager) SetDrainIdleCheck(fn func() bool) {
+	m.drainIdle = fn
 }
 
 // leaseEventBuffer is the capacity of the LeaseStateChanged channel. Lease

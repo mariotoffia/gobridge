@@ -117,7 +117,11 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Usually resolves within seconds. If it persists, force a
   credential refresh (admin endpoint or restart the credential resolver)
   and verify clock sync on the bridge host.
-* **Related metrics.** Credential refresh counters.
+* **Related metrics.** `CredentialRefreshFailures` (poll resolve failures) and
+  `CredentialResolveFailure{code=…}` (resolver fetch failures by code). If the
+  secrets backend itself is briefly unavailable, the resolver serves the
+  last-known-good credential and increments `CredentialStaleServed` rather than
+  failing the rebuild.
 
 ### `NO_ROUTE_OWNER`
 
@@ -174,6 +178,13 @@ the source of the failure.
   identity (`pms://`, `file://`, role chain). Ensure the IAM / RBAC policy
   grants the action the failing call needs (e.g. `sqs:ReceiveMessage`,
   `sqs:ChangeMessageVisibility`, `dynamodb:UpdateItem`, MQTT `subscribe` ACL).
+* **Reactive recovery.** When a rotation apply is rejected as `NOT_AUTHORIZED`,
+  the refresher forces an immediate out-of-band credential re-resolve
+  (rate-limited to one per 5s per URI) instead of waiting for the poll interval,
+  so a freshly rotated secret is picked up quickly. A permanent backend
+  `NOT_AUTHORIZED` is never masked by stale credentials -- it propagates.
+* **Related metrics.** `CredentialResolveFailure{code=NOT_AUTHORIZED}` (resolver
+  permission denials), `CredentialRotationApplied` (successful live applies).
 
 ### `FORBIDDEN`
 
@@ -482,7 +493,7 @@ sustained non-zero rate.
 | Code | Class | DLQ? |
 |---|---|---|
 | `TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`, `BROKER_BUSY`, `TEMPORARY_AUTH_FAILURE`, `NO_ROUTE_OWNER`, `FORWARD_FAILED`, `PROCESSOR_TIMEOUT` | `transient` | Only after retries exhausted |
-| `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`, `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`, `PROCESSOR_PANIC`, `INTERNAL`, `INVALID_OUTBOX_RECORD`, `OUTBOX_NOT_CLAIMABLE`, `OUTBOX_NOT_IN_CLAIMED_STATE`, `OUTBOX_ALREADY_TERMINAL`, `NO_BINDING_MATCH`, `POISON_MESSAGE` | `permanent` | Yes (per route `FailureAction`) |
+| `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`, `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`, `PROCESSOR_PANIC`, `INTERNAL`, `INVALID_OUTBOX_RECORD`, `OUTBOX_NOT_CLAIMABLE`, `OUTBOX_NOT_IN_CLAIMED_STATE`, `OUTBOX_ALREADY_TERMINAL`, `NO_BINDING_MATCH`, `POISON_MESSAGE` | `permanent` | Yes (per route `FailureAction`) |
 | `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | No (silent drop) |
 | `MESSAGE_EXPIRED` | `expired` | Per route `ExpiredAction` |
 

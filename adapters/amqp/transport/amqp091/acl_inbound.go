@@ -3,8 +3,12 @@ package amqp091
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -75,10 +79,70 @@ func deliveryToHeaders(d amqp.Delivery) map[string]any {
 		if messaging.IsReservedHeader(k) || strings.HasPrefix(k, amqp091Prefix) {
 			continue
 		}
-		h[k] = v
+		// ACL purity: nested field tables/arrays and leaf SDK carriers
+		// (amqp.Table, amqp.Decimal) must be rendered to stdlib types so no
+		// SDK type crosses the boundary into envelope headers (PLUGIN.md
+		// hard rule). Copying v verbatim leaked amqp.Table for nested tables.
+		h[k] = renderAMQP091HeaderValue(v)
 	}
 
 	return h
+}
+
+// renderAMQP091HeaderValue converts an AMQP 0-9-1 field-table value into a
+// domain-safe representation so no SDK type crosses the ACL into envelope
+// headers. Nested field tables become map[string]any and field arrays
+// become []any (both rendered recursively); amqp.Decimal becomes a float64;
+// stdlib primitives (including []byte and time.Time) pass through unchanged.
+// Any unexpected type is rendered via fmt.Sprint so a stray SDK carrier can
+// never leak. Mirrors the amqp10 adapter's renderAMQP10AppPropertyValue.
+func renderAMQP091HeaderValue(v any) any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case amqp.Table:
+		return renderAMQP091Table(x)
+	case map[string]any:
+		return renderAMQP091Table(x)
+	case []any:
+		return renderAMQP091Array(x)
+	case amqp.Decimal:
+		return decimalToFloat(x)
+	case string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64,
+		[]byte, time.Time:
+		return v
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// renderAMQP091Table recursively renders every value of an AMQP field table
+// into stdlib types, returning a plain map[string]any.
+func renderAMQP091Table(t map[string]any) map[string]any {
+	out := make(map[string]any, len(t))
+	for k, v := range t {
+		out[k] = renderAMQP091HeaderValue(v)
+	}
+	return out
+}
+
+// renderAMQP091Array recursively renders every element of an AMQP field
+// array into stdlib types, returning a plain []any.
+func renderAMQP091Array(a []any) []any {
+	out := make([]any, len(a))
+	for i, v := range a {
+		out[i] = renderAMQP091HeaderValue(v)
+	}
+	return out
+}
+
+// decimalToFloat converts an amqp.Decimal (mantissa Value scaled by 10^Scale)
+// to the float64 it represents, e.g. {Scale:2, Value:12345} -> 123.45.
+func decimalToFloat(d amqp.Decimal) float64 {
+	return float64(d.Value) / math.Pow10(int(d.Scale))
 }
 
 // deliveryToEnvelope translates an inbound *amqp091.Delivery to a fresh
@@ -99,17 +163,53 @@ func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) (*messaging.Envelope, 
 	if !d.Timestamp.IsZero() {
 		created = d.Timestamp
 	}
+	var expiresAt time.Time
+	if ttl, ok := parseExpirationMillis(d.Expiration); ok {
+		// AMQP per-message expiration is a RELATIVE TTL (whole ms). Map it
+		// to an ABSOLUTE deadline so multi-hop routing does not restart the
+		// countdown at every bridge hop — egress re-derives the relative
+		// TTL from ExpiresAt via Envelope.RemainingTTL. Anchored at receipt
+		// time (not d.Timestamp), because the broker's TTL clock is what we
+		// observe now; the remaining budget shrinks by the in-bridge dwell.
+		expiresAt = clk.Now().Add(ttl)
+	}
 	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   subjectFromHeaders(d.Headers),
 		Payload:   d.Body,
 		Headers:   deliveryToHeaders(d),
 		CreatedAt: created,
+		ExpiresAt: expiresAt,
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
 	}
 	return env, nil
+}
+
+// parseExpirationMillis parses an AMQP 0-9-1 per-message expiration — a
+// short string of whole milliseconds — into a duration. Empty, non-numeric,
+// negative, or over-range (would overflow the duration) values yield
+// ok=false so no expiry is mapped.
+func parseExpirationMillis(s string) (time.Duration, bool) {
+	if s == "" {
+		return 0, false
+	}
+	ms, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || ms < 0 {
+		return 0, false
+	}
+	// time.Duration is int64 NANOSECONDS, so ms*time.Millisecond overflows
+	// (and wraps NEGATIVE) once ms exceeds MaxInt64/1e6 (~9.22e12 ms, ~292
+	// years). A wrapped-negative TTL would make ExpiresAt land in the PAST,
+	// so the delivery is dropped/DLQ'd as already-expired — silent loss for
+	// a producer who set a huge "effectively never expire" sentinel TTL.
+	// Fail toward delivery: an over-range TTL maps to NO expiry rather than
+	// a past deadline.
+	if ms > int64(math.MaxInt64)/int64(time.Millisecond) {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 func generateEnvelopeID() string {

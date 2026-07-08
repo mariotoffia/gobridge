@@ -41,3 +41,15 @@ const (
 	// considered down; the breaker is cooling down).
 	MetricHTTPForwardBreakerOpen = "HTTPForwardBreakerOpen"
 )
+
+// Tag keys dimensioning HTTP-transport metrics by the owning component.
+// Every sender/receiver tags its emissions with its own id so that, with
+// more than one SSE sender (or receiver) in a process, per-component
+// series like the SSEClients gauge do not collapse onto one last-writer-
+// wins series. No shared.TagKey* constant exists for a per-adapter
+// component id, so these literal keys are defined locally (matching the
+// runtime's route_id tagging style — see runtime/outbox/loop.go).
+const (
+	tagKeySenderID   = "sender_id"
+	tagKeyReceiverID = "receiver_id"
+)

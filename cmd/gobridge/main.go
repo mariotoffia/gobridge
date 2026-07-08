@@ -16,9 +16,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,9 +31,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	credentials "github.com/mariotoffia/gobridge/runtime/credentials"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+	filecreds "github.com/mariotoffia/gobridge/adapters/native/credentials/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -47,6 +52,8 @@ func main() {
 func run() int {
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
+	credentialsDir := flag.String("credentials-dir", "credentials",
+		"base directory backing file:// credential URIs (native file credential store)")
 	flag.Parse()
 
 	logger := newLogger(*logLevel)
@@ -101,6 +108,27 @@ func run() int {
 
 	pipeline := newReloadPipeline(reg, logger)
 
+	// Credential store wiring (Finding 11). The stock binary registers the
+	// native file:// credential repository so file:// credential URIs in the
+	// config resolve out of the box — previously NO credential store was
+	// registered here, so an operator copying a documented file:// example
+	// into this image got "no credential store registered". Production builds
+	// add SSM (or other) pull stores the SAME way: resolver.Register(...).
+	//
+	// The resolver is lifted into a runtime-owned push store by the supervisor
+	// (poll-based wrapper). EmitOnStart is set (Finding 1) so a rotation that
+	// lands in the build->watch window is surfaced on the first tick rather
+	// than silently baselined; a default jitter (~10% of the interval,
+	// LOW-severity finding) de-synchronizes polls so many sessions do not
+	// stampede the backend on the same tick.
+	credResolver := newDefaultCredentialResolver(*credentialsDir, logger)
+	credPollInterval := credentials.DefaultCredentialPollInterval
+	credPollConfig := ports.PollBasedWrapperConfig{
+		PollInterval: credPollInterval,
+		Jitter:       credPollInterval / 10,
+		EmitOnStart:  true,
+	}
+
 	sup := bridge.NewSupervisor(
 		bridge.WithSupervisorLogger(logger),
 		// File-change debouncing is done by the reload pipeline (below) so
@@ -108,6 +136,7 @@ func run() int {
 		// therefore applies each config the pipeline forwards immediately.
 		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
 		bridge.WithOnSwap(pipeline.onSwap),
+		bridge.WithSupervisorPolledCredentialStore(credResolver, credPollConfig),
 	)
 
 	// Demo adapter set: MQTT transport + native memory/SQLite stores only.
@@ -146,12 +175,22 @@ func run() int {
 	//
 	//   me, _ := otelmetrics.New(ctx, /* exporter opts */)
 	//   tr, _ := oteltracing.New(ctx, /* exporter opts */)
+	//   // The exporter and tracer are SHARED across every hot-reloaded runtime,
+	//   // so runtime.Stop only Flushes them — it never Closes them. This
+	//   // composition root owns their Close and must call it exactly once at
+	//   // process shutdown, or the exporter's flush goroutine leaks and buffered
+	//   // spans are dropped (CRITICAL 2):
+	//   defer me.Close(context.Background())
+	//   defer tr.Close(context.Background())
 	//   sup := bridge.NewSupervisor(
 	//       // ... existing options ...
 	//       bridge.WithSupervisorMetrics(me),
 	//       bridge.WithSupervisorTracer(tr),
 	//       bridge.WithSupervisorAuditLogger(auditLogger),
 	//   )
+	//   // Pass the SAME exporter into the HTTP server so admin-plane DLQ
+	//   // redrive metrics share the one sink (see httpapi.New below):
+	//   //   httpapi.New(rt, apiCfg, /* ... */, httpapi.WithMetrics(me))
 	//
 	// The runtime then instruments lease/outbox stores and honors the tracer and
 	// audit logger automatically. A production/deploy profile selects the
@@ -172,14 +211,45 @@ func run() int {
 	go pipeline.run(ctx, windowedFile)
 
 	supDone := make(chan error, 1)
+	// supStopped is closed by the goroutine below AFTER it has buffered Run's
+	// single result on supDone. It is a close-only broadcast that lets
+	// waitForSupervisorRuntime notice an early Run exit (an initial build/start
+	// failure) WITHOUT consuming supDone: supDone carries exactly one value and
+	// is reserved for the single downstream reader (the primary select below, or
+	// awaitSupervisorShutdown). A closed channel is broadcast-safe, so observing
+	// it in the wait and again downstream cannot race or steal the result.
+	supStopped := make(chan struct{})
 	go func() {
-		supDone <- sup.Run(ctx, cfg, pipeline.changes())
+		err := sup.Run(ctx, cfg, pipeline.changes())
+		supDone <- err // buffered (cap 1): never blocks; value now readable
+		close(supStopped)
 	}()
 
-	// Wait for the supervisor to build and start the initial runtime.
-	rt := waitForSupervisorRuntime(sup, clock.System, 10*time.Second)
+	// Wait for the supervisor to build and start the initial runtime, bounded by
+	// initialRuntimeWait (which bounds a slow or hung SYNCHRONOUS initial build —
+	// see the constant). The wait also observes supStopped, so an initial
+	// build/start failure surfaces promptly instead of blocking the full ceiling.
+	waitRes := waitForSupervisorRuntime(sup.Runtime, clock.System, initialRuntimeWait, supStopped)
+	rt := waitRes.runtime
 	if rt == nil {
-		logger.Error("supervisor did not produce a runtime within timeout")
+		if waitRes.supEnded {
+			// Run returned before publishing a runtime: the SYNCHRONOUS initial
+			// build or non-blocking start failed (e.g. credential resolution or
+			// store construction errored). Broker/session connects run in the
+			// background and never gate publication, so they cannot be the cause.
+			// Surface its actual error, buffered on supDone. Reading supDone
+			// here is race-free: this branch returns immediately, so neither the
+			// primary select nor awaitSupervisorShutdown — the single intended
+			// reader of supDone — is ever reached.
+			if err := <-supDone; err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("supervisor exited before producing a runtime", "error", err)
+			} else {
+				logger.Error("supervisor stopped before producing a runtime")
+			}
+		} else {
+			logger.Error("supervisor did not produce a runtime within timeout",
+				"timeout", initialRuntimeWait)
+		}
 		cancel()
 		return 1
 	}
@@ -202,6 +272,19 @@ func run() int {
 			},
 			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider: sup.Config,
+			// Surface live-reconfiguration health on /deephealth: the supervisor
+			// goes degraded when its config-change stream closes, and the config
+			// manager goes degraded when a layer watcher cannot re-establish.
+			// Either means the bridge serves its last good config but no longer
+			// tracks config changes.
+			DegradedProvider: func() (bool, string) {
+				return degradedConfigWatch(sup, mgr)
+			},
+			// Route admin start/stop through the supervisor so POST /bridge/stop
+			// is a clean deliberate pause (not process-suicide) and POST
+			// /bridge/start rebuilds a fresh single-use runtime afterwards
+			// (CRITICAL 1).
+			BridgeController: sup,
 			// Apply a committed config in-band by feeding it to the Supervisor's
 			// reload path (bypassing the debounce window) and blocking until the
 			// swap outcome is known — a failed apply surfaces as
@@ -225,7 +308,13 @@ func run() int {
 			logger.Error("failed to start HTTP server", "error", err)
 			return 1
 		}
-		defer func() { _ = srv.Stop(context.Background()) }()
+		defer func() {
+			// Bound the HTTP drain so a wedged in-flight admin request cannot
+			// hang process shutdown forever; reuse the bridge shutdown budget.
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), cfg.Bridge.ShutdownTimeoutDuration())
+			defer stopCancel()
+			_ = srv.Stop(stopCtx)
+		}()
 		logger.Info("HTTP servers started", "admin", apiCfg.AdminAddr, "monitor", apiCfg.MonitorAddr)
 	}
 
@@ -290,11 +379,44 @@ func run() int {
 	return exitCode
 }
 
+// degradedConfigWatch combines the two independent live-reconfiguration
+// degraded signals into the single projection surfaced on /deephealth. The
+// supervisor reports degraded when its config-change stream closes; the config
+// manager reports degraded when a layer's change watcher cannot be
+// re-established. Either means the bridge keeps serving its last good config but
+// can no longer observe config changes without a restart.
+func degradedConfigWatch(sup *bridge.Supervisor, mgr *config.Manager) (bool, string) {
+	if degraded, reason := sup.Degraded(); degraded {
+		return true, reason
+	}
+	if errs := mgr.WatchErrors(); len(errs) > 0 {
+		layers := make([]string, 0, len(errs))
+		for layer := range errs {
+			layers = append(layers, layer)
+		}
+		slices.Sort(layers) // deterministic reason ordering
+		parts := make([]string, len(layers))
+		for i, layer := range layers {
+			parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
+		}
+		return true, "config watch degraded: " + strings.Join(parts, "; ")
+	}
+	return false, ""
+}
+
 // terminalPollInterval is how often the liveness backstop checks whether the
 // current runtime has gone terminal. Terminal state only follows a sustained
 // failure (e.g. ~30s of lease-store outage before step-down), so a coarse poll
 // is ample and cheap.
 const terminalPollInterval = 5 * time.Second
+
+// terminalConfirmSamples is how many CONSECUTIVE positive terminal reads the
+// backstop requires before it exits the process. A single positive sample can
+// be a transient read during a healthy reconfiguration swap window; requiring N
+// consecutive confirmations means a swap-window blip never kills a healthy
+// process, while a genuine terminal/wedged state (which persists) still trips
+// after N×terminalPollInterval (CRITICAL 3).
+const terminalConfirmSamples = 3
 
 // awaitSupervisorShutdown blocks — bounded by the shutdown deadline (done) —
 // for the supervisor goroutine to report it has unwound after the root context
@@ -317,33 +439,85 @@ func awaitSupervisorShutdown(alreadyExited bool, supDone <-chan error, done <-ch
 	}
 }
 
-// watchTerminal polls isTerminal every poll interval, returning true the first
-// time it reports terminal or false when ctx is cancelled. It carries no
-// runtime knowledge itself (the caller supplies the predicate), which keeps the
-// poll loop trivially testable.
+// watchTerminal polls isTerminal every poll interval, returning true only after
+// terminalConfirmSamples CONSECUTIVE positive reads (so a transient swap-window
+// blip never kills a healthy process), or false when ctx is cancelled. It
+// carries no runtime knowledge itself (the caller supplies the predicate), which
+// keeps the poll loop trivially testable.
 func watchTerminal(ctx context.Context, clk clock.Clock, poll time.Duration, isTerminal func() bool) bool {
+	consecutive := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-clk.After(poll):
 			if isTerminal() {
-				return true
+				consecutive++
+				if consecutive >= terminalConfirmSamples {
+					return true
+				}
+			} else {
+				consecutive = 0
 			}
 		}
 	}
 }
 
-func waitForSupervisorRuntime(sup *bridge.Supervisor, clk clock.Clock, timeout time.Duration) *goruntime.Runtime {
+// initialRuntimeWait bounds how long run() waits for the supervisor to publish
+// its initial runtime before giving up and exiting non-zero. The runtime is
+// published right after the SYNCHRONOUS initial build (Supervisor.buildRuntime)
+// and a non-blocking Runtime.Start — broker/session connects run in background
+// goroutines and never gate publication, so sup.Runtime() goes non-nil within
+// milliseconds of a healthy build. This wait therefore exists to bound a slow or
+// hung SYNCHRONOUS startup build (credential resolution, store construction),
+// which is UNBOUNDED for the initial build — unlike reconfiguration swaps, whose
+// build is bounded by defaultSwapDeadline. 60s tolerates a slow-but-healthy cold
+// cloud start (e.g. SSM/STS credential resolve plus a DynamoDB describe or a
+// SQLite migration) while still backstopping a hung dependency, and mirrors the
+// swap build's defaultSwapDeadline. A genuine build error surfaces promptly via
+// supStopped rather than waiting out the full ceiling (Chunk 16 Finding 1).
+const initialRuntimeWait = 60 * time.Second
+
+// runtimeWaitResult reports the outcome of waitForSupervisorRuntime: either the
+// initial runtime became available (runtime != nil), or the supervisor's Run
+// returned before producing one (supEnded). Distinguishing the two lets run()
+// surface the supervisor's real error instead of a misleading timeout, and exit
+// promptly rather than blocking the full ceiling.
+type runtimeWaitResult struct {
+	runtime  *goruntime.Runtime
+	supEnded bool
+}
+
+// waitForSupervisorRuntime blocks until runtimeOf returns a non-nil runtime, the
+// supervisor's Run returns before publishing one (supStopped closed), or the
+// ceiling elapses. It NEVER reads supDone: the single buffered result is left
+// intact for the one downstream reader, so this wait cannot steal the shutdown
+// read. supStopped is a close-only broadcast, safe to observe here and again
+// downstream.
+func waitForSupervisorRuntime(
+	runtimeOf func() *goruntime.Runtime,
+	clk clock.Clock,
+	timeout time.Duration,
+	supStopped <-chan struct{},
+) runtimeWaitResult {
 	// ESSENTIAL: runtime init poll
 	deadline := clk.After(timeout)
 	for {
-		if rt := sup.Runtime(); rt != nil {
-			return rt
+		if rt := runtimeOf(); rt != nil {
+			return runtimeWaitResult{runtime: rt}
 		}
 		select {
+		case <-supStopped:
+			// Run returned before publishing a runtime. Re-check once in case a
+			// runtime raced in just as Run exited; otherwise report the early
+			// exit so the caller surfaces the buffered supDone error instead of
+			// waiting out the full ceiling.
+			if rt := runtimeOf(); rt != nil {
+				return runtimeWaitResult{runtime: rt}
+			}
+			return runtimeWaitResult{supEnded: true}
 		case <-deadline:
-			return nil
+			return runtimeWaitResult{}
 		case <-clk.After(20 * time.Millisecond):
 		}
 	}
@@ -362,4 +536,22 @@ func newLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+}
+
+// newDefaultCredentialResolver builds the stock resolver and best-effort
+// registers the native file:// store (Finding 11). A file-store init failure —
+// e.g. a read-only working directory where ./credentials does not already
+// exist — is NOT fatal: file:// URIs then fail at resolve time with a clear
+// "no credential repository" error, but a config that uses no file://
+// credentials (pms:// only) still boots (adversarial Finding 2). EmitOnStart
+// and jitter are configured by the caller on the poll wrapper.
+func newDefaultCredentialResolver(dir string, logger *slog.Logger) *goruntime.CredentialResolver {
+	res := goruntime.NewCredentialResolver(goruntime.WithCredentialResolverLogger(logger))
+	if repo, err := filecreds.New(dir, filecreds.WithLogger(logger)); err != nil {
+		logger.Warn("file credential store unavailable; file:// credential URIs will not resolve",
+			"path", dir, "error", err)
+	} else {
+		res.Register(repo)
+	}
+	return res
 }

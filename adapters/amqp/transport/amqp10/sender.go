@@ -43,6 +43,12 @@ type Sender struct {
 	mu       sync.Mutex
 	link     senderLinkAPI
 	linkConn amqpConn
+	// closed is set by Close under mu. Once closed, createLink refuses to
+	// re-attach a link (and thus re-register the sender in session
+	// health), so a late Send/SendBatch returns a permanent
+	// transport-closed error instead of silently resurrecting the sender
+	// (finding F14).
+	closed bool
 
 	// attach creates a new sender link on the current session connection.
 	// It defaults to defaultAttach (session-backed); tests may override it
@@ -245,6 +251,15 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 }
 
 func (s *Sender) createLink(ctx context.Context) error {
+	// F14: createLink is the single choke point for link attach (called
+	// under s.mu from Send and ensureLink). Refuse once closed so a late
+	// Send cannot re-attach a link and re-enter session health.
+	if s.closed {
+		return shared.ErrUnavailable.
+			WithMessage("amqp10: sender closed").
+			Wrap(shared.ErrTransportClosedPermanently)
+	}
+
 	attach := s.attach
 	if attach == nil {
 		attach = s.defaultAttach
@@ -341,6 +356,7 @@ func (s *Sender) notifySessionIfConnectionLost(failedConn amqpConn, err error) {
 // Close closes the sender link.
 func (s *Sender) Close(ctx context.Context) error {
 	s.mu.Lock()
+	s.closed = true
 	link := s.link
 	s.link = nil
 	s.linkConn = nil

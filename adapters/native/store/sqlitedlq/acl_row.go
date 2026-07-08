@@ -34,8 +34,14 @@ func scanDLQEntries(rows *sql.Rows) ([]routing.DLQEntry, error) {
 
 		spec.FailedAt = time.UnixMilli(failedAtMs)
 
-		if err := json.Unmarshal([]byte(envJSON), &spec.Envelope); err != nil {
-			return nil, fmt.Errorf("sqlitedlq: unmarshal envelope: %w", err)
+		// An empty envelope_json marks a metadata-only DLQ entry (no
+		// envelope). Skip rehydration so spec.Envelope stays the zero
+		// value rather than tripping the domain's mandatory-ID guard
+		// (mirrors the write-side skip in acl_session.go and the DDB store).
+		if envJSON != "" {
+			if err := json.Unmarshal([]byte(envJSON), &spec.Envelope); err != nil {
+				return nil, fmt.Errorf("sqlitedlq: unmarshal envelope: %w", err)
+			}
 		}
 
 		// RehydrateDLQEntry (not NewDLQEntry): the envelope was freshly

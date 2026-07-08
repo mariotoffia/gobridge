@@ -58,6 +58,7 @@ type Store struct {
 	tableName    string
 	retention    time.Duration
 	maxScanPages int
+	scanPageSize int
 	logger       *slog.Logger
 }
 
@@ -89,8 +90,21 @@ func WithGracePeriod(d time.Duration) Option {
 // WithMaxScanPages bounds the number of DynamoDB pages an index-less List or
 // a Purge will read before stopping, preventing an unbounded full-table
 // scan on large DLQ tables. Default: 100. Zero disables the bound.
+//
+// It does NOT bound DeleteByFilter with Limit <= 0: the ports.DLQAdmin
+// contract requires that call to delete EVERY matching entry, so its
+// index-less path scans to exhaustion regardless of this knob.
 func WithMaxScanPages(n int) Option {
 	return func(s *Store) { s.maxScanPages = n }
+}
+
+// WithScanPageSize caps the number of items DynamoDB returns per Scan page
+// (the Scan Limit) on index-less List, DeleteByFilter, and Purge paths.
+// Zero (the default) lets DynamoDB choose its natural ~1MB page size. A
+// small value bounds per-call latency and memory on wide items; it also
+// makes multi-page scan behaviour deterministic for tests.
+func WithScanPageSize(n int) Option {
+	return func(s *Store) { s.scanPageSize = n }
 }
 
 // WithLogger sets the structured logger for trace/debug diagnostics.
@@ -200,9 +214,20 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 			"entry_id", entry.ID(), "route_id", entry.RouteID(), "category", entry.Category())
 	}
 
-	envJSON, err := json.Marshal(entry.Snapshot())
-	if err != nil {
-		return fmt.Errorf("dynamodbdlq: marshal envelope: %w", err)
+	// Mirror the sqlite DLQ write: a metadata-only entry (no envelope) has a
+	// zero-value Snapshot whose ID() is empty. Marshalling it would produce a
+	// non-empty zero-JSON ({"CreatedAt":…,"ExpiresAt":…}) carrying an EMPTY
+	// envelope ID, which the mandatory-ID guard in Envelope.UnmarshalJSON (C09)
+	// rejects on read-back — a latent silent-loss. Store "" (the empty sentinel
+	// unmarshalEntry already skips) unless the entry actually carries an
+	// envelope (c09-1).
+	var envJSON []byte
+	if snap := entry.Snapshot(); snap.ID() != "" {
+		b, err := json.Marshal(snap)
+		if err != nil {
+			return fmt.Errorf("dynamodbdlq: marshal envelope: %w", err)
+		}
+		envJSON = b
 	}
 
 	failedAtMs := entry.FailedAt().UnixMilli()
@@ -242,7 +267,7 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 		}
 	}
 
-	_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(s.tableName),
 		Item:                item,
 		ConditionExpression: aws.String("attribute_not_exists(#pk)"),
@@ -418,9 +443,20 @@ func (s *Store) listByScan(ctx context.Context, filter routing.DLQFilter) ([]rou
 	var startKey map[string]ddbtypes.AttributeValue
 	pages := 0
 
-	for len(entries) < limit {
+	// Page to exhaustion (bounded by maxScanPages) and collect EVERY matching
+	// entry BEFORE selecting the oldest `limit`. DynamoDB Scan returns items in
+	// arbitrary (internal-hash) order, uncorrelated with failed_at, so the
+	// former `for len(entries) < limit` loop — which stopped as soon as it had
+	// `limit` items and sorted only that subset — could return entries that are
+	// NOT the globally oldest, violating the ports.DLQReader oldest-first
+	// contract across a multi-page table. Collecting all matches within the
+	// scan bound and sorting globally fixes the selection.
+	for {
 		input := &dynamodb.ScanInput{
 			TableName: aws.String(s.tableName),
+		}
+		if s.scanPageSize > 0 {
+			input.Limit = aws.Int32(int32(s.scanPageSize))
 		}
 		if filterExpr != nil {
 			input.FilterExpression = filterExpr
@@ -540,19 +576,23 @@ const deleteBatchSize = 100
 // phantom re-listed entry does not inflate the total.
 //
 // Per the ports.DLQAdmin contract: with filter.Limit <= 0 it deletes EVERY
-// matching entry — it loops List+delete until a pass finds nothing, so the
-// internal List page size (100) never truncates the delete. With a positive
-// Limit it deletes at most Limit entries, selected oldest-first.
-//
-// Interaction with WithMaxScanPages: an index-less filter (no RouteID and
-// no Category) resolves candidates via a bounded table scan; each delete
-// pass makes progress, but if more than maxScanPages pages of NON-matching
-// entries precede the remaining matches, a pass can come up empty early.
-// Filters carrying RouteID or Category use a GSI and are exhaustive.
+// matching entry. An index-less unlimited delete (no RouteID and no Category)
+// is served by a dedicated scan-to-exhaustion path that IGNORES the
+// WithMaxScanPages bound — the caller explicitly asked for "all", so the
+// contract of total removal overrides the scan-safety valve. Unlimited deletes
+// carrying RouteID or Category walk a GSI and are already exhaustive. With a
+// positive Limit it deletes at most Limit entries, selected oldest-first, using
+// the bounded List path.
 func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodbdlq: delete_by_filter",
 			"route_id", filter.RouteID, "category", filter.Category, "limit", filter.Limit)
+	}
+
+	// Unlimited + index-less: scan the whole table to exhaustion so no matching
+	// entry survives behind more than maxScanPages of non-matching entries.
+	if filter.Limit <= 0 && filter.RouteID == "" && filter.Category == "" {
+		return s.deleteByScanExhaustive(ctx, filter)
 	}
 
 	remaining := filter.Limit // <= 0 means delete all matches
@@ -608,6 +648,122 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 	return total, nil
 }
 
+// deleteByScanExhaustive deletes every entry matching filter's time bounds via
+// a full-table scan that walks ExclusiveStartKey to the very end, with NO
+// maxScanPages bound. It backs DeleteByFilter's "delete all" (Limit <= 0)
+// contract for index-less filters: a bounded scan can stop with matches still
+// behind a run of non-matching entries, so unlimited deletion must be
+// exhaustive. The count is exact (ReturnValues ALL_OLD; empty echoes — e.g. an
+// already-deleted key — are not counted).
+func (s *Store) deleteByScanExhaustive(ctx context.Context, filter routing.DLQFilter) (int, error) {
+	var filterParts []string
+	exprNames := map[string]string{}
+	exprValues := map[string]ddbtypes.AttributeValue{}
+
+	if !filter.Since.IsZero() {
+		filterParts = append(filterParts, "#fa >= :since")
+		exprNames["#fa"] = attrFailedAt
+		exprValues[":since"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Since.UnixMilli())}
+	}
+	if !filter.Before.IsZero() {
+		filterParts = append(filterParts, "#fa < :before")
+		exprNames["#fa"] = attrFailedAt
+		exprValues[":before"] = &ddbtypes.AttributeValueMemberN{Value: i64(filter.Before.UnixMilli())}
+	}
+
+	var filterExpr *string
+	if len(filterParts) > 0 {
+		filterExpr = aws.String(strings.Join(filterParts, " AND "))
+	}
+
+	total := 0
+	pages := 0
+	warned := false
+	var startKey map[string]ddbtypes.AttributeValue
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+
+		input := &dynamodb.ScanInput{
+			TableName:      aws.String(s.tableName),
+			ConsistentRead: aws.Bool(true),
+		}
+		if s.scanPageSize > 0 {
+			input.Limit = aws.Int32(int32(s.scanPageSize))
+		}
+		if filterExpr != nil {
+			input.FilterExpression = filterExpr
+			input.ExpressionAttributeNames = exprNames
+			input.ExpressionAttributeValues = exprValues
+		}
+		if startKey != nil {
+			input.ExclusiveStartKey = startKey
+		}
+
+		out, err := s.client.Scan(ctx, input)
+		if err != nil {
+			return total, wrapErr(err, "dlq delete_by_filter scan failed", "table", s.tableName)
+		}
+		pages++
+
+		// This is the deliberately UNBOUNDED delete-all path (Limit <= 0), so it
+		// does NOT stop at maxScanPages — but crossing that many pages means a
+		// very large purge is running against the whole table. Emit ONE loud WARN
+		// (throttled) so a runaway delete-all is observable instead of silent.
+		if !warned && s.maxScanPages > 0 && pages > s.maxScanPages {
+			warned = true
+			if s.logger != nil {
+				s.logger.WarnContext(ctx,
+					"dynamodbdlq: unbounded delete-all exceeded max_scan_pages and is still running",
+					"table", s.tableName,
+					"pages", pages,
+					"deleted_so_far", total,
+					"max_scan_pages", s.maxScanPages,
+					"hint", "this is the Limit<=0 delete-everything path; narrow the time range to bound it")
+			}
+		}
+
+		for _, item := range out.Items {
+			// Honour cancellation per ITEM, not just per page: a ~1MB scan page
+			// can hold thousands of items and would otherwise issue thousands of
+			// un-cancellable DeleteItem calls after the context is already done.
+			if err := ctx.Err(); err != nil {
+				return total, err
+			}
+			pk := strAttr(item, attrPK)
+			// ponytail: per-item DeleteItem (not BatchWriteItem) is deliberate.
+			// BatchWriteItem batches 25 deletes per call but CANNOT return
+			// ALL_OLD, so it cannot preserve the exact-count guarantee (an
+			// idempotent re-delete of a GSI-lagged/duplicate key must not be
+			// counted). Batching the deletes with a separate exact-count strategy
+			// is the deferred upgrade; correctness (exact count + per-item ctx
+			// cancellation) comes first.
+			del, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+				TableName: aws.String(s.tableName),
+				Key: map[string]ddbtypes.AttributeValue{
+					attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
+				},
+				ReturnValues: ddbtypes.ReturnValueAllOld,
+			})
+			if err != nil {
+				return total, wrapErr(err, "dlq delete_by_filter delete failed", "pk", pk)
+			}
+			if len(del.Attributes) > 0 {
+				total++
+			}
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+
+	return total, nil
+}
+
 // Purge deletes entries whose failed_at is before the given time.
 // Returns the count of deleted items.
 func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
@@ -632,6 +788,9 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 				":before": &ddbtypes.AttributeValueMemberN{Value: i64(beforeMs)},
 			},
 		}
+		if s.scanPageSize > 0 {
+			input.Limit = aws.Int32(int32(s.scanPageSize))
+		}
 		if startKey != nil {
 			input.ExclusiveStartKey = startKey
 		}
@@ -644,16 +803,23 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 		for _, item := range out.Items {
 			pk := strAttr(item, attrPK)
 
-			_, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			// ReturnValues ALL_OLD so the reported count is the number of rows
+			// ACTUALLY removed. DeleteItem is idempotent: a key already gone
+			// (concurrent purge, TTL reap) echoes EMPTY Attributes and must not
+			// inflate the total.
+			del, err := s.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 				TableName: aws.String(s.tableName),
 				Key: map[string]ddbtypes.AttributeValue{
 					attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
 				},
+				ReturnValues: ddbtypes.ReturnValueAllOld,
 			})
 			if err != nil {
 				return count, wrapErr(err, "dlq purge delete failed", "pk", pk)
 			}
-			count++
+			if len(del.Attributes) > 0 {
+				count++
+			}
 		}
 
 		if out.LastEvaluatedKey == nil {

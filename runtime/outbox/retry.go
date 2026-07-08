@@ -21,6 +21,19 @@ import (
 // of the success count, and (3) drive the transient-retry backoff floor.
 var errReleasedForRetry = errors.New("outbox: record released for transient retry")
 
+// errReleaseFailed signals that a record failed a transient send AND its
+// subsequent Release back to pending failed with a store error (NOT a stale
+// token). The record stays durably Claimed: Release did not transition it and
+// Complete was never called. It is consumed inside drainBatch's group loop —
+// never propagated as a drain error — to STOP the ordering group WITHOUT
+// counting the still-claimed head as a success and WITHOUT letting a later
+// same-key record overtake it (M4). The group loop deliberately does NOT
+// releaseRemainder for this case: a store that just failed Release will fail it
+// again, so the still-claimed head and the unattempted tail are recovered
+// together by version/stale reclaim. It increments transientReleases so it
+// drives the transient-retry backoff floor — this is a transient store hiccup.
+var errReleaseFailed = errors.New("outbox: record release failed after transient send")
+
 // errBatchDeadlineDeferred signals processRecord aborted a send because the
 // batch deadline (workCtx/batchCtx) fired mid-flight. The record was NOT
 // delivered and has been released back to pending (finding 9): it must be
@@ -59,6 +72,47 @@ func (d *Drainer) emitDLQ(category string) {
 		shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID},
 		shared.Tag{Key: shared.TagKeyCategory, Value: category},
 	)
+}
+
+// emitDrop counts a terminal DROP from the drain path: a record settled WITHOUT
+// a DLQ write and without a successful send, because the route's policy is
+// OnPermanentFailure=drop or no DLQ store is configured (H3). It mirrors the
+// route runner's emitDrop (route/dispatch.go) so drainer-side drops feed the
+// same MessagesDropped series as ingress-side drops — dimensioned by
+// TagKeyReason so the one series stays queryable across both paths and closes
+// the conservation law received = sent + dropped + filtered + expired + dlq +
+// inflight. Its counterpart emitDLQ counts DLQ writes; the two are mutually
+// exclusive per record.
+func (d *Drainer) emitDrop(category string) {
+	d.metrics.Counter(shared.MetricMessagesDropped, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID},
+		shared.Tag{Key: shared.TagKeyReason, Value: category},
+	)
+}
+
+// completeTerminal Completes a terminally-settled record and fires the delivery
+// hook's OnSettled, but only AFTER the store transition durably succeeds (M3).
+//
+// Ordering is load-bearing. The terminal metric (emitDLQ / emitDrop /
+// MessagesExpired) is emitted by the CALLER BEFORE this, and is a per-write /
+// per-event count: a DLQ write that already succeeded is real evidence and must
+// be counted at-least-once even if the subsequent Complete fails. The hook, by
+// contrast, is per-completed-record and must fire EXACTLY ONCE: if Complete
+// fails the record stays claimed and is re-claimed and re-settled on a later
+// cycle, so firing OnSettled now would double-count hook-driven billing/audit.
+// On a Complete failure the hook is therefore deferred to the successful retry
+// and completeErr is returned so the drain loop treats the record as unfinished.
+// This keeps the metric (at-least-once) and the hook (exactly-once) mutually
+// consistent instead of both firing on a settlement whose Complete never landed.
+func (d *Drainer) completeTerminal(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken, outcome ports.DeliveryOutcome) error {
+	completeCtx, completeCancel := d.completeCtx(ctx)
+	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
+	completeCancel()
+	if completeErr != nil {
+		return completeErr
+	}
+	d.hook.OnSettled(ctx, outcome)
+	return nil
 }
 
 // poisonAgeReached reports whether a replay-exhausted record is old enough to
@@ -192,13 +246,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 
 	be, ok := shared.AsBridgeError(sendErr)
 	if ok && be.Class != shared.ErrorTransient {
-		if dlqErr := d.dlq.Route(ctx, outbound, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", sendErr, rec.ReplayCount()); dlqErr != nil {
-			d.log(ctx, slog.LevelError, "DLQ write failed, will not complete record",
-				"record_id", rec.ID(), "dlq_error", dlqErr)
-			return dlqErr
-		}
-		d.emitDLQ("permanent")
-		d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+		outcome := ports.DeliveryOutcome{
 			Direction:   ports.DirectionEgress,
 			RouteID:     d.routeID,
 			BindingID:   rec.BindingID(),
@@ -208,11 +256,26 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 			MaxAttempts: d.policy.MaxReplayAttempts,
 			Err:         sendErr,
 			Terminal:    true,
-		})
-		completeCtx, completeCancel := d.completeCtx(ctx)
-		completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
-		completeCancel()
-		return completeErr
+		}
+		// H3: honor OnPermanentFailure=drop and a missing DLQ store (both legal
+		// configs) by dropping-with-metric instead of writing a DLQ entry the
+		// operator opted out of. Mirrors route.poisonReplayCapExceeded. Without
+		// this gate a drop-policy route miscounts drops as DLQ entries, and with
+		// no store it silently Completes the record while emitting a DLQEntries
+		// counter that has nothing behind it.
+		if d.policy.OnPermanentFailure == routing.FailureDrop || !d.dlq.HasStore() {
+			d.emitDrop("permanent")
+			d.log(ctx, slog.LevelWarn, "permanent send failure dropped: OnPermanentFailure=drop or no DLQ store",
+				"record_id", rec.ID(), "error", sendErr)
+			return d.completeTerminal(ctx, rec, token, outcome)
+		}
+		if dlqErr := d.dlq.Route(ctx, outbound, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", sendErr, rec.ReplayCount()); dlqErr != nil {
+			d.log(ctx, slog.LevelError, "DLQ write failed, will not complete record",
+				"record_id", rec.ID(), "dlq_error", dlqErr)
+			return dlqErr
+		}
+		d.emitDLQ("permanent")
+		return d.completeTerminal(ctx, rec, token, outcome)
 	}
 
 	if ctx.Err() != nil {
@@ -258,26 +321,19 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 		return shared.ErrStaleFencingToken
 	default:
 		// Release failed for some reason OTHER than a stale token (e.g. a
-		// store write/I/O error). Fall back to today's leave-claimed
-		// behavior rather than escalating: return nil so the drain loop
-		// does not cancel sibling sends for what is a localized, transient
-		// store hiccup.
-		//
-		// Residual (A4-R2, reviewer-blessed): returning nil makes the
-		// group loop count this record as a success and CONTINUE to the
-		// next same-key record, so a later record in the ordering group
-		// can overtake this still-claimed, never-sent head. There is NO
-		// data loss — the head stays durably Claimed (Release did not
-		// transition it and we did not Complete it) and is re-claimed and
-		// re-sent in persisted order via version/stale reclaim once the
-		// lease version advances (or the store's stale-claim window
-		// elapses). Closing the ordering window fully would need a
-		// distinct "release-failed" signal plus a conditional
-		// releaseRemainder — over-engineering for a store error that must
-		// land precisely on Release — so it is deliberately deferred.
+		// store write/I/O error). The record was NOT sent and Release did NOT
+		// transition it, so it stays durably Claimed. Return errReleaseFailed
+		// (M4) so the group loop STOPS this ordering group without counting the
+		// head as a success and without letting a later same-key record
+		// overtake it. The loop does NOT releaseRemainder for this signal: a
+		// store that just failed Release will fail it again, so the still-claimed
+		// head and the unattempted tail are recovered together by version/stale
+		// reclaim once the lease version advances (or the stale-claim window
+		// elapses). Not escalated to a stale-token cancel — sibling sends for
+		// other keys are unaffected by a localized store hiccup on this record.
 		d.log(ctx, slog.LevelWarn, "release after transient failure failed",
 			"record_id", rec.ID(), "error", releaseErr)
-		return nil
+		return errReleaseFailed
 	}
 }
 
@@ -312,17 +368,23 @@ func (d *Drainer) releaseRemainder(ctx context.Context, recs []*persistence.Outb
 func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
 	env := rec.Snapshot()
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
-	if d.policy.OnExpired == routing.ExpiredDLQ {
+	if d.policy.OnExpired == routing.ExpiredDLQ && d.dlq.HasStore() {
 		if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", shared.ErrMessageExpired, rec.ReplayCount()); dlqErr != nil {
 			return dlqErr
 		}
 		d.emitDLQ("expired")
 	} else {
-		// Expired-drop: previously fully silent (finding 15). Count it so the
-		// conservation law can attribute the loss.
+		// Expired-drop, or on_expired=dlq with no DLQ store wired. The latter is
+		// rejected by validateTerminalFailureSink at Start; the HasStore guard
+		// mirrors the permanent/poison branches here and dispatch.go for defense
+		// in depth, so we never emit a phantom DLQ metric for a Route whose
+		// dlq.Route would silently no-op. Count the loss (finding 15) so the
+		// conservation law can attribute it.
 		d.metrics.Counter(shared.MetricMessagesExpired, 1, routeTag)
 	}
-	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+	// M3: completeTerminal fires OnSettled only after Complete durably lands;
+	// the MessagesExpired / DLQ count above is per-write and already stands.
+	return d.completeTerminal(ctx, rec, token, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,
 		BindingID:   rec.BindingID(),
@@ -333,10 +395,6 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 		Err:         shared.ErrMessageExpired,
 		Terminal:    true,
 	})
-	completeCtx, completeCancel := d.completeCtx(ctx)
-	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
-	completeCancel()
-	return completeErr
 }
 
 func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
@@ -361,11 +419,7 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 		"first_attempted_at", rec.FirstAttemptedAt(),
 		"replay_budget", d.replayBudget)
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent, "replay count exceeded")
-	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", poisonErr, rec.ReplayCount()); dlqErr != nil {
-		return dlqErr
-	}
-	d.emitDLQ("poison")
-	d.hook.OnSettled(ctx, ports.DeliveryOutcome{
+	outcome := ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     d.routeID,
 		BindingID:   rec.BindingID(),
@@ -375,9 +429,25 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 		MaxAttempts: d.policy.MaxReplayAttempts,
 		Err:         poisonErr,
 		Terminal:    true,
-	})
-	completeCtx, completeCancel := d.completeCtx(ctx)
-	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
-	completeCancel()
-	return completeErr
+	}
+	// H3: honor OnPermanentFailure=drop / no DLQ store (mirror the permanent
+	// branch). A poison under a drop policy — or with no store to write to — is
+	// dropped-with-metric, not written to a DLQ the operator opted out of and
+	// not counted as a DLQ entry with nothing behind it.
+	if d.policy.OnPermanentFailure == routing.FailureDrop || !d.dlq.HasStore() {
+		d.emitDrop("poison")
+		// The point-of-loss detection WARN above records the poison with full
+		// replay-budget evidence (and auto route/partition attrs); this line
+		// records the DROP disposition that overrides the default DLQ intent.
+		d.log(ctx, slog.LevelWarn, "poison dropped: OnPermanentFailure=drop or no DLQ store",
+			"record_id", rec.ID(), "error", poisonErr)
+		return d.completeTerminal(ctx, rec, token, outcome)
+	}
+	if dlqErr := d.dlq.Route(ctx, env, d.routeID, rec.BindingID(), rec.Address(), rec.SessionID(), "", poisonErr, rec.ReplayCount()); dlqErr != nil {
+		return dlqErr
+	}
+	d.emitDLQ("poison")
+	// M3: OnSettled fires only after Complete durably lands; emitDLQ above is
+	// per-write and already stands even if Complete later fails.
+	return d.completeTerminal(ctx, rec, token, outcome)
 }

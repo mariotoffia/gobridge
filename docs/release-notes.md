@@ -8,6 +8,26 @@ operator must do about it. Entries link to an ADR where one records the decision
 Behavior changes from the production-readiness work. Review before upgrading —
 several are breaking at the wire or observable in operations.
 
+### Routing
+
+- **Filtered messages now default to `drop`, not the DLQ.** Silent
+  behavior-change, observable in operations. A message a processor intentionally
+  discards (`shared.ErrMessageFiltered` — e.g. a filter allow-list/deny-list
+  drop) now has its own route policy `on_filtered`, which defaults to `drop`
+  (`domain/routing/policy.go:166-172`). Before this change a filtered message
+  inherited the permanent-failure sink: `on_permanent_failure` defaults to
+  `dlq`, so intentionally-filtered messages accumulated in the DLQ by default.
+  After: filtered messages are dropped and counted in the `MessagesFiltered`
+  metric instead of landing in the DLQ (`runtime/route/dispatch.go:359-382`).
+  Any route that relied on filtered messages being retained in the DLQ must now
+  set `on_filtered: dlq` explicitly, and a DLQ store must be configured — the
+  runtime validator rejects the config and startup fails when `on_filtered=dlq`
+  is set without one (`runtime/validator.go:308-311`). Otherwise filtered messages
+  are dropped;
+  watch the `MessagesFiltered` metric to confirm expected filter volume. The
+  decoupling is deliberate: a high-volume allow-list filter no longer floods the
+  DLQ or drives redrive loops through the permanent-failure default.
+
 ### DLQ
 
 - **DLQ list ordering is now deterministic oldest-first.** The DLQ list and
@@ -77,6 +97,8 @@ several are breaking at the wire or observable in operations.
 
 ## Upgrade checklist
 
+- Set `on_filtered: dlq` (and configure a DLQ store) on any route that must keep
+  intentionally-filtered messages in the DLQ — the new default is `drop`.
 - Repoint any DLQ tooling from `total` to `has_more`, and expect oldest-first
   order.
 - Drop any `Last-Event-ID` reliance in SSE consumers.

@@ -20,7 +20,7 @@ Each server listens on a dedicated port and maps to its own ALB target group.
 | Port | Server | Default Address | Target Group | Health Check | Stickiness |
 |------|--------|-----------------|--------------|--------------|------------|
 | 8080 | Admin | `:8080` | `admin-tg` | Use monitor port (see below) | Recommended |
-| 8081 | Monitor | `:8081` | `monitor-tg` | `GET /api/v1/monitor/health` | Not needed |
+| 8081 | Monitor | `:8081` | `monitor-tg` | `GET /api/v1/monitor/live` | Not needed |
 | 8082 | Transport | `:8082` | `transport-tg` | Use monitor port (see below) | Not needed |
 
 Override default addresses with the `admin_addr`, `monitor_addr`, and
@@ -28,12 +28,22 @@ Override default addresses with the `admin_addr`, `monitor_addr`, and
 
 > **Health check note:** The health probe endpoints (`/health`, `/live`,
 > `/ready`) are registered only on the **monitor server** (port 8081). For
-> ALB target groups on ports 8080 and 8082, configure the health check to
-> use port 8081 with path `/api/v1/monitor/health`. The root `Dockerfile`
-> defines a container `HEALTHCHECK` that runs the binary directly
-> (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`) — the distroless
-> image ships no shell, `curl`, or `wget`, so probe the binary, not a URL
-> tool. The `-healthcheck` flag hits the local monitor `/live` endpoint.
+> **all three** ALB target groups (admin on 8080, monitor on 8081, transport on
+> 8082), configure the health check to use port 8081 with path
+> **`/api/v1/monitor/live`** — not `/health`. `/live` reports process liveness
+> and stays 200 after a clean stop, so all three planes stay reachable while the
+> bridge is paused or unhealthy; `/health` is a traffic-gating readiness signal
+> and would drain the plane from the ALB exactly when an operator needs it — the
+> admin API to start or diagnose the bridge, and the monitor API (`/deephealth`,
+> `/topology`, `/routes`) to inspect why. Health-checking the **transport** plane
+> on `/live` keeps a cleanly-stopped-but-alive instance in rotation (it will
+> reject ingress until it resumes or is replaced), trading brief ingress errors
+> during a rare deliberate pause for stable data-plane capacity across routine
+> config swaps that briefly flip `/health`. The root `Dockerfile` defines a container `HEALTHCHECK` that runs
+> the binary directly (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`)
+> — the distroless image ships no shell, `curl`, or `wget`, so probe the binary,
+> not a URL tool. The `-healthcheck` flag hits the local monitor `/live`
+> endpoint.
 
 ---
 
@@ -50,9 +60,9 @@ port externally only when HTTP ingress or SSE egress is required.
 | Timeout | 5 s | Ample margin over the monitor health handler latency |
 | Healthy threshold | 2 | Two consecutive passes before routing traffic |
 | Unhealthy threshold | 2 | Two consecutive failures before draining |
-| Path | `/api/v1/monitor/health` | Returns structured health status with component errors |
+| Path | `/api/v1/monitor/live` | Process-liveness signal; stays 200 after a clean stop, so the admin/transport target groups are not drained while the bridge is paused or unhealthy |
 | Port override | `8081` | Health probes are on the monitor server only |
-| Matcher | `200` | Only route traffic to healthy instances |
+| Matcher | `200` | Only route traffic to live (non-terminal) instances |
 
 ### CDK Listener Rule Example
 
@@ -78,7 +88,7 @@ adminTG := elbv2.NewApplicationTargetGroup(stack, jsii.String("AdminTG"),
         Protocol:           elbv2.ApplicationProtocol_HTTP,
         TargetType:         elbv2.TargetType_IP,
         HealthCheck: &elbv2.HealthCheck{
-            Path:                    jsii.String("/api/v1/monitor/health"),
+            Path:                    jsii.String("/api/v1/monitor/live"), // liveness: keep admin reachable while paused/unhealthy
             Port:                    jsii.String("8081"),
             Interval:                awscdk.Duration_Seconds(jsii.Number(15)),
             Timeout:                 awscdk.Duration_Seconds(jsii.Number(5)),

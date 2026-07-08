@@ -57,6 +57,29 @@ func TestPollBackoffDoublingAndCapS10(t *testing.T) {
 	}
 }
 
+// TestPollBackoffJitterNeverExceedsMaxS10 is the regression for Finding 11:
+// jitter was added AFTER the base was capped, so a +25% draw could return up
+// to 1.25*PollBackoffMax — violating the operator contract that a retry never
+// waits longer than PollBackoffMax. Once saturated, every jittered draw must
+// stay at or below the cap. Many draws exercise the random +25% path.
+func TestPollBackoffJitterNeverExceedsMaxS10(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultBackoffConfig()
+	b := newPollBackoffFromConfig(cfg)
+
+	// Saturate the base to the ceiling.
+	for i := 0; i < 20; i++ {
+		_ = b.next()
+	}
+
+	for i := 0; i < 10000; i++ {
+		if d := b.next(); d > cfg.PollBackoffMax {
+			t.Fatalf("draw %d: delay %v exceeds cap %v (Finding 11: jitter over cap)", i, d, cfg.PollBackoffMax)
+		}
+	}
+}
+
 // TestPollBackoffResetS10 verifies reset restores the backoff to the initial
 // scale on the following next() call.
 func TestPollBackoffResetS10(t *testing.T) {

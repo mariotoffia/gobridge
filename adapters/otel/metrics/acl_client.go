@@ -31,11 +31,16 @@ var errInstrumentLimit = errors.New("instrument cache limit reached")
 const rejectReportInterval = time.Minute
 
 // MetricExporterRejectedDatums is the self-metric (MF-5) reporting the
-// cumulative number of metric emissions this exporter rejected (full
-// instrument cache, K9). Published through the exporter's own pipeline
-// as an observable counter so silent self-loss is visible on the same
-// backend as the metrics themselves. Name kept in sync with the
-// CloudWatch adapter's equivalent self-metric.
+// cumulative number of metric emissions this exporter REJECTED at
+// emit-time — the datum never entered the export pipeline. Here the
+// reason is a full instrument cache (K9): a new dynamic metric name has
+// nowhere to record. Published through the exporter's own pipeline as an
+// observable counter so silent self-loss is visible on the same backend
+// as the metrics themselves. The name and the emit-time-rejection
+// semantic are kept in sync with the CloudWatch adapter's equivalent
+// self-metric (whose refusal reason is a NaN/Inf value instead); that
+// adapter additionally distinguishes ExporterDroppedDatums for datums
+// accepted into the pipeline and then lost.
 const MetricExporterRejectedDatums = "ExporterRejectedDatums"
 
 // meterClient is the adapter-internal mock seam shielding the
@@ -263,9 +268,40 @@ func (c *otelMeterClient) Histogram(name string, value float64, tags []shared.Ta
 	histogram.Record(context.Background(), value, metric.WithAttributes(c.buildAttributes(tags)...))
 }
 
+// latencyBucketBoundariesMs are the explicit histogram bucket
+// boundaries, in milliseconds, for Timer instruments. The OTel default
+// buckets (0, 5, 10, 25, 50, 75, 100, ...) carry NO sub-5ms resolution,
+// so fast in-process hops all collapse into the first bucket and their
+// distribution is invisible. These add 0.5/1/2.5ms buckets for that
+// range while keeping a coarse upper tail (up to 10s) for slow outliers.
+//
+//nolint:gochecknoglobals // immutable histogram bucket boundaries computed once, not state.
+var latencyBucketBoundariesMs = []float64{
+	0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000,
+}
+
+// timerInstrumentOpts stamp every Timer histogram with its unit ("ms")
+// and latencyBucketBoundariesMs. Applied as advisory INSTRUMENT options
+// (WithUnit / WithExplicitBucketBoundaries) rather than a MeterProvider
+// View so the unit and buckets travel WITH the instrument: the adapter's
+// public NewFromProvider constructor accepts an external provider that
+// carries no View, and the SDK honors these advisory boundaries as the
+// default aggregation when no View overrides them.
+//
+//nolint:gochecknoglobals // immutable advisory instrument options computed once, not state.
+var timerInstrumentOpts = []metric.Float64HistogramOption{
+	metric.WithUnit("ms"),
+	metric.WithExplicitBucketBoundaries(latencyBucketBoundariesMs...),
+}
+
 func (c *otelMeterClient) Timer(name string, duration time.Duration, tags []shared.Tag) {
 	ms := float64(duration.Nanoseconds()) / float64(time.Millisecond)
-	c.Histogram(name, ms, tags)
+	histogram, err := c.getOrCreateHistogram(name, timerInstrumentOpts...)
+	if err != nil {
+		c.reportInstrumentError(name, err)
+		return
+	}
+	histogram.Record(context.Background(), ms, metric.WithAttributes(c.buildAttributes(tags)...))
 }
 
 func (c *otelMeterClient) Flush(ctx context.Context) error {
@@ -365,7 +401,12 @@ func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, er
 	return gauge, nil
 }
 
-func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histogram, error) {
+// getOrCreateHistogram lazily creates (or returns the cached) histogram
+// for name. opts are applied only on first creation — an OTel instrument
+// is identified by name, so a later call with different opts returns the
+// existing instrument unchanged. Timer passes timerInstrumentOpts (unit +
+// latency buckets); plain Histogram passes none (SDK default buckets).
+func (c *otelMeterClient) getOrCreateHistogram(name string, opts ...metric.Float64HistogramOption) (metric.Float64Histogram, error) {
 	c.mu.RLock()
 	histogram, ok := c.histograms[name]
 	full := !ok && c.isFullLocked()
@@ -389,7 +430,7 @@ func (c *otelMeterClient) getOrCreateHistogram(name string) (metric.Float64Histo
 		return nil, errInstrumentLimit
 	}
 
-	histogram, err := c.meter.Float64Histogram(name)
+	histogram, err := c.meter.Float64Histogram(name, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("otel-metrics: create float64 histogram: %w", err)
 	}

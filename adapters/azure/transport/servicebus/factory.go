@@ -119,9 +119,26 @@ func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session 
 	return f.send.NewSender(ctx, spec, session)
 }
 
-// Capabilities returns the transport capabilities for Azure Service Bus.
+// Capabilities returns the transport-WIDE capabilities for Azure Service
+// Bus. These describe the PeekLock (default) source, matching the SQS
+// transport's set:
+//
+//   - CapVisibilityExtension — RenewMessageLock (Extend).
+//   - CapSourceRedelivery    — AbandonMessage / lock expiry redelivers.
+//   - CapDelayedSend         — ScheduleMessages backs a delayed Retry.
+//
+// A ReceiveAndDelete receiver honours NONE of these (the message is gone
+// at receive time), and a topic subscription cannot honour a delayed
+// Retry. The stateless Factory has no per-route config in scope, so it
+// advertises the default PeekLock-queue set; the builder OVERRIDES it per
+// route with Config.Capabilities() when the receiver config implements
+// ports.CapabilityConfig (bridge/builder_complete.go).
 func (f *Factory) Capabilities() []ports.Capability {
-	return []ports.Capability{ports.CapVisibilityExtension}
+	return []ports.Capability{
+		ports.CapVisibilityExtension,
+		ports.CapSourceRedelivery,
+		ports.CapDelayedSend,
+	}
 }
 
 // AddressValidator returns nil — Azure Service Bus entity names are

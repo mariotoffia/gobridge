@@ -29,11 +29,17 @@ func messageToHeaders(msg *amqp.Message) map[string]any {
 	h := make(map[string]any, size)
 
 	if msg.Properties != nil {
-		if msg.Properties.MessageID != nil {
-			h[headerMessageID] = msg.Properties.MessageID
+		// F9: render the message-id / correlation-id to their canonical
+		// STRING form (messageIDToString handles string/uuid/ulong/binary)
+		// so a go-amqp SDK type (amqp.UUID, []byte) never lands in the
+		// domain envelope headers, where audit JSON would otherwise emit
+		// raw byte arrays (ACL purity). An unrecognised (non-spec) id type
+		// renders empty and is dropped rather than leaked.
+		if id := messageIDToString(msg.Properties.MessageID); id != "" {
+			h[headerMessageID] = id
 		}
-		if msg.Properties.CorrelationID != nil {
-			h[headerCorrelationID] = msg.Properties.CorrelationID
+		if id := messageIDToString(msg.Properties.CorrelationID); id != "" {
+			h[headerCorrelationID] = id
 		}
 		if msg.Properties.ContentType != nil {
 			h[headerContentType] = *msg.Properties.ContentType
@@ -75,7 +81,7 @@ func messageToHeaders(msg *amqp.Message) map[string]any {
 		if messaging.IsReservedHeader(k) || strings.HasPrefix(k, headerPrefix) {
 			continue
 		}
-		h[k] = v
+		h[k] = renderAMQP10AppPropertyValue(v)
 	}
 
 	return h
@@ -218,8 +224,16 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 	// downstream by the TTL/IsExpired logic — it must NOT fail ingress, which
 	// on this transport would tear down the receiver link.
 	var expiresAt time.Time
-	if msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil {
+	switch {
+	case msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil:
 		expiresAt = *msg.Properties.AbsoluteExpiryTime
+	case msg.Header != nil && msg.Header.TTL > 0:
+		// F7: a ttl-only message (Header.TTL set, no AbsoluteExpiryTime)
+		// would otherwise cross the bridge as immortal — the relative
+		// lifetime is dropped and nothing downstream can expire it. Stamp
+		// a concrete expiry of receive-time + TTL so the producer's
+		// intended lifetime is honored on this and subsequent hops.
+		expiresAt = clk.Now().Add(msg.Header.TTL)
 	}
 	// Preserve the producer's creation-time when present; fall back to
 	// the bridge receive time only for messages that carry none, so a
@@ -325,6 +339,36 @@ func messageIDToString(id any) string {
 		return hex.EncodeToString(v)
 	default:
 		return ""
+	}
+}
+
+// renderAMQP10AppPropertyValue converts a go-amqp application-property
+// value into a domain-safe representation so no SDK type crosses the ACL
+// into envelope headers (F9 application-property path). Audit JSON would
+// otherwise emit raw byte arrays or opaque amqp.* values. SDK carriers
+// render deterministically (amqp.UUID -> canonical string, amqp.Symbol ->
+// string, binary -> hex); stdlib primitives (including time.Time) pass
+// through unchanged. Any other type is rendered via fmt.Sprint so a stray
+// SDK type can never leak. Unlike messageIDToString this passes primitives
+// through instead of erasing them to "".
+func renderAMQP10AppPropertyValue(v any) any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case amqp.UUID:
+		return x.String()
+	case amqp.Symbol:
+		return string(x)
+	case []byte:
+		return hex.EncodeToString(x)
+	case string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64,
+		time.Time:
+		return v
+	default:
+		return fmt.Sprint(v)
 	}
 }
 

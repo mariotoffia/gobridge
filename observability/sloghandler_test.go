@@ -92,7 +92,9 @@ func TestCorrelationHandler_WithAttrs(t *testing.T) {
 	assert.Equal(t, "test-svc", m["service"])
 }
 
-// Verifies correlation_id is placed inside a slog group when the handler uses WithGroup.
+// Verifies correlation_id is composed FLAT at the record root even when
+// the handler has an open group, so documented $.correlation_id queries
+// never miss a grouped record. The record's own attrs stay grouped.
 func TestCorrelationHandler_WithGroup(t *testing.T) {
 	var buf bytes.Buffer
 	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
@@ -107,10 +109,43 @@ func TestCorrelationHandler_WithGroup(t *testing.T) {
 	m := parseJSON(t, &buf)
 	assert.Equal(t, "grouped", m["msg"])
 
+	// correlation_id is flat at the root, NOT nested in the group.
+	assert.Equal(t, "corr-grp", m["correlation_id"])
+
 	group, ok := m["request"].(map[string]any)
 	require.True(t, ok, "expected 'request' group in output")
 	assert.Equal(t, "/api", group["path"])
-	assert.Equal(t, "corr-grp", group["correlation_id"])
+	assert.NotContains(t, group, "correlation_id",
+		"correlation_id must not be nested inside the open group")
+}
+
+// Verifies correlation fields stay flat at the root even under nested
+// groups, while the record's own attrs remain nested in the innermost group.
+func TestCorrelationHandler_NestedGroups(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	handler := observability.NewCorrelationHandler(inner).
+		WithAttrs([]slog.Attr{slog.String("service", "svc")}).
+		WithGroup("outer").
+		WithGroup("inner")
+	logger := slog.New(handler)
+
+	ctx := observability.WithCorrelationID(context.Background(), "corr-nested")
+	ctx = observability.WithTraceID(ctx, "trace-nested")
+
+	logger.InfoContext(ctx, "deep", slog.String("k", "v"))
+
+	m := parseJSON(t, &buf)
+	assert.Equal(t, "corr-nested", m["correlation_id"])
+	assert.Equal(t, "trace-nested", m["trace_id"])
+	assert.Equal(t, "svc", m["service"], "pre-group attrs stay at root")
+
+	outer, ok := m["outer"].(map[string]any)
+	require.True(t, ok, "expected 'outer' group")
+	inner2, ok := outer["inner"].(map[string]any)
+	require.True(t, ok, "expected nested 'inner' group")
+	assert.Equal(t, "v", inner2["k"], "record attr nests in the innermost group")
+	assert.NotContains(t, inner2, "correlation_id")
 }
 
 // TestNewCorrelationHandler_NilInner_Panics validates that passing nil

@@ -10,12 +10,29 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-func (r *RouteRunner) outboxPartitionKey(plans []routing.DispatchPlan) string {
-	if len(plans) == 0 {
-		return ""
+// distinctOutboxPartitions returns the outbox partition keys a dispatch fan-out
+// would write into — one per plan, deduplicated in first-seen order. A fan-out
+// to N bindings that map to N distinct sessions yields N distinct partitions;
+// bindings sharing a session collapse to one. The advisory depth check (L3)
+// consults EVERY distinct partition, not just plans[0]'s, so a full partition on
+// any fan-out leg still applies backpressure — a single-binding route (the
+// common case) yields exactly one key, identical to the pre-L3 behavior.
+func (r *RouteRunner) distinctOutboxPartitions(plans []routing.DispatchPlan) []string {
+	keys := make([]string, 0, len(plans))
+	seen := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		sessionID := r.sessionIDForBinding(plan.BindingID)
+		key := persistence.OutboxPartitionKey(sessionID, plan.BindingID)
+		if key == "" {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
 	}
-	sessionID := r.sessionIDForBinding(plans[0].BindingID)
-	return persistence.OutboxPartitionKey(sessionID, plans[0].BindingID)
+	return keys
 }
 
 func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope) ([]routing.DispatchPlan, error) {
@@ -76,14 +93,50 @@ func (r *RouteRunner) validatePlanAddresses(plans []routing.DispatchPlan) error 
 
 // validateAddress invokes the AddressValidator registered for bindingID
 // (if any). Returns a shared.ErrInvalidTopic-wrapped error on failure.
+//
+// When a binding's transport registers NO AddressValidator, a minimal
+// TRANSPORT-AGNOSTIC sanity check still runs (F7): a {header} placeholder splices
+// producer-controlled bytes straight into the destination address, so an
+// otherwise-unvalidated rendered address is rejected when it is empty or carries
+// an ASCII control character (NUL, CR, LF, TAB, other C0, or DEL) — bytes that
+// are never legitimate in a transport address and are the classic
+// address/header/log-injection vector. The check is deliberately conservative: it
+// does NOT reject wildcard or other metacharacters (an MQTT '#'/'+', an AMQP
+// '*'/'>'), whose legitimacy is transport-specific and belongs to the transport's
+// own AddressValidator — which, when registered, supersedes this generic check
+// entirely.
 func (r *RouteRunner) validateAddress(bindingID, address string) error {
 	v, ok := r.addressValidators[bindingID]
 	if !ok || v == nil {
+		if err := genericAddressSanity(address); err != nil {
+			return shared.ErrInvalidTopic.
+				WithMessage(fmt.Sprintf("binding %q: %v", bindingID, err))
+		}
 		return nil
 	}
 	if err := v.ValidateAddress(address); err != nil {
 		return shared.ErrInvalidTopic.
 			WithMessage(fmt.Sprintf("binding %q: %v", bindingID, err))
+	}
+	return nil
+}
+
+// genericAddressSanity is the transport-agnostic fallback address check applied
+// only when a binding's transport registers no AddressValidator (F7). It rejects
+// an empty rendered address and any ASCII control character (the C0 range below
+// 0x20, or DEL 0x7f) — never valid in a transport destination and the vehicle for
+// address/header/log injection when a {header} placeholder splices
+// producer-controlled bytes into the address. It intentionally permits every
+// printable character, including transport wildcards, whose legitimacy only a
+// transport-specific validator can judge.
+func genericAddressSanity(address string) error {
+	if address == "" {
+		return fmt.Errorf("rendered address is empty")
+	}
+	for i := 0; i < len(address); i++ {
+		if c := address[i]; c < 0x20 || c == 0x7f {
+			return fmt.Errorf("rendered address contains control character 0x%02x at offset %d", c, i)
+		}
 	}
 	return nil
 }

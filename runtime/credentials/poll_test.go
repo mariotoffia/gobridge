@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // fakePullStore returns a new CredentialSet from a queue on each
@@ -181,8 +182,40 @@ func TestPollBasedWrapper_ResolveErrorKeepsGoing(t *testing.T) {
 	require.GreaterOrEqual(t, atomic.LoadInt64(&pull.calls), int64(2))
 }
 
-// TestPollBasedWrapper_NilGuards verifies Watch rejects nil/invalid
-// inputs at the boundary.
+// TestPollBasedWrapper_EmitsRefreshFailureMetric verifies a resolve failure
+// increments shared.MetricCredentialRefreshFailures on both the initial seed
+// resolve and every periodic poll, so the log-only failure is also visible as
+// a metric.
+func TestPollBasedWrapper_EmitsRefreshFailureMetric(t *testing.T) {
+	t.Parallel()
+
+	pull := &fakePullStore{err: errors.New("backend down")}
+	fake := clocktest.New()
+	rec := &ports.RecordingExporter{}
+	w := NewPollBasedWrapper(pull, ports.PollBasedWrapperConfig{
+		PollInterval: time.Second,
+		EmitOnStart:  true,
+	}, WithPollClock(fake), WithPollMetrics(rec))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, err := w.Watch(ctx, "file://creds/fail")
+	require.NoError(t, err)
+
+	// The seed resolve fails and emits exactly one counter before the poll
+	// timer is armed (the barrier below).
+	require.Eventually(t, func() bool { return fake.TimerCount() >= 1 }, time.Second, time.Millisecond)
+	seed := rec.FindEntries(shared.MetricCredentialRefreshFailures)
+	require.Len(t, seed, 1, "seed resolve failure must emit one counter")
+	require.Equal(t, "counter", seed[0].Kind)
+	require.Equal(t, int64(1), seed[0].IValue)
+
+	// One periodic poll: it also fails and emits a second counter.
+	fake.Advance(time.Second)
+	require.Eventually(t, func() bool {
+		return len(rec.FindEntries(shared.MetricCredentialRefreshFailures)) >= 2
+	}, time.Second, time.Millisecond, "periodic resolve failure must emit another counter")
+}
 func TestPollBasedWrapper_NilGuards(t *testing.T) {
 	t.Parallel()
 
@@ -297,38 +330,55 @@ func TestPollBasedWrapper_OnRotationInvokedBeforeEmission(t *testing.T) {
 	mu.Unlock()
 }
 
-// fakeUncachedPull implements both Resolve and ResolveUncached with
-// separate counters so tests can prove which path the wrapper uses.
+// fakeUncachedPull implements both Resolve (the cached/build-time value)
+// and ResolveUncached (fresh backend reads from a queue) with separate
+// counters and sources so tests can prove which path the wrapper uses and
+// exercise the F1 build-window seed divergence deterministically.
+//
+//   - Resolve      → returns cached (what a freshly built session holds).
+//   - ResolveUncached → pops fresh from an independent queue (the backend).
 type fakeUncachedPull struct {
-	inner         fakePullStore
+	cached        *connectivity.CredentialSet
+	cachedErr     error
+	fresh         fakePullStore
 	cachedCalls   atomic.Int64
 	uncachedCalls atomic.Int64
 }
 
-func (f *fakeUncachedPull) Resolve(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
+func (f *fakeUncachedPull) Resolve(_ context.Context, _ string) (*connectivity.CredentialSet, error) {
 	f.cachedCalls.Add(1)
-	return f.inner.Resolve(ctx, uri)
+	if f.cachedErr != nil {
+		return nil, f.cachedErr
+	}
+	return f.cached, nil
 }
 
 func (f *fakeUncachedPull) ResolveUncached(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
 	f.uncachedCalls.Add(1)
-	return f.inner.Resolve(ctx, uri)
+	return f.fresh.Resolve(ctx, uri)
 }
 
 var _ UncachedPullCredentialStore = (*fakeUncachedPull)(nil)
 
 // TestPollBasedWrapper_PrefersUncachedResolve verifies that when the
-// wrapped store exposes ResolveUncached, EVERY poll read (seed and
-// ticks) bypasses the cached Resolve path — a rotation poll that reads
-// a TTL cache cannot detect rotations before the TTL expires.
+// wrapped store exposes ResolveUncached, the poll TICKS bypass the cached
+// Resolve path — a rotation poll that reads a TTL cache cannot detect
+// rotations before the TTL expires. The seed performs exactly ONE cached
+// read to learn the build-time baseline (F1); all subsequent poll reads
+// are uncached.
 func TestPollBasedWrapper_PrefersUncachedResolve(t *testing.T) {
 	t.Parallel()
 
 	fake := clocktest.New()
-	pull := &fakeUncachedPull{inner: fakePullStore{queue: []*connectivity.CredentialSet{
-		pwd("u1", "p1"), // seed
-		pwd("u2", "p2"), // rotation
-	}}}
+	// Build-time cached value == first fresh value, so the seed does not
+	// diverge; the rotation surfaces on the first uncached tick.
+	pull := &fakeUncachedPull{
+		cached: pwd("u1", "p1"),
+		fresh: fakePullStore{queue: []*connectivity.CredentialSet{
+			pwd("u1", "p1"), // seed fresh (matches cached → no seed rotation)
+			pwd("u2", "p2"), // rotation, surfaced on first tick
+		}},
+	}
 
 	w := NewPollBasedWrapper(pull, ports.PollBasedWrapperConfig{
 		PollInterval: time.Second,
@@ -356,8 +406,120 @@ func TestPollBasedWrapper_PrefersUncachedResolve(t *testing.T) {
 		t.Fatal("timed out waiting for rotation emission")
 	}
 
-	require.Zero(t, pull.cachedCalls.Load(), "wrapper polled the cached Resolve path; rotations would hide behind the cache TTL")
-	require.GreaterOrEqual(t, pull.uncachedCalls.Load(), int64(2))
+	require.Equal(t, int64(1), pull.cachedCalls.Load(), "seed must read the cached baseline exactly once (F1); ticks must be uncached")
+	require.GreaterOrEqual(t, pull.uncachedCalls.Load(), int64(2), "ticks must bypass the cache or rotations hide behind the TTL")
+}
+
+// TestPollBasedWrapper_SeedSurfacesBuildWindowRotation is the F1 regression
+// test: a rotation that lands in the build→watch window (the freshly built
+// session holds the STALE build-time cached value, but the backend already
+// holds the ROTATED value) must be surfaced as a rotation at SEED time —
+// immediately, without waiting for a poll tick — EVEN WHEN EmitOnStart is
+// false (the shipped production default before this fix).
+//
+// Counterfactual: before the F1 fix the seed adopted the fresh uncached
+// value as the dedup baseline and, with EmitOnStart=false, emitted nothing;
+// every later poll then saw "no change" and the session ran on the
+// rotated-out (revoked) credentials forever. With the fix, the seed compares
+// the cached baseline against the fresh value and emits the divergence.
+func TestPollBasedWrapper_SeedSurfacesBuildWindowRotation(t *testing.T) {
+	t.Parallel()
+
+	fake := clocktest.New()
+	// cached == build-time (STALE) value the session was built with.
+	// fresh  == backend value AFTER the rotation that landed in the window.
+	pull := &fakeUncachedPull{
+		cached: pwd("stale-user", "stale-pass"),
+		fresh: fakePullStore{queue: []*connectivity.CredentialSet{
+			pwd("fresh-user", "fresh-pass"),
+		}},
+	}
+
+	var rotations atomic.Int64
+	w := NewPollBasedWrapper(pull, ports.PollBasedWrapperConfig{
+		PollInterval: time.Hour, // large: prove emission is at SEED, not a tick
+		EmitOnStart:  false,     // the pre-fix shipped production default
+	}, WithPollClock(fake), WithOnRotation(func(string) { rotations.Add(1) }))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	ch, err := w.Watch(ctx, "file://creds/a")
+	require.NoError(t, err)
+
+	// The rotation must be emitted at seed WITHOUT advancing the clock.
+	select {
+	case got := <-ch:
+		require.Equal(t, "fresh-user", got.Password().Username(),
+			"seed must emit the fresh (rotated) value, not the stale build-time value")
+	case <-time.After(2 * time.Second):
+		t.Fatal("F1 regression: rotation landing in the build window was silently swallowed")
+	}
+	require.Equal(t, int64(1), rotations.Load(), "OnRotation must fire for a build-window rotation")
+}
+
+// TestPollBasedWrapper_RefreshForcesImmediateReResolve is the F2 regression
+// test: after a hard rotation the broker rejects the live credentials
+// (NOT_AUTHORIZED). The transport/refresher calls Refresh(uri) to force an
+// out-of-band re-resolve INSTEAD of waiting up to a full PollInterval
+// (default 5m) for the timer. The fresh secret must be delivered without
+// advancing the poll timer, and Refresh must be rate limited per URI so a
+// reconnect storm collapses into one backend fetch per interval.
+func TestPollBasedWrapper_RefreshForcesImmediateReResolve(t *testing.T) {
+	t.Parallel()
+
+	fake := clocktest.New()
+	pull := &fakeUncachedPull{
+		cached: pwd("u1", "p1"),
+		fresh: fakePullStore{queue: []*connectivity.CredentialSet{
+			pwd("u1", "p1"), // seed fresh (== cached → no seed emission)
+			pwd("u2", "p2"), // delivered by the reactive Refresh, NOT a tick
+		}},
+	}
+
+	const reactiveInterval = time.Second
+	w := NewPollBasedWrapper(pull, ports.PollBasedWrapperConfig{
+		PollInterval: time.Hour, // large: prove delivery is reactive, not a tick
+		EmitOnStart:  false,
+	}, WithPollClock(fake), WithReactiveReResolveInterval(reactiveInterval))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	ch, err := w.Watch(ctx, "file://creds/a")
+	require.NoError(t, err)
+
+	// Wait until the watch goroutine has registered its nudge channel and
+	// installed its timer (the seed resolve has completed by then).
+	wait.Until(t, 2*time.Second, "watch installed timer", func() bool { return fake.TimerCount() >= 1 })
+	require.Equal(t, int64(1), pull.uncachedCalls.Load(), "only the seed resolve so far")
+
+	// Reactive re-resolve — no clock advance. The fresh (rotated) value must
+	// be delivered immediately.
+	w.Refresh("file://creds/a")
+	got := wait.RequireReceive(t, ch, 2*time.Second)
+	require.Equal(t, "u2", got.Password().Username(), "Refresh must deliver the fresh credentials without waiting for a tick")
+	require.Equal(t, int64(2), pull.uncachedCalls.Load(), "exactly one reactive resolve")
+
+	// Rate limiting: a second Refresh within reactiveInterval (clock not
+	// advanced) must be dropped — no extra backend fetch.
+	w.Refresh("file://creds/a")
+	wait.Silent(t, ch, 100*time.Millisecond)
+	require.Equal(t, int64(2), pull.uncachedCalls.Load(), "Refresh must be rate limited within the interval")
+
+	// After the interval elapses, Refresh is honoured again.
+	fake.Advance(reactiveInterval)
+	w.Refresh("file://creds/a")
+	wait.Until(t, 2*time.Second, "reactive resolve after interval", func() bool { return pull.uncachedCalls.Load() >= 3 })
+}
+
+// TestPollBasedWrapper_RefreshUnknownURIIsNoop verifies Refresh is a safe
+// no-op for a URI that is not being watched (no panic, no state recorded).
+func TestPollBasedWrapper_RefreshUnknownURIIsNoop(t *testing.T) {
+	t.Parallel()
+
+	w := NewPollBasedWrapper(&fakePullStore{}, ports.PollBasedWrapperConfig{PollInterval: time.Second})
+	require.NotPanics(t, func() { w.Refresh("file://never/watched") })
 }
 
 // TestPollBasedWrapper_NextDelayConcurrentlySafe exercises the shared

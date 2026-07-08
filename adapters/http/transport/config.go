@@ -23,6 +23,17 @@ const minAPIKeyLength = 16
 // operator does not set WriteTimeout. See Config.WriteTimeout.
 const defaultSSEWriteTimeout = 15 * time.Second
 
+// defaultMaxDispatchDuration bounds the DETACHED ingress dispatch when the
+// operator does not set MaxDispatchDuration. It is the backstop that
+// cancels the context.WithoutCancel dispatch copy even when the fronting
+// server installs no request-context deadline. See Config.MaxDispatchDuration.
+const defaultMaxDispatchDuration = 5 * time.Minute
+
+// defaultSSEClientBuffer is the fallback per-connection SSE event-queue
+// depth when the operator does not set ClientBufferSize. See
+// Config.ClientBufferSize.
+const defaultSSEClientBuffer = 256
+
 // Config is the typed plugin config for the HTTP transport. It covers
 // both the receiver (POST endpoint) and the SSE sender. All fields are
 // optional except Mode, which the sender rejects when it is anything
@@ -49,6 +60,31 @@ type Config struct {
 	// falls through to the 10000 default; there is no uncapped mode.
 	MaxClients int `yaml:"max_clients,omitempty" json:"max_clients,omitempty" mapstructure:"max_clients"`
 
+	// ClientBufferSize sizes each connected SSE client's per-connection
+	// event queue. A broadcast that finds a client's queue full drops
+	// the event for that client (counted on MetricSSEDroppedEvents)
+	// instead of blocking the fan-out to healthy clients. Zero falls
+	// through to the 256 default. Raising it trades memory for tolerance
+	// of bursty producers / briefly slow consumers. There is
+	// deliberately NO slow-consumer disconnect policy keyed on this
+	// depth: a persistently slow client is evicted by the per-write
+	// deadline (WriteTimeout), not by queue occupancy.
+	ClientBufferSize int `yaml:"client_buffer_size,omitempty" json:"client_buffer_size,omitempty" mapstructure:"client_buffer_size"`
+
+	// FailOnZeroDelivery flips the SSE at-most-once contract into a
+	// fail-loud one: when a broadcast reaches ZERO clients — either no
+	// subscribers are connected or every subscriber's buffer was full —
+	// Send returns a TRANSIENT (Unavailable-class) error instead of
+	// reporting success. The default (false) preserves today's
+	// at-most-once behaviour: Send succeeds and the route runner acks the
+	// source even though the event reached nobody. Transient (not
+	// permanent) is deliberate — it lets the runner RETRY, giving a
+	// briefly-disconnected subscriber time to reconnect, and then DLQ per
+	// the route's retry-exhaustion policy. This flag stops SILENT loss; it
+	// is NOT a replay buffer. Durable fan-out still requires a
+	// shared_outbox route policy.
+	FailOnZeroDelivery bool `yaml:"fail_on_zero_delivery,omitempty" json:"fail_on_zero_delivery,omitempty" mapstructure:"fail_on_zero_delivery"`
+
 	// RedirectEndpoint names the PeerInfo.Endpoints key an SSE sender
 	// uses to build the 307 redirect target when the bound route is
 	// owned by a remote cluster node. Empty (the default) DISABLES the
@@ -68,6 +104,19 @@ type Config struct {
 	// Zero falls through to the 4096 default. The window is node-local
 	// and best-effort — see doc.go "Ingress idempotency window".
 	DedupWindow int `yaml:"dedup_window,omitempty" json:"dedup_window,omitempty" mapstructure:"dedup_window"`
+
+	// MaxDispatchDuration bounds the DETACHED ingress dispatch. Once a
+	// request body is accepted the delivery is emitted on a
+	// context.WithoutCancel copy of the request context so a client
+	// disconnect cannot abort the pipeline mid-flight. This cap guarantees
+	// that detached context is ALWAYS cancelled — the SSE/ingress handler
+	// arms it unconditionally, so a wedged downstream cannot leak one
+	// goroutine + in-memory delivery per stuck request even when the
+	// fronting http.Server installs no request-context deadline (a bare
+	// Read/WriteTimeout does not set one, so the previous conditional
+	// re-arm was a no-op). Zero falls through to the 5m default. The
+	// deadline is released early when the delivery settles (Ack/Retry).
+	MaxDispatchDuration time.Duration `yaml:"max_dispatch_duration,omitempty" json:"max_dispatch_duration,omitempty" mapstructure:"max_dispatch_duration"`
 
 	// WriteTimeout bounds each individual SSE frame write. The SSE
 	// handler re-arms this per-write deadline before every frame via
@@ -104,6 +153,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxClients < 0 {
 		return fmt.Errorf("http: max_clients must be >= 0")
+	}
+	if c.ClientBufferSize < 0 {
+		return fmt.Errorf("http: client_buffer_size must be >= 0")
+	}
+	if c.MaxDispatchDuration < 0 {
+		return fmt.Errorf("http: max_dispatch_duration must be >= 0")
 	}
 	if c.DedupWindow < 0 {
 		return fmt.Errorf("http: dedup_window must be >= 0")
@@ -144,6 +199,24 @@ func (c Config) effectiveWriteTimeout() time.Duration {
 		return defaultSSEWriteTimeout
 	}
 	return c.WriteTimeout
+}
+
+// effectiveMaxDispatchDuration returns the detached-dispatch cap,
+// defaulting to defaultMaxDispatchDuration. Mirrors effectiveWriteTimeout.
+func (c Config) effectiveMaxDispatchDuration() time.Duration {
+	if c.MaxDispatchDuration <= 0 {
+		return defaultMaxDispatchDuration
+	}
+	return c.MaxDispatchDuration
+}
+
+// effectiveClientBufferSize returns the per-client SSE queue depth,
+// defaulting to defaultSSEClientBuffer. Mirrors effectiveHeartbeat.
+func (c Config) effectiveClientBufferSize() int {
+	if c.ClientBufferSize <= 0 {
+		return defaultSSEClientBuffer
+	}
+	return c.ClientBufferSize
 }
 
 func (c Config) effectiveMode() string {

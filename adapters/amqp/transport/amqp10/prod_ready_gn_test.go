@@ -68,11 +68,13 @@ func TestDelivery_DelayedRetryDeferred_MetricAndWarn(t *testing.T) {
 	}
 }
 
-// TestSession_Health_ActiveClampedToRegistered covers G-N3: with a plan
-// wanting 2 subscriptions but only 1 registered (link-up) receiver,
+// TestSession_Health_ActiveClampedToRegistered covers G-N3 + F5: with a
+// plan wanting 2 subscriptions but only 1 registered (link-up) receiver,
 // Health reports the link-derived active count (1), not the plan count
-// (2). Full is still reported because no registered receiver's link is
-// down; only the over-reported active count is corrected.
+// (2). Because active (1) < wanted (2) the session is Degraded, NOT Full
+// (F5 supersedes the earlier G-N3 assertion that kept Full while clamping
+// active): reporting Full while a planned subscription has no receiver
+// hides the missing route from readiness.
 func TestSession_Health_ActiveClampedToRegistered(t *testing.T) {
 	s := newTestSession()
 	s.mu.Lock()
@@ -94,7 +96,7 @@ func TestSession_Health_ActiveClampedToRegistered(t *testing.T) {
 	if h.SubscriptionsActive != 1 {
 		t.Fatalf("SubscriptionsActive = %d, want 1 (clamped to registered up receivers)", h.SubscriptionsActive)
 	}
-	if h.ServiceLevel != ports.ServiceLevelFull {
-		t.Fatalf("ServiceLevel = %q, want %q", h.ServiceLevel, ports.ServiceLevelFull)
+	if h.ServiceLevel != ports.ServiceLevelDegraded {
+		t.Fatalf("ServiceLevel = %q, want %q (F5: active < wanted)", h.ServiceLevel, ports.ServiceLevelDegraded)
 	}
 }

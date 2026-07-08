@@ -337,10 +337,14 @@ func TestRouteRunner_ProcessorError_MessageFiltered_Drop(t *testing.T) {
 }
 
 // TestRouteRunner_ProcessorError_MessageFiltered_DLQ verifies filtered messages are
-// written to DLQ and acked when OnPermanentFailure is set to DLQ.
+// written to DLQ and acked when the filter-drop policy OnFiltered is set to DLQ.
+// It also pins the conservation law: a DLQ'd filter-drop is counted ONCE, as
+// DLQEntries{category=filtered}, and MUST NOT also emit MessagesFiltered.
 func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
+	rec := &ports.RecordingExporter{}
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
-		cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+		cfg.Policy.OnFiltered = routing.FilteredDLQ
+		cfg.Metrics = rec
 		cfg.Processors = []ports.Processor{
 			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
 		}
@@ -368,6 +372,137 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 	}
 	if sender.SentCount() != 0 {
 		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())
+	}
+
+	// DLQEntries{category=filtered} counts the message; MessagesFiltered must NOT
+	// also fire (each message is counted exactly once by the conservation law).
+	dlqEntries := rec.FindEntries(shared.MetricDLQEntries)
+	if len(dlqEntries) != 1 {
+		t.Fatalf("expected 1 DLQEntries metric, got %d", len(dlqEntries))
+	}
+	if !metricHasTag(dlqEntries[0], shared.TagKeyCategory, "filtered") {
+		t.Fatalf("DLQEntries metric must be tagged category=filtered, got %v", dlqEntries[0].Tags)
+	}
+	if n := len(rec.FindEntries(shared.MetricMessagesFiltered)); n != 0 {
+		t.Fatalf("a DLQ'd filter-drop must NOT also emit MessagesFiltered, got %d", n)
+	}
+}
+
+// TestRouteRunner_ProcessorError_MessageFiltered_DefaultDropsNotDLQ is the F1
+// regression guard. With the DEFAULT policy (OnPermanentFailure defaults to
+// FailureDLQ) AND a DLQ store configured, a message a processor intentionally
+// drops must be DROPPED (MessagesFiltered emitted), NOT written to the DLQ.
+// Before F1 the filter-drop was gated on OnPermanentFailure==FailureDLQ, so an
+// allow-list filter DLQ'd 100% of non-matching traffic by default.
+//
+// Fails without the fix (restore the OnPermanentFailure gate): dlqStore.Count()
+// becomes 1 and MessagesFiltered is never emitted.
+func TestRouteRunner_ProcessorError_MessageFiltered_DefaultDropsNotDLQ(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+		// Default policy: OnPermanentFailure=dlq (via WithDefaults), OnFiltered
+		// unset => defaults to drop. A DLQ store IS configured (makeRunner wires
+		// one) — the point is that filter-drops still do not use it.
+		cfg.Metrics = rec
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "allowlist", ProcessErr: shared.ErrMessageFiltered},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered-default"}))
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "filtered message acked (dropped)", del.IsAcked)
+
+	if !del.IsAcked() {
+		t.Fatal("filtered message should be acked (silent drop)")
+	}
+	if del.IsRetried() {
+		t.Fatal("filtered message should not be retried")
+	}
+	if dlqStore.Count() != 0 {
+		t.Fatalf("default filter-drop must NOT go to the DLQ even when a store is configured, got %d entries", dlqStore.Count())
+	}
+	if sender.SentCount() != 0 {
+		t.Fatalf("filtered message should not be sent, got %d", sender.SentCount())
+	}
+	filtered := rec.FindEntries(shared.MetricMessagesFiltered)
+	if len(filtered) != 1 {
+		t.Fatalf("a default filter-drop must emit exactly 1 MessagesFiltered, got %d", len(filtered))
+	}
+	if n := len(rec.FindEntries(shared.MetricDLQEntries)); n != 0 {
+		t.Fatalf("a default filter-drop must NOT emit DLQEntries, got %d", n)
+	}
+}
+
+// TestRouteRunner_MessageFiltered_ProcessorTag is the F13 guard: when the
+// filtering processor attributes its drop via ErrMessageFiltered.With(
+// TagKeyProcessor, name), the MessagesFiltered metric carries a processor tag
+// so a drop can be traced to the processor that made it.
+//
+// Fails without the fix (emitFiltered ignores the detail): the metric has no
+// processor tag.
+func TestRouteRunner_MessageFiltered_ProcessorTag(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+		cfg.Metrics = rec
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{
+				NameVal:    "allowlist",
+				ProcessErr: shared.ErrMessageFiltered.With(shared.TagKeyProcessor, "allowlist"),
+			},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered-tagged"}))
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "filtered message acked", del.IsAcked)
+
+	filtered := rec.FindEntries(shared.MetricMessagesFiltered)
+	if len(filtered) != 1 {
+		t.Fatalf("expected exactly 1 MessagesFiltered, got %d", len(filtered))
+	}
+	if !metricHasTag(filtered[0], shared.TagKeyProcessor, "allowlist") {
+		t.Fatalf("MessagesFiltered must carry processor=allowlist tag, got tags %+v", filtered[0].Tags)
+	}
+}
+
+// TestRouteRunner_MessageFiltered_NoProcessorDetail verifies the F13 fallback: a
+// bare ErrMessageFiltered (no attribution) still emits MessagesFiltered, untagged
+// by processor, without panicking.
+func TestRouteRunner_MessageFiltered_NoProcessorDetail(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	receiver, _, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+		cfg.Metrics = rec
+		cfg.Processors = []ports.Processor{
+			&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered},
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-filtered-bare"}))
+	_ = receiver.Emit(ctx, del)
+	waitFor(t, time.Second, "filtered message acked", del.IsAcked)
+
+	filtered := rec.FindEntries(shared.MetricMessagesFiltered)
+	if len(filtered) != 1 {
+		t.Fatalf("expected exactly 1 MessagesFiltered, got %d", len(filtered))
+	}
+	for _, tg := range filtered[0].Tags {
+		if tg.Key == shared.TagKeyProcessor {
+			t.Fatalf("bare ErrMessageFiltered must not carry a processor tag, got %q", tg.Value)
+		}
 	}
 }
 

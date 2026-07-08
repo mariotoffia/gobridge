@@ -46,7 +46,7 @@ type AlarmDefinition struct {
 }
 
 // DefaultRollupMetrics returns the metric names targeted by
-// DefaultAlarms. Every one of them is emitted WITH dimensions by the
+// DefaultAlarms. All but one are emitted WITH dimensions by the
 // runtime (DLQEntries → route_id/category, lease metrics → lease_id,
 // SQSVisibilityExtensions → queue_url, OutboxDepth → partition), and a
 // CloudWatch alarm without dimensions NEVER matches dimensioned data —
@@ -56,12 +56,20 @@ type AlarmDefinition struct {
 //	exporter, err := cloudwatch.New(ctx, shared.MetricNamespace,
 //	    cloudwatch.WithRollupMetrics(cloudwatch.DefaultRollupMetrics()...),
 //	)
+//
+// CredentialRefreshFailures is the exception: it is emitted with NO
+// runtime dimension, so on a fleet WITH instance tagging (WithInstanceTag)
+// its base series carries only instance_id and a zero-dimension alarm
+// would still miss it — hence it is rolled up too. Without instance
+// tagging its base and rollup copies coincide (a harmless double count of
+// a failure counter that has no default alarm; note it if you build one).
 func DefaultRollupMetrics() []string {
 	return []string{
 		shared.MetricOutboxDepth,
 		shared.MetricLeaseExpiries,
 		shared.MetricDLQEntries,
 		shared.MetricLeaseAcquireFailures,
+		shared.MetricCredentialRefreshFailures,
 		metricSQSVisibilityExtensions,
 	}
 }

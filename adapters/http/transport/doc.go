@@ -109,11 +109,15 @@
 // has been converted to an envelope, the delivery is emitted on a
 // context.WithoutCancel copy of the request context: a client
 // disconnect can no longer abort the pipeline mid-dispatch. Detached is
-// not unbounded — when the request context carries a deadline (the
-// server's own timeout, e.g. an http.TimeoutHandler installed at the
-// composition root) that deadline is re-armed on the detached dispatch
-// context and released when the delivery settles, so a hung pipeline
-// stays bounded by the server's own timeout. The HTTP
+// not unbounded — the dispatch context is ALWAYS bounded by
+// Config.MaxDispatchDuration (default 5m), armed unconditionally and
+// released early when the delivery settles (Ack/Retry). The bound does
+// NOT depend on the request context carrying a deadline: a bare
+// http.Server (Read/WriteTimeout only) installs none, so the earlier
+// "re-arm only when a deadline is present" degraded to a no-op under the
+// shipped composition root and let a wedged downstream leak one goroutine
+// plus one in-memory delivery per stuck request. The cap closes that
+// leak whether or not a fronting http.TimeoutHandler exists. The HTTP
 // RESPONSE still honours the client context (504 on timeout/disconnect)
 // — meaning a 504 tells the producer "outcome unknown", not "not
 // processed". Producers that retry on 504 should supply Idempotency-Key
@@ -137,26 +141,59 @@
 // window absorbs the replay. Forward-level classification: 5xx, 429 and
 // 408 responses are TRANSIENT (429 → ErrThrottled, 408 → ErrTimeout,
 // 5xx → ErrUnavailable) and honour a bounded Retry-After hint (seconds
-// or HTTP-date, clamped to 30s); other 4xx are PERMANENT. An optional
-// ports.CircuitBreaker (ForwarderConfig.Breaker, supplied by the
-// composition root) makes a dead peer fail fast instead of costing
-// every inbound request the full retry × timeout budget.
+// or HTTP-date, clamped to 30s); other 4xx are PERMANENT. A 3xx redirect
+// is NOT followed (CheckRedirect returns http.ErrUseLastResponse) and is
+// classified PERMANENT: following it would turn the POST into a bodyless
+// GET, silently dropping the forwarded body, and a forward target that
+// redirects is a misconfiguration the same URL will keep repeating.
+// ForwarderConfig.TLSClientConfig (supplied by the composition root)
+// lets a forward reach an HTTPS peer behind a private CA or requiring
+// mTLS. An optional ports.CircuitBreaker (ForwarderConfig.Breaker,
+// supplied by the composition root) makes a dead peer fail fast instead
+// of costing every inbound request the full retry × timeout budget.
 //
-// SSE egress is AT-MOST-ONCE. Send reports success even when zero
-// subscribers are connected or every subscriber's buffer is full — the
-// route runner acks the source either way, so the event is gone. Both
-// zero-delivery cases are counted (MetricSSENoSubscribers /
-// MetricSSEAllDropped) and logged. Operators needing stronger delivery
-// must front SSE egress with an outbox/DLQ route policy. Consistently,
-// SSE frames carry NO "id:" field: emitting one would make EventSource
-// clients send Last-Event-ID on reconnect and expect a replay window
-// that does not exist. The envelope ID remains in the JSON payload.
+// SSE egress is AT-MOST-ONCE by default. Send reports success even when
+// zero subscribers are connected or every subscriber's buffer is full —
+// the route runner acks the source either way, so the event is gone.
+// Both zero-delivery cases are counted (MetricSSENoSubscribers /
+// MetricSSEAllDropped) and logged at ERROR level so the loss is loud.
+// Setting Config.FailOnZeroDelivery makes Send instead return a
+// TRANSIENT (Unavailable-class) error on zero delivery. What that error
+// buys depends on the SOURCE feeding the route:
+//   - A durable source that redelivers with an incrementing receive
+//     count (SQS / ASB / AMQP) is RETRIED with backoff — giving a
+//     briefly-disconnected subscriber time to reconnect — and
+//     dead-lettered once the route's MaxReplayAttempts is exhausted.
+//   - An HTTP-ingress source (webhook -> SSE) carries NO redelivery
+//     count, so there is no bridge-side retry delay and no DLQ: the
+//     transient error surfaces to the POSTing producer as HTTP 500, and
+//     retry becomes the producer's responsibility.
+//
+// Either way this stops SILENT loss (a 500 instead of a false 200); it
+// is NOT a replay buffer. "Delivery" here means the event was ENQUEUED
+// to a currently-connected subscriber's buffer, not that the subscriber
+// acknowledged receipt. DURABLE fan-out (delivery to a subscriber that
+// was absent at broadcast time) still requires a shared_outbox route
+// policy in front of SSE egress.
+// The per-subscriber queue depth is Config.ClientBufferSize (default
+// 256); a full queue drops the event for that subscriber
+// (MetricSSEDroppedEvents) rather than blocking healthy subscribers.
+// Consistently, SSE frames carry NO "id:" field: emitting one would make
+// EventSource clients send Last-Event-ID on reconnect and expect a
+// replay window that does not exist. The envelope ID remains in the JSON
+// payload.
 //
 // SSE cross-cluster redirect is OPT-IN. When the bound route is owned
 // by a remote node, the sender refuses with 503 by default; it emits a
 // 307 only when Config.RedirectEndpoint names the PeerInfo.Endpoints
 // key to redirect to — redirecting to the internal forwarder endpoint
-// would leak it to external clients in the Location header.
+// would leak it to external clients in the Location header. Ownership is
+// resolved at connect time AND re-checked periodically (at the heartbeat
+// cadence) for the life of the stream: a cluster rebalance that moves
+// the route to another node after a client connected closes the now-
+// stranded stream so the client reconnects and re-hits the redirect/
+// refuse path, instead of holding a live-but-event-less stream forever.
+// A transient locator error during a re-check keeps the stream open.
 //
 // Graceful shutdown. SSESender.Close (and Factory.Close, which fans
 // out to every SSE sender it created) unblocks all connected client

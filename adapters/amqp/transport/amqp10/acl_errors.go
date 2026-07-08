@@ -100,6 +100,15 @@ func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 		return shared.ErrForbidden.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:resource-limit-exceeded":
 		return shared.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
+	case "amqp:resource-deleted":
+		// F13: the broker deleted the target (queue/address/subscription).
+		// This is PERMANENT — retrying re-attaches to a resource that no
+		// longer exists and loops forever. Surface it so an operator
+		// recreates the resource or fixes the address.
+		return shared.ErrNotFound.Wrap(amqpErr).
+			With("condition", cond).
+			WithMessage("amqp10: broker resource deleted (amqp:resource-deleted); " +
+				"the target address/queue/subscription was removed — recreate it or correct the address")
 
 	case "amqp:connection:forced":
 		return shared.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
@@ -111,6 +120,16 @@ func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 
 	case "amqp:link:detach-forced":
 		return shared.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
+	case "amqp:link:stolen":
+		// F13: a competing client attached to the same durable
+		// subscription / exclusive address and STOLE this link. Retrying
+		// re-attaches and re-steals it back, ping-ponging the
+		// subscription between replicas forever, so classify it PERMANENT.
+		return shared.ErrForbidden.Wrap(amqpErr).
+			With("condition", cond).
+			WithMessage("amqp10: link stolen by a competing consumer (amqp:link:stolen); " +
+				"another client attached to the same durable subscription or exclusive address — " +
+				"ensure a unique container_id / subscription_name per replica")
 	case "amqp:link:transfer-limit-exceeded":
 		return shared.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:link:message-size-exceeded":

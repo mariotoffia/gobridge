@@ -301,17 +301,22 @@ func TestReceiver_ClientDisconnectDoesNotAbortDispatch(t *testing.T) {
 	}
 }
 
-// TestReceiver_DispatchKeepsServerDeadlineWhenDetached pins the second
-// half of the HTTP-H3 contract: the dispatch context is detached from
-// the client's CANCELLATION (context.WithoutCancel) but must NOT become
-// unbounded — when the inbound request context carries a deadline (the
-// server's own timeout, installed by http.TimeoutHandler or timeout
-// middleware at the composition root), that deadline must survive onto
-// the detached dispatch context. Client disconnect still must not abort
-// the dispatch.
-func TestReceiver_DispatchKeepsServerDeadlineWhenDetached(t *testing.T) {
+// TestReceiver_DispatchBoundedByMaxDispatchDuration pins the second half
+// of the HTTP-H3 contract after finding 3: the dispatch context is
+// detached from the client's CANCELLATION (context.WithoutCancel) but is
+// UNCONDITIONALLY bounded by MaxDispatchDuration — it does NOT rely on
+// the client/request context carrying a deadline (a bare http.Server
+// installs none). The dispatch deadline is therefore the configured cap,
+// not the client's far-future deadline. Client disconnect still must not
+// abort the dispatch.
+func TestReceiver_DispatchBoundedByMaxDispatchDuration(t *testing.T) {
 	factory := transport.NewFactory()
-	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "bound"}, nil)
+	// 30m cap: comfortably inside the far-future client deadline below,
+	// so the dispatch deadline being the cap (not the client's) is
+	// observable, yet far enough out never to fire during the test.
+	const maxDispatch = 30 * time.Minute
+	recv, err := factory.NewReceiver(context.Background(),
+		ports.ReceiverSpec{ID: "bound", Config: transport.Config{MaxDispatchDuration: maxDispatch}}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -332,8 +337,9 @@ func TestReceiver_DispatchKeepsServerDeadlineWhenDetached(t *testing.T) {
 	}()
 	waitReceiverReady(t, recv, 2*time.Second)
 
-	// Far-future absolute deadline: asserted by round-trip equality
-	// only, so wall-clock load cannot flake the test.
+	// Far-future absolute client deadline (1h): the dispatch must be
+	// bounded by the 30m cap, i.e. STRICTLY before this, proving the cap
+	// — not the client deadline — governs the detached dispatch.
 	deadline := time.Now().Add(time.Hour)
 	clientCtx, cancelClient := context.WithDeadline(context.Background(), deadline)
 	t.Cleanup(cancelClient)
@@ -354,14 +360,15 @@ func TestReceiver_DispatchKeepsServerDeadlineWhenDetached(t *testing.T) {
 
 	gotDeadline, ok := got.ctx.Deadline()
 	if !ok {
-		t.Fatal("dispatch context dropped the server's own deadline: detached dispatch must stay bounded")
+		t.Fatal("dispatch context has no deadline: detached dispatch must stay bounded by max_dispatch_duration")
 	}
-	if !gotDeadline.Equal(deadline) {
-		t.Fatalf("dispatch deadline = %v, want the server's own %v", gotDeadline, deadline)
+	// Bounded by the cap, not the client's far-future deadline.
+	if !gotDeadline.Before(deadline) {
+		t.Fatalf("dispatch deadline = %v, want strictly before the client deadline %v (bounded by max_dispatch_duration)", gotDeadline, deadline)
 	}
 
-	// Client disconnect (before the server deadline) must still not
-	// abort the detached-but-bounded dispatch.
+	// Client disconnect (before the dispatch cap) must still not abort
+	// the detached-but-bounded dispatch.
 	cancelClient()
 	wait.RequireClosed(t, served, 2*time.Second)
 	if rec.Code != http.StatusGatewayTimeout {

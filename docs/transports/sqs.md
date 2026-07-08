@@ -82,6 +82,7 @@ Either `queue_url` or `queue_name` must be provided.
 | `timeout` | duration | `30s` | Per-call send timeout |
 | `message_group_id` | string | -- | Default FIFO message group ID |
 | `fifo` | bool | `false` | Opt into per-envelope FIFO groups via the `x-bridge.ordering-key` header |
+| `max_message_bytes` | int | 262144 | Message-size ceiling in bytes (body + attributes). Raise to match a queue whose `MaximumMessageSize` is provisioned above 256 KiB; `0` keeps the 256 KiB default. |
 | `credentials_uri` | string | -- | URI resolved by the bridge credential store at build time |
 
 Either `queue_url` or `queue_name` must be provided.
@@ -143,9 +144,12 @@ defined in the [Ubiquitous Language](../../UBIQUITOUS.md).
 The `x-bridge.idempotency-key` attribute is subject to SQS's message-attribute
 count and 256 KiB size caps on egress. It holds rank-0 priority (dropped last),
 but a near-maximum-size payload can still evict it — counted on the
-dropped-attributes metric. The native FIFO fields are not charged against the
-attribute budget and always survive, so idempotency propagation is best-effort
-under cap pressure while deduplication and ordering are not.
+dropped-attributes metric. That 256 KiB ceiling is the `max_message_bytes`
+default; raising it to match a queue whose `MaximumMessageSize` is provisioned
+higher keeps a large body from evicting these best-effort attributes. The
+native FIFO fields are not charged against the attribute budget and always
+survive, so idempotency propagation is best-effort under cap pressure while
+deduplication and ordering are not.
 
 The receiving bridge lifts these values into the envelope's first-class fields at
 ingress, before `messaging.NewEnvelope` strips every `x-bridge.*` key from the

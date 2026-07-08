@@ -2,9 +2,11 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -98,6 +100,13 @@ func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 // invalid prepare/complete sequence — the public surface is Build
 // (single-shot) or Plan/Commit (explicit two-phase).
 func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+	// Surface deferred registration errors (e.g. a duplicate processor name)
+	// before doing any work, so a name collision fails the Build loudly rather
+	// than silently dropping a processor referenced by a route.
+	if len(b.regErrs) > 0 {
+		return nil, errors.Join(b.regErrs...)
+	}
+
 	if err := runtime.CheckRandSource(); err != nil {
 		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
 	}
@@ -191,6 +200,29 @@ func isDistributedFactory(sf ports.StoreFactory) bool {
 	return false
 }
 
+// hasExclusiveSessions reports whether the blueprint configures any exclusive
+// (single-owner, lease-managed) session: either a session declared with
+// session_mode: exclusive, or a route carrying an inline session block (which
+// is always a lease-managed single-owner session). Such sessions rely on the
+// LeaseStore to arbitrate ownership; a process-local lease store cannot do so
+// across replicas.
+func hasExclusiveSessions(cfg *ports.BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	for i := range cfg.Sessions {
+		if cfg.Sessions[i].SessionMode == string(connectivity.SessionExclusive) {
+			return true
+		}
+	}
+	for i := range cfg.Routes {
+		if cfg.Routes[i].Session != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 	res := &storeResult{}
 
@@ -261,6 +293,30 @@ func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
 		if res.dlq != nil && !res.dlqDist {
 			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
 		}
+	}
+
+	// Split-brain-by-misconfiguration guard (LOW): a process-local (e.g. memory)
+	// lease store cannot arbitrate exclusive-session ownership ACROSS replicas.
+	// Clustered mode already hard-fails above, but two replicas EACH deployed as
+	// `standalone` with a memory lease will EACH believe they own every exclusive
+	// session and drive it concurrently (split brain) — a posture NOT detectable
+	// from any single process's config. deployment_mode cannot gate this warning:
+	// it is a gobridge-config assertion decoupled from the orchestrator's actual
+	// replica count (a pod set to `standalone` can still be scaled to replicas>1
+	// in k8s), so `standalone` does NOT prove single-replica and suppressing on
+	// it would blind the exact two-replica case this catches. So warn PROMINENTLY
+	// whenever exclusive sessions ride on a non-distributed lease store,
+	// regardless of deployment_mode, and spell out the safe remediation (run
+	// exactly one replica, or adopt a distributed lease store). Follows the same
+	// b.logger-nil-guarded warning idiom as the resolver-degradation path below.
+	if res.lease != nil && !res.leaseDist && hasExclusiveSessions(b.cfg) && b.logger != nil {
+		b.logger.Warn("SPLIT-BRAIN RISK: exclusive sessions are configured on a process-local (non-distributed) "+
+			"lease store; if more than one replica runs, each replica's lease grants ownership of every exclusive "+
+			"session independently and drives it concurrently. Run EXACTLY ONE replica (replicas=1) for this "+
+			"configuration, or switch to a distributed lease store (e.g. dynamodb) for high availability.",
+			"lease_store_type", b.cfg.Stores.Lease.Type,
+			"deployment_mode", b.cfg.Bridge.DeploymentMode,
+			"remediation", "set replicas=1, or use a distributed lease store")
 	}
 
 	// Wrap stores with metrics decorators when an exporter is configured so

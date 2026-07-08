@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"math/rand/v2"
 	"net/url"
 	"time"
 
@@ -116,6 +117,18 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	s.starting = true
 	s.startDone = make(chan struct{})
+	if s.eventsClosed {
+		// F-1: a prior Reload-failure closed s.events to signal terminal
+		// death and trigger this supervisor re-Start. Re-materialise a
+		// fresh events channel (same capacity) BEFORE dialing so the
+		// reconnect's SessionConnected/SessionReconnecting events land in
+		// the new buffer, and so the manager's handleEvents — which
+		// re-reads Events() on each Run — does not spin on a closed
+		// channel. Done under s.mu; pushEvent observes the cleared flag
+		// and the new channel atomically.
+		s.events = make(chan ports.SessionEvent, sessionEventsBuffer)
+		s.eventsClosed = false
+	}
 	s.mu.Unlock()
 
 	// finishStart publishes the attempt's outcome: clears the in-flight
@@ -215,6 +228,14 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
+	// ponytail: M-6 — this session relies on autopaho's DEFAULT IN-MEMORY
+	// packet/session store (cfg.Session left nil ⇒ state.NewInMemory in
+	// autopaho). Consequence: outbound QoS 1/2 packets in flight at process
+	// death are LOST, and QoS 2 is not exactly-once ACROSS a restart (the
+	// four-way handshake state does not survive). A file-backed
+	// session.SessionManager (assigned to cfg.Session) is the deferred,
+	// ADR-level option; it is out of scope here (see PROD_READY_ISSUES M-6
+	// and scenario-01 docs).
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
@@ -312,17 +333,14 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		}
 	}
 
-	// Reconnect pacing: base delay from reconnect_delay (SDK default
-	// 10s), plus an escalating session-takeover penalty so a ClientID
-	// collision (two instances mutually kicking each other) backs off
-	// instead of storming; see noteSessionTakeover.
-	base := autopaho.NewConstantBackoff(10 * time.Second)
-	if s.opts.ReconnectDelay > 0 {
-		base = autopaho.NewConstantBackoff(s.opts.ReconnectDelay)
-	}
-	cfg.ReconnectBackoff = func(attempt int) time.Duration {
-		return base(attempt) + s.takeoverPenalty()
-	}
+	// Reconnect pacing (M-4): a JITTERED EXPONENTIAL base delay derived
+	// from reconnect_delay (floor) and reconnect_max_delay (ceiling), plus
+	// an escalating session-takeover penalty so a ClientID collision (two
+	// instances mutually kicking each other) backs off instead of storming;
+	// see newReconnectBackoff and noteSessionTakeover. Equal-jitter
+	// desynchronises a fleet that all lost the same broker, avoiding a
+	// thundering-herd reconnect the moment the broker returns.
+	cfg.ReconnectBackoff = s.newReconnectBackoff(rand.Float64)
 
 	// reconnect_timeout bounds each individual (re)connect attempt —
 	// dial, TLS handshake and CONNACK — inside autopaho's reconnect
@@ -389,12 +407,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		user := s.liveCreds.Username
 		pass := s.liveCreds.Password
 		s.mu.Unlock()
-		if user != "" {
-			cp.UsernameFlag = true
-			cp.Username = user
-			cp.PasswordFlag = true
-			cp.Password = []byte(pass)
-		}
+		applyConnectCredentials(cp, user, pass)
 		return cp, nil
 	}
 
@@ -430,4 +443,26 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	}
 
 	return newPahoConn(cm), cmCancel, nil
+}
+
+// applyConnectCredentials sets the MQTT v5 CONNECT username/password fields
+// and their presence flags INDEPENDENTLY.
+//
+// Minor fix: the previous logic gated the password on a non-empty username,
+// so a password-without-username (a common token/JWT auth shape where the
+// bearer token rides in the password with no username) was silently
+// dropped. MQTT v5 [MQTT-3.1.2-16..21] permits Password Flag = 1 with
+// Username Flag = 0, so each flag is now driven solely by whether its own
+// value is present.
+//
+// This helper takes the SDK *paho.Connect and therefore lives in the ACL.
+func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
+	if user != "" {
+		cp.UsernameFlag = true
+		cp.Username = user
+	}
+	if pass != "" {
+		cp.PasswordFlag = true
+		cp.Password = []byte(pass)
+	}
 }

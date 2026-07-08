@@ -73,6 +73,7 @@ classDiagram
         backoff: BackoffDef
         on_expired: string
         on_permanent_failure: string
+        on_filtered: string
     }
 
     BridgeConfig --> BridgeSettings
@@ -150,7 +151,7 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 |------|---------|---------------|
 | `lease` | Distributed lease ownership | Exclusive sessions in clustered mode |
 | `outbox` | Durable message outbox | `delivery_mode: shared_outbox` |
-| `dlq` | Dead-letter queue | `on_expired: dlq` or `on_permanent_failure: dlq` |
+| `dlq` | Dead-letter queue | `on_expired: dlq`, `on_permanent_failure: dlq`, or `on_filtered: dlq` |
 
 ### Store Config Fields
 

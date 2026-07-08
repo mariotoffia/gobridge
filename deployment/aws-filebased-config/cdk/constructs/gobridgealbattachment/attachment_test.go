@@ -347,8 +347,8 @@ func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
 	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
 	for _, raw := range *tgs {
 		props := (*raw)["Properties"].(map[string]any)
-		if props["HealthCheckPath"] != "/api/v1/monitor/health" {
-			t.Fatalf("HealthCheckPath = %v, want /api/v1/monitor/health", props["HealthCheckPath"])
+		if props["HealthCheckPath"] != "/api/v1/monitor/live" {
+			t.Fatalf("HealthCheckPath = %v, want /api/v1/monitor/live", props["HealthCheckPath"])
 		}
 		// Every TG probes the monitor port (8081) via the health-check
 		// port override, regardless of its own traffic port.

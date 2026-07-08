@@ -96,6 +96,17 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 	if cm == nil {
 		// Session not started yet; new creds will be picked up on first
 		// connect via ConnectPacketBuilder. Nothing more to do.
+		//
+		// ponytail: cm==nil also matches the brief window where a
+		// Reload-failure has torn the CM down and the supervisor re-Start
+		// has not yet re-installed one (F-1). Returning nil is still
+		// correct there — credsChanged already updated s.liveCreds and
+		// s.opts above (under s.mu), and the imminent re-Start's dial
+		// re-seeds liveCreds from s.opts, so the rotated credentials are
+		// applied on the next CONNECT. The F-1 events-close restart bounds
+		// this window (the session no longer stays dead), so this is a
+		// transient "picked up on next connect", not a false success
+		// against a permanently dead session.
 		return nil
 	}
 

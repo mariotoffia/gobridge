@@ -119,8 +119,16 @@ func (f *Factory) ConfigRequiresExclusiveIdentity(cfg ports.PluginConfig) bool {
 }
 
 // AddressValidator returns nil — AMQP 0-9-1 routing keys have no
-// runtime-enforceable structural rules; the broker rejects unbound
-// keys at publish time.
+// runtime-enforceable structural rules, so there is nothing to validate
+// structurally at parse time.
+//
+// Note: contrary to a common assumption, the broker does NOT reject an
+// unroutable routing key at publish time unless the publish sets
+// mandatory=true. A non-mandatory publish (the default) to an exchange with
+// no matching binding is confirmed and then SILENTLY DISCARDED — see the
+// silent-drop warning on SenderConfig.Mandatory (config.go), doc.go, and the
+// README. A nil AddressValidator therefore cannot catch an unbound key; only
+// mandatory=true surfaces it (as a basic.return).
 func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
 
 // NewSession creates an AMQP 0-9-1 Session from the given spec.
@@ -185,6 +193,11 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 		PrefetchSize:  cfg.Receiver.PrefetchSize,
 		Session:       amqpSession,
 		Logger:        f.logger,
+		// The managed route runner drains in-flight deliveries and then
+		// calls Receiver.Close, so a graceful stop must HAND the channel
+		// off (drain-then-close) rather than self-close it. Direct
+		// embedders leave this false and self-close on graceful stop.
+		deferCloseToRunner: true,
 	}
 	if rc.QueueName == "" && len(spec.Subscriptions) > 0 {
 		rc.QueueName = spec.Subscriptions[0].Topic

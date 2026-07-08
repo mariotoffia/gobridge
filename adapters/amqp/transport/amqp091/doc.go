@@ -53,6 +53,22 @@
 // it. Quorum queues persist messages regardless of this knob; it matters
 // for durable classic queues.
 //
+// UNROUTABLE PUBLISHES ARE SILENTLY DROPPED BY DEFAULT. sender.mandatory is
+// false by default; a publish to an exchange with no matching binding is
+// then confirmed by the broker and discarded. The Send reports success and
+// the bridge acks the source, so the message is lost with zero telemetry —
+// the basic.return listener only engages when mandatory=true. Set
+// sender.mandatory=true on any route where an unroutable message must fail
+// loudly rather than vanish.
+//
+// ponytail: the managed default sender.mandatory=false silently drops
+// unroutable publishes. Flipping the managed default to mandatory=true is a
+// behavior/policy change (blast radius: every managed publisher; mandatory
+// batches fall back to sequential one-in-flight publishing, so batch
+// throughput drops; routes that deliberately publish to a not-yet-bound
+// exchange would start erroring instead of buffering). Tracked as an ADR
+// candidate — deliberately NOT changed here.
+//
 // SendBatch pipelines non-mandatory batches: every message is published
 // with a deferred confirmation and the confirms are awaited afterwards,
 // so batch throughput is not bounded to one confirm round-trip per
@@ -77,6 +93,22 @@
 // Expiration, Timestamp) are mapped to envelope headers with the
 // "amqp091." prefix. User-defined headers from the AMQP Headers table
 // are mapped directly.
+//
+// End-to-end TTL: an inbound AMQP per-message Expiration (a RELATIVE TTL in
+// milliseconds) is mapped to the envelope's ABSOLUTE ExpiresAt, so the
+// countdown is NOT restarted at each bridge hop (egress re-derives the
+// remaining relative TTL from ExpiresAt). Consequence: a message whose
+// in-bridge dwell (outbox persistence + retry backoff) exceeds its remaining
+// TTL is now handled by the route's expiry disposition — OnExpired=dlq
+// dead-letters it, OnExpired=drop drops-with-metric — where a per-hop-
+// restarted TTL previously let it flow through. The disposition is correct
+// and observable, never silent. An over-range Expiration (one that would
+// overflow the duration) maps to NO expiry, failing toward delivery rather
+// than a spurious past deadline.
+//
+// ponytail: end-to-end AMQP per-message TTL enforcement is an ADR candidate —
+// it changes when an in-transit message can be expiry-dispositioned versus
+// flowing through, and diverges from a naive per-hop-restart transport.
 //
 // Header policy is asymmetric:
 //   - INGRESS: all reserved x-bridge.* headers are stripped to prevent an

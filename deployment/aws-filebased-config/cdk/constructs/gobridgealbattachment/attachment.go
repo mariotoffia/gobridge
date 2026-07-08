@@ -28,8 +28,11 @@
 //     target group.
 //
 // Every target group health-checks the monitor port with path
-// "/api/v1/monitor/health" (the only server exposing the probes) via
-// the health-check port override. The monitor target group registers
+// "/api/v1/monitor/live" (the only server exposing the probes) via
+// the health-check port override -- /live stays 200 for an alive but
+// paused instance, so a deliberate pause never drains the admin or
+// monitor plane from the ALB (HealthzURL still resolves to /health for
+// human/dashboard readiness). The monitor target group registers
 // *every* bridge service so the ALB is granted ingress to the monitor
 // port on each service security group -- without that target
 // registration the port-overridden health checks would be unreachable
@@ -112,10 +115,21 @@ const (
 	// monitor port.
 	DefaultMonitorPath = "/api/v1/monitor/*"
 
-	// MonitorHealthPath is the unauthenticated health probe every
-	// target group health-checks and the path HealthzURL resolves to.
-	// It matches the route registered in httpapi/monitor.go.
+	// MonitorHealthPath is the unauthenticated readiness probe that
+	// HealthzURL resolves to (the deploy-time URL published for humans and
+	// external dashboards). It is a traffic-gating readiness signal, so it
+	// is deliberately NOT the target-group health-check path -- see
+	// MonitorLivePath. It matches the route registered in httpapi/monitor.go.
 	MonitorHealthPath = "/api/v1/monitor/health"
+
+	// MonitorLivePath is the unauthenticated liveness probe every target
+	// group health-checks. Unlike /health it stays 200 after a clean stop
+	// (503 only once the process is terminal), so an alive-but-paused
+	// instance is not drained from the ALB -- keeping the admin plane
+	// reachable to restart/diagnose it and the monitor plane reachable for
+	// /deephealth, /topology, /routes. It matches the route registered in
+	// httpapi/monitor.go.
+	MonitorLivePath = "/api/v1/monitor/live"
 
 	// ManifestVersion is the schema sentinel published as
 	// `<prefix>/manifest-version` by [GoBridgeALBAttachment.WithSSMExports].
@@ -129,7 +143,7 @@ const (
 // applied to all three target groups. Zero-value fields fall through
 // to the defaults documented on AttachmentProps.HealthCheck.
 type HealthCheckProps struct {
-	// Path defaults to MonitorHealthPath ("/api/v1/monitor/health").
+	// Path defaults to MonitorLivePath ("/api/v1/monitor/live").
 	// The health check always targets the monitor port regardless of
 	// Path, because the probes are only served there.
 	Path string
@@ -550,7 +564,7 @@ func addRule(scope constructs.Construct, id string, listener elbv2.IApplicationL
 }
 
 func buildHealthCheck(o *HealthCheckProps, monitorPort float64) *elbv2.HealthCheck {
-	path := MonitorHealthPath
+	path := MonitorLivePath
 	interval := 15.0
 	timeout := 5.0
 	healthy := 2.0

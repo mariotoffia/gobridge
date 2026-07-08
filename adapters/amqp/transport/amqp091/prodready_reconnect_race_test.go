@@ -80,6 +80,8 @@ func runReceiverRaceScenario(t *testing.T, rawErr error, exclusive bool, metrics
 		metrics: metrics,
 		clk:     fake,
 		started: make(chan struct{}),
+		// Un-jittered backoff so a 6s advance always fires the pending timer.
+		randFloat: func() float64 { return 0.5 },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,6 +181,8 @@ func TestReceiver_Run_Reconnect404_RecoversWithinBudget(t *testing.T) {
 		metrics: rec,
 		clk:     fake,
 		started: make(chan struct{}),
+		// Un-jittered backoff so a 6s advance always fires the pending timer.
+		randFloat: func() float64 { return 0.5 },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

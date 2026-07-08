@@ -46,6 +46,7 @@ exclude:
   - domain/clock/clocktest
   - docs
   - ports/storetest
+  - ports/transporttest
   - reports
   - scripts
   - spec
@@ -784,7 +785,12 @@ deps:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [sqlite]
   adapter_store_native_sqlitedlq:
-    mayDependOn: [domain_routing, domain_shared, logging]
+    # domain_clock (unlike the sibling DLQ leaves): sqlitedlq's opt-in
+    # retention sweep (WithRetention) is a CLIENT-side, time-based purge that
+    # takes its clock via WithClock(clock.Clock) for deterministic tests --
+    # the same convention sqliteoutbox uses for compaction. memorydlq has no
+    # sweep and dynamodbdlq relies on server-side TTL, so neither needs it.
+    mayDependOn: [domain_clock, domain_routing, domain_shared, logging]
     canUse: [sqlite]
   adapter_store_aws_dynamodblease:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
@@ -817,10 +823,24 @@ deps:
 
   adapter_store_aws_factory:
     # Narrowed to ACTUAL usage (M-23): composes the three DynamoDB store
-    # impls behind ports.StoreFactory; the acl factory touches the AWS
-    # SDK but no domain context directly.
+    # impls behind ports.StoreFactory and touches the AWS SDK.
+    #
+    # domain_shared (asymmetric with the native sibling on purpose): the
+    # DynamoDB factory owns a build-time schema-preflight posture (H3).
+    # DynamoDB has a control-plane schema (tables + GSIs) that the native
+    # sqlite/memory stores lack, so ONLY this factory runs DescribeTable at
+    # construction and must classify the leaf's returned error to decide
+    # fail-open-vs-fatal: a genuine schema mismatch is a FATAL
+    # shared.ErrInvalidConfig (bad config -> refuse boot), while a transient
+    # DescribeTable failure (throttle / AccessDenied / emulator-unsupported)
+    # fails OPEN with a WARN so a control-plane blip during a mass rollout
+    # cannot brick boot. That errors.Is/As classification over the shared
+    # error taxonomy is intrinsic to the composition role and is centralized
+    # here to stay DRY across the three leaves -- see the dedicated
+    # factory_preflight_*_test.go posture regressions.
     mayDependOn:
       - ports
+      - domain_shared
       - adapter_store_aws_dynamodblease
       - adapter_store_aws_dynamodboutbox
       - adapter_store_aws_dynamodbdlq

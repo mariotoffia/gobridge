@@ -30,21 +30,29 @@ import (
 
 // namedMetrics records counter emissions BY NAME so tests can assert
 // that a specific metric did (or did not) fire. Hand-rolled fake per
-// TESTS.md.
+// TESTS.md. It also records the tags each named counter was emitted with
+// so tests can assert dimensioning (e.g. the renewer scope tag).
 type namedMetrics struct {
 	mu     sync.Mutex
 	counts map[string]int64
+	tags   map[string][]shared.Tag
 }
 
 var _ ports.MetricsExporter = (*namedMetrics)(nil)
 
-func (m *namedMetrics) Counter(name string, v int64, _ ...shared.Tag) {
+func (m *namedMetrics) Counter(name string, v int64, tags ...shared.Tag) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.counts == nil {
 		m.counts = map[string]int64{}
 	}
 	m.counts[name] += v
+	if len(tags) > 0 {
+		if m.tags == nil {
+			m.tags = map[string][]shared.Tag{}
+		}
+		m.tags[name] = append(m.tags[name], tags...)
+	}
 }
 
 func (m *namedMetrics) Gauge(string, float64, ...shared.Tag)       {}
@@ -57,6 +65,18 @@ func (m *namedMetrics) count(name string) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.counts[name]
+}
+
+// hasTag reports whether name was ever emitted with a tag key=value.
+func (m *namedMetrics) hasTag(name, key, value string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, tg := range m.tags[name] {
+		if tg.Key == key && tg.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 // --- config surface ---------------------------------------------------------

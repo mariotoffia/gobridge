@@ -54,6 +54,16 @@ type Delivery struct {
 	onSettled     func()
 	onSettledOnce sync.Once
 
+	// onSettleFailed, when set (by the owning Receiver), is invoked at
+	// most once when the FIRST settlement attempt FAILS. A failed settle
+	// permanently consumes this delivery's link-credit slot (go-amqp only
+	// replenishes credit on a completed disposition), so the receiver
+	// uses this to count failures and force a link rebuild before credit
+	// exhaustion stalls it silently (finding F2). Guarded by
+	// onSettleFailedOnce.
+	onSettleFailed     func(err error)
+	onSettleFailedOnce sync.Once
+
 	// delayWarnOnce dedupes the "delayed retry" Warn to once
 	// per receiver link. It is shared by every Delivery created from the
 	// same link (set by receiverLink.Receive) so an unhonored delayed
@@ -123,14 +133,29 @@ func (d *Delivery) fireOnSettled() {
 	})
 }
 
-// finishSettle records the outcome of a settlement attempt and fires
-// the in-flight tracking hook.
-func (d *Delivery) finishSettle(ok bool) {
+// fireOnSettleFailed invokes the receiver's settlement-failure hook
+// exactly once. Safe to call with a nil hook.
+func (d *Delivery) fireOnSettleFailed(err error) {
+	d.onSettleFailedOnce.Do(func() {
+		if d.onSettleFailed != nil {
+			d.onSettleFailed(err)
+		}
+	})
+}
+
+// finishSettle records the outcome of a settlement attempt, fires the
+// in-flight tracking hook, and — on failure — notifies the owning
+// Receiver so it can observe the leaked link credit and force a link
+// rebuild before the receiver stalls silently (finding F2).
+func (d *Delivery) finishSettle(err error) {
 	d.mu.Lock()
 	d.settleDone = true
-	d.settleOK = ok
+	d.settleOK = err == nil
 	d.mu.Unlock()
 	d.fireOnSettled()
+	if err != nil {
+		d.fireOnSettleFailed(err)
+	}
 }
 
 // Ack settles the message with an accepted disposition. The settlement
@@ -156,7 +181,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 	err := d.settle.AcceptMessage(ctx, d.msg)
 	d.metrics.Timer(MetricAMQP10AcceptLatency, d.clk.Since(start))
 
-	d.finishSettle(err == nil)
+	d.finishSettle(err)
 	if err != nil {
 		return MapError(err)
 	}
@@ -218,7 +243,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 		err = d.settle.ReleaseMessage(ctx, d.msg)
 	}
 
-	d.finishSettle(err == nil)
+	d.finishSettle(err)
 	if err != nil {
 		return MapError(err)
 	}

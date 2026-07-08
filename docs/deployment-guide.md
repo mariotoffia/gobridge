@@ -1,9 +1,44 @@
 # Deployment Guide
 
-This guide covers deployment considerations for GoBridge on any platform --
-AWS, GCP, Kubernetes, or bare metal: deployment topology, configuration
-delivery, secret management, networking, health checks, observability, and
-scaling. For cloud-specific guidance, see [What's Next](#whats-next).
+This guide covers deployment topology, configuration delivery, secret management,
+networking, health checks, observability, and scaling. The concepts apply
+wherever you run GoBridge; the concrete artifact differs by how you build it. For
+cloud-specific guidance, see [What's Next](#whats-next).
+
+> **The shipped container image is the AWS file-based deployment profile, not a
+> platform-neutral image.** The published image runs
+> `deployment/aws-filebased-config` and is bound to AWS. It **requires** SSM to
+> resolve secrets — `admin_api_key_param` is mandatory
+> (`deployment/aws-filebased-config/lib/model/bootstrap.go:123-125`), the SSM
+> resolver runs at startup (`deployment/aws-filebased-config/lib/bootstrap/secrets.go`),
+> and it builds a DynamoDB client unconditionally
+> (`deployment/aws-filebased-config/lib/bootstrap/app.go:265-271`). To run on a
+> non-AWS platform — plain Kubernetes, bare metal, another cloud — build your own
+> composition-root binary using `cmd/gobridge/main.go` as the template and
+> register the transports, stores, and secret sources you need. The GoBridge core
+> and library are portable; the stock image is AWS-bound.
+
+## Reference Binary and Composition Root
+
+The reference `cmd/gobridge` binary is intentionally minimal. Its composition
+root registers the `mqtt` transport and the native `memory` and `sqlite` store
+factories, and **zero processors** (`cmd/gobridge/main.go:145-147`). Processor
+plugins (tenant, filter, transform) and most other transports and stores (SQS,
+Azure Service Bus, AMQP, DynamoDB) live in separate Go modules so the core stays
+dependency-light; the HTTP transport ships in the root module but is likewise
+unregistered by the reference binary.
+
+A config that references a processor, a non-`mqtt` transport, or a `dynamodb`
+store therefore fails against the shipped binary -- the factory is not
+registered. To use those, build your own composition root (`main.go`) that
+registers the plugins you need before starting the supervisor:
+
+- `sup.RegisterTransport(name, factory)` -- transports (e.g. SQS)
+- `sup.RegisterStoreFactory(name, factory)` -- stores (e.g. DynamoDB)
+- `sup.RegisterProcessor(name, processor)` -- processors (tenant / filter / transform)
+
+`cmd/gobridge/main.go` carries commented examples for the AWS transport and store
+factories. See [PLUGIN.md](../PLUGIN.md) for the registration recipe.
 
 ## Deployment Models
 
@@ -144,8 +179,13 @@ flowchart LR
    `http_sender_api_key_params` map receiver/sender IDs to SSM paths, resolved
    into the transport options before the runtime builds.
 4. **Transport credentials** -- A `credentials_uri` in session/receiver/sender
-   options resolves from SSM (`pms://`) or disk (`file://`). See
-   [Credentials & HTTP API](credentials-and-http-api.md).
+   options resolves from SSM (`pms://`) or disk (`file://`). The `file://` store
+   tolerates read-only/immutable mounts, so a Kubernetes Secret mounted
+   read-only does not crash-loop it -- see the
+   [Kubernetes secret-mount cookbook](scenarios/22-k8s-secret-mount-credentials.md).
+   Rotation cadence and live-connection behavior:
+   [Credentials & HTTP API](credentials-and-http-api.md) and
+   [Credential Rotation](credentials-rotation.md).
 
 ### Bootstrap Config Example with Secrets
 
@@ -221,17 +261,23 @@ All health endpoints live on the monitor server (default `:8081`) and are
 
 | Endpoint | Purpose | Healthy | Unhealthy |
 |----------|---------|---------|-----------|
-| `GET /api/v1/monitor/health` | Overall health | 200 `{"status":"ok"}` | 503 `{"status":"unhealthy"}` |
+| `GET /api/v1/monitor/health` | Coarse health | 200 `{"status":"ok"}` | 503 `{"status":"unhealthy"}` |
 | `GET /api/v1/monitor/live` | Liveness probe | 200 `{"status":"alive"}` | 503 `{"status":"terminal"}` once terminal |
 | `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready"}` | 503 `{"error":"not ready"}` |
 
-The `health` endpoint checks runtime state, session connectivity, and route
-health. The `live` endpoint returns 200 while the process is running and the
-runtime is still recoverable (including before the runtime is wired), and 503
-`{"status":"terminal"}` once the runtime has entered a terminal, unrecoverable
-state — so an orchestrator restarts the task instead of leaving it wedged. The
-bare `ready` endpoint returns 200 once the runtime is started
-and healthy; it does **not** guarantee transport sessions are connected or
+The `health` endpoint is coarse: HTTP 200 `{"status":"ok"}` when the runtime is
+running and no critical background component has failed, and HTTP 503 otherwise
+with `status` one of `unhealthy` (a background component failed), `not_running`
+(paused or not yet started), or `unavailable` (runtime not wired). It does **not**
+reflect broker/session connectivity or subscription state -- a broker outage
+keeps `/health` green so a transient reconnect does not restart the pod. Gate on
+connectivity with `/deephealth` or `/ready?level=connected` (see below). The
+`live` endpoint returns 200 while the process is running and the runtime is still
+recoverable (including before the runtime is wired **and after a deliberate admin
+stop**), and 503 `{"status":"terminal"}` only once the runtime has entered a
+terminal, unrecoverable state — so an orchestrator restarts the task instead of
+leaving it wedged. The bare `ready` endpoint returns 200 once the runtime is
+started and healthy; it does **not** guarantee transport sessions are connected or
 subscriptions acknowledged. Gate production traffic with the `?level=`
 parameter described under "Readiness levels" below.
 
@@ -268,6 +314,41 @@ The shutdown sequence proceeds as follows:
 If `drain_timeout` expires before all messages complete, remaining messages
 are abandoned. Set `drain_timeout` shorter than `shutdown_timeout` to leave
 headroom for transport and HTTP server cleanup.
+
+### Exit Codes
+
+An orchestrator reads the process exit code to decide whether to restart. The
+two binaries use these codes.
+
+**`cmd/gobridge`** (`cmd/gobridge/main.go`):
+
+| Code | Meaning |
+|------|---------|
+| `0` | Clean shutdown — `SIGINT`/`SIGTERM` handled, or the supervisor self-exited without error (`main.go:315,348`). |
+| `1` | Startup failure (plugin registration, config load, watcher start, HTTP server start, or the supervisor produced no runtime), or the runtime entered a terminal, unrecoverable state (`main.go:70,77,106,202,223,278,331`). |
+| `2` | Flag/usage error (Go `flag` package default `ExitOnError`), or a second `SIGINT`/`SIGTERM` forcing an immediate exit before drain completes (`main.go:339`). |
+
+**`gobridge-filebased`** (shipped image entrypoint, `deployment/aws-filebased-config/lib/cmd/gobridge-filebased/main.go`):
+
+| Code | Meaning |
+|------|---------|
+| `0` | Clean shutdown, or the `-healthcheck` probe found the monitor liveness endpoint returning 200 (`main.go:40,66`). |
+| `1` | Bootstrap config load failure, `app.Run` returned an error, or the `-healthcheck` probe failed — endpoint not 200 or unreachable (`main.go:40,46,65`). |
+
+A terminal runtime exits non-zero (`cmd/gobridge` → `1`) precisely so a Kubernetes
+`livenessProbe` or ECS health check restarts the task rather than leaving it
+wedged.
+
+### Pin Images by Digest
+
+For reproducible builds, pin images by digest (`name@sha256:...`) rather than a
+floating tag such as `:latest` — both the `Dockerfile` base/runtime images and
+the GoBridge image referenced in task/pod specs. A moving tag makes a rebuild
+non-reproducible and can pull an unexpected image on the next deploy. Released
+image tags are `v0.1.0` and `v0.2.0`; a tag such as `v1.2.3` in older examples
+is illustrative, not a published release. The
+[image upgrade/rollback runbook](runbooks/upgrade-rollback-and-sqlite-durability.md#pin-images-by-digest)
+shows how to resolve a tag to its digest.
 
 ### Container Orchestrator Integration
 
@@ -308,6 +389,16 @@ readinessProbe:
 terminationGracePeriodSeconds: 60
 ```
 
+**Admin API reachability.** The readiness probe deliberately fails a paused or
+not-yet-connected pod, which removes it from the Service's ready endpoints. The
+admin API (port 8080) then becomes unreachable through a normal `ClusterIP`
+Service exactly when an operator needs it to start or diagnose the bridge. Expose
+the admin port through a Service with `publishNotReadyAddresses: true` (or a
+headless Service, `clusterIP: None`) so a not-ready pod's admin API stays
+routable; `kubectl port-forward` reaches it directly regardless. The liveness
+probe stays 200 through a clean `POST /bridge/stop`, so the pod is not restarted
+while paused.
+
 **Readiness levels.** The readiness probe accepts a `?level=` query
 parameter that controls how strict the gate is. Bare
 `/api/v1/monitor/ready` (no level) reports ready as soon as the runtime is
@@ -346,9 +437,21 @@ that Kubernetes **never** updates in place, so hot-reload will not fire. As a
 backstop the watcher re-hashes on a resync ticker (30s default) even in notify
 mode, which also covers network filesystems that drop inotify events.
 
-To serve the admin and monitor APIs over TLS, set `tls_cert_file` and
-`tls_key_file` under the config's `http` block. See
-[Configuration Reference](configuration-reference.md) for the field details.
+**TLS.** How TLS terminates depends on which binary you run.
+
+- **`cmd/gobridge` and library embeddings** honor the config `http:` block: set
+  `tls_cert_file` and `tls_key_file` (both, or neither) to serve the admin and
+  monitor APIs over HTTPS in-process (`cmd/gobridge/main.go:233-234`). Renewed
+  certificates hot-reload without a restart — the server reloads the pair when
+  either file's modification time changes on the next TLS handshake. See the
+  [`http:` field reference](http-api.md#http-api-configuration) for the fields.
+- **The AWS file-based profile (the shipped image) does not honor the `http:`
+  block.** It sources the admin/monitor listen addresses, CORS origins, and API
+  keys from the bootstrap config (env/SSM) rather than `bridge.yaml`
+  (`deployment/aws-filebased-config/lib/bootstrap/app.go:301-305`), and it sets
+  no in-process TLS — TLS terminates at the ALB in front of the task. The
+  `http:` block's `tls_cert_file` / `tls_key_file` (and its admin/monitor
+  addresses and keys) are ignored on that image.
 
 ## Observability
 
@@ -444,6 +547,9 @@ values reduce resource usage but may cause backpressure on the source.
 
 ### CPU and Memory Sizing
 
+This is the authoritative throughput-to-resource tier table. AWS-specific docs
+reference it rather than restating it.
+
 | Workload | vCPU | Memory | `max_in_flight` |
 |----------|------|--------|-----------------|
 | Low (< 100 msg/s) | 0.25 | 512 MiB | 50-100 |
@@ -452,6 +558,14 @@ values reduce resource usage but may cause backpressure on the source.
 
 These are starting points. Profile your workload with realistic message sizes
 and processor chains to find the right balance.
+
+On ECS Fargate these map to task sizes where **1024 CPU units = 1 vCPU** (so
+0.25 vCPU = 256 units / 512 MiB, 0.5 vCPU = 512 units / 1024 MiB, 1 vCPU = 1024
+units / 2048 MiB). The `High` row is a single-instance vertical ceiling; the
+clustered profile instead scales horizontally, sizing each worker task lower and
+multiplying capacity by worker count. For Fargate task-size defaults and the
+horizontal-vs-vertical trade-off, see
+[AWS Deployment — Sizing Guidance](aws-deployment/overview.md#sizing-guidance).
 
 ### Horizontal Scaling
 
@@ -471,6 +585,22 @@ When using SQS as the source, horizontal scaling works naturally -- each
 replica pulls from the same queue and SQS handles message distribution. For
 MQTT sources, use `$share/` topic prefixes to distribute messages across
 replicas.
+
+### Shared Tenant Usage Store
+
+If you run multiple instances and enforce the tenant in-flight ceiling
+(`TenantInfo.MaxInFlight`) through a **shared** usage store -- a Redis or DynamoDB
+counter that spans instances -- the store must decay in-flight counts a crashed
+instance leaves behind. The tenant processor brackets each delivery with `+1` on
+admission and `-1` on settle; a crash between the two (`kill -9`, OOM, node loss)
+strands a stale `+1`, and enough leaks throttle the tenant permanently. A
+conforming shared store makes each `+1` self-healing -- a TTL-leased item the
+store auto-expires, or an implementation of `ports.TenantUsageReconciler` driven
+from your instance-lifecycle hook. A plain additive counter with no decay is not
+conforming; a per-instance / in-memory tracker needs none of this, since its
+counts die with the process. See
+[Tenant quota enforcement](processors-and-stores.md#quota-enforcement) for the
+full contract.
 
 ### Vertical Scaling
 
@@ -509,3 +639,4 @@ For bridge configuration, see:
 | [Processors & Stores](processors-and-stores.md) | Filter, transform, circuit breaker, store backends |
 | [Credentials & HTTP API](credentials-and-http-api.md) | Credential URIs and admin API endpoints |
 | [Scenarios](scenarios/) | Progressive walkthroughs from simple to clustered |
+| [Runbooks](runbooks/) | Symptom-first incident runbooks and upgrade/rollback procedures |

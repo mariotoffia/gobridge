@@ -33,10 +33,24 @@ const (
 
 // Permanent error codes -- retry will not help.
 const (
-	ErrCodeNotAuthorized   ErrorCode = "NOT_AUTHORIZED"
-	ErrCodeForbidden       ErrorCode = "FORBIDDEN"
-	ErrCodeNotFound        ErrorCode = "NOT_FOUND"
-	ErrCodeInvalidPayload  ErrorCode = "INVALID_PAYLOAD"
+	ErrCodeNotAuthorized ErrorCode = "NOT_AUTHORIZED"
+	ErrCodeForbidden     ErrorCode = "FORBIDDEN"
+	ErrCodeNotFound      ErrorCode = "NOT_FOUND"
+	// ErrCodeInvalidPayload flags a rejected MESSAGE payload — malformed
+	// or non-conforming wire data on an in-flight envelope. It is uniquely
+	// classified ErrorRejected (drop, no DLQ). Config-validation failures
+	// (invalid enum / negative duration in a blueprint) use the distinct
+	// ErrCodeInvalidConfig so a single code never carries two classes;
+	// BridgeError.Is matches on Code alone, so overloading one code with
+	// two classes would make classification order-dependent.
+	ErrCodeInvalidPayload ErrorCode = "INVALID_PAYLOAD"
+	// ErrCodeInvalidConfig flags a CONFIG-validation failure: an invalid
+	// enum value or a negative duration carried by a blueprint/policy. It
+	// is always Permanent (a human must fix the configuration; retry never
+	// helps) and is deliberately distinct from ErrCodeInvalidPayload, which
+	// is a rejected message payload. Keeping them separate preserves the
+	// code→class function (every code maps to exactly one ErrorClass).
+	ErrCodeInvalidConfig   ErrorCode = "INVALID_CONFIG"
 	ErrCodePayloadTooLarge ErrorCode = "PAYLOAD_TOO_LARGE"
 	ErrCodeInvalidTopic    ErrorCode = "INVALID_TOPIC"
 	ErrCodeProtocolError   ErrorCode = "PROTOCOL_ERROR"
@@ -204,6 +218,18 @@ var (
 	ErrNotFound = &BridgeError{
 		Code: ErrCodeNotFound, Class: ErrorPermanent,
 		Message: "not found",
+	}
+	// ErrInvalidConfig is the sentinel for a CONFIG-validation failure
+	// (invalid enum value, negative duration, or an otherwise malformed
+	// blueprint/policy field). It is Permanent: retry cannot help, a human
+	// must correct the configuration. It is deliberately distinct from
+	// ErrInvalidPayload (a rejected MESSAGE payload) so the INVALID_PAYLOAD
+	// code stays uniquely ErrorRejected and INVALID_CONFIG stays uniquely
+	// ErrorPermanent — see the code→class function test in
+	// domain/shared/errorclass_function_test.go.
+	ErrInvalidConfig = &BridgeError{
+		Code: ErrCodeInvalidConfig, Class: ErrorPermanent,
+		Message: "invalid configuration",
 	}
 	ErrInvalidPayload = &BridgeError{
 		Code: ErrCodeInvalidPayload, Class: ErrorRejected,

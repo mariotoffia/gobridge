@@ -206,6 +206,53 @@ Two rules govern the declaration:
 | `Retry(ctx, after, err)` | `delivery.Nack(false, true)` | Requeue; `after` is logged but not enforced |
 | `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
 
+## Header Mapping
+
+The adapter maps AMQP 0-9-1 per-message properties to and from the envelope
+end-to-end. Inbound properties become envelope fields and headers; outbound
+`amqp091.*` headers set the matching AMQP publish properties.
+
+### Inbound TTL becomes an absolute deadline
+
+An inbound `Expiration` (the AMQP 0-9-1 per-message expiration -- a short string
+of whole milliseconds) maps to an **absolute** `ExpiresAt` on the envelope,
+anchored at receipt time. The TTL travels as a deadline, not a relative
+countdown, so it no longer restarts at each hop: egress re-derives the remaining
+relative TTL from `ExpiresAt` (`Envelope.RemainingTTL`), and the remaining budget
+shrinks by the in-bridge dwell.
+
+> **Behavior change -- an expiring message can now be dispositioned in-bridge.**
+> A message whose in-bridge dwell (outbox persistence plus retry backoff) exceeds
+> its remaining TTL is expiry-dispositioned instead of flowing through
+> transparently as it did before. Under the route's `on_expired: dlq` it is
+> DLQ'd; under `on_expired: drop` it is dropped and counted (`MessagesExpired`).
+> The disposition is correct and always observable -- never silent. Size the
+> outbox `retention` and any upstream redelivery window against the shortest
+> producer TTL you carry. See [route delivery
+> policy](../routes-and-runtime-reference.md).
+
+An over-range `Expiration` -- greater than ~9.2e12 ms (~292 years), the value a
+producer uses as an "effectively never expire" sentinel -- maps to **no** expiry,
+as do empty, non-numeric, and negative values. The mapping fails toward delivery:
+an unmappable TTL never becomes a past deadline that would drop the message on
+arrival.
+
+### Egress property coercion (priority, timestamp)
+
+Outbound header mapping coerces numeric types instead of requiring an exact Go
+type, so an override supplied from a YAML/JSON route config or produced by another
+transport is honored instead of silently dropped (an earlier build asserted the
+exact type and dropped everything else -- `priority: 9` in YAML published at `0`).
+
+| Header | Accepts | Applied when | Ignored (property left unset) when |
+|---|---|---|---|
+| `amqp091.priority` | any Go integer (`int`, `int8`–`int64`, `uint8`–`uint64`), a non-fractional `float32`/`float64`, or a numeric string (e.g. `9` as an int) | in range `0..255` (the AMQP priority octet; the AMQP 0-9-1 base spec uses `0..9`, RabbitMQ priority queues extend to 255) | out of range, non-integral, or a native `uint` -- broker default `0` applies |
+| `amqp091.timestamp` | POSIX seconds as `int`, `int32`, `int64`, `uint32`, `uint64`, or `float64`; a Go `time.Time`; or an RFC3339 string | it parses to a valid epoch time | any other type, unparseable, `NaN`/`Inf`, or outside the `int64`-seconds range |
+
+An out-of-range or unparseable value leaves the property unset instead of
+publishing a wrong one: a bad `priority` falls back to the broker default and a
+bad `timestamp` is omitted, never emitted as a garbage pre-epoch value.
+
 ## Resilience Behavior
 
 - **Automatic reconnection.** On connection loss, the session retries with

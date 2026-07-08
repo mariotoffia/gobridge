@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -95,8 +97,82 @@ func (p *Processor) Name() string {
 	return "tenant"
 }
 
+// resolveTenantID reads the tenant identity from headers[key], distinguishing
+// an absent header from one that is present but not a usable string:
+//
+//   - key absent            -> ("", nil): no tenant; caller applies the
+//     fail-open / RequireTenant policy.
+//   - present, string       -> (value, nil); an empty string falls through to
+//     the same "no tenant" path as absent.
+//   - present, int/int64/uint32 -> (decimal string, nil): a tenant stamped as a
+//     typed numeric property by a transport (AMQP/MQTTv5) is coerced, not lost.
+//   - present, float64 that is integral and exactly representable ->
+//     (decimal string, nil): encoding/json rehydrates EVERY numeric header as
+//     float64, so a numeric tenant survives a DLQ/outbox JSON round-trip and
+//     coerces to the SAME decimal string int64 would produce.
+//   - present, any other type (incl. a fractional, non-finite, or >2^53 float64)
+//     -> ("", ErrInvalidPayload): a MALFORMED identity, rejected as ambiguous
+//     rather than silently coerced, so a present-but-non-string tenant is never
+//     mistaken for "no tenant" (which would fail-open the message untenanted).
+//
+// ponytail / TRUST BOUNDARY: the tenant header is CALLER-SUPPLIED and is NOT
+// authenticated here — this resolver only closes the present-but-non-string type
+// trap. Any downstream consumer of tenant identity MUST treat it as untrusted
+// unless a preceding validator authenticates it (e.g. against a signed claim).
+//
+// maxExactTenantInt is the largest integer float64 represents exactly (2^53); a
+// numeric tenant beyond it is ambiguous after a JSON round-trip, so it is
+// rejected rather than coerced to a possibly-wrong value.
+const maxExactTenantInt float64 = 1 << 53
+
+func resolveTenantID(headers map[string]any, key string) (string, error) {
+	if headers == nil {
+		return "", nil
+	}
+	v, ok := headers[key]
+	if !ok {
+		return "", nil // absent: no tenant
+	}
+	switch n := v.(type) {
+	case string:
+		return n, nil // empty string -> treated as absent by the caller
+	case int:
+		return strconv.FormatInt(int64(n), 10), nil
+	case int64:
+		return strconv.FormatInt(n, 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(n), 10), nil
+	case float64:
+		// encoding/json rehydrates EVERY numeric header as float64 (see
+		// messaging.Envelope.UnmarshalJSON): a tenant stamped int64(42) on first
+		// delivery is float64(42) after any DLQ/outbox JSON round-trip. Coerce an
+		// integral, exactly-representable value to the SAME decimal string int64
+		// would produce so a numeric tenant survives redrive; reject a fractional,
+		// non-finite, or out-of-safe-range value as malformed (never fail-open
+		// untenanted).
+		// ponytail: 2^53 ceiling — a larger numeric tenant id cannot be
+		// distinguished from its neighbours over JSON; use a string id for those.
+		if math.IsNaN(n) || math.IsInf(n, 0) || n != math.Trunc(n) ||
+			n < -maxExactTenantInt || n > maxExactTenantInt {
+			return "", shared.ErrInvalidPayload.WithMessage(
+				fmt.Sprintf("tenant header %q has a non-integral or out-of-range numeric value (%v)", key, n))
+		}
+		return strconv.FormatInt(int64(n), 10), nil
+	default:
+		return "", shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("tenant header %q present but not a string (got %T)", key, v))
+	}
+}
+
 func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next ports.ProcessorFunc) error {
-	tenantID, _ := messaging.GetHeaderString(env.Headers(), p.config.TenantHeader)
+	// Resolve the tenant identity, distinguishing an ABSENT header (no tenant,
+	// fail-open/RequireTenant applies) from a header that is PRESENT but not a
+	// usable string (a MALFORMED identity — reject, never fail-open untenanted).
+	tenantID, err := resolveTenantID(env.Headers(), p.config.TenantHeader)
+	if err != nil {
+		p.observeReject(ctx, "malformed", "")
+		return err
+	}
 
 	if tenantID == "" {
 		if p.config.RequireTenant {
@@ -169,7 +245,7 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 			return shared.ErrUnavailable.Wrap(
 				fmt.Errorf("tenant in-flight tracking failed: %w", err))
 		}
-		defer func() {
+		release := func() {
 			decrementCtx := ctx
 			if ctx.Err() != nil {
 				var cancel context.CancelFunc
@@ -177,14 +253,28 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 				defer cancel()
 			}
 			if err := p.tracker.IncrementInFlight(decrementCtx, tenantID, -1); err != nil {
-				// Best-effort cleanup: cannot alter control flow from a
-				// defer, but the leaked in-flight count must be visible.
+				// Best-effort cleanup: cannot alter control flow, but the
+				// leaked in-flight count must be visible.
 				p.observeTrackerError(decrementCtx, "decrement", tenantID, err)
 			}
-		}()
+		}
+		if scope, ok := ports.DeliveryScopeFrom(ctx); ok {
+			// Decrement when the WHOLE delivery settles (after the send), not
+			// when Process returns mid-chain. This is the F3 fix: the tenant is
+			// the last processor, so the send happens in the RouteRunner AFTER
+			// the chain returns — a defer here would fire before the send even
+			// starts, making MaxInFlight a no-op. In route-runner use ctx is
+			// already cancelled by the time Release runs, so the decrement
+			// deterministically takes the Background+timeout branch above —
+			// intentional: the cleanup must not be cancelled by the delivery it
+			// is cleaning up after.
+			scope.OnRelease(release)
+		} else {
+			defer release() // standalone use (no runtime scope): today's behaviour
+		}
 	}
 
-	err := next(ctx, env)
+	err = next(ctx, env)
 
 	if p.tracker != nil && err == nil {
 		if mErr := p.tracker.IncrementMessages(ctx, tenantID, 1); mErr != nil {

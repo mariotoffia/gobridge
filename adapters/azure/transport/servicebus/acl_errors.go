@@ -64,6 +64,35 @@ func mapServiceBusError(sbErr *azservicebus.Error) *shared.BridgeError {
 		return shared.ErrUnavailable.Wrap(sbErr).WithMessage("message lock lost - message may be redelivered")
 	case azservicebus.CodeUnauthorizedAccess:
 		return shared.ErrNotAuthorized.Wrap(sbErr).WithMessage("unauthorized access")
+	case azservicebus.CodeNotFound:
+		// The entity (queue/topic/subscription) does not exist — a
+		// deleted entity or a wrong name (AMQP amqp:not-found, which the
+		// SDK treats as RecoveryKindFatal). Classified PERMANENT
+		// (ErrNotFound) so a settlement caller (Ack/Retry/Extend) sees a
+		// non-recoverable class instead of the transient default.
+		//
+		// This classification does NOT self-fault the receive loop: the
+		// poll loop retries EVERY receive error at the backoff cap
+		// without consulting the error class (matching the SQS sibling by
+		// design — an intentional cross-transport policy), and buildStack
+		// re-wraps session-accept failures as transient ErrUnavailable. So
+		// a deleted/renamed entity keeps polling at the backoff cap until
+		// the entity reappears or the route is stopped; making it
+		// self-fault would be a cross-transport behaviour change, out of
+		// scope for this mapping.
+		return shared.ErrNotFound.Wrap(sbErr).WithMessage("entity not found")
+	case azservicebus.CodeClosed:
+		// The local sender/receiver link or connection was closed
+		// ("link was closed by user", or the ReceiveAndDelete internal
+		// cache drained after Close). This is a LOCAL lifecycle
+		// condition, not a remote entity-gone, and ASB clients/links are
+		// rebuildable — so classify it TRANSIENT (ErrConnectionLost) and
+		// let the poll loop rebuild rather than escalating a benign
+		// shutdown/rotation race as a permanent fault. (Judgment call:
+		// the finding leaned "likely permanent"; the SDK source shows
+		// CodeClosed is a local link-close, not entity deletion, which
+		// CodeNotFound covers.)
+		return shared.ErrConnectionLost.Wrap(sbErr).WithMessage("link or connection closed")
 	default:
 		return shared.ErrUnavailable.Wrap(sbErr).With("code", string(sbErr.Code))
 	}

@@ -104,13 +104,16 @@ func newDeadlineSSESender(t *testing.T, id string, writeTimeout time.Duration, s
 }
 
 // The per-write deadline must be re-armed before every frame using the
-// current clock, so a healthy long-lived stream keeps pushing its
-// deadline forward (overriding a fronting server's fixed WriteTimeout)
-// instead of being killed mid-stream.
+// current WALL clock (finding 8: SetWriteDeadline is an OS/kernel socket
+// deadline, so the sender uses time.Now(), not the injected clock), so a
+// healthy long-lived stream keeps pushing its deadline forward
+// (overriding a fronting server's fixed WriteTimeout) instead of being
+// killed mid-stream. Asserted with a monotonic wall-clock bracket
+// [before+timeout, after+timeout] — deterministic (never exact-equal to a
+// read clock), never flaky.
 func TestSSESender_PerWriteDeadlineReArmsEachFrame(t *testing.T) {
 	const writeTimeout = 5 * time.Second
-	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	sender, fake := newDeadlineSSESender(t, "sse-dl", writeTimeout, start)
+	sender, _ := newDeadlineSSESender(t, "sse-dl", writeTimeout, time.Now())
 
 	w := newFakeSSEWriter(nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,21 +130,38 @@ func TestSSESender_PerWriteDeadlineReArmsEachFrame(t *testing.T) {
 		return sender.ClientCount() >= 1
 	})
 
-	// First frame: deadline armed at start + writeTimeout.
+	// First frame: the deadline is armed from the wall clock observed
+	// during the write, so it lands in [before+timeout, after+timeout].
+	before1 := time.Now()
 	send(t, sender, "e1")
 	wait.RequireReceive(t, w.writes, 2*time.Second)
-	if dl, ok := w.lastDeadline(); !ok || !dl.Equal(start.Add(writeTimeout)) {
-		t.Fatalf("first frame deadline = %v (ok=%v), want %v", dl, ok, start.Add(writeTimeout))
+	after1 := time.Now()
+	dl1, ok := w.lastDeadline()
+	if !ok {
+		t.Fatal("first frame armed no write deadline")
+	}
+	if dl1.Before(before1.Add(writeTimeout)) || dl1.After(after1.Add(writeTimeout)) {
+		t.Fatalf("first frame deadline %v outside [%v, %v]", dl1,
+			before1.Add(writeTimeout), after1.Add(writeTimeout))
 	}
 
-	// Advance the clock; the next frame must re-arm relative to the new
-	// "now", proving the deadline is not a one-shot from connect time.
-	fake.Advance(10 * time.Second)
+	// Second frame must arm a FRESH deadline (re-armed each frame, not a
+	// one-shot from connect): at or after the first, and inside its own
+	// wall-clock bracket.
+	before2 := time.Now()
 	send(t, sender, "e2")
 	wait.RequireReceive(t, w.writes, 2*time.Second)
-	want := start.Add(10 * time.Second).Add(writeTimeout)
-	if dl, ok := w.lastDeadline(); !ok || !dl.Equal(want) {
-		t.Fatalf("re-armed deadline = %v (ok=%v), want %v", dl, ok, want)
+	after2 := time.Now()
+	dl2, ok := w.lastDeadline()
+	if !ok {
+		t.Fatal("second frame armed no write deadline")
+	}
+	if dl2.Before(before2.Add(writeTimeout)) || dl2.After(after2.Add(writeTimeout)) {
+		t.Fatalf("second frame deadline %v outside [%v, %v]", dl2,
+			before2.Add(writeTimeout), after2.Add(writeTimeout))
+	}
+	if dl2.Before(dl1) {
+		t.Fatalf("deadline must be re-armed forward each frame: dl2 %v < dl1 %v", dl2, dl1)
 	}
 
 	cancel()

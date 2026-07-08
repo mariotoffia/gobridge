@@ -31,6 +31,12 @@ type RouteHealth struct {
 	DeliveryMode string
 	Ready        bool // route runner started + receiver ready
 	InFlight     int  // currently-processing delivery count
+	// RouteDead reports a route that has restarted K consecutive times without
+	// ever reaching its stability window — a steady-state flap wedged at the
+	// supervisor backoff cap (e.g. a single-use receiver whose Run cannot be
+	// re-entered). Per-route supervision keeps global liveness green by design, so
+	// ops must alert on this STATE rather than on the restart rate alone.
+	RouteDead bool
 }
 
 // SessionHealthDetail describes one session's health, including
@@ -133,6 +139,75 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 	default:
 		return LevelDown, false
 	}
+}
+
+// readinessRoleStandby is the DeepHealth.Role value for an instance that has
+// exclusive sessions configured but holds no lease — ready-but-not-primary.
+// It mirrors the runtime's role vocabulary (runtime.roleStandby) as it appears
+// on the read-side wire; kept here so ReadinessLevelFromDeepHealth stays a pure
+// function of the snapshot without importing the runtime.
+const readinessRoleStandby = "standby"
+
+// ReadinessLevelFromDeepHealth derives the achieved ReadinessLevel from a
+// SINGLE DeepHealth snapshot, so a caller that already holds one (e.g. the
+// /deephealth handler) can classify readiness without triggering a second,
+// internally-inconsistent health sweep.
+//
+// This is the single source of truth for the snapshot→level derivation:
+// Runtime.ReadinessLevel delegates to it after taking its own DeepHealth
+// snapshot, so /ready and /deephealth never diverge. A not-running or
+// unhealthy runtime collapses to LevelLive (the process still answers), and a
+// standby instance (Role "standby") is capped at LevelSubscribed so failover
+// routers never treat a ready standby as an active dispatch target.
+//
+// A deferred-connect standby session (ConnectAfterLease with no lease) is
+// expected to be disconnected and is skipped from the connectivity aggregate,
+// matching the runtime so a standby can still reach its LevelSubscribed cap.
+func ReadinessLevelFromDeepHealth(dh DeepHealth) ReadinessLevel {
+	if !dh.Running || !dh.Healthy {
+		return LevelLive
+	}
+	level := readinessLevelFromSessions(dh)
+	if dh.Role == readinessRoleStandby && level > LevelSubscribed {
+		return LevelSubscribed
+	}
+	return level
+}
+
+// readinessLevelFromSessions derives the achieved level from a consistent
+// DeepHealth snapshot, independent of Role.
+func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
+	allConnected := true
+	allSubscribed := true
+	for _, sh := range dh.Sessions {
+		// A deferred-connect standby is expected to be disconnected until this
+		// instance wins the lease; excluding it lets a ready standby reach its
+		// LevelSubscribed cap instead of being pinned at LevelRunning.
+		if sh.ConnectAfterLease && !sh.HasLease {
+			continue
+		}
+		if !sh.Connected {
+			allConnected = false
+			allSubscribed = false
+			break
+		}
+		if sh.SubscriptionsActive != sh.SubscriptionsWanted {
+			allSubscribed = false
+		}
+	}
+	if !allConnected {
+		return LevelRunning
+	}
+	if !allSubscribed {
+		return LevelConnected
+	}
+	// Full requires every route runner to be Ready (handler registered).
+	for _, rh := range dh.Routes {
+		if !rh.Ready {
+			return LevelSubscribed
+		}
+	}
+	return LevelFull
 }
 
 // RuntimeQuery is the read-side driving port for the bridge runtime.

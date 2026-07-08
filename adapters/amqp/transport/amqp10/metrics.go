@@ -29,4 +29,13 @@ const (
 	// broker (poison messages). The receive loop keeps running — this
 	// counter is the only signal that malformed input is arriving.
 	MetricAMQP10IngressRejected = "AMQP10IngressRejected"
+	// MetricAMQP10SettleFailed counts settlement attempts (Ack/Retry)
+	// that FAILED on a live link. Each failure permanently consumes one
+	// link-credit slot — go-amqp only replenishes credit on a completed
+	// disposition — so an unobserved run of failures silently exhausts
+	// credit and stalls the receiver with Health still Full. The receiver
+	// forces a link rebuild once failures cross a threshold; this counter
+	// makes the leaked-credit condition observable before then (finding
+	// F2). See receiver.go settlementFailed / forceSettleRebuild.
+	MetricAMQP10SettleFailed = "AMQP10SettleFailed"
 )

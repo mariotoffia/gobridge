@@ -76,6 +76,13 @@ type Runtime struct {
 	running        bool
 	healthy        bool
 	terminal       bool
+	// stopped records a clean, DELIBERATE Stop (an admin pause or a
+	// supervisor swap of the old runtime). Unlike terminal it is NOT an
+	// unrecoverable death: /live stays 200 and the liveness backstop must not
+	// restart the process. It still makes the runtime single-use (Start
+	// rejects), so "resume" means the supervisor builds a fresh runtime
+	// (findings: CRITICAL 1 admin stop, CRITICAL 3 healthy-swap liveness).
+	stopped bool
 	// stopDone is published by the Stop call that transitions the runtime to
 	// terminal, and closed as the very last action of that Stop (after every
 	// resource is released and errs is joined). A concurrent second Stop that
@@ -85,8 +92,20 @@ type Runtime struct {
 	// than a Stop call.
 	stopDone        chan struct{}
 	componentErrors map[string]error
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
+	// routeFlaps counts CONSECUTIVE sub-stability-window restarts per supervised
+	// route (keyed "route:<id>", like componentErrors). superviseRoute increments
+	// it on a quick flap and resets it on a stable run; DeepHealth latches
+	// RouteHealth.RouteDead once it reaches routeDeadRestartThreshold (F5).
+	routeFlaps map[string]int
+	// routeRunStart records the wall-clock start of each supervised route's
+	// CURRENT run (keyed "route:<id>"), set before run() and cleared after it
+	// returns. DeepHealth reads it to suppress a latched route_dead once the live
+	// run has outlived the stability window: a route that flaps to the threshold
+	// then recovers and keeps running never re-enters superviseRoute to reset the
+	// flap counter, so without this it would advertise route_dead forever (F5).
+	routeRunStart map[string]time.Time
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 type routeEntry struct {
@@ -294,8 +313,8 @@ func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
 // Stop the runtime is terminal and cannot be restarted (finding 3).
 func (rt *Runtime) Stop(ctx context.Context) error {
 	rt.mu.Lock()
-	if rt.terminal && !rt.running {
-		// A prior Stop already transitioned this runtime to terminal.
+	if (rt.terminal || rt.stopped) && !rt.running {
+		// A prior Stop already transitioned this runtime to stopped/terminal.
 		if rt.stopDone != nil {
 			// That Stop's teardown may still be in flight. Block until it has
 			// fully completed so a caller relying on "Stop returned ⇒ resources
@@ -322,7 +341,13 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	stopDone := make(chan struct{})
 	rt.stopDone = stopDone
 	rt.running = false
-	rt.terminal = true
+	// A deliberate Stop is a clean pause, NOT an unrecoverable death: mark the
+	// runtime stopped (single-use) but do NOT trip terminal. terminal keeps
+	// whatever a background component already set (bridge.go component-failure
+	// trips), so an ABNORMAL stop stays terminal and the liveness backstop still
+	// restarts the process, while a clean admin/swap Stop leaves /live at 200
+	// (CRITICAL 1 / CRITICAL 3).
+	rt.stopped = true
 	cancel := rt.cancel
 	rt.mu.Unlock()
 
@@ -469,7 +494,6 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		sessRefs = append(sessRefs, sessRef{sid: sid, sess: sse.session})
 	}
 	metrics := rt.metrics
-	tracer := rt.tracer
 	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
 	rt.mu.Unlock()
 
@@ -545,24 +569,20 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		if err := metrics.Flush(flushCtx); err != nil {
 			errs = append(errs, err)
 		}
-		// Close releases the exporter/provider; Flush alone does not shut the
-		// metric reader down. Close under closeCtx — the same full-budget context
-		// the tracer Close uses below — NOT the halved flushCtx: a slow-but-
-		// successful Flush must not eat into Close's deadline and turn an
-		// otherwise-clean provider shutdown into a spurious ctx error on the Stop
-		// result (OTEL-N5, K2).
-		if err := metrics.Close(closeCtx); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	// Close the tracer so buffered spans are flushed and the TracerProvider is
-	// released on shutdown, bounded by closeCtx. NoopTracer.Close is a no-op, so
-	// this is safe when tracing is disabled (K2).
-	if tracer != nil {
-		if err := tracer.Close(closeCtx); err != nil {
-			errs = append(errs, err)
-		}
+		// Stop FLUSHES buffered data on every runtime stop but does NOT Close the
+		// exporter: the metrics exporter and tracer are shared by every runtime
+		// across config reloads and are owned by the composition root that
+		// supplied them, which Closes them exactly once at process shutdown. A
+		// per-runtime Close here killed the shared CloudWatch flush goroutine on
+		// the FIRST reload, so all later metrics were silently dropped for the
+		// process lifetime (CRITICAL 2).
+		//
+		// The tracer (ports.Tracer) exposes only Close, no Flush, so there is
+		// nothing to flush per-stop; like the metrics exporter it is neither
+		// flushed nor Closed here. Its owner — the composition root that passed it
+		// via bridge.WithSupervisorTracer — Closes it exactly once at process
+		// shutdown. (No in-tree composition root wires a real tracer today; the
+		// cmd/gobridge example shows the owner-Closes-once pattern.)
 	}
 
 	return errors.Join(errs...)
@@ -606,6 +626,28 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 			rt.mu.Lock()
 			rt.componentErrors[name] = err
 			if errors.Is(err, shared.ErrStaleFencingToken) {
+				// A stale fencing token means THIS instance lost its exclusive
+				// lease to another owner: the component stopped deliberately, so it
+				// must NOT flip global health or cancel the runtime — a demoted
+				// standby stays live to resume on re-acquire. This is safe ONLY
+				// because every component that can legitimately lose a fence (the
+				// session managers) runs under superviseSession, which owns the
+				// lease lifecycle and escalates a terminal loss ITSELF; the bare
+				// startBackground path is never wired to a fencing-capable
+				// component today.
+				//
+				// HAZARD (F9): if a future component IS wired through bare
+				// startBackground and returns ErrStaleFencingToken, its goroutine
+				// would stop here with rt.healthy still true — a silent,
+				// unsupervised death behind a green liveness probe. Log loudly so
+				// that wiring mistake is visible rather than mute; do not remove
+				// this branch on the assumption it is unreachable.
+				if rt.logger != nil {
+					rt.logger.Error("background component stopped on stale fencing token without supervision; "+
+						"global health left unchanged (expected only for lease-supervised components — "+
+						"a bare startBackground component reaching here dies silently)",
+						"component", name, "error", err)
+				}
 				rt.mu.Unlock()
 				return
 			}
@@ -818,7 +860,7 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 	const (
 		minBackoff      = 1 * time.Second
 		maxBackoff      = 30 * time.Second
-		stabilityWindow = maxBackoff
+		stabilityWindow = routeStabilityWindow
 	)
 	name := "route:" + routeID
 	metrics := rt.metrics
@@ -833,10 +875,13 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 		backoff := minBackoff
 		for {
 			runStart := rt.clk.Now()
+			rt.setRouteRunStart(name, runStart)
 			err := run(ctx)
+			rt.clearRouteRunStart(name)
 			if ctx.Err() != nil {
 				// Runtime shutting down: a clean stop. Drop any prior fault.
 				rt.clearComponentError(name)
+				rt.resetRouteFlap(name)
 				return nil
 			}
 			if err == nil {
@@ -849,7 +894,18 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 			metrics.Counter(shared.MetricRouteRestarts, 1,
 				shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
 			if rt.clk.Since(runStart) >= stabilityWindow {
+				// The run reached the stability window before failing: treat it as a
+				// fresh healthy-then-degraded cycle — reset both the backoff and the
+				// consecutive-flap counter that drives route_dead (F5).
 				backoff = minBackoff
+				rt.resetRouteFlap(name)
+			} else {
+				// A sub-stability-window failure — another quick flap. After
+				// routeDeadRestartThreshold of these in a row with no stable run
+				// between, DeepHealth latches route_dead=true so ops alert on the
+				// steady STATE (a route wedged at the backoff cap behind a green
+				// liveness probe) rather than on the restart RATE alone (F5).
+				rt.recordRouteFlap(name)
 			}
 			wait := equalJitter(backoff, randFloat)
 			if rt.logger != nil {
@@ -895,5 +951,74 @@ func (rt *Runtime) setComponentError(name string, err error) {
 func (rt *Runtime) clearComponentError(name string) {
 	rt.mu.Lock()
 	delete(rt.componentErrors, name)
+	rt.mu.Unlock()
+}
+
+// routeStabilityWindow is how long a supervised route's CURRENT run must stay up
+// before it counts as recovered. Two places must agree on it: superviseRoute
+// resets the flap counter when a run RETURNS after this window, and the DeepHealth
+// route_dead projection suppresses a latched dead state when the LIVE run has
+// already outlived it (a recovered route that keeps running never re-enters
+// superviseRoute to reset). Equal to the supervisor backoff cap (30s): a run that
+// outlives one full backoff has cleared the flap regime.
+const routeStabilityWindow = 30 * time.Second
+
+// routeDeadRestartThreshold is the number of CONSECUTIVE sub-stability-window
+// route restarts (quick flaps with no stable run between them) after which
+// DeepHealth latches RouteHealth.RouteDead=true (F5). A route that flaps this
+// many times has almost certainly wedged at the supervisor backoff cap — e.g. a
+// single-use receiver whose Run cannot be re-entered — so ops can alert on that
+// steady STATE rather than on the restart rate. Kept small: with the
+// 1→2→4→8→16s fast-backoff ramp it is ~31s of continuous flapping before the
+// signal latches.
+const routeDeadRestartThreshold = 5
+
+// recordRouteFlap increments a route's consecutive sub-stability-window restart
+// counter (F5). Called by superviseRoute when a run fails before reaching the
+// stability window. Lazily allocates the map so it is safe even when a test
+// drives superviseRoute directly, bypassing Start's allocation.
+func (rt *Runtime) recordRouteFlap(name string) {
+	rt.mu.Lock()
+	if rt.routeFlaps == nil {
+		rt.routeFlaps = make(map[string]int)
+	}
+	rt.routeFlaps[name]++
+	rt.mu.Unlock()
+}
+
+// resetRouteFlap clears a route's consecutive-flap counter once a run stayed up
+// for the stability window (a recovery) or the route stopped cleanly, so a
+// recovered route drops route_dead instead of latching it forever (F5). This
+// fires only when a run RETURNS after the window; a route that recovers and keeps
+// running is handled complementarily by the DeepHealth read-time liveness check
+// (see routeRunStart). delete on a nil map is a no-op, so this is safe even
+// before Start allocates the map.
+func (rt *Runtime) resetRouteFlap(name string) {
+	rt.mu.Lock()
+	delete(rt.routeFlaps, name)
+	rt.mu.Unlock()
+}
+
+// setRouteRunStart records the start time of a supervised route's current run so
+// DeepHealth can distinguish a live, recovered route (its run has outlived the
+// stability window) from one still wedged in the flap regime (F5). Lazily
+// allocates the map like recordRouteFlap so tests driving superviseRoute directly
+// are safe.
+func (rt *Runtime) setRouteRunStart(name string, at time.Time) {
+	rt.mu.Lock()
+	if rt.routeRunStart == nil {
+		rt.routeRunStart = make(map[string]time.Time)
+	}
+	rt.routeRunStart[name] = at
+	rt.mu.Unlock()
+}
+
+// clearRouteRunStart drops the current-run marker when a run returns (the route is
+// now between runs — in backoff or being re-entered), so route_dead is not
+// suppressed while the route is not actually up (F5). delete on a nil map is a
+// no-op.
+func (rt *Runtime) clearRouteRunStart(name string) {
+	rt.mu.Lock()
+	delete(rt.routeRunStart, name)
 	rt.mu.Unlock()
 }

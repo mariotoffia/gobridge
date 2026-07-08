@@ -27,6 +27,15 @@ type Delivery struct {
 	metrics ports.MetricsExporter
 	clk     clock.Clock
 
+	// queue is the bounded queue name this delivery was consumed from. It
+	// is the TagKeyEntity dimension for the Ack/Retry metrics: RoutingKey is
+	// deliberately NOT used because it is caller-controlled and unbounded
+	// (e.g. per-entity keys like "order.<id>"), which would explode metric
+	// time-series cardinality. Set by forwardDeliveries; empty on
+	// directly-constructed deliveries (mirrors receiver.go's ConsumeLatency
+	// tag, which already uses the queue name).
+	queue string
+
 	mu       sync.Mutex
 	settled  bool
 	settleOK bool
@@ -89,7 +98,7 @@ func (d *Delivery) Ack(ctx context.Context) error {
 	ackStart := d.clk.Now()
 	err := d.raw.Ack(false)
 	d.metrics.Timer(MetricAMQP091AckLatency, d.clk.Since(ackStart),
-		shared.Tag{Key: shared.TagKeyEntity, Value: d.raw.RoutingKey})
+		shared.Tag{Key: shared.TagKeyEntity, Value: d.queue})
 
 	if err != nil {
 		return MapError(err)
@@ -128,7 +137,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, reason error)
 
 	if after > 0 {
 		d.metrics.Counter(MetricAMQP091DelayedRetryUnhonored, 1,
-			shared.Tag{Key: shared.TagKeyEntity, Value: d.raw.RoutingKey})
+			shared.Tag{Key: shared.TagKeyEntity, Value: d.queue})
 		d.warnDelayedRetryUnhonored(after, reason)
 	}
 	if logging.TraceEnabled(d.logger) {

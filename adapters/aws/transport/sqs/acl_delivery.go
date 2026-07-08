@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -145,9 +147,19 @@ type sqsDelivery struct {
 	queueURL          string
 	receiptHandle     string
 	visibilityTimeout atomic.Int32
-	logger            *slog.Logger
-	metrics           ports.MetricsExporter
-	clk               clock.Clock
+	// windowDeadline is the wall-clock instant (unix nanos) at which the
+	// CURRENT visibility window lapses. It is seeded in newDelivery and
+	// refreshed on every successful ChangeMessageVisibility — both the
+	// auto-extend loop's own extends AND a user Extend (Finding 2). The
+	// auto-extend loop reads it to decide whether a transient CMV failure
+	// happened inside a still-valid window (retry) or after it lapsed
+	// (cancel). Without refreshing it on user Extend, a user push to
+	// now+10m would be ignored and a blip inside the old 30s window would
+	// prematurely cancel still-locked processing.
+	windowDeadline atomic.Int64
+	logger         *slog.Logger
+	metrics        ports.MetricsExporter
+	clk            clock.Clock
 
 	cancel           context.CancelFunc // cancels autoExtendCtx (stops the goroutine)
 	processingCancel context.CancelFunc // cancels deliveryCtx (frees the context node)
@@ -203,6 +215,7 @@ func newDelivery(
 		cancel:           cancel,
 	}
 	d.visibilityTimeout.Store(visibilityTimeout)
+	d.windowDeadline.Store(clk.Now().Add(time.Duration(visibilityTimeout) * time.Second).UnixNano())
 
 	if autoExtend && visibilityTimeout >= minAutoExtendVisibilitySeconds {
 		go d.autoExtendLoop(ctx)
@@ -229,7 +242,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: acking",
 			"queue_url", d.queueURL,
-			"message_id", d.env.ID,
+			"message_id", d.env.ID(),
 		)
 	}
 
@@ -239,6 +252,8 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		ReceiptHandle: aws.String(d.receiptHandle),
 	})
 	if err != nil {
+		d.metrics.Counter(MetricSQSSettlementErrors, 1,
+			shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 		return MapError(err)
 	}
 	d.metrics.Timer(MetricSQSDeleteLatency, d.clk.Since(start),
@@ -275,7 +290,7 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: retrying",
 			"queue_url", d.queueURL,
-			"message_id", d.env.ID,
+			"message_id", d.env.ID(),
 			"delay_seconds", timeout,
 		)
 	}
@@ -286,6 +301,8 @@ func (d *sqsDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		VisibilityTimeout: timeout,
 	})
 	if err != nil {
+		d.metrics.Counter(MetricSQSSettlementErrors, 1,
+			shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 		return MapError(err)
 	}
 	return nil
@@ -317,7 +334,7 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	if logging.TraceEnabled(d.logger) {
 		d.logger.Log(ctx, logging.LevelTrace, "sqs: extending",
 			"queue_url", d.queueURL,
-			"message_id", d.env.ID,
+			"message_id", d.env.ID(),
 			"new_timeout", timeout,
 		)
 	}
@@ -339,6 +356,10 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	d.metrics.Counter(MetricSQSVisibilityExtensions, 1,
 		shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 	d.visibilityTimeout.Store(timeout)
+	// Refresh the auto-extend loop's window deadline so a transient CMV
+	// failure inside the freshly-extended window is not mistaken for a
+	// lapsed window and does not prematurely cancel processing (Finding 2).
+	d.windowDeadline.Store(d.clk.Now().Add(time.Duration(timeout) * time.Second).UnixNano())
 	return nil
 }
 
@@ -418,13 +439,14 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 	ticker := d.clk.NewTicker(interval)
 	defer ticker.Stop()
 
-	// deadline is the wall-clock instant the CURRENT visibility window
-	// lapses — the message became invisible at receive for `vis` seconds,
-	// and each successful extend resets the window to `vis` from that
-	// moment. Tracking it lets a transient failure retry until (but not
-	// past) the true expiry, instead of relying solely on a fixed failure
-	// count that could fire a full interval after the lapse (Finding 5).
-	deadline := d.clk.Now().Add(time.Duration(vis) * time.Second)
+	// The CURRENT visibility window's lapse instant lives in
+	// d.windowDeadline (unix nanos), seeded by newDelivery and refreshed on
+	// every successful extend — the loop's own (below) AND a user Extend
+	// (Finding 2). Reading it each failure lets a transient error retry
+	// until (but not past) the true expiry instead of relying solely on a
+	// fixed failure count; reading the atomic (not a loop-local) means a
+	// user push to now+10m is honoured instead of ignored, so a blip inside
+	// the old window can no longer prematurely cancel still-locked work.
 
 	consecutiveFailures := 0
 
@@ -449,6 +471,31 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
+				d.metrics.Counter(MetricSQSAutoExtendFailures, 1,
+					shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
+
+				// A receipt handle that is no longer inflight or is invalid
+				// means the lock is already lost — the message is (or is
+				// about to be) visible to another consumer. Retrying is
+				// pointless and only widens the duplicate window, so cancel
+				// processing immediately instead of treating it as transient
+				// (Finding 8).
+				var notInflight *sqstypes.MessageNotInflight
+				var invalidHandle *sqstypes.ReceiptHandleIsInvalid
+				if errors.As(err, &notInflight) || errors.As(err, &invalidHandle) {
+					if d.logger != nil {
+						d.logger.Error("sqs: auto-extend receipt handle no longer valid, cancelling processing",
+							"queue", d.queueURL,
+							"message_id", d.env.ID(),
+							"error", err,
+						)
+					}
+					if d.processingCancel != nil {
+						d.processingCancel()
+					}
+					return
+				}
+
 				consecutiveFailures++
 				if d.logger != nil {
 					d.logger.Warn("sqs: auto-extend visibility failed",
@@ -465,13 +512,15 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				// reached at or before the deadline, so it leads; only at
 				// the minimum visibility (vis==2, interval floored to 1s)
 				// does windowLapsed fire first, cancelling the instant the
-				// lock is genuinely lost.
+				// lock is genuinely lost. The deadline is read from the
+				// atomic so a user Extend (Finding 2) pushes it out.
+				deadline := time.Unix(0, d.windowDeadline.Load())
 				windowLapsed := !now.Before(deadline)
 				if windowLapsed || consecutiveFailures >= autoExtendMaxFailures {
 					if d.logger != nil {
 						d.logger.Error("sqs: auto-extend giving up, cancelling processing",
 							"queue", d.queueURL,
-							"message_id", d.env.ID,
+							"message_id", d.env.ID(),
 							"consecutive_failures", consecutiveFailures,
 							"window_lapsed", windowLapsed,
 						)
@@ -498,8 +547,9 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			}
 			consecutiveFailures = 0
 			// A successful extend resets the visibility window to `vis`
-			// from now; update the deadline and restore the normal cadence.
-			deadline = now.Add(time.Duration(vis) * time.Second)
+			// from now; publish the new deadline (Finding 2) and restore the
+			// normal cadence.
+			d.windowDeadline.Store(now.Add(time.Duration(vis) * time.Second).UnixNano())
 			newInterval := autoExtendInterval(vis)
 			if newInterval != interval {
 				ticker.Reset(newInterval)
@@ -510,7 +560,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			if logging.TraceEnabled(d.logger) {
 				d.logger.Log(ctx, logging.LevelTrace, "sqs: auto-extended",
 					"queue_url", d.queueURL,
-					"message_id", d.env.ID,
+					"message_id", d.env.ID(),
 					"visibility_timeout", vis,
 				)
 			}

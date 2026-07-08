@@ -53,6 +53,12 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 | `DLQWriteFailures` | Counter | — | Failed DLQ writes |
 | `OutboxDepth` | Gauge | `partition` | Pending outbox records |
 | `OutboxDrainLatency` | Timer | `session_id` | Outbox drain cycle time |
+| `OutboxExpiredBeforeSend` | Counter | `route_id` | Claimed record found past its TTL before its send; handled by the route's `on_expired` policy |
+| `OutboxReplayCount` | Counter | `route_id` | A redelivered record (`ReplayCount > 1`) reprocessed on a later attempt |
+| `OutboxDuplicateRisk` | Counter | `route_id` | Send succeeded but the follow-up Complete failed, so the record will be re-sent |
+| `OutboxDeferred` | Counter | `route_id` | Claimed records not processed this drain cycle (batch deadline hit) and released for the next |
+| `DrainSkippedNoLease` | Counter | `session_id`, `route_id` | Drain cycle skipped because the drainer holds no lease |
+| `OutboxDrainStalled` | Counter | `session_id`, `route_id` | Drain batch whose in-flight sends did not return within the watchdog grace (a Sender ignoring `ctx`) |
 | `LeaseAcquireLatency` | Timer | `lease_id` | Lease acquisition latency |
 | `LeaseAcquireFailures` | Counter | `lease_id` | Failed lease acquisitions |
 | `MQTTReconnects` | Counter | `session_id` | Session reconnects (historical wire name) |
@@ -61,6 +67,26 @@ All metrics use `shared.Tag` for dimensional tagging. The OTLP/CloudWatch
 backend applies its own name normalization (e.g. Prometheus lowercases and
 `_`-separates), so dashboard queries use the backend-normalized form of these
 names.
+
+**Reading the loss/duplicate ledger.** The outbox counters above are the
+conservation ledger for at-least-once delivery -- watch their *rate*, not their
+absolute value:
+
+- `OutboxExpiredBeforeSend` rising -- messages are hitting their TTL while
+  queued: a backlog, or a broker outage longer than the message TTL.
+- `OutboxReplayCount` rising -- records are being redelivered repeatedly and are
+  approaching the poison threshold.
+- `OutboxDuplicateRisk` rising -- sends that completed but could not be marked
+  Complete, so they will be re-sent; this is the duplicate window the
+  `x-bridge.idempotency-key` / `x-bridge.dedup-id` headers exist to absorb.
+- `OutboxDeferred` rising under load -- the drain budget is too small for the
+  batch size.
+- `DrainSkippedNoLease` rising on a route that should drain -- a misconfiguration
+  (e.g. `shared_outbox` on a non-exclusive session); a normal standby
+  legitimately holds no lease.
+- `OutboxDrainStalled` non-zero -- a Sender is ignoring `ctx` cancellation and
+  has wedged the drain loop; a diagnostic only, the runtime does not kill the
+  wedged goroutines.
 
 **Transport-adapter metrics.** Some adapters self-instrument under names
 declared in their own package rather than in `domain/shared/metrics.go`. The

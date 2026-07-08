@@ -28,6 +28,7 @@ import (
 type RouteRunner struct {
 	routeID              string
 	policy               routing.RoutePolicy
+	sourceTransport      string
 	receiver             ports.Receiver
 	sender               ports.Sender
 	senders              map[string]ports.Sender           // binding ID -> sender (optional)
@@ -59,8 +60,16 @@ type RouteRunner struct {
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
 type RouteRunnerConfig struct {
-	RouteID              string
-	Policy               routing.RoutePolicy
+	RouteID string
+	Policy  routing.RoutePolicy
+	// SourceTransport is the identity of the transport that FEEDS this route
+	// (the RegisterTransportFactory name the operator declared, or the adapter's
+	// canonical PluginConfig.Kind). It drives the ingress redelivery-count strip
+	// (stripForeignReceiveCounts): the receiving transport keeps only its own
+	// native count header and drops any foreign one an untrusted producer forged
+	// (F3). Empty disables the strip (legacy behaviour for callers that construct
+	// a runner without a declared source transport). Optional.
+	SourceTransport      string
 	Receiver             ports.Receiver
 	Sender               ports.Sender
 	Senders              map[string]ports.Sender           // binding ID -> sender (optional)
@@ -137,6 +146,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	r := &RouteRunner{
 		routeID:              cfg.RouteID,
 		policy:               cfg.Policy,
+		sourceTransport:      cfg.SourceTransport,
 		receiver:             cfg.Receiver,
 		sender:               cfg.Sender,
 		senders:              cfg.Senders,
@@ -450,6 +460,14 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	} else {
 		env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
 	}
+	// Ingress redelivery-count sanitization (F3). The transport-namespaced count
+	// keys (sqs.ApproximateReceiveCount, asb.delivery-count, amqp10.delivery-count)
+	// are NOT x-bridge.*-reserved, so the strip above leaves them in place. An
+	// untrusted producer on a count-less source (MQTT copies arbitrary user
+	// properties into headers) could forge one and have its first delivery read as
+	// over the replay cap. Keep only THIS source transport's own count key and
+	// drop the foreign ones BEFORE any receiveCount read on the retry/poison path.
+	stripForeignReceiveCounts(env, r.sourceTransport)
 	r.injectHeaders(env)
 
 	// Re-stamp a binding-scoped route override carried out-of-band by a trusted
@@ -527,6 +545,13 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		ctx = observability.WithTraceID(ctx, tc.TraceID)
 		ctx = observability.WithSpanID(ctx, tc.SpanID)
 	}
+
+	// Install a delivery-scoped release registry so a mid-chain processor can
+	// bracket a resource across the WHOLE delivery (incl. the egress send in
+	// direct_hold / the outbox persist in shared_outbox). Generic: the runtime
+	// knows nothing of what is registered.
+	ctx, scope := ports.WithDeliveryScope(ctx)
+	defer scope.Release()
 
 	// Attempt reflects the source transport's redelivery count when present
 	// (e.g. SQS ApproximateReceiveCount): a transport redelivery is attempt 2+,
@@ -713,6 +738,14 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 // path consults Settled() so a panic AFTER settlement (finding 18) does not
 // re-settle an already-terminal delivery. Extend is a visibility operation, not
 // a settlement, so it is not tracked.
+//
+// HAZARD (F10): embedding ports.Delivery promotes every current and FUTURE
+// method of the wrapped Delivery, but a wrapper is opaque to interface probing —
+// a caller doing `del.(SomeOptionalCap)` sees THIS concrete type, not the inner
+// delivery, so any optional capability the underlying Delivery grows is silently
+// masked. If such an optional Delivery capability is ever added, it MUST be
+// explicitly forwarded here (add the method and delegate to d.Delivery, or expose
+// the inner value via an Unwrap) so this wrapper does not hide it.
 type settleTrackingDelivery struct {
 	ports.Delivery
 	settled atomic.Bool

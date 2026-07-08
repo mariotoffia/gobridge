@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
@@ -19,6 +20,14 @@ import (
 // hammered every poll interval and a transient outage does not burn the
 // replay/poison budget in a few seconds.
 const transientRetryFloor = 5 * time.Second
+
+// drainWedgeGrace is how long past a batch's own computed deadline wg.Wait may
+// run before the batch is flagged as wedged (Min2). It is deliberately generous:
+// a well-behaved batch returns at or shortly after batchTimeout (workCtx's
+// deadline cancels in-flight sends, which honor ctx and return promptly), so
+// only a Sender that ignores context cancellation runs this far past the
+// deadline. The watchdog never kills — it only makes the wedge observable.
+const drainWedgeGrace = 30 * time.Second
 
 // Run polls the outbox for pending records and sends them. It blocks
 // until the context is cancelled or a fencing error occurs. The polling
@@ -132,15 +141,31 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 }
 
 // maybeExpire runs OutboxStore.Expire at most once per expireInterval, sweeping
-// pending records whose expires_at has passed into the expired terminal state
-// (finding 19). Without this the port's Expire method is dead code and expired
-// records that were never claimed linger pending forever. The caller has already
-// confirmed lease ownership, so exactly one instance performs the sweep per
-// partition. Expire is pending-only (claimed records are reclaimed via Claim,
-// never expired out from under a live owner), so the sweep never races an
-// in-flight send.
+// this partition's pending records whose expires_at has passed into the expired
+// terminal state (finding 19). Without this the port's Expire method is dead
+// code and expired records that were never claimed linger pending forever. The
+// caller has already confirmed lease ownership, so exactly one instance performs
+// the sweep per partition. Expire is pending-only (claimed records are reclaimed
+// via Claim, never expired out from under a live owner), so the sweep never
+// races an in-flight send; it is partition-scoped (M1) so a drainer holding one
+// partition's lease can never expire another partition's records.
+//
+// H1: the bulk sweep is DEFERRED entirely for on_expired:dlq routes. The sweep
+// only transitions records to the terminal "expired" state with a counter — it
+// destroys the envelope without routing it — so under the default ExpiredDLQ
+// policy a broker outage would erase evidence the operator asked to preserve.
+// For DLQ-policy routes, expiry MUST flow through the per-record claim path
+// (handleExpired) which routes the expired envelope to the DLQ. The sweep
+// therefore runs ONLY for drop-policy routes, where the record would be dropped
+// anyway so eager accounting loses no evidence.
 func (d *Drainer) maybeExpire(ctx context.Context) {
 	if d.outboxStore == nil {
+		return
+	}
+	if d.policy.OnExpired == routing.ExpiredDLQ {
+		// DLQ-policy expiry is handled per-record by handleExpired (which
+		// preserves the envelope by routing it to the DLQ), never by the
+		// evidence-destroying bulk sweep.
 		return
 	}
 	now := d.clk.Now()
@@ -148,7 +173,7 @@ func (d *Drainer) maybeExpire(ctx context.Context) {
 		return
 	}
 	d.lastExpire = now
-	n, err := d.outboxStore.Expire(ctx, now)
+	n, err := d.outboxStore.Expire(ctx, now, d.partitionKey)
 	if err != nil {
 		d.log(ctx, slog.LevelWarn, "outbox expire sweep failed", "error", err)
 		return
@@ -180,6 +205,20 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	if err != nil {
 		return 0, 0, err
 	}
+	// OutboxDepth from the drainer's own poll cadence: emit the claimed count as
+	// the depth gauge on every drain cycle this partition actually runs (lease
+	// held AND egress ready), independent of MaxOutboxDepth and of the ingress
+	// QueryPending path. This makes the gauge continuous while an outbox exists
+	// (it emits 0 when caught up) instead of only under a backpressure config.
+	// Tagged TagKeyPartition to share the series with the ingress-side emission
+	// (runtime.InstrumentedOutboxStore.QueryPending). The value saturates at
+	// currentBatchSize (the Claim ceiling), so it signals "backlog at least this
+	// deep", not the exact pending total — an exact count primitive is deferred
+	// to the store wave. It does NOT emit while standby (no lease) or while
+	// egress is not ready; those gaps are covered by DrainSkippedNoLease and the
+	// readiness gate respectively.
+	d.metrics.Gauge(shared.MetricOutboxDepth, float64(len(records)),
+		shared.Tag{Key: shared.TagKeyPartition, Value: d.partitionKey})
 	if len(records) == 0 {
 		if d.hadPending {
 			d.hadPending = false
@@ -312,6 +351,16 @@ loop:
 						// drives the backoff floor via transientReleases.
 						atomic.AddInt64(&transientReleases, 1)
 						d.releaseRemainder(batchCtx, group[ri+1:], token)
+					case errors.Is(err, errReleaseFailed):
+						// Transient egress failure whose Release ALSO failed with
+						// a store error (M4). The head stays durably Claimed. Stop
+						// the group WITHOUT counting a success and WITHOUT letting
+						// a later same-key record overtake the still-claimed head.
+						// Do NOT releaseRemainder: the store that just failed
+						// Release will fail it again, so version/stale reclaim
+						// recovers the still-claimed head AND the unattempted tail
+						// together. Drives the backoff floor via transientReleases.
+						atomic.AddInt64(&transientReleases, 1)
 					case errors.Is(err, shared.ErrStaleFencingToken):
 						staleDetected.Store(true)
 						batchCancel()
@@ -328,7 +377,13 @@ loop:
 			}
 		})
 	}
-	wg.Wait()
+	// Min2: a Sender that ignores ctx can block wg.Wait indefinitely, which is
+	// otherwise indistinguishable from an idle drainer (both emit nothing). Wait
+	// under a non-killing watchdog: if the batch outlives its own deadline by a
+	// generous grace, emit MetricOutboxDrainStalled and a WARN so the wedge is
+	// observable, then keep waiting. Senders MUST honor ctx; killing in-flight
+	// goroutines is explicitly out of scope.
+	d.waitBatch(ctx, &wg, batchTimeout, start, sessionTag, routeTag)
 	batchCancel()
 	workCancel()
 
@@ -374,6 +429,34 @@ loop:
 	}
 
 	return int(atomic.LoadInt64(&successCount)), int(atomic.LoadInt64(&transientReleases)) + deferredTotal, nil
+}
+
+// waitBatch blocks until every in-flight drain goroutine returns, under a
+// non-killing watchdog (Min2). If wg.Wait outlives batchTimeout+drainWedgeGrace
+// it emits MetricOutboxDrainStalled and a WARN — the only signal that a Sender
+// is ignoring ctx and has wedged the loop — then keeps waiting. The watchdog
+// goroutine always completes (it closes done after wg.Wait returns), so it is
+// never leaked; the watchdog timer is Stopped on return regardless of path.
+func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeout time.Duration, start time.Time, tags ...shared.Tag) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	watchdog := d.clk.NewTimer(batchTimeout + drainWedgeGrace)
+	defer watchdog.Stop()
+	select {
+	case <-done:
+		return
+	case <-watchdog.C():
+		d.metrics.Counter(shared.MetricOutboxDrainStalled, 1, tags...)
+		d.log(ctx, slog.LevelWarn,
+			"drain batch exceeded watchdog; a sender may be ignoring context cancellation and has wedged the drain loop",
+			"batch_timeout", batchTimeout, "waited", d.clk.Since(start))
+	}
+	// Never kill the wedged sends — senders must honor ctx. Keep waiting so the
+	// batch accounting below still reflects whatever eventually completes.
+	<-done
 }
 
 // orderingGroup is an ordered run of claimed outbox records delivered as

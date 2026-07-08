@@ -49,14 +49,38 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON populates the envelope from the stable JSON schema.
-// Note: this is a rehydration path, not a fresh construction — it
-// deliberately bypasses NewEnvelope's reserved-header strip so that
-// previously-stamped reserved headers (correlation id, route id, …)
-// survive a save/load cycle.
+//
+// This is a rehydration path, not a fresh construction. It deliberately
+// bypasses NewEnvelope's reserved-header strip so that previously-stamped
+// reserved headers (correlation id, route id, …) survive a save/load
+// cycle — that bypass is intentional (see the headersFromTrustedMap call
+// below).
+//
+// It does, however, enforce the ONE construction invariant that must hold
+// on every path: the envelope ID must be non-empty. An empty ID is
+// rejected with ErrInvalidEnvelopeID, routed through the same
+// checkEnvelopeID rule NewEnvelope uses, so a corrupt or hand-forged
+// record cannot rehydrate into an identity-less envelope that would then
+// collide in the DLQ / outbox key space.
+//
+// Header value typing after a round-trip. encoding/json decodes every
+// JSON number into a Go float64 and every JSON object into
+// map[string]any. A header written as a typed int (or int64/uint) is
+// therefore rehydrated as float64 after ANY JSON round-trip — a DLQ or
+// outbox save/load changes the Go dynamic type even though the numeric
+// value is preserved. Callers that read numeric headers after a
+// round-trip MUST type-assert to float64 (or use a helper that does the
+// coercion themselves), never to a bare int — messaging.Headers stores
+// values as `any` and its accessors (Get/GetString/...) return them
+// verbatim without numeric coercion. Reserved bridge headers are strings
+// and are unaffected.
 func (e *Envelope) UnmarshalJSON(data []byte) error {
 	var dto envelopeJSON
 	if err := json.Unmarshal(data, &dto); err != nil {
 		return fmt.Errorf("messaging: unmarshal envelope: %w", err)
+	}
+	if err := checkEnvelopeID(dto.ID); err != nil {
+		return err
 	}
 	e.id = dto.ID
 	e.subject = dto.Subject

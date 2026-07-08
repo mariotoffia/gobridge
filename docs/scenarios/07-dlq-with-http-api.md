@@ -161,7 +161,7 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
       "failed_at": "2026-03-28T10:15:30Z", "attempts": 3
     }
   ],
-  "total": 1, "limit": 10, "offset": 0
+  "limit": 10, "offset": 0, "has_more": false
 }
 ```
 
@@ -181,6 +181,21 @@ curl -s -X POST -H "X-API-Key: change-me-to-a-real-secret-key" \
 ```json
 { "redriven": 2, "failed": 0 }
 ```
+
+Redrive claims each entry by delete-before-inject (no double-delivery) and
+confines the replay to the entry's original `binding_id` **out-of-band**, not via
+a header. It emits a `dlq.redrive.begin` audit record (outcome `pending`) with the
+requested IDs before the first claim. When the runtime lacks redrive-safe
+injection the response adds a **`warning`** field — the replay reuses the original
+envelope ID and may be silently deduplicated by the outbox on `shared_outbox`
+routes, so verify delivery:
+
+```json
+{ "redriven": 2, "failed": 0, "warning": "runtime lacks redrive-safe injection: replays reuse the original envelope id and may be silently deduplicated by the outbox on shared_outbox routes; verify delivery" }
+```
+
+See [HTTP API Reference](../http-api.md#dlq-redrive) for the full contract (207
+on partial failure, per-entry `errors`).
 
 ### Purge DLQ Entries
 
@@ -261,11 +276,11 @@ The monitor server (`:8081`) exposes unauthenticated probes and authenticated ob
 
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /api/v1/monitor/health` | Full health check | `{"status":"ok", "instance_id":"...", "routes":3}` (200 or 503) |
+| `GET /api/v1/monitor/health` | Coarse health check | `{"status":"ok"}` (200) or `{"status": ...}` (503) |
 | `GET /api/v1/monitor/live` | Liveness probe | `{"status":"alive"}` -- 200 while the runtime is recoverable; `{"status":"terminal"}` with 503 once the runtime is terminal |
 | `GET /api/v1/monitor/ready` | Readiness probe | `{"status":"ready", "role":"standalone"}` -- 200 when processing |
 
-The `health` endpoint returns `status` as `ok`, `unhealthy`, or `not_running`. When components have errors, a `failed_components` count is included. The `role` field reflects the deployment mode: `standalone`, `active` (lease holder), or `standby` (waiting for lease).
+The `health` endpoint returns only a coarse `status`: `ok` (200), or `unhealthy`, `not_running`, or `unavailable` (503) — never `instance_id`, route count, or component detail, which live behind auth on `/deephealth`. The `role` field on `/ready` and `/deephealth` reflects the deployment mode: `standalone`, `active` (lease holder), or `standby` (waiting for lease).
 
 ### Authenticated Endpoints
 

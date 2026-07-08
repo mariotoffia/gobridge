@@ -365,15 +365,18 @@ The HTTP admin API provides transactional config editing over the file-based sto
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/admin/config` | GET | Read current merged config |
-| `/admin/config/txn` | POST | Create a config transaction |
-| `/admin/config/txn` | PATCH | Apply patches to the transaction |
-| `/admin/config/txn` | POST (commit) | Validate, CAS-check version, write to disk |
-| `/admin/config/txn` | DELETE | Rollback (discard) the transaction |
+| `/api/v1/admin/config` | GET | Read the current effective config (redacted) |
+| `/api/v1/admin/config/transactions` | POST | Open a transaction against the current version |
+| `/api/v1/admin/config/transactions/{txnID}` | GET | Preview the merged config |
+| `/api/v1/admin/config/transactions/{txnID}` | PATCH | Apply a config overlay (merge) |
+| `/api/v1/admin/config/transactions/{txnID}/commit` | POST | Validate, CAS-check version, write to disk |
+| `/api/v1/admin/config/transactions/{txnID}` | DELETE | Roll back (discard) the transaction |
 
 The transaction manager uses `config.DefaultMerge` to apply patches and `config.WriteFile` for atomic commits with version-based CAS (compare-and-swap) to prevent lost updates.
 
-See [Credentials & HTTP API](credentials-and-http-api.md) for authentication and endpoint details.
+See the [HTTP API Reference](http-api.md#config-transactions) for the full endpoint
+table, status codes, and merge semantics, and [Credentials & HTTP API](credentials-and-http-api.md)
+for authentication.
 
 ---
 

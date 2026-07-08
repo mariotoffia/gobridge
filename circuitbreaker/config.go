@@ -14,9 +14,11 @@ import (
 )
 
 // ErrorClassifier returns true if the error should count toward circuit
-// breaker failure thresholds. When nil, only transient errors are counted
-// (permanent/rejected errors are ignored to prevent malformed input from
-// tripping the breaker on a healthy dependency).
+// breaker failure thresholds. When nil, the default classifier counts
+// transient (recoverable) errors EXCEPT tenant in-flight quota rejects
+// (permanent/rejected errors are ignored so malformed input cannot trip the
+// breaker on a healthy dependency; a quota reject is a per-tenant fairness
+// signal, not downstream ill-health). See defaultCountError.
 type ErrorClassifier func(error) bool
 
 // Config holds circuit breaker parameters.
@@ -66,9 +68,27 @@ func (c Config) WithDefaults() Config {
 		c.HalfOpenMaxProbes = 1
 	}
 	if c.CountError == nil {
-		c.CountError = shared.IsRecoverableError
+		c.CountError = defaultCountError
 	}
 	return c
+}
+
+// defaultCountError counts an error toward tripping the breaker when it is
+// recoverable (transient) — EXCEPT a tenant in-flight quota reject
+// (ErrCodeTenantQuotaExceeded). A quota reject is a per-tenant fairness signal,
+// not a downstream-health signal; counting it lets one throttled tenant trip a
+// shared (e.g. GlobalKey) breaker and deny every other tenant.
+//
+// Note: a NESTED breaker being open returns shared.ErrUnavailable
+// (ErrCodeUnavailable), which is INDISTINGUISHABLE from a genuine
+// downstream-unavailable failure and is therefore still counted — if you stack
+// breakers, make the outer breaker the aggregate (or override CountError) so an
+// inner-open error does not cascade into tripping the outer breaker.
+func defaultCountError(err error) bool {
+	if be, ok := shared.AsBridgeError(err); ok && be.Code == shared.ErrCodeTenantQuotaExceeded {
+		return false
+	}
+	return shared.IsRecoverableError(err)
 }
 
 // State represents the circuit breaker state.

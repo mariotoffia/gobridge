@@ -86,6 +86,52 @@ func MapError(err error) *shared.BridgeError {
 		return shared.ErrProtocolError.Wrap(err).WithMessage("unsupported operation")
 	}
 
+	// KMS (server-side encryption) errors need code-specific classification
+	// (Finding 3). The string fallback below lower-cases the message and
+	// matches "KmsAccessDenied" as "accessdenied" → permanent ErrNotAuthorized,
+	// which false-DLQs every send during the 10-120s a freshly-granted KMS
+	// key policy or IAM role takes to propagate. These typed checks MUST
+	// precede the string fallback so the transient KMS codes are not
+	// misclassified. Classification follows AWS KMS error semantics.
+	var kmsThrottled *sqstypes.KmsThrottled
+	if errors.As(err, &kmsThrottled) {
+		// KMS-side request throttling — transient, back off and retry.
+		return shared.ErrThrottled.Wrap(err).WithMessage("kms throttled")
+	}
+	var kmsAccessDenied *sqstypes.KmsAccessDenied
+	if errors.As(err, &kmsAccessDenied) {
+		// Caller lacks KMS access. Classify TEMPORARY: a freshly-granted key
+		// policy / IAM role commonly takes 10-120s to propagate and a
+		// permanent class would DLQ every message in that window. If the
+		// grant never lands, the runtime's retry budget still bounds it.
+		return shared.ErrTemporaryAuthFailure.Wrap(err).
+			WithMessage("kms access denied (grant may still be propagating)")
+	}
+	// The remaining KMS codes are genuine, non-self-healing misconfigurations
+	// (disabled/pending-deletion key, wrong key spec, missing key, region
+	// opt-in): retrying cannot succeed within a redelivery window, so classify
+	// permanent and let the runtime DLQ.
+	var kmsDisabled *sqstypes.KmsDisabled
+	if errors.As(err, &kmsDisabled) {
+		return shared.ErrNotAuthorized.Wrap(err).WithMessage("kms key disabled")
+	}
+	var kmsInvalidState *sqstypes.KmsInvalidState
+	if errors.As(err, &kmsInvalidState) {
+		return shared.ErrNotAuthorized.Wrap(err).WithMessage("kms key invalid state")
+	}
+	var kmsNotFound *sqstypes.KmsNotFound
+	if errors.As(err, &kmsNotFound) {
+		return shared.ErrNotAuthorized.Wrap(err).WithMessage("kms key not found")
+	}
+	var kmsOptIn *sqstypes.KmsOptInRequired
+	if errors.As(err, &kmsOptIn) {
+		return shared.ErrNotAuthorized.Wrap(err).WithMessage("kms opt-in required")
+	}
+	var kmsInvalidKeyUsage *sqstypes.KmsInvalidKeyUsage
+	if errors.As(err, &kmsInvalidKeyUsage) {
+		return shared.ErrNotAuthorized.Wrap(err).WithMessage("kms invalid key usage")
+	}
+
 	// Fall back to string-based classification.
 	msg := err.Error()
 
@@ -98,6 +144,16 @@ func MapError(err error) *shared.BridgeError {
 	if containsAny(msg, "connection refused", "connection reset", "network") {
 		return shared.ErrConnectionLost.Wrap(err)
 	}
+	// Plain (non-KMS) API auth failures. NOTE — Finding 3 residual: a fresh
+	// IAM role can take 10-120s to propagate, during which SendMessage
+	// returns AccessDenied for a condition that WILL self-heal. Ideally the
+	// first N encounters would classify temporary, but MapError is a
+	// stateless pure function with no per-message retry counter, so it cannot
+	// distinguish "still propagating" from "genuinely misconfigured" without
+	// threading retry state through the ACL. Plain API auth therefore stays
+	// PERMANENT (a truly-misconfigured policy DLQs instead of retrying
+	// forever); only the code-distinguishable KmsAccessDenied above is mapped
+	// temporary.
 	if containsAny(msg, "AccessDenied", "UnauthorizedAccess", "InvalidClientTokenId") {
 		return shared.ErrNotAuthorized.Wrap(err)
 	}

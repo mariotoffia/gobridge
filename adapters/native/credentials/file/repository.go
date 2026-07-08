@@ -3,12 +3,16 @@ package file
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -102,7 +106,20 @@ type Repository struct {
 	basePath  string
 	namespace string
 	clk       clock.Clock
+	logger    *slog.Logger
 	mu        sync.RWMutex
+
+	// Filesystem seams. Default to the os.* functions; tests override them to
+	// simulate a read-only / operator-owned Secret mount without needing a real
+	// EROFS filesystem.
+	mkdirAll func(string, os.FileMode) error
+	stat     func(string) (os.FileInfo, error)
+	chmod    func(string, os.FileMode) error
+
+	// readWarnOnce ensures the group/world-readable file WARN is emitted at
+	// most once per repository (K8s Secret defaultMode is 0644, so an
+	// operator-correct deployment would otherwise log on every read).
+	readWarnOnce sync.Once
 }
 
 type Option func(*Repository)
@@ -120,46 +137,107 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
+// WithLogger sets the structured logger used for permission-hardening warnings
+// (a read-only mount whose permissions cannot be tightened, or a group/world
+// readable credential file). nil is ignored; without a logger these conditions
+// are handled silently.
+func WithLogger(l *slog.Logger) Option {
+	return func(r *Repository) {
+		if l != nil {
+			r.logger = l
+		}
+	}
+}
+
 func New(basePath string, opts ...Option) (*Repository, error) {
 	if basePath == "" {
 		return nil, fmt.Errorf("basePath is required")
 	}
 
-	// 0700: the directory tree holds secret material — a group/world
-	// listable directory leaks the set of credential names even when
-	// the files themselves are 0600.
-	if err := os.MkdirAll(basePath, 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create base path: %w", err)
+	r := &Repository{
+		basePath: basePath,
+		clk:      clock.System,
+		mkdirAll: os.MkdirAll,
+		stat:     os.Stat,
+		chmod:    os.Chmod,
 	}
-	if err := tightenDirPermissions(basePath); err != nil {
-		return nil, err
-	}
-
-	r := &Repository{basePath: basePath, clk: clock.System}
 	for _, opt := range opts {
 		opt(r)
+	}
+
+	if err := r.ensureBaseDir(); err != nil {
+		return nil, err
 	}
 
 	return r, nil
 }
 
-// tightenDirPermissions chmods a pre-existing credentials directory to
-// 0700 when its current mode grants any group/other access. MkdirAll
-// does not touch the mode of directories that already exist, so
-// without this a repository pointed at an old 0755 tree would keep
-// leaking credential names forever.
-func tightenDirPermissions(dir string) error {
-	info, err := os.Stat(dir)
+// ensureBaseDir creates and hardens the base directory, tolerating an
+// operator-owned, read-only Secret mount (F6). K8s mounts Secrets read-only
+// (and often with a defaultMode that grants group/other read), so the previous
+// unconditional MkdirAll + hard-fail chmod crash-looped the pod on a perfectly
+// valid deployment.
+//
+//   - If MkdirAll fails but the directory already exists, the mount is
+//     operator-provisioned and read-only: accept it.
+//   - Permission tightening is best-effort — see tightenDirPermissions.
+func (r *Repository) ensureBaseDir() error {
+	// 0700: the directory tree holds secret material — a group/world listable
+	// directory leaks the set of credential names even when the files
+	// themselves are 0600.
+	if err := r.mkdirAll(r.basePath, 0o700); err != nil {
+		info, statErr := r.stat(r.basePath)
+		if statErr != nil || !info.IsDir() {
+			return fmt.Errorf("failed to create base path: %w", err)
+		}
+		// The directory exists (read-only parent); proceed to best-effort
+		// hardening below.
+	}
+	return r.tightenDirPermissions(r.basePath)
+}
+
+// tightenDirPermissions best-effort chmods a pre-existing credentials directory
+// to 0700 when its current mode grants any group/other access. MkdirAll does
+// not touch the mode of directories that already exist, so without this a
+// repository pointed at an old 0755 tree would keep leaking credential names.
+//
+// F6: when the chmod fails because the mount is read-only or unowned
+// (EROFS/EPERM) — an operator-controlled Secret volume — the failure is logged
+// at WARN and tolerated rather than returned, so a valid immutable-mount
+// deployment does not crash-loop. A genuine, fixable leak (a writable directory
+// we own that grants group/other access) is still tightened; a chmod failure
+// for any OTHER reason is still a hard error.
+func (r *Repository) tightenDirPermissions(dir string) error {
+	info, err := r.stat(dir)
 	if err != nil {
 		return fmt.Errorf("failed to stat base path: %w", err)
 	}
 	if info.Mode().Perm()&0o077 == 0 {
 		return nil
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := r.chmod(dir, 0o700); err != nil {
+		if isReadOnlyOrPermError(err) {
+			if r.logger != nil {
+				r.logger.Warn("credential file store: cannot tighten base directory permissions on a read-only or unowned mount; leaving operator-controlled permissions as-is",
+					"path", dir,
+					"mode", info.Mode().Perm().String(),
+					"error", err,
+				)
+			}
+			return nil
+		}
 		return fmt.Errorf("failed to restrict base path permissions to 0700: %w", err)
 	}
 	return nil
+}
+
+// isReadOnlyOrPermError reports whether err indicates the filesystem or object
+// is read-only or not owned by this process (an operator-controlled mount),
+// as opposed to an unexpected I/O failure.
+func isReadOnlyOrPermError(err error) bool {
+	return errors.Is(err, syscall.EROFS) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, fs.ErrPermission)
 }
 
 func (r *Repository) Scheme() string    { return Scheme }
@@ -186,12 +264,46 @@ func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.Credent
 		return nil, shared.ErrUnavailable.WithMessage("failed to read credentials file").Wrap(err)
 	}
 
+	// LOW: a credential file that is group/world readable (e.g. a K8s Secret
+	// mounted with defaultMode 0644) is a leak the operator should tighten.
+	// Warn once — do NOT fail; the file is operator-provisioned and readable.
+	r.warnIfWorldReadable(filePath)
+
 	var stored storedCredentials
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, shared.ErrInvalidPayload.WithMessage("failed to parse credentials file").Wrap(err)
 	}
 
+	if stored.Credentials == nil {
+		// F3: an envelope with no credentials — {"version":1} (key absent) or
+		// {"credentials":null} — previously resolved to (nil, nil): the
+		// transport then connected anonymously and the poller skipped the nil
+		// forever. Treat it as a hard, non-retryable payload error instead.
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			"credentials file contains no credentials (missing or null \"credentials\" field)")
+	}
+
 	return stored.Credentials.toDomain(), nil
+}
+
+// warnIfWorldReadable emits a one-time WARN when the credential file grants any
+// group/other access. Best-effort and silent without a configured logger.
+func (r *Repository) warnIfWorldReadable(filePath string) {
+	if r.logger == nil {
+		return
+	}
+	info, err := r.stat(filePath)
+	if err != nil {
+		return
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		r.readWarnOnce.Do(func() {
+			r.logger.Warn("credential file store: credential file is group/world accessible; restrict it to 0600 (a Kubernetes Secret defaultMode of 0644 triggers this)",
+				"path", filePath,
+				"mode", info.Mode().Perm().String(),
+			)
+		})
+	}
 }
 
 func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error {

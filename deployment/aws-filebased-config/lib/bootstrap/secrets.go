@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	filecreds "github.com/mariotoffia/gobridge/adapters/native/credentials/file"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
@@ -77,8 +79,24 @@ func (r *ssmParameterResolver) ResolveString(ctx context.Context, ref string) (s
 	return *out.Parameter.Value, nil
 }
 
-func newDefaultCredentialStore(ctx context.Context, cfg deployinfra.BootstrapConfig) (*runtime.CredentialResolver, error) {
-	resolver := runtime.NewCredentialResolver()
+func newDefaultCredentialStore(
+	ctx context.Context,
+	cfg deployinfra.BootstrapConfig,
+	metrics ports.MetricsExporter,
+	logger *slog.Logger,
+) (*runtime.CredentialResolver, error) {
+	// Finding 4: thread the runtime metrics exporter and logger into the
+	// resolver so credential resolve failures (tagged by error code), stale
+	// serves, and rotations are observable — previously the resolver emitted
+	// nothing.
+	var resolverOpts []runtime.CredentialResolverOption
+	if metrics != nil {
+		resolverOpts = append(resolverOpts, runtime.WithCredentialMetrics(metrics))
+	}
+	if logger != nil {
+		resolverOpts = append(resolverOpts, runtime.WithCredentialResolverLogger(logger))
+	}
+	resolver := runtime.NewCredentialResolver(resolverOpts...)
 
 	var opts []ssmrepo.Option
 	region := cfg.AWSRegion
@@ -103,6 +121,26 @@ func newDefaultCredentialStore(ctx context.Context, cfg deployinfra.BootstrapCon
 	}
 
 	resolver.Register(ssmrepo.New(opts...))
+
+	// Finding 11: register the native file:// credential repository when an
+	// operator opts in via CredentialFilePath, so file:// credential URIs
+	// resolve in this profile too (SSM/pms:// is always registered above).
+	// This is opt-in (empty path => skip) because the profile runs on a
+	// largely read-only container image where creating an unexpected directory
+	// would be surprising; setting the path signals a writable credential
+	// mount is present.
+	if cfg.CredentialFilePath != "" {
+		var fileOpts []filecreds.Option
+		if logger != nil {
+			fileOpts = append(fileOpts, filecreds.WithLogger(logger))
+		}
+		fileRepo, err := filecreds.New(cfg.CredentialFilePath, fileOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: init file credential store: %w", err)
+		}
+		resolver.Register(fileRepo)
+	}
+
 	return resolver, nil
 }
 
@@ -181,6 +219,14 @@ func resolveInputs(
 	if bootstrapCfg.MonitorAPIKeyParam != "" {
 		monitorKey, err = resolver.ResolveString(ctx, bootstrapCfg.MonitorAPIKeyParam)
 		if err != nil {
+			return nil, err
+		}
+		// Enforce the SAME below-floor guard httpapi's startup validateConfig
+		// applies, at startup AND on every reload, so a rotated monitor key that
+		// is non-empty but too short fails fast (watchLoop discards the plan and
+		// keeps the last-good runtime) instead of silently weakening the monitor
+		// plane. An empty key is allowed (monitor auth then folds to admin-only).
+		if err := httpapi.ValidateMonitorKey(monitorKey); err != nil {
 			return nil, err
 		}
 	}

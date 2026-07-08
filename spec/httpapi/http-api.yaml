@@ -733,13 +733,30 @@ paths:
       operationId: getReadiness
       summary: Readiness probe
       description: >
-        Returns 200 when running and healthy, 503 otherwise. Suitable for
-        Kubernetes readiness probes. Sets `Cache-Control: no-cache, max-age=0`.
+        Reports whether the runtime has reached a readiness level. Without
+        `?level=`, the legacy contract applies: 200 `{status, role}` once the
+        runtime is started and healthy, 503 `{error}` otherwise. With
+        `?level=`, the response is the structured form
+        `{status, role, level, requested}` and returns 503 when the achieved
+        level is below the requested one. Suitable for Kubernetes readiness
+        probes. Sets `Cache-Control: no-cache, max-age=0`.
       tags: [Health]
       security: []
+      parameters:
+        - name: level
+          in: query
+          required: false
+          description: >
+            Readiness level to gate on, least to most strict: `live`,
+            `running`, `connected`, `subscribed`, `full`. When omitted, the
+            legacy running-and-healthy gate applies. An unrecognised value
+            returns 400.
+          schema:
+            type: string
+            enum: [live, running, connected, subscribed, full]
       responses:
         "200":
-          description: Bridge is ready for traffic.
+          description: Runtime has reached the requested (or legacy) readiness level.
           content:
             application/json:
               schema:
@@ -748,18 +765,73 @@ paths:
                 properties:
                   status:
                     type: string
+                    enum: [ready]
                     example: ready
                   role:
                     type: string
-                    description: Cluster role (e.g. standalone, leader, follower).
+                    description: >
+                      Failover role from lease ownership: `active` (holds a
+                      lease), `standby` (exclusive sessions but no lease held),
+                      or `standalone` (no exclusive sessions configured).
+                    enum: [active, standby, standalone]
                     example: standalone
-        "503":
-          description: Bridge is not ready.
+                  level:
+                    type: string
+                    description: Achieved readiness level. Present only when `?level=` is supplied.
+                    enum: [down, live, running, connected, subscribed, full]
+                    example: full
+                  requested:
+                    type: string
+                    description: Requested readiness level. Present only when `?level=` is supplied.
+                    enum: [live, running, connected, subscribed, full]
+                    example: subscribed
+              examples:
+                legacy:
+                  value: { "status": "ready", "role": "standalone" }
+                withLevel:
+                  value: { "status": "ready", "role": "active", "level": "full", "requested": "subscribed" }
+        "400":
+          description: Unrecognised `?level=` value.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              example: { "error": "not ready" }
+              example: { "error": "invalid level (want one of: live, running, connected, subscribed, full)" }
+        "503":
+          description: >
+            Runtime is below the requested level, not ready (legacy), or the
+            runtime is not wired.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - type: object
+                    required: [status, role, level, requested]
+                    properties:
+                      status:
+                        type: string
+                        enum: [not_ready]
+                        example: not_ready
+                      role:
+                        type: string
+                        enum: [active, standby, standalone]
+                        example: standby
+                      level:
+                        type: string
+                        enum: [down, live, running, connected, subscribed, full]
+                        example: connected
+                      requested:
+                        type: string
+                        enum: [live, running, connected, subscribed, full]
+                        example: subscribed
+              examples:
+                notReadyLegacy:
+                  value: { "error": "not ready" }
+                notReadyLevel:
+                  value: { "status": "not_ready", "role": "standby", "level": "connected", "requested": "subscribed" }
+                runtimeUnavailable:
+                  value: { "error": "runtime not available" }
 
   # ── Monitor: Authenticated endpoints ────────────────────────────
   /api/v1/monitor/topology:

@@ -189,16 +189,28 @@ func TestManager_Watch_ReestablishFailure_RecordsErrorAndRetries(t *testing.T) {
 
 	close(w.channel(0))
 
-	// First retry fails: the establishment error must be observable.
-	require.Eventually(t, func() bool {
-		clk.Advance(watchRetryMax)
-		return errors.Is(mgr.WatchErrors()["file"], retryErr)
-	}, 2*time.Second, 5*time.Millisecond, "failed re-establishment must record its error")
+	// Step through the fake-clock backoff deterministically instead of racing
+	// Advance against the supervisor goroutine. The failed re-establishment
+	// records retryErr only transiently — call 2 succeeds and clears it — so an
+	// advance-then-check loop can march past that window under load and never
+	// observe the error. TimerCount marks each armed backoff timer, which is the
+	// happens-after point that makes the intermediate state observable.
 
-	// Next retry succeeds: degraded clears.
-	require.Eventually(t, func() bool {
-		clk.Advance(watchRetryMax)
-		return !mgr.WatchDegraded()
-	}, 2*time.Second, 5*time.Millisecond, "manager must keep retrying until the watcher recovers")
+	// The dead watcher is detected and the first re-establishment backoff is armed.
+	require.Eventually(t, func() bool { return clk.TimerCount() == 1 }, 2*time.Second, 5*time.Millisecond,
+		"supervisor must arm the re-establishment backoff timer after the watcher dies")
+
+	// Fire it: call 1 fails with retryErr. The supervisor records the error and
+	// arms the NEXT backoff timer; once that timer is armed the failing
+	// re-establishment — and its setWatchError — has provably run.
+	clk.Advance(watchRetryMax)
+	require.Eventually(t, func() bool { return clk.TimerCount() == 1 && w.callCount() >= 2 },
+		2*time.Second, 5*time.Millisecond, "supervisor must retry after a failed re-establishment")
+	require.ErrorIs(t, mgr.WatchErrors()["file"], retryErr, "failed re-establishment must record its error")
+
+	// Fire the next backoff: call 2 succeeds and the degraded state clears.
+	clk.Advance(watchRetryMax)
+	require.Eventually(t, func() bool { return !mgr.WatchDegraded() }, 2*time.Second, 5*time.Millisecond,
+		"manager must keep retrying until the watcher recovers")
 	require.GreaterOrEqual(t, w.callCount(), 3)
 }

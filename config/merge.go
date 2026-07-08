@@ -61,6 +61,13 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 	if overlay.ConfigWatch != nil {
 		cw := *overlay.ConfigWatch
 		out.ConfigWatch = &cw
+	} else if out.ConfigWatch != nil {
+		// Defensive deep-clone for symmetry with the HTTP/Cluster clones: with
+		// no overlay ConfigWatch, out.ConfigWatch still aliases base.ConfigWatch
+		// (via `out := *base`) so a later mutation of the merged config could
+		// reach back into the cached base layer (Finding 10).
+		cw := *out.ConfigWatch
+		out.ConfigWatch = &cw
 	}
 
 	mergeStores(&out.Stores, &overlay.Stores)
@@ -79,6 +86,13 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 	if overlay.HTTP != nil {
 		merged := mergeHTTP(base.HTTP, overlay.HTTP)
 		out.HTTP = &merged
+	} else if out.HTTP != nil {
+		// Defensive deep-clone: with no overlay HTTP block, out.HTTP still
+		// aliases base.HTTP (via `out := *base`). Clone it for symmetry with
+		// the Cluster clone above so a later mutation of the merged config
+		// cannot reach back into the cached base layer (Finding 10).
+		h := *out.HTTP
+		out.HTTP = &h
 	}
 
 	return &out, nil
@@ -170,18 +184,26 @@ func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 }
 
 func mergeStores(base, overlay *ports.StoresConfig) {
-	if overlay.Lease != nil {
-		sc := *overlay.Lease
-		base.Lease = &sc
+	base.Lease = mergeStoreRole(base.Lease, overlay.Lease)
+	base.Outbox = mergeStoreRole(base.Outbox, overlay.Outbox)
+	base.DLQ = mergeStoreRole(base.DLQ, overlay.DLQ)
+}
+
+// mergeStoreRole returns a clone of the overlay store when set, otherwise a
+// clone of the base store. Cloning the base (rather than aliasing its pointer
+// via `out := *base`) keeps the merged config from reaching back into the
+// cached base layer if a consumer later mutates the store entry (Finding 10 —
+// symmetry with the overlay clone and the Cluster clone).
+func mergeStoreRole(base, overlay *ports.StoreConfig) *ports.StoreConfig {
+	if overlay != nil {
+		sc := *overlay
+		return &sc
 	}
-	if overlay.Outbox != nil {
-		sc := *overlay.Outbox
-		base.Outbox = &sc
+	if base != nil {
+		sc := *base
+		return &sc
 	}
-	if overlay.DLQ != nil {
-		sc := *overlay.DLQ
-		base.DLQ = &sc
-	}
+	return nil
 }
 
 // mergeByID merges overlay entries onto base entries keyed by id. A new overlay

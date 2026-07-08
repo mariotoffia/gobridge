@@ -18,6 +18,13 @@ import (
 // Renew must return ErrStaleFencingToken if the lease has already expired.
 // A paused owner must not be able to silently re-establish an expired lease;
 // it must re-acquire through Acquire instead.
+//
+// Renew MUST NOT bump the returned token's Version: a renewal preserves the
+// fencing version established at Acquire. A Renew that advanced the version
+// would fence the owner's OWN earlier in-flight claims (which carry the
+// pre-renewal version) below the new high-water-mark, causing an owner to
+// stale out its own outstanding work. Only Acquire (a fresh ownership epoch)
+// advances the version.
 type LeaseStore interface {
 	Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
 	Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
@@ -76,11 +83,26 @@ type LeaseStore interface {
 //     Stores MUST honour this version-older rule. A store MAY ADDITIONALLY
 //     reclaim a claimed record whose claim has gone stale past a wall-clock
 //     staleness threshold — a crash-recovery fallback for an owner that died
-//     without bumping the version. The DynamoDB and SQLite backends implement
-//     this time-stale fallback; the in-memory backend is version-only.
+//     without bumping the version, so it MAY reclaim a claim at the SAME
+//     version (not only a strictly-older one). The DynamoDB and SQLite
+//     backends implement this time-stale fallback; the in-memory backend is
+//     version-only. This equal-version, time-stale reclaim is the one
+//     sanctioned bypass of OutboxRecord.Claim's strictly-older rule; stores
+//     effect it through persistence.RehydrateFromSnapshot (see its godoc).
 //     On a successful claim the store sets claimed_by from token.Owner; there
 //     is no separate owner parameter, so token.Owner is the single source of
 //     claim authority.
+//
+//     Wall-clock semantics: the staleness threshold is compared against
+//     wall-clock time (the store's own clock versus the claim's persisted
+//     claimed_at). Across a cluster these clocks drift, so the threshold MUST
+//     DOMINATE the worst-case cluster clock skew: a node whose clock runs
+//     fast MUST NOT reclaim a claim that a still-live owner refreshed only
+//     moments ago. Operators set the threshold strictly GREATER than the
+//     maximum tolerated skew between nodes (threshold > max_skew, with margin
+//     for the owner's refresh interval); a threshold at or below max skew
+//     lets a skewed node preempt a live owner early and duplicate its work.
+//
 //   - Claim maintains a DURABLE per-partition fencing high-water-mark: the
 //     highest token.Version observed on ANY Claim, including a Claim that
 //     returns no records (a no-op claim against an empty or fully-claimed
@@ -88,6 +110,7 @@ type LeaseStore interface {
 //     below this high-water-mark MUST be rejected with shared.ErrStaleFencingToken
 //     so a preempted owner cannot win freshly-arrived pending work that lands
 //     after a higher-version owner has taken over the partition.
+//
 //   - Completion fencing is owner+version+status. Complete may transition a
 //     record only when it is currently claimed, claimed_by == token.Owner, and
 //     claim_version == token.Version. On any mismatch the store MUST return
@@ -99,10 +122,15 @@ type LeaseStore interface {
 //     never converges, leaving the record claimed until stale reclaim. The
 //     live drainer only completes records it claimed in-process, so this
 //     window exists only across restarts.
-//   - Expire is pending-only. It may transition to expired only records that
-//     are still pending with a non-zero expires_at strictly before the cutoff.
-//     Claimed records are never expired here; a claimed-but-stale record is
-//     reclaimed through Claim/IsClaimable, never expired out from under a
+//
+//   - Expire is pending-only AND partition-scoped. It may transition to expired
+//     only records that are still pending with a non-zero expires_at strictly
+//     before the cutoff AND whose partition equals the supplied partition. The
+//     partition is REQUIRED — there is no magic empty-string "all partitions"
+//     value: the sweep is authorized by the caller's lease over that one
+//     partition, so it MUST NOT cross into partitions the caller does not own
+//     (M1). Claimed records are never expired here; a claimed-but-stale record
+//     is reclaimed through Claim/IsClaimable, never expired out from under a
 //     potentially still-valid owner.
 //
 // Lease binding: the runtime TokenFn lease gate is the authoritative access
@@ -116,7 +144,7 @@ type OutboxStore interface {
 	Persist(ctx context.Context, records []*persistence.OutboxRecord) error
 	Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
 	Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
-	Expire(ctx context.Context, before time.Time) (int, error)
+	Expire(ctx context.Context, before time.Time, partition string) (int, error)
 	QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 

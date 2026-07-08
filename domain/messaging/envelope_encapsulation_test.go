@@ -76,15 +76,16 @@ func TestEnvelope_SetExpiry(t *testing.T) {
 }
 
 // TestEnvelope_AssignID covers all three AssignID branches. An ID-less
-// envelope is obtained the same way production does: UnmarshalJSON of a
-// payload missing the "ID" key yields an envelope whose id is blank (the
-// rehydration path that bridge_routes.go's synthetic-injection path then
-// assigns an ID to). MustEnvelope auto-assigns a unique ID and NewEnvelope
-// rejects an empty ID, so neither constructor can produce one.
+// envelope is now obtained from a ZERO-VALUE Envelope: MustEnvelope
+// auto-assigns a unique ID, and NewEnvelope AND UnmarshalJSON both reject
+// an empty ID (finding 4 routed the ID invariant through checkEnvelopeID on
+// the rehydration path too), so a zero value is the only construction that
+// yields a blank identity for AssignID to fill. A library caller that hands
+// runtime.Inject such a zero-value envelope still reaches the
+// assign-if-empty branch.
 func TestEnvelope_AssignID(t *testing.T) {
-	// (a) blank ID → success. Rehydrate an envelope with no "ID" key.
+	// (a) blank ID → success. A zero-value Envelope has no identity yet.
 	var blank messaging.Envelope
-	require.NoError(t, json.Unmarshal([]byte(`{"Subject":"s"}`), &blank))
 	require.Equal(t, "", blank.ID())
 	require.NoError(t, blank.AssignID("assigned"))
 	assert.Equal(t, "assigned", blank.ID())

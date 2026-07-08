@@ -58,7 +58,10 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	}
 	opts := cfg.Session
 	opts.applyDefaults()
-	if err := opts.validate(); err != nil {
+	// Build boundary: credentials_uri has already been resolved (and
+	// CredentialsURIRef cleared) by ApplyCredentials, so validate strictly
+	// — any SASL EXTERNAL cert material must be present by now.
+	if err := opts.validate(false); err != nil {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp10 session %q: %s", spec.ID, err))
 	}

@@ -104,13 +104,23 @@
 // (immediate same-subscription redelivery, no fan-out); the requested
 // delay is not honoured.
 //
+// Operational hazard: because the delay is dropped, a FAST-failing
+// subscription consumer redelivers with no pacing — each failure
+// increments the broker DeliveryCount immediately, so a consumer that
+// fails in milliseconds can burn through MaxDeliveryCount in seconds and
+// the message reaches the broker's native DLQ FAR sooner than the
+// configured retry schedule implies. Size MaxDeliveryCount for the
+// worst-case unpaced redelivery rate, monitor the native DLQ, and prefer
+// a QUEUE (which honours the delay via ScheduleMessages) when a topology
+// needs delay-paced retries.
+//
 // Design note: the subscription abandon-instead-of-schedule fallback
 // (dropping the requested delay to avoid topic fan-out) is a deliberate
 // trade-off, not a limitation worked around here — honouring the delay on
 // a subscription would require a per-subscription scheduling primitive
 // that Service Bus does not expose.
 //
-// The scheduled copy (buildRetryMessage) carries three safety measures:
+// The scheduled copy (buildRetryMessage) carries these safety measures:
 //
 //   - Attempt accounting: scheduling a fresh copy resets the broker
 //     DeliveryCount to 1, so the copy carries the accumulated receive
@@ -130,6 +140,10 @@
 //   - TTL: the copy's TimeToLive is the REMAINING time until the
 //     original absolute expiry (ExpiresAt), not a restart of the full
 //     TTL per retry.
+//   - Routing: SessionID and PartitionKey are copied onto the retry so a
+//     retry of a message on a partitioned entity (without sessions)
+//     keeps its partition assignment instead of being re-hashed onto a
+//     different partition, preserving ordering/grouping context.
 //
 // # Dead-lettering (boundary)
 //
@@ -178,6 +192,35 @@
 // v1.10.0 manages AMQP credit internally and exposes no public prefetch
 // option.
 //
+// # Authentication
+//
+// A ConnectionConfig authenticates in one of four ways, chosen in this
+// order:
+//
+//   - ConnectionString (SAS) when set — takes precedence over everything.
+//   - Managed identity when UseManagedIdentity is true. With no ClientID
+//     this is the node's SYSTEM-assigned identity. Set ClientID to select
+//     a specific USER-assigned identity: on a node that hosts several
+//     user-assigned identities IMDS cannot disambiguate without it, so an
+//     unset ClientID either fails token acquisition or silently
+//     authenticates as the system-assigned identity with the WRONG
+//     permissions. ClientID is threaded into the credential as its
+//     user-assigned client ID (azidentity.ClientID).
+//   - Client-secret (AAD) when ClientID and ClientSecret are both set.
+//   - DefaultAzureCredential otherwise (env / workload identity / CLI).
+//
+// # SDK retry stacking
+//
+// The Azure SDK runs its OWN retry policy INSIDE every client operation
+// (send, receive, settlement): by default 3 retries with ~4s..120s
+// exponential backoff. That layer sits BENEATH the sender's per-call
+// Timeout, gobridge's route retry policy, and the receiver's poll
+// backoff, so on a throttled namespace the layers MULTIPLY. The SDK
+// policy is exposed via ConnectionConfig.Retry (RetryConfig); its zero
+// value keeps the SDK defaults, so leaving it unset changes nothing. Set
+// a negative MaxRetries to disable the SDK layer when gobridge's retry
+// policy should be the only one.
+//
 // # Credential rotation
 //
 // ApplyCredentials on both Receiver and Sender builds a complete
@@ -195,8 +238,14 @@
 //
 // Standard bridge headers (x-bridge.*) are mapped to/from ASB
 // ApplicationProperties. Well-known ASB system properties (MessageID,
-// CorrelationID, SessionID, Subject, ContentType, etc.) are mapped to
-// headers with the asb. prefix.
+// CorrelationID, SessionID, PartitionKey, Subject, ContentType, etc.) are
+// mapped to headers with the asb. prefix. An egress asb.partition-key
+// header sets the outbound Message.PartitionKey, so a bridged message can
+// pin its partition on a partitioned entity. On a SESSION-enabled entity
+// the broker requires PartitionKey == SessionID; the ACL sets both
+// verbatim from their headers and does not reconcile them, so supplying
+// asb.session-id and asb.partition-key with DIFFERENT values is rejected
+// LOUDLY at send time (a clear error, not silent message loss).
 //
 // Reserved-header policy is applied at the ACL boundary. On ingress every
 // reserved x-bridge.* ApplicationProperty is dropped (IsReservedHeader)
@@ -213,6 +262,17 @@
 //   - CodeTimeout        -> ErrTimeout       (transient)
 //   - CodeConnectionLost -> ErrConnectionLost (transient)
 //   - CodeLockLost       -> ErrUnavailable    (transient)
+//   - CodeNotFound       -> ErrNotFound       (PERMANENT: entity gone —
+//     a deleted queue/topic or a wrong name. A settlement caller sees a
+//     non-recoverable class; the RECEIVE loop, however, retries every
+//     error at the backoff cap without consulting the class (matching
+//     SQS by design) and buildStack re-wraps session-accept failures as
+//     transient, so a deleted entity does NOT self-fault — it keeps
+//     polling until the entity returns or the route is stopped)
+//   - CodeClosed         -> ErrConnectionLost (transient: a LOCAL link/
+//     connection close — "closed by user" or a ReceiveAndDelete drain
+//     after Close — which the poll loop rebuilds from; deliberately NOT
+//     permanent, since entity deletion is CodeNotFound above)
 //   - CodeUnauthorizedAccess -> ErrNotAuthorized (permanent)
 //   - ErrMessageTooLarge -> ErrPayloadTooLarge (rejected)
 //

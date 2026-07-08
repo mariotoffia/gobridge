@@ -72,6 +72,21 @@ type ReceiverConfig struct {
 	Logger        *slog.Logger
 	Metrics       ports.MetricsExporter
 	Clock         clock.Clock
+
+	// deferCloseToRunner, when true, makes a graceful stop (ctx cancel)
+	// HAND the live consumer channel to Receiver.Close instead of closing
+	// it inside the consume loop. Only the managed route runner sets it
+	// (via the factory): it drains in-flight deliveries settled in detached
+	// goroutines and only THEN calls Close, so those Acks land on a
+	// still-open channel and the broker does not requeue settled work as
+	// duplicates on shutdown (commit b9cd3af; see runtime/route/runner.go).
+	//
+	// It is unexported because only the in-process managed factory may set
+	// it. Direct embedders driving Run themselves leave it false: a graceful
+	// stop then SELF-CLOSES the channel so a forgotten Receiver.Close cannot
+	// leak the consumer (the documented pattern settles deliveries inline,
+	// so there is nothing left to drain once Run returns).
+	deferCloseToRunner bool
 }
 
 // Delivery-mode knob values for SenderConfig.DeliveryMode /
@@ -95,7 +110,15 @@ const (
 type SenderConfig struct {
 	Exchange   string
 	RoutingKey string
-	Mandatory  bool
+	// Mandatory returns unroutable publishes as a basic.return instead of
+	// letting the broker silently discard them.
+	//
+	// SILENT-DROP WARNING: with the default false, a publish to an exchange
+	// with no matching binding is confirmed and then DISCARDED — the Send
+	// succeeds, the bridge acks the source, and the message is lost with zero
+	// telemetry. The return listener only engages when Mandatory=true (see
+	// doc.go and the README mandatory-flag row).
+	Mandatory bool
 	// Immediate is retained only so existing configs that set it still
 	// decode. It is ignored by the publish path and rejected by
 	// Config.Validate/the managed factory: RabbitMQ removed basic.publish

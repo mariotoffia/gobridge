@@ -16,9 +16,10 @@ import (
 // and the failed batch was requeued unconditionally.
 //
 // Retryable (return false): throttling (even though it is a client
-// fault), server faults (5xx), and anything that is not a modeled API
-// error (network failures, timeouts, context cancellation) — the batch
-// is requeued, bounded by MaxRetryDatums.
+// fault), transient credential-rotation faults (expired/not-yet-propagated
+// tokens during ECS/IAM rotation), server faults (5xx), and anything that
+// is not a modeled API error (network failures, timeouts, context
+// cancellation) — the batch is requeued, bounded by MaxRetryDatums.
 func isPermanentPutError(err error) bool {
 	var apiErr smithy.APIError
 	if !errors.As(err, &apiErr) {
@@ -30,6 +31,16 @@ func isPermanentPutError(err error) bool {
 		"RequestThrottledException", "TooManyRequestsException",
 		"RequestLimitExceeded", "LimitExceededException",
 		"ProvisionedThroughputExceededException", "SlowDown":
+		return false
+	case "ExpiredTokenException", "InvalidClientTokenId",
+		"UnrecognizedClientException":
+		// Transient credential-rotation faults: while an ECS task role / IAM
+		// credential rotates, the in-flight signer briefly presents an
+		// expired or not-yet-propagated token. These are client faults but
+		// clear within seconds once fresh credentials load, so retry (bounded
+		// by MaxRetryDatums) instead of permanently dropping the batch — a
+		// drop would also lose the ExporterDropped/Rejected loss counters
+		// riding in that batch, hiding the blip entirely.
 		return false
 	}
 	// Remaining client faults are validation-class rejections

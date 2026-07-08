@@ -46,6 +46,11 @@ func headersToMessage(headers map[string]any) *azservicebus.Message {
 			msg.SessionID = &s
 		}
 	}
+	if v, ok := headers[asbHeaderPartitionKey]; ok {
+		if s, ok := v.(string); ok {
+			msg.PartitionKey = &s
+		}
+	}
 	if v, ok := headers[asbHeaderContentType]; ok {
 		if s, ok := v.(string); ok {
 			msg.ContentType = &s
@@ -140,6 +145,10 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 		case asbHeaderSessionID:
 			if sv, ok := v.(string); ok {
 				sessionID = sv
+			}
+		case asbHeaderPartitionKey:
+			if sv, ok := v.(string); ok {
+				msg.PartitionKey = &sv
 			}
 		case asbHeaderCorrelationID:
 			if sv, ok := v.(string); ok {
@@ -246,6 +255,13 @@ func buildRetryMessage(received *azservicebus.ReceivedMessage, clk clock.Clock) 
 
 	if received.SessionID != nil {
 		out.SessionID = received.SessionID
+	}
+	if received.PartitionKey != nil {
+		// Preserve the partition assignment: a scheduled retry copy of a
+		// message on a PARTITIONED entity (without sessions) would
+		// otherwise be hashed onto a different partition, losing the
+		// ordering/grouping context of the original.
+		out.PartitionKey = received.PartitionKey
 	}
 	if received.ContentType != nil {
 		out.ContentType = received.ContentType

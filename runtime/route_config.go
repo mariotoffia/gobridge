@@ -59,6 +59,15 @@ type RouteConfig struct {
 	// (barring repeated renewal failure), so a short window paired with
 	// auto-extend is valid and must not be rejected.
 	SourceAutoExtend bool
+
+	// SourceTransport is the identity of the transport feeding this route
+	// (the RegisterTransportFactory name declared under `transport:`, or the
+	// adapter's canonical PluginConfig.Kind). The runtime uses it to strip
+	// foreign redelivery-count headers on ingress so an untrusted producer on a
+	// count-less source cannot forge another transport's count key (F3). Empty
+	// disables the strip. Populated by the builder from the resolved receiver
+	// transport; optional for programmatic callers.
+	SourceTransport string
 }
 
 // CheckRandSource probes crypto/rand once and returns a permanent

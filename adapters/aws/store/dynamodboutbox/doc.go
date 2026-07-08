@@ -16,4 +16,46 @@
 //
 // See docs/runbooks/dynamodb-outbox-gsi-migration.md for migrating
 // tables created with the former StatusIndex/ClaimedByIndex layout.
+//
+// # Authoritative key schema (verified by factory preflight)
+//
+// This is the single source of truth for the outbox table shape. The AWS store
+// factory runs a DescribeTable preflight at build time and FAILS the build with
+// shared.ErrInvalidConfig if the target table does not match — naming the table,
+// the expected schema, and the actual schema. A misprovisioned outbox (e.g. a
+// PK-only lease table copy-pasted into the outbox config) would otherwise accept
+// the first record per partition and classify every subsequent record a
+// duplicate, silently acking and dropping it. EnsureTable/CreateTable provision
+// exactly this shape.
+//
+//	Primary key : PK          (S, HASH)
+//	              SK          (S, RANGE)
+//	GSI ExpiryIndex   : has_expiry (S, HASH), expires_at (N, RANGE)   [sparse]
+//	GSI RecordIDIndex : record_id  (S, HASH)
+//
+// A missing GSI, a wrong key attribute/type, or an unexpected range key fails
+// the preflight. Extra (unexpected) GSIs are tolerated.
+//
+// # IAM requirements (upgrade note)
+//
+// The build-time preflight calls dynamodb:DescribeTable, a NEW required action
+// as of the schema-preflight change. Grant it to the store's role. If the role
+// cannot DescribeTable (AccessDenied) or the call fails transiently, the factory
+// does NOT brick boot: it logs a loud WARN and proceeds fail-open — a genuine
+// key-schema mismatch is only guaranteed to be caught when the role can read the
+// table description. A confirmed schema mismatch, however, is always fatal.
+//
+// # Claim ordering
+//
+// Claim honours the ports.OutboxStore contract of returning the oldest N pending
+// records per partition by (CreatedAt, Seq). Because the SK is keyed on
+// envelope/binding ID — lexicographically uncorrelated with age — the claim
+// query pages the partition to EXHAUSTION and selects the oldest N across every
+// page, rather than sorting a fixed candidate window. This guarantees that under
+// a deep backlog (an egress outage on an exclusive session) an old record whose
+// envelope ID sorts late is still claimed first, so per-partition ordered
+// delivery cannot silently starve a record. No age-ordered secondary index is
+// required for correctness (exhaustive paging is used instead); if one is added
+// later it must be provisioned by EnsureTable/CreateTable and verified by the
+// factory preflight above.
 package dynamodboutbox

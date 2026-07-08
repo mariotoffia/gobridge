@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,13 +37,19 @@ const (
 // self-diagnostics, mirroring the adapter-local dimension-key precedent
 // (adapters/aws/transport/sqs/metrics.go TagKeyQueueURL).
 const (
-	// MetricExporterDroppedDatums counts datums lost to capacity limits
-	// (hard buffer cap, retry-buffer overflow) or dropped after a
-	// non-retryable (validation-class) PutMetricData rejection.
+	// MetricExporterDroppedDatums counts datums that were ACCEPTED into the
+	// export pipeline and then lost: capacity limits (hard buffer cap,
+	// retry-buffer overflow) or a non-retryable (validation-class)
+	// PutMetricData rejection after the datum was already buffered. Contrast
+	// MetricExporterRejectedDatums, which never entered the pipeline.
 	MetricExporterDroppedDatums = "ExporterDroppedDatums"
-	// MetricExporterRejectedDatums counts emissions rejected at add()
-	// time because the value was NaN or ±Inf (CloudWatch rejects the
-	// whole all-or-nothing batch for such a datum — MF-2).
+	// MetricExporterRejectedDatums counts emissions REJECTED at add() time
+	// because the value was NaN or ±Inf (CloudWatch rejects the whole
+	// all-or-nothing batch for such a datum — MF-2). This is an emit-time
+	// rejection: the datum never entered the export pipeline and was never
+	// published — contrast MetricExporterDroppedDatums (accepted, then lost).
+	// The OTel adapter uses the same name with the same emit-time-rejection
+	// semantic (its reason is a full instrument cache instead of NaN/Inf).
 	MetricExporterRejectedDatums = "ExporterRejectedDatums"
 )
 
@@ -453,7 +460,11 @@ func (b *batcher) buildDimensions(tags []shared.Tag, rollup bool) []cwtypes.Dime
 	if rollup {
 		return nil
 	}
-	all := append(b.defaultTags, tags...)
+	// slices.Concat allocates a fresh backing array, so the returned slice
+	// never aliases b.defaultTags' spare capacity — a plain
+	// append(b.defaultTags, tags...) could write into shared capacity and
+	// bleed dimensions across concurrent datums on a future refactor.
+	all := slices.Concat(b.defaultTags, tags)
 	if len(all) == 0 {
 		return nil
 	}

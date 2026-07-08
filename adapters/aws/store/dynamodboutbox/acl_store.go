@@ -61,25 +61,54 @@ const (
 	expiryIndexName   = "ExpiryIndex"
 	recordIDIndexName = "RecordIDIndex"
 
-	// claimCandidateWindowFactor bounds how many claimable candidates a
-	// single Claim gathers before sorting them oldest-first: up to
-	// claimCandidateWindowFactor*limit items. DynamoDB Query returns items in
-	// SK order (OUTBOX#<envelope_id>#<binding_id> — lexicographic by envelope
-	// ID, which is effectively random with respect to record age), so
-	// claiming the first N items encountered starves records whose envelope
-	// IDs sort late and violates the ascending-(CreatedAt, Seq) claim-ordering
-	// contract that memory/sqlite honour via `ORDER BY created_at, seq LIMIT`.
-	// Collecting a window and sorting it client-side restores oldest-first
-	// selection.
+	// claimRetentionFactor bounds how many claimable candidates a single Claim
+	// RETAINS in memory while it pages the partition to exhaustion: the oldest
+	// claimRetentionFactor*limit records by (CreatedAt, Seq, EnvelopeID).
 	//
-	// ponytail: the window is filled in SK order, so a partition whose ready
-	// backlog exceeds claimCandidateWindowFactor*limit can still leave an old
-	// record whose envelope ID sorts beyond the window waiting a few claim
-	// cycles (progress stays oldest-first WITHIN each window). Eliminating that
-	// residual entirely requires the query itself to return records in
-	// created_at order: add a created_at range key (or a per-partition
-	// created_at GSI) and shrink the window to `limit`.
-	claimCandidateWindowFactor = 3
+	// DynamoDB Query returns items in SK order (OUTBOX#<envelope_id>#<binding_id>
+	// — lexicographic by envelope ID, effectively random with respect to record
+	// age), so the FIRST items a query yields are NOT the oldest. The former
+	// implementation stopped after a fixed 3×limit SK-order WINDOW and sorted
+	// only that window; under a backlog deeper than the window an OLD record
+	// whose envelope ID sorted lexicographically late was never even
+	// CONSIDERED, so it starved indefinitely and per-partition ordered delivery
+	// silently broke (H1). Claim now scans EVERY claimable record in the
+	// partition (paging until LastEvaluatedKey is nil) so the retained oldest-N
+	// are the TRUE oldest-N, matching the ascending-(CreatedAt, Seq)
+	// claim-ordering contract memory/sqlite honour via `ORDER BY created_at,
+	// seq LIMIT`. Retaining only claimRetentionFactor*limit caps client memory
+	// to the same ceiling as the old window while leaving a contention buffer
+	// beyond `limit` (per-record claims that lose a fencing race are skipped and
+	// the next-oldest retained candidate takes their place).
+	//
+	// Tradeoff: exhaustive paging reads the whole claimable backlog per Claim.
+	// The durable optimisation is to have the QUERY return age-ordered items so
+	// the scan can stop after `limit`: add a per-partition created_at range key
+	// (or created_at GSI/LSI) and shrink retention to `limit`. That index must
+	// be provisioned by CreateTable and verified by the factory schema preflight
+	// (Preflight) — do not require operators to hand-provision it.
+	claimRetentionFactor = 3
+
+	// deepBacklogPageWarn is the number of DynamoDB Query pages a single Claim
+	// may scan before the store emits ONE loud WARN (throttled to once per
+	// Claim) and bumps MetricClaimScanPages. Because Claim pages the WHOLE
+	// partition to guarantee oldest-first delivery (H1), a partition whose
+	// claimable backlog spans more pages than this makes each Claim O(backlog):
+	// an outage-recovery deep backlog would otherwise drain quadratically and
+	// SILENTLY. Crossing the threshold is the operator's signal to provision the
+	// per-partition created_at GSI (see the claimRetentionFactor note / ADR
+	// 0005). A Query page is up to 1MB, so 8 pages is a genuinely deep
+	// partition, not routine churn.
+	deepBacklogPageWarn = 8
+
+	// claimPreallocCap caps the INITIAL capacity of the per-Claim candidate
+	// buffer. Retention is claimRetentionFactor*limit and the trim threshold is
+	// 2× that, so a large-but-valid operator-set DrainMaxBatchSize (limit) would
+	// otherwise eagerly allocate 6*limit and could OOM on the make() before a
+	// single record is scanned. The slice still grows on demand when a partition
+	// genuinely holds that many claimable records; this only bounds the eager
+	// allocation.
+	claimPreallocCap = 4096
 
 	// fenceRetentionFloor is the minimum TTL horizon stamped on FENCE
 	// rows: fences live for max(compactGrace, fenceRetentionFloor) past
@@ -325,16 +354,17 @@ func (s *Store) CreateTable(ctx context.Context) error {
 	}
 
 	// Enable DynamoDB TTL on the "ttl" attribute so completed/expired records
-	// are compacted physically. A ttl is stamped on completed records and on
-	// any record carrying an ExpiresAt (including pending ones) — but always
-	// as expiresAt + compactGrace, i.e. strictly at/after the record's own
-	// expiry, so TTL never reaps a still-deliverable record. Records with no
-	// ExpiresAt carry no ttl. FENCE metadata rows carry a long TTL of
-	// max(compactGrace, fenceRetentionFloor) past their last write, so
-	// abandoned (ephemeral/rotating session) partitions are eventually
-	// cleaned up instead of leaking one immortal row each. Best-effort: TTL
-	// is a housekeeping convenience, not a correctness requirement, and is
-	// already enabled on re-runs.
+	// are compacted physically. A ttl is stamped ONLY at a terminal transition:
+	// Complete and Expire each set #ttl = now + compactGrace on the record they
+	// finalize. Pending and claimed (still-deliverable) records carry no ttl, so
+	// DynamoDB never physically reaps undelivered work — e.g. an on_expired=dlq
+	// record that expired during an egress outage survives until the claim path
+	// routes it, matching memory/sqlite which likewise never evict pending rows.
+	// FENCE metadata rows carry a long TTL of max(compactGrace,
+	// fenceRetentionFloor) past their last write, so abandoned (ephemeral/
+	// rotating session) partitions are eventually cleaned up instead of leaking
+	// one immortal row each. Best-effort: TTL is a housekeeping convenience, not
+	// a correctness requirement, and is already enabled on re-runs.
 	if _, err := s.client.UpdateTimeToLive(ctx, &dynamodb.UpdateTimeToLiveInput{
 		TableName: aws.String(s.table),
 		TimeToLiveSpecification: &ddbtypes.TimeToLiveSpecification{
@@ -382,7 +412,7 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 
 	duplicates := 0
 	for i := range records {
-		item, err := marshalRecord(records[i], now, s.compactGrace)
+		item, err := marshalRecord(records[i], now)
 		if err != nil {
 			return err
 		}
@@ -562,19 +592,21 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleMs)},
 	}
 
-	// Gather a bounded window of claimable candidates, sort it oldest-first by
-	// (CreatedAt, Seq), then claim the oldest N. DynamoDB Query returns items
-	// in SK order (lexicographic by envelope ID, unrelated to record age), so
-	// claiming the first N encountered would starve records with
-	// lexicographically-late envelope IDs and break the ascending-(CreatedAt,
-	// Seq) claim-ordering contract memory/sqlite honour via ORDER BY
-	// created_at, seq LIMIT. See claimCandidateWindowFactor for the window
-	// ceiling and its documented upgrade path.
-	candidateCap := limit * claimCandidateWindowFactor
-	if candidateCap < limit {
-		// Overflow guard for a pathologically large limit: never scan fewer
+	// Gather claimable candidates by scanning the WHOLE partition (paging until
+	// LastEvaluatedKey is nil), retaining only the oldest claimRetentionFactor*limit
+	// by (CreatedAt, Seq, EnvelopeID), then claim the oldest N. DynamoDB Query
+	// returns items in SK order (lexicographic by envelope ID, unrelated to
+	// record age), so the FIRST items encountered are NOT the oldest. The former
+	// fixed 3×limit SK-order window could leave an old record whose envelope ID
+	// sorted late permanently unconsidered under a deep backlog, starving it and
+	// breaking the ascending-(CreatedAt, Seq) claim-ordering contract memory/sqlite
+	// honour via ORDER BY created_at, seq LIMIT (H1). Exhaustive paging proves the
+	// true oldest-N; bounded retention keeps memory flat. See claimRetentionFactor.
+	retain := limit * claimRetentionFactor
+	if retain < limit {
+		// Overflow guard for a pathologically large limit: never retain fewer
 		// than `limit` candidates.
-		candidateCap = limit
+		retain = limit
 	}
 
 	type claimCandidate struct {
@@ -585,10 +617,51 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		envelopeID string
 	}
 
-	candidates := make([]claimCandidate, 0, candidateCap)
-	var startKey map[string]ddbtypes.AttributeValue
+	oldestFirst := func(a, b claimCandidate) bool {
+		if a.createdAt != b.createdAt {
+			return a.createdAt < b.createdAt
+		}
+		if a.seq != b.seq {
+			return a.seq < b.seq
+		}
+		return a.envelopeID < b.envelopeID
+	}
 
-	for len(candidates) < candidateCap {
+	// candidates is trimmed back to the oldest `retain` whenever it grows past
+	// trimAt, so a partition whose claimable backlog is far deeper than `retain`
+	// cannot grow client memory without bound while the scan still CONSIDERS
+	// every record.
+	trimAt := retain * 2
+	if trimAt < retain { // overflow guard
+		trimAt = retain
+	}
+	// ponytail: cap the EAGER allocation at claimPreallocCap so a huge-but-valid
+	// operator-set limit (DrainMaxBatchSize) cannot OOM on this make() before the
+	// trim guard ever runs. The slice still grows on demand if the partition
+	// genuinely holds more than claimPreallocCap claimable records.
+	initialCap := trimAt
+	if initialCap > claimPreallocCap {
+		initialCap = claimPreallocCap
+	}
+	candidates := make([]claimCandidate, 0, initialCap)
+	trim := func() {
+		if len(candidates) <= retain {
+			return
+		}
+		sort.Slice(candidates, func(i, j int) bool { return oldestFirst(candidates[i], candidates[j]) })
+		candidates = candidates[:retain]
+	}
+
+	var startKey map[string]ddbtypes.AttributeValue
+	// FIX 2 (observability): Claim pages the whole partition (H1), so a deep
+	// backlog makes this loop O(backlog). Count pages/records scanned and, once
+	// a single Claim crosses deepBacklogPageWarn, emit ONE loud WARN (throttled
+	// via deepBacklogWarned) plus a partition-tagged counter so an
+	// outage-recovery quadratic drain is observable, not silent.
+	pages := 0
+	recordsScanned := 0
+	deepBacklogWarned := false
+	for {
 		input := &dynamodb.QueryInput{
 			TableName:                 aws.String(s.table),
 			KeyConditionExpression:    aws.String("PK = :pk AND begins_with(SK, :prefix)"),
@@ -605,6 +678,8 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 		if err != nil {
 			return nil, wrapErr(err, "outbox claim query failed", "partitionKey", partitionKey)
 		}
+		pages++
+		recordsScanned += len(queryOut.Items)
 
 		for _, item := range queryOut.Items {
 			candidates = append(candidates, claimCandidate{
@@ -615,8 +690,22 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 				seq:        numAttrU64(item, "seq"),
 				envelopeID: strAttr(item, "envelope_id"),
 			})
-			if len(candidates) >= candidateCap {
-				break
+		}
+		if len(candidates) > trimAt {
+			trim()
+		}
+
+		if !deepBacklogWarned && pages > deepBacklogPageWarn {
+			deepBacklogWarned = true
+			if s.logger != nil {
+				s.logger.Warn(
+					"dynamodboutbox: deep outbox backlog; each Claim scans the whole partition "+
+						"(O(backlog)); provision the per-partition created_at GSI to bound it — "+
+						"see ADR 0005 / docs/runbooks",
+					"partition_key", partitionKey,
+					"pages", pages,
+					"records_scanned", recordsScanned,
+				)
 			}
 		}
 
@@ -624,21 +713,31 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 			break
 		}
 		startKey = queryOut.LastEvaluatedKey
+
+		// A pathologically deep backlog can page many times; honour
+		// cancellation between pages so a Claim never outlives its context.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	// A deep-backlog Claim scanned an unusual number of pages: surface the count
+	// (tagged by partition) so the O(backlog) per-Claim cost is measurable, not
+	// just log-visible. s.metrics defaults to a no-op meter, so no nil guard.
+	if pages > deepBacklogPageWarn {
+		s.metrics.Counter(MetricClaimScanPages, int64(pages),
+			shared.Tag{Key: shared.TagKeyPartition, Value: partitionKey})
 	}
 
 	// Oldest-first: ascending (CreatedAt, Seq) with envelopeID as the legacy
 	// tiebreak (records persisted before the sequence existed carry Seq 0 and
 	// sort first within their millisecond), matching QueryPending and the
-	// ports.OutboxStore claim-ordering contract.
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].createdAt != candidates[j].createdAt {
-			return candidates[i].createdAt < candidates[j].createdAt
-		}
-		if candidates[i].seq != candidates[j].seq {
-			return candidates[i].seq < candidates[j].seq
-		}
-		return candidates[i].envelopeID < candidates[j].envelopeID
-	})
+	// ports.OutboxStore claim-ordering contract. The retained set already holds
+	// the globally oldest `retain`; this final sort orders them for claiming.
+	sort.Slice(candidates, func(i, j int) bool { return oldestFirst(candidates[i], candidates[j]) })
+	if len(candidates) > retain {
+		candidates = candidates[:retain]
+	}
 
 	// Claim the oldest candidates first, up to limit. A per-record claim can
 	// lose the fencing/condition race (claimOne returns nil): skip it and try
@@ -930,21 +1029,24 @@ func (s *Store) Release(ctx context.Context, recordIDs []string, token persisten
 }
 
 // Expire marks pending records whose ExpiresAt is before the given time as
-// expired. Claimed records are never expired here. Returns the count.
+// expired, SCOPED to the supplied partition (M1). Claimed records are never
+// expired here, and records in other partitions are left untouched even when
+// past their expiry. Returns the count.
 //
 // Candidates come from the sparse ExpiryIndex (only records persisted with
-// a non-zero ExpiresAt are in it); the per-record conditional update gates
-// on pending status, so claimed/terminal candidates are skipped without
-// error.
-func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
+// a non-zero ExpiresAt are in it); the index is hashed on the has_expiry flag
+// (not the partition), so the query is scoped to the partition with a
+// FilterExpression on the projected PK. The per-record conditional update gates
+// on pending status, so claimed/terminal candidates are skipped without error.
+func (s *Store) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
 	beforeMs := before.UnixMilli()
 	ttlEpoch := before.Add(s.compactGrace).Unix()
 	// Pending-only: a claimed record is reclaimed via Claim/IsClaimable,
 	// never expired out from under a potentially still-valid owner.
-	return s.expireByStatus(ctx, string(persistence.OutboxPending), beforeMs, ttlEpoch)
+	return s.expireByStatus(ctx, string(persistence.OutboxPending), partition, beforeMs, ttlEpoch)
 }
 
-func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttlEpoch int64) (int, error) {
+func (s *Store) expireByStatus(ctx context.Context, status, partition string, beforeMs, ttlEpoch int64) (int, error) {
 	count := 0
 	var startKey map[string]ddbtypes.AttributeValue
 
@@ -953,12 +1055,24 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 			TableName:              aws.String(s.table),
 			IndexName:              aws.String(expiryIndexName),
 			KeyConditionExpression: aws.String("#he = :flag AND expires_at < :before"),
+			// FilterExpression scopes the index scan (hashed on has_expiry, not
+			// the partition) to a single partition so a lease-holder's sweep
+			// never expires another partition's records (M1).
+			// ponytail: the ExpiryIndex hash is the single has_expiry="1" flag, so
+			// this partition-scoped Expire still READS every partition's
+			// expiry-eligible rows and filters client-side — cost is O(global
+			// expiry backlog), not O(this partition). Acceptable at Expire's slow
+			// cadence under the drop policy; the durable fix (a sharded /
+			// partition-keyed expiry index) is deferred future work.
+			FilterExpression: aws.String("#pk = :partition"),
 			ExpressionAttributeNames: map[string]string{
 				"#he": attrHasExpiry,
+				"#pk": "PK",
 			},
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":flag":   &ddbtypes.AttributeValueMemberS{Value: hasExpiryFlag},
-				":before": &ddbtypes.AttributeValueMemberN{Value: i64(beforeMs)},
+				":flag":      &ddbtypes.AttributeValueMemberS{Value: hasExpiryFlag},
+				":before":    &ddbtypes.AttributeValueMemberN{Value: i64(beforeMs)},
+				":partition": &ddbtypes.AttributeValueMemberS{Value: partition},
 			},
 		}
 		if startKey != nil {
@@ -1033,14 +1147,15 @@ func (s *Store) expireByStatus(ctx context.Context, status string, beforeMs, ttl
 // is deliberate: the sole runtime caller counts pending records against
 // MaxOutboxDepth (runtime/route/dispatch.go), where only the COUNT matters and
 // the identity of the sampled records is immaterial, so QueryPending avoids the
-// read amplification of a Claim-style candidate window.
+// read amplification of Claim's exhaustive oldest-N scan.
 //
-// Claim, by contrast, DOES select the oldest-N (it gathers a bounded candidate
-// window and sorts before claiming) because per-partition send ordering depends
-// on it. Callers that need oldest-N SELECTION must use Claim, not QueryPending.
+// Claim, by contrast, DOES select the oldest-N (it pages the whole partition to
+// exhaustion and retains the globally oldest candidates before claiming) because
+// per-partition send ordering depends on it. Callers that need oldest-N
+// SELECTION must use Claim, not QueryPending.
 //
 // ponytail: if a future caller needs oldest-N selection here, give QueryPending
-// the same candidate-window treatment as Claim, or add a created_at range key /
+// the same exhaustive-scan treatment as Claim, or add a created_at range key /
 // per-partition GSI so the Query returns age-ordered items directly (which
 // would let both methods drop the client-side sort).
 func (s *Store) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {

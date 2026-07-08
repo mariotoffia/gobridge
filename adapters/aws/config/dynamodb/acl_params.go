@@ -94,10 +94,22 @@ func (s *session) getCurrentVersion(ctx context.Context, pk string) (int64, erro
 
 // putConfigItem writes the (PK, current) row with the supplied JSON
 // payload and version, guarded by a compare-and-set condition:
-// the write succeeds only if the row is absent (first write) or its
-// stored version equals expectedVersion. On a version-conflict the SDK
-// ConditionalCheckFailedException is returned unwrapped so the loader
-// can classify it as a lost-update conflict.
+// the write succeeds only if
+//
+//   - the row is absent (first write); or
+//   - its stored version equals expectedVersion (normal CAS); or
+//   - the row exists but carries NO version attribute AND expectedVersion is 0
+//     (first CAS that adopts a console/IaC-seeded row).
+//
+// The third clause is essential: a row seeded outside this loader (AWS
+// console, Terraform, a data import) has PK/SK/data but no version, so the
+// plain "attribute_not_exists(#pk) OR #v = :expected" guard is permanently
+// false for it — every Save would be misclassified as a version conflict and
+// the config would be un-writable forever. Allowing a version-0 CAS to stamp
+// the missing version lets the loader adopt such a row once, after which normal
+// CAS applies. On a genuine version conflict the SDK
+// ConditionalCheckFailedException is returned unwrapped so the loader can
+// classify it as a lost-update conflict.
 func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, version, expectedVersion int64) error {
 	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.tableName,
@@ -107,13 +119,14 @@ func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, ver
 			attrData:    &ddbtypes.AttributeValueMemberS{Value: string(data)},
 			attrVersion: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(version, 10)},
 		},
-		ConditionExpression: aws.String("attribute_not_exists(#pk) OR #v = :expected"),
+		ConditionExpression: aws.String("attribute_not_exists(#pk) OR #v = :expected OR (attribute_not_exists(#v) AND :expected = :zero)"),
 		ExpressionAttributeNames: map[string]string{
 			"#pk": attrPK,
 			"#v":  attrVersion,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":expected": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(expectedVersion, 10)},
+			":zero":     &ddbtypes.AttributeValueMemberN{Value: "0"},
 		},
 	})
 	if err != nil {

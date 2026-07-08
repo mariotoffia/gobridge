@@ -190,7 +190,9 @@ func TestIntegration_AutoAck(t *testing.T) {
 	defer recvCancel()
 
 	received := make(chan *messaging.Envelope, 1)
+	runDone := make(chan struct{})
 	go func() {
+		defer close(runDone)
 		_ = receiver.Run(recvCtx, func(_ context.Context, d ports.Delivery) error {
 			received <- d.Envelope()
 			recvCancel()
@@ -205,6 +207,16 @@ func TestIntegration_AutoAck(t *testing.T) {
 		}
 	case <-recvCtx.Done():
 		t.Fatal("timed out waiting for auto-ack message")
+	}
+
+	// A direct embedder releases the consumer after Run returns (the
+	// managed route runner does this automatically). A graceful stop
+	// already self-closes the channel; Close is the documented,
+	// idempotent follow-up. Without releasing the first consumer, the
+	// broker round-robins autoack-2 to it and recv2 below times out.
+	<-runDone
+	if err := receiver.Close(ctx); err != nil {
+		t.Fatalf("receiver.Close: %v", err)
 	}
 
 	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
@@ -224,7 +236,9 @@ func TestIntegration_AutoAck(t *testing.T) {
 	defer recv2Cancel()
 
 	received2 := make(chan *messaging.Envelope, 1)
+	run2Done := make(chan struct{})
 	go func() {
+		defer close(run2Done)
 		_ = recv2.Run(recv2Ctx, func(_ context.Context, d ports.Delivery) error {
 			received2 <- d.Envelope()
 			recv2Cancel()
@@ -239,6 +253,10 @@ func TestIntegration_AutoAck(t *testing.T) {
 		}
 	case <-recv2Ctx.Done():
 		t.Fatal("timed out waiting for second message")
+	}
+	<-run2Done
+	if err := recv2.Close(ctx); err != nil {
+		t.Fatalf("recv2.Close: %v", err)
 	}
 }
 

@@ -212,9 +212,27 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	// L12): a route whose supervisor has recorded a fault is NOT ready even if
 	// its close-once Started channel fired on the first (now-failed) run.
 	routeErr := make(map[string]bool, len(routeSnaps))
+	routeDead := make(map[string]bool, len(routeSnaps))
 	for _, rs := range routeSnaps {
 		if rt.componentErrors["route:"+rs.id] != nil {
 			routeErr[rs.id] = true
+		}
+		// route_dead latches once a route has flapped routeDeadRestartThreshold
+		// times without a stable run — a steady-state signal distinct from the
+		// rate-based restart counter (F5). It is suppressed once the route's
+		// CURRENT run has outlived the stability window: a route that flapped to
+		// the threshold then recovered and kept running never re-enters
+		// superviseRoute to reset the counter, so reading liveness here keeps a
+		// healthy long-running route from advertising route_dead forever.
+		if rt.routeFlaps["route:"+rs.id] >= routeDeadRestartThreshold {
+			key := "route:" + rs.id
+			recovered := false
+			if start, ok := rt.routeRunStart[key]; ok && rt.clk.Since(start) >= routeStabilityWindow {
+				recovered = true
+			}
+			if !recovered {
+				routeDead[rs.id] = true
+			}
 		}
 	}
 	rt.mu.Unlock()
@@ -282,6 +300,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			DeliveryMode: rs.deliveryMode,
 			Ready:        ready,
 			InFlight:     inFlight,
+			RouteDead:    routeDead[rs.id],
 		})
 	}
 

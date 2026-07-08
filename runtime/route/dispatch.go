@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -185,7 +186,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			if r.dlq.HasStore() {
 				if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
 					r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
-					return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+					return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 				}
 				r.emitDLQ("max_retries")
 			} else {
@@ -213,7 +214,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 	if r.dlq.HasStore() {
 		if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
@@ -338,7 +339,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 	// counter there would be a false signal; drop-with-metric instead.
 	if r.policy.OnExpired == routing.ExpiredDLQ && r.dlq.HasStore() {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
 		return r.settleTerminal(ctx, del, env, shared.ErrMessageExpired, attempts)
@@ -356,17 +357,23 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delivery, env *messaging.Envelope, err error) error {
 	attempts := receiveCount(env) + 1
 	if errors.Is(err, shared.ErrMessageFiltered) {
-		// A processor deliberately dropped the message. DLQ it only when the
-		// policy asks AND a store exists; otherwise it is an intentional
-		// filter-drop that must still be observable (metric + terminal hook).
-		if r.policy.OnPermanentFailure == routing.FailureDLQ && r.dlq.HasStore() {
+		// A processor deliberately dropped the message. Filter-drops have their
+		// OWN policy (OnFiltered), defaulting to drop — decoupled from
+		// OnPermanentFailure so an allow-list filter does not DLQ 100% of
+		// non-matching traffic just because the permanent-failure sink is the
+		// DLQ default. DLQ only when OnFiltered=dlq is explicitly set AND a store
+		// exists; otherwise it is an intentional filter-drop that must still be
+		// observable (metric + terminal hook).
+		if r.policy.OnFiltered == routing.FilteredDLQ && r.dlq.HasStore() {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-				return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+				return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
+			// Counted as DLQEntries{category=filtered}; do NOT also emit
+			// MessagesFiltered — the conservation law counts each message once.
 			r.emitDLQ("filtered")
 			return r.settleTerminal(ctx, del, env, err, attempts)
 		}
-		r.emitFiltered()
+		r.emitFiltered(filteredProcessorName(err))
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "message filtered; dropped",
 				"route", r.routeID, "envelope_id", env.ID())
@@ -402,7 +409,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
 	return r.settleTerminal(ctx, del, env, err, attempts)
@@ -432,7 +439,7 @@ func (r *RouteRunner) poisonReplayCapExceeded(ctx context.Context, del ports.Del
 		return r.settleTerminal(ctx, del, env, poisonErr, attempts)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", poisonErr, rc); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write poison dlq: %w", dlqErr))
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write poison dlq: %w", dlqErr))
 	}
 	r.emitDLQ(category)
 	return r.settleTerminal(ctx, del, env, poisonErr, attempts)
@@ -453,7 +460,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 			return r.settleTerminal(ctx, del, env, err, attempts)
 		}
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
 		return r.settleTerminal(ctx, del, env, err, attempts)
@@ -605,6 +612,77 @@ func stripInboundReceiveCounts(env *messaging.Envelope) {
 	env.DeleteHeader(headerAMQP10DeliveryCount)
 }
 
+// receiveCountAliases maps a source transport's configured identity — the
+// RegisterTransportFactory name the operator wrote under `transport:`, or the
+// adapter's canonical PluginConfig.Kind() discriminator — to the ONE
+// redelivery-count header key that transport legitimately stamps. Only the three
+// count-bearing transports appear; every other source (MQTT, AMQP 0-9-1, HTTP, …)
+// stamps no native count header and is absent by design, so
+// stripForeignReceiveCounts removes ALL THREE keys for it.
+//
+// The runtime cannot import the adapter packages (layer rule), so both the
+// conventional short names and the canonical Kind() values are listed by value
+// and must stay in sync with the adapters. Keys are matched case-insensitively.
+//
+//nolint:gochecknoglobals // immutable wire-contract lookup, not state.
+var receiveCountAliases = map[string]string{
+	"sqs":              headerSQSReceiveCount,
+	"aws.sqs":          headerSQSReceiveCount,
+	"asb":              headerASBDeliveryCount,
+	"servicebus":       headerASBDeliveryCount,
+	"azure.servicebus": headerASBDeliveryCount,
+	"amqp10":           headerAMQP10DeliveryCount,
+	"amqp1.0":          headerAMQP10DeliveryCount,
+	"amqp.amqp10":      headerAMQP10DeliveryCount,
+}
+
+// nativeReceiveCountKey returns the redelivery-count header key the named source
+// transport legitimately stamps and whether the transport is a known
+// count-bearing one. The lookup is case-insensitive and trims surrounding space.
+// A transport the runtime does not recognize (including a source registered under
+// a wholly custom operator-chosen name) returns ("", false): the conservative
+// choice, since trusting a foreign count is the ingress-forgery vulnerability
+// (F3) this table closes.
+func nativeReceiveCountKey(sourceTransport string) (string, bool) {
+	key, ok := receiveCountAliases[strings.ToLower(strings.TrimSpace(sourceTransport))]
+	return key, ok
+}
+
+// stripForeignReceiveCounts removes, on INGRESS, every transport
+// redelivery-count header that the SOURCE transport does not itself stamp,
+// closing the ingress redelivery-count forgery vector (F3): an untrusted producer
+// on a count-less source (e.g. an MQTT device that copies arbitrary user
+// properties straight into envelope headers) could otherwise inject
+// sqs.ApproximateReceiveCount: 999 and have its FIRST delivery read as over the
+// replay cap, poison-routing a healthy message to the DLQ without a single
+// genuine retry (producer-controlled DLQ pollution + denial-of-retry).
+//
+// The receiving transport keeps ONLY its own native count key and strips the
+// other two; a source with no native count key (MQTT, AMQP 0-9-1, HTTP, …) strips
+// all three. It must run at the ingress reserved-header sanitization seam, BEFORE
+// receiveCount is consulted, and pairs with StripReservedHeaders there (the count
+// keys are transport-namespaced, NOT x-bridge.*-reserved, so that strip does not
+// cover them).
+//
+// sourceTransport == "" disables stripping: a route constructed without a
+// declared source transport (a unit test driving HandleDelivery directly, or any
+// pre-plumbing caller) keeps the legacy behaviour so an explicitly-stamped count
+// is still honoured. Production routes always carry a declared source transport
+// via RouteConfig.SourceTransport, so the strip is active wherever it matters.
+// DeleteHeader is nil-safe.
+func stripForeignReceiveCounts(env *messaging.Envelope, sourceTransport string) {
+	if sourceTransport == "" {
+		return
+	}
+	own, _ := nativeReceiveCountKey(sourceTransport)
+	for _, key := range receiveCountHeaderKeys {
+		if key == own {
+			continue
+		}
+		env.DeleteHeader(key)
+	}
+}
+
 // headerInt reads key from h and coerces the common numeric encodings a
 // transport adapter may stamp (int, int64, uint32, float64, decimal string)
 // into an int. The second result is false when the key is absent or the value
@@ -652,11 +730,32 @@ func (r *RouteRunner) emitDrop(reason string) {
 }
 
 // emitFiltered counts a message a processor deliberately discarded
-// (ErrMessageFiltered) under OnPermanentFailure=drop — a policy discard, kept
-// distinct from a fault-driven drop.
-func (r *RouteRunner) emitFiltered() {
-	r.metrics.Counter(shared.MetricMessagesFiltered, 1,
-		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+// (ErrMessageFiltered) under OnFiltered=drop — a policy discard, kept distinct
+// from a fault-driven drop. processor is the low-cardinality name of the
+// filtering processor when it attributed the drop (empty otherwise); it is
+// omitted from the tag set when empty to avoid an empty-value series.
+func (r *RouteRunner) emitFiltered(processor string) {
+	tags := make([]shared.Tag, 0, 2)
+	tags = append(tags, shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+	if processor != "" {
+		tags = append(tags, shared.Tag{Key: shared.TagKeyProcessor, Value: processor})
+	}
+	r.metrics.Counter(shared.MetricMessagesFiltered, 1, tags...)
+}
+
+// filteredProcessorName extracts the low-cardinality processor attribution a
+// filter processor may attach to ErrMessageFiltered via
+// .With(shared.TagKeyProcessor, name). Empty when the detail is absent, so a
+// filtered error without attribution still emits (untagged) without panicking.
+func filteredProcessorName(err error) string {
+	be, ok := shared.AsBridgeError(err)
+	if !ok {
+		return ""
+	}
+	if v, ok := be.Context[shared.TagKeyProcessor].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // emitExpired counts a message dropped because it expired before delivery
@@ -736,9 +835,19 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	// and collectively exceed MaxOutboxDepth. This is acceptable because the
 	// outbox drainer will eventually process excess entries, and QueryPending
 	// errors now fail the delivery (fail-closed) rather than silently bypassing.
+	//
+	// L3: a fan-out writes one record per plan, each into its own outbox
+	// partition, so the check consults EVERY distinct target partition (not just
+	// plans[0]'s). Backpressure applies if ANY leg's partition is at capacity — a
+	// full partition must not accept another record regardless of which leg
+	// targets it. Single-binding routes (the common case) iterate exactly once,
+	// identical to the pre-L3 behavior. Per-partition logic is unchanged: a fresh
+	// under-capacity cache entry skips the query; unknown/stale/at-capacity query.
 	if r.policy.MaxOutboxDepth > 0 && r.depthCache != nil {
-		partitionKey := r.outboxPartitionKey(plans)
-		if partitionKey != "" && !r.depthCache.IsUnderCapacity(partitionKey) {
+		for _, partitionKey := range r.distinctOutboxPartitions(plans) {
+			if r.depthCache.IsUnderCapacity(partitionKey) {
+				continue
+			}
 			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
 			if qErr != nil {
 				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
@@ -746,14 +855,29 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
 			r.depthCache.Update(partitionKey, atCapacity)
 			if atCapacity {
-				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox at capacity (%d pending)", len(pending)))
+				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox partition %q at capacity (%d pending)", partitionKey, len(pending)))
 			}
 		}
 	}
 
 	records, buildErr := r.buildOutboxRecords(ctx, env, plans)
 	if buildErr != nil {
-		return r.retryOrFallback(ctx, del, env, 0, buildErr)
+		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
+		// record build — a resolver emitting a BindingID absent from the route's
+		// bindings, or the store rejecting an oversized record (helpers.go) — would
+		// otherwise retry indefinitely. The gate reads the source's redelivery
+		// count, so it only trips for COUNT-BEARING sources (SQS, ASB with a
+		// delivery-count, AMQP 1.0): at or above the cap it poisons terminally.
+		// Count-less sources (MQTT, AMQP 0-9-1) stamp no count, so receiveCount is
+		// always 0 and the gate never fires — they get F1's bounded, paced retry
+		// (never the old zero-delay hot loop) but no bridge-level cap, relying on
+		// the broker's own redelivery limit. Below the cap: retry with the policy's
+		// bounded backoff.
+		rc := receiveCount(env)
+		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+			return r.poisonReplayCapExceeded(ctx, del, env, rc, buildErr, "max_retries")
+		}
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, rc+1, buildErr), buildErr)
 	}
 
 	persistErr := r.outboxStore.Persist(ctx, records)
@@ -761,7 +885,20 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		if errors.Is(persistErr, shared.ErrDuplicateRecord) {
 			return r.ackDelivery(ctx, del)
 		}
-		return r.retryOrFallback(ctx, del, env, 0, persistErr)
+		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
+		// outbox persist would otherwise retry indefinitely. As above, the gate
+		// reads the source redelivery count, so it only trips for count-bearing
+		// sources (SQS, ASB, AMQP 1.0); count-less sources (MQTT, AMQP 0-9-1) get
+		// F1's paced retry but no bridge-level cap. At or above the cap, poison
+		// terminally; below it, retry with the policy's bounded backoff (never the
+		// old zero-delay hot loop). The ErrDuplicateRecord branch above is a
+		// success/ack path and is left untouched — a duplicate means the record is
+		// already durable.
+		rc := receiveCount(env)
+		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+			return r.poisonReplayCapExceeded(ctx, del, env, rc, persistErr, "max_retries")
+		}
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, rc+1, persistErr), persistErr)
 	}
 
 	return r.ackDelivery(ctx, del)

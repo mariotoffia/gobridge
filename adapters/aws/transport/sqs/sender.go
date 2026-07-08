@@ -38,6 +38,30 @@ type Sender struct {
 	logger   *slog.Logger
 	metrics  ports.MetricsExporter
 	clk      clock.Clock
+
+	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
+	// enforced when selecting egress attributes. Defaults to
+	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for
+	// queues whose MaximumMessageSize has been raised (Finding 4).
+	maxMessageBytes int
+}
+
+// SenderOption customises a Sender built by NewSender. Adapter constructors
+// use the functional-options pattern per the house rules.
+type SenderOption func(*Sender)
+
+// WithMaxMessageBytes overrides the SQS message-size ceiling (body plus
+// attributes) the sender enforces when selecting message attributes. Use it
+// for queues whose MaximumMessageSize has been raised above the 256 KiB
+// default so a large body does not silently drop ALL attributes — including
+// the rank-0 idempotency-key / traceparent propagation headers (Finding 4).
+// Non-positive values are ignored so the default ceiling is retained.
+func WithMaxMessageBytes(n int) SenderOption {
+	return func(s *Sender) {
+		if n > 0 {
+			s.maxMessageBytes = n
+		}
+	}
 }
 
 // loadClient returns the current SQS client snapshot, or nil when unset.
@@ -60,7 +84,7 @@ func (s *Sender) storeClient(c sqsAPI) {
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
 // lazily on the first Send call unless QueueURL is already set.
-func NewSender(cfg SenderConfig) (*Sender, error) {
+func NewSender(cfg SenderConfig, opts ...SenderOption) (*Sender, error) {
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -73,13 +97,18 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 	if clk == nil {
 		clk = clock.System
 	}
-	return &Sender{
-		cfg:      cfg,
-		queueURL: cfg.QueueURL,
-		logger:   cfg.Logger,
-		metrics:  m,
-		clk:      clk,
-	}, nil
+	s := &Sender{
+		cfg:             cfg,
+		queueURL:        cfg.QueueURL,
+		logger:          cfg.Logger,
+		metrics:         m,
+		clk:             clk,
+		maxMessageBytes: sqsMaxMessageBytes,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 func (s *Sender) clock() clock.Clock {

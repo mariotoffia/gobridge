@@ -61,6 +61,15 @@ const (
 	attrVersion = "version"
 
 	skCurrent = "current"
+
+	// maxConfigItemBytes bounds the serialized config payload written to the
+	// single DynamoDB item's `data` attribute. DynamoDB rejects any item whose
+	// TOTAL size exceeds 400 KB with an opaque ValidationException; we pre-check
+	// the payload against a slightly lower threshold (leaving ample headroom for
+	// the PK/SK/version attributes and their names — together well under 1 KB)
+	// so an oversized config fails fast with a descriptive, actionable error
+	// naming the size and limit, instead of a raw SDK error after a round trip.
+	maxConfigItemBytes = 390 * 1024
 )
 
 // WatchMode selects the change-detection mechanism used by Watch.
@@ -230,32 +239,101 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // In ModeStreams, Watch probes the table via DescribeTable for an
 // enabled stream and, when present together with a configured streams
 // client, consumes stream records for push-based updates. If streams
-// are not available or no streams client has been supplied through
-// WithStreamsClient, Watch transparently falls back to ModePoll and
-// logs a warning. Persistent stream failures at runtime (e.g. the
-// stream is disabled while watching) also degrade to poll mode after
+// are not available at startup (no streams client, stream disabled, or a
+// transient DescribeTable error), Watch serves updates via ModePoll but
+// keeps re-probing the stream in the background with capped backoff and
+// upgrades to the streams consumer once it becomes reachable — so a
+// transient DescribeTable failure no longer disables push updates for the
+// whole process lifetime. Persistent stream failures at runtime (e.g. the
+// stream is disabled while watching) still degrade to poll mode after
 // streamAcquireFallbackAfter consecutive acquisition failures.
 func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
 	ch := make(chan *ports.BridgeConfig, 1)
 
 	if l.mode == ModeStreams {
 		arn, reason := l.resolveStreamArn(ctx)
-		if reason != "" {
-			if l.logger != nil {
-				l.logger.Warn("dynamodb config loader: falling back to poll mode",
-					"reason", reason,
-					"table", l.session.tableName,
-				)
-			}
-		} else {
+		if reason == "" {
 			go l.streamLoop(ctx, ch, arn)
 			return ch, nil
 		}
+		// Streams are not reachable at startup. Historically this was a
+		// PERMANENT downgrade to poll mode — a single transient DescribeTable
+		// error (throttle, brief IAM propagation) disabled push-based updates
+		// for the entire process lifetime. Instead poll now but keep re-probing
+		// the stream in the background and upgrade to the streams consumer once
+		// it becomes reachable.
+		if l.logger != nil {
+			l.logger.Warn("dynamodb config loader: streams unavailable; polling and will retry streams in the background",
+				"reason", reason,
+				"table", l.session.tableName,
+				"poll_interval", l.pollInterval.String(),
+			)
+		}
+		go l.superviseStreamReacquire(ctx, ch)
+		return ch, nil
 	}
 
 	ticker := l.clk.NewTicker(l.pollInterval)
 	go l.pollLoop(ctx, ch, ticker)
 	return ch, nil
+}
+
+// superviseStreamReacquire owns ch while streams are unavailable: it polls (so
+// config still converges) and periodically re-probes the table's stream with
+// capped backoff. When the stream becomes reachable it hands ch to streamLoop,
+// which owns and closes it thereafter — so a transient stream outage degrades
+// to poll only for as long as it lasts instead of permanently. The poll and
+// stream phases run sequentially in THIS single goroutine, so ch always has
+// exactly one producer and is closed exactly once.
+func (l *Loader) superviseStreamReacquire(ctx context.Context, ch chan *ports.BridgeConfig) {
+	arn, upgraded := l.pollUntilStreamReachable(ctx, ch)
+	if !upgraded {
+		// ctx cancelled: pollUntilStreamReachable already closed ch.
+		return
+	}
+	if l.logger != nil {
+		l.logger.Info("dynamodb config loader: stream reachable; upgrading from poll to streams",
+			"stream_arn", arn,
+			"table", l.session.tableName,
+		)
+	}
+	// streamLoop takes over ch ownership (and closes it on exit). Its initial
+	// LATEST-iterator reconciliation covers any version committed during the
+	// poll→stream handoff, so no update is missed.
+	l.streamLoop(ctx, ch, arn)
+}
+
+// pollUntilStreamReachable runs the poll cycle on ch until either ctx is
+// cancelled (returns upgraded=false after closing ch) or a background re-probe
+// finds the stream reachable (returns the arn and upgraded=true WITHOUT closing
+// ch, handing ownership to the caller). Re-probes use capped exponential backoff
+// so a lasting outage does not hammer DescribeTable.
+func (l *Loader) pollUntilStreamReachable(ctx context.Context, ch chan *ports.BridgeConfig) (arn string, upgraded bool) {
+	pollTicker := l.clk.NewTicker(l.pollInterval)
+	defer pollTicker.Stop()
+
+	l.mu.Lock()
+	ps := pollState{lastSeen: l.lastVersion}
+	l.mu.Unlock()
+
+	backoff := l.streamPollInterval
+	reprobeC := l.clk.After(backoff)
+
+	for {
+		select {
+		case <-ctx.Done():
+			close(ch)
+			return "", false
+		case <-pollTicker.C():
+			l.pollOnce(ctx, ch, &ps)
+		case <-reprobeC:
+			if a, reason := l.resolveStreamArn(ctx); reason == "" {
+				return a, true
+			}
+			backoff = nextBackoff(backoff)
+			reprobeC = l.clk.After(backoff)
+		}
+	}
 }
 
 // resolveStreamArn returns the LatestStreamArn for the configured table
@@ -286,67 +364,86 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, tick
 	defer ticker.Stop()
 
 	l.mu.Lock()
-	lastSeen := l.lastVersion
+	ps := pollState{lastSeen: l.lastVersion}
 	l.mu.Unlock()
-
-	var consecutiveFailures int
-	var lastFailureLog time.Time
-
-	logFailure := func(stage string, err error) {
-		consecutiveFailures++
-		if l.logger == nil {
-			return
-		}
-		now := l.clk.Now()
-		first := consecutiveFailures == 1
-		// The first escalation must not be swallowed by rate limiting:
-		// it is the operational signal that config updates have stopped.
-		escalating := consecutiveFailures == pollFailureEscalateAfter
-		if !first && !escalating && now.Sub(lastFailureLog) < pollFailureLogInterval {
-			return
-		}
-		lastFailureLog = now
-		msg := "dynamodb config loader: poll cycle failed"
-		attrs := []any{
-			"stage", stage,
-			"error", err,
-			"table", l.session.tableName,
-			"consecutive_failures", consecutiveFailures,
-		}
-		if consecutiveFailures >= pollFailureEscalateAfter {
-			l.logger.Error(msg+"; config updates are NOT being applied", attrs...)
-			return
-		}
-		l.logger.Warn(msg, attrs...)
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
-			v, err := l.currentVersion(ctx)
-			if err != nil {
-				logFailure("version check", err)
-				continue
-			}
-
-			if v == lastSeen {
-				consecutiveFailures = 0
-				continue
-			}
-
-			cfg, err := l.Load(ctx)
-			if err != nil {
-				logFailure("load", err)
-				continue
-			}
-			consecutiveFailures = 0
-
-			l.deliverLatest(ch, cfg)
-			lastSeen = v
+			l.pollOnce(ctx, ch, &ps)
 		}
 	}
+}
+
+// pollState carries the mutable bookkeeping of a poll phase across ticks: the
+// last delivered version cursor and the consecutive-failure counter used for
+// log rate-limiting/escalation. Extracted so both pollLoop and the
+// stream-reacquire supervisor's poll phase share one poll cycle instead of
+// duplicating it.
+type pollState struct {
+	lastSeen            int64
+	consecutiveFailures int
+	lastFailureLog      time.Time
+}
+
+// pollOnce runs a single poll cycle: it re-reads the committed version and, when
+// it advanced past the cursor, loads and delivers the fresh config. The cursor
+// only moves after a successful delivery, so a transient read/Load failure
+// retries the same version next tick instead of losing it. Failures are logged
+// (rate-limited) and escalate to Error after pollFailureEscalateAfter
+// consecutive occurrences.
+func (l *Loader) pollOnce(ctx context.Context, ch chan *ports.BridgeConfig, ps *pollState) {
+	v, err := l.currentVersion(ctx)
+	if err != nil {
+		l.logPollFailure(ps, "version check", err)
+		return
+	}
+	if v == ps.lastSeen {
+		ps.consecutiveFailures = 0
+		return
+	}
+	cfg, err := l.Load(ctx)
+	if err != nil {
+		l.logPollFailure(ps, "load", err)
+		return
+	}
+	ps.consecutiveFailures = 0
+	l.deliverLatest(ch, cfg)
+	ps.lastSeen = v
+}
+
+// logPollFailure records a poll-cycle failure with rate-limited logging that
+// escalates Warn -> Error once failures persist, so a silently broken IAM
+// policy or deleted table is visible in operations rather than presenting as
+// "config just stopped updating".
+func (l *Loader) logPollFailure(ps *pollState, stage string, err error) {
+	ps.consecutiveFailures++
+	if l.logger == nil {
+		return
+	}
+	now := l.clk.Now()
+	first := ps.consecutiveFailures == 1
+	// The first escalation must not be swallowed by rate limiting: it is the
+	// operational signal that config updates have stopped.
+	escalating := ps.consecutiveFailures == pollFailureEscalateAfter
+	if !first && !escalating && now.Sub(ps.lastFailureLog) < pollFailureLogInterval {
+		return
+	}
+	ps.lastFailureLog = now
+	msg := "dynamodb config loader: poll cycle failed"
+	attrs := []any{
+		"stage", stage,
+		"error", err,
+		"table", l.session.tableName,
+		"consecutive_failures", ps.consecutiveFailures,
+	}
+	if ps.consecutiveFailures >= pollFailureEscalateAfter {
+		l.logger.Error(msg+"; config updates are NOT being applied", attrs...)
+		return
+	}
+	l.logger.Warn(msg, attrs...)
 }
 
 // deliverLatest enqueues cfg on the 1-buffered watch channel with
@@ -410,6 +507,13 @@ func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	data, err := parser.MarshalBridgeConfigJSON(cfg)
 	if err != nil {
 		return fmt.Errorf("dynamodb config save: marshal: %w", err)
+	}
+
+	// Pre-check the payload against the per-item ceiling so an oversized config
+	// fails with a clear, actionable error rather than an opaque DynamoDB
+	// ValidationException after a wasted strong read and conditional write.
+	if len(data) > maxConfigItemBytes {
+		return fmt.Errorf("dynamodb config save: serialized config is %d bytes, which exceeds the %d-byte per-item limit (DynamoDB caps a single item at 400 KB); reduce the configuration size", len(data), maxConfigItemBytes)
 	}
 
 	current, err := l.currentVersion(ctx)

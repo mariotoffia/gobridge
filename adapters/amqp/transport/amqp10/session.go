@@ -239,6 +239,18 @@ func (s *Session) Start(ctx context.Context) error {
 	monCtx, monCancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	s.mu.Lock()
+	if s.closed {
+		// F3: Close() won the race between connect() storing s.conn and
+		// this monitor install. Abort the install so we neither leak an
+		// immortal monitor goroutine nor return nil for a closed session.
+		closedErr := shared.ErrUnavailable.
+			WithMessage("amqp10: session closed during start").
+			Wrap(shared.ErrTransportClosedPermanently)
+		s.startErr = closedErr
+		s.mu.Unlock()
+		monCancel()
+		return closedErr
+	}
 	s.stopMonitor = monCancel
 	s.monitorDone = done
 	s.mu.Unlock()
@@ -407,6 +419,15 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	}
 	if active > linkUp {
 		active = linkUp
+	}
+
+	// F5: a plan that wants more subscriptions than are currently active
+	// (receivers still starting, or fewer receivers registered than the
+	// reconciled plan requires) is NOT Full even when every registered
+	// receiver's link is up. Report Degraded so readiness reflects the
+	// missing subscriptions rather than over-reporting Full.
+	if connected && active < wanted {
+		sl = ports.ServiceLevelDegraded
 	}
 
 	health := ports.SessionHealth{
@@ -682,8 +703,12 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 
 // monitorLoop watches for connection loss and attempts automatic
 // reconnection. It selects on the connection's Done() channel for
-// immediate disconnect detection, falling back to a configurable
-// ticker (SessionOptions.ConnectionMonitorFallback) as a sanity check.
+// immediate disconnect detection. The configurable ticker
+// (SessionOptions.ConnectionMonitorFallback) is only a reconnect
+// backstop: tryReconnect no-ops while s.conn is still non-nil, so the
+// ticker neither probes nor detects a silently half-dropped-but-still-
+// installed connection — that half-open case is surfaced by the AMQP
+// idle_timeout (SessionOptions.IdleTimeout), not by this ticker.
 func (s *Session) monitorLoop(ctx context.Context) {
 	fallback := s.clock().NewTicker(s.opts.ConnectionMonitorFallback)
 	defer fallback.Stop()
@@ -722,6 +747,13 @@ func (s *Session) monitorLoop(ctx context.Context) {
 	}
 }
 
+// tryReconnect is the fallback/reconnect-signal handler. It only acts
+// when the connection is ALREADY known to be down (s.conn == nil): it is
+// a backstop that retries the dial after a prior reconnect attempt has
+// not yet succeeded. It deliberately does NOT probe a live connection —
+// when s.conn is still non-nil it is a no-op — so it cannot detect a
+// silent half-open drop (that is the AMQP idle_timeout's job). See
+// monitorLoop and SessionOptions.ConnectionMonitorFallback (finding F4).
 func (s *Session) tryReconnect(ctx context.Context) {
 	s.mu.Lock()
 	if s.closed {
@@ -763,6 +795,11 @@ func (s *Session) handleConnLost(ctx context.Context, lost amqpConn) {
 	s.amqpSess = nil
 	s.connected = false
 	s.markAllReceiversDownLocked()
+	// F8: mark senders down too, symmetric with notifyDisconnect. A
+	// Done()-driven connection loss invalidates sender links exactly as a
+	// link-error-driven one does; omitting this skews Session.Health
+	// (senders reported up on a dead connection until their next Send).
+	s.markAllSendersDownLocked()
 	s.mu.Unlock()
 
 	_ = lost.Close()

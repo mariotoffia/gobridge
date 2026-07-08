@@ -255,11 +255,36 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 
 	s.mu.Lock()
 	start := s.clock().Now()
-	for i, m := range msgs {
+	// blockedFrom marks the index at which broker flow control was detected
+	// mid-batch; every message from there on is failed fast below.
+	blockedFrom := -1
+	blockedReason := ""
+	i := 0
+	for ; i < len(msgs); i++ {
+		m := msgs[i]
 		results[i] = ports.BatchResult{Index: i}
 		if m.Envelope == nil {
 			results[i].Err = shared.ErrInvalidPayload.WithMessage("amqp091: nil envelope")
 			continue
+		}
+		// Re-check flow control per message. SendBatch only checks once at
+		// entry, but a resource alarm can engage mid-batch; the next
+		// PublishDeferred would then wedge under s.mu because the SDK's
+		// deferred-publish path ignores ctx while the broker is not reading
+		// the socket. Re-checking makes every not-yet-published message
+		// fail fast with ErrBrokerBusy.
+		//
+		// Residual wedge bound: the connection.blocked signal is
+		// asynchronous, so at most ONE publish — the one issued in the lag
+		// window between flow control engaging and blockedState reflecting
+		// it — can still wedge. Once blockedState is true this loop issues
+		// no further publishes.
+		if s.session != nil {
+			if blocked, reason := s.session.blockedState(); blocked {
+				blockedFrom = i
+				blockedReason = reason
+				break
+			}
 		}
 		routingKey, err := resolveRoutingKey(s.cfg, m)
 		if err != nil {
@@ -282,6 +307,15 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 			continue
 		}
 		pending = append(pending, inflight{index: i, pc: pc})
+	}
+	// Fail every message from the flow-control break point onward fast so
+	// the caller retries them rather than stalling past its deadline.
+	if blockedFrom >= 0 {
+		busy := shared.ErrBrokerBusy.WithMessage(
+			"amqp091: broker flow control engaged, refusing publish: " + blockedReason)
+		for ; i < len(msgs); i++ {
+			results[i] = ports.BatchResult{Index: i, Err: busy}
+		}
 	}
 
 	// Await the confirms out-of-band, still under the sender mutex (the
@@ -322,16 +356,33 @@ func (s *Sender) ensureChannelLocked() (*senderChannel, error) {
 	if s.session == nil {
 		return nil, shared.ErrUnavailable.WithMessage("amqp091: no session")
 	}
-	conn := s.session.Connection()
+	conn := s.session.connectionIfReady()
 	if conn == nil {
+		// nil covers both "never started" and the reconnect window
+		// (connection installed but reconcile not yet complete). Both are
+		// transient. The window this gate exists for is the MANDATORY
+		// unroutable case: a mandatory publish to a not-yet-rebound exchange
+		// comes back as a basic.return -> ErrNotFound (Permanent) and would
+		// DLQ/drop a message that is fine to retry once reconcile rebinds.
+		// (A missing-exchange 404 does NOT reach the publish path: the SDK
+		// nacks the pending confirm via deferredConfirmations.Close(), so a
+		// racing publish already sees a transient ErrUnavailable. A
+		// permanently WRONG exchange name on a non-mandatory publish is
+		// likewise classified transient by the SDK and loops until the
+		// runtime replay cap — a pre-existing taxonomy fact tracked as an
+		// ADR, not fixed here.)
 		return nil, shared.ErrUnavailable.WithMessage("amqp091: session not connected")
 	}
-	// After a reconnect, session.Connection() returns a fresh connection
-	// while s.sc still wraps a channel on the old, closed one. Publishing
-	// on that channel would fail spuriously (and only self-heal on the
-	// *next* send). Detect the mismatch up front and reopen on the live
-	// connection so the first post-reconnect publish succeeds.
-	if s.sc != nil && senderChannelStale(s.scConn, conn) {
+	// After a reconnect, the session exposes a fresh connection while s.sc
+	// still wraps a channel on the old, closed one. Publishing on that
+	// channel would fail spuriously (and only self-heal on the *next* send).
+	// Detect the mismatch up front and reopen on the live connection so the
+	// first post-reconnect publish succeeds. Also discard a channel that
+	// died out-of-band on the SAME connection — a soft channel exception
+	// (e.g. a 406/404 the SDK propagated asynchronously) closes only the
+	// channel, leaving the connection live; without this the cached channel
+	// would fail every subsequent publish until it happened to be reset.
+	if s.sc != nil && (senderChannelStale(s.scConn, conn) || s.sc.IsClosed()) {
 		s.resetChannelLocked()
 	}
 	if s.sc != nil {

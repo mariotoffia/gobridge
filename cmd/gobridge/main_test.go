@@ -4,10 +4,16 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 // TestWatchTerminal_ReturnsTrueWhenTerminalObserved proves the backstop keeps
@@ -52,6 +58,31 @@ func TestWatchTerminal_ReturnsFalseOnContextCancel(t *testing.T) {
 // behaviour is verified by its return timing, not by what it logs.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestNewDefaultCredentialResolver_FileStoreInitFailure_DoesNotAbort validates
+// adversarial Finding 2: when the native file:// store cannot initialize, the
+// stock resolver is still returned so a config that uses no file:// credentials
+// boots, and file:// URIs fail cleanly at resolve time instead of aborting the
+// process at startup. A path whose parent is a regular file forces MkdirAll to
+// fail with ENOTDIR — deterministic on every OS and privilege level (root
+// included), unlike a read-only directory which root can bypass.
+func TestNewDefaultCredentialResolver_FileStoreInitFailure_DoesNotAbort(t *testing.T) {
+	t.Parallel()
+
+	parent := filepath.Join(t.TempDir(), "iam-a-file")
+	if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed parent file: %v", err)
+	}
+	dir := filepath.Join(parent, "credentials") // parent is a file -> MkdirAll ENOTDIR
+
+	res := newDefaultCredentialResolver(dir, discardLogger())
+	if res == nil {
+		t.Fatal("resolver must be built even when the file store cannot initialize (Finding 2)")
+	}
+	if _, err := res.Resolve(context.Background(), "file://x"); err == nil {
+		t.Fatal("file:// must fail at resolve time, not abort the process at startup")
+	}
 }
 
 // runsWithin runs fn in a goroutine and reports whether it returned within d.
@@ -109,5 +140,96 @@ func TestAwaitSupervisorShutdown_ReturnsOnDeadline(t *testing.T) {
 		awaitSupervisorShutdown(false, make(chan error), deadline, discardLogger())
 	}) {
 		t.Fatal("awaitSupervisorShutdown should return when the shutdown deadline fires")
+	}
+}
+
+// TestWaitForSupervisorRuntime_ReturnsPromptlyWhenSupervisorExitsEarly pins the
+// early-exit path: when Run returns before publishing a runtime (an initial
+// build/start failure — supStopped closed), the wait must report supEnded
+// immediately instead of blocking the full ceiling. The fake clock is NEVER
+// advanced, so a return at all proves the deadline was not waited out.
+func TestWaitForSupervisorRuntime_ReturnsPromptlyWhenSupervisorExitsEarly(t *testing.T) {
+	fake := clocktest.NewAt(time.Unix(0, 0))
+
+	supStopped := make(chan struct{})
+	close(supStopped) // supervisor's Run already returned before a runtime appeared
+
+	resCh := make(chan runtimeWaitResult, 1)
+	go func() {
+		resCh <- waitForSupervisorRuntime(
+			func() *goruntime.Runtime { return nil }, // never publishes a runtime
+			fake, initialRuntimeWait, supStopped,
+		)
+	}()
+
+	select {
+	case res := <-resCh:
+		if res.runtime != nil {
+			t.Fatal("no runtime should be produced when the supervisor exits early")
+		}
+		if !res.supEnded {
+			t.Fatal("wait must report the supervisor ended before a runtime appeared")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wait must return promptly on early supervisor exit, not block the ceiling")
+	}
+}
+
+// TestWaitForSupervisorRuntime_RuntimeAppearingAfterSlowInitialBuildSucceeds
+// pins the ceiling behaviour: a runtime that appears only after a slow
+// SYNCHRONOUS initial build (simulated here by advancing the fake clock 29s —
+// past the old 10s ceiling but well under initialRuntimeWait) is returned, not
+// timed out. A ceiling at or below the build delay would have fired the deadline
+// first and returned a false timeout.
+func TestWaitForSupervisorRuntime_RuntimeAppearingAfterSlowInitialBuildSucceeds(t *testing.T) {
+	fake := clocktest.NewAt(time.Unix(0, 0))
+	supStopped := make(chan struct{}) // Run keeps running; never closes
+
+	var ready atomic.Bool
+	sentinel := new(goruntime.Runtime)
+	runtimeOf := func() *goruntime.Runtime {
+		if ready.Load() {
+			return sentinel
+		}
+		return nil
+	}
+
+	resCh := make(chan runtimeWaitResult, 1)
+	go func() {
+		resCh <- waitForSupervisorRuntime(runtimeOf, fake, initialRuntimeWait, supStopped)
+	}()
+
+	// Let the wait park in its select: the deadline timer plus one poll timer.
+	waitForTimerCount(t, fake, 2)
+
+	// The synchronous initial build (credential resolution + store construction)
+	// takes ~29s — past the old 10s ceiling but well under initialRuntimeWait —
+	// and only THEN does the supervisor publish its runtime.
+	ready.Store(true)
+	fake.Advance(29 * time.Second)
+
+	select {
+	case res := <-resCh:
+		if res.runtime != sentinel {
+			t.Fatalf("runtime appearing at 29s (< %s ceiling) must be returned, not timed out; got %+v",
+				initialRuntimeWait, res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wait did not return after the runtime became available")
+	}
+}
+
+// waitForTimerCount spins until the fake clock has at least n active timers,
+// synchronising with a background goroutine that registers timers on startup
+// (the documented clocktest pattern) before the test advances time. Bounded by
+// a wall-clock deadline so a wiring regression fails fast instead of hanging.
+func waitForTimerCount(t *testing.T, f *clocktest.Fake, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.TimerCount() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d fake timers (have %d)", n, f.TimerCount())
+		}
+		runtime.Gosched()
 	}
 }

@@ -12,10 +12,100 @@ import (
 // Delivery is a source-owned unit of work. Transport adapters create
 // concrete implementations that map Ack/Retry/Extend to transport-native
 // operations (e.g., SQS DeleteMessage, ChangeMessageVisibility).
+//
+// # Settlement state machine (canonical contract)
+//
+// A Delivery models exactly TWO terminal dispositions: Ack (positive
+// settlement — the message was handled, drop it from the source) and
+// Retry (negative acknowledgement — return the message for redelivery).
+// There is no separate Nack method: Retry IS the nack-with-redelivery
+// disposition. Extend is NOT a settlement; it prolongs ownership.
+//
+// The following rules are NORMATIVE for a conformant Delivery. The conformance
+// kit in ports/transporttest asserts the SUCCESSFUL-settlement invariants —
+// latched disposition, idempotency + mutual exclusion, and
+// ErrNotSupported-never-latches — and ships a reference implementation that
+// complies. Error-path behaviour is deliberately transport-specific (see
+// "Settle errors" below), so the kit does not assert a single error rule;
+// adapters are brought to the successful-settlement invariants via the kit.
+//
+//   - Unsettled until first SUCCESSFUL settle. A Delivery starts UNSETTLED and
+//     stays unsettled until the FIRST successful Ack or Retry.
+//
+//   - Settle errors: fate unknown, rely on redelivery. A settle call that
+//     fails with a non-nil, non-ErrNotSupported error (a broker/network error)
+//     leaves the message's fate UNKNOWN. The caller MUST NOT read the error as
+//     "the message survived" and MUST rely on the transport's at-least-once
+//     redelivery. Whether the SAME handle may be re-settled is
+//     transport-specific and each implementation MUST document its choice: a
+//     transport whose settle op is safely repeatable (e.g. SQS DeleteMessage /
+//     ChangeMessageVisibility) MAY stay UNSETTLED so the caller can re-settle
+//     with the same OR a different disposition; a transport where a settle
+//     error invalidates the handle (e.g. an AMQP channel death — a dead channel
+//     cannot re-ack its delivery tag) MAY latch a terminal settlement-failed
+//     state whose later settle calls return an error satisfying
+//     errors.Is(err, shared.ErrUnavailable), with the broker redelivering the
+//     message as a FRESH Delivery. Neither path loses a message; both forbid a
+//     late settle from flipping a disposition the broker already acted on.
+//
+//   - Latched disposition. The first SUCCESSFUL Ack or Retry transitions the
+//     Delivery to SETTLED and FIXES the disposition for its lifetime.
+//
+//   - Idempotency + mutual exclusion. Once settled, any further settle call —
+//     the SAME method or the OTHER one — MUST be a no-op that returns nil and
+//     MUST NOT change the broker-side disposition. Concretely:
+//     Ack-after-Retry MUST NOT ack/delete the message; Retry-after-Ack MUST
+//     NOT redeliver it; a double-Ack (or double-Retry) is a nil no-op. This
+//     is the exact message-loss class the contract exists to forbid: a late
+//     Ack that deletes a message a prior Retry already returned for
+//     redelivery, or a late Retry that resurfaces a message a prior Ack
+//     already removed.
+//
+//   - ErrNotSupported never latches. An operation a transport cannot
+//     implement returns an error satisfying errors.Is(err,
+//     shared.ErrNotSupported) (code shared.ErrCodeNotSupported) and leaves the
+//     delivery UNSETTLED, so a fallback disposition (e.g. the runtime's
+//     retry→DLQ fallback) can still settle it through another method.
+//
+//   - Concurrency. Settle calls may arrive from different goroutines and MAY
+//     race each other and Extend; an implementation MUST make the
+//     unsettled→settled transition atomic so exactly one disposition wins and
+//     the losers observe the settled state as no-ops.
 type Delivery interface {
 	Envelope() *messaging.Envelope
+	// Ack positively settles the delivery: the message was handled and the
+	// source may drop it (e.g. SQS DeleteMessage, AMQP Ack). The first
+	// SUCCESSFUL Ack latches settlement to the Ack disposition. If the
+	// delivery is already settled (by a prior Ack OR Retry), Ack is a nil
+	// no-op and MUST NOT delete/ack the message. A broker error here does NOT
+	// mean the message survived: the disposition is UNKNOWN and the caller
+	// relies on redelivery; whether the handle is re-settleable afterwards is
+	// transport-specific (see the "Settle errors" rule above).
 	Ack(ctx context.Context) error
+	// Retry negatively settles the delivery, returning the message for
+	// redelivery after the advisory delay `after` (transports without native
+	// delayed redelivery treat it as best-effort and MUST document the loss).
+	// `reason` is the classified failure that triggered the retry, for
+	// logging/metrics only. The first SUCCESSFUL Retry latches settlement to
+	// the Retry disposition. If the delivery is already settled (by a prior
+	// Retry OR Ack), Retry is a nil no-op and MUST NOT redeliver the message.
+	// A transport with no source-redelivery primitive returns an error
+	// satisfying errors.Is(err, shared.ErrNotSupported) WITHOUT latching, so
+	// the caller can fall back (typically to DLQ routing).
 	Retry(ctx context.Context, after time.Duration, reason error) error
+	// Extend prolongs the caller's ownership of an in-flight, UNSETTLED
+	// delivery until `until`. `until` is the CALLER's wall-clock instant (see
+	// the wall-clock semantics note below): the implementation converts it to
+	// the transport's own units (e.g. an SQS visibility timeout of
+	// until-now). Extend is NOT a settlement — it never transitions the
+	// delivery to settled and may be called repeatedly. A transport with no
+	// visibility/lock-extension primitive returns an error satisfying
+	// errors.Is(err, shared.ErrNotSupported).
+	//
+	// Wall-clock semantics: `until` is compared against the same wall clock
+	// the broker uses to expire visibility/lock windows. Callers pass an
+	// absolute instant, not a duration, so a slow hand-off does not silently
+	// shorten the window.
 	Extend(ctx context.Context, until time.Time) error
 }
 
@@ -26,12 +116,16 @@ type Delivery interface {
 // Emit-callback contract. Every Receiver in this repository honours the
 // following contract; an implementation MUST document any deviation:
 //
-//   - Invocation concurrency: emit is invoked SEQUENTIALLY from Run's
-//     own goroutine, never concurrently. A delivery is fully handed off
-//     (emit returns) before the next is pulled from the transport. A
-//     Receiver that needs to fan emit out across goroutines MUST
-//     document that choice, because the default pipeline assumes serial
-//     invocation.
+//   - Invocation concurrency: emit is invoked SEQUENTIALLY, never
+//     concurrently — a delivery is fully handed off (emit returns) before
+//     the next is pulled from the transport. The prevailing adapters
+//     invoke emit from Run's own goroutine. A Receiver MAY instead emit
+//     from a DIFFERENT goroutine (e.g. a broker-client callback goroutine,
+//     as the paho MQTT receiver does) PROVIDED it serializes all emissions
+//     through a single dispatch worker so the calls remain strictly
+//     sequential, and PROVIDED it documents that deviation on its Run
+//     method — the default pipeline assumes serial, non-overlapping emit
+//     and gives no guarantee under concurrent invocation.
 //
 //   - emit returns a non-nil error: the runtime could not accept the
 //     delivery for processing. The Receiver MUST NOT treat the delivery

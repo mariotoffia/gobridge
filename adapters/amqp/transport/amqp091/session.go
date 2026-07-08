@@ -50,6 +50,17 @@ type Session struct {
 	plan       *connectivity.SessionPlan
 	activeSubs map[string]bool // queue names successfully declared
 
+	// reconcileMu serialises reconcile() across its three drivers — Start,
+	// the public Reconcile, and the reconnect loop. Without it a caller-
+	// driven Reconcile can interleave with a reconnect-driven reconcile:
+	// both open channels, declare exchanges/queues/bindings and recompute
+	// activeSubs, so a partially-applied plan or a torn activeSubs view
+	// could result. It is a DIFFERENT lock from mu and is always acquired
+	// first (reconcileMu → mu, never the reverse); reconcile only ever holds
+	// mu for short critical sections while reconcileMu is held, so the
+	// broker I/O in declare* does not block the whole session on mu.
+	reconcileMu sync.Mutex
+
 	// cancel stops the reconnection goroutine on Close.
 	cancel context.CancelFunc
 	// bgDone is closed when the background reconnect goroutine exits.
@@ -178,6 +189,31 @@ func (s *Session) safeBrokerURL() string {
 func (s *Session) Connection() amqpConnection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.conn
+}
+
+// connectionIfReady returns the live AMQP connection ONLY when the session
+// is fully connected AND reconciled (connected==true). It returns nil during
+// the reconnect window — after the connection is installed (so a concurrent
+// Close can tear it down) but BEFORE reconcile has restored the topology.
+//
+// The sender gates channel-open on this (rather than Connection()) so a
+// publish that races the reconcile window sees a transient "not connected"
+// (retryable) instead of an unroutable MANDATORY return the incomplete
+// topology would otherwise produce: a mandatory publish to a not-yet-rebound
+// exchange comes back as a basic.return -> ErrNotFound (Permanent) and would
+// DLQ/drop a message that is fine to retry once reconcile rebinds. (A
+// missing-exchange 404 is already transient WITHOUT this gate — the SDK nacks
+// the pending confirm via deferredConfirmations.Close() rather than surfacing
+// the *amqp.Error on the publish path — so the gate's real job is the
+// mandatory-return case.) This mirrors the receiver, which already waits for
+// SessionConnected/SessionReconciled before consuming.
+func (s *Session) connectionIfReady() amqpConnection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.connected {
+		return nil
+	}
 	return s.conn
 }
 
@@ -380,20 +416,43 @@ func (s *Session) Start(ctx context.Context) error {
 // subscriptions. Pass an empty SessionPlan{} to clear; pass a plan with
 // only Publishers to declare exchanges without changing subscriptions
 // from a prior call (the prior plan's subscriptions are dropped).
+//
+// Ordering: Reconcile MAY be called before Start. The plan is retained and
+// Start applies it during its initial reconcile, so a pre-Start call is a
+// no-op that returns nil rather than an error (the runtime legitimately
+// configures topology before the connection is opened). Only a call on an
+// already-closed session returns ErrUnavailable.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return shared.ErrUnavailable.WithMessage("amqp091: session closed")
+	}
 	s.plan = &plan
 	conn := s.conn
 	s.mu.Unlock()
 
 	if conn == nil {
-		return shared.ErrUnavailable.WithMessage("session not started")
+		// Not started yet: the plan is retained above and Start applies it
+		// during its initial reconcile. This is a valid ordering, so report
+		// success — the declarations happen on Start.
+		//
+		// ponytail: cross-transport divergence — the amqp10 sibling returns
+		// ErrUnavailable for the same before-Start call. Aligning the two is
+		// tracked as an ADR (amqp10 is outside this module's scope).
+		return nil
 	}
 
 	return s.reconcile(ctx, conn, plan)
 }
 
 func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan connectivity.SessionPlan) error {
+	// Serialise all reconciles (Start / public Reconcile / reconnect loop)
+	// so their channel opens and topology declarations cannot interleave.
+	// Acquired before mu (never the reverse) — see reconcileMu's field doc.
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
 	reconcileStart := s.clock().Now()
 
 	if logging.DebugEnabled(s.logger) {
@@ -644,7 +703,13 @@ func (s *Session) subscriberCount() int {
 
 // Close gracefully closes the AMQP connection and stops the reconnection
 // loop. It is safe to call Close multiple times.
-func (s *Session) Close(_ context.Context) error {
+//
+// Close honours ctx: conn.Close() is raced against ctx.Done() because the
+// SDK's connection teardown can block ~20-30s on a half-dead broker (waiting
+// for a Connection.Close-Ok that never arrives). When ctx fires first the
+// detached goroutine still completes the underlying close; Close stops
+// waiting so shutdown respects the caller's deadline (mirrors Receiver.Close).
+func (s *Session) Close(ctx context.Context) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelTrace,
 			"amqp091: session close initiated",
@@ -676,12 +741,37 @@ func (s *Session) Close(_ context.Context) error {
 		cancel()
 	}
 	if done != nil {
-		<-done
+		// The reconnect goroutine may be parked in an SDK topology call
+		// (dial/declare) that ignores ctx — the amqp091-go client's declares
+		// are not context-aware — so an unconditional wait could overrun the
+		// caller's deadline by up to a heartbeat. Race its exit against ctx.
+		//
+		// Leak/double-close safety does NOT depend on this wait: doReconnect
+		// re-checks s.closed under s.mu after every dial and closes any
+		// connection it owns (guarded by s.conn==conn), and Close's detached
+		// conn.Close() below only ever closes the connection it captured
+		// under the lock — so returning early here cannot leak a connection
+		// or double-close one as the goroutine unwinds. pushEvent is also
+		// s.closed-guarded under s.mu, so an in-flight event from the
+		// unwinding goroutine cannot send on the closed events channel.
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
 	}
 
 	var closeErr error
 	if conn != nil {
-		closeErr = conn.Close()
+		// Race conn.Close() against ctx so a half-dead broker cannot wedge
+		// shutdown for the SDK's ~20-30s handshake timeout. The detached
+		// goroutine still completes the underlying close.
+		cdone := make(chan error, 1)
+		go func() { cdone <- conn.Close() }()
+		select {
+		case closeErr = <-cdone:
+		case <-ctx.Done():
+			closeErr = ctx.Err()
+		}
 	}
 
 	close(s.events)

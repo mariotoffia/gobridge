@@ -28,6 +28,17 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Fatalf("timeout waiting for %s", desc)
 }
 
+// metricHasTag reports whether a recorded metric entry carries the given
+// key=value tag. Used by conservation-law / dimension assertions.
+func metricHasTag(e ports.MetricEntry, key, value string) bool {
+	for _, tg := range e.Tags {
+		if tg.Key == key && tg.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // FakeDelivery
 // ---------------------------------------------------------------------------
@@ -543,12 +554,17 @@ func (s *FakeOutboxStore) Release(_ context.Context, recordIDs []string, token p
 	return nil
 }
 
-func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time) (int, error) {
+func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	count := 0
 	for _, rec := range s.records {
+		// Partition-scoped (M1): mirror the production stores so a sweep only
+		// touches records in the supplied partition.
+		if persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID()) != partition {
+			continue
+		}
 		if rec.Status() == persistence.OutboxPending && !rec.ExpiresAt().IsZero() && rec.ExpiresAt().Before(before) {
 			if expErr := rec.Expire(time.Now()); expErr == nil {
 				count++

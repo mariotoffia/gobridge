@@ -69,6 +69,11 @@ type Manager struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{} // closed when watchLoop exits
 	running   bool
+	// stopping guards stopCh's close so two concurrent Stop calls cannot both
+	// close it (a double close panics). running is only cleared after doneCh, so
+	// it cannot distinguish "already asked to stop" from "still running";
+	// stopping does. Reset in Watch on (re)start.
+	stopping bool
 }
 
 // ManagerOption configures a Manager.
@@ -173,6 +178,7 @@ func (m *Manager) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 		return nil, errAlreadyRunning
 	}
 	m.running = true
+	m.stopping = false
 	m.stopCh = make(chan struct{})
 	m.doneCh = make(chan struct{})
 	stopCh := m.stopCh
@@ -242,11 +248,14 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 		return
 	}
-	close(m.stopCh)
 	doneCh := m.doneCh
+	if !m.stopping {
+		m.stopping = true
+		close(m.stopCh)
+	}
 	m.mu.Unlock()
 
-	<-doneCh // wait for watchLoop goroutine to exit
+	<-doneCh // both concurrent callers wait for watchLoop goroutine to exit
 
 	m.mu.Lock()
 	m.running = false
@@ -344,17 +353,31 @@ func (m *Manager) watchLoop(
 				// exited). A watch failure never closes fanIn.
 				return
 			}
-			m.mu.Lock()
-			m.configs[ev.name] = ev.cfg
-			m.mu.Unlock()
-
-			merged, err := m.rebuild(ctx)
+			// Validate the merged result BEFORE caching this layer's new
+			// value. Caching first and validating after let a single poisoned
+			// layer stick in the cache, so every later good update from another
+			// layer re-merged against the poison and was dropped forever (one
+			// bad layer blocked all future good updates). rebuildWith splices
+			// ev.cfg in for the merge but does not commit it to the cache.
+			merged, err := m.rebuildWith(ctx, ev.name, ev.cfg)
 			if err != nil {
+				// Keep the previous good value for ev.name so later good
+				// updates from OTHER layers still merge cleanly. Surface the
+				// rejected update as a degraded signal for operators.
+				m.setWatchError(ev.name, fmt.Errorf("config manager: layer %q update rejected: %w", ev.name, err))
 				if m.logger != nil {
-					m.logger.Warn("config manager: rebuild failed", "trigger", ev.name, "error", err)
+					m.logger.Error("config manager: layer update rejected (merge/validate failed); "+
+						"keeping last good config", "trigger", ev.name, "error", err)
 				}
 				continue
 			}
+
+			// Merge validated: now it is safe to commit the new layer value and
+			// clear any prior rejection recorded for this layer.
+			m.mu.Lock()
+			m.configs[ev.name] = ev.cfg
+			m.mu.Unlock()
+			m.clearWatchError(ev.name)
 
 			// Drain stale config so the consumer always gets the latest.
 			select {
@@ -448,13 +471,26 @@ func nextBackoff(d time.Duration) time.Duration {
 	return next
 }
 
-// rebuild re-merges all layers from cached configs, re-loading any
-// layer whose cached config is nil.
-func (m *Manager) rebuild(ctx context.Context) (*ports.BridgeConfig, error) {
-	m.mu.Lock()
-	baseCfg := m.configs[m.base.Name]
-	m.mu.Unlock()
+// rebuildWith re-merges all layers from the cached per-layer configs, splicing
+// overrideCfg in for overrideName WITHOUT committing it to the cache. A layer
+// whose cached config is nil is loaded and cached (a genuine load, distinct
+// from the candidate value under test). The merged result is validated; on any
+// merge or validation error the candidate is left uncommitted so a single bad
+// layer update cannot poison the cache and block later good updates from other
+// layers.
+func (m *Manager) rebuildWith(ctx context.Context, overrideName string, overrideCfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+	// cfgFor returns the candidate value for the triggering layer and the
+	// cached value for every other layer.
+	cfgFor := func(name string) *ports.BridgeConfig {
+		if name == overrideName {
+			return overrideCfg
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.configs[name]
+	}
 
+	baseCfg := cfgFor(m.base.Name)
 	if baseCfg == nil {
 		var err error
 		baseCfg, err = m.base.Loader.Load(ctx)
@@ -468,10 +504,7 @@ func (m *Manager) rebuild(ctx context.Context) (*ports.BridgeConfig, error) {
 
 	merged := baseCfg
 	for _, ol := range m.overlays {
-		m.mu.Lock()
-		olCfg := m.configs[ol.Name]
-		m.mu.Unlock()
-
+		olCfg := cfgFor(ol.Name)
 		if olCfg == nil {
 			var err error
 			olCfg, err = ol.Loader.Load(ctx)
