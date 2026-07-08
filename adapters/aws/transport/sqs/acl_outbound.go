@@ -32,11 +32,20 @@ const (
 	// sqsMaxAttributeNameLen is the maximum length of an attribute name.
 	sqsMaxAttributeNameLen = 256
 
-	// sqsMaxMessageBytes is the maximum SQS message size (256 KiB),
+	// sqsMaxMessageBytes is the DEFAULT maximum SQS message size (256 KiB),
 	// shared between the body and every attribute name, type and value.
 	// Used as a conservative ceiling so a pathological header set cannot
-	// build a request SQS would reject for size.
+	// build a request SQS would reject for size. Queues configured with a
+	// larger MaximumMessageSize can raise it via WithMaxMessageBytes so an
+	// oversized body does not silently drop all attributes (Finding 4).
 	sqsMaxMessageBytes = 262144
+
+	// sqsSubjectAttributeName is the reserved SQS message-attribute name
+	// carrying the envelope Subject. buildAttributes writes it from
+	// env.Subject(); headersToAttributes skips any same-named header so the
+	// reserved slot and a stray "Subject" header cannot double-charge the
+	// attribute budget (Finding 7).
+	sqsSubjectAttributeName = "Subject"
 )
 
 // sendOne builds the SDK SendMessageInput, issues SendMessage and emits
@@ -188,19 +197,31 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 // by the count/size caps are surfaced via a debug log and the
 // SQSDroppedAttributes counter so the loss is observable.
 func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.MessageAttributeValue {
-	budget := sqsMaxMessageAttributes
-	hasSubject := env.Subject() != ""
-	if hasSubject {
-		budget-- // reserve the Subject slot added below
+	maxBytes := s.maxMessageBytes
+	if maxBytes <= 0 {
+		maxBytes = sqsMaxMessageBytes
 	}
 
-	attrs, dropped := headersToAttributes(env.Headers(), budget, len(env.Payload()))
+	budget := sqsMaxMessageAttributes
+	hasSubject := env.Subject() != ""
+	// Seed the size budget with the body AND — when a Subject attribute is
+	// reserved below — the Subject's own bytes, BEFORE attribute selection
+	// (Finding 4). The Subject is appended AFTER the budget loop, so a body
+	// just under the ceiling could otherwise be pushed over the real broker
+	// limit by the Subject bytes that were never charged.
+	seedBytes := len(env.Payload())
+	if hasSubject {
+		budget-- // reserve the Subject slot added below
+		seedBytes += subjectAttributeSize(env.Subject())
+	}
+
+	attrs, dropped := headersToAttributes(env.Headers(), budget, seedBytes, maxBytes)
 
 	if hasSubject {
 		if attrs == nil {
 			attrs = make(map[string]sqstypes.MessageAttributeValue, 1)
 		}
-		attrs["Subject"] = sqstypes.MessageAttributeValue{
+		attrs[sqsSubjectAttributeName] = sqstypes.MessageAttributeValue{
 			DataType:    aws.String("String"),
 			StringValue: aws.String(env.Subject()),
 		}
@@ -300,9 +321,12 @@ func egressAttributeRank(name string) int {
 // eligible headers dropped by the count/size caps so the caller can
 // surface the loss. Name-invalid and unsupported-type headers are not
 // counted — they could never be SQS attributes.
-func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (map[string]sqstypes.MessageAttributeValue, int) {
+func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, maxBytes int) (map[string]sqstypes.MessageAttributeValue, int) {
 	if len(headers) == 0 || maxAttrs <= 0 {
 		return nil, 0
+	}
+	if maxBytes <= 0 {
+		maxBytes = sqsMaxMessageBytes
 	}
 
 	type candidate struct {
@@ -316,6 +340,15 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 	for k, v := range headers {
 		// FIFO fields map to native SQS message fields, not attributes.
 		if k == messaging.HeaderOrderingKey || k == messaging.HeaderDeduplicationID {
+			continue
+		}
+		// The Subject attribute is reserved and written separately by
+		// buildAttributes from env.Subject(). A stray "Subject" header (kept
+		// as a plain header by SQS->SQS ingress) must NOT also compete for a
+		// budget slot: it would double-charge the 10-attribute limit and the
+		// reserved write would overwrite it, dropping a real application
+		// header on a relay carrying >=10 headers (Finding 7).
+		if k == sqsSubjectAttributeName {
 			continue
 		}
 		// Receiver-injected SQS system metadata is not user attribute data.
@@ -362,16 +395,17 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 
 	attrs := make(map[string]sqstypes.MessageAttributeValue, min(len(eligible), maxAttrs))
 	dropped := 0
-	// Seed with the body size: SQS charges the 256 KiB ceiling against the
-	// body and attributes together, so attributes are measured against the
-	// budget the body already consumes.
-	sizeBytes := bodyBytes
+	// Seed with the pre-charged body (and reserved-Subject) size: SQS
+	// charges its message-size ceiling against the body and attributes
+	// together, so attributes are measured against the budget the body —
+	// and the Subject appended after this loop — already consume.
+	sizeBytes := seedBytes
 	for _, c := range eligible {
 		if len(attrs) >= maxAttrs {
 			dropped++
 			continue
 		}
-		if sizeBytes+c.size > sqsMaxMessageBytes {
+		if sizeBytes+c.size > maxBytes {
 			dropped++
 			continue
 		}
@@ -383,6 +417,14 @@ func headersToAttributes(headers map[string]any, maxAttrs int, bodyBytes int) (m
 		return nil, dropped
 	}
 	return attrs, dropped
+}
+
+// subjectAttributeSize is the byte size the reserved "Subject" attribute
+// contributes to the SQS message-size budget: attribute name + "String"
+// data type + subject value, mirroring the name-inclusive accounting
+// headersToAttributes applies to every other candidate (Finding 4).
+func subjectAttributeSize(subject string) int {
+	return len(sqsSubjectAttributeName) + len("String") + len(subject)
 }
 
 // attributeValue builds the SQS MessageAttributeValue for a header value

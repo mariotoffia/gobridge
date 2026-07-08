@@ -57,6 +57,7 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 
 	validateStaleClaimDuration(ve, cfg)
 	validateSessionRenewTiming(ve, cfg)
+	validateConnectLeaseBudget(ve, cfg)
 
 	return ve
 }
@@ -170,6 +171,151 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 		t = minDerivedTimeout
 	}
 	return t, nil
+}
+
+// validateConnectLeaseBudget warns when a deferred-connect (connect_after_lease)
+// lease-bound session's broker-connect budget can consume so much of the lease
+// TTL that the FIRST renewal completes at or after expiry (finding F2). For such
+// a session the lease is acquired FIRST, then the broker connect+reconcile runs
+// (bounded by the transport's connect_timeout), and only then does the renew
+// loop start — so the first renewal completes no earlier than
+//
+//	connect_timeout + renewInterval + jitter/2 + renewCallTimeout
+//
+// after acquisition. If that meets or exceeds lease_ttl the lease has already
+// lapsed before the first renewal lands: the owner definitively loses the lease
+// it just won, steps down, and (for a single-use MQTT session) restarts,
+// producing a cluster-wide restart loop under broker slowness.
+//
+// This is an advisory WARNING, not a hard reject, because:
+//   - connect_timeout is a transport-specific raw option (mqtt/amqp) read
+//     defensively from the session raw map; it is only inspected when the
+//     operator set it EXPLICITLY. The config layer cannot know a transport's
+//     DEFAULT connect budget (e.g. paho defaults to 30s) without baking
+//     transport specifics into a transport-neutral validator, so a large
+//     default connect_timeout paired with a small lease_ttl is NOT caught here
+//     — that residual gap is noted for the docs pass.
+//   - the reconcile/subscribe budget after connect is unmodellable, so a valid
+//     but slow broker could be over-rejected by a hard error.
+//
+// Eager-connect sessions (connect_after_lease=false) connect BEFORE acquiring
+// the lease, so their connect budget does not erode the post-acquire TTL and is
+// skipped. nil defaults to true for these always-exclusive sessions (finding F6).
+func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
+	const (
+		defaultMaxRenewFails = 3
+		defaultLeaseTTL      = 360 * time.Second
+	)
+	for _, r := range cfg.Routes {
+		s := r.Session
+		if s == nil {
+			continue
+		}
+		if s.ConnectAfterLease != nil && !*s.ConnectAfterLease {
+			continue // eager connect happens before acquire; TTL not eroded
+		}
+		connect, ok := sessionConnectTimeout(cfg, s.SessionID)
+		if !ok {
+			continue // connect_timeout not explicitly set / not a duration
+		}
+		lease := defaultLeaseTTL
+		if s.LeaseTTL != "" {
+			d, err := time.ParseDuration(s.LeaseTTL)
+			if err != nil {
+				continue // invalid duration is rejected on the main validation path; skip the advisory rather than double-report
+			}
+			lease = d
+		}
+		maxFails := s.MaxRenewFails
+		if maxFails <= 0 {
+			maxFails = defaultMaxRenewFails
+		}
+		var renew time.Duration
+		if s.RenewInterval != "" {
+			d, err := time.ParseDuration(s.RenewInterval)
+			if err != nil || d <= 0 {
+				continue
+			}
+			renew = d
+		} else {
+			renew = derivedRenewIntervalForConfig(lease, maxFails)
+		}
+		jitter := renew / 4 // deriveRenewJitter default (duplicated, see note below)
+		if s.RenewJitter != "" {
+			if d, err := time.ParseDuration(s.RenewJitter); err == nil {
+				jitter = d
+			}
+		}
+		callTimeout, err := parseRenewCallTimeout(s, renew)
+		if err != nil {
+			continue
+		}
+		firstRenew := connect + renew + jitter/2 + callTimeout
+		if firstRenew >= lease {
+			ve.Warnf("routes[%s].session: connect + first-renew span %s "+
+				"(connect_timeout=%s + renew_interval=%s + lease_renew_jitter/2=%s + renew_call_timeout=%s) "+
+				"is >= lease_ttl (%s) for a connect_after_lease session; the broker connect runs AFTER the lease "+
+				"is won, so the first renewal can land at/after expiry, definitively losing the just-won lease and "+
+				"(for single-use MQTT) restarting the owner — raise lease_ttl or lower connect_timeout/renew_interval",
+				r.ID, firstRenew, connect, renew, jitter/2, callTimeout, lease)
+		}
+	}
+}
+
+// sessionConnectTimeout returns the EXPLICITLY configured connect_timeout for
+// the session with the given ID, if present and expressible as a duration.
+// connect_timeout is a transport-specific raw option (mqtt/amqp), so it is read
+// defensively from the session raw map (mirroring validateStaleClaimDuration); a
+// missing key, an unknown/absent raw map, or a non-duration value returns
+// ok=false so the F2 advisory is simply skipped rather than emitting a spurious
+// error the transport validator owns.
+func sessionConnectTimeout(cfg *ports.BridgeConfig, sessionID string) (time.Duration, bool) {
+	for i := range cfg.Sessions {
+		if cfg.Sessions[i].ID != sessionID {
+			continue
+		}
+		raw, ok := rawMap(cfg.Sessions[i].Raw())["connect_timeout"]
+		if !ok {
+			return 0, false
+		}
+		switch v := raw.(type) {
+		case string:
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				return 0, false
+			}
+			return d, true
+		case time.Duration:
+			if v <= 0 {
+				return 0, false
+			}
+			return v, true
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// derivedRenewIntervalForConfig duplicates runtime/session.deriveRenewInterval so
+// the F2 advisory uses the SAME effective renew interval the runtime derives when
+// renew_interval is left empty. The config package must not import runtime/session
+// (layering), so the formula and its literals are duplicated with this note; keep
+// it in sync with deriveRenewInterval/deriveRenewJitter.
+func derivedRenewIntervalForConfig(ttl time.Duration, maxRenewFails int) time.Duration {
+	if maxRenewFails < 1 {
+		maxRenewFails = 1
+	}
+	perAttempt := (ttl * 3) / (time.Duration(maxRenewFails) * 4)
+	reserve := 5 * time.Second
+	if reserve > perAttempt/2 {
+		reserve = perAttempt / 2
+	}
+	interval := ((perAttempt - reserve) * 8) / 9
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	return interval
 }
 
 func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {

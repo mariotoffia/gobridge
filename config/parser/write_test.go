@@ -178,6 +178,9 @@ func TestWriteFile_OverwritesExisting(t *testing.T) {
 	assert.Equal(t, "second", parsed.Bridge.ID)
 }
 
+// TestWriteFile_NewFile_DefaultPermissions verifies a new config file is created
+// 0600 (not world-readable 0644): a config may embed secrets (HTTP admin keys,
+// plugin credentials), so a fresh file must not leak them via lax permissions.
 func TestWriteFile_NewFile_DefaultPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "new-config.yaml")
@@ -187,5 +190,5 @@ func TestWriteFile_NewFile_DefaultPermissions(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0644), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
 }

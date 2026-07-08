@@ -15,6 +15,13 @@
 // preventing SQS from making the message visible to other consumers
 // while the bridge pipeline is still processing it.
 //
+// SQS caps a message's TOTAL visibility timeout at 12 hours. Once the
+// accumulated auto-extensions reach that ceiling, ChangeMessageVisibility
+// is rejected, auto-extend fails (logged as an error before it gives up),
+// and the message is eventually redelivered. Handlers whose processing can
+// exceed 12 hours must therefore be idempotent and tolerate at-least-once
+// redelivery rather than rely on the visibility lock.
+//
 // # Sender
 //
 // The Sender submits envelopes to an SQS queue, mapping Envelope.Headers
@@ -144,6 +151,17 @@
 // infrastructure failures that prevent the bridge from processing the
 // message at all. The bridge's own DLQ handles application-level
 // permanent failures, expired messages, and policy rejections.
+//
+// Malformed ("poison") messages the Receiver cannot convert are dropped
+// WITHOUT a DeleteMessage — deleting would suppress the redrive policy.
+// The drop therefore relies ENTIRELY on the source queue's redrive policy
+// (maxReceiveCount to a DLQ) to stop the message after it has resurfaced
+// enough times. A source queue with NO redrive policy redelivers a poison
+// message every visibility timeout forever. To surface that
+// misconfiguration the Receiver escalates the drop from a Warn to an Error
+// log once a message's ApproximateReceiveCount reaches 10
+// (poisonReceiveCountThreshold). Configure a redrive policy on every SQS
+// source queue the bridge consumes.
 //
 // # Capabilities
 //

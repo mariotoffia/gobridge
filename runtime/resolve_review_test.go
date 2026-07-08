@@ -27,15 +27,14 @@ func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 	}
 }
 
-// TestRenderAddress_UnclosedBrace validates that an unclosed brace is
-// treated as literal text and does not cause an error.
+// TestRenderAddress_UnclosedBrace validates that an unclosed brace (an opening
+// '{' with no closing '}') is rejected as a malformed template — symmetric with
+// the missing-key error — rather than silently passed through as literal text
+// (F6).
 func TestRenderAddress_UnclosedBrace(t *testing.T) {
-	result, err := route.RenderAddress("prefix/{unclosed", nil)
-	if err != nil {
-		t.Fatalf("unclosed brace should be treated as literal, got: %v", err)
-	}
-	if result != "prefix/{unclosed" {
-		t.Fatalf("expected literal passthrough, got: %q", result)
+	_, err := route.RenderAddress("prefix/{unclosed", nil)
+	if err == nil {
+		t.Fatal("unclosed brace should return an error, got nil")
 	}
 }
 

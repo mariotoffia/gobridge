@@ -41,9 +41,10 @@ func TestRequireAdminAuth_FailureEmitsAudit(t *testing.T) {
 	assert.Equal(t, "failure", events[0].Outcome)
 }
 
-// After AuthFailureLimit failures within the window, the next attempt is
-// throttled with 429 and a throttle audit event — even if it now presents the
-// correct key (online guessing is slowed regardless).
+// After AuthFailureLimit FAILED attempts within the window, further FAILED
+// attempts from that peer are throttled with 429 — but a VALID key still passes
+// (finding 1): the credential is checked before the throttle, so a bad-key
+// spammer behind a shared LB/NAT peer cannot lock out a valid operator.
 func TestRequireAdminAuth_ThrottlesAfterLimit(t *testing.T) {
 	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	rt := runtime.New(runtime.WithInstanceID("auth-throttle"))
@@ -70,12 +71,18 @@ func TestRequireAdminAuth_ThrottlesAfterLimit(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		assert.Equal(t, http.StatusUnauthorized, do("wrong"))
 	}
-	// 4th attempt is throttled regardless of key correctness.
-	assert.Equal(t, http.StatusTooManyRequests, do("test-secret-key-0123456789"))
+	// A 4th FAILED attempt from the same peer is throttled.
+	assert.Equal(t, http.StatusTooManyRequests, do("wrong"))
 
-	// After the window elapses the client may try again.
-	clk.Advance(time.Minute + time.Second)
+	// The correct key ALWAYS passes, even while the peer's window is throttled:
+	// the throttle only gates FAILED auth, so a valid operator is never locked
+	// out by someone else's bad-key spray from a shared peer (finding 1). A
+	// successful auth also resets the peer's window.
 	assert.Equal(t, http.StatusOK, do("test-secret-key-0123456789"))
+
+	// After the window elapses the peer may fail-and-be-scored again.
+	clk.Advance(time.Minute + time.Second)
+	assert.Equal(t, http.StatusUnauthorized, do("wrong"))
 }
 
 // A brute-forcer hammering the endpoint while throttled must NOT be able to
@@ -211,11 +218,11 @@ func TestValidateConfig_TLSRequiresBothCertAndKey(t *testing.T) {
 }
 
 // A commit succeeds durably (disk write) but the in-band ConfigApplier failing
-// must surface as 500 committed_not_applied with the version — proving the
-// "Commit writes the file but never applies it" fix wires the applier and
-// reports divergence instead of a false "committed".
-func TestHandleConfigTxnCommit_ApplierFailureReportsDivergence(t *testing.T) {
-	cfg := sampleBridgeConfig()
+// must restore the previous on-disk config and surface 500 rolled_back. This is
+// the restart-bomb fix: disk keeps the last good config so the next process
+// boot recovers instead of crash-looping on the rejected config.
+func TestHandleConfigTxnCommit_ApplierFailureRollsBack(t *testing.T) {
+	cfg := sampleBridgeConfig() // version 0 on disk
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -238,12 +245,13 @@ func TestHandleConfigTxnCommit_ApplierFailureReportsDivergence(t *testing.T) {
 	s.handleConfigTxnCommit(rec, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-	assert.Contains(t, rec.Body.String(), "committed_not_applied")
+	assert.Contains(t, rec.Body.String(), "rolled_back")
+	assert.NotContains(t, rec.Body.String(), "committed_not_applied")
 
-	// The durable write still happened: disk carries the bumped version.
+	// The rejected version 1 was rolled back: disk holds the previous version 0.
 	parsed, err := parser.ParseFile(path, parser.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
-	assert.Equal(t, 1, parsed.Version)
+	assert.Equal(t, 0, parsed.Version)
 }
 
 // A successful ConfigApplier is invoked with the committed config and the

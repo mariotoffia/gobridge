@@ -32,6 +32,16 @@ type fakeDDB struct {
 	getErr     error
 	lastCreate *awsddb.CreateTableInput
 	getCalls   atomic.Int32
+
+	// DescribeTable behaviour (used by the stream re-probe path): describeErrs
+	// is a FIFO of errors returned by successive DescribeTable calls (nil
+	// entries and an empty queue return success). When describeStreamEnabled is
+	// set, a successful DescribeTable reports an enabled stream with
+	// describeStreamArn so resolveStreamArn treats the stream as reachable.
+	describeErrs          []error
+	describeStreamEnabled bool
+	describeStreamArn     string
+	describeCalls         atomic.Int32
 }
 
 func (f *fakeDDB) setRow(data string, version int64) {
@@ -82,7 +92,36 @@ func (f *fakeDDB) CreateTable(ctx context.Context, params *awsddb.CreateTableInp
 }
 
 func (f *fakeDDB) DescribeTable(ctx context.Context, params *awsddb.DescribeTableInput, optFns ...func(*awsddb.Options)) (*awsddb.DescribeTableOutput, error) {
+	f.describeCalls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.describeErrs) > 0 {
+		err := f.describeErrs[0]
+		f.describeErrs = f.describeErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	if f.describeStreamEnabled {
+		return &awsddb.DescribeTableOutput{
+			Table: &ddbtypes.TableDescription{
+				StreamSpecification: &ddbtypes.StreamSpecification{
+					StreamEnabled:  aws.Bool(true),
+					StreamViewType: ddbtypes.StreamViewTypeNewImage,
+				},
+				LatestStreamArn: aws.String(f.describeStreamArn),
+			},
+		}, nil
+	}
 	return &awsddb.DescribeTableOutput{}, nil
+}
+
+// enqueueDescribeErr queues an error to be returned by the next DescribeTable
+// call, modelling a transient failure (throttle, brief IAM propagation).
+func (f *fakeDDB) enqueueDescribeErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.describeErrs = append(f.describeErrs, err)
 }
 
 // fakeStreams implements streamsAPI for tests. It serves a single open

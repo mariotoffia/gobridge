@@ -60,10 +60,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleLive reports process liveness. It returns 200 while the process is
 // alive and able to recover — including during runtime swap windows when the
-// runtime is temporarily nil — and 503 only when the runtime is terminal: an
-// unrecoverable component failure that cancelled the runtime. Kubernetes uses
+// runtime is temporarily nil, AND after a deliberate admin stop (a clean pause
+// leaves the runtime non-terminal) — and 503 only when the runtime is terminal:
+// an unrecoverable component failure that cancelled the runtime. Kubernetes uses
 // this probe to restart the container, so failing closed on a terminal runtime
-// is what turns a dead-but-running process into an automatic restart.
+// is what turns a dead-but-running process into an automatic restart, while a
+// deliberate pause must NOT be mistaken for death (CRITICAL 1 / CRITICAL 3).
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	if rt := s.currentRuntime(); rt != nil && rt.Terminal() {
@@ -93,12 +95,15 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 //
 // Unknown levels return 400 Bad Request.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	// Readiness must never be cached — set no-store BEFORE any branch so the
+	// nil-runtime 503 carries it too; a cached "ready" would keep an LB routing
+	// traffic at an instance that has since gone unready.
+	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	rt := s.currentRuntime()
 	if rt == nil {
 		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
 		return
 	}
-	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 
 	rawLevel := r.URL.Query().Get("level")
 	if rawLevel == "" {
@@ -201,6 +206,7 @@ type monitorRouteView struct {
 	AckAfter      string `json:"ack_after"`
 	OnExpired     string `json:"on_expired"`
 	OnPermFailure string `json:"on_perm_failure"`
+	OnFiltered    string `json:"on_filtered"`
 }
 
 func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +227,7 @@ func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
 			AckAfter:      string(ri.Policy.AckAfter),
 			OnExpired:     string(ri.Policy.OnExpired),
 			OnPermFailure: string(ri.Policy.OnPermanentFailure),
+			OnFiltered:    string(ri.Policy.OnFiltered),
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"routes": views})
@@ -238,6 +245,17 @@ type deepHealthResponse struct {
 	Level           string                      `json:"level"` // current ReadinessLevel
 	Sessions        []deepHealthSessionResponse `json:"sessions"`
 	Routes          []deepHealthRouteResponse   `json:"routes"`
+	// ConfigWatch surfaces live-reconfiguration health so operators can see a
+	// bridge running blind on its last good config (degraded config-watch was
+	// previously invisible outside the logs). Omitted when no DegradedProvider
+	// is wired; additive to the existing fields.
+	ConfigWatch *configWatchHealth `json:"config_watch,omitempty"`
+}
+
+// configWatchHealth is the deep-health projection of live-reconfiguration state.
+type configWatchHealth struct {
+	Degraded bool   `json:"degraded"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type deepHealthSessionResponse struct {
@@ -254,8 +272,9 @@ type deepHealthSessionResponse struct {
 type deepHealthRouteResponse struct {
 	ID           string `json:"id"`
 	DeliveryMode string `json:"delivery_mode"`
-	Ready        bool   `json:"ready"`     // route runner started + receiver started
-	InFlight     int    `json:"in_flight"` // currently-processing delivery count
+	Ready        bool   `json:"ready"`      // route runner started + receiver started
+	InFlight     int    `json:"in_flight"`  // currently-processing delivery count
+	RouteDead    bool   `json:"route_dead"` // route wedged flapping at the supervisor backoff cap (F5)
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +292,11 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		Role:            dh.Role,
 		ReadyForTraffic: dh.ReadyForTraffic,
 		ServiceLevel:    string(dh.ServiceLevel),
-		Level:           rt.ReadinessLevel(r.Context()).String(),
+		// Derive the readiness level from the SAME snapshot rather than calling
+		// rt.ReadinessLevel (which takes a second, independent DeepHealth sweep):
+		// one snapshot keeps Level internally consistent with the Sessions/Routes
+		// rendered below and halves the health-probe cost.
+		Level: ports.ReadinessLevelFromDeepHealth(dh).String(),
 	}
 
 	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
@@ -297,6 +320,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 			DeliveryMode: rh.DeliveryMode,
 			Ready:        rh.Ready,
 			InFlight:     rh.InFlight,
+			RouteDead:    rh.RouteDead,
 		}
 	}
 
@@ -304,5 +328,15 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	if !dh.ReadyForTraffic {
 		status = http.StatusServiceUnavailable
 	}
+
+	// Surface live-reconfiguration health additively when a provider is wired.
+	// A degraded config-watch does NOT flip the traffic status: the runtime
+	// keeps serving its last good config, so failing readiness here would pull a
+	// healthy bridge out of rotation over a config-observation problem.
+	if s.cfg.DegradedProvider != nil {
+		degraded, reason := s.cfg.DegradedProvider()
+		resp.ConfigWatch = &configWatchHealth{Degraded: degraded, Reason: reason}
+	}
+
 	writeJSON(w, status, resp)
 }

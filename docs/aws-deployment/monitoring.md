@@ -140,10 +140,17 @@ fields route_id
 ## CloudWatch Metrics
 
 The CloudWatch metrics adapter publishes metrics under the `GoBridge/Runtime`
-namespace (defined by `domain.MetricNamespace`). It buffers counter, gauge,
+namespace (defined by `shared.MetricNamespace`). It buffers counter, gauge,
 histogram, and timer metrics in memory and flushes them periodically via
 `PutMetricData`. Histograms and timers are aggregated into `StatisticSet` values
 (min/max/sum/count) to minimize API calls.
+
+> **No percentile latency.** A `StatisticSet` carries only Min, Max, Sum, and
+> SampleCount, so CloudWatch can derive Average, Minimum, Maximum, Sum, and
+> SampleCount — never `p50`, `p95`, or `p99`. Every GoBridge histogram and timer,
+> including all `*Latency` metrics such as `DeliveryE2ELatency`, publishes this
+> way. Chart latency with `Average` and `Maximum`; a percentile statistic returns
+> no data.
 
 ### Go Bootstrap
 
@@ -187,26 +194,166 @@ A single background flusher goroutine drains the buffer on the flush interval,
 governed so a slow `PutMetricData` cannot stack overlapping flushes.
 
 `DefaultRollupMetrics()` returns `OutboxDepth`, `LeaseExpiries`, `DLQEntries`,
-`LeaseAcquireFailures`, and `SQSVisibilityExtensions`.
+`LeaseAcquireFailures`, `CredentialRefreshFailures`, and `SQSVisibilityExtensions`.
+
+`CredentialRefreshFailures` is the odd one in that list. It is emitted with **no**
+runtime dimension, yet it is rolled up so it still fires on instance-tagged
+fleets: with `WithInstanceTag`, its base series carries only `instance_id`, which
+a zero-dimension alarm would miss, so the dimensionless rollup copy gives the
+alarm something to match. Without instance tagging the base and rollup copies
+coincide — a harmless double count. It has **no** default alarm; add your own if
+you want to alert on a secrets backend that is unreachable or denying access.
 
 ### Key Metrics
+
+The runtime emits the following metrics under `GoBridge/Runtime`. Dimensions are
+the exact `shared.Tag` keys set at each emission site. Every `*Latency` metric is
+Milliseconds published as a `StatisticSet` (no percentiles); `OutboxDepth` is a
+Count gauge; everything else is a Count counter.
+
+**Messages & delivery**
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
 | `MessagesReceived` | `route_id` | Count | Messages received from transports |
-| `MessagesSent` | `route_id` | Count | Messages successfully sent |
-| `MessagesDropped` | `route_id` | Count | Messages dropped (filter, expired) |
+| `MessagesSent` | `route_id` | Count | Messages sent successfully (ingress ack and outbox drain) |
+| `MessagesDropped` | `route_id`, `reason` | Count | A terminal drop settled WITHOUT a DLQ record and WITHOUT a successful send: permanent, rejected, or retry-unsupported under a drop policy, or a missing DLQ store. Not a filter, not an expiry. |
+| `MessagesFiltered` | `route_id`, `processor` | Count | A processor deliberately discarded the message (`ErrMessageFiltered`) under `OnFiltered=drop` — a policy discard, distinct from a fault drop. `processor` is omitted when the drop is unattributed. |
+| `MessagesExpired` | `route_id` | Count | Message expired before delivery under `OnExpired=drop`. The drain-path bulk sweep also tags `session_id`. |
 | `RouteErrors` | `route_id` | Count | Delivery errors by route |
-| `DeliveryE2ELatency` | `route_id` | Milliseconds | End-to-end delivery latency |
-| `OutboxDepth` | `partition` | Count | Pending outbox records |
-| `DLQEntries` | `route_id`, `category` | Count | Messages written to DLQ |
-| `LeaseAcquireFailures` | `lease_id` | Count | Failed lease acquisitions |
-| `LeaseExpiries` | `lease_id` | Count | Leases that expired without renewal |
-| `SQSVisibilityExtensions` | `queue_url` | Count | SQS visibility timeout extensions |
+| `DeliveryE2ELatency` | `route_id` | Milliseconds | End-to-end delivery latency (StatisticSet — chart `Average`/`Maximum`) |
+| `ReceiveCountUnparseable` | `route_id` | Count | Redelivery-count header was present but not an integer; receiveCount failed open to a first delivery |
 
-Dimensions map directly to `domain.Tag` key-value pairs. The dimension keys in
-use are `route_id`, `lease_id`, `session_id`, `partition`, `category`, and
-`queue_url`.
+`MessagesReceived`, `MessagesSent`, `MessagesDropped`, `MessagesFiltered`,
+`MessagesExpired`, `DLQEntries`, and in-flight close the conservation law
+`received = sent + dropped + filtered + expired + dlq + inflight`. A rising
+`MessagesDropped` is the single signal for silent message loss, so keep it split
+from the intentional filter and TTL counters.
+
+**Outbox**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `OutboxDepth` | `partition` | Count (gauge) | Pending outbox records — dual-emitter, see the saturation note below |
+| `OutboxPersistLatency` | `route_id` | Milliseconds | Persist-call latency |
+| `OutboxDrainLatency` | `session_id` | Milliseconds | Drain-batch latency |
+| `OutboxClaimRecoveries` | `session_id` | Count | Claimed records with a replay count > 1 (recovered after a crash) |
+| `OutboxClaimConflicts` | `partition` | Count | Per-record claim transactions aborted by concurrent Persist/Claim/Complete contention |
+| `OutboxCompletions` | `route_id` | Count | Records durably completed after a successful send |
+| `OutboxDeferred` | `route_id` | Count | Claimed records the drainer could not process this cycle (batch deadline hit) and released for the next drain |
+| `OutboxReplayCount` | `route_id` | Count | Records re-attempted after a prior claim |
+| `OutboxRecordFailures` | `route_id` | Count | Records that failed processing this drain cycle |
+| `OutboxDuplicateRisk` | `route_id` | Count | Complete failed after a successful send — the message may be re-delivered |
+| `OutboxExpiredBeforeSend` | `route_id` | Count | Record expired before the drainer launched its send |
+| `OutboxDrainStalled` | `session_id`, `route_id` | Count | Drain batch whose in-flight sends did not return within the watchdog grace (a sender ignoring `ctx`) |
+| `DrainSkippedNoLease` | `session_id`, `route_id` | Count | Drain cycle skipped because the drainer held no lease |
+
+> **`OutboxDepth` saturates without `MaxOutboxDepth`.** This partition-keyed
+> series carries two gauges. The ingress path emits the TRUE pending count
+> (bounded by the configured `MaxOutboxDepth`); the drain path emits the
+> claimed-batch size each poll — a liveness floor that SATURATES at the batch
+> size (default 100, max 500), NOT the backlog. The default alarms read the
+> `Maximum` statistic so the low drain-path value never clobbers the ingress
+> depth. Consequence: with `MaxOutboxDepth` UNSET, only the saturating drain-path
+> value is emitted, so a deep backlog is indistinguishable from a full batch and
+> the depth alarms (1000/10000) can never breach. Set `MaxOutboxDepth` for a true
+> depth signal.
+
+**Store health**
+
+These two counters are emitted by the store adapters (not the runtime core) and
+publish under the same `GoBridge/Runtime` namespace whenever the store's metrics
+exporter is wired -- which the runtime does. Both carry an adapter-owned
+dimension, so the zero-dimension rollup alarms do not match them; alarm on the
+dimensioned series.
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `DynamoDBOutboxClaimScanPages` | `partition` | Count | Number of DynamoDB Query pages a single outbox `Claim` scanned, emitted only when that count crosses 8. Claim pages the whole partition to guarantee oldest-first delivery, so a sustained deep backlog (draining after an egress outage on an exclusive session) makes each Claim O(backlog) and the drain quadratic. A rising value, with the paired loud WARN, is the signal that a partition carries a deep backlog. |
+| `SQLiteStoreUnhealthy` | `entity` | Count | A fatal SQLite outbox storage fault -- disk full, corruption, read-only, or not-a-database (`entity=outbox`). Classified PERMANENT because no retry clears it without operator action. The drain loop keeps polling and records stay durable -- this is an observability signal, not a halt -- so alert on it directly: it means free disk / restore the file, distinct from transient throttling noise. |
+
+The DynamoDB DLQ **unbounded delete-all** (`DeleteByFilter` with no cap, i.e.
+`Limit <= 0`) logs one throttled WARN --
+`dynamodbdlq: unbounded delete-all exceeded max_scan_pages and is still running`
+-- once it pages past `max_scan_pages`. It still pages to exhaustion; the WARN is
+informational (a large purge is running), not an error. Narrow the filter's time
+range to bound it.
+
+The durable fix that removes the O(backlog) `DynamoDBOutboxClaimScanPages` cost --
+a per-partition `created_at` GSI so the Query returns age-ordered items and the
+scan stops after `limit` -- is a tracked future item; see
+[ADR 0005](../adr/0005-outbox-partition-claim-design.md).
+
+**Lease**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `LeaseAcquireLatency` | `lease_id` | Milliseconds | Lease-acquire latency |
+| `LeaseRenewLatency` | `lease_id` | Milliseconds | Lease-renew latency |
+| `LeaseAcquireFailures` | `lease_id` | Count | Failed lease acquisitions |
+| `LeaseExpiries` | `lease_id` | Count | Leases that expired without renewal (step-down) |
+| `LeaseTransfers` | `lease_id` | Count | Lease re-acquired by this instance (hand-off) |
+
+**DLQ**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ |
+| `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped with no held lease |
+| `DLQRedrives` | `route_id` | Count | DLQ entries an admin redrive re-injected successfully |
+| `DLQRedriveFailures` | `route_id` | Count | Redrive attempts that failed during or after the claim |
+
+**Circuit breaker**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `CircuitBreakerStateChanged` | `processor`, `key`, `to` | Count | Every open/half-open/closed transition (`to` is the new state) |
+| `CircuitBreakerTrips` | `processor`, `key` | Count | Transitions into the open state |
+| `CircuitBreakerRejections` | `processor`, `key` | Count | Calls rejected while the breaker is open |
+
+**Processor**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `ProcessorPanics` | `route_id`, `processor` | Count | Processor panics recovered in the chain |
+| `ProcessorTimeouts` | `route_id` | Count | Processor invocations that exceeded the per-processor timeout |
+
+**Session & route**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `MQTTReconnects` | `session_id` | Count | Session reconnects (historical wire name; emitted transport-agnostically by the session manager) |
+| `ReconcileFailures` | `session_id` | Count | Reconcile-on-reconnect failures |
+| `SessionRestarts` | `session_id` | Count | Per-session supervised restarts (isolated, capped backoff) |
+| `RouteRestarts` | `route_id` | Count | Per-route supervised restarts (isolated, jittered capped backoff) |
+| `DeliveryPanics` | `route_id` | Count | Delivery-goroutine panics recovered in the route runner |
+
+**Credentials**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `CredentialRefreshFailures` | none | Count | Credential resolve failures during rotation polling (initial seed and periodic). No dimension by design (the URI may hold secrets). Rolled up for instance-tagged fleets; no default alarm. |
+| `CredentialRotationApplied` | none | Count | Rotations applied to a live transport — one per target whose `ApplyCredentials` succeeded (a URI shared by N sessions counts N on one rotation). Success counterpart to `CredentialRefreshFailures`. Not rolled up; no default alarm. |
+| `CredentialResolveFailure` | `code` | Count | Repository fetch failures at the resolver choke point, tagged with the bounded error code (`NOT_AUTHORIZED`, `UNAVAILABLE`, `NOT_FOUND`, …) so a permission denial is distinguishable from a backend outage. Covers build-time resolves, rotation polls, and reactive re-resolves. Not rolled up; no default alarm. |
+| `CredentialStaleServed` | `code` | Count | Stale-while-error serves — the resolver returned an expired last-known-good credential after a retryable fetch error (`code` is the retryable error). A rising value flags a secrets backend unreachable longer than the cache TTL. Never emitted for permanent errors. Not rolled up; no default alarm. |
+
+**Transport (SQS)**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `SQSVisibilityExtensions` | `queue_url` | Count | SQS visibility-timeout extensions |
+
+**Exporter self-metrics**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `ExporterDroppedDatums` | none | Count | Datums accepted into the export pipeline then lost: buffer hard cap, retry-buffer overflow on requeue, or a non-retryable (validation-class) `PutMetricData` rejection after buffering |
+| `ExporterRejectedDatums` | none | Count | Emissions rejected at `add()` before entering the pipeline: the value was NaN or ±Inf |
+
+Dimensions map directly to `shared.Tag` key-value pairs. The dimension keys in
+use are `route_id`, `session_id`, `lease_id`, `partition`, `entity`, `category`,
+`reason`, `processor`, `key`, `to`, `queue_url`, and `instance_id` (added by
+`WithInstanceTag`, never on rollup copies).
 
 The generic `AckLatency` and `VisibilityExtensions` metrics are emitted **only**
 by the opt-in `runtime.NewInstrumentedReceiver` /
@@ -245,9 +392,13 @@ adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibility
 
 `WithRollupMetrics` emits a second copy of each named metric with **no
 dimensions** so a dimensionless alarm can match it; rollup copies never carry the
-`instance_id` tag. The exporter also emits its own health counters:
-`ExporterDroppedDatums` (datums dropped under buffer pressure) and
-`ExporterRejectedDatums` (datums CloudWatch rejected on `PutMetricData`).
+`instance_id` tag. The exporter also emits two zero-dimension health counters
+through its own pipeline. `ExporterRejectedDatums` counts emissions rejected at
+`add()` time before they enter the pipeline: the value was NaN or ±Inf, which
+would otherwise fail the whole all-or-nothing `PutMetricData` batch.
+`ExporterDroppedDatums` counts datums that entered the pipeline and were then
+lost: the buffer hard cap, retry-buffer overflow on requeue, or a non-retryable
+(validation-class) `PutMetricData` rejection after buffering.
 
 ---
 
@@ -264,6 +415,16 @@ dimensions** so a dimensionless alarm can match it; rollup copies never carry th
 | DLQ Growing | `DLQEntries` | > 0 (sum) | 5 min | SNS (high) |
 | Outbox Depth Critical | `OutboxDepth` | > 10,000 | 5 min | SNS (critical) |
 | Lease Acquire Failures | `LeaseAcquireFailures` | > 3 (sum) | 5 min | SNS (critical) |
+| Outbox Backlog Deep | `DynamoDBOutboxClaimScanPages` | > 0 (sum) | 15 min | SNS (warn) |
+| Store Unhealthy | `SQLiteStoreUnhealthy` | > 0 (sum) | 5 min | SNS (critical) |
+
+`DynamoDBOutboxClaimScanPages` and `SQLiteStoreUnhealthy` are store-adapter
+counters that carry dimensions (`partition`, `entity`) and are **not** part of
+`DefaultAlarms` / `DefaultRollupMetrics`. Alarm on the dimensioned series --
+summed across partitions for the scan-pages counter, or on `entity=outbox` for
+the store-health counter. `SQLiteStoreUnhealthy` applies to single-instance
+SQLite outbox deployments; DynamoDB deployments watch the scan-pages counter
+instead.
 
 ### Built-In Alarm Provisioning
 
@@ -373,7 +534,7 @@ widgets into four rows.
 |-----|--------|--------|------|
 | 1 | Throughput | `MessagesReceived`, `MessagesSent` | Line graph |
 | 1 | Error Rate | `RouteErrors` / `MessagesReceived` | Number (%) |
-| 2 | Delivery Latency | `DeliveryE2ELatency` (p50, p99) | Line graph |
+| 2 | Delivery Latency | `DeliveryE2ELatency` (Average, Maximum) | Line graph |
 | 2 | In-Flight Messages | per-route `in_flight` (monitor deep-health JSON) | Gauge |
 | 3 | Outbox Depth | `OutboxDepth` | Area chart |
 | 3 | DLQ Entries | `DLQEntries` | Bar chart |
@@ -423,8 +584,8 @@ in `runtime/route/runner.go`); scrape that endpoint if you want it on a widget.
       "properties": {
         "title": "Delivery Latency (ms)",
         "metrics": [
-          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "p50", "period": 60 }],
-          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "p99", "period": 60 }]
+          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "Average", "period": 60 }],
+          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "Maximum", "period": 60 }]
         ],
         "view": "timeSeries",
         "region": "eu-west-1"
@@ -540,10 +701,9 @@ events that are logged but not emitted as explicit metrics.
 
 | Filter Name | Pattern | Metric |
 |-------------|---------|--------|
-| Circuit breaker open | `{ $.msg = "circuit breaker state change" && $.new_state = "open" }` | `CircuitBreakerOpen` |
-| Config reload failure | `{ $.msg = "config reload rejected" }` | `ConfigReloadFailures` |
+| Circuit breaker open | `{ $.msg = "circuit breaker state change" && $.to = "open" }` | `CircuitBreakerOpen` |
+| Config reload failure | `{ $.msg = "*config reload rejected*" }` | `ConfigReloadFailures` |
 | Error log count | `{ $.level = "ERROR" }` | `ErrorLogCount` |
-| Delivery panics | `{ $.msg = "delivery panic recovered" }` | `DeliveryPanics` |
 
 ### CDK Metric Filter Example
 
@@ -562,7 +722,7 @@ awslogs.NewMetricFilter(stack, jsii.String("CircuitBreakerOpenFilter"),
                 jsii.String("$.msg"), jsii.String("="), jsii.String("circuit breaker state change"),
             ),
             awslogs.FilterPattern_StringValue(
-                jsii.String("$.new_state"), jsii.String("="), jsii.String("open"),
+                jsii.String("$.to"), jsii.String("="), jsii.String("open"),
             ),
         ),
         MetricNamespace: jsii.String("GoBridge/Logs"),
@@ -642,7 +802,8 @@ Create a read-only IAM role that Grafana assumes:
 |-------|-------|
 | Throughput | CloudWatch: `SUM(MessagesReceived)`, `SUM(MessagesSent)` over 1 min |
 | Error rate | CloudWatch math: `(RouteErrors / MessagesReceived) * 100` |
-| p99 latency | CloudWatch: `p99(DeliveryE2ELatency)` over 1 min |
+| Max latency | CloudWatch: `MAX(DeliveryE2ELatency)` over 1 min |
+| Avg latency | CloudWatch: `AVG(DeliveryE2ELatency)` over 1 min |
 | Outbox depth | CloudWatch: `MAX(OutboxDepth)` over 1 min |
 | Log search | CloudWatch Logs Insights: filter by `correlation_id` or `route_id` |
 | Trace drilldown | X-Ray: search by trace ID from log panel link |

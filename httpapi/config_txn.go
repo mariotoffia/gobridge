@@ -21,6 +21,16 @@ const defaultTxnTTL = 5 * time.Minute
 // Maximum allowed transaction TTL.
 const maxTxnTTL = 30 * time.Minute
 
+// commitApplyTimeout bounds the in-band apply of a committed config. The apply
+// (build/connect/drain) runs on a context DETACHED from the request so a client
+// disconnect cannot cancel the runtime swap after the durable write; this
+// timeout is the sole cap on that detached work. It is deliberately generous
+// (an apply can legitimately take tens of seconds) — if it is exceeded the
+// commit treats it as an apply failure: the previous on-disk config is restored
+// and the commit reports rolled_back (the file watcher re-emit is the safety
+// net that eventually converges the runtime).
+const commitApplyTimeout = 60 * time.Second
+
 // Sentinel errors returned by configTxnManager methods.
 var (
 	errTxnActive       = errors.New("another transaction is already active")
@@ -33,11 +43,19 @@ var (
 	// 422 by the handler.
 	errConfigOptionsLoss = errors.New("config commit would erase plugin options")
 	// errConfigApplyFailed signals that a commit durably wrote the new config
-	// to disk but the in-band apply to the running runtime failed. The write
-	// is NOT rolled back; the operator must reconcile. Distinct so the handler
-	// can report "committed to disk but not applied" rather than a generic
-	// failure.
+	// to disk but the in-band apply to the running runtime failed AND the
+	// previous on-disk config could NOT be restored (first write, or the
+	// restore write itself failed). Disk and runtime have diverged and the
+	// operator must reconcile by hand. Distinct so the handler can report
+	// "committed to disk but not applied".
 	errConfigApplyFailed = errors.New("config committed but apply failed")
+	// errConfigRolledBack signals that a commit durably wrote the new config
+	// but the in-band apply failed and the PREVIOUS on-disk config was
+	// successfully restored, so a process restart recovers the last good config
+	// instead of crash-looping on the rejected one. Distinct from
+	// errConfigApplyFailed so the handler reports rolled_back rather than
+	// committed_not_applied.
+	errConfigRolledBack = errors.New("config apply failed; on-disk config rolled back to previous version")
 )
 
 // ConfigTransaction represents an in-progress configuration change.
@@ -55,7 +73,17 @@ type ConfigTransaction struct {
 // configTxnManager manages the single active config transaction.
 // All methods are safe for concurrent use.
 type configTxnManager struct {
-	mu             sync.Mutex
+	mu sync.Mutex
+	// commitMu serializes the whole of Commit — the durable write, the
+	// out-of-lock apply, and any rollback — so only one commit is ever in that
+	// pipeline at a time. commitDurable clears m.active and releases m.mu BEFORE
+	// the (slow) apply so Preview/status stay responsive; without commitMu a
+	// second Begin+Commit could advance the on-disk version during that apply
+	// window, and a failed apply's rollback would then clobber the newer version
+	// back to this txn's prior (silent loss of an acknowledged commit + version
+	// regression). commitMu is the coarser gate: it blocks only other commits,
+	// never the read/preview endpoints.
+	commitMu       sync.Mutex
 	active         *ConfigTransaction
 	store          ports.ConfigStore
 	configProvider func() *ports.BridgeConfig
@@ -176,26 +204,53 @@ func (m *configTxnManager) Patch(ctx context.Context, txnID string, overlay *por
 	return merged, warnings, nil
 }
 
+// txnMeta is an immutable snapshot of a transaction's identity and timing,
+// captured under the manager lock. Returning it alongside the preview lets a
+// handler render the response from ONE consistent snapshot rather than a second
+// Active() read that a concurrent TTL-expiry or DELETE can race to nil (which
+// then panics on a field access) or, worse, to a DIFFERENT transaction.
+type txnMeta struct {
+	ID         string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	PatchCount int
+}
+
+// metaLocked snapshots the active transaction's identity/timing. Must be called
+// with mu held and only after checkTxn has confirmed m.active is non-nil.
+func (m *configTxnManager) metaLocked() txnMeta {
+	return txnMeta{
+		ID:         m.active.ID,
+		CreatedAt:  m.active.CreatedAt,
+		ExpiresAt:  m.active.ExpiresAt,
+		PatchCount: m.active.PatchCount,
+	}
+}
+
 // Preview returns the current merged state of the transaction without
-// adding a new patch.
-func (m *configTxnManager) Preview(ctx context.Context, txnID string) (*ports.BridgeConfig, error) {
+// adding a new patch, together with a consistent metadata snapshot taken under
+// the same lock (so the caller never re-reads a transaction that a concurrent
+// expiry/rollback has cleared or replaced).
+func (m *configTxnManager) Preview(ctx context.Context, txnID string) (*ports.BridgeConfig, txnMeta, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if err := m.checkTxn(txnID); err != nil {
-		return nil, err
+		return nil, txnMeta{}, err
 	}
 
+	meta := m.metaLocked()
+
 	if m.active.merged != nil {
-		return m.active.merged, nil
+		return m.active.merged, meta, nil
 	}
 
 	merged, err := m.computeMerged(ctx)
 	if err != nil {
-		return nil, err
+		return nil, txnMeta{}, err
 	}
 	m.active.merged = merged
-	return merged, nil
+	return merged, meta, nil
 }
 
 // Commit validates the final merged config and writes it to the config
@@ -210,20 +265,95 @@ func (m *configTxnManager) Preview(ctx context.Context, txnID string) (*ports.Br
 // not perfectly atomic. For truly concurrent config management, use the
 // DynamoDB-backed config profile instead.
 func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Serialize the entire commit pipeline (durable write + out-of-lock apply +
+	// rollback). See the commitMu field comment: this prevents a concurrent
+	// commit from landing a durable write or running a second runtime swap
+	// inside this commit's apply window, which a blind rollback would otherwise
+	// clobber. m.mu is intentionally NOT held across the apply.
+	m.commitMu.Lock()
+	defer m.commitMu.Unlock()
 
-	if err := m.checkTxn(txnID); err != nil {
-		return 0, err
-	}
-
-	merged, err := m.computeMerged(ctx)
+	merged, newVersion, prior, applier, err := m.commitDurable(ctx, txnID)
 	if err != nil {
 		return 0, err
 	}
 
+	// Apply OUTSIDE the manager lock and on a context DETACHED from the request.
+	// The durable write already succeeded; the build/connect/drain that follows
+	// can take tens of seconds, and holding m.mu across it would block every
+	// other txn endpoint. Detaching from the request context means a client
+	// disconnect or write-deadline can no longer cancel the runtime swap
+	// mid-flight AFTER the durable write — the durable commit and the in-band
+	// apply must not be torn apart.
+	if applier != nil {
+		applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitApplyTimeout)
+		defer cancel()
+		if applyErr := applier(applyCtx, merged); applyErr != nil {
+			return m.rollbackAfterApplyFailure(ctx, newVersion, prior, applyErr)
+		}
+	}
+
+	return newVersion, nil
+}
+
+// rollbackAfterApplyFailure restores the previous on-disk config after a failed
+// in-band apply so a process restart recovers the last good config instead of
+// crash-looping on the rejected one (the "committed_not_applied restart bomb").
+// It reports rolled_back on success. When there is no previous config (first
+// write) or the restore write itself fails, disk still holds the rejected
+// config, so it falls back to committed_not_applied and the operator reconciles.
+func (m *configTxnManager) rollbackAfterApplyFailure(ctx context.Context, newVersion int, prior *ports.BridgeConfig, applyErr error) (int, error) {
+	if prior == nil {
+		// First write: nothing to roll back to. Disk holds the new (rejected)
+		// config; report committed_not_applied honestly.
+		return newVersion, fmt.Errorf("%w: version %d is on disk but the running runtime did not converge: %w",
+			errConfigApplyFailed, newVersion, applyErr)
+	}
+
+	// Restore on a FRESH context: the apply context may already be past its
+	// deadline (a timed-out apply), which would fail the restore write. The
+	// restore uses the same atomic Save path as the commit.
+	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitApplyTimeout)
+	defer cancel()
+	if restoreErr := m.store.Save(restoreCtx, prior); restoreErr != nil {
+		if m.logger != nil {
+			m.logger.Error("config commit: apply failed AND rollback failed; disk and runtime diverged",
+				"failed_version", newVersion, "restore_error", restoreErr, "apply_error", applyErr)
+		}
+		return newVersion, fmt.Errorf("%w: version %d is on disk but the running runtime did not converge, and rollback failed (%v): %w",
+			errConfigApplyFailed, newVersion, restoreErr, applyErr)
+	}
+
+	if m.logger != nil {
+		m.logger.Warn("config commit: apply failed; on-disk config rolled back to previous version",
+			"rejected_version", newVersion, "restored_version", prior.Version, "apply_error", applyErr)
+	}
+	return prior.Version, fmt.Errorf("%w: apply of version %d failed; disk restored to version %d: %w",
+		errConfigRolledBack, newVersion, prior.Version, applyErr)
+}
+
+// commitDurable performs the transactional, DURABLE portion of a commit under
+// the manager lock: compute+validate the merged config, guard against plugin-
+// option loss, CAS the on-disk version, Save, then clear the transaction and
+// stop its TTL timer. It returns the merged config, the new version, the PRIOR
+// on-disk config (for rollback if the post-lock apply fails; nil on first
+// write), and the applier to run AFTER the lock is released (nil when none is
+// wired). The lock is intentionally NOT held across the apply — see Commit.
+func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*ports.BridgeConfig, int, *ports.BridgeConfig, func(context.Context, *ports.BridgeConfig) error, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.checkTxn(txnID); err != nil {
+		return nil, 0, nil, nil, err
+	}
+
+	merged, err := m.computeMerged(ctx)
+	if err != nil {
+		return nil, 0, nil, nil, err
+	}
+
 	if _, valErr := m.store.Validate(ctx, merged); valErr != nil {
-		return 0, valErr
+		return nil, 0, nil, nil, valErr
 	}
 
 	// Guard the CRITICAL config-corruption class: a PATCH that touches an
@@ -236,16 +366,27 @@ func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error
 	// scalar PATCHes) and also correctly rejects transport changes attempted
 	// via PATCH, which cannot carry replacement options.
 	if err := guardNoConfigLoss(m.configProvider(), merged); err != nil {
-		return 0, err
+		return nil, 0, nil, nil, err
 	}
 
-	// CAS: read current on-disk version and compare with our base.
-	diskVersion, err := m.readDiskVersion(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("config commit: read disk version: %w", err)
+	// CAS: read the current on-disk config once. Its version drives the
+	// check-and-set, and the config itself is retained as the rollback target
+	// if the post-lock apply fails (Finding: committed_not_applied restart
+	// bomb). A missing file (fs.ErrNotExist) is first-write: version 0 and no
+	// prior config to restore.
+	prior, err := m.store.Load(ctx)
+	var diskVersion int
+	switch {
+	case err == nil:
+		diskVersion = prior.Version
+	case errors.Is(err, fs.ErrNotExist):
+		prior = nil
+		diskVersion = 0
+	default:
+		return nil, 0, nil, nil, fmt.Errorf("config commit: read disk version: %w", err)
 	}
 	if diskVersion != m.active.baseVersion {
-		return 0, fmt.Errorf("%w: expected version %d but file has version %d; re-read the config and retry",
+		return nil, 0, nil, nil, fmt.Errorf("%w: expected version %d but file has version %d; re-read the config and retry",
 			errVersionConflict, m.active.baseVersion, diskVersion)
 	}
 
@@ -253,23 +394,16 @@ func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error
 	merged.Version = newVersion
 
 	if err := m.store.Save(ctx, merged); err != nil {
-		return 0, fmt.Errorf("config write failed: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
 	}
 
-	// Apply to the running runtime in-band when an applier is wired. The
-	// durable write already succeeded, so an apply failure is reported to the
-	// operator (they must reconcile) rather than the API falsely claiming the
-	// runtime converged while it diverged. When no applier is wired,
-	// application is delegated to the file watcher (historical behavior).
-	if m.applier != nil {
-		if err := m.applier(ctx, merged); err != nil {
-			m.cleanup()
-			return newVersion, fmt.Errorf("%w: version %d is on disk but the running runtime did not converge: %w", errConfigApplyFailed, newVersion, err)
-		}
-	}
-
-	m.cleanup()
-	return newVersion, nil
+	// The durable write and version transition are complete, so the transaction
+	// is logically done regardless of the apply outcome. Clear it (and stop the
+	// TTL timer) NOW, before releasing the lock, so a long apply neither blocks
+	// other txn endpoints nor races the expiry timer into a spurious rollback.
+	applier := m.applier
+	m.cleanupLocked()
+	return merged, newVersion, prior, applier, nil
 }
 
 // guardNoConfigLoss returns an error when any plugin-config-bearing entry that
@@ -368,13 +502,6 @@ func (m *configTxnManager) Rollback(txnID string) error {
 
 	m.cleanup()
 	return nil
-}
-
-// Active returns the active transaction, or nil if none.
-func (m *configTxnManager) Active() *ConfigTransaction {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.active
 }
 
 // expire is called by the timeout timer to auto-rollback a stale transaction.

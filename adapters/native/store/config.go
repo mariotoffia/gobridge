@@ -45,12 +45,14 @@ type SQLiteConfig struct {
 	// independent of this knob. Accepts duration strings ("30s").
 	StaleClaimDuration time.Duration `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
 
-	// Retention (outbox only) is the window completed/expired outbox
-	// rows are kept before piggybacked compaction deletes them. Zero
-	// (unset) keeps the store default (one hour); a negative value
-	// disables compaction (rows kept forever). Deleting a terminal
-	// row releases its duplicate-detection identity, so keep this
-	// comfortably above any upstream redelivery window.
+	// Retention is the window completed/expired outbox rows (and, for a
+	// DLQ store, failed entries) are kept before piggybacked compaction
+	// deletes them. Zero (unset) keeps the outbox store default (one hour)
+	// and leaves the DLQ store's sweep DISABLED (entries kept forever); a
+	// negative value disables outbox compaction (rows kept forever).
+	// Deleting a terminal outbox row releases its duplicate-detection
+	// identity, so keep this comfortably above any upstream redelivery
+	// window.
 	Retention time.Duration `mapstructure:"retention" yaml:"retention" json:"retention"`
 }
 

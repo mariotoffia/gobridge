@@ -61,6 +61,16 @@ type Config struct {
 	// APIs. When nil, the Server uses the runtime passed to New().
 	RuntimeProvider func() ports.Runtime `json:"-"`
 
+	// BridgeController, when set, routes admin start/stop through the
+	// composition-root supervisor rather than the runtime directly. This makes
+	// POST /bridge/stop a CLEAN, deliberate pause (not process-suicide) and lets
+	// POST /bridge/start rebuild a fresh runtime afterwards — the runtime is
+	// single-use, so an in-place restart would always 409 (CRITICAL 1). Wired to
+	// bridge.Supervisor in the composition root. When nil, the handlers fall back
+	// to the runtime's own Start/Stop (legacy behavior, used by tests that hold
+	// only a runtime).
+	BridgeController BridgeController `json:"-"`
+
 	// ConfigStore is the persistence boundary used by the admin
 	// transactions API: validate / merge / save / load. The
 	// composition root supplies an implementation (typically backed
@@ -71,6 +81,17 @@ type Config struct {
 	// ConfigProvider returns the current effective BridgeConfig.
 	// Typically wired to bridge.Supervisor.Config().
 	ConfigProvider func() *ports.BridgeConfig `json:"-"`
+
+	// DegradedProvider reports whether live reconfiguration is currently
+	// degraded and a human-readable reason. "Degraded" means the bridge keeps
+	// serving its last good config but can no longer observe config changes
+	// (the supervisor's config-change stream closed, or a config layer's watcher
+	// cannot be re-established). Typically wired to combine
+	// bridge.Supervisor.Degraded() with config.Manager.WatchDegraded(). When
+	// set, the authenticated /deephealth endpoint surfaces a config_watch
+	// projection so operators can see a bridge running blind; when nil the
+	// projection is omitted (it is purely additive).
+	DegradedProvider func() (degraded bool, reason string) `json:"-"`
 
 	// AdminOperationTimeout is the context timeout applied to admin
 	// start/stop operations. Defaults to 30s when zero.
@@ -113,20 +134,39 @@ func DefaultConfig() Config {
 	}
 }
 
+// BridgeController is the composition-root seam the admin start/stop handlers
+// use to pause and resume the bridge through the supervisor. StopBridge performs
+// a clean deliberate stop (non-terminal, so /live stays 200 and the liveness
+// backstop does not restart the process); StartBridge rebuilds and starts a
+// fresh runtime (the runtime is single-use, so resume means build-anew).
+// bridge.Supervisor satisfies this interface.
+type BridgeController interface {
+	StartBridge(ctx context.Context) error
+	StopBridge(ctx context.Context) error
+}
+
 // Server manages the admin and monitor HTTP endpoints.
 type Server struct {
 	rt                 ports.Runtime
 	rtProvider         func() ports.Runtime
+	bridgeController   BridgeController
 	adminKeyProvider   func() shared.Secret
 	adminKeysProvider  func() map[string]shared.Secret
 	monitorKeyProvider func() shared.Secret
 	cfg                Config
 	logger             *slog.Logger
 	audit              ports.AuditLogger
+	metrics            ports.MetricsExporter // optional admin-plane metrics sink; nil = no-op
 	clk                clock.Clock
 	idGen              idGenFn
 	configTxn          *configTxnManager // nil when config management is disabled
-	authThrottle       *authThrottle
+	// adminThrottle and monitorThrottle are SEPARATE failed-auth rate limiters
+	// so a monitor-plane brute-forcer cannot fill a shared window and lock out
+	// the admin plane (and vice versa). Both throttle FAILED authentication
+	// only — a valid credential is checked first and always passes, so a bad-key
+	// spammer behind a shared LB/NAT peer cannot deny a valid operator.
+	adminThrottle   *authThrottle
+	monitorThrottle *authThrottle
 
 	admin    *http.Server
 	monitor  *http.Server
@@ -148,6 +188,15 @@ func WithServerLogger(l *slog.Logger) Option {
 // WithAuditLogger sets the audit logger for security-relevant operations.
 func WithAuditLogger(a ports.AuditLogger) Option {
 	return func(s *Server) { s.audit = a }
+}
+
+// WithMetrics sets the metrics exporter for admin-plane operational metrics
+// (DLQ redrive outcomes). Optional: a nil exporter (the default) makes emission
+// a no-op, so existing constructions that omit it are unaffected. Pass the SAME
+// exporter the runtime receives so admin and runtime metrics share one sink —
+// do not construct a second exporter.
+func WithMetrics(m ports.MetricsExporter) Option {
+	return func(s *Server) { s.metrics = m }
 }
 
 // WithClock sets the clock used for request timestamps, durations, and admin transaction time.
@@ -197,6 +246,9 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	} else {
 		s.rtProvider = func() ports.Runtime { return rt }
 	}
+	if cfg.BridgeController != nil {
+		s.bridgeController = cfg.BridgeController
+	}
 	if cfg.AdminAPIKeyProvider != nil {
 		s.adminKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.AdminAPIKeyProvider()) }
 	} else {
@@ -223,7 +275,8 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	if cfg.ConfigStore != nil && cfg.ConfigProvider != nil {
 		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, cfg.ConfigApplier, s.logger, s.clk)
 	}
-	s.authThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)
+	s.adminThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)
+	s.monitorThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)
 	return s
 }
 
@@ -293,17 +346,19 @@ func (s *Server) Start(_ context.Context) error {
 		return err
 	}
 
-	// TLS is opt-in via a cert/key pair. Loading here fails startup fast on a
-	// bad or unreadable pair rather than on the first request.
+	// TLS is opt-in via a cert/key pair. The reloader loads the pair here so
+	// startup fails fast on a bad or unreadable pair, then serves it through
+	// GetCertificate with an mtime-checked lazy reload so a cert-manager renewal
+	// (atomic file replace) is picked up without a process restart.
 	var tlsConf *tls.Config
 	if s.tlsEnabled() {
-		cert, err := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		cr, err := newCertReloader(s.cfg.TLSCertFile, s.cfg.TLSKeyFile, s.serverLogger())
 		if err != nil {
 			return fmt.Errorf("httpapi: load TLS keypair: %w", err)
 		}
 		tlsConf = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			GetCertificate: cr.getCertificate,
+			MinVersion:     tls.VersionTLS12,
 		}
 	}
 
@@ -357,16 +412,12 @@ func (s *Server) Start(_ context.Context) error {
 
 	go func() {
 		if err := s.admin.Serve(adminLn); err != nil && err != http.ErrServerClosed {
-			if s.logger != nil {
-				s.logger.Error("admin server error", "error", err)
-			}
+			s.serverLogger().Error("admin server error", "error", err)
 		}
 	}()
 	go func() {
 		if err := s.monitor.Serve(monitorLn); err != nil && err != http.ErrServerClosed {
-			if s.logger != nil {
-				s.logger.Error("monitor server error", "error", err)
-			}
+			s.serverLogger().Error("monitor server error", "error", err)
 		}
 	}()
 
@@ -394,6 +445,17 @@ func (s *Server) MonitorURL() string {
 // tlsEnabled reports whether an in-process TLS keypair is configured.
 func (s *Server) tlsEnabled() bool {
 	return s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != ""
+}
+
+// serverLogger returns the configured logger, or the package default when none
+// was injected, so a background listener that dies (Serve returning a non-
+// ErrServerClosed error) is never silently swallowed. Mirrors writeJSON's use
+// of the package-global slog for last-resort diagnostics.
+func (s *Server) serverLogger() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // Stop gracefully shuts down both HTTP servers.
@@ -481,6 +543,20 @@ func ValidateAdminKeys(keys map[string]string) error {
 		if err := validateAdminKeyEntry(name, len(k)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidateMonitorKey validates a raw monitor API key against the same floor
+// validateConfig enforces at startup: an empty key is allowed (the monitor key
+// is optional — an unset key means the monitor plane inherits admin-only auth),
+// but a non-empty key must be at least minAPIKeyLen characters. The composition
+// root MUST call this on every resolved/rotated monitor key so a hot reload
+// cannot install a below-floor key that startup would have rejected. It never
+// logs or returns key material (only the length bound appears in the error).
+func ValidateMonitorKey(key string) error {
+	if key != "" && len(key) < minAPIKeyLen {
+		return fmt.Errorf("httpapi: monitor API key must be at least %d characters when set", minAPIKeyLen)
 	}
 	return nil
 }
@@ -605,71 +681,85 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 
 func (s *Server) requireAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check the credential FIRST so a valid operator key ALWAYS passes,
+		// even from a peer whose window is throttled by someone else's failed
+		// attempts (a shared LB/NAT peer must not lock out a valid operator).
+		// Only a FAILED credential consults and feeds the throttle.
+		//
+		// TRADEOFF: because the key is compared on EVERY request before the
+		// throttle is consulted, the throttle shapes the failure RESPONSE (429
+		// vs 401) but no longer caps the rate at which guesses are TESTED — a
+		// throttled attacker's keys are still evaluated at line rate. Online
+		// brute-force resistance therefore rests entirely on key entropy (the
+		// 16-char floor enforces length, not randomness), so deployments MUST
+		// use high-entropy admin keys. Restoring a test-rate cap would
+		// reintroduce the shared-NAT lockout this ordering exists to prevent.
+		if name, ok := s.matchAPIKey(r, s.currentAdminAPIKeys()); ok {
+			s.adminThrottle.recordSuccess(throttleKeyFromRequest(r))
+			next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name)))
+			return
+		}
 		// Throttle key is the transport peer (RemoteAddr host), never the
 		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
 		client := throttleKeyFromRequest(r)
-		if s.authThrottle.throttled(client) {
+		if s.adminThrottle.throttled(client) {
 			// Audit only the transition into throttling (first reject per
 			// window), not every rejected request — a brute-forcer must not be
 			// able to write audit records at request line-rate.
-			if s.authThrottle.shouldAuditThrottle(client) {
+			if s.adminThrottle.shouldAuditThrottle(client) {
 				s.emitAudit(r, "auth.throttled", "admin", "", "failure", nil)
 			}
-			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
+			w.Header().Set("Retry-After", strconv.Itoa(s.adminThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}
-		name, ok := s.matchAPIKey(r, s.currentAdminAPIKeys())
-		if !ok {
-			s.authThrottle.recordFailure(client)
-			s.emitAudit(r, "auth.failure", "admin", "", "failure", nil)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
-			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
-			return
-		}
-		s.authThrottle.recordSuccess(client)
-		next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name)))
+		s.adminThrottle.recordFailure(client)
+		s.emitAudit(r, "auth.failure", "admin", "", "failure", nil)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-admin"`)
+		writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 	}
 }
 
 func (s *Server) requireMonitorAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check the credential FIRST (monitor key, or admin key as a superset)
+		// so a valid key ALWAYS passes regardless of the peer's throttle window;
+		// only a FAILED credential consults and feeds the monitor throttle. The
+		// monitor throttle is a SEPARATE scope from the admin throttle so a
+		// monitor-plane attacker cannot lock out the admin plane. Same tradeoff
+		// as requireAdminAuth: credential-first means the throttle no longer
+		// rate-caps guess EVALUATION, so monitor-key entropy is the sole online
+		// brute-force control.
+		monitorKey := s.currentMonitorAPIKey()
+		if !monitorKey.IsZero() && s.checkAPIKey(r, monitorKey) {
+			s.monitorThrottle.recordSuccess(throttleKeyFromRequest(r))
+			next(w, r)
+			return
+		}
+		if name, matched := s.matchAPIKey(r, s.currentAdminAPIKeys()); matched {
+			// Admin is a superset of monitor access.
+			s.monitorThrottle.recordSuccess(throttleKeyFromRequest(r))
+			next(w, r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name)))
+			return
+		}
 		// Throttle key is the transport peer (RemoteAddr host), never the
 		// client-controlled X-Forwarded-For; see throttleKeyFromRequest.
 		client := throttleKeyFromRequest(r)
-		if s.authThrottle.throttled(client) {
+		if s.monitorThrottle.throttled(client) {
 			// Audit only the transition into throttling (first reject per
 			// window), not every rejected request — a brute-forcer must not be
 			// able to write audit records at request line-rate.
-			if s.authThrottle.shouldAuditThrottle(client) {
+			if s.monitorThrottle.shouldAuditThrottle(client) {
 				s.emitAudit(r, "auth.throttled", "monitor", "", "failure", nil)
 			}
-			w.Header().Set("Retry-After", strconv.Itoa(s.authThrottle.retryAfterSeconds()))
+			w.Header().Set("Retry-After", strconv.Itoa(s.monitorThrottle.retryAfterSeconds()))
 			writeErr(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}
-		// Accept monitor key, or fall back to admin key (admin is a
-		// superset of monitor access).
-		ok := false
-		monitorKey := s.currentMonitorAPIKey()
-		if !monitorKey.IsZero() {
-			ok = s.checkAPIKey(r, monitorKey)
-		}
-		if !ok {
-			if name, matched := s.matchAPIKey(r, s.currentAdminAPIKeys()); matched {
-				ok = true
-				r = r.WithContext(context.WithValue(r.Context(), ctxKeyActor{}, name))
-			}
-		}
-		if !ok {
-			s.authThrottle.recordFailure(client)
-			s.emitAudit(r, "auth.failure", "monitor", "", "failure", nil)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-monitor"`)
-			writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
-			return
-		}
-		s.authThrottle.recordSuccess(client)
-		next(w, r)
+		s.monitorThrottle.recordFailure(client)
+		s.emitAudit(r, "auth.failure", "monitor", "", "failure", nil)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="gobridge-monitor"`)
+		writeErr(w, http.StatusUnauthorized, "invalid or missing API key")
 	}
 }
 

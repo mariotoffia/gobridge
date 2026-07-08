@@ -126,6 +126,16 @@ type SenderConfig struct {
 	// is empty (the group can still come from envelope headers).
 	FIFO bool
 
+	// MaxMessageBytes overrides the SQS message-size ceiling (body plus
+	// attributes) the sender enforces when selecting egress attributes.
+	// Zero keeps the 262144 (256 KiB) default; raise it only to match a
+	// queue whose MaximumMessageSize has been provisioned above 256 KiB,
+	// otherwise a large body silently drops ALL attributes — including the
+	// rank-0 idempotency-key / traceparent headers (Finding 4). The factory
+	// projects it from the plugin Config and applies it via
+	// WithMaxMessageBytes.
+	MaxMessageBytes int
+
 	// Client allows injecting a pre-built SQS client (for tests).
 	// When set, Region/Endpoint/Profile are ignored.
 	Client sqsAPI

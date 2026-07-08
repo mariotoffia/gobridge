@@ -133,17 +133,18 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 	}
 
 	recv := newReceiver(receiverConfig{
-		id:           spec.ID,
-		path:         path,
-		maxBodySize:  cfg.effectiveMaxBody(),
-		apiKey:       cfg.APIKey.Reveal(),
-		forwardToken: f.forwardToken,
-		dedupWindow:  cfg.effectiveDedupWindow(),
-		locator:      f.locator,
-		forwarder:    f.forwarder,
-		metrics:      f.metrics,
-		logger:       f.logger,
-		clock:        f.clock,
+		id:                  spec.ID,
+		path:                path,
+		maxBodySize:         cfg.effectiveMaxBody(),
+		apiKey:              cfg.APIKey.Reveal(),
+		forwardToken:        f.forwardToken,
+		dedupWindow:         cfg.effectiveDedupWindow(),
+		maxDispatchDuration: cfg.effectiveMaxDispatchDuration(),
+		locator:             f.locator,
+		forwarder:           f.forwarder,
+		metrics:             f.metrics,
+		logger:              f.logger,
+		clock:               f.clock,
 	})
 
 	if err := f.registerHandler("POST "+path, path, recv.ServeHTTP); err != nil {
@@ -173,17 +174,19 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 	}
 
 	sender := newSSESender(sseSenderConfig{
-		id:                spec.ID,
-		path:              path,
-		heartbeatInterval: cfg.effectiveHeartbeat(),
-		writeTimeout:      cfg.effectiveWriteTimeout(),
-		maxClients:        cfg.MaxClients,
-		apiKey:            cfg.APIKey.Reveal(),
-		redirectEndpoint:  cfg.RedirectEndpoint,
-		locator:           f.locator,
-		metrics:           f.metrics,
-		logger:            f.logger,
-		clock:             f.clock,
+		id:                 spec.ID,
+		path:               path,
+		heartbeatInterval:  cfg.effectiveHeartbeat(),
+		writeTimeout:       cfg.effectiveWriteTimeout(),
+		maxClients:         cfg.MaxClients,
+		clientBufferSize:   cfg.effectiveClientBufferSize(),
+		failOnZeroDelivery: cfg.FailOnZeroDelivery,
+		apiKey:             cfg.APIKey.Reveal(),
+		redirectEndpoint:   cfg.RedirectEndpoint,
+		locator:            f.locator,
+		metrics:            f.metrics,
+		logger:             f.logger,
+		clock:              f.clock,
 	})
 
 	if err := f.registerHandler("GET "+path, path, sender.ServeHTTP); err != nil {

@@ -39,15 +39,14 @@ future work.
   oldest-N selection (`stores.go:54-62`). DynamoDB answers it in SK order.
   Callers that need oldest-N selection use `Claim`, never `QueryPending`.
 
-- **DynamoDB: bounded candidate window.** A claim gathers up to
-  `claimCandidateWindowFactor * limit` candidates (`claimCandidateWindowFactor =
-  3`, `acl_store.go:82`) in SK order, then sorts them client-side oldest-first.
-  This restores oldest-first selection within each window.
-
-- **Accepted residual.** A partition whose ready backlog exceeds `3 * limit` can
-  leave an old record — one whose envelope ID sorts beyond the window — waiting a
-  few claim cycles. Progress stays oldest-first within each window
-  (`acl_store.go:75-81`). This is accepted, not a bug.
+- **DynamoDB: exhaustive partition scan, bounded retention.** A claim pages the
+  partition to exhaustion (until `LastEvaluatedKey == nil`) and RETAINS only the
+  oldest `claimRetentionFactor * limit` candidates by `(CreatedAt, Seq,
+  EnvelopeID)` (`claimRetentionFactor = 3`, `acl_store.go`), trimming the
+  retained set back whenever it grows past `2 * retain`. Because every claimable
+  record in the partition is CONSIDERED, the retained oldest-N are the TRUE
+  oldest-N — contract parity with the memory/SQLite `ORDER BY created_at, seq
+  LIMIT`.
 
 - **Per-partition fence row.** A single fence row per partition holds the
   monotonic `max_claim_version` and an atomic `seq_counter`
@@ -67,9 +66,17 @@ future work.
 
 - All three backends satisfy the same `Claim` ordering contract, verified by the
   shared storetest suite.
-- The DynamoDB residual is a few extra claim cycles for a starved old record on a
-  deep partition, not data loss and not permanent starvation. `OutboxDepth` and
-  `OutboxClaimConflicts` make the condition observable.
+- No starvation: every Claim considers every claimable record in the partition,
+  so an old record whose envelope ID sorts late can no longer be permanently
+  skipped — the liveness bug the bounded window had (H1). Client memory stays
+  bounded (~`2 * retain`) because the retained set is trimmed as it pages, and
+  cancellation is honoured between pages so a Claim never outlives its context.
+- Tradeoff: each Claim reads the WHOLE claimable backlog of the partition, so
+  draining N records costs ~`N / limit` scans (quadratic in a deep backlog). This
+  is observable — once a single Claim crosses `deepBacklogPageWarn` pages the
+  store emits a loud WARN and increments `DynamoDBOutboxClaimScanPages` (tagged by
+  partition). A sustained deep backlog is the signal to provision the deferred
+  `created_at` index below.
 - The fence row is a known hot spot on high-throughput partitions.
   `OutboxClaimConflicts` is the signal that would justify acting on it.
 
@@ -78,10 +85,13 @@ future work.
 Both are gated on `OutboxClaimConflicts` / age-skew evidence — neither is
 implemented, and neither should be until the metrics show it is warranted.
 
-1. **Exact global oldest-N.** Add a `created_at` range key (or a per-partition
-   `created_at` GSI) so the query returns records in age order, and shrink the
-   candidate window to `limit` (`acl_store.go:79-81`). Removes the residual
-   entirely at the cost of an extra index to write and migrate — see the
+1. **Age-ordered query.** Add a `created_at` range key (or a per-partition
+   `created_at` GSI) so the query returns records in age order, and shrink
+   retention from `claimRetentionFactor * limit` to `limit`. This removes the
+   O(backlog) per-Claim SCAN COST — the scan can stop after `limit` instead of
+   reading the whole partition — at the cost of an extra index to write and
+   migrate. Any such index must be provisioned by `CreateTable`/`EnsureTable` and
+   verified by the factory schema preflight, never hand-provisioned — see the
    [DynamoDB outbox GSI migration runbook](../runbooks/dynamodb-outbox-gsi-migration.md).
 
 2. **Resharded seq allocation.** Split the single per-partition `seq_counter`
@@ -91,11 +101,12 @@ implemented, and neither should be until the metrics show it is warranted.
 ## Rejected alternatives
 
 - **Claim DynamoDB items in raw SK order.** Random with respect to age; starves
-  late-sorting envelope IDs and breaks the ordering contract. The candidate
-  window exists to avoid exactly this.
+  late-sorting envelope IDs and breaks the ordering contract. The exhaustive
+  age-sorted scan exists to avoid exactly this.
 - **Add the `created_at` GSI now.** An index carries write cost and a migration
-  on every deployment. Deferred until `OutboxClaimConflicts` / age-skew evidence
-  shows the residual matters in practice.
+  on every deployment. Deferred until the deep-backlog scan cost
+  (`DynamoDBOutboxClaimScanPages` / the deep-backlog WARN) shows the per-Claim
+  O(backlog) scan matters in practice.
 - **Use `QueryPending` for selection.** It is count/preview semantics and not
   oldest-N on DynamoDB. Overloading it would silently reintroduce the starvation
-  the `Claim` window prevents.
+  the exhaustive scan prevents.

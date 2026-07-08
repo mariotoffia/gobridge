@@ -64,9 +64,13 @@ func budgetSnapshot(id string, replayCount int, firstAttempted, createdAt time.T
 func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest.Fake, metrics ports.MetricsExporter, logger *slog.Logger) (*Drainer, routing.RoutePolicy) {
 	policy := routing.RoutePolicy{}.WithDefaults()
 	d := New(Config{
-		OutboxStore:  store,
-		Sender:       sender,
-		DLQ:          dlq.New(nil),
+		OutboxStore: store,
+		Sender:      sender,
+		// A real (fake) DLQ store so HasStore() is true: WithDefaults() sets
+		// OnPermanentFailure=FailureDLQ, and H3 now routes poison/permanent to the
+		// DROP path when no store is configured. These tests assert the DLQ path
+		// (emitDLQ → DLQEntries), so they must run with a store behind the router.
+		DLQ:          dlq.New(&fakeDLQStore{}),
 		RouteID:      "route-budget",
 		PartitionKey: "SESSION#sess-budget",
 		Policy:       policy,

@@ -46,6 +46,28 @@ var ErrUnknownTransformType = &shared.BridgeError{
 	Message: "transform: unknown transform type",
 }
 
+// ErrPayloadTargetEmpty signals a non-header (payload) mapping with an empty
+// Target. An empty payload target has no destination key, so the mapping could
+// never write; validated at construction rather than silently no-op'ing per
+// message. Setup error: permanent invalid-payload.
+var ErrPayloadTargetEmpty = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "transform: payload target must not be empty",
+}
+
+// ErrDefaultValueTransform signals a mapping whose DefaultValue is incompatible
+// with its own Transform (e.g. DefaultValue "abc" + Transform "int"). Validated
+// once at construction by transforming the default: otherwise, with
+// FailOnError=false and Required=false, the mapping would vanish silently on
+// every message that falls back to the default. Setup error: permanent
+// invalid-payload.
+var ErrDefaultValueTransform = &shared.BridgeError{
+	Code:    shared.ErrCodeInvalidPayload,
+	Class:   shared.ErrorPermanent,
+	Message: "transform: default value is incompatible with its transform",
+}
+
 // Processor is a processor that transforms message payloads using JSONPath.
 type Processor struct {
 	config          Config
@@ -101,7 +123,22 @@ func New(cfg Config) (*Processor, error) {
 			}
 			pm.headerKey = key
 			pm.toHeader = true
+		} else if m.Target == "" {
+			// A payload target with no key has no destination.
+			return nil, ErrPayloadTargetEmpty.With("source", m.Source)
 		}
+
+		// A DefaultValue that its own Transform cannot convert would make the
+		// mapping silently vanish on every fallback message; catch it once here.
+		if m.DefaultValue != nil && m.Transform != "" {
+			if _, err := applyTransform(m.DefaultValue, m.Transform); err != nil {
+				return nil, ErrDefaultValueTransform.
+					With("transform", string(m.Transform)).
+					With("source", m.Source).
+					Wrap(err)
+			}
+		}
+
 		p.parsers = append(p.parsers, pm)
 
 		if m.Required {
@@ -229,7 +266,15 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		if !ok {
 			continue
 		}
-		setNestedValue(ensureOutput(), pm.mapping.Target, value)
+		if err := setNestedValue(ensureOutput(), pm.mapping.Target, value); err != nil {
+			if p.config.FailOnError || pm.mapping.Required {
+				// Deterministic w.r.t. the payload shape; a retry cannot
+				// succeed. Classify as rejected so the runtime DLQs.
+				return shared.ErrInvalidPayload.Wrap(err)
+			}
+			// Best-effort: skip this mapping, leaving the crossed scalar intact.
+			continue
+		}
 		payloadApplied = true
 	}
 

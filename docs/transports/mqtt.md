@@ -11,8 +11,10 @@ MQTT requires a session. Multiple receivers and senders can share one session
 
 The `options:` block is decoded into the transport's nested typed config: session
 connection settings live under an `options.session` sub-block and sender settings
-under an `options.sender` sub-block. A flat `options:` block (keys directly under
-`options:`) is rejected by the strict decoder.
+under an `options.sender` sub-block. The only other key allowed directly under
+`options:` is `credentials_uri`, which resolves broker credentials from a store.
+Putting session or sender keys flat under `options:` is rejected by the strict
+decoder.
 
 Because MQTT advertises `plan_driven_subscriptions`, every MQTT receiver
 subscribes only when the session manager reconciles the session plan. The bridge
@@ -39,12 +41,16 @@ session-takeover loop); the adapter overrides it to `false` and logs a warning
 On a resumed (`clean_start=false`) session the broker replays its queued
 backlog on CONNACK before the route runners have registered their topic
 filters, so briefly some publishes match no handler. Those are buffered for
-`unmatched_grace` (default 30s, restarted on every reconnect); anything still
-unmatched afterwards is treated as an **orphan subscription** — typically a
-route removed from config whose broker-side subscription survived the resume.
-The adapter acks-and-drops such a publish and UNSUBSCRIBEs its exact topic, so
-an orphan subscription from a removed route no longer stalls in-order acking for
-the rest of the shared session. See [`paho/doc.go`](../../adapters/mqtt/transport/paho/doc.go)
+`unmatched_grace` (default 30s, restarted on every reconnect). After the
+window a still-unmatched publish splits two ways. If a route the session
+still wants covers the topic — its receiver handler only registered late —
+the adapter acks-and-drops it and counts `MQTTRouterCoveredDropped`: **real
+message loss** on a live route, so any non-zero value is alarming. Otherwise
+it is an **orphan subscription** — typically a route removed from config
+whose broker-side subscription survived the resume — and the adapter
+acks-and-drops it, UNSUBSCRIBEs its exact topic, and counts
+`MQTTRouterUnmatchedDropped` (benign cleanup), so the orphan no longer stalls
+in-order acking for the rest of the shared session. See [`paho/doc.go`](../../adapters/mqtt/transport/paho/doc.go)
 for the full mechanism.
 
 ## YAML Example
@@ -112,11 +118,12 @@ senders:
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the pinger. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |
-| `reconnect_delay` | duration | autopaho default (10s) | Constant delay between failed reconnect attempts after the first immediate retry |
+| `reconnect_delay` | duration | `10s` (`DefaultReconnectDelay`) | **Base** delay of a jittered exponential reconnect backoff. Starts at `reconnect_delay`, grows 2× (`reconnectBackoffFactor`) per failed attempt, caps at `reconnect_max_delay`, then equal-jitters to `[d/2, d)` to desynchronise a reconnecting fleet (anti thundering-herd). `0` → `10s`. |
+| `reconnect_max_delay` | duration | `2m` (`DefaultReconnectMaxDelay`) | Caps the jittered-exponential reconnect envelope. Must be ≥ `reconnect_delay`; a smaller value is clamped up to the base at Start. `0` → `2m`. |
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at Start with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
-| `receive_maximum` | int | `0` (paho default 65535) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
-| `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is acked, dropped, counted (`MQTTRouterUnmatchedDropped`), and its exact topic is UNSUBSCRIBEd (deduped, one warn per topic) to converge orphan broker-side subscriptions on a resumed session. `0` → `DefaultUnmatchedGrace` (30s). |
+| `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
+| `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is acked and dropped, split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **real message loss** on a live route (`MQTTRouterCoveredDropped` — any non-zero value is alarming). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is benign cleanup (`MQTTRouterUnmatchedDropped`), and its exact topic is UNSUBSCRIBEd (deduped, one warn per topic) to converge. `0` → `DefaultUnmatchedGrace` (30s). |
 | `username` | string | -- | Authentication username |
 | `password` | string | -- | Authentication password (redacted on marshal) |
 | `will.topic` | string | -- | Last Will and Testament topic (required when `will` is set; no wildcards) |
@@ -142,6 +149,22 @@ senders:
 | `timeout` | duration | `30s` | Per-publish timeout |
 | `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
+## Credential URI (`options.credentials_uri`)
+
+`credentials_uri` is a top-level key under `options:`, a sibling of `session:`
+and `sender:` (not a session key). It names a credential-store URI (`file://…`,
+`pms://…`) that the runtime credential resolver reads at build time. The resolver
+merges the resolved `username`, `password`, and TLS material
+(`tls_cert`/`tls_key`/`tls_ca`) into the session options and removes the
+`credentials_uri` key before the MQTT transport sees the config, so the secrets
+never appear in the YAML. See
+[HTTP ingress with credentials](../scenarios/15-http-ingress-with-credentials.md)
+for the resolver walkthrough.
+
+Token-style auth is supported: a password (or bearer token) with no username
+sets the CONNECT password flag independently of the username flag, so a
+token-in-password credential is no longer dropped for want of a username.
+
 ## Settlement Semantics
 
 MQTT deliveries are acknowledged **after** the bridge settles them, not on
@@ -150,6 +173,18 @@ receipt. The adapter connects with manual acknowledgement and holds the PUBACK
 downstream send or outbox persist succeeds. Acks are released in receive order,
 so an in-flight message survives a crash and is redelivered by the broker when
 a Persistent/Exclusive session resumes.
+
+**Ephemeral sessions have a loss window.** An Ephemeral session keeps no offline
+retention: during any disconnect the broker queues nothing for it, so messages
+it would have delivered are lost with no redelivery on reconnect, and a runtime
+reconfig swap leaves an unavoidable delivery gap. Outbound in-flight QoS 1/2
+state lives only in memory and is lost on a bridge restart or crash. Persistent
+and Exclusive sessions (`clean_start=false` with a non-zero
+`session_expiry_interval`) close the offline and reconfig gaps — the broker
+queues inbound deliveries while the client is away and redelivers them on
+resume — but they do **not** make that outbound in-flight QoS 1/2 state
+durable: a bridge restart or crash still loses it, because it never leaves the
+in-memory packet store.
 
 ## Resilience Behavior
 
@@ -171,6 +206,11 @@ a Persistent/Exclusive session resumes.
   root context and is terminal -- the client never reconnects and `Health()`
   would still report the session up. TLS material rotates through the same
   `Reload` path. See [Credential Rotation](../credentials-rotation.md).
+- **Rotation during an outage recovers on its own.** A credential or TLS rotation
+  `Reload` that fails because the broker is unreachable during the outage no
+  longer leaves the session permanently dead. The session signals terminal death
+  and the runtime supervisor re-Starts it (with jittered backoff), so it
+  reconnects by itself once the broker returns.
 
 ## Backpressure and dispatch
 
@@ -186,8 +226,9 @@ returns:
   at-least-once is preserved as broker backpressure.
 - The **pre-registration pending buffer** absorbs the CONNACK backlog that
   arrives before receivers register (see [Session Modes](#session-modes)). It is
-  bounded by both an entry count (65535) and a **64 MiB** payload ceiling
-  (`defaultPendingBytesLimit`). Publishes held here count on `MQTTRouterBuffered`;
+  bounded by both an entry count sized to `receive_maximum` (default **1024**)
+  and a **64 MiB** payload ceiling (`defaultPendingBytesLimit`). Publishes held
+  here count on `MQTTRouterBuffered`;
   a QoS 0 publish that would overflow the buffer is dropped (`MQTTRouterDropped`),
   while a QoS 1/2 publish evicts the oldest QoS 0 entry to make room.
 
@@ -196,8 +237,12 @@ returns:
 > `receive_maximum` -- neither is byte-bounded. Only the pending buffer enforces
 > a byte ceiling. A burst of large-payload QoS 1/2 publishes can therefore pin
 > roughly `(1024 + receive_maximum) × payload` bytes in memory before the
-> blocking backpressure engages. Bound it operationally: cap `receive_maximum`
-> and the upstream payload size for large-message workloads.
+> blocking backpressure engages -- 1024 is the dispatch-queue count ceiling, the
+> second term is paho's in-flight window. Because `receive_maximum` now defaults
+> to **1024** instead of 65535, the default worst case falls from
+> `(1024 + 65535) × payload` to `(1024 + 1024) × payload` -- roughly 32× smaller.
+> Bound it further operationally: cap `receive_maximum` and the upstream payload
+> size for large-message workloads.
 
 ## Shared subscriptions (`$share`)
 
@@ -205,7 +250,7 @@ MQTT declares the `shared_consumer` capability. A subscription filter of the
 form `$share/<group>/<filter>` is a shared subscription: the broker
 load-balances the topic's deliveries across every client in `<group>`, so
 several bridge instances (or several receivers) consume one logical subscription
-as a scale-out group rather than each receiving a full copy.
+as a scale-out group instead of each receiving a full copy.
 
 Declare the shared filter in the receiver's `topics[]` exactly as the broker
 expects it (`$share/<group>/<filter>`). The adapter strips the `$share/<group>/`

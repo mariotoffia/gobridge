@@ -216,3 +216,9 @@ senders:
         qos: 2
         retain: true  # broker retains last message
 ```
+
+Note: QoS 2 gives exactly-once only *within* a continuous MQTT session. The
+bridge keeps in-flight QoS 2 state (the PUBREL/PUBCOMP handshake) in an
+in-memory packet store, so a bridge restart or crash mid-handshake can duplicate
+or lose the egress message despite QoS 2. For durable end-to-end exactly-once,
+pair QoS 2 with a downstream idempotency or dedup mechanism.

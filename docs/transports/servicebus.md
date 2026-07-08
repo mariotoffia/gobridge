@@ -147,6 +147,11 @@ broker duplicate detection never silently discards a scheduled retry. Both
 reserved properties are stripped at ingress before headers reach the envelope,
 so an external producer cannot inject them.
 
+The scheduled delay is honored only on a queue. On a topic subscription a
+delayed `Retry` falls back to an immediate `Abandon` — the delay is dropped
+because a scheduled message addresses the topic and would fan out to sibling
+subscriptions. Redelivery still happens; only the delay is lost.
+
 ## Credential Rotation
 
 When credentials rotate, the receiver/sender swaps to a freshly built client

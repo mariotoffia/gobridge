@@ -25,7 +25,14 @@ func (s *otelSpan) End() {
 	s.span.End()
 }
 
+// SetError records err on the span and marks it failed. A nil err is a
+// no-op, matching the noop span (ports.Span carries no non-nil
+// precondition): the OTel span must tolerate it too rather than panic in
+// otel's RecordError/err.Error() on a nil interface.
 func (s *otelSpan) SetError(err error) {
+	if err == nil {
+		return
+	}
 	s.span.RecordError(err)
 	s.span.SetStatus(codes.Error, err.Error())
 }

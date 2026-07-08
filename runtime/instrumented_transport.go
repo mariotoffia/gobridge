@@ -190,6 +190,15 @@ func (r *instrumentedReceiverStartedSignaler) Started() <-chan struct{} {
 
 // instrumentedDelivery wraps a Delivery to count visibility extensions
 // and record ack/delete latency.
+//
+// HAZARD (F10): embedding ports.Delivery promotes every current and FUTURE
+// method of the wrapped Delivery, but a wrapper is opaque to interface probing —
+// a caller doing `d.(SomeOptionalCap)` sees THIS concrete type, not the inner
+// delivery, so any optional capability the underlying Delivery grows (e.g. a
+// future DeadLetter() or Lease() sub-interface) is silently masked. If such an
+// optional Delivery capability is ever added, it MUST be explicitly forwarded
+// here (add the method and delegate to d.Delivery, or expose the inner value via
+// an Unwrap) so this wrapper does not hide it.
 type instrumentedDelivery struct {
 	ports.Delivery
 	metrics  ports.MetricsExporter

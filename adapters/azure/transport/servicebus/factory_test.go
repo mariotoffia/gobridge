@@ -2,6 +2,7 @@ package servicebus
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -26,16 +27,67 @@ func TestFactory_NewSession_ReturnsNilNil(t *testing.T) {
 	}
 }
 
-// verifies Factory reports visibility extension capability.
+// verifies Factory declares the PeekLock source capabilities (parity
+// with SQS): visibility extension, source redelivery, delayed send.
 func TestFactory_Capabilities(t *testing.T) {
 	f := NewFactory(nil)
 	caps := f.Capabilities()
 
-	if len(caps) != 1 {
-		t.Fatalf("expected 1 capability, got %d", len(caps))
+	want := []ports.Capability{
+		ports.CapVisibilityExtension,
+		ports.CapSourceRedelivery,
+		ports.CapDelayedSend,
 	}
-	if caps[0] != ports.CapVisibilityExtension {
-		t.Errorf("expected %q, got %q", ports.CapVisibilityExtension, caps[0])
+	if len(caps) != len(want) {
+		t.Fatalf("expected %d capabilities, got %d: %v", len(want), len(caps), caps)
+	}
+	for _, w := range want {
+		if !slices.Contains(caps, w) {
+			t.Errorf("Factory.Capabilities() missing %q; got %v", w, caps)
+		}
+	}
+}
+
+// F4: a ReceiveAndDelete route must NOT advertise CapVisibilityExtension
+// (Extend is a no-op) nor CapSourceRedelivery (no redelivery) — otherwise
+// the validator's "no retry + no DLQ = silent drop" check is masked. A
+// PeekLock route advertises the full set.
+func TestConfig_Capabilities_ModeAware(t *testing.T) {
+	peek := Config{Receiver: ReceiverParams{QueueName: "q"}}.Capabilities()
+	for _, w := range []ports.Capability{
+		ports.CapVisibilityExtension,
+		ports.CapSourceRedelivery,
+		ports.CapDelayedSend,
+	} {
+		if !slices.Contains(peek, w) {
+			t.Errorf("PeekLock Config.Capabilities() missing %q; got %v", w, peek)
+		}
+	}
+
+	// FIX 4: a PeekLock topic subscription (no QueueName) cannot honour a
+	// delayed Retry — scheduling would fan out to sibling subscriptions,
+	// so it falls back to an immediate Abandon and CapDelayedSend is
+	// withheld. CapVisibilityExtension/CapSourceRedelivery REMAIN, so the
+	// route still clears the validator's "no retry + no DLQ" gate.
+	sub := Config{Receiver: ReceiverParams{TopicName: "t", SubscriptionName: "s"}}.Capabilities()
+	if slices.Contains(sub, ports.CapDelayedSend) {
+		t.Errorf("subscription Config.Capabilities() must NOT advertise CapDelayedSend; got %v", sub)
+	}
+	for _, w := range []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery} {
+		if !slices.Contains(sub, w) {
+			t.Errorf("subscription Config.Capabilities() missing %q; got %v", w, sub)
+		}
+	}
+
+	// receive_mode matched case-insensitively, mirroring receiveAndDelete().
+	for _, mode := range []string{"ReceiveAndDelete", "receiveanddelete"} {
+		rad := Config{Receiver: ReceiverParams{QueueName: "q", ReceiveMode: mode}}.Capabilities()
+		if slices.Contains(rad, ports.CapVisibilityExtension) {
+			t.Errorf("ReceiveAndDelete (%q) must not advertise CapVisibilityExtension; got %v", mode, rad)
+		}
+		if slices.Contains(rad, ports.CapSourceRedelivery) {
+			t.Errorf("ReceiveAndDelete (%q) must not advertise CapSourceRedelivery; got %v", mode, rad)
+		}
 	}
 }
 

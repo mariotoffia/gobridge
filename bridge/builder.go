@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -25,6 +26,10 @@ type Builder struct {
 	endpointResolver ports.EndpointResolver
 	hook             ports.DeliveryHook
 	validator        ports.BlueprintValidator
+	// regErrs accumulates deferred registration errors (e.g. a duplicate
+	// processor name) so a chaining Register* call can still return *Builder.
+	// prepare() surfaces them before doing any work, failing the Build.
+	regErrs []error
 }
 
 // BuilderOption configures a Builder.
@@ -124,6 +129,14 @@ func WithAuditLogger(a ports.AuditLogger) BuilderOption {
 	}
 }
 
+// Compile-time guarantee that the poll wrapper this builder constructs
+// satisfies the refresher's optional reactiveCredentialStore capability
+// (its Refresh method). The wiring is a runtime type assertion in
+// CredentialRefresher.NotifyAuthFailure, so without this a rename of
+// PollBasedWrapper.Refresh would silently disable reactive credential
+// recovery (the F2 hard-rotation fast-path) instead of breaking the build.
+var _ reactiveCredentialStore = (*credentials.PollBasedWrapper)(nil)
+
 // effectivePushStore returns the push credential store the build should
 // use: an explicitly-provided one wins; otherwise a poll wrapper is built
 // lazily around the recorded pull store using the fully-resolved logger so
@@ -133,9 +146,24 @@ func (b *Builder) effectivePushStore() ports.PushCredentialStore {
 		return b.pushCredStore
 	}
 	if b.pollCredStore != nil {
-		return credentials.NewPollBasedWrapper(b.pollCredStore, b.pollCredConfig, credentials.WithPollLogger(b.logger))
+		return credentials.NewPollBasedWrapper(b.pollCredStore, b.pollCredConfig,
+			credentials.WithPollLogger(b.logger),
+			credentials.WithPollMetrics(b.metrics))
 	}
 	return nil
+}
+
+// pullCacheNeedsRotationInvalidation reports whether a rotation observed by the
+// refresher must explicitly invalidate the pull cache (contract C4). Only an
+// EXPLICITLY-registered push store (WithPushCredentialStore) rotates out of band
+// from the pull cache and can leave it holding stale material. The lazy poll
+// wrapper (effectivePushStore's fallback, used by WithPolledCredentialStore)
+// wraps this SAME resolver and refreshes its cache via ResolveUncached on the
+// detecting poll BEFORE publishing, so invalidating there would delete the
+// just-cached fresh entry and blind F5 stale-serve for up to a poll interval
+// after every rotation (adversarial Finding 1).
+func (b *Builder) pullCacheNeedsRotationInvalidation() bool {
+	return b.pushCredStore != nil
 }
 
 // NewBuilder creates a builder from the given configuration.
@@ -156,20 +184,38 @@ func NewBuilder(cfg *ports.BridgeConfig, opts ...BuilderOption) *Builder {
 // name (e.g. "mqtt", "sqs"). Returns the builder for chaining. Named for
 // symmetry with RegisterStoreFactory.
 func (b *Builder) RegisterTransportFactory(name string, factory ports.TransportFactory) *Builder {
+	if _, exists := b.transports[name]; exists {
+		b.regErrs = append(b.regErrs, fmt.Errorf("bridge: transport factory %q already registered", name))
+		return b
+	}
 	b.transports[name] = factory
 	return b
 }
 
 // RegisterStoreFactory registers a store factory under the given name
 // (e.g. "dynamodb", "memory", "sqlite"). Returns the builder for chaining.
+// A duplicate name is recorded as a deferred error surfaced at Build.
 func (b *Builder) RegisterStoreFactory(name string, factory ports.StoreFactory) *Builder {
+	if _, exists := b.storeFactories[name]; exists {
+		b.regErrs = append(b.regErrs, fmt.Errorf("bridge: store factory %q already registered", name))
+		return b
+	}
 	b.storeFactories[name] = factory
 	return b
 }
 
 // RegisterProcessor registers a named processor that can be referenced
 // from route definitions. Returns the builder for chaining.
+//
+// A duplicate name is NOT silently overwritten (which would make the losing
+// processor vanish from every route referencing the name): the first
+// registration is kept and the duplicate is recorded as a deferred error that
+// Build surfaces, naming the offending processor.
 func (b *Builder) RegisterProcessor(name string, proc ports.Processor) *Builder {
+	if _, exists := b.processors[name]; exists {
+		b.regErrs = append(b.regErrs, fmt.Errorf("bridge: processor %q already registered", name))
+		return b
+	}
 	b.processors[name] = proc
 	return b
 }

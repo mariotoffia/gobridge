@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -129,31 +130,37 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	// processed — preserving per-group order without serialising in the
 	// shared route runner. Detected from the resolved URL's `.fifo`
 	// suffix so a QueueName-only config is covered after resolution.
-	if isFIFOQueue(queueURL) && r.cfg.MaxMessages != 1 {
+	//
+	// The effective value is kept in a local (Finding 10): mutating
+	// r.cfg.MaxMessages would race a second (mis)use of Run against the
+	// shared config and permanently pin a re-pointed queue to 1.
+	maxMessages := r.cfg.MaxMessages
+	if isFIFOQueue(queueURL) && maxMessages != 1 {
 		if r.logger != nil {
 			r.logger.Warn("sqs: forcing max_messages=1 for FIFO source to preserve per-group ordering",
 				"queue_url", queueURL,
 				"configured_max_messages", r.cfg.MaxMessages,
 			)
 		}
-		r.cfg.MaxMessages = 1
+		maxMessages = 1
 	}
 
 	if logging.DebugEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelDebug, "sqs: receiver starting",
 			"queue_url", queueURL,
-			"max_messages", r.cfg.MaxMessages,
+			"max_messages", maxMessages,
 			"visibility_timeout", r.cfg.VisibilityTimeout,
 			"auto_extend", r.cfg.autoExtendEnabled(),
 		)
 	}
 
-	return r.pollLoop(ctx, queueURL, emit)
+	return r.pollLoop(ctx, queueURL, maxMessages, emit)
 }
 
 func (r *Receiver) pollLoop(
 	ctx context.Context,
 	queueURL string,
+	maxMessages int32,
 	emit func(context.Context, ports.Delivery) error,
 ) error {
 	backoff := newPollBackoffFromConfig(r.cfg)
@@ -166,11 +173,13 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
-		results, err := r.pollAndConvert(ctx, queueURL, pollTimeout)
+		results, err := r.pollAndConvert(ctx, queueURL, maxMessages, pollTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			r.metrics.Counter(MetricSQSPollErrors, 1,
+				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("sqs: ReceiveMessage failed, retrying",
@@ -275,6 +284,14 @@ func (b *pollBackoff) next() time.Duration {
 
 	jitter := time.Duration(float64(delay) * 0.25 * (2*rand.Float64() - 1))
 	delay += jitter
+
+	// Clamp the jittered delay to the configured ceiling: jitter is applied
+	// AFTER b.current was capped, so a +25% jitter would otherwise return up
+	// to 1.25*PollBackoffMax (Finding 11). Downward jitter is preserved so
+	// the backoff still de-synchronises competing pollers below the cap.
+	if delay > b.max {
+		delay = b.max
+	}
 
 	b.current = time.Duration(float64(b.current) * b.multiplier)
 	if b.current > b.max {

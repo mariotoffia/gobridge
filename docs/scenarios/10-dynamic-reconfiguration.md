@@ -104,6 +104,7 @@ import (
     fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
     nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
     "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+    "github.com/mariotoffia/gobridge/ports"
 )
 
 func main() {
@@ -112,12 +113,16 @@ func main() {
 
     logger := slog.Default()
 
-    // 1. Load initial config from file
-    fileSource := fileconfig.NewSource("bridge.yaml")
+    // 1. Build the plugin registry, register the linked adapters, and load
+    //    config. NewSource and NewWatcher both require the *ports.Registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = nativestore.Register(reg)
+    fileSource := fileconfig.NewSource("bridge.yaml", reg)
     baseCfg, _ := fileSource.Load(ctx)
 
-    // 2. Create file watcher using config_watch settings
-    fileWatcher := fileconfig.NewWatcher("bridge.yaml",
+    // 2. Create file watcher using config_watch settings (same registry)
+    fileWatcher := fileconfig.NewWatcher("bridge.yaml", reg,
         fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
         fileconfig.WithLogger(logger),
     )
@@ -133,7 +138,7 @@ func main() {
     sup := bridge.NewSupervisor(
         bridge.WithSupervisorLogger(logger),
         bridge.WithReconfigStrategy(
-            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second),
+            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil),
         ),
         bridge.WithOnSwap(func(ev bridge.SwapEvent) {
             if ev.Error != nil {
@@ -160,7 +165,7 @@ func main() {
 
 Key points:
 
-- **`NewWindowedStrategy(10s, 30s)`** -- Debounce with a 10-second quiet period and a 30-second hard deadline. If edits keep arriving, the latest config is applied at most 30 seconds after the first change.
+- **`NewWindowedStrategy`** -- Debounce with a 10-second quiet period and a 30-second hard deadline. If edits keep arriving, the latest config is applied at most 30 seconds after the first change.
 - **`WithOnSwap`** -- Callback invoked after every swap attempt, successful or not. Useful for alerting and metrics.
 - **`sup.Run`** -- Blocks until the context is cancelled. Config change failures are logged but do not stop the supervisor.
 
@@ -228,8 +233,8 @@ Three built-in strategies control when config changes trigger a rebuild.
 | Strategy | Constructor | Behaviour | Best For |
 |----------|-------------|-----------|----------|
 | `DirectStrategy` | `NewDirectStrategy()` | Every change triggers immediate rebuild | Development |
-| `DebouncedStrategy` | `NewDebouncedStrategy(quietPeriod)` | Waits for quiet period with no new changes; resets timer on each change | Burst edits |
-| `WindowedStrategy` | `NewWindowedStrategy(quietPeriod, maxDelay)` | Like Debounced, but forces emit after `maxDelay` even if changes keep arriving | Production |
+| `DebouncedStrategy` | `NewDebouncedStrategy(quietPeriod, clk)` | Waits for quiet period with no new changes; resets timer on each change | Burst edits |
+| `WindowedStrategy` | `NewWindowedStrategy(quietPeriod, maxDelay, clk)` | Like Debounced, but forces emit after `maxDelay` even if changes keep arriving | Production |
 
 ### Strategy Timing
 
@@ -320,7 +325,7 @@ Implement the `ReconfigStrategy` interface for custom behavior:
 
 ```go
 type ReconfigStrategy interface {
-    Filter(ctx context.Context, in <-chan *config.BridgeConfig) <-chan *config.BridgeConfig
+    Filter(ctx context.Context, in <-chan *ports.BridgeConfig) <-chan *ports.BridgeConfig
 }
 ```
 

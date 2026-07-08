@@ -132,6 +132,15 @@ type router struct {
 	// unsubscribe issues a best-effort UNSUBSCRIBE for an orphan topic.
 	// Set by NewSession; nil in tests / the legacy Route path.
 	unsubscribe func(topic string)
+	// covered reports whether a concrete publish topic is still covered by
+	// a subscription the session wants. It lets dropUnmatched split a
+	// post-grace ack-and-drop into REAL live-route loss (covered: a
+	// still-desired subscription whose handler registered late) versus
+	// benign orphan cleanup (M-3). Set by NewSession (wired to
+	// Session.topicCovered); nil in tests / the legacy Route path, where
+	// every drop is treated as an orphan (previous behaviour). MUST be
+	// invoked without r.mu held (it takes the session mutex).
+	covered func(topic string) bool
 	// unsubscribed dedups the orphan warn log + unsubscribe per topic.
 	// Guarded by mu.
 	unsubscribed map[string]struct{}
@@ -149,6 +158,8 @@ type router struct {
 	dropCount        atomic.Int64 // messages dropped (pending-buffer overflow)
 	bufferedCount    atomic.Int64 // messages held for a not-yet-registered handler
 	unmatchedDropped atomic.Int64 // orphan messages acked-and-dropped past grace
+	coveredDropped   atomic.Int64 // covered-topic messages acked-and-dropped past grace (real loss)
+	overflowDropped  atomic.Int64 // QoS 1/2 messages acked-and-dropped on in-grace pending overflow (real loss)
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -229,6 +240,15 @@ func withUnmatchedGrace(d time.Duration) routerOption {
 // unsubscribe-on-resume hygiene (ack-and-drop still happens).
 func withUnsubscribe(fn func(topic string)) routerOption {
 	return func(r *router) { r.unsubscribe = fn }
+}
+
+// withCovered installs the predicate the router uses to tell a REAL
+// live-route loss (a still-desired subscription whose handler registered
+// late) from benign orphan cleanup when it acks-and-drops a publish past
+// the grace window (M-3). Nil treats every post-grace drop as an orphan
+// (the legacy/test behaviour).
+func withCovered(fn func(topic string) bool) routerOption {
+	return func(r *router) { r.covered = fn }
 }
 
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
@@ -443,14 +463,41 @@ func (r *router) enqueueUnsub(topic string) {
 // dropUnmatched acks (freeing the broker in-flight slot) and drops one
 // publish that matched no registered handler past the grace window. The
 // ack is exactly the PUBACK/PUBCOMP the buffered orphan would otherwise
-// never send; QoS 0 carries no ack. Metric + counter make the otherwise
-// silent drop observable.
+// never send; QoS 0 carries no ack.
+//
+// The drop is split (M-3) by whether the topic is still COVERED by a
+// subscription the session wants:
+//   - covered: a live route whose receiver handler registered later than
+//     the grace window. Dropping is unavoidable (the broker already acked
+//     the publish to us), but this is REAL message loss, so it is counted
+//     on its own metric (MetricMQTTRouterCoveredDropped) and WARN-logged.
+//   - orphan: a route removed from config whose broker subscription
+//     survives on the resumed session. Benign cleanup, counted on
+//     MetricMQTTRouterUnmatchedDropped.
+//
+// covered() is consulted without r.mu held (dispatch and sweepUnmatched
+// both release r.mu before calling here); a nil covered predicate treats
+// every drop as an orphan (legacy/test behaviour).
 func (r *router) dropUnmatched(pub *pahov5.Publish, ack func() error) {
-	r.unmatchedDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1)
+	isCovered := r.covered != nil && r.covered(pub.Topic)
+	if isCovered {
+		r.coveredDropped.Add(1)
+		r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1)
+		if r.logger != nil {
+			r.logger.Warn("mqtt: DROPPED live-route publish past startup grace — a still-desired "+
+				"subscription's receiver handler never registered; MESSAGE LOST (acked to unblock the "+
+				"in-order ack stream)",
+				"topic", pub.Topic,
+				"qos", pub.QoS,
+			)
+		}
+	} else {
+		r.unmatchedDropped.Add(1)
+		r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1)
+	}
 	if ack != nil {
 		if err := ack(); err != nil {
-			logging.Debug(r.logger, "mqtt: ack of dropped unmatched (orphan) publish failed",
+			logging.Debug(r.logger, "mqtt: ack of dropped unmatched publish failed",
 				"topic", pub.Topic,
 				"error", err,
 			)
@@ -592,13 +639,53 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 					"qos", pub.QoS,
 				)
 			} else {
+				// Keep the overflow AGGREGATE (dropCount) for every overflow
+				// drop — QoS 0 and QoS 1/2 alike — as Stats' `dropped` total.
+				// The WIRE metric, however, is emitted INSIDE the QoS split
+				// (mirroring dropUnmatched's covered/orphan split) so real
+				// QoS 1/2 loss lands on its own dedicated counter and is not
+				// masked by best-effort QoS 0 drops sharing MetricMQTTRouterDropped.
 				r.dropCount.Add(1)
-				r.metrics.Counter(MetricMQTTRouterDropped, 1)
-				if r.logger != nil {
-					r.logger.Warn("mqtt: dropped message (pending buffer full)",
-						"topic", pub.Topic,
-						"qos", pub.QoS,
-					)
+				if pub.QoS > 0 {
+					// F-2: the pending buffer is full of un-evictable QoS 1/2
+					// entries, so this QoS 1/2 publish is dropped. We MUST
+					// ack it before dropping. paho's acksTracker flushes acks
+					// strictly in RECEIVE ORDER: a single permanently
+					// un-acked packet head-of-line-blocks every LATER ack,
+					// pins the broker's Receive-Maximum window, and deadlocks
+					// ingress on a live connection. Redelivery is already
+					// forfeited by dropping, so holding the ack hostage only
+					// adds the deadlock. This is REAL message loss — count it
+					// on the DEDICATED MetricMQTTRouterOverflowDropped (NOT the
+					// generic best-effort MetricMQTTRouterDropped) and warn
+					// loudly so it is alarming, distinctly from a QoS 0 drop.
+					r.overflowDropped.Add(1)
+					r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1)
+					if ack != nil {
+						if err := ack(); err != nil {
+							logging.Debug(r.logger, "mqtt: ack of overflow-dropped QoS 1/2 publish failed",
+								"topic", pub.Topic,
+								"error", err,
+							)
+						}
+					}
+					if r.logger != nil {
+						r.logger.Warn("mqtt: DROPPED QoS 1/2 publish (pending buffer full during startup grace) — "+
+							"MESSAGE LOST; acked to keep paho's in-order ack stream draining (prevents ingress deadlock)",
+							"topic", pub.Topic,
+							"qos", pub.QoS,
+						)
+					}
+				} else {
+					// QoS 0 overflow: best-effort, no delivery contract — the
+					// generic drop metric, drop-without-ack.
+					r.metrics.Counter(MetricMQTTRouterDropped, 1)
+					if r.logger != nil {
+						r.logger.Warn("mqtt: dropped QoS 0 publish (pending buffer full during startup grace)",
+							"topic", pub.Topic,
+							"qos", pub.QoS,
+						)
+					}
 				}
 			}
 			return
@@ -982,6 +1069,23 @@ func (r *router) Stats() (received, dropped int64) {
 // dropped after the startup grace window elapsed.
 func (r *router) UnmatchedDroppedCount() int64 {
 	return r.unmatchedDropped.Load()
+}
+
+// CoveredDroppedCount returns the number of publishes on STILL-COVERED
+// topics acked and dropped after the startup grace window elapsed — real
+// live-route loss (a subscription whose receiver handler registered too
+// late), distinct from benign orphan cleanup (M-3).
+func (r *router) CoveredDroppedCount() int64 {
+	return r.coveredDropped.Load()
+}
+
+// OverflowDroppedCount returns the number of QoS 1/2 publishes acked and
+// dropped because the startup pending buffer was full during the grace window
+// — real message loss (F-2 / M-1), distinct from best-effort QoS 0 overflow
+// drops (folded into Stats' `dropped` aggregate) and from the covered/orphan
+// past-grace drops (CoveredDroppedCount / UnmatchedDroppedCount).
+func (r *router) OverflowDroppedCount() int64 {
+	return r.overflowDropped.Load()
 }
 
 // RegisterEnvelope adapts a domain-shaped handler so port-side files

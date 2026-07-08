@@ -60,8 +60,21 @@ type SessionOptions struct {
 	Will *WillOptions `mapstructure:"will" yaml:"will,omitempty" json:"will,omitempty"`
 	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
-	// broker can send before receiving PUBACKs. Default 0 means use the
-	// paho library default (65535). Set higher for high-throughput scenarios.
+	// broker may have in flight (sent but not yet PUBACK/PUBCOMP-settled)
+	// at once. Zero means "unset" and is coerced by NewSession to
+	// DefaultReceiveMaximum (1024) — 0 is not a legal MQTT v5 Receive
+	// Maximum. Set higher for high-throughput scenarios.
+	//
+	// MEMORY EQUATION: paho buffers up to ReceiveMaximum full publishes
+	// under manual acknowledgement, and this adapter's startup pending
+	// buffer is sized to the same value, so worst-case buffered memory is
+	// roughly `receive_maximum × max_payload_size` (bounded independently
+	// by a 64 MiB payload-byte ceiling on the pending buffer). Example:
+	// 65535 × 256 KiB ≈ 16 GiB — the reason the default was lowered.
+	//
+	// ponytail: the effective default was lowered from the MQTT protocol
+	// maximum (65535) to 1024 (M-5). Operators who need the old ceiling set
+	// receive_maximum explicitly.
 	//
 	// ponytail: Receive Maximum bounds ONLY the QoS 1/2 un-acked window —
 	// it does not throttle QoS 0, so a QoS 0 flood can still outrun a slow
@@ -70,11 +83,20 @@ type SessionOptions struct {
 	// redelivery blast radius after a crash (and a smaller startup pending
 	// buffer, which is sized to this value).
 	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
-	// ReconnectDelay is the constant delay between failed reconnection
-	// attempts after the first immediate retry. Zero means use the
-	// autopaho default (10s). Shorter values speed up reconnection in
+	// ReconnectDelay is the BASE delay for the jittered exponential
+	// reconnect backoff (M-4): the delay before the first reconnect
+	// attempt after a failure, grown by reconnectBackoffFactor per
+	// subsequent attempt up to ReconnectMaxDelay, then equal-jittered to
+	// spread a reconnecting fleet (anti thundering-herd). Zero uses
+	// DefaultReconnectDelay (10s). Shorter values speed up reconnection in
 	// test environments but increase load on the broker in production.
 	ReconnectDelay time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
+	// ReconnectMaxDelay caps the jittered-exponential reconnect backoff
+	// envelope (M-4). The per-attempt base delay grows from ReconnectDelay
+	// up to this ceiling; equal-jitter is then applied within the envelope.
+	// Zero uses DefaultReconnectMaxDelay (2m). Must be >= ReconnectDelay;
+	// a smaller value is clamped up to the base at Start.
+	ReconnectMaxDelay time.Duration `mapstructure:"reconnect_max_delay" yaml:"reconnect_max_delay" json:"reconnect_max_delay"`
 	// UnmatchedGrace bounds the startup window during which an incoming
 	// publish that matches NO registered receiver filter is BUFFERED
 	// (un-acked) rather than acked-and-dropped. It exists because on a
@@ -116,7 +138,16 @@ type ReceiverOptions struct {
 // topic to detect ungraceful death. A graceful Close (normal
 // DISCONNECT) does not trigger the will.
 type WillOptions struct {
-	Topic   string `mapstructure:"topic" yaml:"topic" json:"topic"`
+	Topic string `mapstructure:"topic" yaml:"topic" json:"topic"`
+	// Payload is the will message body. It is a string, so only UTF-8 /
+	// text wills are expressible through config today.
+	//
+	// ponytail: binary will payloads are not supported via config. A
+	// base64-decoded `payload_base64` key (decoded into a []byte will body)
+	// is the deferred option; it was left out here to avoid widening the
+	// config schema and the decode/validation/precedence surface for a
+	// rarely-used path. Callers needing a binary will can construct
+	// WillOptions programmatically once the field is widened.
 	Payload string `mapstructure:"payload" yaml:"payload" json:"payload"`
 	QoS     byte   `mapstructure:"qos" yaml:"qos" json:"qos"`
 	Retain  bool   `mapstructure:"retain" yaml:"retain" json:"retain"`
@@ -195,6 +226,35 @@ const DefaultPersistentSessionExpiry uint32 = 86400
 // a genuine orphan subscription pin the broker's in-flight window for
 // long.
 const DefaultUnmatchedGrace = 30 * time.Second
+
+// DefaultReceiveMaximum is the effective MQTT v5 Receive Maximum applied
+// by NewSession when receive_maximum is unset (0). It was deliberately
+// lowered from the protocol maximum (65535) so that worst-case buffered
+// memory — roughly `receive_maximum × max_payload_size` (paho's in-flight
+// QoS 1/2 window plus this adapter's equally-sized startup pending buffer)
+// — stays bounded by default. 1024 in-flight QoS 1/2 publishes is ample
+// throughput for the bridge workload while capping a large-payload flood
+// at ~gigabyte-fraction rather than multi-gigabyte. Operators who need the
+// old ceiling set receive_maximum explicitly (M-5).
+const DefaultReceiveMaximum uint16 = 1024
+
+// Reconnect-backoff defaults (M-4). autopaho's reconnect loop calls
+// ReconnectBackoff(attempt) before each (re)connect; attempt 0 (the first
+// try) is always 0 delay. From attempt 1 the base delay grows
+// exponentially by reconnectBackoffFactor up to DefaultReconnectMaxDelay,
+// then equal-jitter spreads a reconnecting fleet so instances that all
+// lost a shared broker do not retry in lockstep (thundering herd).
+const (
+	// DefaultReconnectDelay is the base (attempt-1) reconnect delay when
+	// reconnect_delay is unset. Matches the historical autopaho default.
+	DefaultReconnectDelay = 10 * time.Second
+	// DefaultReconnectMaxDelay caps the reconnect-backoff envelope when
+	// reconnect_max_delay is unset.
+	DefaultReconnectMaxDelay = 2 * time.Minute
+	// reconnectBackoffFactor is the per-attempt exponential growth factor
+	// of the base delay before jitter.
+	reconnectBackoffFactor = 2.0
+)
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
 //
@@ -292,6 +352,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
+	}
+	if v, ok := optDuration(m, "reconnect_max_delay"); ok {
+		opts.ReconnectMaxDelay = v
 	}
 	if v, ok := optDuration(m, "unmatched_grace"); ok {
 		opts.UnmatchedGrace = v

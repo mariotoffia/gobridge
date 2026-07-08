@@ -47,6 +47,7 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 
 	t.Run("PersistAndQueryPending", func(t *testing.T) { testPersistAndQueryPending(t, store) })
 	t.Run("PersistDuplicate", func(t *testing.T) { testPersistDuplicate(t, store) })
+	t.Run("PersistIdentityPartitionScoped", func(t *testing.T) { testPersistIdentityPartitionScoped(t, store) })
 	t.Run("PersistFanOut", func(t *testing.T) { testPersistFanOut(t, store) })
 	t.Run("PersistPartialOverlap", func(t *testing.T) { testPersistPartialOverlap(t, store) })
 	t.Run("PersistBatchInternalDuplicate", func(t *testing.T) { testPersistBatchInternalDuplicate(t, store) })
@@ -58,6 +59,7 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("CompleteWithWrongToken", func(t *testing.T) { testCompleteWithWrongToken(t, store) })
 	t.Run("ExpireMarksEligible", func(t *testing.T) { testExpireMarksEligible(t, store) })
 	t.Run("ExpireSkipsCompleted", func(t *testing.T) { testExpireSkipsCompleted(t, store) })
+	t.Run("ExpireScopedToPartition", func(t *testing.T) { testExpireScopedToPartition(t, store) })
 	t.Run("QueryPendingOnlyPending", func(t *testing.T) { testQueryPendingOnlyPending(t, store) })
 	t.Run("QueryPendingRespectsPartitionKey", func(t *testing.T) { testQueryPendingRespectsPartitionKey(t, store) })
 	t.Run("FullLifecycle", func(t *testing.T) { testFullLifecycle(t, store) })
@@ -465,7 +467,7 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now())
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-exp")
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -479,6 +481,45 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected 0 pending after expire, got %d", len(pending))
+	}
+}
+
+// testExpireScopedToPartition proves Expire is partition-scoped (M1): a sweep
+// for one partition must NOT expire another partition's pending-expired records,
+// even though both are past their expiry. A drainer holding partition S1's lease
+// must never destroy S2's records.
+func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	past := time.Now().Add(-1 * time.Hour)
+	r1 := makeRecord(t, "expscope-1", "env-expscope-1", "bind-expscope-1", "sess-expscope-1", "route-1", past)
+	r2 := makeRecord(t, "expscope-2", "env-expscope-2", "bind-expscope-2", "sess-expscope-2", "route-1", past)
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r1, r2}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// Sweep only partition 1.
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expscope-1")
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 expired (only partition 1's record), got %d", n)
+	}
+
+	// Partition 1's record is gone from pending; partition 2's remains.
+	p1, err := store.QueryPending(ctx, "SESSION#sess-expscope-1", 10)
+	if err != nil {
+		t.Fatalf("query p1: %v", err)
+	}
+	if len(p1) != 0 {
+		t.Fatalf("expected 0 pending in swept partition 1, got %d", len(p1))
+	}
+	p2, err := store.QueryPending(ctx, "SESSION#sess-expscope-2", 10)
+	if err != nil {
+		t.Fatalf("query p2: %v", err)
+	}
+	if len(p2) != 1 {
+		t.Fatalf("M1: unswept partition 2 must retain its pending record, got %d", len(p2))
 	}
 }
 
@@ -498,7 +539,7 @@ func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now())
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expsk")
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

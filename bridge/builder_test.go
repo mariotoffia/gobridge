@@ -106,7 +106,9 @@ func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ persistence.Lease
 func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
-func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) { return 0, nil }
+func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time, _ string) (int, error) {
+	return 0, nil
+}
 func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }
@@ -1054,6 +1056,66 @@ func TestBuilder_AutoExtendSkipsVisibilityTimeoutCheck(t *testing.T) {
 		defer stopCancel()
 		_ = rt.Stop(stopCtx)
 	})
+}
+
+// fakeCapabilityConfig is a receiver PluginConfig that satisfies
+// ports.CapabilityConfig, letting a test assert the builder threads a
+// per-route source-capability set (e.g. ASB ReceiveAndDelete, which
+// redelivers nothing) over the transport Factory's transport-wide
+// Capabilities() constant.
+type fakeCapabilityConfig struct {
+	caps []ports.Capability
+}
+
+func (fakeCapabilityConfig) Kind() string                       { return "sqs" }
+func (fakeCapabilityConfig) Validate() error                    { return nil }
+func (c fakeCapabilityConfig) Capabilities() []ports.Capability { return c.caps }
+
+// TestBuilder_ReceiverConfigCapabilitiesOverrideFactory proves a per-route
+// receiver config (ports.CapabilityConfig) wins over the transport
+// Factory's transport-wide Capabilities() constant (C14 F4). The fake sqs
+// factory declares CapVisibilityExtension, under which failed messages are
+// treated as redeliverable and the retry-fallback silent-drop check is
+// skipped. testConfig has no DLQ store and does not set AllowRetryDrop, so
+// the ONLY thing keeping its route valid is that redelivery capability.
+//
+//   - caps=nil models ASB ReceiveAndDelete (Extend is a no-op, the message
+//     is already removed on receive): the route must now be REJECTED at
+//     build as a silent-drop config.
+//   - caps=[CapSourceRedelivery] models a mode that can redeliver: the same
+//     route must still build clean, proving the override does not
+//     over-reject and threads a non-empty set correctly.
+//
+// If the builder ignored the config and used the factory constant, the
+// nil-caps case would not error — so this is a true regression guard.
+func TestBuilder_ReceiverConfigCapabilitiesOverrideFactory(t *testing.T) {
+	tests := []struct {
+		name      string
+		caps      []ports.Capability
+		wantError bool
+	}{
+		{name: "receive_and_delete_no_redelivery_rejected", caps: nil, wantError: true},
+		{name: "redelivery_capable_allowed", caps: []ports.Capability{ports.CapSourceRedelivery}, wantError: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Receivers[0].Config = fakeCapabilityConfig{caps: tc.caps}
+
+			_, err := NewBuilder(cfg).
+				RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+				RegisterTransportFactory("sqs", &fakeTransportFactory{}).
+				RegisterStoreFactory("memory", &fakeStoreFactory{}).
+				Build(context.Background())
+
+			if tc.wantError {
+				require.Error(t, err, "no redelivery capability + no DLQ must fail the route at build (F4)")
+				assert.Contains(t, err.Error(), "does not support retry/redelivery")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 // fakeValidatingSender is a fakeSender that also implements

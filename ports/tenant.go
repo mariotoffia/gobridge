@@ -28,8 +28,34 @@ type TenantValidator interface {
 // (needed for quota enforcement) lives in the optional TenantUsageReader
 // extension below rather than widening this one, so existing
 // increment-only trackers keep compiling.
+//
+// # In-flight crash-decay contract (HARD CONTRACT)
+//
+// A tracker whose state is SHARED across bridge instances (e.g. a Redis or
+// DynamoDB counter used to enforce a cross-instance MaxInFlight ceiling) MUST
+// bound its in-flight counts against instance death. The tenant processor
+// brackets each delivery with a paired IncrementInFlight(+1) / (-1): the +1
+// lands as the delivery is admitted and the -1 runs once the delivery settles.
+// If the instance is killed (kill -9, OOM, hardware loss) between the two, the
+// +1 is durable but the -1 never runs — the tenant's shared in-flight count is
+// permanently inflated. Enough such leaks and the tenant is throttled forever
+// (usage.InFlight stays >= MaxInFlight) with no path back to deliverable.
+//
+// A conforming SHARED tracker therefore MUST make each in-flight increment
+// self-healing rather than eternal — for example by modelling each +1 as a
+// TTL-leased item the store auto-expires (so a crashed instance's counts decay
+// on their own), or by implementing the optional TenantUsageReconciler below so
+// the embedder can actively reap stranded counts on instance restart / lease
+// takeover. A purely additive shared counter with no decay is NOT a conforming
+// implementation. (A per-instance / in-memory tracker is exempt: its counts die
+// with the process.)
 type TenantUsageTracker interface {
 	IncrementMessages(ctx context.Context, tenantID string, count int64) error
+	// IncrementInFlight adjusts the tenant's in-flight delivery count by delta
+	// (+1 on admission, -1 on settle). See the type-level crash-decay contract:
+	// a SHARED implementation MUST bound the +1 against instance death (TTL
+	// lease or TenantUsageReconciler) so a crash between the +1 and its paired
+	// -1 does not strand the tenant over-quota permanently.
 	IncrementInFlight(ctx context.Context, tenantID string, delta int64) error
 }
 
@@ -47,4 +73,21 @@ type TenantUsage struct {
 // TenantUsageTracker so existing increment-only trackers keep compiling.
 type TenantUsageReader interface {
 	Usage(ctx context.Context, tenantID string) (TenantUsage, error)
+}
+
+// TenantUsageReconciler is an optional extension a shared TenantUsageTracker
+// MAY implement to actively reap in-flight counts stranded by a crashed
+// instance, as an alternative to passive TTL decay (see the TenantUsageTracker
+// crash-decay contract). The embedder calls ReconcileInFlight on instance
+// restart / lease takeover; it returns the number of stranded in-flight units
+// reclaimed for the tenant.
+//
+// ponytail: this is a documented EXTENSION POINT only — the runtime deliberately
+// wires no epoch/reconcile machinery to it, because no tracker ships with
+// GoBridge (trackers are operator-supplied) and coupling the runtime to a
+// hypothetical reconcile lifecycle would be speculative. An operator that ships
+// a shared tracker implements this (or TTL decay) and drives it from their own
+// instance-lifecycle hook.
+type TenantUsageReconciler interface {
+	ReconcileInFlight(ctx context.Context, tenantID string) (reaped int64, err error)
 }

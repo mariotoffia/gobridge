@@ -58,10 +58,24 @@ it on a receiver reachable by untrusted producers would let them spoof
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
+| `on_filtered` | string | no | `drop` | `drop` or `dlq` |
 | `send_timeout` | duration | no | `30s` | Timeout for individual send operations |
 | `depth_cache_ttl` | duration | no | `1s` | How long outbox depth counts are cached |
 | `allow_unfenced` | bool | no | false | Allow direct_hold with shared consumer sources (risk: no fencing) |
 | `allow_retry_drop` | bool | no | false | Suppress error when source cannot retry and no DLQ is configured |
+
+**Filtered messages (`on_filtered`):**
+
+A *filtered* message is one a processor intentionally discards by returning
+`shared.ErrMessageFiltered` -- for example a filter processor whose allow-list or
+deny-list rejects it. This is a routine outcome, not a fault, and is counted in
+the `MessagesFiltered` metric. Unlike `on_expired` and `on_permanent_failure`,
+which default to `dlq`, `on_filtered` defaults to `drop`: a filtered message is
+dropped-with-metric and reaches the DLQ only when `on_filtered: dlq` is set
+explicitly **and** a DLQ store is configured. Keeping it separate from
+`on_permanent_failure` stops a high-volume filter from flooding the DLQ through
+the permanent-failure sink. The default changed in this release -- see the
+[migration note](release-notes.md#routing).
 
 ### `routes[].policy.backoff` -- Retry Backoff
 
@@ -354,7 +368,7 @@ type DeliveryHook interface {
 | `OnSettled` | `egress` | Message dropped (no DLQ, retry unsupported) | `Err` set, `Terminal=true` |
 | `OnSettled` | `egress` | Message expired before send | `Err=ErrMessageExpired`, `Terminal=true` |
 
-`OnAttempt` fires on **every** attempt including retries. `OnSettled` fires **exactly once** when the message reaches a terminal state.
+`OnAttempt` fires on **every** attempt including retries. `OnSettled` fires after the message reaches a terminal state — for the SharedOutbox path, after the terminal store transition Completes. A failed Complete re-claims the record and defers the hook to the successful retry, so `OnSettled` never double-fires; conversely a crash in the window between a durable Complete and the hook can skip it for that one record (the settlement itself stays durable). Treat it as **at-most-once per completed record**, not exactly once.
 
 ### Event structs
 

@@ -430,8 +430,10 @@ func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testi
 
 	require.Equal(t, []string{"removed/route/1"}, fake.unsubscribed(),
 		"the covered topic must NOT be unsubscribed; only the true orphan is")
-	require.Equal(t, int64(2), sess.Router().UnmatchedDroppedCount(),
-		"both publishes are acked-and-dropped (the covered one unrecoverably, per protocol)")
+	require.Equal(t, int64(1), sess.Router().UnmatchedDroppedCount(),
+		"only the true orphan is counted as benign orphan cleanup (M-3 metric split)")
+	require.Equal(t, int64(1), sess.Router().CoveredDroppedCount(),
+		"the covered topic's drop is counted as REAL live-route loss, not orphan cleanup (M-3)")
 
 	// The still-live route works once its handler registers: subsequent
 	// publishes are delivered rather than dropped — proof it was not killed.

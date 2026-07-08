@@ -165,7 +165,10 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	case ActionPass:
 		return next(ctx, env)
 	case ActionDrop:
-		return shared.ErrMessageFiltered
+		// Attribute the drop to this processor (low-cardinality, operator-named)
+		// so the runtime's MessagesFiltered metric can carry a processor tag.
+		// errors.Is(_, ErrMessageFiltered) still holds (same Code).
+		return shared.ErrMessageFiltered.With(shared.TagKeyProcessor, p.Name())
 	case ActionRoute:
 		// Do not mutate the envelope if the runtime already timed out /
 		// cancelled: it may have moved this envelope on already.

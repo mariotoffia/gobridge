@@ -41,6 +41,9 @@ func TestRoutePolicy_WithDefaults(t *testing.T) {
 	if p.OnPermanentFailure != routing.FailureDLQ {
 		t.Fatalf("OnPermanentFailure: got %s, want %s", p.OnPermanentFailure, routing.FailureDLQ)
 	}
+	if p.OnFiltered != routing.FilteredDrop {
+		t.Fatalf("OnFiltered: got %s, want %s (filter-drops default to drop, NOT the DLQ)", p.OnFiltered, routing.FilteredDrop)
+	}
 	if p.DispatchMode != routing.DispatchSingle {
 		t.Fatalf("DispatchMode: got %s, want %s", p.DispatchMode, routing.DispatchSingle)
 	}
@@ -57,6 +60,7 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 		ReplayBudget:       42 * time.Minute,
 		OnExpired:          routing.ExpiredDrop,
 		OnPermanentFailure: routing.FailureDrop,
+		OnFiltered:         routing.FilteredDLQ,
 		DispatchMode:       routing.DispatchFanOut,
 		AckAfter:           routing.AckAfterOutboxPersist,
 		Backoff: routing.BackoffPolicy{
@@ -80,6 +84,9 @@ func TestRoutePolicy_WithDefaults_PreservesExplicit(t *testing.T) {
 	}
 	if p.OnPermanentFailure != routing.FailureDrop {
 		t.Fatal("explicit OnPermanentFailure should be preserved")
+	}
+	if p.OnFiltered != routing.FilteredDLQ {
+		t.Fatal("explicit OnFiltered should be preserved")
 	}
 	if p.DispatchMode != routing.DispatchFanOut {
 		t.Fatal("explicit DispatchMode should be preserved")
@@ -228,6 +235,99 @@ func TestFailureAction_Constants(t *testing.T) {
 	}
 }
 
+// TestFilteredAction_Constants validates that FilteredAction enum values are distinct and non-empty.
+func TestFilteredAction_Constants(t *testing.T) {
+	values := []routing.FilteredAction{
+		routing.FilteredDrop,
+		routing.FilteredDLQ,
+	}
+	seen := make(map[routing.FilteredAction]bool, len(values))
+	for _, v := range values {
+		if v == "" {
+			t.Fatal("FilteredAction constant must not be empty")
+		}
+		if seen[v] {
+			t.Fatalf("duplicate FilteredAction: %q", v)
+		}
+		seen[v] = true
+	}
+}
+
+// TestFilteredAction_IsValid pins the enum's IsValid contract: only the two
+// declared values are valid; the empty value and any typo are not.
+func TestFilteredAction_IsValid(t *testing.T) {
+	tests := []struct {
+		value routing.FilteredAction
+		valid bool
+	}{
+		{routing.FilteredDrop, true},
+		{routing.FilteredDLQ, true},
+		{"", false},
+		{"DLQ", false},
+		{"wat", false},
+	}
+	for _, tt := range tests {
+		if got := tt.value.IsValid(); got != tt.valid {
+			t.Fatalf("FilteredAction(%q).IsValid() = %v, want %v", tt.value, got, tt.valid)
+		}
+	}
+}
+
+// TestRoutePolicy_WithDefaults_FilteredDefaultsDrop is the domain half of F1:
+// an unset OnFiltered defaults to drop, NOT the DLQ. This is the default that
+// decouples a filter-drop from the permanent-failure DLQ sink.
+func TestRoutePolicy_WithDefaults_FilteredDefaultsDrop(t *testing.T) {
+	p := routing.RoutePolicy{}.WithDefaults()
+	if p.OnFiltered != routing.FilteredDrop {
+		t.Fatalf("OnFiltered default = %q, want %q", p.OnFiltered, routing.FilteredDrop)
+	}
+	// An unrecognised value is reset to the default by WithDefaults.
+	p = routing.RoutePolicy{OnFiltered: "bogus"}.WithDefaults()
+	if p.OnFiltered != routing.FilteredDrop {
+		t.Fatalf("OnFiltered invalid value reset = %q, want %q", p.OnFiltered, routing.FilteredDrop)
+	}
+}
+
+// TestRoutePolicy_Validate_OnFiltered pins the strict-validation gate: an empty
+// OnFiltered validates (means default), a declared value validates, and a typo
+// is rejected as a permanent InvalidConfig error — mirroring OnPermanentFailure.
+func TestRoutePolicy_Validate_OnFiltered(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   routing.FilteredAction
+		wantErr bool
+	}{
+		{name: "empty allowed (use default)", value: "", wantErr: false},
+		{name: "drop allowed", value: routing.FilteredDrop, wantErr: false},
+		{name: "dlq allowed", value: routing.FilteredDLQ, wantErr: false},
+		{name: "typo rejected", value: "queue", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := routing.RoutePolicy{OnFiltered: tt.value}.Validate()
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error for an invalid OnFiltered")
+			}
+			var be *shared.BridgeError
+			if !errors.As(err, &be) {
+				t.Fatalf("want *shared.BridgeError, got %T", err)
+			}
+			if be.Code != shared.ErrCodeInvalidConfig {
+				t.Fatalf("error code = %v, want %v", be.Code, shared.ErrCodeInvalidConfig)
+			}
+			if be.Class != shared.ErrorPermanent {
+				t.Fatalf("error class = %v, want %v", be.Class, shared.ErrorPermanent)
+			}
+		})
+	}
+}
+
 // TestRoutePolicy_WithDefaults_NegativeValues verifies that negative values for
 // MaxInFlight, MaxReplayAttempts, and MaxOutboxDepth are clamped to defaults.
 func TestRoutePolicy_WithDefaults_NegativeValues(t *testing.T) {
@@ -321,8 +421,8 @@ func TestRoutePolicy_Validate_ReplayBudget(t *testing.T) {
 			if be.Class != shared.ErrorPermanent {
 				t.Fatalf("error class = %v, want %v", be.Class, shared.ErrorPermanent)
 			}
-			if be.Code != shared.ErrCodeInvalidPayload {
-				t.Fatalf("error code = %v, want %v", be.Code, shared.ErrCodeInvalidPayload)
+			if be.Code != shared.ErrCodeInvalidConfig {
+				t.Fatalf("error code = %v, want %v", be.Code, shared.ErrCodeInvalidConfig)
 			}
 		})
 	}

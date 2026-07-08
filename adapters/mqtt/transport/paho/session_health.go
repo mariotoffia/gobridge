@@ -61,7 +61,11 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	rm := s.opts.ReceiveMaximum
 	if rm == 0 {
-		rm = 65535 // MQTT v5 default when not explicitly configured
+		// NewSession coerces a zero ReceiveMaximum to DefaultReceiveMaximum,
+		// so s.opts.ReceiveMaximum is normally non-zero here. This fallback
+		// only covers a Session built by hand (bypassing NewSession) and
+		// reports the same effective default the CONNECT would carry.
+		rm = DefaultReceiveMaximum
 	}
 
 	return ports.SessionHealth{
@@ -77,7 +81,15 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 }
 
 // Events returns the channel on which session lifecycle events are emitted.
+//
+// Read under s.mu: the F-1 Reload-failure re-Start reassigns s.events (it
+// re-materialises a fresh channel after the terminal-death close), so an
+// unlocked read could race that write under the race detector. The runtime
+// manager re-invokes Events() at the top of each handleEvents (once per Run,
+// after Start), so it always observes the current channel.
 func (s *Session) Events() <-chan ports.SessionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.events
 }
 
@@ -85,7 +97,12 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
+	if s.closed || s.eventsClosed {
+		// s.closed: terminal shutdown. s.eventsClosed: a Reload-failure
+		// already closed s.events to signal terminal death (F-1) and a
+		// re-Start has not yet re-materialised it. Both are checked under
+		// s.mu that also guards close(s.events), so no send can race the
+		// close.
 		return
 	}
 

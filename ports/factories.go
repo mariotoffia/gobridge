@@ -144,3 +144,20 @@ type VisibilityTimeoutConfig interface {
 	EffectiveVisibilityTimeout() time.Duration
 	AutoExtendEnabled() bool
 }
+
+// CapabilityConfig is an optional interface a receiver's typed
+// PluginConfig may satisfy to declare the SOURCE capabilities the route
+// actually runs with, overriding the transport Factory's transport-wide
+// Capabilities() constant. Some transports advertise a capability at the
+// Factory level that a particular receiver MODE does not implement — e.g.
+// Azure Service Bus declares CapVisibilityExtension for PeekLock, but in
+// ReceiveAndDelete mode Extend is a no-op and the message is already
+// removed on receive, so nothing can redeliver. When a receiver config
+// satisfies this interface the builder threads these per-route
+// capabilities onto the route, so the runtime validator's silent-drop
+// check (a source that cannot retry/redeliver AND no DLQ) sees the honest
+// capability set for the mode the route will actually run with instead of
+// being blinded by the transport-wide constant.
+type CapabilityConfig interface {
+	Capabilities() []Capability
+}

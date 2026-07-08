@@ -39,6 +39,23 @@ type Receiver struct {
 	inflightMu    sync.Mutex
 	inflightCount int
 	inflightIdle  chan struct{}
+
+	// Failed-settlement tracking (finding F2). Each failed settlement
+	// permanently consumes one link-credit slot (go-amqp replenishes
+	// credit only on a completed disposition), so once LinkCredit slots
+	// are gone the broker stops delivering and the receive loop blocks
+	// forever with Health still Full. settleFailures counts failures on
+	// the CURRENT link; at settleFailureThreshold the receiver forces a
+	// link rebuild — the broker redelivers the still-unsettled messages,
+	// reissuing their credit — and the count resets.
+	settleFailMu   sync.Mutex
+	settleFailures int
+	// linkGeneration stamps each successful createLink so a stale
+	// in-flight delivery from a PRIOR link/connection (which can fire
+	// onSettleFailed AFTER createLink reset settleFailures for the new
+	// link) is not miscounted against the current link and cannot trip a
+	// spurious extra rebuild (FIX 4). Guarded by settleFailMu.
+	linkGeneration int
 }
 
 // NewReceiver creates an AMQP 1.0 Receiver.
@@ -143,7 +160,9 @@ func (r *Receiver) Close(ctx context.Context) error {
 }
 
 // trackDelivery registers del in the in-flight settlement count and
-// arms its onSettled hook to decrement on completion.
+// arms its onSettled hook to decrement on completion. It also arms the
+// onSettleFailed hook so a settlement failure feeds the leaked-credit
+// watchdog (finding F2).
 func (r *Receiver) trackDelivery(del *Delivery) {
 	r.inflightMu.Lock()
 	if r.inflightCount == 0 {
@@ -152,6 +171,110 @@ func (r *Receiver) trackDelivery(del *Delivery) {
 	r.inflightCount++
 	r.inflightMu.Unlock()
 	del.onSettled = r.settlementDone
+	// FIX 4: bind the failure hook to the link generation live at track
+	// time so a settlement completing after a later rebuild is recognised
+	// as stale and not counted against the new link.
+	r.settleFailMu.Lock()
+	gen := r.linkGeneration
+	r.settleFailMu.Unlock()
+	del.onSettleFailed = func(err error) { r.settlementFailed(gen, err) }
+}
+
+// settlementFailed is the Delivery.onSettleFailed hook. It records the
+// failure metric and, once accumulated failures on the current link
+// reach the credit-safety threshold, forces a link rebuild so the leaked
+// link credit is reclaimed before the receiver stalls (finding F2). gen
+// is the link generation captured when the delivery was tracked (FIX 4).
+func (r *Receiver) settlementFailed(gen int, cause error) {
+	// FIX 3: a context.Canceled cause is a deliberate route teardown /
+	// reconfig, not a broker-health signal. Counting it could trip a
+	// spurious rebuild (the durable branch drops the WHOLE connection), so
+	// return before touching the counter or emitting the failure metric.
+	// context.DeadlineExceeded is deliberately NOT exempted — it can be a
+	// genuinely stuck broker that the watchdog must still react to.
+	if errors.Is(cause, context.Canceled) {
+		return
+	}
+
+	r.metrics.Counter(MetricAMQP10SettleFailed, 1,
+		shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
+
+	r.settleFailMu.Lock()
+	// FIX 4: ignore failures from a superseded link generation. A stale
+	// in-flight delivery from the previous link/connection must not be
+	// counted against the freshly rebuilt link (which would trip an
+	// immediate second rebuild). The metric above still fires so the stale
+	// settle failure remains observable.
+	if gen != r.linkGeneration {
+		r.settleFailMu.Unlock()
+		return
+	}
+	r.settleFailures++
+	trip := r.settleFailures >= r.settleFailureThreshold()
+	if trip {
+		r.settleFailures = 0
+	}
+	r.settleFailMu.Unlock()
+
+	if trip {
+		r.forceSettleRebuild(cause)
+	}
+}
+
+// settleFailureThreshold is the number of failed settlements on one link
+// that forces a rebuild. It is half the configured link credit (min 1)
+// so the rebuild happens BEFORE every credit slot is leaked and the
+// receiver blocks. LinkCredit defaults to 10 → threshold 5.
+func (r *Receiver) settleFailureThreshold() int {
+	t := int(r.cfg.LinkCredit) / 2
+	if t < 1 {
+		t = 1
+	}
+	return t
+}
+
+// forceSettleRebuild tears the current receiver link down so the blocked
+// receive loop wakes, re-attaches, and the broker redelivers the
+// unsettled messages (reissuing their leaked credit). It runs from a
+// settlement goroutine via settlementFailed, so it must be safe against a
+// concurrent receive loop. A non-durable link is closed directly (which
+// unblocks link.Receive with a transient link error → the loop rebuilds
+// on the live session). A durable subscription link must NOT be closed —
+// go-amqp can only full-close it, which brokers read as UNSUBSCRIBE — so
+// the connection is dropped instead (the link dies with it and the
+// monitor reconnects with the subscription intact). Finding F2.
+func (r *Receiver) forceSettleRebuild(cause error) {
+	r.mu.Lock()
+	link := r.link
+	r.link = nil
+	failedConn := r.linkConn
+	r.linkConn = nil
+	r.mu.Unlock()
+
+	if link == nil {
+		return // a rebuild is already underway
+	}
+
+	if r.logger != nil {
+		r.logger.Warn("amqp10: forcing receiver link rebuild after repeated settlement failures (leaked link credit)",
+			"address", redactURL(r.cfg.Address),
+			"error", cause,
+		)
+	}
+	if r.session != nil {
+		r.session.noteLinkError(cause)       // finding 9: surface cause in Health
+		r.session.markReceiverLink(r, false) // finding 4: link is down
+	}
+
+	if r.cfg.DurabilityMode == 0 {
+		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
+		_ = link.Close(closeCtx)
+		cancel()
+		return
+	}
+	if r.session != nil && failedConn != nil {
+		r.session.notifyDisconnect(failedConn, cause)
+	}
 }
 
 // settlementDone is the Delivery.onSettled hook: it decrements the
@@ -295,6 +418,14 @@ func (r *Receiver) createLink(ctx context.Context) error {
 
 	r.link = recv
 	r.linkConn = conn
+	// A fresh link starts with full credit; clear any settlement-failure
+	// count carried from the previous link so the F2 watchdog counts only
+	// failures on THIS link, and bump the link generation so stale
+	// in-flight settlements from the previous link are ignored (FIX 4).
+	r.settleFailMu.Lock()
+	r.settleFailures = 0
+	r.linkGeneration++
+	r.settleFailMu.Unlock()
 	if r.session != nil {
 		r.session.markReceiverLink(r, true) // finding 4: link is up
 	}

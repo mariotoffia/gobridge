@@ -42,9 +42,15 @@ flowchart LR
 The most common source. Reads a single file and auto-detects format by extension (`.yaml`, `.yml`, `.json`).
 
 ```go
-import fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+import (
+    fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
+    "github.com/mariotoffia/gobridge/ports"
+)
 
-source := fileconfig.NewSource("bridge.yaml")
+// NewSource requires a *ports.Registry carrying the transport/store decoders
+// the config references; register them on the registry before loading.
+reg := ports.NewRegistry()
+source := fileconfig.NewSource("bridge.yaml", reg)
 cfg, err := source.Load(ctx)
 ```
 
@@ -69,15 +75,17 @@ Table schema: `PK = "config#<bridge-id>"`, `SK = "current"`, with a `version` fi
 
 ### Custom Sources
 
-Implement `config.Loader` and optionally `config.Watcher`:
+Implement `ports.Loader` and optionally `ports.Watcher`:
 
 ```go
+// These are the canonical ports.Loader and ports.Watcher interfaces
+// (ports/blueprint_loader.go); a custom source implements them directly.
 type Loader interface {
-    Load(ctx context.Context) (*config.BridgeConfig, error)
+    Load(ctx context.Context) (*ports.BridgeConfig, error)
 }
 
 type Watcher interface {
-    Watch(ctx context.Context) (<-chan *config.BridgeConfig, error)
+    Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 }
 ```
 
@@ -224,16 +232,23 @@ routes:
 
 ## Go Bootstrap Pattern
 
-The reference `cmd/gobridge/main.go` demonstrates the full production pattern:
+The reference `cmd/gobridge/main.go` shows the wiring pattern. It is a minimal
+demo/reference binary, **not** a production build (`cmd/gobridge/main.go:7`); a
+production composition root registers only the transports and stores it actually
+uses.
 
 ```go
 func main() {
-    // 1. Load config from file
-    fileSource := fileconfig.NewSource("bridge.yaml")
+    // 1. Build the plugin registry, register the linked adapters, and load
+    //    config. NewSource and NewWatcher both require the *ports.Registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)         // mqtt transport decoder
+    _ = nativestore.Register(reg)  // memory + sqlite store decoders
+    fileSource := fileconfig.NewSource("bridge.yaml", reg)
     baseCfg, _ := fileSource.Load(ctx)
 
-    // 2. Create file watcher using config_watch settings
-    fileWatcher := fileconfig.NewWatcher("bridge.yaml",
+    // 2. Create file watcher using config_watch settings (same registry)
+    fileWatcher := fileconfig.NewWatcher("bridge.yaml", reg,
         fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
         fileconfig.WithLogger(logger),
     )
@@ -249,7 +264,7 @@ func main() {
     sup := bridge.NewSupervisor(
         bridge.WithSupervisorLogger(logger),
         bridge.WithReconfigStrategy(
-            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second),
+            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil),
         ),
     )
 

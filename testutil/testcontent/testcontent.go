@@ -19,7 +19,7 @@ import (
 
 const (
 	// HeaderTID is the header key used to tag every test message with a unique ID.
-	HeaderTID = "x-bridge.test-msg-id"
+	HeaderTID = "x-bridge.test-msg-id" // x-bridge-local: test-harness tag applied by testcontent only, never emitted by the production bridge
 	// PayloadTIDField is the JSON field embedded in payloads for transports
 	// that strip or don't preserve headers.
 	PayloadTIDField = "_tid"

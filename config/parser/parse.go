@@ -1,7 +1,9 @@
 package parser
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,11 +80,28 @@ func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeC
 	var s1 stage1Bridge
 	switch format {
 	case FormatJSON:
-		if err := json.Unmarshal(data, &s1); err != nil {
+		// Strict decode: reject unknown/typo top-level or nested keys
+		// (e.g. "shutdown_timout") instead of silently discarding them.
+		// Plugin `options:` blocks stay lax here because they decode into
+		// map[string]any; the registry applies its own strict decode.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&s1); err != nil {
 			return nil, fmt.Errorf("config: json parse: %w", err)
 		}
+		// Reject trailing data after the top-level object (e.g. a second JSON
+		// document or garbage), matching the prior json.Unmarshal strictness
+		// that json.NewDecoder does not enforce on its own.
+		if dec.More() {
+			return nil, fmt.Errorf("config: json parse: unexpected trailing data after top-level object")
+		}
 	case FormatYAML, FormatAuto, "":
-		if err := yaml.Unmarshal(data, &s1); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		// io.EOF means an empty document; preserve the prior yaml.Unmarshal
+		// behavior of leaving s1 zero-valued (validation reports the missing
+		// required fields) rather than surfacing a parse error.
+		if err := dec.Decode(&s1); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("config: yaml parse: %w", err)
 		}
 	default:

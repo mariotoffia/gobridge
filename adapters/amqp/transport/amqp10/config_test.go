@@ -376,7 +376,7 @@ func TestSessionOptions_Validate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.opts.validate()
+			err := tt.opts.validate(false)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
 			}

@@ -62,9 +62,18 @@ message through, drop it, or reroute it.
 | `Name` | `string` | No | Unique processor instance name. Defaults to `"filter"`. |
 | `Conditions` | `[]Condition` | Yes | List of conditions to evaluate (AND logic). |
 | `Action` | `Action` | Yes | One of `pass`, `drop`, `route`. |
-| `RouteTo` | `string` | Only when `Action` is `route` | Target route ID for rerouting. |
+| `RouteTo` | `string` | Only when `Action` is `route` | Binding ID to dispatch to, declared on the same route. Overrides the route's normal binding resolution. Constructing a `route` filter with an empty `RouteTo` is a setup-time error (`ErrRouteRequired`). |
 | `Invert` | `bool` | No | Inverts the combined condition result. |
 | `MaxPayloadBytes` | `int` | No | Caps the JSON payload the filter will parse. Non-positive selects `DefaultMaxPayloadBytes`. |
+
+**`RouteTo` must name a binding on the same route.** At delivery the runtime
+consumes the `route` override and dispatches to it only when `RouteTo` matches a
+binding **declared on the route** (a security check). A value that matches no
+declared binding is **not** a hard error: the runtime logs a WARN (`route
+override references unknown binding`) and falls back to the route's normal/default
+resolution, so the message still flows -- it is not dropped. There is no
+build-time validation that `RouteTo` matches a declared binding, so verify it
+against the route's `bindings` and watch for that warn log.
 
 ### Condition Fields
 
@@ -103,7 +112,7 @@ proc, err := filter.New(filter.Config{
 // Convenience constructors
 drop, _ := filter.NewDropFilter("drop-staging", filter.Condition{...})
 pass, _ := filter.NewPassFilter("only-prod", filter.Condition{...})
-reroute, _ := filter.NewRouteFilter("reroute-high", "high-priority-route", filter.Condition{...})
+reroute, _ := filter.NewRouteFilter("reroute-high", "high-priority-binding", filter.Condition{...})
 ```
 
 ---
@@ -297,6 +306,38 @@ the message counter. An increment-only tracker is observational; one that
 also implements `ports.TenantUsageReader` enables the in-flight ceiling
 described below. Message-count quotas stay unenforced (Phase 2).
 
+### Tenant identity resolution and trust boundary
+
+**The tenant header is caller-supplied and unauthenticated.** The resolver reads
+the tenant ID from the configured header and closes a present-but-non-string type
+trap (see numeric coercion below); it does **not** authenticate the value. Treat
+tenant identity as untrusted unless a `WithValidator` authenticates it -- for
+example by checking the header against a signed claim carried on the same message.
+Without a validator, any producer that can reach the receiver can assert any
+tenant ID. Whether an inbound `tenant-id` header survives ingress at all is a
+separate control -- see `trust_bridge_headers` in the
+[Routes reference](routes-and-runtime-reference.md).
+
+**An absent or empty header fails open by default.** When the header is absent or
+an empty string, the message proceeds *untenanted* under the default
+`RequireTenant: false` -- it bypasses tenant validation and quota enforcement
+entirely. Set `RequireTenant: true` to reject a message that carries no tenant ID:
+it fails with `ErrInvalidPayload` ("tenant ID required") and the `TenantRejects`
+counter records reason `missing_required`. Where tenant enforcement is a security
+control rather than a fairness one, set `RequireTenant: true` -- the default lets
+an unlabeled message through.
+
+**Numeric tenant IDs are coerced, with a precision ceiling.** A tenant header
+stamped as an integer by a typed transport (`int` / `int64` / `uint32` from AMQP
+or MQTTv5), or rehydrated as an integral `float64` by a JSON round-trip -- a
+DLQ/outbox save-load, since `encoding/json` decodes every JSON number as
+`float64` -- is coerced to its decimal string. A fractional, non-finite
+(`NaN` / `±Inf`), or out-of-range (`|value| > 2^53`) numeric value is rejected as
+malformed (`ErrInvalidPayload`, `TenantRejects` reason `malformed`), never
+treated as "no tenant". A numeric tenant ID larger than 2^53 cannot survive a
+DLQ/outbox JSON round-trip -- it loses precision and is rejected on redrive. Use
+**string** tenant IDs for large or opaque identifiers.
+
 ### Quota enforcement
 
 The tenant processor can enforce a per-tenant ceiling on concurrent in-flight
@@ -352,6 +393,42 @@ admissions across every route and instance sharing the usage store, not by one
 route's `MaxInFlight`. Acceptable for a fairness quota; exact ceilings would
 require a conditional-increment port method, a recorded upgrade path rather than
 current behavior.
+
+**The in-flight window depends on the route's delivery mode.** The processor
+brackets each delivery with one `+1` on admission and one paired `-1` on release
+(exactly one pair per message either way). The release fires when the whole
+delivery settles, so what the ceiling bounds differs by `ack_after` /
+delivery mode:
+
+- **`direct_hold`** (`ack_after: target_accept`) — the source is held open until
+  egress completes, so the release spans the synchronous egress send. The ceiling
+  bounds concurrent **egress**.
+- **`shared_outbox`** (`ack_after: outbox_persist`) — the processor chain runs
+  once at ingress and the outbox drainer never re-runs it; the release fires at
+  the ingress-ack (outbox-persist), while the message still sits in the outbox
+  awaiting drain and egress. The ceiling bounds **ingress-processing**
+  concurrency (ingress + outbox-persist), **not** concurrent egress.
+
+Size `MaxInFlight` for what it bounds on the route in question: an outbox-backed
+route releases the slot before the message leaves.
+
+**A shared usage store must decay crashed in-flight counts (hard contract).** The
+ceiling works by the `+1` / `-1` pair above; the `-1` runs from a delivery-scope
+release hook (best-effort). If the process crashes between the `+1` and its paired
+`-1` — `kill -9`, OOM, hardware loss — a shared or external usage store keeps a
+stale `+1`. Enough leaks and the tenant's effective ceiling shrinks until it is
+throttled permanently (`InFlight` stays `>= MaxInFlight` with no path back to
+deliverable). A conforming shared usage store therefore **must** make the counter
+decay: either model each `+1` as a **TTL-leased** item the store auto-expires (a
+crashed instance's counts decay on their own), or implement the optional
+`ports.TenantUsageReconciler` so a survivor reaps stranded counts on restart /
+lease takeover. A plain additive shared counter with no decay is **not** a
+conforming usage store. A per-instance / in-memory tracker is exempt — its counts
+die with the process. This release ships the enforcement (`-1` release), the
+documented contract, and the `ports.TenantUsageReconciler` interface, but no
+built-in reconciliation — decay is the operator's responsibility. See the
+in-flight crash-decay contract in `ports/tenant.go` and the
+[deployment guide](deployment-guide.md#shared-tenant-usage-store).
 
 Windowed message-count quotas (per hour or day) are Phase 2. They need windowed
 counter schemas and cross-instance aggregation — the same
@@ -412,6 +489,28 @@ stores:
 - Outbox honours the runtime-derived `stale_claim_duration`: a claim stranded by a crashed owner is reclaimed once it goes stale (in addition to immediate higher-version reclaim). Pair it with a durable lease store for strict multi-restart crash recovery; `memory` lease resets its fencing version on restart.
 - No SQLite lease store exists -- use memory or DynamoDB for leases.
 
+**Fatal storage faults are a distinct alertable signal.** A disk-full, corrupt,
+read-only, or not-a-database fault is classified PERMANENT and increments the
+`SQLiteStoreUnhealthy` counter (Go const `sqliteoutbox.MetricStoreUnhealthy`),
+tagged `entity=outbox`, alongside an error log. It is distinct from transient
+throttling noise: retrying will not clear it -- the fix is to free disk or restore
+the file. The classification does **not** halt the drain loop; the loop keeps
+polling and records stay durable, so the counter exists purely for
+observability. Watch it (see
+[Monitoring](aws-deployment/monitoring.md#key-metrics)) rather than inferring the
+fault from a stalled queue.
+
+**Legacy databases are rebuilt once on open.** A legacy SQLite outbox carrying the
+old global `UNIQUE` constraint is transparently rebuilt one time, on open, to the
+partition-scoped outbox identity. The rebuild runs in a single transaction: it
+holds the writer lock and roughly doubles WAL size for its duration. On a very
+large backlogged legacy outbox this is a noticeable one-time startup pause, and a
+second process opening the same file concurrently can exceed the 5s `busy_timeout`
+and fail to open. Pre-drain or compact a huge legacy outbox before upgrading if
+the startup pause matters; the store is single-process by charter, so the
+concurrent-opener case is rare. A modern or fresh database skips the rebuild
+entirely.
+
 ### DynamoDB Store
 
 - **Type:** `dynamodb`
@@ -427,6 +526,15 @@ stores:
 
 - Distributed and persistent. Uses conditional writes for fencing safety.
 - Required for clustered deployments with lease-based coordination.
+- **Boot-time schema preflight.** Each store validates its table key schema at
+  build time. A confirmed schema mismatch is fatal at boot; a `DescribeTable`
+  call that fails on a missing IAM permission or a throttle logs a WARN and fails
+  open (boot proceeds, the missing/mismatched table then fails loudly at first
+  operation). The lease role additionally runs a best-effort `DescribeTimeToLive`
+  check that warns if TTL is enabled on the fencing table; if that call fails it
+  is silently skipped. See
+  [IAM Least Privilege](aws-deployment/overview.md#iam-least-privilege) for the
+  exact actions and posture.
 - **Retention is the deduplication window.** The outbox keeps completed and
   expired rows for `retention` / `compaction_grace` before piggybacked compaction
   (or the DynamoDB item TTL) deletes them. Deleting a terminal row releases its

@@ -116,6 +116,46 @@ type ConnectionConfig struct {
 	ClientCertPEM      shared.Secret `mapstructure:"client_cert_pem" yaml:"client_cert_pem,omitempty" json:"client_cert_pem,omitempty"`
 	ClientKeyPEM       shared.Secret `mapstructure:"client_key_pem" yaml:"client_key_pem,omitempty" json:"client_key_pem,omitempty"`
 	InsecureSkipVerify bool          `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify,omitempty" json:"insecure_skip_verify,omitempty"`
+	// Retry tunes the Azure SDK's built-in per-operation retry policy.
+	// Zero value keeps the SDK defaults; see RetryConfig.
+	Retry RetryConfig `mapstructure:"retry" yaml:"retry,omitempty" json:"retry,omitempty"`
+}
+
+// RetryConfig tunes the Azure SDK's built-in retry policy, which retries
+// INSIDE every client operation (send, receive, settlement) beneath the
+// per-call timeout, gobridge's own retry policy, and the poll backoff.
+// On a throttled namespace those layers multiply, so exposing the SDK
+// layer lets operators shrink it (gobridge owns end-to-end retry) or
+// widen it. The zero value keeps the azservicebus defaults (MaxRetries
+// 3, RetryDelay 4s, MaxRetryDelay 120s) — leaving RetryConfig unset
+// changes nothing.
+type RetryConfig struct {
+	// MaxRetries caps retries after the first attempt. 0 keeps the SDK
+	// default (3). A NEGATIVE value disables SDK retries entirely (one
+	// try, no retries) — appropriate when gobridge's retry policy should
+	// be the only retry layer.
+	MaxRetries int32 `mapstructure:"max_retries" yaml:"max_retries,omitempty" json:"max_retries,omitempty"`
+	// RetryDelay is the initial backoff before the first retry. 0 keeps
+	// the SDK default (4s); a negative value means no delay.
+	RetryDelay time.Duration `mapstructure:"retry_delay" yaml:"retry_delay,omitempty" json:"retry_delay,omitempty"`
+	// MaxRetryDelay caps the exponential backoff. 0 keeps the SDK default
+	// (120s); a negative value means effectively uncapped.
+	MaxRetryDelay time.Duration `mapstructure:"max_retry_delay" yaml:"max_retry_delay,omitempty" json:"max_retry_delay,omitempty"`
+}
+
+// toSDK converts the domain-shaped RetryConfig into the SDK's
+// RetryOptions. The second return is false for the zero value, so
+// buildClientOptions leaves RetryOptions untouched and the SDK keeps
+// applying its own defaults (no behaviour change unless configured).
+func (r RetryConfig) toSDK() (azservicebus.RetryOptions, bool) {
+	if r == (RetryConfig{}) {
+		return azservicebus.RetryOptions{}, false
+	}
+	return azservicebus.RetryOptions{
+		MaxRetries:    r.MaxRetries,
+		RetryDelay:    r.RetryDelay,
+		MaxRetryDelay: r.MaxRetryDelay,
+	}, true
 }
 
 // asbReceiverOptions carries the receiver-construction knobs in a
@@ -277,7 +317,7 @@ func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 
 	switch {
 	case cfg.UseManagedIdentity:
-		cred, err = azidentity.NewManagedIdentityCredential(nil)
+		cred, err = azidentity.NewManagedIdentityCredential(managedIdentityCredentialOptions(cfg))
 	case cfg.ClientID != "" && !cfg.ClientSecret.IsZero():
 		cred, err = azidentity.NewClientSecretCredential(
 			cfg.TenantID, cfg.ClientID, cfg.ClientSecret.Reveal(), nil,
@@ -297,6 +337,23 @@ func rawNewAzClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 	return &asbClientHandle{raw: c}, nil
 }
 
+// managedIdentityCredentialOptions returns the credential options for a
+// managed-identity login, or nil to accept the SDK default
+// (system-assigned identity). When ClientID is set it selects that
+// USER-assigned identity by client ID: NewManagedIdentityCredential(nil)
+// ignores cfg.ClientID entirely, so on a node hosting several
+// user-assigned identities IMDS cannot disambiguate — token acquisition
+// fails, or the credential silently authenticates as the system-assigned
+// identity with the wrong permissions.
+func managedIdentityCredentialOptions(cfg ConnectionConfig) *azidentity.ManagedIdentityCredentialOptions {
+	if cfg.ClientID == "" {
+		return nil
+	}
+	return &azidentity.ManagedIdentityCredentialOptions{
+		ID: azidentity.ClientID(cfg.ClientID),
+	}
+}
+
 // buildClient constructs a Service Bus client handle for the cold-init
 // code path (Receiver.ensureClient / Sender.ensureClient). It
 // classifies any failure with shared.ErrUnavailable so the runtime
@@ -314,8 +371,8 @@ func buildClient(cfg ConnectionConfig) (*asbClientHandle, error) {
 }
 
 // buildClientOptions returns ClientOptions with a custom TLS
-// configuration when the ConnectionConfig requests one, or nil when
-// the defaults are sufficient.
+// configuration and/or SDK retry policy when the ConnectionConfig
+// requests one, or nil when the defaults are sufficient.
 func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, error) {
 	tc := cfg.TLSConfig
 	if tc == nil {
@@ -325,13 +382,20 @@ func buildClientOptions(cfg ConnectionConfig) (*azservicebus.ClientOptions, erro
 			return nil, err
 		}
 	}
-	if tc == nil {
+
+	retry, hasRetry := cfg.Retry.toSDK()
+	if tc == nil && !hasRetry {
 		return nil, nil
 	}
 
-	return &azservicebus.ClientOptions{
-		TLSConfig: tc,
-	}, nil
+	opts := &azservicebus.ClientOptions{}
+	if tc != nil {
+		opts.TLSConfig = tc
+	}
+	if hasRetry {
+		opts.RetryOptions = retry
+	}
+	return opts, nil
 }
 
 // buildTLSConfig constructs a *tls.Config from optional PEM material

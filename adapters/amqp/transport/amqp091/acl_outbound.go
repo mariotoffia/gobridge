@@ -3,6 +3,8 @@ package amqp091
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,13 +48,13 @@ func headersToPublishing(headers map[string]any) amqp.Publishing {
 	if v, ok := deliveryModeFromHeader(headers[HeaderDeliveryMode]); ok {
 		pub.DeliveryMode = v
 	}
-	if v, ok := headers[HeaderPriority].(uint8); ok {
+	if v, ok := priorityFromHeader(headers[HeaderPriority]); ok {
 		pub.Priority = v
 	}
 	if v, ok := headers[HeaderExpiration].(string); ok {
 		pub.Expiration = v
 	}
-	if v, ok := headers[HeaderTimestamp].(time.Time); ok {
+	if v, ok := timestampFromHeader(headers[HeaderTimestamp]); ok {
 		pub.Timestamp = v
 	}
 
@@ -138,6 +140,112 @@ func deliveryModeFromHeader(v any) (uint8, bool) {
 		return 0, false
 	default:
 		return 0, false
+	}
+}
+
+// priorityFromHeader coerces a per-message "amqp091.priority" header
+// override into an AMQP priority. Loop-back deliveries carry a typed uint8,
+// but headers decoded from YAML/JSON route configs (or produced by another
+// transport) arrive as int/int64/float64/string — the previous exact-uint8
+// type assertion silently downgraded every such override to priority 0
+// (`priority: 9` in YAML published at 0). Mirrors deliveryModeFromHeader's
+// numeric coercion. Values outside 0-255 or non-integral floats are ignored
+// so the broker default (0) applies rather than a wrong priority.
+func priorityFromHeader(v any) (uint8, bool) {
+	toPrio := func(n int64) (uint8, bool) {
+		if n < 0 || n > 255 {
+			return 0, false
+		}
+		return uint8(n), true
+	}
+	switch p := v.(type) {
+	case uint8:
+		return p, true
+	case int:
+		return toPrio(int64(p))
+	case int8:
+		return toPrio(int64(p))
+	case int16:
+		return toPrio(int64(p))
+	case int32:
+		return toPrio(int64(p))
+	case int64:
+		return toPrio(p)
+	case uint16:
+		return toPrio(int64(p))
+	case uint32:
+		return toPrio(int64(p))
+	case uint64:
+		if p > 255 {
+			return 0, false
+		}
+		return toPrio(int64(p))
+	case float64:
+		if p != float64(int64(p)) {
+			return 0, false
+		}
+		return toPrio(int64(p))
+	case float32:
+		return priorityFromHeader(float64(p))
+	case string:
+		s := strings.TrimSpace(p)
+		if s == "" {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return toPrio(n)
+	default:
+		return 0, false
+	}
+}
+
+// timestampFromHeader coerces a per-message "amqp091.timestamp" header
+// override into an AMQP timestamp. Loop-back deliveries carry a typed
+// time.Time, but route configs and other transports may supply a POSIX
+// seconds integer or an RFC3339 string; the previous exact-time.Time
+// assertion dropped those. Integers/floats are interpreted as seconds
+// since the Unix epoch (the AMQP timestamp domain). Unparseable OR
+// out-of-range values (seconds that would overflow int64 in time.Unix,
+// which would otherwise yield a garbage pre-epoch timestamp) are ignored so
+// no timestamp is published rather than a wrong one — parity with
+// priorityFromHeader's range rejection.
+func timestampFromHeader(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t, true
+	case int:
+		return time.Unix(int64(t), 0).UTC(), true
+	case int32:
+		return time.Unix(int64(t), 0).UTC(), true
+	case int64:
+		return time.Unix(t, 0).UTC(), true
+	case uint32:
+		return time.Unix(int64(t), 0).UTC(), true
+	case uint64:
+		if t > uint64(math.MaxInt64) {
+			return time.Time{}, false
+		}
+		return time.Unix(int64(t), 0).UTC(), true
+	case float64:
+		if math.IsNaN(t) || math.IsInf(t, 0) ||
+			t >= float64(math.MaxInt64) || t < float64(math.MinInt64) {
+			return time.Time{}, false
+		}
+		return time.Unix(int64(t), 0).UTC(), true
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return time.Time{}, false
+		}
+		if parsed, err := time.Parse(time.RFC3339, s); err == nil {
+			return parsed.UTC(), true
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
 	}
 }
 
@@ -278,6 +386,11 @@ func openSenderChannel(conn amqpConnection, mandatory bool) (*senderChannel, err
 
 // Close closes the underlying AMQP channel.
 func (sc *senderChannel) Close() error { return sc.ch.Close() }
+
+// IsClosed reports whether the underlying AMQP channel died out-of-band
+// (asynchronous soft channel exception). The sender treats a cached
+// channel that reports closed as stale and reopens on the next publish.
+func (sc *senderChannel) IsClosed() bool { return sc.ch.IsClosed() }
 
 // drainReturns is a defensive no-blocking drain of any residual
 // basic.return frames left on the returns chan. See the rationale on

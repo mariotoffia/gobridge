@@ -190,8 +190,12 @@ func TestWatcher_Notify_OverflowForcesResync(t *testing.T) {
 
 	fc := clocktest.New()
 	w := NewWatcher(path, newTestRegistry(t), WithClock(fc))
-	w.stopCh = make(chan struct{})
-	t.Cleanup(func() { close(w.stopCh) })
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		<-doneCh
+	})
 
 	// Baseline as Watch would take it, then mutate the file with no
 	// event delivered — the injected channels never carry one.
@@ -209,7 +213,7 @@ func TestWatcher_Notify_OverflowForcesResync(t *testing.T) {
 	defer cancel()
 
 	ch := make(chan *ports.BridgeConfig, 1)
-	go w.runNotify(ctx, events, errs, func() error { return nil }, ch)
+	go w.runNotify(ctx, events, errs, func() error { return nil }, ch, stopCh, doneCh)
 
 	errs <- fsnotify.ErrEventOverflow
 

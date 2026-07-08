@@ -290,6 +290,20 @@ func newTestSupervisor(opts ...SupervisorOption) *Supervisor {
 	return s
 }
 
+// newTestSupervisorTransport builds a test supervisor whose "fake" transport is
+// the supplied factory (instead of the default no-op), plus the standard
+// "memory" store. Use it when a test needs a custom transport double: the
+// Register* guards reject re-registering an existing name, so a default cannot
+// be overridden by a second Register call — the custom factory must be the
+// first (and only) registration for "fake".
+func newTestSupervisorTransport(tf ports.TransportFactory, opts ...SupervisorOption) *Supervisor {
+	opts = append([]SupervisorOption{WithSupervisorBlueprintValidator(config.Validate)}, opts...)
+	s := NewSupervisor(opts...)
+	s.RegisterTransport("fake", tf)
+	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
+	return s
+}
+
 // newTestSupervisorWithExclusive creates a Supervisor with both a
 // fake transport and an exclusive transport.
 func newTestSupervisorWithExclusive(opts ...SupervisorOption) (*Supervisor, *exclusiveTransportFactory) {

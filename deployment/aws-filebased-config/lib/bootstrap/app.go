@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -124,6 +126,16 @@ type App struct {
 	apiKeysRef apiKeysRef
 	handlerRef *transportHandlerRef
 
+	// registryRef retains the factory registry backing the
+	// currently-installed runtime so its HTTP transport's SSE senders can be
+	// drained when the registry is superseded (a config swap) or when the App
+	// shuts down. Draining unblocks the long-lived SSE handlers so a fronting
+	// transport server.Shutdown does not hang, and disconnects clients pinned
+	// to the superseded mux so they reconnect to the newly installed one.
+	// Stored by installPlan alongside the other refs; an atomic.Pointer
+	// because Stop reads it after releasing a.mu (like the other refs).
+	registryRef atomic.Pointer[factoryRegistry]
+
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
@@ -219,26 +231,15 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		a.parameterResolver = resolver
 	}
-	if a.credentialStore == nil {
-		store, err := newDefaultCredentialStore(ctx, a.cfg)
-		if err != nil {
-			return err
-		}
-		a.credentialStore = store
-	}
-	if a.dynamoDBClient == nil {
-		client, err := newDynamoDBClient(ctx, a.cfg)
-		if err != nil {
-			return err
-		}
-		a.dynamoDBClient = client
-	}
-
 	// Build the runtime metrics exporter once (noop => nil). It is shared by
 	// every bridge.Builder across config reloads and owns a flush goroutine,
 	// so it is created here (not in newFactoryRegistry, which runs per
 	// reload) and Closed in Stop. On a later Start failure the deferred
 	// cleanup below Closes it to avoid a goroutine leak.
+	//
+	// Built BEFORE the credential store so the store's runtime.Credential
+	// resolver can emit credential resolve/stale metrics through this same
+	// exporter (Finding 4).
 	if a.metricsExporter == nil {
 		exporter, err := newMetricsExporter(ctx, a.cfg, a.logger)
 		if err != nil {
@@ -254,6 +255,21 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}()
 
+	if a.credentialStore == nil {
+		store, err := newDefaultCredentialStore(ctx, a.cfg, a.metricsExporter, a.logger)
+		if err != nil {
+			return err
+		}
+		a.credentialStore = store
+	}
+	if a.dynamoDBClient == nil {
+		client, err := newDynamoDBClient(ctx, a.cfg)
+		if err != nil {
+			return err
+		}
+		a.dynamoDBClient = client
+	}
+
 	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, a.logger, func() *ports.BridgeConfig {
 		return defaultLogicalConfig(a.cfg)
 	})
@@ -268,6 +284,18 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.logicalRef.Set(logicalCfg)
+
+	// The file-based profile configures the admin/monitor listeners from
+	// bootstrap env/SSM (a.cfg + apiKeysRef) and expects TLS to terminate at the
+	// load balancer (ALB), so the bridge config `http:` block is not honored.
+	// Enforce that policy BEFORE building the runtime or starting any server: a
+	// tls_cert_file/tls_key_file pair is an explicit "encrypt this" the profile
+	// cannot satisfy, so fail closed rather than silently serve the admin API in
+	// plaintext; a bare addrs/keys block is warned and ignored (Chunk 16
+	// Finding 2).
+	if err := checkIgnoredHTTPBlock(a.logger, logicalCfg); err != nil {
+		return err
+	}
 
 	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
 		return err
@@ -315,6 +343,10 @@ func (a *App) Start(ctx context.Context) error {
 		// live. appliedRef is nil only when nothing is cleanly running, and
 		// every configProvider consumer handles nil (GET /config -> 503).
 		ConfigProvider: a.appliedRef.Get,
+		// Surface live-reconfiguration health on /deephealth: the config manager
+		// goes degraded when its layer watcher cannot be re-established, so the
+		// App serves its last good config but no longer tracks config changes.
+		DegradedProvider: a.degradedConfigWatch,
 		// ConfigApplier converges the running runtime in-band when a config
 		// is committed through the admin transactions API, reusing the exact
 		// reload path the file watcher drives (applyLogicalConfig) instead of
@@ -328,6 +360,10 @@ func (a *App) Start(ctx context.Context) error {
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),
 		httpapi.WithAuditLogger(httpapi.NewSlogAuditLogger(a.logger)),
+		// Reuse the SAME shared, close-shielded exporter the runtime receives
+		// (registry.go wires it via bridge.WithMetrics) so admin-plane DLQ
+		// redrive metrics land in one sink. nil for the noop profile → no-op.
+		httpapi.WithMetrics(a.metricsExporter),
 	)
 	if err := a.httpServer.Start(ctx); err != nil {
 		_ = a.transportServer.Stop(context.Background())
@@ -354,6 +390,49 @@ func (a *App) Start(ctx context.Context) error {
 	})
 
 	startOK = true
+	return nil
+}
+
+// checkIgnoredHTTPBlock enforces the file-based deployment profile's policy for
+// the optional bridge config `http:` block. This profile sources admin/monitor
+// addresses and API keys from bootstrap env/SSM (a.cfg / apiKeysRef) and expects
+// TLS to terminate at the load balancer (ALB); it does NOT feed ports.HTTPConfig
+// into the served httpapi.Config. Only the cmd/gobridge binary and library
+// embeddings honor the `http:` block.
+//
+// A tls_cert_file/tls_key_file entry is an explicit "encrypt this" instruction
+// the profile cannot satisfy in-process. Silently serving the admin API in
+// plaintext would be a security fail-open, so any TLS entry FAILS CLOSED and
+// aborts startup — mirroring httpapi's own refusal to run a misconfigured TLS
+// listener (httpapi/server.go rejects a half-set pair). An operator who needs
+// in-process TLS must use the cmd/gobridge binary or a library embedding.
+//
+// A bare `http:` block (addresses/keys only, no TLS entry) is legitimately
+// overridden by the SSM-driven bootstrap, so it is warned-and-ignored rather
+// than rejected: WARN-and-continue keeps existing deployments booting. The
+// addresses/keys are deliberately NOT re-sourced from logical.HTTP (that would
+// double-source and conflict with the SSM-driven design); API keys are secrets
+// and are never logged.
+func checkIgnoredHTTPBlock(logger *slog.Logger, logical *ports.BridgeConfig) error {
+	if logical == nil || logical.HTTP == nil {
+		return nil
+	}
+	if logical.HTTP.TLSCertFile != "" || logical.HTTP.TLSKeyFile != "" {
+		return fmt.Errorf("bootstrap: the file-based deployment profile does not serve in-process TLS " +
+			"(TLS is expected to terminate at the load balancer), so the bridge config `http:` block's " +
+			"tls_cert_file/tls_key_file cannot be honored here; continuing would silently serve the admin " +
+			"API in plaintext. Remove the TLS pair from bridge.yaml, or use the cmd/gobridge binary or a " +
+			"library embedding if you need in-process TLS")
+	}
+	logger.Warn("bootstrap: the file-based deployment profile does NOT honor the bridge config `http:` block; "+
+		"admin/monitor addresses and API keys are configured via bootstrap env/SSM and TLS is expected to "+
+		"terminate at the load balancer (ALB). The `http:` block is honored only by the cmd/gobridge binary "+
+		"and library embeddings — it is IGNORED here",
+		"admin_addr", logical.HTTP.AdminAddr,
+		"monitor_addr", logical.HTTP.MonitorAddr,
+		"tls_cert_file_set", logical.HTTP.TLSCertFile != "",
+		"tls_key_file_set", logical.HTTP.TLSKeyFile != "",
+	)
 	return nil
 }
 
@@ -388,6 +467,27 @@ func (a *App) Stop(ctx context.Context) error {
 	var firstErr error
 	if httpServer != nil {
 		if err := httpServer.Stop(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Drain the current registry's SSE senders BEFORE stopping the transport
+	// server. transportServer.Stop calls server.Shutdown, which blocks on the
+	// long-lived SSE handlers until they release (their request contexts are
+	// NOT cancelled by Shutdown), stalling the full ctx budget. Factory.Close
+	// unblocks every SSE handler (idempotent via SSESender.Close's sync.Once),
+	// so the subsequent Shutdown completes promptly.
+	//
+	// Load registryRef HERE, after httpServer.Stop has drained in-flight admin
+	// handlers — NOT in the snapshot block above. An admin config-commit
+	// (applyCommittedConfig) races Stop: it locks a.mu independently of
+	// started, so it can installPlan a NEW registry after Stop set
+	// started=false. Snapshotting the registry before httpServer.Stop would
+	// drain the OLD one while the transport still serves the NEW registry's SSE
+	// handlers, re-stalling Shutdown. httpServer is now closed, so no further
+	// apply can install a registry past this point; this Load is final.
+	currentRegistry := a.registryRef.Load()
+	if currentRegistry != nil && currentRegistry.http != nil {
+		if err := currentRegistry.http.Close(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -574,12 +674,13 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 
 	oldRuntime := a.runtimeRef.Get()
 	oldApplied := a.appliedRef.Get()
+	oldRegistry := a.registryRef.Load()
 
 	switch plan.mode {
 	case swapModePrepareCommit:
-		return a.applyPrepareCommit(ctx, plan, oldRuntime, oldApplied)
+		return a.applyPrepareCommit(ctx, plan, oldRuntime, oldApplied, oldRegistry)
 	default:
-		return a.applyOverlap(ctx, plan, oldRuntime, oldApplied)
+		return a.applyOverlap(ctx, plan, oldRuntime, oldApplied, oldRegistry)
 	}
 }
 
@@ -623,6 +724,7 @@ func (a *App) applyOverlap(
 	plan *runtimePlan,
 	oldRuntime *goruntime.Runtime,
 	oldApplied *ports.BridgeConfig,
+	oldRegistry *factoryRegistry,
 ) error {
 	if err := plan.runtime.Start(ctx); err != nil {
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
@@ -644,6 +746,15 @@ func (a *App) applyOverlap(
 			a.logger.Warn("bootstrap: stop old runtime after overlap swap", "error", err)
 		}
 	}
+	// Drain the superseded registry's SSE senders ONLY on this success tail:
+	// installPlan has swapped handlerRef to the new mux, so clients still
+	// pinned to the OLD sender must be released to reconnect to the new one
+	// (otherwise they sit on the orphaned sender receiving heartbeats but no
+	// events). This is deliberately AFTER installPlan and NOT on the early
+	// "start runtime" error return above — that path leaves the old
+	// runtime/handler live, so draining there would disconnect healthy clients
+	// from a still-serving sender.
+	a.closeSupersededHTTP(ctx, oldRegistry)
 	return nil
 }
 
@@ -652,7 +763,17 @@ func (a *App) applyPrepareCommit(
 	plan *runtimePlan,
 	oldRuntime *goruntime.Runtime,
 	oldApplied *ports.BridgeConfig,
+	oldRegistry *factoryRegistry,
 ) error {
+	// Every return path here supersedes the old registry: success installs the
+	// new mux via installPlan, and each failure path routes through
+	// recoverPrevious — which installs a freshly-rebuilt registry or wedges to
+	// http.NotFoundHandler — never the old one. So drain the old registry's SSE
+	// senders on the way out regardless of outcome. Unlike applyOverlap there
+	// is no "old still live" early return to protect: the old runtime is
+	// stopped up front (below), so its handler is already being torn down.
+	defer a.closeSupersededHTTP(ctx, oldRegistry)
+
 	if oldRuntime != nil {
 		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
 			a.logger.Warn("bootstrap: stop old runtime before prepare/commit swap", "error", err)
@@ -705,6 +826,33 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 	a.installPlan(plan)
 }
 
+// degradedConfigWatch reports whether live reconfiguration is degraded: the
+// config manager's layer watcher cannot be (re)established, so the App keeps
+// serving its last good config but no longer observes config changes. It is the
+// deep-health projection wired to httpapi's DegradedProvider so operators can
+// see a bridge running blind. The terminal "wedged" state (no active runtime at
+// all) is a separate, harder failure already surfaced via /live and the
+// terminal backstop, so it is intentionally not folded in here.
+func (a *App) degradedConfigWatch() (bool, string) {
+	if a.manager == nil {
+		return false, ""
+	}
+	errs := a.manager.WatchErrors()
+	if len(errs) == 0 {
+		return false, ""
+	}
+	layers := make([]string, 0, len(errs))
+	for layer := range errs {
+		layers = append(layers, layer)
+	}
+	slices.Sort(layers) // deterministic reason ordering
+	parts := make([]string, len(layers))
+	for i, layer := range layers {
+		parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
+	}
+	return true, "config watch degraded: " + strings.Join(parts, "; ")
+}
+
 // enterWedgedState records that a prepare/commit swap AND its recovery both
 // failed, leaving the App with no active runtime and no self-recovery path. It
 // tears the request-facing surface down to a clean "nothing running" state and
@@ -727,8 +875,27 @@ func (a *App) installPlan(plan *runtimePlan) {
 	a.appliedRef.Set(plan.logical)
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
+	// Retain the installed registry so its HTTP transport's SSE senders can be
+	// drained when this registry is later superseded or on shutdown (see
+	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
+	// points at this registry's mux.
+	a.registryRef.Store(plan.registry)
 	if a.onRuntimeInstalled != nil {
 		a.onRuntimeInstalled()
+	}
+}
+
+// closeSupersededHTTP drains the SSE senders of a superseded (or shutting-down)
+// factory registry's HTTP transport so clients pinned to its mux disconnect and
+// reconnect to the newly installed one, and so a fronting server.Shutdown does
+// not hang on long-lived SSE handlers. nil-safe; idempotent (SSESender.Close
+// uses sync.Once).
+func (a *App) closeSupersededHTTP(ctx context.Context, reg *factoryRegistry) {
+	if reg == nil || reg.http == nil {
+		return
+	}
+	if err := reg.http.Close(ctx); err != nil {
+		a.logger.Warn("bootstrap: drain superseded HTTP SSE senders", "error", err)
 	}
 }
 

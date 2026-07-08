@@ -53,63 +53,10 @@ func (rt *Runtime) ReadinessLevel(ctx context.Context) ports.ReadinessLevel {
 		// Process is alive (we are answering) but the bridge is not running.
 		return ports.LevelLive
 	}
-	dh := rt.DeepHealth(ctx)
-	if !dh.Running || !dh.Healthy {
-		return ports.LevelLive
-	}
-
-	level := rt.readinessFromSnapshot(dh)
-
-	// Standby cap: an instance holding no lease for its exclusive routes is
-	// ready-but-not-primary. Never advertise Full so failover routing does not
-	// treat it as an active dispatch target.
-	if dh.Role == roleStandby && level > ports.LevelSubscribed {
-		return ports.LevelSubscribed
-	}
-	return level
-}
-
-// readinessFromSnapshot derives the achieved level from a consistent DeepHealth
-// snapshot, independent of Role.
-func (rt *Runtime) readinessFromSnapshot(dh ports.DeepHealth) ports.ReadinessLevel {
-	// Sender-only sessions report Connected without subscriptions; track
-	// the strongest level all sessions satisfy.
-	allConnected := true
-	allSubscribed := true
-	for _, sh := range dh.Sessions {
-		// A deferred-connect standby (ConnectAfterLease with no lease held) is
-		// EXPECTED to be disconnected: its source session does not Start until
-		// this instance wins the lease. Requiring it to be connected pinned a
-		// ready standby at LevelRunning, which a level=connected readiness probe
-		// then marked permanently unready — ejecting the only failover target
-		// (finding C3-M). Skip it from the connectivity aggregate so the standby
-		// reaches its LevelSubscribed cap.
-		if sh.ConnectAfterLease && !sh.HasLease {
-			continue
-		}
-		if !sh.Connected {
-			allConnected = false
-			allSubscribed = false
-			break
-		}
-		if sh.SubscriptionsActive != sh.SubscriptionsWanted {
-			allSubscribed = false
-		}
-	}
-	if !allConnected {
-		return ports.LevelRunning
-	}
-	if !allSubscribed {
-		return ports.LevelConnected
-	}
-
-	// Full requires every route runner to be Ready (handler registered).
-	for _, rh := range dh.Routes {
-		if !rh.Ready {
-			return ports.LevelSubscribed
-		}
-	}
-	return ports.LevelFull
+	// Delegate the snapshot→level derivation (including the standby cap) to the
+	// pure ports.ReadinessLevelFromDeepHealth so /ready and /deephealth classify
+	// identical runtime state identically — one algorithm, no drift.
+	return ports.ReadinessLevelFromDeepHealth(rt.DeepHealth(ctx))
 }
 
 // AtLeast reports whether the runtime has achieved at least the

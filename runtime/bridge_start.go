@@ -37,12 +37,14 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	if rt.terminal {
+	if rt.terminal || rt.stopped {
 		// Finding 3: Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
 		// A restart would append fresh drainers over CLOSED stores and duplicate
-		// work. The runtime is single-use: reject a restart with a clear error
-		// (the supervisor builds a NEW runtime for reconfiguration).
+		// work. The runtime is single-use — for BOTH a clean deliberate Stop
+		// (rt.stopped) and an unrecoverable component failure (rt.terminal):
+		// reject a restart with a clear error. "Resume" after a deliberate stop
+		// means the supervisor builds a NEW runtime (CRITICAL 1).
 		return errors.New("runtime: cannot start a stopped runtime (single-use lifecycle); build a new runtime")
 	}
 
@@ -53,6 +55,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.healthy = true
 	rt.terminal = false
 	rt.componentErrors = make(map[string]error)
+	rt.routeFlaps = make(map[string]int)
+	rt.routeRunStart = make(map[string]time.Time)
 
 	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
 		rt.running = false
@@ -113,17 +117,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// ponytail: fixed 2×5s budget; make it per-route visibility-aware only if a
 	// route both disables visibility extension and sets a visibility window below
 	// the send+DLQ budget.
+	m := rt.metrics
+	if m == nil {
+		m = &ports.NoopExporter{}
+	}
+
 	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store:            rt.dlqStore,
 		Clock:            rt.clk,
 		WriteTimeout:     5 * time.Second,
 		WriteMaxAttempts: 2,
+		// H2: wire Metrics/Logger so MetricDLQWriteFailures reaches the real
+		// exporter (not a NoopExporter) and router write errors are logged.
+		// Without these the production DLQ router was blind.
+		Metrics: m,
+		Logger:  rt.logger,
 	})
-
-	m := rt.metrics
-	if m == nil {
-		m = &ports.NoopExporter{}
-	}
 
 	if rt.globalMaxInFlight > 0 {
 		rt.globalSem = make(chan struct{}, rt.globalMaxInFlight)
@@ -170,6 +179,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		entry.runner = route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 			RouteID:           entry.config.ID,
 			Policy:            entry.config.Policy,
+			SourceTransport:   entry.config.SourceTransport,
 			Receiver:          entry.receiver,
 			Sender:            entry.sender,
 			Senders:           entry.config.Senders,
@@ -245,6 +255,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 						},
 					})
 					rt.drainers = append(rt.drainers, drainer)
+					// F9: let step-down early-complete its grace when this
+					// session's outbox has no in-flight records to settle.
+					mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 				}
 			}
 		}
@@ -305,6 +318,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					},
 				})
 				rt.drainers = append(rt.drainers, drainer)
+				// F9: let step-down early-complete its grace when this session's
+				// outbox has no in-flight records to settle.
+				mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 			}
 		}
 	}

@@ -89,6 +89,19 @@ func clonePayload(b []byte) []byte {
 	return cp
 }
 
+// checkEnvelopeID enforces the single envelope-identity invariant shared
+// by every construction and rehydration path: the ID must be non-empty.
+// NewEnvelope, AssignID and UnmarshalJSON all route through this one
+// function (returning the shared ErrInvalidEnvelopeID sentinel) so the
+// emptiness rule lives in exactly one place rather than three divergent
+// copies.
+func checkEnvelopeID(id string) error {
+	if id == "" {
+		return ErrInvalidEnvelopeID
+	}
+	return nil
+}
+
 // NewEnvelope constructs and validates an Envelope.
 //
 //   - ID must be non-empty (ErrInvalidEnvelopeID).
@@ -110,8 +123,8 @@ func clonePayload(b []byte) []byte {
 //     a time.Time rather than a clock interface so domain/messaging
 //     stays stdlib-only (no edge to domain/clock — see .go-arch-lint.yml).
 func NewEnvelope(in EnvelopeInput, now time.Time) (*Envelope, error) {
-	if in.ID == "" {
-		return nil, ErrInvalidEnvelopeID
+	if err := checkEnvelopeID(in.ID); err != nil {
+		return nil, err
 	}
 	created := in.CreatedAt
 	if created.IsZero() {
@@ -194,8 +207,8 @@ func (e *Envelope) SetExpiry(t time.Time) error {
 // immutable once set: AssignID returns ErrEnvelopeIDImmutable if the envelope
 // already carries an ID, and ErrInvalidEnvelopeID if id is empty.
 func (e *Envelope) AssignID(id string) error {
-	if id == "" {
-		return ErrInvalidEnvelopeID
+	if err := checkEnvelopeID(id); err != nil {
+		return err
 	}
 	if e.id != "" {
 		return ErrEnvelopeIDImmutable

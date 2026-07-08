@@ -134,7 +134,7 @@ func TestRenderAddress_AdjacentBraces(t *testing.T) {
 			name:     "unclosed brace",
 			template: "devices/{incomplete",
 			vars:     nil,
-			want:     "devices/{incomplete",
+			wantErr:  true,
 		},
 		{
 			name:     "empty template",

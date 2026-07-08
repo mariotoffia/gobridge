@@ -165,6 +165,21 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 // renewal, so it seizes ~TTL after that renewal. The correctness of the window
 // relies only on this process's own clock being monotonic within a takeover,
 // not on agreement with the owner's clock.
+//
+// Operational bound (finding F4): because a COLD standby — one that starts AFTER
+// the owner died, e.g. the replacement pod brought up by a rolling deploy — can
+// take up to ~2×TTL to seize, any strict "fail over within N seconds" objective
+// requires lease_ttl ≤ N/2. For the common ≤60s target, configure lease_ttl
+// ≤ 30s. The ~2×TTL bound assumes the standby BEGINS observing within ~TTL of
+// the owner's death; one brought up even later seizes ~TTL after it first
+// observes the final tuple, so a badly delayed rollout can exceed 2×TTL from
+// death — budget standby-start latency into the objective. Shrinking the
+// cold-standby case to ~TTL would require persisting the first-seen observation
+// (kept in per-process memory today — see observationFor/recordObservation).
+// That need not touch the safety-critical fencing row — a separate observation
+// record would do — but the added write path and its failure modes are out of
+// scope, so the 2×TTL cold-standby bound is left as a documented operational
+// constraint.
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
@@ -414,9 +429,22 @@ func (s *Store) getRow(ctx context.Context, leaseID string) (leaseRow, error) {
 	if len(result.Item) == 0 {
 		return leaseRow{present: false}, nil
 	}
-	version, _ := numAttr(result.Item, attrVersion)
-	expiresAt, _ := numAttr(result.Item, attrExpiresAt)
-	renewedAt, _ := numAttr(result.Item, attrRenewedAt)
+	// A lease row that exists MUST carry a parseable fencing version; a
+	// present-but-corrupt version is surfaced rather than silently read as 0
+	// (which would reset the fence). A genuinely absent attribute (legacy row)
+	// is tolerated as 0.
+	version, err := optionalNumAttr(result.Item, attrVersion)
+	if err != nil {
+		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	}
+	expiresAt, err := optionalNumAttr(result.Item, attrExpiresAt)
+	if err != nil {
+		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	}
+	renewedAt, err := optionalNumAttr(result.Item, attrRenewedAt)
+	if err != nil {
+		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	}
 	return leaseRow{
 		present:   true,
 		owner:     strAttr(result.Item, attrOwner),
@@ -567,8 +595,16 @@ func (s *Store) Current(ctx context.Context, leaseID string) (persistence.LeaseI
 			With("leaseID", leaseID)
 	}
 
-	version, _ := numAttr(result.Item, attrVersion)
-	expiresAtMillis, _ := numAttr(result.Item, attrExpiresAt)
+	// Surface a corrupt (present-but-unparseable) fencing version instead of
+	// silently coercing it to 0 — see optionalNumAttr / getRow.
+	version, err := optionalNumAttr(result.Item, attrVersion)
+	if err != nil {
+		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
+	}
+	expiresAtMillis, err := optionalNumAttr(result.Item, attrExpiresAt)
+	if err != nil {
+		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
+	}
 
 	return persistence.LeaseInfo{
 		LeaseID:   leaseID,
@@ -701,6 +737,24 @@ func numAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, erro
 		return 0, fmt.Errorf("dynamodblease: parse number attribute %q: %w", key, err)
 	}
 	return parsed, nil
+}
+
+// optionalNumAttr reads a numeric attribute that MAY be legitimately absent.
+//
+//   - absent            → (0, nil): tolerated (e.g. renewed_at on a freshly
+//     acquired lease, or older rows written before a field existed).
+//   - present & corrupt → (0, err): surfaced, NOT coerced to 0.
+//
+// The distinction is load-bearing for the fencing version: lease rows ARE the
+// fencing counter of record, so silently reading a corrupt version as 0 would
+// reset the fence below the outbox high-water mark and make every subsequent
+// claim fail with ErrStaleFencingToken — a partition-wide stall. A corrupt
+// fence must fail loudly at the read, not masquerade as a fresh lease.
+func optionalNumAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, error) {
+	if _, ok := attrs[key]; !ok {
+		return 0, nil
+	}
+	return numAttr(attrs, key)
 }
 
 func strAttr(attrs map[string]ddbtypes.AttributeValue, key string) string {

@@ -109,7 +109,7 @@ func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
 		LeaseTTL:          "60s",
 		RenewInterval:     "20s",
 		DrainBatchSize:    50,
-		ConnectAfterLease: true,
+		ConnectAfterLease: boolPtr(true),
 	}
 
 	sc := toSessionConfig(rs)
@@ -127,6 +127,37 @@ func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
 	}
 	if !sc.ConnectAfterLease {
 		t.Fatal("ConnectAfterLease should be true")
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestToSessionConfig_ConnectAfterLease_DefaultsOnForExclusive is the regression
+// test for finding F6: a RouteSessionDef source is always an exclusive
+// single-owner session, so connect_after_lease must default ON when the
+// blueprint omits it — otherwise a booting standby with clean_start=false
+// resumes a broker-persisted subscription and consumes WITHOUT the lease. An
+// explicit value (true or false) is still honored.
+func TestToSessionConfig_ConnectAfterLease_DefaultsOnForExclusive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag *bool
+		want bool
+	}{
+		{name: "omitted_defaults_true", flag: nil, want: true},
+		{name: "explicit_true", flag: boolPtr(true), want: true},
+		{name: "explicit_false_honored", flag: boolPtr(false), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := &ports.RouteSessionDef{SessionID: "s1", ConnectAfterLease: tc.flag}
+			sc := toSessionConfig(rs)
+			if sc == nil {
+				t.Fatal("expected non-nil SessionConfig")
+			}
+			if sc.ConnectAfterLease != tc.want {
+				t.Fatalf("ConnectAfterLease: got %v, want %v", sc.ConnectAfterLease, tc.want)
+			}
+		})
 	}
 }
 

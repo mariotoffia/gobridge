@@ -19,6 +19,11 @@ ARG BINARY_MODULE=deployment/aws-filebased-config/lib
 ARG BINARY_PKG=./cmd/gobridge-filebased
 
 # ---- build stage ------------------------------------------------------------
+# REPRODUCIBILITY: pin this base image by digest so builds are reproducible, e.g.
+#   FROM golang:${GO_VERSION}-bookworm@sha256:<digest> AS build
+# Resolve the digest at release time (e.g. `docker buildx imagetools inspect
+# golang:1.25-bookworm`) and commit it. Until then this mutable tag can drift
+# between builds, undermining the reproducibility the header above claims.
 FROM golang:${GO_VERSION}-bookworm AS build
 ARG BINARY_MODULE
 ARG BINARY_PKG
@@ -43,6 +48,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ---- runtime stage ----------------------------------------------------------
 # distroless/static-debian12:nonroot runs as uid:gid 65532:65532 and contains
 # only CA certificates, tzdata and /etc/passwd — no shell, no package manager.
+# REPRODUCIBILITY: pin this base image by digest so builds are reproducible, e.g.
+#   FROM gcr.io/distroless/static-debian12:nonroot@sha256:<digest> AS runtime
+# Resolve the digest at release time (e.g. `docker buildx imagetools inspect
+# gcr.io/distroless/static-debian12:nonroot`) and commit it. Until then this
+# mutable tag can drift between builds, undermining reproducibility.
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=build /out/gobridge-filebased /usr/local/bin/gobridge-filebased

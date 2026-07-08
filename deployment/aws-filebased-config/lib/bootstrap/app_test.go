@@ -268,7 +268,7 @@ func TestResolveInputs_ErrorOnMissingReceiverKey(t *testing.T) {
 
 	_, err := resolveInputs(context.Background(), staticParameterResolver{
 		"/admin":   "admin-key-0123456",
-		"/monitor": "monitor-key",
+		"/monitor": "monitor-secret-key-123",
 	}, deployinfra.BootstrapConfig{
 		BridgeID:                 "bridge-f",
 		ConfigFilePath:           "/tmp/bridge.yaml",

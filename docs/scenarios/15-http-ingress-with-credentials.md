@@ -369,6 +369,16 @@ resolver := runtime.NewCredentialResolver(
 )
 ```
 
+The cache also backs **stale-while-error**: on a transient secrets-backend error
+the resolver serves the last-known-good (expired) credential and increments
+`CredentialStaleServed` instead of failing the build, then re-probes on the next
+resolve. Disabling the cache (`WithCredentialCacheTTL(0)`) turns this off -- a
+transient backend blip then fails the rebuild. Permanent errors (`NOT_FOUND`,
+`NOT_AUTHORIZED`) always propagate. See
+[Credentials & HTTP API](../credentials-and-http-api.md#resolver-caching-and-failure-behavior)
+and, for backing `file://` with a mounted Kubernetes Secret, the
+[Kubernetes secret-mount cookbook](22-k8s-secret-mount-credentials.md).
+
 ## Notes
 
 - **Credential values are never logged.** The `domain.PasswordCredential` and `domain.TLSMaterial` types intentionally have no `String` or `GoString` methods.

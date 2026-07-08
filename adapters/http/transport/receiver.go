@@ -17,6 +17,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -52,11 +53,25 @@ type receiverConfig struct {
 	apiKey       string
 	forwardToken string
 	dedupWindow  int
-	locator      ports.RouteLocator
-	forwarder    ports.MessageForwarder
-	metrics      ports.MetricsExporter
-	logger       *slog.Logger
-	clock        clock.Clock
+	// maxDispatchDuration bounds the detached ingress dispatch context
+	// (Config.MaxDispatchDuration). Zero defaults via
+	// effectiveMaxDispatchDuration.
+	maxDispatchDuration time.Duration
+	locator             ports.RouteLocator
+	forwarder           ports.MessageForwarder
+	metrics             ports.MetricsExporter
+	logger              *slog.Logger
+	clock               clock.Clock
+}
+
+// effectiveMaxDispatchDuration returns the detached-dispatch cap,
+// defaulting to defaultMaxDispatchDuration so a receiverConfig built
+// directly (or with a zero value) is still bounded.
+func (c receiverConfig) effectiveMaxDispatchDuration() time.Duration {
+	if c.maxDispatchDuration <= 0 {
+		return defaultMaxDispatchDuration
+	}
+	return c.maxDispatchDuration
 }
 
 // Receiver implements ports.Receiver for HTTP ingress.
@@ -108,6 +123,14 @@ func newReceiver(cfg receiverConfig) *Receiver {
 // emit callback and the receiver is ready to accept HTTP requests.
 // It satisfies ports.ReceiverStartedSignaler.
 func (r *Receiver) Started() <-chan struct{} { return r.ready }
+
+// tag returns the owning-receiver dimension stamped on every metric this
+// receiver emits, so ingress/forward series stay attributable per
+// receiver instead of merging across receivers — see metrics.go
+// (tagKeyReceiverID).
+func (r *Receiver) tag() shared.Tag {
+	return shared.Tag{Key: tagKeyReceiverID, Value: r.cfg.id}
+}
 
 // SetRouteID associates this receiver with a route for cluster-aware routing.
 func (r *Receiver) SetRouteID(routeID string) {
@@ -225,6 +248,19 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	emit := r.emit
 	r.mu.Unlock()
 
+	// Ownership routing runs ONLY for non-forwarded (client-origin) requests.
+	// A request that already carries a trusted forward marker deliberately
+	// SKIPS this Locate() re-check and is processed locally to terminate the
+	// single-hop chain (finding F5). Re-checking ownership on a forwarded
+	// request and bouncing it back on disagreement would risk an A->B->A loop,
+	// which the single-hop contract exists to prevent. The accepted cost is a
+	// bounded duplicate window: if the forwarding peer acted on a locator cache
+	// entry (TTL on the order of seconds) that went stale because ownership
+	// moved after it forwarded, this just-stepped-down instance may process ONE
+	// forwarded request post-step-down. That window is bounded by the peer's
+	// locator cache TTL; outbox commits stay fencing-version safe (no double
+	// commit), so only direct-mode delivery can surface an at-least-once
+	// duplicate — an accepted trade for guaranteed loop freedom.
 	if !forwarded && routeID != "" && r.cfg.locator != nil {
 		node, local, err := r.cfg.locator.Locate(ctx, routeID)
 		if err != nil {
@@ -248,7 +284,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// untrusted marker still cannot force local processing on a
 			// non-owner — we 508, we do not handle it.
 			if forwardMarker {
-				r.cfg.metrics.Counter(MetricHTTPForwardLoopRefused, 1)
+				r.cfg.metrics.Counter(MetricHTTPForwardLoopRefused, 1, r.tag())
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("refusing to re-forward an already-forwarded request",
 						"route", routeID, "peer", node.InstanceID)
@@ -263,17 +299,17 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				writeError(w, http.StatusBadGateway, "no forwarder configured for remote route")
 				return
 			}
-			r.cfg.metrics.Counter(MetricClusterForwards, 1)
+			r.cfg.metrics.Counter(MetricClusterForwards, 1, r.tag())
 			fwdStart := r.cfg.clock.Now()
 			if err := r.cfg.forwarder.Forward(ctx, node, r.cfg.id, env); err != nil {
-				r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
+				r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart), r.tag())
 				if r.cfg.logger != nil {
 					r.cfg.logger.Error("forward failed", "route", routeID, "peer", node.InstanceID, "error", err)
 				}
 				writeError(w, http.StatusBadGateway, "forward failed")
 				return
 			}
-			r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart))
+			r.cfg.metrics.Timer(MetricHTTPForwardLatency, r.cfg.clock.Since(fwdStart), r.tag())
 			writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 			return
 		}
@@ -285,7 +321,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// duplicate delivery. Node-local and best-effort — see doc.go.
 	dedupKey := ingressDedupKey(keys)
 	if r.dedup.seen(dedupKey) {
-		r.cfg.metrics.Counter(MetricHTTPIngressDuplicates, 1)
+		r.cfg.metrics.Counter(MetricHTTPIngressDuplicates, 1, r.tag())
 		if logging.DebugEnabled(r.cfg.logger) {
 			r.cfg.logger.Log(ctx, logging.LevelDebug, "http: duplicate ingress request acknowledged without re-emit",
 				"receiver_id", r.cfg.id, "envelope_id", env.ID())
@@ -299,22 +335,23 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// mid-pipeline (which could cancel processing after side effects have
 	// begun). The dispatch runs on a context.WithoutCancel copy — values
 	// (trace, correlation) are preserved, the cancellation signal is not.
-	// Detached is NOT unbounded: when the request context carries a
-	// deadline (the server's own timeout, e.g. http.TimeoutHandler
-	// installed at the composition root), that deadline is re-armed on
-	// the detached context so a hung pipeline is still bounded by the
-	// server's own timeout. The deadline is released when the delivery
-	// settles (Ack/Retry) — releasing it on handler return would abort
-	// the dispatch the moment a disconnected client got its 504, which
-	// is exactly the mid-dispatch abort this decoupling removes.
+	// The detached dispatch is ALWAYS bounded by MaxDispatchDuration
+	// (default 5m). This is unconditional on purpose: the request context
+	// carries a deadline only when the composition root installs an
+	// http.TimeoutHandler, and a bare http.Server (Read/WriteTimeout
+	// only) puts NO deadline on the request context — so the previous
+	// "re-arm the deadline only if present" was a no-op under the shipped
+	// bootstrap, and a wedged downstream leaked one goroutine + in-memory
+	// delivery per stuck request. The cap is released early when the
+	// delivery settles (Ack/Retry) via del.onSettle, and on the
+	// emit-failure path below; releasing it on handler return would abort
+	// the dispatch the moment a disconnected client got its 504, which is
+	// exactly the mid-dispatch abort this decoupling removes.
 	// The RESPONSE still honours the client context below: on disconnect
 	// or timeout the handler answers 504 while processing runs to
-	// completion in the pipeline.
-	dispatchCtx := context.WithoutCancel(ctx)
-	cancelDispatch := context.CancelFunc(func() {})
-	if deadline, ok := ctx.Deadline(); ok {
-		dispatchCtx, cancelDispatch = context.WithDeadline(dispatchCtx, deadline)
-	}
+	// completion in the pipeline (bounded by MaxDispatchDuration).
+	dispatchCtx, cancelDispatch := context.WithTimeout(
+		context.WithoutCancel(ctx), r.cfg.effectiveMaxDispatchDuration())
 	del := newHTTPDelivery(env)
 	del.onSettle = cancelDispatch
 	if err := emit(dispatchCtx, del); err != nil {
@@ -330,7 +367,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	select {
 	case result := <-del.done:
-		r.cfg.metrics.Timer(MetricHTTPIngressLatency, r.cfg.clock.Since(start))
+		r.cfg.metrics.Timer(MetricHTTPIngressLatency, r.cfg.clock.Since(start), r.tag())
 		if result.err != nil {
 			writeError(w, http.StatusInternalServerError, "processing failed")
 		} else {

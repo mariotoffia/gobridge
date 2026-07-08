@@ -49,9 +49,16 @@ func openSession(path string) (*sqlSession, error) {
 	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
 	// block-and-retry up to the timeout — the retry policy for cross-process
 	// contention on a file database, including the initial WAL conversion (I2).
+	//
+	// synchronous=FULL is pinned explicitly rather than relying on the driver
+	// default: WAL mode's own default is NORMAL (which can lose the last
+	// committed transaction on power loss), and modernc's FULL default is an
+	// unpinned upstream choice. A DLQ is a durability-of-last-resort record, so
+	// we pin FULL and assert it (see the synchronous-pin test).
 	for _, pragma := range []string{
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=FULL",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			_ = db.Close()
@@ -124,12 +131,21 @@ func (s *sqlSession) close() error {
 // write inserts a single DLQ entry. Duplicates surface as
 // shared.ErrDuplicateRecord.
 func (s *sqlSession) write(ctx context.Context, entry routing.DLQEntry) error {
-	envJSON, err := json.Marshal(entry.Snapshot())
-	if err != nil {
-		return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
+	// A DLQ entry may be a metadata-only failure record with no envelope.
+	// A zero-value envelope marshals to JSON with an empty ID, which the
+	// domain's mandatory-ID guard rejects on read-back; persist an empty
+	// string for an absent envelope (paired with the read-side skip in
+	// acl_row.go) so the entry round-trips without a phantom envelope.
+	var envJSON []byte
+	if snap := entry.Snapshot(); snap.ID() != "" {
+		var err error
+		envJSON, err = json.Marshal(snap)
+		if err != nil {
+			return fmt.Errorf("sqlitedlq: marshal envelope: %w", err)
+		}
 	}
 
-	_, err = s.db.ExecContext(ctx, insertDLQSQL,
+	_, err := s.db.ExecContext(ctx, insertDLQSQL,
 		entry.ID(), entry.RouteID(), entry.BindingID(), entry.SessionID(), entry.SourceID(),
 		entry.CorrelationID(), entry.Address(), entry.Reason(), entry.Category(), entry.ErrorCode(), entry.LastError(),
 		string(envJSON), entry.FailedAt().UnixMilli(), entry.Attempts(),

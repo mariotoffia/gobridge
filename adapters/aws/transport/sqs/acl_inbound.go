@@ -32,13 +32,14 @@ type rawInbound struct {
 func (r *Receiver) pollAndConvert(
 	ctx context.Context,
 	queueURL string,
+	maxMessages int32,
 	pollTimeout time.Duration,
 ) ([]rawInbound, error) {
 	pollStart := r.clock().Now()
 	pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
 	output, err := r.loadClient().ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
 		QueueUrl:              aws.String(queueURL),
-		MaxNumberOfMessages:   r.cfg.MaxMessages,
+		MaxNumberOfMessages:   maxMessages,
 		WaitTimeSeconds:       r.cfg.WaitTimeSeconds,
 		VisibilityTimeout:     r.cfg.VisibilityTimeout,
 		MessageAttributeNames: []string{"All"},
@@ -91,18 +92,57 @@ func (r *Receiver) pollAndConvert(
 			r.metrics.Counter(MetricSQSMalformedMessages, 1,
 				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 			if r.logger != nil {
-				r.logger.Warn("sqs: dropping malformed message",
-					"queue_url", queueURL,
-					"message_id", aws.ToString(msg.MessageId),
-					"error", convErr,
-				)
+				// Escalate to Error once a malformed message has been
+				// redelivered past the sanity bound: the drop-without-delete
+				// strategy relies entirely on the queue's redrive policy to
+				// stop the loop, so a high receive count is a strong signal
+				// that NO redrive policy is configured and the message will
+				// otherwise return every visibility timeout forever
+				// (Finding 6). Settlement behaviour is deliberately
+				// unchanged — only the operator signal is escalated.
+				if recvCount := approximateReceiveCount(msg.Attributes); recvCount >= poisonReceiveCountThreshold {
+					r.logger.Error("sqs: poison message repeatedly redelivered; "+
+						"verify the source queue has a redrive policy (maxReceiveCount) to a DLQ",
+						"queue_url", queueURL,
+						"message_id", aws.ToString(msg.MessageId),
+						"approximate_receive_count", recvCount,
+						"error", convErr,
+					)
+				} else {
+					r.logger.Warn("sqs: dropping malformed message",
+						"queue_url", queueURL,
+						"message_id", aws.ToString(msg.MessageId),
+						"error", convErr,
+					)
+				}
 			}
-			_ = receiptHandle
 			continue
 		}
 		results = append(results, rawInbound{env: env, receiptHandle: receiptHandle})
 	}
 	return results, nil
+}
+
+// poisonReceiveCountThreshold is the ApproximateReceiveCount at or above
+// which a repeatedly-redelivered malformed ("poison") message is escalated
+// from a Warn to an Error log (Finding 6). Malformed messages are dropped
+// WITHOUT a Delete so the queue's own maxReceiveCount redrive policy can
+// move them to a DLQ; with NO redrive policy the message reappears every
+// visibility timeout forever, so crossing this bound strongly indicates a
+// missing redrive policy. 10 mirrors the AWS console's default suggested
+// maxReceiveCount.
+const poisonReceiveCountThreshold = 10
+
+// approximateReceiveCount parses the SQS ApproximateReceiveCount system
+// attribute (the number of times this message has been delivered). Returns
+// 0 when the attribute is absent or unparseable.
+func approximateReceiveCount(sysAttrs map[string]string) int {
+	if v, ok := sysAttrs["ApproximateReceiveCount"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // headerSQSSentTimestamp is the envelope header carrying the broker's
@@ -229,7 +269,7 @@ func (r *Receiver) convertMessage(
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "sqs: converting",
 			"queue_url", queueURL,
-			"message_id", env.ID,
+			"message_id", env.ID(),
 			"body_len", len(body),
 		)
 	}
@@ -241,19 +281,38 @@ func (r *Receiver) convertMessage(
 // attributes as a string (case-insensitive on the x-bridge. namespace,
 // consistent with messaging.IsReservedHeader and the amqp10 adapter's
 // bridgeHeaderString). Returns "" when absent or not a plain String attribute.
+//
+// An exact-case match is preferred before the case-insensitive fold scan
+// (Finding 12): egress always emits the canonical lower-case key, so when a
+// message carries BOTH the canonical key and a case-variant of it, the lift
+// is deterministic instead of picking a random winner from Go's randomised
+// map iteration. When only case-variants exist the smallest key (byte order)
+// wins so the result is still stable.
 func bridgeAttrString(attrs map[string]sqstypes.MessageAttributeValue, key string) string {
-	for k, v := range attrs {
-		if strings.EqualFold(k, key) {
-			// Exact "String" match is deliberate: egress emits the
-			// idempotency key with the plain "String" DataType (see
-			// attributeValue in acl_outbound.go). SQS custom labels like
-			// "String.custom" are intentionally NOT accepted — honouring
-			// them would widen ingress beyond the shape egress produces.
-			if aws.ToString(v.DataType) == "String" {
-				return aws.ToString(v.StringValue)
-			}
-			return ""
+	if v, ok := attrs[key]; ok {
+		return bridgeAttrStringValue(v)
+	}
+	matchKey, found := "", false
+	for k := range attrs {
+		if strings.EqualFold(k, key) && (!found || k < matchKey) {
+			matchKey, found = k, true
 		}
+	}
+	if found {
+		return bridgeAttrStringValue(attrs[matchKey])
+	}
+	return ""
+}
+
+// bridgeAttrStringValue returns the plain-String value of a bridge message
+// attribute. Exact "String" match is deliberate: egress emits the
+// idempotency key with the plain "String" DataType (see attributeValue in
+// acl_outbound.go). SQS custom labels like "String.custom" are intentionally
+// NOT accepted — honouring them would widen ingress beyond the shape egress
+// produces.
+func bridgeAttrStringValue(v sqstypes.MessageAttributeValue) string {
+	if aws.ToString(v.DataType) == "String" {
+		return aws.ToString(v.StringValue)
 	}
 	return ""
 }

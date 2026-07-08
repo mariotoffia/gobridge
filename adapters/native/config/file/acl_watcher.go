@@ -1,6 +1,7 @@
 package file
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -54,9 +55,26 @@ type Watcher struct {
 	logger         *slog.Logger
 	clk            clock.Clock
 
-	mu          sync.Mutex
-	running     bool
-	stopCh      chan struct{}
+	// readFile reads the watched file's bytes. It is a seam (default os.ReadFile)
+	// so reloadIfChanged reads the file EXACTLY ONCE and derives both the change
+	// hash and the parsed config from the SAME bytes — the read-once invariant a
+	// test can pin down (Finding 1). Hashing one read and parsing another let a
+	// truncated mid-write read be parsed and applied while lastHash recorded the
+	// final content's hash, silently wedging a partial config.
+	readFile func(string) ([]byte, error)
+
+	mu      sync.Mutex
+	running bool
+	// stopping guards stopCh's close so two concurrent Stop calls cannot both
+	// close it (a double close panics). running stays true until the loop's
+	// deferred cleanup runs, so it cannot distinguish "already asked to stop"
+	// from "still running"; stopping does. Reset in Watch on (re)start.
+	stopping bool
+	stopCh   chan struct{}
+	// doneCh is closed by the watch loop when it fully exits. Stop waits on it
+	// so a Stop-then-Watch cycle cannot leave the old loop alive alongside a new
+	// one, both mutating lastHash (Finding 8) — mirrors Manager.Stop.
+	doneCh      chan struct{}
 	started     chan struct{}
 	startedOnce sync.Once
 	lastApplied atomic.Pointer[time.Time]
@@ -198,6 +216,9 @@ func NewWatcher(path string, registry *ports.Registry, opts ...WatcherOption) *W
 	if w.clk == nil {
 		w.clk = clock.System
 	}
+	if w.readFile == nil {
+		w.readFile = os.ReadFile
+	}
 	return w
 }
 
@@ -214,7 +235,11 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	}
 
 	w.stopCh = make(chan struct{})
+	w.doneCh = make(chan struct{})
 	w.running = true
+	w.stopping = false
+	stopCh := w.stopCh
+	doneCh := w.doneCh
 
 	ch := make(chan *ports.BridgeConfig, 1)
 
@@ -238,7 +263,7 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	switch w.mode {
 	case ModePoll:
 		w.startedOnce.Do(func() { close(w.started) })
-		go w.pollLoop(ctx, ch)
+		go w.pollLoop(ctx, ch, stopCh, doneCh)
 	default:
 		fsw, err := fsnotify.NewWatcher()
 		if err != nil {
@@ -252,22 +277,28 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 			return nil, fmt.Errorf("file watcher: add %q: %w", dir, err)
 		}
 		w.startedOnce.Do(func() { close(w.started) })
-		go w.notifyLoop(ctx, fsw, ch)
+		go w.notifyLoop(ctx, fsw, ch, stopCh, doneCh)
 	}
 
 	return ch, nil
 }
 
-// Stop stops the watcher.
+// Stop stops the watcher and blocks until the watch loop has fully exited, so a
+// Stop-then-Watch cycle never runs two loops that share lastHash (Finding 8).
 func (w *Watcher) Stop() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if !w.running {
+		w.mu.Unlock()
 		return
 	}
-	close(w.stopCh)
-	w.running = false
+	doneCh := w.doneCh
+	if !w.stopping {
+		w.stopping = true
+		close(w.stopCh)
+	}
+	w.mu.Unlock()
+
+	<-doneCh // both concurrent callers wait for the loop goroutine (and its deferred running=false) to finish
 }
 
 // Started returns a channel that is closed once the watcher's file monitoring
@@ -305,8 +336,8 @@ func (w *Watcher) CoalescedReloads() uint64 {
 //  2. A slow resync ticker (resyncInterval) re-hashes the file
 //     unconditionally, so an event fsnotify dropped (kernel queue
 //     overflow) or never emitted is still applied within one interval.
-func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan *ports.BridgeConfig) {
-	w.runNotify(ctx, fsw.Events, fsw.Errors, fsw.Close, ch)
+func (w *Watcher) notifyLoop(ctx context.Context, fsw *fsnotify.Watcher, ch chan *ports.BridgeConfig, stopCh, doneCh chan struct{}) {
+	w.runNotify(ctx, fsw.Events, fsw.Errors, fsw.Close, ch, stopCh, doneCh)
 }
 
 // runNotify is the notifyLoop body, split out so tests can inject
@@ -318,6 +349,7 @@ func (w *Watcher) runNotify(
 	errs <-chan error,
 	closeWatcher func() error,
 	ch chan *ports.BridgeConfig,
+	stopCh, doneCh chan struct{},
 ) {
 	var debounceTimer clock.Timer
 	var debounceCh <-chan time.Time
@@ -331,6 +363,9 @@ func (w *Watcher) runNotify(
 		w.mu.Lock()
 		w.running = false
 		w.mu.Unlock()
+		// Signal Stop LAST, after running=false, so a Stop that unblocks here
+		// observes a fully torn-down watcher before it returns.
+		close(doneCh)
 	}()
 
 	resync := w.clk.NewTicker(w.resyncInterval)
@@ -340,7 +375,7 @@ func (w *Watcher) runNotify(
 		select {
 		case <-ctx.Done():
 			return
-		case <-w.stopCh:
+		case <-stopCh:
 			return
 
 		case event, ok := <-events:
@@ -383,12 +418,13 @@ func (w *Watcher) runNotify(
 
 // pollLoop periodically reads the file and emits on content change.
 // The content baseline (lastHash) is taken synchronously by Watch.
-func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig) {
+func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, stopCh, doneCh chan struct{}) {
 	defer func() {
 		close(ch)
 		w.mu.Lock()
 		w.running = false
 		w.mu.Unlock()
+		close(doneCh)
 	}()
 
 	ticker := w.clk.NewTicker(w.pollInterval)
@@ -398,7 +434,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-w.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C():
 			w.reloadIfChanged(ch)
@@ -411,27 +447,40 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig) {
 // lastHash advances only after a successful parse and enqueue, so a
 // transiently unreadable or syntactically broken file is retried on the
 // next event/tick rather than being recorded as "seen".
+//
+// The file is read EXACTLY ONCE: the change hash and the parse both derive
+// from the same byte slice (Finding 1). Hashing one read and parsing another
+// let a truncating editor / slow copy be caught mid-write — parse succeeds on a
+// truncated-but-valid prefix while lastHash records the FINAL content's hash,
+// so the resync gate sees "no change" and the bridge silently runs a partial
+// config. Mirrors Source.Load's read-once pattern.
 func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) {
-	h, err := fileHash(w.path)
+	data, err := w.readFile(w.path)
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Warn("file config watcher: read failed", "path", w.path, "error", err)
 		}
 		return
 	}
+	h := sha256.Sum256(data)
 	if h == w.lastHash {
 		return
 	}
-	if w.emitParsed(ch) {
+	if w.emitParsed(data, ch) {
 		w.lastHash = h
 	}
 }
 
-// emitParsed parses the watched file and enqueues the result with
+// emitParsed parses the supplied file bytes and enqueues the result with
 // latest-wins coalescing. It reports whether a config was delivered;
-// parse failures are logged and return false.
-func (w *Watcher) emitParsed(ch chan *ports.BridgeConfig) bool {
-	cfg, err := parser.ParseFile(w.path, w.format, w.registry)
+// parse failures are logged and return false. It parses the SAME bytes
+// reloadIfChanged hashed, never a fresh disk read (Finding 1).
+func (w *Watcher) emitParsed(data []byte, ch chan *ports.BridgeConfig) bool {
+	format := w.format
+	if format == parser.FormatAuto || format == "" {
+		format = detectSourceFormat(w.path)
+	}
+	cfg, err := parser.Parse(bytes.NewReader(data), format, w.registry)
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Warn("file config watcher: parse failed", "path", w.path, "error", err)

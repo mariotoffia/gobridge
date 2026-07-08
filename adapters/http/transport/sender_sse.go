@@ -27,7 +27,17 @@ type sseSenderConfig struct {
 	heartbeatInterval time.Duration
 	writeTimeout      time.Duration
 	maxClients        int
-	apiKey            string
+	// clientBufferSize is the depth of each connected client's event
+	// queue (Config.ClientBufferSize). A full queue drops the event for
+	// that client rather than blocking the fan-out. Zero defaults to
+	// defaultSSEClientBuffer in newSSESender.
+	clientBufferSize int
+	// failOnZeroDelivery makes Send return a transient error when a
+	// broadcast reached nobody (no subscribers, or every buffer full)
+	// instead of the default at-most-once success. See
+	// Config.FailOnZeroDelivery.
+	failOnZeroDelivery bool
+	apiKey             string
 	// redirectEndpoint is the PeerInfo.Endpoints key consulted for
 	// cross-cluster SSE client redirects. Empty (the default) disables
 	// redirecting entirely: a request for a remote route is refused with
@@ -63,6 +73,9 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 	}
 	if cfg.maxClients == 0 {
 		cfg.maxClients = defaultMaxSSEClients
+	}
+	if cfg.clientBufferSize <= 0 {
+		cfg.clientBufferSize = defaultSSEClientBuffer
 	}
 	if cfg.metrics == nil {
 		cfg.metrics = &ports.NoopExporter{}
@@ -142,6 +155,14 @@ func (s *SSESender) identity() string {
 	return s.cfg.id
 }
 
+// tag returns the owning-sender dimension stamped on every metric this
+// sender emits, so multiple SSE senders in one process keep distinct
+// series (notably the SSEClients gauge) instead of clobbering a shared
+// one — see metrics.go (tagKeySenderID).
+func (s *SSESender) tag() shared.Tag {
+	return shared.Tag{Key: tagKeySenderID, Value: s.cfg.id}
+}
+
 // Send broadcasts an envelope to all connected SSE clients.
 //
 // Address validation: an SSESender is bound at construction to a
@@ -206,18 +227,27 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		)
 	}
 
-	// SSE egress is AT-MOST-ONCE (see doc.go): Send reports success even
-	// when the event reached nobody, and the route runner then acks the
-	// source. Both zero-delivery cases — no subscribers at all, and every
-	// subscriber's buffer full — are therefore counted and logged so the
-	// loss is observable instead of silent.
+	// SSE egress is AT-MOST-ONCE by default (see doc.go): Send reports
+	// success even when the event reached nobody, and the route runner
+	// then acks the source. Both zero-delivery cases — no subscribers at
+	// all, and every subscriber's buffer full — are counted and logged at
+	// ERROR level so the loss is loud, never silent. When
+	// FailOnZeroDelivery is set the zero-delivery cases instead return a
+	// TRANSIENT (Unavailable-class) error so the runner RETRIES (letting a
+	// briefly-disconnected subscriber reconnect) and then DLQs per the
+	// route's retry-exhaustion policy.
 	if len(clients) == 0 {
-		s.cfg.metrics.Counter(MetricSSENoSubscribers, 1)
+		s.cfg.metrics.Counter(MetricSSENoSubscribers, 1, s.tag())
 		if s.cfg.logger != nil {
-			s.cfg.logger.Warn("sse: no subscribers connected, event not delivered",
+			s.cfg.logger.Error("sse: no subscribers connected, event not delivered",
 				"sender_id", s.cfg.id, "envelope_id", env.ID())
 		}
-		s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+		s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
+		if s.cfg.failOnZeroDelivery {
+			return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
+				"sse: zero delivery — no subscribers connected (sender %q, envelope %q)",
+				s.cfg.id, env.ID()))
+		}
 		return nil
 	}
 
@@ -225,27 +255,33 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	for _, c := range clients {
 		select {
 		case <-ctx.Done():
-			s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+			s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
 			return ctx.Err()
 		case c.events <- eventBytes:
 		default:
 			dropped++
-			s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1)
+			s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1, s.tag())
 			if s.cfg.logger != nil {
 				s.cfg.logger.Warn("sse: client buffer full, dropping event",
 					"client", c.id, "event_id", env.ID())
 			}
 		}
 	}
-	if dropped == len(clients) {
-		s.cfg.metrics.Counter(MetricSSEAllDropped, 1)
+	allDropped := dropped == len(clients)
+	if allDropped {
+		s.cfg.metrics.Counter(MetricSSEAllDropped, 1, s.tag())
 		if s.cfg.logger != nil {
-			s.cfg.logger.Warn("sse: all subscriber buffers full, event delivered to nobody",
+			s.cfg.logger.Error("sse: all subscriber buffers full, event delivered to nobody",
 				"sender_id", s.cfg.id, "envelope_id", env.ID(), "client_count", len(clients))
 		}
 	}
 
-	s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start))
+	s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
+	if allDropped && s.cfg.failOnZeroDelivery {
+		return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
+			"sse: zero delivery — all %d subscriber buffers full (sender %q, envelope %q)",
+			len(clients), s.cfg.id, env.ID()))
+	}
 	return nil
 }
 
@@ -313,7 +349,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	clientID := generateClientID()
 	client := &sseClient{
 		id:     clientID,
-		events: make(chan []byte, 256),
+		events: make(chan []byte, s.cfg.clientBufferSize),
 	}
 
 	s.mu.Lock()
@@ -325,7 +361,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.clients[clientID] = client
 	count := len(s.clients)
 	s.mu.Unlock()
-	s.cfg.metrics.Gauge(MetricSSEClients, float64(count))
+	s.cfg.metrics.Gauge(MetricSSEClients, float64(count), s.tag())
 	if logging.DebugEnabled(s.cfg.logger) {
 		s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client connected",
 			"client_id", clientID, "total_clients", count)
@@ -336,7 +372,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(s.clients, clientID)
 		count := len(s.clients)
 		s.mu.Unlock()
-		s.cfg.metrics.Gauge(MetricSSEClients, float64(count))
+		s.cfg.metrics.Gauge(MetricSSEClients, float64(count), s.tag())
 		if logging.DebugEnabled(s.cfg.logger) {
 			s.cfg.logger.Log(context.Background(), logging.LevelDebug, "sse: client disconnected",
 				"client_id", clientID, "total_clients", count)
@@ -355,7 +391,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// countable/alertable even when no logger is configured, and warn once
 	// so it is also visible in logs.
 	if s.cfg.writeTimeout > 0 && !s.deadlineProbe(rc) {
-		s.cfg.metrics.Counter(MetricSSEDeadlineUnsupported, 1)
+		s.cfg.metrics.Counter(MetricSSEDeadlineUnsupported, 1, s.tag())
 		if s.cfg.logger != nil {
 			s.cfg.logger.Warn("sse: per-write deadline unsupported by ResponseWriter; slow-client eviction disabled",
 				"client_id", clientID)
@@ -368,6 +404,22 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	heartbeat := s.cfg.clock.NewTicker(s.cfg.heartbeatInterval)
 	defer heartbeat.Stop()
 
+	// Cluster ownership is resolved at connect time (above), but a
+	// rebalance AFTER connect can move the route to another node. Without
+	// a re-check the client keeps a live, heartbeating — yet event-less —
+	// stream forever. Re-poll the locator on a ticker so a client attached
+	// to a now-non-owner node is disconnected and reconnects into the
+	// connect-time redirect/refuse path. Only armed when this sender is
+	// cluster-aware (bound route + locator); otherwise recheckC stays nil
+	// and its select arm never fires. The heartbeat interval is a fine
+	// cadence — a stale stream is corrected within one heartbeat.
+	var recheckC <-chan time.Time
+	if rid != "" && s.cfg.locator != nil {
+		recheck := s.cfg.clock.NewTicker(s.cfg.heartbeatInterval)
+		defer recheck.Stop()
+		recheckC = recheck.C()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -377,6 +429,17 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// http.Server.Shutdown can complete instead of hanging on
 			// long-lived SSE streams.
 			return
+		case <-recheckC:
+			// A transient locator error must NOT disconnect a healthy
+			// stream — only a definitive move away from this node does.
+			if s.ownershipMovedAway(ctx, rid) {
+				if logging.DebugEnabled(s.cfg.logger) {
+					s.cfg.logger.Log(context.Background(), logging.LevelDebug,
+						"sse: route ownership moved to another node, closing stream so client reconnects",
+						"route_id", rid, "client_id", clientID)
+				}
+				return
+			}
 		case event := <-client.events:
 			s.armWriteDeadline(rc)
 			if _, err := w.Write(event); err != nil {
@@ -393,6 +456,24 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ownershipMovedAway reports whether the bound route is no longer owned
+// by this node. It is the periodic re-check that closes an SSE stream a
+// cluster rebalance has stranded on a non-owner (the connect-time locate
+// only runs once). A locator error is treated as "still ours": a
+// transient discovery blip must not disconnect a healthy subscriber, so
+// it is logged and the stream is kept.
+func (s *SSESender) ownershipMovedAway(ctx context.Context, rid string) bool {
+	_, local, err := s.cfg.locator.Locate(ctx, rid)
+	if err != nil {
+		if s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: ownership re-check failed, keeping stream open",
+				"route_id", rid, "error", err)
+		}
+		return false
+	}
+	return !local
+}
+
 // armWriteDeadline re-arms the per-write deadline on the underlying
 // connection before each SSE frame. Re-arming on every write overrides a
 // fronting server's global WriteTimeout — which would otherwise kill a
@@ -400,21 +481,27 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // stalled client is evicted (the next Write fails and the handler
 // returns) instead of pinning this goroutine. Best-effort: a writer
 // without deadline support (e.g. httptest.ResponseRecorder) returns
-// http.ErrNotSupported, which is ignored. The deadline is sourced from
-// the injected clock so tests stay deterministic.
+// http.ErrNotSupported, which is ignored. The deadline argument uses the
+// WALL clock (time.Now), NOT the injected clock: SetWriteDeadline is an
+// OS/kernel socket deadline, so an offset/scaled test clock would set a
+// nonsensical kernel deadline. In unit tests the writer (httptest
+// recorder / fake) returns http.ErrNotSupported, so the value is inert
+// there anyway; wall-clock is correct for production.
 func (s *SSESender) armWriteDeadline(rc *http.ResponseController) {
 	if s.cfg.writeTimeout <= 0 {
 		return
 	}
-	_ = rc.SetWriteDeadline(s.cfg.clock.Now().Add(s.cfg.writeTimeout))
+	_ = rc.SetWriteDeadline(time.Now().Add(s.cfg.writeTimeout)) //nolint:forbidigo // OS kernel socket deadline needs the real wall clock, not the injectable clock (see godoc above)
 }
 
 // deadlineProbe reports whether the underlying ResponseWriter actually
 // supports write deadlines. It is called once at stream start so an
 // unsupported writer (which makes armWriteDeadline a silent no-op, leaving
-// slow-client eviction inert) can be surfaced to operators.
+// slow-client eviction inert) can be surfaced to operators. Like
+// armWriteDeadline it uses the wall clock — the value is only probed for
+// support, never asserted on.
 func (s *SSESender) deadlineProbe(rc *http.ResponseController) bool {
-	return rc.SetWriteDeadline(s.cfg.clock.Now().Add(s.cfg.writeTimeout)) == nil
+	return rc.SetWriteDeadline(time.Now().Add(s.cfg.writeTimeout)) == nil //nolint:forbidigo // OS kernel socket deadline needs the real wall clock, not the injectable clock (see godoc above)
 }
 
 type sseEvent struct {

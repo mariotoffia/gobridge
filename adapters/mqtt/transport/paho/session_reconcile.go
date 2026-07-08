@@ -159,6 +159,20 @@ func (s *Session) topicCoveredLocked(topic string) bool {
 	return false
 }
 
+// topicCovered is the router's covered-topic predicate (wired via
+// withCovered in NewSession). It reports whether a concrete publish topic
+// is still covered by a subscription the session wants — so the router can
+// distinguish a REAL live-route loss (a covered topic acked-and-dropped
+// past grace because its receiver handler registered late) from benign
+// orphan cleanup, and split the drop metric accordingly (M-3). It must be
+// called WITHOUT r.mu held (it takes s.mu); both router drop sites release
+// r.mu before invoking it.
+func (s *Session) topicCovered(topic string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.topicCoveredLocked(topic)
+}
+
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {
 	reconcileStart := s.clock().Now()
 	s.reconcileMu.Lock()

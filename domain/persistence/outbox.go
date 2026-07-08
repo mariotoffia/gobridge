@@ -398,6 +398,20 @@ func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 // from durable storage; runtime code must use NewOutboxRecord. The
 // snapshot's Envelope is deep-cloned so the rehydrated aggregate does
 // not alias state owned by the storage adapter.
+//
+// Sanctioned stale-reclaim bypass. IsClaimable/Claim gate claiming on a
+// STRICTLY-older fencing version (claimVersion < currentTokenVersion), which
+// deliberately forbids an EQUAL-version reclaim. That strict rule cannot
+// express the crash-recovery transition the port sanctions in
+// ports.OutboxStore's fencing contract: reclaiming a claim that has gone
+// wall-clock stale AT THE SAME fencing version, when an owner died without
+// advancing its lease. RehydrateFromSnapshot is the single sanctioned path
+// for that transition — a store performing a time-stale reclaim rehydrates
+// the record with the new owner/claim metadata (and, at its discretion, the
+// same or a bumped claimVersion) rather than routing through Claim. Because
+// it bypasses the state machine it performs NO invariant checks; callers
+// other than storage adapters materializing a claim they have already fenced
+// at the store layer MUST use NewOutboxRecord instead.
 func RehydrateFromSnapshot(s OutboxSnapshot) *OutboxRecord {
 	status := s.Status
 	if status == "" {

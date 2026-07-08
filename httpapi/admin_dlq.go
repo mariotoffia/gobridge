@@ -363,6 +363,13 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	var successIDs []string
 	var redriveErrors []redriveError
 
+	// Redrive-safe injection (fresh envelope ID + provenance) avoids the
+	// shared_outbox dedup silent-loss path. When the runtime lacks it the replay
+	// reuses the original ID and a completed/poisoned outbox row can swallow the
+	// re-persist while this handler still reports the entry redriven — so a
+	// non-fatal warning is surfaced in the response (see below).
+	_, redriveSafe := rt.(redriveInjector)
+
 	// Detach the claim→inject→restore sequence from the request context so an
 	// operator disconnect mid-batch cannot cancel an in-flight restore and
 	// permanently lose a claimed (already-deleted) entry — the claim-by-delete
@@ -370,6 +377,12 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	// inject or store call.
 	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveTimeout)
 	defer cancel()
+
+	// Emit an intent record BEFORE the first irreversible claim-by-delete so a
+	// crash between Delete and Inject leaves an audit trace of which entry IDs
+	// were being redriven (the per-batch outcome record below only exists if the
+	// handler returns).
+	s.emitAudit(r, "dlq.redrive.begin", "dlq", "", "pending", map[string]any{"ids": body.IDs})
 
 	seen := make(map[string]struct{}, len(body.IDs))
 	for _, id := range body.IDs {
@@ -380,8 +393,15 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 
 		entry, err := reader.Get(opCtx, id)
 		if err != nil {
+			// A severed/expired opCtx surfaces here as a Get error too; label it
+			// honestly instead of the misleading "entry not found" so a batch
+			// that ran out of budget is not mistaken for missing entries.
+			errMsg := "entry not found"
+			if opCtx.Err() != nil {
+				errMsg = "redrive deadline exceeded before entry lookup"
+			}
 			redriveErrors = append(redriveErrors, redriveError{
-				ID: id, Error: "entry not found",
+				ID: id, Error: errMsg,
 			})
 			continue
 		}
@@ -439,12 +459,18 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			if restoreErr != nil {
 				msg += " (entry lost: restore failed)"
 			}
+			// Claim succeeded but inject failed (restore attempted above): a
+			// route-tagged failure counter so an operator can alert on
+			// manual-recovery churn the batch-level audit record does not
+			// surface. No-op when no metrics exporter is wired.
+			s.countRedrive(shared.MetricDLQRedriveFailures, entry.RouteID())
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: msg,
 			})
 			continue
 		}
 
+		s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
 		successIDs = append(successIDs, id)
 	}
 
@@ -470,6 +496,14 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	if len(redriveErrors) > 0 {
 		resp["errors"] = redriveErrors
 	}
+	// Flag the silent-loss hazard: without redrive-safe injection a replay that
+	// reused the original envelope ID may have been swallowed by outbox dedup on
+	// a shared_outbox route, so a reported "redriven" is NOT proof of delivery.
+	// The redrive is not failed (the claim+inject completed), but the operator
+	// must verify — a bare 200 would hide the no-op.
+	if !redriveSafe && len(successIDs) > 0 {
+		resp["warning"] = "runtime lacks redrive-safe injection: replays reuse the original envelope id and may be silently deduplicated by the outbox on shared_outbox routes; verify delivery"
+	}
 
 	// 207 Multi-Status when any entry failed (the caller must inspect the
 	// per-entry errors array); 200 only when every requested entry redrove.
@@ -478,6 +512,17 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusMultiStatus
 	}
 	writeJSON(w, status, resp)
+}
+
+// countRedrive emits a route-tagged redrive counter when a metrics exporter is
+// configured. A nil exporter (the default) makes it a no-op, so callers need no
+// guard. name is shared.MetricDLQRedrives (entry redriven) or
+// shared.MetricDLQRedriveFailures (claim ok but inject failed).
+func (s *Server) countRedrive(name, routeID string) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.Counter(name, 1, shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
 }
 
 func (s *Server) handleDLQDeleteByIDs(w http.ResponseWriter, r *http.Request) {

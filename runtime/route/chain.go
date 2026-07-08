@@ -212,7 +212,26 @@ func invokeProcessor(
 	budget := cfg.clk.NewTimer(cfg.timeout)
 	defer budget.Stop()
 	wrappedNext := func(nctx context.Context, nenv *messaging.Envelope) error {
-		budget.Stop()
+		// Disarm the budget for the delegation to next() (only own-time is
+		// charged), then rearm on return. If Stop reports the timer already
+		// fired, drain the buffered tick before Reset so a stale tick cannot
+		// survive the rearm and let the parent select below pick <-budget.C()
+		// after the processor has in fact completed (a done message
+		// misclassified as processor-timeout).
+		//
+		// ponytail: defensive, not load-bearing on this toolchain. Go 1.23+
+		// timer channels are unbuffered (a fired-but-unreceived tick is not
+		// retained across Reset), and the fake clock's Reset drains internally,
+		// so neither production clock leaves a stale tick today. The drain is
+		// kept for correctness under GODEBUG=asynctimerchan=1, pre-1.23
+		// runtimes, and any non-time.Timer clock whose Reset does not drain; the
+		// default: keeps it a no-op when C() is empty.
+		if !budget.Stop() {
+			select {
+			case <-budget.C():
+			default:
+			}
+		}
 		defer budget.Reset(cfg.timeout)
 		return next(nctx, nenv)
 	}

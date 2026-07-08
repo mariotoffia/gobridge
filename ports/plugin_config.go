@@ -34,8 +34,12 @@ var ErrDuplicateKind = shared.NewBridgeError(
 
 // ErrNilDecoder is returned by Registry.Register when the supplied
 // ConfigDecoder is nil. Same typed-error rationale as ErrDuplicateKind.
+// It carries Code ErrCodeInvalidConfig (a registration/config defect a
+// human must fix), NOT ErrCodeInvalidPayload — registering a nil decoder
+// is a configuration error, not a rejected message payload. This keeps
+// ErrCodeInvalidPayload uniquely ErrorRejected across the contract layer.
 var ErrNilDecoder = shared.NewBridgeError(
-	shared.ErrCodeInvalidPayload,
+	shared.ErrCodeInvalidConfig,
 	shared.ErrorPermanent,
 	"ports: nil ConfigDecoder",
 )

@@ -77,18 +77,32 @@ func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginC
 	if sc.Retention != 0 {
 		opts = append(opts, sqliteoutbox.WithRetention(sc.Retention))
 	}
+	// Thread the runtime exporter so store-level counters (the fatal
+	// storage-fault MetricStoreUnhealthy) are emitted in config-driven
+	// deployments. A nil exporter leaves the store's default no-op meter in
+	// place (WithMetrics ignores nil), so this never installs a nil exporter.
+	if rt.Metrics != nil {
+		opts = append(opts, sqliteoutbox.WithMetrics(rt.Metrics))
+	}
 
 	return sqliteoutbox.NewStore(sc.Path, opts...) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
 }
 
-// NewDLQStore creates a SQLite DLQ store from the typed config.
+// NewDLQStore creates a SQLite DLQ store from the typed config. A positive
+// retention opts the store into a piggybacked purge of expired entries,
+// bounding disk growth (zero/unset keeps every entry — the historical default).
 func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
 	sc, err := requiredSQLiteConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return sqlitedlq.NewStore(sc.Path) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
+	var opts []sqlitedlq.Option
+	if sc.Retention > 0 {
+		opts = append(opts, sqlitedlq.WithRetention(sc.Retention))
+	}
+
+	return sqlitedlq.NewStore(sc.Path, opts...) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
 }
 
 func requiredSQLiteConfig(cfg ports.PluginConfig) (SQLiteConfig, error) {

@@ -27,7 +27,7 @@ func newMarshalRecord(t *testing.T) *persistence.OutboxRecord {
 
 func mustMarshalRecord(t *testing.T, r *persistence.OutboxRecord) map[string]ddbtypes.AttributeValue {
 	t.Helper()
-	item, err := marshalRecord(r, time.Unix(1_700_000_000, 0), 0)
+	item, err := marshalRecord(r, time.Unix(1_700_000_000, 0))
 	if err != nil {
 		t.Fatalf("marshalRecord: %v", err)
 	}
@@ -92,5 +92,36 @@ func TestNumAttrI64_MissingAttributeReturnsZero(t *testing.T) {
 	}
 	if !timeFromMillis(0).IsZero() {
 		t.Fatal("timeFromMillis(0) must be the zero time")
+	}
+}
+
+// TestMarshalRecord_PendingWithExpiry_OmitsReapingTTL pins the durable-delivery
+// finding that a still-pending record carrying an ExpiresAt must NOT be stamped
+// with a DynamoDB item-ttl. The ttl is a physical-compaction convenience for
+// TERMINAL records only (Complete/Expire stamp their own #ttl); stamping it on a
+// pending record would let DynamoDB reap undelivered work — e.g. an
+// on_expired=dlq record that expired during an egress outage, which the drainer
+// defers to the claim path instead of sweeping. The record must still carry
+// has_expiry so the sparse ExpiryIndex keeps finding it. memory/sqlite never
+// evict pending rows; this keeps DynamoDB consistent and loss-free.
+func TestMarshalRecord_PendingWithExpiry_OmitsReapingTTL(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	r := persistence.MustOutboxRecord(persistence.OutboxSpec{
+		ID: "exp-1", RouteID: "r", EnvelopeID: "e1", BindingID: "b1", SessionID: "s1", Address: "a",
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "t"}),
+		ExpiresAt: now.Add(1 * time.Minute),
+	})
+
+	item := mustMarshalRecord(t, r)
+
+	if _, ok := item["ttl"]; ok {
+		t.Fatal("pending record with an expiry must NOT carry a reaping ttl; " +
+			"DynamoDB would otherwise silently delete undelivered work during an outage")
+	}
+	if _, ok := item[attrHasExpiry]; !ok {
+		t.Fatalf("pending record with an expiry must still carry %q for the ExpiryIndex", attrHasExpiry)
+	}
+	if got := numAttrI64(item, "expires_at"); got != r.ExpiresAt().UnixMilli() {
+		t.Fatalf("expires_at millis = %d, want %d", got, r.ExpiresAt().UnixMilli())
 	}
 }

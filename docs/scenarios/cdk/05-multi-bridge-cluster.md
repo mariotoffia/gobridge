@@ -153,7 +153,9 @@ func main() {
             Vpc:     vpc,
             Cluster: cluster,
             Image: awsecs.ContainerImage_FromRegistry(
-                jsii.String("ghcr.io/mariotoffia/gobridge:v1.2.3"), nil),
+                // Pin a released tag (or, better, a digest) — see the
+                // "Pin images by digest" note in the deployment guide.
+                jsii.String("ghcr.io/mariotoffia/gobridge:v0.2.0"), nil),
             Bootstrap: infra.BootstrapConfig{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",
@@ -273,9 +275,13 @@ sequenceDiagram
     participant W1 as Worker 1
     participant W2 as Worker 2
 
-    Admin->>Control: PUT /admin/v1/config
+    Admin->>Control: POST /api/v1/admin/config/transactions
+    Control-->>Admin: 201 (txn_id = TXN)
+    Admin->>Control: PATCH .../transactions/TXN (stage change)
+    Control-->>Admin: 200 (merged preview)
+    Admin->>Control: POST .../transactions/TXN/commit
     Control->>EFS: Write bridge.yaml
-    Control-->>Admin: 200 OK
+    Control-->>Admin: 200 (committed, version N)
 
     Note over W1,W2: Workers poll EFS at poll_interval
 
@@ -380,26 +386,52 @@ routes:
 Note the `$share/gobridge/` prefix on the MQTT topic — this enables MQTT v5 shared
 subscriptions so that messages are load-balanced across workers rather than duplicated.
 
-### Blue-green config deployment
+### Staged config rollout
 
-Write a new configuration to a staging path, validate it, then promote to active. This
-prevents workers from reading a partially-written file:
+Roll config out to the cluster through the admin transactions API on the control
+node. A transaction opens against the current config version, lets you preview
+the merged result, and writes `bridge.yaml` to EFS only on commit — so workers
+never read a half-written file. Discard the transaction to back out before it
+goes live.
 
 ```bash
-# Write new config to staging path
-curl -X PUT -H "X-API-Key: ${API_KEY}" \
-  -H "Content-Type: application/yaml" \
-  -d @new-bridge.yaml \
-  "http://control.gobridge.local:8080/admin/v1/config?staging=true"
+CONTROL="http://control.gobridge.local:8080"
 
-# Validate the staged config
-curl -H "X-API-Key: ${API_KEY}" \
-  "http://control.gobridge.local:8080/admin/v1/config/validate?path=staging"
+# 1. Open a transaction against the current config version.
+TXN=$(curl -s -X POST -H "X-API-Key: ${API_KEY}" \
+  "${CONTROL}/api/v1/admin/config/transactions" | jq -r .txn_id)
 
-# Promote staging to active (atomic rename on EFS)
-curl -X POST -H "X-API-Key: ${API_KEY}" \
-  "http://control.gobridge.local:8080/admin/v1/config/promote"
+# 2. Stage a partial change (JSON BridgeConfig overlay) and preview the merge.
+curl -s -X PATCH -H "X-API-Key: ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d @patch.json \
+  "${CONTROL}/api/v1/admin/config/transactions/${TXN}" | jq .
+
+# 3. Commit: validates, checks the version CAS, writes bridge.yaml, applies.
+curl -s -X POST -H "X-API-Key: ${API_KEY}" \
+  "${CONTROL}/api/v1/admin/config/transactions/${TXN}/commit" | jq .
+# → {"status":"committed","version":N}
 ```
+
+The version CAS is checked at commit against the version captured when the
+transaction opened, so a concurrent write returns `409`; a config that fails
+validation returns `422`. The change goes live at commit: the control node
+persists `bridge.yaml` to EFS, and workers pick it up on their next poll (see
+[Config Propagation](#config-propagation)).
+
+To back out before commit, discard the transaction:
+
+```bash
+curl -s -X DELETE -H "X-API-Key: ${API_KEY}" \
+  "${CONTROL}/api/v1/admin/config/transactions/${TXN}"
+# → {"status":"rolled_back"}
+```
+
+To reverse a change that already committed, open a new transaction, PATCH the
+previous values back, and commit. The full endpoint table, status codes, and
+merge semantics live in the [HTTP API Reference](../../http-api.md#config-transactions);
+the [config-rollback runbook](../../runbooks/config-rollback.md) walks the
+incident case.
 
 ### Canary deployments
 

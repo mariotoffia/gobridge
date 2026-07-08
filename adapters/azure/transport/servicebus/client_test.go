@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -127,5 +129,86 @@ func TestBuildClientOptions_InvalidPEM(t *testing.T) {
 	_, err := buildClientOptions(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid CaPEM in ConnectionConfig")
+	}
+}
+
+// --- F1: user-assigned managed identity ------------------------------------
+
+// TestManagedIdentityCredentialOptions_SystemAssigned validates that with
+// no ClientID the helper returns nil, i.e. NewManagedIdentityCredential
+// accepts the default (system-assigned) identity — unchanged behaviour.
+func TestManagedIdentityCredentialOptions_SystemAssigned(t *testing.T) {
+	if opts := managedIdentityCredentialOptions(ConnectionConfig{UseManagedIdentity: true}); opts != nil {
+		t.Fatalf("expected nil options for system-assigned identity, got %+v", opts)
+	}
+}
+
+// TestManagedIdentityCredentialOptions_UserAssigned is the regression
+// guard for F1: a configured ClientID MUST reach the credential options
+// as a user-assigned client ID. The pre-fix code passed nil and silently
+// dropped ClientID.
+func TestManagedIdentityCredentialOptions_UserAssigned(t *testing.T) {
+	const clientID = "11111111-2222-3333-4444-555555555555"
+	opts := managedIdentityCredentialOptions(ConnectionConfig{
+		UseManagedIdentity: true,
+		ClientID:           clientID,
+	})
+	if opts == nil {
+		t.Fatal("expected non-nil options when ClientID is set")
+	}
+	id, ok := opts.ID.(azidentity.ClientID)
+	if !ok {
+		t.Fatalf("expected ID of kind azidentity.ClientID, got %T", opts.ID)
+	}
+	if string(id) != clientID {
+		t.Fatalf("ClientID = %q, want %q", string(id), clientID)
+	}
+}
+
+// --- F5: configurable SDK retry policy -------------------------------------
+
+// TestRetryConfig_ToSDK_ZeroValueKeepsDefaults asserts an unset
+// RetryConfig reports hasRetry=false so buildClientOptions leaves
+// RetryOptions untouched — the SDK keeps applying its own defaults (no
+// behaviour change).
+func TestRetryConfig_ToSDK_ZeroValueKeepsDefaults(t *testing.T) {
+	if _, has := (RetryConfig{}).toSDK(); has {
+		t.Fatal("zero-value RetryConfig must report hasRetry=false")
+	}
+}
+
+// TestRetryConfig_ToSDK_Translates asserts each domain field maps to the
+// matching SDK RetryOptions field.
+func TestRetryConfig_ToSDK_Translates(t *testing.T) {
+	rc := RetryConfig{MaxRetries: -1, RetryDelay: 2 * time.Second, MaxRetryDelay: 30 * time.Second}
+	got, has := rc.toSDK()
+	if !has {
+		t.Fatal("non-zero RetryConfig must report hasRetry=true")
+	}
+	if got.MaxRetries != -1 {
+		t.Fatalf("MaxRetries = %d, want -1", got.MaxRetries)
+	}
+	if got.RetryDelay != 2*time.Second {
+		t.Fatalf("RetryDelay = %s, want 2s", got.RetryDelay)
+	}
+	if got.MaxRetryDelay != 30*time.Second {
+		t.Fatalf("MaxRetryDelay = %s, want 30s", got.MaxRetryDelay)
+	}
+}
+
+// TestBuildClientOptions_WithRetry asserts a configured RetryConfig
+// surfaces on the returned ClientOptions even when no TLS is set (the
+// pre-F5 code returned nil, dropping any retry override).
+func TestBuildClientOptions_WithRetry(t *testing.T) {
+	cfg := ConnectionConfig{Retry: RetryConfig{MaxRetries: 1}}
+	opts, err := buildClientOptions(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts == nil {
+		t.Fatal("expected non-nil options when RetryConfig is set")
+	}
+	if opts.RetryOptions.MaxRetries != 1 {
+		t.Fatalf("RetryOptions.MaxRetries = %d, want 1", opts.RetryOptions.MaxRetries)
 	}
 }

@@ -216,7 +216,10 @@ func (r *Repository) checkVersion(ctx context.Context, paramPath string, version
 func parseURI(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return "", fmt.Errorf("ssm: invalid URI: %w", err)
+		// Redact: url.Parse wraps the raw URI (which may embed userinfo) in a
+		// *url.Error that prints it verbatim. Never echo a credential-bearing
+		// URI into an error string.
+		return "", fmt.Errorf("ssm: invalid URI: %w", shared.RedactURIError(err))
 	}
 
 	if u.Scheme != scheme {

@@ -1,6 +1,8 @@
 package otelmetrics
 
 import (
+	"slices"
+
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
@@ -33,4 +35,11 @@ func NewFromProvider(mp *sdkmetric.MeterProvider, opts ...Option) *Exporter {
 // assertions. Only available in test builds.
 func (e *Exporter) ExportConfigForTest() Config {
 	return e.config
+}
+
+// LatencyBucketBoundariesMsForTest returns a copy of the Timer
+// histogram bucket boundaries so tests can assert the emitted bounds
+// without depending on the internal literal.
+func LatencyBucketBoundariesMsForTest() []float64 {
+	return slices.Clone(latencyBucketBoundariesMs)
 }

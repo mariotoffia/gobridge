@@ -140,6 +140,8 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log'
 	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
 	@bash -c 'set -o pipefail; bash scripts/lint-arch-mapping-test.sh 2>&1 | tee reports/arch-mapping.log'
+	@echo "=== x-bridge header governance ==="
+	@bash -c 'set -o pipefail; bash scripts/lint-xbridge-headers.sh --self-test 2>&1 | tee reports/xbridge-headers.log'
 	@echo "=== gofmt ==="
 	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
 	echo "$$FILES" > reports/gofmt.log; \

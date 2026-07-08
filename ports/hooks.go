@@ -83,8 +83,15 @@ type DeliveryOutcome struct {
 // for concurrent use; methods may be called from multiple goroutines.
 //
 // OnAttempt is invoked on every ingress receive or egress send attempt,
-// including retries. OnSettled is invoked exactly once when the message
-// reaches a terminal state (delivered, DLQ'd, dropped, or expired).
+// including retries. OnSettled is invoked when the message reaches a
+// terminal state (delivered, DLQ'd, dropped, or expired). For the
+// SharedOutbox path it fires after the terminal store transition Completes:
+// if that Complete fails, the record is re-claimed and the hook is deferred
+// to the successful retry, so OnSettled never double-fires. The settlement
+// itself is durable regardless — a crash in the window between a successful
+// Complete and the hook simply skips the hook for that one record; it never
+// undoes or repeats the terminal transition. Treat OnSettled as
+// at-most-once per completed record rather than exactly once.
 //
 // Hooks are called synchronously on the delivery goroutine. A slow hook
 // directly increases delivery latency.

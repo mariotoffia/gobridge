@@ -80,7 +80,12 @@ type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 }
 
-// ShutdownTimeoutDuration parses the shutdown timeout string.
+// ShutdownTimeoutDuration parses the shutdown timeout string, falling back to
+// 30s when the string is empty OR malformed. The duration strings on
+// BridgeSettings are validated (malformed or non-positive values rejected) by
+// the config package's blueprint validator on the load path; these accessors
+// stay deliberately forgiving, so a consumer that builds BridgeSettings by
+// hand and skips that validator inherits the 30s fallback by design.
 func (b BridgeSettings) ShutdownTimeoutDuration() time.Duration {
 	d, _ := time.ParseDuration(b.ShutdownTimeout)
 	if d == 0 {
@@ -347,7 +352,15 @@ type RouteSessionDef struct {
 	DrainMaxBatchSize   int               `yaml:"drain_max_batch_size,omitempty" json:"drain_max_batch_size,omitempty"`
 	DrainMaxConcurrency int               `yaml:"drain_max_concurrency,omitempty" json:"drain_max_concurrency,omitempty"`
 	DrainStrategy       *DrainStrategyDef `yaml:"drain_strategy,omitempty" json:"drain_strategy,omitempty"`
-	ConnectAfterLease   bool              `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
+	// ConnectAfterLease defers the source session's broker connect until this
+	// instance wins the lease. For an exclusive single-use transport (MQTT/AMQP)
+	// this stops a booting standby from resuming a broker-persisted subscription
+	// (clean_start=false) and consuming WITHOUT the lease until reconcile
+	// converges. A RouteSessionDef source is always exclusive, so the safe
+	// default is ON: nil (omitted) resolves to true; set it explicitly to false
+	// only to opt out (finding F6). It is a pointer so an omitted flag is
+	// distinguishable from an explicit false.
+	ConnectAfterLease *bool `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
 }
 
 // DrainStrategyDef configures the outbox drain polling strategy.
@@ -363,18 +376,23 @@ type DrainStrategyDef struct {
 // PolicyDef defines per-route delivery, retry, and backpressure
 // configuration as YAML-friendly strings.
 type PolicyDef struct {
-	MaxInFlight        int        `yaml:"max_in_flight,omitempty" json:"max_in_flight,omitempty"`
-	AckAfter           string     `yaml:"ack_after,omitempty" json:"ack_after,omitempty"`
-	MaxReplayAttempts  int        `yaml:"max_replay_attempts,omitempty" json:"max_replay_attempts,omitempty"`
-	ReplayBudget       string     `yaml:"replay_budget,omitempty" json:"replay_budget,omitempty"`
-	MaxOutboxDepth     int        `yaml:"max_outbox_depth,omitempty" json:"max_outbox_depth,omitempty"`
-	OnExpired          string     `yaml:"on_expired,omitempty" json:"on_expired,omitempty"`
-	OnPermanentFailure string     `yaml:"on_permanent_failure,omitempty" json:"on_permanent_failure,omitempty"`
-	Backoff            BackoffDef `yaml:"backoff,omitempty" json:"backoff,omitempty"`
-	SendTimeout        string     `yaml:"send_timeout,omitempty" json:"send_timeout,omitempty"`
-	DepthCacheTTL      string     `yaml:"depth_cache_ttl,omitempty" json:"depth_cache_ttl,omitempty"`
-	AllowUnfenced      bool       `yaml:"allow_unfenced,omitempty" json:"allow_unfenced,omitempty"`
-	AllowRetryDrop     bool       `yaml:"allow_retry_drop,omitempty" json:"allow_retry_drop,omitempty"`
+	MaxInFlight        int    `yaml:"max_in_flight,omitempty" json:"max_in_flight,omitempty"`
+	AckAfter           string `yaml:"ack_after,omitempty" json:"ack_after,omitempty"`
+	MaxReplayAttempts  int    `yaml:"max_replay_attempts,omitempty" json:"max_replay_attempts,omitempty"`
+	ReplayBudget       string `yaml:"replay_budget,omitempty" json:"replay_budget,omitempty"`
+	MaxOutboxDepth     int    `yaml:"max_outbox_depth,omitempty" json:"max_outbox_depth,omitempty"`
+	OnExpired          string `yaml:"on_expired,omitempty" json:"on_expired,omitempty"`
+	OnPermanentFailure string `yaml:"on_permanent_failure,omitempty" json:"on_permanent_failure,omitempty"`
+	// OnFiltered governs a message a processor intentionally drops
+	// (shared.ErrMessageFiltered). Values: "drop" (default) or "dlq". It is
+	// separate from on_permanent_failure so a high-volume filter drop does not
+	// inherit the permanent-failure DLQ default.
+	OnFiltered     string     `yaml:"on_filtered,omitempty" json:"on_filtered,omitempty"`
+	Backoff        BackoffDef `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	SendTimeout    string     `yaml:"send_timeout,omitempty" json:"send_timeout,omitempty"`
+	DepthCacheTTL  string     `yaml:"depth_cache_ttl,omitempty" json:"depth_cache_ttl,omitempty"`
+	AllowUnfenced  bool       `yaml:"allow_unfenced,omitempty" json:"allow_unfenced,omitempty"`
+	AllowRetryDrop bool       `yaml:"allow_retry_drop,omitempty" json:"allow_retry_drop,omitempty"`
 }
 
 // BackoffDef defines retry backoff as YAML-friendly strings.

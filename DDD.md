@@ -208,7 +208,6 @@ classDiagram
         <<aggregate root>>
         +MaxInFlight, MaxReplayAttempts, MaxOutboxDepth: int
         +Backoff: BackoffPolicy
-        +RequireDurableEgress: bool
         +OnExpired: ExpiredAction
         +OnPermanentFailure: FailureAction
         +DeliveryMode: DeliveryMode

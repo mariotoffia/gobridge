@@ -365,7 +365,7 @@ func TestExpireWithNoExpirySetSkips(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now().Add(1*time.Hour))
+	n, err := store.Expire(ctx, time.Now().Add(1*time.Hour), "SESSION#sess-noexp")
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestFullLifecycleWithExpiry(t *testing.T) {
 		t.Fatalf("expected 1 pending, got %d", len(pending))
 	}
 
-	n, err := store.Expire(ctx, time.Now())
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-lce")
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

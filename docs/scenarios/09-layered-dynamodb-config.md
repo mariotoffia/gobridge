@@ -178,14 +178,18 @@ import (
     "os/signal"
     "time"
 
+    awsconfig "github.com/aws/aws-sdk-go-v2/config"
+    awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+
     "github.com/mariotoffia/gobridge/bridge"
     "github.com/mariotoffia/gobridge/config"
     fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
     ddbconfig "github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb"
     nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
-    awsstore "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodb"
+    awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
     paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
     sqs "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+    "github.com/mariotoffia/gobridge/ports"
 )
 
 func main() {
@@ -194,11 +198,27 @@ func main() {
 
     logger := slog.Default()
 
-    // --- Base layer: file source with watcher ---
-    fileSource := fileconfig.NewSource("base.yaml")
-    fileWatcher := fileconfig.NewWatcher("base.yaml",
+    // --- Registry: register the adapter decoders this config references.
+    //     NewSource and NewWatcher both require the *ports.Registry. ---
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = sqs.Register(reg)
+    _ = nativestore.Register(reg)
+
+    // --- Base layer: file source with watcher (both take the registry) ---
+    fileSource := fileconfig.NewSource("base.yaml", reg)
+    fileWatcher := fileconfig.NewWatcher("base.yaml", reg,
         fileconfig.WithLogger(logger),
     )
+
+    // --- AWS SDK client, shared by the DynamoDB config loader and store
+    //     factory. Mirrors the wiring in cmd/gobridge/main.go. ---
+    awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+    if err != nil {
+        slog.Error("aws config load failed", "error", err)
+        os.Exit(1)
+    }
+    ddbClient := awsdynamodb.NewFromConfig(awsCfg)
 
     // --- Overlay layer: DynamoDB source with polling ---
     ddbLoader := ddbconfig.NewLoader(ddbClient,
@@ -235,7 +255,7 @@ func main() {
     sup := bridge.NewSupervisor(
         bridge.WithSupervisorLogger(logger),
         bridge.WithReconfigStrategy(
-            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second),
+            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil),
         ),
     )
 
@@ -376,8 +396,8 @@ flowchart TD
 Add a third layer for instance-specific overrides. Layers are applied in order: base, then environment, then instance.
 
 ```go
-instanceSource := fileconfig.NewSource("/etc/gobridge/instance.yaml")
-instanceWatcher := fileconfig.NewWatcher("/etc/gobridge/instance.yaml")
+instanceSource := fileconfig.NewSource("/etc/gobridge/instance.yaml", reg)
+instanceWatcher := fileconfig.NewWatcher("/etc/gobridge/instance.yaml", reg)
 
 mgr := config.NewManager(
     config.Layer{Name: "base", Loader: fileSource, Watcher: fileWatcher},
@@ -415,10 +435,13 @@ The default merge behavior can be replaced with a custom function using `WithMer
 mgr := config.NewManager(
     config.Layer{Name: "base", Loader: fileSource, Watcher: fileWatcher},
     config.WithOverlay(config.Layer{Name: "env", Loader: ddbLoader, Watcher: ddbLoader}),
-    config.WithMergeFunc(func(base, overlay *config.BridgeConfig) (*config.BridgeConfig, error) {
+    config.WithMergeFunc(func(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error) {
         // Custom merge logic here
         // For example, deep-merge session options instead of replacing
-        merged := config.DefaultMerge(base, overlay)
+        merged, err := config.DefaultMerge(base, overlay)
+        if err != nil {
+            return nil, err
+        }
         // ... apply additional transformations ...
         return merged, nil
     }),

@@ -2,9 +2,11 @@ package amqp10
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -65,7 +67,10 @@ func (Config) Kind() string { return "amqp.amqp10" }
 // addresses) at build time.
 func (c Config) Validate() error {
 	if c.Session.Address != "" {
-		if err := c.Session.validate(); err != nil {
+		// A pending credentials_uri may still supply SASL EXTERNAL client
+		// certificate material at resolution time, so defer that one check
+		// (F10 deferred path). ApplyCredentials re-runs it post-resolution.
+		if err := c.Session.validate(c.CredentialsURIRef != ""); err != nil {
 			return err
 		}
 	}
@@ -87,21 +92,29 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("amqp10: nil config")
 	}
-	if set == nil {
-		c.CredentialsURIRef = ""
-		return nil
-	}
-	if set.Password() != nil {
-		if c.Session.Username == "" {
-			c.Session.Username = set.Password().Username()
+	if set != nil {
+		if set.Password() != nil {
+			if c.Session.Username == "" {
+				c.Session.Username = set.Password().Username()
+			}
+			if c.Session.Password.IsZero() {
+				c.Session.Password = set.Password().Password()
+			}
 		}
-		if c.Session.Password.IsZero() {
-			c.Session.Password = set.Password().Password()
+		if set.TLS() != nil {
+			applyAMQP10TLSMaterial(&c.Session.TLS, set.TLS())
 		}
-	}
-	if set.TLS() != nil {
-		applyAMQP10TLSMaterial(&c.Session.TLS, set.TLS())
 	}
 	c.CredentialsURIRef = ""
+
+	// F10 (deferred path): the parse-time SASL EXTERNAL cert-material
+	// check is skipped while credentials_uri is unresolved. Now that the
+	// resolved set has (or has not) populated client certificate material,
+	// re-run it so a misconfiguration fails fast here rather than as an
+	// opaque broker SASL failure at dial.
+	if strings.EqualFold(c.Session.SASLMechanism, saslMechanismExternal) && !hasClientCertMaterial(c.Session.TLS) {
+		return shared.ErrInvalidPayload.WithMessage(
+			"amqp10: SASL EXTERNAL requires client certificate material but the resolved credentials supplied none")
+	}
 	return nil
 }

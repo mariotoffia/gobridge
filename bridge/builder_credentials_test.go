@@ -139,6 +139,28 @@ func TestWithPolledCredentialStore_OrderIndependent(t *testing.T) {
 	require.NotNil(t, b.effectivePushStore(), "wrapper resolves regardless of option order")
 }
 
+// TestPullCacheInvalidation_OnlyForExplicitPushStore validates adversarial
+// Finding 1: the post-rotation InvalidateCache (contract C4) must be wired ONLY
+// for an explicitly-registered push store, which rotates out of band from the
+// pull cache. The lazy poll wrapper (WithPolledCredentialStore) wraps the same
+// resolver and refreshes its cache on the detecting poll, so invalidating there
+// would delete a just-cached fresh entry and blind F5 stale-serve for a poll
+// interval. The builder must therefore NOT invalidate on the polled path.
+func TestPullCacheInvalidation_OnlyForExplicitPushStore(t *testing.T) {
+	t.Parallel()
+
+	cfg := &ports.BridgeConfig{}
+	pull := &fakeCredentialStore{creds: map[string]*connectivity.CredentialSet{}}
+
+	polled := NewBuilder(cfg, WithPolledCredentialStore(pull, ports.PollBasedWrapperConfig{PollInterval: time.Second}))
+	require.False(t, polled.pullCacheNeedsRotationInvalidation(),
+		"coherent lazy-wrapper path must NOT invalidate the pull cache on rotation (Finding 1)")
+
+	decoupled := NewBuilder(cfg, WithPushCredentialStore(&fakePushStore{}))
+	require.True(t, decoupled.pullCacheNeedsRotationInvalidation(),
+		"an explicitly-registered push store must invalidate the pull cache on rotation (contract C4)")
+}
+
 // TestCredentialRefresher_NoopWithoutPush verifies the refresher is a
 // safe no-op when constructed with a nil push store (makes composition
 // root code uniform).

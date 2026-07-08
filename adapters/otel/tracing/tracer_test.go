@@ -119,6 +119,31 @@ func TestSpan_SetError(t *testing.T) {
 	assert.Equal(t, "exception", spans[0].Events[0].Name)
 }
 
+// SetError(nil) must be a no-op, not a panic: ports.Span carries no
+// non-nil precondition and the noop span tolerates nil, so the OTel span
+// must too (parity). A nil err leaves the span status Unset with no
+// exception event.
+func TestSpan_SetError_NilIsNoop(t *testing.T) {
+	t.Parallel()
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	tr := oteltracing.NewFromProvider(tp)
+
+	_, span := tr.StartSpan(context.Background(), "nil-error-span")
+	require.NotPanics(t, func() { span.SetError(nil) })
+	span.End()
+
+	_ = tp.ForceFlush(context.Background())
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, codes.Unset, spans[0].Status.Code)
+	assert.Empty(t, spans[0].Events)
+}
+
 // Verifies AddEvent appends a named event with attributes to the span.
 func TestSpan_AddEvent(t *testing.T) {
 	t.Parallel()

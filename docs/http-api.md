@@ -42,14 +42,29 @@ the servers stay plaintext (the historical default) on the assumption that an
 external terminator (LB/ingress/mesh) provides TLS. Supplying exactly one of the
 pair is rejected at startup.
 
+Renewed certificates hot-reload in place. The server checks the cert and key
+file modification times on each TLS handshake and reloads the pair when either
+changes, so a cert-manager renewal is served without a restart. A reload that
+reads a half-written pair keeps the last-good certificate and retries on the
+next change.
+
 ### Authentication failure throttling
 
-Both the admin and monitor auth middlewares throttle repeated failures **per
-client**. After `AuthFailureLimit` failed attempts within `AuthFailureWindow`,
-further attempts from that client are rejected with **HTTP 429** and a
-`Retry-After: 60` header until the window rolls over; a successful auth resets
-the client's counter. These knobs live on the programmatic `httpapi.Config`
-(they are not part of the YAML `http:` block):
+The admin and monitor auth middlewares each throttle repeated **failed**
+authentication **per client**, in **separate** scopes: exhausting the admin
+throttle never locks out the monitor plane, and vice versa. The credential is
+checked **first**, so a valid key always authenticates even when its peer's
+window is throttled by someone else's failures — only a failed credential
+consults and feeds the throttle. Because the key is checked first, the throttle
+shapes the failure *response* (429 vs 401) but does not cap the rate at which
+keys are *tested*: online brute-force resistance rests on key entropy, so use
+high-entropy admin/monitor keys (the 16-char minimum enforces length, not
+randomness). After `AuthFailureLimit` failed attempts within
+`AuthFailureWindow`, further **failing** attempts from that client are rejected
+with **HTTP 429** and a `Retry-After` header (the full window — `60` at the `1m`
+default) until the window rolls over; a successful auth resets the client's
+counter. These knobs live on the programmatic `httpapi.Config` (they are not
+part of the YAML `http:` block):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -216,6 +231,14 @@ Routes are returned wrapped in an object:
 The `payload` field is base64-encoded. Reserved `x-bridge.*` header keys are
 stripped automatically. Request body limited to 1 MB.
 
+An optional `id` field supplies the envelope ID; omit it for a server-generated
+one (an explicit empty string is a 400). The response is
+`{"status":"injected","envelope_id":...}`. A **caller-supplied** `id` can collide
+with a completed/poisoned outbox row on a `shared_outbox` route, where the
+re-persist is swallowed as a duplicate and nothing is sent; the response then
+carries a non-fatal **`warning`** field flagging the possible no-op
+(server-generated IDs are unique, so they never trigger it).
+
 ### DLQ summary response
 
 ```json
@@ -302,8 +325,37 @@ to 1 MB and strict-decoded (unknown JSON fields are rejected). Redrive is
 or a concurrent admin instance cannot double-deliver (a crash between delete and
 inject accepts an at-most-once drop; an inject failure best-effort restores the
 entry). Replay is **binding-scoped** -- the entry's originating `binding_id` is
-pinned via a route-override header so a fan-out route re-delivers only to the
-binding that failed, not to its healthy siblings.
+carried **out-of-band** through the runtime's binding-scoped injection
+capability so a fan-out route re-delivers only to the binding that failed, not
+to its healthy siblings. It is **not** a header: `x-bridge.route-override` and
+the other reserved `x-bridge.*` keys are stripped at ingress before any
+consumption site reads them, so a header cannot steer the replay.
+
+Redrive uses **redrive-safe injection** (`InjectRedrive`) where the runtime
+supports it: the message is re-issued under a fresh envelope ID with the
+original stamped as provenance (`x-bridge.causation-id`). Reusing the original
+ID is a silent-loss path on `shared_outbox` routes -- the outbox retains
+completed/poisoned rows as dedup evidence keyed on `(envelope_id, binding_id)`,
+so re-persisting the same ID is swallowed as a duplicate, the dispatch ACKs, and
+the redrive reports the entry redriven while nothing is sent. When the runtime
+lacks `InjectRedrive` it falls back to plain binding-scoped injection
+(`InjectToBinding`) -- which reuses the original envelope ID -- and the response
+carries a non-fatal **`warning`** field so a bare success does not hide
+the possible no-op -- verify delivery in that case:
+
+```json
+{
+  "redriven": 2,
+  "failed": 0,
+  "warning": "runtime lacks redrive-safe injection: replays reuse the original envelope id and may be silently deduplicated by the outbox on shared_outbox routes; verify delivery"
+}
+```
+
+Before the first (irreversible) claim-by-delete, redrive emits a
+`dlq.redrive.begin` audit record (outcome `pending`) carrying the requested IDs,
+so a crash between delete and inject still leaves a trace of which entries were
+being redriven -- the per-batch `dlq.redrive` outcome record is written only if
+the handler returns.
 
 If the recorded `binding_id` no longer exists on a still-present but
 reconfigured route, the redrive fails that entry with `route or binding not
@@ -401,6 +453,7 @@ Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
 | `auth.failure` | An API key check fails (also increments the per-client throttle) |
 | `auth.throttled` | A request is rejected with 429 because the client is over its failure limit |
 | `dlq.read_payload` | A single DLQ entry (with full payload) is read via `GET .../dlq/messages/{id}` |
+| `dlq.redrive.begin` | Emitted (outcome `pending`) before the first claim-by-delete of a redrive batch, recording the requested IDs |
 
 ## Monitor API Endpoints
 
@@ -415,7 +468,7 @@ caching by load balancers and CDNs.
 |--------|------|-------------|
 | GET | `/api/v1/monitor/health` | Coarse health check -- returns **only** `{"status": ...}` |
 | GET | `/api/v1/monitor/live` | Liveness probe (`{"status":"alive"}`, or `{"status":"terminal"}` + 503) |
-| GET | `/api/v1/monitor/ready` | Readiness probe (`{"status":"ready","role":...}` or 503) |
+| GET | `/api/v1/monitor/ready` | Readiness probe; optional `?level=` gate (`{"status":"ready","role":...}` or 503) |
 
 The `health` endpoint is **unauthenticated** (for load balancers/orchestrators)
 and therefore exposes only a coarse `status` string plus the HTTP status code --
@@ -425,6 +478,18 @@ reconnaissance and live behind auth on `/deephealth`. It returns HTTP 200 with
 where `status` is one of `ok`, `unhealthy`, `not_running`, or `unavailable`
 (runtime not wired).
 
+The `ready` endpoint accepts an optional **`?level=`** query parameter that sets
+how strict the gate is, least to most strict: `live`, `running`, `connected`,
+`subscribed`, `full`. Without it, the legacy contract applies -- HTTP 200
+`{"status":"ready","role":...}` once the runtime is started and healthy, HTTP 503
+`{"error":"not ready"}` otherwise. With it, the response is
+`{"status":..., "role":..., "level":..., "requested":...}` and returns HTTP 503
+when the achieved `level` is below the `requested` one; an unknown level returns
+HTTP 400. `role` is the failover role from lease ownership: `active`, `standby`,
+or `standalone`. See
+[Health checks and graceful shutdown](deployment-guide.md#health-checks-and-graceful-shutdown)
+for probe-to-level mapping.
+
 ### Authenticated
 
 Sensitive endpoints require the monitor API key or fall back to the admin key
@@ -433,7 +498,7 @@ Sensitive endpoints require the monitor API key or fall back to the admin key
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/monitor/topology` | Bridge topology (instance ID, running state, compact route list) |
-| GET | `/api/v1/monitor/routes` | Route details with full policy (max_in_flight, ack_after, on_expired, on_perm_failure) |
+| GET | `/api/v1/monitor/routes` | Route details with full policy (max_in_flight, ack_after, on_expired, on_perm_failure, on_filtered) |
 | GET | `/api/v1/monitor/deephealth` | Deep health check (sessions, routes, service levels) |
 
 ### Topology response
@@ -461,7 +526,8 @@ Sensitive endpoints require the monitor API key or fall back to the admin key
       "max_replay": 3,
       "ack_after": "target_accept",
       "on_expired": "dlq",
-      "on_perm_failure": "dlq"
+      "on_perm_failure": "dlq",
+      "on_filtered": "drop"
     }
   ]
 }

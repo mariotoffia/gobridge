@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -24,25 +25,34 @@ func headerTarget(target string) (key string, ok bool) {
 	return strings.TrimPrefix(target, headerTargetPrefix), true
 }
 
-// setNestedValue sets a value at a nested path in a map.
-// Path is dot-separated, e.g., "user.profile.name"
-func setNestedValue(data map[string]any, path string, value any) {
+// setNestedValue sets value at a dot-separated path in data, creating
+// intermediate maps as needed. It returns an error when a path segment
+// crosses an EXISTING non-map (scalar/array) value: writing through it would
+// silently replace that value with a map and discard it. An absent segment is
+// created; only a present-but-non-object segment is a conflict.
+func setNestedValue(data map[string]any, path string, value any) error {
 	parts := strings.Split(path, ".")
 
 	current := data
 	for i := 0; i < len(parts)-1; i++ {
 		part := parts[i]
-		if next, ok := current[part].(map[string]any); ok {
-			current = next
-		} else {
-			// Create nested map
+		existing, present := current[part]
+		if !present {
 			next := make(map[string]any)
 			current[part] = next
 			current = next
+			continue
 		}
+		next, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("target path %q crosses non-object value at %q",
+				path, strings.Join(parts[:i+1], "."))
+		}
+		current = next
 	}
 
 	current[parts[len(parts)-1]] = value
+	return nil
 }
 
 // applyTransform applies a transformation to a value.
@@ -146,9 +156,9 @@ func toInt(v any) (int64, error) {
 	case int32:
 		return int64(val), nil
 	case float64:
-		return int64(val), nil
+		return floatToInt64(val)
 	case float32:
-		return int64(val), nil
+		return floatToInt64(float64(val))
 	case string:
 		i, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
@@ -163,6 +173,21 @@ func toInt(v any) (int64, error) {
 	default:
 		return 0, fmt.Errorf("cannot convert %T to int", v)
 	}
+}
+
+// floatToInt64 converts a finite, in-range float to int64. It rejects NaN and
+// ±Inf, and magnitudes outside the int64 range: a bare int64(val) on those is
+// implementation-defined (typically a silent MinInt64), turning e.g. 1e300 into
+// garbage instead of an error. float64(math.MaxInt64) rounds up to 2^63, so the
+// upper bound uses >= to exclude that unrepresentable boundary value.
+func floatToInt64(val float64) (int64, error) {
+	if math.IsNaN(val) || math.IsInf(val, 0) {
+		return 0, fmt.Errorf("cannot convert non-finite float %v to int64", val)
+	}
+	if val >= float64(math.MaxInt64) || val < float64(math.MinInt64) {
+		return 0, fmt.Errorf("float %v out of int64 range", val)
+	}
+	return int64(val), nil
 }
 
 // toFloat converts a value to float64.

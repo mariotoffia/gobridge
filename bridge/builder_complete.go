@@ -81,15 +81,37 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	pushStore := b.effectivePushStore()
 	if pushStore != nil && (len(sessionURIs)+len(receiverURIs)+len(senderURIs)) > 0 {
 		var refresherOpts []RefresherOption
-		// Wire push rotations to the pull-cache invalidator so a rotation
-		// observed by the refresher drops the stale cached entry and the next
-		// synchronous resolve fetches fresh material (contract C4). The pull
-		// store is the CredentialResolver when the composition root wires one;
-		// detect the capability structurally to avoid importing runtime here.
-		if inv, ok := b.credStore.(interface{ InvalidateCache(uri string) }); ok {
-			refresherOpts = append(refresherOpts, WithRotationCallback(inv.InvalidateCache))
+		// Emit MetricCredentialRotationApplied per applied rotation so the
+		// success side of credential rotation is observable (F4).
+		if b.metrics != nil {
+			refresherOpts = append(refresherOpts, WithRefresherMetrics(b.metrics))
+		}
+		// Wire push rotations to the pull-cache invalidator so the next
+		// synchronous resolve fetches fresh material (contract C4) — but ONLY for
+		// a decoupled push store. The coherent lazy-wrapper path already refreshes
+		// this same resolver's cache on the detecting poll, so invalidating there
+		// would delete a just-cached fresh entry and blind F5 stale-serve for a
+		// poll interval (see pullCacheNeedsRotationInvalidation / adversarial
+		// Finding 1). Detect the capability structurally to avoid importing runtime.
+		if b.pullCacheNeedsRotationInvalidation() {
+			if inv, ok := b.credStore.(interface{ InvalidateCache(uri string) }); ok {
+				refresherOpts = append(refresherOpts, WithRotationCallback(inv.InvalidateCache))
+			}
 		}
 		refresher := NewCredentialRefresher(pushStore, b.logger, refresherOpts...)
+		// The refresher's Watch* calls start poll goroutines immediately. On the
+		// SUCCESS path the runtime takes ownership via AttachCredentialCloser
+		// below and closes it on Stop. But if a LATER step fails (e.g.
+		// ValidateRoutes returns nil runtime), that closer never runs and the
+		// poll goroutines leak — hammering the credential source and writing into
+		// just-closed sessions. Mirror the session/store failure defers: close the
+		// refresher when complete() returns an error (HIGH: refresher leak on
+		// ValidateRoutes failure).
+		defer func() {
+			if retErr != nil {
+				refresher.Close()
+			}
+		}()
 		for sid, uri := range sessionURIs {
 			if sess, ok := sessions[sid]; ok {
 				refresher.Watch(ctx, uri, sess)
@@ -215,6 +237,7 @@ func (b *Builder) wireRoutes(
 		var caps []ports.Capability
 		var sourceVisTimeout time.Duration
 		var sourceAutoExtend bool
+		var sourceTransport string
 
 		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
 		if recvDef != nil {
@@ -222,6 +245,20 @@ func (b *Builder) wireRoutes(
 			if transport == "" {
 				if sd := findSession(b.cfg, recvDef.SessionID); sd != nil {
 					transport = sd.Transport
+				}
+			}
+			// Record the resolved source transport identity so the runtime can
+			// strip foreign redelivery-count headers on ingress (F3). Prefer the
+			// receiver config's canonical Kind() (e.g. "aws.sqs") over the
+			// operator-chosen registry name: a count-bearing transport registered
+			// under a custom name would otherwise have its OWN redelivery-count
+			// header stripped as foreign, silently disabling the replay cap. Falls
+			// back to the registry name when the receiver carries no typed plugin
+			// config (count-less transports, which strip all count headers anyway).
+			sourceTransport = transport
+			if recvDef.Config != nil {
+				if k := recvDef.Config.Kind(); k != "" {
+					sourceTransport = k
 				}
 			}
 			if tf, ok := b.transports[transport]; ok {
@@ -238,6 +275,16 @@ func (b *Builder) wireRoutes(
 				if vc, ok := recvDef.Config.(ports.VisibilityTimeoutConfig); ok {
 					sourceVisTimeout = vc.EffectiveVisibilityTimeout()
 					sourceAutoExtend = vc.AutoExtendEnabled()
+				}
+				// A per-route receiver config may also narrow the source
+				// capabilities below the transport-wide Factory constant when
+				// the receiver's MODE implements a smaller set (e.g. ASB
+				// ReceiveAndDelete cannot redeliver, so it drops
+				// CapVisibilityExtension/CapSourceRedelivery). The validator's
+				// silent-drop check then sees the honest per-route set instead
+				// of the transport-wide constant (C14 F4).
+				if cc, ok := recvDef.Config.(ports.CapabilityConfig); ok {
+					caps = cc.Capabilities()
 				}
 			}
 		}
@@ -300,6 +347,7 @@ func (b *Builder) wireRoutes(
 			SourceCapabilities:      caps,
 			SourceVisibilityTimeout: sourceVisTimeout,
 			SourceAutoExtend:        sourceAutoExtend,
+			SourceTransport:         sourceTransport,
 		}
 
 		// Build content-based resolver from config if present.

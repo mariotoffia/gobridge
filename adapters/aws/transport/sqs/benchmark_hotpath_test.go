@@ -71,7 +71,7 @@ func BenchmarkHeadersToAttributes(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				_, _ = headersToAttributes(tc.headers, sqsMaxMessageAttributes, 0)
+				_, _ = headersToAttributes(tc.headers, sqsMaxMessageAttributes, 0, sqsMaxMessageBytes)
 			}
 		})
 	}

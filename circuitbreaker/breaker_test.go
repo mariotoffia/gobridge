@@ -1,6 +1,7 @@
 package circuitbreaker_test
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -158,7 +159,12 @@ func TestBreaker_HalfOpen_LimitsProbes(t *testing.T) {
 		HalfOpenMaxProbes: 1,
 	}.WithDefaults()
 
-	b := circuitbreaker.NewBreaker("test", cfg, nil)
+	// Fake clock so no wall-clock time elapses between admissions: the
+	// probe-slot reclaim is deadline-driven, and a slow CI could otherwise
+	// cross the probe timeout and reclaim the in-flight slot, admitting the
+	// "should be rejected" probe.
+	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
+	b := circuitbreaker.NewBreaker("test", cfg, nil, circuitbreaker.WithBreakerClock(fake))
 	b.ForceStateForTest(circuitbreaker.StateHalfOpen, time.Time{})
 
 	err1 := b.BeforeRequest()
@@ -176,6 +182,86 @@ func TestBreaker_HalfOpen_LimitsProbes(t *testing.T) {
 	err3 := b.BeforeRequest()
 	if err3 != nil {
 		t.Fatalf("probe after completion should be admitted: %v", err3)
+	}
+}
+
+// TestBreaker_HalfOpen_AbandonedProbeReclaimed validates that a half-open
+// probe slot taken by a caller that never reports an outcome (a missing
+// AfterRequestToken defer) is reclaimed after the probe timeout, so the
+// breaker cannot wedge half-open and reject every request forever.
+func TestBreaker_HalfOpen_AbandonedProbeReclaimed(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		ResetTimeout:      10 * time.Second,
+		HalfOpenMaxProbes: 1,
+	}.WithDefaults()
+
+	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
+	b := circuitbreaker.NewBreaker("abandoned", cfg, nil,
+		circuitbreaker.WithBreakerClock(fake),
+		circuitbreaker.WithHalfOpenProbeTimeout(5*time.Second))
+	b.ForceStateForTest(circuitbreaker.StateHalfOpen, time.Time{})
+
+	// Take the single probe slot and NEVER report its outcome.
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("first probe should be admitted: %v", err)
+	}
+	if got := b.HalfOpenInFlight(); got != 1 {
+		t.Fatalf("HalfOpenInFlight = %d, want 1", got)
+	}
+
+	// The breaker is wedged: a second probe is rejected while the slot is held.
+	if _, err := b.BeforeRequestToken(); !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("second probe should be rejected while slot held, err = %v", err)
+	}
+
+	// Before the timeout elapses the slot is still held.
+	fake.Advance(4 * time.Second)
+	if _, err := b.BeforeRequestToken(); !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("probe should still be rejected before timeout, err = %v", err)
+	}
+
+	// Past the probe timeout the abandoned slot is reclaimed and a fresh
+	// probe is admitted again — the breaker is no longer wedged.
+	fake.Advance(2 * time.Second) // total 6s > 5s probe timeout
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("probe should be admitted after abandoned slot reclaimed: %v", err)
+	}
+	if got := b.HalfOpenInFlight(); got != 1 {
+		t.Fatalf("HalfOpenInFlight = %d, want 1 (the fresh probe)", got)
+	}
+}
+
+// TestBreaker_HalfOpenProbeTimeout_DefaultsFromResetTimeout validates that
+// the probe timeout defaults to 2×ResetTimeout when no explicit timeout is
+// configured, so an abandoned probe is still eventually reclaimed.
+func TestBreaker_HalfOpenProbeTimeout_DefaultsFromResetTimeout(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold:  1,
+		SuccessThreshold:  1,
+		ResetTimeout:      3 * time.Second,
+		HalfOpenMaxProbes: 1,
+	}.WithDefaults()
+
+	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
+	b := circuitbreaker.NewBreaker("default-timeout", cfg, nil, circuitbreaker.WithBreakerClock(fake))
+	b.ForceStateForTest(circuitbreaker.StateHalfOpen, time.Time{})
+
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("first probe should be admitted: %v", err)
+	}
+
+	// Just under 2×ResetTimeout (6s): still wedged.
+	fake.Advance(5 * time.Second)
+	if _, err := b.BeforeRequestToken(); !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("probe should still be rejected before 2×ResetTimeout, err = %v", err)
+	}
+
+	// Past 2×ResetTimeout: reclaimed.
+	fake.Advance(2 * time.Second) // total 7s > 6s
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("probe should be admitted after default probe timeout: %v", err)
 	}
 }
 
@@ -349,6 +435,96 @@ func TestConfig_WithDefaults(t *testing.T) {
 	}
 	if cfg.CountError == nil {
 		t.Fatal("expected default CountError to be non-nil")
+	}
+	// F5: the default classifier counts transient/recoverable errors but must
+	// NOT count a tenant in-flight quota reject (that is a per-tenant fairness
+	// signal, not downstream ill-health — counting it lets one throttled tenant
+	// trip a shared breaker and deny every other tenant).
+	if cfg.CountError(shared.ErrTenantQuotaExceeded) {
+		t.Error("default classifier must NOT count ErrTenantQuotaExceeded")
+	}
+	if !cfg.CountError(shared.ErrUnavailable) {
+		t.Error("default classifier MUST count ErrUnavailable (breaker's core purpose)")
+	}
+	if !cfg.CountError(shared.ErrTimeout) {
+		t.Error("default classifier MUST count ErrTimeout (transient)")
+	}
+	if cfg.CountError(shared.ErrInvalidPayload) {
+		t.Error("default classifier must NOT count ErrInvalidPayload (rejected)")
+	}
+}
+
+// TestBreaker_TenantQuotaExceeded_DoesNotTrip is the F5 core guard: a burst of
+// tenant in-flight quota rejects must leave a shared breaker CLOSED, so one
+// throttled tenant cannot deny every other tenant behind the same breaker.
+func TestBreaker_TenantQuotaExceeded_DoesNotTrip(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		ResetTimeout:     1 * time.Minute,
+	}.WithDefaults()
+
+	b := circuitbreaker.NewBreaker("shared", cfg, nil)
+
+	for i := 0; i < 10; i++ {
+		_ = b.BeforeRequest()
+		b.AfterRequest(shared.ErrTenantQuotaExceeded)
+	}
+
+	m := b.GetMetrics()
+	if m.State != circuitbreaker.StateClosed.String() {
+		t.Fatalf("tenant-quota rejects must not trip the breaker, got state %s", m.State)
+	}
+	if m.ConsecutiveFailures != 0 {
+		t.Fatalf("expected 0 consecutive failures for quota rejects, got %d", m.ConsecutiveFailures)
+	}
+}
+
+// TestBreaker_Unavailable_DoesTrip is the regression guard for the breaker's
+// core purpose: genuine downstream-unavailable errors MUST still trip it. (A
+// nested-breaker-open error is indistinguishable ErrUnavailable and is counted
+// by design; see defaultCountError's godoc.)
+func TestBreaker_Unavailable_DoesTrip(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold: 3,
+		SuccessThreshold: 1,
+		ResetTimeout:     1 * time.Minute,
+	}.WithDefaults()
+
+	b := circuitbreaker.NewBreaker("downstream", cfg, nil)
+
+	for i := 0; i < 3; i++ {
+		_ = b.BeforeRequest()
+		b.AfterRequest(shared.ErrUnavailable)
+	}
+
+	m := b.GetMetrics()
+	if m.State != circuitbreaker.StateOpen.String() {
+		t.Fatalf("ErrUnavailable must trip the breaker, got state %s", m.State)
+	}
+}
+
+// TestBreaker_CustomCountError_Overrides confirms a caller-supplied classifier
+// still wins over the tenant-quota-excluding default: here it opts to count
+// quota rejects, and the breaker trips on them.
+func TestBreaker_CustomCountError_Overrides(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		ResetTimeout:     1 * time.Minute,
+		CountError:       func(error) bool { return true },
+	}.WithDefaults()
+
+	b := circuitbreaker.NewBreaker("custom", cfg, nil)
+
+	for i := 0; i < 2; i++ {
+		_ = b.BeforeRequest()
+		b.AfterRequest(shared.ErrTenantQuotaExceeded)
+	}
+
+	m := b.GetMetrics()
+	if m.State != circuitbreaker.StateOpen.String() {
+		t.Fatalf("custom CountError must override the default, got state %s", m.State)
 	}
 }
 

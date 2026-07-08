@@ -31,6 +31,41 @@ when several repositories share the same scheme. The `CredentialResolver`
 caches resolved credentials with a configurable TTL (default 5 minutes, max
 1000 entries).
 
+## Resolver caching and failure behavior
+
+Every resolve path funnels through one fetch choke point in the
+`CredentialResolver`: the build-time synchronous resolve, the uncached rotation
+polls (see [credentials-rotation.md](credentials-rotation.md)), and the reactive
+re-resolve after an auth failure. That choke point owns credential-resolve
+observability and the stale-while-error policy.
+
+On any repository error the resolver emits `CredentialResolveFailure` tagged
+with the bounded error `code` (`NOT_AUTHORIZED`, `UNAVAILABLE`, `NOT_FOUND`, …),
+so a permission denial is distinguishable from a backend outage.
+
+**Stale-while-error.** On a *retryable* (transient) error -- throttled, timeout,
+unavailable -- the resolver serves the last-known-good but **expired** cached
+credential instead of failing the build/rebuild, logs a WARN, and emits
+`CredentialStaleServed`. The stale entry's TTL is not extended, so the next
+resolve re-probes the backend and recovery is immediate once it returns.
+*Permanent* errors (`NOT_FOUND`, `INVALID_PAYLOAD`, `NOT_AUTHORIZED`) always
+propagate -- stale credentials never mask a revocation or a misconfiguration.
+
+Operator consequence: a credential **rebuild** survives a bounded secrets-backend
+outage on last-known-good material, while a **revocation** still propagates the
+moment the backend recovers and returns the permanent error. Stale-serving needs
+the cache; it does not apply when caching is disabled
+(`WithCredentialCacheTTL(0)`).
+
+| Metric | Dimensions | Meaning |
+|--------|-----------|---------|
+| `CredentialResolveFailure` | `code` | Repository fetch failed at the resolver (any resolve path). |
+| `CredentialStaleServed` | `code` | Served an expired last-known-good credential after a retryable error. |
+| `CredentialRotationApplied` | none | A rotation was applied to a live transport target. |
+
+Full dimensions, units, and alarm guidance live in
+[AWS monitoring](aws-deployment/monitoring.md#key-metrics).
+
 ```mermaid
 sequenceDiagram
     participant B as Builder
@@ -101,6 +136,18 @@ repo, err := filecreds.New("/etc/gobridge/creds",
 created. The repository also implements `ports.CredentialAdmin` for
 Create/Update/Delete/List operations with optimistic version locking.
 
+### Stock binary wiring
+
+The stock `gobridge` binary registers the `file://` repository unconditionally,
+driven by the `-credentials-dir` flag (default `credentials`), so `file://`
+credential URIs in a config resolve out of the box. A file-store init failure --
+for example a read-only working directory where the base dir does not already
+exist -- is not fatal: `file://` URIs then fail at resolve time with a clear
+error, but a config that uses only `pms://` (or no) credentials still boots.
+In the AWS file-based deployment the same wiring is opt-in via
+`credential_file_path` (see [AWS configuration](aws-deployment/configuration.md#field-reference));
+`pms://` (SSM) is always registered there.
+
 ### Durability and safe writes
 
 Create/Update write through a temp file in the destination directory (`0600`
@@ -116,6 +163,13 @@ cancelled `context`.
 > `RWMutex` serialises its own readers/writers); it is not a multi-writer or
 > multi-process rotating secret store. For rotating secrets in production use
 > the `pms://` (SSM) or Secrets Manager backends.
+>
+> Read-only and immutable mounts are tolerated: a Kubernetes Secret mounted
+> read-only does not crash-loop the store. When the base directory already
+> exists the repository accepts it, and the 0700 permission tighten is
+> best-effort -- a chmod that fails because the mount is read-only or unowned
+> (EROFS/EPERM) is logged at WARN and tolerated. See the
+> [Kubernetes secret-mount cookbook](scenarios/22-k8s-secret-mount-credentials.md).
 
 ## `pms://` Backend (AWS SSM Parameter Store)
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -47,6 +48,7 @@ type Store struct {
 	staleClaim time.Duration
 	retention  time.Duration
 	logger     *slog.Logger
+	metrics    counterMeter
 
 	// lastCompactMs throttles piggybacked retention compaction (unix ms of
 	// the last run). Accessed atomically; Store methods may race.
@@ -85,6 +87,20 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithMetrics sets the metrics exporter the store emits store-level counters
+// through (MetricStoreUnhealthy on a fatal storage fault). A nil exporter
+// leaves the no-op meter in place, so the store never depends on a configured
+// backend; the parameter is the minimal counterMeter surface and
+// ports.MetricsExporter satisfies it structurally, so the composition root can
+// inject a real exporter with no adapter glue.
+func WithMetrics(m counterMeter) Option {
+	return func(s *Store) {
+		if m != nil {
+			s.metrics = m
+		}
+	}
+}
+
 // WithRetention sets the retention window for terminal rows: completed and
 // expired records older than d are physically deleted by a best-effort
 // compaction piggybacked (throttled) on Complete and Expire, so the
@@ -105,7 +121,7 @@ func WithRetention(d time.Duration) Option {
 func NewStore(dbPath string, opts ...Option) (*Store, error) {
 	// Options first: openSession stamps legacy fence rows with the
 	// (possibly test-injected) clock's now.
-	s := &Store{clk: clock.System, retention: defaultRetention}
+	s := &Store{clk: clock.System, retention: defaultRetention, metrics: noopMeter{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -128,7 +144,7 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: persist", "count", len(records))
 	}
-	return s.sess.persist(ctx, records, s.clk)
+	return s.observe(ctx, s.sess.persist(ctx, records, s.clk))
 }
 
 // Claim atomically claims up to limit pending records under partition pk.
@@ -136,7 +152,8 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
-	return s.sess.claim(ctx, pk, token, limit, s.clk.Now(), s.staleClaim)
+	recs, err := s.sess.claim(ctx, pk, token, limit, s.clk.Now(), s.staleClaim)
+	return recs, s.observe(ctx, err)
 }
 
 // Complete marks the supplied records as completed at the current clock time.
@@ -147,7 +164,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: complete", "count", len(recordIDs))
 	}
 	if err := s.sess.complete(ctx, recordIDs, token, s.clk.Now()); err != nil {
-		return err
+		return s.observe(ctx, err)
 	}
 	s.maybeCompact(ctx)
 	return nil
@@ -162,20 +179,21 @@ func (s *Store) Release(ctx context.Context, recordIDs []string, token persisten
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: release", "count", len(recordIDs))
 	}
-	return s.sess.release(ctx, recordIDs, token)
+	return s.observe(ctx, s.sess.release(ctx, recordIDs, token))
 }
 
 // Expire marks pending records whose expires_at is older than before
-// as expired. Claimed records are never expired here. A successful
-// Expire may piggyback a throttled retention compaction pass (see
-// WithRetention).
-func (s *Store) Expire(ctx context.Context, before time.Time) (int, error) {
+// as expired, SCOPED to the supplied partition (M1). Claimed records are
+// never expired here, and records in other partitions are left untouched.
+// A successful Expire may piggyback a throttled retention compaction pass
+// (see WithRetention).
+func (s *Store) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
 	if logging.TraceEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire")
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire", "partition_key", partition)
 	}
-	n, err := s.sess.expire(ctx, before)
+	n, err := s.sess.expire(ctx, before, partition)
 	if err != nil {
-		return 0, err
+		return 0, s.observe(ctx, err)
 	}
 	s.maybeCompact(ctx)
 	return n, nil
@@ -220,7 +238,26 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: query_pending", "partition_key", pk, "limit", limit)
 	}
-	return s.sess.queryPending(ctx, pk, limit)
+	recs, err := s.sess.queryPending(ctx, pk, limit)
+	return recs, s.observe(ctx, err)
+}
+
+// observe emits the store-health counter (MetricStoreUnhealthy) when err is a
+// fatal storage fault — disk full, corruption, read-only, or not-a-database —
+// and returns err unchanged. mapError already classifies such faults as
+// PERMANENT so the drain loop stops retrying; surfacing them here as a metric
+// (and an error log) gives operators a dashboard signal for a condition no
+// retry can clear. Non-fatal errors pass through untouched.
+func (s *Store) observe(ctx context.Context, err error) error {
+	if err != nil && isFatalStorageErr(err) {
+		s.metrics.Counter(MetricStoreUnhealthy, 1,
+			shared.Tag{Key: shared.TagKeyEntity, Value: "outbox"})
+		if s.logger != nil {
+			s.logger.LogAttrs(ctx, slog.LevelError, "sqliteoutbox: fatal storage fault",
+				slog.Any("error", err))
+		}
+	}
+	return err
 }
 
 // partitionKey derives the storage partition for a record.

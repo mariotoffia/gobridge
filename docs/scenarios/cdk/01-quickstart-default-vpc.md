@@ -307,32 +307,38 @@ After the stack deploys and the config file is on EFS, verify that GoBridge is r
 
 ### Health check
 
-The admin API exposes a health endpoint:
+The monitor server exposes an unauthenticated health endpoint. Through the ALB it
+is path-routed to the monitor target group; on a direct task IP it lives on the
+monitor port (`:8081`), separate from the admin port (`:8080`).
 
 ```bash
 ALB_DNS=$(aws elbv2 describe-load-balancers \
   --query "LoadBalancers[?contains(DNSName, 'gobridge') || contains(LoadBalancerName, 'GoBridge')]|[0].DNSName" \
   --output text 2>/dev/null)
 
-# If no ALB, use ECS task public IP (when running with public subnets)
+# If no ALB, use ECS task public IP (when running with public subnets).
+# The ALB path-routes both planes on one host; a direct task IP splits them
+# across the admin (:8080) and monitor (:8081) ports.
 if [ -z "${ALB_DNS}" ] || [ "${ALB_DNS}" = "None" ]; then
   TASK_ARN=$(aws ecs list-tasks --cluster "${CLUSTER}" --service-name gobridge --query "taskArns[0]" --output text)
   ENI=$(aws ecs describe-tasks --cluster "${CLUSTER}" --tasks "${TASK_ARN}" \
     --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
   TASK_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "${ENI}" \
     --query "NetworkInterfaces[0].Association.PublicIp" --output text)
-  ENDPOINT="http://${TASK_IP}:8080"
+  ADMIN_ENDPOINT="http://${TASK_IP}:8080"
+  MONITOR_ENDPOINT="http://${TASK_IP}:8081"
 else
-  ENDPOINT="http://${ALB_DNS}"
+  ADMIN_ENDPOINT="http://${ALB_DNS}"
+  MONITOR_ENDPOINT="http://${ALB_DNS}"
 fi
 
-curl -s "${ENDPOINT}/healthz"
+curl -s "${MONITOR_ENDPOINT}/api/v1/monitor/health"
 ```
 
 Expected response:
 
 ```json
-{"status":"healthy"}
+{"status":"ok"}
 ```
 
 ### Admin config API
@@ -341,7 +347,7 @@ Retrieve the running configuration:
 
 ```bash
 curl -s -H "X-API-Key: my-secret-admin-key-min16chars" \
-  "${ENDPOINT}/admin/v1/config" | jq .
+  "${ADMIN_ENDPOINT}/api/v1/admin/config" | jq .
 ```
 
 ### Send a test message

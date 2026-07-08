@@ -393,15 +393,15 @@ func TestSupervisor_SwapCallback_UsesInjectedClockForDuration(t *testing.T) {
 
 	var ev SwapEvent
 	done := make(chan struct{}, 1)
-	s := newTestSupervisor(
+	s := newTestSupervisorTransport(
+		&clockAdvancingTransportFactory{
+			clk:           fakeClock,
+			advanceOnCall: 2,
+			advanceBy:     swapDuration,
+		},
 		WithSupervisorClock(fakeClock),
 		WithOnSwap(func(e SwapEvent) { ev = e; done <- struct{}{} }),
 	)
-	s.RegisterTransport("fake", &clockAdvancingTransportFactory{
-		clk:           fakeClock,
-		advanceOnCall: 2,
-		advanceBy:     swapDuration,
-	})
 
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)

@@ -31,8 +31,11 @@ func WriteFile(path string, cfg *ports.BridgeConfig) error {
 
 	dir := filepath.Dir(path)
 
-	// Capture existing file permissions (default 0644 for new files).
-	perm := os.FileMode(0644)
+	// New config files are created 0600, not world-readable 0644: a config can
+	// embed secrets (HTTP admin/monitor API keys, plugin credentials). An
+	// existing file keeps its current permissions so an operator-tightened or
+	// deployment-managed mode is not clobbered.
+	perm := os.FileMode(0600)
 	if info, err := os.Stat(path); err == nil {
 		perm = info.Mode().Perm()
 	}
@@ -70,6 +73,27 @@ func WriteFile(path string, cfg *ports.BridgeConfig) error {
 		return fmt.Errorf("config: rename %s -> %s: %w", tmpPath, path, err)
 	}
 
+	// fsync the parent directory so the rename (a directory-entry change) is
+	// durable. Without it a crash right after the rename can leave the new
+	// directory entry unpersisted and lose the just-committed config even
+	// though the file data itself was fsynced above.
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("config: sync dir %s: %w", dir, err)
+	}
+
 	ok = true
+	return nil
+}
+
+// syncDir fsyncs a directory so a rename into it is durable across a crash.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir: %w", err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("fsync dir: %w", err)
+	}
 	return nil
 }

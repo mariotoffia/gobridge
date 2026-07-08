@@ -358,6 +358,15 @@ the full contract, per-transport behaviour matrix, and worked
 examples of adding a new rotatable capability or writing a new
 transport that participates in rotation.
 
+A transport that authenticates on a live connection may call
+`CredentialRefresher.NotifyAuthFailure(uri, err)` when the broker reports
+`NOT_AUTHORIZED`, forcing an immediate credential re-resolve instead of waiting
+for the poll interval (rate-limited per URI). Resolve and rotation observability
+is built in and not your plugin's job: the resolver emits
+`CredentialResolveFailure` and `CredentialStaleServed`, the refresher emits
+`CredentialRotationApplied`, and the poll wrapper emits
+`CredentialRefreshFailures`.
+
 ## Observability Adapters
 
 ### Metrics
@@ -421,7 +430,7 @@ A processor can:
 - **Pass through**: call `next(ctx, env)` to continue the chain
 - **Modify**: mutate `env` before calling `next`
 - **Short-circuit**: return an error without calling `next`
-- **Filter**: return `shared.ErrMessageFiltered` to silently ack without DLQ
+- **Filter**: return `shared.ErrMessageFiltered` to intentionally discard the message. The route's `on_filtered` policy governs the outcome -- default `drop` (dropped and counted as `MessagesFiltered`); set `on_filtered: dlq` to divert filtered messages to the DLQ instead
 
 ### Registration
 

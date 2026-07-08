@@ -23,11 +23,15 @@ import (
 // The two storetest helpers below import "testing" and act as
 // conformance suites for adapter implementations; they are test
 // helpers despite not having the _test.go suffix and are explicitly
-// allowed.
+// allowed. ports/transporttest is the transport-side equivalent
+// (ports.Delivery/Receiver/Sender conformance) and is allowed for the
+// same reason: its makeEnvelope helper builds known-valid fixtures for
+// conformance deliveries, exactly as the storetest suites do.
 var productionMustEnvelopeWhitelist = map[string]struct{}{
-	"ports/storetest/dlq.go":            {},
-	"ports/storetest/outbox.go":         {},
-	"ports/storetest/outbox_fencing.go": {},
+	"ports/storetest/dlq.go":               {},
+	"ports/storetest/outbox.go":            {},
+	"ports/storetest/outbox_fencing.go":    {},
+	"ports/transporttest/transporttest.go": {},
 }
 
 // repoRoot returns the absolute path to the gobridge repo root,

@@ -138,6 +138,62 @@ func TestPluginOptionsDecode_PrefetchKey_Rejected(t *testing.T) {
 	require.Contains(t, err.Error(), "prefetch")
 }
 
+// TestPluginOptionsDecode_RetryBlock_Succeeds is the config test for F5:
+// the SDK retry-policy surface (connection.retry) must decode through the
+// strict production decoder. Without json tags on RetryConfig the nested
+// block would fail under ErrorUnused, leaving the SDK retry layer
+// untunable. A negative max_retries (disable the SDK layer) and duration
+// strings must round-trip, and toSDK must then report the override.
+func TestPluginOptionsDecode_RetryBlock_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"receiver": map[string]any{"queue_name": "orders"},
+		"connection": map[string]any{
+			"namespace": "ns.servicebus.windows.net",
+			"retry": map[string]any{
+				"max_retries":     -1,
+				"retry_delay":     "2s",
+				"max_retry_delay": "45s",
+			},
+		},
+	}
+
+	var cfg Config
+	require.NoError(t, parser.NewRawConfig(input).Decode(&cfg))
+
+	require.Equal(t, int32(-1), cfg.Connection.Retry.MaxRetries)
+	require.Equal(t, 2*time.Second, cfg.Connection.Retry.RetryDelay)
+	require.Equal(t, 45*time.Second, cfg.Connection.Retry.MaxRetryDelay)
+
+	sdk, override := cfg.Connection.Retry.toSDK()
+	require.True(t, override)
+	require.Equal(t, int32(-1), sdk.MaxRetries)
+	require.Equal(t, 2*time.Second, sdk.RetryDelay)
+	require.Equal(t, 45*time.Second, sdk.MaxRetryDelay)
+}
+
+// An undocumented key inside connection.retry must still fail the strict
+// decode — the retry block does not loosen the ErrorUnused contract.
+func TestPluginOptionsDecode_UnknownRetryKey_Errors(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"receiver": map[string]any{"queue_name": "q"},
+		"connection": map[string]any{
+			"retry": map[string]any{
+				"max_retries": 1,
+				"bogus_retry": "nope",
+			},
+		},
+	}
+
+	var cfg Config
+	err := parser.NewRawConfig(input).Decode(&cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "bogus_retry")
+}
+
 // A bare YAML integer for max_wait_time decodes as NANOSECONDS through
 // the current production hook chain (the hook guards floats only); the
 // 1s validation floor must catch the resulting hot receive loop and

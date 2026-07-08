@@ -96,6 +96,12 @@ options:
     address: "amqp://localhost:5672"
 ```
 
+When `sasl_mechanism: external`, the client certificate material may be
+supplied on the transport config (`tls.cert_pem`/`tls.key_pem` in-memory, or
+`tls.cert_file`/`tls.key_file` file paths) or resolved from `credentials_uri`.
+If neither provides it, config validation fails fast with a clear error rather
+than an opaque broker SASL failure at dial.
+
 ## Receiver Options Reference (`options.receiver.*`)
 
 | Key | Type | Default | Description |

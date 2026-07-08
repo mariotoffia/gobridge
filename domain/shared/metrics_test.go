@@ -142,6 +142,7 @@ func TestTagKeyConstants_NonEmpty(t *testing.T) {
 		shared.TagKeyCategory,
 		shared.TagKeyTransport,
 		shared.TagKeyEntity,
+		shared.TagKeyProcessor,
 	}
 
 	seen := make(map[string]bool, len(tagKeys))

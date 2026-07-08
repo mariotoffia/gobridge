@@ -69,7 +69,7 @@ func (s *idempotentOutboxStore) Complete(_ context.Context, _ []string, _ persis
 	return nil
 }
 
-func (s *idempotentOutboxStore) Expire(_ context.Context, _ time.Time) (int, error) {
+func (s *idempotentOutboxStore) Expire(_ context.Context, _ time.Time, _ string) (int, error) {
 	return 0, nil
 }
 

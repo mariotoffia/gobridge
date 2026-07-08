@@ -118,6 +118,11 @@ func edge091SendRecv(t *testing.T, e edge091Env, env *messaging.Envelope,
 	}()
 
 	<-done
+	// A direct embedder releases the consumer after Run returns; without
+	// it, a leaked consumer on the shared queue steals the next subtest's
+	// message. (A graceful stop also self-closes the channel; Close is the
+	// documented, idempotent follow-up.)
+	_ = recv.Close(context.Background())
 	if received == nil {
 		t.Fatal("no message received")
 	}

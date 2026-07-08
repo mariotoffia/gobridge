@@ -148,6 +148,10 @@ func ValidateBlueprintGraph(cfg *ports.BridgeConfig) *ports.BlueprintValidationE
 			validateEnum(ve, fmt.Sprintf("routes[%d].policy.on_permanent_failure", i), r.Policy.OnPermanentFailure,
 				"drop", "dlq")
 		}
+		if r.Policy.OnFiltered != "" {
+			validateEnum(ve, fmt.Sprintf("routes[%d].policy.on_filtered", i), r.Policy.OnFiltered,
+				"drop", "dlq")
+		}
 		if r.Policy.SendTimeout != "" {
 			if d, err := time.ParseDuration(r.Policy.SendTimeout); err != nil {
 				ve.Addf("routes[%d].policy.send_timeout: invalid duration %q: %v", i, r.Policy.SendTimeout, err)
@@ -218,10 +222,77 @@ func ValidateBlueprintGraph(cfg *ports.BridgeConfig) *ports.BlueprintValidationE
 		validateClusteredMQTTSubscriptions(ve, cfg)
 	}
 
+	validateSameSessionRouteLoop(ve, cfg)
+
 	if !ve.HasErrors() && len(ve.Warnings) == 0 {
 		return nil
 	}
 	return ve
+}
+
+// validateSameSessionRouteLoop warns when a binding publishes to an address
+// that a receiver on the SAME session subscribes to. On a single broker
+// (session) this is a static feedback loop: every delivered message is
+// re-consumed on that subscription and re-sent, indefinitely. Only exact
+// literal matches are flagged (the static case the finding scopes to);
+// templated addresses (e.g. "a/{id}") and wildcard subscriptions do not match
+// and never produce a warning, so false positives are avoided. It is a warning,
+// not an error, because a topology may legitimately bounce through an external
+// system that rewrites the message before it re-enters.
+func validateSameSessionRouteLoop(ve *ports.BlueprintValidationError, cfg *ports.BridgeConfig) {
+	if len(cfg.Bindings) == 0 || len(cfg.Receivers) == 0 {
+		return
+	}
+
+	senderSession := make(map[string]string, len(cfg.Senders))
+	for _, s := range cfg.Senders {
+		senderSession[s.ID] = s.SessionID
+	}
+
+	// session id -> subscribed topic -> first receiver id declaring it.
+	topicsBySession := make(map[string]map[string]string)
+	for _, r := range cfg.Receivers {
+		if r.SessionID == "" {
+			continue
+		}
+		for _, t := range r.Topics {
+			if t.Topic == "" {
+				continue
+			}
+			topics := topicsBySession[r.SessionID]
+			if topics == nil {
+				topics = make(map[string]string)
+				topicsBySession[r.SessionID] = topics
+			}
+			if _, exists := topics[t.Topic]; !exists {
+				topics[t.Topic] = r.ID
+			}
+		}
+	}
+	if len(topicsBySession) == 0 {
+		return
+	}
+
+	for i, b := range cfg.Bindings {
+		if b.Address == "" {
+			continue
+		}
+		// A binding's effective session is its own session_id, or the session
+		// of the sender it publishes through.
+		sess := b.SessionID
+		if sess == "" {
+			sess = senderSession[b.SenderID]
+		}
+		if sess == "" {
+			continue
+		}
+		if rxID, ok := topicsBySession[sess][b.Address]; ok {
+			ve.Warnf("bindings[%d] (%s): address %q on session %q is also a subscription topic of "+
+				"receiver %q on the same session; messages sent here are re-consumed and re-sent "+
+				"(feedback loop) — publish to a distinct address/topic or route through a separate "+
+				"session/broker", i, b.ID, b.Address, sess, rxID)
+		}
+	}
 }
 
 // validateClusteredMQTTSubscriptions checks that MQTT receivers in clustered

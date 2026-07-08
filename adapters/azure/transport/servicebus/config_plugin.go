@@ -3,6 +3,7 @@ package servicebus
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -12,6 +13,7 @@ import (
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
 var _ ports.VisibilityTimeoutConfig = (*Config)(nil)
+var _ ports.CapabilityConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the Azure Service Bus
 // transport. Service Bus has no session, so only Receiver/Sender
@@ -147,6 +149,47 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // SendTimeout-vs-window check for auto-extended routes (Finding 2 / D2).
 func (c Config) AutoExtendEnabled() bool {
 	return c.Receiver.AutoExtend == nil || *c.Receiver.AutoExtend
+}
+
+// Capabilities reports the SOURCE capabilities this receiver config
+// actually honours, so a route can advertise an HONEST, mode-aware set
+// instead of the Factory's transport-wide default (F4/F8).
+//
+// PeekLock (the default) renews locks (CapVisibilityExtension) and
+// redelivers via abandon / lock expiry (CapSourceRedelivery). A delayed
+// Retry (CapDelayedSend) is honoured only on a QUEUE: on a topic
+// subscription, scheduling would address the topic and fan out to sibling
+// subscriptions, so the delivery falls back to an immediate Abandon (the
+// delay is dropped — see the poll loop's delayedRetryDisabled), and the
+// capability is withheld for subscriptions. ReceiveAndDelete honours NONE
+// of them: the broker deletes the message at receive time, so Extend is a
+// no-op, Retry reports ErrNotSupported and nothing redelivers. Returning
+// an empty set for that mode lets the runtime validator's "no retry + no
+// DLQ = silent drop" check FIRE instead of being masked by a
+// CapVisibilityExtension the mode never implements.
+//
+// The bridge builder CONSULTS this per route: when a receiver's Config
+// implements ports.CapabilityConfig the builder OVERRIDES the Factory's
+// transport-wide Capabilities() with this value
+// (bridge/builder_complete.go), so a ReceiveAndDelete route's empty set
+// actually drives the silent-drop rejection. Withholding CapDelayedSend
+// from a PeekLock subscription is safe: CapSourceRedelivery remains, so
+// that route still satisfies the same gate.
+func (c Config) Capabilities() []ports.Capability {
+	if strings.EqualFold(c.Receiver.ReceiveMode, "ReceiveAndDelete") {
+		return nil
+	}
+	caps := []ports.Capability{
+		ports.CapVisibilityExtension,
+		ports.CapSourceRedelivery,
+	}
+	// A delayed Retry is honoured only on a queue (ScheduleMessages); a
+	// subscription (no QueueName) drops the delay to an Abandon, mirroring
+	// the poll loop's `delayedRetryDisabled := r.cfg.QueueName == ""`.
+	if c.Receiver.QueueName != "" {
+		caps = append(caps, ports.CapDelayedSend)
+	}
+	return caps
 }
 
 func (c Config) toReceiverConfig() ReceiverConfig {

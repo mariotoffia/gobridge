@@ -234,11 +234,15 @@ func TestReceiver_ConvertMessage_UUIDMessageID_Deterministic(t *testing.T) {
 	}
 }
 
-// TestEnvelope_RoundTrip_PreservesTypedMessageID verifies a uuid
-// message-id survives ingress→egress: headersToMessage carries the typed
-// value and envelopeToMessage must NOT overwrite it with the (string)
-// envelope ID (finding 6).
-func TestEnvelope_RoundTrip_PreservesTypedMessageID(t *testing.T) {
+// TestEnvelope_RoundTrip_RendersTypedMessageIDToString verifies a uuid
+// message-id survives ingress→egress as its DETERMINISTIC STRING
+// rendering: F9 (ACL purity) requires messageToHeaders to render typed
+// ids via messageIDToString so no go-amqp SDK type reaches the domain
+// headers, and envelopeToMessage must emit that string (not clobber it
+// with a fresh envelope ID). Dedup is preserved because the rendering is
+// stable. This supersedes the pre-F9 "preserve the typed amqp.UUID"
+// contract (finding 6), which leaked an SDK type into the envelope.
+func TestEnvelope_RoundTrip_RendersTypedMessageIDToString(t *testing.T) {
 	uuid := amqp.UUID{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
 		0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}
 	in := &amqp.Message{
@@ -250,16 +254,23 @@ func TestEnvelope_RoundTrip_PreservesTypedMessageID(t *testing.T) {
 		t.Fatalf("messageToEnvelope: %v", err)
 	}
 
+	// ACL purity: the header must be the string rendering, never the
+	// amqp.UUID SDK type.
+	if got, ok := env.Headers()[headerMessageID].(string); !ok || got != uuid.String() {
+		t.Fatalf("header message-id = %v (%T), want string %q",
+			env.Headers()[headerMessageID], env.Headers()[headerMessageID], uuid.String())
+	}
+
 	out := envelopeToMessage(env, false)
 	if out.Properties == nil || out.Properties.MessageID == nil {
 		t.Fatal("egress message lost its message-id")
 	}
-	got, ok := out.Properties.MessageID.(amqp.UUID)
+	got, ok := out.Properties.MessageID.(string)
 	if !ok {
-		t.Fatalf("egress message-id type = %T, want amqp.UUID (typed id clobbered by envelope ID)", out.Properties.MessageID)
+		t.Fatalf("egress message-id type = %T, want string (ACL purity, F9)", out.Properties.MessageID)
 	}
-	if got != uuid {
-		t.Fatalf("egress message-id = %v, want %v", got, uuid)
+	if got != uuid.String() {
+		t.Fatalf("egress message-id = %q, want deterministic rendering %q", got, uuid.String())
 	}
 }
 
@@ -277,7 +288,7 @@ func TestEnvelope_Egress_StampsIDWhenNoMessageID(t *testing.T) {
 
 func TestSessionOptionsFromMap_HonorsPEMKeys(t *testing.T) {
 	opts, err := SessionOptionsFromMap(map[string]any{
-		"address": "amqp://localhost:5672",
+		"address": "amqps://localhost:5671",
 		"tls": map[string]any{
 			"enable":      true,
 			"ca_cert_pem": "--CA--",

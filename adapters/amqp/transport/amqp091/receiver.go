@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -48,6 +49,11 @@ type Receiver struct {
 	clk         clock.Clock
 	started     chan struct{}
 	startedOnce sync.Once
+
+	// randFloat sources the retry-backoff jitter in [0,1). nil defaults to
+	// rand.Float64; tests inject a fixed 0.5 to get the un-jittered base
+	// backoff deterministically. See jitteredBackoff.
+	randFloat func() float64
 
 	// chMu guards activeCh, the channel the live consume loop handed off on
 	// graceful shutdown. Close (invoked by the route runner AFTER it drains
@@ -203,7 +209,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-r.clock().After(receiverBackoff(failures)):
+		case <-r.clock().After(r.jitteredBackoff(failures)):
 		}
 	}
 }
@@ -247,6 +253,19 @@ func isPermanentError(err error) bool {
 // for ~2x heartbeat ≈ 20s at the 10s default, and the
 // topology-re-declare window after a broker restart) while a genuine
 // misconfiguration still surfaces within half a minute.
+//
+// ponytail: ADR candidate — exclusive-consumer warm-standby semantics.
+// Today a SUSTAINED 403 ACCESS_REFUSED on an exclusive consumer exhausts
+// this ~25-30s budget and FAILS the component. For an intentional
+// active/standby topology (two replicas both consuming an exclusive queue,
+// the standby waiting to take over when the active dies) that is wrong: the
+// standby should wait INDEFINITELY for the exclusive lock, reporting
+// Degraded (not failing), and RabbitMQ's x-single-active-consumer
+// (declared via queue_arguments) is the first-class primitive for it.
+// Changing this is a real behaviour change (a currently-failing standby
+// would instead stay up in a Degraded wait state, and health/alerting
+// semantics shift), so it is deliberately NOT made here — see the audit
+// M-5 finding. Flagged to the maintainer as an ADR.
 const reconnectRaceRetryBudget = 10
 
 // isReconnectRaceError reports whether a permanent-classified consume
@@ -279,7 +298,9 @@ func isReconnectRaceError(err error, exclusive bool) bool {
 }
 
 // receiverBackoff returns the bounded exponential backoff for the nth
-// consecutive rapid failure (failures >= 1).
+// consecutive rapid failure (failures >= 1). It is intentionally PURE
+// (no jitter) so its schedule stays exactly assertable; jitter is applied
+// at the call site by jitteredBackoff.
 func receiverBackoff(failures int) time.Duration {
 	if failures <= 1 {
 		return receiverRetryInitial
@@ -293,6 +314,25 @@ func receiverBackoff(failures int) time.Duration {
 		return receiverRetryMax
 	}
 	return d
+}
+
+// jitteredBackoff applies ±25% jitter to the pure exponential
+// receiverBackoff. Without it, many receivers that fail in lockstep — e.g.
+// a broker bounce that cancels every consumer at once — re-consume on the
+// same schedule and hammer the broker in a synchronized thundering herd
+// (the session backoff already jitters; the receiver retry did not). The
+// jitter source defaults to rand.Float64; tests inject a fixed 0.5, which
+// maps to a factor of exactly 1.0 (the un-jittered base) for deterministic
+// clock advances.
+func (r *Receiver) jitteredBackoff(failures int) time.Duration {
+	base := receiverBackoff(failures)
+	rf := r.randFloat
+	if rf == nil {
+		rf = rand.Float64
+	}
+	// rf() in [0,1) -> factor in [0.75, 1.25); 0.5 -> exactly base.
+	factor := 1 + (rf()*2-1)*0.25
+	return time.Duration(float64(base) * factor)
 }
 
 // isEmitError returns true when the error originated from the emit callback
@@ -315,17 +355,19 @@ func (r *Receiver) consumeLoop(ctx context.Context, emit func(context.Context, p
 //
 //   - On any error/reconnect return it closes the channel so the next
 //     attempt (Run's loop) opens a fresh one.
-//   - On a graceful stop (ctx cancelled) it HANDS the channel off to
-//     Receiver.Close instead of closing it here. The route runner drains
-//     in-flight deliveries and only then calls Close, so those deliveries'
-//     Acks settle on a still-open channel. Closing here (the previous
-//     `defer ch.Close()`) tore the channel down while up to prefetch_count
-//     deliveries were mid-pipeline, failing their Acks and forcing the
-//     broker to requeue settled work as duplicates on every shutdown.
-//
-// Because a graceful stop hands the channel off rather than closing it,
-// callers driving Run directly MUST call Receiver.Close after Run returns,
-// or the channel and its forwarder goroutine leak.
+//   - On a graceful stop (ctx cancelled) the disposition depends on
+//     whether a route runner manages this receiver (cfg.deferCloseToRunner):
+//   - Managed: it HANDS the channel off to Receiver.Close instead of
+//     closing it here. The route runner drains in-flight deliveries
+//     (settled in detached goroutines) and only then calls Close, so
+//     those Acks settle on a still-open channel. Closing here (the old
+//     `defer ch.Close()`) tore the channel down while up to
+//     prefetch_count deliveries were mid-pipeline, failing their Acks
+//     and requeuing settled work as duplicates on every shutdown.
+//   - Direct embedder: it SELF-CLOSES the channel (the deferred close
+//     runs). The documented pattern settles deliveries inline, so
+//     nothing remains to drain once Run returns, and self-closing means
+//     an embedder that forgets Receiver.Close cannot leak the consumer.
 func (r *Receiver) runChannel(ctx context.Context, ch receiverChannel, emit func(context.Context, ports.Delivery) error) error {
 	r.setActiveChannel(ch)
 	handOff := false
@@ -393,13 +435,15 @@ func (r *Receiver) runChannel(ctx context.Context, ch receiverChannel, emit func
 		// graceful shutdown under load.
 		select {
 		case <-ctx.Done():
-			handOff = true
+			// Managed receivers hand the channel to Receiver.Close
+			// (drain-then-close); direct embedders self-close it here.
+			handOff = r.cfg.deferCloseToRunner
 			return nil
 		default:
 		}
 		select {
 		case <-ctx.Done():
-			handOff = true
+			handOff = r.cfg.deferCloseToRunner
 			return nil
 		case chanErr, ok := <-chanClose:
 			if ok && chanErr != nil {
@@ -452,9 +496,11 @@ func (r *Receiver) closeActiveChannel(ch receiverChannel) {
 // returns promptly while the goroutine still completes the channel.Close (the
 // broker requeues any unacked deliveries on that channel — at-least-once).
 //
-// Embedders driving Run directly MUST call Close after Run returns on a
-// graceful stop; otherwise the handed-off consumer channel and its forwarder
-// goroutine leak (Run no longer self-closes the channel — see runChannel).
+// Embedders driving Run directly SHOULD call Close after Run returns. It is
+// an idempotent safety call for them: a graceful stop already self-closes the
+// consumer channel (see runChannel), so Close is a no-op unless a managed
+// runner handed a channel off. Only the managed route runner relies on Close
+// to tear down a handed-off channel.
 func (r *Receiver) Close(ctx context.Context) error {
 	r.chMu.Lock()
 	ch := r.activeCh

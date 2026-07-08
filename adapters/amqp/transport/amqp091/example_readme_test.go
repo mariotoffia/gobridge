@@ -81,9 +81,15 @@ func Example() {
 		Logger:        logger,
 	})
 
+	// Consume until ctx is cancelled. After Run returns, release the
+	// consumer with Close. A direct embedder's graceful stop already
+	// self-closes the consumer channel, so Close is an idempotent safety
+	// call here (the managed runtime calls it for you after draining
+	// in-flight deliveries).
 	_ = receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		e := del.Envelope()
 		logger.Info("received", "id", e.ID(), "payload", string(e.Payload()))
 		return del.Ack(ctx)
 	})
+	_ = receiver.Close(ctx)
 }

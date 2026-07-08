@@ -117,7 +117,9 @@ func TestReceiver_GracefulStop_HandsChannelToClose(t *testing.T) {
 	)
 
 	r := &Receiver{
-		cfg:     ReceiverConfig{QueueName: "q"},
+		// This test models the MANAGED route runner: a graceful stop hands
+		// the channel off (drain-then-close) rather than self-closing it.
+		cfg:     ReceiverConfig{QueueName: "q", deferCloseToRunner: true},
 		logger:  slog.Default(),
 		metrics: &ports.NoopExporter{},
 		started: make(chan struct{}),
@@ -161,6 +163,69 @@ func TestReceiver_GracefulStop_HandsChannelToClose(t *testing.T) {
 	}
 	if n := fc.closeCount(); n != 1 {
 		t.Fatalf("channel Close called %d times, want exactly 1", n)
+	}
+}
+
+// TestReceiver_GracefulStop_DirectEmbedder_SelfCloses is the F-1 regression
+// proof at the unit level: a receiver NOT managed by a route runner
+// (deferCloseToRunner=false, the default for a direct NewReceiver) must
+// SELF-CLOSE its consumer channel on a graceful stop, so an embedder that
+// forgets Receiver.Close cannot leak the consumer.
+//
+// Counterfactual: with the pre-fix always-hand-off behavior the channel
+// stays open after Run returns (closeCount==0) and the consumer leaks —
+// exactly the broker round-robin that made TestIntegration_AutoAck fail.
+func TestReceiver_GracefulStop_DirectEmbedder_SelfCloses(t *testing.T) {
+	fc := newFakeReceiverChannel()
+
+	ack := newMockAcknowledger()
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "m1", Payload: []byte("x")})
+	fc.deliveries <- NewDelivery(
+		env,
+		amqp.Delivery{Acknowledger: ack, DeliveryTag: 1, RoutingKey: "rk"},
+		slog.Default(), &ports.NoopExporter{}, nil,
+	)
+
+	r := &Receiver{
+		// Direct embedder: no route runner, deferCloseToRunner stays false.
+		cfg:     ReceiverConfig{QueueName: "q"},
+		logger:  slog.Default(),
+		metrics: &ports.NoopExporter{},
+		started: make(chan struct{}),
+	}
+
+	got := make(chan ports.Delivery, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.runChannel(ctx, fc, func(_ context.Context, d ports.Delivery) error {
+			got <- d
+			return nil
+		})
+	}()
+
+	// Accept one delivery so the consume loop is definitely live, then stop.
+	wait.RequireReceive(t, got, 2*time.Second)
+	cancel()
+	if err := wait.RequireReceive(t, done, 2*time.Second); err != nil {
+		t.Fatalf("runChannel returned %v, want nil on graceful stop", err)
+	}
+
+	// The direct-embedder graceful stop MUST self-close the channel.
+	if !fc.isClosed() {
+		t.Fatal("direct-embedder graceful stop did not self-close the channel: consumer leaks")
+	}
+	if n := fc.closeCount(); n != 1 {
+		t.Fatalf("channel Close called %d times, want exactly 1 (self-close)", n)
+	}
+
+	// A subsequent Close (the idempotent safety call) is a no-op: the
+	// channel was already self-closed and the active reference cleared.
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatalf("Close after self-close: %v", err)
+	}
+	if n := fc.closeCount(); n != 1 {
+		t.Fatalf("Close after self-close closed the channel again: closeCount = %d, want 1", n)
 	}
 }
 

@@ -337,7 +337,15 @@ is ~62s. Set `renew_interval` explicitly to override the derivation.
 
 ### `max_renew_fails` (3)
 
-How many consecutive renewal failures the active instance tolerates before initiating a step-down. After 3 consecutive failures, the instance assumes it has lost connectivity to DynamoDB and begins draining in-flight messages.
+How many consecutive renewal failures the active instance tolerates before it
+re-checks ownership. After `max_renew_fails` consecutive *transient* failures
+(timeout / throttle / unavailable) the instance performs **one authoritative
+lease read** before deciding: a genuine store outage fails that read too and the
+instance steps down (fail-closed) and drains in-flight messages, but a transient
+blip whose read still names this instance as the unexpired owner is treated as a
+no-op, so a brief wobble does not needlessly surrender the lease. A *definitive*
+loss (the row now names another owner, or the lease has expired) steps down
+immediately, without waiting for `max_renew_fails`.
 
 ### `step_down_grace` (20s)
 
@@ -472,6 +480,13 @@ observing after the owner died needs up to ~2×`lease_ttl` (~90s) — see the
 takeover observation window above. During the window the broker retains messages
 (QoS 1, `clean_start: false`) and replays them to the new owner once it connects
 -- as in the failover sequence above, with 45s in place of 300s.
+
+> **Rolling deploys are the cold-standby case.** A replacement pod starts
+> observing the lease only *after* it boots, so a failover objective that must
+> hold **through a deploy** is bounded by ~2×`lease_ttl`, not `lease_ttl`. For a
+> strict ≤60s bound including rolling deploys, pin `lease_ttl ≤ 30s` (the
+> Aggressive row below), and budget pod-schedule latency on top if the
+> replacement is slow to start — the warm-standby figure alone is not enough.
 
 **Invariants the preset preserves** (and any hand-tuned profile must too):
 

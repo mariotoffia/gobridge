@@ -70,15 +70,21 @@ bin-packing. You get:
 
 ### Sizing Guidance
 
-The table below provides starting points. We recommend load-testing with your
-actual message shapes and processor chains before finalizing.
+These are per-task Fargate sizes (**1024 CPU units = 1 vCPU**). The authoritative
+throughput-to-resource tiers and `max_in_flight` guidance live in the
+[Deployment Guide — CPU and Memory Sizing](../deployment-guide.md#cpu-and-memory-sizing);
+the table below maps those tiers to valid Fargate task sizes and Spot
+suitability. Load-test with your actual message shapes and processor chains
+before finalizing.
 
-| Throughput | CPU (units) | Memory (MiB) | Fargate Spot? |
-|------------|-------------|---------------|---------------|
-| < 100 msg/s | 256 | 512 | Yes |
-| 100 -- 1 000 msg/s | 512 | 1024 | Evaluate |
-| > 1 000 msg/s | 1024 | 2048 | No |
+| Throughput | CPU (units) | vCPU | Memory (MiB) | Fargate Spot? |
+|------------|-------------|------|--------------|---------------|
+| < 100 msg/s | 256 | 0.25 | 512 | Yes |
+| 100 -- 1 000 msg/s | 512 | 0.5 | 1024 | Evaluate |
+| > 1 000 msg/s (per worker) | 1024 | 1.0 | 2048 | No |
 
+For a single non-clustered task above 1 000 msg/s, size vertically to the
+Deployment Guide's `High` tier (2--4 vCPU / 4--8 GiB) instead of adding workers.
 The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
 (`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The clustered
 profile (`GoBridgeCluster`) runs one control task plus `WorkerDesiredCount`
@@ -446,7 +452,8 @@ manually, use these as a reference.
 ### Task Role
 
 The task role is assumed by the running container. It needs access to EFS,
-SSM, and any transport-specific services (e.g. SQS).
+SSM, any transport-specific services (e.g. SQS), and DynamoDB when you configure
+DynamoDB lease/outbox/DLQ stores.
 
 ```json
 {
@@ -490,6 +497,25 @@ SSM, and any transport-specific services (e.g. SQS).
         "sqs:GetQueueAttributes"
       ],
       "Resource": "arn:aws:sqs:REGION:ACCOUNT:my-queue-*"
+    },
+    {
+      "Sid": "DynamoDbStoreAccess",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/gobridge-*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/gobridge-*/index/*"
+      ]
     }
   ]
 }
@@ -507,6 +533,60 @@ queue-name resolution -- a receiver or sender configured with `queue_name`
 adapter does not call `GetQueueAttributes`; the action is retained here as a
 harmless allowance for operators who inspect queues out-of-band, and can be
 dropped from a least-privilege policy.
+
+**DynamoDB stores.** The `DynamoDbStoreAccess` statement is needed only when a
+store role is configured with `type: dynamodb`. Scope `Resource` to your actual
+table ARNs -- the default names are `gobridge-leases`, `gobridge-outbox`, and
+`gobridge-dlq` -- and keep the `/index/*` entry, which the outbox and DLQ queries
+need for their GSIs. Omit the statement entirely for memory/SQLite-only
+deployments. The data-plane actions each role uses, if you split the statement
+per table for tighter least privilege:
+
+| Role | Runtime data-plane actions |
+|------|----------------------------|
+| Lease | `GetItem`, `PutItem`, `UpdateItem` |
+| Outbox | `GetItem`, `PutItem`, `UpdateItem`, `Query`, `TransactWriteItems` |
+| DLQ | `GetItem`, `PutItem`, `DeleteItem`, `Query`, `Scan` |
+
+Each store also runs a boot-time schema **preflight** that adds control-plane
+actions on top of the data-plane set above:
+
+- Outbox and DLQ additionally call `dynamodb:DescribeTable`.
+- Lease additionally calls `dynamodb:DescribeTable` **and**
+  `dynamodb:DescribeTimeToLive` (it warns loudly when TTL is enabled on the
+  fencing table, which a reaper would use to delete lease rows and reset the
+  fencing version).
+
+Preflight posture is deliberate and matters for how you grant these actions:
+
+- A **confirmed schema mismatch** -- the table exists but has the wrong key
+  schema or is missing a required GSI -- is **fatal at boot**. The store refuses
+  to start against a mis-shaped table (the guard against a copy-pasted table name
+  silently shredding messages).
+- If a **`DescribeTable`** call **fails** because the permission is missing
+  (`AccessDenied`) or the control plane throttles it during a mass rollout,
+  preflight logs a loud **WARN** and **fails open**: boot proceeds, and a
+  genuinely missing or mis-shaped table then fails loudly at the first store
+  operation rather than at boot.
+- The lease role's **`DescribeTimeToLive`** check is separate and best-effort: it
+  runs during table setup, and if TTL is enabled on the fencing table it logs a
+  loud **WARN** (TTL must be disabled or fencing-token monotonicity breaks). If
+  the `DescribeTimeToLive` call itself fails -- missing permission, a throttle, or
+  an emulator that does not support it -- the check is **silently skipped** (no
+  WARN, no boot failure); it is not part of the fatal preflight.
+- Granting `dynamodb:DescribeTable` is therefore **recommended** -- it lets
+  preflight catch a mis-shaped table at boot instead of at first use -- but is
+  **not strictly required** for boot. Granting `dynamodb:DescribeTimeToLive` to
+  the lease role is optional: without it the TTL-misconfiguration warning simply
+  never fires.
+
+Table creation and TTL setup (`dynamodb:CreateTable`, `dynamodb:UpdateTimeToLive`)
+are a deploy-time concern; the CDK constructs provision tables out-of-band. Grant
+those two actions only if you let the bridge self-provision through its
+`EnsureTable` helper. See the
+[DynamoDB Store](../processors-and-stores.md#dynamodb-store) reference for store
+behavior and [Monitoring](monitoring.md#key-metrics) for the backlog and
+store-health signals.
 
 ### Execution Role
 

@@ -68,13 +68,19 @@ type Receiver struct {
 	// against the current seam, and closing it under them would fail
 	// their Ack/Retry and force redelivery churn.
 	inFlightDeliveries atomic.Int64
-	logger             *slog.Logger
-	metrics            ports.MetricsExporter
-	clk                clock.Clock
-	initMu             sync.Mutex
-	closeOnce          sync.Once
-	started            chan struct{}
-	startedOnce        sync.Once
+	// sessionGen is bumped every time ensureSessionSeam installs a newly
+	// accepted session seam (use_sessions rotation). The single
+	// long-lived session renewer reads it to reset its consecutive-
+	// failure budget per accepted session, so a blip on one session never
+	// denies renewal to the next one it accepts (F3). Lock-free on read.
+	sessionGen  atomic.Uint64
+	logger      *slog.Logger
+	metrics     ports.MetricsExporter
+	clk         clock.Clock
+	initMu      sync.Mutex
+	closeOnce   sync.Once
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 // receiverStack bundles the SDK client handle with the receiver and
@@ -807,6 +813,11 @@ func (r *Receiver) ensureSessionSeam(ctx context.Context) error {
 	if r.client == nil && r.asbClient == handle {
 		r.client = seam
 		r.initMu.Unlock()
+		// A newly accepted session: bump the generation so the session
+		// renewer resets its per-session failure budget and keeps
+		// renewing this seam even if a PREVIOUS session's lock was
+		// blipping when the renewer last ticked (F3).
+		r.sessionGen.Add(1)
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "servicebus: accepted next session",
 				"entity", r.entityName(),
@@ -850,28 +861,52 @@ func (r *Receiver) releaseSessionSeam(ctx context.Context) {
 // runSessionRenewer renews the shared session lock at interval until
 // ctx is done. One instance per poll loop in session mode; replaces
 // the per-delivery auto-extend goroutines (which would all renew the
-// SAME session lock redundantly). Tolerates up to autoExtendMaxFailures
-// consecutive errors, then stops: the session lock will lapse and the
-// subsequent ReceiveMessages failures surface through the poll loop's
-// error path (backoff + MetricASBReceiveFailures).
+// SAME session lock redundantly).
+//
+// Unlike the per-delivery auto-extend loop, this renewer does NOT
+// permanently exit on renewal failures — it exits ONLY when ctx is done
+// (the poll loop stopping). Exiting early would deny renewal to every
+// session the poll loop accepts afterwards, causing a LockLost
+// redelivery storm (F3). Instead it:
+//
+//   - resets its consecutive-failure budget whenever a NEW session is
+//     accepted (sessionGen changes), so a blip on a previous session
+//     never starves the next one, and
+//   - emits MetricASBLockRenewerStopped ONCE per degradation episode when
+//     the current session's renewal fails autoExtendMaxFailures times in
+//     a row, then keeps trying (paced at interval) so it recovers on the
+//     next successful renewal or the next accepted session.
+//
+// The poll loop's receive-error path (releaseSessionSeam → re-accept) is
+// the backstop that sheds a genuinely lost session; a shed leaves
+// currentClient() nil, which the renewer skips without counting a
+// failure, and the subsequent re-accept bumps sessionGen.
 //
 // It resolves the live receiver seam via currentClient() on EVERY tick
 // rather than pinning a snapshot: a credential rotation swaps the stack
 // under the still-running poll loop, and renewing the OLD (closed)
 // client's session would leave the NEW session's lock unrenewed
-// (lock-lost on in-flight deliveries). A nil snapshot — the brief
-// window while a session rebuild is pending — is skipped without
-// counting as a failure; the next tick renews the rebuilt session.
+// (lock-lost on in-flight deliveries).
 func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration) {
 	ticker := r.clock().NewTicker(interval)
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
+	degradedSignalled := false
+	lastGen := r.sessionGen.Load()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			if gen := r.sessionGen.Load(); gen != lastGen {
+				// A new session was accepted (rotation / re-accept): start
+				// this session with a fresh failure budget so it is renewed
+				// regardless of a previous session's blip.
+				lastGen = gen
+				consecutiveFailures = 0
+				degradedSignalled = false
+			}
 			client := r.currentClient()
 			if client == nil {
 				// Stack swap in progress (session rebuild pending): the
@@ -885,6 +920,7 @@ func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration
 					return
 				}
 				consecutiveFailures++
+				r.metrics.Counter(MetricASBLockRenewalFailures, 1)
 				if r.logger != nil {
 					r.logger.Warn("servicebus: session lock renewal failed",
 						"session_id", r.cfg.SessionID,
@@ -892,17 +928,26 @@ func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration
 						"consecutive_failures", consecutiveFailures,
 					)
 				}
-				if consecutiveFailures >= autoExtendMaxFailures {
+				if consecutiveFailures >= autoExtendMaxFailures && !degradedSignalled {
+					// Persistent failure on the CURRENTLY held session:
+					// alertable. Do NOT return — that would abandon every
+					// session accepted afterwards. Signal once, keep
+					// renewing; a successful renewal or a newly accepted
+					// session clears the degraded state.
+					degradedSignalled = true
+					r.metrics.Counter(MetricASBLockRenewerStopped, 1,
+						shared.Tag{Key: asbTagKeyRenewerScope, Value: asbRenewerScopeSession})
 					if r.logger != nil {
-						r.logger.Error("servicebus: session lock renewal max failures reached, stopping renewer",
+						r.logger.Error("servicebus: session lock renewal persistently failing; lock may lapse and redeliver",
 							"session_id", r.cfg.SessionID,
+							"consecutive_failures", consecutiveFailures,
 						)
 					}
-					return
 				}
 				continue
 			}
 			consecutiveFailures = 0
+			degradedSignalled = false
 			r.metrics.Counter(MetricASBLockRenewals, 1)
 		}
 	}

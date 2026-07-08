@@ -21,6 +21,7 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		AckAfter:           routing.AckBoundary(r.Policy.AckAfter),
 		OnExpired:          routing.ExpiredAction(r.Policy.OnExpired),
 		OnPermanentFailure: routing.FailureAction(r.Policy.OnPermanentFailure),
+		OnFiltered:         routing.FilteredAction(r.Policy.OnFiltered),
 		AllowUnfenced:      r.Policy.AllowUnfenced,
 		AllowRetryDrop:     r.Policy.AllowRetryDrop,
 		TrustBridgeHeaders: r.TrustBridgeHeaders,
@@ -86,7 +87,12 @@ func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
 	}
 
 	sc := session.DefaultConfig(rs.SessionID, true)
-	sc.ConnectAfterLease = rs.ConnectAfterLease
+	// F6: default connect_after_lease ON for a RouteSessionDef source. It is
+	// always an exclusive single-owner session (DefaultConfig(...,true) above);
+	// deferring connect until the lease is won stops a booting standby from
+	// resuming a broker-persisted subscription and consuming without the lease.
+	// nil (omitted in the blueprint) => true; an explicit value is honored.
+	sc.ConnectAfterLease = rs.ConnectAfterLease == nil || *rs.ConnectAfterLease
 	// DefaultConfig pins RenewInterval to a fixed value (110s). Leaving it set
 	// suppresses the session manager's documented derive-from-TTL branch
 	// (runtime/session/manager.go), so a blueprint that only sets lease_ttl

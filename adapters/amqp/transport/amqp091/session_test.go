@@ -308,16 +308,16 @@ func TestSession_Reconcile_NotStarted(t *testing.T) {
 	plan := connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "q1"}},
 	}
-	err := s.Reconcile(context.Background(), plan)
-	if err == nil {
-		t.Fatal("expected error from Reconcile on un-started session")
+	// Reconcile before Start is a valid ordering: the plan is retained and
+	// Start applies it during its initial reconcile, so it returns nil.
+	if err := s.Reconcile(context.Background(), plan); err != nil {
+		t.Fatalf("Reconcile before Start must not error (plan is retained): %v", err)
 	}
-	var be *shared.BridgeError
-	if !errors.As(err, &be) {
-		t.Fatalf("expected BridgeError, got %T", err)
-	}
-	if !errors.Is(be, shared.ErrUnavailable) {
-		t.Errorf("expected ErrUnavailable, got code %s", be.Code)
+	s.mu.Lock()
+	retained := s.plan
+	s.mu.Unlock()
+	if retained == nil || len(retained.Subscriptions) != 1 || retained.Subscriptions[0].Topic != "q1" {
+		t.Fatalf("Reconcile before Start must retain the plan for Start to apply, got %+v", retained)
 	}
 }
 

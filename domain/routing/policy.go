@@ -107,6 +107,27 @@ func (a FailureAction) IsValid() bool {
 	return false
 }
 
+// FilteredAction determines what happens to a message a processor
+// intentionally drops via shared.ErrMessageFiltered. It is deliberately
+// distinct from OnPermanentFailure: an allow-list filter drop is a routine,
+// high-volume outcome (every non-matching message), NOT a fault, so it must
+// not inherit the permanent-failure DLQ default and flood the DLQ.
+type FilteredAction string
+
+const (
+	FilteredDrop FilteredAction = "drop" // drop-with-metric (default)
+	FilteredDLQ  FilteredAction = "dlq"  // opt-in: write to the DLQ
+)
+
+// IsValid reports whether a is one of the declared FilteredAction values.
+func (a FilteredAction) IsValid() bool {
+	switch a {
+	case FilteredDrop, FilteredDLQ:
+		return true
+	}
+	return false
+}
+
 // Route policy defaults.
 const (
 	DefaultMaxInFlight       = 100
@@ -138,15 +159,21 @@ func NewDefaultBackoffPolicy() BackoffPolicy {
 
 // RoutePolicy defines per-route delivery, retry, and backpressure configuration.
 type RoutePolicy struct {
-	MaxInFlight          int
-	Backoff              BackoffPolicy
-	RequireDurableEgress bool
-	OnExpired            ExpiredAction
-	OnPermanentFailure   FailureAction
-	DeliveryMode         DeliveryMode
-	DispatchMode         DispatchMode
-	AckAfter             AckBoundary
-	MaxReplayAttempts    int
+	MaxInFlight        int
+	Backoff            BackoffPolicy
+	OnExpired          ExpiredAction
+	OnPermanentFailure FailureAction
+	// OnFiltered governs a message a processor intentionally drops via
+	// shared.ErrMessageFiltered. It defaults to FilteredDrop (drop-with-metric):
+	// filtered messages are NOT written to the DLQ unless this is explicitly set
+	// to FilteredDLQ. Kept separate from OnPermanentFailure so an allow-list
+	// filter cannot DLQ 100% of non-matching traffic just because the
+	// permanent-failure sink is the DLQ default.
+	OnFiltered        FilteredAction
+	DeliveryMode      DeliveryMode
+	DispatchMode      DispatchMode
+	AckAfter          AckBoundary
+	MaxReplayAttempts int
 	// ReplayBudget bounds the total wall-clock time, measured from a record's
 	// FirstAttemptedAt, that the drainer keeps redelivering before poisoning it
 	// to the DLQ. It is the age half of the poison AND-gate (the count half is
@@ -217,6 +244,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	if !p.OnPermanentFailure.IsValid() {
 		p.OnPermanentFailure = FailureDLQ
 	}
+	if !p.OnFiltered.IsValid() {
+		p.OnFiltered = FilteredDrop
+	}
 	if !p.DispatchMode.IsValid() {
 		p.DispatchMode = DispatchSingle
 	}
@@ -249,12 +279,18 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 }
 
 // Validate reports the first invalid enum value or negative duration carried by
-// p as a permanent BridgeError with code shared.ErrCodeInvalidPayload. A
+// p as a permanent BridgeError with code shared.ErrCodeInvalidConfig. A
 // zero-valued enum or duration is treated as "use default" (handled by
 // WithDefaults) and is NOT considered invalid here; only a NEGATIVE ReplayBudget
 // is rejected. Callers that want strict rejection of typos like
 // RoutePolicy{DeliveryMode: "wat"} should call Validate before (or instead of)
 // WithDefaults.
+//
+// The returned code is shared.ErrCodeInvalidConfig (Permanent), NOT
+// ErrCodeInvalidPayload: an invalid route policy is a configuration defect a
+// human must fix, semantically distinct from a rejected message payload. This
+// keeps ErrCodeInvalidPayload uniquely ErrorRejected (see the code→class
+// function test in domain/shared).
 func (p RoutePolicy) Validate() error {
 	if p.DeliveryMode != "" && !p.DeliveryMode.IsValid() {
 		return invalidEnum("DeliveryMode", string(p.DeliveryMode))
@@ -271,15 +307,34 @@ func (p RoutePolicy) Validate() error {
 	if p.OnPermanentFailure != "" && !p.OnPermanentFailure.IsValid() {
 		return invalidEnum("OnPermanentFailure", string(p.OnPermanentFailure))
 	}
+	if p.OnFiltered != "" && !p.OnFiltered.IsValid() {
+		return invalidEnum("OnFiltered", string(p.OnFiltered))
+	}
 	if p.ReplayBudget < 0 {
 		return invalidDuration("ReplayBudget", p.ReplayBudget)
+	}
+	// Reject negative Backoff fields (F8). WithDefaults fills only ZERO fields, so
+	// a negative survives it. A negative MaxInterval is the dangerous one:
+	// route.retryDelay only clamps exponential growth behind a `> 0` MaxInterval
+	// guard, so a negative cap never fires and float64 growth reaches
+	// time.Duration(+Inf) (implementation-defined, negative on amd64/arm64),
+	// feeding Retry a negative/near-infinite delay. InitialInterval and Multiplier
+	// are rejected for the same fail-loud-on-bad-config posture.
+	if p.Backoff.InitialInterval < 0 {
+		return invalidDuration("Backoff.InitialInterval", p.Backoff.InitialInterval)
+	}
+	if p.Backoff.MaxInterval < 0 {
+		return invalidDuration("Backoff.MaxInterval", p.Backoff.MaxInterval)
+	}
+	if p.Backoff.Multiplier < 0 {
+		return invalidFloat("Backoff.Multiplier", p.Backoff.Multiplier)
 	}
 	return nil
 }
 
 func invalidEnum(field, value string) *shared.BridgeError {
 	return &shared.BridgeError{
-		Code:    shared.ErrCodeInvalidPayload,
+		Code:    shared.ErrCodeInvalidConfig,
 		Class:   shared.ErrorPermanent,
 		Message: fmt.Sprintf("routing: invalid %s value %q", field, value),
 	}
@@ -287,9 +342,17 @@ func invalidEnum(field, value string) *shared.BridgeError {
 
 func invalidDuration(field string, value time.Duration) *shared.BridgeError {
 	return &shared.BridgeError{
-		Code:    shared.ErrCodeInvalidPayload,
+		Code:    shared.ErrCodeInvalidConfig,
 		Class:   shared.ErrorPermanent,
 		Message: fmt.Sprintf("routing: invalid %s value %s (must not be negative)", field, value),
+	}
+}
+
+func invalidFloat(field string, value float64) *shared.BridgeError {
+	return &shared.BridgeError{
+		Code:    shared.ErrCodeInvalidConfig,
+		Class:   shared.ErrorPermanent,
+		Message: fmt.Sprintf("routing: invalid %s value %g (must not be negative)", field, value),
 	}
 }
 

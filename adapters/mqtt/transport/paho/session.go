@@ -27,12 +27,20 @@ type Session struct {
 	// not import the vendor SDK. Tests assign a *pahoConn wrapping a
 	// sentinel autopaho.ConnectionManager when they only need a
 	// non-nil presence.
-	cm        pahoConnection
-	cmCancel  context.CancelFunc // cancels the CM's background context on Close
-	events    chan ports.SessionEvent
-	closed    bool
-	connected bool // true when autopaho reports connection is up
-	starting  bool // true while a Start() attempt is in flight
+	cm       pahoConnection
+	cmCancel context.CancelFunc // cancels the CM's background context on Close
+	events   chan ports.SessionEvent
+	// eventsClosed guards the single close of s.events. TWO paths close
+	// it — Close (terminal shutdown) and Reload's Start-failure signal
+	// (F-1: closing events routes the dead session into the runtime
+	// manager's events-channel-close restart path). Both honor this flag
+	// under s.mu so a double-close cannot panic, and pushEvent checks it
+	// so no send can race the close. Start clears it (and re-materialises
+	// s.events) when the supervisor re-Starts a Reload-failed session.
+	eventsClosed bool
+	closed       bool
+	connected    bool // true when autopaho reports connection is up
+	starting     bool // true while a Start() attempt is in flight
 	// startDone is closed when the in-flight Start attempt finishes
 	// (success or failure) so concurrent Start callers can wait for the
 	// outcome instead of returning a false success (finding: concurrent
@@ -94,6 +102,12 @@ type mqttCredentials struct {
 
 var _ ports.Session = (*Session)(nil)
 
+// sessionEventsBuffer is the capacity of the session lifecycle-event
+// channel. It is a named constant so the Reload-failure re-Start
+// (acl_session.go) can re-materialise a channel with the SAME capacity
+// it was constructed with (F-1).
+const sessionEventsBuffer = 16
+
 // NewSession creates an MQTT Session from the given options.
 // metrics may be nil; a no-op exporter is used in that case.
 //
@@ -102,6 +116,11 @@ var _ ports.Session = (*Session)(nil)
 // means the broker discards session state the moment the network drops,
 // which silently voids the offline-retention contract those modes exist
 // to provide.
+//
+// A zero ReceiveMaximum is coerced to DefaultReceiveMaximum. 0 is not a
+// legal MQTT v5 Receive Maximum (protocol error), so it can only mean
+// "unset"; the effective default bounds worst-case buffered memory (see
+// DefaultReceiveMaximum and the ReceiveMaximum doc comment).
 func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
@@ -119,22 +138,44 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			)
 		}
 	}
+	if opts.ReceiveMaximum == 0 {
+		// ponytail: BEHAVIOR CHANGE — the effective Receive Maximum default
+		// was lowered from the MQTT protocol maximum (65535) to
+		// DefaultReceiveMaximum (1024) to bound worst-case buffered memory
+		// (receive_maximum × max_payload; paho buffers up to Receive Maximum
+		// full publishes, and the startup pending buffer is sized to it too).
+		// 0 is not a legal MQTT v5 Receive Maximum, so coercing it is
+		// correct. Operators who want the old ceiling set receive_maximum
+		// explicitly.
+		opts.ReceiveMaximum = DefaultReceiveMaximum
+		if logger != nil {
+			logger.Warn("mqtt: receive_maximum unset; defaulting to bound worst-case buffered "+
+				"memory (receive_maximum × max_payload) at the cost of QoS 1/2 in-flight "+
+				"parallelism — set receive_maximum explicitly (e.g. 65535) to restore the prior ceiling",
+				"receive_maximum", opts.ReceiveMaximum,
+			)
+		}
+	}
 	s := &Session{
 		opts:       opts,
 		mode:       mode,
 		logger:     logger,
 		metrics:    m,
 		clk:        opts.Clock,
-		events:     make(chan ports.SessionEvent, 16),
+		events:     make(chan ports.SessionEvent, sessionEventsBuffer),
 		activeSubs: make(map[string]byte),
 	}
 	// The router shares the session's (possibly fake) clock so the startup
 	// grace window is deterministic under test, and calls back through
-	// s.unsubscribeOrphan to converge broker state for orphan topics.
+	// s.unsubscribeOrphan to converge broker state for orphan topics. The
+	// covered-topic predicate lets the router distinguish a real live-route
+	// loss (a still-desired subscription whose handler registers late) from
+	// benign orphan cleanup when it acks-and-drops past the grace window.
 	r := newRouter(logger, m,
 		withRouterClock(opts.Clock),
 		withUnmatchedGrace(opts.UnmatchedGrace),
 		withUnsubscribe(s.unsubscribeOrphan),
+		withCovered(s.topicCovered),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window

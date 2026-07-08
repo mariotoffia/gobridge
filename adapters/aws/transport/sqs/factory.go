@@ -30,7 +30,7 @@ type Factory struct {
 
 // NewFactory creates a stateless SQS TransportFactory. The optional
 // variadic metrics exporter is threaded into every Receiver and Sender
-// the factory builds so the adapter's nine SQS metrics actually emit on
+// the factory builds so the adapter's twelve SQS metrics actually emit on
 // the config-driven/plugin path — without it the factory left cfg.Metrics
 // nil and each adapter fell back to a Noop exporter (Finding 8/HIGH). The
 // signature mirrors paho.NewFactory; the variadic keeps existing
@@ -174,7 +174,16 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ po
 	cfg := pc.toSenderConfig()
 	cfg.Logger = f.logger
 	cfg.Metrics = f.metrics
-	return NewSender(cfg)
+	// Surface the message-size ceiling to the config-driven (YAML) path:
+	// pass the functional option ONLY when the operator set a positive value
+	// so an absent/0 config keeps the 256 KiB default instead of zeroing the
+	// ceiling (which would drop ALL attributes, including the rank-0
+	// idempotency-key / traceparent headers) (Finding 4).
+	var opts []SenderOption
+	if cfg.MaxMessageBytes > 0 {
+		opts = append(opts, WithMaxMessageBytes(cfg.MaxMessageBytes))
+	}
+	return NewSender(cfg, opts...)
 }
 
 // configFromSpec accepts both *Config (the canonical decoder return)

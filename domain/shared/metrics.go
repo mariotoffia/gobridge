@@ -20,8 +20,17 @@ const (
 
 // Outbox metric names.
 const (
-	MetricOutboxPersistLatency    = "OutboxPersistLatency"
-	MetricOutboxDrainLatency      = "OutboxDrainLatency"
+	MetricOutboxPersistLatency = "OutboxPersistLatency"
+	MetricOutboxDrainLatency   = "OutboxDrainLatency"
+	// MetricOutboxDepth carries two gauges on one partition-keyed series. The
+	// ingress path emits the TRUE pending count (bounded by the configured
+	// MaxOutboxDepth); the drain path emits the claimed-batch size each poll —
+	// a liveness floor that SATURATES at the batch size (default 100, max 500),
+	// NOT the backlog. The default alarms read the Maximum statistic so the low
+	// drain-path value never clobbers the ingress depth. Consequence: with
+	// MaxOutboxDepth UNSET only the saturating drain-path value is emitted, so a
+	// deep backlog is indistinguishable from a full batch and the depth alarms
+	// (1000/10000) can never breach — set MaxOutboxDepth for a true depth signal.
 	MetricOutboxDepth             = "OutboxDepth"
 	MetricOutboxClaimRecoveries   = "OutboxClaimRecoveries"
 	MetricOutboxCompletions       = "OutboxCompletions"
@@ -49,6 +58,15 @@ const (
 	// a non-exclusive session that never acquires a lease) rather than a normal
 	// standby that legitimately holds no lease.
 	MetricDrainSkippedNoLease = "DrainSkippedNoLease"
+	// MetricOutboxDrainStalled counts drain batches whose in-flight sends did not
+	// return within a generous grace past the batch deadline — the signature of a
+	// Sender that ignores context cancellation and wedges the drain loop's
+	// wg.Wait (Min2). A wedged batch is otherwise indistinguishable from an idle
+	// drainer (both emit nothing), so a non-zero (and especially a rising) value
+	// is the single signal that a sender is not honoring ctx and the partition is
+	// stuck. The runtime does NOT kill the wedged goroutines — senders must honor
+	// ctx — so this is a diagnostic, not a recovery, signal.
+	MetricOutboxDrainStalled = "OutboxDrainStalled"
 )
 
 // Generic transport-agnostic delivery metric names.
@@ -63,6 +81,13 @@ const (
 	MetricDLQEntries         = "DLQEntries"
 	MetricDLQWriteFailures   = "DLQWriteFailures"
 	MetricDeliveryPanics     = "DeliveryPanics"
+	// MetricDLQRedrives counts DLQ entries an admin redrive claimed and
+	// re-injected successfully (route_id-tagged). MetricDLQRedriveFailures counts
+	// redrive attempts that failed after (or during) the claim — inject failed,
+	// claim failed, or a restore was attempted — so an operator can alert on
+	// manual-recovery churn that the batch-level audit record does not surface.
+	MetricDLQRedrives        = "DLQRedrives"
+	MetricDLQRedriveFailures = "DLQRedriveFailures"
 )
 
 // Throughput metric names.
@@ -77,9 +102,9 @@ const (
 	// inflight, so a rising Dropped is the single signal for silent message loss.
 	MetricMessagesDropped = "MessagesDropped"
 	// MetricMessagesFiltered counts messages a processor deliberately dropped
-	// (shared.ErrMessageFiltered) under OnPermanentFailure=drop — a POLICY
-	// discard, not a fault. Split from MessagesDropped so an intentional filter
-	// rate never masks (or is masked by) genuine loss.
+	// (shared.ErrMessageFiltered) under OnFiltered=drop — a POLICY discard, not a
+	// fault. Split from MessagesDropped so an intentional filter rate never masks
+	// (or is masked by) genuine loss.
 	MetricMessagesFiltered = "MessagesFiltered"
 	// MetricMessagesExpired counts messages dropped because they expired before
 	// delivery under OnExpired=drop (the ingress route-expired path and the
@@ -141,6 +166,67 @@ const (
 	MetricRouteRestarts = "RouteRestarts"
 )
 
+// Credential metric names. Emitted by the poll-based credential wrapper
+// (runtime/credentials) around credential rotation polling.
+const (
+	// MetricCredentialRefreshFailures counts credential resolve failures during
+	// rotation polling — both the initial seed resolve and every periodic poll
+	// (runtime/credentials.PollBasedWrapper). A resolve failure is logged and
+	// non-fatal (the loop retries next tick), so it is otherwise invisible; a
+	// rising value flags a secrets backend (Secrets Manager / SSM) that is
+	// unreachable or denying access, which would leave a session stuck on stale
+	// credentials until the backend recovers. Tagged with nothing (the wrapper
+	// is per-URI but the URI may carry secrets, so it is deliberately not a
+	// dimension).
+	MetricCredentialRefreshFailures = "CredentialRefreshFailures"
+	// MetricCredentialRotationApplied counts credential rotations actually
+	// APPLIED to a live transport target: the CredentialRefresher observed a
+	// changed CredentialSet on a watched URI and a target's ApplyCredentials
+	// returned without error (bridge.CredentialRefresher). Counted once per
+	// target-apply, so a URI shared by N sessions counts N on one rotation. It
+	// is the success counterpart to MetricCredentialRefreshFailures: together
+	// they make credential rotation observable instead of log-only. The URI is
+	// deliberately NOT a dimension (it may carry secrets).
+	MetricCredentialRotationApplied = "CredentialRotationApplied"
+	// MetricCredentialResolveFailure counts credential repository fetch failures
+	// at the resolver choke point (runtime.CredentialResolver.fetch), tagged by
+	// the failure's TagKeyCode (e.g. NOT_AUTHORIZED, UNAVAILABLE, NOT_FOUND) so a
+	// permission denial is distinguishable from a backend outage. Covers every
+	// resolve path — build-time synchronous resolve, uncached rotation polls, and
+	// reactive re-resolves — because they all funnel through fetch. The URI is
+	// deliberately NOT a dimension (it may carry secrets); only the bounded error
+	// code is.
+	MetricCredentialResolveFailure = "CredentialResolveFailure"
+	// MetricCredentialStaleServed counts stale-while-error serves: the resolver
+	// returned an EXPIRED but last-known-good cached CredentialSet because a
+	// RETRYABLE fetch error (transient — throttled/timeout/unavailable) prevented
+	// refreshing it (runtime.CredentialResolver). Serving stale keeps rebuilds
+	// working through a bounded source outage instead of failing hard; a rising
+	// value flags a secrets backend that has been unreachable longer than the
+	// cache TTL. Never emitted for permanent errors (NOT_FOUND / INVALID_PAYLOAD),
+	// which always propagate. The URI is deliberately NOT a dimension.
+	MetricCredentialStaleServed = "CredentialStaleServed"
+)
+
+// Reconfiguration metric names. Emitted by the bridge Supervisor around live
+// config reloads and the degraded state that follows a lost config-change
+// stream. These make the previously-invisible degraded config-watch observable
+// to operators.
+//
+// MetricConfigReloads counts live reconfiguration attempts, tagged with the
+// outcome (TagKeyState = "success" | "failure"); a rising failure rate flags a
+// config that keeps being rejected by the running runtime.
+//
+// MetricConfigDegraded is a 0/1 gauge that flips to 1 when live reconfiguration
+// is no longer available (the config-change stream closed and the bridge is
+// running blind on its last good config) and back to 0 when a reload next
+// succeeds. It is the single series an operator alerts on to learn a bridge can
+// no longer observe config changes without a restart.
+const (
+	MetricConfigReloads  = "ConfigReloads"
+	MetricConfigDegraded = "ConfigDegraded"
+)
+
 // Standard dimension key names for metric tags.
 const (
 	TagKeyLeaseID   = "lease_id"
@@ -156,4 +242,14 @@ const (
 	// TagKeyReason dimensions a drop/filter/expire counter by the terminal
 	// reason so a single MessagesDropped series can be split by cause.
 	TagKeyReason = "reason"
+	// TagKeyProcessor dimensions a filter-drop counter by the processor that
+	// discarded the message. Processor names are operator-defined and bounded,
+	// so cardinality stays low.
+	TagKeyProcessor = "processor"
+	// TagKeyCode dimensions a failure counter by the BridgeError code that
+	// classified it (e.g. NOT_AUTHORIZED, UNAVAILABLE, NOT_FOUND). Used by the
+	// credential resolve-failure counter so a permission denial is separable
+	// from a backend outage. ErrorCode is a bounded enum, so cardinality stays
+	// low; never dimension by a free-form URI or message that may carry secrets.
+	TagKeyCode = "code"
 )

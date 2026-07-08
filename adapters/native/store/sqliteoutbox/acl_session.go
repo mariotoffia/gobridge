@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -54,9 +56,18 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
 	// block-and-retry up to the timeout — the retry policy for cross-process
 	// contention on a file database, including the initial WAL conversion (I2).
+	//
+	// synchronous=FULL is pinned explicitly (D1): this outbox is the durable
+	// hand-off between an at-least-once receive and an at-least-once send, so a
+	// committed record MUST survive an OS/host crash. modernc.org/sqlite
+	// currently defaults to FULL, but that is an UNPINNED upstream default; a
+	// future driver bump or a DSN override could silently drop it to NORMAL,
+	// which under WAL can lose the last committed transaction on power loss.
+	// Pinning it makes durability a property of THIS store, not of the driver.
 	for _, pragma := range []string{
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=FULL",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			_ = db.Close()
@@ -84,6 +95,15 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 	if err := migrateColumn(db, "outbox_partition_fence", "updated_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		_ = db.Close()
 		return nil, wrapErr(err, "sqliteoutbox: migrate fence updated_at", "path", path)
+	}
+
+	// Identity migration (H2): drop the legacy GLOBAL UNIQUE(envelope_id,
+	// binding_id) in favour of the partition-scoped idx_outbox_identity, then
+	// (idempotently) (re)create every index. Runs AFTER the column migrations
+	// so the rebuild copies a table that already has all columns.
+	if err := migrateOutboxIdentity(db); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqliteoutbox: migrate outbox identity", "path", path)
 	}
 	// Stamp legacy fence rows (updated_at 0, i.e. never touched since the
 	// column appeared) with "now" so they age through the full fence
@@ -155,6 +175,105 @@ func hasColumn(db *sql.DB, table, column string) (bool, error) {
 		}
 	}
 	return false, rows.Err()
+}
+
+// migrateOutboxIdentity converts a database carrying the legacy GLOBAL
+// UNIQUE(envelope_id, binding_id) constraint to the partition-scoped
+// duplicate-detection identity, then (idempotently) creates every outbox
+// index. It is safe to run on every open:
+//
+//   - Fresh databases (schemaSQL already omits the inline constraint) skip the
+//     rebuild and just ensure the indexes exist.
+//   - Legacy databases (constraint present inline in the table definition) are
+//     rebuilt once via the canonical SQLite table-rebuild dance — SQLite cannot
+//     drop an inline table constraint with ALTER — then indexed.
+//
+// A legacy database provably cannot contain two rows sharing (envelope_id,
+// binding_id), so the new partition-scoped UNIQUE index can never fail to
+// build over migrated data.
+func migrateOutboxIdentity(db *sql.DB) error {
+	legacy, err := hasLegacyGlobalUnique(db)
+	if err != nil {
+		return err
+	}
+	if legacy {
+		if err := rebuildOutboxDropGlobalUnique(db); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(outboxIndexSQL); err != nil {
+		return fmt.Errorf("sqliteoutbox: create outbox indexes: %w", err)
+	}
+	return nil
+}
+
+// hasLegacyGlobalUnique reports whether the persisted outbox table definition
+// still carries the inline global UNIQUE(envelope_id, binding_id) constraint.
+// It reads the canonical DDL from sqlite_master and compares with all
+// whitespace stripped so formatting differences (an ALTER TABLE ADD COLUMN
+// rewrites the stored text) cannot fool the probe.
+func hasLegacyGlobalUnique(db *sql.DB) (bool, error) {
+	var ddl string
+	err := db.QueryRow(
+		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outbox'",
+	).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No outbox table yet — schemaSQL should have created it, but treat a
+		// missing table as "nothing legacy to migrate" rather than erroring.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sqliteoutbox: probe outbox schema: %w", err)
+	}
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return -1
+		default:
+			return r
+		}
+	}, ddl)
+	return strings.Contains(compact, "UNIQUE(envelope_id,binding_id)"), nil
+}
+
+// rebuildOutboxDropGlobalUnique performs the canonical SQLite table rebuild
+// (https://sqlite.org/lang_altertable.html) to drop the inline global UNIQUE
+// constraint: create a constraint-free twin, copy every row, drop the old
+// table, rename the twin. The whole dance runs in a single transaction so an
+// interrupted open leaves the original table intact and a later open retries.
+//
+// One-time cost: the single-transaction copy holds the writer lock and roughly
+// doubles WAL size for its duration. It runs once, only on a legacy DB, at
+// open. On a very large backlogged outbox this is a noticeable startup pause,
+// and a second process opening the same file concurrently can exceed the 5s
+// busy_timeout and fail NewStore — pre-compact or drain a huge legacy outbox
+// before the upgrade if that matters. The store's single-process charter makes
+// the concurrent-opener case rare.
+func rebuildOutboxDropGlobalUnique(db *sql.DB) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("sqliteoutbox: begin identity rebuild: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck
+
+	for _, stmt := range []struct {
+		sql  string
+		what string
+	}{
+		{createOutboxRebuildTableSQL, "create rebuild table"},
+		{copyIntoOutboxRebuildSQL, "copy rows"},
+		{"DROP TABLE outbox", "drop legacy table"},
+		{"ALTER TABLE outbox_rebuild RENAME TO outbox", "rename rebuild table"},
+	} {
+		if _, err := tx.Exec(stmt.sql); err != nil {
+			return fmt.Errorf("sqliteoutbox: identity rebuild (%s): %w", stmt.what, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqliteoutbox: commit identity rebuild: %w", err)
+	}
+	return nil
 }
 
 // close releases the underlying *sql.DB.
@@ -398,11 +517,34 @@ func fetchByIDsTx(ctx context.Context, tx *sql.Tx, ids []string) ([]*persistence
 	return scanOutboxRecords(rows)
 }
 
+// dedupIDs returns recordIDs with duplicates removed, preserving first-seen
+// order. Complete/Release compare RowsAffected against len(ids) as a fence
+// check; a duplicate id updates a single physical row once, so leaving
+// duplicates in would make the achievable RowsAffected fall below len and
+// trip a spurious ErrStaleFencingToken (M4). Collapsing them is loss-free
+// because the guarded UPDATE ... WHERE id IN (...) is idempotent per id.
+func dedupIDs(ids []string) []string {
+	if len(ids) < 2 {
+		return ids
+	}
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 // complete marks records as completed iff they are still claimed by
 // token.Owner at token.Version. If fewer rows were updated than
 // requested the claim has been preempted and ErrStaleFencingToken is
 // returned.
 func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken, now time.Time) error {
+	recordIDs = dedupIDs(recordIDs)
 	if len(recordIDs) == 0 {
 		return nil
 	}
@@ -435,6 +577,7 @@ func (s *sqlSession) complete(ctx context.Context, recordIDs []string, token per
 // ErrStaleFencingToken is returned. replay_count is left untouched — the
 // next Claim increments it, preserving the poison-message cap.
 func (s *sqlSession) release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	recordIDs = dedupIDs(recordIDs)
 	if len(recordIDs) == 0 {
 		return nil
 	}
@@ -460,9 +603,10 @@ func (s *sqlSession) release(ctx context.Context, recordIDs []string, token pers
 }
 
 // expire flips pending records past their expires_at deadline to
-// expired. Claimed records are left untouched. Returns rows affected.
-func (s *sqlSession) expire(ctx context.Context, before time.Time) (int, error) {
-	res, err := s.db.ExecContext(ctx, expireOutboxSQL, before.UnixMilli())
+// expired, scoped to partition (M1). Claimed records and records in
+// other partitions are left untouched. Returns rows affected.
+func (s *sqlSession) expire(ctx context.Context, before time.Time, partition string) (int, error) {
+	res, err := s.db.ExecContext(ctx, expireOutboxSQL, partition, before.UnixMilli())
 	if err != nil {
 		return 0, wrapErr(err, "sqliteoutbox: expire")
 	}

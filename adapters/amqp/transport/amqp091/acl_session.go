@@ -28,6 +28,14 @@ func (c *amqpChannel) Close() error {
 	return nil
 }
 
+// IsClosed reports whether the underlying AMQP channel has been closed
+// (e.g. by an asynchronous soft channel exception the SDK propagated on
+// its own goroutine). Exposed so the sender can discard a cached channel
+// that died out-of-band without leaking the SDK type across the ACL.
+func (c *amqpChannel) IsClosed() bool {
+	return c.raw.IsClosed()
+}
+
 // Qos applies the channel's prefetch settings (count and size).
 func (c *amqpChannel) Qos(prefetchCount, prefetchSize int) error {
 	if err := c.raw.Qos(prefetchCount, prefetchSize, false); err != nil {
@@ -150,13 +158,17 @@ func (c *amqpChannel) Consume(
 	}
 
 	out := make(chan *Delivery)
-	go forwardDeliveries(ctx, deliveries, out, autoAck, logger, metrics, clk)
+	go forwardDeliveries(ctx, queue, deliveries, out, autoAck, logger, metrics, clk)
 	return out, nil
 }
 
 // forwardDeliveries converts raw SDK deliveries into domain *Delivery
 // values and forwards them on out until deliveries is closed or ctx is
 // cancelled. Malformed deliveries are rejected (no requeue) and skipped.
+//
+// queue is the bounded queue name this consumer reads from; it is stamped
+// on every Delivery as the TagKeyEntity metric dimension (RoutingKey is
+// unbounded and would explode metric cardinality — see Delivery.queue).
 //
 // ctx bounds the goroutine: a send on the unbuffered out channel is
 // raced against ctx.Done() so that when the consumer is shutting down or
@@ -166,6 +178,7 @@ func (c *amqpChannel) Consume(
 // redelivered rather than dropped — the safest at-least-once choice.
 func forwardDeliveries(
 	ctx context.Context,
+	queue string,
 	deliveries <-chan amqp.Delivery,
 	out chan<- *Delivery,
 	autoAck bool,
@@ -191,6 +204,7 @@ func forwardDeliveries(
 		}
 		delivery := NewDelivery(env, d, logger, metrics, clk)
 		delivery.delayWarnOnce = &delayWarnOnce
+		delivery.queue = queue
 		select {
 		case out <- delivery:
 		case <-ctx.Done():

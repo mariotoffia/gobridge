@@ -81,7 +81,7 @@ func testExpireSkipsClaimed(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now())
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expcl")
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

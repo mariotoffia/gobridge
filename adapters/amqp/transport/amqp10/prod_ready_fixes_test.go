@@ -678,12 +678,36 @@ func TestRoutingType_UnmarshalText(t *testing.T) {
 // ── Finding 17: SASL mechanism knob ────────────────────────────────
 
 func TestSessionOptions_ValidateSASLMechanism(t *testing.T) {
-	for _, ok := range []string{"", "plain", "external", "anonymous", "EXTERNAL"} {
+	// Mechanisms that need no client certificate validate with a plain
+	// address.
+	for _, ok := range []string{"", "plain", "anonymous"} {
 		opts := SessionOptions{Address: "amqp://h", SASLMechanism: ok}
-		require.NoError(t, opts.validate(), "mechanism %q must validate", ok)
+		require.NoError(t, opts.validate(false), "mechanism %q must validate", ok)
+	}
+	// F10: EXTERNAL (case-insensitive) authenticates via an mTLS client
+	// certificate. It validates only with enabled TLS + client key-pair
+	// material over an amqps endpoint, and is rejected without it.
+	for _, ext := range []string{"external", "EXTERNAL"} {
+		withCert := SessionOptions{
+			Address:       "amqps://h",
+			SASLMechanism: ext,
+			TLS:           &TLSConfig{Enable: true, CertFile: "/c.pem", KeyFile: "/k.pem"},
+		}
+		require.NoError(t, withCert.validate(false), "external %q with client cert must validate", ext)
+
+		noCert := SessionOptions{Address: "amqp://h", SASLMechanism: ext}
+		err := noCert.validate(false)
+		require.Error(t, err, "external %q without client cert must fail", ext)
+		require.Contains(t, err.Error(), "external")
+
+		// Deferred path (FIX 1): with a pending credentials_uri the same
+		// cert-less EXTERNAL config passes parse-time validation; the check
+		// moves to Config.ApplyCredentials post-resolution.
+		require.NoError(t, noCert.validate(true),
+			"external %q must defer the cert check while credentials pending", ext)
 	}
 	opts := SessionOptions{Address: "amqp://h", SASLMechanism: "gssapi"}
-	err := opts.validate()
+	err := opts.validate(false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "sasl_mechanism")
 }

@@ -13,6 +13,12 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
+// defaultRetention mirrors the SQLite/DynamoDB backends' compaction grace:
+// terminal (completed/expired) records survive at least this long before the
+// piggybacked eviction may drop them, bounding the otherwise-unbounded growth
+// of a long-lived in-memory store. Pending/claimed records are NEVER evicted.
+const defaultRetention = time.Hour
+
 // Store implements ports.OutboxStore in memory for unit tests.
 // It is not safe for production deployments.
 //
@@ -23,11 +29,16 @@ import (
 type Store struct {
 	mu            sync.Mutex
 	records       map[string]*persistence.OutboxRecord // keyed by record ID
-	dedup         map[string]bool                      // keyed by "EnvelopeID\x00BindingID"
+	dedup         map[string]bool                      // keyed by "PartitionKey\x00EnvelopeID\x00BindingID"
 	clk           clock.Clock
 	logger        *slog.Logger
 	latestVersion map[string]uint64 // per-partition fencing token version
 	nextSeq       map[string]uint64 // per-partition monotonic persist sequence
+
+	// retention bounds terminal-record growth; lastEvict throttles the
+	// piggybacked eviction sweep. Both are guarded by mu.
+	retention time.Duration
+	lastEvict time.Time
 }
 
 // Option configures a Store.
@@ -48,6 +59,17 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithRetention bounds how long terminal (completed/expired) records are
+// retained before the piggybacked eviction sweep may drop them. A value <= 0
+// disables eviction entirely (records grow without bound — the historical
+// behaviour). Defaults to defaultRetention (1h). Because Claim/QueryPending
+// never observe terminal records, eviction is loss-free for still-deliverable
+// work; the window must, however, exceed any upstream redelivery window so a
+// re-Persist of an evicted identity is not silently re-admitted as new.
+func WithRetention(d time.Duration) Option {
+	return func(s *Store) { s.retention = d }
+}
+
 // NewStore creates a new in-memory OutboxStore.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
@@ -56,6 +78,7 @@ func NewStore(opts ...Option) *Store {
 		clk:           clock.System,
 		latestVersion: make(map[string]uint64),
 		nextSeq:       make(map[string]uint64),
+		retention:     defaultRetention,
 	}
 	for _, o := range opts {
 		o(s)
@@ -63,8 +86,14 @@ func NewStore(opts ...Option) *Store {
 	return s
 }
 
-func dedupKey(envelopeID, bindingID string) string {
-	return envelopeID + "\x00" + bindingID
+// dedupKey is the store's per-record idempotency identity. It is
+// PARTITION-SCOPED — (PartitionKey, EnvelopeID, BindingID) — matching the
+// ports.OutboxStore contract and the SQLite/DynamoDB backends. A global
+// (EnvelopeID, BindingID) key would silently swallow a re-persist of the
+// same message under a NEW partition (e.g. after a session-identity change)
+// as a duplicate, losing it (never delivered, never recorded).
+func dedupKey(partitionKey, envelopeID, bindingID string) string {
+	return partitionKey + "\x00" + envelopeID + "\x00" + bindingID
 }
 
 func partitionKey(r *persistence.OutboxRecord) string {
@@ -75,11 +104,73 @@ func cloneAggregate(r *persistence.OutboxRecord) *persistence.OutboxRecord {
 	return persistence.RehydrateFromSnapshot(r.PersistenceSnapshot())
 }
 
+// maybeEvict drops terminal (completed/expired) records whose terminal
+// timestamp precedes the retention cutoff, bounding the otherwise-unbounded
+// growth of a long-lived in-memory store. Callers hold s.mu.
+//
+// Eviction is loss-free through the port surface: Claim and QueryPending only
+// ever return PENDING/claimable records, so a terminal record is already
+// unobservable before it is dropped — no still-deliverable, durable record is
+// discarded. Evicting a record also releases its (partition, envelope, binding)
+// dedup identity; the retention window must therefore exceed any upstream
+// redelivery window, the same tradeoff the SQLite/DynamoDB backends document
+// for compaction/TTL.
+//
+// The sweep is throttled to at most once per max(retention/4, time.Minute) so
+// the hot Persist/Complete path stays allocation-free under load.
+func (s *Store) maybeEvict(now time.Time) {
+	if s.retention <= 0 {
+		return
+	}
+	interval := s.retention / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	if !s.lastEvict.IsZero() && now.Sub(s.lastEvict) < interval {
+		return
+	}
+	s.lastEvict = now
+
+	cutoff := now.Add(-s.retention)
+	for id, r := range s.records {
+		ref, terminal := terminalRef(r)
+		if !terminal || !ref.Before(cutoff) {
+			continue
+		}
+		delete(s.records, id)
+		delete(s.dedup, dedupKey(partitionKey(r), r.EnvelopeID(), r.BindingID()))
+	}
+}
+
+// terminalRef returns the time a terminal record ages from for retention and
+// whether the record is terminal at all. Completed records age from
+// CompletedAt; expired records age from their expiry deadline (Expire records
+// no separate timestamp). A zero reference falls back to CreatedAt so a
+// terminal record can never become immortal for want of a timestamp.
+func terminalRef(r *persistence.OutboxRecord) (time.Time, bool) {
+	switch r.Status() {
+	case persistence.OutboxCompleted:
+		if t := r.CompletedAt(); !t.IsZero() {
+			return t, true
+		}
+		return r.CreatedAt(), true
+	case persistence.OutboxExpired:
+		if t := r.ExpiresAt(); !t.IsZero() {
+			return t, true
+		}
+		return r.CreatedAt(), true
+	default:
+		return time.Time{}, false
+	}
+}
+
 // Persist stores the batch with per-record idempotency (ports.OutboxStore
-// contract): records whose (EnvelopeID, BindingID) identity already exists —
-// in the store or earlier in the same batch — are skipped, new records are
-// persisted, and shared.ErrDuplicateRecord is returned only when EVERY
-// record in the batch was a duplicate (nothing persisted).
+// contract): records whose (PartitionKey, EnvelopeID, BindingID) identity
+// already exists — in the store or earlier in the same batch — are skipped,
+// new records are persisted, and shared.ErrDuplicateRecord is returned only
+// when EVERY record in the batch was a duplicate (nothing persisted). The
+// identity is partition-scoped, so the SAME (EnvelopeID, BindingID) re-persisted
+// under a different partition is a DISTINCT record, not a duplicate.
 func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord) error {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: persist",
@@ -94,7 +185,8 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 	now := s.clk.Now()
 	skipped := 0
 	for _, rec := range records {
-		dk := dedupKey(rec.EnvelopeID(), rec.BindingID())
+		pk := persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID())
+		dk := dedupKey(pk, rec.EnvelopeID(), rec.BindingID())
 		if s.dedup[dk] {
 			skipped++
 			continue
@@ -106,13 +198,13 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 		if snap.CreatedAt.IsZero() {
 			snap.CreatedAt = now
 		}
-		pk := persistence.OutboxPartitionKey(snap.SessionID, snap.BindingID)
 		s.nextSeq[pk]++
 		snap.Seq = s.nextSeq[pk]
 		stored := persistence.RehydrateFromSnapshot(snap)
 		s.records[stored.ID()] = stored
 		s.dedup[dk] = true
 	}
+	s.maybeEvict(now)
 
 	if skipped == len(records) {
 		return shared.ErrDuplicateRecord.
@@ -205,6 +297,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			return completeErr
 		}
 	}
+	s.maybeEvict(s.clk.Now())
 	return nil
 }
 
@@ -282,13 +375,19 @@ func claimVersionOf(r *persistence.OutboxRecord) uint64 {
 	return r.ClaimVersion()
 }
 
-func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
+func (s *Store) Expire(_ context.Context, before time.Time, partition string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	count := 0
 	now := s.clk.Now()
 	for _, r := range s.records {
+		// Partition-scoped (M1): a drainer's Expire sweep is authorized only for
+		// the partition it holds the lease on, so records in other partitions are
+		// skipped even when past their expiry.
+		if partitionKey(r) != partition {
+			continue
+		}
 		if r.Status() != persistence.OutboxPending {
 			continue
 		}
@@ -299,6 +398,7 @@ func (s *Store) Expire(_ context.Context, before time.Time) (int, error) {
 			count++
 		}
 	}
+	s.maybeEvict(now)
 	return count, nil
 }
 

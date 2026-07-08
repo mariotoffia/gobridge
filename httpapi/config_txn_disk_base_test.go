@@ -60,7 +60,7 @@ func TestConfigTxn_ComputeMerged_BasesOnDisk_NotStaleMemory(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Rollback(txn.ID) }()
 
-	preview, err := mgr.Preview(ctx, txn.ID)
+	preview, _, err := mgr.Preview(ctx, txn.ID)
 	require.NoError(t, err)
 
 	ids := bindingIDSet(preview.Bindings)

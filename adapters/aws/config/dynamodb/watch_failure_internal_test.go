@@ -561,4 +561,62 @@ func TestNextBackoffDoublesAndCaps(t *testing.T) {
 	}
 }
 
+// Verifies a transient DescribeTable failure at Watch startup no longer
+// PERMANENTLY downgrades a ModeStreams loader to polling. The loader must
+// serve config via poll while re-probing the stream in the background, and
+// upgrade to the streams consumer once DescribeTable succeeds. Pre-fix, the
+// first DescribeTable error disabled push-based updates for the whole process
+// lifetime (the stream was never re-probed).
+func TestWatchReacquiresStreamsAfterTransientDescribeTableFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ddb := &fakeDDB{}
+	ddb.setRow(`{"bridge":{"id":"stream-test"}}`, 1)
+	// The stream IS reachable — but the FIRST DescribeTable (the synchronous
+	// probe inside Watch) fails transiently (throttle / IAM propagation).
+	ddb.describeStreamEnabled = true
+	ddb.describeStreamArn = "arn:test-stream"
+	ddb.enqueueDescribeErr(errors.New("ThrottlingException: rate exceeded"))
+
+	streams := &fakeStreams{}
+
+	fc := clocktest.New()
+	l := newFailureTestLoader(t, ddb, streams, fc, nil)
+	l.lastVersion = 1
+
+	ch, err := l.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	// Drain the channel so the eventual stream consumer never blocks on a
+	// delivery (none is expected here: version stays at 1).
+	go func() {
+		for range ch {
+		}
+	}()
+
+	// Watch's synchronous probe consumed the first (failing) DescribeTable and
+	// dispatched the poll+reprobe supervisor instead of a permanent downgrade.
+	if got := ddb.describeCalls.Load(); got != 1 {
+		t.Fatalf("DescribeTable calls after Watch: got %d, want 1 (one startup probe)", got)
+	}
+	// The supervisor's poll phase (ticker) and background stream re-probe timer
+	// must both be armed on the fake clock.
+	waitUntil(t, "poll ticker and stream re-probe timer armed", func() bool {
+		return fc.TickerCount() >= 1 && fc.TimerCount() >= 1
+	})
+
+	// Fire the re-probe backoff: DescribeTable now succeeds and reports the
+	// enabled stream, so the loader upgrades poll -> streams.
+	fc.Advance(l.streamPollInterval)
+
+	waitUntil(t, "stream re-acquired (DescribeStream invoked by streamLoop)", func() bool {
+		return streams.describeCalls.Load() >= 1
+	})
+	if got := ddb.describeCalls.Load(); got < 2 {
+		t.Fatalf("DescribeTable must be retried after the transient failure: got %d calls, want >=2", got)
+	}
+}
+
 var _ streamsAPI = (*pagedStreams)(nil)
