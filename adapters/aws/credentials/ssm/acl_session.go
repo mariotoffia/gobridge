@@ -40,9 +40,16 @@ type session struct {
 
 	preset ssmAPI
 
-	once    sync.Once
-	client  ssmAPI
-	initErr error
+	// build overrides client construction; nil selects the default AWS
+	// SDK path (see newClient). Injected only by tests so init-failure
+	// recovery can be exercised without real AWS calls.
+	build func(ctx context.Context) (ssmAPI, error)
+
+	// mu guards client. Construction is retried on every failed attempt:
+	// a transient failure is never memoised, only a successfully built
+	// client is cached.
+	mu     sync.Mutex
+	client ssmAPI
 }
 
 // newSession builds a lazily-initialised session. If preset is non-nil
@@ -58,25 +65,47 @@ func newSession(region, endpoint, profile string, preset ssmAPI) *session {
 }
 
 // ensure resolves the underlying ssmAPI handle, lazily building one
-// from ambient AWS config on first call. Safe for concurrent use.
+// from ambient AWS config on first use. Safe for concurrent use.
+//
+// A construction failure is deliberately NOT cached: a one-time init
+// blip (transient IMDS/token/deadline error, or IAM-propagation delay
+// on a cold/standby start) would otherwise poison credential
+// resolution for the entire process lifetime and break failover — the
+// standby's routes stay down until the pod restarts. Each call retries
+// construction until it succeeds; only the successful client is cached.
 func (s *session) ensure(ctx context.Context) (ssmAPI, error) {
 	if s.preset != nil {
 		return s.preset, nil
 	}
 
-	s.once.Do(func() {
-		cfg, err := buildAWSConfig(ctx, s.region, s.endpoint, s.profile)
-		if err != nil {
-			s.initErr = err
-			return
-		}
-		s.client = awsssm.NewFromConfig(cfg)
-	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if s.initErr != nil {
-		return nil, s.initErr
+	if s.client != nil {
+		return s.client, nil
 	}
+
+	client, err := s.newClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.client = client
 	return s.client, nil
+}
+
+// newClient builds the underlying ssmAPI from ambient AWS config. The
+// build hook is overridable in tests; production always takes the
+// default SDK path.
+func (s *session) newClient(ctx context.Context) (ssmAPI, error) {
+	if s.build != nil {
+		return s.build(ctx)
+	}
+
+	cfg, err := buildAWSConfig(ctx, s.region, s.endpoint, s.profile)
+	if err != nil {
+		return nil, err
+	}
+	return awsssm.NewFromConfig(cfg), nil
 }
 
 // buildAWSConfig loads the default AWS configuration with optional

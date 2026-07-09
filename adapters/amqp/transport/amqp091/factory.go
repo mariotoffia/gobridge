@@ -46,15 +46,15 @@ func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory 
 	return &Factory{
 		Logger:    logger,
 		Metrics:   m,
-		receivers: NewReceiverFactory(logger),
-		senders:   NewSenderFactory(logger),
+		receivers: NewReceiverFactory(logger, m),
+		senders:   NewSenderFactory(logger, m),
 	}
 }
 
 // NewReceiver delegates to the inner ReceiverFactory.
 func (f *Factory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	if f.receivers == nil {
-		f.receivers = NewReceiverFactory(f.Logger)
+		f.receivers = NewReceiverFactory(f.Logger, f.Metrics)
 	}
 	r, err := f.receivers.NewReceiver(ctx, spec, session)
 	if err != nil {
@@ -71,7 +71,7 @@ func (f *Factory) NewReceiver(ctx context.Context, spec ports.ReceiverSpec, sess
 // NewSender delegates to the inner SenderFactory.
 func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
 	if f.senders == nil {
-		f.senders = NewSenderFactory(f.Logger)
+		f.senders = NewSenderFactory(f.Logger, f.Metrics)
 	}
 	return f.senders.NewSender(ctx, spec, session)
 }
@@ -149,12 +149,21 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 
 // ReceiverFactory implements ports.ReceiverFactory for AMQP 0-9-1.
 type ReceiverFactory struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
 }
 
-// NewReceiverFactory creates a ReceiverFactory.
-func NewReceiverFactory(logger *slog.Logger) *ReceiverFactory {
-	return &ReceiverFactory{logger: logger}
+// NewReceiverFactory creates a ReceiverFactory. The optional metrics exporter
+// is threaded into every built ReceiverConfig so managed receivers export the
+// adapter's consume/settlement/reconnect metrics instead of silently dropping
+// them to a NoopExporter (metrics-dropped finding). Omitting it (nil / no
+// argument) keeps direct embedders defaulting to the NoopExporter.
+func NewReceiverFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *ReceiverFactory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &ReceiverFactory{logger: logger, metrics: m}
 }
 
 // NewReceiver creates an AMQP 0-9-1 Receiver bound to the given Session.
@@ -193,6 +202,10 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 		PrefetchSize:  cfg.Receiver.PrefetchSize,
 		Session:       amqpSession,
 		Logger:        f.logger,
+		// Thread the factory's exporter through so managed receiver metrics
+		// are actually exported (metrics-dropped finding); nil falls back to
+		// the NoopExporter in NewReceiver.
+		Metrics: f.metrics,
 		// The managed route runner drains in-flight deliveries and then
 		// calls Receiver.Close, so a graceful stop must HAND the channel
 		// off (drain-then-close) rather than self-close it. Direct
@@ -214,12 +227,21 @@ func (f *ReceiverFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec
 
 // SenderFactory implements ports.SenderFactory for AMQP 0-9-1.
 type SenderFactory struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
 }
 
-// NewSenderFactory creates a SenderFactory.
-func NewSenderFactory(logger *slog.Logger) *SenderFactory {
-	return &SenderFactory{logger: logger}
+// NewSenderFactory creates a SenderFactory. The optional metrics exporter is
+// threaded into every built SenderConfig so managed senders export the
+// adapter's publish/confirm/return metrics instead of silently dropping them
+// to a NoopExporter (metrics-dropped finding). Omitting it (nil / no argument)
+// keeps direct embedders defaulting to the NoopExporter.
+func NewSenderFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *SenderFactory {
+	var m ports.MetricsExporter
+	if len(metrics) > 0 {
+		m = metrics[0]
+	}
+	return &SenderFactory{logger: logger, metrics: m}
 }
 
 // NewSender creates an AMQP 0-9-1 Sender bound to the given Session.
@@ -241,6 +263,20 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, sess
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("amqp091 sender %q: immediate=true is not supported by RabbitMQ; remove it", spec.ID))
 	}
+	// A managed sender must not silently lose unroutable publishes. With
+	// mandatory=false the broker CONFIRMS an unroutable publish and then
+	// DISCARDS it, so Send acks the source and the message vanishes with no
+	// telemetry (mandatory-silent-drop finding). Require mandatory=true OR an
+	// explicit allow_unroutable_drop opt-in that records the operator's
+	// acceptance of that loss. Direct embedders that call NewSender with a raw
+	// SenderConfig are unaffected — this gate is the managed build boundary.
+	if !cfg.Sender.Mandatory && !cfg.Sender.AllowUnroutableDrop {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp091 sender %q: mandatory=false silently drops unroutable publishes "+
+				"(the broker confirms then discards them, so the source is acked and the message is lost); "+
+				"set sender.mandatory=true to surface unroutable messages as basic.return, or "+
+				"set sender.allow_unroutable_drop=true to deliberately accept the loss", spec.ID))
+	}
 	sc := SenderConfig{
 		Exchange:     cfg.Sender.Exchange,
 		RoutingKey:   cfg.Sender.RoutingKey,
@@ -249,6 +285,10 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, sess
 		Timeout:      cfg.Sender.Timeout,
 		Session:      amqpSession,
 		Logger:       f.logger,
+		// Thread the factory's exporter through so managed sender metrics are
+		// actually exported (metrics-dropped finding); nil falls back to the
+		// NoopExporter in NewSender.
+		Metrics: f.metrics,
 	}
 	if err := sc.validate(); err != nil {
 		return nil, shared.ErrInvalidPayload.WithMessage(

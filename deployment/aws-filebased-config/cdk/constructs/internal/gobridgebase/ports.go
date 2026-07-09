@@ -27,32 +27,38 @@ type PortMapping struct {
 }
 
 // DerivePortMappings extracts the container ports the bridge runtime
-// will listen on, derived solely from the parsed config and bootstrap
-// (no hard-coded defaults beyond the package-level Default* constants
-// from the infra module, which are themselves the runtime defaults).
+// will listen on, derived solely from the BootstrapConfig listen
+// addresses (no hard-coded defaults beyond the package-level Default*
+// constants from the infra module, which are themselves the runtime
+// defaults).
+//
+// The BootstrapConfig is the SINGLE authoritative port source: the
+// file-based runtime binds admin, monitor, and transport exclusively
+// to boot.AdminAddr / boot.MonitorAddr / boot.TransportHTTPAddr (see
+// lib/bootstrap App.startLocked → apiCfg.{Admin,Monitor}Addr and
+// transportServer.Start(cfg.TransportHTTPAddr)). The bridge yaml
+// `http:` block is DELIBERATELY NOT consulted here: this profile
+// ignores it at runtime (lib/bootstrap.checkIgnoredHTTPBlock
+// warns-and-ignores a bare `http:` block and fails closed on a TLS
+// pair). Deriving ALB / target-group / health-check ports from the
+// `http:` block would aim them at ports NOTHING listens on the moment
+// an operator sets e.g. http.admin_addr — breaking health checks and
+// failing deploys (c15-cdk-ports). Read the port only from bootstrap
+// so the CDK and the runtime agree by construction.
 //
 // Rules:
-//   - Admin port is always emitted (bootstrap.AdminAddr; HTTPConfig
-//     overrides when set).
-//   - Monitor port is emitted when bootstrap.MonitorAddr or
-//     HTTPConfig.MonitorAddr is non-empty.
+//   - Admin port is always emitted from bootstrap.AdminAddr.
+//   - Monitor port is emitted when bootstrap.MonitorAddr is non-empty.
 //   - Transport HTTP port is emitted iff at least one ReceiverDef in
 //     cfg has Transport == "http"; the port itself comes from
 //     bootstrap.TransportHTTPAddr (single shared listener — receivers
-//     register routes against it).
+//     register routes against it). cfg is consulted ONLY to detect
+//     that at least one HTTP receiver exists, never for the port.
 func DerivePortMappings(cfg *ports.BridgeConfig, boot infra.BootstrapConfig) []PortMapping {
 	boot = boot.Normalized()
 
 	adminAddr := boot.AdminAddr
 	monitorAddr := boot.MonitorAddr
-	if cfg != nil && cfg.HTTP != nil {
-		if cfg.HTTP.AdminAddr != "" {
-			adminAddr = cfg.HTTP.AdminAddr
-		}
-		if cfg.HTTP.MonitorAddr != "" {
-			monitorAddr = cfg.HTTP.MonitorAddr
-		}
-	}
 
 	out := []PortMapping{}
 	if p, ok := portFromAddr(adminAddr); ok {

@@ -94,6 +94,19 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 			filters = append(filters, sub.Topic)
 		}
 	}
+	// A receiver with ZERO subscription topics is a configuration error, not
+	// an implicit match-all. The router treats an empty filter set as
+	// "match every topic" (matchesAnyFilter, topic_match.go), so a no-topic
+	// receiver on a shared session would receive every publish, participate
+	// in ACK splitting, and defeat orphan cleanup — flooding the route with
+	// unintended traffic. Reject it here at the config-driven factory seam
+	// (c4-notopic-matchall); the direct NewReceiver constructor keeps the
+	// match-all default for tests/diagnostic taps.
+	if len(filters) == 0 {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("mqtt receiver %q: at least one subscription topic is required "+
+				"(a receiver with no topics would subscribe to everything)", spec.ID))
+	}
 	return NewReceiver(spec.ID, mqttSession, WithTopicFilters(filters...)), nil
 }
 

@@ -110,8 +110,9 @@ func TestSenderFactory_NewSender_SubMillisecondTimeoutRejected(t *testing.T) {
 	_, err := sf.NewSender(context.Background(), ports.SenderSpec{
 		ID: "snd1",
 		Config: &Config{Sender: SenderParams{
-			Exchange: "x",
-			Timeout:  30, // 30ns
+			Exchange:  "x",
+			Mandatory: true, // pass the managed-route mandatory gate so the timeout floor is reached
+			Timeout:   30,   // 30ns
 		}},
 	}, sess)
 	require.Error(t, err)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"testing"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -95,10 +97,29 @@ func TestDelivery_Retry_Immediate(t *testing.T) {
 	}
 }
 
-// verifies Delivery.Retry with a delay still nacks immediately (logs a warning).
+// verifies Delivery.Retry with a delay HOLDS the requeue until the injected
+// clock advances past the delay (honored client-side), then nacks with
+// requeue=true.
 func TestDelivery_Retry_Delayed(t *testing.T) {
 	acker := newMockAcknowledger()
+	var capturedRequeue bool
+	acker.NackFn = func(_ uint64, _ bool, requeue bool) error {
+		capturedRequeue = requeue
+		return nil
+	}
 	del, _ := makeTestDelivery(acker, 5)
+	fake := clocktest.New()
+	del.clk = fake
+
+	// Retry parks on the injected clock; release the honored delay from a
+	// helper goroutine once the timer is registered (runtime.Gosched
+	// busy-poll — no real sleep).
+	go func() {
+		for fake.TimerCount() < 1 {
+			runtime.Gosched()
+		}
+		fake.Advance(5 * time.Second)
+	}()
 
 	reason := errors.New("transient failure")
 	err := del.Retry(context.Background(), 5*time.Second, reason)
@@ -107,6 +128,9 @@ func TestDelivery_Retry_Delayed(t *testing.T) {
 	}
 	if acker.NackCalls != 1 {
 		t.Errorf("NackCalls = %d, want 1", acker.NackCalls)
+	}
+	if !capturedRequeue {
+		t.Error("expected requeue=true")
 	}
 }
 

@@ -4,7 +4,7 @@
 
 **Transport name:** `servicebus`
 **Factory:** `servicebus.NewFactory(logger)`
-**Capabilities:** `visibility_extension`
+**Capabilities:** `visibility_extension`, `source_redelivery`, `delayed_send`
 
 Azure Service Bus is stateless in GoBridge (no bridge-level sessions).
 The `options:` block is decoded into a nested typed config: receiver settings
@@ -12,6 +12,16 @@ under `options.receiver`, sender settings under `options.sender`, and shared
 connection/credential settings under `options.connection`. The transport
 supports both queues and topic/subscription patterns, plus Azure SB sessions
 for ordered processing.
+
+> **Capabilities are mode-aware.** The transport advertises
+> `visibility_extension`, `source_redelivery`, and `delayed_send`, but the builder
+> narrows the set per route from the receiver config. A `PeekLock` queue honours
+> all three. A `PeekLock` subscription drops `delayed_send`: a scheduled retry
+> would address the topic and fan out to sibling subscriptions, so a delayed
+> `Retry` falls back to an immediate `Abandon` (see [Retry Wire
+> Semantics](#retry-wire-semantics)). A `ReceiveAndDelete` receiver honours none
+> of them — the message is gone at receive time — so its empty set lets the
+> runtime's "no retry + no DLQ = silent drop" check fire instead of being masked.
 
 ## YAML Example
 
@@ -78,7 +88,8 @@ senders:
 | `use_sessions` | bool | `false` | Consume a session-enabled entity by accepting the **next available** session and rotating between sessions (cannot combine with `session_id` or `sub_queue`) |
 | `max_messages` | int | 10 | Messages per receive call (1--100). Forced to 1 in `ReceiveAndDelete` mode (warned). |
 | `max_wait_time` | duration | `30s` | Maximum wait for messages (>= 1s; a bare int decodes as nanoseconds and is rejected) |
-| `receive_mode` | string | `PeekLock` | `PeekLock` or `ReceiveAndDelete` (case-insensitive; unknown values rejected). `ReceiveAndDelete` settles at the broker on receive — **at-most-once** delivery. |
+| `receive_mode` | string | `PeekLock` | `PeekLock` or `ReceiveAndDelete` (case-insensitive; unknown values rejected). `ReceiveAndDelete` settles at the broker on receive — **at-most-once**: a crash after receive is unrecoverable loss. Rejected at config parse unless `allow_at_most_once: true` is also set. |
+| `allow_at_most_once` | bool | `false` | Explicit opt-in required for `receive_mode: ReceiveAndDelete`. Without it the config fails to parse, because ReceiveAndDelete deletes at the broker on receive (`Ack` is a no-op, `Retry` is unsupported) and a crash after receive loses the message. |
 | `sub_queue` | string | -- | `""`, `"deadletter"`, or `"transferdeadletter"` (case-insensitive) |
 | `lock_duration` | duration | `30s` | Expected lock duration (for auto-extend). Accepted range 5s--5m; `0` → 30s default. |
 | `auto_extend` | bool | `true` | Renew lock at 50% of duration |
@@ -129,6 +140,14 @@ A top-level `options.credentials_uri` resolves connection material from the
 bridge credential store at build time. Either `connection_string` or `namespace`
 is required.
 
+> **SDK retry (`options.connection.retry.*`).** The Azure SDK retries inside every
+> client operation (send, receive, settlement) beneath gobridge's own retry policy
+> and the poll backoff, so on a throttled namespace the layers multiply. Tune the
+> SDK layer with `retry.max_retries` (SDK default 3; a negative value disables SDK
+> retries so gobridge owns all retry), `retry.retry_delay` (initial backoff,
+> default 4s), and `retry.max_retry_delay` (backoff cap, default 120s). Leaving the
+> `retry` block unset keeps the SDK defaults unchanged.
+
 ## Retry Wire Semantics
 
 Service Bus has no native delayed-redelivery for a scheduled retry that resets
@@ -152,12 +171,43 @@ delayed `Retry` falls back to an immediate `Abandon` — the delay is dropped
 because a scheduled message addresses the topic and would fan out to sibling
 subscriptions. Redelivery still happens; only the delay is lost.
 
+## Empty MessageID Fallback
+
+A broker message with no `MessageID` does not get a fresh random envelope ID per
+delivery — that would defeat downstream dedup, which would treat each redelivery
+as a distinct message. The adapter derives a stable fallback ID from the broker
+`SequenceNumber`, namespaced by the fully-qualified receive entity:
+`asb-seq:<scope>:<sequence>`. The scope encodes the entity kind so no two
+distinct entities can collide:
+
+- queue: `q:<queue-name>`
+- subscription: `s:<topic-name>:<subscription-name>`
+- bare topic: `t:<topic-name>`
+
+The `SequenceNumber` is unique only within one entity, so without the scope
+prefix a queue and a subscription that each assign sequence number 5 would derive
+the same fallback ID and cross-entity dedup could suppress a legitimate message.
+The `q:`/`s:`/`t:` prefixes make the mapping injective, so that cannot happen. A
+bridge-scheduled retry copy keeps its salted wire `MessageID` and restores the
+first delivery's `MessageID` from `x-bridge.original-message-id`, so this
+fallback only applies to messages that genuinely arrived without one.
+
 ## Credential Rotation
 
-When credentials rotate, the receiver/sender swaps to a freshly built client
-atomically — in-flight operations finish against the old client and new
-operations use the new one; there is no window where the transport has no
-client.
+For a queue, a topic sender, or a non-session receiver, rotation is atomic: the
+adapter builds a fresh client first and commit-and-swaps only on success, so
+in-flight operations finish against the old client, new operations use the new
+one, and a failed build leaves the old client serving. There is no window with no
+client on this path.
+
+A **pinned-session** receiver (`session_id`) is different. The broker holds an
+exclusive lock on the session, so two clients cannot hold it at once. Rotation
+closes the old link **before** building the replacement, leaving a brief window
+where the receiver has no client. If the rebuild fails, the new connection stays
+uncommitted and the rebuild is marked pending; the poll loop (or a re-push of the
+same credentials) retries it, and `currentClient()` returns nil until it
+succeeds. The gap is visible and recoverable — never a nil-panic — but it is a
+real no-client window that the non-session path does not have.
 
 ## Resilience Behavior
 

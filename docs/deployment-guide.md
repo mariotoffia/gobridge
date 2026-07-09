@@ -303,17 +303,38 @@ bridge:
 
 The shutdown sequence proceeds as follows:
 
-1. **Signal received** -- The process catches `SIGINT` or `SIGTERM`.
-2. **Stop accepting** -- Receivers stop accepting new messages.
-3. **Drain in-flight** -- In-flight messages are given `drain_timeout` to
-   complete processing and delivery.
-4. **Close transports** -- Sessions and connections are closed gracefully.
-5. **Shutdown HTTP** -- Admin, monitor, and transport HTTP servers shut down.
-6. **Exit** -- The process exits with code 0.
+1. **Signal received** -- `cmd/gobridge` catches `SIGINT` or `SIGTERM` and
+   cancels the root context. A second signal forces an immediate exit with
+   code 2.
+2. **Readiness goes false** -- The runtime marks itself not-ready, so `/ready`
+   fails and a load balancer stops routing new **push** traffic to the instance.
+   **Pull** receivers such as the SQS poller are not gated by readiness and keep
+   pulling from the broker until the context is cancelled in step 4.
+3. **Settle in-flight** -- Before cancelling anything, the runtime settles
+   already-accepted in-flight deliveries (send + ack) up to a bounded budget:
+   `WithStopQuiesce` if set, otherwise a 25s ceiling, and never longer than the
+   `drain_timeout` the supervisor allots. If the budget expires, any unsettled
+   source falls to broker redelivery (at-least-once) -- it is never silently
+   acked. This settle phase runs by default, not only under `WithStopQuiesce`.
+4. **Cancel and drain** -- The runtime context is cancelled, tearing down
+   receiver loops; the credential refresher closes, then the outbox drainers get
+   a bounded grace to finish so a final drain's `Complete` runs against a live
+   lease.
+5. **Close transports and stores** -- Session managers close (releasing leases),
+   then unmanaged sessions, then durable stores, then telemetry -- each under a
+   bounded close timeout detached from the caller context.
+6. **Shutdown HTTP** -- After the supervisor finishes, `cmd/gobridge` stops the
+   admin, monitor, and transport HTTP servers, bounded by `shutdown_timeout`.
+7. **Exit** -- The process exits with code 0 on a clean shutdown.
 
-If `drain_timeout` expires before all messages complete, remaining messages
-are abandoned. Set `drain_timeout` shorter than `shutdown_timeout` to leave
-headroom for transport and HTTP server cleanup.
+The in-flight settle (step 3) is bounded by `drain_timeout`; the subsequent
+cancel and close phases (steps 4--5) run detached from the caller context under
+their own bounded close timeouts. The process then has `shutdown_timeout` to
+finish HTTP cleanup. Set `drain_timeout` shorter than `shutdown_timeout` to
+leave headroom. When the drain budget expires before
+in-flight work settles, durable outbox records stay persisted and at-least-once
+sources are redelivered by the broker on restart -- remaining work is not silently
+dropped.
 
 ### Exit Codes
 

@@ -132,10 +132,11 @@ Unrecognized conditions fall through to `ErrUnavailable`. Heuristic matching on 
 | `Address` | `string` | — (required) | Broker URL, e.g. `amqp://localhost:5672` |
 | `ConnectTimeout` | `time.Duration` | `30s` | Dial timeout per connection attempt |
 | `ReconnectDelay` | `time.Duration` | `1s` | Initial delay before reconnect; grows exponentially to 30s |
-| `IdleTimeout` | `time.Duration` | `2m` | Connection idle timeout sent to broker |
+| `IdleTimeout` | `time.Duration` | `30s` | Connection idle timeout; go-amqp uses it as the read deadline, so it bounds silent half-open (SIGKILL/blackhole/NAT) detection. HA-oriented default meets the 30-60s failover target — raise it on lossy links to trade failover speed for fewer reconnects (see High Availability) |
 | `MaxFrameSize` | `uint32` | `65536` | Maximum AMQP frame size in bytes |
 | `Username` | `string` | — | SASL PLAIN username |
 | `Password` | `string` | — | SASL PLAIN password |
+| `AllowInsecurePlain` | `bool` | `false` | Opt in to SASL PLAIN over a non-TLS scheme. By default PLAIN over `amqp://` is **rejected** at validation (credentials would travel in cleartext); set true only on a trusted network / for local development |
 | `TLS` | `*TLSConfig` | `nil` | TLS settings (CA cert, client cert, skip verify) |
 | `ContainerID` | `string` | — | AMQP container ID; identifies this client to the broker |
 
@@ -278,6 +279,22 @@ Subscribe to `sess.Events()` to observe lifecycle transitions (`SessionConnected
 ### High Availability
 
 `SessionOptions.Address` is a **single** broker endpoint. Reconnection re-dials that same endpoint; the adapter keeps no client-side broker list and performs no multi-broker failover. For HA, resolve `Address` to a load balancer or DNS name that points at a healthy node (a VIP, an Artemis cluster connector, or a service-mesh address) so a single `Address` transparently follows failover.
+
+**Half-open detection & failover timing.** The connection monitor deliberately does **not** probe a live connection (see `ConnectionMonitorFallback`), so a *silent* half-open drop (SIGKILL, blackhole, NAT/conntrack eviction — no TCP FIN) is surfaced only by the AMQP `IdleTimeout`: go-amqp arms it as the connection read deadline, so no-bytes-for-`IdleTimeout` tears the connection down and the monitor reconnects. The default `IdleTimeout` is therefore **30s** (HA-oriented) so half-open detection plus standby reattach lands inside the 30-60s failover target. The tradeoff: a lower idle timeout means more keepalive frames and a genuine network stall longer than the timeout drops an otherwise-healthy connection (the reconnect loop re-establishes it). On a high-latency/lossy link where you prefer fewer reconnects over fast failover, raise `IdleTimeout` explicitly — an explicit value is always honored.
+
+### Durable subscriptions — the dedicated-session contract
+
+**A durable receiver (`DurabilityMode > 0`) MUST be placed on its own dedicated session (its own `session_id`).** Do not multiplex a durable receiver with other live receivers/senders on the same session.
+
+One session owns exactly one AMQP connection and multiplexes **all** its receivers and senders over it. Closing a durable receiver cannot use a normal link detach: the pinned `go-amqp` (v1.5.1) can only emit a **closing** detach (`Detach{Closed:true}`), which Artemis interprets as **UNSUBSCRIBE** — destroying the durable terminus and every message retained for it. The only way to detach the live durable link while **preserving** the subscription is to drop the whole connection (a *non-closing* detach of every link on it); see `Receiver.closeLink` (`c7-durable-close`).
+
+**Blast radius:** because the teardown drops the shared connection, closing a durable receiver transiently blips **every** sibling link on the same session — in-flight sender publishes relatch and non-durable receivers redeliver. The reconnect loop re-establishes the connection and siblings resume, so recovery is **bounded**, but the disruption is real. Isolating durable receivers on a dedicated session confines a durable close to that session and leaves unrelated traffic untouched.
+
+### Credentials on the wire
+
+SASL PLAIN sends the username/password in **cleartext** frames. Over a plaintext `amqp://` (or schemeless) address that exposes them on the wire, so configuration validation **rejects** PLAIN over a non-TLS scheme by default (`c7-plain-plaintext`, fail-closed). This includes credentials embedded in the address URL (`amqp://user:pass@host`) — go-amqp selects SASL PLAIN from the URL userinfo regardless of `sasl_mechanism`, so the gate rejects any userinfo over a non-TLS scheme too. Use `amqps://` / `amqp+ssl://`, switch to SASL EXTERNAL (mTLS), or — only on a trusted network — set `allow_insecure_plain: true` to make the insecure path a deliberate, auditable choice.
+
+The gate holds on **every** credential-injection path, not just the build boundary — config/factory construction, `Config.ApplyCredentials`, and the **runtime rotation** path `Session.ApplyCredentials`. A live credential rotation that would newly expose PLAIN over a non-TLS scheme is **refused**; the session keeps its last-good credentials and issues no cleartext re-dial, so a session that started without a username can never be silently rotated into a cleartext credential leak.
 
 ## Metrics
 

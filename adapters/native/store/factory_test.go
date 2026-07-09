@@ -9,15 +9,33 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Verifies the memory store factory returns a non-nil lease store.
+// Verifies the memory lease store fails fast when single-replica operation is
+// not acknowledged (nil config or the flag left false), and builds once it is.
+// This is the c10-memlease-split gate: an unacknowledged in-memory lease behind
+// >1 replica would silently split-brain, so construction must refuse it.
 func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewLeaseStore(context.Background(), nil)
+
+	// Not acknowledged -> fail closed. Mutation guard: dropping the gate in
+	// NewLeaseStore makes these return a non-nil store with no error.
+	for _, cfg := range []ports.PluginConfig{nil, &nativestore.MemoryConfig{}, nativestore.MemoryConfig{}} {
+		s, err := f.NewLeaseStore(context.Background(), cfg)
+		if err == nil {
+			t.Fatalf("expected fail-closed error for unacknowledged single-replica lease (cfg %T)", cfg)
+		}
+		if s != nil {
+			t.Fatalf("expected nil LeaseStore when construction fails (cfg %T)", cfg)
+		}
+	}
+
+	// Acknowledged -> constructs.
+	s, err := f.NewLeaseStore(context.Background(),
+		&nativestore.MemoryConfig{AcknowledgeSingleReplica: true})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected error with acknowledgement: %v", err)
 	}
 	if s == nil {
-		t.Fatal("expected non-nil LeaseStore")
+		t.Fatal("expected non-nil LeaseStore once single-replica is acknowledged")
 	}
 }
 

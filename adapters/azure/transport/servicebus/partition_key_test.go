@@ -27,7 +27,7 @@ func TestBuildRetryMessage_PreservesPartitionKey(t *testing.T) {
 		DeliveryCount: 1,
 		PartitionKey:  strPtr("tenant-42"),
 	}
-	out := buildRetryMessage(received, clk)
+	out := buildRetryMessage(received, clk, "q")
 
 	require.NotNil(t, out.PartitionKey, "retry copy must carry a PartitionKey")
 	require.Equal(t, "tenant-42", *out.PartitionKey)

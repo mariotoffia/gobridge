@@ -66,9 +66,19 @@ type Manager struct {
 	mu        sync.Mutex
 	configs   map[string]*ports.BridgeConfig // cached per-layer configs
 	watchErrs map[string]error               // layer name → current watch establishment error (degraded signal)
-	stopCh    chan struct{}
-	doneCh    chan struct{} // closed when watchLoop exits
-	running   bool
+	// appliedVersion is the ports.BridgeConfig.Version of the last merged config
+	// this instance successfully validated and emitted downstream (-1 before the
+	// first emit). It is a per-INSTANCE convergence signal: because a rejected
+	// layer update keeps the prior config locally (degraded state is local-only,
+	// finding H-cluster-convergence), one node can sit on an older version while
+	// another advances, and nothing here coordinates them. Surfacing the applied
+	// version (AppliedVersion) plus logging every version change makes that
+	// divergence OBSERVABLE so operators/monitoring can alert on cross-instance
+	// version skew externally.
+	appliedVersion int
+	stopCh         chan struct{}
+	doneCh         chan struct{} // closed when watchLoop exits
+	running        bool
 	// stopping guards stopCh's close so two concurrent Stop calls cannot both
 	// close it (a double close panics). running is only cleared after doneCh, so
 	// it cannot distinguish "already asked to stop" from "still running";
@@ -110,11 +120,12 @@ func WithManagerClock(c clock.Clock) ManagerOption {
 // NewManager creates a Manager with the given base layer and options.
 func NewManager(base Layer, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		base:      base,
-		mergeFn:   DefaultMerge,
-		clk:       clock.System,
-		configs:   make(map[string]*ports.BridgeConfig),
-		watchErrs: make(map[string]error),
+		base:           base,
+		mergeFn:        DefaultMerge,
+		clk:            clock.System,
+		configs:        make(map[string]*ports.BridgeConfig),
+		watchErrs:      make(map[string]error),
+		appliedVersion: -1,
 	}
 	for _, o := range opts {
 		o(m)
@@ -157,6 +168,7 @@ func (m *Manager) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, err
 	}
 
+	m.recordAppliedVersion(merged)
 	return merged, nil
 }
 
@@ -292,6 +304,42 @@ func (m *Manager) clearWatchError(layer string) {
 	m.mu.Unlock()
 }
 
+// AppliedVersion reports the ports.BridgeConfig.Version this instance has last
+// successfully merged, validated, and emitted downstream, and whether any config
+// has been applied yet. It is a per-instance convergence signal for detecting
+// cross-instance config-version divergence.
+//
+// ponytail: this is OBSERVATION ONLY. GoBridge deliberately does not coordinate
+// config versions across the cluster (no version barrier, no cluster rollback) —
+// a failed merge/validation keeps the prior config locally, so nodes can diverge
+// indefinitely. Surfacing the applied version (and logging every change in
+// recordAppliedVersion) lets operators alert on skew externally; building
+// distributed consensus here is out of scope. Safe for concurrent use.
+func (m *Manager) AppliedVersion() (version int, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.appliedVersion, m.appliedVersion >= 0
+}
+
+// recordAppliedVersion stamps the version of a just-emitted merged config and
+// logs any change so cross-instance divergence is observable. cfg is the config
+// the manager has committed to downstream (Load return / watch emit).
+func (m *Manager) recordAppliedVersion(cfg *ports.BridgeConfig) {
+	if cfg == nil {
+		return
+	}
+	m.mu.Lock()
+	prev := m.appliedVersion
+	m.appliedVersion = cfg.Version
+	m.mu.Unlock()
+	if m.logger != nil && prev != cfg.Version {
+		m.logger.Info("config manager: applied config version changed; "+
+			"compare across instances to detect cluster divergence "+
+			"(reconfiguration is per-instance, not cluster-coordinated)",
+			"previous_version", prev, "applied_version", cfg.Version)
+	}
+}
+
 func (m *Manager) watchLoop(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -385,6 +433,7 @@ func (m *Manager) watchLoop(
 			default:
 			}
 			out <- merged
+			m.recordAppliedVersion(merged)
 		}
 	}
 }

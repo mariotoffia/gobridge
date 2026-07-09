@@ -51,12 +51,13 @@ type Runtime struct {
 
 	shutdownTimeout time.Duration
 
-	// stopQuiesce, when > 0, makes Stop drain in-flight deliveries BEFORE it
-	// cancels the runtime context (finding L8): Stop waits up to this budget for
-	// every route to reach InFlight==0 (via WaitQuiescent) so a rolling restart
-	// lets current work settle instead of aborting mid-delivery and forcing a
-	// duplicate on redelivery. Zero (default) preserves the historical
-	// abort-style Stop.
+	// stopQuiesce OVERRIDES the pre-cancel drain budget in Stop. Stop always
+	// drains in-flight deliveries BEFORE it cancels the runtime context (finding:
+	// SIGTERM cancels work before quiescing): it waits for every route to reach
+	// InFlight==0 (via WaitQuiescent) so a rolling restart lets current work
+	// settle instead of aborting mid-delivery and forcing a duplicate on
+	// redelivery. This field only tunes the budget; zero selects
+	// defaultStopDrainBudget (see stopDrainBudget), NOT the old abort-style Stop.
 	stopQuiesce time.Duration
 
 	// randFloat supplies the [0,1) value used to jitter session-restart
@@ -140,11 +141,14 @@ func WithLeaseStore(store ports.LeaseStore) Option {
 	return func(rt *Runtime) { rt.leaseStore = store }
 }
 
-// WithStopQuiesce enables a bounded pre-cancel drain in Stop. When budget > 0,
-// Stop waits up to budget for all routes to reach InFlight==0 BEFORE cancelling
-// the runtime context, so in-flight deliveries settle rather than being aborted
-// mid-flight (which would resurface them as duplicates on redelivery). It is
-// opt-in and default-off (abort-style Stop) so existing callers are unaffected.
+// WithStopQuiesce OVERRIDES the pre-cancel drain budget used by Stop. Stop now
+// ALWAYS settles in-flight deliveries before cancelling (see stopDrainBudget /
+// defaultStopDrainBudget); this option only tunes how long that settle phase may
+// take. When budget > 0, Stop waits up to budget for all routes to reach
+// InFlight==0 BEFORE cancelling the runtime context, so in-flight deliveries
+// settle rather than being aborted mid-flight (which would resurface them as
+// duplicates on redelivery). Passing 0 selects the default ceiling, not the old
+// abort-style Stop.
 //
 // NOTE: a rolling restart should already have removed this instance from ingress
 // (e.g. pod marked NotReady) before Stop; the quiesce then drains the residual
@@ -365,15 +369,30 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 
 	// cancel is nil for a built-but-never-started runtime (Start assigns it).
 	if cancel != nil {
-		// Optional pre-cancel quiesce (finding L8): drain in-flight deliveries
-		// under a bounded budget BEFORE cancelling, so a graceful/rolling stop
-		// settles current work instead of aborting it into duplicate
-		// redeliveries. Default-off; only runs when WithStopQuiesce was set.
-		if rt.stopQuiesce > 0 {
-			qCtx, qCancel := context.WithTimeout(context.WithoutCancel(ctx), rt.stopQuiesce)
-			if err := rt.WaitQuiescent(qCtx, QuiescenceOptions{Timeout: rt.stopQuiesce}); err != nil && rt.logger != nil {
-				rt.logger.Warn("stop quiesce did not fully drain; proceeding to cancel",
-					"instance_id", rt.instanceID, "budget", rt.stopQuiesce, "error", err)
+		// Drain state machine (ports.RuntimeCommand.Stop). Only `running` was
+		// flipped false above (`healthy` is intentionally left true — a clean
+		// Stop is a pause, not a failure), so readiness (running && healthy) has
+		// gone false. Readiness=false only sheds PUSH traffic: an upstream LB or
+		// service mesh stops routing new requests to this instance. PULL
+		// transports (SQS/Kafka receivers) are NOT gated by readiness and keep
+		// pulling from the broker until `cancel()` below tears their loop down —
+		// so there is a residual intake/redelivery window between readiness going
+		// false and cancel firing. Now SETTLE already-accepted in-flight
+		// deliveries BEFORE cancelling: aborting mid-send/mid-ack turns
+		// every rolling restart into a duplicate/loss window (a canceled context
+		// fails the source ack, so the broker redelivers an already-sent message),
+		// whereas letting accepted work finish its send+settle first avoids it.
+		//
+		// This runs by DEFAULT now, not only under WithStopQuiesce (finding: SIGTERM
+		// cancels work before quiescing). The wait is bounded — deadline fallback:
+		// when the budget or the caller ctx expires we cancel remaining work and
+		// return, leaving any unsettled source to broker redelivery (at-least-once),
+		// never silently acked. WaitQuiescent acquires rt.mu, which we released above.
+		if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && rt.anyRouteInFlight() {
+			qCtx, qCancel := context.WithTimeout(ctx, budget)
+			if err := rt.WaitQuiescent(qCtx, QuiescenceOptions{}); err != nil && rt.logger != nil {
+				rt.logger.Warn("stop drain did not fully settle in-flight deliveries before deadline; cancelling (unsettled sources rely on broker redelivery)",
+					"instance_id", rt.instanceID, "budget", budget, "error", err)
 			}
 			qCancel()
 		}
@@ -594,6 +613,43 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 // ceiling; if it is exceeded the store close is skipped (handles leak, which is
 // safe) rather than risking a close underneath an in-flight Complete.
 const storeCloseGrace = 15 * time.Second
+
+// defaultStopDrainBudget caps the pre-cancel in-flight settle phase of Stop when
+// no explicit WithStopQuiesce budget was set. It is the ceiling that keeps a Stop
+// with a deadline-less caller ctx (e.g. context.Background()) from blocking
+// forever behind a wedged sender: at worst Stop settles for this long, then falls
+// through to cancel + broker redelivery (deadline fallback). A caller ctx with a
+// shorter deadline still wins — the drain honours whichever fires first.
+const defaultStopDrainBudget = 25 * time.Second
+
+// stopDrainBudget returns the bounded budget for Stop's pre-cancel in-flight
+// settle phase. An explicit WithStopQuiesce wins; otherwise the default ceiling
+// applies. The caller ctx additionally bounds the wait (see the WithTimeout(ctx,
+// budget) at the call site), so a short SIGTERM grace period is respected without
+// this method having to inspect the deadline.
+func (rt *Runtime) stopDrainBudget() time.Duration {
+	if rt.stopQuiesce > 0 {
+		return rt.stopQuiesce
+	}
+	return defaultStopDrainBudget
+}
+
+// anyRouteInFlight reports whether any route runner currently has an in-flight
+// delivery. Stop uses it to SKIP the pre-cancel drain when the runtime is already
+// quiescent — the common case — so an idle Stop cancels promptly instead of
+// waiting out a settle/quiet window. A delivery accepted in the narrow window
+// between this snapshot and cancel is the same at-least-once boundary the
+// deadline fallback already documents (broker redelivery, never a silent ack).
+func (rt *Runtime) anyRouteInFlight() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, e := range rt.entries {
+		if e.runner != nil && e.runner.InFlight() > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
 	if logging.TraceEnabled(rt.logger) {

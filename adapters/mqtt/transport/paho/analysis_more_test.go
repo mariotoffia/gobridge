@@ -156,10 +156,16 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	}, connectivity.SessionEphemeral, nil, rec)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
-	s.plan = &connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "kept"}}}
+	// A SUBLESS prior plan (sender-only session): an empty target plan
+	// re-affirms "nothing desired" and is a genuine no-op. NOTE the prior
+	// setup used a prior plan WITH a subscription and an empty activeSubs —
+	// that is now the reconnect-window TEARDOWN case (the broker may still
+	// hold the resumed sub), not a no-op, so it must NOT be pinned here
+	// (c4-remove-subs gates teardown on desired-state history, not activeSubs).
+	s.plan = &connectivity.SessionPlan{}
 	s.mu.Unlock()
 
-	// Empty plan + prior plan = no-op short-circuit BEFORE reconcile().
+	// Empty plan + subless prior plan = no-op short-circuit BEFORE reconcile().
 	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("no-op Reconcile error: %v", err)
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	credentials "github.com/mariotoffia/gobridge/runtime/credentials"
@@ -71,7 +72,16 @@ func run() int {
 	}
 
 	fileSource := fileconfig.NewSource(*configPath, reg)
-	baseCfg, err := fileSource.Load(context.Background())
+	// Start-empty (Finding c15/550): a missing config file is a supported,
+	// healthy state — mirror the deployment profile's optionalFileSource. The
+	// bridge boots with an empty logical config (bridge.id only, zero routes)
+	// behind a loud WARN, and converges once a config is pushed through the
+	// admin config API (the txn store treats a missing file as first-write)
+	// or the file is created — the watcher watches the directory, so file
+	// creation is picked up. Any other load error (unreadable, bad parse)
+	// stays fatal.
+	loader := &startEmptySource{src: fileSource, path: *configPath, logger: logger}
+	baseCfg, err := loader.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
 		return 1
@@ -93,7 +103,7 @@ func run() int {
 	fileWatcher := fileconfig.NewWatcher(*configPath, reg, watcherOpts...)
 
 	mgr := config.NewManager(
-		config.Layer{Name: "file", Loader: fileSource, Watcher: fileWatcher},
+		config.Layer{Name: "file", Loader: loader, Watcher: fileWatcher},
 		config.WithManagerLogger(logger),
 	)
 
@@ -536,6 +546,53 @@ func newLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+}
+
+// startEmptySource wraps the file config source so a MISSING config file
+// starts an empty, healthy bridge instead of failing the process (start-empty,
+// mirroring the deployment profile's optionalFileSource). The fallback is
+// loud: a missing file is warned on every load so an operator who mistyped
+// -config sees why nothing is bridged. Only shared.ErrNotFound falls back —
+// an unreadable or unparseable file stays a fatal load error, because
+// silently replacing a config that EXISTS but cannot be read would swap real
+// routes for none.
+type startEmptySource struct {
+	src    *fileconfig.Source
+	path   string
+	logger *slog.Logger
+}
+
+var _ ports.Loader = (*startEmptySource)(nil)
+
+func (s *startEmptySource) Load(ctx context.Context) (*ports.BridgeConfig, error) {
+	cfg, err := s.src.Load(ctx)
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, shared.ErrNotFound) {
+		s.logger.Warn(
+			"config file not found; starting empty (no routes will be bridged) — "+
+				"create the file or push a config through the admin config API",
+			"path", s.path,
+		)
+		return defaultEmptyConfig(), nil
+	}
+	return nil, err
+}
+
+// defaultEmptyConfig is the start-empty logical config: the one field
+// validation requires (bridge.id) plus the same explicit shutdown budgets the
+// deployment profile's defaultLogicalConfig sets. Zero routes — the bridge is
+// a no-op until configured.
+func defaultEmptyConfig() *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{
+			ID:              "gobridge",
+			DeploymentMode:  "standalone",
+			ShutdownTimeout: "30s",
+			DrainTimeout:    "30s",
+		},
+	}
 }
 
 // newDefaultCredentialResolver builds the stock resolver and best-effort

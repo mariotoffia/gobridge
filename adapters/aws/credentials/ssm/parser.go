@@ -57,7 +57,11 @@ func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 
 	var tls *connectivity.TLSMaterial
 	if wantTLS {
-		tls = parseTLSJSON(raw)
+		t, err := parseTLSJSON(raw)
+		if err != nil {
+			return nil, err
+		}
+		tls = t
 	}
 
 	return connectivity.NewCredentialSet(password, tls), nil
@@ -114,7 +118,7 @@ func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.PasswordCreden
 	return &pw, nil
 }
 
-func parseTLSJSON(raw map[string]any) *connectivity.TLSMaterial {
+func parseTLSJSON(raw map[string]any) (*connectivity.TLSMaterial, error) {
 	certPEM := getStringField(raw, "certPem", "cert", "certificate")
 	keyPEM := getStringField(raw, "keyPem", "key", "privateKey")
 	insecure := getBoolField(raw, "insecure", "insecureSkipVerify")
@@ -123,21 +127,42 @@ func parseTLSJSON(raw map[string]any) *connectivity.TLSMaterial {
 	if ca, ok := raw["caPem"]; ok {
 		switch v := ca.(type) {
 		case string:
-			caPEMs = []string{v}
+			if strings.TrimSpace(v) != "" {
+				caPEMs = []string{v}
+			}
 		case []any:
 			for _, item := range v {
-				if s, ok := item.(string); ok {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
 					caPEMs = append(caPEMs, s)
 				}
 			}
 		}
 	}
-	if ca, ok := raw["ca"].(string); ok && len(caPEMs) == 0 {
+	if ca, ok := raw["ca"].(string); ok && strings.TrimSpace(ca) != "" && len(caPEMs) == 0 {
 		caPEMs = []string{ca}
 	}
 
+	// Reject empty / incomplete TLS material instead of silently
+	// producing a credential with no trust anchors. A failed rotation
+	// write leaving {"type":"tls"} (or a torn document) must surface as
+	// an error, not strip TLS trust from a live transport. Valid forms
+	// are a CA bundle (server verification) and/or a complete cert+key
+	// pair (mutual TLS); a half cert/key pair is always rejected.
+	// Emptiness is judged after trimming so a whitespace-only field
+	// (" ", "\n") is treated as absent and rejected at parse time rather
+	// than deferred to a confusing connect-time TLS failure.
+	hasCert := strings.TrimSpace(certPEM) != ""
+	hasKey := strings.TrimSpace(keyPEM) != ""
+	if hasCert != hasKey {
+		return nil, fmt.Errorf("ssm: incomplete TLS material: certPem and keyPem must be provided together")
+	}
+	hasPair := hasCert && hasKey
+	if !hasPair && len(caPEMs) == 0 {
+		return nil, fmt.Errorf("ssm: empty TLS material: require a CA bundle or a complete cert/key pair")
+	}
+
 	tls := connectivity.NewTLSMaterial(certPEM, keyPEM, caPEMs, insecure)
-	return &tls
+	return &tls, nil
 }
 
 func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
@@ -146,7 +171,15 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 		return nil, fmt.Errorf("ssm: invalid simple credentials format, expected username:password")
 	}
 
-	pw := connectivity.NewPasswordCredential(parts[0], parts[1])
+	username, password := parts[0], parts[1]
+	if username == "" || password == "" {
+		// A ":pass", "user:" or ":" value would otherwise yield an
+		// anonymous/half-empty credential that drives transports into
+		// authentication-failure reconnect loops.
+		return nil, fmt.Errorf("ssm: simple credentials require a non-empty username and password")
+	}
+
+	pw := connectivity.NewPasswordCredential(username, password)
 	return connectivity.NewCredentialSet(&pw, nil), nil
 }
 

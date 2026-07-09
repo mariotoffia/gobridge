@@ -6,9 +6,12 @@
 **Factory:** `amqp10.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `source_redelivery`
 
-The AMQP 1.0 adapter works with any broker that speaks the AMQP 1.0 wire
-protocol: Apache ActiveMQ Artemis, Solace PubSub+, Apache Qpid, Azure
-Event Hubs (direct AMQP), and AWS MQ for ActiveMQ. Built on
+The AMQP 1.0 adapter is built and CI-tested against Apache ActiveMQ Artemis. It
+attaches links with Artemis-style `queue`/`topic` terminus capabilities on every
+attach, so a broker that reads those capabilities differently — Apache Qpid,
+Solace PubSub+, Azure Event Hubs (direct AMQP), AWS MQ for ActiveMQ — may reject
+the attach or route messages differently. Treat any non-Artemis broker as
+unverified and test it before relying on it. Built on
 [github.com/Azure/go-amqp](https://github.com/Azure/go-amqp).
 
 A `Session` owns the TCP connection and AMQP session. Receivers and senders
@@ -36,6 +39,7 @@ sessions:
         sasl_mechanism: "plain"
         username: "admin"
         password: "admin"
+        allow_insecure_plain: true  # local/dev only: PLAIN over amqp:// is cleartext; use amqps:// in production
 
 receivers:
   - id: order-receiver
@@ -76,6 +80,7 @@ senders:
 | `sasl_mechanism` | string | `""` | `""` (PLAIN when `username` set, else no SASL), `plain`, `external` (mTLS client cert), or `anonymous` |
 | `username` | string | -- | SASL PLAIN username |
 | `password` | string | -- | SASL PLAIN password |
+| `allow_insecure_plain` | bool | `false` | Opt-in to send SASL PLAIN credentials over a non-TLS scheme. By default a PLAIN mechanism (explicit `sasl_mechanism: plain`, the inferred default when a username is set, or userinfo in `address`) over `amqp://` (or a schemeless address) is **rejected** at config validation, because PLAIN transmits the username/password in cleartext. Prefer `amqps://` / `amqp+ssl://`, or `sasl_mechanism: external` for mTLS; set this only to send credentials in the clear on a trusted network. |
 | `tls.enable` | bool | `false` | Enable TLS |
 | `tls.ca_cert_file` | string | -- | CA certificate PEM file path |
 | `tls.cert_file` | string | -- | Client certificate PEM file path |
@@ -101,6 +106,16 @@ supplied on the transport config (`tls.cert_pem`/`tls.key_pem` in-memory, or
 `tls.cert_file`/`tls.key_file` file paths) or resolved from `credentials_uri`.
 If neither provides it, config validation fails fast with a clear error rather
 than an opaque broker SASL failure at dial.
+
+> **SASL PLAIN is rejected over a non-TLS scheme (secure by default).** PLAIN
+> sends the username/password in cleartext frames, so config validation refuses it
+> over `amqp://` (or a schemeless address) unless `allow_insecure_plain: true` is
+> set. The gate holds on every credential path — construction, build-time
+> credential resolution, and runtime rotation — so a rotation that would newly
+> expose PLAIN over plaintext is refused and the session keeps its last-good
+> credentials (no cleartext re-dial). Use `amqps://` / `amqp+ssl://`, switch to
+> `sasl_mechanism: external` (mTLS), or opt in explicitly with
+> `allow_insecure_plain: true` as a deliberate, auditable choice.
 
 ## Receiver Options Reference (`options.receiver.*`)
 
@@ -129,6 +144,26 @@ than an opaque broker SASL failure at dial.
 > resumes under a stable container-id + link name. A detached non-durable
 > subscription -- or a durable one orphaned by an unstable link name -- silently
 > misses everything sent in the gap.
+
+> **Durable receivers need a dedicated session.** Closing a durable receiver
+> (`durability_mode > 0`) cannot use a normal link detach: the pinned go-amqp can
+> only send a closing detach, which Artemis reads as UNSUBSCRIBE and destroys the
+> durable subscription (dropping every retained message). To detach the live link
+> while preserving the subscription the adapter drops the whole connection — a
+> non-closing detach of **every** link on that session. So a durable receiver
+> sharing a session with other receivers or senders blips all of them on close:
+> in-flight sender publishes relatch and non-durable receivers redeliver. Give
+> each durable (multicast) receiver its own `session_id` to confine a durable
+> close to that one session.
+
+> **No safe clustered durable multicast.** Two replicas that resume the same
+> durable multicast identity (container-id + link name) fight over the link: the
+> broker grants it to one and detaches the other permanently with `amqp:link:stolen`
+> (classified permanent — retrying just re-steals it back forever). Giving each
+> replica a unique identity avoids the theft, but then every replica keeps its own
+> copy of each message (one copy per replica), not a shared load-balanced stream.
+> For competing consumers across a cluster use `anycast` (point-to-point), which
+> the broker load-balances across attached receivers.
 
 ## Sender Options Reference (`options.sender.*`)
 
@@ -169,12 +204,23 @@ failed settlement is surfaced, not silently swallowed.
 
 ## Resilience Behavior
 
-- **Automatic reconnection.** On connection loss or link detach, the
-  session reconnects with exponential backoff (1s initial, 30s cap, 25%
-  jitter). Links re-create themselves on the next operation.
-- **Link lifecycle.** Receivers and senders detect link errors and notify
-  the session, which triggers reconnection. After reconnect, `Reconcile`
-  runs again if a plan exists.
+- **Recovery has three scopes.** A fault is recovered at the narrowest scope that
+  covers it, so a single link problem does not disrupt the whole connection.
+  - *Connection-scoped* (connection lost, unclassified unavailable): the session
+    reconnects with exponential backoff (1s initial, 30s cap, 25% jitter),
+    rebuilding the connection and every link on it. After reconnect `Reconcile`
+    runs again if a plan exists.
+  - *Receiver link-scoped* (an `*amqp.LinkError` on a live session): only that
+    receiver's link is rebuilt; the shared connection and its sibling links stay
+    up.
+  - *Sender link-scoped*: the sender abandons the failed link and rebuilds it
+    lazily on the next `Send` — there is no background sender reconnect, so a
+    sender that never sends again never notices its link failed.
+- **Send timeout leaves the outcome unknown.** A send waits for the broker's
+  disposition (`SendWithReceipt` then `receipt.Wait`). If `timeout` (or the
+  context deadline) fires during the wait, the adapter returns an error while the
+  broker may already hold the message, so the runtime retries and the sink can see
+  a duplicate. Use idempotent sinks (or downstream dedup) on this path.
 - **Single-shot settlement.** A `Delivery` settles once. A repeat `Ack` or
   `Retry` is a safe no-op **only** after a successful first settlement; a repeat
   after a failed or still-in-flight first attempt returns `ErrUnavailable`

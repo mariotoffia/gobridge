@@ -17,8 +17,9 @@ For monitoring cost details, see [Monitoring](monitoring.md).
 
 ## Cost Model Overview
 
-A GoBridge deployment on AWS touches five cost categories. The diagram below
-shows each category and its primary billing dimension.
+A GoBridge deployment on AWS touches five cost categories, plus DynamoDB when
+the bridge uses DynamoDB-backed stores. The diagram below shows each category
+and its primary billing dimension.
 
 ```mermaid
 flowchart LR
@@ -27,6 +28,9 @@ flowchart LR
     end
     subgraph Storage
         EFS_C["EFS\n~$0.30/GB-mo"]
+    end
+    subgraph Stores
+        DDB["DynamoDB\non-demand WRU/RRU\n(optional)"]
     end
     subgraph Networking
         NAT["NAT Gateway\n$0.045/hr"]
@@ -41,6 +45,7 @@ flowchart LR
     end
 
     FG --> EFS_C
+    FG --> DDB
     FG --> NAT
     FG --> CW
     FG --> SSM_C
@@ -50,7 +55,10 @@ flowchart LR
 
 For most deployments, **compute and networking dominate the bill**. Storage
 and secrets are negligible. Observability costs scale with log volume and the
-number of custom metrics you publish.
+number of custom metrics you publish. DynamoDB applies only when a store role
+uses `type: dynamodb`, and its request-based charge tracks message throughput --
+at high sustained rates it can exceed compute (see
+[DynamoDB Store Costs](#dynamodb-store-costs)).
 
 ---
 
@@ -134,6 +142,78 @@ costs well under $0.01/month even with multiple replicas.
 Enable lifecycle policies only if you store additional data on EFS beyond the
 bridge config. For a config-only mount, lifecycle transitions add complexity
 with zero benefit.
+
+---
+
+## DynamoDB Store Costs
+
+DynamoDB costs apply only when a store role is configured with `type: dynamodb`
+(lease, outbox, or DLQ). Memory and SQLite stores incur no DynamoDB charge. All
+three GoBridge tables are created `PAY_PER_REQUEST` (on-demand), so you pay per
+request unit consumed rather than for provisioned capacity. See
+[AWS Overview](overview.md#dynamodb-stores) for the exact table schemas.
+
+### On-Demand Pricing Dimensions
+
+| Dimension | Rate | Notes |
+|---|---|---|
+| Write request unit (WRU) | ~$1.25/million | One standard write of an item ≤1 KB |
+| Read request unit (RRU) | ~$0.25/million | One eventually-consistent read ≤4 KB; strongly-consistent reads cost 2 RRU |
+| Transactional write | 2 WRU per write | The outbox `Claim` uses `TransactWriteItems` |
+| Data storage | ~$0.25/GB-month | First 25 GB is in the free tier |
+
+These are DynamoDB on-demand base rates; us-west-1 runs modestly above us-east-1,
+so confirm the current regional rate. A global secondary index bills as its own
+write: every base-table write that changes an indexed attribute also consumes
+write units on each GSI that projects it.
+
+### Per-Table Cost Drivers
+
+**Lease table** (`gobridge-leases`). One row per lease. `Acquire`/`Renew` are
+conditional `UpdateItem` writes (1 WRU each) and the lease manager polls the row
+with `GetItem` reads. The renew interval is the dominant cost: a lease renewed
+every 10 s (the HA preset) runs ~8.6K writes/day (~$0.01/day) per lease. No GSIs,
+negligible storage.
+
+**Outbox table** (`gobridge-outbox`). The heaviest DynamoDB consumer when
+`shared_outbox` is enabled. Each message persisted is one base `PutItem` plus
+write units on the GSIs it qualifies for (`RecordIDIndex`; `ExpiryIndex` when it
+carries an expiry; `ClaimIndex` while it is pending/claimed). `Claim` runs a
+`TransactWriteItems` (2 WRU per item) behind a durable partition fence, and
+`Complete`/`Expire` are `UpdateItem` writes that strip the sparse-index keys.
+Budget roughly 6–8 write units per message end-to-end, plus the claim `Query`
+reads.
+
+**Claim-scan recovery multiplier.** Provision the `ClaimIndex` GSI
+(`Projection: ALL`). Without it, `Claim` degrades to a whole-partition scan
+(O(backlog) RRU per claim batch); after an outage leaves a deep backlog, that
+scan cost grows with the backlog and can multiply outbox read charges during
+recovery. The GSI bounds each claim to O(limit).
+
+**DLQ table** (`gobridge-dlq`). Writes only on delivery failures, so cost tracks
+your failure rate, not throughput. Each dead-letter `PutItem` also writes the
+`RouteIndex` and `CategoryIndex` GSIs. Operator `List`/`Purge` run `Query`/`Scan`
+reads. On a healthy deployment this is near zero.
+
+### Worked Example
+
+A shared-outbox route at 10 messages/second with DynamoDB lease + outbox stores:
+
+```text
+Outbox writes: 10 msg/s x 6 WRU x 86,400 s = ~5.18M WRU/day
+               5.18M x 30 days = ~155M WRU/month
+               155M x $1.25/M = ~$194/month
+Outbox reads:  claim queries, ~10 RRU/s x 86,400 x 30 = ~26M RRU/month
+               26M x $0.25/M = ~$6.50/month
+Lease:         2 leases renewed every 10s (HA preset) = < $1/month
+Storage:       bounded by retention/compaction, typically < 1 GB = < $0.25/month
+Total:                                        ~$202/month
+```
+
+Cost scales linearly with throughput: at 100 msg/s the outbox alone is roughly
+$1,900/month, which can exceed compute. For sustained high throughput, evaluate
+provisioned capacity with autoscaling, or a native SQLite store that trades the
+per-request charge for single-node durability.
 
 ---
 
@@ -409,6 +489,11 @@ The table below provides a quick reference for budget planning.
 
 Costs are rounded to the nearest dollar. Actual bills may vary by 10--15%
 depending on data transfer, Logs Insights query volume, and LCU consumption.
+
+These profiles use file-based (EFS) config and native/SQLite stores, so they
+carry no DynamoDB charge. A deployment that configures DynamoDB-backed lease,
+outbox, or DLQ stores adds the request-based cost described in
+[DynamoDB Store Costs](#dynamodb-store-costs) on top of the totals above.
 
 ---
 

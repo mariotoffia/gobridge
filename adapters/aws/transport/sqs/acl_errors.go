@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -144,16 +147,20 @@ func MapError(err error) *shared.BridgeError {
 	if containsAny(msg, "connection refused", "connection reset", "network") {
 		return shared.ErrConnectionLost.Wrap(err)
 	}
-	// Plain (non-KMS) API auth failures. NOTE — Finding 3 residual: a fresh
-	// IAM role can take 10-120s to propagate, during which SendMessage
-	// returns AccessDenied for a condition that WILL self-heal. Ideally the
-	// first N encounters would classify temporary, but MapError is a
-	// stateless pure function with no per-message retry counter, so it cannot
-	// distinguish "still propagating" from "genuinely misconfigured" without
-	// threading retry state through the ACL. Plain API auth therefore stays
-	// PERMANENT (a truly-misconfigured policy DLQs instead of retrying
-	// forever); only the code-distinguishable KmsAccessDenied above is mapped
-	// temporary.
+	// Plain (non-KMS) API auth failures. MapError itself is a stateless
+	// pure function, so it classifies plain auth PERMANENT here — a
+	// genuinely-misconfigured policy must DLQ rather than retry forever.
+	// The propagation window for a freshly-rotated static key / IAM role
+	// (10-120s of AccessDenied for a condition that WILL self-heal) is
+	// handled OUTSIDE this pure function by authGrace.classify (Finding:
+	// c8-auth-permanent): the send path (sendOne / sendBatchChunk) and the
+	// receive poll loop route every error through a per-adapter authGrace
+	// that treats a plain auth failure as transient ErrTemporaryAuthFailure
+	// while inside a bounded, clock-driven grace window and only escalates
+	// to this permanent classification once the window lapses — mirroring
+	// the KmsAccessDenied temporary treatment above. Keeping the grace in a
+	// stateful wrapper preserves MapError's purity (and its use by callers
+	// that legitimately want the immediate permanent verdict).
 	if containsAny(msg, "AccessDenied", "UnauthorizedAccess", "InvalidClientTokenId") {
 		return shared.ErrNotAuthorized.Wrap(err)
 	}
@@ -178,4 +185,127 @@ func containsAny(s string, substrs ...string) bool {
 		}
 	}
 	return false
+}
+
+// authGraceWindow bounds how long a plain (non-KMS) API auth failure is
+// treated as transient before it escalates to permanent ErrNotAuthorized.
+// A freshly-rotated static key or a newly-granted IAM role commonly takes
+// 10-120s to propagate, during which the broker returns AccessDenied for a
+// condition that WILL self-heal; classifying it permanent inside that window
+// makes a direct-hold route DLQ/drop-then-ACK the source during a purely
+// transient gap (policy loss). 120s matches the upper bound documented for
+// the KmsAccessDenied temporary treatment in MapError.
+const authGraceWindow = 120 * time.Second
+
+// authGrace gives plain API auth failures a bounded, clock-driven grace
+// window (Finding: c8-auth-permanent). It is held per Sender/Receiver so the
+// classification can be stateful without contaminating the pure MapError.
+//
+// The first plain auth failure of a streak records its instant; every auth
+// failure within authGraceWindow of that instant classifies transient
+// (ErrTemporaryAuthFailure, retryable), and only a failure past the window
+// escalates to permanent ErrNotAuthorized. Only a SUCCESSFUL call ends the
+// streak (reset): a non-auth error (throttle, network, timeout) does NOT
+// prove auth recovered, so it neither starts nor clears a window. This makes
+// a genuine revocation GUARANTEED to escalate to permanent at the window edge
+// even when transient blips interleave, while never DLQ-ing prematurely. A
+// later rotation gap (after a real success) gets a fresh window.
+type authGrace struct {
+	clk    clock.Clock
+	window time.Duration
+
+	mu    sync.Mutex
+	since time.Time // first auth failure of the current streak; zero = none pending
+}
+
+// newAuthGrace builds an authGrace using the injected clock (defaulting to
+// clock.System) and grace window (defaulting to authGraceWindow when <= 0).
+func newAuthGrace(clk clock.Clock, window time.Duration) *authGrace {
+	if clk == nil {
+		clk = clock.System
+	}
+	if window <= 0 {
+		window = authGraceWindow
+	}
+	return &authGrace{clk: clk, window: window}
+}
+
+// classify maps err via MapError and, for a plain API auth failure, applies
+// the bounded grace: transient (ErrTemporaryAuthFailure) while inside the
+// window measured from the first failure of the current streak, permanent
+// (the MapError verdict, ErrNotAuthorized) once the window lapses. A non-auth
+// error defers to MapError unchanged and leaves any in-progress window intact
+// — it neither starts nor clears the streak; only reset() (on a real success)
+// clears it, so a genuine revocation still escalates at the window edge even
+// when transient blips interleave.
+func (g *authGrace) classify(err error) *shared.BridgeError {
+	mapped := MapError(err)
+	// A nil grace (struct-literal Sender/Receiver in tests that bypass the
+	// constructors) degrades to the pure MapError verdict — production always
+	// wires a grace via newAuthGrace.
+	if g == nil {
+		return mapped
+	}
+	if !isPlainAuthFailure(err) {
+		// A NON-auth error (throttle, network, timeout) does not prove auth
+		// recovered — only a real SUCCESS does (reset()). Leave any
+		// in-progress auth window intact: do NOT clear `since` (so a genuine
+		// revocation still escalates to permanent at the window edge despite
+		// interleaved blips) and do NOT start one (a non-auth error must
+		// never open a window).
+		return mapped
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.clk.Now()
+	if g.since.IsZero() {
+		g.since = now
+	}
+	if now.Sub(g.since) <= g.window {
+		return shared.ErrTemporaryAuthFailure.Wrap(err).
+			WithMessage("auth failure within grace window (credentials may still be propagating)")
+	}
+	return mapped
+}
+
+// reset clears any pending auth-failure streak so the next plain auth
+// failure starts a fresh grace window. Callers invoke it after a successful
+// SQS call.
+func (g *authGrace) reset() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.since = time.Time{}
+	g.mu.Unlock()
+}
+
+// isPlainAuthFailure reports whether err is a plain (non-KMS) API auth
+// failure — AccessDenied / UnauthorizedAccess / InvalidClientTokenId — that
+// MapError classifies permanent ErrNotAuthorized. It deliberately excludes
+// the typed KMS errors (KmsAccessDenied etc.): MapError classifies those
+// BEFORE the string fallback and each already carries its own
+// transient/permanent policy, so the grace must not double-handle a KMS
+// condition (whose .Error() text can contain the same substrings).
+func isPlainAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var (
+		kmsThrottled       *sqstypes.KmsThrottled
+		kmsAccessDenied    *sqstypes.KmsAccessDenied
+		kmsDisabled        *sqstypes.KmsDisabled
+		kmsInvalidState    *sqstypes.KmsInvalidState
+		kmsNotFound        *sqstypes.KmsNotFound
+		kmsOptIn           *sqstypes.KmsOptInRequired
+		kmsInvalidKeyUsage *sqstypes.KmsInvalidKeyUsage
+	)
+	if errors.As(err, &kmsThrottled) || errors.As(err, &kmsAccessDenied) ||
+		errors.As(err, &kmsDisabled) || errors.As(err, &kmsInvalidState) ||
+		errors.As(err, &kmsNotFound) || errors.As(err, &kmsOptIn) ||
+		errors.As(err, &kmsInvalidKeyUsage) {
+		return false
+	}
+	return containsAny(err.Error(), "AccessDenied", "UnauthorizedAccess", "InvalidClientTokenId")
 }

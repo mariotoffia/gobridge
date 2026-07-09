@@ -13,6 +13,12 @@ import (
 // picks them up; if the session is currently connected, the existing
 // connection is closed so the reconnect loop runs immediately.
 //
+// SECURITY (c7-plain-plaintext): a credential rotation that would newly
+// expose SASL PLAIN over a non-TLS scheme is REFUSED (fail-closed) via
+// validatePlainOverPlaintext — the session keeps its last-good creds and
+// no cleartext dial is issued. This closes the last credential-injection
+// point the build-time gate does not cover.
+//
 // Design choice: go-amqp has no in-band re-auth primitive. The safest
 // path is therefore "close then reconnect" — the existing reconnect
 // loop already handles connection loss, so ApplyCredentials just
@@ -42,12 +48,39 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 		credsChanged = s.liveCreds.Username != set.Password().Username() ||
 			s.liveCreds.Password != set.Password().Password().Reveal()
 		if credsChanged {
+			// Snapshot the last-good credentials so a REFUSED rotation
+			// leaves the session running on them — never a partial state
+			// where Username is set but the dial was rejected.
+			prevLiveCreds := s.liveCreds
+			prevUsername := s.opts.Username
+			prevPassword := s.opts.Password
+
 			s.liveCreds = amqp10Credentials{
 				Username: set.Password().Username(),
 				Password: set.Password().Password().Reveal(),
 			}
 			s.opts.Username = set.Password().Username()
 			s.opts.Password = set.Password().Password()
+
+			// c7-plain-plaintext holds on the RUNTIME rotation path too,
+			// not just the config/factory build boundary. go-amqp infers
+			// SASL PLAIN from a non-empty Username, so a rotation that
+			// injects a username into a plaintext amqp:// session (which
+			// may have PASSED the build gate precisely because it had NO
+			// username then) would newly ship the credentials in cleartext
+			// on the next dial. Fail closed: refuse the rotation, restore
+			// the last-good credentials, and DO NOT force a re-dial — the
+			// session keeps running on its prior creds rather than leaking
+			// the new ones. validatePlainOverPlaintext already passes for
+			// TLS schemes and honors allow_insecure_plain, so an amqps://
+			// or explicitly-opted-in operator is unaffected.
+			if err := s.opts.validatePlainOverPlaintext(); err != nil {
+				s.liveCreds = prevLiveCreds
+				s.opts.Username = prevUsername
+				s.opts.Password = prevPassword
+				s.mu.Unlock()
+				return err
+			}
 		}
 	}
 

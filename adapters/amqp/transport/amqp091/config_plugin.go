@@ -71,6 +71,16 @@ type SenderParams struct {
 	RoutingKey string `mapstructure:"routing_key" yaml:"routing_key" json:"routing_key"`
 	Mandatory  bool   `mapstructure:"mandatory" yaml:"mandatory" json:"mandatory"`
 	Immediate  bool   `mapstructure:"immediate" yaml:"immediate" json:"immediate"`
+	// AllowUnroutableDrop is the explicit opt-in that lets a managed sender
+	// publish with mandatory=false. With mandatory=false the broker CONFIRMS
+	// an unroutable publish and then silently DISCARDS it, so the bridge acks
+	// the source and the message is lost with zero telemetry (wrong routing
+	// key / missing binding after a deploy). The managed factory therefore
+	// refuses to build a sender unless it is mandatory OR this flag admits the
+	// silent-drop behaviour deliberately (throughput-over-safety fan-out where
+	// unroutable is expected). It never changes the publish itself — it only
+	// records that the operator accepts the loss.
+	AllowUnroutableDrop bool `mapstructure:"allow_unroutable_drop" yaml:"allow_unroutable_drop" json:"allow_unroutable_drop"`
 	// DeliveryMode selects the default persistence of every publish:
 	// "persistent" (default; AMQP delivery-mode 2, survives a broker
 	// restart on a durable queue) or "transient" (delivery-mode 1, lost

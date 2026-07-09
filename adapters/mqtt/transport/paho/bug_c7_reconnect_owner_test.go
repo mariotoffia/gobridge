@@ -44,10 +44,11 @@ import (
 // only test double that actually exercises cm.Subscribe (the sentinel
 // fakeCM used elsewhere is non-functional and panics if called).
 type fakeReconcileConn struct {
-	mu         sync.Mutex
-	subCalls   int
-	subTopics  [][]string
-	unsubCalls int
+	mu          sync.Mutex
+	subCalls    int
+	subTopics   [][]string
+	unsubCalls  int
+	unsubTopics [][]string
 
 	// reasons, when non-nil, is returned as the SUBACK reason vector for
 	// every Subscribe. A byte >= 0x80 marks a rejected topic (mapped to a
@@ -71,13 +72,22 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 	if f.reasons != nil {
 		return f.reasons, nil
 	}
-	return make([]byte, len(subs)), nil // all accepted (0x00)
+	// Default: accept every subscription at the REQUESTED QoS (granted ==
+	// requested, no downgrade). Echoing the requested QoS keeps the SUBACK
+	// realistic now that reconcile persists the GRANTED QoS and surfaces
+	// downgrades (c4-qos-downgrade).
+	granted := make([]byte, len(subs))
+	for i, s := range subs {
+		granted[i] = s.QoS
+	}
+	return granted, nil
 }
 
-func (f *fakeReconcileConn) Unsubscribe(_ context.Context, _ []string) error {
+func (f *fakeReconcileConn) Unsubscribe(_ context.Context, topics []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unsubCalls++
+	f.unsubTopics = append(f.unsubTopics, append([]string(nil), topics...))
 	return nil
 }
 
@@ -93,6 +103,24 @@ func (f *fakeReconcileConn) subscribeCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.subCalls
+}
+
+func (f *fakeReconcileConn) unsubscribeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unsubCalls
+}
+
+// unsubscribedTopics returns a copy of the topic slices passed to each
+// Unsubscribe call, in call order.
+func (f *fakeReconcileConn) unsubscribedTopics() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.unsubTopics))
+	for i, t := range f.unsubTopics {
+		out[i] = append([]string(nil), t...)
+	}
+	return out
 }
 
 var _ pahoConnection = (*fakeReconcileConn)(nil)
@@ -266,21 +294,37 @@ func TestC7_StaleActiveSubs_ZeroDeltaMasksBrokerRejection(t *testing.T) {
 	}
 }
 
-// TestC7_Reconcile_EmptyPlanNoOp_DoesNotEmitReconciled protects the exact
-// emission point: an empty plan that only re-affirms a prior plan is a no-op
-// (re-establishes nothing) and must NOT emit SessionReconciled.
-func TestC7_Reconcile_EmptyPlanNoOp_DoesNotEmitReconciled(t *testing.T) {
+// TestC7_Reconcile_EmptyPlanRemovesManagedSubs asserts the intentional
+// "remove all subscriptions" semantics (c4-remove-subs): an empty plan handed
+// to Reconcile while managed subscriptions are still active MUST unsubscribe
+// them (converging broker state) and emit SessionReconciled — it does real
+// work. The prior behaviour treated this as a silent no-op, leaving the broker
+// delivering on stale subscriptions the router then ack-drops as orphans
+// forever.
+func TestC7_Reconcile_EmptyPlanRemovesManagedSubs(t *testing.T) {
 	fake := &fakeReconcileConn{}
-	s, _ := c7Session(t, fake, "kept", 0)
+	s, _ := c7Session(t, fake, "kept", 0) // activeSubs = {kept:0}, plan = {kept}
 
 	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
-		t.Fatalf("no-op Reconcile error: %v", err)
+		t.Fatalf("empty-plan Reconcile error: %v", err)
+	}
+	// The managed subscription must be UNSUBSCRIBED, not left alive.
+	if got := fake.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("empty plan with active subs must Unsubscribe once, got %d", got)
 	}
 	if got := fake.subscribeCallCount(); got != 0 {
-		t.Fatalf("no-op Reconcile must not Subscribe, got %d", got)
+		t.Fatalf("empty plan must not Subscribe, got %d", got)
 	}
-	// No event of any kind: the no-op path re-established nothing.
-	wait.Silent(t, s.Events(), 100*time.Millisecond)
+	s.mu.Lock()
+	n := len(s.activeSubs)
+	s.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("activeSubs must be empty after removing all subscriptions, got %d", n)
+	}
+	// A reconcile that actually converged broker state signals reconciled.
+	if ev := wait.RequireReceive(t, s.Events(), time.Second); ev.Type != ports.SessionReconciled {
+		t.Fatalf("expected SessionReconciled after removing all subs, got %v", ev.Type)
+	}
 }
 
 // TestC7_Reconcile_InitialEmptyPlan_EmitsReconciled covers the sender-only

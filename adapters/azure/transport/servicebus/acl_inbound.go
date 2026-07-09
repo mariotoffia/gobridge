@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
@@ -132,7 +133,7 @@ func effectiveReceiveCount(msg *azservicebus.ReceivedMessage) int {
 // from the native Service Bus Subject; the queue/topic entity name is
 // NEVER promoted into Envelope.Subject. When the broker carries no
 // native Subject, Envelope.Subject is left empty.
-func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*messaging.Envelope, error) {
+func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock, entity string) (*messaging.Envelope, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -150,7 +151,22 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*me
 		id = orig
 	}
 	if id == "" {
-		id = generateEnvelopeID()
+		// A broker message with no MessageID must NOT get a fresh random
+		// ID on every redelivery — that defeats downstream idempotency /
+		// dedup, which would see each redelivery of the SAME logical
+		// message as a distinct one. Derive a STABLE fallback from the
+		// broker SequenceNumber, which peek-lock redelivery (abandon /
+		// lock expiry) preserves, so redeliveries collapse onto one ID
+		// while distinct messages (distinct sequence numbers) never do.
+		if fallback, ok := stableFallbackID(msg, entity); ok {
+			id = fallback
+		} else {
+			// No sequence number to anchor on (not possible for a genuine
+			// received message): fall back to a random ID rather than
+			// rejecting, so a single odd message never stalls the loop and
+			// two such messages still never collide.
+			id = generateEnvelopeID()
+		}
 	}
 	// A received broker absolute-expiry is stamped at construction (permissive):
 	// a message that expired in transit is accepted as an already-expired
@@ -174,6 +190,34 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock) (*me
 	return env, nil
 }
 
+// asbFallbackIDPrefix namespaces a sequence-number-derived envelope ID so
+// it can never be confused with a producer-supplied MessageID.
+const asbFallbackIDPrefix = "asb-seq:"
+
+// stableFallbackID derives a deterministic envelope ID for a broker
+// message that arrived with an empty MessageID. The broker SequenceNumber
+// is STABLE across redeliveries of the same wire message (peek-lock
+// abandon / lock-expiry redelivery preserves it), so downstream
+// idempotency/dedup collapses the redeliveries onto one logical message
+// instead of seeing a fresh random ID each time.
+//
+// The id is namespaced by the fully-qualified receive entity
+// (entityScopeFor): the SequenceNumber is only unique WITHIN an entity, so
+// two different queues — or two subscriptions of one topic — can each
+// assign sequence number 5. Without the entity prefix a cross-entity dedup
+// store would treat those DISTINCT messages as duplicates and DROP one
+// (data loss). The format is "asb-seq:<entity>:<sequence>".
+//
+// Returns ("", false) when the broker supplied no sequence number (not
+// possible for a genuine received message); the caller then falls back to
+// a random ID rather than rejecting.
+func stableFallbackID(msg *azservicebus.ReceivedMessage, entity string) (string, bool) {
+	if msg.SequenceNumber == nil {
+		return "", false
+	}
+	return asbFallbackIDPrefix + entity + ":" + strconv.FormatInt(*msg.SequenceNumber, 10), true
+}
+
 var _ ports.Delivery = (*asbDelivery)(nil)
 
 // asbDelivery wraps an inbound Azure Service Bus message and implements
@@ -189,7 +233,8 @@ var _ ports.Delivery = (*asbDelivery)(nil)
 //		       └─ autoExtendCtx (WithCancel) — scoped to the auto-extend goroutine
 //
 //	  - cancel cancels autoExtendCtx (stops the goroutine) via stop(), called
-//	    before the settlement API call in Ack/Retry.
+//	    via defer AFTER the settlement API call in Ack/Retry so lock renewal
+//	    stays alive until settlement returns (renew-through-settle).
 //	  - processingCancel cancels deliveryCtx (the ctx handed to emit) via
 //	    cleanupContext() after settlement, and is also invoked by the
 //	    auto-extend loop on repeated lock-renewal failure so the in-flight
@@ -221,9 +266,40 @@ type asbDelivery struct {
 	// settlement.
 	delayedRetryDisabled bool
 
+	// entity is the fully-qualified receive-entity scope (entityScopeFor)
+	// used to namespace the sequence-number fallback ID of an empty-
+	// MessageID retry copy (buildRetryMessage), so the anchor id matches
+	// the one receivedToEnvelope minted on ingress. Set by the receiver
+	// before emit; read only during settlement.
+	entity string
+
 	cancel           context.CancelFunc // cancels autoExtendCtx (stops the goroutine)
 	processingCancel context.CancelFunc // cancels deliveryCtx (the ctx handed to emit)
 	once             sync.Once          // makes stop() idempotent
+
+	// settled is the atomic single-outcome settlement guard. Ack and
+	// Retry CAS it false→true at entry; exactly ONE wins and performs the
+	// terminal broker call (Complete / schedule+Complete / Abandon), all
+	// later attempts are strict no-ops. This closes the double-settlement
+	// windows where the auto-extend cancel path, a panic-recovery path and
+	// a settlement-timeout path could otherwise each reach the broker —
+	// yielding Complete-after-Abandon or duplicate scheduled copies. Once
+	// won it is never reset: the runtime never re-settles the same delivery
+	// object; a failed terminal call lets the lock lapse and the broker
+	// redelivers on a FRESH delivery.
+	settled atomic.Bool
+
+	// settleReturned is set true the instant the terminal broker
+	// settlement call (Complete / Abandon / schedule+Complete) RETURNS,
+	// which is strictly AFTER `settled` (claimed at settlement ENTRY). The
+	// auto-extend loop checks it so lock renewal stays alive WHILE the
+	// terminal call runs (renew-through-settle keeps a slow Complete's lock
+	// from lapsing) but stops the instant it returns — a renew fired after
+	// the message is already settled would hit an already-completed message
+	// (LockLost warn + a spurious MetricASBLockRenewalFailures bump). It is
+	// deliberately NOT `settled`: gating renewal on `settled` would stop it
+	// before the terminal call even starts, breaking renew-through-settle.
+	settleReturned atomic.Bool
 
 	// renewalDeadline caps total lock auto-renewal wall time (zero =
 	// no cap). Computed once in newDelivery from
@@ -324,8 +400,21 @@ func newDelivery(
 func (d *asbDelivery) Envelope() *messaging.Envelope { return d.env }
 
 func (d *asbDelivery) Ack(ctx context.Context) error {
-	d.stop()
+	if !d.claimSettlement() {
+		// A settlement outcome already won for this delivery. A racing
+		// second attempt (panic-recovery vs. timeout path, or a retried
+		// runtime call) must be a strict no-op: a second CompleteMessage
+		// here could land AFTER an Abandon and re-complete a message the
+		// broker already redelivered.
+		return nil
+	}
+	// Keep lock auto-renewal ALIVE until settlement returns, THEN stop it
+	// (defers run after CompleteMessage below). Stopping renewal first —
+	// as the old code did — let a throttled/slow Complete outlive the
+	// remaining lock, so a second consumer could pick the message up
+	// (duplicate). LIFO: stop() then cleanupContext().
 	defer d.cleanupContext()
+	defer d.stop()
 
 	if d.receiveAndDelete {
 		// ReceiveAndDelete pre-settles at the broker: the message was
@@ -346,7 +435,11 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 	}
 
 	start := d.clk.Now()
-	if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
+	err := d.client.CompleteMessage(ctx, d.msg, nil)
+	// Terminal broker call returned: stop lock auto-renewal now (closes the
+	// spurious-renew-after-complete window). See settleReturned.
+	d.settleReturned.Store(true)
+	if err != nil {
 		return MapError(err)
 	}
 
@@ -358,8 +451,17 @@ func (d *asbDelivery) Ack(ctx context.Context) error {
 }
 
 func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) error {
-	d.stop()
+	if !d.claimSettlement() {
+		// A settlement outcome already won for this delivery. A racing
+		// second attempt must be a strict no-op: re-entering here could
+		// schedule a DUPLICATE delayed copy or Abandon a message already
+		// Completed.
+		return nil
+	}
+	// Keep lock auto-renewal ALIVE until settlement returns, THEN stop it
+	// (see Ack). LIFO: stop() then cleanupContext().
 	defer d.cleanupContext()
+	defer d.stop()
 
 	if d.receiveAndDelete {
 		// ReceiveAndDelete pre-settles at the broker: the message is gone
@@ -400,7 +502,7 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 			)
 		}
 
-		newMsg := buildRetryMessage(d.msg, d.clk)
+		newMsg := buildRetryMessage(d.msg, d.clk, d.entity)
 
 		enqueueAt := d.clk.Now().Add(after)
 		schedStart := d.clk.Now()
@@ -410,14 +512,18 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		}
 		d.metrics.Timer(MetricASBScheduleLatency, d.clk.Since(schedStart))
 
-		if err := d.client.CompleteMessage(ctx, d.msg, nil); err != nil {
+		completeErr := d.client.CompleteMessage(ctx, d.msg, nil)
+		// Terminal broker call returned: stop lock auto-renewal now. See
+		// settleReturned.
+		d.settleReturned.Store(true)
+		if completeErr != nil {
 			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
 				d.logger.Error("servicebus: failed to cancel scheduled message after CompleteMessage failure",
 					"message_id", d.msg.MessageID,
 					"error", cancelErr,
 				)
 			}
-			return MapError(err)
+			return MapError(completeErr)
 		}
 		return nil
 	}
@@ -428,7 +534,11 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		)
 	}
 
-	if err := d.client.AbandonMessage(ctx, d.msg, nil); err != nil {
+	err := d.client.AbandonMessage(ctx, d.msg, nil)
+	// Terminal broker call returned: stop lock auto-renewal now. See
+	// settleReturned.
+	d.settleReturned.Store(true)
+	if err != nil {
 		return MapError(err)
 	}
 	return nil
@@ -439,6 +549,13 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 // always reset to the entity's configured lock duration; precise time-based
 // extension is not supported by the SDK.
 func (d *asbDelivery) Extend(ctx context.Context, _ time.Time) error {
+	if d.settled.Load() {
+		// The delivery has already reached a terminal settlement outcome;
+		// renewing its lock now is meaningless and would race the terminal
+		// broker call. No-op.
+		return nil
+	}
+
 	if d.receiveAndDelete {
 		// No lock exists in ReceiveAndDelete mode; nothing to renew.
 		return nil
@@ -454,6 +571,16 @@ func (d *asbDelivery) Extend(ctx context.Context, _ time.Time) error {
 		return MapError(err)
 	}
 	return nil
+}
+
+// claimSettlement atomically claims the single settlement outcome for
+// this delivery, returning true for the ONE caller that wins the
+// false→true transition and false for every later attempt. Ack and Retry
+// call it at entry so exactly one terminal broker call is ever made,
+// regardless of concurrent settlement paths (panic recovery, timeout,
+// runtime retry).
+func (d *asbDelivery) claimSettlement() bool {
+	return d.settled.CompareAndSwap(false, true)
 }
 
 func (d *asbDelivery) stop() {
@@ -491,6 +618,18 @@ func (d *asbDelivery) autoExtendLoop(ctx context.Context, interval time.Duration
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
+			if d.settleReturned.Load() {
+				// The terminal settlement broker call has already RETURNED
+				// (Ack/Retry ran to completion): the message is settled, so a
+				// renew now would target an already-settled message — a
+				// LockLost warn plus a spurious MetricASBLockRenewalFailures
+				// bump. Stop; the deferred stop() is cancelling ctx anyway.
+				// This is gated on settleReturned, NOT `settled` (claimed at
+				// settlement ENTRY): renewal must stay alive WHILE the terminal
+				// call runs so a slow Complete's lock never lapses
+				// (renew-through-settle).
+				return
+			}
 			if !d.renewalDeadline.IsZero() && !d.clk.Now().Before(d.renewalDeadline) {
 				// Wall-time cap: a hung pipeline must not hold the message
 				// locked (invisible, never redelivered, never DLQ'd)
@@ -614,8 +753,9 @@ func (r *Receiver) pollAndConvert(ctx context.Context) ([]rawInbound, error) {
 	}
 
 	out := make([]rawInbound, 0, len(msgs))
+	entityScope := entityScopeFor(r.cfg)
 	for _, msg := range msgs {
-		env, convErr := receivedToEnvelope(msg, r.clock())
+		env, convErr := receivedToEnvelope(msg, r.clock(), entityScope)
 		if convErr != nil {
 			// Release the lock so the broker can redeliver; after
 			// MaxDeliveryCount abandons it dead-letters the poison message.

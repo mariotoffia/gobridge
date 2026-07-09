@@ -9,6 +9,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
 
@@ -28,6 +29,11 @@ var _ io.Closer = (*Store)(nil)
 type Store struct {
 	sess   *sqlSession
 	logger *slog.Logger
+
+	// metrics receives the store-health counter (MetricStoreUnhealthy) on a
+	// fatal storage fault. Defaults to a no-op meter so the store never depends
+	// on a configured backend; injectable via WithMetrics. Mirrors sqliteoutbox.
+	metrics counterMeter
 
 	// retention, when > 0, opts this store into a piggybacked retention sweep
 	// that purges entries older than the window on Write, bounding disk growth.
@@ -68,6 +74,20 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithMetrics sets the metrics exporter the store emits store-level counters
+// through (MetricStoreUnhealthy on a fatal storage fault). A nil exporter
+// leaves the no-op meter in place, so the store never depends on a configured
+// backend; the parameter is the minimal counterMeter surface and
+// ports.MetricsExporter satisfies it structurally, so the composition root can
+// inject a real exporter with no adapter glue. Mirrors sqliteoutbox.WithMetrics.
+func WithMetrics(m counterMeter) Option {
+	return func(s *Store) {
+		if m != nil {
+			s.metrics = m
+		}
+	}
+}
+
 // SetLogger sets a structured logger for trace-level diagnostics.
 //
 // Deprecated: prefer WithLogger at construction. Retained for backward
@@ -81,7 +101,7 @@ func NewStore(dbPath string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{sess: sess, clk: clock.System}
+	s := &Store{sess: sess, clk: clock.System, metrics: noopMeter{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -103,6 +123,25 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	}
 	err := s.sess.write(ctx, entry)
 	s.maybeSweep(ctx)
+	return s.observe(ctx, err)
+}
+
+// observe emits the store-health counter (MetricStoreUnhealthy) when err is a
+// fatal storage fault — disk full, corruption, read-only, or not-a-database —
+// and returns err unchanged. mapError already classifies such faults as
+// PERMANENT; surfacing them here as a metric (and an error log) gives operators
+// a dashboard signal for a failing last-resort DLQ sink that no retry can
+// clear, instead of it blending into transient-throttle noise. Non-fatal
+// errors pass through untouched. Mirrors sqliteoutbox.Store.observe.
+func (s *Store) observe(ctx context.Context, err error) error {
+	if err != nil && isFatalStorageErr(err) {
+		s.metrics.Counter(MetricStoreUnhealthy, 1,
+			shared.Tag{Key: shared.TagKeyEntity, Value: "dlq"})
+		if s.logger != nil {
+			s.logger.LogAttrs(ctx, slog.LevelError, "sqlitedlq: fatal storage fault",
+				slog.Any("error", err))
+		}
+	}
 	return err
 }
 
@@ -142,7 +181,8 @@ func (s *Store) List(ctx context.Context, filter routing.DLQFilter) ([]routing.D
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: list",
 			"route_id", filter.RouteID, "limit", filter.Limit)
 	}
-	return s.sess.list(ctx, filter)
+	entries, err := s.sess.list(ctx, filter)
+	return entries, s.observe(ctx, err)
 }
 
 // Get returns the entry with id or shared.ErrNotFound.
@@ -150,7 +190,8 @@ func (s *Store) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: get", "entry_id", id)
 	}
-	return s.sess.get(ctx, id)
+	entry, err := s.sess.get(ctx, id)
+	return entry, s.observe(ctx, err)
 }
 
 // Delete removes the entries with the supplied ids and returns the
@@ -162,7 +203,8 @@ func (s *Store) Delete(ctx context.Context, ids []string) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: delete", "count", len(ids))
 	}
-	return s.sess.delete(ctx, ids)
+	n, err := s.sess.delete(ctx, ids)
+	return n, s.observe(ctx, err)
 }
 
 // DeleteByFilter removes every entry matching the filter.
@@ -171,7 +213,8 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (i
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: delete_by_filter",
 			"route_id", filter.RouteID, "category", filter.Category)
 	}
-	return s.sess.deleteByFilter(ctx, filter)
+	n, err := s.sess.deleteByFilter(ctx, filter)
+	return n, s.observe(ctx, err)
 }
 
 // Purge deletes every entry whose failed_at is strictly before the
@@ -180,5 +223,6 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: purge", "before", before)
 	}
-	return s.sess.purge(ctx, before)
+	n, err := s.sess.purge(ctx, before)
+	return n, s.observe(ctx, err)
 }

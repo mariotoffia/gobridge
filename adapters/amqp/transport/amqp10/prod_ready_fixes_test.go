@@ -679,9 +679,11 @@ func TestRoutingType_UnmarshalText(t *testing.T) {
 
 func TestSessionOptions_ValidateSASLMechanism(t *testing.T) {
 	// Mechanisms that need no client certificate validate with a plain
-	// address.
+	// address. SASL PLAIN over plaintext is otherwise gated by
+	// c7-plain-plaintext, so opt in explicitly here — this test pins the
+	// mechanism knob, not the cleartext-credentials gate.
 	for _, ok := range []string{"", "plain", "anonymous"} {
-		opts := SessionOptions{Address: "amqp://h", SASLMechanism: ok}
+		opts := SessionOptions{Address: "amqp://h", SASLMechanism: ok, AllowInsecurePlain: true}
 		require.NoError(t, opts.validate(false), "mechanism %q must validate", ok)
 	}
 	// F10: EXTERNAL (case-insensitive) authenticates via an mTLS client

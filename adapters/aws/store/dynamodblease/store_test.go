@@ -7,9 +7,15 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
+
+// Compile-time assertion that *Store satisfies the port it adapts. It lives in
+// the external test package because the store adapter layer may not depend on
+// ports (the production package satisfies ports.LeaseStore structurally).
+var _ ports.LeaseStore = (*dynamodblease.Store)(nil)
 
 func TestMain(m *testing.M) {
 	code := m.Run()

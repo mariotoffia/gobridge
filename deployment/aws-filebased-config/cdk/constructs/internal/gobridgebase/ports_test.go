@@ -39,14 +39,39 @@ func TestDerivePortMappings(t *testing.T) {
 			},
 		},
 		{
-			name: "yaml-overrides-bootstrap-admin-monitor",
+			// c15-cdk-ports: the file-based runtime IGNORES the bridge
+			// yaml `http:` block (lib/bootstrap.checkIgnoredHTTPBlock) and
+			// binds admin/monitor to the BootstrapConfig addresses only.
+			// The derived ports MUST therefore ignore http.admin_addr /
+			// http.monitor_addr and stay on the bootstrap defaults (8080 /
+			// 8081) — otherwise target groups aim at ports nothing listens
+			// on. Mutation: repoint DerivePortMappings back at cfg.HTTP →
+			// these ports flip to 9090/9091 and this case FAILs.
+			name: "http-block-does-not-sway-ports",
 			cfg: &ports.BridgeConfig{
 				HTTP: &ports.HTTPConfig{AdminAddr: ":9090", MonitorAddr: ":9091"},
 			},
 			boot: infra.BootstrapConfig{},
 			want: map[gobridgebase.PortKind]float64{
-				gobridgebase.PortKindAdmin:   9090,
-				gobridgebase.PortKindMonitor: 9091,
+				gobridgebase.PortKindAdmin:   8080,
+				gobridgebase.PortKindMonitor: 8081,
+			},
+		},
+		{
+			// Ports follow the bootstrap listen addresses the runtime
+			// actually binds, even when the (ignored) http: block sets
+			// conflicting values. Bootstrap is the single authority.
+			name: "bootstrap-addrs-win-over-http-block",
+			cfg: &ports.BridgeConfig{
+				HTTP: &ports.HTTPConfig{AdminAddr: ":9090", MonitorAddr: ":9091"},
+			},
+			boot: infra.BootstrapConfig{
+				AdminAddr:   ":7000",
+				MonitorAddr: ":7001",
+			},
+			want: map[gobridgebase.PortKind]float64{
+				gobridgebase.PortKindAdmin:   7000,
+				gobridgebase.PortKindMonitor: 7001,
 			},
 		},
 		{

@@ -103,7 +103,7 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_max_batch_size` | int | no | 500 | Upper limit for adaptive batch scaling |
 | `drain_max_concurrency` | int | no | 10 | Max concurrent send goroutines per drain cycle |
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
-| `connect_after_lease` | bool | no | false | Delay transport connection until lease acquired |
+| `connect_after_lease` | bool | no | `true` | Defer the source transport connect until this instance wins the lease. Omitted resolves to `true` -- the safe default for the exclusive single-owner session a route source always is, since it stops a booting standby from resuming a broker-persisted subscription and consuming without the lease. Set `false` to opt out. |
 | `renew_call_timeout` | duration | no | derived | Bounds a single lease-renew store call, so a hung backend cannot stretch step-down and takeover unboundedly. Folded into the failover-safety invariant below. Empty derives `min(renew_interval/2, 5s)` (floor 1s). |
 | `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)` (floor 1ms) -- decoupled from renew so a standby polls faster than the owner renews and failover stays bounded by ~`lease_ttl`. |
 
@@ -324,7 +324,7 @@ Solid arrows are required references. Dashed arrows are optional. The validator 
 
 ## Delivery Hooks (Programmatic API)
 
-Delivery hooks are registered programmatically via the builder or runtime options -- they are not configured in YAML. A hook observes message lifecycle events without modifying the message or control flow.
+Delivery hooks are registered programmatically via the builder or runtime options -- they are not configured in YAML. A hook observes message lifecycle events; it cannot modify the message or change the settlement outcome (the callbacks have no return value the runtime acts on). It is not free: hooks run **synchronously on the delivery goroutine**, so a slow or blocking hook directly adds delivery latency and can stall the route. A panic in `OnAttempt`/`OnSettled` is contained by an internal recover (counted on the delivery-panic metric with `reason=hook` and logged) so it never alters settlement or produces a duplicate -- but keep hooks fast and non-blocking rather than relying on that.
 
 ### Registration
 
@@ -332,7 +332,7 @@ Delivery hooks are registered programmatically via the builder or runtime option
 hook := &myAuditHook{}
 
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewFactory(logger)).
+    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     RegisterDeliveryHook(hook).
     Build(ctx)
@@ -362,11 +362,16 @@ type DeliveryHook interface {
 |-------|-----------|------|--------|
 | `OnAttempt` | `ingress` | Every time a message is received from a source transport | `RouteID`, `Envelope`, `Attempt=1` |
 | `OnAttempt` | `egress` | Every send attempt (DirectHold) or drain attempt (SharedOutbox) | `RouteID`, `BindingID`, `Envelope`, `Attempt`, `MaxAttempts`, `Err` |
-| `OnSettled` | `egress` | Message delivered successfully | `Err=nil`, `Terminal=true` |
-| `OnSettled` | `egress` | Permanent failure routed to DLQ | `Err` set, `Terminal=true` |
-| `OnSettled` | `egress` | Max retries exceeded (poison) | `Err` set, `Terminal=true` |
-| `OnSettled` | `egress` | Message dropped (no DLQ, retry unsupported) | `Err` set, `Terminal=true` |
-| `OnSettled` | `egress` | Message expired before send | `Err=ErrMessageExpired`, `Terminal=true` |
+| `OnSettled` | `egress` | Delivered successfully (DirectHold send or SharedOutbox drain) | `Err=nil`, `Terminal=true` |
+| `OnSettled` | `egress` | DirectHold send or SharedOutbox drain failed permanently -- DLQ/drop | `Err` set, `Terminal=true` |
+| `OnSettled` | `egress` | DirectHold send or SharedOutbox drain hit the replay cap (poison) -- DLQ/drop | `Err` set, `Terminal=true` |
+| `OnSettled` | `ingress` | Permanent processor/resolve failure -- DLQ/drop | `Err` set, `Terminal=true` |
+| `OnSettled` | `ingress` | Replay cap reached on the processor/resolve/outbox-build path (poison) -- DLQ/drop | `Err` set, `Terminal=true` |
+| `OnSettled` | `ingress` | Message filtered by a processor -- drop/DLQ | `Err=ErrMessageFiltered`, `Terminal=true` |
+| `OnSettled` | `ingress` | Message dropped (retry unsupported, no DLQ) | `Err` set, `Terminal=true` |
+| `OnSettled` | `ingress` | Message expired before send | `Err=ErrMessageExpired`, `Terminal=true` |
+
+Terminal `Direction` reflects where the message settled. Outcomes on the send path -- a successful send, or a DirectHold send or SharedOutbox drain that failed permanently or hit the replay cap -- are stamped `egress`. Outcomes that settle at the source boundary before or without a successful egress hop -- expired, filtered, a permanent processor/resolve error, a retry-unsupported drop, or a replay-cap poison on the processor/resolve/outbox-build path -- converge through the runtime's `settleTerminal` and are stamped `ingress`. Dashboards and audit rules that key on `Direction` must expect `ingress` for these, not `egress`.
 
 `OnAttempt` fires on **every** attempt including retries. `OnSettled` fires after the message reaches a terminal state — for the SharedOutbox path, after the terminal store transition Completes. A failed Complete re-claims the record and defers the hook to the successful retry, so `OnSettled` never double-fires; conversely a crash in the window between a durable Complete and the hook can skip it for that one record (the settlement itself stays durable). Treat it as **at-most-once per completed record**, not exactly once.
 

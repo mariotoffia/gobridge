@@ -61,21 +61,39 @@ type Store struct {
 	// expires_at to the taker's clock, which removes the cross-clock skew hazard
 	// where a taker whose clock runs fast could seize an unexpired lease
 	// (finding M5). observations records, per lease, the liveness tuple
-	// (owner, version, renewed_at) this process last saw and WHEN (on this
-	// process's own clock) it first saw that exact tuple.
+	// (owner, version, renewed_at, expires_at) this process last saw and WHEN (on
+	// this process's own clock) it first saw that exact tuple. expires_at is in
+	// the tuple so a live legacy (renewed_at-absent) owner's advancing expiry
+	// resets the window rather than looking crashed (split-brain-on-foreign-rows).
 	obsMu        sync.Mutex
 	observations map[string]leaseObservation
+
+	// ttlPreflightAdvisory downgrades the build-time lease-table TTL invariant
+	// check (Preflight) from FAIL-CLOSED to advisory: an OBSERVED enabled TTL, or
+	// a DescribeTimeToLive that cannot verify the TTL state, becomes a loud WARN
+	// instead of a fatal error. Default false = production fail-closed posture;
+	// set only via WithTTLPreflightAdvisory (an explicit dev/emulator opt-out).
+	ttlPreflightAdvisory bool
 }
 
 // leaseObservation is one process's local record that a lease appeared held by
 // a particular liveness tuple, and the local-clock instant that tuple was first
-// observed. A takeover is permitted only once the SAME tuple has persisted for
-// at least the lease's own declared TTL, measured entirely on this process's
-// clock.
+// observed. The liveness tuple is (owner, version, renewedAt, expiresAt): a
+// takeover is permitted only once the SAME tuple has persisted for at least the
+// lease's own declared TTL, measured entirely on this process's clock.
+//
+// expiresAt is part of the tuple for the LEGACY (renewed_at-ABSENT) case: such a
+// row exposes NO renewed_at liveness signal, so a live owner is distinguished
+// from a crashed one ONLY by whether it keeps advancing expires_at. Including
+// expires_at means a live legacy owner's advancing expiry RESETS the observation
+// window, so it is never seized as if crashed (see observeOrSeize). For modern
+// rows renewed_at and expires_at always move together, so this term is redundant
+// but harmless there.
 type leaseObservation struct {
 	owner     string
 	version   uint64
-	renewedAt int64 // epoch millis, as written by the owner
+	renewedAt int64 // epoch millis, as written by the owner (0 == legacy/absent)
+	expiresAt int64 // epoch millis; the SOLE liveness signal for legacy rows
 	firstSeen time.Time
 }
 
@@ -112,6 +130,23 @@ func WithClock(c clock.Clock) Option {
 // WithLogger sets the structured logger for trace/debug diagnostics.
 func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
+}
+
+// WithTTLPreflightAdvisory downgrades the build-time lease-table TTL invariant
+// check from FAIL-CLOSED (the production default) to advisory. With it set, an
+// OBSERVED enabled (or enabling) DynamoDB TTL on the lease table — and a
+// DescribeTimeToLive call that cannot verify the TTL state — is logged as a loud
+// WARN and Preflight returns nil instead of a fatal error.
+//
+// This is an EXPLICIT dev/emulator opt-out ONLY. Leave it unset in production:
+// the lease row IS the monotonic fencing counter of record, and a TTL reaper
+// deleting a fence row resets its version to 1 while the outbox high-water mark
+// sits at v≫1 — every subsequent claim then fails ErrStaleFencingToken and the
+// partition splits/stalls. An inability to VERIFY the TTL state is likewise NOT
+// proof it is disabled, so it fails closed too (mirroring the base store's
+// WithSchemaPreflightAdvisory discipline).
+func WithTTLPreflightAdvisory() Option {
+	return func(s *Store) { s.ttlPreflightAdvisory = true }
 }
 
 // NewStore creates a new DynamoDB-backed LeaseStore.
@@ -287,15 +322,19 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 	}
 
 	obs, ok := s.observationFor(leaseID)
-	tupleChanged := !ok || obs.owner != row.owner || obs.version != row.version || obs.renewedAt != row.renewedAt
+	tupleChanged := !ok || obs.owner != row.owner || obs.version != row.version ||
+		obs.renewedAt != row.renewedAt || obs.expiresAt != row.expiresAt
 	if tupleChanged {
-		// First sighting of this liveness tuple, or the owner has renewed since
-		// we last looked (renewed_at advanced): (re)start the observation window.
-		// We cannot seize yet.
+		// First sighting of this liveness tuple, or the owner advanced it since we
+		// last looked (renewed_at OR expires_at moved, or the version bumped):
+		// (re)start the observation window. We cannot seize yet. Tracking
+		// expires_at is what stops a LIVE legacy owner (renewed_at absent, expiry
+		// still advancing) from ever presenting a frozen tuple and looking crashed.
 		s.recordObservation(leaseID, leaseObservation{
 			owner:     row.owner,
 			version:   row.version,
 			renewedAt: row.renewedAt,
+			expiresAt: row.expiresAt,
 			firstSeen: now,
 		})
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
@@ -307,9 +346,21 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 	// The lease's own declared TTL is expires_at - renewed_at: a difference of
 	// two timestamps BOTH written by the owner on the same clock, so it is
 	// skew-immune. We measure elapsed time against our OWN clock only.
-	observedTTL := time.Duration(row.expiresAt-row.renewedAt) * time.Millisecond
-	if observedTTL <= 0 {
-		observedTTL = ttl
+	//
+	// Legacy rows written before the renewed_at attribute existed carry
+	// renewed_at=0 (finding c13-legacy-renewedat). Treating that epoch-1970 zero
+	// as a real renewal instant makes observedTTL = expires_at - 0 ≈ the current
+	// epoch in millis (~decades), so a standby would wait DECADES to take over an
+	// orphaned legacy lease and failover would never happen. Treat a
+	// missing/legacy renewed_at (<= 0) as an unknown-but-bounded renewal time and
+	// fall back to the caller-provided TTL window so normal expiry math applies:
+	// takeover then becomes possible within one TTL of first observing the final
+	// tuple instead of never.
+	observedTTL := ttl
+	if row.renewedAt > 0 {
+		if d := time.Duration(row.expiresAt-row.renewedAt) * time.Millisecond; d > 0 {
+			observedTTL = d
+		}
 	}
 	if now.Sub(obs.firstSeen) < observedTTL {
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
@@ -320,14 +371,72 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 	// The owner has not renewed for a full TTL of our local time. Seize, fencing
 	// on the exact observed tuple so a renewal that landed after observation
 	// began (owner recovered) aborts the takeover.
+	//
+	// Legacy rows (finding c13-legacy-renewedat) carry NO renewed_at attribute,
+	// so obs.renewedAt is 0 (optionalNumAttr decodes ABSENT→0). In DynamoDB a
+	// `#ren = :obs_ren` equality is FALSE against an ABSENT attribute (only
+	// attribute_not_exists observes absence), so an equality fence would ALWAYS
+	// fail the conditional write and a crashed legacy owner would never fail over
+	// — the seize would bounce to ErrAlreadyExists forever. Fence on the ABSENCE
+	// of renewed_at instead, while STILL fencing on the observed owner AND version
+	// so two standbys observing the same legacy row cannot both seize (only one
+	// version fence wins). The SET clause then writes a positive renewed_at, so
+	// this legacy branch is a one-shot upgrade that heals the row.
+	//
+	// SAFETY INVARIANT (now ENFORCED, not assumed): a renewed_at-absent row is
+	// seized ONLY when its ENTIRE liveness tuple — owner, version AND expires_at —
+	// stayed FROZEN for a full TTL of local time. The observation tuple includes
+	// expires_at (see leaseObservation), so a LIVE legacy owner that keeps
+	// advancing expires_at (a restore, a migration, a pre-repo binary, a
+	// hand-seeded row — cases where "no live writer omits renewed_at" cannot be
+	// assumed) continually RESETS the window and is never seized. Absence of
+	// renewed_at is treated as a healed-vs-legacy marker only, NOT as liveness
+	// evidence; crashed-vs-live rests on the frozen expires_at. This is what makes
+	// the attribute_not_exists takeover safe against FOREIGN concurrent writers.
+	//
+	// The seize CONDITION also fences on expires_at STABILITY (#exp), closing the
+	// TOCTOU between our final getRow and this UpdateItem: a dead foreign owner
+	// that REVIVES in that gap and advances ONLY expires_at (owner+version
+	// unchanged, renewed_at still absent — the most common minimal-lease writer)
+	// would otherwise satisfy owner+version+attribute_not_exists(#ren) and be
+	// wrongly seized. A genuinely crashed owner has a STATIC expires_at, so the
+	// #exp fence holds and the legitimate seize still succeeds. So the seize is
+	// gated on owner + version + renewed_at-absence + expires_at-stability, and a
+	// live reviver can never be seized.
+	//
+	// A MODERN row can never present renewedAt==0: Acquire's PutItem, Renew, and
+	// every runTakeover SET clause write renewed_at = now-millis (> 0), so the
+	// attribute_not_exists(#ren) branch is legacy-exclusive. (A row with renewed_at
+	// literally present as "0" is unreachable by any write path; were one
+	// hand-crafted, attribute_not_exists would be FALSE and this seize would fail
+	// CLOSED — safe: no incorrect takeover.)
+	renCond := "#ren = :obs_ren"
+	extraValues := map[string]ddbtypes.AttributeValue{
+		":obs_own": &ddbtypes.AttributeValueMemberS{Value: obs.owner},
+		":obs_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(obs.version)},
+		":obs_ren": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(obs.renewedAt, 10)},
+	}
+	if obs.renewedAt == 0 {
+		renCond = "attribute_not_exists(#ren)"
+		delete(extraValues, ":obs_ren")
+	}
+	// Fence on the observed expires_at, built the same dynamic way as #ren so
+	// absence and presence are handled SYMMETRICALLY: comparing #exp = 0 against a
+	// MISSING attribute is FALSE in DynamoDB and would wrongly BLOCK a legitimate
+	// seize of a row that simply has no expires_at. (observeOrSeize is only reached
+	// with a positive expires_at today — Acquire routes expires_at<=0 to the
+	// released fast path — so obs.expiresAt==0 is defensive, kept for correctness
+	// if that guard ever changes or a row is hand-seeded.)
+	expCond := "#exp = :obs_expires"
+	if obs.expiresAt == 0 {
+		expCond = "attribute_not_exists(#exp)"
+	} else {
+		extraValues[":obs_expires"] = &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(obs.expiresAt, 10)}
+	}
 	tok, err := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
-		"#own = :obs_own AND #ver = :obs_ver AND #ren = :obs_ren",
-		map[string]string{"#ren": attrRenewedAt},
-		map[string]ddbtypes.AttributeValue{
-			":obs_own": &ddbtypes.AttributeValueMemberS{Value: obs.owner},
-			":obs_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(obs.version)},
-			":obs_ren": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(obs.renewedAt, 10)},
-		})
+		"#own = :obs_own AND #ver = :obs_ver AND "+renCond+" AND "+expCond,
+		map[string]string{"#ren": attrRenewedAt, "#exp": attrExpiresAt},
+		extraValues)
 	if err != nil {
 		if errors.Is(err, shared.ErrAlreadyExists) {
 			// Owner renewed under us; drop the stale window so the next poll
@@ -656,6 +765,12 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 // safeguard for operators upgrading from a build that wrote a ttl attribute;
 // it never fails EnsureTable (the DescribeTimeToLive call itself may be
 // unsupported on some emulators).
+//
+// INTENTIONAL asymmetry: this EnsureTable (provisioning / dev-and-test setup)
+// path stays WARN-only, whereas the build-time Preflight (checkLeaseTableTTL) is
+// FATAL by default for the same enabled TTL. EnsureTable is a best-effort
+// convenience that may run against an emulator; Preflight is the production
+// admission gate that must fail closed on the split-brain hazard.
 func (s *Store) warnIfTTLEnabled(ctx context.Context) {
 	if s.logger == nil {
 		return

@@ -27,6 +27,10 @@ delivery. The transaction flow is reversible, which is the point of this runbook
 2. Interpret the commit outcome you got back
    (`httpapi/admin_config.go:156-194`):
    - `{"status":"committed","version":N}` (200) — disk and runtime both updated.
+   - `{"status":"committed_applying","version":N}` (202) — the durable write
+     succeeded and the applier is still swapping (or the bridge is paused/shutting
+     down and recorded it for a later resume). The write is **retained**; the
+     runtime is converging. No rollback action — this is not a failure.
    - `{"status":"rolled_back","version":N}` (500) — the apply failed and the
      **previous on-disk config was restored**; a restart recovers the last good
      config. Disk is safe.

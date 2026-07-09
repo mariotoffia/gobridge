@@ -570,9 +570,12 @@ func TestDrainer_WaitIdle_EmptyDrainerReportsIdleAfterMinQuiet(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Min2: a Sender that ignores ctx wedges wg.Wait. The non-killing watchdog must
-// (a) emit MetricOutboxDrainStalled so the wedge is observable, and (b) NOT kill
-// the in-flight send — once it eventually returns, the batch completes normally.
+// Min2: a Sender that ignores ctx wedges wg.Wait. The watchdog must (a) emit
+// MetricOutboxDrainStalled so the wedge is observable, and (b) UNBLOCK the
+// drainer within the bound (batchTimeout+drainWedgeGrace) instead of blocking
+// forever — otherwise a single hung sender wedges every other record and
+// shutdown. Because the send never returned, the record must NOT be falsely
+// completed: it stays Claimed and is re-drained later (at-least-once).
 // ---------------------------------------------------------------------------
 
 // signalingClock announces the moment the drainer registers a timer, so the test
@@ -610,7 +613,7 @@ func (e *stallSignalExporter) Counter(name string, value int64, tags ...shared.T
 	}
 }
 
-func TestDrainer_WedgedSender_EmitsDrainStalledWithoutKilling(t *testing.T) {
+func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) {
 	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 1)}
 	metrics := &stallSignalExporter{recordingExporter: newRecordingExporter(), stalled: make(chan struct{}, 1)}
 	rec := deferredTestRecord(t, "rec-wedge", "")
@@ -624,6 +627,9 @@ func TestDrainer_WedgedSender_EmitsDrainStalledWithoutKilling(t *testing.T) {
 		<-unblock // deliberately IGNORE ctx: simulate a sender that wedges the loop
 		return nil
 	}}
+	// Never leak the abandoned goroutine out of the test: release the hung send
+	// after the assertions so it can return.
+	defer close(unblock)
 
 	d := New(Config{
 		OutboxStore:  store,
@@ -652,14 +658,21 @@ func TestDrainer_WedgedSender_EmitsDrainStalledWithoutKilling(t *testing.T) {
 	clk.Advance(3 * time.Hour) // fire the watchdog (past batchTimeout+drainWedgeGrace)
 	<-metrics.stalled          // the drain-stalled signal fired: the watchdog case was taken
 
-	// Non-killing: releasing the wedged send lets the batch complete normally.
-	close(unblock)
+	// The drainer must UNBLOCK now even though the send is still hung on
+	// <-unblock. If waitBatch still blocked on <-done this receive would hang
+	// (and the -timeout in CI would fail the test) — that is the wedge the
+	// finding is about.
 	res := <-resCh
 	if res.err != nil {
-		t.Fatalf("drainBatch err = %v, want nil", res.err)
+		t.Fatalf("drainBatch err = %v, want nil (a wedged sender must not surface an error)", res.err)
 	}
-	if res.success != 1 {
-		t.Errorf("success = %d, want 1 (the wedged send eventually completed; the watchdog never killed it)", res.success)
+	if res.success != 0 {
+		t.Errorf("success = %d, want 0 (the send never returned, so nothing may be counted delivered)", res.success)
+	}
+	// No false completion: the send never returned nil, so Complete must never
+	// have run — the record stays Claimed and is re-drained later (at-least-once).
+	if got := store.completedIDs(); len(got) != 0 {
+		t.Errorf("completed = %v, want [] (a record may only be Completed on durable send success)", got)
 	}
 	if got := metrics.sum(shared.MetricOutboxDrainStalled, nil); got != 1 {
 		t.Errorf("OutboxDrainStalled = %d, want 1 (emitted once for the wedged batch)", got)

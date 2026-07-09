@@ -156,7 +156,17 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		// so a partition or broker restart does not turn into a route
 		// crash loop. See isReconnectRaceError.
 		if isPermanentError(err) {
-			if !isReconnectRaceError(err, r.cfg.Exclusive) || raceRetries >= reconnectRaceRetryBudget {
+			// The stale-exclusive-consumer failover race gets a
+			// heartbeat-derived budget: the broker holds a partitioned peer's
+			// exclusive consumer until ~2x heartbeat reaps it, so a raised
+			// heartbeat needs a longer standby window than the fixed default.
+			// Other reconnect races (404 topology re-declare) keep the fixed
+			// budget. See exclusiveRaceRetryBudget.
+			budget := reconnectRaceRetryBudget
+			if exclusiveStaleConsumerRace(err, r.cfg.Exclusive) {
+				budget = exclusiveRaceRetryBudget(r.heartbeat())
+			}
+			if !isReconnectRaceError(err, r.cfg.Exclusive) || raceRetries >= budget {
 				if logging.DebugEnabled(r.logger) {
 					r.logger.Log(ctx, logging.LevelDebug,
 						"amqp091: receiver stopping on permanent error",
@@ -171,7 +181,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 				r.logger.Warn("amqp091: permanent-classified consume error retried as reconnect race",
 					"queue", r.cfg.QueueName,
 					"attempt", raceRetries,
-					"budget", reconnectRaceRetryBudget,
+					"budget", budget,
 					"error", err,
 				)
 			}
@@ -254,19 +264,82 @@ func isPermanentError(err error) bool {
 // topology-re-declare window after a broker restart) while a genuine
 // misconfiguration still surfaces within half a minute.
 //
-// ponytail: ADR candidate — exclusive-consumer warm-standby semantics.
-// Today a SUSTAINED 403 ACCESS_REFUSED on an exclusive consumer exhausts
-// this ~25-30s budget and FAILS the component. For an intentional
-// active/standby topology (two replicas both consuming an exclusive queue,
-// the standby waiting to take over when the active dies) that is wrong: the
-// standby should wait INDEFINITELY for the exclusive lock, reporting
-// Degraded (not failing), and RabbitMQ's x-single-active-consumer
-// (declared via queue_arguments) is the first-class primitive for it.
-// Changing this is a real behaviour change (a currently-failing standby
-// would instead stay up in a Degraded wait state, and health/alerting
-// semantics shift), so it is deliberately NOT made here — see the audit
-// M-5 finding. Flagged to the maintainer as an ADR.
+// It is the FLOOR and the fixed budget for the 404 topology-re-declare
+// race; the stale-exclusive-consumer (403) race instead derives a
+// heartbeat-aware budget from it (see exclusiveRaceRetryBudget) so a
+// raised heartbeat does not exhaust the standby before it can take over.
 const reconnectRaceRetryBudget = 10
+
+// exclusiveRaceRetryMaxBudget caps the heartbeat-derived exclusive-failover
+// retry budget so a large heartbeat cannot mask a GENUINE 403 permission error
+// indefinitely. exclusiveStaleConsumerRace treats ANY 403 on an exclusive
+// consumer as the failover race, so an unbounded budget would keep retrying a
+// real authorization misconfiguration for as long as the derived window —
+// heartbeat:600s would otherwise yield ~360 retries (~30 min) of "retrying" a
+// dead-on-arrival permission error. At the saturated backoff (~receiverRetryMax
+// per retry) 48 retries is ~4 minutes of standby wait: comfortably past the
+// ~2x-heartbeat stale-consumer hold for every realistic heartbeat, yet a
+// genuine 403 now surfaces in minutes, not tens of them.
+const exclusiveRaceRetryMaxBudget = 48
+
+// exclusiveStaleConsumerRace reports whether err is specifically the
+// stale-exclusive-consumer failover race — a 403 ACCESS_REFUSED observed while
+// THIS receiver is an exclusive consumer — as opposed to the 404
+// topology-re-declare race. Only this case widens the retry budget with the
+// heartbeat (exclusiveRaceRetryBudget); a 404 keeps the fixed
+// reconnectRaceRetryBudget. A non-exclusive 403 is a real permission error and
+// is not a race at all (isReconnectRaceError already refuses to retry it).
+func exclusiveStaleConsumerRace(err error, exclusive bool) bool {
+	if !exclusive {
+		return false
+	}
+	var be *shared.BridgeError
+	if !errors.As(err, &be) {
+		return false
+	}
+	return be.Code == shared.ErrCodeNotAuthorized
+}
+
+// exclusiveRaceRetryBudget derives the failover retry budget for a stale
+// exclusive consumer from the session heartbeat. After a partition the broker
+// keeps the dead peer's exclusive consumer until missed heartbeats (~2x the
+// interval) reap the connection, so the standby must retry the 403
+// ACCESS_REFUSED for LONGER than that hold or it fails the component before it
+// can take over. The fixed reconnectRaceRetryBudget (~25-30s on the capped
+// backoff) suits the 10s default heartbeat but is too short once the heartbeat
+// is raised (heartbeat:30s → the stale consumer lingers ~60s, well past a
+// fixed-10 budget → the standby wrongly fails).
+//
+// Once the exponential backoff saturates, each retry is ~receiverRetryMax
+// apart, so n retries cover ~n*receiverRetryMax of standby wait. We size n for
+// ~3x the heartbeat of wait (comfortably past the ~2x-heartbeat stale-consumer
+// hold, with margin), never drop BELOW the fixed default (so shorter heartbeats
+// keep today's behaviour), and never exceed exclusiveRaceRetryMaxBudget (so a
+// pathologically large heartbeat cannot indefinitely mask a genuine 403). Pure
+// arithmetic on the configured heartbeat — deterministic and clock-free.
+func exclusiveRaceRetryBudget(heartbeat time.Duration) int {
+	if heartbeat <= 0 {
+		return reconnectRaceRetryBudget
+	}
+	n := int((3 * heartbeat) / receiverRetryMax)
+	if n < reconnectRaceRetryBudget {
+		return reconnectRaceRetryBudget
+	}
+	if n > exclusiveRaceRetryMaxBudget {
+		return exclusiveRaceRetryMaxBudget
+	}
+	return n
+}
+
+// heartbeat returns the session's (defaulted) heartbeat interval, or 0 when no
+// session is bound. It feeds exclusiveRaceRetryBudget so the exclusive-consumer
+// failover window scales with the negotiated heartbeat.
+func (r *Receiver) heartbeat() time.Duration {
+	if r.session == nil {
+		return 0
+	}
+	return r.session.opts.Heartbeat
+}
 
 // isReconnectRaceError reports whether a permanent-classified consume
 // error is plausibly a transient broker race around a reconnect and

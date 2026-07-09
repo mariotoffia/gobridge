@@ -49,6 +49,17 @@ type SessionOptions struct {
 	//   - "anonymous" — SASL ANONYMOUS.
 	SASLMechanism string `mapstructure:"sasl_mechanism" yaml:"sasl_mechanism" json:"sasl_mechanism"`
 
+	// AllowInsecurePlain permits SASL PLAIN (username/password) over a
+	// non-TLS scheme. SASL PLAIN transmits the credentials in cleartext
+	// frames, so by default it is REJECTED at config validation on a
+	// plaintext "amqp://" (or schemeless) address — the username and
+	// password would travel on the wire in the clear (c7-plain-plaintext).
+	// Set this to true to explicitly opt into that insecure path (e.g. a
+	// trusted private network or local development); it is a deliberate,
+	// auditable override, never the default. It has no effect on a TLS
+	// scheme (amqps:// / amqp+ssl://), where PLAIN is already protected.
+	AllowInsecurePlain bool `mapstructure:"allow_insecure_plain" yaml:"allow_insecure_plain" json:"allow_insecure_plain"`
+
 	// LinkCloseTimeout is the deadline for closing an AMQP link or
 	// session during cleanup (e.g. after a failure or reconnect).
 	// Defaults to 5s if zero.
@@ -219,7 +230,7 @@ func DefaultSessionOptions() SessionOptions {
 		ReconnectDelay:            1 * time.Second,
 		ReconnectMaxDelay:         30 * time.Second,
 		ReconnectMultiplier:       2.0,
-		IdleTimeout:               2 * time.Minute,
+		IdleTimeout:               defaultIdleTimeout,
 		MaxFrameSize:              65536,
 		ConnectionMonitorFallback: 30 * time.Second,
 	}
@@ -261,6 +272,20 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 				"use amqps:// or amqp+ssl:// (refusing to connect in cleartext)", o.Address))
 	}
 
+	// c7-plain-plaintext: SASL PLAIN (explicit sasl_mechanism=plain, or
+	// the inferred default when a username is present) sends the
+	// credentials in cleartext. Over a non-TLS scheme that puts them on
+	// the wire in the clear, so reject unless allow_insecure_plain is set.
+	// When credentialsPending, a username may still arrive via
+	// credentials_uri and select inferred PLAIN, so the inferred
+	// empty-username case naturally passes here (usesSASLPlain is false)
+	// and Config.ApplyCredentials re-runs this gate post-resolution. An
+	// EXPLICIT sasl_mechanism=plain is rejected now regardless: the scheme
+	// is fixed, so no resolution can make it secure.
+	if err := o.validatePlainOverPlaintext(); err != nil {
+		return err
+	}
+
 	// F10: SASL EXTERNAL authenticates via the mTLS client certificate.
 	// Without enabled TLS and client key-pair material it surfaces only as
 	// an opaque broker SASL failure at dial; reject it up front. When
@@ -288,6 +313,74 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 // amqpMinFrameSize is the smallest max-frame-size permitted by the AMQP
 // 1.0 spec (§2.7.1 open.max-frame-size, MIN-MAX-FRAME-SIZE).
 const amqpMinFrameSize = 512
+
+// defaultIdleTimeout is the default connection idle timeout when none is
+// configured. go-amqp uses it as the read deadline for the connection
+// (conn.go: SetReadDeadline(now + idleTimeout) before every read) and
+// advertises idle_timeout/2 to the broker, so it is the upper bound on
+// how long a SILENTLY half-open connection (SIGKILL / blackhole / NAT
+// drop that never FINs) goes undetected — no bytes arrive, the read
+// deadline fires, and the monitor reconnects.
+//
+// c7-idle-timeout: this is intentionally HA-oriented (<= 30s) so
+// half-open detection meets the 30-60s failover target — a standby can
+// reattach well inside the window. The monitor ticker deliberately does
+// NOT probe a live connection (see ConnectionMonitorFallback), so this
+// idle timeout is the ONLY thing that surfaces a half-open drop; a longer
+// value (the previous 2m default) lagged standby reattach past 60s.
+//
+// Tradeoff: a lower idle timeout means keepalive frames flow more often
+// and a genuine network stall longer than the timeout tears down an
+// otherwise-healthy connection (the reconnect loop re-establishes it).
+// Operators on a high-latency/lossy link who prefer fewer reconnects over
+// fast failover may raise idle_timeout explicitly; an explicit value is
+// always honored.
+const defaultIdleTimeout = 30 * time.Second
+
+// usesSASLPlain reports whether the effective SASL layer will be PLAIN,
+// which transmits the username/password to the broker. It is PLAIN when:
+//
+//   - the Address URL carries userinfo. go-amqp's dialConn (v1.5.1
+//     conn.go:224) UNCONDITIONALLY does cp.SASLType = SASLTypePlain(user,
+//     pass) whenever u.User != nil, OVERRIDING whatever SASLType the
+//     adapter assembled from SASLMechanism. So credentials embedded in the
+//     Address (amqp://user:pass@host, or even username-only) put PLAIN on
+//     the wire regardless of sasl_mechanism — this branch must win over
+//     the mechanism switch below.
+//   - sasl_mechanism is explicitly "plain", or
+//   - the mechanism is unset and a username is present — the inferred
+//     default applied by defaultDial.
+func (o *SessionOptions) usesSASLPlain() bool {
+	if u, err := url.Parse(o.Address); err == nil && u.User != nil {
+		return true
+	}
+	switch strings.ToLower(o.SASLMechanism) {
+	case saslMechanismPlain:
+		return true
+	case "":
+		return o.Username != ""
+	default:
+		return false
+	}
+}
+
+// validatePlainOverPlaintext fails closed when SASL PLAIN credentials
+// would travel over a non-TLS scheme. SASL PLAIN sends the
+// username/password in cleartext frames, so on a plaintext "amqp://" (or
+// schemeless) address they are exposed on the wire (c7-plain-plaintext).
+// The only escape hatch is an explicit allow_insecure_plain opt-in, so
+// the insecure path is a deliberate, auditable operator decision rather
+// than a silent default. A TLS scheme (amqps:// / amqp+ssl://) already
+// protects the credentials, so it passes regardless of the opt-in.
+func (o *SessionOptions) validatePlainOverPlaintext() error {
+	if o.usesSASLPlain() && !o.AllowInsecurePlain && !schemeUsesTLS(o.Address) {
+		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"amqp10: SASL PLAIN sends username/password in cleartext but address %q is not a TLS scheme; "+
+				"use amqps:// or amqp+ssl://, or set allow_insecure_plain=true to send credentials in cleartext anyway",
+			o.Address))
+	}
+	return nil
+}
 
 // schemeUsesTLS reports whether address carries a scheme for which
 // go-amqp negotiates TLS ("amqps" or "amqp+ssl"). It mirrors the SDK's
@@ -391,7 +484,7 @@ func (o *SessionOptions) applyDefaults() {
 		o.ReconnectMultiplier = 2.0
 	}
 	if o.IdleTimeout <= 0 {
-		o.IdleTimeout = 2 * time.Minute
+		o.IdleTimeout = defaultIdleTimeout
 	}
 	if o.MaxFrameSize == 0 {
 		o.MaxFrameSize = 65536
@@ -517,6 +610,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	}
 	if v, ok := optString(m, "sasl_mechanism"); ok {
 		opts.SASLMechanism = v
+	}
+	if v, ok := optBool(m, "allow_insecure_plain"); ok {
+		opts.AllowInsecurePlain = v
 	}
 
 	if sub, ok := m["tls"].(map[string]any); ok {

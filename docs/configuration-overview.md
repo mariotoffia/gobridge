@@ -35,6 +35,26 @@ flowchart LR
 5. **Build** -- The `Builder` (or `Supervisor`) creates a `Runtime` with live transports, sessions, and routes.
 6. **Watch** *(optional)* -- A `Watcher` detects source changes and feeds them back into the lifecycle.
 
+## Start-Empty (missing or route-less config)
+
+A missing or route-less config is a supported, healthy state -- not a startup
+failure. The shipped file-based deployment profile treats a config file that does
+not exist as start-empty: it logs a **WARN**, boots with an empty logical config
+(`bridge.id` only, zero routes), and passes health checks. A config that carries a
+valid `bridge.id` and no routes is equally valid -- validation requires `bridge.id`,
+not a route graph. The bridge converges as routes are added: push a config change
+through the admin config API (see [HTTP API](http-api.md)) or edit the watched
+config document, and the running runtime picks it up. Nothing is bridged until
+routes exist, so a start-empty bridge is a no-op until then; the WARN is the signal
+that no config file was found.
+
+The reference binary `cmd/gobridge/main.go` behaves the same way: a `-config`
+path that does not exist starts empty with the same WARN, and the bridge converges
+when the file is created or a config is pushed through the admin config API. Any
+other load failure (unreadable or unparseable file) still exits non-zero -- an
+existing config that stops parsing is an error, not an invitation to silently drop
+every route.
+
 ## Configuration Sources
 
 ### File Source (YAML / JSON)
@@ -181,7 +201,7 @@ Load config and wire everything in Go:
 cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
 
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewFactory(logger)).
+    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     RegisterProcessor("my-filter", filterProc).
     Build(ctx)
@@ -260,25 +280,47 @@ func main() {
     )
     cfg, _ := mgr.Load(ctx)
 
-    // 4. Create supervisor with reconfiguration strategy
+    // 4. Create the reload pipeline. It merges the admin API's in-band config
+    //    commits with the file watcher's debounced changes onto the single
+    //    channel the supervisor drains, and drops the watcher's re-emit of a
+    //    config an admin commit already applied in-band. It is defined in the
+    //    reference binary (cmd/gobridge/reload.go); it is not exported.
+    pipeline := newReloadPipeline(reg, logger)
+
+    // 5. Create the supervisor. File-change debouncing is done OUTSIDE the
+    //    supervisor (step 7) so admin commits can bypass the window and apply
+    //    in-band, so the supervisor applies each config the pipeline forwards
+    //    immediately (DirectStrategy). WithOnSwap lets the pipeline observe swap
+    //    results so a commit can report a definitive outcome.
     sup := bridge.NewSupervisor(
         bridge.WithSupervisorLogger(logger),
-        bridge.WithReconfigStrategy(
-            bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil),
-        ),
+        bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
+        bridge.WithOnSwap(pipeline.onSwap),
     )
 
-    // 5. Register transport and store factories
+    // 6. Register transport and store factories
     sup.RegisterTransport("mqtt", paho.NewFactory(logger))
     sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
 
-    // 6. Start watching and run
+    // 7. Debounce raw file changes with an EXTERNAL WindowedStrategy, feed them
+    //    into the pipeline, and run the supervisor off the pipeline's channel.
     watchCh, _ := mgr.Watch(ctx)
     defer mgr.Stop()
 
-    sup.Run(ctx, cfg, watchCh) // blocks until context cancelled
+    windowedFile := bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil).
+        Filter(ctx, watchCh)
+    go pipeline.run(ctx, windowedFile)
+
+    sup.Run(ctx, cfg, pipeline.changes()) // blocks until context cancelled
 }
 ```
+
+The supervisor runs `DirectStrategy` and applies each config the pipeline forwards.
+Windowing (`WindowedStrategy`) is applied externally on the raw file-watch channel,
+not inside the supervisor, so an in-band admin commit is not delayed by the file
+debounce window and a commit costs exactly one swap. Copying an older wiring that
+puts `WindowedStrategy` on the supervisor and runs `sup.Run(ctx, cfg, watchCh)`
+directly bypasses this in-band commit path.
 
 ## Dynamic Reconfiguration
 

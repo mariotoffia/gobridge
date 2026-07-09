@@ -288,11 +288,12 @@ type Layer struct {
 
 | Section | Merge Behaviour |
 |---------|-----------------|
-| `bridge` | Overlay non-zero fields replace base |
+| `bridge` | Overlay non-zero fields replace base; `cluster` replaces base when non-nil (endpoint map cloned) |
 | `config_watch` | Overlay replaces base entirely if non-nil |
-| `http` | Overlay replaces base entirely if non-nil |
+| `http` | **Field-level** -- non-empty overlay scalar fields win, empty fields keep the base value; the `admin_api_key` / `monitor_api_key` secrets are preserved when the overlay omits them or echoes back the `"[REDACTED]"` marker (a partial PATCH never wipes a configured key) |
 | `stores` | Overlay replaces per role (`lease`, `outbox`, `dlq` individually) |
-| `sessions`, `receivers`, `senders`, `bindings`, `routes` | **Merge by ID** -- matching IDs are replaced, new IDs are appended |
+| `sessions`, `receivers`, `senders`, `bindings` | **Merge by ID** -- new IDs append; a matching ID is merged **field-level**, and the base entry's typed plugin `Config` (broker URL, credentials, options) is carried forward unless the overlay changes the transport/discriminator |
+| `routes` | **Merge by ID** -- new IDs append; a matching ID is wholesale-replaced (routes carry no plugin `Config`, so nothing can be lost) |
 
 ### Behaviour
 
@@ -344,16 +345,17 @@ watchCh, _ := mgr.Watch(ctx)
 
 ## Config Persistence (Write)
 
-**Package:** `github.com/mariotoffia/gobridge/config`
+**Package:** `github.com/mariotoffia/gobridge/config/parser`
 
-The `WriteFile` function provides atomic YAML writes with permission preservation:
+The `parser.WriteFile` function provides atomic YAML writes with permission preservation:
 
 ```go
-err := config.WriteFile("bridge.yaml", cfg)
+err := parser.WriteFile("bridge.yaml", cfg)
 ```
 
 - Writes to a temporary file in the same directory, then atomically renames.
-- Preserves original file permissions (defaults to `0644` for new files).
+- New files are created `0600` (not world-readable) because a config can embed secrets; an existing file keeps its current permissions.
+- fsyncs the file and the parent directory so the rename survives a crash.
 - Readers never see a partially written file.
 - Used by the HTTP admin API for transactional config commits.
 

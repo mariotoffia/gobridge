@@ -165,6 +165,11 @@ func TestSessionOptionsFromMap(t *testing.T) {
 				"username":        "user1",
 				"password":        "pass1",
 				"container_id":    "my-container",
+				// SASL PLAIN over plaintext amqp:// is gated by
+				// c7-plain-plaintext; this parse-shape test opts in so the
+				// username/password fields decode without the security gate
+				// firing (the gate itself is covered in config_plaintext_test.go).
+				"allow_insecure_plain": true,
 			},
 			check: func(t *testing.T, opts SessionOptions) {
 				t.Helper()
@@ -241,8 +246,8 @@ func TestSessionOptionsFromMap(t *testing.T) {
 				if opts.ReconnectDelay != 1*time.Second {
 					t.Fatalf("ReconnectDelay = %v, want default 1s", opts.ReconnectDelay)
 				}
-				if opts.IdleTimeout != 2*time.Minute {
-					t.Fatalf("IdleTimeout = %v, want default 2m", opts.IdleTimeout)
+				if opts.IdleTimeout != 30*time.Second {
+					t.Fatalf("IdleTimeout = %v, want default 30s", opts.IdleTimeout)
 				}
 				if opts.MaxFrameSize != 65536 {
 					t.Fatalf("MaxFrameSize = %d, want default 65536", opts.MaxFrameSize)
@@ -338,8 +343,8 @@ func TestDefaultSessionOptions(t *testing.T) {
 	if opts.ReconnectDelay != 1*time.Second {
 		t.Fatalf("ReconnectDelay = %v, want 1s", opts.ReconnectDelay)
 	}
-	if opts.IdleTimeout != 2*time.Minute {
-		t.Fatalf("IdleTimeout = %v, want 2m", opts.IdleTimeout)
+	if opts.IdleTimeout != 30*time.Second {
+		t.Fatalf("IdleTimeout = %v, want 30s", opts.IdleTimeout)
 	}
 	if opts.MaxFrameSize != 65536 {
 		t.Fatalf("MaxFrameSize = %d, want 65536", opts.MaxFrameSize)
@@ -394,8 +399,8 @@ func TestSessionOptions_ApplyDefaults(t *testing.T) {
 	if opts.ReconnectDelay != 1*time.Second {
 		t.Fatalf("ReconnectDelay = %v, want 1s", opts.ReconnectDelay)
 	}
-	if opts.IdleTimeout != 2*time.Minute {
-		t.Fatalf("IdleTimeout = %v, want 2m", opts.IdleTimeout)
+	if opts.IdleTimeout != 30*time.Second {
+		t.Fatalf("IdleTimeout = %v, want 30s", opts.IdleTimeout)
 	}
 	if opts.MaxFrameSize != 65536 {
 		t.Fatalf("MaxFrameSize = %d, want 65536", opts.MaxFrameSize)

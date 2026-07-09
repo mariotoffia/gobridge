@@ -90,4 +90,59 @@
 // service-mesh address) so a single Address transparently follows
 // failover. ponytail: client-side endpoint-list failover is deliberately
 // out of scope — HA is delegated to the network/broker layer.
+//
+// Half-open detection: the connection monitor does NOT probe a live
+// connection, so a SILENT half-open drop (SIGKILL / blackhole / NAT
+// eviction with no TCP FIN) is surfaced only by SessionOptions.IdleTimeout
+// — go-amqp arms it as the connection read deadline. The default is
+// therefore an HA-oriented 30s (see defaultIdleTimeout) so half-open
+// detection plus standby reattach meets the 30-60s failover target; a
+// longer value lags reattach. The tradeoff is more keepalive traffic and
+// that a network stall longer than the timeout drops an otherwise-healthy
+// connection (the reconnect loop re-establishes it); operators on a
+// lossy/high-latency link may raise IdleTimeout explicitly.
+//
+// # Durable Subscriptions & the Dedicated-Session Contract
+//
+// CONTRACT: a durable receiver (durability_mode > 0) MUST be placed on its
+// OWN dedicated Session (its own session_id) — do not multiplex a durable
+// receiver on the same session as other live receivers or senders.
+//
+// Why: one Session owns exactly one AMQP connection and multiplexes ALL of
+// its receivers and senders over it. Closing a durable receiver cannot use
+// a normal link detach, because the pinned go-amqp (v1.5.1) can only emit a
+// CLOSING detach (Detach{Closed:true}); Artemis reads that as UNSUBSCRIBE
+// and DESTROYS the durable terminus (dropping every retained message). The
+// only way to detach the live durable link while PRESERVING the durable
+// subscription is to drop the whole connection — a non-closing detach of
+// every link on it (see Receiver.closeLink, c7-durable-close).
+//
+// Consequence (blast radius): closing a durable receiver forces a full
+// connection teardown, which transiently blips EVERY sibling link on the
+// same Session — in-flight sender publishes must relatch and non-durable
+// receivers redeliver. The reconnect loop re-establishes the connection and
+// siblings resume, so recovery is BOUNDED, but the disruption is real.
+// Isolating durable receivers on a dedicated session confines a durable
+// close to that session and keeps unrelated traffic untouched. If go-amqp
+// ever supports a non-closing detach (or an Artemis unsubscribe-vs-detach
+// distinction), the connection teardown can be narrowed to a link detach.
+//
+// # Credentials on the Wire
+//
+// SASL PLAIN transmits the username/password in cleartext frames. Config
+// validation therefore REJECTS PLAIN (explicit sasl_mechanism=plain, the
+// inferred default when a username is present, or credentials embedded in
+// the Address URL — go-amqp selects PLAIN from userinfo) over a non-TLS
+// scheme by default (c7-plain-plaintext, fail-closed). Use amqps:// /
+// amqp+ssl://, switch to SASL EXTERNAL (mTLS), or set
+// allow_insecure_plain=true to opt into the insecure path on a trusted
+// network as a deliberate, auditable choice.
+//
+// The gate holds on EVERY credential-injection path, not just the build
+// boundary: config/factory construction, Config.ApplyCredentials, AND the
+// runtime rotation path Session.ApplyCredentials. A live rotation that
+// would newly expose PLAIN over a non-TLS scheme is REFUSED and the
+// session keeps its last-good credentials (no cleartext re-dial) — so a
+// session that started without a username cannot later be rotated into a
+// cleartext credential leak.
 package amqp10

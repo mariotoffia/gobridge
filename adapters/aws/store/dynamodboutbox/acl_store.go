@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -60,6 +62,27 @@ const (
 	hasExpiryFlag     = "1"
 	expiryIndexName   = "ExpiryIndex"
 	recordIDIndexName = "RecordIDIndex"
+
+	// attrClaimSort is the age-ordered composite sort attribute that keys the
+	// ClaimIndex GSI. It encodes (created_at millis, seq) as a zero-padded
+	// lexicographically-sortable string (see claimSortKey), so a Query on the
+	// ClaimIndex returns a partition's claimable records OLDEST-FIRST and Claim
+	// can STOP after `limit` instead of scanning the whole partition
+	// (c13-claim-quadratic). It is stamped once by Persist and removed at a
+	// terminal transition (Complete/Expire) so the index is sparse — it holds
+	// exactly the not-yet-terminal (pending/claimed) records — mirroring the
+	// has_expiry/ExpiryIndex pattern. Claim/Release never rewrite it, so a
+	// reclaimed record keeps its original age position.
+	attrClaimSort  = "claim_sort"
+	claimIndexName = "ClaimIndex"
+
+	// claimIndexPageLimit caps a single ClaimIndex Query page. Claim requests
+	// min(limit, claimIndexPageLimit) age-ordered items per page and stops once
+	// `limit` records are claimed, so a healthy pending backlog drains in O(limit)
+	// Query cost regardless of partition depth. Paging continues only when a
+	// page under-fills because candidates lost a fencing race or were claimed by
+	// a live owner (filtered out) — bounded by contention, not by backlog.
+	claimIndexPageLimit = 1000
 
 	// claimRetentionFactor bounds how many claimable candidates a single Claim
 	// RETAINS in memory while it pages the partition to exhaustion: the oldest
@@ -188,6 +211,17 @@ type Store struct {
 	// It is a bounded LRU so claimed-but-never-completed entries (lease
 	// churn) cannot grow it without limit; see keyCache (J-N1).
 	keys *keyCache
+
+	// claimIndexAbsent latches true the first time a ClaimIndex Query fails
+	// because the GSI cannot serve the age-ordered claim query — it does not
+	// exist (an un-migrated table) OR it exists but is not Projection: ALL, so
+	// the claim FilterExpression's status attribute is not projected. Once
+	// latched, Claim skips the age-ordered fast path and uses the always-correct
+	// exhaustive base-table scan, so existing/misprojected tables keep working
+	// (c13-claim-quadratic backward-compat). claimIndexWarnOnce ensures the
+	// fallback is announced with exactly one WARN.
+	claimIndexAbsent   atomic.Bool
+	claimIndexWarnOnce sync.Once
 }
 
 type recordKey struct {
@@ -306,6 +340,7 @@ func (s *Store) CreateTable(ctx context.Context) error {
 			{AttributeName: aws.String(attrHasExpiry), AttributeType: ddbtypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("expires_at"), AttributeType: ddbtypes.ScalarAttributeTypeN},
 			{AttributeName: aws.String("record_id"), AttributeType: ddbtypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String(attrClaimSort), AttributeType: ddbtypes.ScalarAttributeTypeS},
 		},
 		GlobalSecondaryIndexes: []ddbtypes.GlobalSecondaryIndex{
 			{
@@ -335,6 +370,25 @@ func (s *Store) CreateTable(ctx context.Context) error {
 					{AttributeName: aws.String("record_id"), KeyType: ddbtypes.KeyTypeHash},
 				},
 				Projection: &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeKeysOnly},
+			},
+			{
+				// ClaimIndex is the per-partition age-ordered access path
+				// (c13-claim-quadratic): hash=PK, range=claim_sort, so a Query
+				// returns a partition's claimable records OLDEST-FIRST and Claim
+				// stops after `limit` instead of paging the whole partition to
+				// find the oldest-N (which went O(backlog) after an outage). It
+				// is sparse — only records carrying claim_sort (pending/claimed,
+				// stamped at Persist and removed at Complete/Expire) are indexed,
+				// so it holds exactly the not-yet-terminal working set. It
+				// projects ALL so a claim query yields the full item without a
+				// base-table read; the trade-off is claim_sort-scoped write
+				// amplification on Claim, bounded by the in-flight backlog.
+				IndexName: aws.String(claimIndexName),
+				KeySchema: []ddbtypes.KeySchemaElement{
+					{AttributeName: aws.String("PK"), KeyType: ddbtypes.KeyTypeHash},
+					{AttributeName: aws.String(attrClaimSort), KeyType: ddbtypes.KeyTypeRange},
+				},
+				Projection: &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeAll},
 			},
 		},
 		BillingMode: ddbtypes.BillingModePayPerRequest,
@@ -417,6 +471,12 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 			return err
 		}
 		item["seq"] = &ddbtypes.AttributeValueMemberN{Value: u64(seqs[i])}
+		// Stamp the age-ordered ClaimIndex key now that both created_at (from
+		// marshalRecord) and the allocated seq are known, so Claim can query
+		// the partition oldest-first and stop after `limit` (c13-claim-quadratic).
+		item[attrClaimSort] = &ddbtypes.AttributeValueMemberS{
+			Value: claimSortKey(numAttrI64(item, "created_at"), seqs[i]),
+		}
 
 		_, err = s.client.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName:           aws.String(s.table),
@@ -425,8 +485,31 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 		})
 		if err != nil {
 			if isConditionFailed(err) {
-				duplicates++
-				continue
+				// attribute_not_exists(SK) failed: a row already occupies this
+				// sort key. Verify it is the SAME logical record before treating
+				// it as an idempotent duplicate. New-scheme SKs are injective
+				// (finding 1), so a conflict with a DIFFERENT (envelope_id,
+				// binding_id) can only be a CROSS-SCHEME collision with a
+				// pre-upgrade raw-concat row — e.g. new sortKey("a#b","c") ==
+				// old raw "OUTBOX#a%23b#c" written for env "a%23b". Blindly
+				// counting that a duplicate would ack and DROP this distinct
+				// message: the exact silent loss finding 1 closes. Surface it as
+				// a transient conflict so the record is RETRIED (never dropped);
+				// it self-heals once the legacy row is claimed, completed and
+				// TTL-compacted away (c13 review MEDIUM — cross-scheme migration).
+				same, verr := s.conflictIsSameRecord(ctx, item, records[i])
+				if verr != nil {
+					return verr
+				}
+				if same {
+					duplicates++
+					continue
+				}
+				return shared.ErrUnavailable.
+					WithMessage("outbox persist: sort key occupied by a DIFFERENT record "+
+						"(legacy raw-key migration collision); retrying until the legacy row drains").
+					With("envelopeID", records[i].EnvelopeID()).
+					With("bindingID", records[i].BindingID())
 			}
 			return wrapErr(err, "outbox persist failed",
 				"envelopeID", records[i].EnvelopeID(), "bindingID", records[i].BindingID())
@@ -439,6 +522,41 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 			With("recordCount", len(records))
 	}
 	return nil
+}
+
+// conflictIsSameRecord resolves an attribute_not_exists(SK) PutItem conflict:
+// it strongly-consistently reads the row already occupying this sort key and
+// reports whether that row is the SAME logical record (identical envelope_id
+// AND binding_id) as the one being persisted — a genuine idempotent duplicate —
+// versus a DIFFERENT record whose key collides (a pre-upgrade raw-key migration
+// alias; see Persist). ConsistentRead guarantees this read observes the very
+// row the failed condition saw. If the row has vanished (claimed, completed and
+// TTL-compacted between the failed condition and this read) it is reported NOT
+// the same, so the caller surfaces a transient conflict and the record is
+// retried into the now-free slot rather than dropped.
+func (s *Store) conflictIsSameRecord(
+	ctx context.Context,
+	item map[string]ddbtypes.AttributeValue,
+	rec *persistence.OutboxRecord,
+) (bool, error) {
+	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": item["PK"],
+			"SK": item["SK"],
+		},
+		ConsistentRead:       aws.Bool(true),
+		ProjectionExpression: aws.String("envelope_id, binding_id"),
+	})
+	if err != nil {
+		return false, wrapErr(err, "outbox persist: resolve sort-key conflict",
+			"envelopeID", rec.EnvelopeID(), "bindingID", rec.BindingID())
+	}
+	if out.Item == nil {
+		return false, nil
+	}
+	return strAttr(out.Item, "envelope_id") == rec.EnvelopeID() &&
+		strAttr(out.Item, "binding_id") == rec.BindingID(), nil
 }
 
 // allocateSeqs reserves one monotonic per-partition sequence number per
@@ -580,28 +698,160 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 	// A claimed record is reclaimable when its claim_version is strictly
 	// older than the incoming token (version-monotonic preemption, matching
 	// the port contract and memory/sqlite) OR when its claim has gone stale
-	// past the wall-clock threshold (crash-recovery fallback).
+	// past the wall-clock threshold (crash-recovery fallback). Key-condition
+	// values (:pk, and the scan fallback's :prefix) are added per path.
 	filterExpr := "(#st = :pending) OR (#st = :claimed AND (claim_version < :ver OR claimed_at < :stale))"
 	exprNames := map[string]string{"#st": "status"}
-	exprValues := map[string]ddbtypes.AttributeValue{
-		":pk":      &ddbtypes.AttributeValueMemberS{Value: partitionKey},
-		":prefix":  &ddbtypes.AttributeValueMemberS{Value: skPrefix},
+	filterValues := map[string]ddbtypes.AttributeValue{
 		":pending": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxPending)},
 		":claimed": &ddbtypes.AttributeValueMemberS{Value: string(persistence.OutboxClaimed)},
 		":ver":     &ddbtypes.AttributeValueMemberN{Value: u64(token.Version)},
 		":stale":   &ddbtypes.AttributeValueMemberN{Value: i64(staleMs)},
 	}
 
-	// Gather claimable candidates by scanning the WHOLE partition (paging until
-	// LastEvaluatedKey is nil), retaining only the oldest claimRetentionFactor*limit
-	// by (CreatedAt, Seq, EnvelopeID), then claim the oldest N. DynamoDB Query
-	// returns items in SK order (lexicographic by envelope ID, unrelated to
-	// record age), so the FIRST items encountered are NOT the oldest. The former
-	// fixed 3×limit SK-order window could leave an old record whose envelope ID
-	// sorted late permanently unconsidered under a deep backlog, starving it and
-	// breaking the ascending-(CreatedAt, Seq) claim-ordering contract memory/sqlite
-	// honour via ORDER BY created_at, seq LIMIT (H1). Exhaustive paging proves the
-	// true oldest-N; bounded retention keeps memory flat. See claimRetentionFactor.
+	// Fast path (c13-claim-quadratic): query the age-ordered ClaimIndex GSI and
+	// STOP once `limit` records are claimed, so a healthy pending backlog drains
+	// in O(limit) Query cost regardless of how deep the partition is. If the GSI
+	// is absent (an un-migrated table) the query fails with a missing-index
+	// error; claimByIndex latches that and returns usable=false so we fall back
+	// to the always-correct exhaustive base-table scan.
+	if !s.claimIndexAbsent.Load() {
+		claimed, usable, err := s.claimByIndex(ctx, partitionKey, token, limit, now, staleMs, filterExpr, exprNames, filterValues)
+		if usable {
+			return claimed, err
+		}
+	}
+	return s.claimByScan(ctx, partitionKey, token, limit, now, staleMs, filterExpr, exprNames, filterValues)
+}
+
+// claimByIndex is the O(limit) claim path: it queries the age-ordered
+// ClaimIndex GSI (range=claim_sort, ScanIndexForward=true → oldest-first) and
+// claims records as it pages, STOPPING as soon as `limit` are claimed instead
+// of scanning the whole partition (c13-claim-quadratic). Because the GSI yields
+// items in ascending (CreatedAt, Seq), the claimed slice is already in
+// claim-order without a client-side sort.
+//
+// usable is false (with a nil error) when the ClaimIndex GSI cannot serve the
+// claim query — it does not exist (an un-migrated table) OR it exists but is
+// not Projection: ALL, so the FilterExpression's status attribute is not
+// projected. The caller then falls back to claimByScan. Either condition is
+// latched (claimIndexAbsent) so subsequent Claims skip straight to the scan
+// with one WARN (see claimIndexUnusableReason / markClaimIndexUnusable).
+//
+// The GSI is eventually consistent (a GSI cannot be read strongly consistent),
+// so a just-persisted record may be claimed on a later cycle and a
+// just-claimed record may still appear here — the claimOne transaction
+// re-validates status and the fence, so a stale index entry only ever costs a
+// skipped candidate, never a double claim.
+func (s *Store) claimByIndex(
+	ctx context.Context,
+	partitionKey string,
+	token persistence.LeaseToken,
+	limit int,
+	now time.Time,
+	staleMs int64,
+	filterExpr string,
+	exprNames map[string]string,
+	filterValues map[string]ddbtypes.AttributeValue,
+) (claimed []*persistence.OutboxRecord, usable bool, err error) {
+	exprValues := make(map[string]ddbtypes.AttributeValue, len(filterValues)+1)
+	for k, v := range filterValues {
+		exprValues[k] = v
+	}
+	exprValues[":pk"] = &ddbtypes.AttributeValueMemberS{Value: partitionKey}
+
+	pageLimit := int32(claimIndexPageLimit)
+	if limit < claimIndexPageLimit {
+		pageLimit = int32(limit)
+	}
+
+	claimed = make([]*persistence.OutboxRecord, 0, limit)
+	var startKey map[string]ddbtypes.AttributeValue
+	for len(claimed) < limit {
+		if err := ctx.Err(); err != nil {
+			return claimed, true, err
+		}
+		input := &dynamodb.QueryInput{
+			TableName:                 aws.String(s.table),
+			IndexName:                 aws.String(claimIndexName),
+			KeyConditionExpression:    aws.String("PK = :pk"),
+			FilterExpression:          aws.String(filterExpr),
+			ExpressionAttributeNames:  exprNames,
+			ExpressionAttributeValues: exprValues,
+			// Ascending claim_sort == oldest-first (the claim-ordering contract).
+			ScanIndexForward: aws.Bool(true),
+			Limit:            aws.Int32(pageLimit),
+		}
+		if startKey != nil {
+			input.ExclusiveStartKey = startKey
+		}
+
+		out, err := s.client.Query(ctx, input)
+		if err != nil {
+			if reason, unusable := claimIndexUnusableReason(err); unusable {
+				s.markClaimIndexUnusable(partitionKey, reason)
+				return nil, false, nil // signal the caller to use the scan fallback
+			}
+			return nil, true, wrapErr(err, "outbox claim index query failed", "partitionKey", partitionKey)
+		}
+
+		for _, item := range out.Items {
+			if len(claimed) >= limit {
+				break // early stop: already claimed `limit`, do not page further
+			}
+			if err := ctx.Err(); err != nil {
+				return claimed, true, err
+			}
+			pk := strAttr(item, "PK")
+			sk := strAttr(item, "SK")
+			rec, err := s.claimOne(ctx, item, pk, sk, token, now, staleMs)
+			if err != nil {
+				return nil, true, err
+			}
+			if rec == nil {
+				continue // lost the per-record race; not an error
+			}
+			// Cache the base-table keys so Complete can address this record
+			// directly instead of resolving through the lagging GSI.
+			s.cacheKey(rec.ID(), pk, sk)
+			claimed = append(claimed, rec)
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break // index exhausted for this partition
+		}
+		startKey = out.LastEvaluatedKey
+	}
+	return claimed, true, nil
+}
+
+// claimByScan is the backward-compatible fallback claim path used when the
+// ClaimIndex GSI is absent (an un-migrated table). It scans the WHOLE partition
+// (paging until LastEvaluatedKey is nil), retaining only the oldest
+// claimRetentionFactor*limit by (CreatedAt, Seq, EnvelopeID), then claims the
+// oldest N. DynamoDB Query returns items in SK order (lexicographic by envelope
+// ID, unrelated to record age), so the FIRST items encountered are NOT the
+// oldest; exhaustive paging proves the true oldest-N (H1), at O(backlog) cost —
+// the very cost the ClaimIndex fast path exists to avoid. Bounded retention
+// keeps client memory flat; a deep backlog is surfaced via deepBacklogPageWarn.
+func (s *Store) claimByScan(
+	ctx context.Context,
+	partitionKey string,
+	token persistence.LeaseToken,
+	limit int,
+	now time.Time,
+	staleMs int64,
+	filterExpr string,
+	exprNames map[string]string,
+	filterValues map[string]ddbtypes.AttributeValue,
+) ([]*persistence.OutboxRecord, error) {
+	exprValues := make(map[string]ddbtypes.AttributeValue, len(filterValues)+2)
+	for k, v := range filterValues {
+		exprValues[k] = v
+	}
+	exprValues[":pk"] = &ddbtypes.AttributeValueMemberS{Value: partitionKey}
+	exprValues[":prefix"] = &ddbtypes.AttributeValueMemberS{Value: skPrefix}
+
 	retain := limit * claimRetentionFactor
 	if retain < limit {
 		// Overflow guard for a pathologically large limit: never retain fewer
@@ -653,11 +903,12 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 	}
 
 	var startKey map[string]ddbtypes.AttributeValue
-	// FIX 2 (observability): Claim pages the whole partition (H1), so a deep
-	// backlog makes this loop O(backlog). Count pages/records scanned and, once
-	// a single Claim crosses deepBacklogPageWarn, emit ONE loud WARN (throttled
-	// via deepBacklogWarned) plus a partition-tagged counter so an
-	// outage-recovery quadratic drain is observable, not silent.
+	// Claim pages the whole partition (H1), so a deep backlog makes this loop
+	// O(backlog). Count pages/records scanned and, once a single Claim crosses
+	// deepBacklogPageWarn, emit ONE loud WARN (throttled via deepBacklogWarned)
+	// plus a partition-tagged counter so an outage-recovery quadratic drain on
+	// this fallback path is observable, not silent. The durable fix is the
+	// ClaimIndex GSI (provision it to move onto the O(limit) fast path).
 	pages := 0
 	recordsScanned := 0
 	deepBacklogWarned := false
@@ -699,9 +950,9 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 			deepBacklogWarned = true
 			if s.logger != nil {
 				s.logger.Warn(
-					"dynamodboutbox: deep outbox backlog; each Claim scans the whole partition "+
-						"(O(backlog)); provision the per-partition created_at GSI to bound it — "+
-						"see ADR 0005 / docs/runbooks",
+					"dynamodboutbox: deep outbox backlog; ClaimIndex GSI absent so each Claim "+
+						"scans the whole partition (O(backlog)); provision the ClaimIndex GSI "+
+						"to bound it — see doc.go / ADR 0005 / docs/runbooks",
 					"partition_key", partitionKey,
 					"pages", pages,
 					"records_scanned", recordsScanned,
@@ -769,6 +1020,28 @@ func (s *Store) Claim(ctx context.Context, partitionKey string, token persistenc
 	}
 
 	return claimed, nil
+}
+
+// markClaimIndexUnusable latches the ClaimIndex-degraded state so subsequent
+// Claims skip straight to the exhaustive scan fallback, and emits exactly one
+// WARN telling the operator WHY the GSI could not serve the claim query (it is
+// absent, or present but not Projection: ALL) and how to restore the O(limit)
+// fast path. reason is a short human classification from
+// claimIndexUnusableReason.
+func (s *Store) markClaimIndexUnusable(partitionKey, reason string) {
+	s.claimIndexAbsent.Store(true)
+	s.claimIndexWarnOnce.Do(func() {
+		if s.logger != nil {
+			s.logger.Warn(
+				"dynamodboutbox: ClaimIndex GSI unusable ("+reason+"); Claim falls back to the "+
+					"O(backlog) whole-partition scan. Provision the ClaimIndex GSI "+
+					"(hash=PK, range=claim_sort, Projection: ALL) to bound Claim to O(limit) — see doc.go / ADR 0005",
+				"partition_key", partitionKey,
+				"index", claimIndexName,
+				"reason", reason,
+			)
+		}
+	})
 }
 
 // claimOne transitions a single candidate record to claimed inside a
@@ -841,14 +1114,45 @@ func (s *Store) claimOne(
 	})
 	if err != nil {
 		if reasons, canceled := transactCancellationCodes(err); canceled {
+			// Defensive: a TransactionCanceledException with NO per-item reason
+			// codes is not a recognisable lost race. It must NOT fall through to
+			// the benign (nil, nil) skip below — an empty/malformed cancellation
+			// would then silently DROP the record. Surface it as a (transient)
+			// fault via wrapErr so the drainer retries instead (c13 review LOW).
+			if len(reasons) == 0 {
+				return nil, wrapErr(err, "outbox claim transaction canceled with no reasons",
+					"partitionKey", pk, "ownerID", token.Owner)
+			}
 			// Item 0 is the fence check: its failure means a higher-version
 			// owner raised the fence between our read and this claim — the
 			// exact TOCTOU split-brain the transaction exists to prevent.
-			if len(reasons) > 0 && reasons[0] == "ConditionalCheckFailed" {
+			//
+			// PRECEDENCE: the fence ConditionCheck is item 0 and is evaluated
+			// FIRST, so it is deliberately handled before nonContentionCancellation
+			// below. A failed fence check means THIS owner has lost the partition
+			// to a higher version — it must stop claiming and re-fence — so even a
+			// co-occurring throttle on the record update (item 1) is moot: there
+			// is nothing to back off and retry under this now-stale token.
+			// Surfacing ErrStaleFencingToken (not a throttle backoff) is therefore
+			// the correct, higher-priority outcome.
+			if len(reasons) > 0 && reasons[0] == ccReasonCondCheckFailed {
 				return nil, shared.ErrStaleFencingToken.
 					WithMessage("claim aborted: partition fence advanced past token version").
 					With("givenVersion", token.Version).
 					With("partitionKey", pk)
+			}
+			// A cancellation reason OUTSIDE the benign contention set
+			// (ProvisionedThroughputExceeded / ThrottlingError / ValidationError
+			// / ...) is NOT a lost race. Returning (nil, nil) here — as the code
+			// once did for EVERY non-fence reason — silently SKIPPED the record
+			// with no backoff signal, so a throttled partition self-throttled
+			// harder and validation faults hid forever (c13-txn-throttle).
+			// Classify through wrapErr so throttling surfaces as retryable
+			// shared.ErrThrottled (the drainer backs off) and permanent faults
+			// surface honestly, instead of being dropped.
+			if code, faulted := nonContentionCancellation(reasons); faulted {
+				return nil, wrapErr(err, "outbox claim transaction canceled",
+					"partitionKey", pk, "ownerID", token.Owner, "cancellationReason", code)
 			}
 			// Record-level condition failure or a transient transaction
 			// conflict: another claimer won this record. Skip it. A
@@ -857,7 +1161,7 @@ func (s *Store) claimOne(
 			// `limit` records because of CONTENTION is distinguishable from an
 			// empty backlog (lag); a record-level ConditionalCheckFailed is a
 			// normal lost race and is not counted.
-			if hasCode(reasons, "TransactionConflict") {
+			if hasCode(reasons, ccReasonTxnConflict) {
 				s.metrics.Counter(shared.MetricOutboxClaimConflicts, 1,
 					shared.Tag{Key: shared.TagKeyPartition, Value: pk})
 			}
@@ -928,9 +1232,10 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 				"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
 			},
 			// REMOVE has_expiry drops the terminal record out of the sparse
-			// ExpiryIndex so Expire never re-scans it.
+			// ExpiryIndex so Expire never re-scans it; REMOVE claim_sort drops
+			// it out of the sparse ClaimIndex so Claim never re-considers it.
 			UpdateExpression: aws.String(
-				"SET #st = :completed, completed_at = :now, #ttl = :ttl REMOVE " + attrHasExpiry),
+				"SET #st = :completed, completed_at = :now, #ttl = :ttl REMOVE " + attrHasExpiry + ", " + attrClaimSort),
 			ConditionExpression: aws.String(
 				"#st = :claimed AND claimed_by = :owner AND claim_version = :ver"),
 			ExpressionAttributeNames: map[string]string{
@@ -1095,8 +1400,9 @@ func (s *Store) expireByStatus(ctx context.Context, status, partition string, be
 					"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
 				},
 				// REMOVE has_expiry drops the now-terminal record out of the
-				// sparse ExpiryIndex so later Expire passes never re-scan it.
-				UpdateExpression: aws.String("SET #st = :expired, #ttl = :ttl REMOVE " + attrHasExpiry),
+				// sparse ExpiryIndex so later Expire passes never re-scan it;
+				// REMOVE claim_sort drops it out of the sparse ClaimIndex.
+				UpdateExpression: aws.String("SET #st = :expired, #ttl = :ttl REMOVE " + attrHasExpiry + ", " + attrClaimSort),
 				// Condition gates on the status this pass is allowed to
 				// expire (pending-only from Expire) plus the expiry window,
 				// so a candidate that was claimed or completed between the

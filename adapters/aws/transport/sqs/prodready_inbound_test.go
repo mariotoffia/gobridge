@@ -257,7 +257,7 @@ func TestPollAndConvert_ReceiveLatencyExcludesLongPollIdle(t *testing.T) {
 		t.Fatalf("ensureClient: %v", err)
 	}
 
-	if _, err := r.pollAndConvert(context.Background(), "https://q", r.cfg.MaxMessages, time.Minute); err != nil {
+	if _, err := r.pollAndConvert(context.Background(), r.loadClient(), "https://q", r.cfg.MaxMessages, time.Minute); err != nil {
 		t.Fatalf("pollAndConvert #1: %v", err)
 	}
 	entries := rec.FindEntries(MetricSQSReceiveLatency)
@@ -269,7 +269,7 @@ func TestPollAndConvert_ReceiveLatencyExcludesLongPollIdle(t *testing.T) {
 	}
 
 	rec.Reset()
-	if _, err := r.pollAndConvert(context.Background(), "https://q", r.cfg.MaxMessages, time.Minute); err != nil {
+	if _, err := r.pollAndConvert(context.Background(), r.loadClient(), "https://q", r.cfg.MaxMessages, time.Minute); err != nil {
 		t.Fatalf("pollAndConvert #2: %v", err)
 	}
 	if n := len(rec.FindEntries(MetricSQSReceiveLatency)); n != 0 {

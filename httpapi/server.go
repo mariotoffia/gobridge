@@ -250,22 +250,40 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		s.bridgeController = cfg.BridgeController
 	}
 	if cfg.AdminAPIKeyProvider != nil {
-		s.adminKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.AdminAPIKeyProvider()) }
+		// Validate every dynamically-refreshed single admin key with the same
+		// strength floor validateConfig enforces at startup, failing closed to
+		// the last good key: a rotation that returns a below-floor key can never
+		// be installed after startup (Finding: dynamic providers could install
+		// weak keys post-startup).
+		vp := &validatedKeyProvider{
+			raw:      cfg.AdminAPIKeyProvider,
+			validate: validateDynamicAdminKey,
+			logger:   s.logger,
+			what:     "admin",
+		}
+		s.adminKeyProvider = vp.get
 	} else {
 		s.adminKeyProvider = func() shared.Secret { return cfg.AdminAPIKey }
 	}
 	if cfg.AdminAPIKeysProvider != nil {
-		s.adminKeysProvider = func() map[string]shared.Secret {
-			raw := cfg.AdminAPIKeysProvider()
-			out := make(map[string]shared.Secret, len(raw))
-			for name, k := range raw {
-				out[name] = shared.NewSecret(k)
-			}
-			return out
+		// Validate the whole refreshed named-key set (per-key name + length) and
+		// reject it atomically on any failure, keeping the last good set — a bad
+		// rotation must not install a weak/unsafe key that startup would reject.
+		vp := &validatedKeysProvider{
+			raw:    cfg.AdminAPIKeysProvider,
+			logger: s.logger,
 		}
+		s.adminKeysProvider = vp.get
 	}
 	if cfg.MonitorAPIKeyProvider != nil {
-		s.monitorKeyProvider = func() shared.Secret { return shared.NewSecret(cfg.MonitorAPIKeyProvider()) }
+		// Same fail-closed validation for the rotated monitor key.
+		vp := &validatedKeyProvider{
+			raw:      cfg.MonitorAPIKeyProvider,
+			validate: ValidateMonitorKey,
+			logger:   s.logger,
+			what:     "monitor",
+		}
+		s.monitorKeyProvider = vp.get
 	} else {
 		s.monitorKeyProvider = func() shared.Secret { return cfg.MonitorAPIKey }
 	}
@@ -559,6 +577,100 @@ func ValidateMonitorKey(key string) error {
 		return fmt.Errorf("httpapi: monitor API key must be at least %d characters when set", minAPIKeyLen)
 	}
 	return nil
+}
+
+// validateDynamicAdminKey validates one dynamically-refreshed SINGLE admin key.
+// An empty value is legitimate (the single legacy key may be unset when named
+// keys carry admin auth — currentAdminAPIKeys folds and skips it); a non-empty
+// value must clear the same minAPIKeyLen floor validateConfig enforces at
+// startup. It never returns key material (only the length bound appears).
+func validateDynamicAdminKey(v string) error {
+	if v == "" {
+		return nil
+	}
+	return validateAdminKeyEntry("admin", len(v))
+}
+
+// validatedKeyProvider wraps a dynamic single-key provider (admin or monitor)
+// with per-refresh strength validation and last-good caching. Startup validates
+// the provider output once, but a later rotation could return a weak/invalid key
+// that per-request use would otherwise install unchecked. This wrapper FAILS
+// CLOSED: a refresh whose value fails validate is rejected and the last VALID
+// key is returned instead, so a bad rotation can never install a below-floor key
+// after startup. The first call has no last-good fallback; an invalid first
+// value yields the zero Secret (all requests rejected) rather than a weak key.
+// get is safe for concurrent per-request use.
+type validatedKeyProvider struct {
+	raw      func() string
+	validate func(string) error
+	logger   *slog.Logger
+	what     string // "admin" or "monitor", for the reject log only
+
+	mu       sync.Mutex
+	lastGood shared.Secret
+	haveGood bool
+}
+
+func (p *validatedKeyProvider) get() shared.Secret {
+	v := p.raw()
+	if err := p.validate(v); err != nil {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Warn("httpapi: rejecting dynamically-refreshed API key that fails validation; keeping last valid key",
+				"provider", p.what, "error", err.Error())
+		}
+		if p.haveGood {
+			return p.lastGood
+		}
+		return shared.Secret{}
+	}
+	sec := shared.NewSecret(v)
+	p.mu.Lock()
+	p.lastGood = sec
+	p.haveGood = true
+	p.mu.Unlock()
+	return sec
+}
+
+// validatedKeysProvider wraps a dynamic named-admin-key-map provider with the
+// same fail-closed semantics as validatedKeyProvider, over the whole set. The
+// refreshed map is validated with ValidateAdminKeys (per-key name + length); on
+// ANY failure the ENTIRE set is rejected atomically and the last valid set is
+// returned, so a single bad entry in a rotation cannot install a weak/unsafe key
+// nor drop the good ones piecemeal. get is safe for concurrent per-request use.
+type validatedKeysProvider struct {
+	raw    func() map[string]string
+	logger *slog.Logger
+
+	mu       sync.Mutex
+	lastGood map[string]shared.Secret
+	haveGood bool
+}
+
+func (p *validatedKeysProvider) get() map[string]shared.Secret {
+	raw := p.raw()
+	if err := ValidateAdminKeys(raw); err != nil {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Warn("httpapi: rejecting dynamically-refreshed admin key set that fails validation; keeping last valid set",
+				"error", err.Error())
+		}
+		if p.haveGood {
+			return p.lastGood
+		}
+		return nil
+	}
+	out := make(map[string]shared.Secret, len(raw))
+	for name, k := range raw {
+		out[name] = shared.NewSecret(k)
+	}
+	p.mu.Lock()
+	p.lastGood = out
+	p.haveGood = true
+	p.mu.Unlock()
+	return out
 }
 
 // validAdminKeyName reports whether name is safe to use as an audit Actor and

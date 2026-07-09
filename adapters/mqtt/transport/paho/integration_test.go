@@ -439,6 +439,10 @@ func TestIntegration_Factory(t *testing.T) {
 	recv, err := factory.NewReceiver(ctx, ports.ReceiverSpec{
 		ID:        "factory-rx",
 		SessionID: "factory-sess",
+		// A receiver MUST declare at least one subscription topic; a
+		// zero-topic receiver is rejected as an implicit match-all
+		// (c4-notopic-matchall).
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "factory/test", QoS: 1}},
 	}, sess)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)

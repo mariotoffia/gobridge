@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -261,9 +262,12 @@ func (m *configTxnManager) Preview(ctx context.Context, txnID string) (*ports.Br
 // different version in the meantime. The transaction is cleaned up on
 // success.
 //
-// Note: on network filesystems (NFS/EFS) the check-read and write are
-// not perfectly atomic. For truly concurrent config management, use the
-// DynamoDB-backed config profile instead.
+// Note: on network filesystems (NFS/EFS) a plain file-backed store's
+// check-read and write are not perfectly atomic. When the configured
+// ports.ConfigStore also implements ports.ConditionalConfigStore the commit
+// uses SaveIfVersion for a genuinely atomic cross-instance CAS (e.g. the
+// DynamoDB-backed config profile); otherwise it degrades to the best-effort
+// read-check-Save with the documented last-writer-wins caveat.
 func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error) {
 	// Serialize the entire commit pipeline (durable write + out-of-lock apply +
 	// rollback). See the commitMu field comment: this prevents a concurrent
@@ -289,6 +293,22 @@ func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error
 		applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitApplyTimeout)
 		defer cancel()
 		if applyErr := applier(applyCtx, merged); applyErr != nil {
+			// ports.ErrApplyInFlight is the "committed, NOT confirmed applied, DO
+			// NOT roll back" terminal signal: the runtime accepted cfg but its
+			// running state is not confirmed (the swap is still in-flight past
+			// the apply deadline, or the bridge is paused/shutting down and
+			// recorded cfg for a later resume). In every such case cfg is (or
+			// will become) the durable desired state, so rolling the durable
+			// write back would fight the runtime. Keep the committed config on
+			// disk and surface committed_not_applied; the file watcher / next
+			// swap converges the observable state. This is the reconciliation
+			// path for the "crash after durable write leaves an unapplied config"
+			// finding: the durable write is deliberately RETAINED so a restart
+			// recovers the committed config instead of losing it to a rollback.
+			if errors.Is(applyErr, ports.ErrApplyInFlight) {
+				return newVersion, fmt.Errorf("%w: version %d is committed to disk; apply is in-flight and the running state is not confirmed (not rolled back): %w",
+					errConfigApplyFailed, newVersion, applyErr)
+			}
 			return m.rollbackAfterApplyFailure(ctx, newVersion, prior, applyErr)
 		}
 	}
@@ -312,15 +332,16 @@ func (m *configTxnManager) rollbackAfterApplyFailure(ctx context.Context, newVer
 
 	// Restore on a FRESH context: the apply context may already be past its
 	// deadline (a timed-out apply), which would fail the restore write. The
-	// restore uses the same atomic Save path as the commit.
+	// restore mirrors the commit's write discipline (CAS when the store
+	// supports it) so the rollback cannot clobber a concurrent commit.
 	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitApplyTimeout)
 	defer cancel()
-	if restoreErr := m.store.Save(restoreCtx, prior); restoreErr != nil {
+	if restoreErr := m.restoreConfig(restoreCtx, prior, newVersion); restoreErr != nil {
 		if m.logger != nil {
-			m.logger.Error("config commit: apply failed AND rollback failed; disk and runtime diverged",
+			m.logger.Error("config commit: apply failed AND rollback did not restore the previous config (write failed or a concurrent commit advanced the version); disk and runtime may diverge",
 				"failed_version", newVersion, "restore_error", restoreErr, "apply_error", applyErr)
 		}
-		return newVersion, fmt.Errorf("%w: version %d is on disk but the running runtime did not converge, and rollback failed (%v): %w",
+		return newVersion, fmt.Errorf("%w: version %d is on disk but the running runtime did not converge, and rollback did not restore the previous config (%v): %w",
 			errConfigApplyFailed, newVersion, restoreErr, applyErr)
 	}
 
@@ -330,6 +351,21 @@ func (m *configTxnManager) rollbackAfterApplyFailure(ctx context.Context, newVer
 	}
 	return prior.Version, fmt.Errorf("%w: apply of version %d failed; disk restored to version %d: %w",
 		errConfigRolledBack, newVersion, prior.Version, applyErr)
+}
+
+// restoreConfig writes prior back to the store during a rollback, mirroring
+// commitDurable's write discipline. Against a ports.ConditionalConfigStore it
+// uses SaveIfVersion(prior, committedVersion) so the rollback only lands while
+// THIS transaction's just-committed version is still the latest on disk; if a
+// concurrent writer already advanced past it, the CAS refuses rather than
+// clobbering that acknowledged commit — closing the same lost-update window on
+// the rollback path that the forward commit closes. Stores without the
+// capability keep the plain Save (documented single-writer last-writer-wins).
+func (m *configTxnManager) restoreConfig(ctx context.Context, prior *ports.BridgeConfig, committedVersion int) error {
+	if cas, ok := m.store.(ports.ConditionalConfigStore); ok {
+		return cas.SaveIfVersion(ctx, prior, committedVersion)
+	}
+	return m.store.Save(ctx, prior)
 }
 
 // commitDurable performs the transactional, DURABLE portion of a commit under
@@ -393,7 +429,28 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 	newVersion := diskVersion + 1
 	merged.Version = newVersion
 
-	if err := m.store.Save(ctx, merged); err != nil {
+	// Persist with an ATOMIC compare-and-swap when the store supports it. A
+	// plain read-check-Save (the version guard above followed by Save) has a
+	// lost-update window between the version read and the write: two admin
+	// instances both committing from version N against a shared backend each
+	// pass the guard, and the second Save clobbers the first — last-writer-wins,
+	// a silently dropped acknowledged commit (and a version regression should a
+	// later rollback fire). ports.ConditionalConfigStore.SaveIfVersion closes
+	// that window: it writes only if the store's CURRENTLY persisted version
+	// still equals the transaction's baseVersion, so a concurrent commit that
+	// advanced the version is rejected with shared.ErrVersionMismatch (surfaced
+	// as errVersionConflict) instead of being overwritten. Stores that do not
+	// implement the capability fall back to the plain Save (documented
+	// last-writer-wins caveat on shared network backends).
+	if cas, ok := m.store.(ports.ConditionalConfigStore); ok {
+		if err := cas.SaveIfVersion(ctx, merged, m.active.baseVersion); err != nil {
+			if errors.Is(err, shared.ErrVersionMismatch) {
+				return nil, 0, nil, nil, fmt.Errorf("%w: expected version %d but a concurrent commit advanced the shared config; re-read the config and retry",
+					errVersionConflict, m.active.baseVersion)
+			}
+			return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
+		}
+	} else if err := m.store.Save(ctx, merged); err != nil {
 		return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
 	}
 

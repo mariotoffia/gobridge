@@ -80,18 +80,18 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 		defer close(out)
 
 		var pending *ports.BridgeConfig
-		timer := s.clk.NewTimer(0)
-		if !timer.Stop() {
-			<-timer.C()
-		}
-		timerActive := false
+		// Go 1.23+ timer semantics (go.mod declares go 1.25): after Stop()/Reset()
+		// returns, the channel yields no stale value, so the historical
+		// `if !timer.Stop() { <-timer.C() }` drain is unnecessary AND unsafe —
+		// it can block forever when the fire raced the Stop (reconfig_strategy.go:92,
+		// Chunk 3). Create the timer stopped; Reset re-arms it before each use.
+		timer := s.clk.NewTimer(s.quietPeriod)
+		timer.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
-				if !timer.Stop() && timerActive {
-					<-timer.C()
-				}
+				timer.Stop()
 				return
 			case cfg, ok := <-in:
 				if !ok {
@@ -100,11 +100,7 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 					// non-blocking send (Finding 11). A change that arrived
 					// just before close would otherwise be silently lost.
 					if pending != nil {
-						if timerActive {
-							if !timer.Stop() {
-								<-timer.C()
-							}
-						}
+						timer.Stop()
 						select {
 						case out <- pending:
 						case <-ctx.Done():
@@ -113,13 +109,8 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 					return
 				}
 				pending = cfg
-				if !timer.Stop() && timerActive {
-					<-timer.C()
-				}
 				timer.Reset(s.quietPeriod)
-				timerActive = true
 			case <-timer.C():
-				timerActive = false
 				if pending != nil {
 					select {
 					case out <- pending:
@@ -169,17 +160,14 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 		defer close(out)
 
 		var pending *ports.BridgeConfig
-		quietTimer := s.clk.NewTimer(0)
-		if !quietTimer.Stop() {
-			<-quietTimer.C()
-		}
-		quietActive := false
+		// Go 1.23+ timer semantics: no manual channel drain after Stop()/Reset()
+		// (reconfig_strategy.go:92, Chunk 3). Both timers are created stopped and
+		// re-armed via Reset when a batch opens.
+		quietTimer := s.clk.NewTimer(s.quietPeriod)
+		quietTimer.Stop()
 
-		maxTimer := s.clk.NewTimer(0)
-		if !maxTimer.Stop() {
-			<-maxTimer.C()
-		}
-		maxActive := false
+		maxTimer := s.clk.NewTimer(s.quietPeriod)
+		maxTimer.Stop()
 
 		emit := func() {
 			if pending == nil {
@@ -190,25 +178,15 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 			case <-ctx.Done():
 			}
 			pending = nil
-			if !quietTimer.Stop() && quietActive {
-				<-quietTimer.C()
-			}
-			quietActive = false
-			if !maxTimer.Stop() && maxActive {
-				<-maxTimer.C()
-			}
-			maxActive = false
+			quietTimer.Stop()
+			maxTimer.Stop()
 		}
 
 		for {
 			select {
 			case <-ctx.Done():
-				if !quietTimer.Stop() && quietActive {
-					<-quietTimer.C()
-				}
-				if !maxTimer.Stop() && maxActive {
-					<-maxTimer.C()
-				}
+				quietTimer.Stop()
+				maxTimer.Stop()
 				return
 			case cfg, ok := <-in:
 				if !ok {
@@ -216,14 +194,8 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 					// blocking send (ctx-guarded) so a change batched just
 					// before close is not dropped (Finding 11).
 					if pending != nil {
-						if !quietTimer.Stop() && quietActive {
-							<-quietTimer.C()
-						}
-						quietActive = false
-						if !maxTimer.Stop() && maxActive {
-							<-maxTimer.C()
-						}
-						maxActive = false
+						quietTimer.Stop()
+						maxTimer.Stop()
 						select {
 						case out <- pending:
 						case <-ctx.Done():
@@ -233,21 +205,14 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 				}
 				firstInBatch := pending == nil
 				pending = cfg
-				if !quietTimer.Stop() && quietActive {
-					<-quietTimer.C()
-				}
 				quietTimer.Reset(s.quietPeriod)
-				quietActive = true
 
 				if firstInBatch && s.maxDelay > 0 {
 					maxTimer.Reset(s.maxDelay)
-					maxActive = true
 				}
 			case <-quietTimer.C():
-				quietActive = false
 				emit()
 			case <-maxTimer.C():
-				maxActive = false
 				emit()
 			}
 		}

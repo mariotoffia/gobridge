@@ -123,6 +123,7 @@ senders:
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at Start with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
+| `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × max_payload_bytes` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is acked and dropped, split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **real message loss** on a live route (`MQTTRouterCoveredDropped` — any non-zero value is alarming). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is benign cleanup (`MQTTRouterUnmatchedDropped`), and its exact topic is UNSUBSCRIBEd (deduped, one warn per topic) to converge. `0` → `DefaultUnmatchedGrace` (30s). |
 | `username` | string | -- | Authentication username |
 | `password` | string | -- | Authentication password (redacted on marshal) |
@@ -211,6 +212,15 @@ in-memory packet store.
   longer leaves the session permanently dead. The session signals terminal death
   and the runtime supervisor re-Starts it (with jittered backoff), so it
   reconnects by itself once the broker returns.
+- **Granted-QoS downgrade is surfaced.** When the broker grants a subscription a
+  lower QoS than requested (a SUBACK reason below the requested level, e.g.
+  requested QoS 2, granted QoS 0), the route still assumes the requested
+  guarantee, so the downgrade silently removes offline/redelivery coverage and
+  opens a disconnect-gap loss window. The reconcile loop stores the requested QoS
+  as its delta baseline (a stable downgraded sub is not re-subscribed every cycle)
+  and counts `MQTTQoSDowngraded` with a loud warning once per subscription
+  transition — initial subscribe, reconnect, or a plan that changes the requested
+  QoS. Any non-zero value warrants checking the broker's QoS-cap policy.
 
 ## Backpressure and dispatch
 
@@ -225,24 +235,38 @@ returns:
   blocks until a slot drains (bounded by the broker's Receive-Maximum window), so
   at-least-once is preserved as broker backpressure.
 - The **pre-registration pending buffer** absorbs the CONNACK backlog that
-  arrives before receivers register (see [Session Modes](#session-modes)). It is
-  bounded by both an entry count sized to `receive_maximum` (default **1024**)
-  and a **64 MiB** payload ceiling (`defaultPendingBytesLimit`). Publishes held
-  here count on `MQTTRouterBuffered`;
-  a QoS 0 publish that would overflow the buffer is dropped (`MQTTRouterDropped`),
-  while a QoS 1/2 publish evicts the oldest QoS 0 entry to make room.
+  arrives before receivers register (see [Session Modes](#session-modes)). It has
+  two independent bounds applied asymmetrically by QoS: an entry-count cap sized
+  to `receive_maximum` (default **1024**) and a **64 MiB** payload ceiling
+  (`defaultPendingBytesLimit`). The byte ceiling governs **QoS 0 only**. A QoS 0
+  publish over either cap is dropped (`MQTTRouterDropped`) — it carries no
+  delivery contract. A **QoS 1/2** publish is never dropped for the byte ceiling:
+  it evicts the oldest QoS 0 entry to reclaim memory and buffers regardless,
+  bounded by the count cap. QoS 1/2 memory needs no byte cap because the broker's
+  Receive-Maximum flow control never delivers more than `receive_maximum` un-acked
+  QoS 1/2 at once, so at most `receive_maximum × max_payload_bytes` of QoS 1/2 is
+  ever pending. The single path that drops a QoS 1/2 publish is the count cap hit
+  with no QoS 0 left to evict — reachable only when a broker exceeds the Receive
+  Maximum it was granted (a protocol violation). That publish is acked-and-dropped
+  (dropping-with-ack keeps paho's in-order ack stream draining) and counted on
+  `MQTTRouterOverflowDropped`, so any non-zero value points at a broker bug, not
+  operator mis-sizing. Publishes held in the buffer count on `MQTTRouterBuffered`.
 
 > **Byte accounting is partial.** The dispatch queue is bounded by **count**
 > (1024 items), and paho's in-flight `publishPackets` window is bounded by
-> `receive_maximum` -- neither is byte-bounded. Only the pending buffer enforces
-> a byte ceiling. A burst of large-payload QoS 1/2 publishes can therefore pin
-> roughly `(1024 + receive_maximum) × payload` bytes in memory before the
-> blocking backpressure engages -- 1024 is the dispatch-queue count ceiling, the
-> second term is paho's in-flight window. Because `receive_maximum` now defaults
-> to **1024** instead of 65535, the default worst case falls from
-> `(1024 + 65535) × payload` to `(1024 + 1024) × payload` -- roughly 32× smaller.
-> Bound it further operationally: cap `receive_maximum` and the upstream payload
-> size for large-message workloads.
+> `receive_maximum` -- neither is byte-bounded on its own. A burst of
+> large-payload QoS 1/2 publishes can pin roughly `(1024 + receive_maximum) ×
+> payload` bytes in memory before the blocking backpressure engages -- 1024 is the
+> dispatch-queue count ceiling, the second term is paho's in-flight window.
+> Because `receive_maximum` now defaults to **1024** instead of 65535, the default
+> worst case falls from `(1024 + 65535) × payload` to `(1024 + 1024) × payload` --
+> roughly 32× smaller. Bound the `payload` term too: set `max_payload_bytes` and
+> the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from
+> that value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT
+> v5 four-byte ceiling (256 MiB − 1). The broker is then forbidden from delivering
+> a larger packet, so the `receive_maximum × max_payload_bytes` bound is
+> broker-enforced. Left unset (`0`) it advertises no packet-size limit -- the
+> broker's own max-message policy is the only ceiling.
 
 ## Shared subscriptions (`$share`)
 

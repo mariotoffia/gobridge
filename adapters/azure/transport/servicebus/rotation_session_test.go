@@ -578,7 +578,8 @@ func TestReceiverConfig_Validate_ReceiveModeAndSubQueue(t *testing.T) {
 		{"empty mode ok", func(*ReceiverConfig) {}, false},
 		{"PeekLock ok", func(c *ReceiverConfig) { c.ReceiveMode = "PeekLock" }, false},
 		{"peeklock case-insensitive ok", func(c *ReceiverConfig) { c.ReceiveMode = "peeklock" }, false},
-		{"RECEIVEANDDELETE case-insensitive ok", func(c *ReceiverConfig) { c.ReceiveMode = "RECEIVEANDDELETE" }, false},
+		{"RECEIVEANDDELETE case-insensitive ok (opted in)", func(c *ReceiverConfig) { c.ReceiveMode = "RECEIVEANDDELETE"; c.AllowAtMostOnce = true }, false},
+		{"ReceiveAndDelete without opt-in rejected", func(c *ReceiverConfig) { c.ReceiveMode = "ReceiveAndDelete" }, true},
 		{"unknown mode rejected", func(c *ReceiverConfig) { c.ReceiveMode = "PeekAndLock" }, true},
 		{"deadletter ok", func(c *ReceiverConfig) { c.SubQueue = "deadletter" }, false},
 		{"DeadLetter case-insensitive ok", func(c *ReceiverConfig) { c.SubQueue = "DeadLetter" }, false},
@@ -663,10 +664,11 @@ func TestNewReceiver_ReceiveAndDeleteClampsMaxMessages(t *testing.T) {
 	t.Parallel()
 
 	recv, err := NewReceiver(ReceiverConfig{
-		QueueName:   "q",
-		ReceiveMode: "ReceiveAndDelete",
-		MaxMessages: 50,
-		Client:      &mockASBClient{},
+		QueueName:       "q",
+		ReceiveMode:     "ReceiveAndDelete",
+		AllowAtMostOnce: true,
+		MaxMessages:     50,
+		Client:          &mockASBClient{},
 	}, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, recv.cfg.MaxMessages)

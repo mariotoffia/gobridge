@@ -187,6 +187,16 @@ func defaultIDGen() string {
 	return hex.EncodeToString(b)
 }
 
+// adminOpContext derives a bounded child context for a SINGLE backend admin
+// operation (route inject, DLQ read/delete/purge). A wedged runtime or a
+// blocked store must not hang the handler goroutine — and, through it, graceful
+// shutdown — indefinitely just because the client is patient; every backend
+// call gets AdminOperationTimeout (the same bound handleStart/handleStop already
+// apply). The caller MUST defer the returned cancel.
+func (s *Server) adminOpContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, s.cfg.AdminOperationTimeout)
+}
+
 func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	if rt == nil {
@@ -243,7 +253,11 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := rt.Inject(r.Context(), routeID, env); err != nil {
+	// Bound the backend inject so a wedged runtime cannot hang the handler (and
+	// block graceful shutdown) on a patient client.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	if err := rt.Inject(opCtx, routeID, env); err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
 				"envelope_id": env.ID(),

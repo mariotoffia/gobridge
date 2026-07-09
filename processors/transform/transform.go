@@ -164,29 +164,39 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 	}
 
 	payload := env.Payload()
-	if len(payload) == 0 {
-		return next(ctx, env)
-	}
-
 	if len(payload) > p.maxPayloadBytes {
 		return shared.ErrPayloadTooLarge.Wrap(
 			fmt.Errorf("transform: payload %d bytes exceeds limit %d", len(payload), p.maxPayloadBytes))
 	}
 
-	// Parse the payload
+	// Parse the payload.
 	data, err := oj.Parse(payload)
 	if err != nil {
 		// A parse failure is only a legitimate pass-through when the
 		// caller opted into best-effort (FailOnError=false) AND no
 		// mapping is Required. Otherwise the payload cannot satisfy the
 		// configured contract, so reject it (DLQ) instead of silently
-		// forwarding it unchanged.
+		// forwarding it unchanged. The static message already names the
+		// fault; the parser error is not wrapped (it carries no payload
+		// content worth surfacing and keeps the reject leak-free).
 		if p.config.FailOnError || p.hasRequired {
 			return shared.ErrInvalidPayload.
-				WithMessage("transform: payload is not valid JSON").
-				Wrap(err)
+				WithMessage("transform: payload is not valid JSON")
 		}
 		return next(ctx, env)
+	}
+
+	// Empty bytes, whitespace-only input, and a literal JSON null all parse
+	// to a nil document — one and the same "no fields" input. Normalize it to
+	// an empty object so a missing/blank body flows through the SAME
+	// per-mapping resolution as a literal {}: a Required mapping with no
+	// default is rejected (this is what closes the empty-payload
+	// required-field bypass), a Required mapping WITH a default is satisfied
+	// from that default (matching {}), and a non-required mapping passes
+	// through unchanged. One code path, no len(payload)==0 special case that
+	// could diverge from the {} contract.
+	if data == nil {
+		data = map[string]any{}
 	}
 
 	// Resolve header-target values over the pristine parsed data. Payload
@@ -342,7 +352,8 @@ func (p *Processor) resolveMapping(data any, pm parsedMapping) (value any, ok bo
 	if pm.mapping.Transform != "" {
 		value, err = applyTransform(value, pm.mapping.Transform)
 		if err != nil {
-			return nil, false, fmt.Errorf("transform failed for %q: %w", pm.mapping.Source, err)
+			return nil, false, fmt.Errorf("transform %q failed for source %q: %w",
+				pm.mapping.Transform, pm.mapping.Source, err)
 		}
 	}
 

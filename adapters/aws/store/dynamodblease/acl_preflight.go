@@ -15,25 +15,31 @@ import (
 )
 
 // Preflight validates that the configured DynamoDB table's key schema matches
-// what the LEASE role needs and warns loudly when DynamoDB TTL is enabled on
-// it. It is a build-time safeguard against a misprovisioned or copy-pasted
-// table name (H3) and against a fatal TTL misconfiguration (MEDIUM).
+// what the LEASE role needs and ENFORCES that DynamoDB TTL is DISABLED on it. It
+// is a build-time safeguard against a misprovisioned or copy-pasted table name
+// (H3) and against a fatal TTL misconfiguration (finding c13-lease-ttl-warn).
 //
 // The lease row IS the monotonic fencing counter of record. Two dangers:
 //   - Wrong key schema (e.g. an outbox/DLQ table with extra keys or a different
 //     partition key) corrupts lease storage.
-//   - DynamoDB TTL ENABLED on the lease table lets a reaper delete lease rows,
-//     resetting their version to 1 while the outbox HWM sits at v≫1 — every
-//     subsequent claim then fails ErrStaleFencingToken and the partition
-//     stalls. TTL-enabled is not always wrong (other tables use it), so this is
-//     a loud WARN, not a fatal error.
+//   - DynamoDB TTL ENABLED on the lease table lets a reaper delete lease/fence
+//     rows, resetting their version to 1 while the outbox HWM sits at v≫1 —
+//     every subsequent claim then fails ErrStaleFencingToken and the partition
+//     stalls (a split-brain window). TTL-enabled is legitimate on OTHER tables
+//     but is a correctness hazard here, so on the lease table an OBSERVED enabled
+//     TTL is FATAL — not a mere WARN — unless WithTTLPreflightAdvisory is set.
 //
 // Semantics:
 //   - Table missing (ResourceNotFound): NON-fatal, returns nil (build-then-
 //     EnsureTable flows stay valid; a missing table fails loudly at first use).
 //   - Table present with a mismatched schema: FATAL, returns a
 //     shared.ErrInvalidConfig error naming the table, expected, and actual.
-//   - Table present with TTL enabled: WARN (never fatal).
+//   - Table present with TTL ENABLED/ENABLING: FATAL, returns a
+//     shared.ErrInvalidConfig error naming the table and ttl status — unless
+//     WithTTLPreflightAdvisory downgrades it to a loud WARN (dev/emulator).
+//   - DescribeTimeToLive itself fails (missing permission / throttle / emulator
+//     gap): FATAL fail-closed (it proves nothing about the TTL state) — unless
+//     WithTTLPreflightAdvisory downgrades it to a loud WARN.
 //
 // Expected schema (see EnsureTable / doc.go):
 //
@@ -58,10 +64,120 @@ func (s *Store) Preflight(ctx context.Context) error {
 		return err
 	}
 
-	// The lease table exists: warn (never fatal) if TTL is enabled, since a
-	// reaper deleting fencing rows breaks token monotonicity.
-	s.warnIfTTLEnabled(ctx)
+	// The lease table exists: ENFORCE the TTL-DISABLED invariant. A reaper
+	// deleting fencing rows breaks token monotonicity, so an observed enabled
+	// TTL (or an unverifiable TTL state) is fatal by default.
+	return s.checkLeaseTableTTL(ctx)
+}
+
+// checkLeaseTableTTL enforces the TTL-DISABLED invariant on the lease table at
+// build time (finding c13-lease-ttl-warn). The lease row IS the monotonic
+// fencing counter of record: an ENABLED (or ENABLING) DynamoDB TTL lets a reaper
+// delete a fence row and reset its version to 1 while the outbox high-water mark
+// sits at v≫1, opening a split-brain window in which every subsequent claim
+// fails ErrStaleFencingToken. An OBSERVED enabled TTL is therefore a FATAL
+// configuration error (shared.ErrInvalidConfig), not a WARN.
+//
+// A DescribeTimeToLive call that itself FAILS (missing dynamodb:DescribeTimeToLive,
+// a throttle, or an emulator that does not implement it) proves NOTHING about the
+// table's TTL state and must NOT be swallowed as success: it is surfaced
+// FAIL-CLOSED. Crucially it is returned as shared.ErrInvalidConfig (with the
+// classified transport cause wrapped for diagnostics), NOT as a bare transient
+// sentinel: the DynamoDBStoreFactory's fatal decision rests on
+// errors.Is(err, ErrInvalidConfig) — the BridgeError Code identity — which it
+// checks BEFORE the advisory branch (acl_factory.go), whereas any OTHER error
+// funnels through its "could-not-verify" path where WithSchemaPreflightAdvisory()
+// would downgrade it. Returning the ErrInvalidConfig Code ensures ONLY
+// WithTTLPreflightAdvisory (the TTL-specific opt-out, handled below) can relax
+// this TTL check — the SCHEMA advisory must not silently disable it. (Any
+// .With(...) context added to the error is diagnostic only and plays no part in
+// that decision.)
+//
+// The single escape hatch is WithTTLPreflightAdvisory(), an EXPLICIT dev/emulator
+// opt-out that downgrades BOTH an observed enabled TTL and a DescribeTimeToLive
+// error to a loud WARN and returns nil. Production leaves it unset.
+func (s *Store) checkLeaseTableTTL(ctx context.Context) error {
+	out, err := s.client.DescribeTimeToLive(ctx, &dynamodb.DescribeTimeToLiveInput{
+		TableName: aws.String(s.tableName),
+	})
+	if err != nil {
+		if s.ttlPreflightAdvisory {
+			s.warnTTLPreflightUnverified(err)
+			return nil
+		}
+		// Fail closed AND factory-always-fatal. The factory's fatal decision rests
+		// SOLELY on errors.Is(err, shared.ErrInvalidConfig) — the BridgeError Code
+		// identity, which survives the WithMessage/With/Wrap builder chain — so
+		// returning ErrInvalidConfig is precisely what blocks boot regardless of the
+		// factory's SCHEMA advisory. The classified transport cause
+		// (ErrThrottled/ErrNotAuthorized/…) is wrapped so errors.Is still finds it
+		// for diagnostics. Only WithTTLPreflightAdvisory (above) relaxes this.
+		//
+		// The .With("ttl_preflight","unverified") below is DIAGNOSTIC context only
+		// (a structured-log / telemetry breadcrumb) — it plays NO part in the fatal
+		// decision, which is the Code identity above.
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"dynamodblease: could not verify DynamoDB TTL state on lease table %q "+
+				"(DescribeTimeToLive failed); refusing to start because a TTL-reaped "+
+				"fence row is a split-brain hazard. Grant dynamodb:DescribeTimeToLive, "+
+				"or set WithTTLPreflightAdvisory for a dev/emulator that cannot "+
+				"DescribeTimeToLive.", s.tableName)).
+			With("table", s.tableName).
+			With("ttl_preflight", "unverified").
+			Wrap(mapError(err))
+	}
+	if out == nil || out.TimeToLiveDescription == nil {
+		return nil
+	}
+	switch out.TimeToLiveDescription.TimeToLiveStatus {
+	case ddbtypes.TimeToLiveStatusEnabled, ddbtypes.TimeToLiveStatusEnabling:
+		status := string(out.TimeToLiveDescription.TimeToLiveStatus)
+		if s.ttlPreflightAdvisory {
+			s.warnTTLEnabled(status)
+			return nil
+		}
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"dynamodblease: DynamoDB TTL is %s on lease table %q; the lease row is the "+
+				"fencing counter of record and a TTL reaper deleting it resets the fencing "+
+				"version and opens a split-brain window. Disable table TTL (set "+
+				"WithTTLPreflightAdvisory only for a dev/emulator).",
+			status, s.tableName)).
+			With("table", s.tableName).
+			With("ttl_status", status)
+	}
 	return nil
+}
+
+// warnTTLEnabled emits the loud advisory-mode WARN for an observed enabled TTL
+// on the lease table (WithTTLPreflightAdvisory). Nil-logger safe.
+func (s *Store) warnTTLEnabled(status string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn(
+		"dynamodblease: DynamoDB TTL is ENABLED on the lease table under "+
+			"WithTTLPreflightAdvisory; it is the fencing counter of record and TTL MUST "+
+			"be DISABLED or fencing-token monotonicity will break. Disable table TTL "+
+			"immediately (the advisory override is for dev/emulator only).",
+		"table", s.tableName,
+		"ttl_status", status,
+	)
+}
+
+// warnTTLPreflightUnverified emits the loud advisory-mode WARN when
+// DescribeTimeToLive could not verify the lease-table TTL state
+// (WithTTLPreflightAdvisory). Nil-logger safe.
+func (s *Store) warnTTLPreflightUnverified(err error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn(
+		"dynamodblease: lease-table TTL preflight skipped (DescribeTimeToLive failed) "+
+			"under WithTTLPreflightAdvisory; production must grant dynamodb:DescribeTimeToLive "+
+			"so preflight can enforce the TTL-DISABLED invariant on the fencing table.",
+		"table", s.tableName,
+		"error", err.Error(),
+	)
 }
 
 // isResourceNotFound reports whether err is a DynamoDB ResourceNotFoundException

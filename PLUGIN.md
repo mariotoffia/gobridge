@@ -106,7 +106,7 @@ adapter's concrete type rather than through `ports/` (keeping
 ### Registration
 
 ```go
-builder.RegisterTransport("mytransport", myTransportFactory)
+builder.RegisterTransportFactory("mytransport", myTransportFactory)
 ```
 
 The `"mytransport"` name must match the `transport` field in config YAML:
@@ -667,7 +667,7 @@ Rules:
 
 - One `register.go` file per adapter, exposing a single exported
   `Register(reg *ports.Registry) error`. The composition root wires it
-  explicitly (typically via `builder.RegisterTransport` /
+  explicitly (typically via `builder.RegisterTransportFactory` /
   `builder.RegisterStoreFactory`); registration is never an import
   side effect.
 - A decoder must call `Validate()` and surface the error; the bridge

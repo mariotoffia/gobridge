@@ -53,21 +53,25 @@
 // it. Quorum queues persist messages regardless of this knob; it matters
 // for durable classic queues.
 //
-// UNROUTABLE PUBLISHES ARE SILENTLY DROPPED BY DEFAULT. sender.mandatory is
-// false by default; a publish to an exchange with no matching binding is
-// then confirmed by the broker and discarded. The Send reports success and
-// the bridge acks the source, so the message is lost with zero telemetry —
-// the basic.return listener only engages when mandatory=true. Set
-// sender.mandatory=true on any route where an unroutable message must fail
-// loudly rather than vanish.
+// UNROUTABLE PUBLISHES ARE SILENTLY DROPPED WHEN mandatory=false. A publish
+// to an exchange with no matching binding is then confirmed by the broker and
+// discarded: Send reports success and the bridge acks the source, so the
+// message is lost with zero telemetry — the basic.return listener only engages
+// when mandatory=true.
 //
-// ponytail: the managed default sender.mandatory=false silently drops
-// unroutable publishes. Flipping the managed default to mandatory=true is a
-// behavior/policy change (blast radius: every managed publisher; mandatory
-// batches fall back to sequential one-in-flight publishing, so batch
-// throughput drops; routes that deliberately publish to a not-yet-bound
-// exchange would start erroring instead of buffering). Tracked as an ADR
-// candidate — deliberately NOT changed here.
+// MANAGED ROUTES must therefore make an explicit choice: the SenderFactory
+// refuses to build a sender unless sender.mandatory=true (unroutable publishes
+// fail loudly as a basic.return) OR sender.allow_unroutable_drop=true (the
+// operator deliberately accepts the silent drop, e.g. throughput-over-safety
+// fan-out where unroutable is expected). A managed sender that sets neither is
+// rejected at build time with ErrInvalidPayload, so the silent-loss default can
+// no longer be reached by omission. allow_unroutable_drop never alters the
+// publish — it only records acceptance of the loss.
+//
+// DIRECT EMBEDDERS that construct a SenderConfig and call NewSender bypass this
+// gate (SenderConfig.Mandatory still defaults to false); they own the choice
+// and should set Mandatory on any route where an unroutable message must fail
+// loudly rather than vanish.
 //
 // SendBatch pipelines non-mandatory batches: every message is published
 // with a deferred confirmation and the confirms are awaited afterwards,

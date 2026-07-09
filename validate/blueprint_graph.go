@@ -166,6 +166,7 @@ func ValidateBlueprintGraph(cfg *ports.BridgeConfig) *ports.BlueprintValidationE
 				ve.Addf("routes[%d].policy.depth_cache_ttl: must be positive, got %s", i, r.Policy.DepthCacheTTL)
 			}
 		}
+		validateRoutePolicyBuildFields(ve, i, r.Policy)
 
 		if len(r.Bindings) == 0 {
 			ve.Addf("routes[%d] (%s): at least one binding is required", i, r.ID)
@@ -375,6 +376,37 @@ func collectIDs(ve *ports.BlueprintValidationError, section string, n int, fn fu
 	return ids
 }
 
+// validateRoutePolicyBuildFields validates the route-policy fields that
+// bridge/convert.go (toRoutePolicyE) parses at BUILD time — replay_budget and
+// the retry backoff block — so a bad value fails validation instead of passing
+// the config transaction and durable write only to fail at apply/restart
+// (finding: validation misses fields parsed later at build). The checks mirror
+// the builder exactly: replay_budget must be a non-negative duration, the
+// backoff intervals must be parseable durations, and backoff.jitter must be in
+// [0,1]. send_timeout and depth_cache_ttl are validated inline at the call site.
+func validateRoutePolicyBuildFields(ve *ports.BlueprintValidationError, i int, p ports.PolicyDef) {
+	if p.ReplayBudget != "" {
+		if d, err := time.ParseDuration(p.ReplayBudget); err != nil {
+			ve.Addf("routes[%d].policy.replay_budget: invalid duration %q: %v", i, p.ReplayBudget, err)
+		} else if d < 0 {
+			ve.Addf("routes[%d].policy.replay_budget: must not be negative, got %s", i, p.ReplayBudget)
+		}
+	}
+	if p.Backoff.InitialInterval != "" {
+		if _, err := time.ParseDuration(p.Backoff.InitialInterval); err != nil {
+			ve.Addf("routes[%d].policy.backoff.initial_interval: invalid duration %q: %v", i, p.Backoff.InitialInterval, err)
+		}
+	}
+	if p.Backoff.MaxInterval != "" {
+		if _, err := time.ParseDuration(p.Backoff.MaxInterval); err != nil {
+			ve.Addf("routes[%d].policy.backoff.max_interval: invalid duration %q: %v", i, p.Backoff.MaxInterval, err)
+		}
+	}
+	if p.Backoff.Jitter != 0 && (p.Backoff.Jitter < 0 || p.Backoff.Jitter > 1) {
+		ve.Addf("routes[%d].policy.backoff.jitter: must be in [0,1], got %v", i, p.Backoff.Jitter)
+	}
+}
+
 // validateSessionDurationFields checks the foreign-key-adjacent
 // duration fields on a route's session block. Pure field-level
 // duration parsing for top-level sections (bridge.*, config_watch.*)
@@ -397,6 +429,28 @@ func validateSessionDurationFields(ve *ports.BlueprintValidationError, prefix st
 	}
 	if sess.MaxRenewFails < 0 {
 		ve.Addf("%s: session.max_renew_fails: must be non-negative, got %d", prefix, sess.MaxRenewFails)
+	}
+
+	// Build-time-consumed session duration fields (bridge/convert.go
+	// toSessionConfigE / toDrainStrategyE) that were previously parsed ONLY at
+	// build time — validate them here too so a bad value fails validation
+	// instead of escaping to a restart-time apply failure (finding: validation
+	// misses fields parsed later at build). These mirror the builder's parse
+	// exactly (reject only an unparseable duration) so no value the builder
+	// would accept is rejected here. drain_interval is also guarded for
+	// mutual-exclusion with drain_strategy in validateRouteDrainStrategy.
+	for _, f := range []struct{ name, val string }{
+		{"lease_renew_jitter", sess.RenewJitter},
+		{"acquire_poll_interval", sess.AcquirePollInterval},
+		{"renew_call_timeout", sess.RenewCallTimeout},
+		{"drain_interval", sess.DrainInterval},
+	} {
+		if f.val == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(f.val); err != nil {
+			ve.Addf("%s: session.%s: invalid duration %q: %v", prefix, f.name, f.val, err)
+		}
 	}
 }
 

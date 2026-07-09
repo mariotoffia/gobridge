@@ -12,7 +12,6 @@
 //   - Receiver: message ingress from a transport
 //   - Sender / BatchSender: message egress to a transport
 //   - Session: stateful transport connection lifecycle
-//   - Lease: cluster ownership for single-active scenarios
 //   - DestinationResolver: runtime egress binding selection
 //   - Processor: message transformation chain element
 //   - CredentialStore: URI-based credential resolution

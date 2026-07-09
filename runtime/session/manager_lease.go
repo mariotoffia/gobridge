@@ -293,6 +293,9 @@ func (m *Manager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseT
 		cancel()
 		m.metrics.Timer(shared.MetricLeaseAcquireLatency, m.clk.Since(start), leaseTag)
 		if err == nil {
+			// Record the local lease deadline from the PRE-call timestamp so it
+			// is at or before the store's authoritative ExpiresAt (fail-closed).
+			m.recordLeaseDeadline(start)
 			if outageFailures > 0 {
 				m.log(ctx, slog.LevelInfo, "lease store recovered, lease acquired",
 					"after_failures", outageFailures)
@@ -412,7 +415,7 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 	consecutiveFailures := 0
 	events := m.session.Events()
 
-	timer := m.clk.NewTimer(m.clampedInterval())
+	timer := m.clk.NewTimer(m.nextRenewDelay())
 	defer timer.Stop()
 
 	for {
@@ -441,11 +444,27 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 			}
 
 		case <-timer.C():
+			leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
+
+			// ROOT-CAUSE fail-closed gate (split-brain renew-fail/read-succeed):
+			// once our own lease deadline (last successful acquire/renew + TTL)
+			// has passed, step down UNCONDITIONALLY — before any renew attempt or
+			// authoritative Current read. The F7 Current-read mitigation below
+			// only applies BEFORE expiry; a write-failing/read-succeeding
+			// partition keeps Current naming us past our real expiry, so relying
+			// on it after the deadline is exactly what let an expired owner keep
+			// consuming (~97s) alongside the standby that seizes at TTL.
+			if m.leaseDeadlinePassed() {
+				m.log(ctx, slog.LevelWarn,
+					"local lease deadline reached; stepping down (fail-closed)")
+				m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
+				return m.stepDown(ctx)
+			}
+
 			m.mu.Lock()
 			token := m.token
 			m.mu.Unlock()
 
-			leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
 			callCtx, cancel := m.withCallTimeout(ctx)
 			start := m.clk.Now()
 			newToken, err := m.leaseStore.Renew(callCtx, m.sessionID, token, m.leaseTTL, m.endpoints)
@@ -456,6 +475,9 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 			case err == nil:
 				consecutiveFailures = 0
 				m.setToken(newToken)
+				// Extend the local deadline from the PRE-call timestamp (start)
+				// so it stays at or before the store's authoritative ExpiresAt.
+				m.recordLeaseDeadline(start)
 				m.pushLeaseEvent(LeaseStateRenewed, newToken, nil)
 				if logging.TraceEnabled(m.logger) {
 					m.logger.Log(ctx, logging.LevelTrace, "lease renewed",
@@ -492,6 +514,14 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 					// owner, treat the streak as a no-op and keep renewing; a
 					// Current error or any other-owner/expired row is treated as
 					// loss (fail-closed, per the exclusive-safety posture).
+					//
+					// This mitigation is now bounded ABOVE by the local lease
+					// deadline: it can only continue renewing while we are still
+					// BEFORE our own expiry (leaseDeadlinePassed forces an
+					// unconditional step-down at the top of this case once the
+					// deadline is reached). A write-failing/read-succeeding
+					// partition therefore no longer keeps an EXPIRED owner active
+					// on the strength of Current reads (split-brain fix).
 					if m.leaseStillHeld(ctx) {
 						m.log(ctx, slog.LevelWarn,
 							"lease renewal failing but authoritative read still shows us as owner; not stepping down",
@@ -500,12 +530,11 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 						// failed renew re-runs the authoritative Current check
 						// instead of granting a fresh full MaxRenewFails budget.
 						// During a sustained write-failing / read-succeeding
-						// partition this bounds the past-expiry dual-owner window to
-						// ~one renew interval (a polling standby seizes at ~TTL); a
-						// zero reset would let a stale owner keep consuming for up to
-						// MaxRenewFails×renewInterval past its own expiry. The window
-						// stays fenced on the data path (no loss / no double-commit);
-						// this only tightens it. maxRenewFails is floored to 1 at
+						// partition this keeps re-checking each renew interval; the
+						// hard past-expiry bound is now the leaseDeadline gate
+						// above, which fails closed at TTL regardless of Current.
+						// The window stays fenced on the data path (no loss / no
+						// double-commit). maxRenewFails is floored to 1 at
 						// construction, so this is >= 0.
 						consecutiveFailures = m.maxRenewFails - 1
 					} else {
@@ -515,7 +544,7 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 				}
 			}
 
-			timer.Reset(m.clampedInterval())
+			timer.Reset(m.nextRenewDelay())
 		}
 	}
 }

@@ -158,6 +158,9 @@ func TestSenderFactory_NewSender_Valid(t *testing.T) {
 			Sender: SenderParams{
 				Exchange:   "my-exchange",
 				RoutingKey: "my.key",
+				// Managed senders must be mandatory (or explicitly opt into
+				// dropping unroutable publishes); default false is rejected.
+				Mandatory: true,
 			},
 		},
 	}, sess)

@@ -34,31 +34,63 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 	return s.cm.Underlying()
 }
 
-// classifySubackReasons walks the SUBACK reason codes one-to-one with
-// the requested subscriptions and partitions them into accepted and
-// rejected. The first rejection's classified BridgeError is returned
-// alongside the offending topic so the caller can surface a meaningful
-// failure, but EVERY accepted topic is included in the succeeded slice
-// so the caller can persist a faithful view of broker state.
+// classifySubackReasons walks the SUBACK reason codes ONE-TO-ONE with the
+// requested subscriptions (by index) and partitions them into accepted and
+// rejected. The first rejection's classified BridgeError is returned alongside
+// the offending topic so the caller can surface a meaningful failure, but EVERY
+// accepted topic is included in the succeeded slice so the caller can persist a
+// faithful view of broker state.
 //
-// Topics whose reason index is out of range (broker returned a short
-// SUBACK) are conservatively treated as accepted — matching the
-// previous implementation and avoiding gratuitous unsubscribe loops.
+// The one-to-one indexing TRUSTS the broker to return reason codes in request
+// order, one per subscription (MQTT v5 §3.9.3). A broker that returns MORE
+// reason codes than requested, or reorders them, is a spec violation this
+// function does not defend against beyond the short-SUBACK check below — the
+// extra/reordered codes are simply not consulted (loop bounds are toSub). This
+// residual trust is a deliberate LOW: all mainstream brokers comply.
+//
+// Two protocol hazards ARE handled here:
+//
+//   - Short SUBACK (c4-short-suback): a broker that returns FEWER reason
+//     codes than requested subscriptions leaves the tail topics
+//     unconfirmed. Those topics have no broker proof of subscription, so
+//     they are treated as a FAILURE (not silently assumed accepted) —
+//     otherwise the health would report Full while a subscription was
+//     never established and silently never delivers.
+//   - Granted QoS (c4-qos-downgrade): a success reason code (0x00/0x01/
+//     0x02) IS the QoS the broker granted, which may be LOWER than the
+//     requested QoS. The succeeded spec carries the GRANTED QoS purely so
+//     the CALLER can DETECT a downgrade (granted < requested); the caller
+//     then persists the REQUESTED QoS into activeSubs (its reconcile delta
+//     baseline) so a stable downgraded sub is not re-subscribed every cycle.
 func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 	succeeded []subscribeSpec, firstErr *shared.BridgeError, errTopic string,
 ) {
 	succeeded = make([]subscribeSpec, 0, len(toSub))
 	for i, opt := range toSub {
-		if i < len(reasons) {
-			if berr := MapSubscribeReasonCode(reasons[i]); berr != nil {
-				if firstErr == nil {
-					firstErr = berr
-					errTopic = opt.Topic
-				}
-				continue
+		if i >= len(reasons) {
+			// Short SUBACK: no reason code for this topic ⇒ no broker
+			// confirmation. Treat it as a failure rather than assuming
+			// acceptance (c4-short-suback); do NOT mark it active.
+			if firstErr == nil {
+				firstErr = shared.ErrProtocolError.WithMessage(
+					"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
+				errTopic = opt.Topic
 			}
+			continue
 		}
-		succeeded = append(succeeded, opt)
+		if berr := MapSubscribeReasonCode(reasons[i]); berr != nil {
+			if firstErr == nil {
+				firstErr = berr
+				errTopic = opt.Topic
+			}
+			continue
+		}
+		// Success: carry the GRANTED QoS (the reason-code value) so the caller
+		// can detect a downgrade. The caller stores the REQUESTED QoS in
+		// activeSubs (see reconcile), keeping the delta stable (c4-qos-downgrade).
+		granted := opt
+		granted.QoS = reasons[i]
+		succeeded = append(succeeded, granted)
 	}
 	return succeeded, firstErr, errTopic
 }
@@ -364,6 +396,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	// connect via ConnectPacketBuilder.
 	ephemeralCleanStart := false
 	rm := s.opts.ReceiveMaximum
+	maxPayload := s.opts.MaxPayloadBytes
 
 	switch s.mode {
 	case connectivity.SessionEphemeral:
@@ -397,12 +430,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		if ephemeralCleanStart {
 			cp.CleanStart = true
 		}
-		if rm > 0 {
-			if cp.Properties == nil {
-				cp.Properties = &pahov5.ConnectProperties{}
-			}
-			cp.Properties.ReceiveMaximum = &rm
-		}
+		// Advertise the self-imposed resource limits the broker MUST honour:
+		// Receive Maximum (in-flight QoS 1/2 count) and — when MaxPayloadBytes
+		// is set — Maximum Packet Size, which makes the pending-memory bound
+		// receive_maximum × max_payload_bytes broker-ENFORCED (c-mempkt).
+		applyConnectLimits(cp, rm, maxPayload)
 		s.mu.Lock()
 		user := s.liveCreds.Username
 		pass := s.liveCreds.Password
@@ -464,5 +496,62 @@ func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
 	if pass != "" {
 		cp.PasswordFlag = true
 		cp.Password = []byte(pass)
+	}
+}
+
+// mqttPacketOverheadAllowance is the byte headroom ADDED to the configured
+// max payload when advertising the MQTT v5 Maximum Packet Size. MaximumPacketSize
+// bounds the WHOLE packet (fixed header + variable header + properties +
+// payload), so advertising exactly max_payload_bytes would make the broker
+// reject a legitimate payload of exactly that size. 128 KiB comfortably covers
+// the MQTT PUBLISH fixed header (≤5 B), a maximal topic name (≤65 535 B, a
+// 2-byte length field), the packet identifier and a bounded set of properties —
+// so an application payload up to max_payload_bytes is always admitted while the
+// broker still refuses anything materially larger.
+const mqttPacketOverheadAllowance uint64 = 128 << 10
+
+// mqttMaxPacketSize is the MQTT v5 Maximum Packet Size ceiling: the largest
+// value a Four Byte Integer may carry per the spec (§2.2.2.2), 256 MiB − 1.
+// The derived packet-size limit is clamped to this so a huge max_payload_bytes
+// cannot advertise an out-of-range (protocol-violating) value.
+const mqttMaxPacketSize uint64 = 268_435_455
+
+// maxPacketSizeFor derives the MQTT v5 Maximum Packet Size to advertise from the
+// configured maximum application PAYLOAD size, adding mqttPacketOverheadAllowance
+// so a payload of exactly maxPayloadBytes is still admitted (the limit covers
+// the whole packet, not just the payload). The result is clamped to
+// mqttMaxPacketSize. Callers guard maxPayloadBytes > 0 before advertising.
+func maxPacketSizeFor(maxPayloadBytes uint32) uint32 {
+	sz := uint64(maxPayloadBytes) + mqttPacketOverheadAllowance
+	if sz > mqttMaxPacketSize {
+		return uint32(mqttMaxPacketSize)
+	}
+	return uint32(sz)
+}
+
+// applyConnectLimits populates the MQTT v5 CONNECT properties advertising the
+// self-imposed limits the broker must honour: Receive Maximum (in-flight QoS 1/2
+// count) and, when a per-message payload ceiling is configured, Maximum Packet
+// Size (derived via maxPacketSizeFor). Both are broker-enforced, together
+// bounding worst-case pending memory to receive_maximum × max_payload_bytes.
+//
+// A zero receiveMaximum or a zero maxPayloadBytes leaves its respective property
+// UNSET (0 is not a legal MQTT v5 value for either, and an unset Maximum Packet
+// Size means "no limit" — the prior behaviour). Like applyConnectCredentials it
+// takes the SDK *paho.Connect and therefore lives in the ACL.
+func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadBytes uint32) {
+	if receiveMaximum == 0 && maxPayloadBytes == 0 {
+		return
+	}
+	if cp.Properties == nil {
+		cp.Properties = &pahov5.ConnectProperties{}
+	}
+	if receiveMaximum > 0 {
+		rm := receiveMaximum
+		cp.Properties.ReceiveMaximum = &rm
+	}
+	if maxPayloadBytes > 0 {
+		mps := maxPacketSizeFor(maxPayloadBytes)
+		cp.Properties.MaximumPacketSize = &mps
 	}
 }

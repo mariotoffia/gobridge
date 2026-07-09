@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -59,6 +60,17 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.routeRunStart = make(map[string]time.Time)
 
 	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
+		rt.running = false
+		return err
+	}
+
+	// Finding: shared_outbox drainer config bleed. Exactly one drainer exists per
+	// outbox session partition, so if two DIFFERENT routes resolve to the same
+	// session with divergent sender or drain/replay/DLQ policy, one route's
+	// records would silently drain under the other's configuration. Detect that
+	// BEFORE any wiring/goroutine spawns and fail fast, rather than warning and
+	// running with a data-integrity hazard.
+	if err := rt.checkSharedOutboxDrainerConflicts(); err != nil {
 		rt.running = false
 		return err
 	}
@@ -412,5 +424,236 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
 	}
 
+	return nil
+}
+
+// drainerFingerprint captures the drain-relevant inputs a shared_outbox drainer
+// for one session partition is built from — the fields whose divergence between
+// two routes sharing that partition would silently change how the SECOND route's
+// records are drained. It is deliberately restricted to value-typed, directly
+// comparable fields so two fingerprints compare with ==. The sender is compared
+// separately (see sendersConflict) because a Sender is an interface identity, not
+// a value. DrainStrategy is intentionally excluded: it is an interface (pointer)
+// whose identity cannot distinguish "equivalent but separately constructed" from
+// "genuinely different", so comparing it here would raise false conflicts; a
+// diverging poll cadence is the accepted residual (records still drain, only the
+// cadence follows the first route).
+type drainerFingerprint struct {
+	onPermanentFailure    routing.FailureAction
+	onExpired             routing.ExpiredAction
+	maxReplayAttempts     int
+	replayBudget          time.Duration
+	sendTimeout           time.Duration
+	drainBatchSize        int
+	drainMaxBatchSize     int
+	drainMaxConcurrency   int
+	drainTimeout          time.Duration
+	perRecordDrainTimeout time.Duration
+	maxDrainTimeout       time.Duration
+}
+
+// drainerBinding is a per-route claim on a session partition's single drainer.
+type drainerBinding struct {
+	routeID string
+	sender  ports.Sender
+	fp      drainerFingerprint
+}
+
+// drainFingerprint derives the fingerprint from a route's (defaulted) policy and
+// the session config the drainer's tuning comes from. It mirrors the fields read
+// off Policy/sessCfg at the two drainer-construction sites in Start.
+//
+// The drain-tuning fields are NORMALIZED to the values outbox.New would store,
+// not compared raw: outbox.New defaults a zero DrainBatchSize/DrainMaxBatchSize/
+// DrainMaxConcurrency/DrainTimeout to fixed values, so two effectively-identical
+// session configs that merely differ in "left zero" vs "spelled out the default"
+// would otherwise fingerprint differently and raise a false conflict that blocks
+// a valid Start. Normalizing here mirrors runtime/outbox/drainer.go New()'s
+// defaulting exactly (see normalizeDrain* below) so semantically-equal configs
+// fingerprint equal.
+//
+// PerRecordDrainTimeout and MaxDrainTimeout are resolved via
+// normalizeScaledDrainTimeouts, which mirrors outbox.ComputeBatchDeadline: when
+// BOTH are zero the drainer is in legacy (fixed DrainTimeout) mode and the 0/0
+// pair is kept RAW so a legacy route never fingerprints equal to a scaled one;
+// once EITHER is set the drainer is in scaled mode, where a zero PerRecord/Max is
+// defaulted (3s/10s) at compute time — so two scaled routes differing only
+// zero-vs-spelled-out-default share an effective per-batch deadline and MUST
+// fingerprint equal.
+func drainFingerprint(p routing.RoutePolicy, sc session.Config) drainerFingerprint {
+	batch := normalizeDrainBatchSize(sc.DrainBatchSize)
+	per, maxT := normalizeScaledDrainTimeouts(sc.PerRecordDrainTimeout, sc.MaxDrainTimeout)
+	return drainerFingerprint{
+		onPermanentFailure:    p.OnPermanentFailure,
+		onExpired:             p.OnExpired,
+		maxReplayAttempts:     p.MaxReplayAttempts,
+		replayBudget:          p.ReplayBudget,
+		sendTimeout:           p.SendTimeout,
+		drainBatchSize:        batch,
+		drainMaxBatchSize:     normalizeDrainMaxBatchSize(sc.DrainMaxBatchSize, batch),
+		drainMaxConcurrency:   normalizeDrainMaxConcurrency(sc.DrainMaxConcurrency),
+		drainTimeout:          normalizeDrainTimeout(sc.DrainTimeout),
+		perRecordDrainTimeout: per,
+		maxDrainTimeout:       maxT,
+	}
+}
+
+// The following normalize* helpers mirror runtime/outbox/drainer.go New()'s
+// inline defaulting for the drain-tuning fields. They are the source of truth's
+// counterpart: if outbox.New changes a default, update these to match. (They are
+// duplicated rather than reused because outbox.New performs the defaulting inline
+// on its private Config and exposes no normalize/WithDefaults helper to call.)
+const drainAbsoluteMaxBatchSize = 10000 // mirrors outbox absoluteMaxBatchSize
+
+// Mirrors runtime/outbox drainer.go defaults (duplicated per the note above).
+const (
+	drainDefaultPerRecordTimeout = 3 * time.Second  // mirrors outbox defaultPerRecordDrainTimeout
+	drainDefaultMaxTimeout       = 10 * time.Second // mirrors outbox defaultMaxDrainTimeout
+)
+
+// normalizeScaledDrainTimeouts mirrors outbox.ComputeBatchDeadline's resolution
+// of the scaled drain-timeout pair. When BOTH are zero the drainer is in legacy
+// (fixed DrainTimeout) mode, so the 0/0 pair is preserved verbatim to keep
+// legacy and scaled configs distinct in the fingerprint. Once EITHER is set the
+// drainer is in scaled mode, where ComputeBatchDeadline defaults a zero PerRecord
+// to 3s and a zero Max to 10s at compute time — so two scaled routes differing
+// only zero-vs-spelled-out-default share an effective deadline and MUST
+// fingerprint equal.
+func normalizeScaledDrainTimeouts(per, maxT time.Duration) (time.Duration, time.Duration) {
+	if per == 0 && maxT == 0 {
+		return 0, 0 // legacy mode: preserve raw so legacy != scaled
+	}
+	if per == 0 {
+		per = drainDefaultPerRecordTimeout
+	}
+	if maxT == 0 {
+		maxT = drainDefaultMaxTimeout
+	}
+	return per, maxT
+}
+
+func normalizeDrainBatchSize(v int) int {
+	if v <= 0 {
+		v = 100
+	}
+	return min(v, drainAbsoluteMaxBatchSize)
+}
+
+func normalizeDrainMaxBatchSize(v, batch int) int {
+	if v <= 0 {
+		v = 500
+	}
+	v = min(v, drainAbsoluteMaxBatchSize)
+	return max(v, batch)
+}
+
+func normalizeDrainMaxConcurrency(v int) int {
+	if v <= 0 {
+		return 10
+	}
+	return v
+}
+
+func normalizeDrainTimeout(v time.Duration) time.Duration {
+	if v <= 0 {
+		return 10 * time.Second
+	}
+	return v
+}
+
+// sendersConflict reports whether two senders are DIFFERENT instances. Sender
+// identity is the correct check here: a partition drains through exactly one
+// drainer wired with exactly one Sender, so two distinct Sender objects on one
+// partition genuinely means one route's records take the other's send path —
+// there is no "equivalent sender" escape hatch. A non-comparable dynamic type
+// (which would panic on ==) is conservatively treated as a conflict so a config
+// bleed fails fast rather than slipping through a recovered panic.
+func sendersConflict(a, b ports.Sender) (conflict bool) {
+	defer func() {
+		if recover() != nil {
+			conflict = true
+		}
+	}()
+	return a != b
+}
+
+// checkSharedOutboxDrainerConflicts fails fast when two DIFFERENT shared_outbox
+// routes resolve to the same outbox session partition with divergent sender or
+// drain/replay/DLQ policy. Exactly one drainer is built per partition (keyed
+// SESSION#<id> by OutboxPartitionKey), so such divergence would silently drain
+// the second route's records under the first route's sender and policy — records
+// sent via the wrong sender, or poisoned under the wrong replay budget/DLQ
+// policy. It walks entries in the SAME order and resolves the SAME session→config
+// mapping as the drainer-construction loop in Start, so what it validates is
+// exactly what would be built. Called under rt.mu before any wiring; caller
+// resets rt.running on error.
+func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
+	if rt.outboxStore == nil {
+		return nil
+	}
+
+	owners := make(map[string]drainerBinding)
+	claim := func(sid string, b drainerBinding) error {
+		prev, exists := owners[sid]
+		if !exists {
+			owners[sid] = b
+			return nil
+		}
+		if prev.routeID == b.routeID {
+			// The same route re-referencing its own session partition (e.g. a
+			// binding that inherited the route's primary session) shares that
+			// route's single drainer — no cross-route bleed.
+			return nil
+		}
+		if prev.fp == b.fp && !sendersConflict(prev.sender, b.sender) {
+			// Identical drain config AND the same sender instance: the single
+			// shared drainer is correct for both routes, no bleed.
+			return nil
+		}
+		return fmt.Errorf("runtime: shared_outbox routes %q and %q both target outbox session partition %q but resolve to divergent sender or drain/replay/DLQ policy; a session partition drains through exactly one drainer, so the second route's records would silently drain under the first route's sender and policy — align their sender and drain policy, or give them distinct sessions",
+			prev.routeID, b.routeID, sid)
+	}
+
+	for _, entry := range rt.entries {
+		if entry.config.Policy.DeliveryMode != routing.DeliverySharedOutbox {
+			continue
+		}
+		p := entry.config.Policy.WithDefaults()
+
+		// Site 1: the route's primary session (matches the primary-session
+		// drainer built in Start when entry.session != nil && entry.sessCfg != nil).
+		if entry.session != nil && entry.sessCfg != nil {
+			b := drainerBinding{routeID: entry.config.ID, sender: entry.sender, fp: drainFingerprint(p, *entry.sessCfg)}
+			if err := claim(entry.sessCfg.SessionID, b); err != nil {
+				return err
+			}
+		}
+
+		// Site 2: fan-out target sessions referenced by bindings (matches the
+		// per-binding drainer built in Start from rt.sessionSenders).
+		for _, binding := range entry.config.Bindings {
+			sid := binding.SessionID
+			if sid == "" && entry.sessCfg != nil {
+				// Mirror Start's binding-session inheritance: a shared_outbox
+				// binding that omits its SessionID inherits the route's primary
+				// session.
+				sid = entry.sessCfg.SessionID
+			}
+			if sid == "" {
+				continue
+			}
+			sse, ok := rt.sessionSenders[sid]
+			if !ok {
+				// No standalone sender for this sid: either it is the route's own
+				// primary session (already claimed at site 1 for this route) or it
+				// is not drainer-backed here. Start likewise skips it.
+				continue
+			}
+			b := drainerBinding{routeID: entry.config.ID, sender: sse.sender, fp: drainFingerprint(p, sse.config)}
+			if err := claim(sid, b); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

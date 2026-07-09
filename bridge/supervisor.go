@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -43,6 +44,14 @@ type SwapEvent struct {
 	SwapMode  SwapMode
 	Error     error
 	Duration  time.Duration
+
+	// Deferred is true when the Supervisor deliberately did NOT apply NewConfig
+	// and instead recorded it as the desired state to resume later — currently
+	// only when the bridge is paused by an admin StopBridge. A deferred event
+	// carries Error == nil (it is not a failure): the config is committed and
+	// will take effect on the next StartBridge, so an in-band applier MUST treat
+	// it as committed-not-applied (no rollback), not as a successful swap.
+	Deferred bool
 }
 
 // Supervisor manages the runtime lifecycle and applies new
@@ -566,11 +575,24 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.mu.RUnlock()
 	if paused {
 		s.mu.Lock()
+		oldCfg := s.cfg
 		s.cfg = newCfg
 		s.mu.Unlock()
 		if s.logger != nil {
 			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
 				"config_version", newCfg.Version)
+		}
+		// onSwap MUST be total: an in-band applier blocks on the swap result for
+		// this exact config, so a paused apply that returned without firing
+		// onSwap would hang that waiter until its deadline. Emit a DEFERRED event
+		// (Error == nil, Deferred == true) so the applier resolves immediately
+		// with a committed-not-applied (no-rollback) outcome.
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: oldCfg,
+				NewConfig: newCfg,
+				Deferred:  true,
+			})
 		}
 		return
 	}
@@ -598,8 +620,37 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	var newRt *runtime.Runtime
 	var err error
 
-	switch mode {
-	case SwapPrepareCommit:
+	// A live reload that repoints a durable store to a DIFFERENT backing
+	// identity (changed type, or changed path/table) would strand the OLD
+	// store's pending/claimed backlog — the new runtime opens the new location
+	// while unprocessed durable rows sit in the old one, silently missed until
+	// manual recovery (supervisor.go:681, Chunk 10). Detect it before touching
+	// either runtime.
+	identErr := storeIdentityChanged(oldCfg, newCfg)
+
+	// Dropping a durable store entirely (non-nil -> nil) is a deliberate
+	// operator action the swap allows, but it silently abandons whatever backlog
+	// sat in the removed store; warn so that abandonment is observable.
+	if s.logger != nil {
+		if removed := removedStoreRoles(oldCfg, newCfg); len(removed) > 0 {
+			s.logger.Warn("supervisor: reload removes durable store(s); any backlog they hold is abandoned",
+				"removed_stores", removed, "attempted_config_version", newCfg.Version)
+		}
+	}
+
+	switch {
+	case oldRt != nil && identErr != nil:
+		// Refuse the swap and keep the old runtime (and its store) serving; an
+		// operator must drain/migrate deliberately. Coherent with the
+		// stop-failed abort (Finding #3): both keep the old runtime rather than
+		// risk data hazards.
+		err = identErr
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing reload that changes a durable store identity; "+
+				"draining/migrating the old store is required to avoid stranding its backlog",
+				"error", err, "attempted_config_version", newCfg.Version)
+		}
+	case mode == SwapPrepareCommit:
 		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, newCfg)
 	default:
 		newRt, err = s.applyOverlap(ctx, oldRt, oldCfg, newCfg)
@@ -687,10 +738,28 @@ func (s *Supervisor) applyOverlap(
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
-			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
-		}
+		stopErr := oldRt.Stop(stopCtx)
 		cancel()
+		if stopErr != nil {
+			// The old runtime did NOT stop cleanly (e.g. a hung broker close).
+			// Starting the freshly built runtime now would leave TWO runtimes
+			// live against the same brokers — duplicate consumption,
+			// exclusive-identity conflicts, stale lease writes
+			// (supervisor.go:690, Chunk 3). Refuse the swap: release the
+			// built-but-unstarted new runtime and fail the reload, leaving the
+			// old (not-fully-stopped) runtime as the still-current one.
+			if s.logger != nil {
+				s.logger.Error("supervisor: old runtime stop failed; aborting swap to avoid running two runtimes", "error", stopErr)
+			}
+			s.stopAbandoned(ctx, newRt, newCfg)
+			// The retained old runtime is in an ambiguous half-stopped state
+			// (drain timed out / broker close hung), so it is NOT plainly
+			// healthy. Surface a degraded signal so operators can observe it
+			// rather than reading a clean health; a later successful reload
+			// clears it.
+			s.markDegraded("old runtime stop failed during reload; retained runtime may be half-stopped")
+			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
+		}
 	}
 
 	if err := newRt.Start(ctx); err != nil {
@@ -788,10 +857,25 @@ func (s *Supervisor) applyPrepareCommit(
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		if stopErr := oldRt.Stop(stopCtx); stopErr != nil && s.logger != nil {
-			s.logger.Warn("supervisor: old runtime stop error", "error", stopErr)
-		}
+		stopErr := oldRt.Stop(stopCtx)
 		cancel()
+		if stopErr != nil {
+			// The old runtime did NOT stop cleanly. complete() below opens the
+			// NEW exclusive-identity sessions/receivers; doing so while the old
+			// runtime may still hold them causes broker identity conflicts and
+			// double consumption (supervisor.go:690, Chunk 3). Refuse the swap:
+			// release the prep-opened store handles and fail the reload, leaving
+			// the old (not-fully-stopped) runtime current instead of overlapping.
+			if s.logger != nil {
+				s.logger.Error("supervisor: old runtime stop failed; aborting prepare-commit swap to avoid running two runtimes", "error", stopErr)
+			}
+			builder.closeStoreHandles(prep.stores)
+			// Retained old runtime is in an ambiguous half-stopped state; surface
+			// a degraded signal (cleared by a later successful reload) rather than
+			// reporting plain health.
+			s.markDegraded("old runtime stop failed during reload; retained runtime may be half-stopped")
+			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
+		}
 	}
 
 	newRt, err := builder.complete(phaseCtx, prep)
@@ -934,7 +1018,120 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 	return SwapOverlap
 }
 
-// exclusiveIdentityConfigDetector is an optional transport-factory hook that
+// storageIdentifiedConfig is an OPTIONAL store PluginConfig capability that
+// reports a stable descriptor of the DURABLE backing location (e.g. a SQLite
+// file path or a DynamoDB table name) — and nothing tunable. When a store
+// config implements it, storeIdentity compares only that descriptor, so a
+// tuning-only reload (e.g. changing stale_claim_duration) is NOT mistaken for a
+// backing-store change. The descriptor MUST NOT contain secrets.
+type storageIdentifiedConfig interface {
+	StorageIdentity() string
+}
+
+// storeIdentityChanged reports an error when a hot reload would repoint an
+// EXISTING durable store (lease/outbox/DLQ present in BOTH configs) to a
+// different backing identity — a changed Type, or a changed path/table.
+// Swapping such a store live strands the old store's durable backlog
+// (supervisor.go:681, Chunk 10). It returns nil when nothing durable changes.
+//
+// Adding a store where none existed (nil -> non-nil) or removing one entirely
+// (non-nil -> nil) is deliberately NOT flagged here: an add has no prior backlog
+// to strand, and a full removal is a distinct operator action. This guard
+// targets the specific "same role, different backing location" swap the finding
+// describes.
+func storeIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
+	if oldCfg == nil || newCfg == nil {
+		return nil
+	}
+	roles := []struct {
+		name     string
+		old, new *ports.StoreConfig
+	}{
+		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
+		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
+		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+	}
+	for _, r := range roles {
+		if r.old == nil || r.new == nil {
+			continue
+		}
+		if storeIdentity(r.old) != storeIdentity(r.new) {
+			// The identity fingerprint (path/table, or a raw options blob that
+			// could carry credentials) is NEVER put in the error. Surface only
+			// the role and the non-secret type discriminators, and adapt the
+			// wording so an unchanged type does not read as the misleading
+			// "type sqlite -> sqlite".
+			if r.old.Type != r.new.Type {
+				return fmt.Errorf("bridge: refusing live reload: %s store type changed "+
+					"(%q -> %q); the old store's durable backlog would be stranded — "+
+					"drain or migrate it before changing its type",
+					r.name, r.old.Type, r.new.Type)
+			}
+			return fmt.Errorf("bridge: refusing live reload: %s store keeps type %q but its "+
+				"durable backing location (path/table) changed; the old store's backlog would be "+
+				"stranded — drain or migrate it before repointing the store",
+				r.name, r.old.Type)
+		}
+	}
+	return nil
+}
+
+// removedStoreRoles reports which durable store roles were present in oldCfg but
+// dropped entirely in newCfg (non-nil -> nil). Such a removal is a deliberate
+// operator action, not a stranding hazard the swap refuses, but it silently
+// abandons whatever backlog sat in the removed store — so the caller logs an
+// operator-facing warning. Returns nil when nothing was removed.
+func removedStoreRoles(oldCfg, newCfg *ports.BridgeConfig) []string {
+	if oldCfg == nil || newCfg == nil {
+		return nil
+	}
+	var removed []string
+	roles := []struct {
+		name     string
+		old, new *ports.StoreConfig
+	}{
+		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
+		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
+		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+	}
+	for _, r := range roles {
+		if r.old != nil && r.new == nil {
+			removed = append(removed, r.name)
+		}
+	}
+	return removed
+}
+
+// storeIdentity returns a comparable descriptor of a store's durable backing.
+// It prefers an explicit storageIdentifiedConfig capability (path/table only);
+// otherwise it falls back to Type plus a deterministic fingerprint of the raw
+// stage-1 options (conservative: any option change trips the guard, which is the
+// safe default for durable data). A hand-built config with neither capability
+// nor raw options degrades to a deterministic fingerprint of its typed value, so
+// two same-type configs pointing at DIFFERENT backings are still distinguished
+// (fail-safe: any field difference trips the guard) rather than collapsing to
+// the Type discriminator alone and silently stranding a backlog.
+func storeIdentity(sc *ports.StoreConfig) string {
+	if sc == nil {
+		return ""
+	}
+	if si, ok := sc.Config.(storageIdentifiedConfig); ok {
+		return sc.Type + "|id=" + si.StorageIdentity()
+	}
+	if raw := sc.Raw(); raw != nil {
+		var m map[string]any
+		if err := raw.Decode(&m); err == nil {
+			if b, err := json.Marshal(m); err == nil {
+				return sc.Type + "|raw=" + string(b)
+			}
+		}
+	}
+	// Last resort: fingerprint the typed config value itself. fmt prints struct
+	// fields in declaration order and map keys sorted, so this is deterministic
+	// for a given concrete type.
+	return sc.Type + "|struct=" + fmt.Sprintf("%#v", sc.Config)
+}
+
 // reports, from an incoming receiver config alone, whether that receiver will
 // be an exclusive-identity consumer — before any receiver (and thus the
 // factory's post-build CapExclusiveIdentity latch) exists. It lets

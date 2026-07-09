@@ -98,6 +98,34 @@ func mapServiceBusError(sbErr *azservicebus.Error) *shared.BridgeError {
 	}
 }
 
+// isClosedLinkError reports whether err is the SDK's TYPED terminal
+// local-link-closed condition — a *azservicebus.Error whose Code is
+// CodeClosed ("the link or connection for this receiver has been
+// closed"). This is the ONLY state a NON-session receiver must REBUILD
+// out of: a closed receiver link never recovers on its own, so re-polling
+// the same seam warn-loops forever.
+//
+// It deliberately does NOT trigger on:
+//
+//   - CodeConnectionLost: the SDK reopens the AMQP connection on the next
+//     ReceiveMessages, so it self-heals; a rebuild would race that recovery
+//     and churn the stack.
+//   - substring heuristics: "invalid connection string" contains
+//     "connection" but is a PERMANENT auth/config fault. Classifying it as
+//     connection-lost (as MapError's string path does) and rebuilding on it
+//     would mask the real cause behind an endless rebuild loop instead of
+//     surfacing it via the receive-failure metric + warn.
+//
+// Because it keys on the TYPED code, a non-SDK error (plain string, wrapped
+// sentinel) is never a rebuild trigger.
+func isClosedLinkError(err error) bool {
+	var sbErr *azservicebus.Error
+	if !errors.As(err, &sbErr) {
+		return false
+	}
+	return sbErr.Code == azservicebus.CodeClosed
+}
+
 func containsAny(s string, substrs ...string) bool {
 	lower := strings.ToLower(s)
 	for _, sub := range substrs {

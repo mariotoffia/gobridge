@@ -159,7 +159,7 @@ type router struct {
 	bufferedCount    atomic.Int64 // messages held for a not-yet-registered handler
 	unmatchedDropped atomic.Int64 // orphan messages acked-and-dropped past grace
 	coveredDropped   atomic.Int64 // covered-topic messages acked-and-dropped past grace (real loss)
-	overflowDropped  atomic.Int64 // QoS 1/2 messages acked-and-dropped on in-grace pending overflow (real loss)
+	overflowDropped  atomic.Int64 // QoS 1/2 acked-and-dropped because a broker exceeded receive_maximum (protocol violation; unreachable with a compliant broker)
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -199,10 +199,12 @@ type pendingPublish struct {
 const defaultPendingLimit = 65535
 
 // defaultPendingBytesLimit caps the pre-registration pending buffer in
-// payload bytes (independent of entry count). Without a byte cap the
-// default 65535-entry buffer could hold multiple gigabytes of large
-// publishes during a grace window; 64 MiB is a generous ceiling that
-// still bounds memory under a large-message flood.
+// payload bytes for QoS 0 ONLY (QoS 1/2 are never dropped for this ceiling —
+// see bufferLocked). Without it a QoS 0 flood during a grace window could
+// buffer gigabytes; 64 MiB is a generous ceiling that still bounds QoS 0
+// memory. QoS 1/2 pending memory is bounded instead by the entry count cap
+// (== receive_maximum), since dropping a QoS 1/2 is incompatible with
+// at-least-once.
 const defaultPendingBytesLimit int64 = 64 << 20
 
 // defaultDispatchSize bounds the serialized dispatch queue that decouples
@@ -639,26 +641,29 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 					"qos", pub.QoS,
 				)
 			} else {
-				// Keep the overflow AGGREGATE (dropCount) for every overflow
-				// drop — QoS 0 and QoS 1/2 alike — as Stats' `dropped` total.
-				// The WIRE metric, however, is emitted INSIDE the QoS split
-				// (mirroring dropUnmatched's covered/orphan split) so real
-				// QoS 1/2 loss lands on its own dedicated counter and is not
-				// masked by best-effort QoS 0 drops sharing MetricMQTTRouterDropped.
+				// bufferLocked refused the publish. For QoS 0 this is a
+				// routine best-effort overflow drop. For QoS 1/2 it is
+				// UNREACHABLE under a spec-compliant broker (see bufferLocked):
+				// the only refusal is the count cap (== receive_maximum) being
+				// hit with no evictable QoS 0 — i.e. the broker delivered more
+				// un-acked QoS 1/2 than the Receive Maximum it was granted.
+				// Keep the overflow AGGREGATE (dropCount) for every refusal as
+				// Stats' `dropped` total; the WIRE metric is emitted inside the
+				// QoS split so a protocol-violation QoS 1/2 loss lands on its
+				// own dedicated counter, never masked by best-effort QoS 0 drops.
 				r.dropCount.Add(1)
 				if pub.QoS > 0 {
-					// F-2: the pending buffer is full of un-evictable QoS 1/2
-					// entries, so this QoS 1/2 publish is dropped. We MUST
-					// ack it before dropping. paho's acksTracker flushes acks
-					// strictly in RECEIVE ORDER: a single permanently
-					// un-acked packet head-of-line-blocks every LATER ack,
-					// pins the broker's Receive-Maximum window, and deadlocks
-					// ingress on a live connection. Redelivery is already
-					// forfeited by dropping, so holding the ack hostage only
-					// adds the deadlock. This is REAL message loss — count it
-					// on the DEDICATED MetricMQTTRouterOverflowDropped (NOT the
-					// generic best-effort MetricMQTTRouterDropped) and warn
-					// loudly so it is alarming, distinctly from a QoS 0 drop.
+					// Protocol-violating broker exceeded receive_maximum and the
+					// buffer is full of un-acked QoS 1/2 with nothing to reclaim.
+					// We cannot buffer it, and leaving it UN-ACKED would
+					// head-of-line-block paho's contiguous-prefix ack stream and
+					// (once the window fills) wedge ingress. So ACK-and-drop this
+					// one victim: acking keeps the ack stream draining — the
+					// buffered QoS 1/2 ahead of it still settle via flush on
+					// handler registration or the past-grace sweep — at the cost
+					// of losing exactly this message. Alarm on the dedicated
+					// metric: ANY non-zero value means a broker is violating the
+					// Receive Maximum it was granted.
 					r.overflowDropped.Add(1)
 					r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1)
 					if ack != nil {
@@ -670,8 +675,10 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 						}
 					}
 					if r.logger != nil {
-						r.logger.Warn("mqtt: DROPPED QoS 1/2 publish (pending buffer full during startup grace) — "+
-							"MESSAGE LOST; acked to keep paho's in-order ack stream draining (prevents ingress deadlock)",
+						r.logger.Warn("mqtt: DROPPED QoS 1/2 publish — broker exceeded the granted "+
+							"receive_maximum (protocol violation) and the startup pending buffer holds no "+
+							"evictable QoS 0; acked-and-dropped to keep paho's in-order ack stream draining. "+
+							"MESSAGE LOST — investigate the broker.",
 							"topic", pub.Topic,
 							"qos", pub.QoS,
 						)
@@ -709,43 +716,81 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 	r.fanout(pub, ack, matching)
 }
 
-// bufferLocked appends the publish to the pending buffer, evicting the
-// oldest QoS 0 entry on overflow. Returns false when the publish had
-// to be dropped (buffer full of QoS 1/2 entries, or the new publish is
-// QoS 0 and there is no room). The buffer is bounded by BOTH an entry
-// count (pendingLimit, sized to Receive Maximum) AND a payload-byte
-// ceiling (pendingBytesLimit) so a flood of large publishes cannot
-// buffer gigabytes. QoS 1/2 entries are never evicted: they are
-// un-acked, so dropping them silently would either lose them (if acked)
-// or head-of-line-block the ack stream (if not).
+// bufferLocked appends the publish to the pre-registration pending buffer,
+// enforcing the buffer's two independent bounds ASYMMETRICALLY by QoS because
+// dropping a QoS 1/2 publish is never safe:
+//
+//   - QoS 0 (no delivery contract): admitted only while under BOTH the entry
+//     count cap (pendingLimit, sized to Receive Maximum) AND the payload-byte
+//     ceiling (pendingBytesLimit). Over either cap it is refused (return
+//     false) — a best-effort drop, always safe for QoS 0.
+//
+//   - QoS 1/2 (at-least-once): ALWAYS buffered. It is NEVER dropped for the
+//     BYTE ceiling — that ceiling governs QoS 0 memory only. A QoS 1/2 drop is
+//     never safe: ack+drop loses the message; un-ack+drop head-of-line-blocks
+//     paho's CONTIGUOUS-PREFIX manual-ack stream (acksTracker.flush sends the
+//     acknowledged prefix and stops at the first un-acked entry), stranding
+//     acks for messages that WERE delivered and, once receive_maximum un-acked
+//     slots accumulate, wedging ingress on a stable connection. QoS 1/2 memory
+//     needs no byte cap: the broker's Receive-Maximum flow control never
+//     delivers message R+1 while R un-acked QoS 1/2 sit un-acked here, so at
+//     most pendingLimit (== receive_maximum) QoS 1/2 entries are ever pending —
+//     worst case receive_maximum × max_payload, exactly the memory model
+//     config.go documents. Over the byte ceiling a QoS 1/2 publish still
+//     buffers, best-effort reclaiming memory by evicting the oldest QoS 0 first.
+//
+// The ONLY path that refuses a QoS 1/2 publish (return false) is the COUNT cap
+// being hit with NO evictable QoS 0 — UNREACHABLE under a spec-compliant broker,
+// retained only as a hard safety valve against a broker that exceeds the Receive
+// Maximum it was granted. The caller handles that protocol-violation case.
 func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 	size := pubBytes(pub)
-	overLimit := len(r.pending) >= r.pendingLimit ||
-		(r.pendingBytesLimit > 0 && r.pendingBytes+size > r.pendingBytesLimit)
-	if overLimit {
-		if pub.QoS == 0 {
+	overCount := len(r.pending) >= r.pendingLimit
+	overBytes := r.pendingBytesLimit > 0 && r.pendingBytes+size > r.pendingBytesLimit
+
+	if pub.QoS == 0 {
+		if overCount || overBytes {
+			// Best-effort drop: refusing a QoS 0 publish is always safe (no
+			// redelivery contract, no ack to strand).
 			return false
 		}
-		// Evict the oldest QoS 0 entry to make room for a QoS 1/2 publish
-		// (which carries a delivery contract and must not be dropped).
-		evicted := false
-		for i := range r.pending {
-			if r.pending[i].pub.QoS == 0 {
-				r.pendingBytes -= pubBytes(r.pending[i].pub)
-				r.pending = append(r.pending[:i], r.pending[i+1:]...)
-				evicted = true
-				break
-			}
-		}
-		if !evicted {
-			return false
-		}
-		r.dropCount.Add(1)
-		r.metrics.Counter(MetricMQTTRouterDropped, 1)
+		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+		r.pendingBytes += size
+		return true
+	}
+
+	// QoS 1/2: never refuse for the byte ceiling — reclaim memory best-effort
+	// by evicting the oldest QoS 0, then buffer regardless (memory is bounded
+	// by the count cap == receive_maximum).
+	if overBytes {
+		r.evictOldestQoS0Locked()
+	}
+	// Enforce the count cap AFTER any byte-driven eviction freed a slot.
+	if len(r.pending) >= r.pendingLimit && !r.evictOldestQoS0Locked() {
+		// Count cap hit with no QoS 0 to reclaim: only reachable if the broker
+		// exceeded its granted Receive Maximum (protocol violation).
+		return false
 	}
 	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
 	r.pendingBytes += size
 	return true
+}
+
+// evictOldestQoS0Locked removes the OLDEST QoS 0 entry from the pending buffer
+// to reclaim a slot and bytes for a QoS 1/2 publish that must be buffered,
+// counting the evicted QoS 0 as a best-effort drop (it carries no delivery
+// contract). Returns true when an entry was evicted. Caller holds r.mu.
+func (r *router) evictOldestQoS0Locked() bool {
+	for i := range r.pending {
+		if r.pending[i].pub.QoS == 0 {
+			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			r.pending = append(r.pending[:i], r.pending[i+1:]...)
+			r.dropCount.Add(1)
+			r.metrics.Counter(MetricMQTTRouterDropped, 1)
+			return true
+		}
+	}
+	return false
 }
 
 // pubBytes estimates the retained memory of a buffered publish: topic +
@@ -1079,11 +1124,15 @@ func (r *router) CoveredDroppedCount() int64 {
 	return r.coveredDropped.Load()
 }
 
-// OverflowDroppedCount returns the number of QoS 1/2 publishes acked and
-// dropped because the startup pending buffer was full during the grace window
-// — real message loss (F-2 / M-1), distinct from best-effort QoS 0 overflow
-// drops (folded into Stats' `dropped` aggregate) and from the covered/orphan
-// past-grace drops (CoveredDroppedCount / UnmatchedDroppedCount).
+// OverflowDroppedCount returns the number of QoS 1/2 publishes acked-and-dropped
+// because the startup pending buffer's COUNT cap (== receive_maximum) was hit
+// with no evictable QoS 0 to reclaim — UNREACHABLE under a spec-compliant broker
+// (Receive-Maximum flow control bounds in-flight QoS 1/2 at the count cap), so a
+// non-zero value means a broker delivered more un-acked QoS 1/2 than the Receive
+// Maximum it was granted. The byte ceiling NEVER drops QoS 1/2 (it governs QoS 0
+// only), so this is distinct from best-effort QoS 0 overflow drops (folded into
+// Stats' `dropped` aggregate) and from the covered/orphan past-grace drops
+// (CoveredDroppedCount / UnmatchedDroppedCount).
 func (r *router) OverflowDroppedCount() int64 {
 	return r.overflowDropped.Load()
 }

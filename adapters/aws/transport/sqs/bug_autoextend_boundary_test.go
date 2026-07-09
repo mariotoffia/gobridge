@@ -45,17 +45,22 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		nil,
 	)
 
-	// NEGATIVE: verify no ChangeMessageVisibility when visibilityTimeout == 1
+	// NEGATIVE: verify no ChangeMessageVisibility from the background
+	// auto-extend loop when visibilityTimeout == 1 (guard is vis >= 2).
+	// Measure BEFORE Ack: Ack now issues a single final pre-delete
+	// visibility-margin extension for such a small window
+	// (Finding: c8-autoextend-margin), which is unrelated to whether the
+	// background auto-extend loop started.
 	<-time.After(200 * time.Millisecond)
 
-	_ = del.Ack(context.Background())
-
 	mock.mu.Lock()
-	calls := len(mock.ChangeVisibilityCalls)
+	callsBeforeAck := len(mock.ChangeVisibilityCalls)
 	mock.mu.Unlock()
 
-	assert.Equal(t, 0, calls,
+	assert.Equal(t, 0, callsBeforeAck,
 		"auto-extend should NOT start when visibilityTimeout == 1")
+
+	_ = del.Ack(context.Background())
 }
 
 // TestAutoExtend_Boundary_Timeout2_Enabled verifies that auto-extend DOES

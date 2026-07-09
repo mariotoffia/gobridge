@@ -95,6 +95,11 @@ stores:
       path: /var/lib/gobridge/outbox.db
   lease:
     type: memory # single-instance example; use dynamodb for multi-instance (see stores.lease)
+    options:
+      # The in-memory lease keeps ownership per-process and cannot coordinate
+      # across replicas, so single-replica operation must be acknowledged
+      # explicitly before it will build. Use dynamodb for multi-instance.
+      acknowledge_single_replica: true
 
 receivers:
   - id: mqtt-in
@@ -153,16 +158,26 @@ Outbox delivery is at-least-once, so design the downstream for deduplication: gi
 
 ### `ack_after` -- When to Acknowledge the Source
 
-The `ack_after` policy field controls the trade-off between speed and guarantee strength.
+For a `shared_outbox` route the acknowledgement boundary is fixed: the source is
+ACKed once the outbox write succeeds. The durable outbox record IS the guarantee,
+so there is nothing stronger to wait for.
 
-| Value | Behavior | Trade-off |
-|-------|----------|-----------|
-| `outbox_persist` | ACK the source as soon as the outbox write succeeds | Fast ACK, message survives crashes in the outbox |
-| `target_accept` | ACK only after the target sender confirms delivery | Slower, but end-to-end guarantee before ACK |
+| Value | Behavior | Notes |
+|-------|----------|-------|
+| `outbox_persist` | ACK the source as soon as the outbox write succeeds | The default, and the only accepted value, for `shared_outbox`. Fast ACK; the message survives a crash once it is in the outbox. |
+| `target_accept` | ACK only after the target sender confirms delivery | **Rejected on a `shared_outbox` route** -- the runtime fails validation at startup (`runtime/validator.go:278-286`). It is the `direct_hold` default, where there is no outbox to persist to. |
 
-With `outbox_persist`, the MQTT PUBACK is sent the moment the outbox store confirms the write. The message is durable in the outbox but has not yet reached SQS. This is the recommended default for `shared_outbox` -- it keeps ingress latency low.
+With `outbox_persist`, the MQTT PUBACK is sent the moment the outbox store confirms
+the write. The message is durable in the outbox but has not yet reached SQS. This
+keeps ingress latency low and is the boundary `shared_outbox` is built around.
 
-With `target_accept`, the source is not acknowledged until the drainer has successfully sent the message to SQS and marked the outbox record as completed. This provides the strongest guarantee but couples ingress throughput to egress latency.
+Setting `ack_after: target_accept` on a `shared_outbox` route is a startup error,
+not a stronger guarantee -- the drainer sends to the target asynchronously, so the
+source ACK can never be deferred to the target. If you need the source held open
+until the target accepts, use `delivery_mode: direct_hold` instead; that trades the
+outbox's crash durability for end-to-end confirmation before ACK. Omitting
+`ack_after` on a `shared_outbox` route is the safe choice: it defaults to
+`outbox_persist`.
 
 ### `stores.outbox`
 
@@ -343,6 +358,8 @@ stores:
       path: /var/lib/gobridge/outbox.db
   lease:
     type: memory
+    options:
+      acknowledge_single_replica: true
 ```
 
 On crash and restart, the drainer finds all pending records and resumes
@@ -430,15 +447,34 @@ routes:
 
 **Conservation law.** Every received message ends in exactly one terminal state, and the runtime metrics account for all of them: `MessagesReceived = MessagesSent + MessagesDropped + MessagesFiltered + MessagesExpired + DLQEntries + in-flight`. A rising `MessagesDropped` (terminated with neither a send nor a DLQ record) is the single signal for silent loss. `MessagesExpired` covers TTL drops (route-expired ingress and the drainer's expire sweep); `MessagesFiltered` covers deliberate processor discards. Watch these series together to prove the outbox is losing nothing.
 
-### Target Accept ACK for Strongest Guarantees
+### Strongest Guarantee: Keep `outbox_persist`
 
-Delay the MQTT PUBACK until the target sender confirms delivery. Slower, but appropriate for financial or regulatory data:
+For `shared_outbox` the strongest source guarantee IS `outbox_persist` -- the
+source is ACKed only after the message is durable in the outbox, so a crash never
+loses it. There is no "wait for the target" variant on this delivery mode:
+`ack_after: target_accept` is rejected at startup (`runtime/validator.go:278-286`),
+because the drainer delivers to the target asynchronously and the source ACK cannot
+be deferred that far.
+
+If your requirement is that the source stay unacknowledged until the *target*
+confirms delivery -- for example financial or regulatory data where you accept
+coupling ingress throughput to egress latency -- use `direct_hold` instead of
+`shared_outbox`:
 
 ```yaml
-policy:
-  ack_after: target_accept
-  max_in_flight: 50
+routes:
+  - id: sensor-ingest
+    receiver_id: mqtt-in
+    delivery_mode: direct_hold
+    bindings: [to-sqs]
+    policy:
+      ack_after: target_accept   # direct_hold default; the source is held open until the target accepts
+      max_in_flight: 50
 ```
+
+`direct_hold` trades the outbox's crash durability (a process death mid-send loses
+the in-flight message) for end-to-end confirmation before ACK. Pick one boundary:
+outbox durability with `shared_outbox`, or target confirmation with `direct_hold`.
 
 ### Combined: Durable Fan-Out
 

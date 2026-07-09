@@ -27,7 +27,7 @@ func TestBuildRetryMessage_StampsAttemptCounter(t *testing.T) {
 		Body:          []byte("payload"),
 		DeliveryCount: 1,
 	}
-	copy1 := buildRetryMessage(first, clk)
+	copy1 := buildRetryMessage(first, clk, "q")
 	require.Equal(t, int64(1), copy1.ApplicationProperties[asbPropRetryAttempt])
 
 	// Second retry: the redelivered COPY has broker count 1 again, but
@@ -41,7 +41,7 @@ func TestBuildRetryMessage_StampsAttemptCounter(t *testing.T) {
 			asbPropOriginalMessageID: "m1",
 		},
 	}
-	copy2 := buildRetryMessage(second, clk)
+	copy2 := buildRetryMessage(second, clk, "q")
 	require.Equal(t, int64(2), copy2.ApplicationProperties[asbPropRetryAttempt])
 }
 
@@ -111,7 +111,7 @@ func TestBuildRetryMessage_SaltsMessageID(t *testing.T) {
 	clk := clocktest.New()
 
 	first := &azservicebus.ReceivedMessage{MessageID: "m1", DeliveryCount: 1}
-	copy1 := buildRetryMessage(first, clk)
+	copy1 := buildRetryMessage(first, clk, "q")
 	require.NotNil(t, copy1.MessageID)
 	require.Equal(t, "m1-r1", *copy1.MessageID)
 	require.Equal(t, "m1", copy1.ApplicationProperties[asbPropOriginalMessageID])
@@ -125,7 +125,7 @@ func TestBuildRetryMessage_SaltsMessageID(t *testing.T) {
 			asbPropOriginalMessageID: "m1",
 		},
 	}
-	copy2 := buildRetryMessage(second, clk)
+	copy2 := buildRetryMessage(second, clk, "q")
 	require.Equal(t, "m1-r2", *copy2.MessageID)
 	require.Equal(t, "m1", copy2.ApplicationProperties[asbPropOriginalMessageID])
 }
@@ -145,7 +145,7 @@ func TestReceivedToEnvelope_RestoresOriginalMessageID(t *testing.T) {
 			asbPropOriginalMessageID: "m1",
 		},
 	}
-	env, err := receivedToEnvelope(msg, clk)
+	env, err := receivedToEnvelope(msg, clk, "q")
 	require.NoError(t, err)
 	require.Equal(t, "m1", env.ID())
 }
@@ -165,7 +165,7 @@ func TestBuildRetryMessage_DeepCopiesApplicationProperties(t *testing.T) {
 			"tenant": "acme",
 		},
 	}
-	out := buildRetryMessage(received, clk)
+	out := buildRetryMessage(received, clk, "q")
 
 	out.ApplicationProperties["tenant"] = "mutated"
 	out.ApplicationProperties["new-key"] = "v"
@@ -190,7 +190,7 @@ func TestBuildRetryMessage_PreservesAbsoluteExpiry(t *testing.T) {
 		TimeToLive:    &fullTTL,
 		ExpiresAt:     &expires,
 	}
-	out := buildRetryMessage(received, clk)
+	out := buildRetryMessage(received, clk, "q")
 	require.NotNil(t, out.TimeToLive)
 	require.Equal(t, 90*time.Second, *out.TimeToLive)
 }
@@ -207,7 +207,7 @@ func TestBuildRetryMessage_ExpiredGetsMinimalTTL(t *testing.T) {
 		DeliveryCount: 1,
 		ExpiresAt:     &expires,
 	}
-	out := buildRetryMessage(received, clk)
+	out := buildRetryMessage(received, clk, "q")
 	require.NotNil(t, out.TimeToLive)
 	require.Equal(t, time.Millisecond, *out.TimeToLive)
 }
@@ -224,7 +224,7 @@ func TestBuildRetryMessage_TTLNotAliased(t *testing.T) {
 		DeliveryCount: 1,
 		TimeToLive:    &ttl,
 	}
-	out := buildRetryMessage(received, clk)
+	out := buildRetryMessage(received, clk, "q")
 	require.NotNil(t, out.TimeToLive)
 	require.Equal(t, time.Minute, *out.TimeToLive)
 	require.NotSame(t, received.TimeToLive, out.TimeToLive)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -18,12 +19,121 @@ import (
 
 // --- marshaling ---
 
+// skSeparator delimits the escaped envelope and binding components inside a
+// record sort key. It is the raw '#'; a literal '#' inside either component
+// is percent-escaped (see escapeSKComponent), so the FIRST raw '#' after
+// skPrefix always marks the component boundary.
+const skSeparator = "#"
+
+// sortKey builds the INJECTIVE composite sort key for a record. The envelope
+// and binding components are percent-escaped before being joined with the
+// skSeparator, so distinct (envelope, binding) pairs can never collapse onto
+// the same key.
+//
+// c13-sk-collision: RAW concatenation ("OUTBOX#"+env+"#"+binding) was NOT
+// injective. Within one partition, (env="order", binding="eu#prod") and
+// (env="order#eu", binding="prod") both produced "OUTBOX#order#eu#prod", so
+// the second DISTINCT record hit attribute_not_exists(SK), was treated as an
+// idempotent duplicate, and was acked and DROPPED — silent data loss.
+// Envelope IDs are producer-controlled on every transport, so a colliding
+// '#'-bearing ID can arrive externally; the collision must be closed HERE, in
+// the marshaler, not relied upon to be rejected by out-of-module config
+// validation.
+//
+// Escaping only '%' and '#' keeps the common case (neither component contains
+// '#' or '%') byte-for-byte identical to the historical key, so a rolling
+// deploy preserves attribute_not_exists(SK) idempotency for existing records
+// — only the previously-colliding '#'-bearing keys change shape.
 func sortKey(envelopeID, bindingID string) string {
-	return skPrefix + envelopeID + "#" + bindingID
+	return skPrefix + escapeSKComponent(envelopeID) + skSeparator + escapeSKComponent(bindingID)
+}
+
+// parseSortKey is the inverse of sortKey: it recovers the exact
+// (envelopeID, bindingID) pair a sort key was built from, undoing the
+// percent-escaping. ok is false when sk is not a well-formed record sort key
+// (e.g. the FENCE row, which has no skPrefix/separator). The record's own
+// envelope_id/binding_id attributes remain the authoritative source on the
+// unmarshal path; parseSortKey exists to prove the SK encoding is injective
+// and round-trippable and for key-level diagnostics.
+func parseSortKey(sk string) (envelopeID, bindingID string, ok bool) {
+	rest, ok := strings.CutPrefix(sk, skPrefix)
+	if !ok {
+		return "", "", false
+	}
+	// The separator is the FIRST raw '#': every '#' inside a component was
+	// escaped to "%23", so a raw '#' in rest can only be the delimiter.
+	idx := strings.Index(rest, skSeparator)
+	if idx < 0 {
+		return "", "", false
+	}
+	return unescapeSKComponent(rest[:idx]), unescapeSKComponent(rest[idx+len(skSeparator):]), true
+}
+
+// escapeSKComponent percent-escapes the two characters that would otherwise
+// make the composite sort key ambiguous: the '#' separator and the '%'
+// escape marker itself. '%' MUST be escaped first so a literal '%' in the
+// input cannot masquerade as an escape sequence on decode.
+func escapeSKComponent(s string) string {
+	if !strings.ContainsAny(s, "%#") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "%", "%25")
+	s = strings.ReplaceAll(s, "#", "%23")
+	return s
+}
+
+// unescapeSKComponent reverses escapeSKComponent in a single left-to-right
+// pass so that a literal "%23" in the original component (encoded as
+// "%2523") round-trips exactly, which naive sequential ReplaceAll decoding
+// would corrupt.
+func unescapeSKComponent(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			switch s[i+1 : i+3] {
+			case "23":
+				b.WriteByte('#')
+				i += 2
+				continue
+			case "25":
+				b.WriteByte('%')
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func partitionKey(r *persistence.OutboxRecord) string {
 	return persistence.OutboxPartitionKey(r.SessionID(), r.BindingID())
+}
+
+// claimSortKey encodes (createdAtMillis, seq) as a zero-padded,
+// lexicographically-sortable string so the ClaimIndex GSI (range=claim_sort)
+// orders a partition's records by ascending (CreatedAt, Seq) — the
+// ports.OutboxStore claim-ordering contract. 19 digits cover any non-negative
+// int64 created_at in millis; 20 digits cover any uint64 seq. A record
+// persisted before the sequence existed carries seq 0 and sorts first within
+// its millisecond, matching the exhaustive-scan tiebreak.
+//
+// PRECONDITION: createdAtMillis >= 0. Zero-padded %019d is
+// lexically==numerically ordered ONLY for non-negative values — a negative
+// millis renders with a leading '-' and would sort AFTER every positive one,
+// silently corrupting the age ordering. marshalRecord upholds this by
+// substituting `now` for a zero/unset CreatedAt, and real record timestamps
+// are post-epoch; the clamp below is a defensive backstop so a pathological
+// negative can never poison the index ordering.
+func claimSortKey(createdAtMillis int64, seq uint64) string {
+	if createdAtMillis < 0 {
+		createdAtMillis = 0
+	}
+	return fmt.Sprintf("%019d#%020d", createdAtMillis, seq)
 }
 
 func marshalRecord(r *persistence.OutboxRecord, now time.Time) (map[string]ddbtypes.AttributeValue, error) {

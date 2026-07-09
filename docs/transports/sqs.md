@@ -9,7 +9,10 @@
 SQS is stateless -- no sessions are needed. The `options:` block is flat (keys
 directly under `options:`). Each receiver and sender opens its own AWS SDK
 client. Receivers support long polling and automatic visibility extension.
-Senders support batching, delayed delivery, and FIFO queues.
+Senders support delayed delivery and FIFO queues. Route dispatch is
+**per-message**: the runtime calls `Send` once per envelope, so `batch_size`
+governs only the direct `SendBatch` API (callers that hand the sender a slice of
+messages) — it does not batch a route's traffic.
 
 ## YAML Example
 
@@ -58,7 +61,7 @@ senders:
 | `max_messages` | int | 10 | Messages per ReceiveMessage call (1--10). An explicit `0` is rejected by the plugin decoder -- omit the key for the default of 10. **Forced to 1 for FIFO queues** (`.fifo` suffix) so per-`MessageGroupId` order is preserved under the concurrent route runner. |
 | `wait_time_seconds` | int | 20 | Long-poll duration in seconds (1--20). An explicit `0` (short-polling) is rejected by the plugin decoder -- omit the key for the 20s long-poll default. |
 | `visibility_timeout` | int | 30 | Visibility timeout in seconds (0--43200) |
-| `auto_extend` | bool | `true` | Renew visibility at 50% of timeout |
+| `auto_extend` | bool | `true` | Renew visibility at a third of the timeout (a tick at `visibility_timeout/3`, floored at 1s). Ticking at a third rather than half leaves margin: a retry at the next tick still lands before the window lapses after one transient extend failure. |
 | `sns_unwrap` | bool | `false` | Extract inner message from an SNS-to-SQS wrapper. Only bodies whose JSON `Type` is `Notification` **and** whose `TopicArn` is non-empty are unwrapped; a raw body is passed through unchanged. The bridge cannot verify the wrapper genuinely came from SNS — that guarantee is the queue policy restricting `sqs:SendMessage` to the topic (operator responsibility). |
 | `init_timeout` | duration | `30s` | Bounds receiver startup (client creation + queue-URL resolution) |
 | `poll_backoff_initial` | duration | `1s` | Starting delay after a failed `ReceiveMessage` call |
@@ -120,6 +123,17 @@ sender build their first SQS client from a
 `credentials.NewStaticCredentialsProvider` seeded with the resolved key. A later
 rotation swaps the client atomically -- SQS is stateless per request, so there
 is no connection to churn.
+
+An auth failure on the send or receive path is not classified permanent
+immediately. A freshly-granted IAM role or queue policy commonly takes 10--120s
+to propagate, during which SQS returns `AccessDenied` for a condition that will
+self-heal. Each receiver and sender holds a bounded, clock-driven grace window
+(120s) that keeps such failures transient and retryable; only once the window
+lapses without a successful call does the failure escalate to a permanent
+`NOT_AUTHORIZED`. A successful call resets the window. This closes the
+rotation-gap in which a transient auth error would otherwise DLQ or drop messages
+and ack the source. (KMS `AccessDenied` on the send path is already treated as
+temporary by classification, independent of this grace.)
 
 Only long-lived static keys are supported on this path. A resolved access-key ID
 with an `ASIA…` prefix (temporary/STS material) is rejected with
@@ -234,6 +248,27 @@ so neither can be injected through an attribute.
 - **Adaptive auto-extend ticker.** When `Extend()` changes the SQS visibility
   timeout, the auto-extend ticker interval updates accordingly, preventing
   excessive or insufficient extend calls.
+- **Terminal receive faults degrade the route.** A `ReceiveMessage` error that
+  cannot self-heal — queue deleted, IAM revoked past the auth grace, invalid URL
+  — is returned from the poll loop to the supervisor (`superviseRoute`) instead of
+  being tight-retried behind an already-green readiness signal. The supervisor
+  records the component error and restarts or degrades the route in isolation, so
+  health reflects a non-functional route rather than reporting ready. Only
+  genuinely transient errors stay on the retry-with-backoff path.
+- **Per-batch client snapshot.** The poll loop snapshots the SQS client once per
+  receive and binds it to every delivery from that batch, so `Ack`, `Retry`, and
+  auto-extend run under the same principal that received the message. A credential
+  rotation that swaps the client mid-batch cannot make settlement run under a
+  different client (which would fail the delete/extension and redeliver the
+  message).
+- **Pre-delete visibility margin.** `Ack` stops auto-extension, then — when the
+  remaining visibility window is shorter than the settlement budget — issues one
+  final `ChangeMessageVisibility` to a floor (~15s: the 10s settlement bound plus
+  a 5s buffer) before `DeleteMessage`. A `visibility_timeout` as low as 2--3s is
+  otherwise permitted and a delete can take up to 10s, so without the margin the
+  message could resurface to another consumer before the delete lands — a
+  duplicate, and FIFO group churn. The extension is best effort: on failure or
+  timeout `Ack` still proceeds to the delete.
 - **Send timeout vs. visibility window.** With `auto_extend` disabled, the
   builder rejects a route whose policy `send_timeout` is at least half the
   effective `visibility_timeout`: a send that outruns half the window lets SQS

@@ -71,6 +71,13 @@ type Manager struct {
 	token         persistence.LeaseToken
 	hasLease      bool
 	connectedOnce atomic.Bool
+	// leaseDeadline is the local, fail-closed expiry of the lease we hold: the
+	// pre-call timestamp of the last SUCCESSFUL Acquire/Renew plus LeaseTTL.
+	// Once passed, the renew loop steps down UNCONDITIONALLY — even if a
+	// write-fails/read-succeeds partition keeps Current naming us as owner — so
+	// this owner can never consume past the instant a standby can seize the
+	// expired lease (split-brain renew-fail/read-succeed fix). Guarded by mu.
+	leaseDeadline time.Time
 
 	leaseEvents     chan LeaseStateEvent
 	leaseEventDrops atomic.Uint64
@@ -159,6 +166,38 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 	}
 	if cfg.StepDownGrace <= 0 {
 		cfg.StepDownGrace = defaults.StepDownGrace
+	}
+	// StepDownGrace must stay strictly below LeaseTTL: a stepping-down owner
+	// drains in-flight Send+Complete for StepDownGrace BEFORE releasing, so a
+	// grace at or above the TTL lets the old owner keep draining PAST its own
+	// lease expiry and overlap the new owner (finding: StepDownGrace>=LeaseTTL
+	// accepted on the main construction path). Config.Validate rejects this as a
+	// hard error; here — mirroring clampRenewTimings — newManager (which returns
+	// no error) clamps defensively and warns so a hand-tuned or programmatic
+	// Config can never breach the invariant on the construction path.
+	//
+	// This bound limits the DURATION of any owner overlap; it is NOT what makes
+	// single-active safe. Correctness comes from monotonic fencing: a stale
+	// owner's Send/Complete carry an outdated fencing version the stores reject,
+	// so even an overlapping drain cannot double-process. Keeping grace < TTL
+	// simply keeps that (already-safe) overlap window short, minimising duplicate
+	// egress during a handover.
+	//
+	// ponytail: clamp to LeaseTTL/2, an obviously-sub-TTL drain window, rather
+	// than TTL-ε; the exact clamped value is not load-bearing — only that it is
+	// well under the TTL. Operators wanting a precise grace should pass a valid
+	// (StepDownGrace < LeaseTTL) config, which is left untouched.
+	if cfg.StepDownGrace >= cfg.LeaseTTL {
+		clampedGrace := cfg.LeaseTTL / 2
+		if logger != nil {
+			logger.Warn("session StepDownGrace clamped below LeaseTTL to keep step-down within the lease",
+				"session_id", cfg.SessionID,
+				"requested_step_down_grace", cfg.StepDownGrace,
+				"lease_ttl", cfg.LeaseTTL,
+				"clamped_step_down_grace", clampedGrace,
+			)
+		}
+		cfg.StepDownGrace = clampedGrace
 	}
 
 	return &Manager{
@@ -374,6 +413,34 @@ func (m *Manager) setToken(token persistence.LeaseToken) {
 	m.mu.Unlock()
 }
 
+// recordLeaseDeadline records the local, fail-closed lease expiry from the
+// pre-call timestamp of a SUCCESSFUL Acquire/Renew (start), which the caller
+// captured BEFORE issuing the store write. Using the pre-call time (rather than
+// the post-call time) keeps the local deadline at or before the store's
+// authoritative ExpiresAt: the store computes ExpiresAt = store-write-time + TTL
+// and the write happens at or after start, so start+TTL <= ExpiresAt. That
+// guarantees a forced step-down at this deadline fires at or before the instant
+// a standby can seize the expired lease — the fail-closed posture the
+// split-brain (renew-fail/read-succeed) fix requires.
+func (m *Manager) recordLeaseDeadline(start time.Time) {
+	m.mu.Lock()
+	m.leaseDeadline = start.Add(m.leaseTTL)
+	m.mu.Unlock()
+}
+
+// leaseDeadlinePassed reports whether the injected clock has reached the local
+// lease deadline recorded by the last successful Acquire/Renew. When true the
+// renew loop MUST step down unconditionally (fail-closed), regardless of any
+// authoritative Current read that still names us — the write-fails/read-succeeds
+// partition this closes keeps Current optimistic past our real expiry.
+func (m *Manager) leaseDeadlinePassed() bool {
+	m.mu.Lock()
+	deadline := m.leaseDeadline
+	m.mu.Unlock()
+	return !deadline.IsZero() && !m.clk.Now().Before(deadline)
+}
+
+// jitter returns a random offset in [-renewJitter/2, +renewJitter/2).
 func (m *Manager) jitter() time.Duration {
 	if m.renewJitter <= 0 {
 		return 0
@@ -387,6 +454,27 @@ func (m *Manager) jitter() time.Duration {
 // the renewal interval.
 func (m *Manager) clampedInterval() time.Duration {
 	return max(m.renewInterval+m.jitter(), time.Millisecond)
+}
+
+// nextRenewDelay is clampedInterval, additionally clamped so the renew timer
+// NEVER fires after the local lease deadline: scheduling a renew beyond expiry
+// is exactly the split-brain window this closes (a write-failing owner would
+// otherwise keep its next renewal — and its consumption — past the point a
+// standby seizes the lease). When the deadline is already at or in the past the
+// timer is floored to fire almost immediately so the renew loop's
+// deadline-passed check runs and forces a fail-closed step-down. Floored at 1ms
+// (like clampedInterval) to keep the fake-clock timer well-formed.
+func (m *Manager) nextRenewDelay() time.Duration {
+	d := m.clampedInterval()
+	m.mu.Lock()
+	deadline := m.leaseDeadline
+	m.mu.Unlock()
+	if !deadline.IsZero() {
+		if remaining := deadline.Sub(m.clk.Now()); remaining < d {
+			d = remaining
+		}
+	}
+	return max(d, time.Millisecond)
 }
 
 // acquirePollDelay returns the standby lease-acquisition poll interval with a

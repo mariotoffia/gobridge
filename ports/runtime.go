@@ -267,6 +267,24 @@ type RuntimeCommand interface {
 	Start(ctx context.Context) error
 	// Stop gracefully shuts the runtime down. Safe to call when not
 	// running (no-op).
+	//
+	// Drain state machine. Stop drives the runtime through an ordered
+	// quiesce so a rolling restart or reconfig does not become a
+	// loss/duplication window:
+	//
+	//  1. Stop intake — receivers stop pulling new work and readiness goes
+	//     false, so load balancers drain the instance.
+	//  2. Settle in-flight — already-accepted deliveries are allowed to
+	//     finish their send+settle (outbox persist / source ack) within the
+	//     time left in ctx.
+	//  3. Deadline fallback — when ctx expires before in-flight work drains,
+	//     Stop cancels remaining work and returns; unsettled sources are left
+	//     to broker redelivery (at-least-once), never silently acked.
+	//
+	// After Stop returns no adapter may emit a late delivery. Implementations
+	// that cannot honour the settle phase (cancel-first) MUST document the
+	// resulting duplicate/loss window. ctx bounds the whole sequence; an
+	// expired ctx still runs the cancel-and-return fallback promptly.
 	Stop(ctx context.Context) error
 	// Inject sends a synthetic envelope through the named route's
 	// delivery pipeline. Returns shared.ErrNotFound when the route

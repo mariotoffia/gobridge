@@ -22,11 +22,14 @@ import (
 const transientRetryFloor = 5 * time.Second
 
 // drainWedgeGrace is how long past a batch's own computed deadline wg.Wait may
-// run before the batch is flagged as wedged (Min2). It is deliberately generous:
-// a well-behaved batch returns at or shortly after batchTimeout (workCtx's
-// deadline cancels in-flight sends, which honor ctx and return promptly), so
-// only a Sender that ignores context cancellation runs this far past the
-// deadline. The watchdog never kills — it only makes the wedge observable.
+// run before the batch is flagged as wedged and ABANDONED (Min2). It is
+// deliberately generous: a well-behaved batch returns at or shortly after
+// batchTimeout (workCtx's deadline cancels in-flight sends, which honor ctx and
+// return promptly), so only a Sender that ignores context cancellation runs
+// this far past the deadline. The watchdog never kills the in-flight goroutine
+// (senders MUST honor ctx; we cannot force-return a hung Send), but it IS the
+// hard ceiling on how long the drainer itself will wait: once it fires the
+// drainer stops waiting, records the stall, and proceeds so it can never wedge.
 const drainWedgeGrace = 30 * time.Second
 
 // Run polls the outbox for pending records and sends them. It blocks
@@ -379,10 +382,14 @@ loop:
 	}
 	// Min2: a Sender that ignores ctx can block wg.Wait indefinitely, which is
 	// otherwise indistinguishable from an idle drainer (both emit nothing). Wait
-	// under a non-killing watchdog: if the batch outlives its own deadline by a
-	// generous grace, emit MetricOutboxDrainStalled and a WARN so the wedge is
-	// observable, then keep waiting. Senders MUST honor ctx; killing in-flight
-	// goroutines is explicitly out of scope.
+	// under a watchdog: if the batch outlives its own deadline by a generous
+	// grace, emit MetricOutboxDrainStalled and a WARN, then STOP waiting and
+	// proceed — abandoning the still-in-flight send — so a ctx-ignoring sender
+	// can never wedge this drainer (blocking every other record and shutdown).
+	// The abandoned record was never Completed (Complete only runs after Send
+	// returns nil), so it stays Claimed and is re-drained later: at-least-once
+	// is preserved, nothing is falsely completed. Killing the in-flight
+	// goroutine is impossible in Go — senders MUST honor ctx.
 	d.waitBatch(ctx, &wg, batchTimeout, start, sessionTag, routeTag)
 	batchCancel()
 	workCancel()
@@ -432,11 +439,14 @@ loop:
 }
 
 // waitBatch blocks until every in-flight drain goroutine returns, under a
-// non-killing watchdog (Min2). If wg.Wait outlives batchTimeout+drainWedgeGrace
-// it emits MetricOutboxDrainStalled and a WARN — the only signal that a Sender
-// is ignoring ctx and has wedged the loop — then keeps waiting. The watchdog
-// goroutine always completes (it closes done after wg.Wait returns), so it is
-// never leaked; the watchdog timer is Stopped on return regardless of path.
+// watchdog (Min2). If wg.Wait outlives batchTimeout+drainWedgeGrace it emits
+// MetricOutboxDrainStalled and a WARN — the signal that a Sender is ignoring
+// ctx — and then RETURNS instead of waiting any longer, so the drainer keeps
+// making progress and can shut down. The watchdog is the hard ceiling on how
+// long the drainer waits for one batch; it never kills the in-flight goroutine
+// (a hung Send cannot be force-returned in Go), so that goroutine may leak, but
+// the drainer itself is never wedged. The watchdog timer is Stopped on return
+// regardless of path.
 func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeout time.Duration, start time.Time, tags ...shared.Tag) {
 	done := make(chan struct{})
 	go func() {
@@ -451,12 +461,23 @@ func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeou
 	case <-watchdog.C():
 		d.metrics.Counter(shared.MetricOutboxDrainStalled, 1, tags...)
 		d.log(ctx, slog.LevelWarn,
-			"drain batch exceeded watchdog; a sender may be ignoring context cancellation and has wedged the drain loop",
+			"drain batch exceeded watchdog; a sender is ignoring context cancellation — abandoning the in-flight send so the drainer does not wedge",
 			"batch_timeout", batchTimeout, "waited", d.clk.Since(start))
 	}
-	// Never kill the wedged sends — senders must honor ctx. Keep waiting so the
-	// batch accounting below still reflects whatever eventually completes.
-	<-done
+	// ponytail: watchdog expiry is the HARD CEILING on a single batch. A
+	// well-behaved sender honors the already-cancelled workCtx/batchCtx and
+	// returns long before this via the <-done case above, so reaching here
+	// means a Sender is ignoring context cancellation and its goroutine will
+	// never return. We deliberately do NOT block on <-done any longer: doing so
+	// wedges this drainer forever — no other record drains and shutdown hangs
+	// (the finding). Instead we RETURN and let drainBatch proceed, treating the
+	// stuck record as transient: it was never Completed (Complete runs only
+	// after Send returns nil, which has not happened), so it stays Claimed and
+	// is re-claimed on a later cycle — at-least-once preserved, nothing falsely
+	// completed. The abandoned goroutine LEAKS until its hung Send eventually
+	// returns (if ever) — an accepted, bounded-per-batch cost that trades one
+	// leaked goroutine for a live drainer. Its late atomic increments land on
+	// heap-escaped batch counters and are harmless. Senders MUST honor ctx.
 }
 
 // orderingGroup is an ordered run of claimed outbox records delivered as

@@ -339,9 +339,29 @@ scan stops after `limit` -- is a tracked future item; see
 
 **Transport (SQS)**
 
+The SQS adapter self-instruments twelve metrics, all tagged by `queue_url`
+(bounded cardinality). Five are latency timers (Milliseconds, StatisticSet);
+seven are counters. All emit on both the programmatic and config-driven paths
+(see the note below).
+
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `SQSVisibilityExtensions` | `queue_url` | Count | SQS visibility-timeout extensions |
+| `SQSPollLatency` | `queue_url` | Milliseconds | `ReceiveMessage` long-poll round-trip latency |
+| `SQSReceiveLatency` | `queue_url` | Milliseconds | Per-message receive-to-convert latency |
+| `SQSDeleteLatency` | `queue_url` | Milliseconds | `DeleteMessage` (ack) call latency |
+| `SQSSendLatency` | `queue_url` | Milliseconds | `SendMessage` call latency |
+| `SQSSendBatchLatency` | `queue_url` | Milliseconds | `SendMessageBatch` call latency |
+| `SQSVisibilityExtensions` | `queue_url` | Count | Explicit `Extend` `ChangeMessageVisibility` calls |
+| `SQSAutoExtends` | `queue_url` | Count | Successful background auto-extend `ChangeMessageVisibility` calls |
+| `SQSMalformedMessages` | `queue_url` | Count | Messages that failed envelope conversion |
+| `SQSDroppedAttributes` | `queue_url` | Count | Envelope headers dropped from a send over the SQS attribute count/size budget |
+| `SQSPollErrors` | `queue_url` | Count | `ReceiveMessage` poll failures |
+| `SQSSettlementErrors` | `queue_url` | Count | Failed Ack (`DeleteMessage`) and Retry (`ChangeMessageVisibility`) settlement calls |
+| `SQSAutoExtendFailures` | `queue_url` | Count | Failed background auto-extend `ChangeMessageVisibility` calls |
+
+`SQSPollErrors`, `SQSSettlementErrors`, and `SQSAutoExtendFailures` are failure
+counters — a poll, settlement, or auto-extend failure that was previously only a
+Warn log and thus metrics-invisible. Alert on a rising rate on any of the three.
 
 **Exporter self-metrics**
 
@@ -363,10 +383,11 @@ adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibility
 
 > **Adapter metrics now emit on the config-driven path (SQS).** The SQS
 > factory threads a `MetricsExporter` into every receiver and sender it builds,
-> so the adapter's nine SQS metrics (`SQSReceiveLatency`, `SQSPollLatency`,
+> so the adapter's twelve SQS metrics (`SQSReceiveLatency`, `SQSPollLatency`,
 > `SQSDeleteLatency`, `SQSSendLatency`, `SQSSendBatchLatency`,
 > `SQSVisibilityExtensions`, `SQSAutoExtends`, `SQSMalformedMessages`,
-> `SQSDroppedAttributes`) now report when the transport is built from
+> `SQSDroppedAttributes`, `SQSPollErrors`, `SQSSettlementErrors`,
+> `SQSAutoExtendFailures`) now report when the transport is built from
 > configuration or a plugin — not only on the programmatic path. Earlier
 > builds left `cfg.Metrics` nil on the factory path and each adapter fell back
 > to a no-op exporter, so these series were silently absent on config-driven

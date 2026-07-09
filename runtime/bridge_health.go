@@ -139,6 +139,47 @@ type (
 	RouteHealth         = ports.RouteHealth
 )
 
+// defaultSessionHealthTimeout bounds a single plugin Session.Health call made
+// from a health probe (DeepHealth → /ready, /deephealth). A plugin Health that
+// blocks — a wedged broker client whose SDK call never returns — would otherwise
+// hang the probe indefinitely, and it does so at the WORST possible moment: an
+// outage, which is exactly when Kubernetes/ECS readiness is what sheds traffic
+// from the sick instance. Bounding the call and classifying a timeout as
+// NOT-ready (see healthWithTimeout) makes the probe fail closed instead of
+// hanging. 5s is comfortably longer than a healthy broker's Health latency yet
+// well under a typical probe period, so it never false-trips a live session.
+const defaultSessionHealthTimeout = 5 * time.Second
+
+// healthWithTimeout invokes sess.Health under a bounded, clock-driven deadline.
+// Session.Health is a plugin call that MAY ignore its context and block forever
+// (a wedged SDK), so it runs in its own goroutine and the deadline is raced
+// against it rather than trusting the plugin to honour ctx.
+//
+// Classification: on timeout (or caller-ctx cancellation) the session is
+// reported not-connected, not-ready, ServiceLevelNone, and the second return is
+// true. DeepHealth's readiness aggregate therefore fails CLOSED — a hung session
+// drives ReadyForTraffic=false and floors the aggregate ServiceLevel — so a
+// wedged plugin cannot advertise a green /ready.
+//
+// ponytail: a genuinely-hung plugin leaks the single Health goroutine spawned
+// here until (if ever) it unblocks — the deliberate, bounded price of never
+// letting a wedged plugin wedge the probe. That goroutine only blocks on a
+// buffered-channel send, so it holds no lock and is reclaimed the moment Health
+// finally returns.
+func (rt *Runtime) healthWithTimeout(ctx context.Context, sess ports.Session) (ports.SessionHealth, bool) {
+	resCh := make(chan ports.SessionHealth, 1)
+	go func() { resCh <- sess.Health(ctx) }()
+
+	select {
+	case sh := <-resCh:
+		return sh, false
+	case <-rt.clk.After(defaultSessionHealthTimeout):
+		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}, true
+	case <-ctx.Done():
+		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}, true
+	}
+}
+
 // DeepHealth returns a comprehensive health snapshot including session
 // subscription readiness and lease status. Use ReadyForTraffic to
 // determine if all sessions are connected and subscribed before
@@ -247,7 +288,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	aggSL := ports.ServiceLevelFull
 
 	for _, snap := range sessSnaps {
-		sh := snap.sess.Health(ctx)
+		sh, _ := rt.healthWithTimeout(ctx, snap.sess)
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
 			SessionID:           snap.sid,
 			Connected:           sh.Connected,

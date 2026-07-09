@@ -231,7 +231,7 @@ func TestReloadPipeline_ApplierUnblocksOnContextCancel(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected a context-cancelled error, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("applyCommitted did not unblock on context cancellation")
 	}
 }

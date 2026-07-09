@@ -39,6 +39,13 @@ type Sender struct {
 	metrics  ports.MetricsExporter
 	clk      clock.Clock
 
+	// authGrace gives a plain (non-KMS) API auth failure a bounded,
+	// clock-driven grace window before it is classified permanent, so a
+	// static-key rotation / IAM-propagation gap is retried instead of
+	// DLQ/drop-then-ACK-ing the source during a purely transient window
+	// (Finding: c8-auth-permanent).
+	authGrace *authGrace
+
 	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
 	// enforced when selecting egress attributes. Defaults to
 	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for
@@ -103,6 +110,7 @@ func NewSender(cfg SenderConfig, opts ...SenderOption) (*Sender, error) {
 		logger:          cfg.Logger,
 		metrics:         m,
 		clk:             clk,
+		authGrace:       newAuthGrace(clk, authGraceWindow),
 		maxMessageBytes: sqsMaxMessageBytes,
 	}
 	for _, opt := range opts {

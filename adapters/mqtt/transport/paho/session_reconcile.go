@@ -21,15 +21,32 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // Reconcile diffs the desired SessionPlan against current subscriptions and
 // issues Subscribe / Unsubscribe to reach the desired state.
 //
-// When the new plan has no subscriptions and a plan is already set (from a
-// prior Reconcile call), the call is a no-op. This prevents a SessionManager
-// with an empty plan from unsubscribing externally-managed topics.
+// An EMPTY target plan is treated as an intentional "remove all
+// subscriptions" (e.g. hot reconfig removed the last MQTT receiver): the
+// subscriptions the prior plan desired are UNSUBSCRIBED. The teardown is
+// gated on whether the PRIOR PLAN held subscriptions (desired-state history),
+// not on the volatile activeSubs snapshot a reconnect may have just reset —
+// so a subscription resumed by a clean_start=false broker is torn down even
+// in the post-reconnect window (c4-remove-subs). Only a subless transition —
+// an empty plan re-affirming a prior plan that had no subscriptions (a
+// sender-only session) — is a no-op, so a SessionManager that never had
+// subscriptions cannot churn the broker.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
 	hasPriorPlan := s.plan != nil
-	if len(plan.Subscriptions) > 0 || !hasPriorPlan {
-		s.plan = &plan
-	}
+	priorPlanHadSubs := hasPriorPlan && len(s.plan.Subscriptions) > 0
+	// Snapshot the prior desired topics BEFORE overwriting s.plan: an empty
+	// target plan must tear these down even when a reconnect just reset the
+	// volatile activeSubs snapshot to empty (a clean_start=false broker
+	// resumed them), and the overwrite below would otherwise lose them.
+	priorPlanTopics := s.planTopicsLocked()
+	// Record the latest desired plan unconditionally — including an EMPTY plan
+	// (previously skipped to avoid clobbering the prior plan). Recording the
+	// empty plan is the durable "no subscription is desired any more" fact
+	// that makes a SUBSEQUENT empty reconcile a genuine no-op (rather than
+	// re-issuing the same UNSUBSCRIBE every reconcile) and stops topicCovered
+	// from treating a removed route as a still-live route.
+	s.plan = &plan
 	cm := s.cm
 	s.mu.Unlock()
 
@@ -37,11 +54,31 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		return shared.ErrUnavailable.WithMessage("session not started")
 	}
 
-	if len(plan.Subscriptions) == 0 && hasPriorPlan {
+	// An empty target plan is an intentional "remove all subscriptions" (e.g.
+	// hot reconfig removed the last MQTT receiver): the managed subscriptions
+	// this session established MUST be UNSUBSCRIBED, else the broker keeps
+	// delivering on stale subscriptions the router then ack-drops as orphans
+	// forever (c4-remove-subs).
+	//
+	// The teardown is gated on the DESIRED-STATE HISTORY (whether the prior
+	// plan held subscriptions), NOT on the volatile activeSubs snapshot.
+	// handleConnectionUp resets activeSubs to empty on every reconnect while a
+	// clean_start=false broker still holds the resumed subscriptions, so an
+	// empty plan reconciled in that post-reset/pre-resubscribe window would
+	// look like "nothing to remove" under an activeSubs guard and orphan the
+	// broker sub until the router's grace-sweep backstop. Gating on the prior
+	// plan closes that window: s.reconcile unsubscribes the prior desired
+	// topics (priorPlanTopics) even when activeSubs is empty.
+	//
+	// Only a genuinely subless transition — an empty plan re-affirming a prior
+	// plan that itself held no subscriptions (a sender-only session) — is a
+	// true no-op, so a SessionManager that never had subscriptions cannot
+	// churn the broker.
+	if len(plan.Subscriptions) == 0 && hasPriorPlan && !priorPlanHadSubs {
 		return nil
 	}
 
-	if err := s.reconcile(ctx, cm, plan); err != nil {
+	if err := s.reconcile(ctx, cm, plan, priorPlanTopics); err != nil {
 		return err
 	}
 
@@ -134,6 +171,22 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	}
 }
 
+// planTopicsLocked returns the topic filters of the current desired plan
+// (s.plan), or nil when no plan is set. Callers must hold s.mu. It is the
+// desired-state history Reconcile snapshots before overwriting s.plan so an
+// empty target plan can tear down the prior desired subscriptions even when a
+// reconnect has just reset the volatile activeSubs snapshot (c4-remove-subs).
+func (s *Session) planTopicsLocked() []string {
+	if s.plan == nil {
+		return nil
+	}
+	topics := make([]string, 0, len(s.plan.Subscriptions))
+	for _, sub := range s.plan.Subscriptions {
+		topics = append(topics, sub.Topic)
+	}
+	return topics
+}
+
 // topicCoveredLocked reports whether a concrete publish topic is covered by
 // a subscription the session still wants — either an active broker
 // subscription (s.activeSubs) or a desired filter in the current plan.
@@ -173,7 +226,7 @@ func (s *Session) topicCovered(topic string) bool {
 	return s.topicCoveredLocked(topic)
 }
 
-func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan) error {
+func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan, priorTopics []string) error {
 	reconcileStart := s.clock().Now()
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
@@ -198,12 +251,31 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		)
 	}
 
-	// Unsubscribe topics no longer desired
+	// Unsubscribe topics no longer desired. Candidates are the UNION of the
+	// active broker subscriptions we know about (current) AND the prior plan's
+	// desired topics (priorTopics). The prior-plan topics matter in the
+	// reconnect window: handleConnectionUp reset activeSubs to empty but a
+	// clean_start=false broker still holds the resumed subscriptions, so
+	// without them an empty plan would fail to tear anything down and orphan
+	// the broker sub (c4-remove-subs). Unsubscribing a topic the broker does
+	// not actually hold is harmless (the broker ignores it).
 	var toUnsub []string
+	unsubSeen := make(map[string]struct{})
 	for topic := range current {
 		if _, ok := desired[topic]; !ok {
 			toUnsub = append(toUnsub, topic)
+			unsubSeen[topic] = struct{}{}
 		}
+	}
+	for _, topic := range priorTopics {
+		if _, ok := desired[topic]; ok {
+			continue
+		}
+		if _, dup := unsubSeen[topic]; dup {
+			continue
+		}
+		toUnsub = append(toUnsub, topic)
+		unsubSeen[topic] = struct{}{}
 	}
 
 	if len(toUnsub) > 0 {
@@ -253,9 +325,43 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		if len(succeeded) > 0 {
 			s.mu.Lock()
 			for _, opt := range succeeded {
-				s.activeSubs[opt.Topic] = opt.QoS
+				// Persist the REQUESTED QoS (intent), NOT the broker-granted
+				// QoS. activeSubs is the reconcile delta's baseline, so keying
+				// it off the requested QoS keeps a granted-QoS DOWNGRADE from
+				// leaving the topic permanently "dirty" (granted != requested)
+				// and re-SUBSCRIBING + re-warning on EVERY reconcile. opt.QoS is
+				// the GRANTED QoS (see classifySubackReasons) and is used only
+				// for the downgrade comparison below; desired[opt.Topic] is the
+				// requested QoS we store (c4-qos-downgrade MEDIUM).
+				s.activeSubs[opt.Topic] = desired[opt.Topic]
 			}
 			s.mu.Unlock()
+			// Surface any granted-QoS downgrade (broker granted a weaker QoS
+			// than requested). The route assumes the requested delivery
+			// guarantee, so a silent downgrade would quietly remove offline /
+			// redelivery guarantees (c4-qos-downgrade). Because activeSubs is
+			// keyed off the REQUESTED QoS, a stable downgraded subscription
+			// yields an EMPTY delta on the next reconcile and is not
+			// re-subscribed — so this fires ONCE per subscription transition
+			// (initial subscribe, reconnect, or a plan that changes the
+			// requested QoS), not on every reconcile. Warn loudly and record on
+			// a dedicated metric rather than silently accepting the weaker
+			// guarantee.
+			for _, opt := range succeeded {
+				if req, ok := desired[opt.Topic]; ok && opt.QoS < req {
+					s.metrics.Counter(MetricMQTTQoSDowngraded, 1,
+						shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+					if s.logger != nil {
+						s.logger.Warn("mqtt: broker downgraded subscription QoS below requested; "+
+							"delivery guarantee is weaker than the route assumes",
+							"client_id", s.opts.ClientID,
+							"topic", opt.Topic,
+							"requested_qos", req,
+							"granted_qos", opt.QoS,
+						)
+					}
+				}
+			}
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)

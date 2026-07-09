@@ -40,13 +40,17 @@ type ReceiverParams struct {
 	// next available session and rotating between sessions; see
 	// ReceiverConfig.UseSessions. Mutually exclusive with session_id
 	// and sub_queue.
-	UseSessions  bool          `mapstructure:"use_sessions" yaml:"use_sessions" json:"use_sessions"`
-	MaxMessages  int           `mapstructure:"max_messages" yaml:"max_messages" json:"max_messages"`
-	MaxWaitTime  time.Duration `mapstructure:"max_wait_time" yaml:"max_wait_time" json:"max_wait_time"`
-	ReceiveMode  string        `mapstructure:"receive_mode" yaml:"receive_mode" json:"receive_mode"`
-	SubQueue     string        `mapstructure:"sub_queue" yaml:"sub_queue" json:"sub_queue"`
-	LockDuration time.Duration `mapstructure:"lock_duration" yaml:"lock_duration" json:"lock_duration"`
-	AutoExtend   *bool         `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
+	UseSessions bool          `mapstructure:"use_sessions" yaml:"use_sessions" json:"use_sessions"`
+	MaxMessages int           `mapstructure:"max_messages" yaml:"max_messages" json:"max_messages"`
+	MaxWaitTime time.Duration `mapstructure:"max_wait_time" yaml:"max_wait_time" json:"max_wait_time"`
+	ReceiveMode string        `mapstructure:"receive_mode" yaml:"receive_mode" json:"receive_mode"`
+	// AllowAtMostOnce is the explicit opt-in gate for receive_mode
+	// "ReceiveAndDelete" (at-most-once, lossy). Validate rejects that
+	// mode unless this is true; see ReceiverConfig.AllowAtMostOnce.
+	AllowAtMostOnce bool          `mapstructure:"allow_at_most_once" yaml:"allow_at_most_once" json:"allow_at_most_once"`
+	SubQueue        string        `mapstructure:"sub_queue" yaml:"sub_queue" json:"sub_queue"`
+	LockDuration    time.Duration `mapstructure:"lock_duration" yaml:"lock_duration" json:"lock_duration"`
+	AutoExtend      *bool         `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
 	// MaxLockRenewalDuration caps total per-delivery lock auto-renewal
 	// wall time (default 5m); see ReceiverConfig.MaxLockRenewalDuration.
 	MaxLockRenewalDuration time.Duration `mapstructure:"max_lock_renewal_duration" yaml:"max_lock_renewal_duration" json:"max_lock_renewal_duration"`
@@ -89,6 +93,12 @@ func (c Config) Validate() error {
 	}
 	if err := validateReceiveMode(c.Receiver.ReceiveMode); err != nil {
 		return err
+	}
+	if strings.EqualFold(c.Receiver.ReceiveMode, "ReceiveAndDelete") && !c.Receiver.AllowAtMostOnce {
+		// ReceiveAndDelete is at-most-once (the broker deletes at receive;
+		// a crash after receive is unrecoverable loss, Ack is a no-op,
+		// Retry is unsupported). Fail parse-time unless explicitly opted in.
+		return errors.New("servicebus: receiver.receive_mode ReceiveAndDelete is at-most-once (unrecoverable message loss on a crash after receive) and requires receiver.allow_at_most_once: true")
 	}
 	if err := validateSubQueue(c.Receiver.SubQueue); err != nil {
 		return err
@@ -202,6 +212,7 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 		MaxMessages:            c.Receiver.MaxMessages,
 		MaxWaitTime:            c.Receiver.MaxWaitTime,
 		ReceiveMode:            c.Receiver.ReceiveMode,
+		AllowAtMostOnce:        c.Receiver.AllowAtMostOnce,
 		SubQueue:               c.Receiver.SubQueue,
 		LockDuration:           c.Receiver.LockDuration,
 		AutoExtend:             c.Receiver.AutoExtend,

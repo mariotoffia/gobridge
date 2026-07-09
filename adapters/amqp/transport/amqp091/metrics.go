@@ -34,11 +34,14 @@ const (
 	// a genuine misconfiguration, not a race.
 	MetricAMQP091ReconnectRaceRetried = "AMQP091ReconnectRaceRetried"
 	// MetricAMQP091DelayedRetryUnhonored counts delayed (backoff) retries
-	// that could not be honored client-side. AMQP 0-9-1 has no native
-	// delayed-redelivery primitive, so Retry(after>0) nacks with immediate
-	// requeue: the runtime's requested spacing is silently lost and a
-	// poison message can hot-loop on a classic queue unless the queue has
-	// an x-delivery-limit / dead-letter-exchange guard. Mirrors
-	// AMQP10DelayedRetryUnhonored on the amqp10 adapter.
+	// that AMQP 0-9-1 cannot schedule natively (the broker has no
+	// delayed-redelivery primitive). Retry(after>0) therefore honors the
+	// requested spacing CLIENT-SIDE by holding the unacked delivery for
+	// `after` before requeueing — spacing a poison message instead of
+	// hot-looping it on a classic queue. A climbing count means poison /
+	// repeatedly-failing traffic; guard it with an x-delivery-limit /
+	// dead-letter-exchange on the queue. Mirrors AMQP10DelayedRetryUnhonored
+	// on the amqp10 adapter (the wire name is retained for dashboard/runbook
+	// stability).
 	MetricAMQP091DelayedRetryUnhonored = "AMQP091DelayedRetryUnhonored"
 )

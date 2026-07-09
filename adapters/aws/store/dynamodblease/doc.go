@@ -22,23 +22,52 @@
 // Lease rows ARE the fencing counter of record. If DynamoDB TTL is enabled on
 // the lease table a reaper can delete a lease row, and the next acquire recreates
 // it at version 1 while the outbox high-water mark still sits at v >> 1 — every
-// subsequent claim then fails with ErrStaleFencingToken and the partition stalls.
-// The factory preflight makes a best-effort DescribeTimeToLive call at build time
-// and emits a loud WARN (never fatal — TTL is legitimate on other tables, just
-// dangerous here) if TTL is enabled on the lease table. If that call itself fails
-// (missing permission, a throttle, or an emulator that does not support it) the
-// check is silently skipped. Provisioning must leave TTL disabled.
+// subsequent claim then fails with ErrStaleFencingToken and the partition stalls
+// (a split-brain window). The build-time Preflight therefore ENFORCES this
+// invariant (finding c13-lease-ttl-warn): it calls dynamodb:DescribeTimeToLive
+// and, if TTL is ENABLED/ENABLING on the lease table, FAILS the build with
+// shared.ErrInvalidConfig naming the table and status. A DescribeTimeToLive that
+// itself fails (missing permission, throttle, or an emulator gap) proves nothing
+// about the TTL state and is surfaced FAIL-CLOSED as shared.ErrInvalidConfig (the
+// classified transport cause is wrapped for diagnostics). Returning the
+// factory's always-fatal marker is deliberate: it guarantees the schema-level
+// WithSchemaPreflightAdvisory cannot silently relax this TTL check — only the
+// TTL-specific WithTTLPreflightAdvisory option downgrades both the enabled-TTL
+// and the unverifiable-TTL cases to a loud WARN. Provisioning must leave TTL
+// disabled.
 //
 // # IAM requirements (upgrade note)
 //
-// The build-time preflight calls dynamodb:DescribeTable AND, best-effort,
+// The build-time preflight calls dynamodb:DescribeTable AND
 // dynamodb:DescribeTimeToLive as of the schema-preflight / TTL-invariant change.
 // DescribeTable is recommended: if the role cannot DescribeTable (AccessDenied) or
 // the call fails transiently, the factory does NOT brick boot — it logs a loud
 // WARN and proceeds fail-open; a confirmed schema mismatch, however, is always
-// fatal. DescribeTimeToLive is optional: its result only drives the TTL-enabled
-// warning, and a failed call is swallowed silently, so without the permission the
-// warning simply never fires.
+// fatal. DescribeTimeToLive is REQUIRED by default: the lease store's Preflight
+// enforces the TTL-DISABLED invariant fail-closed, so a missing
+// dynamodb:DescribeTimeToLive permission (or an emulator that cannot answer it)
+// blocks boot unless WithTTLPreflightAdvisory is set as an explicit dev/emulator
+// opt-out.
+//
+// # BREAKING upgrade / migration (dynamodb:DescribeTimeToLive now required)
+//
+// This is a fail-closed escalation: dynamodb:DescribeTimeToLive changes from
+// best-effort (previously swallowed) to a REQUIRED lease-role permission. An
+// existing lease role that lacks it will FAIL BOOT after upgrade (AccessDenied →
+// shared.ErrInvalidConfig). Before rolling out this version:
+//
+//  1. Grant dynamodb:DescribeTimeToLive on the lease table to the lease role
+//     (alongside the existing dynamodb:DescribeTable), THEN deploy; or
+//  2. As a temporary, dev-only bridge, downgrade the check to a WARN with the
+//     WithTTLPreflightAdvisory() opt-out — available BOTH on this store
+//     (dynamodblease.WithTTLPreflightAdvisory) and, for factory / config-driven
+//     deployments, on the AWS store factory (awsstore.WithTTLPreflightAdvisory,
+//     at parity with the schema advisory). It is a COMPILE-TIME option (not a
+//     runtime config flag) and is NOT a production posture, since an unverifiable
+//     TTL state on the fencing table is a real split-brain hazard.
+//
+// This package ships no IAM/IaC of its own; grant the permission in whatever
+// provisioning (CDK/Terraform/console) manages the lease role.
 //
 // A present-but-unparseable fencing version is surfaced as a read error rather
 // than silently coerced to 0 (which would also reset the fence), so fence

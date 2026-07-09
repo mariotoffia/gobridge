@@ -54,6 +54,16 @@ type ReceiverConfig struct {
 	// (case-insensitive). Any other value is rejected by validate.
 	ReceiveMode string
 
+	// AllowAtMostOnce is the explicit opt-in that MUST be set to run
+	// ReceiveMode "ReceiveAndDelete". That mode is AT-MOST-ONCE: the
+	// broker deletes the message at receive time, so a crash — or a
+	// malformed-envelope drop — after receive but before the downstream
+	// send is UNRECOVERABLE loss, Ack is a no-op, and Retry is
+	// unsupported. validate() rejects ReceiveAndDelete unless this is
+	// true, and NewReceiver emits a loud startup warning, so the lossy
+	// semantics can never be selected by accident. Ignored for PeekLock.
+	AllowAtMostOnce bool
+
 	// SubQueue selects a sub-queue: "", "deadletter", or
 	// "transferdeadletter" (case-insensitive). Any other value is
 	// rejected by validate so a typo can never silently consume the
@@ -183,6 +193,13 @@ func (c *ReceiverConfig) validate() error {
 	}
 	if err := validateReceiveMode(c.ReceiveMode); err != nil {
 		return err
+	}
+	if c.receiveAndDelete() && !c.AllowAtMostOnce {
+		// ReceiveAndDelete is AT-MOST-ONCE: the broker deletes at receive,
+		// Ack is a no-op and Retry is unsupported, so any crash after
+		// receive is unrecoverable loss. Refuse to start it unless the
+		// operator has explicitly accepted those semantics.
+		return errors.New("servicebus: receive_mode ReceiveAndDelete is at-most-once (the broker deletes at receive time; a crash after receive is unrecoverable message loss, Ack is a no-op, Retry is unsupported) and must be explicitly enabled with allow_at_most_once=true")
 	}
 	if err := validateSubQueue(c.SubQueue); err != nil {
 		return err

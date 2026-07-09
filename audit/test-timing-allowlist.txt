@@ -8,9 +8,9 @@
 ./adapters/amqp/transport/amqp10/session_lifecycle_test.go:48:	time.Sleep(50 * time.Millisecond)
 ./adapters/amqp/transport/amqp10/session_reconnect_test.go:52:		time.Sleep(50 * time.Millisecond) // OTHER: simulates dial latency in mock.
 ./adapters/aws/cluster/ecs/resolver_test.go:189:		time.Sleep(time.Millisecond) // OTHER: bounded poll for fake-clock timer registration (no fake-time dependency)
-./adapters/aws/store/dynamodblease/store_test.go:132:		time.Sleep(50 * time.Millisecond) // OTHER: real elapsed time — renewed_at epoch-millis must differ from baseline
-./adapters/aws/store/dynamodblease/store_test.go:141:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — full TTL must pass to prove the window reset
-./adapters/aws/store/dynamodblease/store_test.go:99:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — emulator observation window keys on wall-clock renewed_at (M5)
+./adapters/aws/store/dynamodblease/store_test.go:138:		time.Sleep(50 * time.Millisecond) // OTHER: real elapsed time — renewed_at epoch-millis must differ from baseline
+./adapters/aws/store/dynamodblease/store_test.go:147:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — full TTL must pass to prove the window reset
+./adapters/aws/store/dynamodblease/store_test.go:105:		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — emulator observation window keys on wall-clock renewed_at (M5)
 ./adapters/aws/transport/sqs/sender_test.go:477:			time.Sleep(5 * time.Millisecond) // OTHER: ensure distinguishable deadlines
 ./adapters/aws/transport/sqs/sender_timeout_test.go:205:			time.Sleep(2 * time.Millisecond) // OTHER: simulate work for deadline verification
 ./adapters/aws/transport/sqs/sender_timeout_test.go:32:			time.Sleep(10 * time.Millisecond) // OTHER: shift wall clock for distinguishable deadlines
@@ -22,10 +22,10 @@
 ./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_router_test.go:236:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
 ./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
-./adapters/mqtt/transport/paho/analysis_session_test.go:285:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
-./adapters/mqtt/transport/paho/analysis_session_test.go:334:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
-./adapters/mqtt/transport/paho/analysis_session_test.go:381:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
-./adapters/mqtt/transport/paho/analysis_session_test.go:462:	time.Sleep(20 * time.Millisecond) // OTHER: race window — let ConnectionManager accessor goroutine exercise before Close
+./adapters/mqtt/transport/paho/analysis_session_test.go:289:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
+./adapters/mqtt/transport/paho/analysis_session_test.go:338:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
+./adapters/mqtt/transport/paho/analysis_session_test.go:385:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
+./adapters/mqtt/transport/paho/analysis_session_test.go:466:	time.Sleep(20 * time.Millisecond) // OTHER: race window — let ConnectionManager accessor goroutine exercise before Close
 ./adapters/mqtt/transport/paho/analysis_session_test.go:93:		time.Sleep(50 * time.Millisecond) // OTHER: race window — cancel during Start connect attempt
 ./adapters/mqtt/transport/paho/integration_resilience_test.go:242:		time.Sleep(40 * time.Millisecond)
 ./adapters/mqtt/transport/paho/integration_test.go:311:			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation

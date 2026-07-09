@@ -266,7 +266,7 @@ func TestReceive_UsesMessageSystemAttributeNames(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, recv.ensureClient(context.Background()))
 
-	_, err = recv.pollAndConvert(context.Background(), "https://q", recv.cfg.MaxMessages, time.Second)
+	_, err = recv.pollAndConvert(context.Background(), recv.loadClient(), "https://q", recv.cfg.MaxMessages, time.Second)
 	require.NoError(t, err)
 	require.NotNil(t, captured)
 

@@ -43,7 +43,7 @@ graph LR
 | `ports.Delivery` Method | AMQP 0-9-1 Operation | Notes |
 |---|---|---|
 | `Ack(ctx)` | `delivery.Ack(false)` | Single-message acknowledgement |
-| `Retry(ctx, after, reason)` | `delivery.Nack(false, true)` | Requeue **immediately**; AMQP 0-9-1 has no native delayed redelivery. When `after > 0` the adapter emits `AMQP091DelayedRetryUnhonored` (every occurrence) and a `Warn` log (once per consumer channel). Guard poison messages broker-side with `x-delivery-limit` (quorum queues) or a dead-letter exchange — without one, a message that always fails hot-loops on a classic queue. |
+| `Retry(ctx, after, reason)` | `delivery.Nack(false, true)` | Requeue with `requeue=true`. AMQP 0-9-1 has no native delayed redelivery, so when `after > 0` the requested backoff is honored **client-side**: the unacked delivery is held for `after` (via the injected clock, cancellable by `ctx`) **before** the requeue, spacing a poison message instead of letting it hot-loop on a classic queue. Each occurrence emits `AMQP091DelayedRetryUnhonored` (the broker cannot schedule the delay natively) and a `Warn` log (once per consumer channel). A message that *always* fails still loops — only spaced now — so still guard it broker-side with `x-delivery-limit` (quorum queues) or a dead-letter exchange. A `ctx` cancel (shutdown) requeues immediately so settlement never blocks teardown. |
 | `Extend(ctx, deadline)` | — | Returns `ErrNotSupported`; AMQP 0-9-1 has no visibility timeout |
 
 Settlement is guaranteed at-most-once via a mutex-guarded flag on each
@@ -159,7 +159,8 @@ In the plugin options map these live under the `session:` block (snake_case keys
 |---|---|---|---|
 | `Exchange` | `string` | `""` | Target exchange |
 | `RoutingKey` | `string` | `""` | Fallback routing key. The per-dispatch `OutboundMessage.Address` from the dispatch plan wins; `RoutingKey` applies only when `Address` is empty. Never derived from `Envelope.Subject`. The logical subject is propagated as the AMQP header `gobridge.subject`. |
-| `Mandatory` | `bool` | `false` | Return unroutable messages so a publish that matches no binding fails instead of vanishing. **⚠️ Silent-drop warning:** with the default `false`, a publish to an exchange with **no matching binding** is *confirmed and then discarded by the broker* — the bridge sees a successful confirm and acks the source, so the message is **gone with zero telemetry**. The `basic.return` listener only engages when `Mandatory: true`. Enable it on any route where an unroutable message must not be lost silently. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering) |
+| `Mandatory` | `bool` | `false` | Return unroutable messages so a publish that matches no binding fails instead of vanishing. **⚠️ Silent-drop warning:** with the default `false`, a publish to an exchange with **no matching binding** is *confirmed and then discarded by the broker* — the bridge sees a successful confirm and acks the source, so the message is **gone with zero telemetry**. The `basic.return` listener only engages when `Mandatory: true`. Enable it on any route where an unroutable message must not be lost silently. Note: mandatory batches publish sequentially (a `basic.return` carries no delivery tag, so attribution needs one-in-flight ordering). **Managed routes** built through the `SenderFactory` must set `Mandatory: true` **or** `AllowUnroutableDrop: true` — a sender that sets neither is rejected at build time so the silent-loss default cannot be reached by omission |
+| `AllowUnroutableDrop` | `bool` | `false` | Managed-route opt-in (config key `allow_unroutable_drop`) that lets a sender build with `mandatory=false`, deliberately accepting the silent-drop behaviour above (e.g. throughput-over-safety fan-out where unroutable is expected). It **never** changes the publish — it only records that the operator accepts the loss. Direct embedders that call `NewSender` with a raw `SenderConfig` bypass the gate and own the choice themselves |
 | `Immediate` | `bool` | `false` | **Deprecated / rejected**: RabbitMQ removed `basic.publish` `immediate` in 3.0 and closes the channel when it is set. `Config.Validate` refuses it |
 | `DeliveryMode` | `string` | `"persistent"` | Default persistence for every publish: `"persistent"` (AMQP delivery-mode 2 — survives a broker restart on a durable queue) or `"transient"` (delivery-mode 1 — lost on broker restart even on a durable classic queue). A per-message `amqp091.delivery-mode` envelope header overrides it. **Quorum queues** always persist messages regardless of this knob; it matters for durable classic queues |
 | `Timeout` | `time.Duration` | `30s` | Per-publish timeout (applied when context has no deadline) |
@@ -189,7 +190,7 @@ options:
     durable: true
     queue_arguments:
       x-queue-type: "quorum"
-      x-delivery-limit: 5   # poison-message guard for immediate-requeue retries
+      x-delivery-limit: 5   # poison-message guard for repeatedly-failing (client-side-spaced) retries
 ```
 
 ## Capabilities
