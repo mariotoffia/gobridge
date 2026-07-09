@@ -306,26 +306,39 @@ func TestOutboxRecord_Release(t *testing.T) {
 	}
 }
 
-// TestOutboxRecord_Expire validates legal transitions from Pending and
-// Claimed plus rejection from terminal states.
+// TestOutboxRecord_Expire validates that Expire is pending-only: it succeeds
+// from Pending, rejects Claimed with ErrOutboxNotPending (a claimed record is
+// reclaimed, never expired out from under a live owner), and rejects terminal
+// states with ErrOutboxAlreadyTerminal.
 func TestOutboxRecord_Expire(t *testing.T) {
 	now := time.Unix(1_700_000_300, 0)
 
-	for _, st := range []persistence.OutboxStatus{persistence.OutboxPending, persistence.OutboxClaimed} {
-		st := st
-		t.Run("from_"+string(st)+"_succeeds", func(t *testing.T) {
-			rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-				ID: "r", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
-				Status: st,
-			})
-			if err := rec.Expire(now); err != nil {
-				t.Fatalf("unexpected: %v", err)
-			}
-			if rec.Status() != persistence.OutboxExpired {
-				t.Errorf("status=%q", rec.Status())
-			}
+	t.Run("from_pending_succeeds", func(t *testing.T) {
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+			ID: "r", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
+			Status: persistence.OutboxPending,
 		})
-	}
+		if err := rec.Expire(now); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if rec.Status() != persistence.OutboxExpired {
+			t.Errorf("status=%q", rec.Status())
+		}
+	})
+
+	t.Run("from_claimed_rejected", func(t *testing.T) {
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+			ID: "r", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
+			Status: persistence.OutboxClaimed,
+		})
+		err := rec.Expire(now)
+		if !errors.Is(err, shared.ErrOutboxNotPending) {
+			t.Fatalf("err=%v want ErrOutboxNotPending", err)
+		}
+		if rec.Status() != persistence.OutboxClaimed {
+			t.Errorf("claimed record must stay claimed after rejected expire, got %q", rec.Status())
+		}
+	})
 
 	for _, st := range []persistence.OutboxStatus{persistence.OutboxCompleted, persistence.OutboxExpired} {
 		st := st

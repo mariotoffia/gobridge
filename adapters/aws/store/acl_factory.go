@@ -24,6 +24,20 @@ var (
 type DynamoDBStoreFactory struct {
 	client *dynamodb.Client
 	logger *slog.Logger
+	// preflightAdvisory downgrades an UNVERIFIABLE schema preflight (a
+	// DescribeTable that throttles / AccessDenies / is unsupported by an
+	// emulator) from FAIL-CLOSED to a WARN-and-continue. Default false =
+	// production fail-closed posture; set only via WithSchemaPreflightAdvisory.
+	preflightAdvisory bool
+	// ttlPreflightAdvisory downgrades the lease store's build-time TTL-invariant
+	// check from FAIL-CLOSED to a WARN-and-continue. It is threaded into the
+	// dynamodblease store as WithTTLPreflightAdvisory. Default false = production
+	// fail-closed posture; set only via WithTTLPreflightAdvisory. This is the
+	// factory-level parity lever for the TTL check: the SCHEMA advisory
+	// (preflightAdvisory) does NOT relax the TTL check, because an OBSERVED enabled
+	// TTL and an unverifiable TTL state are both returned as shared.ErrInvalidConfig
+	// (matched at the top of preflight, before the schema-advisory branch).
+	ttlPreflightAdvisory bool
 }
 
 // FactoryOption configures a DynamoDBStoreFactory.
@@ -36,6 +50,48 @@ type FactoryOption func(*DynamoDBStoreFactory)
 // place.
 func WithLogger(l *slog.Logger) FactoryOption {
 	return func(f *DynamoDBStoreFactory) { f.logger = l }
+}
+
+// WithSchemaPreflightAdvisory downgrades the build-time DynamoDB schema
+// preflight from FAIL-CLOSED (the production default) to advisory: when
+// DescribeTable cannot VERIFY the target table — a control-plane throttle, a
+// least-privilege role lacking dynamodb:DescribeTable (AccessDenied), or an
+// emulator that does not implement DescribeTable — the factory logs a loud WARN
+// and builds the store anyway instead of blocking startup.
+//
+// This is an EXPLICIT dev/emulator opt-out ONLY. Leave it unset in production:
+// an inability to verify the schema is NOT proof the table is valid, and a role
+// missing dynamodb:DescribeTable pointed at a mis-shaped table is precisely the
+// silent-shredder scenario the preflight exists to catch (the first record per
+// partition writes, the rest are acked-and-dropped as "duplicates"). A confirmed
+// schema mismatch (shared.ErrInvalidConfig) stays FATAL regardless of this flag.
+func WithSchemaPreflightAdvisory() FactoryOption {
+	return func(f *DynamoDBStoreFactory) { f.preflightAdvisory = true }
+}
+
+// WithTTLPreflightAdvisory downgrades the lease store's build-time TTL-invariant
+// preflight from FAIL-CLOSED (the production default) to advisory: an OBSERVED
+// enabled/enabling DynamoDB TTL on the lease table — and a DescribeTimeToLive
+// call that cannot verify the TTL state (missing dynamodb:DescribeTimeToLive, a
+// throttle, or an emulator that does not implement it) — is logged as a loud WARN
+// and the store is built instead of blocking startup.
+//
+// This is the factory-level parity lever for the lease store's
+// dynamodblease.WithTTLPreflightAdvisory option, mirroring WithSchemaPreflightAdvisory
+// for the schema check. It is an EXPLICIT dev/emulator opt-out ONLY. Leave it
+// unset in production: the lease row IS the monotonic fencing counter of record,
+// and a TTL reaper deleting a fence row resets its version to 1 while the outbox
+// high-water mark sits at v≫1 — every subsequent claim then fails
+// ErrStaleFencingToken and the partition splits/stalls. An inability to VERIFY the
+// TTL state is likewise NOT proof it is disabled, so it fails closed too.
+//
+// Note it is INTENTIONALLY independent of WithSchemaPreflightAdvisory: the schema
+// advisory does not relax the TTL check (the TTL failures surface as
+// shared.ErrInvalidConfig, which the factory treats as always fatal before the
+// schema-advisory branch), so ONLY this option can bridge a lease role that lacks
+// dynamodb:DescribeTimeToLive during an upgrade.
+func WithTTLPreflightAdvisory() FactoryOption {
+	return func(f *DynamoDBStoreFactory) { f.ttlPreflightAdvisory = true }
 }
 
 // NewDynamoDBStoreFactory returns a factory that creates DynamoDB stores
@@ -67,38 +123,62 @@ type preflighter interface {
 // so skipping preflight there keeps construction pure while every production
 // build path — which always injects a real client — validates the table.
 //
-// Posture (centralized here because every store's Preflight flows through it):
+// Posture (centralized here because every store's Preflight flows through it).
+// The pivotal distinction is VERIFIED vs. COULD-NOT-VERIFY:
 //
-//   - Schema MISMATCH → FATAL. The store returns shared.ErrInvalidConfig (via
-//     its schemaMismatch helper) for a genuine key-schema/GSI mismatch and for
-//     that ONLY — a DescribeTable CALL error maps to a transient/auth class
-//     (ErrThrottled/ErrUnavailable/ErrNotAuthorized/…), never ErrInvalidConfig.
-//     This is the H3 silent-shredder guard; a store pointed at the wrong table
-//     shape must never boot.
-//   - ResourceNotFound → already nil inside the store (build-then-provision).
-//   - Any OTHER Preflight error (a control-plane throttle during a mass rollout
-//     of N pods × DescribeTable, a least-privilege role lacking
-//     dynamodb:DescribeTable → AccessDenied, or DescribeTable being unsupported
-//     by an emulator) → loud WARN and fail OPEN (return nil). Preflight is a
-//     best-effort safety net: it catches the shredder when it can SEE the
-//     schema and degrades gracefully when it cannot, mirroring the lease TTL
-//     check's tolerance rather than bricking boot.
+//   - Schema VERIFIED VALID → nil. DescribeTable succeeded and the key
+//     schema/GSIs match. Also nil when the table is VERIFIED ABSENT
+//     (ResourceNotFoundException → nil inside the store's Preflight) so a
+//     build-then-provision flow stays valid; a genuinely missing table then
+//     fails loudly at the first operation, not silently.
+//
+//   - Schema VERIFIED INVALID → FATAL. The store returns shared.ErrInvalidConfig
+//     (via its schemaMismatch helper) for a genuine key-schema/GSI mismatch and
+//     for that ONLY. This is the H3 silent-shredder guard; a store pointed at
+//     the wrong table shape must never boot.
+//
+//   - Schema COULD NOT BE VERIFIED → FATAL (fail CLOSED). A DescribeTable CALL
+//     error — a control-plane throttle during a mass rollout of N pods ×
+//     DescribeTable, a least-privilege role lacking dynamodb:DescribeTable
+//     (AccessDenied), or DescribeTable being unsupported by an emulator — maps
+//     to a transient/auth class (ErrThrottled/ErrUnavailable/ErrNotAuthorized/…)
+//     but NEVER to shared.ErrInvalidConfig. Such an error proves NOTHING about
+//     the table's shape, so it must NOT be swallowed as success: an unreadable +
+//     mis-shaped table is exactly the shredder this preflight exists to catch.
+//     The build fails with the classified error (wrapped for operator context)
+//     so boot is blocked until dynamodb:DescribeTable is granted or the table is
+//     confirmed correct out of band.
+//
+//     The one escape hatch is WithSchemaPreflightAdvisory(), an EXPLICIT
+//     dev/emulator opt-out: with it set, an unverifiable table downgrades to a
+//     loud WARN and fails OPEN. Production leaves it unset.
 func (f *DynamoDBStoreFactory) preflight(ctx context.Context, s preflighter) error {
 	if f.client == nil {
 		return nil
 	}
 	err := s.Preflight(ctx)
 	if err == nil {
+		// Verified valid, or verified absent (build-then-provision): the store
+		// maps ResourceNotFound to nil.
 		return nil
 	}
 	if errors.Is(err, shared.ErrInvalidConfig) {
+		// Verified present with the WRONG shape → hard fail (H3 shredder guard).
 		return err
 	}
-	// ponytail: fail-open ceiling — a table that is genuinely mis-shaped but
-	// UNREADABLE at boot (persistent AccessDenied / DescribeTable unsupported)
-	// is not caught here. Grant dynamodb:DescribeTable so preflight can enforce
-	// the schema; until then the missing/mismatched table fails loudly at the
-	// first operation instead.
+	// Could-not-verify: DescribeTable failed (throttle / AccessDenied / emulator
+	// gap). This is NOT evidence the table is valid.
+	if !f.preflightAdvisory {
+		// FAIL CLOSED: block boot rather than swallow an unverifiable schema. The
+		// classified sentinel is preserved (%w) so callers can still match
+		// ErrThrottled/ErrNotAuthorized/… ; it never becomes ErrInvalidConfig.
+		return fmt.Errorf(
+			"awsstore: DynamoDB schema preflight could not verify the table; "+
+				"refusing to start (grant dynamodb:DescribeTable, or set "+
+				"WithSchemaPreflightAdvisory for a dev/emulator that cannot "+
+				"DescribeTable): %w", err)
+	}
+	// Explicit dev/emulator opt-out: WARN and fail OPEN.
 	if f.logger != nil {
 		attrs := []any{"error", err.Error()}
 		var be *shared.BridgeError
@@ -108,8 +188,9 @@ func (f *DynamoDBStoreFactory) preflight(ctx context.Context, s preflighter) err
 			}
 		}
 		f.logger.Warn(
-			"awsstore: DynamoDB schema preflight skipped (DescribeTable failed); "+
-				"ensure dynamodb:DescribeTable is granted and the table schema matches doc.go",
+			"awsstore: DynamoDB schema preflight skipped (DescribeTable failed) "+
+				"under WithSchemaPreflightAdvisory; production must grant "+
+				"dynamodb:DescribeTable so preflight can enforce the schema",
 			attrs...,
 		)
 	}
@@ -131,6 +212,11 @@ func (f *DynamoDBStoreFactory) NewLeaseStore(ctx context.Context, cfg ports.Plug
 	}
 	if f.logger != nil {
 		opts = append(opts, dynamodblease.WithLogger(f.logger))
+	}
+	if f.ttlPreflightAdvisory {
+		// Factory-level parity with the lease store's TTL opt-out (dev/emulator
+		// only); keeps the default fail-closed posture when unset.
+		opts = append(opts, dynamodblease.WithTTLPreflightAdvisory())
 	}
 	store := dynamodblease.NewStore(f.client, opts...)
 	if err := f.preflight(ctx, store); err != nil {

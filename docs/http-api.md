@@ -399,12 +399,16 @@ are not JSON-serialisable fields (`Config` carries `json:"-"`), a PATCH body
 containing an `options` key is an **unknown field → HTTP 400**. A PATCH may
 therefore only touch scalar/structural fields, never a plugin's option block.
 
-**PATCH is merge-only.** Omitted, empty-string, empty-list, and the redaction
-marker (`"[REDACTED]"`, the value echoed back by a redacted read) all
+**PATCH is merge-only.** Every PATCH runs `store.Merge` against the current
+on-disk config (`config.DefaultMerge`), so omitted, empty-string, empty-list, and
+the redaction marker (`"[REDACTED]"`, the value echoed back by a redacted read) all
 **preserve the current value** — a field cannot be cleared or removed via PATCH.
-To clear a field, submit a full replacement configuration (open a transaction and
-PATCH the complete desired state, or use the DynamoDB/file profile's whole-document
-replace). Fields that cannot be cleared via PATCH include: `http.cors_origins`,
+The transaction API has **no replacement mode**: a PATCH carrying the full desired
+config still merges, so it cannot clear a field either. To remove a field, rewrite
+the underlying config document at its source — edit the config file (the file
+watcher reloads the whole document) or overwrite the config-store item — so the
+whole document is reloaded instead of an overlay merged.
+Fields that cannot be cleared via PATCH include: `http.cors_origins`,
 `http.tls_cert_file` / `http.tls_key_file`, `http.admin_api_key` /
 `http.monitor_api_key` (empty **or** `"[REDACTED]"` keeps the stored secret; note
 that any *other* non-empty string overwrites the secret verbatim), a
@@ -418,12 +422,18 @@ options) -- the commit fails with **HTTP 422** and `errConfigOptionsLoss`
 (transaction not found/expired), `409` (version conflict / concurrent write),
 `422` (config validation failed, with `validation_errors`).
 
-Commit is **write-then-apply**. On success it returns
-`{"status": "committed", "version": N}`. When a `ConfigApplier` is wired and the
-durable write succeeds but the in-band apply fails, commit returns **HTTP 500**
-with `{"status": "committed_not_applied", "version": N, ...}` -- disk and the
-running runtime have diverged and an operator must reconcile (the version is on
-disk).
+Commit is **write-then-apply**: the new config is durably written to the store,
+then applied in-band to the running runtime on a context detached from the request
+(so a client disconnect cannot tear the durable write from the apply). The apply is
+bounded by a 60s cap; exceeding it counts as an apply failure (`rolled_back`), not
+an in-flight result. The response `status` reports the outcome:
+
+| `status` | HTTP | Meaning |
+|----------|------|---------|
+| `committed` | 200 | Applied to the running runtime (or no `ConfigApplier` wired). `{"status": "committed", "version": N}`. |
+| `committed_applying` | 202 | The durable write succeeded and the runtime accepted the config, but the applier reported the swap is still in flight (`ErrApplyInFlight`), or the bridge is paused/shutting down and recorded it for a later resume. This is a signal from the applier, not the 60s cap being hit. The write is **retained** on disk and the runtime is converging -- no action required. |
+| `rolled_back` | 500 | The apply failed (including exceeding the 60s apply cap) and the previous on-disk config was restored, so a process restart recovers the last good config instead of crash-looping. `version` is the restored previous version. |
+| `committed_not_applied` | 500 | The apply failed **and** the previous config could not be restored (first write, or the restore write itself failed). Disk holds the rejected config; disk and the running runtime have diverged and an operator must reconcile. |
 
 ### Audit logging
 

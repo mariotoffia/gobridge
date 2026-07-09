@@ -77,3 +77,23 @@ func TestPluginOptionsDecode_UnknownKey_Errors(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bogus_key")
 }
+
+// TestPluginOptionsDecode_AllowUnroutableDrop proves the new
+// sender.allow_unroutable_drop opt-in decodes through the production
+// (strict, TagName=json) decoder — i.e. it is a RECOGNIZED key, not an
+// ErrorUnused rejection — and lands in the typed SenderParams. Without the
+// json:"allow_unroutable_drop" tag on the field this decode would fail.
+func TestPluginOptionsDecode_AllowUnroutableDrop(t *testing.T) {
+	input := map[string]any{
+		"sender": map[string]any{
+			"exchange":              "events",
+			"mandatory":             false,
+			"allow_unroutable_drop": true,
+		},
+	}
+
+	var cfg Config
+	require.NoError(t, parser.NewRawConfig(input).Decode(&cfg))
+	require.False(t, cfg.Sender.Mandatory)
+	require.True(t, cfg.Sender.AllowUnroutableDrop)
+}

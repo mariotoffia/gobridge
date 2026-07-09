@@ -223,6 +223,11 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		if r.logger != nil {
 			r.logger.Warn("credential refresh: Watch failed", "uri", shared.RedactURI(uri), "error", shared.RedactURIError(err))
 		}
+		// Surface the failed watcher as a metric, not just a log: a failed
+		// Watch means rotation is silently disabled for this URI for the whole
+		// process lifetime, so it must be observable/alertable rather than
+		// permanently silent (credential_refresh.go:221, Chunk 3).
+		r.metrics.Counter(shared.MetricCredentialRefreshFailures, 1)
 		// Drop the key so a later Watch for the same URI can retry
 		// establishing a poller rather than being suppressed as a duplicate.
 		r.mu.Lock()
@@ -247,6 +252,26 @@ func (r *CredentialRefresher) run(
 			return
 		case creds, ok := <-ch:
 			if !ok {
+				// The watcher channel closed on its own while the refresher is
+				// still live (parent not cancelled). This is a DEAD watcher:
+				// credentials for this URI will never refresh again until the
+				// process restarts. Previously this exited silently — surface it
+				// with a WARN + a failure metric so a dead credential watcher is
+				// observable/alertable instead of a silent auth time-bomb on the
+				// next rotation (credential_refresh.go:221, Chunk 3).
+				// ponytail: we surface (log + metric) rather than auto-restart
+				// with backoff — the push store owns reconnection, and an
+				// unconditional re-Watch loop here could hot-spin against a store
+				// that closes immediately. Restart is the store's job; the
+				// bridge's job is to make the death visible.
+				if parent.Err() == nil {
+					r.metrics.Counter(shared.MetricCredentialRefreshFailures, 1)
+					if r.logger != nil {
+						r.logger.Warn("credential refresh: watcher channel closed unexpectedly; "+
+							"credential rotation for this URI is now disabled until restart",
+							"uri", shared.RedactURI(uri))
+					}
+				}
 				return
 			}
 			if creds == nil {

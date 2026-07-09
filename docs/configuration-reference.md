@@ -132,7 +132,7 @@ Controls how file-based config changes are detected. Only relevant when using fi
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `mode` | string | no | `notify` | `notify` (fsnotify) or `poll` (SHA-256 comparison) |
-| `poll_interval` | duration | no | `30s` | Polling interval when mode is `poll` |
+| `poll_interval` | duration | no | `30s` | In `poll` mode, the file re-read + content-hash comparison interval. In `notify` mode it doubles as the **resync** cadence -- a slow hash-reconciliation poll behind fsnotify that catches a missed or coalesced filesystem event within one interval (one knob for "how stale a missed change can be"). |
 | `debounce` | duration | no | `100ms` | Debounce period for `notify` mode |
 
 ```yaml

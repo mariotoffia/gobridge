@@ -22,12 +22,28 @@ type leaseEntry struct {
 
 // Store implements ports.LeaseStore in memory for tests and
 // single-process mode. It is not safe for clustered production deployments.
+//
+// Split-brain safety gate (finding c10-memlease-split): the store keeps a
+// PER-PROCESS lease map and version counter. Two replicas of the same
+// standalone deployment (e.g. a Kubernetes Deployment with replicas > 1) each
+// hold an independent Store and both believe they own "the" lease, producing
+// split-brain delivery (duplicate / double ownership). A pure in-memory store
+// genuinely cannot coordinate across processes, so the store FAILS CLOSED:
+// every operation is rejected until the operator explicitly acknowledges the
+// single-replica constraint via WithAcknowledgeSingleReplica(true). That opt-in
+// also emits one LOUD warning documenting the split-brain risk.
 type Store struct {
 	mu      sync.Mutex
 	leases  map[string]*leaseEntry
 	nextVer atomic.Uint64
 	clk     clock.Clock // injectable clock for testing
 	logger  *slog.Logger
+
+	// ackSingleReplica records the operator's explicit assertion that this
+	// process is the SOLE replica using this in-memory lease store. It gates
+	// every operation (fail-closed) so a silently scaled-out deployment cannot
+	// cause undetectable split-brain ownership. See finding c10-memlease-split.
+	ackSingleReplica bool
 }
 
 // Option configures a Store.
@@ -48,7 +64,32 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithAcknowledgeSingleReplica records the operator's explicit acknowledgement
+// that this process is the ONLY replica that will ever use this in-memory lease
+// store. It maps to the `acknowledge_single_replica` configuration key.
+//
+// It exists to close finding c10-memlease-split: because an in-memory lease
+// store keeps a per-process lease map, it cannot coordinate ownership across
+// processes. A standalone deployment silently scaled to replicas > 1 would let
+// every pod believe it owns the lease → split-brain delivery (duplicate /
+// double ownership). To make that impossible to do by accident, the store
+// FAILS CLOSED: every operation is rejected with shared.ErrInvalidConfig until
+// this option is passed with true. Passing true asserts single-replica
+// ownership and emits one LOUD warning documenting the split-brain risk.
+//
+// Single-node dev and tests opt in with this one line:
+//
+//	memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))
+func WithAcknowledgeSingleReplica(ack bool) Option {
+	return func(s *Store) { s.ackSingleReplica = ack }
+}
+
 // NewStore creates a new in-memory LeaseStore.
+//
+// Without WithAcknowledgeSingleReplica(true) the returned Store is in a
+// guarded, fail-closed state: construction succeeds (the constructor cannot
+// change its signature) but every operation returns shared.ErrInvalidConfig.
+// See finding c10-memlease-split and WithAcknowledgeSingleReplica.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
 		leases: make(map[string]*leaseEntry),
@@ -57,7 +98,44 @@ func NewStore(opts ...Option) *Store {
 	for _, o := range opts {
 		o(s)
 	}
+	if s.ackSingleReplica {
+		s.warnSplitBrainRisk(context.Background())
+	}
 	return s
+}
+
+// warnSplitBrainRisk emits the mandatory LOUD warning that this in-memory lease
+// store is operating in single-replica mode. It is called exactly once, at
+// construction, when the operator has acknowledged the constraint. Falls back
+// to slog.Default() so the warning is never silently dropped when no logger is
+// injected. See finding c10-memlease-split.
+func (s *Store) warnSplitBrainRisk(ctx context.Context) {
+	l := s.logger
+	if l == nil {
+		l = slog.Default()
+	}
+	l.LogAttrs(ctx, slog.LevelWarn,
+		"memorylease: SINGLE-REPLICA MODE acknowledged — split-brain risk",
+		slog.String("finding", "c10-memlease-split"),
+		slog.Bool("acknowledge_single_replica", true),
+		slog.String("warning",
+			"in-memory lease ownership is per-process and CANNOT coordinate across replicas; "+
+				"running more than one replica (e.g. Kubernetes replicas > 1) causes duplicate / "+
+				"double lease ownership — keep this deployment at exactly one replica"),
+	)
+}
+
+// errNotAcknowledged is the fail-closed error returned by every operation until
+// the operator asserts single-replica ownership via
+// WithAcknowledgeSingleReplica(true). See finding c10-memlease-split.
+func (s *Store) errNotAcknowledged() error {
+	return shared.ErrInvalidConfig.
+		WithMessage("memorylease: refusing to operate without single-replica acknowledgement — "+
+			"an in-memory lease store cannot coordinate lease ownership across processes, so scaling "+
+			"beyond one replica (e.g. Kubernetes replicas > 1) causes split-brain delivery "+
+			"(duplicate / double ownership); construct with memorylease.WithAcknowledgeSingleReplica(true) "+
+			"to assert this process is the sole replica").
+		With("finding", "c10-memlease-split")
 }
 
 // cloneEndpoints returns an independent copy of the endpoints map so that
@@ -78,6 +156,19 @@ func cloneEndpoints(m map[string]string) map[string]string {
 }
 
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
+	// Fail-FAST for the single-replica misconfig is owned by the composition
+	// root: the adapters/native/store factory rejects an un-acknowledged
+	// standalone memory-lease at BUILD time (startup abort naming the
+	// acknowledge_single_replica key). This per-op ErrInvalidConfig is only a
+	// defense-in-depth BACKSTOP for direct NewStore callers (tests/embedders)
+	// that bypass the factory. Note it is NOT a clean abort in the running
+	// system: the runtime acquire loop treats every non-ErrAlreadyExists error
+	// as a transient store outage and retries unbounded, so relying on this
+	// per-op error alone yields fail-forever — hence the factory gate is the
+	// primary control. Same rationale applies to Renew/Release/Current below.
+	if !s.ackSingleReplica {
+		return persistence.LeaseToken{}, s.errNotAcknowledged()
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: acquire",
 			"lease_id", leaseID, "owner_id", ownerID)
@@ -105,6 +196,9 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 }
 
 func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
+	if !s.ackSingleReplica {
+		return persistence.LeaseToken{}, s.errNotAcknowledged()
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: renew",
 			"lease_id", leaseID, "owner_id", token.Owner)
@@ -143,6 +237,9 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 }
 
 func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
+	if !s.ackSingleReplica {
+		return s.errNotAcknowledged()
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memorylease: release",
 			"lease_id", leaseID)
@@ -170,6 +267,9 @@ func (s *Store) Release(ctx context.Context, leaseID string, token persistence.L
 }
 
 func (s *Store) Current(_ context.Context, leaseID string) (persistence.LeaseInfo, error) {
+	if !s.ackSingleReplica {
+		return persistence.LeaseInfo{}, s.errNotAcknowledged()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

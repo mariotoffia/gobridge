@@ -68,6 +68,9 @@ sessions:
         container_id: "cross-bridge-01"
         username: "bridge-user"
         password: "bridge-pass"
+        # SASL PLAIN over plaintext amqp:// sends credentials in the clear;
+        # opt in explicitly. Prefer an amqps:// address in production.
+        allow_insecure_plain: true
 
 receivers:
   - id: rabbit-in

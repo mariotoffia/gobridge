@@ -87,6 +87,14 @@ type Watcher struct {
 	// touches it, so no lock is needed.
 	lastHash [sha256.Size]byte
 
+	// readFailedLogged de-duplicates the read-failure WARN to once per
+	// fail streak (reset by the next successful read). A start-empty
+	// bridge legitimately watches a file that does not exist yet, and in
+	// notify mode events are matched per-directory — every unrelated
+	// change in a busy directory would otherwise re-log the same missing
+	// file. Same single-goroutine confinement as lastHash.
+	readFailedLogged bool
+
 	// baselineHash, when baselineHashSet, seeds lastHash at Watch time instead
 	// of hashing disk. Set via WithBaselineHash from the hash the caller
 	// actually Loaded (Source.LoadHash), closing the Load↔Watch window where a
@@ -259,6 +267,9 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 			w.lastHash = h
 		}
 	}
+	// New watch cycle, new fail streak: the first read failure after this
+	// Watch must log even if a previous cycle ended mid-streak.
+	w.readFailedLogged = false
 
 	switch w.mode {
 	case ModePoll:
@@ -457,11 +468,14 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) {
 	data, err := w.readFile(w.path)
 	if err != nil {
-		if w.logger != nil {
-			w.logger.Warn("file config watcher: read failed", "path", w.path, "error", err)
+		if w.logger != nil && !w.readFailedLogged {
+			w.logger.Warn("file config watcher: read failed (logged once per fail streak)",
+				"path", w.path, "error", err)
 		}
+		w.readFailedLogged = true
 		return
 	}
+	w.readFailedLogged = false
 	h := sha256.Sum256(data)
 	if h == w.lastHash {
 		return

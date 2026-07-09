@@ -29,15 +29,21 @@ type rawInbound struct {
 // returned SDK message into a messaging.Envelope. It also emits the
 // SQS-poll/per-message receive-latency metrics. All SDK types stay
 // inside this ACL file.
+//
+// The client is passed in (not re-loaded here) so the receive uses the SAME
+// snapshot the caller binds to every resulting delivery's settlement
+// (Finding: c8-settle-client): a credential rotation between receive and
+// settle must not split the batch across two principals.
 func (r *Receiver) pollAndConvert(
 	ctx context.Context,
+	client sqsAPI,
 	queueURL string,
 	maxMessages int32,
 	pollTimeout time.Duration,
 ) ([]rawInbound, error) {
 	pollStart := r.clock().Now()
 	pollCtx, pollCancel := context.WithTimeout(ctx, pollTimeout)
-	output, err := r.loadClient().ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
+	output, err := client.ReceiveMessage(pollCtx, &awssqs.ReceiveMessageInput{
 		QueueUrl:              aws.String(queueURL),
 		MaxNumberOfMessages:   maxMessages,
 		WaitTimeSeconds:       r.cfg.WaitTimeSeconds,

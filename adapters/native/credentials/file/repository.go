@@ -102,6 +102,91 @@ func (dto *credentialSetDTO) toDomain() *connectivity.CredentialSet {
 	return connectivity.NewCredentialSet(pw, tls)
 }
 
+// ensureUsableCredential rejects a credential set that carries no usable
+// credential material (c12). It runs on every load AND every write so an empty
+// set can neither masquerade as valid on read nor silently replace live
+// credentials with a no-auth no-op on rotation.
+//
+// A set is usable when it carries at least one of:
+//   - basic-auth material: a non-empty username OR a non-empty password.
+//     Username-only is a legitimate broker shape — the paho transport applies
+//     set.Password().Username() with whatever password is present, empty
+//     included (adapters/mqtt/transport/paho/config_plugin.go) — so gating on
+//     the password alone would reject a credential that loaded and connected
+//     before this guard existed.
+//   - TLS material: a CA bundle (server verification) and/or a COMPLETE
+//     cert+key pair (mutual TLS).
+//
+// A torn TLS half — a lone cert or a lone key — is rejected UNCONDITIONALLY,
+// even when basic-auth material is present, so it surfaces here at load/write
+// time rather than as a confusing connect-time "requires both" failure in the
+// transport (servicebus buildTLSConfig / amqp10 both demand the pair).
+// Emptiness is judged after strings.TrimSpace, so whitespace-only material
+// counts as absent.
+//
+// Parity note: the whitespace-trim rule and the CA-or-complete-pair /
+// torn-half rejection MATCH the sibling SSM parser
+// (adapters/aws/credentials/ssm/parser.go). The basic-auth FIELD gating
+// DIVERGES: SSM gates on username only and permits an empty password, whereas
+// this repository accepts username-or-password. Unifying the two behind a
+// single connectivity.CredentialSet predicate is deferred to a Wave D ADR and
+// must NOT be attempted from this closed module.
+func ensureUsableCredential(dto *credentialSetDTO) error {
+	if dto == nil {
+		return errNoUsableCredential()
+	}
+
+	// A torn TLS half is always invalid, even alongside usable basic auth.
+	if dto.TLS != nil {
+		hasCert := strings.TrimSpace(dto.TLS.CertPEM) != ""
+		hasKey := strings.TrimSpace(dto.TLS.KeyPEM) != ""
+		if hasCert != hasKey {
+			return shared.ErrInvalidPayload.WithMessage(
+				"incomplete TLS material: certificate and key must both be present")
+		}
+	}
+
+	if !dto.hasUsableBasicAuth() && !dto.hasUsableTLS() {
+		return errNoUsableCredential()
+	}
+	return nil
+}
+
+func errNoUsableCredential() error {
+	return shared.ErrInvalidPayload.WithMessage(
+		"credential set carries no usable credential (need a username or password, a CA bundle, or a complete cert/key pair)")
+}
+
+// hasUsableBasicAuth reports whether the DTO carries usable basic-auth
+// material: a non-empty username OR a non-empty password (after trimming).
+// Username-only and password-only are both legitimate; only an entry whose
+// username AND password are both empty/whitespace contributes nothing.
+func (dto *credentialSetDTO) hasUsableBasicAuth() bool {
+	if dto.Password == nil {
+		return false
+	}
+	return strings.TrimSpace(dto.Password.Username) != "" ||
+		strings.TrimSpace(dto.Password.Password) != ""
+}
+
+// hasUsableTLS reports whether the DTO carries usable TLS material: a CA
+// bundle (server verification) and/or a complete cert+key pair (mutual TLS).
+// A torn half is rejected earlier by ensureUsableCredential, so by the time
+// this runs cert and key are either both present or both absent.
+func (dto *credentialSetDTO) hasUsableTLS() bool {
+	if dto.TLS == nil {
+		return false
+	}
+	for _, ca := range dto.TLS.CAPEMs {
+		if strings.TrimSpace(ca) != "" {
+			return true
+		}
+	}
+	hasCert := strings.TrimSpace(dto.TLS.CertPEM) != ""
+	hasKey := strings.TrimSpace(dto.TLS.KeyPEM) != ""
+	return hasCert && hasKey
+}
+
 type Repository struct {
 	basePath  string
 	namespace string
@@ -283,6 +368,15 @@ func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.Credent
 			"credentials file contains no credentials (missing or null \"credentials\" field)")
 	}
 
+	// c12: an envelope whose credential set is present but carries neither a
+	// usable password nor usable TLS material — {"credentials":{}} or one that
+	// only holds whitespace — would resolve to CredentialSet{nil,nil} and let
+	// the transport connect with no auth material. Reject a torn or blanked
+	// file here so it can never masquerade as a valid anonymous credential.
+	if err := ensureUsableCredential(stored.Credentials); err != nil {
+		return nil, err
+	}
+
 	return stored.Credentials.toDomain(), nil
 }
 
@@ -311,6 +405,14 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 		return err
 	}
 
+	// c12: never persist a credential set with no usable material — an empty
+	// or whitespace-only set would strip auth from any transport that later
+	// resolves it. Validate before taking the lock or touching the disk.
+	dto := toDTO(creds)
+	if err := ensureUsableCredential(dto); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -330,7 +432,7 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 
 	now := r.clk.Now()
 	stored := storedCredentials{
-		Credentials: toDTO(creds),
+		Credentials: dto,
 		Version:     1,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -341,6 +443,14 @@ func (r *Repository) Create(ctx context.Context, uri string, creds *connectivity
 
 func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// c12: reject a rotation to an empty or whitespace-only credential set so
+	// it can never silently replace live credentials with a no-auth no-op.
+	// Validate the incoming material before reading or rewriting the file.
+	dto := toDTO(creds)
+	if err := ensureUsableCredential(dto); err != nil {
 		return err
 	}
 
@@ -369,7 +479,7 @@ func (r *Repository) Update(ctx context.Context, uri string, creds *connectivity
 		return shared.ErrVersionMismatch
 	}
 
-	stored.Credentials = toDTO(creds)
+	stored.Credentials = dto
 	stored.Version++
 	stored.UpdatedAt = r.clk.Now()
 
@@ -469,7 +579,12 @@ func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) 
 func (r *Repository) uriToPath(serverURI string) (string, error) {
 	u, err := url.Parse(serverURI)
 	if err != nil {
-		return "", fmt.Errorf("invalid URI: %w", err)
+		// file-uri-leak: url.Parse wraps the raw URI (which may embed
+		// `user:pass@` userinfo) in a *url.Error that echoes it verbatim into
+		// the message. Strip the credential-bearing components before the
+		// error reaches any log or caller, matching the SSM and runtime
+		// credential paths (shared.RedactURIError -> shared.RedactURI).
+		return "", fmt.Errorf("invalid URI: %w", shared.RedactURIError(err))
 	}
 
 	if u.Scheme != Scheme {

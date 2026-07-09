@@ -28,11 +28,11 @@ const (
 	sqsMaxVisibilitySeconds int32 = 43200
 
 	// minAutoExtendVisibilitySeconds is the smallest visibility timeout
-	// the auto-extend machinery will use. Below 2s the derived tick
-	// interval (visibility/2) rounds down toward a non-positive duration,
-	// and a clock Ticker panics when NewTicker/Reset is handed d <= 0. It
-	// is also the threshold newDelivery uses to decide whether starting
-	// the auto-extend goroutine is worthwhile at all.
+	// the auto-extend machinery will use: clampVisibilitySeconds raises any
+	// smaller window up to it, and newDelivery only starts the auto-extend
+	// goroutine when the window is at least this. The tick interval itself
+	// (visibility/3) is separately floored at 1s in autoExtendInterval, so
+	// the clock Ticker never receives a non-positive duration.
 	minAutoExtendVisibilitySeconds int32 = 2
 
 	// sqsSettlementTimeout bounds every settlement/extend SQS call
@@ -41,6 +41,29 @@ const (
 	// connection wedging the delivery goroutine for the TCP RTO. See
 	// settlementContext (Finding 5).
 	sqsSettlementTimeout = 10 * time.Second
+
+	// ackDeleteMarginSeconds is the minimum visibility (in seconds) Ack
+	// guarantees remains on a message before it issues DeleteMessage
+	// (Finding: c8-autoextend-margin). DeleteMessage is bounded by
+	// sqsSettlementTimeout (10s); if the live visibility window were shorter,
+	// the message could resurface to another consumer BEFORE the delete lands
+	// — a duplicate (and, on a FIFO queue, group churn). A visibility_timeout
+	// as low as 2-3s is otherwise permitted, so Ack performs a final
+	// ChangeMessageVisibility to this floor whenever the remaining window is
+	// below it, guaranteeing the delete always outruns redelivery. The floor
+	// is the settlement bound plus a 5s buffer for scheduling/clock jitter.
+	ackDeleteMarginSeconds int32 = int32(sqsSettlementTimeout/time.Second) + 5
+
+	// marginCMVTimeout bounds the pre-delete visibility-margin
+	// ChangeMessageVisibility (Finding: c8-autoextend-margin). It is
+	// deliberately SHORT and INDEPENDENT of the delete's sqsSettlementTimeout
+	// budget: the margin CMV and the DeleteMessage must not share one 10s
+	// context, or a slow-but-eventually-successful CMV could starve the
+	// delete's remaining budget and turn a would-have-succeeded delete into a
+	// 15s-delayed redelivery (a duplicate). The CMV is best effort — on
+	// timeout Ack still proceeds to the delete under the full settlement
+	// budget — so a tight bound is safe.
+	marginCMVTimeout = 3 * time.Second
 )
 
 // settlementContext returns the context for a settlement/extend SQS call
@@ -59,10 +82,20 @@ const (
 // not redelivered on restart, mirroring the runtime's panic-path
 // settlement pattern (runtime/route/runner.go).
 func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return boundedSettleContext(ctx, sqsSettlementTimeout)
+}
+
+// boundedSettleContext bounds an SQS settlement/extend call with the given
+// timeout, keeping settlementContext's cancellation semantics: while ctx is
+// live it derives directly; once ctx is cancelled (shutdown) cancellation is
+// stripped with context.WithoutCancel (values kept) so the bounded call still
+// reaches SQS. It lets the pre-delete margin CMV get its OWN short bound
+// (marginCMVTimeout) rather than sharing the delete's settlement budget.
+func boundedSettleContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx.Err() == nil {
-		return context.WithTimeout(ctx, sqsSettlementTimeout)
+		return context.WithTimeout(ctx, timeout)
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), sqsSettlementTimeout)
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 // clampVisibilitySeconds bounds a desired visibility timeout (seconds)
@@ -170,7 +203,7 @@ type sqsDelivery struct {
 //
 // When autoExtend is true and visibilityTimeout > 1s, a background
 // goroutine (autoExtendLoop) periodically calls ChangeMessageVisibility
-// at 50% of visibilityTimeout. This keeps the message invisible to
+// at one-third of visibilityTimeout. This keeps the message invisible to
 // other consumers while the bridge processes it. The loop runs until
 // the delivery is finalized (Ack or Retry) or the parent context is
 // canceled.
@@ -232,6 +265,11 @@ func (d *sqsDelivery) Envelope() *messaging.Envelope { return d.env }
 // DeleteMessage still runs under a bounded settlement context — see
 // settlementContext — so a successfully egressed message is not
 // redelivered on restart.
+//
+// Before deleting, Ack guarantees the message still has a visibility margin
+// larger than the delete's own timeout (Finding: c8-autoextend-margin) via
+// ensureDeleteVisibilityMargin, so the delete always lands before the
+// message could resurface to another consumer.
 func (d *sqsDelivery) Ack(ctx context.Context) error {
 	d.stopAutoExtend()
 	defer d.cleanupContext()
@@ -246,6 +284,13 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
+	// Guarantee the delete a visibility margin (Finding: c8-autoextend-
+	// margin). Auto-extend is already stopped above, so this final extension
+	// cannot race the background loop. It is passed the CALLER ctx (not
+	// settleCtx): the margin CMV bounds itself independently so it can never
+	// consume the delete's settlement budget.
+	d.ensureDeleteVisibilityMargin(ctx)
+
 	start := d.clk.Now()
 	_, err := d.client.DeleteMessage(settleCtx, &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(d.queueURL),
@@ -259,6 +304,48 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 	d.metrics.Timer(MetricSQSDeleteLatency, d.clk.Since(start),
 		shared.Tag{Key: TagKeyQueueURL, Value: d.queueURL})
 	return nil
+}
+
+// ensureDeleteVisibilityMargin extends the message visibility to
+// ackDeleteMarginSeconds when the live window would otherwise lapse before
+// DeleteMessage can complete (Finding: c8-autoextend-margin). DeleteMessage
+// is bounded by sqsSettlementTimeout; a shorter remaining window could let
+// the message resurface to another consumer mid-delete → duplicate
+// processing. It is a no-op on the common path (a comfortably-large window
+// pays no extra call) and best effort: a failed or timed-out extension just
+// proceeds to the delete with the current window — no worse than before the
+// fix — and is deliberately NOT counted as a settlement error, since the
+// delete itself is what settles the message.
+//
+// ctx is the CALLER's Ack context. The CMV bounds ITSELF with marginCMVTimeout
+// via boundedSettleContext — a separate, short budget from the delete's
+// sqsSettlementTimeout — so a slow CMV can never starve the delete and turn a
+// would-have-succeeded delete into a 15s-delayed redelivery.
+func (d *sqsDelivery) ensureDeleteVisibilityMargin(ctx context.Context) {
+	deadline := time.Unix(0, d.windowDeadline.Load())
+	if deadline.Sub(d.clk.Now()) >= time.Duration(ackDeleteMarginSeconds)*time.Second {
+		return
+	}
+
+	cmvCtx, cancel := boundedSettleContext(ctx, marginCMVTimeout)
+	defer cancel()
+
+	_, err := d.client.ChangeMessageVisibility(cmvCtx, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          aws.String(d.queueURL),
+		ReceiptHandle:     aws.String(d.receiptHandle),
+		VisibilityTimeout: ackDeleteMarginSeconds,
+	})
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("sqs: pre-delete visibility extension failed; proceeding to delete",
+				"queue", d.queueURL,
+				"message_id", d.env.ID(),
+				"error", err,
+			)
+		}
+		return
+	}
+	d.windowDeadline.Store(d.clk.Now().Add(time.Duration(ackDeleteMarginSeconds) * time.Second).UnixNano())
 }
 
 // Retry makes the message visible again after the given delay.
@@ -402,11 +489,11 @@ const autoExtendMaxFailures = 3
 // on it, causing a duplicate delivery.
 //
 // autoExtendLoop prevents this by calling ChangeMessageVisibility at
-// 50% of the visibility timeout (the "tick interval"). Each call resets
-// the invisibility clock to the full timeout value, giving the processor
-// another full window to finish.
+// one-third of the visibility timeout (the "tick interval"). Each call
+// resets the invisibility clock to the full timeout value, giving the
+// processor another full window to finish.
 //
-//	visibility = 30s → tick at 15s → extends to 30s from now → repeat
+//	visibility = 30s → tick at 10s → extends to 30s from now → repeat
 //
 // # Dynamic visibility timeout
 //

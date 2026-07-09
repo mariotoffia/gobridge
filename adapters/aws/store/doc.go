@@ -17,7 +17,20 @@
 // silently ack-and-drop every subsequent one as a duplicate. A table that does
 // not yet exist is tolerated (ResourceNotFoundException is non-fatal), so a
 // build-then-provision flow still works; the missing table then fails loudly at
-// first use. The lease build additionally emits a loud WARN if DynamoDB TTL is
+// first use.
+//
+// The preflight is FAIL-CLOSED. A confirmed schema mismatch is fatal, and so is
+// an inability to VERIFY the schema: when DescribeTable itself fails — a
+// control-plane throttle, a least-privilege role lacking dynamodb:DescribeTable
+// (AccessDenied), or an emulator that does not implement DescribeTable — the
+// build FAILS rather than proceeding as if the table were valid, because an
+// unreadable table gives no evidence that it is well-shaped. Grant
+// dynamodb:DescribeTable so the check can enforce the schema. For a dev/emulator
+// that genuinely cannot answer DescribeTable, construct the factory with
+// WithSchemaPreflightAdvisory to downgrade an unverifiable table to a loud WARN;
+// this is an explicit opt-out and must not be used in production.
+//
+// The lease build additionally emits a loud WARN if DynamoDB TTL is
 // enabled on the lease table, since TTL-reaping a lease row resets its fencing
 // counter (see dynamodblease).
 package awsstore

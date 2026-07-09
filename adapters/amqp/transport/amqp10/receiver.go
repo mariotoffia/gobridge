@@ -328,42 +328,64 @@ func (r *Receiver) closeLink() {
 	r.mu.Lock()
 	link := r.link
 	r.link = nil
+	failedConn := r.linkConn
 	r.linkConn = nil
 	r.mu.Unlock()
 
-	if link != nil {
-		// Durable subscriptions (DurabilityMode > 0) must NOT be closed
-		// at the link level: go-amqp can only send a full close
-		// (Detach{Closed:true}), which brokers interpret as UNSUBSCRIBE —
-		// deleting the subscription and every message retained for it
-		// (verified against Artemis: link close deletes, connection drop
-		// preserves). The link is released locally and torn down with
-		// the connection instead, which keeps the subscription.
-		if r.cfg.DurabilityMode > 0 {
-			if logging.DebugEnabled(r.logger) {
-				r.logger.Log(context.Background(), logging.LevelDebug,
-					"amqp10: leaving durable subscription link for connection teardown (link close would unsubscribe)",
-					"address", redactURL(r.cfg.Address),
-					"subscription", r.linkName(),
-				)
-			}
-			return
-		}
-		if logging.TraceEnabled(r.logger) {
-			r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
-				"address", redactURL(r.cfg.Address))
-		}
-		// Finding 3: bound the detach. closeLink runs from Close on
-		// shutdown; an unbounded context.Background() could hang the
-		// caller forever on an unresponsive broker. We derive from
-		// Background (not a — by now cancelled — Run ctx) on purpose so
-		// the detach still gets its full LinkCloseTimeout window to flush
-		// in-flight dispositions during a graceful stop, mirroring
-		// handleLinkError.
-		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
-		_ = link.Close(closeCtx)
-		cancel()
+	if link == nil {
+		return
 	}
+
+	// Durable subscriptions (DurabilityMode > 0) must NOT be full-closed
+	// at the link level: go-amqp can only send a CLOSING detach
+	// (Detach{Closed:true}), which brokers interpret as UNSUBSCRIBE —
+	// deleting the subscription and every message retained for it
+	// (verified against Artemis: a closing detach deletes, a connection
+	// drop — a NON-closing detach — preserves the durable terminus).
+	//
+	// c7-durable-close: merely nil-ing r.link (the previous behaviour) is
+	// NOT a teardown — the link stays ATTACHED on the broker, which keeps
+	// delivering up to link credit into an abandoned link whose messages
+	// then sit UNSETTLED until the connection eventually drops (possibly
+	// never, while the session serves other links). Force a REAL
+	// connection teardown instead: dropping the connection detaches the
+	// live link (broker stops delivering) via a non-closing detach that
+	// PRESERVES the durable subscription. This mirrors the durable branch
+	// of forceSettleRebuild — the same seam used to reclaim leaked credit.
+	if r.cfg.DurabilityMode > 0 {
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(context.Background(), logging.LevelDebug,
+				"amqp10: tearing down connection to detach durable subscription link on close (link close would unsubscribe)",
+				"address", redactURL(r.cfg.Address),
+				"subscription", r.linkName(),
+			)
+		}
+		if r.session != nil {
+			r.session.markReceiverLink(r, false) // finding 4: link is down
+			if failedConn != nil {
+				// notifyDisconnect closes failedConn, clears session
+				// connection state and wakes the monitor; it no-ops when
+				// the session is already closed or has moved on to a newer
+				// connection, so a concurrent Session.Close stays safe.
+				r.session.notifyDisconnect(failedConn, nil)
+			}
+		}
+		return
+	}
+	if logging.TraceEnabled(r.logger) {
+		r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
+			"address", redactURL(r.cfg.Address))
+	}
+	// Finding 3: bound the detach. closeLink runs from Close on
+	// shutdown; an unbounded context.Background() could hang the
+	// caller forever on an unresponsive broker. We derive from
+	// Background (not a — by now cancelled — Run ctx) on purpose so
+	// the detach still gets its full LinkCloseTimeout window to flush
+	// in-flight dispositions during a graceful stop, mirroring
+	// handleLinkError.
+	closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
+	_ = link.Close(closeCtx)
+	cancel()
 }
 
 // defaultLinkCloseTimeout bounds a link detach when SessionOptions does

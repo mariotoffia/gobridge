@@ -131,7 +131,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		}
 	}
 
-	sendErr := sender.Send(sendCtx, ports.OutboundMessage{Envelope: outbound, Address: plan.Address})
+	sendErr := r.boundedSend(sendCtx, sender, ports.OutboundMessage{Envelope: outbound, Address: plan.Address})
 
 	r.invokeOnDelivery(outbound, sendErr)
 
@@ -183,17 +183,18 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			}
 			poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
-			if r.dlq.HasStore() {
+			if r.dropOnPermanentFailure() {
+				// on_permanent_failure=drop, or no DLQ store: dropping is the
+				// only terminal option that honours the policy (retrying forever
+				// is the very poison loop the cap prevents). Count it so the loss
+				// is observable, never silent.
+				r.emitDrop("max_retries")
+			} else {
 				if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
 					r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
 					return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 				}
 				r.emitDLQ("max_retries")
-			} else {
-				// No DLQ store: dropping is the only terminal option (retrying
-				// forever is the very poison loop the cap prevents). Count it so
-				// the loss is observable, never silent.
-				r.emitDrop("max_retries")
 			}
 			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 				Direction:   ports.DirectionEgress,
@@ -212,7 +213,17 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
 	}
 
-	if r.dlq.HasStore() {
+	if r.dropOnPermanentFailure() {
+		// on_permanent_failure=drop, or no DLQ store: drop-with-metric so the
+		// failed message is not silently ACKed as if delivered AND the operator's
+		// drop policy is honoured (payload not retained in the DLQ). Mirrors the
+		// terminal decision the processor/resolve/poison paths route through.
+		if r.logger != nil {
+			r.logger.Warn("permanent send error dropped",
+				"route", r.routeID, "envelope_id", env.ID(), "error", sendErr)
+		}
+		r.emitDrop("permanent")
+	} else {
 		if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
 			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
@@ -225,14 +236,6 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			)
 		}
 		r.emitDLQ("permanent")
-	} else {
-		// Permanent send error with no DLQ store: drop-with-metric so the
-		// failed message is not silently ACKed as if delivered.
-		if r.logger != nil {
-			r.logger.Warn("permanent send error dropped: no DLQ configured",
-				"route", r.routeID, "envelope_id", env.ID(), "error", sendErr)
-		}
-		r.emitDrop("permanent")
 	}
 	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
@@ -246,6 +249,99 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		Terminal:    true,
 	})
 	return r.ackDelivery(ctx, del)
+}
+
+// dropOnPermanentFailure is the single decision point every TERMINAL
+// permanent/rejected path routes through: it reports whether a permanently
+// failed / rejected delivery must be DROPPED (with metric) rather than written
+// to the DLQ. It is true when the operator selected on_permanent_failure=drop
+// (the payload must not be retained in a DLQ), or when no DLQ store is
+// configured (a DLQEntries counter with no store behind it is a false signal
+// and drop is the only terminal option). Centralising the decision keeps the
+// direct_hold send-failure, resolve-error, processor-permanent and replay-cap
+// poison paths consistent so the configured policy is honoured everywhere.
+func (r *RouteRunner) dropOnPermanentFailure() bool {
+	return r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore()
+}
+
+// boundedSend runs sender.Send under ctx (already bounded by SendTimeout) but
+// guarantees the DISPATCHER unblocks when ctx fires even if the sender ignores
+// cancellation entirely. A cooperative sender returns via the buffered done
+// channel and its real result (including its own ctx-cancel error) is returned
+// unchanged, so this is transparent to well-behaved transports. A sender that
+// truly hangs ignoring ctx leaves its goroutine parked until it eventually
+// returns; the buffered channel lets that goroutine complete and exit without a
+// reader, so nothing else leaks.
+//
+// A panic inside Send is captured and re-raised on the caller goroutine so the
+// existing Run-loop panic-recovery / poison-gate semantics are preserved (a
+// deterministically-panicking sender is still capped, not silently retried
+// forever) and a background-goroutine panic can never crash the process.
+//
+// ponytail: the parked goroutine on a truly-hung sender is the deliberate
+// ceiling — Go cannot forcibly kill a goroutine, and the dispatcher MUST unblock
+// on shutdown/reconfig. The hard ceiling is a fresh SendTimeout timer that is
+// INDEPENDENT of parent-ctx cancellation: ctx (already the SendTimeout-bounded
+// sendCtx) is still passed to Send so a COOPERATIVE sender aborts promptly and
+// reports through done even mid-shutdown, but a sender that ignores ctx entirely
+// gets SendTimeout to return before we unblock. Deriving the ceiling from a
+// timer rather than ctx.Done() is what lets an already-cancelled parent ctx
+// still capture a fast sender's SUCCESS instead of mis-timing it out into a
+// duplicate retry. On the ceiling we classify the send as a transient TIMEOUT so
+// the delivery is RETRIED (the source redelivers) and NEVER falsely acked; a
+// non-blocking read of done first lets a send that completed in the same tick as
+// the ceiling win, closing the "sent-then-timeout" duplicate window as far as
+// the cooperative race allows (the residual send-success-after-ceiling duplicate
+// is inherent to any send timeout and is already a documented at-least-once
+// window).
+func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage) error {
+	type sendResult struct {
+		err error
+		rec any
+	}
+	done := make(chan sendResult, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				done <- sendResult{rec: rec}
+			}
+		}()
+		done <- sendResult{err: sender.Send(ctx, msg)}
+	}()
+
+	// Injected clock (never time.NewTimer): the production timing audit forbids a
+	// real timer in this layer, and it keeps the ceiling deterministically
+	// drivable from tests via a fake clock.
+	ceiling := r.clk.NewTimer(r.policy.SendTimeout)
+	defer ceiling.Stop()
+	select {
+	case res := <-done:
+		if res.rec != nil {
+			panic(res.rec)
+		}
+		return res.err
+	case <-ceiling.C():
+		// Prefer a result that landed in the same tick as the ceiling: a send
+		// that actually completed must win over the timeout so we never retry an
+		// already-delivered message (duplicate).
+		select {
+		case res := <-done:
+			if res.rec != nil {
+				panic(res.rec)
+			}
+			return res.err
+		default:
+		}
+		if r.logger != nil {
+			r.logger.Warn("sender did not return within send bound; unblocking dispatcher",
+				"route", r.routeID,
+				"send_timeout", r.policy.SendTimeout,
+				"cause", ctx.Err(),
+			)
+		}
+		return shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient,
+			fmt.Sprintf("send did not complete within send bound %v: %v", r.policy.SendTimeout, ctx.Err()))
+	}
 }
 
 // invokeOnDelivery calls the optional OnDelivery callback if configured,
@@ -400,7 +496,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 	}
 	// Permanent failure. Honour OnPermanentFailure=drop and the no-store case
 	// by dropping-with-metric; otherwise write the DLQ record.
-	if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
+	if r.dropOnPermanentFailure() {
 		r.emitDrop("permanent")
 		if r.logger != nil {
 			r.logger.Warn("permanent failure dropped",
@@ -429,7 +525,7 @@ func (r *RouteRunner) poisonReplayCapExceeded(ctx context.Context, del ports.Del
 	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 		fmt.Sprintf("%s: receive count %d >= max replay attempts %d: %v", category, rc, r.policy.MaxReplayAttempts, cause))
 
-	if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
+	if r.dropOnPermanentFailure() {
 		r.emitDrop(category)
 		if r.logger != nil {
 			r.logger.Warn("replay cap reached; dropped",
@@ -449,12 +545,14 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	be, ok := shared.AsBridgeError(err)
 	if ok && be.Class != shared.ErrorTransient {
 		attempts := receiveCount(env) + 1
-		if !r.dlq.HasStore() {
-			// No DLQ store: a rejected/permanent resolve error would otherwise be
-			// silently ACKed. Drop-with-metric and settle terminally instead.
+		if r.dropOnPermanentFailure() {
+			// on_permanent_failure=drop, or no DLQ store: a rejected/permanent
+			// resolve error would otherwise be DLQ'd against the operator's drop
+			// policy (or silently ACKed with no store). Drop-with-metric and
+			// settle terminally instead.
 			r.emitDrop("rejected")
 			if r.logger != nil {
-				r.logger.Warn("resolve error dropped: no DLQ configured",
+				r.logger.Warn("resolve error dropped",
 					"route", r.routeID, "envelope_id", env.ID(), "error", err)
 			}
 			return r.settleTerminal(ctx, del, env, err, attempts)

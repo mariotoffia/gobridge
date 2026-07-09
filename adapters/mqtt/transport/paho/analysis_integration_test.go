@@ -89,11 +89,14 @@ func TestAnaIntg_StartAfterClose_RealBroker_DoesNotReconnect(t *testing.T) {
 	}
 }
 
-// TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe verifies the
-// documented no-op behaviour against a real broker. After applying a
-// non-empty plan, calling Reconcile with an empty plan must NOT cause
-// the previously-subscribed messages to be missed.
-func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
+// TestAnaIntg_ReconcileEmptyPlan_UnsubscribesManagedSubs verifies the
+// intentional "remove all subscriptions" behaviour against a real broker
+// (c4-remove-subs). After applying a non-empty plan, calling Reconcile with an
+// empty plan MUST unsubscribe the previously-established subscriptions —
+// otherwise the broker keeps delivering on stale subscriptions. Health's
+// broker-confirmed SubscriptionsActive is the deterministic signal: it drops
+// from 1 to 0 once the UNSUBSCRIBE lands.
+func TestAnaIntg_ReconcileEmptyPlan_UnsubscribesManagedSubs(t *testing.T) {
 	url := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -110,12 +113,18 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 	}
 	waitSubActive(t, sess, 5*time.Second)
 
-	// Empty plan must be a no-op.
+	// An empty plan is an intentional "remove all subscriptions".
 	if err := sess.Reconcile(ctx, connectivity.SessionPlan{}); err != nil {
-		t.Fatalf("empty Reconcile must succeed (no-op): %v", err)
+		t.Fatalf("empty Reconcile must succeed: %v", err)
 	}
 
-	recv := paho.NewReceiver("rx-empty", sess)
+	// The managed subscription must be gone (broker UNSUBSCRIBE applied).
+	waitForCondition(t, 5*time.Second, "managed subscription unsubscribed", func() bool {
+		return sess.Health(context.Background()).SubscriptionsActive == 0
+	})
+
+	// A message published on the now-unsubscribed topic must NOT arrive.
+	recv := paho.NewReceiver("rx-empty", sess, paho.WithTopicFilters(topic))
 	sender := paho.NewSender(sess, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
 
 	var got atomic.Int32
@@ -126,9 +135,6 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 		defer wg.Done()
 		_ = recv.Run(rctx, func(ctx context.Context, del ports.Delivery) error {
 			got.Add(1)
-			// Settle the delivery like the runtime does on every
-			// terminal path — under manual ack an unsettled QoS 1
-			// delivery would exhaust the broker's in-flight window.
 			return del.Ack(ctx)
 		})
 	}()
@@ -140,13 +146,11 @@ func TestAnaIntg_ReconcileEmptyPlan_DoesNotUnsubscribe(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
-	for got.Load() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("expected message to arrive — empty Reconcile must NOT unsubscribe")
-		case <-time.After(50 * time.Millisecond):
-		}
+	// Give the broker a bounded window to (not) deliver.
+	deadline := time.After(2 * time.Second)
+	<-deadline
+	if got.Load() != 0 {
+		t.Fatal("message arrived after empty Reconcile — the subscription must have been unsubscribed")
 	}
 }
 

@@ -2,6 +2,7 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -116,12 +117,28 @@ func (d *payloadDoc) get(env *messaging.Envelope, maxPayloadBytes int, path stri
 		// producer bypass an ActionDrop (deny) rule by sending garbage.
 		// Fail closed: classify the payload as rejected so the runtime
 		// DLQs it instead of passing it down the chain.
-		d.err = shared.ErrInvalidPayload.Wrap(
-			fmt.Errorf("filter: %q path on unparseable JSON payload: %w", path, err))
+		d.err = shared.ErrInvalidPayload.Wrap(redactJSONParseErr(path, err))
 		return nil, d.err
 	}
 	d.data = data
 	return d.data, nil
+}
+
+// redactJSONParseErr builds an unparseable-payload error that is safe to
+// surface in route logs and DLQ error metadata. The (config-derived)
+// field PATH is kept for debugging, but the payload CONTENT is not:
+// encoding/json's *json.SyntaxError.Error() quotes the first offending
+// payload byte (which may be part of a secret/PII), so only its
+// content-free byte OFFSET is surfaced. Any other unmarshal error is
+// reduced to a content-free classifier. The caller wraps the result in
+// shared.ErrInvalidPayload, so errors.Is classification is preserved on
+// either branch and the value-bearing json error is never surfaced.
+func redactJSONParseErr(path string, cause error) error {
+	var syntaxErr *json.SyntaxError
+	if errors.As(cause, &syntaxErr) {
+		return fmt.Errorf("filter: %q path on malformed JSON at offset %d", path, syntaxErr.Offset)
+	}
+	return fmt.Errorf("filter: %q path on malformed JSON payload", path)
 }
 
 // evaluate evaluates the condition against env with a private payload
@@ -402,6 +419,11 @@ func (e *conditionEvaluator) numericCompare(value any) (int, error) {
 		// deterministic for this payload, so a retry can never succeed.
 		// Classify as rejected (invalid payload) so the runtime DLQs the
 		// message instead of redelivering it forever.
+		//
+		// SECURITY: only the (config-derived) field PATH and operator are
+		// formatted here. The wrapped toFloat64 error is already redacted
+		// (type + length + reason, never the raw value), so this error is
+		// safe to surface in route logs and DLQ error metadata.
 		return 0, shared.ErrInvalidPayload.Wrap(fmt.Errorf(
 			"filter: field %q is not numeric for %q comparison: %w",
 			e.condition.Field, e.condition.Operator, err))
@@ -431,6 +453,13 @@ func (e *conditionEvaluator) isIn(value any) bool {
 	return false
 }
 
+// toFloat64 coerces a numeric value (config- or message-derived) to a
+// float64 for ordering comparisons. On failure it NEVER formats the raw
+// value into the returned error: the value may be payload- or
+// header-derived and can carry secrets or PII. Failures are described by
+// the observed Go type, the observed byte length, and the conversion
+// target — see redactNumericConvErr — so the error stays useful for
+// debugging while leaking zero content into route logs and DLQ metadata.
 func toFloat64(v any) (float64, error) {
 	switch val := v.(type) {
 	case float64:
@@ -463,16 +492,47 @@ func toFloat64(v any) (float64, error) {
 	case string:
 		f, err := strconv.ParseFloat(val, 64)
 		if err != nil {
-			return 0, fmt.Errorf("parse float %q: %w", val, err)
+			// SECURITY: strconv.ParseFloat's *strconv.NumError embeds the
+			// raw string in its own Error(); never echo it (nor val) — the
+			// string is payload/header-derived and may hold secrets/PII.
+			return 0, redactNumericConvErr(val, len(val), err)
 		}
 		return f, nil
 	case json.Number:
 		f, err := val.Float64()
 		if err != nil {
-			return 0, fmt.Errorf("json.Number to float: %w", err)
+			// json.Number.Float64 delegates to strconv.ParseFloat and so
+			// carries the same value-embedding *strconv.NumError; redact.
+			return 0, redactNumericConvErr(val, len(string(val)), err)
 		}
 		return f, nil
 	default:
+		// %T reveals only the Go type, never the value's content.
 		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}
+}
+
+// redactNumericConvErr builds a float64-conversion failure that is safe
+// to surface in route logs and DLQ error metadata. The value being
+// converted is payload- or header-derived and may carry secrets or PII,
+// so its raw CONTENT is never formatted into the error — only the
+// observed Go type, the observed byte length, and the conversion target
+// (float64). strconv.ParseFloat (used directly and by json.Number.Float64)
+// returns a *strconv.NumError whose own Error() embeds the raw value, so
+// this surfaces ONLY the underlying reason obtained via Unwrap
+// (strconv.ErrSyntax / ErrRange): errors.Is stays intact while zero
+// content escapes.
+//
+// Contract: the returned error's reason is content-free regardless of
+// caller input. If cause is not wrappable (Unwrap == nil) this does NOT
+// fall back to cause — a bare value-bearing error (e.g. an un-nested
+// *strconv.NumError) would leak — and uses a generic reason instead.
+func redactNumericConvErr(value any, length int, cause error) error {
+	if reason := errors.Unwrap(cause); reason != nil {
+		// reason is the low-level sentinel (content-free); %w keeps
+		// errors.Is(err, strconv.ErrSyntax/ErrRange) intact.
+		return fmt.Errorf("cannot convert %T (len %d) to float64: %w", value, length, reason)
+	}
+	// Not wrappable: never echo cause itself — it may embed the raw value.
+	return fmt.Errorf("cannot convert %T (len %d) to float64: conversion error", value, length)
 }

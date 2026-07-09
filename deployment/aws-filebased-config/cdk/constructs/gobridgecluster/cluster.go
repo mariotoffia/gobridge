@@ -7,6 +7,17 @@
 // GoBridgeEfsConfig type access). The top-level cdk/gobridgecdk
 // facade re-exports the public surface; consumers should normally
 // use that re-export rather than importing this package directly.
+//
+// NOT HIGH AVAILABILITY. Despite the name, GoBridgeCluster is a
+// filesystem-replicated SCALE-OUT topology, not coordinated-failover
+// HA: the replicas independently read one shared EFS config to scale
+// throughput. It forces topology=filesystem_replicated, under which
+// the runtime REJECTS the cross-instance coordination features
+// (shared_outbox, route.session leases), so there is no single-active
+// lease owner and no 30-60s failover path. Coordinated failover
+// requires DynamoDB-backed lease/outbox stores, which are out of this
+// reference construct's scope (c15-cluster-notha). See the
+// GoBridgeCluster type doc for the full non-HA advisory.
 package gobridgecluster
 
 import (
@@ -28,6 +39,35 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+)
+
+// Non-HA honesty markers (c15-cluster-notha). GoBridgeCluster is a
+// filesystem-replicated SCALE-OUT topology, not coordinated-failover
+// HA. The tag keys/values below are stamped onto every taggable
+// resource the construct synthesizes and DO reach the deployed stack,
+// so an operator inspecting the deployed resources (not just this
+// source) can see it is scale-out with no 30-60s coordinated-failover
+// path. nonHAAdvisory is additionally surfaced as a synth-time info
+// annotation — CloudAssembly metadata only, visible in verbose
+// `cdk synth`/`deploy` output; it does NOT reach the deployed stack.
+const (
+	// tagKeyTopology / tagValueTopology label the deployment shape.
+	tagKeyTopology   = "gobridge:topology"
+	tagValueTopology = "filesystem-replicated-scale-out"
+	// tagKeyHA / tagValueHA spell out that this is NOT HA. CloudFormation
+	// tag values disallow spaces-only oddities but accept '-'; the value
+	// is intentionally self-describing.
+	tagKeyHA   = "gobridge:ha"
+	tagValueHA = "none-scale-out-not-coordinated-failover"
+
+	// nonHAAdvisory is the synth-time info annotation. It states, in one
+	// place, exactly what this construct is and is not.
+	nonHAAdvisory = "GoBridgeCluster is a filesystem-replicated SCALE-OUT topology " +
+		"(N replicas share one EFS) and is NOT coordinated-failover HA: it forces " +
+		"topology=filesystem_replicated, under which the runtime rejects shared_outbox " +
+		"and route.session, so there is no single-active lease owner and no 30-60s " +
+		"failover path. Coordinated-failover HA requires DynamoDB-backed lease/outbox " +
+		"stores, which are out of this reference construct's scope (c15-cluster-notha)."
 )
 
 // AutoScalingProps opts the worker service into target-tracking CPU
@@ -172,6 +212,32 @@ type ClusterProps struct {
 // groups, EFS ingress rules and runs the Phase 1 / Phase 2 tier-B
 // validators on the resolved BridgeConfig.
 //
+// ⚠️ SCALE-OUT, NOT HIGH AVAILABILITY. "Cluster" here means
+// filesystem-replicated SCALE-OUT — N replicas independently reading
+// one shared EFS config to scale throughput — NOT coordinated-failover
+// HA. This construct FORCES topology=filesystem_replicated, and under
+// that topology the runtime REJECTS the cross-instance coordination
+// features (shared_outbox and route.session leases) via
+// validateFilesystemProfile. Consequences an operator MUST understand:
+//
+//   - There is NO single-active lease owner and NO coordinated failover.
+//     The replicas do not fail over for each other; they are independent
+//     readers of the same config.
+//   - There is NO 30-60s failover path. This deployment does NOT meet a
+//     30-60s (or any bounded) coordinated-failover target.
+//   - A config that declares shared_outbox or route.session is REJECTED
+//     at synth (Phase 1) or by the runtime guard — deploying it here
+//     yields config rejection, not the coordinated behaviour the names
+//     imply.
+//
+// Coordinated-failover HA requires DynamoDB-backed lease/outbox stores
+// (see ARCHITECTURE.md "clustered deployment for high availability"),
+// which are OUT OF SCOPE for this reference construct. To keep this
+// honest at the deployed-resource level (not just in source), the
+// construct stamps gobridge:topology / gobridge:ha tags onto every
+// taggable resource and emits a synth-time info annotation stating the
+// non-HA nature (c15-cluster-notha).
+//
 // The control DesiredCount is hard-coded to 1 and NOT exposed as a
 // prop: it is a runtime invariant of the single-LeaseStore-writer
 // semantics documented in the design. The control deployment
@@ -243,6 +309,19 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	// exist to prevent. Forcing it here makes the guards actually fire.
 	bootstrapControl.Topology = infra.TopologyFilesystemReplicated
 	bootstrapWorker.Topology = infra.TopologyFilesystemReplicated
+
+	// Be HONEST about what this construct is (c15-cluster-notha). The name
+	// "Cluster" can read as "HA / coordinated failover", but forcing
+	// filesystem_replicated above makes this a SCALE-OUT topology: N
+	// replicas independently read one EFS config, there is no single-active
+	// lease owner, and there is no 30-60s failover path. Stamp that truth
+	// onto the synthesized stack — tags on every taggable child plus a
+	// synth-time info annotation — so an operator reading the deployed
+	// resources (not just this source) does not deploy expecting a
+	// coordinated failover that does not exist here.
+	awscdk.Tags_Of(c).Add(jsii.String(tagKeyTopology), jsii.String(tagValueTopology), nil)
+	awscdk.Tags_Of(c).Add(jsii.String(tagKeyHA), jsii.String(tagValueHA), nil)
+	awscdk.Annotations_Of(c).AddInfo(jsii.String(nonHAAdvisory))
 
 	// Phase 1 — fast-fail tier-B validation on the resolved config.
 	// Use the worker NodeRole so worker-specific checks fire (a

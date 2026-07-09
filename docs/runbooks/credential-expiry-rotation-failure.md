@@ -45,8 +45,13 @@ a transient backend blip; the work is fixing the source.
 
 ## Action
 
-- **`TEMPORARY_AUTH_FAILURE` that persists**: force a credential refresh and
-  verify clock sync on the bridge host
+- **`TEMPORARY_AUTH_FAILURE` that persists**: there is no HTTP "refresh"
+  endpoint. The bridge already re-resolves on its rotation poll and reconnects on
+  its own, so a persistent code means the broker keeps rejecting a credential that
+  DID resolve -- usually clock skew or a value that is not yet active at the broker.
+  Verify clock sync (NTP) on the bridge host, confirm the rotated credential is
+  active at the broker/IdP, and if it outlasts the propagation window restart the
+  process to force a fresh resolve and a clean reconnect
   ([troubleshooting.md#temporary_auth_failure](../troubleshooting.md#temporary_auth_failure)).
 - **`CredentialResolveFailure{code=NOT_AUTHORIZED}`**: restore the IAM read grant
   (or the `file://` permissions) on the secret. Rotation resumes on the next poll.

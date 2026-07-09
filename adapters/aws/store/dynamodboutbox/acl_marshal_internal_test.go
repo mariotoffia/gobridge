@@ -8,6 +8,7 @@ package dynamodboutbox
 // TestOutboxFirstAttemptConformance under the integration gate.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -123,5 +124,98 @@ func TestMarshalRecord_PendingWithExpiry_OmitsReapingTTL(t *testing.T) {
 	}
 	if got := numAttrI64(item, "expires_at"); got != r.ExpiresAt().UnixMilli() {
 		t.Fatalf("expires_at millis = %d, want %d", got, r.ExpiresAt().UnixMilli())
+	}
+}
+
+// TestSortKey_HistoricallyCollidingPairsAreDistinct is the c13-sk-collision
+// regression. The RAW-concat sort key ("OUTBOX#"+env+"#"+binding) was NOT
+// injective: within one partition the DISTINCT pairs (env="order",
+// binding="eu#prod") and (env="order#eu", binding="prod") both marshaled to
+// "OUTBOX#order#eu#prod", so the second record hit attribute_not_exists(SK),
+// was mistaken for an idempotent duplicate, and was acked and DROPPED (silent
+// data loss). Envelope IDs are producer-controlled, so a colliding '#'-bearing
+// ID can arrive externally on any transport.
+//
+// Mutation this kills: reverting sortKey to `skPrefix + env + "#" + binding`
+// makes the two keys EQUAL again → this test FAILs.
+func TestSortKey_HistoricallyCollidingPairsAreDistinct(t *testing.T) {
+	a := sortKey("order", "eu#prod")
+	b := sortKey("order#eu", "prod")
+	if a == b {
+		t.Fatalf("distinct (env,binding) pairs must not collide: both marshaled to %q", a)
+	}
+
+	// A genuine duplicate — the SAME (env,binding) — must still collapse to the
+	// same SK so attribute_not_exists(SK) keeps real redeliveries idempotent.
+	if sortKey("order", "eu#prod") != a {
+		t.Fatalf("identical (env,binding) must yield a stable SK for idempotency")
+	}
+
+	// The SK must still live under the OUTBOX# prefix so begins_with(SK, prefix)
+	// record queries keep finding it and skip the FENCE row.
+	for _, sk := range []string{a, b} {
+		if !strings.HasPrefix(sk, skPrefix) {
+			t.Fatalf("sort key %q must retain the %q prefix", sk, skPrefix)
+		}
+	}
+}
+
+// TestSortKey_RoundTripRecoversExactComponents proves the escaped SK is
+// injective AND reversible: parseSortKey recovers the exact (env,binding) the
+// key was built from, including components that themselves contain the '#'
+// separator or the '%' escape marker.
+func TestSortKey_RoundTripRecoversExactComponents(t *testing.T) {
+	cases := []struct{ env, binding string }{
+		{"order", "eu#prod"},
+		{"order#eu", "prod"},
+		{"plain-env", "plain-bind"},
+		{"a#b#c", "d#e"},
+		{"pct%25", "hash#and%pct"},
+		{"%23", "%25"},
+		{"", ""},
+		{"#", "#"},
+	}
+	for _, tc := range cases {
+		sk := sortKey(tc.env, tc.binding)
+		gotEnv, gotBind, ok := parseSortKey(sk)
+		if !ok {
+			t.Fatalf("parseSortKey(%q) failed for (env=%q, binding=%q)", sk, tc.env, tc.binding)
+		}
+		if gotEnv != tc.env || gotBind != tc.binding {
+			t.Fatalf("round-trip of %q: got (env=%q, binding=%q), want (env=%q, binding=%q)",
+				sk, gotEnv, gotBind, tc.env, tc.binding)
+		}
+	}
+
+	// The FENCE row's sort key has no record prefix/separator and must not
+	// parse as a record key.
+	if _, _, ok := parseSortKey(fenceSK); ok {
+		t.Fatalf("parseSortKey must reject the non-record FENCE key %q", fenceSK)
+	}
+}
+
+// TestMarshalRecord_SKIsInjectiveAcrossCollidingPairs pins the injectivity at
+// the marshalRecord boundary (not just sortKey): two records that historically
+// collided produce items with DISTINCT SK attributes, so a conditional
+// attribute_not_exists(SK) Persist no longer drops the second as a duplicate.
+func TestMarshalRecord_SKIsInjectiveAcrossCollidingPairs(t *testing.T) {
+	mk := func(env, binding string) *persistence.OutboxRecord {
+		return persistence.MustOutboxRecord(persistence.OutboxSpec{
+			ID: "c13-" + env + "-" + binding, RouteID: "r",
+			EnvelopeID: env, BindingID: binding, SessionID: "s1", Address: "a",
+			Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{ID: env, Subject: "t"}),
+		})
+	}
+	itemA := mustMarshalRecord(t, mk("order", "eu#prod"))
+	itemB := mustMarshalRecord(t, mk("order#eu", "prod"))
+
+	if strAttr(itemA, "SK") == strAttr(itemB, "SK") {
+		t.Fatalf("marshalRecord produced colliding SKs %q for distinct (env,binding) pairs",
+			strAttr(itemA, "SK"))
+	}
+	// The separate authoritative attributes stay intact per record.
+	if strAttr(itemA, "binding_id") != "eu#prod" || strAttr(itemB, "binding_id") != "prod" {
+		t.Fatalf("binding_id attribute corrupted: A=%q B=%q",
+			strAttr(itemA, "binding_id"), strAttr(itemB, "binding_id"))
 	}
 }

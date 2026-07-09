@@ -307,13 +307,21 @@ func (r *OutboxRecord) Release(_ time.Time) *shared.BridgeError {
 }
 
 // Expire transitions the aggregate to the Expired terminal state. Valid
-// only from Pending or Claimed; returns shared.ErrOutboxAlreadyTerminal
-// otherwise.
+// only from Pending; a claimed record is reclaimed through Claim/stale-reclaim
+// and MUST NOT be expired out from under a potentially still-live owner, so
+// Expire returns shared.ErrOutboxNotPending from Claimed and
+// shared.ErrOutboxAlreadyTerminal from a terminal state. This mirrors the
+// pending-only, partition-scoped sweep contract on ports.OutboxStore.Expire.
 func (r *OutboxRecord) Expire(_ time.Time) *shared.BridgeError {
 	switch r.status {
-	case OutboxPending, OutboxClaimed:
+	case OutboxPending:
 		r.status = OutboxExpired
 		return nil
+	case OutboxClaimed:
+		return shared.ErrOutboxNotPending.
+			WithMessage("outbox record must be pending to expire; claimed records are reclaimed, not expired").
+			With("recordID", r.id).
+			With("status", string(r.status))
 	default:
 		return shared.ErrOutboxAlreadyTerminal.
 			WithMessage("outbox record is already in a terminal state").

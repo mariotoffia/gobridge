@@ -125,12 +125,24 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if clk == nil {
 		clk = clock.System
 	}
-	if cfg.receiveAndDelete() && requestedMaxMessages > 1 && l != nil {
-		// applyDefaults clamps MaxMessages to 1 in ReceiveAndDelete mode:
-		// the broker deletes at receive time, so every batched-but-not-
-		// yet-emitted message would be lost on shutdown or emit error.
-		l.Warn("servicebus: receive_mode ReceiveAndDelete forces max_messages=1 (broker settles at receive; larger batches risk message loss on shutdown)",
-			"requested_max_messages", requestedMaxMessages)
+	if cfg.receiveAndDelete() && l != nil {
+		// ReceiveAndDelete is AT-MOST-ONCE. Emit a LOUD startup warning
+		// whenever it is active (gated on the explicit allow_at_most_once
+		// opt-in in validate) so the lossy semantics are never silent, and
+		// call out the max_messages clamp separately when it discarded a
+		// larger configured batch.
+		l.Warn("servicebus: receive_mode ReceiveAndDelete is AT-MOST-ONCE — the broker deletes each message at receive time; a crash (or a malformed-message drop) after receive but before the downstream send is UNRECOVERABLE loss, Ack is a no-op and Retry is unsupported",
+			"entity", entityNameFor(cfg),
+			"allow_at_most_once", cfg.AllowAtMostOnce,
+		)
+		if requestedMaxMessages > 1 {
+			// applyDefaults clamps MaxMessages to 1 in ReceiveAndDelete
+			// mode: the broker deletes at receive time, so every batched-
+			// but-not-yet-emitted message would be lost on shutdown or
+			// emit error.
+			l.Warn("servicebus: receive_mode ReceiveAndDelete forces max_messages=1 (broker settles at receive; larger batches risk message loss on shutdown)",
+				"requested_max_messages", requestedMaxMessages)
+		}
 	}
 	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
 }
@@ -179,6 +191,11 @@ func (r *Receiver) swapStack(next receiverStack) receiverStack {
 // credential rotation: cfg.Connection only ever advances here, AFTER a
 // successful build, mirroring Sender.swapClient. Returns the previous
 // stack so the caller can close it OUTSIDE the lock.
+//
+// It bumps rebuildGen so a concurrent generation-fenced rebuild
+// (rebuildReceiver) that captured the PRIOR generation detects that a
+// rotation superseded it and discards its stale build instead of
+// reverting cfg.Connection and closing this fresh stack (lost update).
 func (r *Receiver) commitStack(next receiverStack, conn ConnectionConfig) receiverStack {
 	r.initMu.Lock()
 	defer r.initMu.Unlock()
@@ -189,6 +206,7 @@ func (r *Receiver) commitStack(next receiverStack, conn ConnectionConfig) receiv
 	r.cfg.Connection = conn
 	r.rebuildPending = false
 	r.pendingConn = ConnectionConfig{}
+	r.rebuildGen++
 	return old
 }
 
@@ -214,16 +232,21 @@ func (r *Receiver) beginSessionRebuild(conn ConnectionConfig) (receiverStack, ui
 }
 
 // commitRebuild installs next and commits conn IFF the rebuild
-// generation is still gen — i.e. no newer beginSessionRebuild
-// superseded this build while it ran. This fences the last-writer-wins
-// hazard where a slow rebuild of an OLDER connection completes after a
-// newer rotation already committed, which would otherwise overwrite the
-// newer stack and roll cfg.Connection back to stale credentials.
+// generation is still gen — i.e. no newer beginSessionRebuild OR
+// commitStack rotation superseded this build while it ran. This fences
+// the last-writer-wins hazard where a slow rebuild of an OLDER
+// connection completes after a newer rotation already committed, which
+// would otherwise overwrite the newer stack and roll cfg.Connection back
+// to stale credentials.
 //
-// Because a generation maps 1:1 to a single beginSessionRebuild(conn)
-// (both set under the same lock), every builder that captured gen G
-// targets the SAME conn, so a same-generation double-commit is benign
-// (converges to conn, the redundant stack is closed).
+// rebuildGen is advanced by every stack-replacing commit
+// (beginSessionRebuild for the session close-before-build path, and
+// commitStack for a non-session rotation / dead-link rebuild). A build
+// that captured gen G therefore observes an unchanged generation only
+// when NOTHING replaced the stack since — so committing its captured conn
+// is safe (for a session rebuild G maps 1:1 to a beginSessionRebuild(conn)
+// so a same-generation double-commit converges to conn; for a non-session
+// rebuild the captured conn still equals the live cfg.Connection).
 //
 // Returns (stackToClose, applied): when applied, stackToClose is the
 // previous live stack; when superseded, stackToClose is next itself, so
@@ -261,10 +284,54 @@ func (r *Receiver) build(ctx context.Context, conn ConnectionConfig) (receiverSt
 func (r *Receiver) Started() <-chan struct{} { return r.started }
 
 func (r *Receiver) entityName() string {
-	if r.cfg.QueueName != "" {
-		return r.cfg.QueueName
+	return entityNameFor(r.cfg)
+}
+
+// entityNameFor returns the receive entity (queue or topic) for a
+// ReceiverConfig. Shared by Receiver.entityName and NewReceiver's
+// startup warnings, which run before the Receiver value exists.
+func entityNameFor(cfg ReceiverConfig) string {
+	if cfg.QueueName != "" {
+		return cfg.QueueName
 	}
-	return r.cfg.TopicName
+	return cfg.TopicName
+}
+
+// entityScopeFor returns a FULLY-QUALIFIED, PROVABLY-INJECTIVE receive-
+// entity identifier used to namespace sequence-number-derived fallback
+// envelope IDs (stableFallbackID). Namespacing is required because the
+// broker SequenceNumber is only unique WITHIN an entity: two different
+// queues (or two subscriptions of the same topic) can each assign sequence
+// number 5, so an un-namespaced "asb-seq:5" would collide across entities
+// and a cross-entity dedup store could false-positive and DROP a distinct
+// message (data loss).
+//
+// The scope is one of:
+//
+//   - queue:        "q:" + queueName
+//   - subscription: "s:" + topicName + ":" + subscriptionName
+//   - bare topic:   "t:" + topicName   (defensive; ASB receives from
+//     subscriptions, not topics)
+//
+// This mapping is injective — no two distinct entities share a scope:
+//
+//   - The kinds differ in their first two chars ("q:" / "s:" / "t:"), so
+//     they can never cross-collide (e.g. a queue named "t/s" yields
+//     "q:t/s" while topic "t" + subscription "s" yields "s:t:s").
+//   - ":" is disallowed in EVERY ASB entity name (queue, topic,
+//     subscription), unlike "/" which is permitted in queue and topic
+//     names. So in "s:<topic>:<sub>" the two ":" sit at unambiguous
+//     positions (a "/" inside topic is harmless), and "q:<name>" /
+//     "t:<name>" have no interior ":" to confuse parsing.
+//   - Queue/topic/subscription name uniqueness is namespace-enforced.
+func entityScopeFor(cfg ReceiverConfig) string {
+	if cfg.QueueName != "" {
+		return "q:" + cfg.QueueName
+	}
+	if cfg.SubscriptionName != "" {
+		return "s:" + cfg.TopicName + ":" + cfg.SubscriptionName
+	}
+	return "t:" + cfg.TopicName
 }
 
 // Close releases the AMQP client, receiver, and scheduler resources.
@@ -510,6 +577,10 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 	// delivery falls back to abandon (logged at debug, not error).
 	delayedRetryDisabled := r.cfg.QueueName == ""
 	receiveAndDelete := r.cfg.receiveAndDelete()
+	// Fully-qualified entity scope for namespacing the sequence-number
+	// fallback ID of an empty-MessageID retry copy (see entityScopeFor /
+	// stableFallbackID). Loop-invariant, so compute once.
+	entityScope := entityScopeFor(r.cfg)
 
 	pinnedSession := r.cfg.SessionID != ""
 	useSessions := r.cfg.UseSessions
@@ -527,11 +598,10 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 		renewCtx, renewCancel := context.WithCancel(ctx)
 		defer renewCancel()
 
-		interval := r.cfg.LockDuration / 2
-		if floor := r.cfg.MinAutoExtendInterval; floor > 0 && interval < floor {
-			interval = floor
-		}
-		go r.runSessionRenewer(renewCtx, interval)
+		// The renewer paces itself against the OBSERVED session-lock
+		// deadline (SessionLockedUntil), falling back to lock_duration/2
+		// only when the seam exposes no deadline (mock/defensive path).
+		go r.runSessionRenewer(renewCtx, r.cfg.LockDuration/2)
 	}
 
 	tuning := deliveryTuning{
@@ -629,6 +699,27 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 					"servicebus: entity %q requires sessions but the receiver is not session-aware; set receiver.session_id to pin one session or receiver.use_sessions to rotate over available sessions: %w",
 					r.entityName(), err))
 			}
+			if !sessionMode && r.cfg.Client == nil && isClosedLinkError(err) {
+				// A non-session receiver's AMQP link is terminally CLOSED
+				// (typed *azservicebus.Error, CodeClosed). Re-polling the SAME
+				// seam only warn-loops forever, so rebuild the client+receiver
+				// from the live connection and let the next iteration poll the
+				// fresh link. Guarded on cfg.Client == nil: an injected client
+				// (tests) has no connection to rebuild from. Only CodeClosed
+				// triggers this: CodeConnectionLost self-heals in the SDK and a
+				// misclassified auth/config fault must surface, not rebuild-loop
+				// (see isClosedLinkError). A failed rebuild falls through to the
+				// normal metric+backoff below and is retried on the next
+				// iteration. Session modes self-heal via releaseSessionSeam /
+				// rebuildPendingStack instead.
+				if rebuildErr := r.rebuildReceiver(ctx); rebuildErr != nil {
+					if r.logger != nil {
+						r.logger.Warn("servicebus: receiver rebuild after connection loss failed, will retry",
+							"error", rebuildErr,
+						)
+					}
+				}
+			}
 			if useSessions {
 				// The session link is suspect (session lock lost, link
 				// detached): shed it so the next iteration accepts a fresh
@@ -704,6 +795,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			)
 			del.receiveAndDelete = receiveAndDelete
 			del.delayedRetryDisabled = delayedRetryDisabled
+			del.entity = entityScope
 			if useSessions {
 				// Track settlement so idle rotation cannot close the seam
 				// under an unsettled delivery. deliveryCtx is cancelled on
@@ -728,6 +820,53 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			}
 		}
 	}
+}
+
+// rebuildReceiver rebuilds the non-session receiver stack after a
+// terminally-closed link (CodeClosed). A closed AMQP receiver never
+// recovers on its own, so the poll loop calls this instead of re-polling
+// the dead seam. It builds a fresh stack from the live connection and
+// commits it under a GENERATION FENCE: a concurrent ApplyCredentials
+// rotation (commitStack bumps rebuildGen) may install a fresh stack on a
+// NEW connection while this rebuild runs. Committing unconditionally
+// would revert cfg.Connection to the stale conn and CLOSE the rotation's
+// live stack (a lost update invisible to -race). When superseded, the
+// rebuilt stack is discarded (closed) and cfg.Connection is left
+// untouched. A build failure is returned so the caller counts it and
+// backs off; the next poll iteration retries.
+func (r *Receiver) rebuildReceiver(ctx context.Context) error {
+	r.initMu.Lock()
+	conn := r.cfg.Connection
+	gen := r.rebuildGen
+	r.initMu.Unlock()
+
+	stack, err := r.build(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("servicebus: rebuild receiver for %q: %w", r.entityName(), err)
+	}
+
+	toClose, applied := r.commitRebuild(gen, stack, conn)
+	toClose.close(ctx)
+	if !applied {
+		// A rotation superseded this rebuild while it ran; the freshly
+		// built (stale-connection) stack was closed above and the newer
+		// rotation's stack is live. Do NOT touch cfg.Connection.
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug,
+				"servicebus: receiver rebuild superseded by a concurrent rotation, discarded",
+				"entity", r.entityName(),
+			)
+		}
+		return nil
+	}
+
+	if logging.DebugEnabled(r.logger) {
+		r.logger.Log(ctx, logging.LevelDebug,
+			"servicebus: receiver rebuilt after connection loss",
+			"entity", r.entityName(),
+		)
+	}
+	return nil
 }
 
 // rebuildPendingStack completes a deferred session-mode rebuild: when a
@@ -887,8 +1026,20 @@ func (r *Receiver) releaseSessionSeam(ctx context.Context) {
 // under the still-running poll loop, and renewing the OLD (closed)
 // client's session would leave the NEW session's lock unrenewed
 // (lock-lost on in-flight deliveries).
-func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration) {
-	ticker := r.clock().NewTicker(interval)
+//
+// # Observed-deadline pacing
+//
+// fallback is lock_duration/2 — used ONLY when the live seam exposes no
+// observed session-lock deadline (a mock/defensive path). When the seam
+// implements sessionLockDeadliner (the production sessionReceiverAdapter),
+// the renewer paces every interval off the broker's ACTUAL LockedUntil,
+// re-derived after each successful renewal (which advances the deadline)
+// and re-armed via ticker.Reset. A configured lock_duration that exceeds
+// the entity's real lock would otherwise schedule renewal too late and
+// let the session lock lapse mid-processing — another consumer then
+// steals the session (duplicate processing).
+func (r *Receiver) runSessionRenewer(ctx context.Context, fallback time.Duration) {
+	ticker := r.clock().NewTicker(r.sessionRenewInterval(fallback))
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
@@ -949,8 +1100,47 @@ func (r *Receiver) runSessionRenewer(ctx context.Context, interval time.Duration
 			consecutiveFailures = 0
 			degradedSignalled = false
 			r.metrics.Counter(MetricASBLockRenewals, 1)
+			// Re-pace against the OBSERVED deadline the successful renewal
+			// just advanced: a configured fallback wider than the entity's
+			// true lock would schedule the next renewal too late.
+			ticker.Reset(r.sessionRenewInterval(fallback))
 		}
 	}
+}
+
+// sessionRenewInterval computes the session-lock renewal interval. It
+// prefers HALF the remaining time to the OBSERVED broker lock deadline
+// (sessionLockDeadliner.SessionLockedUntil) so renewal always fires well
+// before the real lock expires, and only falls back to the supplied
+// lock_duration/2 when the live seam exposes no deadline (nil client mid
+// stack-swap, or a mock). When the observed lock has ALREADY LAPSED
+// (remaining <= 0) it re-arms at the floor (ASAP) rather than the wider
+// configured fallback, so the renewer attempts to reclaim/renew the
+// session immediately instead of waiting up to lock_duration/2 on an
+// already-expired lock. The result is floored at MinAutoExtendInterval
+// (default 1s) so it stays strictly positive — the clock ticker rejects a
+// non-positive interval.
+func (r *Receiver) sessionRenewInterval(fallback time.Duration) time.Duration {
+	floor := r.cfg.MinAutoExtendInterval
+	if floor <= 0 {
+		floor = time.Second
+	}
+	interval := fallback
+	if deadliner, ok := r.currentClient().(sessionLockDeadliner); ok {
+		if until := deadliner.SessionLockedUntil(); !until.IsZero() {
+			if remaining := until.Sub(r.clock().Now()); remaining > 0 {
+				interval = remaining / 2
+			} else {
+				// Observed lock already lapsed: re-arm at the floor (ASAP),
+				// not the configured fallback which could be lock_duration/2.
+				interval = floor
+			}
+		}
+	}
+	if interval < floor {
+		interval = floor
+	}
+	return interval
 }
 
 // pollBackoff implements exponential backoff with jitter for poll loops.

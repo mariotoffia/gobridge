@@ -114,9 +114,10 @@ func TestReceiveAndDelete_DisablesAutoExtend(t *testing.T) {
 	}
 
 	recv, err := NewReceiver(ReceiverConfig{
-		QueueName:   "q",
-		ReceiveMode: "ReceiveAndDelete",
-		Client:      mock,
+		QueueName:       "q",
+		ReceiveMode:     "ReceiveAndDelete",
+		AllowAtMostOnce: true,
+		Client:          mock,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

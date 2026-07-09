@@ -70,6 +70,7 @@ senders:
         exchange: "notifications"
         routing_key: "order.confirmed"
         delivery_mode: "persistent"
+        mandatory: true
         timeout: "30s"
 ```
 
@@ -128,9 +129,22 @@ senders:
 |-----|------|---------|-------------|
 | `exchange` | string | `""` | Target exchange name |
 | `routing_key` | string | `""` | Static fallback routing key. The per-dispatch `OutboundMessage.Address` (resolved from the dispatch plan) **wins**; `routing_key` applies only when `Address` is empty. If both are empty the publish is rejected with `ErrInvalidTopic`. The routing key is **never** taken from `Envelope.Subject` — Subject travels as a header, not as a transport address. |
-| `delivery_mode` | string | `persistent` | `persistent` (AMQP delivery-mode 2, survives a broker restart on a durable queue) or `transient` (delivery-mode 1, lost on restart). A per-message `amqp091.delivery-mode` header overrides it; quorum queues persist regardless. Empty/invalid resolves to `persistent`. |
-| `mandatory` | bool | `false` | Return unroutable messages |
+| `delivery_mode` | string | `persistent` | `persistent` (AMQP delivery-mode 2, survives a broker restart on a durable queue) or `transient` (delivery-mode 1, lost on restart). A per-message `amqp091.delivery-mode` header overrides it (accepts `1`/`2` or `transient`/`persistent`; any other value is ignored and the configured default applies); quorum queues persist regardless. Empty resolves to `persistent`; an invalid value is rejected at config validation (`config.go` `validateDeliveryMode`). |
+| `mandatory` | bool | `false` | Return an unroutable publish as a `basic.return` instead of letting the broker confirm-then-discard it. See the unroutable-publish note below — the managed factory requires `mandatory: true` or `allow_unroutable_drop: true`. |
+| `allow_unroutable_drop` | bool | `false` | Explicit opt-in that lets a managed sender publish with `mandatory: false`, deliberately accepting the silent broker discard of unroutable publishes (throughput-over-safety fan-out where unroutable is expected). It never changes the publish; it only records that the operator accepts the loss. |
 | `timeout` | duration | `30s` | Per-publish timeout (applied when context has no deadline) |
+
+> **Unroutable publishes and `mandatory`.** With `mandatory: false` (the decode
+> default) RabbitMQ confirms an unroutable publish — wrong routing key or missing
+> binding — then discards it, so `Send` succeeds, the source is acked, and the
+> message is lost with no telemetry. The managed factory therefore refuses to
+> build a sender unless it sets `mandatory: true` or `allow_unroutable_drop: true`
+> (`factory.go`). With `mandatory: true` an unroutable publish comes back as a
+> `basic.return`; the sender surfaces it as a permanent `ErrNotFound`
+> ("mandatory publish unroutable") so the route retries or DLQs it instead of
+> acking the source (`sender.go`). Batched sends fall back to sequential `Send`
+> when `mandatory` is set, because `basic.return` carries no delivery tag to
+> attribute the bounce to a specific message.
 
 > **Removed:** `immediate` is rejected (`immediate: true` fails validation --
 > RabbitMQ removed `basic.publish` `immediate` in 3.0 and closes the channel

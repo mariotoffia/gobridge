@@ -56,18 +56,20 @@ const (
 	MetricMQTTRouterCoveredDropped = "MQTTRouterCoveredDropped"
 
 	// MetricMQTTRouterOverflowDropped counts QoS 1/2 publishes acked-and-dropped
-	// because the startup pending buffer was FULL (entry or byte cap) during the
-	// unmatched-grace window and no evictable QoS 0 entry was available. This is
-	// REAL message loss: the broker already delivered the publish, and dropping
-	// it forfeits redelivery — the ack is issued ONLY to keep paho's in-order
-	// ack stream draining (an un-acked overflow slot would head-of-line-block
-	// every later ack, pin the broker's Receive-Maximum window, and deadlock
-	// ingress on a live connection). ANY non-zero value is alarming. Kept
-	// DISTINCT from the generic MetricMQTTRouterDropped (QoS 0 best-effort
-	// overflow, no delivery contract) and from the covered/orphan past-grace
-	// drops (MetricMQTTRouterCoveredDropped / MetricMQTTRouterUnmatchedDropped)
-	// so this real QoS 1/2 startup-overflow loss is never masked by a benign
-	// best-effort drop (F-2 / M-1).
+	// because the startup pending buffer's COUNT cap (== receive_maximum) was
+	// hit with NO evictable QoS 0 to reclaim. This is UNREACHABLE under a
+	// spec-compliant broker: Receive-Maximum flow control caps in-flight
+	// (un-acked) QoS 1/2 at the count cap, so the buffer can never overflow with
+	// QoS 1/2 alone. The independent 64 MiB byte ceiling NEVER drops QoS 1/2 (it
+	// governs QoS 0 memory only). Therefore ANY non-zero value means a broker
+	// delivered more un-acked QoS 1/2 than the Receive Maximum it was granted —
+	// a protocol violation. The victim is acked-and-dropped (NOT left un-acked:
+	// an un-acked drop would head-of-line-block paho's contiguous-prefix ack
+	// stream and wedge ingress). Kept DISTINCT from the generic
+	// MetricMQTTRouterDropped (QoS 0 best-effort overflow) and from the
+	// covered/orphan past-grace drops (MetricMQTTRouterCoveredDropped /
+	// MetricMQTTRouterUnmatchedDropped) so this protocol-violation loss is never
+	// masked (c4-qos12-overflow / F-2 / M-1).
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
@@ -76,4 +78,17 @@ const (
 	// client_id and mutually kicking each other. (0x8F is Topic Filter
 	// Invalid — a different condition — and is NOT counted here.)
 	MetricMQTTSessionTakeover = "MQTTSessionTakeover"
+
+	// MetricMQTTQoSDowngraded counts subscriptions the broker accepted at a
+	// LOWER QoS than requested (a granted-QoS downgrade: e.g. requested QoS 2,
+	// SUBACK reason 0x00 = granted QoS 0). The route assumes the requested
+	// delivery guarantee, so a silent downgrade quietly removes offline /
+	// redelivery guarantees and opens a disconnect-gap loss window. The
+	// reconcile loop stores the REQUESTED QoS in activeSubs (its delta baseline,
+	// so a stable downgraded sub is not re-subscribed every cycle) and
+	// increments this counter with a loud warning ONCE per subscription
+	// transition — initial subscribe, reconnect, or a plan that changes the
+	// requested QoS — rather than on every reconcile (c4-qos-downgrade). ANY
+	// non-zero value warrants investigating a broker QoS-cap policy.
+	MetricMQTTQoSDowngraded = "MQTTQoSDowngraded"
 )

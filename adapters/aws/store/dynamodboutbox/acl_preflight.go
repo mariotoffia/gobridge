@@ -37,6 +37,14 @@ import (
 //	Primary key : PK (S, HASH), SK (S, RANGE)
 //	GSI ExpiryIndex   : has_expiry (S, HASH), expires_at (N, RANGE)
 //	GSI RecordIDIndex : record_id (S, HASH)
+//	GSI ClaimIndex    : PK (S, HASH), claim_sort (S, RANGE), Projection: ALL —
+//	                    OPTIONAL; Claim falls back to a whole-partition scan when
+//	                    it is absent (c13-claim-quadratic backward-compat), so an
+//	                    un-migrated table is not fatal. When PRESENT it must match
+//	                    key schema AND be Projection: ALL (the claim query filters
+//	                    on the non-key status attribute), so a misprovisioned or
+//	                    under-projected ClaimIndex is rejected at startup rather
+//	                    than wedging every Claim at runtime.
 func (s *Store) Preflight(ctx context.Context) error {
 	out, err := s.client.DescribeTable(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(s.table),
@@ -67,6 +75,22 @@ func (s *Store) Preflight(ctx context.Context) error {
 					{name: "record_id", keyType: ddbtypes.KeyTypeHash, attrType: ddbtypes.ScalarAttributeTypeS},
 				},
 			},
+			{
+				// ClaimIndex is optional: Claim degrades to an exhaustive scan
+				// when it is absent (c13-claim-quadratic backward-compat), so a
+				// pre-migration table stays valid. A present-but-wrong ClaimIndex
+				// is still rejected — including a correct key schema with the
+				// WRONG projection: the claim query filters on the non-key status
+				// attribute, so ClaimIndex MUST be Projection: ALL or every claim
+				// query fails at runtime (c13 review HIGH).
+				name:              claimIndexName,
+				optional:          true,
+				wantProjectionAll: true,
+				keys: []expectedKey{
+					{name: "PK", keyType: ddbtypes.KeyTypeHash, attrType: ddbtypes.ScalarAttributeTypeS},
+					{name: attrClaimSort, keyType: ddbtypes.KeyTypeRange, attrType: ddbtypes.ScalarAttributeTypeS},
+				},
+			},
 		},
 	)
 }
@@ -85,10 +109,20 @@ type expectedKey struct {
 	attrType ddbtypes.ScalarAttributeType
 }
 
-// expectedIndex describes a required global secondary index.
+// expectedIndex describes a required global secondary index. When optional is
+// true the index may be absent (validateTableSchema skips it), but if present
+// it must still match — used for ClaimIndex, whose absence Claim tolerates via
+// a scan fallback (c13-claim-quadratic backward-compat). When wantProjectionAll
+// is true a PRESENT index must also project ALL attributes: a correctly-keyed
+// but under-projected ClaimIndex would pass a key-only check yet fail every
+// claim query at runtime (the FilterExpression reads the non-projected `status`
+// attribute), wedging the fleet — so preflight rejects it at startup (c13
+// review HIGH).
 type expectedIndex struct {
-	name string
-	keys []expectedKey
+	name              string
+	optional          bool
+	wantProjectionAll bool
+	keys              []expectedKey
 }
 
 // validateTableSchema verifies the described table's primary key and required
@@ -112,6 +146,9 @@ func validateTableSchema(
 	for _, want := range gsis {
 		got := findGSI(table.GlobalSecondaryIndexes, want.name)
 		if got == nil {
+			if want.optional {
+				continue // absent optional GSI (e.g. ClaimIndex) is tolerated
+			}
 			return schemaMismatch(pkg, tableName, fmt.Sprintf(
 				"required global secondary index %q is missing (expected key schema %s)",
 				want.name, renderExpected(want.keys)))
@@ -119,8 +156,25 @@ func validateTableSchema(
 		if err := checkKeySchema(pkg, tableName, fmt.Sprintf("GSI %q", want.name), got.KeySchema, defs, want.keys); err != nil {
 			return err
 		}
+		if want.wantProjectionAll {
+			if got.Projection == nil || got.Projection.ProjectionType != ddbtypes.ProjectionTypeAll {
+				return schemaMismatch(pkg, tableName, fmt.Sprintf(
+					"GSI %q must be Projection: ALL (the claim query filters on the non-key "+
+						"status attribute); actual projection is %q",
+					want.name, projectionTypeOf(got)))
+			}
+		}
 	}
 	return nil
+}
+
+// projectionTypeOf renders a GSI's projection type for a schema-mismatch
+// message, tolerating a nil projection description.
+func projectionTypeOf(gsi *ddbtypes.GlobalSecondaryIndexDescription) string {
+	if gsi == nil || gsi.Projection == nil {
+		return "<none>"
+	}
+	return string(gsi.Projection.ProjectionType)
 }
 
 func checkKeySchema(

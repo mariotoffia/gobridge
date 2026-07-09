@@ -74,7 +74,7 @@ SQS is a **stateless** transport. Unlike MQTT, there's no persistent connection 
 - **`max_messages: 10`** -- Maximum messages per `ReceiveMessage` call (SQS max is 10).
 - **`wait_time_seconds: 20`** -- Long polling. The API call waits up to 20 seconds for messages before returning empty. This reduces cost and latency vs short polling.
 - **`visibility_timeout: 60`** -- After receiving a message, it becomes invisible to other consumers for 60 seconds. If not acknowledged in time, SQS re-delivers it.
-- **`auto_extend: true`** -- A background goroutine renews the visibility timeout at 50% (30s mark), preventing redelivery for long-running processing.
+- **`auto_extend: true`** -- A background goroutine renews the visibility timeout at one-third of the window (`visibility_timeout/3`, floored at 1s; the 20s mark for this 60s timeout), preventing redelivery for long-running processing.
 
 ### `senders`
 - **`batch_size: 10`** -- Maximum entries per `SendMessageBatch` call. It takes effect only when a caller invokes the sender's `SendBatch` (batch) API directly. This route's per-delivery dispatch sends one message per `Send` call, so `batch_size` does not reduce API calls here, and it does not apply to the shared-outbox drain path either (the drainer sends one record per `Send`).
@@ -98,7 +98,7 @@ sequenceDiagram
             Bridge->>SQS: DeleteMessage (ACK)
         end
 
-        opt auto_extend at 50% visibility
+        opt auto_extend at one-third of visibility
             Bridge->>SQS: ChangeMessageVisibility
         end
     end

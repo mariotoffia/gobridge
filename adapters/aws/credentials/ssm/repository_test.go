@@ -180,6 +180,66 @@ func TestParseCredentials_MissingUsername(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// Verifies TLS JSON with neither a CA bundle nor a complete cert/key pair
+// is rejected rather than yielding a credential with empty trust material.
+//
+// Mutation reasoning: reverting parseTLSJSON to unconditionally return
+// connectivity.NewTLSMaterial(...) (the pre-fix behaviour) makes every
+// input below parse successfully — a failed/torn rotation write of
+// `{"type":"tls"}` would silently strip TLS trust from a live transport.
+// Each require.Error then fails.
+func TestParseCredentials_EmptyTLSRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"declared type only", `{"type":"tls"}`},
+		{"empty cert and key strings", `{"certPem":"","keyPem":""}`},
+		{"cert without key", `{"type":"tls","certPem":"only-cert"}`},
+		{"key without cert", `{"type":"tls","keyPem":"only-key"}`},
+		{"insecure only", `{"type":"tls","insecure":true}`},
+		{"empty ca list", `{"type":"tls","caPem":[""]}`},
+		{"whitespace ca entry", `{"type":"tls","caPem":[" "]}`},
+		{"whitespace single ca", `{"type":"tls","ca":"  "}`},
+		{"whitespace cert and key", `{"certPem":" ","keyPem":"\n"}`},
+		{"whitespace cert without key", `{"type":"tls","certPem":"  "}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseCredentials(tc.input)
+			require.Error(t, err)
+		})
+	}
+}
+
+// Verifies a CA-only credential (server verification, no mutual TLS) is
+// accepted: the empty-material guard must not reject legitimate trust
+// bundles carrying only a CA.
+func TestParseCredentials_TLS_CAOnlyAccepted(t *testing.T) {
+	creds, err := parseCredentials(`{"type":"tls","caPem":["root-ca"]}`)
+	require.NoError(t, err)
+	require.NotNil(t, creds.TLS())
+	assert.Empty(t, creds.TLS().CertPEM())
+	assert.Empty(t, creds.TLS().KeyPEM().Reveal())
+	assert.Equal(t, []string{"root-ca"}, creds.TLS().CAPEMs())
+}
+
+// Verifies simple username:password strings with an empty username or
+// password are rejected.
+//
+// Mutation reasoning: reverting parseSimpleCredentials to build a
+// PasswordCredential from parts[0]/parts[1] without the emptiness guard
+// makes ":pass", "user:" and ":" parse into anonymous/half-empty
+// credentials, so the require.Error assertions fail.
+func TestParseCredentials_EmptySimpleRejected(t *testing.T) {
+	for _, input := range []string{":pass", "user:", ":"} {
+		t.Run(input, func(t *testing.T) {
+			_, err := parseCredentials(input)
+			require.Error(t, err)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Serialization round-trip
 // ---------------------------------------------------------------------------

@@ -8,8 +8,10 @@ import (
 
 // warnSubstrConnectLease is the distinctive fragment of the F2 advisory emitted
 // by validateConnectLeaseBudget; tests key off it to avoid matching unrelated
-// warnings (e.g. the direct_hold fencing advisory).
-const warnSubstrConnectLease = "connect + first-renew span"
+// warnings (e.g. the direct_hold fencing advisory). The advisory now folds the
+// reconcile budget into the span ("connect + reconcile + first-renew span"), so
+// the stable fragment is "first-renew span".
+const warnSubstrConnectLease = "first-renew span"
 
 func boolPtrConfig(b bool) *bool { return &b }
 

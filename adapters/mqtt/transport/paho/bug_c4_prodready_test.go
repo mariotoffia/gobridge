@@ -1,0 +1,321 @@
+package paho
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	pahov5 "github.com/eclipse/paho.golang/paho"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Chunk 4 — MQTT plugin production-readiness (HIGH) — one focused, deterministic
+// unit test per fix. Each test states the mutation (counterfactual) that would
+// make it fail if the fix were reverted.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestC4_NoTopicReceiver_RejectedNotMatchAll pins c4-notopic-matchall
+// (factory.go): a config-driven receiver with ZERO subscription topics must be
+// REJECTED. The router treats an empty filter set as match-all
+// (matchesAnyFilter), so a no-topic receiver on a shared session would receive
+// EVERY publish, join ACK splitting, and defeat orphan cleanup — flooding the
+// route with unintended traffic.
+//
+// Mutation: deleting the `len(filters) == 0` reject in Factory.NewReceiver
+// makes err nil (a match-all receiver is silently constructed) → this test
+// fails on the first assertion.
+func TestC4_NoTopicReceiver_RejectedNotMatchAll(t *testing.T) {
+	sess := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "c4-notopic",
+	}, connectivity.SessionEphemeral, nil)
+
+	f := &Factory{}
+
+	// Zero topics ⇒ configuration error, not an implicit match-all.
+	_, err := f.NewReceiver(context.Background(), ports.ReceiverSpec{
+		ID:        "rx-notopic",
+		SessionID: "s",
+	}, sess)
+	if err == nil {
+		t.Fatal("c4-notopic-matchall: a receiver with zero topics must be rejected, " +
+			"not made a match-all subscriber")
+	}
+	be, ok := shared.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected classified *shared.BridgeError, got %T: %v", err, err)
+	}
+	if be.Code != shared.ErrInvalidPayload.Code {
+		t.Fatalf("expected ErrInvalidPayload, got %s", be.Code)
+	}
+
+	// Guard: the rejection is specific to the zero-topic case — a receiver
+	// WITH at least one topic still builds successfully.
+	if _, err := f.NewReceiver(context.Background(), ports.ReceiverSpec{
+		ID:            "rx-ok",
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/x", QoS: 1}},
+	}, sess); err != nil {
+		t.Fatalf("a receiver with a topic must be accepted: %v", err)
+	}
+}
+
+// TestC4_ShortSuback_ReconcileFails pins c4-short-suback (acl_session.go),
+// end-to-end through Session.reconcile: a SUBACK carrying fewer reason codes
+// than requested subscriptions leaves the tail topics UNCONFIRMED by the
+// broker. Reconcile must surface that as a failure (ErrProtocolError) rather
+// than silently reporting success while a subscription was never established.
+//
+// Mutation: reverting the short-SUBACK branch to treat an out-of-range index
+// as accepted makes classifySubackReasons return firstErr == nil, so Reconcile
+// returns nil → this test fails.
+func TestC4_ShortSuback_ReconcileFails(t *testing.T) {
+	// Broker returns a single reason for a two-topic SUBSCRIBE: exactly one
+	// topic is confirmed, the other is left unconfirmed. Both requested at
+	// QoS 0 so the confirmed topic is NOT also a QoS downgrade (keeps the
+	// failure signal clean). toSub order is map-derived (non-deterministic),
+	// so we assert only the error CODE, which holds regardless of which
+	// topic lands at the missing index.
+	fake := &fakeReconcileConn{reasons: []byte{0x00}}
+	s := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "c4-short-suback",
+	}, connectivity.SessionEphemeral, nil)
+	s.mu.Lock()
+	s.cm = fake
+	s.mu.Unlock()
+
+	err := s.Reconcile(context.Background(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
+			{Topic: "a", QoS: 0},
+			{Topic: "b", QoS: 0},
+		},
+	})
+	if err == nil {
+		t.Fatal("c4-short-suback: a short SUBACK must fail Reconcile (unconfirmed subscription)")
+	}
+	be, ok := shared.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected classified *shared.BridgeError, got %T: %v", err, err)
+	}
+	if be.Code != shared.ErrProtocolError.Code {
+		t.Fatalf("expected ErrProtocolError for a short SUBACK, got %s", be.Code)
+	}
+}
+
+// TestC4_QoSDowngrade_EmittedOncePerTransition_NotReSubscribed pins
+// c4-qos-downgrade (session_reconcile.go / acl_session.go): when the broker
+// grants a LOWER QoS than requested, reconcile must (a) surface the downgrade
+// on MetricMQTTQoSDowngraded, and (b) store the REQUESTED QoS in activeSubs (its
+// delta baseline) so a STABLE downgraded subscription is NOT re-subscribed and
+// the downgrade signal fires ONCE per transition — not on every reconcile.
+//
+// Mutation A (the reviewer's MEDIUM, proven by storing the GRANTED QoS in
+// activeSubs instead of the requested QoS): the second reconcile sees
+// granted(0) != requested(1), re-subscribes (subCalls == 2) and re-fires the
+// metric (count == 2) → this test fails on both the subscribe-once and
+// metric-once assertions.
+// Mutation B (delete the downgrade-detection loop): the metric count is 0 on
+// the first reconcile → this test fails.
+func TestC4_QoSDowngrade_EmittedOncePerTransition_NotReSubscribed(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	// Request QoS 1 but the broker grants QoS 0 (reason 0x00) — a downgrade.
+	fake := &fakeReconcileConn{reasons: []byte{0x00}}
+	s := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "c4-downgrade",
+	}, connectivity.SessionEphemeral, nil, rec)
+	s.mu.Lock()
+	s.cm = fake
+	s.mu.Unlock()
+
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/x", QoS: 1}},
+	}
+
+	// First reconcile: subscribe, detect the downgrade, emit once.
+	if err := s.Reconcile(context.Background(), plan); err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	// Second reconcile with the SAME plan on the SAME connection (no activeSubs
+	// reset between): the delta must be empty — no re-subscribe, no re-emit.
+	if err := s.Reconcile(context.Background(), plan); err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+
+	if got := fake.subscribeCallCount(); got != 1 {
+		t.Fatalf("c4-qos-downgrade: a stable downgraded sub must be subscribed ONCE (delta keyed off "+
+			"requested QoS), got %d Subscribe calls", got)
+	}
+	if got := len(rec.FindEntries(MetricMQTTQoSDowngraded)); got != 1 {
+		t.Fatalf("c4-qos-downgrade: the downgrade must fire ONCE per transition, got %d %s metrics",
+			got, MetricMQTTQoSDowngraded)
+	}
+	// activeSubs stores the REQUESTED QoS (intent), keeping the delta stable.
+	s.mu.Lock()
+	req, ok := s.activeSubs["sensors/x"]
+	s.mu.Unlock()
+	if !ok {
+		t.Fatal("subscription must still be recorded active after a downgrade")
+	}
+	if req != 1 {
+		t.Fatalf("activeSubs must store the REQUESTED QoS 1 (delta baseline), got %d", req)
+	}
+}
+
+// TestC4_EmptyPlanUnsubscribesManagedSubs pins c4-remove-subs
+// (session_reconcile.go): an empty target plan handed to Reconcile while
+// managed subscriptions are still active must issue the UNSUBSCRIBE for the
+// previously-held topics — otherwise the broker keeps delivering on stale
+// subscriptions the router then ack-drops as orphans forever.
+//
+// Mutation: making an empty plan an UNCONDITIONAL no-op (`if
+// len(plan.Subscriptions) == 0 { return nil }`, the original c4-remove-subs
+// bug) short-circuits before reconcile(), so Unsubscribe is never called even
+// though managed subscriptions are active → this test fails.
+func TestC4_EmptyPlanUnsubscribesManagedSubs(t *testing.T) {
+	fake := &fakeReconcileConn{}
+	s, _ := c7Session(t, fake, "kept", 1) // activeSubs = {kept:1}, plan = {kept}
+
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
+		t.Fatalf("empty-plan Reconcile: %v", err)
+	}
+	if got := fake.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("c4-remove-subs: empty plan with active subs must Unsubscribe once, got %d", got)
+	}
+	if got := fake.subscribeCallCount(); got != 0 {
+		t.Fatalf("empty plan must not Subscribe, got %d", got)
+	}
+	s.mu.Lock()
+	n := len(s.activeSubs)
+	s.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("activeSubs must be cleared after removing all subscriptions, got %d", n)
+	}
+}
+
+// TestC4_ReconnectWindow_EmptyPlanUnsubscribesResumedSub pins the reconnect-
+// window half of c4-remove-subs (session_reconcile.go): handleConnectionUp
+// resets activeSubs to empty on every reconnect, but a clean_start=false broker
+// still holds the resumed subscriptions. An empty plan reconciled in that
+// post-reset/pre-resubscribe window MUST still UNSUBSCRIBE the prior desired
+// topic — gating teardown on the volatile (now-empty) activeSubs would no-op
+// and orphan the broker sub until the router's grace-sweep backstop fires on a
+// later publish.
+//
+// Mutation (kills BOTH halves of the fix):
+//   - revert the guard to `... && !hasActiveSubs`: in the reset window
+//     hasActiveSubs is false, so Reconcile short-circuits to a no-op → no
+//     UNSUBSCRIBE; OR
+//   - compute toUnsub from `current` alone (drop the priorTopics union in
+//     reconcile): the guard passes but activeSubs is empty so nothing is torn
+//     down → no UNSUBSCRIBE.
+//
+// Either mutation leaves unsubCalls==0 → this test fails.
+func TestC4_ReconnectWindow_EmptyPlanUnsubscribesResumedSub(t *testing.T) {
+	fake := &fakeReconcileConn{}
+	s, _ := c7Session(t, fake, "resumed/topic", 1) // plan={resumed/topic}, activeSubs={resumed/topic:1}
+
+	// Simulate the post-reconnect window: handleConnectionUp reset activeSubs
+	// to empty while the broker still holds the resumed subscription. s.plan
+	// (the desired-state history) is deliberately NOT reset by reconnect.
+	s.mu.Lock()
+	s.activeSubs = map[string]byte{}
+	s.mu.Unlock()
+
+	// A config reload removed the last receiver → empty plan reconciled in the
+	// reset/pre-resubscribe window.
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
+		t.Fatalf("reconnect-window empty-plan Reconcile: %v", err)
+	}
+	if got := fake.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("c4-remove-subs: reconnect-window empty plan must UNSUBSCRIBE the resumed sub once, got %d", got)
+	}
+	unsub := fake.unsubscribedTopics()
+	if len(unsub) != 1 || len(unsub[0]) != 1 || unsub[0][0] != "resumed/topic" {
+		t.Fatalf("c4-remove-subs: must UNSUBSCRIBE the prior desired topic 'resumed/topic', got %v", unsub)
+	}
+	if got := fake.subscribeCallCount(); got != 0 {
+		t.Fatalf("empty plan must not Subscribe, got %d", got)
+	}
+}
+
+// TestC4_QoS12ByteCap_NeverDropsQoS12 pins the reworked c4-qos12-overflow
+// (acl_router.go bufferLocked): the pending buffer's BYTE ceiling governs QoS 0
+// only — a QoS 1/2 publish is NEVER dropped for it, because dropping a QoS 1/2
+// is unsafe (ack+drop loses it; un-ack+drop head-of-line-blocks paho's
+// contiguous-prefix ack stream and wedges ingress). QoS 1/2 pending memory is
+// bounded instead by the entry-count cap (== receive_maximum). This test drives
+// a QoS 1 backlog past the byte ceiling and asserts every message is buffered
+// (none dropped), then flushed and acked in arrival order once a handler
+// registers (the ack stream drains — ingress is not wedged).
+//
+// Mutation: reintroduce a byte-cap `return false` for QoS 1/2 in bufferLocked
+// (either the un-ack+drop or ack+drop variant) → PendingCount falls below n and
+// the delivered set loses the tail → this test fails.
+func TestC4_QoS12ByteCap_NeverDropsQoS12(t *testing.T) {
+	clk := testClock()
+	rec := &ports.RecordingExporter{}
+	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
+	defer r.shutdown()
+
+	// Byte ceiling far below the backlog; the count cap keeps its default so
+	// only the byte ceiling is exercised. Within grace, no handler → buffer path.
+	r.mu.Lock()
+	r.pendingBytesLimit = 16
+	r.mu.Unlock()
+
+	const n = 4
+	payloads := make([]string, n)
+	acked := make([]atomic.Int32, n)
+	for i := 0; i < n; i++ {
+		payloads[i] = fmt.Sprintf("p-%02d", i) // 4B payload + 3B topic = 7B each; n×7 ≫ 16B
+		idx := i
+		r.dispatch(&pahov5.Publish{Topic: "t/1", QoS: 1, Payload: []byte(payloads[idx])},
+			func() error { acked[idx].Add(1); return nil })
+	}
+
+	// No QoS 1/2 dropped for the byte ceiling: all buffered, none acked yet.
+	if got := r.PendingCount(); got != n {
+		t.Fatalf("c4-qos12-overflow: expected all %d QoS 1 buffered (byte cap must not drop QoS 1/2), got %d", n, got)
+	}
+	if got := r.OverflowDroppedCount(); got != 0 {
+		t.Fatalf("byte ceiling must not trigger a QoS 1/2 overflow drop, OverflowDroppedCount=%d", got)
+	}
+	for i := 0; i < n; i++ {
+		if acked[i].Load() != 0 {
+			t.Fatalf("buffered QoS 1 #%d must stay un-acked until delivered", i)
+		}
+	}
+
+	// Register the handler: the backlog flushes in arrival order and each acks.
+	var mu sync.Mutex
+	var delivered []string
+	r.RegisterFiltered("rx", []string{"t/1"}, func(pub *pahov5.Publish, ack func() error) {
+		mu.Lock()
+		delivered = append(delivered, string(pub.Payload))
+		mu.Unlock()
+		if ack != nil {
+			_ = ack()
+		}
+	})
+	r.Wait() // RegisterFiltered enrolled the flush in r.wg before returning
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	mu.Unlock()
+	if !slices.Equal(got, payloads) {
+		t.Fatalf("delivered order = %v, want %v (every QoS 1 delivered once, in arrival order)", got, payloads)
+	}
+	for i := 0; i < n; i++ {
+		if acked[i].Load() != 1 {
+			t.Fatalf("QoS 1 #%d ack count = %d, want 1 (ack stream drains — ingress not wedged)", i, acked[i].Load())
+		}
+	}
+}

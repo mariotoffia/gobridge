@@ -97,6 +97,17 @@ type amqp10Credentials struct {
 var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an AMQP 1.0 Session from the given options.
+//
+// SECURITY NOTE: NewSession applies defaults but does NOT run
+// SessionOptions.validate — in particular it does NOT enforce the
+// plaintext-PLAIN credential gate (see validatePlainOverPlaintext). That
+// gate is enforced at the configuration/factory boundary: build sessions
+// through Factory.NewSession or SessionOptionsFromMap, both of which call
+// validate. A direct programmatic embedder using NewSession with an
+// Address that puts SASL PLAIN over a non-TLS scheme (o.Username set, or
+// URL userinfo such as amqp://user:pass@host) is responsible for calling
+// opts.validate(usingTLS) itself, or must accept that credentials may be
+// sent in cleartext.
 func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {

@@ -174,18 +174,26 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 }
 
 // validateConnectLeaseBudget warns when a deferred-connect (connect_after_lease)
-// lease-bound session's broker-connect budget can consume so much of the lease
-// TTL that the FIRST renewal completes at or after expiry (finding F2). For such
-// a session the lease is acquired FIRST, then the broker connect+reconcile runs
-// (bounded by the transport's connect_timeout), and only then does the renew
-// loop start — so the first renewal completes no earlier than
+// lease-bound session's broker connect+reconcile budget can consume so much of
+// the lease TTL that the FIRST renewal completes at or after expiry (finding F2).
+// For such a session the lease is acquired FIRST, then the broker connect AND the
+// subscription reconcile run (each bounded by the transport's connect budget),
+// and only then does the renew loop start — so the first renewal completes no
+// earlier than
 //
-//	connect_timeout + renewInterval + jitter/2 + renewCallTimeout
+//	connect_timeout + reconcile + renewInterval + jitter/2 + renewCallTimeout
 //
-// after acquisition. If that meets or exceeds lease_ttl the lease has already
-// lapsed before the first renewal lands: the owner definitively loses the lease
-// it just won, steps down, and (for a single-use MQTT session) restarts,
-// producing a cluster-wide restart loop under broker slowness.
+// after acquisition. The reconcile term is included because the runtime does not
+// begin renewing until subscriptions are re-established (ports.SessionReconciled);
+// omitting it understates real failover time (finding H4 — the budget math must
+// count connect AND reconcile, not connect alone). There is no dedicated
+// reconcile-timeout knob, so the subscribe round-trip is modelled conservatively
+// as one additional connect_timeout worth of broker interaction — an advisory
+// over-estimate is the SAFE direction here (understating failover is the bug).
+// If that first renewal meets or exceeds lease_ttl the lease has already lapsed
+// before it lands: the owner definitively loses the lease it just won, steps
+// down, and (for a single-use MQTT session) restarts, producing a cluster-wide
+// restart loop under broker slowness.
 //
 // This is an advisory WARNING, not a hard reject, because:
 //   - connect_timeout is a transport-specific raw option (mqtt/amqp) read
@@ -195,8 +203,8 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 //     transport specifics into a transport-neutral validator, so a large
 //     default connect_timeout paired with a small lease_ttl is NOT caught here
 //     — that residual gap is noted for the docs pass.
-//   - the reconcile/subscribe budget after connect is unmodellable, so a valid
-//     but slow broker could be over-rejected by a hard error.
+//   - the reconcile/subscribe budget after connect has no dedicated knob, so it
+//     is conservatively approximated (see above) rather than measured.
 //
 // Eager-connect sessions (connect_after_lease=false) connect BEFORE acquiring
 // the lease, so their connect budget does not erode the post-acquire TTL and is
@@ -250,14 +258,21 @@ func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 		if err != nil {
 			continue
 		}
-		firstRenew := connect + renew + jitter/2 + callTimeout
+		// reconcile: the renew loop does not start until subscriptions are
+		// re-established after connect (ports.SessionReconciled). No dedicated
+		// reconcile-timeout knob exists, so model the subscribe round-trip
+		// conservatively as one more connect_timeout worth of broker
+		// interaction. Including it stops the failover budget from understating
+		// real failover time (finding H4).
+		reconcile := connect
+		firstRenew := connect + reconcile + renew + jitter/2 + callTimeout
 		if firstRenew >= lease {
-			ve.Warnf("routes[%s].session: connect + first-renew span %s "+
-				"(connect_timeout=%s + renew_interval=%s + lease_renew_jitter/2=%s + renew_call_timeout=%s) "+
-				"is >= lease_ttl (%s) for a connect_after_lease session; the broker connect runs AFTER the lease "+
-				"is won, so the first renewal can land at/after expiry, definitively losing the just-won lease and "+
+			ve.Warnf("routes[%s].session: connect + reconcile + first-renew span %s "+
+				"(connect_timeout=%s + reconcile≈connect_timeout=%s + renew_interval=%s + lease_renew_jitter/2=%s + renew_call_timeout=%s) "+
+				"is >= lease_ttl (%s) for a connect_after_lease session; the broker connect AND subscription reconcile run AFTER "+
+				"the lease is won, so the first renewal can land at/after expiry, definitively losing the just-won lease and "+
 				"(for single-use MQTT) restarting the owner — raise lease_ttl or lower connect_timeout/renew_interval",
-				r.ID, firstRenew, connect, renew, jitter/2, callTimeout, lease)
+				r.ID, firstRenew, connect, reconcile, renew, jitter/2, callTimeout, lease)
 		}
 	}
 }

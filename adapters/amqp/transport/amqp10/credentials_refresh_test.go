@@ -11,10 +11,13 @@ import (
 
 // TestApplyCredentials_BeforeStart_UpdatesLiveCreds verifies that
 // rotating credentials on a not-yet-connected session stores them so
-// the first dial picks them up via connect().
+// the first dial picks them up via connect(). Uses an amqps:// (TLS)
+// scheme so the c7-plain-plaintext runtime gate permits the PLAIN
+// credential rotation (a plaintext username rotation is fail-closed —
+// see TestApplyCredentials_PlainOverPlaintext_Refused).
 func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 	s := NewSession(SessionOptions{
-		Address:  "amqp://broker.example:5672/",
+		Address:  "amqps://broker.example:5671/",
 		Username: "u-old",
 		Password: shared.NewSecret("p-old"),
 	}, connectivity.SessionEphemeral, nil)

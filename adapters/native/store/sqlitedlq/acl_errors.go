@@ -62,6 +62,61 @@ func isIOErr(err error) bool {
 	return false
 }
 
+// isFatalStorageErr reports whether err is a storage fault an operator — not a
+// retry loop — must resolve: the database is full, corrupt, read-only, or not
+// a database at all. mapError classifies these PERMANENT rather than the
+// transient ErrConnectionLost/ErrUnavailable fall-through. The DLQ is the
+// LAST-RESORT failure sink, so a fault HERE must not blend into transient
+// noise: the PERMANENT class in logs plus the MetricStoreUnhealthy counter
+// (see Store.observe) tell an operator "retrying will not clear this; free
+// disk / restore the file". Both the primary and any extended result code
+// share the lower 8 bits, so the mask catches e.g. SQLITE_READONLY_RECOVERY as
+// READONLY. A human-message fallback covers errors flattened across a boundary
+// that lost the typed *sqlite.Error. Mirrors sqliteoutbox.isFatalStorageErr.
+func isFatalStorageErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var serr *sqlite3.Error
+	if errors.As(err, &serr) {
+		switch serr.Code() & 0xFF {
+		case sqlite3lib.SQLITE_FULL,
+			sqlite3lib.SQLITE_CORRUPT,
+			sqlite3lib.SQLITE_READONLY,
+			sqlite3lib.SQLITE_NOTADB:
+			return true
+		}
+	}
+	msg := err.Error()
+	for _, tok := range []string{
+		"disk is full",
+		"database or disk is full",
+		"database disk image is malformed",
+		"file is not a database",
+		"attempt to write a readonly database",
+		"readonly database",
+	} {
+		if strings.Contains(msg, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// errStoreFatal classifies disk-full / corruption / read-only / not-a-database
+// faults as PERMANENT rather than the transient ErrUnavailable fall-through.
+// This is an OBSERVABILITY signal, not a control-flow change: the DLQ record
+// still fails on its own merits either way (nothing branches on the store-error
+// class), but ErrCodeInternal + ErrorPermanent surfaces "operator must
+// intervene" in logs, and Store.observe pairs the fatal classification with the
+// MetricStoreUnhealthy counter so a failing last-resort sink is visible on the
+// dashboard instead of looking like transient throttle noise. Mirrors
+// sqliteoutbox.errStoreFatal.
+var errStoreFatal = shared.NewBridgeError(
+	shared.ErrCodeInternal, shared.ErrorPermanent,
+	"sqlitedlq: fatal storage fault (disk full, corruption, read-only, or not a database)",
+)
+
 // mapError classifies a SQLite error per the error-wrapping policy
 // SQLite mapping table.
 //
@@ -94,6 +149,13 @@ func mapError(err error) error {
 	}
 	if isBusy(err) {
 		return shared.ErrThrottled.Wrap(err)
+	}
+	// Fatal storage faults are PERMANENT: they must be classified before the
+	// io.EOF/IOERR (transient ErrConnectionLost) and the ErrUnavailable
+	// fall-through, both of which would make a failing last-resort DLQ sink
+	// look like transient noise a retry could clear.
+	if isFatalStorageErr(err) {
+		return errStoreFatal.Wrap(err)
 	}
 	if errors.Is(err, io.EOF) || isIOErr(err) {
 		return shared.ErrConnectionLost.Wrap(err)

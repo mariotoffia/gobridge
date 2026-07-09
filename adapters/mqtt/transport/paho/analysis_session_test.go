@@ -195,18 +195,21 @@ func TestAnaSession_ReconcileBeforeStart_StashesPlanForOnConnectionUp(t *testing
 	}
 }
 
-// TestAnaSession_ReconcileEmptyPlanWithPriorPlan_IsNoOp documents the
-// intentional no-op behaviour: an empty plan handed to Reconcile when
-// a prior plan exists does NOT clear active subscriptions. This is by
-// design (per session.go comment) so that a SessionManager with no
-// subscriptions cannot accidentally tear down externally-managed topics.
-func TestAnaSession_ReconcileEmptyPlanWithPriorPlan_IsNoOp(t *testing.T) {
+// TestAnaSession_ReconcileEmptyPlanWithPriorPlan_UnsubscribesManagedSubs
+// pins the intentional "remove all subscriptions" behaviour (c4-remove-subs):
+// an empty plan handed to Reconcile while managed subscriptions are still
+// active MUST unsubscribe them and clear activeSubs. The prior behaviour left
+// the subscriptions alive, so the broker kept delivering on stale
+// subscriptions the router then ack-drops as orphans forever.
+func TestAnaSession_ReconcileEmptyPlanWithPriorPlan_UnsubscribesManagedSubs(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recon-empty",
 	}, connectivity.SessionEphemeral, nil)
+
+	fake := &recordingUnsubConn{}
 	s.mu.Lock()
-	s.cm = &pahoConn{cm: fakeCM}
+	s.cm = fake
 	s.plan = &connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "kept", QoS: 1}},
 	}
@@ -214,16 +217,17 @@ func TestAnaSession_ReconcileEmptyPlanWithPriorPlan_IsNoOp(t *testing.T) {
 	s.mu.Unlock()
 
 	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
-		t.Fatalf("empty Reconcile with prior plan must be a silent no-op, got %v", err)
+		t.Fatalf("empty Reconcile with prior plan must succeed, got %v", err)
+	}
+
+	if got := fake.unsubscribed(); len(got) != 1 || got[0] != "kept" {
+		t.Fatalf("empty plan must UNSUBSCRIBE the managed topic 'kept', got %v", got)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.activeSubs) != 1 {
-		t.Fatalf("activeSubs len = %d, want 1 (empty plan must NOT unsubscribe by design)", len(s.activeSubs))
-	}
-	if s.plan == nil || len(s.plan.Subscriptions) != 1 {
-		t.Fatalf("prior plan must be preserved")
+	if len(s.activeSubs) != 0 {
+		t.Fatalf("activeSubs len = %d, want 0 (empty plan removes all managed subs)", len(s.activeSubs))
 	}
 }
 

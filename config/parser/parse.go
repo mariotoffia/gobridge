@@ -101,8 +101,37 @@ func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeC
 		// io.EOF means an empty document; preserve the prior yaml.Unmarshal
 		// behavior of leaving s1 zero-valued (validation reports the missing
 		// required fields) rather than surfacing a parse error.
-		if err := dec.Decode(&s1); err != nil && !errors.Is(err, io.EOF) {
+		err := dec.Decode(&s1)
+		switch {
+		case errors.Is(err, io.EOF):
+			// empty document: leave s1 zero-valued.
+		case err != nil:
 			return nil, fmt.Errorf("config: yaml parse: %w", err)
+		default:
+			// Reject ADDITIONAL documents/content after the first. yaml.Decoder
+			// decodes a SINGLE document, so a duplicated or multi-doc file (e.g.
+			// two `bridge:` docs separated by `---`) would otherwise be silently
+			// accepted — deploying only document 1 while the file visibly holds
+			// more. (A torn/partial write of the FIRST document is already caught
+			// by the Decode(&s1) above.) yaml.v3 decodes a trailing `---` marker
+			// as an empty (null) document, which is benign, so scan subsequent
+			// documents and reject only genuine trailing CONTENT — mirroring the
+			// JSON dec.More() strictness above without tripping on a harmless
+			// trailing separator.
+			for {
+				var trailing any
+				terr := dec.Decode(&trailing)
+				if errors.Is(terr, io.EOF) {
+					break // no further documents.
+				}
+				if terr != nil {
+					return nil, fmt.Errorf("config: yaml parse: unexpected trailing content after the top-level document: %w", terr)
+				}
+				if trailing != nil {
+					return nil, fmt.Errorf("config: yaml parse: unexpected trailing document after the top-level document")
+				}
+				// trailing == nil: an empty `---` document; keep scanning.
+			}
 		}
 	default:
 		return nil, fmt.Errorf("config: unsupported format %q", format)

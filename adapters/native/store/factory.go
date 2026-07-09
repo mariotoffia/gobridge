@@ -25,9 +25,18 @@ func NewMemoryStoreFactory() *MemoryStoreFactory {
 	return &MemoryStoreFactory{}
 }
 
-// NewLeaseStore creates an in-memory lease store.
-func (f *MemoryStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
-	return memorylease.NewStore(), nil
+// NewLeaseStore creates an in-memory lease store. The in-memory lease keeps
+// ownership in a per-process map and cannot coordinate across replicas, so it
+// is built ONLY when the operator has acknowledged single-replica operation via
+// the "acknowledge_single_replica" config key. Absent, construction fails fast
+// here rather than letting a clustered deployment silently split the brain — a
+// missing/empty config never wires a lease store at all, so this gate does not
+// affect the healthy empty-start path. See finding c10-memlease-split.
+func (f *MemoryStoreFactory) NewLeaseStore(_ context.Context, cfg ports.PluginConfig) (ports.LeaseStore, error) {
+	if !memoryConfigFrom(cfg).AcknowledgeSingleReplica {
+		return nil, fmt.Errorf("nativestore: in-memory lease store requires \"acknowledge_single_replica: true\" — it keeps ownership per-process and cannot coordinate across replicas, so more than one instance silently splits the brain (duplicate / double lease ownership); set the flag to confirm single-replica operation, or use \"dynamodb\" for clustered deployments")
+	}
+	return memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true)), nil
 }
 
 // NewOutboxStore creates an in-memory outbox store.
@@ -114,6 +123,23 @@ func requiredSQLiteConfig(cfg ports.PluginConfig) (SQLiteConfig, error) {
 		return SQLiteConfig{}, fmt.Errorf("nativestore: missing required option \"path\" in SQLite store config")
 	}
 	return sc, nil
+}
+
+// memoryConfigFrom extracts a MemoryConfig from the PluginConfig, returning the
+// zero value (AcknowledgeSingleReplica=false) when the config is nil, a typed
+// nil, or a different type. The zero value drives NewLeaseStore's fail-closed
+// gate, so an absent or mistyped config can never silently build an
+// unacknowledged single-replica lease store.
+func memoryConfigFrom(cfg ports.PluginConfig) MemoryConfig {
+	switch v := cfg.(type) {
+	case *MemoryConfig:
+		if v != nil {
+			return *v
+		}
+	case MemoryConfig:
+		return v
+	}
+	return MemoryConfig{}
 }
 
 func sqliteConfigFrom(cfg ports.PluginConfig) (SQLiteConfig, bool) {

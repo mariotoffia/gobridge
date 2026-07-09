@@ -146,6 +146,27 @@ func marshalPayload(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
+// redactValue returns a content-free descriptor of a payload value for use
+// in error messages: it reveals only the value's TYPE and, for
+// length-bearing kinds, its LENGTH — never the value's contents, which may
+// carry secrets or PII. Conversion errors flow into route logs, so echoing
+// the raw failed value (or a strconv error that embeds it) would leak the
+// payload. Callers add the field PATH and target type from the mapping.
+func redactValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return fmt.Sprintf("type=string len=%d", len(x))
+	case []byte:
+		return fmt.Sprintf("type=[]byte len=%d", len(x))
+	case []any:
+		return fmt.Sprintf("type=array len=%d", len(x))
+	case map[string]any:
+		return fmt.Sprintf("type=object len=%d", len(x))
+	default:
+		return fmt.Sprintf("type=%T", v)
+	}
+}
+
 // toInt converts a value to int64.
 func toInt(v any) (int64, error) {
 	switch val := v.(type) {
@@ -162,7 +183,9 @@ func toInt(v any) (int64, error) {
 	case string:
 		i, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("parse int %q: %w", val, err)
+			// Redact: neither the raw value nor strconv's error (which
+			// embeds the raw value) may reach the log.
+			return 0, fmt.Errorf("cannot parse %s as int", redactValue(val))
 		}
 		return i, nil
 	case bool:
@@ -171,7 +194,7 @@ func toInt(v any) (int64, error) {
 		}
 		return 0, nil
 	default:
-		return 0, fmt.Errorf("cannot convert %T to int", v)
+		return 0, fmt.Errorf("cannot convert %s to int", redactValue(v))
 	}
 }
 
@@ -179,13 +202,15 @@ func toInt(v any) (int64, error) {
 // ±Inf, and magnitudes outside the int64 range: a bare int64(val) on those is
 // implementation-defined (typically a silent MinInt64), turning e.g. 1e300 into
 // garbage instead of an error. float64(math.MaxInt64) rounds up to 2^63, so the
-// upper bound uses >= to exclude that unrepresentable boundary value.
+// upper bound uses >= to exclude that unrepresentable boundary value. Error
+// messages state the TYPE only — the numeric magnitude is payload content and
+// is never echoed.
 func floatToInt64(val float64) (int64, error) {
 	if math.IsNaN(val) || math.IsInf(val, 0) {
-		return 0, fmt.Errorf("cannot convert non-finite float %v to int64", val)
+		return 0, fmt.Errorf("cannot convert non-finite float64 to int64")
 	}
 	if val >= float64(math.MaxInt64) || val < float64(math.MinInt64) {
-		return 0, fmt.Errorf("float %v out of int64 range", val)
+		return 0, fmt.Errorf("float64 value out of int64 range")
 	}
 	return int64(val), nil
 }
@@ -206,11 +231,12 @@ func toFloat(v any) (float64, error) {
 	case string:
 		f, err := strconv.ParseFloat(val, 64)
 		if err != nil {
-			return 0, fmt.Errorf("parse float %q: %w", val, err)
+			// Redact: strconv's error embeds the raw value.
+			return 0, fmt.Errorf("cannot parse %s as float", redactValue(val))
 		}
 		return f, nil
 	default:
-		return 0, fmt.Errorf("cannot convert %T to float", v)
+		return 0, fmt.Errorf("cannot convert %s to float", redactValue(v))
 	}
 }
 
@@ -232,10 +258,11 @@ func toBool(v any) (bool, error) {
 	case string:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
-			return false, fmt.Errorf("parse bool %q: %w", val, err)
+			// Redact: strconv's error embeds the raw value.
+			return false, fmt.Errorf("cannot parse %s as bool", redactValue(val))
 		}
 		return b, nil
 	default:
-		return false, fmt.Errorf("cannot convert %T to bool", v)
+		return false, fmt.Errorf("cannot convert %s to bool", redactValue(v))
 	}
 }

@@ -198,12 +198,18 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 		t.Fatalf("Ack failed: %v", err)
 	}
 
+	// Ack issues a single pre-delete visibility-margin extension for this
+	// small (vis=2) window (Finding: c8-autoextend-margin); capture the
+	// count right after Ack, then assert the background auto-extend loop
+	// makes NO further extensions.
+	afterAck := extendCount.Load()
+
 	// NEGATIVE: verify no further ChangeMessageVisibility after Ack
 	<-time.After(200 * time.Millisecond)
 
 	count := extendCount.Load()
-	if count > 0 {
-		t.Fatalf("auto-extend should not fire after Ack, got %d calls", count)
+	if count > afterAck {
+		t.Fatalf("auto-extend should not fire after Ack, got %d additional calls", count-afterAck)
 	}
 }
 
@@ -359,6 +365,11 @@ func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 		t.Fatalf("Ack failed: %v", err)
 	}
 
+	// Ack issues one pre-delete visibility-margin extension for this small
+	// (vis=2) window (Finding: c8-autoextend-margin); capture the count now
+	// and assert the background loop makes NO further extensions below.
+	afterAck := extendCount.Load()
+
 	mock.mu.Lock()
 	deleteCount := len(mock.DeleteCalls)
 	mock.mu.Unlock()
@@ -368,7 +379,7 @@ func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 
 	// NEGATIVE: verify no further ChangeMessageVisibility after Ack
 	<-time.After(200 * time.Millisecond)
-	if extendCount.Load() > 0 {
+	if extendCount.Load() > afterAck {
 		t.Fatal("auto-extend should not fire after Ack")
 	}
 }

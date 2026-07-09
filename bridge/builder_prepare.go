@@ -107,6 +107,15 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		return nil, errors.Join(b.regErrs...)
 	}
 
+	// Build against a copy whose credentialed configs are cloned so the
+	// in-place ApplyCredentials mutation during complete() cannot pollute the
+	// caller's canonical config — which the Supervisor retains as its
+	// rollback/restart snapshot (builder_resolve.go:42, Chunk 3). Reassigning
+	// b.cfg here means both prepare() and the later complete() (Build or
+	// Plan/Commit) operate on the private copy while the original stays
+	// pristine and re-resolvable on recovery.
+	b.cfg = cloneConfigForBuild(b.cfg)
+
 	if err := runtime.CheckRandSource(); err != nil {
 		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
 	}
@@ -153,6 +162,10 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 
 	endpoints, err := b.resolveClusterEndpoints(ctx)
 	if err != nil {
+		// buildStores already opened handles; a failure here (e.g. clustered
+		// endpoint resolution) must release them rather than leak on every
+		// failed reload (builder_prepare.go:229, Chunk 3).
+		b.closeStoreHandles(stores)
 		return nil, err
 	}
 	if len(endpoints) > 0 {
@@ -223,8 +236,20 @@ func hasExclusiveSessions(cfg *ports.BridgeConfig) bool {
 	return false
 }
 
-func (b *Builder) buildStores(ctx context.Context) (*storeResult, error) {
+func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error) {
 	res := &storeResult{}
+
+	// Any failure AFTER a store was opened (a later store's factory error, the
+	// nil-store guard, or the clustered-distribution rejection below) must not
+	// leak the handles already created — a watcher-driven reload that keeps
+	// failing would otherwise leak a SQLite handle / network client every cycle
+	// (builder_prepare.go:229, Chunk 3). closeStoreHandles is best-effort and
+	// skips in-memory stores (no io.Closer), mirroring runtime.Stop teardown.
+	defer func() {
+		if retErr != nil {
+			b.closeStoreHandles(res)
+		}
+	}()
 
 	if sc := b.cfg.Stores.Lease; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]

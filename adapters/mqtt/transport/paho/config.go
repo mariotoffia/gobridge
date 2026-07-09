@@ -68,9 +68,23 @@ type SessionOptions struct {
 	// MEMORY EQUATION: paho buffers up to ReceiveMaximum full publishes
 	// under manual acknowledgement, and this adapter's startup pending
 	// buffer is sized to the same value, so worst-case buffered memory is
-	// roughly `receive_maximum × max_payload_size` (bounded independently
-	// by a 64 MiB payload-byte ceiling on the pending buffer). Example:
-	// 65535 × 256 KiB ≈ 16 GiB — the reason the default was lowered.
+	// roughly `receive_maximum × max_payload_size`. Example: 65535 × 256 KiB
+	// ≈ 16 GiB — the reason the default was lowered. ReceiveMaximum is the
+	// operator's lever for QoS 1/2 pending memory: the startup buffer's 64 MiB
+	// payload-byte ceiling bounds QoS 0 ONLY (a QoS 0 flood), because dropping
+	// a QoS 1/2 publish is incompatible with at-least-once (ack+drop loses it;
+	// un-ack+drop head-of-line-blocks paho's contiguous-prefix ack stream), so
+	// QoS 1/2 is never dropped for the byte ceiling — its memory is bounded
+	// instead by this count.
+	//
+	// The `max_payload_size` term is NOT merely documented: when MaxPayloadBytes
+	// is set the adapter advertises an MQTT v5 Maximum Packet Size in the CONNECT
+	// (see acl_session.go), so the broker is FORBIDDEN from delivering a packet
+	// larger than max_payload_bytes (+ a bounded header allowance). The
+	// worst-case bound `receive_maximum × max_payload_bytes` is therefore
+	// broker-ENFORCED, not merely a hope about the broker's own max-message
+	// policy. Leaving MaxPayloadBytes unset (0) advertises no packet-size limit,
+	// so the bound is only as tight as the broker's policy (prior behaviour).
 	//
 	// ponytail: the effective default was lowered from the MQTT protocol
 	// maximum (65535) to 1024 (M-5). Operators who need the old ceiling set
@@ -83,6 +97,21 @@ type SessionOptions struct {
 	// redelivery blast radius after a crash (and a smaller startup pending
 	// buffer, which is sized to this value).
 	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
+	// MaxPayloadBytes is the maximum application PAYLOAD size (message body, in
+	// bytes) this session will admit from the broker. When non-zero the adapter
+	// advertises an MQTT v5 Maximum Packet Size in the CONNECT derived from this
+	// value plus a bounded protocol-overhead allowance (see acl_session.go's
+	// maxPacketSizeFor), so the broker MUST NOT deliver a packet whose payload
+	// exceeds this limit. Together with ReceiveMaximum this makes the worst-case
+	// pending-buffer memory bound `receive_maximum × max_payload_bytes`
+	// broker-ENFORCED rather than dependent on the broker's own max-message
+	// policy.
+	//
+	// Zero (the default) means "unset": no Maximum Packet Size is advertised and
+	// the broker's own max-message policy is the only ceiling (prior behaviour).
+	// This governs the ADVERTISED inbound packet ceiling only; it is not an
+	// outbound publish validator.
+	MaxPayloadBytes uint32 `mapstructure:"max_payload_bytes" yaml:"max_payload_bytes" json:"max_payload_bytes"`
 	// ReconnectDelay is the BASE delay for the jittered exponential
 	// reconnect backoff (M-4): the delay before the first reconnect
 	// attempt after a failure, grown by reconnectBackoffFactor per

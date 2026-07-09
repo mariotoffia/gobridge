@@ -26,11 +26,12 @@ import (
 type fakeDDB struct {
 	mu sync.Mutex
 
-	getItemFn    func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error)
-	updateItemFn func(*dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error)
-	queryFn      func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
-	putItemFn    func(*dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error)
-	transactFn   func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error)
+	getItemFn       func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error)
+	updateItemFn    func(*dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error)
+	queryFn         func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
+	putItemFn       func(*dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error)
+	transactFn      func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error)
+	describeTableFn func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error)
 
 	getItemCalls  int
 	transactCalls int
@@ -101,7 +102,13 @@ func (f *fakeDDB) CreateTable(_ context.Context, _ *dynamodb.CreateTableInput, _
 	return &dynamodb.CreateTableOutput{}, nil
 }
 
-func (f *fakeDDB) DescribeTable(_ context.Context, _ *dynamodb.DescribeTableInput, _ ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error) {
+func (f *fakeDDB) DescribeTable(_ context.Context, in *dynamodb.DescribeTableInput, _ ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error) {
+	f.mu.Lock()
+	fn := f.describeTableFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(in)
+	}
 	return &dynamodb.DescribeTableOutput{}, nil
 }
 
@@ -293,6 +300,21 @@ func fenceGetItem(v string) func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutpu
 	}
 }
 
+// dupRowGetItem models the row already occupying a queried SK as the SAME
+// logical record — envelope_id/binding_id recovered from the SK itself — i.e. a
+// genuine idempotent duplicate, the case Persist's verify-on-conflict collapses.
+// conflictIsSameRecord issues this strongly-consistent readback when
+// attribute_not_exists(SK) fails.
+func dupRowGetItem() func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+	return func(in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+		env, bind, _ := parseSortKey(strAttr(in.Key, "SK"))
+		return &dynamodb.GetItemOutput{Item: map[string]ddbtypes.AttributeValue{
+			"envelope_id": &ddbtypes.AttributeValueMemberS{Value: env},
+			"binding_id":  &ddbtypes.AttributeValueMemberS{Value: bind},
+		}}, nil
+	}
+}
+
 // transactCanceled fabricates the SDK error for a canceled claim
 // transaction with the given per-item cancellation codes.
 func transactCanceled(codes ...string) error {
@@ -460,6 +482,92 @@ func TestClaim_TransactionConflict_CountsMetricAndSkips(t *testing.T) {
 	})
 }
 
+// TestClaim_ThrottleCancellation_SurfacesRetryable is the c13-txn-throttle
+// regression. A claim TransactWriteItems canceled for a reason OTHER than the
+// fence ConditionalCheckFailed — a throttle (ProvisionedThroughputExceeded /
+// ThrottlingError) or a permanent fault (ValidationError) — must NOT be
+// swallowed as a benign (nil, nil) skip. Swallowing it once dropped the record
+// with no backoff signal to the drainer, so a throttled partition self-
+// throttled harder and validation faults hid forever. The claim must surface a
+// classified error: a retryable shared.ErrThrottled so the drainer BACKS OFF,
+// and a permanent shared.ErrInvalidPayload that is never retried into oblivion.
+//
+// Mutation this kills: collapsing every non-fence cancellation reason back to
+// (nil, nil) → err becomes nil → this test FAILs.
+func TestClaim_ThrottleCancellation_SurfacesRetryable(t *testing.T) {
+	tests := []struct {
+		name          string
+		codes         []string
+		wantSentinel  error
+		wantTransient bool
+	}{
+		{"throughput on the record update", []string{ccReasonNone, "ProvisionedThroughputExceeded"}, shared.ErrThrottled, true},
+		{"throttling on the fence check", []string{"ThrottlingError", ccReasonNone}, shared.ErrThrottled, true},
+		{"validation is permanent", []string{ccReasonNone, "ValidationError"}, shared.ErrInvalidPayload, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDDB()
+			f.getItemFn = fenceGetItem("0")
+			f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+				return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+					pendingQueryItem("PART#throttle", "OUTBOX#env-1#bind-1", "rec-1"),
+				}}, nil
+			}
+			f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+				return nil, transactCanceled(tc.codes...)
+			}
+			s := newFakeStore(f)
+
+			claimed, err := s.Claim(context.Background(), "PART#throttle",
+				persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
+			if err == nil {
+				t.Fatalf("a %v cancellation must surface an error, not a silent skip (got claimed=%v)", tc.codes, claimed)
+			}
+			if claimed != nil {
+				t.Fatalf("no records may be returned alongside the error, got %v", claimed)
+			}
+			if !errors.Is(err, tc.wantSentinel) {
+				t.Fatalf("cancellation %v must classify as %v, got %v", tc.codes, tc.wantSentinel, err)
+			}
+			be, ok := shared.AsBridgeError(err)
+			if !ok {
+				t.Fatalf("expected a *shared.BridgeError, got %T", err)
+			}
+			if transient := be.Class == shared.ErrorTransient; transient != tc.wantTransient {
+				t.Fatalf("cancellation %v transient=%v, want %v (class=%s)", tc.codes, transient, tc.wantTransient, be.Class)
+			}
+		})
+	}
+}
+
+// A pure fence-conflict (item 0 ConditionalCheckFailed) remains benign
+// contention: it surfaces ErrStaleFencingToken, NOT a throttle/permanent
+// error, so the c13-txn-throttle fix does not over-classify a legitimate
+// preemption. (The full fence-TOCTOU semantics are pinned separately by
+// TestClaim_FenceRaceDetectedByTransaction_ReturnsStaleToken.)
+func TestClaim_FenceConflict_StaysBenignAfterThrottleFix(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+		}}, nil
+	}
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return nil, transactCanceled(ccReasonCondCheckFailed, ccReasonNone)
+	}
+	s := newFakeStore(f)
+
+	_, err := s.Claim(context.Background(), "PART#1", persistence.LeaseToken{Version: 5, Owner: "a"}, 10)
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("fence conflict must stay ErrStaleFencingToken, got %v", err)
+	}
+	if errors.Is(err, shared.ErrThrottled) || errors.Is(err, shared.ErrInvalidPayload) {
+		t.Fatalf("fence conflict must not be reclassified as a fault: %v", err)
+	}
+}
+
 // Every per-record claim must pair the record update with a ConditionCheck
 // on the partition FENCE row inside one TransactWriteItems — the shape that
 // closes the check-then-claim TOCTOU.
@@ -575,6 +683,135 @@ func TestClaim_ZeroLimit_FenceOnlyNoScan(t *testing.T) {
 	}
 }
 
+// TestClaim_IndexFastPath_StopsAtLimitWithoutPagingWholePartition is the
+// c13-claim-quadratic regression. Claim's fast path queries the age-ordered
+// ClaimIndex GSI oldest-first and must STOP as soon as `limit` records are
+// claimed, even when the partition holds a far deeper backlog (more index
+// pages exist). The pre-fix Claim paged the WHOLE partition every batch to
+// find the oldest-N, going O(backlog) and self-throttling DynamoDB after an
+// outage. Here the first index page already yields `limit` claimable records
+// AND signals more via a non-nil LastEvaluatedKey; the fast path must claim
+// `limit` and issue exactly ONE index query, never touching the base-table
+// full-partition scan.
+//
+// Mutation this kills: removing the early stop (changing the paging loop
+// `for len(claimed) < limit` to page to LastEvaluatedKey exhaustion) makes
+// Claim fetch page 2 → f.queryCalls[ClaimIndex] becomes 2 → this test FAILs.
+func TestClaim_IndexFastPath_StopsAtLimitWithoutPagingWholePartition(t *testing.T) {
+	const (
+		partition = "PART#backlog"
+		limit     = 3
+	)
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+
+	page := 0
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.IndexName == nil || *in.IndexName != claimIndexName {
+			t.Fatalf("fast path must query the %s GSI, got index=%v", claimIndexName, in.IndexName)
+		}
+		page++
+		if page == 1 {
+			items := make([]map[string]ddbtypes.AttributeValue, limit)
+			for i := 0; i < limit; i++ {
+				items[i] = pendingQueryItem(partition,
+					fmt.Sprintf("OUTBOX#env-%d#bind", i), fmt.Sprintf("rec-%d", i))
+			}
+			// A full page of `limit` claimable records WITH more pages behind
+			// it: the fast path must not fetch the next page.
+			return &dynamodb.QueryOutput{
+				Items: items,
+				LastEvaluatedKey: map[string]ddbtypes.AttributeValue{
+					"PK":          &ddbtypes.AttributeValueMemberS{Value: partition},
+					attrClaimSort: &ddbtypes.AttributeValueMemberS{Value: "cursor"},
+				},
+			}, nil
+		}
+		// Page 2+ exists ONLY so the page-to-exhaustion mutant terminates; a
+		// correct Claim never asks for it.
+		return &dynamodb.QueryOutput{}, nil
+	}
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	claimed, err := s.Claim(context.Background(), partition,
+		persistence.LeaseToken{Version: 1, Owner: "drainer"}, limit)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != limit {
+		t.Fatalf("expected %d claimed, got %d", limit, len(claimed))
+	}
+	// The heart of the fix: exactly ONE index page even though more pages
+	// exist, and the base-table full-partition scan is never touched.
+	if got := f.queryCalls[claimIndexName]; got != 1 {
+		t.Fatalf("Claim must stop after one index page once `limit` are claimed, got %d pages", got)
+	}
+	if got := f.queryCalls[""]; got != 0 {
+		t.Fatalf("fast path must not scan the base table, got %d scans", got)
+	}
+}
+
+// TestClaim_MissingIndex_FallsBackToScanAndWarnsOnce pins the backward-compat
+// guarantee: a table created before the ClaimIndex GSI existed still works.
+// The first Claim probes the GSI, DynamoDB rejects it (missing index), and
+// Claim must LATCH the absence, WARN exactly once, and fall back to the
+// always-correct base-table scan — still claiming the record. A subsequent
+// Claim goes straight to the scan without re-probing the GSI.
+func TestClaim_MissingIndex_FallsBackToScanAndWarnsOnce(t *testing.T) {
+	const partition = "PART#unmigrated"
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.IndexName != nil && *in.IndexName == claimIndexName {
+			// An un-migrated table lacks ClaimIndex: DynamoDB rejects the query
+			// with a ValidationException naming the missing index.
+			return nil, errors.New("ValidationException: The table does not have the specified index: ClaimIndex")
+		}
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem(partition, "OUTBOX#env-1#bind-1", "rec-1"),
+		}}, nil
+	}
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	logger, buf := warnBufLogger()
+	s := newFakeStore(f)
+	s.logger = logger
+
+	claimed, err := s.Claim(context.Background(), partition,
+		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
+	if err != nil {
+		t.Fatalf("missing-index claim must fall back, not error: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("scan fallback must still claim the record, got %d", len(claimed))
+	}
+	if !s.claimIndexAbsent.Load() {
+		t.Fatalf("a missing ClaimIndex must be latched so later Claims skip the GSI probe")
+	}
+	if got := f.queryCalls[""]; got == 0 {
+		t.Fatalf("Claim must fall back to the base-table scan when the GSI is absent")
+	}
+
+	// Second Claim: absence is latched, so it must go straight to the scan and
+	// NOT re-probe the GSI; the WARN must stay at exactly one.
+	gsiProbes := f.queryCalls[claimIndexName]
+	if _, err := s.Claim(context.Background(), partition,
+		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10); err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if f.queryCalls[claimIndexName] != gsiProbes {
+		t.Fatalf("latched absence must skip further GSI probes, got %d then %d",
+			gsiProbes, f.queryCalls[claimIndexName])
+	}
+	if n := strings.Count(buf.String(), "ClaimIndex GSI unusable"); n != 1 {
+		t.Fatalf("expected exactly ONE ClaimIndex-unusable WARN, got %d in: %q", n, buf.String())
+	}
+}
+
 // --- Persist (per-record idempotency + seq allocation) unit coverage ---
 
 // Persist allocates monotonic per-partition seqs from the FENCE row's
@@ -596,6 +833,7 @@ func TestPersist_AllocatesSeqsAndSkipsDuplicates(t *testing.T) {
 	}
 	var seqs []string
 	putCalls := 0
+	f.getItemFn = dupRowGetItem()
 	f.putItemFn = func(in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 		putCalls++
 		if in.ConditionExpression == nil || *in.ConditionExpression != "attribute_not_exists(SK)" {
@@ -652,6 +890,7 @@ func TestPersist_AllDuplicates_ReturnsErrDuplicateRecord(t *testing.T) {
 	f.putItemFn = func(in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 		return nil, &ddbtypes.ConditionalCheckFailedException{}
 	}
+	f.getItemFn = dupRowGetItem()
 	s := newFakeStore(f)
 
 	records := []*persistence.OutboxRecord{

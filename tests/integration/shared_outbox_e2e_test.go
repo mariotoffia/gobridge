@@ -502,7 +502,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 	_ = outboxStore.CreateTable(context.Background())
 	ddblocal.CleanupTable(t, client, outboxTable)
 
-	leaseStore := memorylease.NewStore()
+	leaseStore := memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))
 	dlq := &fakeDLQStore{}
 
 	const sessionID = "mqtt-mixed"

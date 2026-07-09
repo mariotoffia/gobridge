@@ -143,6 +143,23 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		dc = outbox.NewDepthCache(cfg.DepthCacheTTL, cfg.Clock)
 	}
 
+	// Finding 3: a delivery hook is a passive observer (ports/hooks.go) and MUST
+	// NOT alter settlement. Wrap any real hook so a panic in OnAttempt/OnSettled
+	// is contained here instead of unwinding into the delivery goroutine, where
+	// the Run-loop recover would see an unsettled delivery (a hook can panic
+	// AFTER a successful Send but BEFORE the source Ack) and RETRY it — a
+	// downstream duplicate. The Noop hook cannot panic, so it is left unwrapped
+	// to keep the per-delivery hot path allocation-free.
+	hook := cfg.Hook
+	if _, isNoop := hook.(ports.NoopDeliveryHook); !isNoop {
+		hook = &recoveringHook{
+			inner:   hook,
+			metrics: cfg.Metrics,
+			logger:  cfg.Logger,
+			routeID: cfg.RouteID,
+		}
+	}
+
 	r := &RouteRunner{
 		routeID:              cfg.RouteID,
 		policy:               cfg.Policy,
@@ -159,7 +176,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		instanceID:           cfg.InstanceID,
 		metrics:              cfg.Metrics,
 		tracer:               cfg.Tracer,
-		hook:                 cfg.Hook,
+		hook:                 hook,
 		logger:               cfg.Logger,
 		clk:                  cfg.Clock,
 		globalSem:            cfg.GlobalSem,
@@ -177,6 +194,58 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 	return r
 }
 
+// recoveringHook wraps a DeliveryHook so a panic in an observer callback cannot
+// escape into the delivery goroutine. A hook that panicked AFTER a successful
+// Send but BEFORE the source Ack would otherwise be caught by the Run-loop
+// recover, seen as an unsettled delivery, and retried — producing a downstream
+// DUPLICATE. Swallowing the panic here is the fail-safe classification: the
+// settlement the runtime already decided stands (a passive observer never
+// undoes or repeats a terminal transition — ports/hooks.go). The panic is
+// counted and logged so a crashing hook is never silent.
+type recoveringHook struct {
+	inner   ports.DeliveryHook
+	metrics ports.MetricsExporter
+	logger  *slog.Logger
+	routeID string
+}
+
+func (h *recoveringHook) OnAttempt(ctx context.Context, evt ports.DeliveryAttempt) {
+	defer h.recover("OnAttempt")
+	h.inner.OnAttempt(ctx, evt)
+}
+
+func (h *recoveringHook) OnSettled(ctx context.Context, evt ports.DeliveryOutcome) {
+	defer h.recover("OnSettled")
+	h.inner.OnSettled(ctx, evt)
+}
+
+func (h *recoveringHook) recover(method string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	// A panicking hook is a delivery-pipeline panic we deliberately suppressed to
+	// protect settlement; reuse the DeliveryPanics series (tagged reason=hook so
+	// it stays splittable from settlement-triggering panics) rather than mint a
+	// new metric, and never let the metric/log path itself panic.
+	func() {
+		defer func() { _ = recover() }()
+		if h.metrics != nil {
+			h.metrics.Counter(shared.MetricDeliveryPanics, 1,
+				shared.Tag{Key: shared.TagKeyRouteID, Value: h.routeID},
+				shared.Tag{Key: shared.TagKeyReason, Value: "hook"},
+			)
+		}
+		if h.logger != nil {
+			h.logger.Error("panic in delivery hook suppressed; settlement unaffected",
+				"route", h.routeID,
+				"hook_method", method,
+				"panic", rec,
+			)
+		}
+	}()
+}
+
 // Run starts the receiver and processes deliveries concurrently up to
 // MaxInFlight. It blocks until the context is cancelled or the receiver
 // returns an unrecoverable error. In-flight goroutines are awaited on exit.
@@ -188,6 +257,58 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		mu     sync.Mutex
 		closed bool
 	)
+
+	// Finding 5 (Wave A) + Finding 4 (Wave B): bounded, at-most-once receiver
+	// Close that PRESERVES drain-then-close on graceful shutdown. Historically
+	// Close ran only AFTER receiver.Run returned, so a receiver blocked inside a
+	// broker client that needs Close to unblock its Run loop wedged shutdown
+	// forever. Wave A added a watcher that force-closed the instant ctx was
+	// cancelled — but that Close raced the in-flight ack drain, and a receiver
+	// whose Close has no in-flight barrier (e.g. amqp091) would tear the transport
+	// down under in-flight acks → failed acks → requeue → DUPLICATE egress. So on
+	// cancellation we now grant a bounded GRACE for the receiver to return
+	// cooperatively (letting the post-wg.Wait() path drain acks, THEN close in
+	// order); only a receiver STILL stuck after ReceiverCloseTimeout is force
+	// closed. sync.Once + a bounded Close context keep Close exactly-once and
+	// non-hanging.
+	var closeOnce sync.Once
+	closeReceiver := func() {
+		closeOnce.Do(func() {
+			closer, ok := r.receiver.(interface{ Close(context.Context) error })
+			if !ok {
+				return
+			}
+			// Close even when the caller ctx is already cancelled (the common
+			// shutdown case). Preserve values for log/trace correlation via
+			// WithoutCancel and bound the call so a stuck Close cannot hang.
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
+			defer cancel()
+			_ = closer.Close(closeCtx)
+		})
+	}
+
+	// Watcher: on cancellation, prefer the cooperative drain-then-close path
+	// (watchDone, signalled once Run has returned). Force-close ONLY a receiver
+	// still stuck after the grace, using the INJECTED clock so the grace is
+	// deterministically drivable in tests and never a real timer. The grace uses
+	// NewTimer+Stop (not clk.After) so that when the cooperative path wins the
+	// timer is released immediately — realClock.After is unstoppable and would
+	// otherwise leak a receiverCloseTimeout-long timer on every graceful shutdown.
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-watchDone:
+			return
+		case <-ctx.Done():
+		}
+		graceTimer := r.clk.NewTimer(r.receiverCloseTimeout)
+		defer graceTimer.Stop()
+		select {
+		case <-watchDone:
+		case <-graceTimer.C():
+			closeReceiver()
+		}
+	}()
 
 	err := r.receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
 		if err := r.acquireSlots(ctx); err != nil {
@@ -286,16 +407,17 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	mu.Lock()
 	closed = true
 	mu.Unlock()
+	// Stop the watcher (no-op if it already fired on cancellation) and await
+	// in-flight deliveries. wg.Wait is bounded because every delivery goroutine
+	// is itself bounded (acquireSlots honours ctx, boundedSend caps the egress
+	// send, terminal settles run under settleContext's timeout).
+	close(watchDone)
 	wg.Wait()
 
-	// Close the receiver even when the caller ctx is already cancelled
-	// (which is the common shutdown case). Preserve values for log/trace
-	// correlation via WithoutCancel.
-	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
-	defer closeCancel()
-	if closer, ok := r.receiver.(interface{ Close(context.Context) error }); ok {
-		_ = closer.Close(closeCtx)
-	}
+	// Ensure the receiver is Closed exactly once. If the watcher already Closed
+	// on cancellation this is a no-op; otherwise (cooperative Run return) it is
+	// the sole Close.
+	closeReceiver()
 
 	return err
 }

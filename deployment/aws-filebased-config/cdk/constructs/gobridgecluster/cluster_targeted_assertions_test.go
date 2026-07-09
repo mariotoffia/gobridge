@@ -3,6 +3,7 @@
 package gobridgecluster_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,4 +244,85 @@ func t20ClusterNormalizeActions(v any) []string {
 		return out
 	}
 	return nil
+}
+
+// resourceTags flattens a synthesized resource's Properties.Tags
+// ([]{Key,Value}) into a key→value map.
+func resourceTags(props map[string]any) map[string]string {
+	out := map[string]string{}
+	raw, _ := props["Tags"].([]any)
+	for _, e := range raw {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		k, _ := m["Key"].(string)
+		v, _ := m["Value"].(string)
+		if k != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// Test_T20_Cluster_AdvertisesNonHA is the c15-cluster-notha honesty
+// guard. GoBridgeCluster is a filesystem-replicated SCALE-OUT topology,
+// not coordinated-failover HA (it forces topology=filesystem_replicated,
+// under which the runtime rejects shared_outbox / route.session, and
+// there is no 30-60s failover path). The construct MUST advertise that
+// non-HA nature in its SYNTHESIZED output — not just in doc comments —
+// so an operator inspecting the deployed stack sees it:
+//
+//   - every ECS Service carries gobridge:topology and gobridge:ha tags
+//     whose values say "scale-out" and "not coordinated failover";
+//   - a synth-time info annotation spells out that this is not HA and
+//     has no 30-60s failover path.
+//
+// Mutation: delete the Tags_Of(...).Add + Annotations_Of(...).AddInfo
+// honesty block in NewGoBridgeCluster → the tags vanish and the info
+// annotation disappears, and this test FAILs.
+func Test_T20_Cluster_AdvertisesNonHA(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := t20ClusterNew(t)
+	tpl := assertions.Template_FromStack(stack, nil)
+
+	// (1) Both ECS services must carry the non-HA / scale-out tags.
+	svcs := tpl.FindResources(jsii.String("AWS::ECS::Service"), nil)
+	if svcs == nil || len(*svcs) != 2 {
+		t.Fatalf("want 2 ECS Services, got %v", svcs)
+	}
+	for id, raw := range *svcs {
+		tags := resourceTags((*raw)["Properties"].(map[string]any))
+		if got := tags["gobridge:topology"]; got != "filesystem-replicated-scale-out" {
+			t.Fatalf("service %s: gobridge:topology tag = %q, want %q (scale-out, not HA)",
+				id, got, "filesystem-replicated-scale-out")
+		}
+		if got := tags["gobridge:ha"]; got != "none-scale-out-not-coordinated-failover" {
+			t.Fatalf("service %s: gobridge:ha tag = %q, want %q (advertises NOT coordinated-failover HA)",
+				id, got, "none-scale-out-not-coordinated-failover")
+		}
+	}
+
+	// (2) A synth-time info annotation must spell out the non-HA nature.
+	ann := assertions.Annotations_FromStack(stack)
+	infos := ann.FindInfo(jsii.String("*"), assertions.Match_AnyValue())
+	if infos == nil {
+		t.Fatalf("no info annotations emitted; expected a non-HA advisory")
+	}
+	var found bool
+	for _, m := range *infos {
+		if m == nil || m.Entry == nil { //nolint:staticcheck // CDK assertions still surface SynthesisMessage; no Go replacement on Find* yet.
+			continue
+		}
+		msg := fmt.Sprintf("%v", m.Entry.Data) //nolint:staticcheck // see above
+		if strings.Contains(msg, "NOT coordinated-failover HA") &&
+			strings.Contains(msg, "SCALE-OUT") &&
+			strings.Contains(msg, "no 30-60s") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no info annotation communicating the non-HA (scale-out, no 30-60s failover) nature was found")
+	}
 }

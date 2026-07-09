@@ -47,6 +47,9 @@ sessions:
         container_id: "bridge-node-01"
         username: "admin"
         password: "admin"
+        # SASL PLAIN over plaintext amqp:// sends credentials in the clear;
+        # opt in explicitly. Prefer an amqps:// address in production.
+        allow_insecure_plain: true
 
 receivers:
   - id: order-in
@@ -178,6 +181,9 @@ sessions:
         container_id: "bridge-solace"
         username: "default"
         password: "default"
+        # SASL PLAIN over plaintext amqp:// sends credentials in the clear;
+        # opt in explicitly. Prefer an amqps:// address in production.
+        allow_insecure_plain: true
 
 receivers:
   - id: solace-in
@@ -237,6 +243,9 @@ sessions:
         container_id: "bridge-source"
         username: "admin"
         password: "admin"
+        # SASL PLAIN over plaintext amqp:// sends credentials in the clear;
+        # opt in explicitly. Prefer an amqps:// address in production.
+        allow_insecure_plain: true
 
   - id: target-broker
     transport: amqp10
@@ -246,6 +255,9 @@ sessions:
         container_id: "bridge-target"
         username: "admin"
         password: "admin"
+        # SASL PLAIN over plaintext amqp:// sends credentials in the clear;
+        # opt in explicitly. Prefer an amqps:// address in production.
+        allow_insecure_plain: true
 
 receivers:
   - id: source-in

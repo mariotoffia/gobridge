@@ -165,6 +165,27 @@ func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// The durable write succeeded and the runtime ACCEPTED the config, but
+		// its running state is not yet confirmed (the swap is still in-flight
+		// past the apply deadline, or the bridge is paused/shutting down and
+		// recorded the config for a later resume). This is NOT a failure: the
+		// committed config is the durable desired state and the runtime is
+		// converging to it, so the durable write was deliberately RETAINED (no
+		// rollback). Surface it as a distinct, non-5xx outcome so an operator or
+		// automation does not read a 500 as "my change failed" and fire a
+		// compensating revert against a runtime that is already applying it.
+		if errors.Is(err, ports.ErrApplyInFlight) {
+			s.emitAudit(r, "config.txn.commit", "config", txnID, "committed_applying", map[string]any{
+				"error":   err.Error(),
+				"version": newVersion,
+			})
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":  "committed_applying",
+				"version": newVersion,
+				"error":   "config written to disk and accepted by the runtime; apply is in-flight and not yet confirmed (converging, no action required)",
+			})
+			return
+		}
 		// The durable write succeeded but the in-band apply failed and the
 		// previous config could NOT be restored: report the committed version
 		// explicitly so the operator knows disk and runtime diverged (must

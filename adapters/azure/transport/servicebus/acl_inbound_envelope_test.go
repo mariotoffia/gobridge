@@ -21,7 +21,7 @@ func TestASBReceivedToEnvelope_PreservesPopulatedMessageID(t *testing.T) {
 		MessageID: "asb-msg-42",
 		Body:      []byte("payload"),
 	}
-	env, err := receivedToEnvelope(msg, clk)
+	env, err := receivedToEnvelope(msg, clk, "q")
 	if err != nil {
 		t.Fatalf("receivedToEnvelope: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestASBReceivedToEnvelope_EmptyMessageIDDoesNotCollapse(t *testing.T) {
 	clk := clocktest.NewAt(time.Now().UTC())
 	seen := map[string]struct{}{}
 	for i := 0; i < 100; i++ {
-		env, err := receivedToEnvelope(&azservicebus.ReceivedMessage{Body: []byte("b")}, clk)
+		env, err := receivedToEnvelope(&azservicebus.ReceivedMessage{Body: []byte("b")}, clk, "q")
 		if err != nil {
 			t.Fatalf("iter %d: %v", i, err)
 		}
@@ -61,7 +61,7 @@ func TestASBReceivedToEnvelope_CreatedAtFromClock(t *testing.T) {
 	env, err := receivedToEnvelope(&azservicebus.ReceivedMessage{
 		MessageID: "id",
 		Body:      []byte("b"),
-	}, clk)
+	}, clk, "q")
 	if err != nil {
 		t.Fatalf("receivedToEnvelope: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestASBReceivedToEnvelope_StripsReservedApplicationProperties(t *testing.T)
 			"safe":                   "yes",
 		},
 	}
-	env, err := receivedToEnvelope(msg, clk)
+	env, err := receivedToEnvelope(msg, clk, "q")
 	if err != nil {
 		t.Fatalf("receivedToEnvelope: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestASBReceivedToEnvelope_StaticSignature(t *testing.T) {
 	env, err := receivedToEnvelope(&azservicebus.ReceivedMessage{
 		MessageID: "id",
 		Body:      []byte("b"),
-	}, clocktest.NewAt(time.Now()))
+	}, clocktest.NewAt(time.Now()), "q")
 	if err != nil || env == nil {
 		t.Fatalf("unexpected: env=%v err=%v", env, err)
 	}

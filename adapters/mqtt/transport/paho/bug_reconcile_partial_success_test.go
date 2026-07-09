@@ -116,24 +116,34 @@ func TestBugRPS_ClassifyAllRejected_NoSuccessesAndFirstErrorRetained(t *testing.
 	}
 }
 
-// TestBugRPS_ClassifyShortReasons_TreatedAsSucceeded pins the
-// behaviour for malformed-but-tolerated SUBACKs: topics whose reason
-// index is past the reasons slice are conservatively treated as
-// accepted. This matches the previous implementation and avoids
-// gratuitous unsubscribe loops on broker quirks.
-func TestBugRPS_ClassifyShortReasons_TreatedAsSucceeded(t *testing.T) {
+// TestBugRPS_ClassifyShortReasons_TreatedAsFailure pins the c4-short-suback
+// fix: a SUBACK carrying FEWER reason codes than requested subscriptions
+// leaves the tail topics unconfirmed by the broker. Those topics must be
+// treated as a FAILURE (surfaced via firstErr, excluded from succeeded), not
+// conservatively assumed accepted — an unconfirmed subscription is silently
+// never established and would report health Full while missing messages.
+//
+// Counterfactual (unfixed code treated out-of-range indices as accepted):
+// firstErr would be nil and succeeded would contain all three topics.
+func TestBugRPS_ClassifyShortReasons_TreatedAsFailure(t *testing.T) {
 	toSub := []subscribeSpec{
 		{Topic: "a", QoS: 0},
 		{Topic: "b", QoS: 1},
 		{Topic: "c", QoS: 2},
 	}
-	// Broker sent only 1 reason; our policy assumes acceptance for the rest.
+	// Broker sent only 1 reason: 'a' is confirmed, 'b' and 'c' are not.
 	succ, firstErr, errTopic := classifySubackReasons(toSub, []byte{0x00})
-	if firstErr != nil {
-		t.Fatalf("expected nil error for short reasons, got %v at %q", firstErr, errTopic)
+	if firstErr == nil {
+		t.Fatal("c4-short-suback: a short SUBACK must be treated as a failure")
 	}
-	if len(succ) != 3 {
-		t.Fatalf("succ len = %d, want 3 (short reasons treated as success)", len(succ))
+	if firstErr.Code != shared.ErrProtocolError.Code {
+		t.Errorf("short-SUBACK err code = %s, want ErrProtocolError", firstErr.Code)
+	}
+	if errTopic != "b" {
+		t.Errorf("errTopic = %q, want %q (first unconfirmed topic)", errTopic, "b")
+	}
+	if len(succ) != 1 || succ[0].Topic != "a" {
+		t.Fatalf("succeeded = %v, want only the confirmed topic 'a'", succ)
 	}
 }
 

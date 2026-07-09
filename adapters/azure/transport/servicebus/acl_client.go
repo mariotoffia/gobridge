@@ -62,8 +62,31 @@ type sessionReceiverAdapter struct {
 
 var _ asbAPI = (*sessionReceiverAdapter)(nil)
 
+// sessionLockDeadliner exposes the OBSERVED session-lock deadline so the
+// session renewer can schedule renewal against the broker's real lock
+// expiry (updated on every accept/renew) rather than the CONFIGURED
+// lock_duration. A configured value that exceeds the entity's true lock
+// would schedule renewal too late and let the session lock lapse
+// mid-processing (another consumer then steals the session). Only session
+// receivers implement this; non-session receivers do not (per-message
+// locking uses ReceivedMessage.LockedUntil instead).
+type sessionLockDeadliner interface {
+	SessionLockedUntil() time.Time
+}
+
+var _ sessionLockDeadliner = (*sessionReceiverAdapter)(nil)
+
 func (a *sessionReceiverAdapter) ReceiveMessages(ctx context.Context, count int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
 	return a.inner.ReceiveMessages(ctx, count, options) //nolint:wrapcheck // Rule 2 decorator pass-through; classified at caller via MapError
+}
+
+// SessionLockedUntil reports the broker's current session-lock expiry.
+// It reflects the deadline observed at AcceptSession and refreshed by
+// every RenewSessionLock (RenewMessageLock on this adapter), so the
+// renewer always paces itself against the REAL lock, not the configured
+// duration.
+func (a *sessionReceiverAdapter) SessionLockedUntil() time.Time {
+	return a.inner.LockedUntil()
 }
 
 func (a *sessionReceiverAdapter) CompleteMessage(ctx context.Context, message *azservicebus.ReceivedMessage, options *azservicebus.CompleteMessageOptions) error {

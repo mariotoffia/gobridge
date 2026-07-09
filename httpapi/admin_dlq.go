@@ -17,19 +17,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// redriveTimeout bounds the detached claim→inject sequence for a full redrive
+// redriveTimeout bounds the detached inject→delete sequence for a full redrive
 // batch so a stuck inject or store cannot hang the handler forever once the
 // request context is severed from cancellation.
 const redriveTimeout = 30 * time.Second
-
-// redriveRestoreTimeout bounds a SINGLE best-effort restore of a claimed entry
-// after a failed inject. It is deliberately its own short budget, freshly
-// derived per restore and independent of the per-batch redriveTimeout: a batch
-// that exhausts (or nearly exhausts) its budget mid-loop would otherwise fail
-// the restore on the same expired context and permanently lose the claimed
-// (already-deleted) entry. A fresh detached context guarantees the restore
-// always gets a real chance to run.
-const redriveRestoreTimeout = 10 * time.Second
 
 // bindingInjector is the optional capability a Runtime exposes for
 // binding-scoped synthetic injection. The concrete runtime implements
@@ -175,7 +166,10 @@ func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no DLQ store configured")
 		return
 	}
-	entries, err := store.List(r.Context(), routing.DLQFilter{Limit: dlqSummaryCap})
+	// Bound the store scan so a wedged backend cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	entries, err := store.List(opCtx, routing.DLQFilter{Limit: dlqSummaryCap})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to list DLQ entries")
 		return
@@ -259,7 +253,10 @@ func (s *Server) handleDLQMessages(w http.ResponseWriter, r *http.Request) {
 		filter.Before = t
 	}
 
-	entries, err := store.List(r.Context(), filter)
+	// Bound the store scan so a wedged backend cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	entries, err := store.List(opCtx, filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to list DLQ messages")
 		return
@@ -299,7 +296,10 @@ func (s *Server) handleDLQMessageByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
-	entry, err := store.Get(r.Context(), id)
+	// Bound the store lookup so a wedged backend cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	entry, err := store.Get(opCtx, id)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "DLQ entry not found")
@@ -370,16 +370,16 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	// non-fatal warning is surfaced in the response (see below).
 	_, redriveSafe := rt.(redriveInjector)
 
-	// Detach the claim→inject→restore sequence from the request context so an
-	// operator disconnect mid-batch cannot cancel an in-flight restore and
-	// permanently lose a claimed (already-deleted) entry — the claim-by-delete
-	// below makes that loss irreversible. A bounded timeout still caps a stuck
-	// inject or store call.
+	// Detach the inject→delete sequence from the request context so an operator
+	// disconnect mid-batch cannot cancel an in-flight delete that follows a
+	// successful inject — a cancelled delete would leave the (already-delivered)
+	// entry behind and cause a duplicate redrive on the next attempt. A bounded
+	// timeout still caps a stuck inject or store call.
 	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveTimeout)
 	defer cancel()
 
-	// Emit an intent record BEFORE the first irreversible claim-by-delete so a
-	// crash between Delete and Inject leaves an audit trace of which entry IDs
+	// Emit an intent record BEFORE the inject→delete loop so a crash between a
+	// successful Inject and its Delete leaves an audit trace of which entry IDs
 	// were being redriven (the per-batch outcome record below only exists if the
 	// handler returns).
 	s.emitAudit(r, "dlq.redrive.begin", "dlq", "", "pending", map[string]any{"ids": body.IDs})
@@ -406,30 +406,17 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Claim-by-delete BEFORE inject. Deleting first makes redrive safe
-		// under (a) client retries — a re-sent request finds the entry already
-		// gone (count==0) and skips it instead of re-injecting, and (b)
-		// concurrent admin instances — only the instance whose Delete returns 1
-		// owns the entry and injects it. This trades an at-most-once window (a
-		// crash between delete and inject drops the entry) for no double
-		// delivery, which is the correct bias for a manual redrive; the inject
-		// failure path below best-effort restores the entry to close most of
-		// that window.
-		deleted, err := admin.Delete(opCtx, []string{id})
-		if err != nil {
-			redriveErrors = append(redriveErrors, redriveError{
-				ID: id, Error: "failed to claim entry for redrive",
-			})
-			continue
-		}
-		if deleted == 0 {
-			// Lost the race (or a retry): another actor already claimed it.
-			redriveErrors = append(redriveErrors, redriveError{
-				ID: id, Error: "entry already redriven or concurrently deleted",
-			})
-			continue
-		}
-
+		// Inject BEFORE delete (at-least-once). The previous claim-by-delete
+		// ordering deleted the entry FIRST and injected afterwards, so a crash /
+		// SIGKILL / store outage between Delete and Inject lost BOTH the message
+		// and its DLQ evidence — an irreversible at-most-once window
+		// (dlq.redrive.begin records IDs, not recoverable payloads). Injecting
+		// first and deleting only after a CONFIRMED inject makes a failed inject
+		// leave the entry fully intact: no loss. The cost is a bounded duplicate
+		// window — a crash between a successful Inject and the Delete re-drives
+		// on the next attempt (at-least-once). For a manual recovery action,
+		// never losing the message is the correct bias.
+		//
 		// Binding-scoped dispatch: the entry records the exact BindingID that
 		// failed. injectRedrive carries that binding out-of-band via
 		// Runtime.InjectToBinding (NOT a header — the ingress reserved-header
@@ -446,26 +433,29 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 				// route, not that the route itself is gone.
 				msg = "route or binding not found"
 			}
-			// Inject failed after we claimed the entry: best-effort restore so
-			// the failure evidence is not lost. The restore runs under its OWN
-			// fresh detached context (context.WithoutCancel + a short timeout),
-			// NOT the per-batch opCtx: a batch that exhausted its budget mid-loop
-			// would otherwise fail this restore on the same expired context and
-			// permanently drop the claimed entry. If restore still fails, flag
-			// the entry as dropped so the operator can investigate.
-			restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveRestoreTimeout)
-			restoreErr := admin.Write(restoreCtx, entry)
-			restoreCancel()
-			if restoreErr != nil {
-				msg += " (entry lost: restore failed)"
-			}
-			// Claim succeeded but inject failed (restore attempted above): a
-			// route-tagged failure counter so an operator can alert on
-			// manual-recovery churn the batch-level audit record does not
-			// surface. No-op when no metrics exporter is wired.
+			// Inject failed: the entry was NEVER deleted, so both the failure
+			// evidence and the message survive in the DLQ. A route-tagged failure
+			// counter lets an operator alert on manual-recovery churn the
+			// batch-level audit record does not surface. No-op when no metrics
+			// exporter is wired.
 			s.countRedrive(shared.MetricDLQRedriveFailures, entry.RouteID())
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: msg,
+			})
+			continue
+		}
+
+		// Inject confirmed: only NOW remove the entry. A failed delete means the
+		// message WAS delivered but the entry lingers, so a later redrive
+		// re-delivers (a bounded at-least-once duplicate, NOT a loss). Surface it
+		// so the operator removes the entry manually rather than believing the
+		// redrive failed. A deleted count of 0 (a concurrent redrive already
+		// removed it) is benign — our inject still happened.
+		if _, err := admin.Delete(opCtx, []string{id}); err != nil {
+			s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
+			redriveErrors = append(redriveErrors, redriveError{
+				ID:    id,
+				Error: "message re-injected but DLQ entry not removed (delete failed); remove it manually to avoid a duplicate redrive",
 			})
 			continue
 		}
@@ -555,7 +545,10 @@ func (s *Server) handleDLQDeleteByIDs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := store.Delete(r.Context(), body.IDs)
+	// Bound the backend delete so a wedged store cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	n, err := store.Delete(opCtx, body.IDs)
 	if err != nil {
 		s.emitAudit(r, "dlq.delete", "dlq", "", "failure", map[string]any{
 			"ids":   body.IDs,
@@ -630,7 +623,10 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	n, err := store.DeleteByFilter(r.Context(), filter)
+	// Bound the backend delete so a wedged store cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	n, err := store.DeleteByFilter(opCtx, filter)
 	if err != nil {
 		s.emitAudit(r, "dlq.delete_by_filter", "dlq", "", "failure", map[string]any{
 			"error": err.Error(),
@@ -674,7 +670,10 @@ func (s *Server) handleDLQPurge(w http.ResponseWriter, r *http.Request) {
 			"purge deletes the entire DLQ; set confirm_purge_all=true to proceed")
 		return
 	}
-	count, err := store.Purge(r.Context(), s.clk.Now().UTC())
+	// Bound the backend purge so a wedged store cannot hang the handler.
+	opCtx, cancel := s.adminOpContext(r.Context())
+	defer cancel()
+	count, err := store.Purge(opCtx, s.clk.Now().UTC())
 	if err != nil {
 		s.emitAudit(r, "dlq.purge", "dlq", "", "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusInternalServerError, "DLQ purge failed")

@@ -61,9 +61,15 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 			s.logger.Log(ctx, logging.LevelDebug, "sqs: send failed",
 				"queue_url", s.queueURL, "error", err)
 		}
-		return MapError(err)
+		// Route through the auth grace so a transient static-key rotation /
+		// IAM-propagation window classifies temporary (retryable) instead of
+		// permanent (Finding: c8-auth-permanent).
+		return s.authGrace.classify(err)
 	}
 
+	// A successful send authenticated: end any pending auth-failure streak so
+	// a later rotation gap gets a fresh grace window.
+	s.authGrace.reset()
 	s.metrics.Timer(MetricSQSSendLatency, s.clock().Since(start),
 		shared.Tag{Key: TagKeyQueueURL, Value: s.queueURL})
 
@@ -101,13 +107,19 @@ func (s *Sender) sendBatchChunk(
 	cancel()
 
 	if err != nil {
-		e := MapError(err)
+		// A whole-batch auth failure gets the same bounded grace as a
+		// single send (Finding: c8-auth-permanent).
+		e := s.authGrace.classify(err)
 		for j := range results {
 			results[j].Err = e
 		}
 		return results
 	}
 
+	// The batch call itself authenticated: reset the auth-failure streak even
+	// when individual entries were rejected (those are per-entry SenderFaults,
+	// not an auth condition).
+	s.authGrace.reset()
 	s.metrics.Timer(MetricSQSSendBatchLatency, s.clock().Since(start),
 		shared.Tag{Key: TagKeyQueueURL, Value: s.queueURL})
 

@@ -19,6 +19,16 @@ import (
 // A paused owner must not be able to silently re-establish an expired lease;
 // it must re-acquire through Acquire instead.
 //
+// Freshness invariant (single-active safety): a successful Acquire or Renew MUST
+// persist a lease expiry (observable as LeaseInfo.ExpiresAt) that is NO EARLIER
+// than the wall-clock instant the client BEGAN the call plus ttl. The session
+// manager derives its own voluntary step-down deadline from the pre-call
+// timestamp + ttl and stops acting as owner once that deadline passes; if a
+// store persisted a SHORTER effective lifetime than the caller's start+ttl, a
+// competing instance could acquire the lease while the current owner still
+// believes it holds it — split-brain. Persisting a LATER expiry (server clock
+// ahead of the client, or an added safety margin) is always safe.
+//
 // Renew MUST NOT bump the returned token's Version: a renewal preserves the
 // fencing version established at Acquire. A Renew that advanced the version
 // would fence the owner's OWN earlier in-flight claims (which carry the
@@ -123,6 +133,21 @@ type LeaseStore interface {
 //     live drainer only completes records it claimed in-process, so this
 //     window exists only across restarts.
 //
+//   - Complete batch atomicity. The live drainer always passes exactly one
+//     recordID, so Complete is single-record in practice; the slice exists for
+//     signature symmetry with Claim's output. When more than one id is passed
+//     the batch is NOT guaranteed all-or-nothing across backends. Only the
+//     memory store validates the whole batch before mutating (all-or-nothing).
+//     SQLite issues one filter-UPDATE that completes EVERY matching record and
+//     then returns shared.ErrStaleFencingToken if any id failed its fence — the
+//     matched ids stay completed. DynamoDB completes per-record and stops at the
+//     first fencing mismatch, so earlier ids are already completed when a later
+//     one returns shared.ErrStaleFencingToken. In short: SQLite and DynamoDB may
+//     both leave already-matched records completed when a sibling id in the batch
+//     fails. Callers that need a definite terminal outcome per record MUST pass
+//     one id at a time (as the drainer does) rather than infer atomicity from a
+//     single returned error.
+//
 //   - Expire is pending-only AND partition-scoped. It may transition to expired
 //     only records that are still pending with a non-zero expires_at strictly
 //     before the cutoff AND whose partition equals the supplied partition. The
@@ -164,10 +189,12 @@ type OutboxStore interface {
 //
 // Release is single-record-intended: the live drainer always passes exactly
 // one recordID. The recordIDs slice is retained for signature symmetry with
-// Complete. The memory and SQLite backends validate the whole batch before
-// mutating (all-or-nothing); DynamoDB releases per-record and stops at the
-// first mismatch, so earlier ids may already be released. Pass one id to
-// stay within the well-defined single-record contract.
+// Complete. Only the memory backend validates the whole batch before mutating
+// (all-or-nothing); SQLite issues one filter-UPDATE (every matching record is
+// released, then shared.ErrStaleFencingToken if any id failed its fence) and
+// DynamoDB releases per-record stopping at the first mismatch, so on both,
+// earlier matched ids may already be released when a sibling fails. Pass one id
+// to stay within the well-defined single-record contract.
 //
 // Release is claim-scoped, not idempotent: it only acts on a currently
 // claimed record. Re-releasing an already-pending (or completed) record is a

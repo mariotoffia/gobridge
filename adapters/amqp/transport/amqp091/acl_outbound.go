@@ -363,6 +363,23 @@ type senderChannel struct {
 	mandatory bool
 }
 
+// publisherChannel is the confirm-tracked publish surface the Sender drives on
+// a cached AMQP channel. *senderChannel is the sole production implementation
+// (all SDK access lives there). The interface is the seam that lets the
+// publish-wedge timeout branch of Sender.Send — abandon the channel, release
+// the mutex, hand the channel to the background reaper, return a transient
+// error — be unit-tested with a blocking or failing publish and an observable
+// Close, without a live broker. Only the operations the Sender actually calls
+// are exposed; production wires it via openSenderChannel.
+type publisherChannel interface {
+	PublishConfirmed(ctx context.Context, exchange, routingKey string, mandatory bool, env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) (publishResult, error)
+	PublishDeferred(ctx context.Context, exchange, routingKey string, mandatory bool, env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) (*pendingConfirm, error)
+	IsClosed() bool
+	Close() error
+}
+
+var _ publisherChannel = (*senderChannel)(nil)
+
 // openSenderChannel opens a fresh AMQP channel on the connection and
 // installs publisher-confirm bookkeeping.
 func openSenderChannel(conn amqpConnection, mandatory bool) (*senderChannel, error) {

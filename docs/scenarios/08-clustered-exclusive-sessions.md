@@ -473,20 +473,30 @@ stores:
 > call-timeout in YAML, pin all three fields explicitly as shown above.
 
 **Failover math.** Worst-case failover for a warm (continuously polling) standby
-is approximately `lease_ttl` (45s) plus takeover: a standby retries `Acquire`
-every ~5s (the acquire poll is derived and capped at 5s) plus broker-connect
-time, so budget ~45--55s end to end. A **cold** standby that only begins
-observing after the owner died needs up to ~2×`lease_ttl` (~90s) — see the
-takeover observation window above. During the window the broker retains messages
-(QoS 1, `clean_start: false`) and replays them to the new owner once it connects
--- as in the failover sequence above, with 45s in place of 300s.
+is approximately `lease_ttl` plus takeover, where takeover folds in the acquire
+poll AND the broker connect: the DynamoDB store seizes only after it has observed
+the owner's liveness tuple unchanged for a full TTL, and the standby retries
+`Acquire` on its own cadence (derived, capped at 5s, with ±25% jitter). For the
+45s preset that is `lease_ttl + ~2×6.25s + connect ≈ 57.5s + broker-connect` end to
+end. A **cold** standby that only begins observing *after* the owner died must
+first watch the tuple unchanged for a full TTL before it can even attempt the
+seizing `Acquire`, so it needs one MORE TTL: `2×lease_ttl + ~2×acquire-poll +
+connect ≈ 102.5s + broker-connect` for the 45s preset -- not ~90s, because the
+acquire poll and connect are on top of the two TTLs. During the window the broker
+retains messages (QoS 1, `clean_start: false`) and replays them to the new owner
+once it connects -- as in the failover sequence above, with 45s in place of 300s.
 
 > **Rolling deploys are the cold-standby case.** A replacement pod starts
 > observing the lease only *after* it boots, so a failover objective that must
-> hold **through a deploy** is bounded by ~2×`lease_ttl`, not `lease_ttl`. For a
-> strict ≤60s bound including rolling deploys, pin `lease_ttl ≤ 30s` (the
-> Aggressive row below), and budget pod-schedule latency on top if the
-> replacement is slow to start — the warm-standby figure alone is not enough.
+> hold **through a deploy** is bounded by the cold figure -- ~2×`lease_ttl` plus
+> the acquire poll and broker connect -- not `lease_ttl`. Pinning `lease_ttl` low
+> does NOT buy a strict ≤60s bound here: the Aggressive `lease_ttl=30s` row still
+> costs `2×30 + ~2×4.2 + connect ≈ 68s + broker-connect` cold, already past 60s
+> before the pod connects. To hold a 30--60s objective *through* a deploy, keep a
+> WARM standby observing across the rollout -- surge the replacement up and let it
+> observe a full TTL before the active owner steps down -- so takeover stays on the
+> warm path. The cold/rolling worst case is ~2×`lease_ttl` + takeover regardless of
+> how low you pin the TTL.
 
 **Invariants the preset preserves** (and any hand-tuned profile must too):
 

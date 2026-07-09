@@ -6,7 +6,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
 // Delivery is a source-owned unit of work. Transport adapters create
@@ -199,6 +198,27 @@ type OutboundMessage struct {
 // OutboundMessage.Address is the transport destination for this dispatch;
 // OutboundMessage.Envelope.Subject is the logical event subject and is
 // distinct from the transport address.
+//
+// Success boundary. Send returns nil ONLY once the transport has accepted
+// the message to the point the source delivery may be settled without loss
+// under this transport's durability model: a broker-acknowledged publish
+// (MQTT PUBACK/PUBCOMP for QoS>0, AMQP publisher confirm, SQS/Service Bus
+// send response, AMQP 1.0 accepted disposition). A nil return MUST NOT mean
+// "buffered locally" or "written to the socket" for a durability-bearing
+// send — the runtime acks the source on nil (direct_hold) or completes the
+// outbox record, so a premature nil is silent message loss by contract.
+// Fire-and-forget transports (MQTT QoS0) have no acknowledgement; their nil
+// means "handed to the client" and the caller inherits that transport's
+// at-most-once semantics — such senders MUST document it.
+//
+// Context. Send MUST honour ctx: a cancelled/expired ctx returns promptly
+// with a ctx error (wrapped) rather than blocking, so shutdown and reconfig
+// are not wedged by a hung broker call.
+//
+// Errors. On failure Send returns a *shared.BridgeError (or an error wrapping
+// one) so the runtime can classify transient vs permanent vs rejected and
+// apply the route's retry/DLQ policy. A bare, unclassifiable error is treated
+// as transient.
 type Sender interface {
 	Send(ctx context.Context, msg OutboundMessage) error
 }
@@ -318,14 +338,6 @@ type Session interface {
 	Health(ctx context.Context) SessionHealth
 	Events() <-chan SessionEvent
 	Close(ctx context.Context) error
-}
-
-// Lease manages cluster ownership for single-active scenarios.
-type Lease interface {
-	Acquire(ctx context.Context) (persistence.LeaseToken, error)
-	Renew(ctx context.Context, token persistence.LeaseToken) (persistence.LeaseToken, error)
-	Release(ctx context.Context, token persistence.LeaseToken) error
-	Owner() string
 }
 
 // Capability describes a routing-relevant transport feature.

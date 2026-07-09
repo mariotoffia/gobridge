@@ -89,7 +89,7 @@ func TestPollAndConvert_PoisonMessageEscalation(t *testing.T) {
 		h := &captureHandler{}
 		r := newZeroClockReceiver(t, poison("15"), h)
 
-		results, err := r.pollAndConvert(context.Background(), "http://test/q", 10, 0)
+		results, err := r.pollAndConvert(context.Background(), r.loadClient(), "http://test/q", 10, 0)
 		if err != nil {
 			t.Fatalf("pollAndConvert: %v", err)
 		}
@@ -122,7 +122,7 @@ func TestPollAndConvert_PoisonMessageEscalation(t *testing.T) {
 		h := &captureHandler{}
 		r := newZeroClockReceiver(t, poison("3"), h)
 
-		if _, err := r.pollAndConvert(context.Background(), "http://test/q", 10, 0); err != nil {
+		if _, err := r.pollAndConvert(context.Background(), r.loadClient(), "http://test/q", 10, 0); err != nil {
 			t.Fatalf("pollAndConvert: %v", err)
 		}
 		for _, rc := range h.snapshot() {

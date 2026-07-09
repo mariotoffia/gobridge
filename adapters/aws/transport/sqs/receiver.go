@@ -31,6 +31,7 @@ type Receiver struct {
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
 	clk         clock.Clock
+	authGrace   *authGrace
 	initMu      sync.Mutex
 	started     chan struct{}
 	startedOnce sync.Once
@@ -72,7 +73,7 @@ func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
 	if clk == nil {
 		clk = clock.System
 	}
-	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, started: make(chan struct{})}, nil
+	return &Receiver{cfg: cfg, logger: l, metrics: m, clk: clk, authGrace: newAuthGrace(clk, authGraceWindow), started: make(chan struct{})}, nil
 }
 
 func (r *Receiver) clock() clock.Clock {
@@ -173,13 +174,45 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
-		results, err := r.pollAndConvert(ctx, queueURL, maxMessages, pollTimeout)
+		// Snapshot the client ONCE per batch (Finding: c8-settle-client).
+		// The SAME client must serve the receive AND every resulting
+		// delivery's Ack/Retry/auto-extend: if ApplyCredentials swaps a
+		// rotated client between the receive and settlement, the deletes /
+		// extensions would run under a different principal than the one that
+		// received → they fail → the messages redeliver as duplicates. The
+		// snapshot is passed into pollAndConvert (so the receive uses it) and
+		// bound to each delivery below.
+		client := r.loadClient()
+
+		results, err := r.pollAndConvert(ctx, client, queueURL, maxMessages, pollTimeout)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			r.metrics.Counter(MetricSQSPollErrors, 1,
 				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+
+			// Classify the receive error (Finding: c8-terminal-recv). A
+			// terminal/permanent fault — queue deleted, IAM revoked past the
+			// auth grace, invalid URL — cannot self-heal by retrying, so
+			// tight-retrying it here behind an already-closed readiness
+			// signal strands a non-functional route while health reports
+			// green (health lies). Surface it to the caller (superviseRoute)
+			// which records the component error and restarts/degrades the
+			// route in isolation. The authGrace keeps a freshly-granted role
+			// retryable within its bounded propagation window; only genuinely
+			// transient errors stay on the retry-with-backoff path below.
+			classified := r.authGrace.classify(err)
+			if !shared.IsRecoverableError(classified) {
+				if r.logger != nil {
+					r.logger.Error("sqs: ReceiveMessage terminal fault; degrading route",
+						"queue", queueURL,
+						"error", classified,
+					)
+				}
+				return classified
+			}
+
 			delay := backoff.next()
 			if r.logger != nil {
 				r.logger.Warn("sqs: ReceiveMessage failed, retrying",
@@ -197,11 +230,9 @@ func (r *Receiver) pollLoop(
 		}
 
 		backoff.reset()
-
-		// Snapshot the client once per batch so the receive and the
-		// resulting deliveries share a coherent client even if a
-		// credential rotation swaps it mid-loop.
-		client := r.loadClient()
+		// A successful poll authenticated: end any pending auth-failure streak
+		// so a later credential-rotation gap gets a fresh grace window.
+		r.authGrace.reset()
 
 		// Create ALL deliveries for the batch BEFORE the emit loop.
 		// Every batch-mate's visibility clock started ticking at

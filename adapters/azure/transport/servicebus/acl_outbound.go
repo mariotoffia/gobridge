@@ -228,7 +228,7 @@ func envelopeToMessage(env *messaging.Envelope, defaultSessionID string, clk clo
 //
 // ApplicationProperties are deep-copied (top-level) so mutations on
 // the copy never alias the received message.
-func buildRetryMessage(received *azservicebus.ReceivedMessage, clk clock.Clock) *azservicebus.Message {
+func buildRetryMessage(received *azservicebus.ReceivedMessage, clk clock.Clock, entity string) *azservicebus.Message {
 	out := &azservicebus.Message{
 		Body:    received.Body,
 		Subject: received.Subject,
@@ -245,6 +245,16 @@ func buildRetryMessage(received *azservicebus.ReceivedMessage, clk clock.Clock) 
 	originalID := received.MessageID
 	if prior, ok := stringProp(received.ApplicationProperties, asbPropOriginalMessageID); ok {
 		originalID = prior
+	} else if originalID == "" {
+		// The first delivery carried no MessageID. Anchor the retry chain
+		// on the SAME broker-stable, entity-namespaced sequence-number
+		// fallback that receivedToEnvelope uses, so every scheduled copy
+		// preserves ONE logical ID for downstream idempotency — instead of
+		// each copy (a NEW broker message with its OWN sequence number)
+		// minting a fresh, unrelated ID on redelivery.
+		if fallback, ok := stableFallbackID(received, entity); ok {
+			originalID = fallback
+		}
 	}
 	if originalID != "" {
 		props[asbPropOriginalMessageID] = originalID

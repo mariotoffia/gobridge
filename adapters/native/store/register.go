@@ -16,8 +16,17 @@ func Register(reg *ports.Registry) error {
 	)
 }
 
-func decodeMemoryConfig(_ ports.RawConfig) (ports.PluginConfig, error) {
-	return MemoryConfig{}, nil
+func decodeMemoryConfig(raw ports.RawConfig) (ports.PluginConfig, error) {
+	var cfg MemoryConfig
+	if raw != nil {
+		if err := raw.Decode(&cfg); err != nil {
+			return nil, err //nolint:wrapcheck // surfaced verbatim by the registry caller.
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func decodeSQLiteConfig(raw ports.RawConfig) (ports.PluginConfig, error) {

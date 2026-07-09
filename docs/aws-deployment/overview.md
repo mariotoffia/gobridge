@@ -196,6 +196,55 @@ store names. Two operator responsibilities follow:
   Synth emits a warning for this case; set `table_name`, or grant the default
   table to the task role externally.
 
+The adapter's expected key schemas -- what an out-of-band table must match, and
+what the store's own `EnsureTable`/`CreateTable` helper provisions -- are below.
+All three tables are created `PAY_PER_REQUEST` (on-demand).
+
+**Lease table** (default `gobridge-leases`)
+
+| Attribute | Type | Role |
+|---|---|---|
+| `PK` | `S` | Partition key |
+
+No sort key and no GSIs. **DynamoDB TTL must be DISABLED** on this table: the
+lease row is the fencing counter of record, and a TTL reaper that deletes it
+resets the fencing version and opens a split-brain window. The lease preflight
+enforces this (see [IAM Least Privilege](#iam-least-privilege) below).
+
+**Outbox table** (default `gobridge-outbox`)
+
+| Attribute | Type | Role |
+|---|---|---|
+| `PK` | `S` | Partition key |
+| `SK` | `S` | Sort key |
+
+| GSI | Key schema | Projection | Notes |
+|---|---|---|---|
+| `ExpiryIndex` | `has_expiry` (S) HASH, `expires_at` (N) RANGE | `KEYS_ONLY` | Sparse; drives expiry sweeps |
+| `RecordIDIndex` | `record_id` (S) HASH | `KEYS_ONLY` | `Complete` record lookup |
+| `ClaimIndex` | `PK` (S) HASH, `claim_sort` (S) RANGE | `ALL` | Sparse, age-ordered claim path; **optional** |
+
+`ClaimIndex` is optional -- `Claim` falls back to a whole-partition scan when it
+is absent, so an un-migrated table still boots. When it is present it **must** be
+`Projection: ALL`: the claim query filters on the non-key `status` attribute, so
+an under-projected index fails every claim at runtime. Preflight rejects a
+present-but-under-projected `ClaimIndex` at startup, and the running store
+degrades to the scan path if the index becomes unusable.
+
+**DLQ table** (default `gobridge-dlq`)
+
+| Attribute | Type | Role |
+|---|---|---|
+| `PK` | `S` | Partition key |
+
+| GSI | Key schema | Projection | Notes |
+|---|---|---|---|
+| `RouteIndex` | `route_id` (S) HASH, `failed_at` (N) RANGE | `ALL` | List/purge by route |
+| `CategoryIndex` | `category` (S) HASH, `failed_at` (N) RANGE | `ALL` | List/purge by category |
+
+DLQ entries carry no TTL by default. Setting a `retention` window enables
+DynamoDB TTL on the `ttl` attribute through the store's `EnsureTable` helper.
+
 ### DevMode Guard
 
 The `BootstrapConfig.SSMEndpoint` field allows overriding the SSM endpoint for
@@ -526,7 +575,7 @@ your bridge routes reference. Omit it entirely if your deployment does not use
 SQS transport.
 
 `sqs:ChangeMessageVisibility` backs the receiver's `auto_extend` (visibility
-renewal at 50% of the timeout); a missing grant surfaces as `NOT_AUTHORIZED`
+renewal at one-third of the timeout); a missing grant surfaces as `NOT_AUTHORIZED`
 only after the first extension attempt, not at startup. `sqs:GetQueueUrl` backs
 queue-name resolution -- a receiver or sender configured with `queue_name`
 (rather than a full `queue_url`) resolves the canonical URL at build time. The
@@ -553,32 +602,47 @@ actions on top of the data-plane set above:
 
 - Outbox and DLQ additionally call `dynamodb:DescribeTable`.
 - Lease additionally calls `dynamodb:DescribeTable` **and**
-  `dynamodb:DescribeTimeToLive` (it warns loudly when TTL is enabled on the
-  fencing table, which a reaper would use to delete lease rows and reset the
-  fencing version).
+  `dynamodb:DescribeTimeToLive` -- it enforces that DynamoDB TTL is **disabled**
+  on the fencing table, which a reaper would otherwise use to delete lease rows
+  and reset the fencing version.
 
-Preflight posture is deliberate and matters for how you grant these actions:
+Preflight posture is **fail-closed** and matters for how you grant these actions:
 
 - A **confirmed schema mismatch** -- the table exists but has the wrong key
   schema or is missing a required GSI -- is **fatal at boot**. The store refuses
   to start against a mis-shaped table (the guard against a copy-pasted table name
   silently shredding messages).
-- If a **`DescribeTable`** call **fails** because the permission is missing
-  (`AccessDenied`) or the control plane throttles it during a mass rollout,
-  preflight logs a loud **WARN** and **fails open**: boot proceeds, and a
-  genuinely missing or mis-shaped table then fails loudly at the first store
-  operation rather than at boot.
-- The lease role's **`DescribeTimeToLive`** check is separate and best-effort: it
-  runs during table setup, and if TTL is enabled on the fencing table it logs a
-  loud **WARN** (TTL must be disabled or fencing-token monotonicity breaks). If
-  the `DescribeTimeToLive` call itself fails -- missing permission, a throttle, or
-  an emulator that does not support it -- the check is **silently skipped** (no
-  WARN, no boot failure); it is not part of the fatal preflight.
-- Granting `dynamodb:DescribeTable` is therefore **recommended** -- it lets
-  preflight catch a mis-shaped table at boot instead of at first use -- but is
-  **not strictly required** for boot. Granting `dynamodb:DescribeTimeToLive` to
-  the lease role is optional: without it the TTL-misconfiguration warning simply
-  never fires.
+- A `DescribeTable` call that **cannot verify** the table -- the permission is
+  missing (`AccessDenied`), the control plane throttles it during a mass rollout,
+  or the backend does not implement `DescribeTable` -- is **also fatal at boot**.
+  An unreadable table is not proof the table is valid, and an unreadable +
+  mis-shaped table is the exact silent-shredder scenario the preflight exists to
+  catch (the first record per partition writes, the rest ack-and-drop as
+  "duplicates"). The store refuses to start.
+- On the lease role, an **observed enabled (or enabling) DynamoDB TTL** on the
+  fencing table is **fatal at boot**. A `DescribeTimeToLive` call that **cannot
+  verify** the TTL state (missing `dynamodb:DescribeTimeToLive`, a throttle, or a
+  backend that does not implement it) is **fatal for the same reason**: it proves
+  nothing about the TTL state, and a TTL-reaped fence row is a split-brain hazard.
+- Both `dynamodb:DescribeTable` (every store role) and `dynamodb:DescribeTimeToLive`
+  (the lease role) are therefore **required** for boot under the default posture,
+  and TTL must stay disabled on the lease table.
+
+The advisory opt-outs are **Go-code-level factory options, not config keys.**
+`WithSchemaPreflightAdvisory()` downgrades an unverifiable `DescribeTable` to a
+loud WARN-and-continue; `WithTTLPreflightAdvisory()` does the same for the lease
+TTL check (both an observed enabled TTL and an unverifiable `DescribeTimeToLive`).
+Neither relaxes a **confirmed** schema mismatch, which stays fatal. Use them only
+for a dev/emulator that cannot serve these control-plane calls.
+
+The shipped `aws-filebased-config` deployment builds the factory as
+`NewDynamoDBStoreFactory(client)` with no options and exposes **no**
+`schema_preflight_advisory` or `ttl_preflight_advisory` config key, so opting into
+advisory mode requires code-level wiring in a custom composition root. The
+DynamoDB Local (`ddblocal`) test emulator implements both `DescribeTable` and
+`DescribeTimeToLive`, so tests and local development against it boot cleanly under
+the default fail-closed posture -- only an emulator or backend that lacks these
+control-plane calls needs the advisory opt-outs.
 
 Table creation and TTL setup (`dynamodb:CreateTable`, `dynamodb:UpdateTimeToLive`)
 are a deploy-time concern; the CDK constructs provision tables out-of-band. Grant

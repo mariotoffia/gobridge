@@ -66,6 +66,10 @@ func TestClaim_DeepBacklog_IsObservable(t *testing.T) {
 		s := newFakeStore(f)
 		s.metrics = rec
 		s.logger = logger
+		// Deep-backlog observability is a property of the SCAN fallback path
+		// (c13-claim-quadratic): force it, since the default ClaimIndex fast
+		// path stops at `limit` and never pages the whole partition.
+		s.claimIndexAbsent.Store(true)
 
 		claimed, err := s.Claim(context.Background(), partition,
 			persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
@@ -120,6 +124,8 @@ func TestClaim_DeepBacklog_IsObservable(t *testing.T) {
 		s := newFakeStore(f)
 		s.metrics = rec
 		s.logger = logger
+		// Force the SCAN fallback path (see the deep-backlog subtest).
+		s.claimIndexAbsent.Store(true)
 
 		if _, err := s.Claim(context.Background(), partition,
 			persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10); err != nil {

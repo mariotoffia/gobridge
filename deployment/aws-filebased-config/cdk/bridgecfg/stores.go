@@ -49,9 +49,16 @@ func (b *Builder) WithMemoryOutbox() *Builder {
 }
 
 // WithMemoryLease installs the in-memory lease store. Same single-
-// bridge caveats as WithMemoryOutbox apply.
+// bridge caveats as WithMemoryOutbox apply — and because an in-memory
+// lease keeps ownership per-process and cannot coordinate across
+// replicas, the emitted config carries acknowledge_single_replica: true
+// so the runtime accepts it (MemoryStoreFactory.NewLeaseStore fails
+// closed otherwise). Keep such a deployment at exactly one replica; use
+// a DynamoDB lease for clustered failover. See finding c10-memlease-split.
 func (b *Builder) WithMemoryLease() *Builder {
-	b.cfg.Stores.Lease = memoryStore()
+	sc := &ports.StoreConfig{Type: nativestore.MemoryKind}
+	sc.SetDecoded(nativestore.MemoryConfig{AcknowledgeSingleReplica: true}, nil)
+	b.cfg.Stores.Lease = sc
 	return b
 }
 
@@ -62,9 +69,10 @@ func (b *Builder) WithMemoryDLQ() *Builder {
 	return b
 }
 
-// memoryStore is the shared assembly path for the three memory store
-// methods. MemoryConfig has no operator-tunable fields so the
-// helper is parameter-free.
+// memoryStore is the shared assembly path for the in-memory OUTBOX and
+// DLQ stores, which have no operator-tunable fields (the lease store's
+// acknowledge_single_replica flag is set on its own path in
+// WithMemoryLease), so this helper is parameter-free.
 func memoryStore() *ports.StoreConfig {
 	sc := &ports.StoreConfig{Type: nativestore.MemoryKind}
 	sc.SetDecoded(nativestore.MemoryConfig{}, nil)

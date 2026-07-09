@@ -68,6 +68,7 @@ func TestErrorCodeToClass_IsAFunction(t *testing.T) {
 		shared.ErrOutboxNotClaimable,
 		shared.ErrOutboxNotInClaimedState,
 		shared.ErrOutboxAlreadyTerminal,
+		shared.ErrOutboxNotPending,
 	}
 
 	// The routing policy validators are the ONLY non-sentinel BridgeError

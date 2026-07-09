@@ -19,11 +19,15 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
-// Compile-time assertion that the DynamoDB store implements the optional
-// OutboxReleaser capability the drainer type-asserts for the transient-
-// failure fast path. It lives in the test file because the production
-// package satisfies its ports structurally (no ports import).
-var _ ports.OutboxReleaser = (*dynamodboutbox.Store)(nil)
+// Compile-time assertions that the DynamoDB store implements the OutboxStore
+// write contract and the optional OutboxReleaser capability the drainer
+// type-asserts for the transient-failure fast path. They live in the external
+// test package because the store adapter layer may not depend on ports (the
+// production package satisfies its ports structurally).
+var (
+	_ ports.OutboxStore    = (*dynamodboutbox.Store)(nil)
+	_ ports.OutboxReleaser = (*dynamodboutbox.Store)(nil)
+)
 
 func TestMain(m *testing.M) {
 	code := m.Run()

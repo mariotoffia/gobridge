@@ -20,14 +20,27 @@ const MemoryKind = "memory"
 const SQLiteKind = "sqlite"
 
 // MemoryConfig is the typed PluginConfig for the in-memory store.
-// The in-memory store has no user-settable fields; the type exists
-// to satisfy the registry contract.
-type MemoryConfig struct{}
+type MemoryConfig struct {
+	// AcknowledgeSingleReplica must be set to true to build the in-memory
+	// LEASE store; it has no effect on the in-memory outbox or DLQ stores.
+	// The in-memory lease keeps ownership in a per-process map and cannot
+	// coordinate across replicas, so running it behind more than one instance
+	// silently splits the brain (every replica believes it owns the same
+	// exclusive session). gobridge cannot observe the deployment's replica
+	// count, so the operator must explicitly acknowledge single-replica
+	// operation. Absent (false), MemoryStoreFactory.NewLeaseStore fails fast
+	// at construction. Use the "dynamodb" store for clustered deployments.
+	// See finding c10-memlease-split.
+	AcknowledgeSingleReplica bool `mapstructure:"acknowledge_single_replica" yaml:"acknowledge_single_replica" json:"acknowledge_single_replica"`
+}
 
 // Kind reports the registry discriminator.
 func (MemoryConfig) Kind() string { return MemoryKind }
 
-// Validate is a no-op for the empty memory config.
+// Validate is a no-op: the single-replica acknowledgement is a lease-store-only
+// concern enforced at construction (MemoryStoreFactory.NewLeaseStore), because
+// the same MemoryConfig also configures the outbox and DLQ stores, which have
+// no split-brain constraint and must validate without the flag.
 func (MemoryConfig) Validate() error { return nil }
 
 // SQLiteConfig is the typed PluginConfig for the SQLite-backed
@@ -58,6 +71,14 @@ type SQLiteConfig struct {
 
 // Kind reports the registry discriminator.
 func (SQLiteConfig) Kind() string { return SQLiteKind }
+
+// StorageIdentity reports the SQLite database file path — the stable descriptor
+// of this store's durable backing, and nothing tunable. The supervisor's
+// live-reload guard compares only this, so a tuning-only reload (e.g. changing
+// stale_claim_duration or retention) is not mistaken for a backing-store change,
+// while repointing Path IS caught even on a hand-built config with no raw
+// options. The path is not a secret.
+func (c SQLiteConfig) StorageIdentity() string { return c.Path }
 
 // Validate ensures Path is non-empty and durations are sane.
 func (c SQLiteConfig) Validate() error {

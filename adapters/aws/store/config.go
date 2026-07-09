@@ -56,6 +56,16 @@ type DynamoDBConfig struct {
 // Kind reports the registry discriminator.
 func (DynamoDBConfig) Kind() string { return DynamoDBKind }
 
+// StorageIdentity reports the DynamoDB table name — the stable descriptor of
+// this store's durable backing, and nothing tunable. The supervisor's
+// live-reload guard compares only this, so a tuning-only reload (e.g. changing
+// stale_claim_duration or max_scan_pages) is not mistaken for a backing-store
+// change, while repointing TableName IS caught even on a hand-built config with
+// no raw options. An empty TableName means "the store's built-in default table",
+// so two empty configs share one identity — correct, since they resolve to the
+// same table. The table name is not a secret.
+func (c DynamoDBConfig) StorageIdentity() string { return c.TableName }
+
 // Validate rejects nonsensical duration values. TableName is optional.
 func (c DynamoDBConfig) Validate() error {
 	if c.StaleClaimDuration < 0 {

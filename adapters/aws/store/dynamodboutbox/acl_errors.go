@@ -36,6 +36,62 @@ func transactCancellationCodes(err error) ([]string, bool) {
 	return codes, true
 }
 
+// Per-item TransactWriteItems cancellation reason codes. Only these three are
+// BENIGN contention on a claim: a non-cause item (None), a lost claim race
+// (ConditionalCheckFailed), or a concurrent write on the same item
+// (TransactionConflict). Any OTHER reason — ProvisionedThroughputExceeded,
+// ThrottlingError, ValidationError, ... — is a real fault that must surface,
+// never be swallowed as a silent skip (c13-txn-throttle).
+const (
+	ccReasonNone            = "None"
+	ccReasonCondCheckFailed = "ConditionalCheckFailed"
+	ccReasonTxnConflict     = "TransactionConflict"
+)
+
+// nonContentionCancellation reports whether a transaction's per-item
+// cancellation reason codes include any reason OUTSIDE the benign contention
+// set (None / ConditionalCheckFailed / TransactionConflict). Such a reason
+// means the claim did not merely lose a race: a throttle
+// (ProvisionedThroughputExceeded, ThrottlingError) must reach the drainer as
+// a retryable error so it BACKS OFF, and a permanent fault (ValidationError)
+// must surface honestly — either way the record must NOT be dropped as a
+// silent skip. It returns the first offending code for diagnostics.
+func nonContentionCancellation(codes []string) (string, bool) {
+	for _, c := range codes {
+		switch c {
+		case "", ccReasonNone, ccReasonCondCheckFailed, ccReasonTxnConflict:
+			continue
+		default:
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// classifyCancellationCodes maps the first non-contention transaction
+// cancellation reason code to the module's canonical error class, so
+// wrapErr/mapError surface a throttled claim as retryable shared.ErrThrottled
+// (drainer backs off) and a permanent fault as shared.ErrInvalidPayload
+// (never retried forever). Benign contention codes (handled and
+// short-circuited at the call site) and unrecognised codes yield nil here so
+// mapError falls through to its generic classification (a safe transient
+// default), never to a silent skip.
+func classifyCancellationCodes(codes []string, err error) error {
+	for _, c := range codes {
+		switch c {
+		case "ProvisionedThroughputExceeded", "ThrottlingError", "ThrottlingException", "RequestLimitExceeded":
+			return shared.ErrThrottled.Wrap(err)
+		case "ValidationError", "ValidationException", "ItemCollectionSizeLimitExceeded":
+			return shared.ErrInvalidPayload.Wrap(err)
+		case "InternalServerError":
+			return shared.ErrUnavailable.Wrap(err)
+		case "AccessDenied", "AccessDeniedException":
+			return shared.ErrNotAuthorized.Wrap(err)
+		}
+	}
+	return nil
+}
+
 // hasCode reports whether any per-item cancellation reason equals code (e.g.
 // "TransactionConflict"). Used to distinguish contention (a concurrent write
 // touched the same item) from a benign lost race on the record condition.
@@ -51,6 +107,52 @@ func hasCode(codes []string, code string) bool {
 func isResourceInUse(err error) bool {
 	var riue *ddbtypes.ResourceInUseException
 	return errors.As(err, &riue)
+}
+
+// claimIndexUnusableReason classifies a ClaimIndex Query error that means the
+// GSI cannot serve the age-ordered claim query, so Claim must DEGRADE to the
+// exhaustive base-table scan instead of surfacing a (mis-classified) fault. It
+// returns a short human reason for the one-time WARN and true; for any other
+// error it returns ("", false) — a genuine fault the caller must surface.
+//
+// Two DISTINCT DynamoDB rejections are both benign-degradable, and BOTH must be
+// caught here or Claim wedges the fleet:
+//
+//   - MISSING index — an un-migrated table created before ClaimIndex existed.
+//     DynamoDB: "The table does not have the specified index: ClaimIndex".
+//
+//   - WRONG projection — a ClaimIndex whose KEY schema is correct (so preflight,
+//     if it only checked keys, would pass it) but whose projection omits the
+//     `status` attribute the claim FilterExpression reads. DynamoDB:
+//     "Secondary index ClaimIndex does not project one or more filter
+//     attributes: [status]". Without this branch that ValidationException flows
+//     to mapError and is mis-classified PERMANENT (ErrInvalidPayload/Rejected),
+//     so EVERY Claim on EVERY partition fails forever — misdiagnosed as a bad
+//     payload — and outbox delivery wedges fleet-wide (c13 review HIGH). The
+//     durable guard is the startup preflight projection check; this runtime
+//     branch is the belt-and-suspenders for a fail-open/skipped preflight.
+func claimIndexUnusableReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	// Inspect both the typed smithy API message (when present) and the full
+	// error string, so a typed ValidationException and a plain error carrying
+	// the same text are recognised identically.
+	candidates := []string{err.Error()}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		candidates = append(candidates, apiErr.ErrorMessage())
+	}
+	for _, c := range candidates {
+		lower := strings.ToLower(c)
+		switch {
+		case strings.Contains(lower, "specified index"):
+			return "not present", true
+		case strings.Contains(lower, "does not project"):
+			return "not Projection: ALL (the claim query needs the status attribute projected)", true
+		}
+	}
+	return "", false
 }
 
 // mapError classifies a DynamoDB SDK error per the error-wrapping policy
@@ -76,6 +178,19 @@ func mapError(err error) error {
 	// Rule 1: ctx errors pass through verbatim. Do not reclassify.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
+	}
+
+	// A TransactionCanceledException that reaches mapError is NOT a benign
+	// contention cancellation — claimOne short-circuits the fence conflict and
+	// the ConditionalCheckFailed/TransactionConflict lost-race codes before
+	// wrapping. What remains carries a real fault reason (throttle, throughput,
+	// validation), which must be classified honestly so the drainer backs off
+	// or stops retrying instead of silently skipping the record
+	// (c13-txn-throttle).
+	if codes, ok := transactCancellationCodes(err); ok {
+		if mapped := classifyCancellationCodes(codes, err); mapped != nil {
+			return mapped
+		}
 	}
 
 	var notFound *ddbtypes.ResourceNotFoundException

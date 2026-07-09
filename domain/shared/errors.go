@@ -96,6 +96,7 @@ const (
 	ErrCodeOutboxNotClaimable      ErrorCode = "OUTBOX_NOT_CLAIMABLE"
 	ErrCodeOutboxNotInClaimedState ErrorCode = "OUTBOX_NOT_IN_CLAIMED_STATE"
 	ErrCodeOutboxAlreadyTerminal   ErrorCode = "OUTBOX_ALREADY_TERMINAL"
+	ErrCodeOutboxNotPending        ErrorCode = "OUTBOX_NOT_PENDING"
 )
 
 // BridgeError is the structured error type for the bridge.
@@ -357,6 +358,14 @@ var (
 	ErrOutboxAlreadyTerminal = &BridgeError{
 		Code: ErrCodeOutboxAlreadyTerminal, Class: ErrorPermanent,
 		Message: "outbox record is already in a terminal state",
+	}
+	// ErrOutboxNotPending indicates Expire was invoked on a record that is
+	// not Pending (e.g. Claimed). Expire is pending-only: a claimed record
+	// is reclaimed through Claim/stale-reclaim, never expired out from under
+	// a potentially still-live owner (see ports.OutboxStore.Expire).
+	ErrOutboxNotPending = &BridgeError{
+		Code: ErrCodeOutboxNotPending, Class: ErrorPermanent,
+		Message: "outbox record is not pending",
 	}
 )
 

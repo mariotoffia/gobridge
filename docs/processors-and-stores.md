@@ -455,6 +455,11 @@ independently in the `stores` section.
 stores:
   lease:
     type: memory
+    options:
+      # Required for the in-memory lease: it keeps ownership per-process and
+      # cannot coordinate across replicas, so single-replica operation must be
+      # explicitly acknowledged. Use dynamodb for clustered deployments.
+      acknowledge_single_replica: true
   outbox:
     type: sqlite
     options:
@@ -481,7 +486,7 @@ stores:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `stale_claim_duration` | duration | runtime-derived | Outbox only -- same semantics as the DynamoDB row below. |
-| `retention` | duration | `1h` | Outbox only -- window completed/expired rows are kept before piggybacked compaction deletes them. Negative disables compaction. Keep above any upstream redelivery window. |
+| `retention` | duration | `1h` outbox / disabled DLQ | One key, per-role default. **Outbox:** window completed/expired rows are kept before piggybacked compaction deletes them; negative disables compaction (rows kept forever). Keep it above any upstream redelivery window. **DLQ:** a positive value opts the DLQ into a throttled purge of entries older than the window; zero/unset (the default) keeps every entry forever. |
 
 - Persistent across restarts. Single-instance only.
 - Suitable for single-instance production with disk durability.

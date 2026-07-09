@@ -119,6 +119,12 @@ linters:
         #    in tests). All begin with a lower-cased letter so they
         #    cannot be imported.
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091.amqpConnection
+        # publisherChannel is the confirm-tracked publish surface the Sender
+        # drives on a cached channel (*senderChannel is the sole production
+        # impl). Package-private seam so the publish-wedge timeout branch of
+        # Sender.Send can be unit-tested with a blocking/failing channel double
+        # (wedgeableChannel) without a live broker.
+        - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091.publisherChannel
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10.amqpConn
         - github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm.ssmAPI
         - github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch.cloudWatchAPI
