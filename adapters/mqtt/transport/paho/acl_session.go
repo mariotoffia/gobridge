@@ -266,8 +266,8 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	// death are LOST, and QoS 2 is not exactly-once ACROSS a restart (the
 	// four-way handshake state does not survive). A file-backed
 	// session.SessionManager (assigned to cfg.Session) is the deferred,
-	// ADR-level option; it is out of scope here (see PROD_READY_ISSUES M-6
-	// and scenario-01 docs).
+	// ADR-level option; it is out of scope here (deferred finding M-6; see
+	// scenario-01 docs).
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
