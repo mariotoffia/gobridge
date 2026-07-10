@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -36,6 +37,18 @@ type Sender struct {
 	// cached across a reconnect (stale connection) is detected and
 	// replaced before the first post-reconnect publish.
 	scConn amqpConnection
+
+	// abandoned counts publisher channels currently parked on background
+	// reapers after a publish wedged past its deadline but whose wedged
+	// publish has not yet returned (the reaper is still blocked on <-done).
+	// It bounds the HIGH-4 leak: on a broker with heartbeats the wedged
+	// publishes unblock within the heartbeat read deadline and the reapers
+	// decrement it, but with heartbeats disabled (or a black-holed network)
+	// they could otherwise accumulate without bound. Once it reaches
+	// cfg.MaxAbandonedPublishes, Send/SendBatch fast-fail transient instead of
+	// stacking more wedged publishes. Atomic so the hot-path guard reads it
+	// without taking s.mu.
+	abandoned atomic.Int64
 
 	// openChannel opens a fresh confirm-tracked publisher channel on conn.
 	// It is a seam (defaults to openSenderChannel) so the publish-wedge
@@ -124,6 +137,16 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		}
 	}
 
+	// Back-pressure on the abandoned-publish budget (HIGH-4): if too many
+	// prior publishes wedged and their reapers have not drained yet, refuse
+	// new publishes fast (transient) rather than stacking another wedged
+	// channel on an unresponsive connection. The budget frees as the wedged
+	// publishes unblock (broker recovery or reconnect).
+	if s.abandonedBudgetExhausted() {
+		return shared.ErrBrokerBusy.WithMessage(
+			"amqp091: too many publishes wedged on an unresponsive connection, refusing until recovery")
+	}
+
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "amqp091: publishing",
 			"exchange", exchange,
@@ -143,6 +166,22 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if err != nil {
 		s.mu.Unlock()
 		return MapError(err)
+	}
+
+	// Reserve one abandoned-publish slot BEFORE issuing the wedgeable publish
+	// (HIGH-4 / review #2). Reserving up-front — not charging after the
+	// timeout unlocks — makes the cap a hard bound on already-admitted callers:
+	// a caller that would push the reaper count past cfg.MaxAbandonedPublishes
+	// is refused here rather than allowed to publish, wedge, and only then
+	// discover the budget is blown. The reservation is released on any
+	// non-wedged outcome (success, nack, channel-closed) and retained by the
+	// reaper on a wedge/confirm-stall. Send holds s.mu across the whole publish
+	// so healthy serialized publishes each take and release a single slot;
+	// only genuinely parked reapers hold slots across callers.
+	if !s.tryReserveAbandonedPublish() {
+		s.mu.Unlock()
+		return shared.ErrBrokerBusy.WithMessage(
+			"amqp091: too many publishes wedged on an unresponsive connection, refusing until recovery")
 	}
 
 	start := s.clock().Now()
@@ -166,7 +205,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.sc = nil
 		s.scConn = nil
 		s.mu.Unlock()
-		go reapWedgedChannel(done, sc)
+		s.abandonReservedChannel(done, sc)
 		s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug,
@@ -177,6 +216,32 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 	res, perr := outcome.res, outcome.err
 	if perr != nil {
+		// A ctx-derived publish/confirm error means the broker accepted the
+		// publish but stalled before the publisher confirm (review #1). Closing
+		// the channel synchronously (resetChannelLocked → sc.Close) would wait
+		// for channel.close-ok on the SAME stalled broker and wedge s.mu,
+		// blocking every future send, shutdown and reconfig. Route it through
+		// the async abandon path exactly like the timed-out wedge: drop the
+		// cached channel under lock, UNLOCK, then reap detached. done is closed
+		// (the call returned), so the reaper closes immediately in the
+		// background and only that goroutine — never s.mu — waits on the broker.
+		if isPublishCtxError(perr) {
+			s.sc = nil
+			s.scConn = nil
+			s.mu.Unlock()
+			s.abandonReservedChannel(done, sc)
+			s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
+			if logging.DebugEnabled(s.logger) {
+				s.logger.Log(ctx, logging.LevelDebug,
+					"amqp091: publish confirm stalled; channel abandoned",
+					"exchange", exchange, "routing_key", routingKey, "error", perr)
+			}
+			return mapPublishError(perr)
+		}
+		// Non-ctx error (nack, confirm channel closed, protocol error): the
+		// broker responded, so Close returns promptly and is safe under s.mu.
+		// Release the reservation and synchronously reset the dead channel.
+		s.releaseAbandonedPublish()
 		s.resetChannelLocked()
 		s.mu.Unlock()
 		s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
@@ -186,6 +251,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		}
 		return mapPublishError(perr)
 	}
+	// Normal completion: the reservation taken up-front is no longer needed.
+	s.releaseAbandonedPublish()
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(start)
@@ -265,6 +332,17 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 			return results, nil
 		}
 	}
+	// Abandoned-publish back-pressure (HIGH-4): mirror Send's budget guard so
+	// a batch cannot stack more wedged publishes once the reapers are saturated.
+	if s.abandonedBudgetExhausted() {
+		results := make([]ports.BatchResult, len(msgs))
+		busy := shared.ErrBrokerBusy.WithMessage(
+			"amqp091: too many publishes wedged on an unresponsive connection, refusing until recovery")
+		for i := range msgs {
+			results[i] = ports.BatchResult{Index: i, Err: busy}
+		}
+		return results, nil
+	}
 	if s.cfg.Mandatory {
 		results := make([]ports.BatchResult, len(msgs))
 		for i, m := range msgs {
@@ -293,16 +371,36 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 
 	type inflight struct {
 		index int
-		pc    *pendingConfirm
+		pc    pendingPublish
 	}
 	pending := make([]inflight, 0, len(msgs))
 
 	s.mu.Lock()
+	// Reserve one abandoned-publish slot for the whole batch BEFORE any
+	// wedgeable publish (HIGH-4 / review #2), so a batch that would push the
+	// reaper count past cfg.MaxAbandonedPublishes is refused up-front instead of
+	// being allowed to publish, wedge, and only then blow the budget. A batch
+	// abandons at most one channel (it stops at the first publish wedge, and a
+	// confirm-stall abandons the single live channel), so one reservation
+	// suffices. handedOff records whether that slot was handed to a reaper; if
+	// not, it is released before unlock.
+	if !s.tryReserveAbandonedPublish() {
+		s.mu.Unlock()
+		busy := shared.ErrBrokerBusy.WithMessage(
+			"amqp091: too many publishes wedged on an unresponsive connection, refusing until recovery")
+		for i := range msgs {
+			results[i] = ports.BatchResult{Index: i, Err: busy}
+		}
+		return results
+	}
+	handedOff := false
 	start := s.clock().Now()
-	// blockedFrom marks the index at which broker flow control was detected
-	// mid-batch; every message from there on is failed fast below.
-	blockedFrom := -1
-	blockedReason := ""
+	// tailErr, when set, fails message i and every message after it fast and
+	// stops the publish loop: either broker flow control engaged mid-batch
+	// (ErrBrokerBusy) or a publish wedged past the deadline (mapPublishWedge).
+	// Both mean we must issue no further publishes on this batch and let the
+	// caller retry the unsent tail.
+	var tailErr error
 	i := 0
 	for ; i < len(msgs); i++ {
 		m := msgs[i]
@@ -321,12 +419,12 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 		// Residual wedge bound: the connection.blocked signal is
 		// asynchronous, so at most ONE publish — the one issued in the lag
 		// window between flow control engaging and blockedState reflecting
-		// it — can still wedge. Once blockedState is true this loop issues
-		// no further publishes.
+		// it — can still wedge. The awaitCall bound below catches THAT one so
+		// it cannot stall the batch (and s.mu) past the deadline.
 		if s.session != nil {
 			if blocked, reason := s.session.blockedState(); blocked {
-				blockedFrom = i
-				blockedReason = reason
+				tailErr = shared.ErrBrokerBusy.WithMessage(
+					"amqp091: broker flow control engaged, refusing publish: " + reason)
 				break
 			}
 		}
@@ -343,22 +441,49 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 			results[i].Err = MapError(err)
 			continue
 		}
-		pc, perr := sc.PublishDeferred(sendCtx, s.cfg.Exchange, routingKey,
-			false, m.Envelope, s.cfg, s.clock())
+		// Bound the deferred publish by sendCtx, exactly like Send: the SDK's
+		// PublishWithDeferredConfirmWithContext IGNORES ctx and blocks while
+		// the broker holds connection.blocked flow control. Issuing it raw
+		// under s.mu (as before) let a single mid-batch resource alarm wedge
+		// the batch AND every subsequent send, shutdown, and reconfiguration
+		// on the sender mutex. awaitCall runs it on a goroutine raced against
+		// sendCtx; on the deadline we abandon the channel to a reaper and stop.
+		pubOut, timedOut, done := awaitCall(sendCtx, func() (pendingPublish, error) {
+			return sc.PublishDeferred(sendCtx, s.cfg.Exchange, routingKey,
+				false, m.Envelope, s.cfg, s.clock())
+		})
+		if timedOut {
+			// Drop the wedged channel so a later send reopens a fresh one and
+			// hand it to the background reaper against the reserved budget slot.
+			// Fail this message and the unsent tail transient. The already-
+			// pending confirms are drained below (Settled-first) so any the
+			// broker already confirmed keep their real outcome; genuinely
+			// unsettled ones under the now-expired sendCtx fail transient.
+			s.sc = nil
+			s.scConn = nil
+			s.abandonReservedChannel(done, sc)
+			handedOff = true
+			tailErr = mapPublishWedge(sendCtx)
+			break
+		}
+		pc, perr := pubOut.val, pubOut.err
 		if perr != nil {
+			// The SDK's deferred-publish IGNORES ctx, so this error is never a
+			// ctx timeout — it is a real publish failure (dead channel, protocol
+			// error). The broker responded, so Close returns promptly and
+			// resetChannelLocked is safe under s.mu (unlike the confirm-stall
+			// path below, which must abandon asynchronously).
 			s.resetChannelLocked()
 			results[i].Err = mapPublishError(perr)
 			continue
 		}
 		pending = append(pending, inflight{index: i, pc: pc})
 	}
-	// Fail every message from the flow-control break point onward fast so
-	// the caller retries them rather than stalling past its deadline.
-	if blockedFrom >= 0 {
-		busy := shared.ErrBrokerBusy.WithMessage(
-			"amqp091: broker flow control engaged, refusing publish: " + blockedReason)
+	// Fail every message from the break point onward fast so the caller
+	// retries them rather than stalling past its deadline.
+	if tailErr != nil {
 		for ; i < len(msgs); i++ {
-			results[i] = ports.BatchResult{Index: i, Err: busy}
+			results[i] = ports.BatchResult{Index: i, Err: tailErr}
 		}
 	}
 
@@ -366,20 +491,70 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 	// channel and its confirmation bookkeeping are single-owner). On a
 	// channel death the SDK nacks every outstanding confirm, so this
 	// loop always terminates within the batch deadline.
+	//
+	// ponytail: confirm-drain is confirm-preferred, bounded at-least-once.
+	// A message whose confirm already arrived is recorded with its real
+	// outcome via Settled() BEFORE the (possibly expired) sendCtx is honoured
+	// (review #6) — otherwise a delivered message loses the ctx.Done() select
+	// race and is misreported transient, duplicating on retry. The residual
+	// ceiling: publishes whose confirms are GENUINELY still in flight when the
+	// deadline fires are ambiguous (broker may or may not have persisted them)
+	// and are reported transient, so a retry may duplicate that unconfirmed
+	// prefix. This is inherent to at-least-once publishing under a hard
+	// deadline; the bound is the number of unsettled in-flight confirms.
 	channelDead := false
+	confirmWedged := false
+	var wedgedSC channelCloser
 	for _, p := range pending {
+		if settled, serr := p.pc.Settled(); settled {
+			if serr != nil {
+				results[p.index].Err = mapPublishError(serr)
+				if errors.Is(serr, errConfirmChannelClosed) {
+					channelDead = true
+				}
+				continue
+			}
+			s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
+			continue
+		}
 		if err := p.pc.Wait(sendCtx); err != nil {
 			results[p.index].Err = mapPublishError(err)
-			if errors.Is(err, errConfirmChannelClosed) ||
-				errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			switch {
+			case isPublishCtxError(err):
+				// The broker accepted the publish but stalled before the
+				// confirm (review #1). Closing the channel synchronously would
+				// wait for channel.close-ok on the SAME stalled broker under
+				// s.mu, wedging every future send/shutdown/reconfig. Abandon it
+				// asynchronously after the loop instead. The stalled channel is
+				// the live cached one (a confirm on an already-reset channel
+				// would have been nacked, not ctx-wedged).
+				confirmWedged = true
+				if wedgedSC == nil {
+					wedgedSC = s.sc
+				}
+			case errors.Is(err, errConfirmChannelClosed):
 				channelDead = true
 			}
 			continue
 		}
 		s.metrics.Timer(MetricAMQP091PublishLatency, s.clock().Since(start), sessionTag)
 	}
-	if channelDead {
+	switch {
+	case confirmWedged && !handedOff:
+		// Drop the stalled channel under lock, then reap it detached so the
+		// broker's channel.close-ok wait never blocks s.mu. done is nil: the
+		// publish already returned, only the confirm stalled.
+		s.sc = nil
+		s.scConn = nil
+		s.abandonReservedChannel(nil, wedgedSC)
+		handedOff = true
+	case channelDead:
+		// Broker closed the channel (all pending confirms nacked): Close is
+		// prompt, so reset synchronously.
 		s.resetChannelLocked()
+	}
+	if !handedOff {
+		s.releaseAbandonedPublish()
 	}
 	s.mu.Unlock()
 
@@ -505,33 +680,50 @@ type publishOutcome struct {
 	err error
 }
 
-// awaitPublish runs publish — which may ignore ctx and block indefinitely, as
-// the SDK's PublishWithDeferredConfirmWithContext does while the broker holds
-// connection.blocked flow control — and races its completion against ctx. When
-// the publish finishes first it returns the outcome with timedOut=false. When
-// ctx fires first it returns timedOut=true and a done channel that closes once
-// the wedged publish finally unblocks, so the caller can reap (force-close) the
-// abandoned channel out-of-band WITHOUT holding the sender mutex meanwhile.
+// awaitResult carries the outcome of a bounded call raced against ctx.
+type awaitResult[T any] struct {
+	val T
+	err error
+}
+
+// awaitCall runs call — which may ignore ctx and block indefinitely, as the
+// SDK's PublishWithDeferredConfirmWithContext does while the broker holds
+// connection.blocked flow control — on a goroutine and races its completion
+// against ctx. When the call finishes first it returns the result with
+// timedOut=false. When ctx fires first it returns timedOut=true and a done
+// channel that closes once the wedged call finally unblocks, so the caller can
+// reap (force-close) the abandoned channel out-of-band WITHOUT holding the
+// sender mutex meanwhile.
 //
-// Race-safety: the publish goroutine writes the outcome through o and then
-// closes d; the non-timeout path reads *o only after receiving from d
-// (close(d) establishes happens-before), and the timeout path never reads o.
-func awaitPublish(
+// Race-safety: the goroutine writes *o and then closes d; the non-timeout path
+// reads *o only after receiving from d (close(d) establishes happens-before),
+// and the timeout path never reads o.
+func awaitCall[T any](
 	ctx context.Context,
-	publish func() (publishResult, error),
-) (out publishOutcome, timedOut bool, done <-chan struct{}) {
+	call func() (T, error),
+) (out awaitResult[T], timedOut bool, done <-chan struct{}) {
 	d := make(chan struct{})
-	o := &publishOutcome{}
+	o := &awaitResult[T]{}
 	go func() {
-		o.res, o.err = publish()
+		o.val, o.err = call()
 		close(d)
 	}()
 	select {
 	case <-d:
 		return *o, false, d
 	case <-ctx.Done():
-		return publishOutcome{}, true, d
+		return awaitResult[T]{}, true, d
 	}
+}
+
+// awaitPublish is the confirmed-publish (Send) specialisation of awaitCall.
+// See awaitCall for the timeout/abandon/reap contract and race-safety.
+func awaitPublish(
+	ctx context.Context,
+	publish func() (publishResult, error),
+) (out publishOutcome, timedOut bool, done <-chan struct{}) {
+	res, timedOut, d := awaitCall(ctx, publish)
+	return publishOutcome{res: res.val, err: res.err}, timedOut, d
 }
 
 // channelCloser is the minimal surface reapWedgedChannel needs; *senderChannel
@@ -539,15 +731,82 @@ func awaitPublish(
 // unit-tested without a live broker channel.
 type channelCloser interface{ Close() error }
 
-// reapWedgedChannel force-closes a publisher channel abandoned by Send after a
-// publish wedged past its deadline. It waits for the wedged publish goroutine
+// reapWedgedChannel force-closes a publisher channel abandoned after a publish
+// wedged past its deadline (or after a publisher confirm stalled on a half-dead
+// broker). When done is non-nil it first waits for the wedged publish goroutine
 // to return (done closed) because the SDK's channel Close serializes on the
-// same send mutex the publish holds — closing earlier would itself wedge. Run
-// detached from the Send caller so a stuck broker never stalls the hot path,
-// shutdown, or reconfig.
+// same send mutex the publish holds — closing earlier would itself wedge. When
+// done is nil the publish already returned (only the confirm was outstanding),
+// so it closes immediately. Run detached from the caller so a stuck broker
+// never stalls the hot path, shutdown, or reconfig.
 func reapWedgedChannel(done <-chan struct{}, sc channelCloser) {
-	<-done
-	_ = sc.Close()
+	if done != nil {
+		<-done
+	}
+	if sc != nil {
+		_ = sc.Close()
+	}
+}
+
+// tryReserveAbandonedPublish atomically reserves one slot of the per-sender
+// abandoned-publish budget (HIGH-4) BEFORE a wedgeable publish is issued, so
+// the cap bounds already-admitted concurrent callers rather than only callers
+// that arrive after exhaustion. It returns false when the budget is already at
+// cfg.MaxAbandonedPublishes (a non-positive cap disables the guard). The CAS
+// loop makes check-and-charge a single atomic step: a normal publish releases
+// the reservation on completion (releaseAbandonedPublish); a wedged one keeps
+// it charged until its reaper drains (abandonReservedChannel).
+func (s *Sender) tryReserveAbandonedPublish() bool {
+	limit := int64(s.cfg.MaxAbandonedPublishes)
+	for {
+		cur := s.abandoned.Load()
+		if limit > 0 && cur >= limit {
+			return false
+		}
+		if s.abandoned.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// releaseAbandonedPublish returns a reservation taken by
+// tryReserveAbandonedPublish when the publish completed normally (no wedge).
+func (s *Sender) releaseAbandonedPublish() {
+	s.abandoned.Add(-1)
+}
+
+// abandonReservedChannel hands a channel whose publish wedged, or whose
+// publisher confirm stalled on a half-dead broker, to a background reaper. The
+// reservation was already taken (tryReserveAbandonedPublish) so it does NOT
+// re-charge; the reaper closes the channel once the wedged publish returns
+// (done non-nil) or immediately (done nil, confirm-only stall) and then
+// RELEASES the reservation. Until then the live count bounds how many such
+// leaks accumulate: Send/SendBatch refuse new publishes once the budget is
+// exhausted, so a black-holed connection cannot stack reapers without bound.
+func (s *Sender) abandonReservedChannel(done <-chan struct{}, sc channelCloser) {
+	go func() {
+		reapWedgedChannel(done, sc)
+		s.releaseAbandonedPublish()
+	}()
+}
+
+// abandonedBudgetExhausted reports whether the number of reserved abandoned-
+// publish slots has reached cfg.MaxAbandonedPublishes. A non-positive cap
+// disables the guard (unlimited). This is a cheap pre-lock fast-fail; the hard
+// cap is enforced under s.mu by tryReserveAbandonedPublish.
+func (s *Sender) abandonedBudgetExhausted() bool {
+	limit := s.cfg.MaxAbandonedPublishes
+	return limit > 0 && s.abandoned.Load() >= int64(limit)
+}
+
+// isPublishCtxError reports whether a publish-or-confirm error is derived from
+// ctx cancellation/deadline (directly or wrapped, e.g. through pendingConfirm.
+// Wait's "%w" wrap). Such an error means the broker accepted the publish but
+// stalled before the publisher confirm: closing the channel synchronously would
+// wait for channel.close-ok on the same stalled broker and wedge s.mu, so these
+// are routed through the async abandon path instead of resetChannelLocked.
+func isPublishCtxError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // mapPublishWedge classifies a publish abandoned on deadline/cancel as a

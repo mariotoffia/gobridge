@@ -153,15 +153,25 @@ func TestDeliveryRetryScheduleFailsNoComplete(t *testing.T) {
 	}
 }
 
-// TestDeliveryRetryCompleteFailCancelsScheduled verifies that when
-// CompleteMessage fails after a successful schedule, the scheduled
-// message is cancelled to prevent duplicates.
-func TestDeliveryRetryCompleteFailCancelsScheduled(t *testing.T) {
+// TestDeliveryRetryCompleteFailKeepsScheduledNoCancel proves the delayed-
+// retry path does NOT cancel the scheduled copy when CompleteMessage
+// fails. CompleteMessage can fail AMBIGUOUSLY — the broker may have
+// COMMITTED the complete while the client only saw a timeout /
+// connection-lost response — so cancelling the ONLY scheduled copy would
+// erase the message from both places: permanent loss (CRITICAL-1). The
+// adapter prefers duplicates over loss: the copy stays scheduled and the
+// settle error is surfaced.
+//
+// Mutation: restore the CancelScheduledMessages call on complete failure.
+// Then CancelCalls == 1 and this test FAILS.
+func TestDeliveryRetryCompleteFailKeepsScheduledNoCancel(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockASBClient{
 		CompleteMessageFn: func(context.Context, *azservicebus.ReceivedMessage, *azservicebus.CompleteMessageOptions) error {
-			return errors.New("complete failed")
+			// Ambiguous failure: the broker may already have committed the
+			// complete. The client cannot tell, so the copy must survive.
+			return &azservicebus.Error{Code: azservicebus.CodeConnectionLost}
 		},
 	}
 	sched := &mockRetryScheduler{}
@@ -171,16 +181,16 @@ func TestDeliveryRetryCompleteFailCancelsScheduled(t *testing.T) {
 
 	err := d.Retry(context.Background(), 5*time.Second, nil)
 	if err == nil {
-		t.Fatal("expected error from failed CompleteMessage")
+		t.Fatal("expected the ambiguous CompleteMessage failure to be surfaced")
 	}
 
 	sched.mu.Lock()
 	defer sched.mu.Unlock()
 	if sched.ScheduleCalls != 1 {
-		t.Fatalf("ScheduleCalls = %d, want 1", sched.ScheduleCalls)
+		t.Fatalf("ScheduleCalls = %d, want 1 (the retry copy is scheduled exactly once)", sched.ScheduleCalls)
 	}
-	if sched.CancelCalls != 1 {
-		t.Fatalf("CancelCalls = %d, want 1 (should cancel scheduled message on complete failure)", sched.CancelCalls)
+	if sched.CancelCalls != 0 {
+		t.Fatalf("CancelCalls = %d, want 0 (the scheduled copy must NEVER be cancelled — prefer duplicates over loss)", sched.CancelCalls)
 	}
 }
 

@@ -113,6 +113,17 @@ func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*p
 	return nil, nil
 }
 
+// CountPending advertises the OPTIONAL ports.OutboxDepthReporter capability and
+// reports every partition empty. The supervisor's durable-reload preflight
+// (HIGH-2/HIGH-3) refuses a reload that orphans a NON-empty outbox partition; a
+// store that cannot prove its depth is treated as non-empty (fail closed). This
+// fake proves empty so the many existing reload/orphaning tests that use it keep
+// exercising the allow path. Tests that want to exercise the REFUSE path use a
+// dedicated store reporting a positive count.
+func (f *fakeOutboxStore) CountPending(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
 type fakeStoreFactory struct{}
 
 func (f *fakeStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {

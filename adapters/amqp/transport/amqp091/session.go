@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -77,6 +78,22 @@ type Session struct {
 	// re-established the connection, replacing the 250ms poll.
 	reconnected chan struct{}
 
+	// forceReconnect wakes the reconnectLoop to reconnect NOW, out of band
+	// from a NotifyClose. Credential/TLS rotation (ApplyCredentials) uses it
+	// to drive an immediate reconnect after it force-drops the live
+	// connection, instead of relying on the stale connection's async Close
+	// eventually firing NotifyClose (which never happens if that Close wedges
+	// on a half-dead broker). Buffered (cap 1) and coalesced: multiple
+	// rotations while a reconnect is already scheduled collapse to one.
+	forceReconnect chan struct{}
+
+	// activeCloses bounds the number of in-flight detached connection-close
+	// goroutines (closeConnAsync). Under a sustained outage every reconnect
+	// attempt discards a connection whose Close can itself wedge on
+	// connection.close-ok; without a cap each attempt would park another
+	// close goroutine forever (review #3). maxConcurrentCloses is the ceiling.
+	activeCloses atomic.Int64
+
 	// eventSubs holds per-subscriber channels for fan-out delivery of
 	// session lifecycle events. Reading from the legacy Events() channel
 	// drains the shared buffer, so every Receiver and observer that
@@ -91,6 +108,15 @@ type Session struct {
 	// new values, and in-flight dials with stale credentials are fine
 	// (they just fail auth and retry).
 	liveCreds amqpCredentials
+
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live reconnect
+	// dial maps a broker error to shared.ErrNotAuthorized (403 access-refused),
+	// forcing an immediate re-resolve rather than stalling on revoked
+	// credentials until the next poll. atomic.Pointer gives safe publication
+	// across the builder goroutine (setter) and the reconnect goroutine (load).
+	authFailureCB atomic.Pointer[func(error)]
 }
 
 // amqpCredentials is the mutable subset of SessionOptions that can be
@@ -113,15 +139,16 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	}
 	opts.applyDefaults()
 	s := &Session{
-		opts:        opts,
-		mode:        mode,
-		logger:      logger,
-		metrics:     m,
-		dial:        defaultDialFromOpts(opts),
-		clk:         opts.Clock,
-		events:      make(chan ports.SessionEvent, 16),
-		activeSubs:  make(map[string]bool),
-		reconnected: make(chan struct{}, 1),
+		opts:           opts,
+		mode:           mode,
+		logger:         logger,
+		metrics:        m,
+		dial:           defaultDialFromOpts(opts),
+		clk:            opts.Clock,
+		events:         make(chan ports.SessionEvent, 16),
+		activeSubs:     make(map[string]bool),
+		reconnected:    make(chan struct{}, 1),
+		forceReconnect: make(chan struct{}, 1),
 		liveCreds: amqpCredentials{
 			Username: opts.Username,
 			Password: opts.Password.Reveal(),
@@ -342,7 +369,14 @@ func (s *Session) Start(ctx context.Context) error {
 	// Defer SessionConnected until after reconcile when a plan is present,
 	// so consumers don't act on a connection that isn't fully set up.
 	if plan != nil {
-		if err := s.reconcile(ctx, conn, *plan); err != nil {
+		// Bound the initial topology declaration by ConnectTimeout: the
+		// declare calls are ctx-less (see reconcile), so a caller that passes
+		// a deadline-less ctx (e.g. context.Background()) would otherwise let
+		// a single wedged declare hang Start indefinitely on a half-dead broker.
+		reconcileCtx, reconcileCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
+		err := s.reconcile(reconcileCtx, conn, *plan)
+		reconcileCancel()
+		if err != nil {
 			// A failed initial reconcile means the declared topology is
 			// NOT in place: messages published to the missing binding are
 			// silently unroutable. Surface it — fail Start so the caller
@@ -363,8 +397,11 @@ func (s *Session) Start(ctx context.Context) error {
 			s.mu.Unlock()
 			if ownsConn {
 				// If Close ran meanwhile it already took (and closed) the
-				// connection; only close what we still own.
-				_ = conn.Close()
+				// connection; only close what we still own. Detached, because
+				// a reconcile that failed on a DEADLINE left a half-dead broker
+				// whose synchronous Close would itself wedge (it also unblocks
+				// the abandoned declare goroutine).
+				s.closeConnAsync(conn)
 			}
 			return mappedErr
 		}
@@ -443,7 +480,21 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		return nil
 	}
 
-	return s.reconcile(ctx, conn, plan)
+	// Bound the declaration by ConnectTimeout — the declare calls are ctx-less
+	// (see reconcile). On the deadline (a half-dead broker), drop the
+	// connection so the abandoned declare goroutine unwinds and the reconnect
+	// loop redials; the close is detached because a synchronous Close would
+	// itself wedge on the same dead broker. A FAST declare failure (a topology
+	// or permission error on a HEALTHY connection) is returned WITHOUT dropping
+	// the connection — cycling it would only re-fail the same plan.
+	reconcileCtx, reconcileCancel := context.WithTimeout(ctx, s.opts.ConnectTimeout)
+	err := s.reconcile(reconcileCtx, conn, plan)
+	timedOut := reconcileCtx.Err() != nil
+	reconcileCancel()
+	if err != nil && timedOut {
+		s.closeConnAsync(conn)
+	}
+	return err
 }
 
 func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan connectivity.SessionPlan) error {
@@ -462,17 +513,123 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 		)
 	}
 
-	// activeSubs is recomputed from the new plan rather than appended to
-	// so that subscriptions removed from the plan are reflected in
-	// Health() reporting.
+	// activeSubs is NOT reset here. It is committed from the queue names that
+	// topology declaration returns LOCALLY, and only after a successful declare
+	// under a generation guard (see below). Resetting up-front would (a) make a
+	// FAILED reconcile drop the last-known-good view, and (b) — combined with
+	// the in-goroutine write this refactor removed — let a timed-out plan-A
+	// declare that later unwinds clobber a newer plan-B's subscriptions
+	// (review #5). On failure activeSubs keeps its last-known-good value.
+
+	// Topology declaration is bounded by ctx: the amqp091-go declare calls
+	// (Channel/ExchangeDeclare/QueueDeclare/QueueBind — see acl_session.go)
+	// are NOT context-aware and block on a half-dead broker until it answers
+	// or the connection dies. Without a bound, a single wedged declare hangs
+	// reconnect (connected stays false, receivers stay down), Start, and the
+	// public Reconcile past the configured ConnectTimeout. declareTopologyWithin
+	// runs the declarations raced against ctx; on the deadline the driver drops
+	// the connection so the abandoned SDK call unwinds and the reconnect loop
+	// redials (see doReconnect / Start / Reconcile).
+	declaredQueues, err := s.declareTopologyWithin(ctx, conn, plan)
+	if err != nil {
+		return err
+	}
+
+	// Commit activeSubs from the LOCALLY-returned queue names, and only if this
+	// reconcile's connection is still the installed one (generation guard). The
+	// commit happens HERE — never inside the declare goroutine — so a plan-A
+	// declare that timed out and later unwinds cannot write stale subscriptions
+	// over the connection a newer plan-B installed (review #5).
 	s.mu.Lock()
-	s.activeSubs = make(map[string]bool, len(plan.Subscriptions))
+	if s.conn == conn {
+		next := make(map[string]bool, len(declaredQueues))
+		for _, q := range declaredQueues {
+			next[q] = true
+		}
+		s.activeSubs = next
+	}
 	s.mu.Unlock()
 
-	for _, sub := range plan.Subscriptions {
-		if err := s.declareSubscription(conn, sub); err != nil {
-			return err
+	elapsed := s.clock().Since(reconcileStart)
+	s.metrics.Timer(MetricAMQP091ReconcileLatency, elapsed,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile done",
+			"subscriptions", len(plan.Subscriptions),
+			"publishers", len(plan.Publishers),
+			"duration", elapsed,
+		)
+	}
+
+	s.pushEvent(ports.SessionReconciled, nil)
+	return nil
+}
+
+// declareOutcome carries the result of an abandonable topology declaration:
+// the queue names successfully declared and the terminal error (nil on
+// success). It travels on a buffered channel so an abandoned declare goroutine
+// can deposit its result and exit without blocking — and, crucially, WITHOUT
+// mutating session state. activeSubs is committed by reconcile from these
+// returned names under a generation guard, so a timed-out plan-A declare that
+// later unwinds cannot write stale subscriptions over a newer plan-B (review #5).
+type declareOutcome struct {
+	queues []string
+	err    error
+}
+
+// declareTopologyWithin runs the plan's exchange/queue/binding declarations
+// bounded by ctx and returns the names of the queues successfully declared.
+// The amqp091-go declare calls (Channel/ExchangeDeclare/QueueDeclare/QueueBind)
+// are NOT context-aware and block on a half-dead broker until it answers or the
+// connection dies, so the work runs on a goroutine raced against ctx. done is
+// BUFFERED (cap 1) so the abandoned goroutine's send never blocks and it exits
+// on its own once the driver drops the connection and the wedged SDK call
+// unwinds — no goroutine leak, and no session-state mutation from the abandoned
+// goroutine. On the deadline the mapped ctx error is returned so the caller
+// drops the connection and retries within the configured timeout.
+func (s *Session) declareTopologyWithin(ctx context.Context, conn amqpConnection, plan connectivity.SessionPlan) ([]string, error) {
+	done := make(chan declareOutcome, 1)
+	go func() {
+		queues, err := s.declareTopology(conn, plan)
+		done <- declareOutcome{queues: queues, err: err}
+	}()
+
+	select {
+	case out := <-done:
+		return out.queues, out.err
+	case <-ctx.Done():
+		// Prefer a declaration that completed in the same instant the deadline
+		// fired over reporting a spurious timeout.
+		select {
+		case out := <-done:
+			return out.queues, out.err
+		default:
 		}
+		if s.logger != nil {
+			s.logger.Warn("amqp091: topology declaration exceeded deadline; "+
+				"abandoning and dropping the connection",
+				"broker", s.safeBrokerURL(), "error", ctx.Err())
+		}
+		return nil, MapError(ctx.Err())
+	}
+}
+
+// declareTopology performs the plan's exchange/queue/binding declarations and
+// returns the queue names it successfully declared (for reconcile to commit
+// into activeSubs). Subscription declares are FATAL — you cannot consume from a
+// queue that cannot be declared — so the first error aborts and the queues
+// declared so far are returned alongside it (reconcile discards them on error).
+// Publisher-exchange declares are BEST-EFFORT (see the inline rationale). It
+// runs on the goroutine declareTopologyWithin spawns so the ctx-less SDK calls
+// can be abandoned on the deadline; it MUST NOT mutate session state (review #5).
+func (s *Session) declareTopology(conn amqpConnection, plan connectivity.SessionPlan) ([]string, error) {
+	queues := make([]string, 0, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		queueName, err := s.declareSubscription(conn, sub)
+		if err != nil {
+			return queues, err
+		}
+		queues = append(queues, queueName)
 	}
 
 	for _, pub := range plan.Publishers {
@@ -499,44 +656,68 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 		}
 	}
 
-	elapsed := s.clock().Since(reconcileStart)
-	s.metrics.Timer(MetricAMQP091ReconcileLatency, elapsed,
-		shared.Tag{Key: shared.TagKeySessionID, Value: s.safeBrokerURL()})
-	if logging.DebugEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelDebug, "amqp091: reconcile done",
-			"subscriptions", len(plan.Subscriptions),
-			"publishers", len(plan.Publishers),
-			"duration", elapsed,
-		)
-	}
+	return queues, nil
+}
 
-	s.pushEvent(ports.SessionReconciled, nil)
-	return nil
+// closeConnAsync closes conn without blocking the caller. A synchronous
+// conn.Close() on a half-dead broker blocks in the SDK (it waits for the
+// connection.close-ok, ultimately bounded only by the heartbeat read
+// deadline), which would stall reconnect retries, Start, credential rotation
+// and topology-declaration give-up. The close is detached and deadline-bounded:
+// its only job is to unwedge any in-flight SDK call and free the socket.
+//
+// It is also CAPPED (review #3): under a sustained outage every reconnect
+// attempt discards a connection whose Close can itself wedge waiting for
+// connection.close-ok. A plain fire-and-forget go conn.Close() would park a new
+// goroutine on every attempt and leak unboundedly — the exact outage-shape leak
+// HIGH-2 fixed, reintroduced on the close side. Two bounds apply: each close
+// runs under conn.CloseDeadline so it cannot park past the dial timeout even if
+// the broker never answers, and at most maxConcurrentCloses close goroutines
+// run at once — beyond that the connection is dropped without an explicit close
+// (the OS reaps the socket when the process/GC releases it, and the broker
+// reaps the peer when heartbeats stop), which is strictly better than an
+// unbounded goroutine pile-up.
+func (s *Session) closeConnAsync(conn amqpConnection) {
+	if conn == nil {
+		return
+	}
+	if s.activeCloses.Add(1) > maxConcurrentCloses {
+		s.activeCloses.Add(-1)
+		return
+	}
+	deadline := s.clock().Now().Add(dialTimeout(s.opts))
+	go func() {
+		defer s.activeCloses.Add(-1)
+		_ = conn.CloseDeadline(deadline)
+	}()
 }
 
 // declareSubscription opens a fresh AMQP channel for a single subscription's
-// declarations (exchange, queue, bind). A separate channel per subscription
-// ensures that a PRECONDITION_FAILED error on one declaration does not
-// poison the channel for subsequent subscriptions in the same plan, since
-// AMQP closes the channel on any soft error.
-func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.SubscriptionPlan) error {
+// declarations (exchange, queue, bind) and returns the declared queue name.
+// A separate channel per subscription ensures that a PRECONDITION_FAILED error
+// on one declaration does not poison the channel for subsequent subscriptions
+// in the same plan, since AMQP closes the channel on any soft error. It does
+// NOT mutate activeSubs — reconcile commits the returned name under a
+// generation guard so an abandoned declare goroutine cannot write stale
+// state (review #5).
+func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.SubscriptionPlan) (string, error) {
 	queueName := sub.Topic
 	decl := subscriptionParams(sub)
 
 	ch, err := conn.Channel()
 	if err != nil {
-		return MapError(err)
+		return "", MapError(err)
 	}
 	defer func() { _ = ch.Close() }()
 
 	if decl.exchange != "" {
 		if err := ch.ExchangeDeclare(decl.exchange, decl.exchangeType, decl.durable, decl.autoDelete, decl.exchangeArgs); err != nil {
-			return MapError(err)
+			return "", MapError(err)
 		}
 	}
 
 	if err := ch.QueueDeclare(queueName, decl.durable, decl.autoDelete, decl.queueArgs); err != nil {
-		return MapError(err)
+		return "", MapError(err)
 	}
 
 	if decl.exchange != "" {
@@ -545,14 +726,11 @@ func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.Subs
 			routingKey = queueName
 		}
 		if err := ch.QueueBind(queueName, routingKey, decl.exchange, decl.bindArgs); err != nil {
-			return MapError(err)
+			return "", MapError(err)
 		}
 	}
 
-	s.mu.Lock()
-	s.activeSubs[queueName] = true
-	s.mu.Unlock()
-	return nil
+	return queueName, nil
 }
 
 // declarePublisher opens a fresh channel for a single publisher's exchange
@@ -825,6 +1003,15 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 
 const (
 	reconnectInitial = 1 * time.Second
+
+	// maxConcurrentCloses bounds the number of in-flight detached
+	// connection-close goroutines (closeConnAsync). Under a sustained outage
+	// every reconnect attempt discards a connection whose Close can itself
+	// wedge waiting for connection.close-ok; capping the close goroutines keeps
+	// that from leaking one goroutine per attempt (review #3). A small constant
+	// is plenty: closes are transient and CloseDeadline-bounded, so the queue
+	// drains as fast as the dial timeout.
+	maxConcurrentCloses = 4
 )
 
 // watchBlocked observes broker connection.blocked / connection.unblocked
@@ -921,6 +1108,14 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-s.reconnected:
+			case <-s.forceReconnect:
+				// Credential/TLS rotation dropped the live connection and asked
+				// for an immediate reconnect (review #4). s.conn is already nil
+				// (ApplyCredentials cleared it under the lock), so redial now
+				// rather than waiting for the stale connection's async Close to
+				// fire NotifyClose — which never happens if that Close wedges on
+				// a half-dead broker.
+				s.doReconnect(ctx)
 			}
 			continue
 		}
@@ -930,6 +1125,12 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.forceReconnect:
+			// Rotation forced a reconnect while we were watching a now-stale
+			// connection. ApplyCredentials already dropped s.conn and started
+			// its detached close, so drive the reconnect immediately instead of
+			// blocking on this connection's NotifyClose.
+			s.doReconnect(ctx)
 		case connErr, ok := <-notifyCh:
 			s.mu.Lock()
 			if s.closed {
@@ -958,6 +1159,16 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: connection lost, reconnecting",
 					"broker", s.safeBrokerURL(), "error", connErr)
+			}
+
+			// Absorb any pending forceReconnect token: this NotifyClose-driven
+			// reconnect already accomplishes what a concurrent rotation asked
+			// for, so a leftover token must not drive a SECOND doReconnect that
+			// would overwrite — and leak — the freshly reconnected connection
+			// (doReconnect installs without closing the previous s.conn).
+			select {
+			case <-s.forceReconnect:
+			default:
 			}
 
 			s.doReconnect(ctx)
@@ -1005,6 +1216,19 @@ func (s *Session) doReconnect(ctx context.Context) {
 		connectCancel()
 
 		if err != nil {
+			// HIGH-3 reactive-recovery chokepoint: every reconnect attempt
+			// redials here, and a hard rotation that revoked the old
+			// credentials fails the dial with 403 access-refused, which
+			// MapError classifies as shared.ErrNotAuthorized. Report it so the
+			// refresher forces an immediate re-resolve instead of retrying the
+			// same revoked material until the next poll. reportAuthFailure
+			// filters non-auth dial errors (connection refused, timeout).
+			//
+			// ponytail: AMQP 0-9-1 authenticates at connection.open, so a
+			// credential revocation manifests as a reconnect auth failure — the
+			// single funnel for every channel/consumer/publisher on the
+			// connection — not a per-message fault.
+			s.reportAuthFailure(MapError(err))
 			if logging.DebugEnabled(s.logger) {
 				s.logger.Log(context.Background(), logging.LevelDebug, "amqp091: reconnect attempt failed",
 					"broker", safeBroker,
@@ -1068,7 +1292,12 @@ func (s *Session) doReconnect(ctx context.Context) {
 				closed := s.closed
 				s.mu.Unlock()
 				if ownsConn {
-					_ = conn.Close()
+					// Detached: a reconcile that failed on a DEADLINE left a
+					// half-dead broker whose synchronous Close would wedge and
+					// stall this retry loop (it also unblocks the abandoned
+					// declare goroutine). Fire-and-forget is safe — we already
+					// dropped s.conn, so the next attempt redials.
+					s.closeConnAsync(conn)
 				}
 				if closed {
 					return

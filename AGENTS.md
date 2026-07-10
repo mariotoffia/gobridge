@@ -19,6 +19,7 @@ GoBridge is a Go 1.25+ multi-module message bridge (MQTT, AWS SQS, Azure Service
 | Understanding the domain shape or bounded contexts | `DDD.md` |
 | Lint failed; need to know which checker, which report, how to fix | `LINT.md` |
 | Local setup, env vars, CI mapping | `DEVELOPMENT.md` |
+| Tagging a release, bumping inter-module requires, adding/removing a `replace`, versioning a module | `RELEASE.md` (tag names, dependency-ordered release, no replaces in published modules) + `DEVELOPMENT.md` §Module versioning & references |
 | Operating against the running bridge | `docs/` (configuration, transports, processors, stores, scenarios, runbooks) |
 
 Markdown is the default doc format. New runbooks go under `docs/runbooks/`. Do not add root-level docs unless instructed.

@@ -71,7 +71,13 @@ func TestSession_Start_ReconcileFailure_FailsStart(t *testing.T) {
 	require.Equal(t, shared.ErrCodeNotFound, be.Code)
 
 	// Unwound: connection closed, nothing installed, not connected.
-	require.Equal(t, 1, mc.closeCalls(), "the dialed connection must be closed on reconcile failure")
+	// The close is detached (closeConnAsync) so a reconcile that failed on a
+	// half-dead broker cannot wedge Start on a synchronous conn.Close — hence
+	// Eventually rather than a synchronous count. s.conn is cleared under the
+	// lock before the close is dispatched, so it is observably nil right away.
+	require.Eventually(t, func() bool { return mc.closeCalls() >= 1 },
+		2*time.Second, time.Millisecond,
+		"the dialed connection must be closed on reconcile failure")
 	s.mu.Lock()
 	conn := s.conn
 	s.mu.Unlock()

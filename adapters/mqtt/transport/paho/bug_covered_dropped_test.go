@@ -16,19 +16,24 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// M-3 (MEDIUM): covered-topic post-grace ack-and-drop silently loses live-route
-// QoS 1/2 and is conflated with benign orphan cleanup.
+// HIGH-1: a still-COVERED live-route publish must NEVER be acked-and-dropped
+// after the grace window — that converts startup slowness into acknowledged
+// loss and breaks at-least-once.
 //
-// After the grace window an unmatched publish is acked-and-dropped. If its
-// topic is STILL covered by a subscription the session wants (a live route
-// whose receiver handler registered late), that is REAL message loss — but the
-// old code counted it on the same MetricMQTTRouterUnmatchedDropped as a benign
-// orphan (a route removed from config), and warned only at DEBUG.
+// After the grace window an unmatched publish is classified by whether its
+// topic is STILL covered by a subscription the session wants. A COVERED topic
+// (a live route whose receiver handler registered late) is RETAINED un-acked in
+// the bounded pending buffer (bounded by receive_maximum) so it is delivered
+// once the handler registers, or redelivered by the broker on reconnect — never
+// lost. Only a genuine ORPHAN (a route removed from config) is acked, dropped,
+// and unsubscribed.
 //
-// Fix: split the metric — covered-topic drops are counted on
-// MetricMQTTRouterCoveredDropped and WARN-logged; genuine orphan cleanup stays
-// on MetricMQTTRouterUnmatchedDropped. A nil covered predicate preserves the
-// legacy behaviour (every drop is an orphan).
+// Metrics: covered retentions are counted on MetricMQTTRouterCoveredRetained
+// (NOT lost); genuine orphan cleanup stays on MetricMQTTRouterUnmatchedDropped;
+// MetricMQTTRouterCoveredDropped now fires ONLY for a covered QoS 0 the buffer
+// could not hold (best-effort, QoS 0 has no redelivery contract). A nil covered
+// predicate preserves the legacy behaviour (every unmatched publish is an
+// orphan).
 // ═══════════════════════════════════════════════════════════════════════════
 
 // recordingLogHandler captures slog records so a test can assert that the
@@ -60,16 +65,20 @@ func (h *recordingLogHandler) warnCountContaining(substr string) int {
 	return n
 }
 
-// TestBug_DropUnmatched_CoveredVsOrphan_MetricSplit drives dropUnmatched via
-// two post-grace drops — one on a COVERED topic (real loss) and one on an
-// ORPHAN topic (benign) — and asserts the M-3 metric split plus the
-// covered-topic WARN.
+// TestBug_SettleUnmatched_CoveredRetained_OrphanDropped drives settleUnmatched
+// via two post-grace unmatched publishes — one on a COVERED topic (a
+// still-desired subscription whose handler registered late) and one on an
+// ORPHAN topic (a route removed from config) — and asserts HIGH-1: the covered
+// publish is RETAINED un-acked (never ack-dropped, so at-least-once holds) and
+// is delivered once its handler finally registers, while the orphan is
+// acked-and-dropped.
 //
-// Counterfactual (proven by forcing isCovered=false in dropUnmatched):
-// pre-fix BOTH drops land on MetricMQTTRouterUnmatchedDropped
-// (UnmatchedDroppedCount==2, CoveredDroppedCount==0) with no covered WARN — the
-// real loss masked by benign cleanup.
-func TestBug_DropUnmatched_CoveredVsOrphan_MetricSplit(t *testing.T) {
+// Counterfactual (the pre-fix ack-and-drop, reproduced by ack-dropping the
+// covered publish in settleUnmatched): the covered publish was ACKED and
+// dropped (coveredAcked==1, PendingCount==0) and the late-registering handler
+// received NOTHING — acknowledged live-route loss. The require.Equal on
+// coveredAcked==0 / PendingCount==1 / the delivered payload FAIL.
+func TestBug_SettleUnmatched_CoveredRetained_OrphanDropped(t *testing.T) {
 	clk := testClock()
 	rec := &ports.RecordingExporter{}
 	logs := &recordingLogHandler{}
@@ -82,43 +91,70 @@ func TestBug_DropUnmatched_CoveredVsOrphan_MetricSplit(t *testing.T) {
 	)
 	defer r.shutdown()
 
-	clk.Advance(testGrace + time.Second) // past grace → unmatched publishes are dropped
+	clk.Advance(testGrace + time.Second) // past grace → unmatched publishes are settled
 
-	// Covered-topic drop: a still-desired route whose handler registered late.
+	// Covered-topic publish: a still-desired route whose handler registered late.
 	var coveredAcked atomic.Int32
 	r.dispatch(&pahov5.Publish{Topic: "live/route/1", QoS: 1, Payload: []byte("x")},
 		func() error { coveredAcked.Add(1); return nil })
 
-	// Orphan-topic drop: a route removed from config.
+	// Orphan-topic publish: a route removed from config.
 	var orphanAcked atomic.Int32
 	r.dispatch(&pahov5.Publish{Topic: "removed/route/9", QoS: 1, Payload: []byte("y")},
 		func() error { orphanAcked.Add(1); return nil })
 
-	// Both are acked-and-dropped past grace (freeing the broker in-flight slot).
-	require.Equal(t, int32(1), coveredAcked.Load(), "covered-topic drop is still acked")
-	require.Equal(t, int32(1), orphanAcked.Load(), "orphan-topic drop is still acked")
+	// HIGH-1: the covered publish is RETAINED un-acked (never ack-dropped); only
+	// the orphan is acked-and-dropped.
+	require.Equal(t, int32(0), coveredAcked.Load(),
+		"the covered publish must NOT be acked-and-dropped — that would be acknowledged live-route loss")
+	require.Equal(t, int32(1), orphanAcked.Load(), "the orphan publish is still acked-and-dropped")
+	require.Equal(t, 1, r.PendingCount(), "the covered publish is retained in the pending buffer")
 
-	// M-3 metric split.
-	require.Equal(t, int64(1), r.CoveredDroppedCount(),
-		"the covered-topic drop is counted as REAL live-route loss")
-	require.Equal(t, int64(1), r.UnmatchedDroppedCount(),
-		"the orphan-topic drop is counted as benign cleanup")
-	require.Len(t, rec.FindEntries(MetricMQTTRouterCoveredDropped), 1,
-		"covered-drop metric emitted exactly once")
+	require.Equal(t, int64(1), r.CoveredRetainedCount(),
+		"the covered publish is counted as a retention, not a loss")
+	require.Equal(t, int64(0), r.CoveredDroppedCount(), "a retained QoS 1 covered publish is not dropped")
+	require.Equal(t, int64(1), r.UnmatchedDroppedCount(), "the orphan publish is benign cleanup")
+	require.Len(t, rec.FindEntries(MetricMQTTRouterCoveredRetained), 1,
+		"the covered-retained metric is emitted exactly once")
 	require.Len(t, rec.FindEntries(MetricMQTTRouterUnmatchedDropped), 1,
-		"orphan-drop metric emitted exactly once")
+		"the orphan-drop metric is emitted exactly once")
+	require.Empty(t, rec.FindEntries(MetricMQTTRouterCoveredDropped),
+		"no covered QoS 1/2 is ever dropped (HIGH-1)")
 
-	// The covered (real-loss) drop must WARN so it is alarming; the orphan
-	// drop does not warn here (its warn is the deduped unsubscribe path).
-	require.Equal(t, 1, logs.warnCountContaining("DROPPED live-route"),
-		"the covered-topic real-loss drop must WARN")
+	// The covered retention WARNs so a slow/absent receiver is alarming.
+	require.Equal(t, 1, logs.warnCountContaining("RETAINED covered"),
+		"the covered-topic retention must WARN")
+
+	// The retained covered publish is delivered once its handler registers —
+	// proof it was NOT lost. RegisterFiltered enrolls the flush in r.wg before
+	// returning, so r.Wait() is a deterministic barrier (no sleep).
+	var mu sync.Mutex
+	var delivered []string
+	r.RegisterFiltered("rx", []string{"live/route/1"}, func(pub *pahov5.Publish, ack func() error) {
+		mu.Lock()
+		delivered = append(delivered, string(pub.Payload))
+		mu.Unlock()
+		if ack != nil {
+			_ = ack()
+		}
+	})
+	r.Wait()
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	mu.Unlock()
+	require.Equal(t, []string{"x"}, got,
+		"the RETAINED covered publish is delivered (not lost) once its handler registers (HIGH-1)")
+	require.Equal(t, int32(1), coveredAcked.Load(),
+		"the covered publish is acked only AFTER real delivery, preserving at-least-once")
+	require.Equal(t, 0, r.PendingCount(), "the pending buffer is drained after the flush")
 }
 
-// TestBug_DropUnmatched_NilCovered_LegacyAllOrphan pins the legacy contract:
-// with no covered predicate wired (the direct-router / Route path), EVERY
-// post-grace drop is treated as an orphan — so existing router-only tests keep
-// their previous metric semantics.
-func TestBug_DropUnmatched_NilCovered_LegacyAllOrphan(t *testing.T) {
+// TestBug_SettleUnmatched_NilCovered_LegacyAllOrphan pins the legacy contract:
+// with no covered predicate wired (the direct-router / Route path),
+// settleUnmatched treats EVERY post-grace unmatched publish as an orphan — so
+// existing router-only tests keep their previous ack-and-drop semantics.
+func TestBug_SettleUnmatched_NilCovered_LegacyAllOrphan(t *testing.T) {
 	clk := testClock()
 	rec := &ports.RecordingExporter{}
 	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
@@ -126,11 +162,17 @@ func TestBug_DropUnmatched_NilCovered_LegacyAllOrphan(t *testing.T) {
 
 	clk.Advance(testGrace + time.Second)
 
+	var acked atomic.Int32
 	r.dispatch(&pahov5.Publish{Topic: "live/route/1", QoS: 1, Payload: []byte("x")},
-		func() error { return nil })
+		func() error { acked.Add(1); return nil })
 
+	require.Equal(t, int32(1), acked.Load(),
+		"a nil covered predicate acks-and-drops every unmatched publish (legacy behaviour)")
+	require.Equal(t, int64(0), r.CoveredRetainedCount(),
+		"a nil covered predicate never retains a covered publish")
 	require.Equal(t, int64(0), r.CoveredDroppedCount(),
 		"a nil covered predicate never counts a covered drop")
 	require.Equal(t, int64(1), r.UnmatchedDroppedCount(),
 		"a nil covered predicate treats every drop as an orphan (legacy behaviour)")
+	require.Equal(t, 0, r.PendingCount(), "nothing is retained")
 }

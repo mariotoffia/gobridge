@@ -108,7 +108,7 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewSender(context.Background(), ports.SenderSpec{
 		ID:     "sse-auth-r2",
-		Config: transport.Config{Mode: "sse", APIKey: shared.NewSecret("sse-secret")},
+		Config: transport.Config{Mode: "sse", APIKey: shared.NewSecret("sse-secret-abcdef")},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
@@ -128,7 +128,7 @@ func TestEdgeR2_SSEAuthRequired(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest("GET", sseURL, nil)
-	req.Header.Set("X-API-Key", "sse-secret")
+	req.Header.Set("X-API-Key", "sse-secret-abcdef")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET with key: %v", err)

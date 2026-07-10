@@ -22,16 +22,6 @@ import (
 // request context is severed from cancellation.
 const redriveTimeout = 30 * time.Second
 
-// bindingInjector is the optional capability a Runtime exposes for
-// binding-scoped synthetic injection. The concrete runtime implements
-// InjectToBinding so the admin DLQ redrive can confine a replay to the single
-// binding that failed (carried out-of-band, surviving the ingress reserved-
-// header strip). The ports.Runtime contract stays minimal; adapters type-assert
-// for the capability and fall back to a plain Inject when it is absent.
-type bindingInjector interface {
-	InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error
-}
-
 // redriveInjector is the optional capability a Runtime exposes for
 // DLQ-redrive-safe injection: the message is re-issued under a FRESH envelope
 // ID with the original ID stamped as provenance (x-bridge.causation-id).
@@ -40,46 +30,106 @@ type bindingInjector interface {
 // on (envelope_id, binding_id), so re-persisting the same ID returns
 // duplicate → the dispatch ACKs → the redrive reports success → the DLQ entry
 // is deleted — and the message is never sent again. Adapters type-assert for
-// this capability first and fall back to the legacy paths when absent.
+// this capability and REFUSE to redrive a binding-scoped (shared_outbox) entry
+// when it is absent (see injectRedrive).
 type redriveInjector interface {
 	InjectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error
 }
 
-// injectRedrive injects env into routeID, confining dispatch to the entry's
-// binding when the runtime supports binding-scoped injection. Redriving one
-// failed leg of a fan-out shared_outbox route must NOT re-persist records for
-// the N-1 healthy bindings, so a non-empty bindingID takes the out-of-band
-// InjectToBinding path. A header cannot carry the binding: doHandleDelivery
+// errRedriveUnsafeSharedOutbox is returned by injectRedrive when the runtime
+// lacks redrive-safe injection (InjectRedrive) AND the entry targets a specific
+// binding — a shared_outbox fan-out leg. Replaying such an entry through any
+// legacy path (InjectToBinding or plain Inject) reuses the ORIGINAL envelope
+// ID, which the outbox's retained UNIQUE(envelope_id, binding_id) dedup row
+// swallows as a duplicate: the dispatch ACKs, the redrive would report success,
+// and the DLQ entry would be deleted while nothing is actually re-sent — silent
+// loss of BOTH the message and its failure evidence. The redrive is refused
+// (no inject, no delete) so the entry and its evidence are preserved. Upgrade
+// path: a runtime implementing InjectRedrive (fresh ID + causation provenance),
+// which the concrete runtime.Runtime does.
+var errRedriveUnsafeSharedOutbox = errors.New("refusing redrive: runtime lacks redrive-safe injection and this entry targets a shared_outbox binding")
+
+// errRedriveUnsafeNoFreshID is returned by injectRedrive when the runtime lacks
+// redrive-safe injection (InjectRedrive) AND a DIRECT (non-binding) entry could
+// still be silently deduplicated by an idempotent/FIFO transport: the legacy
+// plain-Inject replay would reuse the ORIGINAL envelope ID and/or its
+// x-bridge.dedup-id header, and a sender that dedups on either (e.g. SQS FIFO
+// maps x-bridge.dedup-id → MessageDeduplicationId, else hashes the envelope ID)
+// would ACK WITHOUT delivering → Send returns nil → the redrive would report
+// success and the DLQ entry would be deleted after a no-op. That is the same
+// silent evidence loss as the shared_outbox path, just outside shared_outbox.
+// The redrive is refused (no inject, no delete). Only a collision-free direct
+// entry — EMPTY envelope ID AND no x-bridge.dedup-id header — is safe for the
+// legacy path (injectToBinding then assigns a fresh ID). Upgrade path: a runtime
+// implementing InjectRedrive (fresh ID + stripped dedup key), which the concrete
+// runtime.Runtime does.
+var errRedriveUnsafeNoFreshID = errors.New("refusing redrive: runtime lacks redrive-safe injection and this entry carries a dedup-prone identity")
+
+// injectRedrive injects env into routeID for a DLQ redrive.
+//
+// When the runtime supports redrive-safe injection (InjectRedrive) the replay
+// is re-issued under a FRESH envelope ID with the original stamped as
+// provenance, and dispatch is confined out-of-band to the entry's binding
+// (redriving one failed leg of a fan-out shared_outbox route must NOT re-deliver
+// to the N-1 healthy bindings). A header cannot carry the binding: doHandleDelivery
 // strips x-bridge.route-override at ingress before any consumption site reads
-// it, which is exactly the security property that keeps external messages from
-// steering routing.
+// it, which is the security property that keeps external messages from steering
+// routing.
+//
+// When the runtime LACKS redrive-safe injection the replay would reuse the
+// original envelope ID. For a binding-scoped entry (a shared_outbox fan-out leg)
+// that is a proven silent-loss path — the outbox's retained dedup row swallows
+// the re-persist as a duplicate — so it is REFUSED with
+// errRedriveUnsafeSharedOutbox (the caller must NOT delete the entry). A direct
+// entry (empty bindingID) has no shared_outbox dedup row, but an idempotent/FIFO
+// transport can still swallow a replay that reuses the original envelope ID or
+// its x-bridge.dedup-id header, so a direct entry is refused with
+// errRedriveUnsafeNoFreshID UNLESS it is collision-free (empty ID AND no dedup
+// header); only then does a plain Inject stay safe on runtimes that predate
+// InjectRedrive.
 func injectRedrive(ctx context.Context, logger *slog.Logger, rt ports.RuntimeCommand, routeID, bindingID string, env *messaging.Envelope) error {
 	if ri, ok := rt.(redriveInjector); ok {
 		return ri.InjectRedrive(ctx, routeID, bindingID, env)
 	}
-	// No redrive-safe injection: the replay keeps the original envelope ID.
-	// On a shared_outbox route whose store retains completed rows for dedup,
-	// the re-persist is swallowed as a duplicate and the message is silently
-	// lost while this redrive still reports success. Surface the hazard.
-	if logger != nil {
-		logger.Warn("dlq redrive: runtime lacks redrive-safe injection; replay keeps the original envelope ID and may be swallowed by outbox dedup",
-			"route_id", routeID, "binding_id", bindingID)
-	}
 	if bindingID != "" {
-		if bi, ok := rt.(bindingInjector); ok {
-			return bi.InjectToBinding(ctx, routeID, bindingID, env)
-		}
-		// The entry recorded a specific failed binding, but this runtime does
-		// not implement binding-scoped injection. Falling back to a plain Inject
-		// fans the replay out to ALL bindings on the route, re-delivering to the
-		// N-1 healthy destinations — the exact duplicate-delivery hazard the
-		// binding-scoped path exists to prevent. Surface the degradation at Warn
-		// so an operator can see why a supposedly-confined redrive fanned out.
+		// Binding-scoped entries are exactly the shared_outbox fan-out legs
+		// where reusing the original envelope ID is a proven silent-loss path.
+		// Even a binding-confined InjectToBinding would reuse that ID and be
+		// swallowed by the outbox dedup row, so REFUSE the redrive rather than
+		// inject-and-delete. The entry and its failure evidence are preserved.
 		if logger != nil {
-			logger.Warn("dlq redrive: runtime lacks binding-scoped injection; replay will fan out to all bindings",
+			logger.Warn("dlq redrive: refusing shared_outbox/binding entry; runtime lacks redrive-safe injection (InjectRedrive), so a replay would reuse the original envelope id and risk silent outbox dedup loss",
 				"route_id", routeID, "binding_id", bindingID)
 		}
+		return errRedriveUnsafeSharedOutbox
 	}
+	// Direct entry (no binding): there is no shared_outbox dedup row to collide
+	// with, but an idempotent/FIFO transport can STILL silently deduplicate a
+	// replay that reuses the original envelope ID or its x-bridge.dedup-id header
+	// (e.g. SQS FIFO maps x-bridge.dedup-id → MessageDeduplicationId, else hashes
+	// the envelope ID). A dedup hit ACKs WITHOUT delivering, Send returns nil, and
+	// the caller would delete the entry after a no-op. So a direct entry is only
+	// safe for the legacy plain-Inject path when it is collision-free: EMPTY ID
+	// AND no dedup-id header (injectToBinding then assigns a FRESH ID). Anything
+	// else is refused so the entry and its evidence are preserved.
+	if env.ID() != "" {
+		if logger != nil {
+			logger.Warn("dlq redrive: refusing direct entry with a non-empty envelope id; runtime lacks redrive-safe injection (InjectRedrive), so a replay would reuse the original id and risk silent transport dedup loss",
+				"route_id", routeID, "envelope_id", env.ID())
+		}
+		return errRedriveUnsafeNoFreshID
+	}
+	if _, hasDedup := env.Header(messaging.HeaderDeduplicationID); hasDedup {
+		if logger != nil {
+			logger.Warn("dlq redrive: refusing direct entry carrying x-bridge.dedup-id; runtime lacks redrive-safe injection (InjectRedrive), so a replay would reuse the dedup key and risk silent transport dedup loss",
+				"route_id", routeID)
+		}
+		return errRedriveUnsafeNoFreshID
+	}
+	// Collision-free direct entry (empty ID, no dedup key): a plain Inject is
+	// safe — the runtime assigns a fresh ID and the transport re-derives dedup
+	// from it. The response still surfaces a verify-delivery warning (see
+	// handleDLQRedrive) because the runtime is not redrive-safe.
 	return rt.Inject(ctx, routeID, env)
 }
 
@@ -150,6 +200,15 @@ const (
 	maxDLQOffset  = 100_000
 	maxRedriveIDs = 100
 	maxDeleteIDs  = 1000
+	// maxDeleteByFilterLimit caps a POSITIVE delete-by-filter limit so a
+	// confirmed delete still cannot launch an effectively unbounded destructive
+	// scan via an absurd bound (e.g. {"limit":2147483647} would delete the whole
+	// DLQ). A caller who genuinely wants "delete every matching entry" uses
+	// limit==0 (unbounded WITHIN the filter) — which the confirm_delete_all guard
+	// gates when the filter is otherwise empty — not a giant positive number.
+	// ponytail: fixed ceiling. If a deployment needs a larger single-call bounded
+	// delete, raise this cap or page via repeated calls / limit==0 + a filter.
+	maxDeleteByFilterLimit = 10_000
 	// dlqSummaryCap bounds the entries scanned for the /dlq summary count; when
 	// hit, the response flags count_capped so operators know depth exceeds it.
 	dlqSummaryCap = maxDLQLimit
@@ -418,26 +477,48 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		// never losing the message is the correct bias.
 		//
 		// Binding-scoped dispatch: the entry records the exact BindingID that
-		// failed. injectRedrive carries that binding out-of-band via
-		// Runtime.InjectToBinding (NOT a header — the ingress reserved-header
+		// failed. When the runtime supports redrive-safe injection, injectRedrive
+		// re-issues under a FRESH envelope ID and carries that binding out-of-band
+		// via Runtime.InjectRedrive (NOT a header — the ingress reserved-header
 		// strip in doHandleDelivery removes any x-bridge.route-override before a
 		// consumption site reads it), confining the replay to that one binding so
 		// the N-1 healthy bindings on a fan-out route do not receive duplicate
-		// deliveries. Snapshot returns a fresh deep copy.
+		// deliveries. When the runtime LACKS redrive-safe injection a
+		// binding-scoped entry is REFUSED (errRedriveUnsafeSharedOutbox) and a
+		// dedup-prone direct entry (non-empty ID or an x-bridge.dedup-id header) is
+		// REFUSED (errRedriveUnsafeNoFreshID): the original-ID/dedup-key replay
+		// would be swallowed by outbox or transport dedup and silently lost, so the
+		// entry is left intact rather than deleted after a no-op. Snapshot returns a
+		// fresh deep copy.
 		env := entry.Snapshot()
 		if err := injectRedrive(opCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
 			msg := "inject failed"
-			if errors.Is(err, shared.ErrNotFound) {
+			switch {
+			case errors.Is(err, errRedriveUnsafeSharedOutbox):
+				// The runtime cannot confirm a non-duplicate enqueue for this
+				// shared_outbox/binding entry, so the redrive was refused BEFORE
+				// any inject. The entry is intact; the message and its evidence
+				// are preserved. The operator must upgrade the runtime to one
+				// that implements redrive-safe injection (InjectRedrive).
+				msg = "refused: runtime lacks redrive-safe injection; redriving this shared_outbox/binding entry would reuse the original envelope id and risk silent outbox dedup loss — entry preserved (no delete)"
+			case errors.Is(err, errRedriveUnsafeNoFreshID):
+				// A DIRECT entry that carries a non-empty ID or a dedup-id header
+				// was refused BEFORE any inject: an idempotent/FIFO transport could
+				// silently swallow the original-ID/dedup-key replay, so the entry
+				// is left intact. The operator must upgrade the runtime to one that
+				// implements redrive-safe injection (InjectRedrive).
+				msg = "refused: runtime lacks redrive-safe injection; redriving this entry would reuse its original envelope id or dedup key and risk silent transport dedup loss — entry preserved (no delete)"
+			case errors.Is(err, shared.ErrNotFound):
 				// ErrNotFound from redrive now most often means the recorded
 				// binding no longer exists on a still-present (reconfigured)
 				// route, not that the route itself is gone.
 				msg = "route or binding not found"
 			}
-			// Inject failed: the entry was NEVER deleted, so both the failure
-			// evidence and the message survive in the DLQ. A route-tagged failure
-			// counter lets an operator alert on manual-recovery churn the
-			// batch-level audit record does not surface. No-op when no metrics
-			// exporter is wired.
+			// Inject failed or was refused: the entry was NEVER deleted, so both
+			// the failure evidence and the message survive in the DLQ. A
+			// route-tagged failure counter lets an operator alert on
+			// manual-recovery churn the batch-level audit record does not
+			// surface. No-op when no metrics exporter is wired.
 			s.countRedrive(shared.MetricDLQRedriveFailures, entry.RouteID())
 			redriveErrors = append(redriveErrors, redriveError{
 				ID: id, Error: msg,
@@ -591,6 +672,33 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// A NEGATIVE limit is meaningless as a bound and DANGEROUS: the DeleteByFilter
+	// port contract (ports.DLQAdmin) treats DLQFilter.Limit <= 0 as "delete EVERY
+	// matching entry". Copying a caller-supplied negative straight into the filter
+	// would turn a request like {"route_id":"r","limit":-1} — which reads as a
+	// bounded delete of one — into an UNBOUNDED destructive delete of all matching
+	// DLQ evidence. Reject it before the filter is built.
+	if body.Limit < 0 {
+		writeErr(w, http.StatusBadRequest, "limit must not be negative")
+		return
+	}
+	// A huge POSITIVE limit is the mirror hazard. A limit is a BOUND, not a
+	// content selector, so a bare {"limit":2147483647} with no route/category/time
+	// predicate is still a delete-all (the hasFilter guard below no longer treats
+	// a limit as a filter) and, even WITH a filter, a giant bound would let a
+	// confirmed delete launch an effectively unbounded destructive scan. Cap it so
+	// a positive limit stays a genuine bound.
+	if body.Limit > maxDeleteByFilterLimit {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Sprintf("limit exceeds maximum of %d", maxDeleteByFilterLimit))
+		return
+	}
+	// Limit == 0 (the omitted-field default) is DELIBERATELY kept as "unbounded
+	// within the provided filter" per the port contract — the common "delete all
+	// entries for route X" case. The hasFilter/confirm_delete_all guard below keeps
+	// a limit==0 (or any bare-limit) request with NO other filter unambiguous: it
+	// demands an explicit confirm_delete_all before wiping the whole DLQ.
+
 	filter := routing.DLQFilter{
 		RouteID:  body.RouteID,
 		Category: body.Category,
@@ -614,9 +722,14 @@ func (s *Server) handleDLQDeleteByFilter(w http.ResponseWriter, r *http.Request)
 		filter.Before = t
 	}
 
-	// Safety guard: require confirmation for unfiltered delete-all
+	// Safety guard: require confirmation for an unconfirmed delete-all. A limit is
+	// a BOUND, not a content selector, so a bare {"limit":N} (or the limit==0
+	// default) with no route/category/time predicate is still a delete-all and
+	// MUST carry confirm_delete_all — a positive limit alone no longer satisfies
+	// hasFilter (previously `|| filter.Limit > 0` let {"limit":2147483647} bypass
+	// this confirmation and wipe the whole DLQ).
 	hasFilter := filter.RouteID != "" || filter.Category != "" ||
-		!filter.Since.IsZero() || !filter.Before.IsZero() || filter.Limit > 0
+		!filter.Since.IsZero() || !filter.Before.IsZero()
 	if !hasFilter && !body.ConfirmDeleteAll {
 		writeErr(w, http.StatusBadRequest,
 			"empty filter would delete all entries; set confirm_delete_all=true to proceed")

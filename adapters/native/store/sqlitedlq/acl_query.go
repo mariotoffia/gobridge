@@ -52,6 +52,11 @@ const (
 	selectByIDSQL = `SELECT ` + dlqColumns + ` FROM dlq WHERE id = ?`
 
 	purgeBeforeSQL = `DELETE FROM dlq WHERE failed_at < ?`
+
+	// countAllSQL backs the OPTIONAL ports.DLQDepthReporter capability: an
+	// efficient COUNT of the whole table (the standing backlog behind
+	// shared.MetricDLQDepth) instead of paging every entry.
+	countAllSQL = `SELECT COUNT(*) FROM dlq`
 )
 
 // filterClauses translates a routing.DLQFilter into SQL WHERE fragments

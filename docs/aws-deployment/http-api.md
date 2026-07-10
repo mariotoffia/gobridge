@@ -19,31 +19,43 @@ Each server listens on a dedicated port and maps to its own ALB target group.
 
 | Port | Server | Default Address | Target Group | Health Check | Stickiness |
 |------|--------|-----------------|--------------|--------------|------------|
-| 8080 | Admin | `:8080` | `admin-tg` | Use monitor port (see below) | Recommended |
+| 8080 | Admin | `:8080` | `admin-tg` | Use monitor port + `/live` (see below) | Recommended |
 | 8081 | Monitor | `:8081` | `monitor-tg` | `GET /api/v1/monitor/live` | Not needed |
-| 8082 | Transport | `:8082` | `transport-tg` | Use monitor port (see below) | Not needed |
+| 8082 | Transport | `:8082` | `transport-tg` | Use monitor port + `/live` (see below) | Not needed |
 
 Override default addresses with the `admin_addr`, `monitor_addr`, and
 `transport_http_addr` fields in the `BootstrapConfig`.
 
 > **Health check note:** The health probe endpoints (`/health`, `/live`,
-> `/ready`) are registered only on the **monitor server** (port 8081). For
-> **all three** ALB target groups (admin on 8080, monitor on 8081, transport on
-> 8082), configure the health check to use port 8081 with path
-> **`/api/v1/monitor/live`** — not `/health`. `/live` reports process liveness
-> and stays 200 after a clean stop, so all three planes stay reachable while the
-> bridge is paused or unhealthy; `/health` is a traffic-gating readiness signal
-> and would drain the plane from the ALB exactly when an operator needs it — the
-> admin API to start or diagnose the bridge, and the monitor API (`/deephealth`,
-> `/topology`, `/routes`) to inspect why. Health-checking the **transport** plane
-> on `/live` keeps a cleanly-stopped-but-alive instance in rotation (it will
-> reject ingress until it resumes or is replaced), trading brief ingress errors
-> during a rare deliberate pause for stable data-plane capacity across routine
-> config swaps that briefly flip `/health`. The root `Dockerfile` defines a container `HEALTHCHECK` that runs
-> the binary directly (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`)
-> — the distroless image ships no shell, `curl`, or `wget`, so probe the binary,
-> not a URL tool. The `-healthcheck` flag hits the local monitor `/live`
-> endpoint.
+> `/ready`) are registered only on the **monitor server** (port 8081), so
+> **every** target group health-checks **port 8081** (via the port override) on
+> the **same liveness path**:
+>
+> - **All target groups (admin 8080, monitor 8081, transport 8082) →
+>   `/api/v1/monitor/live`.** `/live` reports process *liveness* and stays 200
+>   after a clean stop, so the admin and monitor planes stay reachable while the
+>   bridge is paused or recovering — the admin API to start or diagnose the
+>   bridge, and the monitor API (`/deephealth`, `/topology`, `/routes`) to
+>   inspect why. Do **not** use `/health` here: it is a traffic-gating readiness
+>   signal and would drain the plane exactly when an operator needs it.
+> - **The transport target group deliberately stays on `/live`, NOT a
+>   broker-coupled readiness probe (e.g. `/ready?level=full`).** ECS replaces a
+>   task that is unhealthy in **any** attached target group, and the worker
+>   service is attached to **both** the transport TG and the shared monitor TG.
+>   A readiness probe on the transport TG would therefore drive task
+>   replacement, so a broker-wide outage or a deliberate admin pause would flip
+>   every worker's `/ready` to 503 and recycle the **entire fleet** — restarted
+>   tasks still can't reach the broker, so a transient downstream outage becomes
+>   a crash-recycle storm. Instead, **traffic readiness is enforced at the
+>   request layer**: the HTTP receiver returns `503` when not ready and `5xx` on
+>   emit failure, and records the dedup key **only on success**, so producers
+>   retry with no message loss (a not-ready task never silently drops traffic —
+>   see `adapters/http/transport/receiver.go:178,381,385`).
+>
+> The root `Dockerfile` defines a container `HEALTHCHECK` that runs the binary
+> directly (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`) — the
+> distroless image ships no shell, `curl`, or `wget`, so probe the binary, not a
+> URL tool. The `-healthcheck` flag hits the local monitor `/live` endpoint.
 
 ---
 
@@ -60,7 +72,7 @@ port externally only when HTTP ingress or SSE egress is required.
 | Timeout | 5 s | Ample margin over the monitor health handler latency |
 | Healthy threshold | 2 | Two consecutive passes before routing traffic |
 | Unhealthy threshold | 2 | Two consecutive failures before draining |
-| Path | `/api/v1/monitor/live` | Process-liveness signal; stays 200 after a clean stop, so the admin/transport target groups are not drained while the bridge is paused or unhealthy |
+| Path | `/api/v1/monitor/live` (all target groups) | Every TG gates on process liveness so admin/monitor stay reachable after a clean stop. The transport TG stays on `/live` too — a broker-coupled readiness probe here would recycle the whole worker fleet on a broker outage/pause (ECS replaces a task unhealthy in any attached TG). Traffic readiness is enforced at the receiver instead (503 + retry-safe, no dedup record on failure). |
 | Port override | `8081` | Health probes are on the monitor server only |
 | Matcher | `200` | Only route traffic to live (non-terminal) instances |
 

@@ -1,7 +1,10 @@
 package amqp10
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/Azure/go-amqp"
 
 	"github.com/stretchr/testify/require"
 
@@ -115,4 +118,61 @@ func pwCred(u, p string) *connectivity.PasswordCredential {
 func tlsMat(cert, key string, ca []string, insecure bool) *connectivity.TLSMaterial {
 	m := connectivity.NewTLSMaterial(cert, key, ca, insecure)
 	return &m
+}
+
+// TestSetAuthFailureCallback_ReconnectAuthFailure_ForcesReactiveReResolve
+// verifies the HIGH-3 reactive-recovery wiring: when a live (re)connect dial is
+// rejected with an authorization failure, the URI-bound callback injected by
+// the CredentialRefresher is invoked exactly once with shared.ErrNotAuthorized,
+// forcing an immediate re-resolve instead of stalling on revoked credentials.
+func TestSetAuthFailureCallback_ReconnectAuthFailure_ForcesReactiveReResolve(t *testing.T) {
+	s := NewSession(SessionOptions{Address: "amqps://broker.example:5671/"},
+		connectivity.SessionEphemeral, nil)
+	defer func() { _ = s.Close(t.Context()) }()
+
+	reported := make(chan error, 1)
+	s.SetAuthFailureCallback(func(err error) { reported <- err })
+
+	// A hard rotation revoked the old credentials: the redial fails SASL and
+	// MapError classifies amqp:unauthorized-access as ErrNotAuthorized.
+	s.dial = mockDialFunc(nil, &amqp.Error{
+		Condition:   "amqp:unauthorized-access",
+		Description: "credentials revoked",
+	})
+
+	err := s.connect(t.Context())
+	require.Error(t, err)
+	require.ErrorIs(t, err, shared.ErrNotAuthorized)
+
+	select {
+	case got := <-reported:
+		require.ErrorIs(t, got, shared.ErrNotAuthorized,
+			"reconnect auth failure must invoke the reactive-recovery callback")
+	default:
+		t.Fatal("expected reactive-recovery callback to be invoked on reconnect auth failure")
+	}
+}
+
+// TestSetAuthFailureCallback_ReconnectNonAuthError_DoesNotReport verifies the
+// callback is NOT invoked for a non-authorization reconnect failure (e.g. a
+// plain connection-refused): only NOT_AUTHORIZED forces a reactive re-resolve.
+func TestSetAuthFailureCallback_ReconnectNonAuthError_DoesNotReport(t *testing.T) {
+	s := NewSession(SessionOptions{Address: "amqps://broker.example:5671/"},
+		connectivity.SessionEphemeral, nil)
+	defer func() { _ = s.Close(t.Context()) }()
+
+	reported := make(chan error, 1)
+	s.SetAuthFailureCallback(func(err error) { reported <- err })
+
+	s.dial = mockDialFunc(nil, errors.New("connection refused"))
+
+	err := s.connect(t.Context())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, shared.ErrNotAuthorized)
+
+	select {
+	case got := <-reported:
+		t.Fatalf("non-auth reconnect error must not report: got %v", got)
+	default:
+	}
 }

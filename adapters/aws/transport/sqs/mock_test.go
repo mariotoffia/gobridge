@@ -17,6 +17,7 @@ type mockSQSClient struct {
 	SendMessageFn             func(ctx context.Context, in *awssqs.SendMessageInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageOutput, error)
 	SendMessageBatchFn        func(ctx context.Context, in *awssqs.SendMessageBatchInput, opts ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error)
 	GetQueueUrlFn             func(ctx context.Context, in *awssqs.GetQueueUrlInput, opts ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error)
+	GetQueueAttributesFn      func(ctx context.Context, in *awssqs.GetQueueAttributesInput, opts ...func(*awssqs.Options)) (*awssqs.GetQueueAttributesOutput, error)
 
 	DeleteCalls           []awssqs.DeleteMessageInput
 	ChangeVisibilityCalls []awssqs.ChangeMessageVisibilityInput
@@ -77,4 +78,11 @@ func (m *mockSQSClient) GetQueueUrl(ctx context.Context, in *awssqs.GetQueueUrlI
 		return m.GetQueueUrlFn(ctx, in, opts...)
 	}
 	return &awssqs.GetQueueUrlOutput{}, nil
+}
+
+func (m *mockSQSClient) GetQueueAttributes(ctx context.Context, in *awssqs.GetQueueAttributesInput, opts ...func(*awssqs.Options)) (*awssqs.GetQueueAttributesOutput, error) {
+	if m.GetQueueAttributesFn != nil {
+		return m.GetQueueAttributesFn(ctx, in, opts...)
+	}
+	return &awssqs.GetQueueAttributesOutput{}, nil
 }

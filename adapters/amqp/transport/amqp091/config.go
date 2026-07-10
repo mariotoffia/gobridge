@@ -106,6 +106,14 @@ const (
 	DeliveryModeTransient = "transient"
 )
 
+// defaultMaxAbandonedPublishes bounds, per sender, the publisher channels
+// parked on background reapers after a publish wedged past its deadline
+// (HIGH-4). Small on purpose: reaching it means publishes are wedging faster
+// than the broker/heartbeat is releasing them, so refusing new publishes fast
+// (transient) is the correct back-pressure. The reapers drain on broker
+// recovery or reconnect, restoring the budget.
+const defaultMaxAbandonedPublishes = 8
+
 // SenderConfig holds AMQP 0-9-1 sender-specific configuration.
 type SenderConfig struct {
 	Exchange   string
@@ -133,10 +141,19 @@ type SenderConfig struct {
 	// of this knob; it matters for durable classic queues.
 	DeliveryMode string
 	Timeout      time.Duration
-	Session      *Session
-	Logger       *slog.Logger
-	Metrics      ports.MetricsExporter
-	Clock        clock.Clock
+	// MaxAbandonedPublishes bounds how many publisher channels may be parked
+	// on background reapers after their publish wedged past the deadline
+	// (see Sender.tryReserveAbandonedPublish / abandonReservedChannel). Once the
+	// budget is exhausted, Send and SendBatch fast-fail with a transient error
+	// instead of stacking more wedged publishes, until the wedged publishes
+	// unblock (broker recovery or reconnect) and their reapers drain. Internal —
+	// not operator-tunable and deliberately NOT wired into ports.PluginConfig;
+	// defaulted in applyDefaults. A value <= 0 disables the cap.
+	MaxAbandonedPublishes int
+	Session               *Session
+	Logger                *slog.Logger
+	Metrics               ports.MetricsExporter
+	Clock                 clock.Clock
 }
 
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
@@ -372,6 +389,9 @@ func (c *SenderConfig) applyDefaults() {
 	}
 	if c.DeliveryMode == "" {
 		c.DeliveryMode = DeliveryModePersistent
+	}
+	if c.MaxAbandonedPublishes == 0 {
+		c.MaxAbandonedPublishes = defaultMaxAbandonedPublishes
 	}
 	if c.Clock == nil {
 		c.Clock = clock.System

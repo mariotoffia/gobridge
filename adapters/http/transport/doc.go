@@ -152,14 +152,13 @@
 // supplied by the composition root) makes a dead peer fail fast instead
 // of costing every inbound request the full retry × timeout budget.
 //
-// SSE egress is AT-MOST-ONCE by default. Send reports success even when
-// zero subscribers are connected or every subscriber's buffer is full —
-// the route runner acks the source either way, so the event is gone.
-// Both zero-delivery cases are counted (MetricSSENoSubscribers /
+// SSE egress FAILS SAFE on zero delivery by default. When a broadcast
+// reaches nobody — zero subscribers connected, or every subscriber's
+// buffer full — Send returns a TRANSIENT (Unavailable-class) error so
+// the route runner does NOT ack a delivery that reached no one. Both
+// zero-delivery cases are counted (MetricSSENoSubscribers /
 // MetricSSEAllDropped) and logged at ERROR level so the loss is loud.
-// Setting Config.FailOnZeroDelivery makes Send instead return a
-// TRANSIENT (Unavailable-class) error on zero delivery. What that error
-// buys depends on the SOURCE feeding the route:
+// What that error buys depends on the SOURCE feeding the route:
 //   - A durable source that redelivers with an incrementing receive
 //     count (SQS / ASB / AMQP) is RETRIED with backoff — giving a
 //     briefly-disconnected subscriber time to reconnect — and
@@ -168,6 +167,15 @@
 //     count, so there is no bridge-side retry delay and no DLQ: the
 //     transient error surfaces to the POSTing producer as HTTP 500, and
 //     retry becomes the producer's responsibility.
+//
+// Setting Config.AtMostOnceAcceptLoss opts OUT of the safe default,
+// restoring classic fire-and-forget at-most-once: Send reports success
+// (the source is acked) even when the event reached nobody. The legacy
+// Config.FailOnZeroDelivery flag now only reaffirms the default and is
+// mutually exclusive with AtMostOnceAcceptLoss. Independently, once Close
+// has begun (config reload / shutdown) Send fails with the transient
+// error REGARDLESS of AtMostOnceAcceptLoss, because a drained subscriber
+// set cannot receive the event.
 //
 // Either way this stops SILENT loss (a 500 instead of a false 200); it
 // is NOT a replay buffer. "Delivery" here means the event was ENQUEUED
@@ -181,7 +189,11 @@
 // Consistently, SSE frames carry NO "id:" field: emitting one would make
 // EventSource clients send Last-Event-ID on reconnect and expect a
 // replay window that does not exist. The envelope ID remains in the JSON
-// payload.
+// payload. The serialised payload is framed PER SSE RULES — every line
+// terminator inside the data is emitted as its own "data:" line (the
+// client rejoins segments with "\n") — so a payload carrying embedded
+// newlines is reconstructed byte-for-byte instead of truncating at the
+// first newline or splitting into phantom events.
 //
 // SSE cross-cluster redirect is OPT-IN. When the bound route is owned
 // by a remote node, the sender refuses with 503 by default; it emits a

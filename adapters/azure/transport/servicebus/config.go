@@ -184,9 +184,37 @@ func validateSubQueue(subQueue string) error {
 	}
 }
 
+// validateReceiverEntityExclusive rejects a receiver config that names
+// BOTH a queue and a topic/subscription. entityNameFor selects the
+// queue whenever QueueName is set and silently ignores TopicName /
+// SubscriptionName, so a both-set config would consume from the wrong
+// entity with no startup error. Exactly one entity kind is allowed: a
+// queue, OR a topic + subscription (HIGH-3).
+func validateReceiverEntityExclusive(queueName, topicName, subscriptionName string) error {
+	if queueName != "" && (topicName != "" || subscriptionName != "") {
+		return errors.New("servicebus: receiver sets both queue_name and topic_name/subscription_name; exactly one entity kind is allowed (a queue OR a topic+subscription) — the queue would be selected and the topic silently ignored, so remove one")
+	}
+	return nil
+}
+
+// validateSenderEntityExclusive rejects a sender config that names BOTH
+// a queue and a topic. entityName selects the queue whenever QueueName
+// is set and silently ignores TopicName, so a both-set config would
+// publish to the wrong entity with no startup error. Exactly one is
+// allowed (HIGH-3).
+func validateSenderEntityExclusive(queueName, topicName string) error {
+	if queueName != "" && topicName != "" {
+		return errors.New("servicebus: sender sets both queue_name and topic_name; exactly one is allowed — the queue would be selected and the topic silently ignored, so remove one")
+	}
+	return nil
+}
+
 func (c *ReceiverConfig) validate() error {
 	if c.QueueName == "" && (c.TopicName == "" || c.SubscriptionName == "") {
 		return errors.New("servicebus: either QueueName or TopicName+SubscriptionName is required")
+	}
+	if err := validateReceiverEntityExclusive(c.QueueName, c.TopicName, c.SubscriptionName); err != nil {
+		return err
 	}
 	if c.Client == nil && c.Connection.ConnectionString.IsZero() && c.Connection.Namespace == "" {
 		return errors.New("servicebus: Connection.ConnectionString or Connection.Namespace is required")
@@ -275,6 +303,9 @@ func (c *ReceiverConfig) receiveAndDelete() bool {
 func (c *SenderConfig) validate() error {
 	if c.QueueName == "" && c.TopicName == "" {
 		return errors.New("servicebus: either QueueName or TopicName is required")
+	}
+	if err := validateSenderEntityExclusive(c.QueueName, c.TopicName); err != nil {
+		return err
 	}
 	if c.Client == nil && c.Connection.ConnectionString.IsZero() && c.Connection.Namespace == "" {
 		return errors.New("servicebus: Connection.ConnectionString or Connection.Namespace is required")

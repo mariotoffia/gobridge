@@ -198,7 +198,11 @@ routes:
 Load config and wire everything in Go:
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = paho.Register(reg)         // register each linked adapter's config decoder
+_ = nativestore.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
     RegisterTransportFactory("mqtt", paho.NewFactory(logger)).

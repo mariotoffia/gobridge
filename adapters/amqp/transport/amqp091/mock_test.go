@@ -2,6 +2,7 @@ package amqp091
 
 import (
 	"sync"
+	"time"
 )
 
 // mockConnection implements amqpConnection for unit tests. Tests are
@@ -13,6 +14,7 @@ type mockConnection struct {
 
 	ChannelFn       func() (*amqpChannel, error)
 	CloseFn         func() error
+	CloseDeadlineFn func() error
 	NotifyCloseChan chan error
 	BlockedChan     chan connBlockState
 	IsClosedFn      func() bool
@@ -56,6 +58,32 @@ func (m *mockConnection) closeCalls() int {
 }
 
 func (m *mockConnection) Close() error {
+	m.recordClose()
+	if m.CloseFn != nil {
+		return m.CloseFn()
+	}
+	return nil
+}
+
+// CloseDeadline records the close identically to Close (so tests that assert
+// closeCalls() stay valid whichever close path the code takes) and runs the
+// deadline-specific hook when set, falling back to CloseFn so an existing
+// blocking CloseFn still models a half-dead broker under CloseDeadline.
+func (m *mockConnection) CloseDeadline(_ time.Time) error {
+	m.recordClose()
+	if m.CloseDeadlineFn != nil {
+		return m.CloseDeadlineFn()
+	}
+	if m.CloseFn != nil {
+		return m.CloseFn()
+	}
+	return nil
+}
+
+// recordClose performs the bookkeeping shared by Close and CloseDeadline:
+// count the call, mark closed, and mirror the SDK by closing the NotifyClose
+// and Blocked streams so any watcher goroutine drains and exits.
+func (m *mockConnection) recordClose() {
 	m.mu.Lock()
 	m.CloseCalls++
 	m.closed = true
@@ -80,11 +108,6 @@ func (m *mockConnection) Close() error {
 			close(blocked)
 		}()
 	}
-
-	if m.CloseFn != nil {
-		return m.CloseFn()
-	}
-	return nil
 }
 
 // NotifyClose returns the test-supplied channel as the lifecycle

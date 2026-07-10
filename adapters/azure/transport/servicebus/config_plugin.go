@@ -123,6 +123,9 @@ func (c Config) ValidateReceiverEntity() error {
 	if c.Receiver.QueueName == "" && (c.Receiver.TopicName == "" || c.Receiver.SubscriptionName == "") {
 		return errors.New("servicebus: receiver requires queue_name, or topic_name with subscription_name")
 	}
+	if err := validateReceiverEntityExclusive(c.Receiver.QueueName, c.Receiver.TopicName, c.Receiver.SubscriptionName); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -132,6 +135,9 @@ func (c Config) ValidateReceiverEntity() error {
 func (c Config) ValidateSenderEntity() error {
 	if c.Sender.QueueName == "" && c.Sender.TopicName == "" {
 		return errors.New("servicebus: sender requires queue_name or topic_name")
+	}
+	if err := validateSenderEntityExclusive(c.Sender.QueueName, c.Sender.TopicName); err != nil {
+		return err
 	}
 	return nil
 }
@@ -254,7 +260,10 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		c.CredentialsURIRef = ""
 		return nil
 	}
-	merged, _ := credentialsToConnection(c.Connection, set)
+	merged, _, err := credentialsToConnection(c.Connection, set)
+	if err != nil {
+		return err
+	}
 	c.Connection = merged
 	c.CredentialsURIRef = ""
 	return nil

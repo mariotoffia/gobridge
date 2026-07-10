@@ -6,11 +6,13 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // parseCredentials parses a parameter value into a CredentialSet.
-// Supports JSON objects (username/password, TLS, or both capabilities
-// combined) and simple username:password format.
+// Supports JSON objects (username/password, an opaque password-only
+// "secret" shape, TLS, or capabilities combined) and the simple
+// username:password format.
 func parseCredentials(value string) (*connectivity.CredentialSet, error) {
 	value = strings.TrimSpace(value)
 
@@ -32,14 +34,24 @@ func parseCredentials(value string) (*connectivity.CredentialSet, error) {
 // A capability participates when the "type" field declares it (tokens
 // may be combined with '+', e.g. "password+tls") or when its fields
 // are present in the document.
+//
+// A password credential has two shapes. The default carries a username
+// and requires it. The opaque "secret" shape carries the whole credential
+// in a single value with NO username — the form the Azure Service Bus
+// transport consumes for a SAS connection string
+// (adapters/azure/transport/servicebus/credentials_refresh.go:35-40). It is
+// selected by a "secret" / "opaque" / "sas" type token ONLY when the
+// document carries no username; a secret token that appears alongside a
+// username keeps parsing as username/password, exactly as pre-opaque readers
+// did, so credential sets already stored in SSM stay readable after upgrade.
 func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return nil, fmt.Errorf("ssm: invalid JSON credentials: %w", err)
 	}
 
-	declaredPassword, declaredTLS := declaredCapabilities(raw)
-	wantPassword := declaredPassword || hasPasswordFields(raw)
+	declaredPassword, declaredSecret, declaredTLS := declaredCapabilities(raw)
+	wantPassword := declaredPassword || declaredSecret || hasPasswordFields(raw)
 	wantTLS := declaredTLS || hasTLSFields(raw)
 
 	if !wantPassword && !wantTLS {
@@ -48,7 +60,7 @@ func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 
 	var password *connectivity.PasswordCredential
 	if wantPassword {
-		pw, err := parseUsernamePasswordJSON(raw)
+		pw, err := parsePasswordJSON(raw, declaredSecret)
 		if err != nil {
 			return nil, err
 		}
@@ -69,21 +81,23 @@ func parseJSONCredentials(value string) (*connectivity.CredentialSet, error) {
 
 // declaredCapabilities reads the optional "type" field. Tokens may be
 // combined with '+' (the serializer emits "password+tls" for combined
-// sets).
-func declaredCapabilities(raw map[string]any) (password, tls bool) {
+// sets, or "secret" for an opaque password-only credential).
+func declaredCapabilities(raw map[string]any) (password, secret, tls bool) {
 	typeStr, ok := raw["type"].(string)
 	if !ok {
-		return false, false
+		return false, false, false
 	}
 	for _, token := range strings.Split(strings.ToLower(typeStr), "+") {
 		switch strings.TrimSpace(token) {
 		case "usernamepassword", "username_password", "password":
 			password = true
+		case "secret", "opaque", "sas":
+			secret = true
 		case "tls", "certificate", "cert":
 			tls = true
 		}
 	}
-	return password, tls
+	return password, secret, tls
 }
 
 // hasPasswordFields reports whether the document carries
@@ -106,9 +120,39 @@ func hasTLSFields(raw map[string]any) bool {
 	return false
 }
 
-func parseUsernamePasswordJSON(raw map[string]any) (*connectivity.PasswordCredential, error) {
+// parsePasswordJSON builds the password credential from a JSON document.
+//
+// declaredSecret is true when the "type" field carried a secret token
+// ("secret" / "opaque" / "sas"). The opaque password-only form — the whole
+// credential in a single value with an intentionally empty username, the shape
+// an Azure Service Bus SAS connection string takes at runtime
+// (PasswordCredential{Username:"", Password:<connection string>}) — is selected
+// ONLY when a secret token was declared AND the document carries no username.
+//
+// A secret token that appears next to a username is NOT opaque: it parses as an
+// ordinary username/password credential. Older readers ignored unknown type
+// tokens and parsed such documents as username/password, and stored SSM values
+// are never rewritten on upgrade, so that read must stay backward compatible —
+// the invariant is that any JSON an earlier reader accepted still parses to the
+// same credential.
+//
+// The default form requires a non-empty username so a username-less "password"
+// document surfaces as an error instead of a broker-breaking anonymous
+// credential. The opaque form requires a non-BLANK secret value for the same
+// reason: a whitespace-only value ("\n", " ") is a semantically empty
+// connection string that would fail broker client creation downstream, so it is
+// rejected here rather than deferred to a confusing connect-time failure.
+func parsePasswordJSON(raw map[string]any, declaredSecret bool) (*connectivity.PasswordCredential, error) {
 	username := getStringField(raw, "username", "user")
 	password := getStringField(raw, "password", "pass", "secret")
+
+	if declaredSecret && username == "" {
+		if strings.TrimSpace(password) == "" {
+			return nil, fmt.Errorf("ssm: opaque secret credential requires a non-empty secret value")
+		}
+		pw := connectivity.NewPasswordCredential("", password)
+		return &pw, nil
+	}
 
 	if username == "" {
 		return nil, fmt.Errorf("ssm: missing username field")
@@ -161,6 +205,19 @@ func parseTLSJSON(raw map[string]any) (*connectivity.TLSMaterial, error) {
 		return nil, fmt.Errorf("ssm: empty TLS material: require a CA bundle or a complete cert/key pair")
 	}
 
+	// Normalise a whitespace-only cert or key to the empty string. The guards
+	// above judge presence AFTER trimming, so a CA-only document may still hold
+	// blank-but-non-empty cert/key fields (" ", "\n"). Storing those verbatim
+	// would later drive a transport into tls.X509KeyPair(" ", " "), which fails
+	// at connect/rotation time on material this reader had already accepted.
+	// A genuine cert/key pair (hasCert && hasKey) is stored verbatim.
+	if !hasCert {
+		certPEM = ""
+	}
+	if !hasKey {
+		keyPEM = ""
+	}
+
 	tls := connectivity.NewTLSMaterial(certPEM, keyPEM, caPEMs, insecure)
 	return &tls, nil
 }
@@ -186,25 +243,44 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 // serializeCredentialSet converts a CredentialSet to JSON for storage.
 // The "type" field enumerates every capability present (joined with
 // '+', e.g. "password+tls") so parseJSONCredentials round-trips a
-// combined set without losing either capability.
+// combined set without losing either capability. A password whose
+// username is empty is written as the opaque "secret" shape so the
+// reader reconstructs the empty-username credential (e.g. a Service Bus
+// SAS connection string, HIGH-2) instead of rejecting a username-less
+// password.
+//
+// Every serialized payload is validated by round-tripping it back
+// through the package's own reader (parseCredentials) before it is
+// returned for storage. An admin Create/Update must never persist a
+// value that a later Get or rotation poll cannot parse, because a single
+// unreadable write would otherwise become a persistent credential outage
+// (HIGH-1): empty sets, torn TLS halves, empty passwords, and any other
+// unreadable shape are rejected here at write time.
 func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	m := make(map[string]any)
 	var capabilities []string
 
-	if creds.Password() != nil {
-		capabilities = append(capabilities, "password")
-		m["username"] = creds.Password().Username()
-		m["password"] = creds.Password().Password().Reveal()
+	if pw := creds.Password(); pw != nil {
+		if pw.Username() == "" {
+			// Opaque password-only credential: the whole secret is the
+			// password and there is no username (Service Bus SAS et al.).
+			capabilities = append(capabilities, "secret")
+			m["secret"] = pw.Password().Reveal()
+		} else {
+			capabilities = append(capabilities, "password")
+			m["username"] = pw.Username()
+			m["password"] = pw.Password().Reveal()
+		}
 	}
 
-	if creds.TLS() != nil {
+	if tls := creds.TLS(); tls != nil {
 		capabilities = append(capabilities, "tls")
-		m["certPem"] = creds.TLS().CertPEM()
-		m["keyPem"] = creds.TLS().KeyPEM().Reveal()
-		if caPEMs := creds.TLS().CAPEMs(); len(caPEMs) > 0 {
+		m["certPem"] = tls.CertPEM()
+		m["keyPem"] = tls.KeyPEM().Reveal()
+		if caPEMs := tls.CAPEMs(); len(caPEMs) > 0 {
 			m["caPem"] = caPEMs
 		}
-		if creds.TLS().InsecureSkipVerify() {
+		if tls.InsecureSkipVerify() {
 			m["insecure"] = true
 		}
 	}
@@ -217,7 +293,30 @@ func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ssm: failed to serialize credentials: %w", err)
 	}
+
+	if err := ensureReadable(string(data), creds); err != nil {
+		return "", err
+	}
 	return string(data), nil
+}
+
+// ensureReadable is the write-side round-trip guard (HIGH-1). It reparses the
+// serialized payload with the package's own reader and confirms the result is
+// an equivalent CredentialSet, so Create/Update can never persist a value that
+// a subsequent Get or rotation poll would reject. The failure is classified as
+// shared.ErrInvalidPayload for parity with the sibling file repository's
+// usable-credential guard (adapters/native/credentials/file/repository.go).
+func ensureReadable(serialized string, original *connectivity.CredentialSet) error {
+	roundTripped, err := parseCredentials(serialized)
+	if err != nil {
+		return shared.ErrInvalidPayload.WithMessage(
+			"ssm: refusing to store credentials the reader cannot parse back").Wrap(err)
+	}
+	if !roundTripped.Equal(original) {
+		return shared.ErrInvalidPayload.WithMessage(
+			"ssm: refusing to store credentials that do not round-trip through the reader")
+	}
+	return nil
 }
 
 func getStringField(m map[string]any, keys ...string) string {

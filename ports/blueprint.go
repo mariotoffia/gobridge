@@ -73,9 +73,26 @@ type BridgeSettings struct {
 	Cluster         *ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
 }
 
-// ClusterConfig configures cluster membership and endpoint discovery.
-// Endpoints are normally auto-discovered via EndpointResolver at startup.
-// The Endpoints field is an optional static override for special cases.
+// ClusterConfig configures cluster endpoint advertisement for this instance.
+//
+// Endpoints are normally auto-discovered via EndpointResolver at startup
+// (e.g. the ECS resolver derives them from task metadata) and written into the
+// lease row on acquire/renew. The Endpoints field is an optional STATIC OVERRIDE
+// for special cases.
+//
+// IMPORTANT — shape: Endpoints is THIS instance's advertised CAPABILITY
+// endpoints, keyed by CAPABILITY name (currently "http"), with a full URL value
+// (scheme://host:port). It is NOT a peer/instance membership map. The HTTP
+// forwarder locates the owning instance's endpoint via Endpoints["http"] to
+// forward a remote exclusive request, so a static override MUST look like:
+//
+//	endpoints:
+//	  http: "http://10.0.1.10:8080"   # this instance's reachable transport URL
+//
+// A peer-membership map (instance-01: "10.0.1.10:8080", ...) has no "http" key
+// and would make every remote exclusive HTTP forward fail with "target has no
+// HTTP endpoint" (502). The config validator rejects that shape in clustered
+// mode (config/validate.go: validateClusterEndpoints).
 type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 }

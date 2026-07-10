@@ -2,11 +2,37 @@ package amqp091
 
 import (
 	"context"
+	"errors"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3), satisfying
+// the bridge.AuthFailureReporter capability (matched structurally by the
+// CredentialRefresher in another module). A nil callback clears it.
+func (s *Session) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		s.authFailureCB.Store(nil)
+		return
+	}
+	s.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure invokes the injected reactive-recovery callback iff err is
+// an authorization failure. Safe to call on every mapped reconnect error: the
+// callback delegates to CredentialRefresher.NotifyAuthFailure, which is
+// auth-gated and per-URI rate-limited.
+func (s *Session) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := s.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
 
 // ApplyCredentials rotates the AMQP 0-9-1 session's username/password
 // and/or TLS material. New values are stored so the next (re)dial
@@ -66,7 +92,24 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 		s.mu.Unlock()
 		return nil
 	}
+	// Force-detach the stale connection UNDER THE LOCK before releasing it
+	// (review #4). Marking the session disconnected and dropping s.conn here —
+	// instead of leaving it installed and waiting for the async Close to
+	// eventually fire NotifyClose — guarantees a sender that grabs the seam
+	// (connectionIfReady) after this point cannot publish on the old connection
+	// with the OLD credentials. If we left s.conn installed and relied on the
+	// close completing, a Close that wedges on a half-dead broker would strand
+	// senders on the stale connection (and stale creds) indefinitely, and
+	// reconnect would never start. activeSubs/blocked are cleared to match the
+	// NotifyClose-driven disconnect path.
 	conn := s.conn
+	if conn != nil {
+		s.connected = false
+		s.conn = nil
+		s.activeSubs = make(map[string]bool)
+		s.blocked = false
+		s.blockedReason = ""
+	}
 	s.mu.Unlock()
 
 	if logging.DebugEnabled(s.logger) {
@@ -88,12 +131,38 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 		// down. The next dial attempt consumes the rotated material.
 		return nil
 	}
-	// Closing the connection triggers NotifyClose in reconnectLoop,
-	// which calls doReconnect with the updated brokerURL()/TLS.
-	if err := conn.Close(); err != nil {
-		return MapError(err)
+
+	// The connection is already detached from session state; announce the
+	// disconnect and EXPLICITLY wake the reconnect loop to redial with the
+	// rotated material, rather than relying on the async Close below to fire
+	// NotifyClose (which never happens if that Close wedges — review #4). The
+	// send is coalesced (buffered cap 1): concurrent rotations collapse to a
+	// single scheduled reconnect.
+	s.pushEvent(ports.SessionDisconnected, nil)
+	select {
+	case s.forceReconnect <- struct{}{}:
+	default:
 	}
-	return nil
+
+	// Close the now-detached connection to unwedge any in-flight SDK call and
+	// free the socket. Race the close against ctx: conn.Close() blocks in the
+	// SDK until the broker answers connection.close-ok (bounded only by the
+	// heartbeat read deadline), so a caller that cancels or deadlines
+	// mid-rotation must not be pinned to a half-dead broker. The detached
+	// goroutine still completes the underlying close, and reconnect has already
+	// been driven above, so progress does not depend on who wins this race.
+	// cdone is buffered so the detached goroutine never leaks on ctx win.
+	cdone := make(chan error, 1)
+	go func() { cdone <- conn.Close() }()
+	select {
+	case err := <-cdone:
+		if err != nil {
+			return MapError(err)
+		}
+		return nil
+	case <-ctx.Done():
+		return MapError(ctx.Err())
+	}
 }
 
 // applyAMQPTLSMaterial mirrors the paho helper: returns true when the

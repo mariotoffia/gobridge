@@ -2,11 +2,39 @@ package amqp10
 
 import (
 	"context"
+	"errors"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3). It satisfies
+// the bridge.AuthFailureReporter capability (matched structurally by the
+// CredentialRefresher, which lives in a different module). A nil callback clears
+// the hook. Safe to call concurrently with reportAuthFailure via the atomic
+// pointer.
+func (s *Session) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		s.authFailureCB.Store(nil)
+		return
+	}
+	s.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure invokes the injected reactive-recovery callback iff err is
+// an authorization failure. It is safe to call on every mapped (re)connect
+// error: the callback delegates to CredentialRefresher.NotifyAuthFailure, which
+// is auth-gated and per-URI rate-limited, so a reconnect storm cannot hammer the
+// credential backend.
+func (s *Session) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := s.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
 
 // ApplyCredentials rotates the AMQP 1.0 session's SASL credentials
 // and/or TLS material. New values are stored so the next (re)dial

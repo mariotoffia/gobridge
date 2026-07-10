@@ -71,19 +71,35 @@ type Config struct {
 	// deadline (WriteTimeout), not by queue occupancy.
 	ClientBufferSize int `yaml:"client_buffer_size,omitempty" json:"client_buffer_size,omitempty" mapstructure:"client_buffer_size"`
 
-	// FailOnZeroDelivery flips the SSE at-most-once contract into a
-	// fail-loud one: when a broadcast reaches ZERO clients — either no
-	// subscribers are connected or every subscriber's buffer was full —
-	// Send returns a TRANSIENT (Unavailable-class) error instead of
-	// reporting success. The default (false) preserves today's
-	// at-most-once behaviour: Send succeeds and the route runner acks the
-	// source even though the event reached nobody. Transient (not
-	// permanent) is deliberate — it lets the runner RETRY, giving a
-	// briefly-disconnected subscriber time to reconnect, and then DLQ per
-	// the route's retry-exhaustion policy. This flag stops SILENT loss; it
-	// is NOT a replay buffer. Durable fan-out still requires a
-	// shared_outbox route policy.
+	// FailOnZeroDelivery is the LEGACY opt-in that made a zero-delivery
+	// broadcast return a transient error. Zero delivery now FAILS BY
+	// DEFAULT (see AtMostOnceAcceptLoss), so this flag is retained only for
+	// backward compatibility: setting it true merely reaffirms the default
+	// and has no additional effect. It is MUTUALLY EXCLUSIVE with
+	// AtMostOnceAcceptLoss (one demands failure, the other demands
+	// accepting loss) and that contradiction is rejected by Validate.
 	FailOnZeroDelivery bool `yaml:"fail_on_zero_delivery,omitempty" json:"fail_on_zero_delivery,omitempty" mapstructure:"fail_on_zero_delivery"`
+
+	// AtMostOnceAcceptLoss OPTS AN SSE SENDER OUT of the safe default and
+	// into explicit at-most-once loss. By default (false) a broadcast that
+	// reaches ZERO subscribers — none connected, or every subscriber's
+	// buffer full — makes Send return a TRANSIENT (Unavailable-class)
+	// error, so the route runner does NOT ack the source: a durable source
+	// redelivers with backoff (giving a briefly-disconnected subscriber
+	// time to reconnect) and dead-letters per policy, and an HTTP-ingress
+	// source surfaces the failure to the POSTing producer as HTTP 500.
+	// Setting this true restores the pre-hardening behaviour where Send
+	// reports SUCCESS on zero delivery and the source is acked even though
+	// the event reached nobody — accept ONLY for a best-effort live tap
+	// whose loss is tolerable. Either way the zero-delivery outcome is
+	// counted (MetricSSENoSubscribers / MetricSSEAllDropped) and logged at
+	// ERROR level. Mutually exclusive with FailOnZeroDelivery.
+	//
+	// BREAKING CHANGE: earlier builds defaulted to at-most-once (Send
+	// succeeded on zero delivery). Deployments that relied on that must set
+	// at_most_once_accept_loss: true to keep it; otherwise SSE routes now
+	// fail-and-retry instead of silently dropping events with no subscriber.
+	AtMostOnceAcceptLoss bool `yaml:"at_most_once_accept_loss,omitempty" json:"at_most_once_accept_loss,omitempty" mapstructure:"at_most_once_accept_loss"`
 
 	// RedirectEndpoint names the PeerInfo.Endpoints key an SSE sender
 	// uses to build the 307 redirect target when the bound route is
@@ -177,7 +193,23 @@ func (c Config) Validate() error {
 	if c.Mode != "" && c.Mode != "sse" {
 		return fmt.Errorf("http: unsupported sender mode %q (only \"sse\" supported)", c.Mode)
 	}
+	if c.FailOnZeroDelivery && c.AtMostOnceAcceptLoss {
+		// One demands a transient error on zero delivery, the other demands
+		// accepting the loss and acking. Refuse the ambiguous config at
+		// build time rather than silently picking one (HIGH-1).
+		return fmt.Errorf("http: fail_on_zero_delivery and at_most_once_accept_loss are mutually exclusive")
+	}
 	return nil
+}
+
+// effectiveAcceptZeroDeliveryLoss reports whether an SSE broadcast that
+// reached nobody must be treated as an at-most-once SUCCESS (true) rather
+// than the safe default TRANSIENT error (false). Loss is accepted ONLY
+// when the operator explicitly opts in via AtMostOnceAcceptLoss; the
+// legacy FailOnZeroDelivery flag can only reaffirm the default and is
+// rejected by Validate when it contradicts an accept-loss opt-in.
+func (c Config) effectiveAcceptZeroDeliveryLoss() bool {
+	return c.AtMostOnceAcceptLoss
 }
 
 func (c Config) effectiveMaxBody() int64 {

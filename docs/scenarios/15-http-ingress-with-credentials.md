@@ -207,7 +207,8 @@ import (
     "os"
 
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
+    "github.com/mariotoffia/gobridge/ports"
     "github.com/mariotoffia/gobridge/httpapi"
     "github.com/mariotoffia/gobridge/runtime"
     adaptershttp "github.com/mariotoffia/gobridge/adapters/http/transport"
@@ -218,7 +219,15 @@ import (
 
 func main() {
     logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+
+    // Register each linked adapter's config decoder; ParseFile requires a
+    // non-nil registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = adaptershttp.Register(reg)
+    _ = nativestore.Register(reg)
+
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
     // Credential repository for file:// URIs
     fileRepo, _ := filecreds.New("/etc/gobridge/creds",
@@ -228,7 +237,7 @@ func main() {
     resolver.Register(fileRepo)
 
     // HTTP transport factory
-    httpFactory := adaptershttp.NewBridgeFactory(
+    httpFactory := adaptershttp.NewFactory(
         adaptershttp.WithFactoryLogger(logger),
     )
 
@@ -237,8 +246,8 @@ func main() {
         bridge.WithCredentialStore(resolver),
         bridge.WithLogger(logger),
     ).
-        RegisterTransport("mqtt", paho.NewFactory(logger)).
-        RegisterTransport("http", httpFactory).
+        RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+        RegisterTransportFactory("http", httpFactory).
         RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
         Build(context.Background())
 

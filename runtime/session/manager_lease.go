@@ -205,8 +205,8 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
 		// reconnect failure is surfaced for isolated restart instead of being
 		// relabelled as a lease transfer (C7-N2).
-		if m.afterRenewLoopExit(ctx, token, err) {
-			return err
+		if propErr := m.afterRenewLoopExit(ctx, token, err); propErr != nil {
+			return propErr
 		}
 	}
 }
@@ -266,8 +266,8 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
 		// reconnect failure is surfaced for isolated restart instead of being
 		// relabelled as a lease transfer (C7-N2).
-		if m.afterRenewLoopExit(ctx, token, err) {
-			return err
+		if propErr := m.afterRenewLoopExit(ctx, token, err); propErr != nil {
+			return propErr
 		}
 	}
 }
@@ -640,47 +640,76 @@ func (m *Manager) stepDown(ctx context.Context) error {
 }
 
 // afterRenewLoopExit classifies renewLoop's non-ctx return and emits the
-// matching observability signal. It reports whether the caller must PROPAGATE
-// the error (return from Run) rather than re-acquire the lease.
+// matching observability signal. It returns the error the caller must PROPAGATE
+// (return from Run), or nil when the caller should re-acquire the lease in place.
 //
 //   - Genuine lease loss (stepDown crossed the renewal-failure threshold or a
 //     definitive fencing signal, errLeaseLostAfterRenewal): emit lease.lost +
-//     LeaseStateLost, clear hasLease, and return false so the caller
-//     re-acquires. This — and only this — is a real lease transfer
-//     (MetricLeaseTransfers on re-acquire). stepDown has already released the
-//     lease, so the re-acquire is unimpeded.
+//     LeaseStateLost, clear hasLease, and return nil so the caller re-acquires.
+//     This — and only this — is a real lease transfer (MetricLeaseTransfers on
+//     re-acquire). stepDown has already released the lease, so the re-acquire is
+//     unimpeded.
 //
 //   - Session failure (any other non-nil err: a reconcile-on-reconnect failure
 //     or an unexpected Events-channel close): the lease is still held and
 //     unexpired, so this is NOT a lease loss. Emit the DISTINCT
 //     LeaseStateReconcileFailed signal (never lease.lost / LeaseStateLost / a
 //     MetricLeaseTransfers-bearing re-acquire — MetricReconcileFailures was
-//     already emitted at the failure site) and return true so the caller
-//     surfaces the error to superviseSession for isolated restart, keeping
+//     already emitted at the failure site) and return the error so the caller
+//     surfaces it to superviseSession for isolated restart, keeping
 //     lease-transfer observability uncontaminated (C7-N2). hasLease is cleared
 //     so a drainer does not act on a lease this failing session is no longer
 //     renewing during the restart window.
 //
-// Release-then-reacquire recovery (finding M12): the still-held lease is
-// RELEASED best-effort here before the restart. Previously it was deliberately
-// left in place, forcing superviseSession's restarted Run to block in Acquire
-// against our own unexpired lease until LeaseTTL self-expiry (up to 360s with
-// defaults) — a needless self-inflicted outage. Releasing first lets the
-// restart re-acquire immediately; fencing + durable outbox retry preserve
-// correctness across the release/re-acquire, and the source session was already
-// closed on the failure path. The release is detached from ctx so it completes
-// even if the caller is shutting down.
+// Release-then-reacquire recovery (finding M12): on a session failure the
+// still-held lease is RELEASED best-effort here before the restart, so the
+// restarted Run re-acquires immediately instead of blocking in Acquire against
+// our own unexpired lease until LeaseTTL self-expiry. Fencing + durable outbox
+// retry preserve correctness across the release/re-acquire, and the source
+// session is closed (bounded) on the failure path BEFORE the release so a standby
+// never overlaps a still-subscribed old owner (CRITICAL-1). The release is
+// detached from ctx so it completes even if the caller is shutting down.
+//
+// B1 — wedged-Close guard: the M12 release is CONDITIONAL on the bounded source
+// Close actually completing. If Close ignored ctx and only the ceiling unblocked
+// it (completed == false), the source is STILL subscribed; releasing the lease
+// would let a standby acquire and overlap a still-consuming old owner — the exact
+// split-brain CRITICAL-1 exists to close. A session whose Close ignores ctx is
+// unrecoverable in-process, so we do NOT release (the lease stays held and
+// expires only by natural TTL, keeping single-owner) and instead escalate to a
+// terminal ErrSessionUnrecoverable. superviseSession flips the runtime terminal;
+// the pod restart forcibly tears down the wedged transport at the OS level
+// (socket close on process exit), after which the standby takes over at TTL.
 //
 // A clean events-closed exit (err == nil) keeps the pre-existing re-acquire
 // behaviour: it falls through to the lease-loss branch below.
-func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.LeaseToken, err error) bool {
+func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.LeaseToken, err error) error {
 	if err != nil && !errors.Is(err, errLeaseLostAfterRenewal) {
 		m.pushLeaseEvent(LeaseStateReconcileFailed, token, err)
 		m.mu.Lock()
 		m.hasLease = false
 		m.mu.Unlock()
+		// CRITICAL-1: STOP consuming before the lease becomes releasable by a
+		// standby. This branch is reached on a session failure (reconcile-on-
+		// reconnect failure or an unexpected Events-channel close) while the
+		// session is still connected/subscribed. Releasing the lease WITHOUT
+		// closing the source first lets a standby acquire it while THIS owner's
+		// route receiver keeps consuming+acking source messages — split-brain,
+		// duplicate egress, source ACK by a non-owner. Close the source session
+		// (bounded, so a wedged Close cannot hang the manager or stall a standby)
+		// BEFORE releasing the lease.
+		if !m.closeSourceBounded(ctx, "session failure") {
+			// B1: Close ignored ctx and did not complete within the bounded
+			// ceiling — the source is STILL subscribed. Do NOT release the lease
+			// (that would re-open the split-brain); escalate to terminal so the
+			// pod restart forcibly tears down the wedged transport. The lease
+			// stays held and expires only by natural TTL, preserving single-owner
+			// until the standby takes over.
+			return fmt.Errorf("%w: source session close ignored ctx and did not complete on session-failure recovery: %w",
+				ErrSessionUnrecoverable, err)
+		}
 		m.releaseOwnedLeaseBestEffort(ctx, token, "session failure")
-		return true
+		return err
 	}
 	m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
 	m.pushLeaseEvent(LeaseStateLost, token, err)
@@ -688,5 +717,5 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 	m.mu.Lock()
 	m.hasLease = false
 	m.mu.Unlock()
-	return false
+	return nil
 }

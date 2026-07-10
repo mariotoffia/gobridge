@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/eclipse/paho.golang/autopaho"
@@ -55,6 +56,22 @@ type subscribeSpec struct {
 // added if future logic requires them.
 type publishResult struct {
 	ReasonCode byte
+}
+
+// connackReasonCode extracts the CONNACK reason code from a rejected autopaho
+// connect error. A server-side CONNECT denial surfaces as
+// *autopaho.ConnackError whose ReasonCode carries the auth verdict (0x86 bad
+// user/pass, 0x87 not authorized). Returning the plain byte keeps the vendor
+// SDK boundary inside this ACL file: the port side (mapConnectError) maps the
+// code via MapDisconnectReasonCode without importing the SDK. ok is false when
+// err is not a CONNACK denial (e.g. a network dial failure), in which case the
+// caller falls back to the generic MapError.
+func connackReasonCode(err error) (code byte, ok bool) {
+	var ce *autopaho.ConnackError
+	if errors.As(err, &ce) {
+		return ce.ReasonCode, true
+	}
+	return 0, false
 }
 
 // pahoConn is the production pahoConnection backed by a real

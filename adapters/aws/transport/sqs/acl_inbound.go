@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -90,13 +91,30 @@ func (r *Receiver) pollAndConvert(
 	for _, msg := range output.Messages {
 		env, receiptHandle, convErr := r.convertMessage(ctx, queueURL, msg)
 		if convErr != nil {
-			// Drop poison messages: they will hit the broker's
-			// MaxReceiveCount-driven DLQ via VisibilityTimeout
-			// expiration without us issuing a Delete (which would
-			// suppress the redrive policy). Emitting the malformed
-			// metric makes the drop visible in dashboards.
+			// Emitting the malformed metric makes the drop visible in
+			// dashboards regardless of which drop strategy applies below.
 			r.metrics.Counter(MetricSQSMalformedMessages, 1,
 				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+
+			recvCount := approximateReceiveCount(msg.Attributes)
+
+			// Adapter-enforced poison backstop (Chunk 13 HIGH-2). When
+			// poison_max_receives is configured and this malformed message has
+			// resurfaced at least that many times, DELETE it to break an
+			// otherwise-unbounded redelivery hot loop on a source queue with no
+			// native redrive policy. The delete is a controlled, observable
+			// drop (SQSPoisonDropped + Error log). poison_max_receives should
+			// sit ABOVE the queue's native maxReceiveCount so native redrive
+			// still wins where configured — a message only climbs this high
+			// when nothing is draining it. When the backstop is disabled (0)
+			// the message is dropped WITHOUT a Delete (below), so the queue's
+			// own MaxReceiveCount redrive policy owns it; issuing a Delete then
+			// would suppress that redrive policy.
+			if r.cfg.PoisonMaxReceives > 0 && recvCount >= int(r.cfg.PoisonMaxReceives) {
+				r.dropPoisonMessage(ctx, client, queueURL, receiptHandle, aws.ToString(msg.MessageId), recvCount, convErr)
+				continue
+			}
+
 			if r.logger != nil {
 				// Escalate to Error once a malformed message has been
 				// redelivered past the sanity bound: the drop-without-delete
@@ -106,9 +124,10 @@ func (r *Receiver) pollAndConvert(
 				// otherwise return every visibility timeout forever
 				// (Finding 6). Settlement behaviour is deliberately
 				// unchanged — only the operator signal is escalated.
-				if recvCount := approximateReceiveCount(msg.Attributes); recvCount >= poisonReceiveCountThreshold {
+				if recvCount >= poisonReceiveCountThreshold {
 					r.logger.Error("sqs: poison message repeatedly redelivered; "+
-						"verify the source queue has a redrive policy (maxReceiveCount) to a DLQ",
+						"verify the source queue has a redrive policy (maxReceiveCount) to a DLQ, "+
+						"or set poison_max_receives to enable the adapter backstop",
 						"queue_url", queueURL,
 						"message_id", aws.ToString(msg.MessageId),
 						"approximate_receive_count", recvCount,
@@ -127,6 +146,212 @@ func (r *Receiver) pollAndConvert(
 		results = append(results, rawInbound{env: env, receiptHandle: receiptHandle})
 	}
 	return results, nil
+}
+
+// dropPoisonMessage deletes a malformed ("poison") message the receiver
+// cannot convert, as the adapter-enforced backstop once poison_max_receives is
+// reached (Chunk 13 HIGH-2). It is a controlled, observable drop that breaks an
+// otherwise-unbounded redelivery hot loop on a source queue with no native
+// redrive policy. Best effort and bounded by the settlement timeout: a failed
+// delete counts a settlement error and lets the message redeliver (the loop
+// continues, no worse than the disabled-backstop path) rather than wedging the
+// poll loop for the TCP RTO.
+//
+// The delete uses the SAME client snapshot the poll bound to the batch
+// (Finding: c8-settle-client), so a credential rotation between receive and
+// this settlement cannot split them across two principals.
+//
+// ponytail: the ceiling is a local delete (a controlled drop) rather than a
+// bridge-DLQ handoff — a conversion failure happens before the message becomes
+// a ports.Delivery, so there is no delivery-level poison sink the receiver can
+// route it to without a shared ports mechanism.
+func (r *Receiver) dropPoisonMessage(
+	ctx context.Context,
+	client sqsAPI,
+	queueURL, receiptHandle, messageID string,
+	recvCount int,
+	convErr error,
+) {
+	delCtx, cancel := boundedSettleContext(ctx, sqsSettlementTimeout)
+	defer cancel()
+
+	_, err := client.DeleteMessage(delCtx, &awssqs.DeleteMessageInput{
+		QueueUrl:      aws.String(queueURL),
+		ReceiptHandle: aws.String(receiptHandle),
+	})
+	if err != nil {
+		r.metrics.Counter(MetricSQSSettlementErrors, 1,
+			shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+		if r.logger != nil {
+			r.logger.Error("sqs: poison-message backstop delete failed; message will redeliver",
+				"queue_url", queueURL,
+				"message_id", messageID,
+				"approximate_receive_count", recvCount,
+				"error", err,
+			)
+		}
+		return
+	}
+
+	r.metrics.Counter(MetricSQSPoisonDropped, 1,
+		shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+	if r.logger != nil {
+		r.logger.Error("sqs: poison message deleted by adapter backstop "+
+			"(poison_max_receives reached); message dropped — no native redrive "+
+			"policy caught it",
+			"queue_url", queueURL,
+			"message_id", messageID,
+			"approximate_receive_count", recvCount,
+			"poison_max_receives", r.cfg.PoisonMaxReceives,
+			"error", convErr,
+		)
+	}
+}
+
+// checkRedrivePolicy performs a best-effort startup check of the source
+// queue's native redrive policy (maxReceiveCount -> DLQ) and reconciles it
+// with the adapter poison backstop (Chunk 13 HIGH-2 + destructive-preemption
+// follow-up).
+//
+// It NEVER fails startup for a permission or availability reason: a
+// GetQueueAttributes error (commonly a missing sqs:GetQueueAttributes grant)
+// degrades to a Warn (backstop on) or debug (backstop off) so a least-
+// privilege deployment is not blocked by an advisory check.
+//
+// It DOES fail startup (shared.ErrInvalidConfig, permanent) for one
+// loss-critical misconfiguration: the queue has a READABLE native redrive
+// policy AND the poison backstop would fire at or before it
+// (poison_max_receives <= native maxReceiveCount). The backstop DELETES the
+// message (destroying the payload) whereas native redrive MOVES it to a DLQ
+// (preserving it), so a backstop that fires first silently pre-empts the DLQ
+// and loses data. Returning here aborts Run before Started() so a readiness
+// probe never observes a ready route for a destructive config.
+//
+// Behaviour by mode:
+//   - backstop OFF (poison_max_receives == 0): a queue with NO redrive policy
+//     emits SQSMissingRedrivePolicy + a Warn; a queue with one is silent.
+//   - backstop ON: verify it will not pre-empt native redrive (above). A queue
+//     with NO native redrive is the expected backstop use case (the backstop
+//     is the sole bound) and is accepted.
+func (r *Receiver) checkRedrivePolicy(ctx context.Context, client sqsAPI, queueURL string) error {
+	if client == nil {
+		return nil
+	}
+
+	out, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       aws.String(queueURL),
+		AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameRedrivePolicy},
+	})
+	if err != nil {
+		// Cannot verify (likely no sqs:GetQueueAttributes grant). Do NOT fail
+		// startup — a least-privilege deployment must not be blocked by an
+		// advisory check. With the backstop configured we could not confirm it
+		// will not pre-empt a native DLQ, so Warn loudly rather than the silent
+		// debug used when the backstop is off.
+		if r.cfg.PoisonMaxReceives > 0 {
+			if r.logger != nil {
+				r.logger.Warn("sqs: could not read source queue redrive policy to verify it against "+
+					"poison_max_receives (permission?); proceeding best-effort — ensure poison_max_receives "+
+					"stays ABOVE any native maxReceiveCount so native redrive (which preserves the payload to "+
+					"a DLQ) wins over the adapter's destructive delete",
+					"queue_url", queueURL,
+					"poison_max_receives", r.cfg.PoisonMaxReceives,
+					"error", err,
+				)
+			}
+		} else if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug,
+				"sqs: could not verify source queue redrive policy (permission?)",
+				"queue_url", queueURL,
+				"error", err,
+			)
+		}
+		return nil
+	}
+
+	policy := ""
+	if out != nil {
+		policy = out.Attributes[string(sqstypes.QueueAttributeNameRedrivePolicy)]
+	}
+	maxReceive, haveMax := parseMaxReceiveCount(policy)
+
+	if r.cfg.PoisonMaxReceives > 0 {
+		// Loss-critical guard: a readable native redrive policy the backstop
+		// would fire at or before means the adapter's DeleteMessage destroys
+		// the payload before SQS can move it to the DLQ. Refuse to start.
+		if haveMax && int(r.cfg.PoisonMaxReceives) <= maxReceive {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"sqs: poison_max_receives (%d) must be greater than the source queue's native redrive "+
+					"maxReceiveCount (%d): the adapter backstop DELETES a poison message (losing the "+
+					"payload) whereas native redrive MOVES it to the DLQ (preserving it), so a backstop "+
+					"at or below maxReceiveCount silently pre-empts the DLQ and loses data. Raise "+
+					"poison_max_receives above %d, or set it to 0 to rely on native redrive.",
+				r.cfg.PoisonMaxReceives, maxReceive, maxReceive))
+		}
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug,
+				"sqs: poison backstop reconciled with native redrive policy",
+				"queue_url", queueURL,
+				"poison_max_receives", r.cfg.PoisonMaxReceives,
+				"native_max_receive_count", maxReceive,
+				"has_native_redrive", haveMax,
+			)
+		}
+		return nil
+	}
+
+	// Backstop OFF: advisory missing-redrive signal (unchanged behaviour).
+	if policy != "" {
+		if logging.DebugEnabled(r.logger) {
+			r.logger.Log(ctx, logging.LevelDebug, "sqs: source queue has a redrive policy",
+				"queue_url", queueURL,
+			)
+		}
+		return nil
+	}
+
+	r.metrics.Counter(MetricSQSMissingRedrivePolicy, 1,
+		shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
+	if r.logger != nil {
+		r.logger.Warn("sqs: source queue has NO native redrive policy "+
+			"(maxReceiveCount -> DLQ); a malformed message the bridge cannot "+
+			"convert will redeliver forever. Configure a redrive policy on the "+
+			"queue, or set poison_max_receives to enable the adapter backstop",
+			"queue_url", queueURL,
+		)
+	}
+	return nil
+}
+
+// parseMaxReceiveCount extracts maxReceiveCount from an SQS RedrivePolicy
+// attribute value — a JSON document such as
+// {"deadLetterTargetArn":"...","maxReceiveCount":"5"}. SQS renders the count
+// as a JSON string, but a bare number is tolerated too. Returns (0, false)
+// when the policy is empty, unparseable, or omits the field; callers treat
+// "unknown" as "cannot verify" and fall back to best-effort behaviour rather
+// than blocking startup.
+func parseMaxReceiveCount(policy string) (int, bool) {
+	if policy == "" {
+		return 0, false
+	}
+	var raw struct {
+		MaxReceiveCount any `json:"maxReceiveCount"`
+	}
+	if err := json.Unmarshal([]byte(policy), &raw); err != nil {
+		return 0, false
+	}
+	switch v := raw.MaxReceiveCount.(type) {
+	case float64:
+		return int(v), true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
 }
 
 // poisonReceiveCountThreshold is the ApproximateReceiveCount at or above

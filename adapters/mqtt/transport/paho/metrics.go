@@ -33,27 +33,45 @@ const (
 	// clean_start=false session). Such a publish is acked-and-dropped so its
 	// un-acked slot no longer pins the broker's Receive-Maximum in-flight
 	// window and no longer head-of-line-blocks in-order acking for the rest
-	// of the session. This is BENIGN cleanup. Real live-route loss (a
-	// still-desired subscription whose handler registered late) is counted
-	// separately on MetricMQTTRouterCoveredDropped. A steadily rising count
+	// of the session. This is BENIGN cleanup. A still-desired subscription
+	// whose handler registered late is NOT counted here and is NOT lost: its
+	// QoS 1/2 is RETAINED un-acked (MetricMQTTRouterCoveredRetained) and only a
+	// covered QoS 0 that ALSO overflows the bounded buffer is dropped
+	// (MetricMQTTRouterCoveredDropped). A steadily rising count
 	// means the broker is still delivering for a subscription no configured
 	// route covers; see the router's unsubscribe-on-resume hygiene
 	// (acl_router.go, doc.go).
 	MetricMQTTRouterUnmatchedDropped = "MQTTRouterUnmatchedDropped"
 
-	// MetricMQTTRouterCoveredDropped counts publishes acked-and-dropped past
-	// the startup grace window on a topic STILL covered by a subscription the
+	// MetricMQTTRouterCoveredDropped counts QoS 0 publishes dropped past the
+	// startup grace window on a topic STILL covered by a subscription the
 	// session wants (an active broker subscription or a desired plan filter)
-	// whose receiver handler had not registered in time. Unlike an orphan
-	// drop (MetricMQTTRouterUnmatchedDropped) this is REAL message loss on a
-	// live route: the broker already acked the publish to the client, so it
-	// cannot be recovered, and dropping-with-ack is the only way to keep
-	// paho's in-order ack stream draining. ANY non-zero value is alarming —
-	// it means a receiver handler registered later than unmatched_grace
-	// (30s default) and lost data. Split out from
-	// MetricMQTTRouterUnmatchedDropped so this real loss is not masked by
-	// benign orphan cleanup.
+	// whose receiver handler had not registered in time AND which the bounded
+	// pending buffer could not hold (its QoS 0 count/byte ceiling was full).
+	// QoS 0 carries no redelivery contract, so a covered QoS 0 the buffer
+	// cannot retain is a best-effort loss. Covered QoS 1/2 is NEVER counted
+	// here: it is RETAINED un-acked instead (MetricMQTTRouterCoveredRetained)
+	// so at-least-once holds — dropping a covered live-route QoS 1/2 would be
+	// acknowledged loss (HIGH-1). ANY non-zero value means a receiver handler
+	// registered later than unmatched_grace (30s default) while a covered QoS 0
+	// backlog overflowed the buffer. Split out from
+	// MetricMQTTRouterUnmatchedDropped so this loss is not masked by benign
+	// orphan cleanup.
 	MetricMQTTRouterCoveredDropped = "MQTTRouterCoveredDropped"
+
+	// MetricMQTTRouterCoveredRetained counts publishes on a STILL-COVERED topic
+	// RETAINED un-acked past the startup grace window because their receiver
+	// handler had not registered yet (HIGH-1). Unlike MetricMQTTRouterCoveredDropped
+	// these are NOT lost: rather than ack-and-drop a still-desired live-route
+	// publish (which would convert startup slowness into acknowledged loss and
+	// break at-least-once), the router keeps it in the bounded pending buffer
+	// (bounded by receive_maximum) until the handler registers and flushes it —
+	// or the broker redelivers it on reconnect. A steadily rising count means a
+	// receiver is registering later than unmatched_grace (30s default) or never;
+	// investigate the slow/absent receiver, but no data is lost. Retained QoS 1/2
+	// pins a broker Receive-Maximum slot until settled, so a persistent backlog
+	// eventually applies ingress backpressure rather than dropping.
+	MetricMQTTRouterCoveredRetained = "MQTTRouterCoveredRetained"
 
 	// MetricMQTTRouterOverflowDropped counts QoS 1/2 publishes acked-and-dropped
 	// because the startup pending buffer's COUNT cap (== receive_maximum) was

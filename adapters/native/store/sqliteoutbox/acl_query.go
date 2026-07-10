@@ -64,6 +64,17 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 // databases converge on the same index set:
 //
 //   - idx_outbox_partition_status backs the Claim/QueryPending partition scans.
+//     It also serves CountPending's per-partition path (countPendingByPartitionSQL,
+//     which constrains partition_key so the composite index applies).
+//   - idx_outbox_status_pending is a PARTIAL index on status keeping only the
+//     'pending' rows. It bounds CountPending's FLEET-WIDE path
+//     (countPendingAllSQL, WHERE status = 'pending' with NO partition_key): the
+//     composite idx_outbox_partition_status cannot serve that query (its leading
+//     column partition_key is unconstrained, so the planner falls back to a full
+//     covering scan of every row), whereas this tiny status-only partial index
+//     lets the fleet-wide COUNT be served by an index whose size is exactly the
+//     pending backlog — bounded cost, and near-free to maintain since it holds
+//     only pending rows (F2 CountPending bounded-cost contract).
 //   - idx_outbox_identity is the partition-scoped duplicate-detection identity
 //     (partition_key, envelope_id, binding_id) that INSERT OR IGNORE keys on.
 //     It REPLACES the legacy global UNIQUE(envelope_id, binding_id) so the same
@@ -74,6 +85,7 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 //     from full-table scans into narrow index range scans.
 const outboxIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
+CREATE INDEX IF NOT EXISTS idx_outbox_status_pending ON outbox(status) WHERE status = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_identity ON outbox(partition_key, envelope_id, binding_id);
 CREATE INDEX IF NOT EXISTS idx_outbox_completed ON outbox(completed_at) WHERE status = 'completed';
 CREATE INDEX IF NOT EXISTS idx_outbox_expired ON outbox(expires_at) WHERE status = 'expired';
@@ -174,6 +186,23 @@ const (
 		 WHERE partition_key = ? AND status = 'pending'
 		 ORDER BY created_at, seq
 		 LIMIT ?`
+
+	// countPendingByPartitionSQL / countPendingAllSQL back the OPTIONAL
+	// ports.OutboxDepthReporter capability: an efficient COUNT of pending rows
+	// (the true backlog behind shared.MetricOutboxDepth) served by an index
+	// rather than materialising every row like selectPendingByPartitionSQL.
+	//   - countPendingByPartitionSQL constrains partition_key, so the composite
+	//     idx_outbox_partition_status(partition_key, status) serves it as a
+	//     bounded index SEARCH.
+	//   - countPendingAllSQL counts across every partition (empty partition key).
+	//     Its leading composite-index column partition_key is unconstrained, so
+	//     it is served by the status-leading PARTIAL index idx_outbox_status_pending
+	//     (see outboxIndexSQL) whose size is exactly the pending backlog — never a
+	//     full covering scan of every row. TestCountPendingQueryPlansAreIndexed
+	//     pins this bounded-cost plan for both paths.
+	countPendingByPartitionSQL = `SELECT COUNT(*) FROM outbox
+		 WHERE partition_key = ? AND status = 'pending'`
+	countPendingAllSQL = `SELECT COUNT(*) FROM outbox WHERE status = 'pending'`
 
 	expireOutboxSQL = `UPDATE outbox SET status = 'expired'
 		 WHERE partition_key = ? AND expires_at > 0 AND expires_at < ? AND status = 'pending'`

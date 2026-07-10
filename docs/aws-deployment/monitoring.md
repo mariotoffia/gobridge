@@ -194,15 +194,20 @@ A single background flusher goroutine drains the buffer on the flush interval,
 governed so a slow `PutMetricData` cannot stack overlapping flushes.
 
 `DefaultRollupMetrics()` returns `OutboxDepth`, `LeaseExpiries`, `DLQEntries`,
-`LeaseAcquireFailures`, `CredentialRefreshFailures`, and `SQSVisibilityExtensions`.
+`LeaseAcquireFailures`, `CredentialRefreshFailures`, `SQSVisibilityExtensions`,
+and the silent-loss + backlog signals `DLQDepth`, `MessagesDropped`,
+`MessagesExpired`, and `MessagesFiltered`.
 
-`CredentialRefreshFailures` is the odd one in that list. It is emitted with **no**
-runtime dimension, yet it is rolled up so it still fires on instance-tagged
-fleets: with `WithInstanceTag`, its base series carries only `instance_id`, which
-a zero-dimension alarm would miss, so the dimensionless rollup copy gives the
-alarm something to match. Without instance tagging the base and rollup copies
-coincide — a harmless double count. It has **no** default alarm; add your own if
-you want to alert on a secrets backend that is unreachable or denying access.
+`CredentialRefreshFailures` and `DLQDepth` are the dimensionless entries. Each is
+emitted with **no** runtime dimension, yet is rolled up so it still fires on
+instance-tagged fleets: with `WithInstanceTag`, the base series carries only
+`instance_id`, which a zero-dimension alarm would miss, so the dimensionless
+rollup copy gives the alarm something to match. Without instance tagging the base
+and rollup copies coincide — a harmless double count (`DLQDepth` is a gauge whose
+rollup takes the fleet `Maximum`). `CredentialRefreshFailures` has **no** default
+alarm; add your own if you want to alert on a secrets backend that is unreachable
+or denying access. `MessagesDropped/Expired/Filtered` carry `route_id`, so their
+rollup copies are what the default fleet alarms below match.
 
 ### Key Metrics
 
@@ -234,7 +239,9 @@ from the intentional filter and TTL counters.
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `OutboxDepth` | `partition` | Count (gauge) | Pending outbox records — dual-emitter, see the saturation note below |
+| `OutboxDepth` | `partition` | Count (gauge) | TRUE pending backlog — dual-emitter (ingress + drain), see the depth note below |
+| `OutboxClaimBatchSize` | `partition` | Count (gauge) | Records the drainer CLAIMED on its last poll — a liveness/throughput signal that saturates at the claim ceiling; NOT the backlog (kept separate from `OutboxDepth`) |
+| `OutboxDepthFailures` | `partition` | Count | Drain cycles where a supported depth reporter's count query FAILED (real DB/read error, not "unsupported"). On such a cycle `OutboxDepth` is deliberately NOT emitted so the missing-data alarm fires; a rising value means the depth query itself is broken |
 | `OutboxPersistLatency` | `route_id` | Milliseconds | Persist-call latency |
 | `OutboxDrainLatency` | `session_id` | Milliseconds | Drain-batch latency |
 | `OutboxClaimRecoveries` | `session_id` | Count | Claimed records with a replay count > 1 (recovered after a crash) |
@@ -248,16 +255,26 @@ from the intentional filter and TTL counters.
 | `OutboxDrainStalled` | `session_id`, `route_id` | Count | Drain batch whose in-flight sends did not return within the watchdog grace (a sender ignoring `ctx`) |
 | `DrainSkippedNoLease` | `session_id`, `route_id` | Count | Drain cycle skipped because the drainer held no lease |
 
-> **`OutboxDepth` saturates without `MaxOutboxDepth`.** This partition-keyed
-> series carries two gauges. The ingress path emits the TRUE pending count
-> (bounded by the configured `MaxOutboxDepth`); the drain path emits the
-> claimed-batch size each poll — a liveness floor that SATURATES at the batch
-> size (default 100, max 500), NOT the backlog. The default alarms read the
-> `Maximum` statistic so the low drain-path value never clobbers the ingress
-> depth. Consequence: with `MaxOutboxDepth` UNSET, only the saturating drain-path
-> value is emitted, so a deep backlog is indistinguishable from a full batch and
-> the depth alarms (1000/10000) can never breach. Set `MaxOutboxDepth` for a true
-> depth signal.
+> **`OutboxDepth` reports the true backlog; `OutboxClaimBatchSize` is liveness.**
+> This partition-keyed depth gauge is emitted from two sites, each reporting a
+> real pending count (never a claim-batch size): the ingress path emits the
+> pending count it observed (bounded by `MaxOutboxDepth`), and the drain path
+> emits the EXACT remaining pending count read from the store's optional
+> `ports.OutboxDepthReporter` capability — a dedicated COUNT primitive that does
+> not saturate at the claim ceiling — so a deep backlog reports its real size.
+> On a store that has **not** adopted `OutboxDepthReporter` yet, the drain path
+> falls back to the claimed count (a saturating LOWER BOUND) to keep the gauge
+> continuous; implement the capability on your outbox store for an exact,
+> unbounded depth signal. The default depth alarms read the `Maximum` statistic
+> and treat missing data as breaching (silence means the drainer/bridge died).
+> The honest per-cycle claim size is published SEPARATELY as
+> `OutboxClaimBatchSize`, so a full batch can never masquerade as a shallow
+> backlog. When a store DOES support the capability but its count query hits a
+> REAL failure (a DB/read error, distinct from "not implemented"), the drainer
+> does NOT fall back to the claimed count — it SKIPS the `OutboxDepth` emission
+> for that cycle (so a persistently broken query trips the breaching-on-missing
+> alarm rather than hiding behind a saturating lower bound) and records it on
+> `OutboxDepthFailures` plus a structured error log.
 
 **Store health**
 
@@ -298,7 +315,8 @@ scan stops after `limit` -- is a tracked future item; see
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ |
+| `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ (an INGRESS COUNTER — only ever increases) |
+| `DLQDepth` | none | Count (gauge) | CURRENT outstanding DLQ entries — the standing backlog "right now", so a stale burst after traffic stops is visible. Sampled via the store's optional `ports.DLQDepthReporter`; emitted as a dimensionless fleet total. |
 | `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped with no held lease |
 | `DLQRedrives` | `route_id` | Count | DLQ entries an admin redrive re-injected successfully |
 | `DLQRedriveFailures` | `route_id` | Count | Redrive attempts that failed during or after the claim |
@@ -434,6 +452,9 @@ lost: the buffer hard cap, retry-buffer overflow on requeue, or a non-retryable
 | CPU Utilization | ECS `CPUUtilization` | > 80% | 5 min | SNS (warn) |
 | Memory Utilization | ECS `MemoryUtilization` | > 80% | 5 min | SNS (warn) |
 | DLQ Growing | `DLQEntries` | > 0 (sum) | 5 min | SNS (high) |
+| DLQ Depth | `DLQDepth` | > 0 (max) | 5 min | SNS (warn) |
+| Message Loss | `MessagesDropped` | > 0 (sum) | 5 min | SNS (critical) |
+| TTL Loss (sustained) | `MessagesExpired` | > 0 (sum, 3 periods) | 5 min ×3 | SNS (warn) |
 | Outbox Depth Critical | `OutboxDepth` | > 10,000 | 5 min | SNS (critical) |
 | Lease Acquire Failures | `LeaseAcquireFailures` | > 3 (sum) | 5 min | SNS (critical) |
 | Outbox Backlog Deep | `DynamoDBOutboxClaimScanPages` | > 0 (sum) | 15 min | SNS (warn) |
@@ -451,8 +472,10 @@ instead.
 
 The CloudWatch adapter provides `DefaultAlarms` and `EnsureAlarms` to create
 alarms programmatically. `DefaultAlarms` returns pre-defined alarm definitions
-for outbox depth, DLQ entries, lease expiries, lease acquire failures, and SQS
-visibility extensions. These alarm definitions carry **no dimensions**, so they
+for outbox depth, DLQ entries, lease expiries, lease acquire failures, SQS
+visibility extensions, and the silent-loss signals — `DLQDepth` (backlog > 0),
+`MessagesDropped` (any terminal loss, critical), and sustained `MessagesExpired`
+(TTL loss). These alarm definitions carry **no dimensions**, so they
 match only the zero-dimension **rollup** series. Configure the exporter with
 `WithRollupMetrics(cwmetrics.DefaultRollupMetrics()...)` and the **same
 namespace** you pass to `DefaultAlarms`, or every alarm sits at
@@ -472,10 +495,30 @@ if err != nil {
 ```
 
 The runtime does **not** call `EnsureAlarms` for you — alarm provisioning is a
-deploy-time concern. In CDK, the `GoBridgeAlarms` construct exposes the same set
-declaratively via `EnableRollupAlarms` (opt-in, off by default). It requires an
-exporter configured with rollup metrics whose namespace matches the construct's
-`RollupMetricsNamespace`; a mismatch leaves the alarms at `INSUFFICIENT_DATA`.
+deploy-time concern. In CDK, the `GoBridgeAlarms` construct exposes a rollup
+alarm set declaratively via `EnableRollupAlarms` (opt-in, off by default). It
+requires an exporter configured with rollup metrics whose namespace matches the
+construct's `RollupMetricsNamespace`; a mismatch leaves the alarms at
+`INSUFFICIENT_DATA`.
+
+> **The new silent-loss alarms ship in `DefaultAlarms()`, not yet in the CDK
+> construct.** `DefaultAlarms()`/`EnsureAlarms()` provision the `DLQDepth`,
+> `MessagesDropped`, and `MessagesExpired` alarms described above. The
+> `GoBridgeAlarms` CDK construct currently creates only `OutboxDepth`,
+> `DLQEntries`, `LeaseExpiries`, and `LeaseAcquireFailures`; adding the
+> silent-loss alarms to the construct is tracked separately. Until then, provision
+> them via `DefaultAlarms()`/`EnsureAlarms()` (the Go call above) or an equivalent
+> hand-authored CDK alarm.
+
+> **`DLQDepth` requires the composition-root DLQ sampler to be active.** The
+> `GoBridge-DLQDepth-Warning` alarm uses `TreatMissingData=notBreaching`, so with
+> NO sampler emitting `DLQDepth` it sits silent rather than false-alarming. The
+> gauge is emitted only when the composition root calls `runtime.ReportDLQDepth`
+> on a periodic cadence against a DLQ store that implements
+> `ports.DLQDepthReporter` (see the store/DLQ wiring). Until that sampler is
+> wired, the alarm cannot fire — verify the sampler is running before relying on
+> it. (`notBreaching` is deliberate: `breaching` would false-alarm every fleet
+> until the sampler lands.)
 
 ### CDK Alarm Examples
 

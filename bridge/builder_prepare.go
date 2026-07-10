@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -44,10 +45,24 @@ type preparedBuild struct {
 // BuildPlan.Commit is one-shot: a second call returns an error. If
 // you do not need the explicit two-phase pattern, prefer the simpler
 // Builder.Build(ctx).
+//
+// A BuildPlan that is prepared but never committed MUST be released via
+// BuildPlan.Close (or its alias Abort) so the transport-independent stores the
+// prepare phase opened (SQLite files, DynamoDB clients) are not leaked.
 type BuildPlan struct {
-	b         *Builder
-	prep      *preparedBuild
-	committed bool
+	b    *Builder
+	prep *preparedBuild
+
+	mu sync.Mutex
+	// consumed is set the instant Commit is invoked — BEFORE complete runs — so
+	// the plan is one-shot regardless of outcome. complete()'s failure defers
+	// close the prep-opened store handles, so a retried Commit would build a
+	// runtime over already-closed handles (HIGH-4); marking consumed up front
+	// makes a second Commit fail instead.
+	consumed bool
+	// closed records that Close/Abort has released the prep-opened stores of a
+	// never-committed plan, so Close is idempotent and never double-closes.
+	closed bool
 }
 
 // Plan runs the prepare phase: validates the configuration, builds
@@ -64,7 +79,8 @@ type BuildPlan struct {
 // trusts the input.
 //
 // Most callers should use Build(ctx) instead; Plan is reserved for
-// supervisor-style hot-reload orchestration.
+// supervisor-style hot-reload orchestration. A plan that is not
+// committed must be released with Close/Abort.
 func (b *Builder) Plan(ctx context.Context) (*BuildPlan, error) {
 	prep, err := b.prepare(ctx)
 	if err != nil {
@@ -78,22 +94,67 @@ func (b *Builder) Plan(ctx context.Context) (*BuildPlan, error) {
 // *runtime.Runtime (callers must invoke Start themselves).
 //
 // Commit is one-shot — calling it twice on the same BuildPlan
-// returns an error. This guards against accidental double-commit
-// when the hot-reload state machine retries.
+// returns an error, whether the FIRST call succeeded OR failed. The
+// plan is marked consumed BEFORE complete runs: complete()'s failure
+// path closes the prep-opened store handles, so a retried Commit would
+// otherwise build a runtime over already-closed stores (HIGH-4). A
+// caller that wants to retry a failed reload must Plan again.
 func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 	if p == nil {
 		return nil, fmt.Errorf("bridge: BuildPlan.Commit called on nil plan")
 	}
-	if p.committed {
+	p.mu.Lock()
+	if p.consumed {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("bridge: BuildPlan already committed")
 	}
+	if p.closed {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("bridge: BuildPlan.Commit called after Close/Abort")
+	}
+	// Consume the plan up front so neither a success nor a failure leaves it
+	// retryable (see the doc comment above).
+	p.consumed = true
+	p.mu.Unlock()
+
 	rt, err := p.b.complete(ctx, p.prep)
 	if err != nil {
 		return nil, err
 	}
-	p.committed = true
 	return rt, nil
 }
+
+// Close releases the transport-independent store handles a Plan opened but never
+// committed into a runtime. It is the abort path for a caller that prepares a
+// plan and then decides not to Commit it: without it the opened SQLite/DynamoDB
+// store handles leak for the plan's lifetime (HIGH-4). Close is idempotent and
+// safe on a nil plan.
+//
+// Close is a deliberate NO-OP once Commit has been invoked: on Commit success
+// the runtime owns the store handles and closes them on Stop; on Commit failure
+// complete()'s own defers already closed them. Close therefore only acts on the
+// never-committed path and can never double-close a handle.
+func (p *BuildPlan) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.consumed || p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	prep := p.prep
+	p.mu.Unlock()
+	if prep != nil {
+		p.b.closeStoreHandles(prep.stores)
+	}
+}
+
+// Abort is an alias for Close, provided for callers that read the two-phase
+// lifecycle as prepare/commit-or-abort. It releases a prepared-but-uncommitted
+// plan's store handles exactly once.
+func (p *BuildPlan) Abort() { p.Close() }
 
 // prepare is the internal first phase used by both Build and Plan.
 // It is unexported to enforce that callers cannot construct an
@@ -444,7 +505,7 @@ func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRunti
 		if r.Session == nil {
 			continue
 		}
-		sessCfg, err := toSessionConfigE(r.Session)
+		sessCfg, err := toSessionConfigE(r.Session, deploymentClustered(b.cfg))
 		if err != nil {
 			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
 		}

@@ -14,6 +14,7 @@ import (
 )
 
 var _ ports.DLQStore = (*Store)(nil)
+var _ ports.DLQDepthReporter = (*Store)(nil)
 
 // Store implements ports.DLQStore in memory for tests and
 // single-process mode. It is not safe for clustered production deployments.
@@ -209,6 +210,22 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	}
 
 	return count, nil
+}
+
+// Depth reports the current number of outstanding DLQ entries — the standing
+// backlog behind shared.MetricDLQDepth (ports.DLQDepthReporter, sampled via
+// runtime.ReportDLQDepth). len(map) is O(1), so the sample is cheap. The
+// in-memory store cannot fail a read, so it always returns a real count and a
+// nil error.
+func (s *Store) Depth(ctx context.Context) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memorydlq: depth")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.entries), nil
 }
 
 func matchesFilter(e routing.DLQEntry, filter routing.DLQFilter) bool {

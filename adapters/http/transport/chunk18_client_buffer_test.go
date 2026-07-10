@@ -21,8 +21,11 @@ import (
 func TestChunk18_SSE_ClientBufferSizeHonored(t *testing.T) {
 	const bufferSize = 3
 	rec := &ports.RecordingExporter{}
+	// Accept-loss opt-in keeps this test focused on buffer capacity: the
+	// overflow event is expected to drop, and we assert on the drop metric,
+	// not on the (separately tested) zero-delivery ack semantics.
 	sender := newChunk18Sender(t, "buf-cfg",
-		transport.Config{ClientBufferSize: bufferSize}, rec, nil)
+		transport.Config{ClientBufferSize: bufferSize, AtMostOnceAcceptLoss: true}, rec, nil)
 
 	w := newBlockingSSEWriter()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,9 +66,10 @@ func TestChunk18_SSE_ClientBufferSizeHonored(t *testing.T) {
 
 	// The next event overflows the configured buffer and is dropped. With
 	// the old hardcoded 256 buffer this event would still fit, so the drop
-	// proves ClientBufferSize is honored.
+	// proves ClientBufferSize is honored. Accept-loss is enabled, so the
+	// all-dropped send still acks (returns nil).
 	if err := sender.Send(context.Background(), chunk18Envelope("overflow")); err != nil {
-		t.Fatalf("Send(overflow) must still ack by default: %v", err)
+		t.Fatalf("Send(overflow) under accept-loss must ack: %v", err)
 	}
 	drops := rec.FindEntries(transport.MetricSSEDroppedEvents)
 	if len(drops) != 1 {

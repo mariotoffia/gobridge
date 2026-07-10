@@ -22,6 +22,13 @@ The fix is a one-line change in how the external tool writes the file: write to 
 temporary file in the same directory, then rename it over the target. gobridge's
 own writer already does this, so this runbook is only about EXTERNAL writers.
 
+gobridge also carries an in-process safety net — a content-stability gate that
+holds a change back until it reads the same new bytes twice across the settle
+window — which closes the *common* torn-read window. It narrows the risk but does
+not remove it, so atomic writing remains required. See
+[In-process mitigation: the content-stability gate](#in-process-mitigation-the-content-stability-gate)
+below.
+
 ## What the file watcher is doing
 
 While gobridge runs, a background watcher keeps an eye on the config file. When the
@@ -176,6 +183,29 @@ Templating and deploy tools:
   file and `mv` it into place, as above.
 - Editors: use "save via rename" / atomic save, or edit a copy and `mv` it in. A
   plain in-place save is a partial-write risk.
+
+## In-process mitigation: the content-stability gate
+
+As defense in depth, the watcher does not apply a change the instant it first
+reads new content. It requires the **same new bytes to be read twice across the
+settle window** before swapping the runtime. The first read records the content
+as a candidate; a confirming read one `config_watch.debounce` window later (a
+dedicated confirm timer in `poll` mode) must return byte-identical content before
+the file is parsed and applied. Content that is still changing between the two
+reads — the normal signature of an in-progress write — is held back, not applied.
+
+This closes the **common** torn-read window. An in-place write that completes
+within one settle window is never observed as "settled" on a partial file,
+because the confirming read sees either the finished file or still-changing
+bytes. A larger `config_watch.debounce` widens this protection, at the cost of
+proportionally slower reloads.
+
+It does **not** replace atomic writes. A writer that stalls mid-write for longer
+than the settle window — leaving a valid partial file untouched across both reads
+— still looks "stable" and can be applied. Slow or chunked renderers, network
+filesystems, and paused editors can all produce that state. Atomic
+temp-file-plus-rename remains the required discipline for every external writer;
+the stability gate only narrows the window, it does not remove the requirement.
 
 ## Why gobridge itself does not need this
 

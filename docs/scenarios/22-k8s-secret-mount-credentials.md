@@ -131,7 +131,7 @@ import (
     "time"
 
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
     "github.com/mariotoffia/gobridge/ports"
     goruntime "github.com/mariotoffia/gobridge/runtime"
     filecreds "github.com/mariotoffia/gobridge/adapters/native/credentials/file"
@@ -140,7 +140,13 @@ import (
 
 func main() {
     logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+
+    // Register each linked adapter's config decoder; ParseFile requires a
+    // non-nil registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
     fileRepo, err := filecreds.New("/etc/gobridge/creds")
     if err != nil {
@@ -150,13 +156,14 @@ func main() {
     resolver.Register(fileRepo)
 
     rt, _ := bridge.NewBuilder(cfg,
+        bridge.WithLogger(logger),
         bridge.WithPolledCredentialStore(resolver, ports.PollBasedWrapperConfig{
             PollInterval: 5 * time.Minute,
             Jitter:       30 * time.Second, // ~10% de-sync across a fleet
             EmitOnStart:  true,             // surface a build-window rotation
         }),
     ).
-        RegisterTransport("mqtt", paho.NewFactory(logger)). // config uses transport: mqtt
+        RegisterTransportFactory("mqtt", paho.NewFactory(logger)). // config uses transport: mqtt
         Build(context.Background())
 
     ctx, cancel := context.WithCancel(context.Background())

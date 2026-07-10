@@ -113,9 +113,14 @@ func TestGenerateHTTPEnvelopeID_CarriesInstanceEntropy(t *testing.T) {
 func TestSSESender_Send_AllBuffersFullCountsAllDropped(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s := newSSESender(sseSenderConfig{
-		id:      "sse-full",
-		metrics: rec,
-		clock:   clocktest.New(),
+		id: "sse-full",
+		// This test asserts the all-dropped ACCOUNTING (metrics), so it
+		// opts into at-most-once loss to keep Send returning nil; the
+		// safe-default fail-on-zero-delivery path is covered separately
+		// (chunk18 + TestChunk16_HIGH1_*).
+		acceptZeroDeliveryLoss: true,
+		metrics:                rec,
+		clock:                  clocktest.New(),
 	})
 	// A zero-capacity events channel with no reader models a client
 	// whose buffer is 100% full: every fan-out hits the default branch.
@@ -176,6 +181,70 @@ func TestFormatSSE_OmitsIDField(t *testing.T) {
 	}
 	if !strings.HasSuffix(frame, "\n\n") {
 		t.Fatalf("frame must end with a blank line, got %q", frame)
+	}
+}
+
+// --- Finding HIGH-3: multi-line data is framed per SSE rules ------------
+
+// A data value that contains a line terminator must be emitted as one
+// "data:" line per segment. The pre-fix formatter wrote a single "data: "
+// prefix in front of the whole value, so EventSource kept only the first
+// physical line and dropped the rest — silent data corruption at the SSE
+// boundary. Every physical data line must carry the "data: " prefix and
+// the client-side reconstruction (segments rejoined with "\n") must equal
+// the original bytes.
+func TestFormatSSE_MultilineDataIsSplitPerLine(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string // full frame
+	}{
+		{
+			name: "single_line_unchanged",
+			data: `{"a":1}`,
+			want: "event: message\ndata: {\"a\":1}\n\n",
+		},
+		{
+			name: "lf_split",
+			data: "{\"a\":\n1}",
+			want: "event: message\ndata: {\"a\":\ndata: 1}\n\n",
+		},
+		{
+			name: "crlf_collapsed_to_one_break",
+			data: "line1\r\nline2",
+			want: "event: message\ndata: line1\ndata: line2\n\n",
+		},
+		{
+			name: "lone_cr_split",
+			data: "line1\rline2",
+			want: "event: message\ndata: line1\ndata: line2\n\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := string(formatSSE("message", []byte(tc.data)))
+			if frame != tc.want {
+				t.Fatalf("frame mismatch:\n got %q\nwant %q", frame, tc.want)
+			}
+			// Every line between the event line and the terminating blank
+			// line must be a data: line, and rejoining them must yield the
+			// original data (with CR/CRLF normalised to LF).
+			body := strings.TrimSuffix(frame, "\n\n")
+			var segments []string
+			for _, line := range strings.Split(body, "\n") {
+				if strings.HasPrefix(line, "event: ") {
+					continue
+				}
+				if !strings.HasPrefix(line, "data: ") {
+					t.Fatalf("physical line %q lacks the data: prefix — SSE framing corrupts multi-line data", line)
+				}
+				segments = append(segments, strings.TrimPrefix(line, "data: "))
+			}
+			wantReassembled := strings.ReplaceAll(strings.ReplaceAll(tc.data, "\r\n", "\n"), "\r", "\n")
+			if got := strings.Join(segments, "\n"); got != wantReassembled {
+				t.Fatalf("reconstructed data %q != normalised original %q", got, wantReassembled)
+			}
+		})
 	}
 }
 

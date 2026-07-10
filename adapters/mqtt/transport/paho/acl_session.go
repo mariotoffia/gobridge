@@ -253,21 +253,46 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	s.mu.Lock()
 	tlsOpts := s.opts.TLS
 	s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
+	credsPresent := s.liveCreds.Username != "" || s.liveCreds.Password != ""
+	allowPlaintext := s.opts.AllowPlaintextCredentials
+	brokerURLs := s.opts.BrokerURLs
 	s.mu.Unlock()
+
+	// HIGH-4 defense-in-depth: Factory.NewSession validates the plaintext-
+	// credential transport before construction and Session.ApplyCredentials
+	// re-gates on rotation, but a DIRECT NewSession caller (bypassing the
+	// factory) — or any future path that seeds credentials onto opts — could
+	// still reach dial with username/password bound to a plaintext transport.
+	// Fail the dial CLOSED here so cleartext credentials can NEVER leave the
+	// process on a non-TLS scheme without the explicit opt-in.
+	if plaintextCredentialViolation(credsPresent, allowPlaintext, brokerURLs) {
+		return nil, nil, errPlaintextCredentials()
+	}
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
 		return nil, nil, shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
-	// ponytail: M-6 — this session relies on autopaho's DEFAULT IN-MEMORY
-	// packet/session store (cfg.Session left nil ⇒ state.NewInMemory in
-	// autopaho). Consequence: outbound QoS 1/2 packets in flight at process
-	// death are LOST, and QoS 2 is not exactly-once ACROSS a restart (the
-	// four-way handshake state does not survive). A file-backed
-	// session.SessionManager (assigned to cfg.Session) is the deferred,
-	// ADR-level option; it is out of scope here (deferred finding M-6; see
-	// scenario-01 docs).
+	// ponytail: M-6 / HIGH-5 — this session relies on autopaho's DEFAULT
+	// IN-MEMORY packet/session store (cfg.Session left nil ⇒ state.NewInMemory
+	// in autopaho). CEILING: outbound QoS 1/2 packets IN FLIGHT at process
+	// death are LOST (the un-acked PUBLISH / PUBREL state does not survive),
+	// and QoS 2 is therefore NOT exactly-once ACROSS a restart. This is NOT
+	// fixed by client_id/clean_start=false (those resume BROKER-side session
+	// state; the CLIENT-side outbound packet queue is what is volatile here).
+	//
+	// PRODUCTION CONTRACT: durable, at-least-once EGRESS is the BRIDGE's
+	// responsibility, delivered by the shared_outbox / idempotent-replay
+	// pattern at the route layer — the sender is invoked from a durable outbox
+	// record and re-invoked on replay after a crash, so a lost in-flight
+	// publish is re-sent. The MQTT plugin ALONE does not provide durable
+	// egress; do NOT rely on MQTT QoS 1/2 as the sole loss-prevention for
+	// outbound. Factory.NewSender emits a one-time advisory to this effect for
+	// QoS 1/2 senders (see warnOutboxDurabilityOnce), and docs/transports/mqtt.md
+	// documents the requirement. A file-backed session.SessionManager (assigned
+	// to cfg.Session) is the deferred, ADR-level alternative and is out of
+	// scope here (deferred finding M-6; see scenario-01 docs).
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
@@ -286,10 +311,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 			s.handleConnectionUp()
 		},
 		OnConnectError: func(err error) {
-			s.mu.Lock()
-			s.connected = false
-			s.mu.Unlock()
-			s.pushEvent(ports.SessionReconnecting, MapError(err))
+			s.handleConnectError(err)
 		},
 		OnConnectionDown: func() bool {
 			s.mu.Lock()

@@ -51,6 +51,12 @@ type deferredFakeStore struct {
 	// releaseErr, when non-nil, is returned by Release. Used by the M4 test to
 	// simulate a store I/O error on Release (distinct from a stale token).
 	releaseErr error
+
+	// completeSignal, when non-nil, receives each id passed to Complete
+	// (non-blocking), so a test can deterministically observe WHETHER Complete
+	// ran — used by the HIGH-2 post-send-fence test to prove a watchdog-abandoned
+	// send never completes.
+	completeSignal chan string
 }
 
 func (s *deferredFakeStore) Persist(context.Context, []*persistence.OutboxRecord) error {
@@ -72,6 +78,14 @@ func (s *deferredFakeStore) Complete(_ context.Context, ids []string, _ persiste
 	s.mu.Lock()
 	s.completed = append(s.completed, ids...)
 	s.mu.Unlock()
+	if s.completeSignal != nil {
+		for _, id := range ids {
+			select {
+			case s.completeSignal <- id:
+			default:
+			}
+		}
+	}
 	return s.completeErr
 }
 

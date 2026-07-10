@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -54,6 +55,21 @@ type Session struct {
 	// readiness probes.
 	senders map[*Sender]bool
 
+	// builtLinkCount and builtDurableReceiver enforce the
+	// dedicated-session contract for durable AMQP 1.0 receivers at BUILD
+	// time (HIGH-3). One Session multiplexes every receiver/sender bound
+	// to its session_id over a single connection, and closing a durable
+	// receiver forces a full connection teardown (the pinned go-amqp
+	// cannot non-closing-detach a durable link — a closing detach is an
+	// UNSUBSCRIBE), which transiently blips every sibling link. reserveLink
+	// refuses to build a durable receiver on a session that already hosts
+	// any link, and refuses any link on a session already claimed by a
+	// durable receiver, so the blast radius is confined by construction
+	// (Dedicated-session contract in UBIQUITOUS.md / doc.go, c7-durable-close).
+	// Guarded by mu.
+	builtLinkCount       int
+	builtDurableReceiver bool
+
 	// lastErr records the most recent link/connection error observed by
 	// a receiver or sender, surfaced via SessionHealth.LastError on any
 	// non-Full state so operators see the CAUSE of a degrade, not merely
@@ -83,6 +99,16 @@ type Session struct {
 	// and drops the current connection so the next dial picks up the
 	// rotated material.
 	liveCreds amqp10Credentials
+
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
+	// (re)connect maps a dial error to shared.ErrNotAuthorized, forcing an
+	// immediate credential re-resolve rather than stalling on revoked
+	// credentials until the next poll. atomic.Pointer gives safe publication:
+	// the setter runs on the builder goroutine while the load happens on the
+	// reconnect/monitor goroutine.
+	authFailureCB atomic.Pointer[func(error)]
 }
 
 // amqp10Credentials is the mutable subset of SessionOptions that can
@@ -97,6 +123,17 @@ type amqp10Credentials struct {
 var _ ports.Session = (*Session)(nil)
 
 // NewSession creates an AMQP 1.0 Session from the given options.
+//
+// LOW-LEVEL constructor. Besides the credential note below, it does NOT
+// gate durable receivers on an explicit container_id: applyDefaults
+// synthesises a per-instance container_id (unique per replica, stable
+// across reconnects, but DIFFERENT across process restarts). The
+// restart-safety gate for durable subscriptions (HIGH-1) lives in
+// Factory.NewReceiver, which production always goes through (every link is
+// built via the ports.TransportFactory interface). A direct embedder that
+// builds a durable receiver on a NewSession-built session with a generated
+// container_id will silently lose the subscription across restarts — build
+// through Factory in production.
 //
 // SECURITY NOTE: NewSession applies defaults but does NOT run
 // SessionOptions.validate — in particular it does NOT enforce the
@@ -275,6 +312,25 @@ func (s *Session) Start(ctx context.Context) error {
 }
 
 func (s *Session) connect(ctx context.Context) error {
+	// HIGH-3 reactive-recovery chokepoint: every (re)connect — the initial
+	// dial and every reconnect after a credential rotation dropped the
+	// connection — routes through doConnect. When a hard rotation revoked the
+	// old credentials, the redial fails SASL and doConnect maps it to
+	// shared.ErrNotAuthorized; reporting here forces an immediate re-resolve
+	// instead of stalling on revoked material until the next poll.
+	//
+	// ponytail: session transports authenticate at connection open, so a
+	// credential revocation manifests as a (re)connect auth failure, NOT a
+	// per-message send/receive fault (a live send returning NOT_AUTHORIZED is a
+	// routing-authorization condition, not a rotation failure). This single
+	// chokepoint therefore covers the credential-rotation scenario for all
+	// links multiplexed on the session.
+	err := s.doConnect(ctx)
+	s.reportAuthFailure(err)
+	return err
+}
+
+func (s *Session) doConnect(ctx context.Context) error {
 	// Snapshot the mutable dial inputs under the lock: ApplyCredentials
 	// (runtime credential refresher goroutine) writes s.opts.Username/
 	// Password and swaps the s.opts.TLS pointer concurrently. Copying the
@@ -455,6 +511,44 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		health.LastError = lastErr
 	}
 	return health
+}
+
+// reserveLink records a build-time link reservation on this session and
+// enforces the dedicated-session contract for durable AMQP 1.0 receivers
+// (HIGH-3). durableReceiver reports whether the link being built is a
+// durable receiver (durability_mode > 0).
+//
+// It returns a non-nil error when the reservation would place a durable
+// receiver on a session that already hosts a link, or place any link on a
+// session already claimed by a durable receiver. Because a durable
+// receiver's close forces a full connection teardown that blips every
+// sibling link, the safe topology is one durable receiver alone on its
+// own session; this refusal makes that topology mandatory at build time
+// rather than a documentation-only recommendation.
+//
+// Called once per link at factory build time. Links are built once per
+// session lifetime — Reconcile stores the plan and never rebuilds links —
+// so the counter is not perturbed by reconnects.
+func (s *Session) reserveLink(durableReceiver bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case durableReceiver && s.builtLinkCount > 0:
+		return shared.ErrInvalidPayload.WithMessage(
+			"durable receiver (durability_mode > 0) requires a dedicated session (its own session_id): " +
+				"the session already hosts another receiver or sender, and closing a durable receiver forces " +
+				"a full connection teardown that blips every sibling link — give the durable receiver its own " +
+				"session_id (dedicated-session contract, c7-durable-close)")
+	case !durableReceiver && s.builtDurableReceiver:
+		return shared.ErrInvalidPayload.WithMessage(
+			"session already hosts a durable receiver (durability_mode > 0), which requires a dedicated " +
+				"session (its own session_id): move this receiver or sender to a different session so a durable " +
+				"close cannot blip it (dedicated-session contract, c7-durable-close)")
+	case durableReceiver:
+		s.builtDurableReceiver = true
+	}
+	s.builtLinkCount++
+	return nil
 }
 
 // registerReceiver records r as a live receiver whose link health feeds

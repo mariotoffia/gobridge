@@ -149,10 +149,13 @@ graph TD
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = amqp091.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("amqp091", amqp091.NewFactory(logger)).
+    RegisterTransportFactory("amqp091", amqp091.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

@@ -66,6 +66,18 @@ func TestReadinessLevelFromDeepHealth(t *testing.T) {
 			want: ports.LevelSubscribed,
 		},
 		{
+			// HIGH-2: a latched-dead route (wedged flapping at the supervisor cap)
+			// cannot dispatch, so it caps the instance below Full even though its
+			// Started signal fired (Ready: true).
+			name: "subscribed but a route latched dead pins subscribed",
+			dh: ports.DeepHealth{
+				Running: true, Healthy: true,
+				Sessions: []ports.SessionHealthDetail{connected("s1")},
+				Routes:   []ports.RouteHealth{{ID: "r1", Ready: true, RouteDead: true}},
+			},
+			want: ports.LevelSubscribed,
+		},
+		{
 			name: "all connected+subscribed+routes-ready reaches full",
 			dh: ports.DeepHealth{
 				Running: true, Healthy: true,
@@ -73,6 +85,49 @@ func TestReadinessLevelFromDeepHealth(t *testing.T) {
 				Routes:   []ports.RouteHealth{{ID: "r1", Ready: true}},
 			},
 			want: ports.LevelFull,
+		},
+		{
+			// BLOCKING: a session that is connected+subscribed but EXPLICITLY
+			// degraded (e.g. broker flow-control blocked) cannot fully serve, so
+			// LevelFull's "ReadyForTraffic + ServiceLevelFull" contract caps it at
+			// Subscribed even though every route is ready.
+			name: "connected+subscribed but a session degraded pins subscribed",
+			dh: ports.DeepHealth{
+				Running: true, Healthy: true,
+				Sessions: []ports.SessionHealthDetail{func() ports.SessionHealthDetail {
+					s := connected("s1")
+					s.ServiceLevel = ports.ServiceLevelDegraded
+					return s
+				}()},
+				Routes: []ports.RouteHealth{{ID: "r1", Ready: true}},
+			},
+			want: ports.LevelSubscribed,
+		},
+		{
+			// BLOCKING backward-compat: an UNSET (empty) ServiceLevel must NOT cap
+			// — hand-built snapshots that leave it empty legitimately expect Full.
+			name: "connected+subscribed with UNSET service level still reaches full",
+			dh: ports.DeepHealth{
+				Running: true, Healthy: true,
+				Sessions: []ports.SessionHealthDetail{connected("s1")}, // ServiceLevel == ""
+				Routes:   []ports.RouteHealth{{ID: "r1", Ready: true}},
+			},
+			want: ports.LevelFull,
+		},
+		{
+			// BLOCKING: a DEFERRED-standby degraded session is skipped like the
+			// connectivity checks, so it does not cap; the standby cap then lowers
+			// the otherwise-Full instance to Subscribed independently.
+			name: "deferred-standby degraded session is skipped from the service-level cap",
+			dh: ports.DeepHealth{
+				Running: true, Healthy: true, Role: "standby",
+				Sessions: []ports.SessionHealthDetail{{
+					SessionID: "s1", Connected: false,
+					ConnectAfterLease: true, HasLease: false,
+					ServiceLevel: ports.ServiceLevelNone,
+				}},
+			},
+			want: ports.LevelSubscribed,
 		},
 		{
 			name: "no sessions and no routes reaches full",

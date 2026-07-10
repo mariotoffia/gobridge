@@ -35,6 +35,16 @@ type Receiver struct {
 	initMu      sync.Mutex
 	started     chan struct{}
 	startedOnce sync.Once
+
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
+	// ReceiveMessage poll is classified as shared.ErrNotAuthorized (a static-key
+	// revocation past the auth-grace window), forcing an immediate re-resolve
+	// rather than degrading the route on revoked keys until the next poll.
+	// atomic.Pointer gives safe publication across the builder goroutine
+	// (setter) and the poll goroutine (load).
+	authFailureCB atomic.Pointer[func(error)]
 }
 
 // loadClient returns the current SQS client snapshot, or nil when unset.
@@ -121,6 +131,18 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
+	// Best-effort startup check that the source queue has a native redrive
+	// policy (maxReceiveCount -> DLQ) so a malformed message the receiver
+	// cannot convert eventually reaches a DLQ instead of hot-looping forever
+	// (Chunk 13 HIGH-2). Permission-gated: a GetQueueAttributes denial degrades
+	// to a log, never a start failure. It DOES fail startup for one loss-
+	// critical case: a poison_max_receives backstop that would preempt an
+	// EXISTING native redrive policy (destructive delete before the DLQ
+	// preserves the payload) — see checkRedrivePolicy.
+	if err := r.checkRedrivePolicy(initCtx, r.loadClient(), queueURL); err != nil {
+		return err
+	}
+
 	// FIFO ordering safety: a single ReceiveMessage may return multiple
 	// messages from the same MessageGroupId. The runtime processes
 	// deliveries concurrently, so returning a group's messages in one
@@ -202,7 +224,7 @@ func (r *Receiver) pollLoop(
 			// route in isolation. The authGrace keeps a freshly-granted role
 			// retryable within its bounded propagation window; only genuinely
 			// transient errors stay on the retry-with-backoff path below.
-			classified := r.authGrace.classify(err)
+			classified := r.classify(err)
 			if !shared.IsRecoverableError(classified) {
 				if r.logger != nil {
 					r.logger.Error("sqs: ReceiveMessage terminal fault; degrading route",

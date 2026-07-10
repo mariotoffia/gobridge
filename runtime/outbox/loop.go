@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // transientRetryFloor is the minimum wait before re-polling a partition
@@ -192,6 +193,69 @@ func (d *Drainer) maybeExpire(ctx context.Context) {
 	}
 }
 
+// emitDepth reports the outbox backlog for this partition on the drainer's own
+// poll cadence. It always emits the honest per-cycle liveness gauge, and emits
+// the true backlog gauge according to the store's depth capability:
+//
+//   - MetricOutboxClaimBatchSize: the honest claimed count (claimedThisCycle) —
+//     a liveness/throughput signal that saturates at the claim ceiling. Kept
+//     SEPARATE from depth so a full batch cannot masquerade as a shallow
+//     backlog. Emitted EVERY cycle (H-OBS).
+//   - MetricOutboxDepth: the TRUE pending backlog. When the store implements
+//     ports.OutboxDepthReporter (the InstrumentedOutboxStore wrapper forwards
+//     it), CountPending is read on EVERY drain cycle — INCLUDING zero-claim
+//     cycles — so a backlog that could not be claimed this poll (e.g. Claim
+//     returned 0 under contention while records still pend, observable via
+//     MetricOutboxClaimConflicts) still reports its real size instead of a
+//     false-healthy zero. The COUNT runs on the drain cadence (not a tight
+//     loop), so the extra query on caught-up cycles is acceptable.
+//
+// Error handling distinguishes the two failure modes (H-OBS):
+//   - ports.ErrOutboxDepthUnsupported (the inner store has not adopted the
+//     capability): benign — fall back to claimedThisCycle, a saturating LOWER
+//     BOUND, so the continuously emitted gauge and its breaching-on-missing
+//     alarm stay alive with no regression. No DB round-trip occurred (the
+//     wrapper returns the sentinel from a cheap type assertion), so unsupported
+//     stores add no per-cycle cost.
+//   - any OTHER error (a REAL DB/read failure): NOT masked. Skip the depth
+//     emission for this cycle so a persistently broken query trips the
+//     missing-data alarm, and make the failure observable via
+//     MetricOutboxDepthFailures + a structured error log.
+//
+// A store that does not implement the capability at all (raw store, no wrapper)
+// gets the claimed-count fallback with no CountPending call. This is a
+// metrics-only observation and never mutates drain/claim state.
+func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
+	partitionTag := shared.Tag{Key: shared.TagKeyPartition, Value: d.partitionKey}
+	// Always emit the honest per-cycle claim/liveness gauge.
+	d.metrics.Gauge(shared.MetricOutboxClaimBatchSize, float64(claimedThisCycle), partitionTag)
+
+	reporter, ok := d.outboxStore.(ports.OutboxDepthReporter)
+	if !ok {
+		// Store cannot report depth at all: saturating claimed-count fallback.
+		d.metrics.Gauge(shared.MetricOutboxDepth, float64(claimedThisCycle), partitionTag)
+		return
+	}
+
+	n, err := reporter.CountPending(ctx, d.partitionKey)
+	switch {
+	case err == nil:
+		// True backlog, every cycle including zero-claim.
+		d.metrics.Gauge(shared.MetricOutboxDepth, float64(n), partitionTag)
+	case errors.Is(err, ports.ErrOutboxDepthUnsupported):
+		// Inner store has not adopted the capability: benign saturating fallback
+		// (no DB round-trip happened).
+		d.metrics.Gauge(shared.MetricOutboxDepth, float64(claimedThisCycle), partitionTag)
+	default:
+		// REAL count failure. Do NOT mask it behind the claimed-count fallback:
+		// skip the depth emission this cycle (missing-data alarm catches a
+		// persistently broken query) and make the failure observable.
+		d.metrics.Counter(shared.MetricOutboxDepthFailures, 1, partitionTag)
+		d.log(ctx, slog.LevelError, "outbox depth query failed; skipping OutboxDepth this cycle",
+			"partition_key", d.partitionKey, "error", err.Error())
+	}
+}
+
 func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
@@ -208,20 +272,13 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	if err != nil {
 		return 0, 0, err
 	}
-	// OutboxDepth from the drainer's own poll cadence: emit the claimed count as
-	// the depth gauge on every drain cycle this partition actually runs (lease
-	// held AND egress ready), independent of MaxOutboxDepth and of the ingress
-	// QueryPending path. This makes the gauge continuous while an outbox exists
-	// (it emits 0 when caught up) instead of only under a backpressure config.
-	// Tagged TagKeyPartition to share the series with the ingress-side emission
-	// (runtime.InstrumentedOutboxStore.QueryPending). The value saturates at
-	// currentBatchSize (the Claim ceiling), so it signals "backlog at least this
-	// deep", not the exact pending total — an exact count primitive is deferred
-	// to the store wave. It does NOT emit while standby (no lease) or while
-	// egress is not ready; those gaps are covered by DrainSkippedNoLease and the
-	// readiness gate respectively.
-	d.metrics.Gauge(shared.MetricOutboxDepth, float64(len(records)),
-		shared.Tag{Key: shared.TagKeyPartition, Value: d.partitionKey})
+	// Report the partition backlog on the drainer's own poll cadence (H-OBS).
+	// Runs on every drain cycle this partition actually runs (lease held AND
+	// egress ready), independent of MaxOutboxDepth and of the ingress
+	// QueryPending path, so the gauges are continuous while an outbox exists.
+	// It does NOT emit while standby (no lease) or while egress is not ready;
+	// those gaps are covered by DrainSkippedNoLease and the readiness gate.
+	d.emitDepth(ctx, len(records))
 	if len(records) == 0 {
 		if d.hadPending {
 			d.hadPending = false
@@ -364,6 +421,37 @@ loop:
 						// recovers the still-claimed head AND the unattempted tail
 						// together. Drives the backoff floor via transientReleases.
 						atomic.AddInt64(&transientReleases, 1)
+					case errors.Is(err, errCompletionFenced):
+						// Post-send fence tripped (HIGH-2): the batch was abandoned
+						// by the watchdog (or cancelled) AFTER this record's Send
+						// returned, so this owner did NOT Complete it. The fence's
+						// lease check (checked FIRST) already passed, so the lease
+						// Version is UNCHANGED — which means on a VERSION-ONLY store
+						// (the in-memory backend; ports/stores.go documents same-
+						// version stale reclaim as MAY, not MUST) the same owner at
+						// the same version can NEVER re-Claim a still-Claimed record
+						// (OutboxRecord.Claim requires claim_version < token.Version
+						// or Pending). Leaving the head Claimed here would strand it
+						// — AND the unattempted group[ri+1:] suffix — Claimed forever
+						// (CountPending excludes Claimed rows, so the backlog reads 0
+						// while records silently stall). So RELEASE the fenced head
+						// plus its unsent suffix back to pending with the CURRENT
+						// token; the next cycle re-drains them. releaseRemainder is
+						// token-fenced: if the token has since gone stale (another
+						// owner reclaimed on a stale-reclaim store), Release fails and
+						// the record correctly stays Claimed for that new owner — safe
+						// on BOTH store classes. Use a detached ctx because batchCtx
+						// is cancelled in this branch. The head's Send already ran
+						// (its delivery side-effect happened), so re-draining it is
+						// the accepted at-least-once duplicate already counted via
+						// MetricOutboxDuplicateRisk at the fence; the suffix was never
+						// attempted, so it is a first delivery. Count neither a
+						// success nor a hard failure; drive the backoff floor via
+						// transientReleases, consistent with errReleasedForRetry.
+						atomic.AddInt64(&transientReleases, 1)
+						d.releaseRemainder(context.WithoutCancel(ctx), group[ri:], token)
+						d.log(batchCtx, slog.LevelWarn, "record left for reclaim: post-send fence tripped after batch abandonment; released head+suffix to pending",
+							"record_id", rec.ID())
 					case errors.Is(err, shared.ErrStaleFencingToken):
 						staleDetected.Store(true)
 						batchCancel()

@@ -19,7 +19,7 @@ func toRoutePolicy(r ports.RouteDef) routing.RoutePolicy {
 }
 
 func toSessionConfig(rs *ports.RouteSessionDef) *session.Config {
-	sc, _ := toSessionConfigE(rs)
+	sc, _ := toSessionConfigE(rs, false)
 	return sc
 }
 

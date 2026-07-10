@@ -408,6 +408,10 @@ func TestEdge_LocatorErrorReturns502(t *testing.T) {
 // 9. TestEdge_SendWithNoClients
 // ---------------------------------------------------------------------------
 
+// Safe-by-default (HIGH-1): a broadcast with no connected subscribers is a
+// zero delivery, so Send returns a TRANSIENT (Unavailable-class) error and
+// the route runner does NOT ack the source. Accepting the loss requires the
+// explicit at_most_once_accept_loss opt-in (asserted separately below).
 func TestEdge_SendWithNoClients(t *testing.T) {
 	factory := transport.NewFactory()
 	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
@@ -422,8 +426,36 @@ func TestEdge_SendWithNoClients(t *testing.T) {
 		Subject: "no.listeners",
 		Payload: []byte(`{}`),
 	})
+	err = sender.Send(context.Background(), ports.OutboundMessage{Envelope: env})
+	if err == nil {
+		t.Fatal("Send with no clients must return a transient error by default, got nil")
+	}
+	if !shared.IsRecoverableError(err) {
+		t.Fatalf("zero-delivery error must be transient/recoverable, got %v", err)
+	}
+	if !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("zero-delivery error must be Unavailable-class, got %v", err)
+	}
+}
+
+// Explicit opt-out: with at_most_once_accept_loss:true the same no-client
+// broadcast is accepted (nil) so the source is acked despite reaching nobody.
+func TestEdge_SendWithNoClients_AcceptLossOptOut(t *testing.T) {
+	factory := transport.NewFactory()
+	sender, err := factory.NewSender(context.Background(), ports.SenderSpec{
+		ID: "sse-empty-loss", Config: transport.Config{Mode: "sse", AtMostOnceAcceptLoss: true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "orphan-2",
+		Subject: "no.listeners",
+		Payload: []byte(`{}`),
+	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
-		t.Fatalf("Send with no clients should succeed, got: %v", err)
+		t.Fatalf("Send with no clients under accept-loss must succeed, got: %v", err)
 	}
 }
 

@@ -31,6 +31,15 @@ func (rt *Runtime) ValidateRoutes() error {
 	return validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil)
 }
 
+// dlqDepthSampleInterval is the cadence at which the runtime samples the
+// standing dead-letter-queue backlog (shared.MetricDLQDepth). Unlike OutboxDepth
+// — sampled every drain cycle by the drainer loop — the DLQ has no loop of its
+// own, so without this periodic sampler a stale post-burst backlog (writes
+// stopped, nothing redriven) is invisible until a manual storage scan (XCUT-B /
+// H-OBS DLQ-1). 30s aligns with the 30–60s operational alarm cadence; it is a
+// const, not a config knob, since no DLQ-sampling knob exists in the blueprint.
+const dlqDepthSampleInterval = 30 * time.Second
+
 // Start wires up all registered routes, session managers, and outbox
 // drainers, then spawns background goroutines. It returns immediately;
 // use Stop to shut down gracefully.
@@ -422,6 +431,42 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// receivers settle at the backoff cap rather than reconnect).
 	for _, entry := range rt.entries {
 		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
+	}
+
+	// DLQ-depth sampler (XCUT-B): periodically emit the standing DLQ backlog as
+	// shared.MetricDLQDepth so operators can alarm on records sitting in the DLQ
+	// after traffic stops. Unlike OutboxDepth (sampled every drain cycle by the
+	// drainer loop) the DLQ has no loop of its own. The goroutine probes the
+	// OPTIONAL ports.DLQDepthReporter capability ONCE: a store that does not
+	// implement it (ok == false, err == nil) needs no ticker and the goroutine
+	// returns immediately — no pointless loop; a transient probe error keeps
+	// sampling, because the capability is present and only the backend was
+	// briefly unavailable. The loop NEVER returns a non-ctx error, so a transient
+	// sample failure cannot trip startBackground's terminal escalation — it logs
+	// and retries next interval. It uses rt.clk so a fake clock drives it in
+	// tests with no real sleep, and omits tags for the dimensionless fleet total
+	// the metric documents. The probe runs inside the goroutine (not under
+	// rt.mu) so a slow store never blocks Start under the runtime lock.
+	if rt.dlqStore != nil {
+		rt.startBackground(ctx, "dlq-depth-sampler", func(ctx context.Context) error {
+			// Probe the OPTIONAL capability ONCE with a nil exporter: this is a
+			// pure capability check, not an emission — the periodic loop below
+			// owns every shared.MetricDLQDepth gauge so the series is driven
+			// strictly by the sample cadence.
+			if _, ok, probeErr := ReportDLQDepth(ctx, rt.dlqStore, nil); !ok && probeErr == nil {
+				return nil
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-rt.clk.After(dlqDepthSampleInterval):
+					if _, _, err := ReportDLQDepth(ctx, rt.dlqStore, rt.metrics); err != nil && rt.logger != nil {
+						rt.logger.Warn("dlq-depth sample failed; will retry next interval", "error", err)
+					}
+				}
+			}
+		})
 	}
 
 	return nil

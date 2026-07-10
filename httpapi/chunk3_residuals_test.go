@@ -80,6 +80,9 @@ func newConfigTxnServer(t *testing.T, store ports.ConfigStore, clk *clocktest.Fa
 	cfg := testConfig()
 	cfg.ConfigStore = store
 	cfg.ConfigProvider = func() *ports.BridgeConfig { return sampleBridgeConfig() }
+	// Single-process test server: assert single-writer so a durable commit
+	// against a non-CAS test store is not fail-closed refused (see [HIGH-1]).
+	cfg.ConfigSingleWriter = true
 	s := New(rt, cfg, WithClock(clk))
 	require.NotNil(t, s.configTxn, "config txn manager must be wired when store+provider are set")
 	return s
@@ -275,14 +278,16 @@ func TestConfigTxnCommit_ApplyFailureRollsBack(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────
 
 // TestHandleDLQRedrive_WarnsWhenNoRedriveSafeInjection pins finding 4a: a
-// runtime lacking InjectRedrive replays with the original envelope id, which a
-// shared_outbox route can silently deduplicate. The response must carry a
-// warning so a 200 does not hide the possible no-op.
+// runtime lacking InjectRedrive replays a COLLISION-FREE direct entry (empty
+// envelope id, no dedup key) via plain Inject; the response must still carry a
+// warning so a 200 does not hide the possible no-op on any deduped path. (An
+// ID-bearing or dedup-keyed entry is refused instead — see
+// TestHandleDLQRedrive_NoRedriveSafe_DirectEntryWithID_RefusedNotDeleted.)
 func TestHandleDLQRedrive_WarnsWhenNoRedriveSafeInjection(t *testing.T) {
 	mux, dlq, _ := newRecordingRedriveServer(t)
 	seedDLQ(t, dlq, routing.NewDLQEntry(routing.DLQEntrySpec{
 		ID: "e1", RouteID: "r1",
-		Envelope: *messaging.MustEnvelope(messaging.EnvelopeInput{Subject: "s1"}),
+		Envelope: messaging.Envelope{},
 		FailedAt: time.Now(),
 	}))
 

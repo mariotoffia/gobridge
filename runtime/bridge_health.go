@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -75,6 +77,40 @@ func (rt *Runtime) DLQAdmin() ports.DLQAdmin {
 	return rt.dlqStore
 }
 
+// OutboxPending reports the number of PENDING outbox records currently held for
+// partitionKey, using the OPTIONAL ports.OutboxDepthReporter capability the F2
+// workstream added (forwarded through runtime.InstrumentedOutboxStore).
+//
+// ok is true ONLY when the depth was actually proven: the store is configured
+// AND implements the depth-report capability AND the query succeeded. It is
+// false — with err nil — when no outbox store is configured or the store does
+// not implement the capability (ErrOutboxDepthUnsupported). A real backend
+// failure returns ok=false with a non-nil err.
+//
+// Callers that must decide whether a durable partition is safe to strand (the
+// supervisor's destructive-reload preflight) treat "not ok" as UNPROVEN and
+// fail closed: an unprovable depth is never assumed empty.
+func (rt *Runtime) OutboxPending(ctx context.Context, partitionKey string) (n int, ok bool, err error) {
+	rt.mu.Lock()
+	store := rt.outboxStore
+	rt.mu.Unlock()
+	if store == nil {
+		return 0, false, nil
+	}
+	reporter, isReporter := store.(ports.OutboxDepthReporter)
+	if !isReporter {
+		return 0, false, nil
+	}
+	count, err := reporter.CountPending(ctx, partitionKey)
+	if err != nil {
+		if errors.Is(err, ports.ErrOutboxDepthUnsupported) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
 // LeaseStatus returns the lease ownership status for each exclusive
 // session. The map keys are session IDs; values are true when the
 // session holds the lease (active) and false otherwise (standby).
@@ -115,14 +151,26 @@ func (rt *Runtime) Role() string {
 }
 
 // roleUnlocked returns the role without acquiring the mutex (caller must hold it).
+// It classifies by EXCLUSIVE sessions only, matching the documented contract:
+// a non-exclusive session never acquires a lease and takes no part in failover,
+// so it must NOT make the instance look like a standby. Keying off all
+// sessionMgrs instead misclassified a plain single-session (non-exclusive)
+// bridge as "standby", which the readiness cap then pinned below LevelFull —
+// turning the canonical standalone deployment permanently not-ready on the
+// legacy /ready probe.
 func (rt *Runtime) roleUnlocked() string {
-	if len(rt.sessionMgrs) == 0 {
-		return roleStandalone
-	}
+	hasExclusive := false
 	for _, mgr := range rt.sessionMgrs {
+		if !mgr.Exclusive() {
+			continue
+		}
+		hasExclusive = true
 		if _, held := mgr.Token(); held {
 			return roleActive
 		}
+	}
+	if !hasExclusive {
+		return roleStandalone
 	}
 	return roleStandby
 }
@@ -145,38 +193,133 @@ type (
 // hang the probe indefinitely, and it does so at the WORST possible moment: an
 // outage, which is exactly when Kubernetes/ECS readiness is what sheds traffic
 // from the sick instance. Bounding the call and classifying a timeout as
-// NOT-ready (see healthWithTimeout) makes the probe fail closed instead of
+// NOT-ready (see healthUnderDeadline) makes the probe fail closed instead of
 // hanging. 5s is comfortably longer than a healthy broker's Health latency yet
 // well under a typical probe period, so it never false-trips a live session.
+// HIGH-4: it is now the SHARED deadline for the whole concurrent probe sweep
+// (probeSessionsHealth), so the sweep costs ~one ceiling regardless of how many
+// sessions are wedged — not O(N × ceiling).
 const defaultSessionHealthTimeout = 5 * time.Second
 
-// healthWithTimeout invokes sess.Health under a bounded, clock-driven deadline.
-// Session.Health is a plugin call that MAY ignore its context and block forever
-// (a wedged SDK), so it runs in its own goroutine and the deadline is raced
-// against it rather than trusting the plugin to honour ctx.
+// deepHealthProbeConcurrency caps the number of session Health calls in flight
+// at once during a DeepHealth sweep. A fixed, small worker pool bounds the
+// goroutine fan-out on a large fleet (never one goroutine per session
+// unconditionally) while still collapsing the sweep to ~one ceiling under the
+// shared deadline. 8 is comfortably above a typical bridge's session count so a
+// healthy fleet is probed in a single wave.
+const deepHealthProbeConcurrency = 8
+
+// probeSessionsHealth probes every session's Health CONCURRENTLY under ONE
+// shared, clock-driven deadline, returning results indexed to sessions.
 //
-// Classification: on timeout (or caller-ctx cancellation) the session is
-// reported not-connected, not-ready, ServiceLevelNone, and the second return is
-// true. DeepHealth's readiness aggregate therefore fails CLOSED — a hung session
-// drives ReadyForTraffic=false and floors the aggregate ServiceLevel — so a
-// wedged plugin cannot advertise a green /ready.
+// HIGH-4: probing sessions SEQUENTIALLY cost O(N × ceiling) — a fleet of wedged
+// sessions (12 × 5s = 60s) blows the 30–60s failover objective and piles
+// concurrent probes on every scrape. A single deadline shared by every probe
+// caps the WHOLE sweep at ~one ceiling regardless of session count; any session
+// whose Health has not returned by the deadline is left not-ready/ServiceLevelNone
+// (fail closed), so a wedged plugin still cannot advertise a green /ready.
+//
+// The deadline is clock-driven (rt.clk — the production timing gate forbids raw
+// time.After) and also honours the caller's ctx (whichever fires first). A
+// single watcher fans the deadline out to every worker via a close-once channel
+// because a shared rt.clk.After value can be received by only one goroutine.
+//
+// Race-clean: each worker writes only its own results[i] slot and every worker
+// has returned before the caller reads the slice (workers stop blocking on
+// Health the moment the deadline fires — only the inner Health goroutine may
+// linger, writing to its own buffered channel, never the shared slice).
+//
+// ponytail (MEDIUM-1): a genuinely-hung plugin still leaks the single inner
+// Health goroutine per probed session until it unblocks — Go cannot cancel a
+// non-cooperative call. The bounded pool caps how many are spawned per sweep;
+// fully eliminating the leak needs a plugin-side cancellable Health contract,
+// out of scope here (CRITICAL+HIGH only).
+func (rt *Runtime) probeSessionsHealth(ctx context.Context, sessions []ports.Session) []ports.SessionHealth {
+	n := len(sessions)
+	results := make([]ports.SessionHealth, n)
+	// Fail closed by default: any session not resolved before the shared deadline
+	// keeps this not-ready/ServiceLevelNone value.
+	for i := range results {
+		results[i] = ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}
+	}
+	if n == 0 {
+		return results
+	}
+
+	// One shared deadline for the whole sweep, fanned out via a close-once
+	// channel. The watcher owns deadlineFired (the sole closer, so no double
+	// close); the caller signals completion via stop so the watcher never
+	// outlives the sweep.
+	deadlineFired := make(chan struct{})
+	stop := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		defer close(deadlineFired)
+		select {
+		case <-rt.clk.After(defaultSessionHealthTimeout):
+		case <-ctx.Done():
+		case <-stop:
+		}
+	}()
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := deepHealthProbeConcurrency
+	if workers > n {
+		workers = n
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				results[i] = rt.healthUnderDeadline(ctx, sessions[i], deadlineFired)
+			}
+		}()
+	}
+
+	// Feed indices to the pool, abandoning dispatch once the deadline fires so we
+	// do not queue work that would only be marked not-ready anyway.
+feed:
+	for i := 0; i < n; i++ {
+		select {
+		case jobs <- i:
+		case <-deadlineFired:
+			break feed
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	// Tear the watcher down (it may still be blocked on its rt.clk timer) and
+	// wait for it to exit so no goroutine outlives the sweep.
+	close(stop)
+	<-watcherDone
+	return results
+}
+
+// healthUnderDeadline invokes sess.Health, racing it against a SHARED deadline
+// channel and the caller ctx. Session.Health is a plugin call that MAY ignore
+// its context and block forever (a wedged SDK), so it runs in its own goroutine
+// and the deadline is raced against it rather than trusting the plugin to honour
+// ctx. On the deadline (or ctx cancellation) it returns a not-connected,
+// not-ready, ServiceLevelNone health so the readiness aggregate fails CLOSED.
 //
 // ponytail: a genuinely-hung plugin leaks the single Health goroutine spawned
-// here until (if ever) it unblocks — the deliberate, bounded price of never
-// letting a wedged plugin wedge the probe. That goroutine only blocks on a
-// buffered-channel send, so it holds no lock and is reclaimed the moment Health
-// finally returns.
-func (rt *Runtime) healthWithTimeout(ctx context.Context, sess ports.Session) (ports.SessionHealth, bool) {
+// here until (if ever) it unblocks. It only blocks on a buffered-channel send,
+// so it holds no lock and is reclaimed the moment Health finally returns.
+func (rt *Runtime) healthUnderDeadline(ctx context.Context, sess ports.Session, deadline <-chan struct{}) ports.SessionHealth {
 	resCh := make(chan ports.SessionHealth, 1)
 	go func() { resCh <- sess.Health(ctx) }()
 
 	select {
 	case sh := <-resCh:
-		return sh, false
-	case <-rt.clk.After(defaultSessionHealthTimeout):
-		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}, true
+		return sh
+	case <-deadline:
+		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}
 	case <-ctx.Done():
-		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}, true
+		return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}
 	}
 }
 
@@ -287,8 +430,18 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	allReady := running && healthy
 	aggSL := ports.ServiceLevelFull
 
-	for _, snap := range sessSnaps {
-		sh, _ := rt.healthWithTimeout(ctx, snap.sess)
+	// HIGH-4: probe every session's Health CONCURRENTLY under one shared deadline
+	// so the sweep costs ~one ceiling instead of O(N × ceiling) when sessions are
+	// wedged. Results are indexed to sessSnaps; an un-returned probe is left
+	// not-ready/ServiceLevelNone (fail closed) by probeSessionsHealth.
+	sessions := make([]ports.Session, len(sessSnaps))
+	for i, snap := range sessSnaps {
+		sessions[i] = snap.sess
+	}
+	sessHealth := rt.probeSessionsHealth(ctx, sessions)
+
+	for i, snap := range sessSnaps {
+		sh := sessHealth[i]
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
 			SessionID:           snap.sid,
 			Connected:           sh.Connected,
@@ -336,13 +489,26 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		if rs.runner != nil {
 			inFlight = int(rs.runner.InFlight())
 		}
+		dead := routeDead[rs.id]
 		dh.Routes = append(dh.Routes, ports.RouteHealth{
 			ID:           rs.id,
 			DeliveryMode: rs.deliveryMode,
 			Ready:        ready,
 			InFlight:     inFlight,
-			RouteDead:    routeDead[rs.id],
+			RouteDead:    dead,
 		})
+		// HIGH-2: a route that is not ready OR latched dead means this instance
+		// cannot dispatch that route, so it MUST NOT advertise traffic-ready.
+		// Previously only the session loop narrowed allReady, so a down route left
+		// ReadyForTraffic=true and an LB kept steering traffic at a bridge that
+		// could not deliver. Floor the reported ServiceLevel too so dh.ServiceLevel
+		// stays honest with ReadyForTraffic; the pure ReadinessLevelFromDeepHealth
+		// independently caps such a snapshot below LevelFull. Per-route reporting
+		// (Ready / RouteDead above) is unchanged.
+		if !ready || dead {
+			allReady = false
+			aggSL = minServiceLevel(aggSL, ports.ServiceLevelDegraded)
+		}
 	}
 
 	dh.ReadyForTraffic = allReady

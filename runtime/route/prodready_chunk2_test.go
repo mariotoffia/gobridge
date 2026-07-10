@@ -342,11 +342,11 @@ func TestBoundedSend_HungSenderDoesNotWedgeDispatch(t *testing.T) {
 	}()
 
 	// The sender is now parked ignoring ctx; boundedSend has registered its
-	// ceiling timer on the injected clock. Fire the ceiling to prove the
-	// dispatcher unblocks even though the sender never returns.
+	// wedge ceiling timer on the injected clock. Fire it (SendTimeout + margin =
+	// 35s) to prove the dispatcher unblocks even though the sender never returns.
 	<-sender.entered
 	waitTimerCount(t, clk, 1)
-	clk.Advance(30 * time.Second)
+	clk.Advance(35 * time.Second)
 
 	// MUST return without any real timeout: if the send bound did not unblock the
 	// dispatcher this receive wedges and the test times out (regression signal).

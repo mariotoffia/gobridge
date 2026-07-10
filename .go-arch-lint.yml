@@ -773,7 +773,13 @@ deps:
   # (OutboxRecord embeds messaging.Envelope) and is not imported
   # directly. ports is listed only where the store references a ports
   # symbol directly (e.g. memorydlq's compile-time ports.DLQStore
-  # assertion); the others satisfy their port structurally. dynamodboutbox
+  # assertion, and the dynamodb outbox/dlq stores' OPTIONAL depth-reporter
+  # capability: dynamodbdlq asserts ports.DLQDepthReporter, and dynamodboutbox
+  # both asserts ports.OutboxDepthReporter and returns the shared
+  # ports.ErrOutboxDepthUnsupported sentinel the drainer matches with
+  # errors.Is -- a value that MUST be the identical ports symbol across the
+  # boundary, so the import is a genuine contract, not a convenience);
+  # the others satisfy their port structurally. dynamodboutbox
   # additionally reads routing.DefaultMaxReplayAttempts.
   adapter_store_native_memorylease:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
@@ -796,10 +802,10 @@ deps:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:
-    mayDependOn: [domain_clock, domain_persistence, domain_routing, domain_shared, logging]
+    mayDependOn: [domain_clock, domain_persistence, domain_routing, domain_shared, logging, ports]
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
-    mayDependOn: [domain_routing, domain_shared, logging]
+    mayDependOn: [domain_routing, domain_shared, logging, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----

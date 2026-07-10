@@ -464,14 +464,17 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// (which releases the lease and closes the session) out from under such a
 	// send makes the drainer's subsequent Complete fail with a stale fencing
 	// token — the record resurfaces on restart as a duplicate send. So, exactly
-	// as the store-close does below, wait a bounded storeCloseGrace for the
-	// drainer wg to CONFIRM done BEFORE we close managers. If the grace elapses
-	// we still close managers (leases MUST release so another instance can take
-	// over — a stale-token Complete from a genuinely stuck drainer is the lesser
-	// evil), but in the common case finalDrain's Complete runs against a live
-	// manager/lease.
+	// as the store-close does below, wait a bounded grace for the drainer wg to
+	// CONFIRM done BEFORE we close managers. The grace is
+	// clampedStoreCloseGrace(ctx): the policy-derived worst-case, but never longer
+	// than the incoming shutdown ctx's remaining deadline (B6) so the detached
+	// (WithoutCancel) wait cannot outlive the platform kill budget and get
+	// SIGKILLed mid-drain. If the grace elapses we still close managers (leases
+	// MUST release so another instance can take over — a stale-token Complete from
+	// a genuinely stuck drainer is the lesser evil), but in the common case
+	// finalDrain's Complete runs against a live manager/lease.
 	if !drainersDone {
-		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), storeCloseGrace)
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), rt.clampedStoreCloseGrace(ctx))
 		select {
 		case <-waitDone:
 			drainersDone = true
@@ -607,12 +610,104 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// storeCloseGrace bounds how long Stop waits for the drainer waitgroup to
-// confirm done before releasing durable store handles when the caller ctx has
-// already expired (finding 13). It comfortably covers the default finalDrain
-// ceiling; if it is exceeded the store close is skipped (handles leak, which is
-// safe) rather than risking a close underneath an in-flight Complete.
+// storeCloseGrace is the FLOOR that Stop waits for the drainer waitgroup to
+// confirm done before (a) closing session managers and (b) releasing durable
+// store handles, when the caller ctx has already expired (finding 13). It is a
+// floor, not the whole budget: effectiveStoreCloseGrace raises it to cover the
+// configured policies' worst-case single in-flight completion so a legitimate
+// final drainer send is never cut off mid-flight (see effectiveStoreCloseGrace).
 const storeCloseGrace = 15 * time.Second
+
+// completeBudgetCeiling mirrors the drainer's completeCtx/completeBudget clamp
+// (outbox/retry.go): the post-send Complete/Release window is bounded to at most
+// 5s (min(SendTimeout, 5s) for a positive SendTimeout). Kept here as a named
+// ceiling so effectiveStoreCloseGrace derives the SAME worst-case the drainer
+// actually uses without a ports/outbox change.
+const completeBudgetCeiling = 5 * time.Second
+
+// effectiveStoreCloseGrace returns the grace Stop must wait for the drainers to
+// confirm done, coherent with the drainers' worst-case single in-flight send.
+//
+// The inherited hazard (outbox/retry.go:131-141): a drainer's finalDrain runs
+// under context.WithoutCancel and can legitimately spend up to SendTimeout on the
+// final send plus up to completeBudget() (== min(SendTimeout, 5s)) on the
+// post-send Complete. If the bare 15s storeCloseGrace elapses first, Stop closes
+// the session manager — which clears the lease — so the drainer's runtime-side
+// post-send lease fence refuses the final Complete and the record resurfaces on
+// restart as an AVOIDABLE duplicate. To stay coherent, the grace must be at least
+// the largest such worst-case across every shared-outbox route policy:
+//
+//	worst(entry) = SendTimeout + min(SendTimeout, 5s)   // after WithDefaults
+//	grace        = max(storeCloseGrace floor, max_entries worst(entry))
+//
+// The floor (15s) still applies when no policy demands more (e.g. no routes, or
+// tiny SendTimeouts). Single-owner failover semantics are preserved: the grace is
+// still a BOUNDED wait — once it elapses Stop closes managers and releases the
+// lease regardless (the "lesser evil" of a stale-token Complete from a genuinely
+// stuck drainer, per the wait sites' comments), so leases always eventually
+// release for a standby to take over.
+func (rt *Runtime) effectiveStoreCloseGrace() time.Duration {
+	grace := storeCloseGrace
+	rt.mu.Lock()
+	entries := rt.entries
+	rt.mu.Unlock()
+	for i := range entries {
+		p := entries[i].config.Policy.WithDefaults()
+		st := p.SendTimeout
+		if st <= 0 {
+			continue
+		}
+		complete := st
+		if complete > completeBudgetCeiling {
+			complete = completeBudgetCeiling
+		}
+		if worst := st + complete; worst > grace {
+			grace = worst
+		}
+	}
+	return grace
+}
+
+// storeCloseGraceMargin is subtracted from the incoming shutdown ctx's remaining
+// deadline when clamping the store-close grace, so the bounded manager-close wait
+// leaves a little headroom for the caller to observe the clamp rather than
+// consuming the ENTIRE remaining budget right up to the platform kill instant.
+const storeCloseGraceMargin = 1 * time.Second
+
+// clampedStoreCloseGrace bounds the derived store-close grace by the incoming
+// shutdown ctx's remaining deadline (B6).
+//
+// effectiveStoreCloseGrace can derive a grace as large as
+// SendTimeout + min(SendTimeout, 5s) (~65s for a 60s SendTimeout), and the
+// grace-wait DETACHES from ctx via context.WithoutCancel so the drain survives
+// caller cancellation. Detaching an UNCLAMPED grace lets that wait outlive the
+// platform's OWN kill budget — ECS StopTimeout / K8s terminationGracePeriod,
+// default 60s — so the process is SIGKILLed mid-drain: the exact avoidable
+// duplicate + lost in-flight the coherence raise was meant to PREVENT (raising
+// the bare 15s floor is what created this exposure). So when the caller ctx
+// carries a deadline, clamp the grace to the remaining time (minus a small margin
+// for the close phase that follows); with no deadline the derived grace stands (a
+// deadline-less Background caller cannot be SIGKILLed by a platform budget this
+// layer can observe). The value-detachment (trace/correlation) at the wait site
+// is unaffected — only the WAIT duration is bounded, never below zero.
+func (rt *Runtime) clampedStoreCloseGrace(ctx context.Context) time.Duration {
+	grace := rt.effectiveStoreCloseGrace()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return grace
+	}
+	// Compute the remaining budget via the injected clock (never time.Until):
+	// rt.clk is clock.System (real wall-clock) in production — matching both the
+	// caller's real-time ctx deadline and the WithTimeout timer below — and is a
+	// fake clock only under test.
+	if remaining := deadline.Sub(rt.clk.Now()) - storeCloseGraceMargin; remaining < grace {
+		grace = remaining
+	}
+	if grace < 0 {
+		grace = 0
+	}
+	return grace
+}
 
 // defaultStopDrainBudget caps the pre-cancel in-flight settle phase of Stop when
 // no explicit WithStopQuiesce budget was set. It is the ceiling that keeps a Stop
@@ -947,6 +1042,27 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 				err = errRouteUnexpectedStop
 			}
 			rt.setComponentError(name, err)
+			if errors.Is(err, route.ErrRouteTerminal) {
+				// HIGH-2/HIGH-3/HIGH-4: the route runner declared itself
+				// UNRESTARTABLE in this process — either its single-use receiver
+				// was already Closed and cannot be re-Run (a fresh Run would flap
+				// the SAME dead instance at the backoff cap forever behind green
+				// liveness, since AddRoute stores built receiver/session/sender
+				// INSTANCES, not factories, so the supervisor has nothing to
+				// rebuild from), or the runner wedged after a hung send / a
+				// timeout-abandoned processor storm and must not keep accepting
+				// work. Silent capped flapping is exactly the "permanently dead
+				// behind green process liveness with no actionable signal" hazard
+				// the finding calls out. Escalate to terminal instead (mirrors
+				// superviseSession's ErrSessionUnrecoverable branch): the error
+				// flips startBackground terminal so the orchestrator restarts this
+				// pod with freshly-built transports (documented process-restart
+				// backstop). The route is already recorded in componentErrors and
+				// MetricRouteRestarts fired, so the escalation stays observable.
+				metrics.Counter(shared.MetricRouteRestarts, 1,
+					shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
+				return err
+			}
 			metrics.Counter(shared.MetricRouteRestarts, 1,
 				shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
 			if rt.clk.Since(runStart) >= stabilityWindow {

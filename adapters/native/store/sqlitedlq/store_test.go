@@ -12,8 +12,16 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 )
+
+// Compile-time assertion that the SQLite DLQ store implements the optional
+// DLQDepthReporter capability runtime.ReportDLQDepth type-asserts to sample the
+// standing backlog (shared.MetricDLQDepth). It lives in the test package
+// because the production file satisfies ports structurally with no ports import
+// (see .go-arch-lint.yml).
+var _ ports.DLQDepthReporter = (*sqlitedlq.Store)(nil)
 
 // Validates the SQLite DLQ store against the shared conformance suite.
 func TestDLQStoreConformance(t *testing.T) {

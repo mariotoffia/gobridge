@@ -651,6 +651,20 @@ func (s *Store) fenceTTLEpoch(now time.Time) int64 {
 // check, A's next claim fails the fence condition and surfaces
 // shared.ErrStaleFencingToken.
 func (s *Store) Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+	// Fencing guard (F1): the DynamoDB claim path bypasses the OutboxRecord
+	// aggregate and drives raw conditional writes, so it must reject an invalid
+	// (zero-value) fencing token itself — BEFORE the fence read/advance and any
+	// per-record TransactWriteItems. A LeaseToken with an empty Owner or zero
+	// Version can never name a real lease (LeaseStore issues versions from 1),
+	// so it must never claim work. See the ports.OutboxStore fencing contract
+	// and persistence.LeaseToken.Valid.
+	if !token.Valid() {
+		return nil, shared.ErrStaleFencingToken.
+			WithMessage("claim rejected: invalid (zero-value) fencing token").
+			With("owner", token.Owner).
+			With("version", token.Version)
+	}
+
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: claim", "partition_key", partitionKey, "limit", limit)
 	}
@@ -1193,6 +1207,20 @@ func (s *Store) claimOne(
 // Complete marks the given records as completed after successful target delivery.
 // The caller's fencing token must match the claim_version on each record.
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// Fencing guard (F1): the completion fence is owner+version+status enforced
+	// via raw conditional UpdateItems that bypass the OutboxRecord aggregate, so
+	// reject an invalid (zero-value) token here — BEFORE resolving any record
+	// key or issuing an UpdateItem. An empty Owner or zero Version can never
+	// match a real claim's non-empty owner and non-zero version, so it must
+	// never complete work. See the ports.OutboxStore fencing contract and
+	// persistence.LeaseToken.Valid.
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("complete rejected: invalid (zero-value) fencing token").
+			With("owner", token.Owner).
+			With("version", token.Version)
+	}
+
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: complete", "count", len(recordIDs))
 	}
@@ -1279,6 +1307,20 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // released record — the record is pending again, so it is claimable by any
 // token at or above the partition fence.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// Fencing guard (F1): Release fencing is owner+version+status, identical to
+	// Complete, applied via raw conditional UpdateItems that bypass the
+	// OutboxRecord aggregate, so reject an invalid (zero-value) token here —
+	// BEFORE resolving any record key or issuing an UpdateItem. An empty Owner
+	// or zero Version can never match a real claim, so it must never release
+	// work. See the ports.OutboxReleaser fencing contract and
+	// persistence.LeaseToken.Valid.
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("release rejected: invalid (zero-value) fencing token").
+			With("owner", token.Owner).
+			With("version", token.Version)
+	}
+
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodboutbox: release", "count", len(recordIDs))
 	}

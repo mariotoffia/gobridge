@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -69,8 +70,36 @@ type Session struct {
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
 
-	// plan is the last reconciled session plan, re-applied on reconnect.
+	// plan is the last DESIRED session plan (the target the most recent
+	// Reconcile was asked to reach). It is stashed BEFORE the broker ops run
+	// so it is set even when Reconcile-before-Start returns an error (the
+	// stash OnConnectionUp replays), and it drives topicCovered. It is NOT the
+	// applied state — see appliedPlan.
 	plan *connectivity.SessionPlan
+
+	// appliedPlan is the last plan whose broker Subscribe/Unsubscribe ops
+	// ACTUALLY SUCCEEDED — the "last successfully reconciled" state, distinct
+	// from the desired plan above (blocking-#2). A FAILED reconcile (e.g. an
+	// Unsubscribe that times out) must NOT be committed as applied history:
+	// the empty-plan no-op short-circuit and the reconnect-window teardown
+	// both key off appliedPlan, so keeping it at the last SUCCESSFUL value is
+	// what makes the NEXT Reconcile RETRY the failed op instead of no-oping.
+	// nil until the first reconcile succeeds. Guarded by mu.
+	appliedPlan *connectivity.SessionPlan
+
+	// sharedSubWarned latches the one-time advisory that shared
+	// subscriptions ($share) are configured on a stable/shared-ClientID
+	// mode — the client_id-collision footgun for scale-out (HIGH-3). Guarded
+	// by mu; deduplicated so the warning fires once per session lifetime, not
+	// on every reconcile.
+	sharedSubWarned bool
+
+	// outboxWarned latches the one-time advisory that outbound QoS 1/2 packet
+	// state is IN-MEMORY (autopaho), so durable egress needs the bridge's
+	// shared_outbox / idempotent replay, not MQTT session durability alone
+	// (HIGH-5). Guarded by mu; deduplicated so it fires once per session even
+	// when many QoS 1/2 senders bind to it.
+	outboxWarned bool
 
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
@@ -89,6 +118,16 @@ type Session struct {
 	// file need not import the vendor SDK. Production leaves it nil; the
 	// real dial lives in acl_session.go.
 	connectOverride func(ctx context.Context) (pahoConnection, context.CancelFunc, error)
+
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live CONNECT
+	// is rejected with an authorization failure (CONNACK 0x86/0x87 →
+	// shared.ErrNotAuthorized), forcing an immediate re-resolve rather than
+	// stalling on revoked credentials until the next poll. atomic.Pointer gives
+	// safe publication across the builder goroutine (setter) and autopaho's
+	// OnConnectError callback goroutine (load).
+	authFailureCB atomic.Pointer[func(error)]
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be
@@ -198,6 +237,34 @@ func (s *Session) clock() clock.Clock {
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
+}
+
+// warnOutboxDurabilityOnce logs, at most once per session, the HIGH-5 egress
+// durability boundary for QoS 1/2 senders: autopaho keeps outbound packet state
+// IN MEMORY (see the store note in acl_session.go), so publishes in flight at
+// process death are LOST and QoS 2 is not exactly-once across a restart. Durable
+// at-least-once egress is the bridge's shared_outbox / idempotent-replay
+// responsibility, not the MQTT session's — surface that so QoS 1/2 is not
+// mistaken for durable egress on its own. Deduplicated so binding many senders
+// to one session does not spam the advisory; QoS 0 senders never call it.
+func (s *Session) warnOutboxDurabilityOnce(logger *slog.Logger, senderID string, qos byte) {
+	if logger == nil {
+		return
+	}
+	s.mu.Lock()
+	first := !s.outboxWarned
+	s.outboxWarned = true
+	s.mu.Unlock()
+	if !first {
+		return
+	}
+	logger.Warn("mqtt: outbound QoS 1/2 packet state is IN-MEMORY (autopaho) — publishes in flight at process "+
+		"death are LOST and QoS 2 is not exactly-once across a restart; durable egress requires the bridge's "+
+		"shared_outbox / idempotent replay, not MQTT session durability alone",
+		"session_id", s.opts.ClientID,
+		"sender_id", senderID,
+		"qos", qos,
+	)
 }
 
 // ---------------------------------------------------------------------------

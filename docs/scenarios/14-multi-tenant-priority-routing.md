@@ -294,16 +294,26 @@ package main
 
 import (
     "context"
+    "log/slog"
 
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
+    "github.com/mariotoffia/gobridge/ports"
     "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
     "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
     "github.com/mariotoffia/gobridge/processors/tenant"
 )
 
 func main() {
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+    logger := slog.Default()
+
+    // Register each linked adapter's config decoder; ParseFile requires a
+    // non-nil registry. myTenantValidator is a user-supplied hook.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = sqs.Register(reg)
+
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
     tenantProc, _ := tenant.New(tenant.Config{
         Name:          "tenant-validator",
@@ -311,9 +321,9 @@ func main() {
         RequireTenant: false, // allow catch-all for messages without tenant
     }, tenant.WithValidator(myTenantValidator))
 
-    sup, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewFactory(nil)).
-        RegisterTransport("sqs", sqs.NewFactory(nil)).
+    sup, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+        RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+        RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
         RegisterProcessor("tenant-validator", tenantProc).
         Build(context.Background())
 

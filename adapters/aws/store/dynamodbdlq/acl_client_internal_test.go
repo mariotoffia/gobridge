@@ -25,6 +25,10 @@ type fakeDLQClient struct {
 	// ALL_OLD echo / idempotent no-op); deleteCalls counts every DeleteItem.
 	deleteFn    func(*dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error)
 	deleteCalls int
+	// describeTableFn optionally shapes DescribeTable responses (e.g. the
+	// item-count metadata read behind Depth); describeCalls counts every call.
+	describeTableFn func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error)
+	describeCalls   int
 }
 
 func (f *fakeDLQClient) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
@@ -64,7 +68,11 @@ func (f *fakeDLQClient) CreateTable(_ context.Context, _ *dynamodb.CreateTableIn
 	return &dynamodb.CreateTableOutput{}, nil
 }
 
-func (f *fakeDLQClient) DescribeTable(_ context.Context, _ *dynamodb.DescribeTableInput, _ ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error) {
+func (f *fakeDLQClient) DescribeTable(_ context.Context, in *dynamodb.DescribeTableInput, _ ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error) {
+	f.describeCalls++
+	if f.describeTableFn != nil {
+		return f.describeTableFn(in)
+	}
 	return &dynamodb.DescribeTableOutput{}, nil
 }
 

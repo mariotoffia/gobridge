@@ -156,6 +156,90 @@ func TestCredentialRefresher_ApplyAuthFailureTriggersRefresh(t *testing.T) {
 		"an ApplyCredentials NOT_AUTHORIZED must force a reactive re-resolve")
 }
 
+// reportingSession is a CredentialAware target that ALSO implements
+// AuthFailureReporter (HIGH-3). It captures the URI-bound callback the
+// refresher injects at Watch time so a test can drive it directly and prove it
+// forwards to the reactive push store's Refresh.
+type reportingSession struct {
+	*fakeSession
+	mu sync.Mutex
+	cb func(error)
+}
+
+func (s *reportingSession) ApplyCredentials(_ context.Context, _ *connectivity.CredentialSet) error {
+	return nil
+}
+
+func (s *reportingSession) SetAuthFailureCallback(cb func(error)) {
+	s.mu.Lock()
+	s.cb = cb
+	s.mu.Unlock()
+}
+
+func (s *reportingSession) callback() func(error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cb
+}
+
+// TestCredentialRefresher_InjectsURIBoundAuthFailureCallback verifies the
+// HIGH-3 injection: a target implementing AuthFailureReporter receives a
+// URI-bound callback at Watch time that, when invoked with
+// shared.ErrNotAuthorized, forces the reactive Refresh for that URI; a non-auth
+// error does not.
+func TestCredentialRefresher_InjectsURIBoundAuthFailureCallback(t *testing.T) {
+	t.Parallel()
+
+	push := &reactivePushStore{
+		out:          make(chan *connectivity.CredentialSet, 1),
+		refreshCalls: make(chan string, 4),
+	}
+	r := NewCredentialRefresher(push, nil)
+	defer r.Close()
+
+	sess := &reportingSession{fakeSession: &fakeSession{}}
+	r.Watch(t.Context(), "file://creds", sess)
+
+	cb := sess.callback()
+	require.NotNil(t, cb, "refresher must inject a URI-bound auth-failure callback")
+
+	// An authorization failure forces a reactive re-resolve bound to the URI.
+	cb(shared.ErrNotAuthorized)
+	require.Equal(t, "file://creds", wait.RequireReceive(t, push.refreshCalls, 2*time.Second),
+		"a live NOT_AUTHORIZED report must force a reactive re-resolve for the bound URI")
+
+	// A non-authorization failure must NOT trigger a reactive refresh.
+	cb(shared.ErrUnavailable)
+	wait.Silent(t, push.refreshCalls, 100*time.Millisecond)
+}
+
+// TestCredentialRefresher_NonReporterTargetSkippedCleanly verifies that a
+// CredentialAware target WITHOUT the AuthFailureReporter capability is watched
+// normally (rotation still applies) and is not required to expose the setter —
+// the injection is silently skipped, mirroring the CredentialAware tolerance.
+func TestCredentialRefresher_NonReporterTargetSkippedCleanly(t *testing.T) {
+	t.Parallel()
+
+	push := &reactivePushStore{
+		out:          make(chan *connectivity.CredentialSet, 1),
+		refreshCalls: make(chan string, 4),
+	}
+	r := NewCredentialRefresher(push, nil)
+	defer r.Close()
+
+	// fakeSession is CredentialAware-shaped via authRejectingSession but does
+	// NOT implement AuthFailureReporter; Watch must not panic and rotation
+	// still drives ApplyCredentials (which here rejects and self-reports).
+	require.NotPanics(t, func() {
+		r.Watch(t.Context(), "file://creds", &authRejectingSession{fakeSession: &fakeSession{}})
+	})
+	push.out <- connectivity.NewCredentialSet(pwCred("u", "p"), nil)
+
+	// The apply-error path still forces a reactive refresh (existing F2), proving
+	// the non-reporter target is watched cleanly.
+	require.Equal(t, "file://creds", wait.RequireReceive(t, push.refreshCalls, 2*time.Second))
+}
+
 // TestCredentialRefresher_ApplyErrorNeverLeaksURIUserinfo is the refresher
 // leak-regression test: a watched URI that embeds userinfo (user:pass@) must
 // never appear verbatim in any log line, even on the ApplyCredentials-failure

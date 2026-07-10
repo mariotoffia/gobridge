@@ -2,11 +2,76 @@ package paho
 
 import (
 	"context"
+	"errors"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3), satisfying
+// the bridge.AuthFailureReporter capability (matched structurally by the
+// CredentialRefresher in another module). A nil callback clears it.
+func (s *Session) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		s.authFailureCB.Store(nil)
+		return
+	}
+	s.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure invokes the injected reactive-recovery callback iff err is
+// an authorization failure. Safe to call on every mapped connect error: the
+// callback delegates to CredentialRefresher.NotifyAuthFailure, which is
+// auth-gated and per-URI rate-limited.
+func (s *Session) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := s.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
+
+// handleConnectError is the body of autopaho's OnConnectError callback,
+// extracted so the HIGH-3 reactive-recovery chokepoint is unit-testable without
+// a live broker. autopaho surfaces a rejected CONNECT here; after a hard
+// rotation revoked the old credentials the broker answers CONNACK 0x86/0x87
+// (bad user/pass, not authorized), which MapError classifies as
+// shared.ErrNotAuthorized. Reporting it forces an immediate re-resolve instead
+// of reconnecting forever with the revoked material; reportAuthFailure filters
+// non-auth connect errors.
+//
+// ponytail: MQTT authenticates only at CONNECT, so a credential revocation
+// manifests as a connect error — this is the single funnel; per-topic
+// SUBACK/PUBACK not-authorized codes are routing authorization, not credential
+// rotation.
+func (s *Session) handleConnectError(err error) {
+	s.mu.Lock()
+	s.connected = false
+	s.mu.Unlock()
+	mapped := mapConnectError(err)
+	s.reportAuthFailure(mapped)
+	s.pushEvent(ports.SessionReconnecting, mapped)
+}
+
+// mapConnectError classifies an autopaho connect failure. A server CONNACK deny
+// carries the auth verdict in its reason code (0x86 bad user/pass, 0x87 not
+// authorized) — the generic MapError never sees it (it only inspects net errors
+// / message substrings), so a credential revocation would misclassify as
+// ErrUnavailable and NEVER trigger the reactive re-resolve. connackReasonCode
+// (the ACL SDK seam) extracts the plain reason byte; route it through
+// MapDisconnectReasonCode (which maps 0x86/0x87 → shared.ErrNotAuthorized);
+// everything else defers to MapError.
+func mapConnectError(err error) *shared.BridgeError {
+	if code, ok := connackReasonCode(err); ok {
+		if be := MapDisconnectReasonCode(code); be != nil {
+			return be
+		}
+	}
+	return MapError(err)
+}
 
 // ApplyCredentials rotates the credential material used on subsequent
 // MQTT CONNECT packets and forces a reconnect so the broker picks the
@@ -59,6 +124,17 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 	credsChanged := creds.Password() != nil &&
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)
 	if credsChanged {
+		// HIGH-4 (runtime rotation is the hole the static/deferred gates miss):
+		// a rotation that would put username/password on a PLAINTEXT transport
+		// is gated identically to static config. Validate the CANDIDATE creds
+		// BEFORE mutating liveCreds/opts so a rejected rotation leaves the
+		// session's credential material — and its TLS material — UNCHANGED.
+		// Only reached when credsChanged, so a dedup no-op never newly rejects.
+		candidateHasCreds := user != "" || pass != ""
+		if plaintextCredentialViolation(candidateHasCreds, s.opts.AllowPlaintextCredentials, s.opts.BrokerURLs) {
+			s.mu.Unlock()
+			return errPlaintextCredentials()
+		}
 		s.liveCreds = mqttCredentials{Username: user, Password: pass}
 		// Also update s.opts so subsequent Start() calls (e.g. after
 		// a restart by the Supervisor) see consistent values. Mutated

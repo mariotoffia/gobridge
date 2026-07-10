@@ -213,13 +213,13 @@ func TestSSESender_Send_SetRouteIDOverridesIdentity(t *testing.T) {
 	sender, _ := newSSESenderForTest(t, "sse-spec-id")
 	sender.SetRouteID("route-123")
 
-	// A msg.Address equal to the now-overridden identity must succeed.
+	// A matching Address must pass validation (not be rejected as a topic mismatch); zero delivery is a separate concern covered elsewhere.
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Subject: "evt.x", Payload: []byte(`{}`)})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{
 		Envelope: env,
 		Address:  "route-123",
-	}); err != nil {
-		t.Fatalf("Send with matching routeID address: %v", err)
+	}); errors.Is(err, shared.ErrInvalidTopic) {
+		t.Fatalf("Send with matching routeID address rejected as mismatch: %v", err)
 	}
 
 	// The original spec ID must now be rejected as a mismatch.
@@ -251,7 +251,7 @@ func TestHTTPIngressToSSEEgress_PreservesSubject(t *testing.T) {
 
 	recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
 		ID:     "http-ingress",
-		Config: transport.Config{Mode: "http"},
+		Config: transport.Config{},
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)

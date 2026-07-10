@@ -36,11 +36,11 @@ programmatic registration, and a multi-transport example.
 
 ```mermaid
 flowchart TD
-    YAML["bridge.yaml"] --> Parse["config.ParseFile()"]
-    Parse --> CFG["config.BridgeConfig"]
+    YAML["bridge.yaml"] --> Parse["parser.ParseFile()"]
+    Parse --> CFG["ports.BridgeConfig"]
     CFG --> Builder["bridge.Builder"]
 
-    Builder -->|"RegisterTransport(name, factory)"| TF["TransportFactory"]
+    Builder -->|"RegisterTransportFactory(name, factory)"| TF["TransportFactory"]
 
     TF -->|"NewSession(ctx, SessionDef)"| Session["ports.Session"]
     TF -->|"NewReceiver(ctx, ReceiverDef, session)"| Receiver["ports.Receiver"]
@@ -127,12 +127,12 @@ Register transport factories on the `Builder` (one-shot) or `Supervisor`
 ```go
 // Builder (one-shot)
 rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewFactory(logger)).
-    RegisterTransport("sqs", sqs.NewFactory(logger)).
-    RegisterTransport("servicebus", servicebus.NewFactory(logger)).
-    RegisterTransport("amqp091", amqp091.NewFactory(logger)).
-    RegisterTransport("amqp10", amqp10.NewFactory(logger)).
-    RegisterTransport("http", httptransport.NewFactory(
+    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+    RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
+    RegisterTransportFactory("servicebus", servicebus.NewFactory(logger)).
+    RegisterTransportFactory("amqp091", amqp091.NewFactory(logger)).
+    RegisterTransportFactory("amqp10", amqp10.NewFactory(logger)).
+    RegisterTransportFactory("http", httptransport.NewFactory(
         httptransport.WithFactoryLogger(logger),
     )).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).

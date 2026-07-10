@@ -35,6 +35,12 @@ func RunOutboxReleaseTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("ReleaseUnclaimedRejected", func(t *testing.T) {
 		testReleaseUnclaimedRejected(t, store, releaser)
 	})
+	t.Run("ReleaseRejectsZeroToken", func(t *testing.T) {
+		testReleaseRejectsZeroToken(t, store, releaser)
+	})
+	t.Run("ReleaseRejectsZeroClaimSnapshot", func(t *testing.T) {
+		testReleaseRejectsZeroClaimSnapshot(t, store, releaser)
+	})
 }
 
 // testReleaseReturnsRecordToPending pins the fast-release round trip: a
@@ -123,5 +129,67 @@ func testReleaseUnclaimedRejected(t *testing.T, store ports.OutboxStore, release
 	err := releaser.Release(ctx, []string{"rel-un-1"}, tok)
 	if !errors.Is(err, shared.ErrStaleFencingToken) {
 		t.Fatalf("expected ErrStaleFencingToken releasing an unclaimed record, got %v", err)
+	}
+}
+
+// testReleaseRejectsZeroToken pins the valid-token requirement on Release:
+// Release fencing is owner+version+status, so a zero-value / invalid
+// LeaseToken (empty owner or zero version) can never match a real claim and is
+// rejected with shared.ErrStaleFencingToken, leaving the record claimed for its
+// rightful owner.
+func testReleaseRejectsZeroToken(t *testing.T, store ports.OutboxStore, releaser ports.OutboxReleaser) {
+	ctx := context.Background()
+	r := makeRecord(t, "rel-zt-1", "env-rel-zt", "bind-rel-zt", "sess-rel-zt", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	tok := persistence.LeaseToken{Version: 1, Owner: "owner-rel-zt"}
+	if _, err := store.Claim(ctx, "SESSION#sess-rel-zt", tok, 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	for _, invalid := range []persistence.LeaseToken{
+		{},
+		{Version: 1},
+		{Owner: "owner-rel-zt"},
+	} {
+		if err := releaser.Release(ctx, []string{"rel-zt-1"}, invalid); !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("expected ErrStaleFencingToken releasing with invalid token %+v, got %v", invalid, err)
+		}
+	}
+
+	// Still claimed by its rightful owner: the valid token releases it.
+	if err := releaser.Release(ctx, []string{"rel-zt-1"}, tok); err != nil {
+		t.Fatalf("rightful release after rejected zero tokens: %v", err)
+	}
+}
+
+// testReleaseRejectsZeroClaimSnapshot is the Release-side twin of
+// testCompleteRejectsZeroClaimSnapshot: a zero-claimed row (Status == Claimed,
+// claimed_by == "", claim_version == 0) presented with a zero-value
+// LeaseToken{} must be rejected with shared.ErrStaleFencingToken and must NOT
+// be returned to pending. Stores routing Release through the aggregate inherit
+// the self-guard; raw-SQL/DDB stores must add an explicit invalid-token guard.
+// Backends that cannot represent a zero-claimed row through the port skip.
+func testReleaseRejectsZeroClaimSnapshot(t *testing.T, store ports.OutboxStore, releaser ports.OutboxReleaser) {
+	ctx := context.Background()
+	pk, ok := seedZeroClaimed(t, store, "zrs-1", "sess-zrs")
+	if !ok {
+		t.Skip("backend force-resets status to pending on Persist; a zero-claimed row is not representable through the port (aggregate-routed stores are covered by the OutboxRecord self-guard; raw-SQL/DDB stores must add an explicit invalid-token guard on Release)")
+	}
+
+	if err := releaser.Release(ctx, []string{"zrs-1"}, persistence.LeaseToken{}); !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken releasing a zero-claimed row with a zero token, got %v", err)
+	}
+
+	// Non-mutation: Release's only possible mutation is Claimed -> Pending, so
+	// the row must NOT have surfaced as pending.
+	pending, err := store.QueryPending(ctx, pk, 10)
+	if err != nil {
+		t.Fatalf("query pending after rejected release: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("zero-claimed row must not become pending after rejected release, got %d", len(pending))
 	}
 }

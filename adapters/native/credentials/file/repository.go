@@ -96,7 +96,23 @@ func (dto *credentialSetDTO) toDomain() *connectivity.CredentialSet {
 	}
 	var tls *connectivity.TLSMaterial
 	if dto.TLS != nil {
-		t := connectivity.NewTLSMaterial(dto.TLS.CertPEM, dto.TLS.KeyPEM, dto.TLS.CAPEMs, dto.TLS.InsecureSkipVerify)
+		// Normalise a whitespace-only cert or key to the empty string. A CA-only
+		// document may carry blank-but-non-empty cert/key fields (" ", "\n");
+		// ensureUsableCredential judges their presence AFTER trimming, so such a
+		// file loads, but storing the fields verbatim would later drive a
+		// transport into tls.X509KeyPair(" ", " ") and fail at connect time on
+		// material this reader already accepted. A genuine cert+key pair is
+		// stored verbatim. Mirrors the sibling SSM parser
+		// (adapters/aws/credentials/ssm/parser.go, parseTLSJSON).
+		certPEM := dto.TLS.CertPEM
+		if strings.TrimSpace(certPEM) == "" {
+			certPEM = ""
+		}
+		keyPEM := dto.TLS.KeyPEM
+		if strings.TrimSpace(keyPEM) == "" {
+			keyPEM = ""
+		}
+		t := connectivity.NewTLSMaterial(certPEM, keyPEM, dto.TLS.CAPEMs, dto.TLS.InsecureSkipVerify)
 		tls = &t
 	}
 	return connectivity.NewCredentialSet(pw, tls)

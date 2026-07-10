@@ -234,3 +234,14 @@ func (s *sqlSession) purge(ctx context.Context, before time.Time) (int, error) {
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
+
+// count returns the total number of outstanding DLQ entries via COUNT(*),
+// backing the OPTIONAL ports.DLQDepthReporter capability. A read failure is
+// wrapped and returned as-is.
+func (s *sqlSession) count(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, countAllSQL).Scan(&n); err != nil {
+		return 0, wrapErr(err, "sqlitedlq: count")
+	}
+	return n, nil
+}

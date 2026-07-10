@@ -98,7 +98,9 @@ const (
 	LevelSubscribed
 	// LevelFull means LevelSubscribed plus every route has Ready == true
 	// (route runner started AND receiver started AND, for MQTT,
-	// HandlersRegistered > 0). Equivalent to ReadyForTraffic + ServiceLevelFull.
+	// HandlersRegistered > 0) AND every non-deferred session is at
+	// ServiceLevelFull (a flow-control-blocked / degraded session caps below
+	// Full). Equivalent to ReadyForTraffic + ServiceLevelFull.
 	LevelFull
 )
 
@@ -179,10 +181,14 @@ func ReadinessLevelFromDeepHealth(dh DeepHealth) ReadinessLevel {
 func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 	allConnected := true
 	allSubscribed := true
+	allFullService := true
 	for _, sh := range dh.Sessions {
 		// A deferred-connect standby is expected to be disconnected until this
 		// instance wins the lease; excluding it lets a ready standby reach its
-		// LevelSubscribed cap instead of being pinned at LevelRunning.
+		// LevelSubscribed cap instead of being pinned at LevelRunning. The same
+		// skip applies to the service-level check below — a standby's dormant
+		// source must not cap an otherwise-healthy instance (and standbys are
+		// capped at LevelSubscribed anyway).
 		if sh.ConnectAfterLease && !sh.HasLease {
 			continue
 		}
@@ -194,6 +200,17 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 		if sh.SubscriptionsActive != sh.SubscriptionsWanted {
 			allSubscribed = false
 		}
+		// A session that is connected + subscribed can still be unable to serve:
+		// e.g. under broker flow control it reports ServiceLevelDegraded (publishes
+		// and acks stall). LevelFull is contractually "ReadyForTraffic +
+		// ServiceLevelFull", so an EXPLICITLY degraded/none session must cap the
+		// instance below Full. An UNSET (empty) ServiceLevel does NOT cap:
+		// production always sets it via SessionHealth.ServiceLevel, but hand-built
+		// snapshots that leave it empty legitimately expect Full (backward-compat).
+		// Compare explicitly rather than by ordering.
+		if sh.ServiceLevel == ServiceLevelDegraded || sh.ServiceLevel == ServiceLevelNone {
+			allFullService = false
+		}
 	}
 	if !allConnected {
 		return LevelRunning
@@ -201,11 +218,22 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 	if !allSubscribed {
 		return LevelConnected
 	}
-	// Full requires every route runner to be Ready (handler registered).
+	// Full requires every route runner to be Ready (handler registered). A route
+	// that is not ready OR latched dead (RouteDead — wedged flapping at the
+	// supervisor cap) cannot dispatch, so the instance is not Full even though
+	// every session is subscribed (HIGH-2). This keeps LevelFull an honest
+	// "every route ready to serve" signal that the legacy /ready default relies on.
 	for _, rh := range dh.Routes {
-		if !rh.Ready {
+		if !rh.Ready || rh.RouteDead {
 			return LevelSubscribed
 		}
+	}
+	// Full ALSO requires every non-deferred session to be at ServiceLevelFull, so
+	// LevelFull matches its documented contract (ReadyForTraffic + ServiceLevelFull).
+	// A flow-control-blocked session is connected+subscribed yet degraded, so cap
+	// below Full so the default /ready probe sheds traffic from it.
+	if !allFullService {
+		return LevelSubscribed
 	}
 	return LevelFull
 }

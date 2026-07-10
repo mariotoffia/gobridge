@@ -15,11 +15,46 @@ A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure S
 
 ## Quick Start
 
-The simplest possible bridge — a single MQTT topic forwarded to another topic — is walked through end to end (YAML config + Go bootstrap + variations) in **[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
+### Production (container image / composition root)
+
+The shipped **production** binary is the file-based composition root
+`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, published as the
+container image **`ghcr.io/mariotoffia/gobridge`**. It registers the MQTT, AWS
+SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores, and is
+the binary the AWS ECS/EFS deployment profile runs. Start here for any real
+deployment: see the **[Deployment Guide](docs/deployment-guide.md)** and the
+**[AWS file-based profile](deployment/aws-filebased-config/README.md)**. For
+transports it does not bundle (Azure Service Bus, AMQP), build a custom
+composition root the same way — the demo binary below shows the two wiring
+sites.
+
+### Local / demo
+
+`cmd/gobridge` is a **DEMO / reference** binary — it links **only** MQTT +
+native (memory/SQLite) stores and is **not** for production (a config using any
+other transport/store is rejected at startup). It forwards a single MQTT topic
+to another, walked through end to end (YAML config + Go bootstrap + variations)
+in **[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
 
 For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, clustered exclusive sessions, multi-tenant routing, custom processors, …) or jump straight to the [Configuration Overview](docs/configuration-overview.md).
 
 ## Installation
+
+> **⚠️ External `go get` requires released, path-prefixed submodule tags — a
+> prerequisite release step that is not yet performed.** This repository is a
+> Go **multi-module workspace**: the submodules below depend on sibling modules
+> via in-repo `replace` directives and `v0.0.0` requirements that only resolve
+> inside this checkout (`go.work`). Go **ignores `replace` directives in
+> dependencies**, so a clean external `go get` of a submodule currently fails to
+> resolve those siblings (`unknown revision … v0.0.0`). Until every submodule is
+> published with a **path-prefixed semver tag** and its internal `v0.0.0`/zero
+> pseudo-version requirements are replaced with the released versions, consume
+> these modules from an **in-repo workspace** (clone this repo and work within
+> `go.work`), not via `go get`. See the release checklist in
+> **[RELEASE.md](RELEASE.md)** (published module set, path-prefixed tag policy,
+> and the first-release migration that removes `replace` directives).
+
+Once the submodules are published (see the release checklist), the modules are consumed with:
 
 ```bash
 # Core module (domain, ports, runtime, config, bridge) -- zero external deps

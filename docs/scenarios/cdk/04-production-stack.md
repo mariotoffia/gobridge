@@ -155,7 +155,7 @@ bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
 
 ## CloudWatch Alarms
 
-Five alarms cover the failure modes that matter most. Each fires to an SNS
+These alarms cover the failure modes that matter most. Each fires to an SNS
 topic that routes to your incident management system.
 
 | Alarm | Metric | Threshold | Period | Severity |
@@ -163,8 +163,18 @@ topic that routes to your incident management system.
 | Unhealthy Tasks | ECS `CPUUtilization` SampleCount | < 2 | 1 min | Critical |
 | High Error Rate | `RouteErrors / MessagesReceived * 100` | > 5% | 5 min | High |
 | CPU Utilization | ECS `CPUUtilization` | > 80% | 5 min | Warn |
-| DLQ Depth | `DLQEntries` Sum | > 0 | 5 min | High |
+| DLQ Arrivals | `DLQEntries` Sum | > 0 | 5 min | High |
+| DLQ Depth | `DLQDepth` Maximum | > 0 | 5 min | Warn |
+| Message Loss | `MessagesDropped` Sum | > 0 | 5 min | Critical |
 | Config Reload Failure | `ConfigReloadFailures` (log metric) | > 0 | 5 min | High |
+
+`DLQEntries` is an INGRESS counter (arrivals, only ever increases), so its `Sum`
+answers "did anything land in the DLQ this window". `DLQDepth` is the standing
+BACKLOG gauge (see [monitoring](../../aws-deployment/monitoring.md)) — it stays
+lit while entries remain outstanding even after arrivals stop, so alarm on its
+`Maximum`. `MessagesDropped` is the silent-loss counter: any terminal drop
+settled without a DLQ record, so a non-zero `Sum` is real message loss. All three
+ship in `DefaultAlarms`/`DefaultRollupMetrics`.
 
 Example -- DLQ alarm with SNS action:
 

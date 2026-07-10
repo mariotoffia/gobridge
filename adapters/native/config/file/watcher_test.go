@@ -1,9 +1,11 @@
 package file
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +47,49 @@ func writeYAML(t *testing.T, path string, bridgeID string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// readRecorder wraps a Watcher.readFile seam to count invocations and capture
+// the bytes returned by each read. It lets a test PROVE the HIGH-2 stability
+// gate's confirm step performs an ACTUAL second read of identical bytes before
+// emitting — rather than replaying cached first-sighting bytes when the confirm
+// timer fires. Without this a regression that emitted the candidate on the timer
+// without re-reading would still pass the loop tests. Safe for the watcher
+// goroutine to call while the test goroutine inspects it.
+type readRecorder struct {
+	inner func(string) ([]byte, error)
+
+	mu    sync.Mutex
+	reads [][]byte
+}
+
+func newReadRecorder(inner func(string) ([]byte, error)) *readRecorder {
+	return &readRecorder{inner: inner}
+}
+
+// read is the seam installed as Watcher.readFile.
+func (r *readRecorder) read(p string) ([]byte, error) {
+	data, err := r.inner(p)
+	r.mu.Lock()
+	r.reads = append(r.reads, append([]byte(nil), data...))
+	r.mu.Unlock()
+	return data, err
+}
+
+func (r *readRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.reads)
+}
+
+// last returns a copy of the bytes returned by the most recent read.
+func (r *readRecorder) last() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.reads) == 0 {
+		return nil
+	}
+	return r.reads[len(r.reads)-1]
 }
 
 func TestSource_Load(t *testing.T) {
@@ -105,8 +150,18 @@ func TestWatcher_PollMode(t *testing.T) {
 	w := NewWatcher(path, newTestRegistry(t),
 		WithMode(ModePoll),
 		WithPollInterval(100*time.Millisecond),
+		// Confirm window (debounce) STRICTLY smaller than the poll interval so
+		// advancing through it fires ONLY the one-shot confirm timer, never a
+		// second poll tick. That isolates the confirm re-read: the read count can
+		// only grow if the CONFIRM path itself re-reads (a coincident ticker
+		// re-read would otherwise mask a cache-emit regression).
+		WithDebounce(20*time.Millisecond),
 		WithClock(fc),
 	)
+	// Count reads through the seam so we can prove the confirm step RE-READS
+	// the file (HIGH-2), not just replays cached first-sighting bytes.
+	rec := newReadRecorder(os.ReadFile)
+	w.readFile = rec.read
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -118,7 +173,19 @@ func TestWatcher_PollMode(t *testing.T) {
 
 	waitForTicker(t, fc)
 	writeYAML(t, path, "polled")
-	fc.Advance(100 * time.Millisecond)
+	fc.Advance(100 * time.Millisecond) // poll tick detects the change → held for stability
+
+	// Stability gate (HIGH-2): a detected change is applied only after a
+	// confirming re-read one settle window (debounce) later returns the same
+	// bytes. Poll mode arms a one-shot confirm timer for that re-read; advance
+	// through it so the settled content is delivered.
+	waitForTimer(t, fc)
+	// The detect read set the candidate and armed the confirm timer but has NOT
+	// emitted yet. Snapshot the read state so the confirm phase can be asserted
+	// to perform a genuine second read.
+	detectRead := rec.last()
+	readsBeforeConfirm := rec.count()
+	fc.Advance(w.debounce)
 
 	select {
 	case cfg := <-ch:
@@ -127,6 +194,16 @@ func TestWatcher_PollMode(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for poll event")
+	}
+
+	// #4: the confirm must have re-read the file (not emitted cached bytes on the
+	// timer), and that second read must have returned identical bytes.
+	if got := rec.count(); got <= readsBeforeConfirm {
+		t.Fatalf("confirm did not re-read the file: read count stayed at %d (expected > %d)", got, readsBeforeConfirm)
+	}
+	if confirmRead := rec.last(); !bytes.Equal(confirmRead, detectRead) {
+		t.Fatalf("confirm re-read %q differs from the detect read %q; the gate must confirm on IDENTICAL bytes",
+			confirmRead, detectRead)
 	}
 
 	w.Stop()
@@ -276,7 +353,13 @@ func TestWatcher_InvalidContent(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{{broken yaml"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fc.Advance(100 * time.Millisecond)
+	fc.Advance(100 * time.Millisecond) // poll tick detects the change
+
+	// Advance through the stability window so the confirming read actually
+	// reaches the parser: corrupt-but-stable content must still emit nothing
+	// (and must not advance lastHash), exercising the parse-failure path.
+	waitForTimer(t, fc)
+	fc.Advance(w.debounce)
 
 	select {
 	case cfg := <-ch:

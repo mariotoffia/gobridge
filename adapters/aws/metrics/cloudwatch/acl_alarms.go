@@ -46,9 +46,10 @@ type AlarmDefinition struct {
 }
 
 // DefaultRollupMetrics returns the metric names targeted by
-// DefaultAlarms. All but one are emitted WITH dimensions by the
-// runtime (DLQEntries → route_id/category, lease metrics → lease_id,
-// SQSVisibilityExtensions → queue_url, OutboxDepth → partition), and a
+// DefaultAlarms plus the silent-loss counters. Most are emitted WITH
+// dimensions by the runtime (DLQEntries → route_id/category, lease
+// metrics → lease_id, SQSVisibilityExtensions → queue_url, OutboxDepth →
+// partition, MessagesDropped/Expired/Filtered → route_id[/reason]), and a
 // CloudWatch alarm without dimensions NEVER matches dimensioned data —
 // so the exporter must double-publish a zero-dimension rollup copy of
 // these metrics for the default alarms to fire (MF-4):
@@ -57,12 +58,13 @@ type AlarmDefinition struct {
 //	    cloudwatch.WithRollupMetrics(cloudwatch.DefaultRollupMetrics()...),
 //	)
 //
-// CredentialRefreshFailures is the exception: it is emitted with NO
-// runtime dimension, so on a fleet WITH instance tagging (WithInstanceTag)
-// its base series carries only instance_id and a zero-dimension alarm
-// would still miss it — hence it is rolled up too. Without instance
-// tagging its base and rollup copies coincide (a harmless double count of
-// a failure counter that has no default alarm; note it if you build one).
+// CredentialRefreshFailures and DLQDepth are the dimensionless exceptions:
+// each is emitted with NO runtime dimension, so on a fleet WITH instance
+// tagging (WithInstanceTag) its base series carries only instance_id and a
+// zero-dimension alarm would still miss it — hence both are rolled up too.
+// Without instance tagging their base and rollup copies coincide (a
+// harmless double count for CredentialRefreshFailures, which has no default
+// alarm; DLQDepth is a gauge whose rollup takes the fleet Maximum).
 func DefaultRollupMetrics() []string {
 	return []string{
 		shared.MetricOutboxDepth,
@@ -71,6 +73,17 @@ func DefaultRollupMetrics() []string {
 		shared.MetricLeaseAcquireFailures,
 		shared.MetricCredentialRefreshFailures,
 		metricSQSVisibilityExtensions,
+		// Silent-loss + backlog counters (H-OBS). These are emitted with a
+		// route/partition dimension by the runtime, so a dimensionless fleet
+		// alarm never matches their base series without a zero-dimension rollup
+		// copy. DLQDepth and MessagesDropped/Expired have default alarms below;
+		// MessagesFiltered is rolled up too (so operators CAN alarm on an
+		// unexpected filter rate) but ships no default alarm because a filter
+		// discard is an intentional policy outcome, not loss.
+		shared.MetricDLQDepth,
+		shared.MetricMessagesDropped,
+		shared.MetricMessagesExpired,
+		shared.MetricMessagesFiltered,
 	}
 }
 
@@ -171,6 +184,55 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 			Threshold:        100,
 			Period:           300,
 			EvalPeriods:      1,
+			Statistic:        cwtypes.StatisticSum,
+			Comparison:       cwtypes.ComparisonOperatorGreaterThanThreshold,
+			Severity:         SeverityWarning,
+			SNSTopicARN:      snsTopicARN,
+			TreatMissingData: "notBreaching",
+		},
+		// DLQ depth: any outstanding dead-letter entry is worth attention. A
+		// gauge (Maximum), so notBreaching — absence means no DLQ store / no
+		// sampler, not a healthy zero (H-OBS DLQ-1).
+		{
+			Name:             "GoBridge-DLQDepth-Warning",
+			MetricName:       shared.MetricDLQDepth,
+			Namespace:        namespace,
+			Threshold:        0,
+			Period:           300,
+			EvalPeriods:      1,
+			Statistic:        cwtypes.StatisticMaximum,
+			Comparison:       cwtypes.ComparisonOperatorGreaterThanThreshold,
+			Severity:         SeverityWarning,
+			SNSTopicARN:      snsTopicARN,
+			TreatMissingData: "notBreaching",
+		},
+		// Terminal silent loss: a message settled WITHOUT a DLQ record and
+		// WITHOUT a successful send. Any drop is critical — this is the single
+		// signal for lost messages. Counter (Sum) > 0 over one period; absence
+		// is the healthy state (notBreaching).
+		{
+			Name:             "GoBridge-MessagesDropped-Critical",
+			MetricName:       shared.MetricMessagesDropped,
+			Namespace:        namespace,
+			Threshold:        0,
+			Period:           300,
+			EvalPeriods:      1,
+			Statistic:        cwtypes.StatisticSum,
+			Comparison:       cwtypes.ComparisonOperatorGreaterThanThreshold,
+			Severity:         SeverityCritical,
+			SNSTopicARN:      snsTopicARN,
+			TreatMissingData: "notBreaching",
+		},
+		// TTL loss: messages expiring before delivery. A trickle can be normal
+		// for short-TTL traffic, so alarm on SUSTAINED expiry — Sum > 0 in each
+		// of three consecutive 5-minute windows — rather than a single expiry.
+		{
+			Name:             "GoBridge-MessagesExpired-Warning",
+			MetricName:       shared.MetricMessagesExpired,
+			Namespace:        namespace,
+			Threshold:        0,
+			Period:           300,
+			EvalPeriods:      3,
 			Statistic:        cwtypes.StatisticSum,
 			Comparison:       cwtypes.ComparisonOperatorGreaterThanThreshold,
 			Severity:         SeverityWarning,

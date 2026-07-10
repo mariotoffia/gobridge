@@ -301,9 +301,11 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// NodeRole is intentionally NOT consulted here: every node starts
-	// the transport, admin, and monitor servers. node_role is reserved
-	// / non-operative at runtime today (see infra.BootstrapConfig.NodeRole).
+	// Every node starts the transport, admin, and monitor servers regardless
+	// of NodeRole (workers still expose the admin listener today — see
+	// infra.BootstrapConfig.NodeRole). NodeRole IS consulted below for the
+	// config single-writer posture (apiCfg.ConfigSingleWriter): only the
+	// control/single node is the sole durable config writer.
 	a.transportServer = newTransportServer(a.handlerRef, a.logger)
 	if err := a.transportServer.Start(a.cfg.TransportHTTPAddr); err != nil {
 		return fmt.Errorf("bootstrap: start transport HTTP server: %w", err)
@@ -356,6 +358,21 @@ func (a *App) Start(ctx context.Context) error {
 		// runtime diverges. Without this wiring the committed_not_applied /
 		// errConfigApplyFailed path is dead in the shipped binary.
 		ConfigApplier: a.applyCommittedConfig,
+		// ConfigSingleWriter asserts THIS admin process is the sole durable
+		// writer of the config store. The profile's ConfigStore is a
+		// parser.FileStore (non-CAS: no ports.ConditionalConfigStore), so the
+		// httpapi config-transaction commit path FAILS CLOSED on a durable
+		// commit unless single-writer is asserted. In the file-based profile
+		// the CONTROL/single node owns the RW EFS mount and is the only admin
+		// writer (GoBridgeSingle is one task; GoBridgeCluster forces the
+		// control service to DesiredCount=1 and mounts workers RO), so the
+		// control role IS the sole writer. Derive the flag from NodeRole rather
+		// than hardcoding: worker nodes get false (their commits correctly fail
+		// closed — a RO EFS mount could not durably persist anyway), and a
+		// genuine multi-writer deployment must instead wire a CAS ConfigStore
+		// (ports.ConditionalConfigStore.SaveIfVersion — see xcut filestore-cas),
+		// which is always safe regardless of this flag.
+		ConfigSingleWriter: a.configSingleWriter(),
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),
@@ -391,6 +408,31 @@ func (a *App) Start(ctx context.Context) error {
 
 	startOK = true
 	return nil
+}
+
+// configSingleWriter reports whether THIS node is the sole durable writer of
+// the config store, which the served httpapi.Config asserts via
+// ConfigSingleWriter. The file-based profile's ConfigStore is a
+// parser.FileStore — a non-CAS store (it does not implement
+// ports.ConditionalConfigStore) — so the httpapi config-transaction commit path
+// fails closed on a durable commit unless single-writer is asserted.
+//
+// The decision is derived from the deploy-time NodeRole rather than hardcoded:
+//
+//   - control (and the empty default normalized to control by
+//     BootstrapConfig.Normalized, covering GoBridgeSingle and library/local
+//     use) owns the RW EFS mount and is the ONLY admin writer — GoBridgeCluster
+//     forces the control service to DesiredCount=1 — so it is the sole writer.
+//   - worker mounts EFS read-only in GoBridgeCluster and is NOT a durable
+//     writer; returning false makes a worker's commit fail closed (correct: a
+//     RO mount could not persist anyway) instead of a silent last-writer-wins.
+//
+// A genuine multi-writer deployment (multiple concurrent admin writers against
+// one backend) cannot be made safe with a non-CAS FileStore; it MUST wire a
+// ports.ConditionalConfigStore instead, which is always safe regardless of this
+// flag (xcut filestore-cas: parser.FileStore lacks SaveIfVersion today).
+func (a *App) configSingleWriter() bool {
+	return a.cfg.NodeRole == deployinfra.NodeRoleControl
 }
 
 // checkIgnoredHTTPBlock enforces the file-based deployment profile's policy for

@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -75,7 +78,76 @@ type Manager struct {
 	// version (AppliedVersion) plus logging every version change makes that
 	// divergence OBSERVABLE so operators/monitoring can alert on cross-instance
 	// version skew externally.
+	//
+	// NOTE: appliedVersion is the DESIRED version — the one this manager last
+	// EMITTED downstream (asked the applier to run). It advances the moment a
+	// merged config is validated and pushed, BEFORE any runtime swap has
+	// actually succeeded. runningVersion below is the version the applier
+	// CONFIRMED it applied. The two diverge after a failed runtime swap (the
+	// supervisor recovers the previous runtime) — see NotifyApplyResult.
 	appliedVersion int
+	// runningVersion is the BridgeConfig.Version the downstream applier
+	// (supervisor) last CONFIRMED it applied via NotifyApplyResult. It is the
+	// truthful "what is actually serving traffic" signal, distinct from the
+	// emitted/desired appliedVersion. On a failed swap the applier recovers the
+	// previous runtime, so runningVersion stays behind the desired config and
+	// ReconfigurePending reports the divergence — this stops the manager/source
+	// from silently claiming a live reload took effect while the old runtime
+	// still serves traffic (finding: desired-ahead-of-applied). -1 before the
+	// first confirmed apply. NOTE: like appliedVersion this is operator-facing
+	// observability only; the desired-vs-running DECISION is keyed on the content
+	// fingerprints below, never on the non-unique Version.
+	runningVersion int
+	// lastApplyErr is the error from the most recent FAILED NotifyApplyResult for
+	// the CURRENT desired config (nil once a later apply is confirmed, a newer
+	// desired is emitted, or before any result is reported).
+	lastApplyErr error
+	// applyResultSeen becomes true after the first NotifyApplyResult that
+	// pertains to the current desired config. Until an applier reports back,
+	// ReconfigurePending stays false: an unwired composition root (no ack path)
+	// must not look permanently out-of-sync just because nothing has confirmed
+	// the boot config yet.
+	applyResultSeen bool
+	// desiredFingerprint / runningFingerprint correlate an emitted (desired)
+	// config with the apply result reported for it by CONTENT, not by the
+	// operator-controlled BridgeConfig.Version. Version is NOT unique: an
+	// external writer can change config CONTENT while leaving the version field
+	// unchanged (or two commits can reuse a number), so keying desired-vs-running
+	// on Version HIDES a real divergence after a failed swap — the manager would
+	// see appliedVersion == runningVersion and wrongly report "converged". These
+	// SHA-256 fingerprints are taken over the REVEALED config (secrets included)
+	// so any content change — including a secret-only edit — is detected. The
+	// fingerprint ALSO covers each decoded PluginConfig's options: those live in
+	// the `Config` fields tagged json:"-" on the blueprint, so a plain
+	// json.Marshal of the config DROPS them and a change confined to a plugin's
+	// options (or a plugin secret) at an unchanged Version would be INVISIBLE —
+	// see configFingerprint, which projects each plugin's decoded options back in
+	// (finding: plugin options omitted from the fingerprint). desiredFingerprint
+	// is the last config EMITTED downstream; runningFingerprint is the last one the
+	// applier CONFIRMED. ReconfigurePending is their inequality (finding:
+	// desired/running keyed on non-unique Version).
+	desiredFingerprint [sha256.Size]byte
+	runningFingerprint [sha256.Size]byte
+	// desiredConfig is the EXACT *ports.BridgeConfig pointer the manager last
+	// emitted downstream. NotifyApplyResult correlates an apply result to the
+	// desired config by this pointer identity: the applier echoes the exact config
+	// it attempted back via SwapEvent.NewConfig (verified end to end — watchLoop →
+	// WindowedStrategy → reload pipeline → Supervisor.onSwap all forward the
+	// pointer without cloning or reparsing). Pointer identity, NOT the content
+	// fingerprint, is what disambiguates an A→B→A flap: A#1 and A#2 are distinct
+	// allocations with identical content, so a delayed ack for A#1 that lands after
+	// A#2 was emitted is a DIFFERENT pointer and is ignored, whereas a content hash
+	// (identical for A#1 and A#2) cannot tell them apart (finding: content-only
+	// correlation lets a stale ack regress running).
+	desiredConfig *ports.BridgeConfig
+	// desiredHashErr is non-nil when the current desired config cannot be
+	// fingerprinted (e.g. a NaN/Inf or otherwise unserialisable value reached via
+	// the public ConditionDef.Value any). A config we cannot fingerprint can never
+	// be PROVEN converged, so ReconfigurePending fails closed (reports pending)
+	// instead of letting an unhashable config collapse to a zero fingerprint that
+	// would falsely compare equal to another unhashable one and read as converged
+	// (finding: marshal error collapses to a zero fingerprint).
+	desiredHashErr error
 	stopCh         chan struct{}
 	doneCh         chan struct{} // closed when watchLoop exits
 	running        bool
@@ -126,6 +198,7 @@ func NewManager(base Layer, opts ...ManagerOption) *Manager {
 		configs:        make(map[string]*ports.BridgeConfig),
 		watchErrs:      make(map[string]error),
 		appliedVersion: -1,
+		runningVersion: -1,
 	}
 	for _, o := range opts {
 		o(m)
@@ -304,10 +377,20 @@ func (m *Manager) clearWatchError(layer string) {
 	m.mu.Unlock()
 }
 
-// AppliedVersion reports the ports.BridgeConfig.Version this instance has last
-// successfully merged, validated, and emitted downstream, and whether any config
-// has been applied yet. It is a per-instance convergence signal for detecting
+// AppliedVersion reports the DESIRED ports.BridgeConfig.Version this instance
+// last merged, validated, and EMITTED downstream, and whether any config has
+// been emitted yet. It is a per-instance convergence signal for detecting
 // cross-instance config-version divergence.
+//
+// IMPORTANT: "emitted downstream" is NOT the same as "running". AppliedVersion
+// advances the instant a merged config is validated and pushed to the applier,
+// which is BEFORE the runtime swap that actually starts serving it. A swap can
+// still fail (build/start/route validation) and the supervisor then recovers
+// the PREVIOUS runtime. Use RunningVersion for the version the applier has
+// CONFIRMED, and ReconfigurePending / LastApplyError to detect a desired config
+// that has not (yet) taken effect. Reading AppliedVersion alone can report a
+// live reload as active while traffic is still served by the old runtime
+// (finding: desired-ahead-of-applied).
 //
 // ponytail: this is OBSERVATION ONLY. GoBridge deliberately does not coordinate
 // config versions across the cluster (no version barrier, no cluster rollback) —
@@ -321,23 +404,296 @@ func (m *Manager) AppliedVersion() (version int, ok bool) {
 	return m.appliedVersion, m.appliedVersion >= 0
 }
 
-// recordAppliedVersion stamps the version of a just-emitted merged config and
-// logs any change so cross-instance divergence is observable. cfg is the config
-// the manager has committed to downstream (Load return / watch emit).
-func (m *Manager) recordAppliedVersion(cfg *ports.BridgeConfig) {
+// RunningVersion reports the ports.BridgeConfig.Version the downstream applier
+// (supervisor) last CONFIRMED it applied via NotifyApplyResult, and whether any
+// apply has been confirmed. Unlike AppliedVersion (the last EMITTED/desired
+// version), this reflects the config actually serving traffic: after a failed
+// runtime swap it stays at the previous, still-running version. Safe for
+// concurrent use.
+func (m *Manager) RunningVersion() (version int, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runningVersion, m.runningVersion >= 0
+}
+
+// ReconfigurePending reports whether the last DESIRED (emitted) config has not
+// been confirmed applied by the runtime — i.e. the desired and running CONTENT
+// fingerprints differ after at least one apply result has been reported for the
+// current desired. It is the manager-side signal that a live reload is in-flight
+// or, after a failed swap, stuck: the source/cache moved forward but the runtime
+// did not.
+//
+// It is keyed on a content fingerprint, NOT on BridgeConfig.Version: a content
+// change that reuses the operator version (e.g. an external file edit that does
+// not bump version) still diverges here, where a Version comparison would falsely
+// read as converged (finding: desired/running keyed on non-unique Version).
+//
+// It stays false until the first NotifyApplyResult so an unwired composition
+// root (no acknowledgement path) is not reported as permanently pending. Safe
+// for concurrent use.
+func (m *Manager) ReconfigurePending() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.desiredHashErr != nil {
+		// The desired config cannot be fingerprinted, so convergence can never be
+		// PROVEN. Fail closed: report pending rather than let an unhashable desired
+		// masquerade as converged (a zero fingerprint must never read as a valid,
+		// matchable value — finding: marshal error collapses to a zero fingerprint).
+		return true
+	}
+	return m.applyResultSeen && m.desiredFingerprint != m.runningFingerprint
+}
+
+// LastApplyError returns the error from the most recent FAILED apply result
+// (nil once a later apply is confirmed, or before any result is reported). It is
+// the diagnostic companion to ReconfigurePending: why the desired config is not
+// running. Safe for concurrent use.
+func (m *Manager) LastApplyError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastApplyErr
+}
+
+// NotifyApplyResult records the outcome of the downstream applier's attempt to
+// make a previously-emitted (desired) config the RUNNING config. The applier
+// passes back the EXACT config it attempted (the one delivered on the change
+// channel) so the manager can correlate the result with the desired config by
+// CONTENT — never by the operator-controlled, non-unique BridgeConfig.Version.
+// It closes the desired-vs-applied gap that let the manager/source run ahead of
+// the actual runtime after a failed swap:
+//
+//   - err == nil  → the runtime CONFIRMED it is serving cfg; RunningVersion
+//     advances to cfg.Version, the running fingerprint becomes cfg's, and any
+//     prior apply error is cleared.
+//   - err != nil  → the swap DEFINITIVELY failed and the applier recovered the
+//     previous runtime; the running fingerprint is left behind (still the old,
+//     running config), lastApplyErr records why, and ReconfigurePending now
+//     reports the divergence so operators/health see that the desired config is
+//     NOT live.
+//
+// A result whose content does NOT match the current desired config is for a
+// config the manager has already superseded — a late or out-of-order ack. It is
+// IGNORED: acting on it would regress the running config to an old version or
+// resurrect a stale error even though a newer config is already running
+// (finding: stale acks regress running).
+//
+// Callers MUST only report definitive outcomes here. A committed-but-unconfirmed
+// result (ports.ErrApplyInFlight — bridge paused/deferred, or a swap still
+// in-flight past the apply deadline) is neither success nor failure: do NOT call
+// NotifyApplyResult for it, so the pending/divergence state is preserved until a
+// real result is known. A nil cfg is ignored. Safe for concurrent use.
+func (m *Manager) NotifyApplyResult(cfg *ports.BridgeConfig, err error) {
 	if cfg == nil {
 		return
 	}
 	m.mu.Lock()
-	prev := m.appliedVersion
-	m.appliedVersion = cfg.Version
-	m.mu.Unlock()
-	if m.logger != nil && prev != cfg.Version {
-		m.logger.Info("config manager: applied config version changed; "+
-			"compare across instances to detect cluster divergence "+
-			"(reconfiguration is per-instance, not cluster-coordinated)",
-			"previous_version", prev, "applied_version", cfg.Version)
+	if cfg != m.desiredConfig {
+		// Correlate by the EXACT pointer the manager emitted (echoed back by the
+		// applier via SwapEvent.NewConfig). A different pointer is a result for a
+		// SUPERSEDED emit — a late/out-of-order ack (e.g. an A→B→A flap where a
+		// delayed ack for the first A lands after the second A was emitted) or a
+		// config that did not originate from this manager (an in-band admin swap).
+		// Ignoring it stops a stale ack from regressing running to an old
+		// generation whose CONTENT happens to match the current desired; content
+		// hashing alone cannot make this distinction (identical content ⇒ identical
+		// hash — finding: stale acks regress running).
+		m.mu.Unlock()
+		if m.logger != nil {
+			m.logger.Debug("config manager: ignoring apply result for a superseded or foreign config "+
+				"(not the current desired emit)", "acked_version", cfg.Version)
+		}
+		return
 	}
+	m.applyResultSeen = true
+	desired := m.appliedVersion
+	unverifiable := false
+	switch {
+	case err != nil:
+		// Definitive failure: the applier recovered the previous runtime. Leave
+		// runningFingerprint behind (still the old, running config) so
+		// ReconfigurePending surfaces the divergence.
+		m.lastApplyErr = err
+	case m.desiredHashErr != nil:
+		// Success reported for a desired we cannot fingerprint: we cannot PROVE
+		// the runtime converged on it, so do NOT advance runningFingerprint.
+		// desiredHashErr keeps ReconfigurePending true (fail closed).
+		unverifiable = true
+		m.lastApplyErr = fmt.Errorf("config manager: applied config cannot be fingerprinted, "+
+			"convergence unverifiable: %w", m.desiredHashErr)
+	default:
+		// Success: the current desired is now the running config. cfg IS the
+		// desired pointer, so its content is desiredFingerprint (computed once at
+		// emit); copy it across rather than re-hash.
+		m.runningVersion = cfg.Version
+		m.runningFingerprint = m.desiredFingerprint
+		m.lastApplyErr = nil
+	}
+	running := m.runningVersion
+	m.mu.Unlock()
+
+	if m.logger == nil {
+		return
+	}
+	switch {
+	case err != nil:
+		m.logger.Error("config manager: runtime apply FAILED; desired config is NOT running "+
+			"(desired != applied — traffic served by the previous runtime until re-driven or reverted)",
+			"desired_version", desired, "running_version", running, "error", err)
+	case unverifiable:
+		m.logger.Warn("config manager: runtime reported the config applied, but it cannot be "+
+			"fingerprinted so convergence cannot be verified (treated as still pending)",
+			"running_version", cfg.Version)
+	default:
+		m.logger.Info("config manager: runtime confirmed config applied",
+			"running_version", cfg.Version)
+	}
+}
+
+// configFingerprint returns a stable content fingerprint of the FULL logical
+// config, used to detect whether the running config still matches the desired
+// one WITHOUT relying on the operator-controlled, non-unique BridgeConfig.Version.
+//
+// It hashes two things into one SHA-256, over the REVEALED config (secrets
+// included) so a secret-only edit is detected:
+//
+//  1. the top-level blueprint via encoding/json — structure plus every
+//     non-plugin field (HTTP admin keys, cluster endpoints, routing, ...). This
+//     step DROPS every typed PluginConfig, because the `Config` fields are tagged
+//     json:"-" on the blueprint (ports.blueprint.go);
+//  2. each decoded PluginConfig's options, in a fixed traversal order, so a
+//     change confined to a plugin's options (or a plugin secret) at an unchanged
+//     Version still changes the fingerprint (finding: plugin options omitted).
+//
+// encoding/json emits map keys in sorted order and struct fields in declaration
+// order, so equal content always produces equal bytes. It returns an error when
+// any part cannot be marshalled (e.g. a NaN/Inf reached via ConditionDef.Value
+// any): callers MUST treat that as "cannot fingerprint" and fail closed — never
+// substitute a zero fingerprint, which would falsely compare equal to another
+// unhashable config and read as converged (finding: marshal error collapses to a
+// zero fingerprint).
+func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
+	var out [sha256.Size]byte
+	if cfg == nil {
+		return out, nil
+	}
+	h := sha256.New()
+	enc := json.NewEncoder(h)
+	if err := enc.Encode(shared.RevealSecrets(cfg)); err != nil {
+		return out, fmt.Errorf("config manager: fingerprint bridge config: %w", err)
+	}
+	if err := forEachPluginConfig(cfg, func(pc ports.PluginConfig) error {
+		// enc.Encode writes each value followed by a newline, so the ordered
+		// stream of plugin payloads is self-delimiting. A nil PluginConfig encodes
+		// as "null", preserving its structural position.
+		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+			return fmt.Errorf("config manager: fingerprint plugin config: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	h.Sum(out[:0])
+	return out, nil
+}
+
+// forEachPluginConfig visits every decoded PluginConfig on the blueprint in a
+// fixed, deterministic order (matching the parser's wire projection). The order
+// is part of the fingerprint contract: two configs that differ only in the
+// position of an otherwise-identical plugin option must fingerprint differently.
+func forEachPluginConfig(cfg *ports.BridgeConfig, fn func(ports.PluginConfig) error) error {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
+		if sc == nil {
+			continue
+		}
+		if err := fn(sc.Config); err != nil {
+			return err
+		}
+	}
+	for i := range cfg.Sessions {
+		if err := fn(cfg.Sessions[i].Config); err != nil {
+			return err
+		}
+	}
+	for i := range cfg.Receivers {
+		if err := fn(cfg.Receivers[i].Config); err != nil {
+			return err
+		}
+		for j := range cfg.Receivers[i].Topics {
+			if err := fn(cfg.Receivers[i].Topics[j].Config); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range cfg.Senders {
+		if err := fn(cfg.Senders[i].Config); err != nil {
+			return err
+		}
+	}
+	for i := range cfg.Bindings {
+		if err := fn(cfg.Bindings[i].Config); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordAppliedVersion stamps the DESIRED config of a just-emitted merged config
+// and logs any CONTENT change so cross-instance divergence is observable. cfg is
+// the config the manager has committed to downstream (Load return / watch emit).
+// This records what the manager ASKED to be applied, not what the runtime has
+// confirmed running — see NotifyApplyResult / RunningVersion for the latter. The
+// desired fingerprint is keyed on content, so a change that reuses the operator
+// Version still supersedes the previous desired.
+func (m *Manager) recordAppliedVersion(cfg *ports.BridgeConfig) {
+	if cfg == nil {
+		return
+	}
+	fp, hashErr := configFingerprint(cfg)
+	m.mu.Lock()
+	prevVersion := m.appliedVersion
+	prevHashErr := m.desiredHashErr
+	m.appliedVersion = cfg.Version
+	// Track the EXACT emitted pointer so NotifyApplyResult can correlate its ack
+	// by identity (distinguishes an A→B→A flap that content hashing cannot).
+	m.desiredConfig = cfg
+	m.desiredHashErr = hashErr
+	var contentChanged bool
+	switch {
+	case hashErr != nil:
+		// Cannot fingerprint this desired (e.g. a NaN/Inf in a ConditionDef.Value).
+		// Treat it as a new, unconfirmable desired: ReconfigurePending short-circuits
+		// on desiredHashErr, so leave the (now-stale) fingerprint untouched.
+		contentChanged = true
+	default:
+		contentChanged = prevHashErr != nil || fp != m.desiredFingerprint
+		m.desiredFingerprint = fp
+	}
+	if contentChanged {
+		// A newly-emitted desired config supersedes the previous one, so an
+		// error recorded for that prior desired no longer describes the CURRENT
+		// desired's state (which has not been applied yet). Clear it so
+		// LastApplyError only ever reflects the current desired.
+		m.lastApplyErr = nil
+	}
+	m.mu.Unlock()
+	if hashErr != nil {
+		if m.logger != nil {
+			m.logger.Error("config manager: desired config cannot be fingerprinted; "+
+				"convergence is unverifiable (treated as permanently pending until replaced)",
+				"desired_version", cfg.Version, "error", hashErr)
+		}
+		return
+	}
+	if m.logger == nil || !contentChanged {
+		return
+	}
+	// Log on any CONTENT change, INCLUDING one that leaves BridgeConfig.Version
+	// unchanged — exactly the case a Version-keyed check would miss.
+	m.logger.Info("config manager: desired config changed (emitted downstream); "+
+		"compare across instances to detect cluster divergence "+
+		"(reconfiguration is per-instance, not cluster-coordinated)",
+		"previous_version", prevVersion, "desired_version", cfg.Version,
+		"version_unchanged", prevVersion == cfg.Version)
 }
 
 func (m *Manager) watchLoop(
@@ -427,13 +783,21 @@ func (m *Manager) watchLoop(
 			m.mu.Unlock()
 			m.clearWatchError(ev.name)
 
+			// Record the desired config BEFORE publishing it. The consumer
+			// (applier/supervisor) may apply and acknowledge the moment it reads
+			// from out; NotifyApplyResult correlates that ack against the desired
+			// fingerprint, so the fingerprint MUST already be stamped or the ack
+			// would be mistaken for a superseded config and dropped. Recording
+			// first also means "desired" is set no later than the config becomes
+			// observable downstream.
+			m.recordAppliedVersion(merged)
+
 			// Drain stale config so the consumer always gets the latest.
 			select {
 			case <-out:
 			default:
 			}
 			out <- merged
-			m.recordAppliedVersion(merged)
 		}
 	}
 }

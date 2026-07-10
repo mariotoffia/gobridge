@@ -304,3 +304,163 @@ func testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t *testing.T, store ports.
 		}
 	}
 }
+
+// testClaimRejectsZeroToken pins the valid-token requirement on Claim: a
+// zero-value or otherwise invalid LeaseToken (empty owner OR zero version)
+// must be rejected with shared.ErrStaleFencingToken and must NOT claim any
+// record, so a miswired or buggy drainer cannot bypass lease ownership and
+// claim work without a real lease. The pending record is left untouched, so a
+// subsequent VALID token still wins it.
+func testClaimRejectsZeroToken(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-zerotok"
+	r := makeRecord(t, "zerotok-1", "env-zerotok-1", "bind-zerotok-1", "sess-zerotok", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	invalid := []struct {
+		name  string
+		token persistence.LeaseToken
+	}{
+		{"zero_value", persistence.LeaseToken{}},
+		{"empty_owner", persistence.LeaseToken{Version: 1}},
+		{"zero_version", persistence.LeaseToken{Owner: "owner-zerotok"}},
+	}
+	for _, tc := range invalid {
+		claimed, err := store.Claim(ctx, pk, tc.token, 10)
+		if !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("%s: expected ErrStaleFencingToken claiming with invalid token %+v, got %v", tc.name, tc.token, err)
+		}
+		if len(claimed) != 0 {
+			t.Fatalf("%s: invalid token must claim 0 records, got %d", tc.name, len(claimed))
+		}
+	}
+
+	// The record was never claimed by any invalid token, so a valid token
+	// still wins the still-pending record.
+	valid := persistence.LeaseToken{Version: 1, Owner: "owner-zerotok"}
+	claimed, err := store.Claim(ctx, pk, valid, 10)
+	if err != nil {
+		t.Fatalf("valid claim after rejected zero tokens: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID() != "zerotok-1" {
+		t.Fatalf("valid token must claim the still-pending record, got %d records", len(claimed))
+	}
+}
+
+// testCompleteRejectsZeroToken pins the valid-token requirement on Complete:
+// the completion fence is owner+version+status, so a zero-value / invalid
+// LeaseToken (empty owner or zero version) can never match a real claim and is
+// rejected with shared.ErrStaleFencingToken, leaving the record claimed so its
+// rightful owner can still complete it.
+func testCompleteRejectsZeroToken(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-zerocomp"
+	r := makeRecord(t, "zerocomp-1", "env-zerocomp-1", "bind-zerocomp-1", "sess-zerocomp", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	owner := persistence.LeaseToken{Version: 3, Owner: "owner-zerocomp"}
+	if _, err := store.Claim(ctx, pk, owner, 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	invalid := []struct {
+		name  string
+		token persistence.LeaseToken
+	}{
+		{"zero_value", persistence.LeaseToken{}},
+		{"empty_owner", persistence.LeaseToken{Version: 3}},
+		{"zero_version", persistence.LeaseToken{Owner: "owner-zerocomp"}},
+	}
+	for _, tc := range invalid {
+		if err := store.Complete(ctx, []string{"zerocomp-1"}, tc.token); !errors.Is(err, shared.ErrStaleFencingToken) {
+			t.Fatalf("%s: expected ErrStaleFencingToken completing with invalid token %+v, got %v", tc.name, tc.token, err)
+		}
+	}
+
+	// Left claimed by the rightful owner, so it can still complete.
+	if err := store.Complete(ctx, []string{"zerocomp-1"}, owner); err != nil {
+		t.Fatalf("rightful complete after rejected zero tokens: %v", err)
+	}
+}
+
+// seedZeroClaimed attempts to persist a "zero-claimed" outbox row: Status ==
+// Claimed with an INVALID stored claim identity (claimed_by == "" AND
+// claim_version == 0). This models the corrupt / pre-fencing row a zero-value
+// LeaseToken{} would fraudulently MATCH under a naive owner+version+status
+// fence. It is seeded through RehydrateFromSnapshot + Persist because Claim
+// (correctly) refuses to ever produce it.
+//
+// It returns the row's partition key and whether the seed actually took (ok).
+// Both durable backends force-reset status to 'pending' on Persist
+// (sqliteoutbox and dynamodboutbox hardcode the inserted status), and the port
+// exposes no other snapshot-injection path, so on those backends a zero-claimed
+// row is NOT representable and ok is false — the caller must skip. The
+// in-memory reference backend round-trips the snapshot verbatim (ok true), so
+// the exploit is exercised there against the aggregate-routed transition.
+func seedZeroClaimed(t *testing.T, store ports.OutboxStore, id, sessionID string) (string, bool) {
+	t.Helper()
+	base := makeRecord(t, id, "env-"+id, "bind-"+id, sessionID, "route-1", time.Time{})
+	snap := base.PersistenceSnapshot()
+	snap.Status = persistence.OutboxClaimed
+	snap.ClaimedBy = ""   // invalid: a real claim always has a non-empty owner
+	snap.ClaimVersion = 0 // invalid: a real claim always has a non-zero version
+	seeded := persistence.RehydrateFromSnapshot(snap)
+	if err := store.Persist(context.Background(), []*persistence.OutboxRecord{seeded}); err != nil {
+		t.Fatalf("seed zero-claimed %s: %v", id, err)
+	}
+	pk := persistence.OutboxPartitionKey(sessionID, "bind-"+id)
+	// Verify the Claimed status survived Persist. If the row surfaces as
+	// pending, this backend force-reset the status and cannot represent the
+	// precondition through the port.
+	pending, err := store.QueryPending(context.Background(), pk, 100)
+	if err != nil {
+		t.Fatalf("seed verify query %s: %v", id, err)
+	}
+	for _, pr := range pending {
+		if pr.ID() == id {
+			return pk, false
+		}
+	}
+	return pk, true
+}
+
+// testCompleteRejectsZeroClaimSnapshot pins that Complete rejects a zero-claimed
+// row — a persisted record whose stored claim identity is itself invalid
+// (claimed_by == "" AND claim_version == 0) — when presented with a zero-value
+// LeaseToken{}. This is the exploit a mere owner+version fence misses: the zero
+// token MATCHES the zero-claimed row's metadata. The store MUST reject the
+// completion with shared.ErrStaleFencingToken and leave the row unmutated,
+// independent of the stored row's shape. Stores that route Complete through the
+// OutboxRecord aggregate inherit the aggregate's self-guard and pass; a store
+// that completes purely via raw SQL / conditional write against stored metadata
+// must add an explicit invalid-token guard. Backends that cannot represent a
+// zero-claimed row through the port (durable stores force-reset status on
+// Persist) skip — see seedZeroClaimed.
+func testCompleteRejectsZeroClaimSnapshot(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk, ok := seedZeroClaimed(t, store, "zcs-1", "sess-zcs")
+	if !ok {
+		t.Skip("backend force-resets status to pending on Persist; a zero-claimed row is not representable through the port (aggregate-routed stores are covered by the OutboxRecord self-guard; raw-SQL/DDB stores must add an explicit invalid-token guard on Complete)")
+	}
+
+	if err := store.Complete(ctx, []string{"zcs-1"}, persistence.LeaseToken{}); !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken completing a zero-claimed row with a zero token, got %v", err)
+	}
+
+	// Non-mutation probe: the row must still be Claimed (not terminally
+	// Completed). A fresh VALID high-version token preempts the stale
+	// claim_version 0 via the mandatory version-older reclaim rule and wins the
+	// row back — only possible if Complete left it Claimed.
+	probe := persistence.LeaseToken{Version: 9, Owner: "probe-zcs"}
+	claimed, err := store.Claim(ctx, pk, probe, 10)
+	if err != nil {
+		t.Fatalf("reclaim probe after rejected complete: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID() != "zcs-1" {
+		t.Fatalf("zero-claimed row must remain claimable (unmutated) after rejected complete; got %d records", len(claimed))
+	}
+}

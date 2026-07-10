@@ -68,8 +68,30 @@ senders:
 | `poll_backoff_max` | duration | `30s` | Maximum delay between poll retries (must be >= `poll_backoff_initial`) |
 | `poll_backoff_multiplier` | float | `2.0` | Exponential growth factor for the poll backoff (must be >= 1.0) |
 | `credentials_uri` | string | -- | URI resolved by the bridge credential store at build time |
+| `poison_max_receives` | int | `0` (disabled) | Adapter-enforced backstop for malformed ("poison") messages the receiver cannot convert. When `> 0` and a poison message's `ApproximateReceiveCount` reaches it, the receiver **deletes** the message to break an otherwise-unbounded redelivery loop, emitting `SQSPoisonDropped`. The delete **drops the message (no DLQ copy)**, so it is subject to two enforced guards (below): it must be `>= 2` unless `poison_drop_without_dlq` is set, and it must be **strictly greater** than any native `maxReceiveCount` (verified at startup) so native redrive — which *preserves* the payload — always wins. A native redrive policy remains the preferred loss-preventing mechanism. |
+| `poison_drop_without_dlq` | bool | `false` | Explicit opt-in for the single most destructive backstop setting, `poison_max_receives: 1` (delete on the **first** conversion failure — no redelivery, no DLQ copy). Without it, `poison_max_receives == 1` is rejected at config time. It does **not** relax the startup guard that rejects a backstop preempting an existing native redrive policy. |
 
 Either `queue_url` or `queue_name` must be provided.
+
+> **Startup redrive validation (enforced).** On startup the receiver performs a
+> best-effort `GetQueueAttributes` read of the source queue's native redrive
+> policy (`maxReceiveCount` → DLQ):
+>
+> - **Backstop off** (`poison_max_receives: 0`): a queue with **no** redrive
+>   policy is surfaced as the `SQSMissingRedrivePolicy` metric and a warning;
+>   a queue with one is silent.
+> - **Backstop on** (`poison_max_receives > 0`): the receiver **refuses to
+>   start** (`INVALID_CONFIG`) when a native redrive policy is readable and
+>   `poison_max_receives <= maxReceiveCount`. In that range the adapter's
+>   destructive `DeleteMessage` fires *before* SQS can move the message to the
+>   DLQ, so it would **silently pre-empt the DLQ and lose the payload**. Raise
+>   `poison_max_receives` above `maxReceiveCount`, or set it to `0`.
+>
+> The check is **permission-gated and never fails startup for a permission
+> reason**: a missing `sqs:GetQueueAttributes` grant degrades to a log (a
+> loud warning when the backstop is on, since the destructive setting could
+> not be verified against native redrive). It only fails startup for the
+> definitive `poison_max_receives <= maxReceiveCount` conflict above.
 
 ## Sender Options Reference
 
@@ -241,10 +263,30 @@ so neither can be injected through an attribute.
   (`correlation-id`, `causation-id`, `tenant-id`, `forwarded-*`) sacrificed
   first. FIFO ordering/dedup ride the native `MessageGroupId` /
   `MessageDeduplicationId` fields and never consume an attribute slot.
-- **Batch error classification.** SQS batch send failures distinguish between
-  server faults (transient, retriable) and sender faults (permanent, not
-  retriable). Messages with malformed payloads are classified as
-  `ErrorRejected` and routed to DLQ instead of being retried indefinitely.
+- **Batch error classification.** `SendMessageBatch` per-entry failures classify
+  the AWS error `Code` with the SAME policy as single-send errors **before**
+  falling back to the sender-fault verdict: KMS conditions (`KmsAccessDenied` →
+  transient auth, `KmsThrottled` → throttled, `KmsDisabled`/`KmsInvalidState`/… →
+  not-authorized) and throttling / service faults (`ThrottlingException`,
+  `OverLimit`, `ServiceUnavailable`, `InternalError`) stay **retriable**. Only a
+  code outside that set falls back to the fault flag — a caller-malformed request
+  (`SenderFault=true`) is `ErrorRejected` and routed to DLQ, a server fault is
+  transient. This keeps a per-entry retryable target outage (a KMS grant still
+  propagating, request throttling) from becoming a terminal reject that costs the
+  source its retry.
+- **Poison-message handling.** A message the receiver cannot convert is dropped
+  **without** a `DeleteMessage` by default, so the source queue's native redrive
+  policy owns it (moving it to a DLQ *preserves* the payload). Startup validation
+  surfaces a queue with no redrive policy (`SQSMissingRedrivePolicy` + warning;
+  permission-gated, never fails startup), and the optional `poison_max_receives`
+  backstop deletes a poison message once its `ApproximateReceiveCount` reaches the
+  bound (`SQSPoisonDropped`) to break an unbounded redelivery loop where a native
+  redrive policy cannot be configured. Because that delete is **destructive** (no
+  DLQ copy), two guards prevent it from silently causing data loss: it must be
+  `>= 2` unless `poison_drop_without_dlq` opts in, and startup **refuses to
+  start** (`INVALID_CONFIG`) when a readable native `maxReceiveCount >=
+  poison_max_receives` — otherwise the backstop would fire first and pre-empt the
+  DLQ. See the Receiver Options Reference.
 - **Adaptive auto-extend ticker.** When `Extend()` changes the SQS visibility
   timeout, the auto-extend ticker interval updates accordingly, preventing
   excessive or insufficient extend calls.

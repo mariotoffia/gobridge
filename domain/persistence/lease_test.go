@@ -57,3 +57,27 @@ func TestLeaseInfo_Fields(t *testing.T) {
 		t.Fatalf("ExpiresAt: got %v, want %v", info.ExpiresAt, exp)
 	}
 }
+
+// TestLeaseToken_Valid validates the fencing-token validity rule: a usable
+// token names a non-empty Owner AND a non-zero Version. A zero-value token,
+// an empty owner, or a zero version is NEVER valid.
+func TestLeaseToken_Valid(t *testing.T) {
+	tests := []struct {
+		name  string
+		token persistence.LeaseToken
+		want  bool
+	}{
+		{"zero_value", persistence.LeaseToken{}, false},
+		{"empty_owner", persistence.LeaseToken{Version: 1}, false},
+		{"zero_version", persistence.LeaseToken{Owner: "owner"}, false},
+		{"owner_and_version", persistence.LeaseToken{Version: 1, Owner: "owner"}, true},
+		{"high_version", persistence.LeaseToken{Version: 42, Owner: "owner"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.token.Valid(); got != tc.want {
+				t.Fatalf("LeaseToken%+v.Valid() = %v, want %v", tc.token, got, tc.want)
+			}
+		})
+	}
+}

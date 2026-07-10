@@ -11,7 +11,8 @@ import (
 
 func TestCredentialsToConnection_ConnectionString(t *testing.T) {
 	existing := ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://old/;...")}
-	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("", "Endpoint=sb://new/;..."), nil))
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("", "Endpoint=sb://new/;..."), nil))
+	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "Endpoint=sb://new/;...", out.ConnectionString.Reveal())
 	require.Empty(t, out.ClientID)
@@ -23,7 +24,8 @@ func TestCredentialsToConnection_AADClientSecret(t *testing.T) {
 		TenantID:  "tenant-1",
 		ClientID:  "old-client",
 	}
-	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("new-client", "new-secret"), nil))
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("new-client", "new-secret"), nil))
+	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "new-client", out.ClientID)
 	require.Equal(t, "new-secret", out.ClientSecret.Reveal())
@@ -33,8 +35,122 @@ func TestCredentialsToConnection_AADClientSecret(t *testing.T) {
 
 func TestCredentialsToConnection_NilSet_NoChange(t *testing.T) {
 	existing := ConnectionConfig{ConnectionString: shared.NewSecret("endpoint")}
-	_, changed := credentialsToConnection(existing, nil)
+	_, changed, err := credentialsToConnection(existing, nil)
+	require.NoError(t, err)
 	require.False(t, changed)
+}
+
+// TestCredentialsToConnection_ClientSecretClearsManagedIdentity pins
+// HIGH-2: rotating from managed identity to an AAD client secret MUST
+// clear UseManagedIdentity. The credential builder (rawNewAzClient)
+// evaluates managed identity BEFORE client-secret auth, so a lingering
+// flag would ignore the rotated secret and keep authenticating as the
+// wrong identity.
+//
+// Mutation: drop `out.UseManagedIdentity = false` from the client-secret
+// branch. Then UseManagedIdentity stays true and the assertion FAILS.
+func TestCredentialsToConnection_ClientSecretClearsManagedIdentity(t *testing.T) {
+	existing := ConnectionConfig{
+		Namespace:          "contoso.servicebus.windows.net",
+		TenantID:           "tenant-1",
+		UseManagedIdentity: true,
+	}
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("app-client", "app-secret"), nil))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "app-client", out.ClientID)
+	require.Equal(t, "app-secret", out.ClientSecret.Reveal())
+	require.False(t, out.UseManagedIdentity,
+		"managed identity must be cleared so the rotated client secret takes effect (HIGH-2)")
+	require.Equal(t, "tenant-1", out.TenantID, "tenant preserved")
+}
+
+// TestCredentialsToConnection_ManagedIdentityFlagStuck_ClearedWhenSecretMatches
+// covers the degenerate state where the ClientID/secret already equal the
+// rotated material but UseManagedIdentity is still (wrongly) set. Including
+// the flag in the change guard forces a rebuild so the contradictory flag
+// cannot persist and silently override the client secret.
+func TestCredentialsToConnection_ManagedIdentityFlagStuck_ClearedWhenSecretMatches(t *testing.T) {
+	existing := ConnectionConfig{
+		Namespace:          "contoso.servicebus.windows.net",
+		TenantID:           "tenant-1",
+		ClientID:           "app-client",
+		ClientSecret:       shared.NewSecret("app-secret"),
+		UseManagedIdentity: true, // contradictory leftover
+	}
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("app-client", "app-secret"), nil))
+	require.NoError(t, err)
+	require.True(t, changed, "a stuck UseManagedIdentity flag alone must force the client-secret switch")
+	require.False(t, out.UseManagedIdentity)
+	require.Equal(t, "app-client", out.ClientID)
+	require.Equal(t, "app-secret", out.ClientSecret.Reveal())
+}
+
+// TestCredentialsToConnection_UsernameWithoutSecret_Rejected pins the
+// HIGH-2 follow-up: a rotation credential that supplies a username but NO
+// secret is malformed (client-secret auth needs both; the connection-
+// string path needs an empty username). It must be rejected with
+// shared.ErrInvalidPayload and MUST NOT clear UseManagedIdentity — the
+// old behaviour stored a zero ClientSecret, cleared the flag, and let
+// rawNewAzClient silently fall through to DefaultAzureCredential.
+//
+// Mutation: fold the `case Password().IsZero()` guard back into the
+// client-secret `default` branch. Then err is nil, UseManagedIdentity is
+// cleared, and every assertion here FAILS.
+func TestCredentialsToConnection_UsernameWithoutSecret_Rejected(t *testing.T) {
+	existing := ConnectionConfig{
+		Namespace:          "contoso.servicebus.windows.net",
+		TenantID:           "tenant-1",
+		UseManagedIdentity: true,
+	}
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("app-client", ""), nil))
+	require.Error(t, err)
+	be, ok := shared.AsBridgeError(err)
+	require.True(t, ok)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+	require.False(t, changed, "a malformed credential rotates nothing")
+	require.True(t, out.UseManagedIdentity, "managed identity must NOT be cleared by a secret-less username")
+	require.Empty(t, out.ClientID, "no client-secret material is stored")
+	require.True(t, out.ClientSecret.IsZero())
+}
+
+// TestCredentialsToConnection_UsernameWithSecret_PrefersClientSecret is
+// test (c): a username WITH a non-empty secret takes the client-secret
+// branch (store ClientID/secret, clear MI, no error) — it must NOT be
+// swept into the secret-less rejection.
+//
+// Mutation: drop the `.IsZero()` qualifier so ANY username hits the
+// reject branch. Then this returns an error and the assertions FAIL.
+func TestCredentialsToConnection_UsernameWithSecret_PrefersClientSecret(t *testing.T) {
+	existing := ConnectionConfig{
+		Namespace:          "contoso.servicebus.windows.net",
+		TenantID:           "tenant-1",
+		UseManagedIdentity: true,
+	}
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(pwCred("app-client", "app-secret"), nil))
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "app-client", out.ClientID)
+	require.Equal(t, "app-secret", out.ClientSecret.Reveal())
+	require.False(t, out.UseManagedIdentity, "a valid client secret clears managed identity (HIGH-2)")
+}
+
+// TestApplyCredentials_Sender_UsernameWithoutSecret_Rejected proves the
+// malformed-credential rejection surfaces through the public rotation API
+// (ErrInvalidPayload) rather than silently drifting the sender's auth
+// identity to DefaultAzureCredential.
+func TestApplyCredentials_Sender_UsernameWithoutSecret_Rejected(t *testing.T) {
+	s, err := NewSender(SenderConfig{
+		QueueName:  "q",
+		Connection: ConnectionConfig{Namespace: "contoso.servicebus.windows.net", UseManagedIdentity: true},
+	})
+	require.NoError(t, err)
+
+	err = s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(pwCred("app-client", ""), nil))
+	require.Error(t, err)
+	be, ok := shared.AsBridgeError(err)
+	require.True(t, ok)
+	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
 }
 
 // TestApplyCredentials_Sender_NilSet_Rejected pins the boundary check
@@ -87,7 +203,8 @@ func TestApplyCredentials_NoChange_ReturnsNil(t *testing.T) {
 // rebuilds tls.Config from the new PEM material.
 func TestCredentialsToConnection_TLSMaterial_ChangesPEMFields(t *testing.T) {
 	existing := ConnectionConfig{ConnectionString: shared.NewSecret("Endpoint=sb://x/;...")}
-	out, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
+	out, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
+	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "--- CERT ---", out.ClientCertPEM.Reveal())
 	require.Equal(t, "--- KEY ---", out.ClientKeyPEM.Reveal())
@@ -107,14 +224,16 @@ func TestCredentialsToConnection_TLSMaterial_Dedup(t *testing.T) {
 		ClientCertPEM:    shared.NewSecret("--- CERT ---"),
 		ClientKeyPEM:     shared.NewSecret("--- KEY ---"),
 	}
-	_, changed := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
+	_, changed, err := credentialsToConnection(existing, connectivity.NewCredentialSet(nil, tlsMat("--- CERT ---", "--- KEY ---", []string{"--- CA ---"}, false)))
+	require.NoError(t, err)
 	require.False(t, changed)
 }
 
 // TestCredentialsToConnection_MultiCA_Joined documents how multiple
 // CA PEMs are folded into a single CaPEM bundle.
 func TestCredentialsToConnection_MultiCA_Joined(t *testing.T) {
-	out, changed := credentialsToConnection(ConnectionConfig{}, connectivity.NewCredentialSet(nil, tlsMat("", "", []string{"ca1", "ca2"}, false)))
+	out, changed, err := credentialsToConnection(ConnectionConfig{}, connectivity.NewCredentialSet(nil, tlsMat("", "", []string{"ca1", "ca2"}, false)))
+	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "ca1\nca2", out.CaPEM.Reveal())
 }

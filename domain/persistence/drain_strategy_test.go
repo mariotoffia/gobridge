@@ -1,6 +1,7 @@
 package persistence_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -295,5 +296,115 @@ func TestAdaptiveBackoff_Reset(t *testing.T) {
 	got := ab.NextInterval(0)
 	if !withinJitter(got, 200*time.Millisecond) {
 		t.Errorf("after Reset + empty: got %v, want 200ms ±25%% (min * multiplier)", got)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Jitter overflow regression
+//
+// A parseable-but-absurd interval (e.g. a duration near math.MaxInt64) must
+// never make applyJitter overflow time.Duration to a NEGATIVE value: a
+// negative interval makes Clock.After/time.After fire immediately, so an idle
+// drainer spins hot instead of backing off. Both strategies must saturate.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestFixedPoll_MaxDurationNoOverflow proves FixedPoll never returns a
+// negative (overflowed) interval even when constructed with the maximum
+// representable duration. Runs many iterations because the jitter sign is
+// random; a broken +25% would overflow on any positive-jitter draw.
+func TestFixedPoll_MaxDurationNoOverflow(t *testing.T) {
+	fp := persistence.NewFixedPoll(time.Duration(math.MaxInt64))
+	for i := 0; i < 2000; i++ {
+		if got := fp.NextInterval(0); got < 0 {
+			t.Fatalf("iter %d: NextInterval returned negative interval %v (jitter overflow)", i, got)
+		}
+	}
+}
+
+// TestAdaptiveBackoff_MaxDurationNoOverflow proves AdaptiveBackoff never
+// returns a negative (overflowed) interval when constructed with max-duration
+// bounds AND an enormous multiplier: the backoff multiply and the jitter both
+// have to saturate rather than wrap. Exercises both the empty-poll (backoff)
+// and records-found (reset) paths.
+func TestAdaptiveBackoff_MaxDurationNoOverflow(t *testing.T) {
+	ab := persistence.NewAdaptiveBackoff(time.Duration(math.MaxInt64), time.Duration(math.MaxInt64), 1e18)
+	for i := 0; i < 2000; i++ {
+		if got := ab.NextInterval(0); got < 0 {
+			t.Fatalf("iter %d: backoff NextInterval returned negative interval %v (overflow)", i, got)
+		}
+		if got := ab.NextInterval(1); got < 0 {
+			t.Fatalf("iter %d: reset NextInterval returned negative interval %v (overflow)", i, got)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Jitter low-end truncation regression
+//
+// A sub-4ns interval must never be jittered DOWN to zero: for d = 1ns the
+// jittered float (0.75..1.25) truncates toward zero on the time.Duration
+// conversion, yielding 0 roughly half the time. Clock.After(0) fires
+// immediately, so a drainer configured with a tiny poll interval spins hot at
+// the LOW end exactly like the overflow case does at the high end. applyJitter
+// must floor any positive-input result at a single nanosecond.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestFixedPoll_SubResolutionNeverZero proves a 1ns FixedPoll never yields a
+// zero interval. Without the low-end floor roughly half of these draws
+// truncate to time.Duration(0); the loop count makes a regression virtually
+// certain to trip.
+func TestFixedPoll_SubResolutionNeverZero(t *testing.T) {
+	fp := persistence.NewFixedPoll(1 * time.Nanosecond)
+	for i := 0; i < 2000; i++ {
+		if got := fp.NextInterval(0); got < time.Nanosecond {
+			t.Fatalf("iter %d: NextInterval returned %v, want >= 1ns (low-end truncation to zero hot-spins)", i, got)
+		}
+	}
+}
+
+// TestAdaptiveBackoff_SubResolutionNeverZero proves the adaptive strategy never
+// yields a zero interval at sub-nanosecond-adjacent bounds, on BOTH the
+// records-found reset path (min = 1ns) and the empty-poll backoff path.
+func TestAdaptiveBackoff_SubResolutionNeverZero(t *testing.T) {
+	ab := persistence.NewAdaptiveBackoff(1*time.Nanosecond, 4*time.Nanosecond, 2.0)
+	for i := 0; i < 2000; i++ {
+		if got := ab.NextInterval(1); got < time.Nanosecond { // reset -> applyJitter(1ns)
+			t.Fatalf("iter %d: reset NextInterval returned %v, want >= 1ns", i, got)
+		}
+		if got := ab.NextInterval(0); got < time.Nanosecond { // backoff -> applyJitter(small)
+			t.Fatalf("iter %d: backoff NextInterval returned %v, want >= 1ns", i, got)
+		}
+	}
+}
+
+// TestAdaptiveBackoff_NonFiniteMultiplier proves a non-finite multiplier is
+// rejected at construction and replaced with the default. NaN in particular
+// slips past a bare `multiplier <= 1.0` (every NaN comparison is false); left
+// unguarded, NextInterval would convert float64(current)*NaN into a garbage
+// (typically hugely negative) time.Duration and hot-spin the drainer. +Inf and
+// -Inf are rejected too. Each case must also produce a sane, positive interval.
+func TestAdaptiveBackoff_NonFiniteMultiplier(t *testing.T) {
+	tests := []struct {
+		name       string
+		multiplier float64
+	}{
+		{"nan", math.NaN()},
+		{"pos_inf", math.Inf(1)},
+		{"neg_inf", math.Inf(-1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ab := persistence.NewAdaptiveBackoff(100*time.Millisecond, 10*time.Second, tt.multiplier)
+			if ab.Multiplier != persistence.DefaultAdaptiveBackoffMultiplier {
+				t.Fatalf("Multiplier = %v, want default %v", ab.Multiplier, persistence.DefaultAdaptiveBackoffMultiplier)
+			}
+			// End-to-end: the backoff path must stay positive rather than
+			// converting a non-finite product into a negative duration.
+			for i := 0; i < 8; i++ {
+				if got := ab.NextInterval(0); got <= 0 {
+					t.Fatalf("iter %d: NextInterval returned non-positive %v with %s multiplier", i, got, tt.name)
+				}
+			}
+		})
 	}
 }

@@ -188,11 +188,41 @@ rest with KMS.
 
 1. **JSON with `username`/`password` fields** -- detected by `username` or
    `user` key presence.
-2. **JSON with TLS fields** -- detected by `certPem` or `cert` key presence.
-3. **Simple format** -- `username:password` plain text.
+2. **JSON opaque `secret`** -- a password-only credential with **no username**,
+   declared by a `"secret"` type token (aliases `"opaque"`, `"sas"`) with the
+   whole value in a `secret` (or `password`) field. This is the shape an Azure
+   Service Bus SAS connection string takes at runtime
+   (`PasswordCredential{Username:"", Password:<connection string>}`). The opaque
+   shape is selected **only when the document carries no `username`/`user`
+   field**; a secret/opaque/sas token that appears *alongside* a username parses
+   as an ordinary username/password credential instead. That preserves the
+   behaviour of readers predating the opaque shape (which ignored the token and
+   parsed such documents as username/password), so credential sets already
+   stored in SSM stay readable after upgrade. The secret value must be
+   non-blank. Example:
+   `{"type":"secret","secret":"Endpoint=sb://…;SharedAccessKeyName=…;SharedAccessKey=…"}`.
+3. **JSON with TLS fields** -- detected by `certPem` or `cert` key presence. A
+   CA-only bundle (server verification, no mutual TLS) is accepted; a
+   `certPem`/`keyPem` field that is present but whitespace-only is normalised to
+   empty so it never reaches a transport as a blank-but-non-empty key pair.
+4. **Simple format** -- `username:password` plain text (both parts required;
+   opaque secrets must use the JSON `secret` shape above, since a connection
+   string itself contains colons).
 
-A `type` field (`"password"`, `"tls"`, `"certificate"`) can disambiguate when
-both key sets are present.
+A `type` field (`"password"`, `"secret"`, `"tls"`, `"certificate"`, or a
+`+`-combined token such as `"password+tls"`) can disambiguate when more than one
+key set is present.
+
+### Write validation (Create / Update)
+
+The admin write path serializes as JSON and then **round-trips the payload back
+through the reader** before calling `PutParameter`. A write that would produce a
+value the reader cannot parse — an empty set, a torn TLS half (a certificate
+without its key, or vice-versa), an empty password, or a **whitespace-only
+opaque secret** — is rejected with `shared.ErrInvalidPayload` and never reaches
+SSM. This guarantees write format == read format, so a single bad admin write
+can never persist a value that every later `Get` or rotation poll would fail to
+parse (a self-inflicted credential outage).
 
 ### Repository setup
 

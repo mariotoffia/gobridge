@@ -56,7 +56,12 @@ func TestWatcher_WithBaselineHash_EmitsChangeWrittenBetweenLoadAndWatch(t *testi
 	defer w.Stop()
 
 	waitForTicker(t, fc)
-	fc.Advance(100 * time.Millisecond)
+	fc.Advance(100 * time.Millisecond) // poll tick detects the between-Load-and-Watch change
+
+	// Stability gate (HIGH-2): the change is applied only after a confirming
+	// re-read one settle window (debounce) later returns the same bytes.
+	waitForTimer(t, fc)
+	fc.Advance(w.debounce)
 
 	select {
 	case got := <-ch:

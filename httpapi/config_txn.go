@@ -57,6 +57,15 @@ var (
 	// errConfigApplyFailed so the handler reports rolled_back rather than
 	// committed_not_applied.
 	errConfigRolledBack = errors.New("config apply failed; on-disk config rolled back to previous version")
+	// errConfigStoreNotCAS signals that a durable commit was REFUSED because the
+	// configured ConfigStore does not implement ports.ConditionalConfigStore
+	// (compare-and-swap) AND the operator has not asserted single-writer
+	// (Config.ConfigSingleWriter). A plain last-writer-wins Save on a shared
+	// non-CAS backend can silently clobber a peer admin instance's acknowledged
+	// commit, so the durable write is refused rather than performed silently
+	// (see [HIGH-1]). It is a deployment-configuration condition, not a
+	// client-correctable one: either wire a CAS store or assert single-writer.
+	errConfigStoreNotCAS = errors.New("config commit refused: non-CAS store is cluster-unsafe")
 )
 
 // ConfigTransaction represents an in-progress configuration change.
@@ -93,6 +102,18 @@ type configTxnManager struct {
 	clk            clock.Clock
 	timeoutTimer   clock.Timer
 	timeoutCancel  chan struct{}
+	// singleWriter records the operator's assertion that THIS process is the
+	// sole writer of the durable config store. It gates the non-CAS durable
+	// commit path in commitDurable: a store that does not implement
+	// ports.ConditionalConfigStore can be committed to with a plain (last-
+	// writer-wins) Save ONLY when there is a single writer that cannot clobber a
+	// peer's acknowledged commit; otherwise the commit is refused
+	// (errConfigStoreNotCAS) rather than silently doing LWW. newTxnManager
+	// defaults it to true for the direct, in-process, single-manager
+	// construction used by tests and embedders; Server.New overrides it from
+	// Config.ConfigSingleWriter so a real deployment fails closed on a shared
+	// non-CAS store by default (see [HIGH-1]).
+	singleWriter bool
 }
 
 // newTxnManager creates a new transaction manager.
@@ -111,6 +132,11 @@ func newTxnManager(store ports.ConfigStore, provider func() *ports.BridgeConfig,
 		applier:        applier,
 		logger:         logger,
 		clk:            clk,
+		// Direct construction is single-manager (one in-process writer), so it
+		// is single-writer by definition. Server.New overrides this from
+		// Config.ConfigSingleWriter to fail closed on a shared non-CAS store in
+		// a real (possibly multi-instance) deployment.
+		singleWriter: true,
 	}
 }
 
@@ -439,9 +465,12 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 	// that window: it writes only if the store's CURRENTLY persisted version
 	// still equals the transaction's baseVersion, so a concurrent commit that
 	// advanced the version is rejected with shared.ErrVersionMismatch (surfaced
-	// as errVersionConflict) instead of being overwritten. Stores that do not
-	// implement the capability fall back to the plain Save (documented
-	// last-writer-wins caveat on shared network backends).
+	// as errVersionConflict) instead of being overwritten. Stores that do NOT
+	// implement the capability have no safe cross-instance write, so the plain
+	// Save is taken ONLY when the operator asserted a single writer
+	// (m.singleWriter); otherwise the commit fails closed with
+	// errConfigStoreNotCAS rather than performing a silent last-writer-wins Save
+	// (see [HIGH-1]).
 	if cas, ok := m.store.(ports.ConditionalConfigStore); ok {
 		if err := cas.SaveIfVersion(ctx, merged, m.active.baseVersion); err != nil {
 			if errors.Is(err, shared.ErrVersionMismatch) {
@@ -450,7 +479,20 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 			}
 			return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
 		}
+	} else if !m.singleWriter {
+		// Fail closed: a non-CAS store on a possibly-multi-writer deployment
+		// cannot serialize concurrent commits. The read-time version guard above
+		// is NOT atomic with this write, so two admin instances that both read
+		// version N would each pass it and the second plain Save would clobber
+		// the first acknowledged commit (silent lost update; [HIGH-1]). Refuse
+		// the durable write instead of performing it silently. The operator must
+		// either wire a ports.ConditionalConfigStore (always safe) or assert a
+		// single writer via Config.ConfigSingleWriter.
+		return nil, 0, nil, nil, fmt.Errorf("%w: the configured config store does not support compare-and-swap saves; enable it with a ports.ConditionalConfigStore or set Config.ConfigSingleWriter to assert a single admin writer",
+			errConfigStoreNotCAS)
 	} else if err := m.store.Save(ctx, merged); err != nil {
+		// Single-writer asserted: a plain Save is safe because no peer can
+		// clobber this write. This is the documented single-writer LWW path.
 		return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
 	}
 

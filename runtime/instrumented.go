@@ -62,7 +62,10 @@ type InstrumentedOutboxStore struct {
 	clk     clock.Clock
 }
 
-var _ ports.OutboxStore = (*InstrumentedOutboxStore)(nil)
+var (
+	_ ports.OutboxStore         = (*InstrumentedOutboxStore)(nil)
+	_ ports.OutboxDepthReporter = (*InstrumentedOutboxStore)(nil)
+)
 
 // NewInstrumentedOutboxStore decorates inner with metrics instrumentation.
 //
@@ -204,9 +207,64 @@ func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey
 	return recs, err
 }
 
+// CountPending forwards the OPTIONAL ports.OutboxDepthReporter capability of the
+// wrapped store (finding-14 family: an instrumentation wrapper must not strip
+// optional interfaces). The base *InstrumentedOutboxStore ALWAYS satisfies
+// ports.OutboxDepthReporter so the drainer's capability probe succeeds in
+// production (where it holds the wrapper, not the raw store); when the inner
+// store cannot count, CountPending returns the EXPORTED sentinel
+// ports.ErrOutboxDepthUnsupported rather than a bogus number, so the drainer can
+// distinguish "unsupported" (benign saturating fallback) from a REAL count
+// failure (which it surfaces, never masks). Advertising the method
+// unconditionally is SAFE here — unlike the Release/Started capabilities, a
+// false-positive cannot panic or wedge, it only yields the sentinel the caller
+// already handles by falling back. A real error from the inner reporter is
+// returned AS-IS (not the sentinel) so it is NOT mistaken for "unsupported".
+// This method does NOT emit a metric; the drainer owns the
+// shared.MetricOutboxDepth emission so there is a single drain-path emission
+// site.
+func (s *InstrumentedOutboxStore) CountPending(ctx context.Context, partitionKey string) (int, error) {
+	reporter, ok := s.inner.(ports.OutboxDepthReporter)
+	if !ok {
+		return 0, ports.ErrOutboxDepthUnsupported
+	}
+	return reporter.CountPending(ctx, partitionKey)
+}
+
 func instrumentedClock(clk clock.Clock) clock.Clock {
 	if clk == nil {
 		return clock.System
 	}
 	return clk
+}
+
+// ReportDLQDepth samples the current dead-letter-queue backlog via the OPTIONAL
+// ports.DLQDepthReporter capability and emits it as the shared.MetricDLQDepth
+// gauge. It is the store-side means of making DLQ depth observable: composition
+// roots call it on a periodic cadence (and MAY call it after DLQ mutations) so a
+// stale backlog is alarmable without a manual storage scan (H-OBS DLQ-1).
+//
+// Fail-safe by design:
+//   - When store does not implement ports.DLQDepthReporter it emits nothing and
+//     returns (0, false, nil) — a store without the capability is not an error.
+//   - When Depth returns an error it emits nothing and returns (0, false, err).
+//   - Otherwise it emits shared.MetricDLQDepth with the supplied tags (pass none
+//     for the recommended dimensionless fleet total) and returns (depth, true,
+//     nil).
+//
+// metrics may be nil (no-op emission) so a caller can use the returned depth for
+// its own purposes without an exporter.
+func ReportDLQDepth(ctx context.Context, store ports.DLQReader, metrics ports.MetricsExporter, tags ...shared.Tag) (int, bool, error) {
+	reporter, ok := store.(ports.DLQDepthReporter)
+	if !ok {
+		return 0, false, nil
+	}
+	depth, err := reporter.Depth(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	if metrics != nil {
+		metrics.Gauge(shared.MetricDLQDepth, float64(depth), tags...)
+	}
+	return depth, true, nil
 }

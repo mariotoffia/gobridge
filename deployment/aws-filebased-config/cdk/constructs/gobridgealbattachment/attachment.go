@@ -30,13 +30,20 @@
 // Every target group health-checks the monitor port with path
 // "/api/v1/monitor/live" (the only server exposing the probes) via
 // the health-check port override -- /live stays 200 for an alive but
-// paused instance, so a deliberate pause never drains the admin or
-// monitor plane from the ALB (HealthzURL still resolves to /health for
-// human/dashboard readiness). The monitor target group registers
-// *every* bridge service so the ALB is granted ingress to the monitor
-// port on each service security group -- without that target
-// registration the port-overridden health checks would be unreachable
-// and tasks would flap unhealthy.
+// paused instance, so a deliberate pause never drains the admin,
+// monitor, or transport plane from the ALB (HealthzURL still resolves
+// to /health for human/dashboard readiness). The transport TG is
+// deliberately kept on liveness, NOT a broker-coupled readiness probe:
+// ECS replaces a task that is unhealthy in ANY attached target group,
+// so a /ready?level= probe here would recycle the whole worker fleet on
+// a broker outage or admin pause -- traffic readiness is instead
+// enforced at the request layer (the HTTP receiver returns 5xx and does
+// not record the dedup key on failure, so producers retry with no
+// message loss). The monitor target group registers *every* bridge
+// service so the ALB is granted ingress to the monitor port on each
+// service security group -- without that target registration the
+// port-overridden health checks would be unreachable and tasks would
+// flap unhealthy.
 //
 // # Reserved priority range
 //
@@ -122,13 +129,17 @@ const (
 	// MonitorLivePath. It matches the route registered in httpapi/monitor.go.
 	MonitorHealthPath = "/api/v1/monitor/health"
 
-	// MonitorLivePath is the unauthenticated liveness probe every target
-	// group health-checks. Unlike /health it stays 200 after a clean stop
-	// (503 only once the process is terminal), so an alive-but-paused
-	// instance is not drained from the ALB -- keeping the admin plane
-	// reachable to restart/diagnose it and the monitor plane reachable for
-	// /deephealth, /topology, /routes. It matches the route registered in
-	// httpapi/monitor.go.
+	// MonitorLivePath is the unauthenticated liveness probe EVERY target
+	// group (control, monitor, and transport) health-checks. Unlike /health
+	// it stays 200 after a clean stop (503 only once the process is
+	// terminal), so an alive-but-paused instance is not drained from the ALB
+	// -- keeping the admin plane reachable to restart/diagnose it and the
+	// monitor plane reachable for /deephealth, /topology, /routes. The
+	// transport TG stays on liveness too (not a broker-coupled /ready probe):
+	// ECS replaces a task unhealthy in ANY attached TG, so a readiness probe
+	// here would recycle the worker fleet on a broker outage/pause; traffic
+	// readiness is enforced at the request layer instead (see the transport
+	// TG construction). It matches the route registered in httpapi/monitor.go.
 	MonitorLivePath = "/api/v1/monitor/live"
 
 	// ManifestVersion is the schema sentinel published as
@@ -143,9 +154,9 @@ const (
 // applied to all three target groups. Zero-value fields fall through
 // to the defaults documented on AttachmentProps.HealthCheck.
 type HealthCheckProps struct {
-	// Path defaults to MonitorLivePath ("/api/v1/monitor/live").
-	// The health check always targets the monitor port regardless of
-	// Path, because the probes are only served there.
+	// Path defaults to MonitorLivePath ("/api/v1/monitor/live") for all
+	// three target groups. The health check always targets the monitor
+	// port regardless of Path, because the probes are only served there.
 	Path string
 	// IntervalSeconds defaults to 15.
 	IntervalSeconds float64
@@ -195,7 +206,7 @@ type AttachmentProps struct {
 
 	// HealthCheck overrides the default health-check configuration
 	// applied to all three target groups. nil means "use the documented
-	// defaults".
+	// defaults" (every target group probes /live on the monitor port).
 	HealthCheck *HealthCheckProps
 }
 
@@ -253,9 +264,10 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 	//    target registration.
 	tgt := resolveTargets(props)
 
-	// Every target group health-checks the monitor port + path (the
-	// only listener serving the probes) via the health-check port
-	// override.
+	// Every target group health-checks the monitor port + LIVENESS path
+	// (/live) via the health-check port override (the only server serving
+	// the probes). See step 6 for why the transport TG also stays on /live
+	// rather than a broker-coupled readiness probe.
 	hc := buildHealthCheck(props.HealthCheck, tgt.monitorPort)
 
 	// 4. Build the admin (control) and monitor target groups. These
@@ -320,10 +332,24 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 			panic("GoBridgeALBAttachment: HTTP receivers derived from config but no transport port is mapped")
 		}
 		transportTG = elbv2.NewApplicationTargetGroup(c, jsii.String("WorkerTG"), &elbv2.ApplicationTargetGroupProps{
-			Vpc:         props.Vpc,
-			Port:        jsii.Number(tgt.transportPort),
-			Protocol:    elbv2.ApplicationProtocol_HTTP,
-			TargetType:  elbv2.TargetType_IP,
+			Vpc:        props.Vpc,
+			Port:       jsii.Number(tgt.transportPort),
+			Protocol:   elbv2.ApplicationProtocol_HTTP,
+			TargetType: elbv2.TargetType_IP,
+			// ponytail: the transport TG health-checks LIVENESS (/live via hc),
+			// NOT a broker-coupled readiness probe (e.g. /ready?level=full). ECS
+			// replaces a task that is unhealthy in ANY attached target group,
+			// and the worker service is attached to BOTH this TG and the shared
+			// monitor TG -- so a readiness probe here would drive task
+			// replacement. A broker-wide outage or a deliberate admin pause
+			// would then flip every worker's /ready to 503 and recycle the
+			// entire fleet (restarted tasks still can't reach the broker -> a
+			// crash-recycle storm that amplifies a transient downstream outage).
+			// Traffic readiness is instead enforced at the REQUEST layer: the
+			// HTTP receiver returns 503 when not ready and 5xx on emit failure,
+			// and records the dedup key only on success, so producers retry with
+			// no message loss -- no not-ready task silently drops traffic (see
+			// adapters/http/transport/receiver.go:178,381,385).
 			HealthCheck: hc,
 		})
 		transportTG.AddTarget(tgt.worker.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{

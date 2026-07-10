@@ -678,3 +678,434 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 		t.Errorf("OutboxDrainStalled = %d, want 1 (emitted once for the wedged batch)", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HIGH-1: a stale owner must NOT Complete a record after losing the lease. Owner
+// A claims a record and passes the pre-send tokenFn check; its Send blocks until
+// AFTER A's lease has transferred to owner B; when Send finally returns nil, the
+// post-send fence must observe the lost lease and REFUSE the Complete, leaving
+// the record Claimed for B to reclaim. Deterministic: the fake sender itself
+// flips the live-token state the instant it runs, so the transfer is sequenced
+// by the send call — no sleeps.
+// ---------------------------------------------------------------------------
+
+func TestDrainer_TokenGoesStaleBetweenSendAndComplete_DoesNotComplete(t *testing.T) {
+	clk := clocktest.NewAt(budgetBase)
+	rec := deferredTestRecord(t, "rec-stale", "")
+	store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+	metrics := newRecordingExporter()
+
+	// hasLease models the runtime-side live token: true while A owns the session,
+	// flipped to false when the lease transfers to B mid-Send.
+	var hasLease atomic.Bool
+	hasLease.Store(true)
+	tokenFn := func() (persistence.LeaseToken, bool) {
+		return deferredTestToken(), hasLease.Load()
+	}
+
+	var sent int32
+	sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+		atomic.AddInt32(&sent, 1)
+		// A's Send outlived its lease: B has taken the session. The target
+		// accepted the message (return nil), but A is no longer authoritative.
+		hasLease.Store(false)
+		return nil
+	}}
+
+	d := New(Config{
+		OutboxStore:  store,
+		Sender:       sender,
+		RouteID:      "route-stale",
+		PartitionKey: "SESSION#sess-stale",
+		Policy:       routing.RoutePolicy{SendTimeout: time.Second, MaxReplayAttempts: 5},
+		Clock:        clk,
+		Metrics:      metrics,
+		TokenFn:      tokenFn,
+	})
+
+	success, _, err := d.drainBatch(context.Background(), deferredTestToken())
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("drainBatch err = %v, want ErrStaleFencingToken (lost lease must stop the drain and back off)", err)
+	}
+	if success != 0 {
+		t.Errorf("success = %d, want 0 (a record may not count delivered once the owner lost the lease)", success)
+	}
+	if n := atomic.LoadInt32(&sent); n != 1 {
+		t.Errorf("sender calls = %d, want 1 (Send ran once; the lease was lost during it)", n)
+	}
+	if got := store.completedIDs(); len(got) != 0 {
+		t.Errorf("completed = %v, want [] (a stale owner must NOT Complete after losing the lease — HIGH-1)", got)
+	}
+	if got := metrics.sum(shared.MetricOutboxDuplicateRisk, nil); got != 1 {
+		t.Errorf("OutboxDuplicateRisk = %d, want 1 (a fenced completion is a duplicate-delivery risk)", got)
+	}
+}
+
+// dualSignalExporter announces the moment the drainer emits OutboxDrainStalled
+// (watchdog fired) AND the moment it emits OutboxDuplicateRisk (post-send fence
+// tripped), so the HIGH-2 test can sequence both transitions deterministically —
+// no sleeps or polls.
+type dualSignalExporter struct {
+	*recordingExporter
+	stalled       chan struct{}
+	duplicateRisk chan struct{}
+}
+
+func (e *dualSignalExporter) Counter(name string, value int64, tags ...shared.Tag) {
+	e.recordingExporter.Counter(name, value, tags...)
+	switch name {
+	case shared.MetricOutboxDrainStalled:
+		select {
+		case e.stalled <- struct{}{}:
+		default:
+		}
+	case shared.MetricOutboxDuplicateRisk:
+		select {
+		case e.duplicateRisk <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HIGH-2: a watchdog-abandoned send goroutine must NOT complete its old claim if
+// it later returns nil. The sender ignores ctx; waitBatch hits the watchdog,
+// records OutboxDrainStalled and RETURNS (cancelling batchCtx) so the drainer
+// does not wedge. When the abandoned send LATER returns nil, the post-send fence
+// (batchCtx cancelled) must refuse the Complete — the drainer already moved on.
+// Deterministic sequencing via the stall + duplicate-risk signals and a Complete
+// signal channel (which must never fire).
+// ---------------------------------------------------------------------------
+
+func TestDrainer_WatchdogAbandonedSend_LaterReturnsNil_DoesNotComplete(t *testing.T) {
+	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 1)}
+	metrics := &dualSignalExporter{
+		recordingExporter: newRecordingExporter(),
+		stalled:           make(chan struct{}, 1),
+		duplicateRisk:     make(chan struct{}, 1),
+	}
+	rec := deferredTestRecord(t, "rec-abandon", "")
+	completeCh := make(chan string, 1)
+	store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}, completeSignal: completeCh}
+
+	inflight := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	sender := &fnSender{send: func(_ context.Context, _ ports.OutboundMessage) error {
+		once.Do(func() { close(inflight) })
+		<-release  // deliberately IGNORE ctx: block until the test releases us
+		return nil // then "succeed" AFTER the watchdog already abandoned the batch
+	}}
+
+	d := New(Config{
+		OutboxStore:  store,
+		Sender:       sender,
+		RouteID:      "route-abandon",
+		PartitionKey: "SESSION#sess-abandon",
+		// Lease stays live throughout: this proves the BATCH-abandonment fence
+		// (not the lease fence) is what refuses the completion.
+		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		DrainTimeout: time.Hour, // keep the REAL workCtx deadline far away
+		Clock:        clk,
+		Metrics:      metrics,
+		TokenFn:      func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
+	})
+
+	drainReturned := make(chan struct{})
+	go func() {
+		_, _, _ = d.drainBatch(context.Background(), deferredTestToken())
+		close(drainReturned)
+	}()
+
+	<-inflight                 // the send is in-flight and ignoring ctx
+	<-clk.timerCreated         // waitBatch has registered the watchdog timer
+	clk.Advance(3 * time.Hour) // fire the watchdog (past batchTimeout+drainWedgeGrace)
+	<-metrics.stalled          // watchdog case taken: batchCtx cancelled, drainer proceeds
+	<-drainReturned            // the drainer unblocked and moved on (never wedged)
+
+	// Now release the abandoned send. It returns nil and its goroutine reaches
+	// the post-send fence, which must refuse the Complete because batchCtx is
+	// cancelled. If the fence were absent, Complete would run (completeCh fires)
+	// — that is exactly the HIGH-2 regression.
+	close(release)
+	select {
+	case id := <-completeCh:
+		t.Fatalf("Complete called for %q after the batch was abandoned; a watchdog-abandoned send must NOT complete (HIGH-2)", id)
+	case <-metrics.duplicateRisk:
+		// Fence tripped and counted the duplicate risk: Complete was skipped.
+	}
+
+	if got := store.completedIDs(); len(got) != 0 {
+		t.Errorf("completed = %v, want [] (a watchdog-abandoned send must never Complete — HIGH-2)", got)
+	}
+	if got := metrics.sum(shared.MetricOutboxDrainStalled, nil); got != 1 {
+		t.Errorf("OutboxDrainStalled = %d, want 1", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FINDING 1 (adversarial): the pre-send lease re-check must compare the live
+// token VERSION to the claim token, not merely presence. A lease reacquired at a
+// HIGHER version by a new owner BEFORE this record's Send still returns
+// (hasLease=true); a bare !hasLease check would Send a record claimed under the
+// superseded version — a duplicate target-side delivery the post-send fence can
+// no longer prevent (it only refuses the Complete, after Send already fired).
+// The pre-send version check refuses to Send at all.
+// ---------------------------------------------------------------------------
+
+func TestDrainer_LeaseReacquiredBeforeSend_DoesNotSend(t *testing.T) {
+	clk := clocktest.NewAt(budgetBase)
+	rec := deferredTestRecord(t, "rec-presend-stale", "")
+	store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+	metrics := newRecordingExporter()
+
+	// The record is claimed under v1 (the token passed to drainBatch), but the
+	// live token has already advanced to v2 held by a NEW owner before Send.
+	liveToken := persistence.LeaseToken{Owner: "owner-2", Version: 2}
+	tokenFn := func() (persistence.LeaseToken, bool) { return liveToken, true }
+
+	var sent int32
+	sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+		atomic.AddInt32(&sent, 1)
+		return nil
+	}}
+
+	d := New(Config{
+		OutboxStore:  store,
+		Sender:       sender,
+		RouteID:      "route-presend-stale",
+		PartitionKey: "SESSION#sess-presend-stale",
+		Policy:       routing.RoutePolicy{SendTimeout: time.Second, MaxReplayAttempts: 5},
+		Clock:        clk,
+		Metrics:      metrics,
+		TokenFn:      tokenFn,
+	})
+
+	// drainBatch runs under the ORIGINAL claim token (v1); the live token is v2.
+	success, _, err := d.drainBatch(context.Background(), deferredTestToken())
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("drainBatch err = %v, want ErrStaleFencingToken (superseded lease version must stop the drain)", err)
+	}
+	if success != 0 {
+		t.Errorf("success = %d, want 0", success)
+	}
+	if n := atomic.LoadInt32(&sent); n != 0 {
+		t.Errorf("sender calls = %d, want 0 (must NOT send a record claimed under a superseded lease version)", n)
+	}
+	if got := store.completedIDs(); len(got) != 0 {
+		t.Errorf("completed = %v, want []", got)
+	}
+}
+
+// versionOnlyStore models the SANCTIONED version-only claim semantics of the
+// in-memory outbox backend (ports/stores.go): a record is claimable only when
+// Pending or when Claimed at a STRICTLY-OLDER claim_version. There is NO
+// same-version time-stale reclaim, so a record left Claimed at the CURRENT lease
+// version can never be re-claimed by the same owner — the exact stranding
+// finding 2 is about. Complete/Release are owner+version+status fenced. It is
+// deliberately minimal (single partition, no wall-clock, no high-water-mark).
+type versionOnlyRecord struct {
+	rec       *persistence.OutboxRecord
+	state     string // "pending" | "claimed" | "completed"
+	claimVer  uint64
+	claimedBy string
+}
+
+type versionOnlyStore struct {
+	mu    sync.Mutex
+	order []string
+	recs  map[string]*versionOnlyRecord
+	// releaseSignal, when non-nil, receives each id transitioned back to pending
+	// by Release, so a test can wait for the fence's release before re-draining.
+	releaseSignal chan string
+}
+
+func newVersionOnlyStore(recs ...*persistence.OutboxRecord) *versionOnlyStore {
+	s := &versionOnlyStore{recs: make(map[string]*versionOnlyRecord)}
+	for _, r := range recs {
+		s.order = append(s.order, r.ID())
+		s.recs[r.ID()] = &versionOnlyRecord{rec: r, state: "pending"}
+	}
+	return s
+}
+
+func (s *versionOnlyStore) Persist(context.Context, []*persistence.OutboxRecord) error { return nil }
+
+func (s *versionOnlyStore) Claim(_ context.Context, _ string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*persistence.OutboxRecord
+	for _, id := range s.order {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		vr := s.recs[id]
+		claimable := vr.state == "pending" || (vr.state == "claimed" && vr.claimVer < token.Version)
+		if !claimable {
+			continue
+		}
+		vr.state = "claimed"
+		vr.claimVer = token.Version
+		vr.claimedBy = token.Owner
+		out = append(out, vr.rec)
+	}
+	return out, nil
+}
+
+func (s *versionOnlyStore) fenced(vr *versionOnlyRecord, token persistence.LeaseToken) bool {
+	return vr != nil && vr.state == "claimed" && vr.claimedBy == token.Owner && vr.claimVer == token.Version
+}
+
+func (s *versionOnlyStore) Complete(_ context.Context, ids []string, token persistence.LeaseToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		if !s.fenced(s.recs[id], token) {
+			return shared.ErrStaleFencingToken
+		}
+	}
+	for _, id := range ids {
+		s.recs[id].state = "completed"
+	}
+	return nil
+}
+
+func (s *versionOnlyStore) Release(_ context.Context, ids []string, token persistence.LeaseToken) error {
+	s.mu.Lock()
+	for _, id := range ids {
+		if !s.fenced(s.recs[id], token) {
+			s.mu.Unlock()
+			return shared.ErrStaleFencingToken
+		}
+	}
+	for _, id := range ids {
+		vr := s.recs[id]
+		vr.state = "pending"
+		vr.claimVer = 0
+		vr.claimedBy = ""
+	}
+	s.mu.Unlock()
+	if s.releaseSignal != nil {
+		for _, id := range ids {
+			s.releaseSignal <- id
+		}
+	}
+	return nil
+}
+
+func (s *versionOnlyStore) Expire(context.Context, time.Time, string) (int, error) { return 0, nil }
+
+func (s *versionOnlyStore) QueryPending(context.Context, string, int) ([]*persistence.OutboxRecord, error) {
+	return nil, nil
+}
+
+func (s *versionOnlyStore) stateOf(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if vr := s.recs[id]; vr != nil {
+		return vr.state
+	}
+	return ""
+}
+
+var _ ports.OutboxStore = (*versionOnlyStore)(nil)
+var _ ports.OutboxReleaser = (*versionOnlyStore)(nil)
+
+// ---------------------------------------------------------------------------
+// FINDING 2 (adversarial): errCompletionFenced must RELEASE the fenced head AND
+// the never-attempted ordering-group suffix back to pending, or they strand
+// Claimed forever on a version-only store (the in-memory backend). Proof end to
+// end: two records in ONE ordering group; the head is abandoned by the watchdog
+// and its slow Send later returns nil (errCompletionFenced); a SECOND drain with
+// the SAME lease token must re-claim and deliver BOTH — only possible because the
+// fence released them (a version-only store cannot re-claim a still-Claimed
+// record at the same version).
+// ---------------------------------------------------------------------------
+
+func TestDrainer_WatchdogAbandon_VersionOnlyStore_ReleasesHeadAndSuffixForReclaim(t *testing.T) {
+	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 1)}
+	metrics := &dualSignalExporter{
+		recordingExporter: newRecordingExporter(),
+		stalled:           make(chan struct{}, 1),
+		duplicateRisk:     make(chan struct{}, 1),
+	}
+	// Two records sharing ONE ordering key -> one sequential group: the head is
+	// attempted; the suffix is never reached because the group stops on the
+	// head's fence, so it too is a claimed-but-unattempted record.
+	head := deferredTestRecord(t, "rec-head", "grp")
+	tail := deferredTestRecord(t, "rec-tail", "grp")
+	store := newVersionOnlyStore(head, tail)
+	store.releaseSignal = make(chan string, 2)
+
+	var sendCount int32
+	inflight := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	sender := &fnSender{send: func(_ context.Context, _ ports.OutboundMessage) error {
+		if atomic.AddInt32(&sendCount, 1) == 1 {
+			once.Do(func() { close(inflight) })
+			<-release // ignore ctx: block the FIRST send past the watchdog
+		}
+		return nil
+	}}
+
+	tok := deferredTestToken() // v1, owner-1
+	d := New(Config{
+		OutboxStore:  store,
+		Sender:       sender,
+		RouteID:      "route-vonly",
+		PartitionKey: "SESSION#sess-vonly",
+		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		DrainTimeout: time.Hour,
+		Clock:        clk,
+		Metrics:      metrics,
+		TokenFn:      func() (persistence.LeaseToken, bool) { return tok, true },
+	})
+
+	drainReturned := make(chan struct{})
+	go func() {
+		_, _, _ = d.drainBatch(context.Background(), tok)
+		close(drainReturned)
+	}()
+
+	<-inflight                 // head send in-flight, ignoring ctx
+	<-clk.timerCreated         // watchdog registered
+	clk.Advance(3 * time.Hour) // fire the watchdog
+	<-metrics.stalled          // batchCtx cancelled, drainer proceeds
+	<-drainReturned            // the drainer moved on (never wedged)
+
+	// Release the abandoned head send: it returns nil, trips the batch-abandon
+	// fence (errCompletionFenced), and the group loop releases the head AND the
+	// unattempted tail back to pending on the version-only store.
+	close(release)
+	<-metrics.duplicateRisk
+	// Wait for BOTH records to be released before re-draining (deterministic).
+	released := map[string]bool{}
+	for len(released) < 2 {
+		released[<-store.releaseSignal] = true
+	}
+	if s := store.stateOf("rec-head"); s != "pending" {
+		t.Fatalf("head state = %q, want pending (fence must release the abandoned head)", s)
+	}
+	if s := store.stateOf("rec-tail"); s != "pending" {
+		t.Fatalf("tail state = %q, want pending (fence must release the unattempted suffix)", s)
+	}
+
+	// The crux: a SECOND drain with the SAME token (same version) must re-claim
+	// and deliver BOTH. On a version-only store this is possible ONLY because the
+	// fence released them; without the release they stay Claimed at v1 and this
+	// drain finds nothing (the mutation).
+	success, _, err := d.drainBatch(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("second drainBatch err = %v, want nil", err)
+	}
+	if success != 2 {
+		t.Fatalf("second drain success = %d, want 2 (both released records re-drained under the SAME token)", success)
+	}
+	if s := store.stateOf("rec-head"); s != "completed" {
+		t.Fatalf("head state = %q, want completed after reclaim", s)
+	}
+	if s := store.stateOf("rec-tail"); s != "completed" {
+		t.Fatalf("tail state = %q, want completed after reclaim", s)
+	}
+}

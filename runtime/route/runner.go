@@ -56,6 +56,30 @@ type RouteRunner struct {
 	inFlight             atomic.Int64
 	idleMu               sync.Mutex
 	idleCh               chan struct{}
+
+	// HIGH-1/HIGH-4: bridge-owned retry ledger giving count-less sources a
+	// stable attempt count so MaxReplayAttempts actually caps them.
+	replay *replayLedger
+
+	// HIGH-2: latched true once Run has closed its single-use receiver, so a
+	// supervisor re-entry returns ErrRouteReceiverClosed (terminal) instead of
+	// re-running the dead receiver.
+	receiverClosed atomic.Bool
+
+	// HIGH-3/HIGH-4: terminal wedge. Once set, the Run callback refuses new
+	// deliveries and Run returns wedgeErr, which superviseRoute escalates.
+	wedgeOnce sync.Once
+	wedged    atomic.Bool
+	wedgeErr  atomic.Value // wedgeBox
+
+	// HIGH-3: per-binding parked-send latch capping leaked send goroutines to
+	// one per binding.
+	hungMu   sync.Mutex
+	hungBind map[string]bool
+
+	// HIGH-4: count of processor goroutines abandoned after ProcessorTimeout.
+	// When it crosses maxAbandonedProcessors the route wedges (circuit break).
+	abandonedProc atomic.Int64
 }
 
 // RouteRunnerConfig holds the configuration for a RouteRunner.
@@ -187,6 +211,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		onAck:                cfg.OnAck,
 		started:              make(chan struct{}),
 		idleCh:               make(chan struct{}),
+		replay:               newReplayLedger(replayLedgerMaxKeys),
 	}
 	if r.policy.MaxInFlight > 0 {
 		r.sem = make(chan struct{}, r.policy.MaxInFlight)
@@ -252,6 +277,22 @@ func (h *recoveringHook) recover(method string) {
 func (r *RouteRunner) Run(ctx context.Context) error {
 	r.startedOnce.Do(func() { close(r.started) })
 
+	// HIGH-2: RouteRunner.Run ALWAYS closes its (single-use) receiver on exit
+	// (closeReceiver below). A supervisor that restarts this SAME runner would
+	// re-run a dead receiver and flap at the backoff cap forever behind green
+	// liveness. AddRoute stores built receiver/sender/session INSTANCES, not
+	// factories (runtime/bridge_routes.go), so there is no blueprint reachable
+	// here to rebuild the receiver — a restart against a closed receiver is
+	// TERMINAL. Return the sentinel superviseRoute escalates (ErrRouteTerminal)
+	// instead of silently flapping. A route that latched a wedge on a prior run
+	// (HIGH-3/HIGH-4) is likewise terminal on re-entry.
+	if r.receiverClosed.Load() {
+		return ErrRouteReceiverClosed
+	}
+	if r.isWedged() {
+		return r.wedgeError()
+	}
+
 	var (
 		wg     sync.WaitGroup
 		mu     sync.Mutex
@@ -284,6 +325,10 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
 			defer cancel()
 			_ = closer.Close(closeCtx)
+			// HIGH-2: latch that this single-use receiver has been closed so a
+			// supervisor re-entry returns ErrRouteReceiverClosed rather than
+			// re-running the dead instance.
+			r.receiverClosed.Store(true)
 		})
 	}
 
@@ -311,6 +356,16 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	}()
 
 	err := r.receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
+		// HIGH-3/HIGH-4: a hung sender or a run of abandoned-processor timeouts
+		// wedged the route. STOP accepting new deliveries and surface the wedge so
+		// the receiver stops and Run returns it (superviseRoute escalates via
+		// ErrRouteTerminal) rather than spawning more doomed work — and leaking
+		// more goroutines — behind green liveness. The wedge propagates on the next
+		// receive activity; the harm (new hung sends/processors) is already stopped
+		// the instant the flag is set.
+		if r.isWedged() {
+			return r.wedgeError()
+		}
 		if err := r.acquireSlots(ctx); err != nil {
 			return err
 		}
@@ -418,6 +473,14 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	// on cancellation this is a no-op; otherwise (cooperative Run return) it is
 	// the sole Close.
 	closeReceiver()
+
+	// HIGH-3/HIGH-4: if the route wedged (a hung sender / abandoned-processor
+	// ceiling), surface the terminal wedge error regardless of how receiver.Run
+	// returned (it may have returned nil on a cooperative stop) so superviseRoute
+	// escalates instead of treating the exit as a clean stop.
+	if r.isWedged() {
+		return r.wedgeError()
+	}
 
 	return err
 }
@@ -718,6 +781,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		WithChainTimeout(r.policy.ProcessorTimeout),
 		WithChainRouteID(r.routeID),
 		WithChainClock(r.clk),
+		WithChainOnProcessorTimeout(r.onProcessorAbandoned),
 	); err != nil {
 		pErr := r.handleProcessorError(ctx, del, env, err)
 		if !errors.Is(err, shared.ErrMessageFiltered) {
@@ -779,10 +843,11 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 		return r.handleResolveError(ctx, del, env, resolveErr)
 	}
 
-	if len(plans) == 0 {
-		return r.retryOrFallback(ctx, del, env, 0, fmt.Errorf("resolver returned no dispatch plans for route %s", r.routeID))
-	}
-
+	// resolvePlans now guarantees len(plans) >= 1 — the fail-closed zero-plan
+	// guard (HIGH-1) lives at that single choke point (shared by shared_outbox)
+	// and routes an empty resolve through handleResolveError's replay-cap gate,
+	// so the previous zero-delay retryOrFallback guard here was redundant and
+	// divergent (no cap); it has been removed to keep one coherent behaviour.
 	if len(plans) > 1 {
 		// direct_hold is single-dispatch: it delivers exactly one leg and ACKs
 		// the source. A resolver that yielded multiple plans here would send
@@ -807,18 +872,23 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 
 // recoverDelivery settles a delivery whose processing goroutine panicked
 // OUTSIDE the processor chain (resolver, hooks, tracer, metrics — RunChain has
-// its own recovery). Finding 2: it applies the SAME receive-count poison gate
-// the send path uses so a deterministically-panicking resolver cannot spin an
-// uncapped, immediate redelivery hot loop. At or above MaxReplayAttempts the
-// message is poisoned to the DLQ (or dropped-with-metric when the policy is
-// drop or no store is configured); below the cap it is retried with the
-// policy's bounded backoff (never the previous immediate, zero-delay retry).
+// its own recovery). Finding 2 / B2: it routes the poison decision through the
+// SAME native-or-ledger cap the send path uses (replayCapReached), NOT the raw
+// native receive count. A count-less source (MQTT/AMQP091/HTTP, receiveCount
+// always 0) with a deterministically-panicking resolver/hook/tracer would
+// otherwise never trip a native-only gate and spin an uncapped redelivery hot
+// loop forever (bounded backoff, but infinite). At or above MaxReplayAttempts the
+// message is poisoned to the DLQ (or dropped-with-metric when the policy is drop
+// or no store is configured); below the cap it is retried via retryOrFallback,
+// which records one ledger attempt per redelivery so the count-less cap actually
+// climbs, with the policy's bounded backoff (never the previous immediate,
+// zero-delay retry).
 func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, cause error) {
 	env := del.Envelope()
-	rc := receiveCount(env)
+	rc, over := r.replayCapReached(env)
 	attempts := rc + 1
 
-	if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+	if over {
 		poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
 			fmt.Sprintf("panic-recovery: receive count %d >= max replay attempts %d: %v", rc, r.policy.MaxReplayAttempts, cause))
 		if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {

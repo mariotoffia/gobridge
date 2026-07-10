@@ -163,6 +163,44 @@
 // (poisonReceiveCountThreshold). Configure a redrive policy on every SQS
 // source queue the bridge consumes.
 //
+// Two guards backstop that redelivery-forever failure mode:
+//
+//   - Startup redrive validation (default ON, permission-gated). On Run the
+//     Receiver issues a best-effort GetQueueAttributes. With the poison
+//     backstop OFF, a source queue with no RedrivePolicy emits
+//     SQSMissingRedrivePolicy plus a Warn naming the remedy. With the backstop
+//     ON, the Receiver reconciles poison_max_receives against the native
+//     maxReceiveCount (see below). It NEVER fails startup for a permission
+//     reason: a missing sqs:GetQueueAttributes grant degrades to a log (a loud
+//     Warn when the backstop is on, since the destructive setting could not be
+//     verified), so a least-privilege deployment is not blocked.
+//
+//   - poison_max_receives (default 0 = disabled). An adapter-enforced
+//     backstop for deployments that cannot configure a native redrive
+//     policy. When set and a malformed message's ApproximateReceiveCount
+//     reaches it, the Receiver DELETES the message to break the hot loop,
+//     emitting SQSPoisonDropped and an Error log.
+//
+// The delete is DESTRUCTIVE — the payload is dropped, not handed to a DLQ — so
+// two rules stop a plausible misconfiguration from silently losing data:
+//
+//   - poison_max_receives == 1 (delete on the FIRST conversion failure) is
+//     rejected at config time unless poison_drop_without_dlq explicitly opts
+//     in; a single failed receive destroying data is almost never intended.
+//
+//   - When a native redrive policy is readable and poison_max_receives <=
+//     maxReceiveCount, Run fails with shared.ErrInvalidConfig (permanent):
+//     the backstop would fire BEFORE SQS moves the message to the DLQ, so it
+//     would pre-empt the DLQ (which preserves the payload) and lose data.
+//     poison_max_receives must sit strictly ABOVE maxReceiveCount, so native
+//     redrive always wins where configured. A native redrive policy remains
+//     the preferred loss-preventing mechanism.
+//
+// ponytail: full conversion-failure DLQ hand-off (poison payload preserved
+// to the bridge DLQ instead of deleted) needs a receiver-side DLQ port that
+// does not yet exist in ports; poison_max_receives is the bounded-loss
+// ceiling until then.
+//
 // # Capabilities
 //
 // The factory declares CapVisibilityExtension, CapSourceRedelivery and

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -58,8 +59,145 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 	validateStaleClaimDuration(ve, cfg)
 	validateSessionRenewTiming(ve, cfg)
 	validateConnectLeaseBudget(ve, cfg)
+	validateClusterEndpoints(ve, cfg)
+	validateClusteredExclusiveHTTPDirectHold(ve, cfg)
 
 	return ve
+}
+
+// deploymentIsClustered mirrors the bridge builder's clustered predicate
+// (bridge/builder_prepare.go): a deployment is clustered when deployment_mode is
+// "clustered" OR a static cluster.endpoints override is present. The config-layer
+// cluster rules use it so they reject exactly the set the runtime treats as
+// clustered.
+func deploymentIsClustered(cfg *ports.BridgeConfig) bool {
+	if cfg.Bridge.DeploymentMode == "clustered" {
+		return true
+	}
+	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+}
+
+// validateClusterEndpoints rejects the copied-from-docs peer-membership shape of
+// cluster.endpoints at load time instead of at forward time (finding HIGH-1).
+// cluster.endpoints advertises THIS instance's CAPABILITY endpoints keyed by
+// capability (e.g. http -> "http://host:port"); the HTTP forwarder looks up
+// target.Endpoints["http"] to forward a remote exclusive request
+// (adapters/http/transport/forwarder.go). A peer map
+// ({instance-01: "10.0.1.10:8080"}) has instance-id keys and no "http" key, so a
+// non-owner forwarding an exclusive HTTP request gets "target has no HTTP
+// endpoint" -> 502 for every remote ingress.
+//
+// ponytail: this is the finding's narrower fallback. Rather than wire an
+// "exclusive route reachable over HTTP transport" detector, whenever
+// cluster.endpoints is STATICALLY set in a clustered deployment we require a
+// valid "http" capability entry. A peer-map shape has instance keys (not "http")
+// and fails, which is the exact mistake we reject; a correct
+// {http: "http://host:port"} passes; leaving endpoints unset (auto-discovery) is
+// NOT forced.
+func validateClusterEndpoints(ve *ValidationError, cfg *ports.BridgeConfig) {
+	if cfg.Bridge.Cluster == nil || len(cfg.Bridge.Cluster.Endpoints) == 0 {
+		return // auto-discovery: no static override to validate
+	}
+	if !deploymentIsClustered(cfg) {
+		return
+	}
+	raw, ok := cfg.Bridge.Cluster.Endpoints["http"]
+	if !ok {
+		ve.Addf("bridge.cluster.endpoints: statically set in a clustered deployment but has no " +
+			"\"http\" capability key. cluster.endpoints advertises THIS instance's capability " +
+			"endpoints keyed by capability (e.g. http: \"http://host:port\"), NOT a peer/instance " +
+			"map — a peer map (instance-01: \"10.0.1.10:8080\") has no \"http\" key, so every remote " +
+			"exclusive HTTP request fails to forward (502). Set endpoints: {http: " +
+			"\"http://<this-instance-host>:<port>\"}, or remove the static override to use " +
+			"auto-discovery")
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		ve.Addf("bridge.cluster.endpoints.http: %q is not an absolute http(s)://host:port URL; the "+
+			"HTTP forwarder POSTs directly to this value, so it must be a full URL "+
+			"(e.g. \"http://10.0.1.10:8080\"), not a bare host:port or an instance address", raw)
+	}
+}
+
+// validateClusteredExclusiveHTTPDirectHold rejects direct_hold delivery for a
+// clustered exclusive route whose ingress is the HTTP transport (finding
+// HIGH-4). Forwarded trusted HTTP requests deliberately skip the ownership
+// re-check (adapters/http/transport/receiver.go), and direct_hold sends straight
+// from the sender boundary with NO lease/fencing token
+// (runtime/route/runner.go), so a request forwarded to an owner that has just
+// stepped down can be sent by the OLD owner while the NEW owner handles a retry —
+// a bounded duplicate-send window across failover. shared_outbox fences every
+// send by outbox version and closes that window, so it is required for this
+// class. Non-clustered or non-HTTP-exclusive routes are unaffected. An empty
+// delivery_mode defaults to direct_hold (domain/routing.RoutePolicy.WithDefaults),
+// so empty and explicit direct_hold are the same hazardous class here.
+func validateClusteredExclusiveHTTPDirectHold(ve *ValidationError, cfg *ports.BridgeConfig) {
+	if !deploymentIsClustered(cfg) {
+		return
+	}
+	for _, r := range cfg.Routes {
+		if !routeIsExclusive(cfg, r) {
+			continue
+		}
+		if receiverTransport(cfg, r.ReceiverID) != "http" {
+			continue
+		}
+		if r.DeliveryMode != "" && r.DeliveryMode != string(routing.DeliveryDirectHold) {
+			continue // shared_outbox (or any non-direct_hold mode) is fenced-safe
+		}
+		mode := r.DeliveryMode
+		if mode == "" {
+			mode = string(routing.DeliveryDirectHold) + " (default)"
+		}
+		ve.Addf("routes[%s]: clustered exclusive route with HTTP ingress uses %s delivery, which is "+
+			"not fencing-safe across failover: a request forwarded to an owner that has just stepped "+
+			"down can be sent by the old owner while the new owner handles a retry, duplicating the "+
+			"send. Use delivery_mode: shared_outbox (fenced by outbox version) for this route",
+			r.ID, mode)
+	}
+}
+
+// receiverTransport returns the transport name of the receiver with the given ID
+// (the route's ingress), or "" when no such receiver exists.
+func receiverTransport(cfg *ports.BridgeConfig, receiverID string) string {
+	for i := range cfg.Receivers {
+		if cfg.Receivers[i].ID == receiverID {
+			return cfg.Receivers[i].Transport
+		}
+	}
+	return ""
+}
+
+// routeIsExclusive reports whether a route participates in lease-managed,
+// single-owner (exclusive) ownership: it either carries an inline session block
+// (a RouteSessionDef is always exclusive) or its receiver references a session
+// declared session_mode: exclusive. Mirrors bridge.hasExclusiveSessions' notion
+// of an exclusive session, scoped to one route.
+func routeIsExclusive(cfg *ports.BridgeConfig, r ports.RouteDef) bool {
+	if r.Session != nil {
+		return true
+	}
+	// "exclusive" is domain/connectivity.SessionExclusive; the literal is
+	// duplicated to keep the config validator from importing connectivity for a
+	// single discriminator string (same style as the other duplicated literals
+	// in this file).
+	for i := range cfg.Receivers {
+		if cfg.Receivers[i].ID != r.ReceiverID {
+			continue
+		}
+		sid := cfg.Receivers[i].SessionID
+		if sid == "" {
+			return false
+		}
+		for j := range cfg.Sessions {
+			if cfg.Sessions[j].ID == sid && cfg.Sessions[j].SessionMode == "exclusive" {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // validateSessionRenewTiming enforces the renew/lease invariant for every

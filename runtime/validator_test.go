@@ -205,6 +205,74 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 	}
 }
 
+// TestValidator_SharedOutbox_RejectsZeroPlanStaticResolver verifies a
+// shared_outbox route whose StaticResolver is fixed at ZERO plans is rejected at
+// registration (HIGH-1). Such a resolver would persist zero outbox records for
+// every message and then ACK the source with no delivery — silent loss. Because
+// the cardinality is statically knowable, the misconfiguration must fail fast at
+// Start, mirroring the direct_hold PlanCount()>1 rejection.
+//
+// Mutation check: delete the StaticResolver PlanCount()==0 branch in
+// validateSharedOutbox and this fails — Start returns nil (the empty resolver is
+// accepted and only fails per-message at runtime).
+func TestValidator_SharedOutbox_RejectsZeroPlanStaticResolver(t *testing.T) {
+	rt := runtime.New(
+		runtime.WithInstanceID("test-bridge"),
+		runtime.WithOutboxStore(NewFakeOutboxStore()),
+		runtime.WithLeaseStore(NewFakeLeaseStore()),
+		runtime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	cfg := runtime.RouteConfig{
+		ID: "sqs-to-mqtt-zero-plans",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Resolver: runtime.NewStaticResolver(), // ZERO plans — statically knowable
+	}
+	sessCfg := session.DefaultConfig("mqtt-sess", true)
+
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for a static resolver yielding 0 dispatch plans")
+	}
+	if !strings.Contains(err.Error(), "yields 0 dispatch plans") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidator_DirectHold_RejectsZeroPlanStaticResolver verifies the zero-plan
+// static-resolver rejection fires for direct_hold too (mode-agnostic). A
+// direct_hold route configured with NewStaticResolver() can never produce a
+// delivery — it would retry-poison EVERY message — so this knowable-dead config
+// must fail fast at Start, mirroring how a statically-zero resolver is a dead
+// config in any delivery mode.
+//
+// Mutation check: scope the zero-plan rejection back to shared_outbox only and
+// this fails — the direct_hold route starts (Start returns nil for validation).
+func TestValidator_DirectHold_RejectsZeroPlanStaticResolver(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.ID = "sqs-to-mqtt-dh-zero-plans"
+	cfg.Resolver = runtime.NewStaticResolver() // ZERO plans — statically knowable
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for a direct_hold static resolver yielding 0 dispatch plans")
+	}
+	if !strings.Contains(err.Error(), "yields 0 dispatch plans") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestValidator_SharedOutbox_RejectsMissingOutboxStore verifies shared_outbox without OutboxStore fails validation.
 func TestValidator_SharedOutbox_RejectsMissingOutboxStore(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))

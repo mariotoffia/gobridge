@@ -140,6 +140,55 @@ func TestGet_ValidCredentialSetAccepted(t *testing.T) {
 	}
 }
 
+// TestGet_TLS_CAOnlyNormalisesBlankCertKey pins the native-file parity fix for
+// the SSM whitespace-cert/key defect: a CA-only file whose CertPEM/KeyPEM are
+// PRESENT but whitespace-only loads as usable CA-only TLS material with EMPTY
+// cert/key — never blank-but-non-empty strings that a transport would feed to
+// tls.X509KeyPair and fail on at connect time. A genuine cert+key pair is stored
+// verbatim (the normalisation must touch only entirely-blank fields).
+//
+// Mutation killed: dropping the whitespace-cert/key normalisation in toDomain
+// stores " "/"\n" verbatim, so CertPEM()/KeyPEM() come back non-empty and the
+// assert.Empty checks FAIL.
+func TestGet_TLS_CAOnlyNormalisesBlankCertKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("whitespace cert and key normalised to empty", func(t *testing.T) {
+		t.Parallel()
+		repo, err := New(t.TempDir())
+		require.NoError(t, err)
+
+		uri := "file://broker"
+		writeRawCredFile(t, repo, uri,
+			`{"credentials":{"TLS":{"CertPEM":" ","KeyPEM":"\n","CAPEMs":["root-ca"]}},"version":1}`)
+
+		creds, err := repo.Get(context.Background(), uri)
+		require.NoError(t, err)
+		require.NotNil(t, creds)
+		require.NotNil(t, creds.TLS())
+		assert.Empty(t, creds.TLS().CertPEM(), "whitespace cert must normalise to empty")
+		assert.Empty(t, creds.TLS().KeyPEM().Reveal(), "whitespace key must normalise to empty")
+		assert.Equal(t, []string{"root-ca"}, creds.TLS().CAPEMs())
+	})
+
+	t.Run("real cert and key pair preserved verbatim", func(t *testing.T) {
+		t.Parallel()
+		repo, err := New(t.TempDir())
+		require.NoError(t, err)
+
+		uri := "file://broker"
+		writeRawCredFile(t, repo, uri,
+			`{"credentials":{"TLS":{"CertPEM":"cert-pem","KeyPEM":"key-pem"}},"version":1}`)
+
+		creds, err := repo.Get(context.Background(), uri)
+		require.NoError(t, err)
+		require.NotNil(t, creds)
+		require.NotNil(t, creds.TLS())
+		assert.Equal(t, "cert-pem", creds.TLS().CertPEM())
+		assert.Equal(t, "key-pem", creds.TLS().KeyPEM().Reveal())
+	})
+}
+
 // TestBasicAuthShapes_CreateUpdateGet is the regression proof for the
 // username-or-password gate: username-only, password-only, and full basic-auth
 // credentials all round-trip through Create, Get, and Update. Before the

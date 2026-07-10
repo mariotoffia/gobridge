@@ -125,7 +125,7 @@ or the file named by `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`) — it is not YAML:
 | `admin_api_key_param` | Yes | -- | SSM parameter path for the admin API key |
 | `monitor_api_key_param` | No | -- | SSM parameter path for the monitor API key |
 | `poll_interval` | No | `1s` | Config file poll interval |
-| `node_role` | No | `control` | `control` or `worker` |
+| `node_role` | No | `control` | `control` or `worker`. Also selects the admin config single-writer posture — see [Admin Config Transactions and the Single-Writer Posture](#admin-config-transactions-and-the-single-writer-posture) |
 | `topology` | No | `single` | `single` or `filesystem_replicated` |
 | `admin_addr` | No | `:8080` | Admin server listen address |
 | `monitor_addr` | No | `:8081` | Monitor server listen address |
@@ -152,6 +152,59 @@ config_watch:
   mode: poll
   poll_interval: 30s
 ```
+
+### Config-file writes must be atomic
+
+> **Pre-deploy checklist item.** Any process that writes the watched bridge
+> config file — a deploy script, a templating tool (Helm, Jsonnet, `envsubst`),
+> or a CI job — MUST write atomically: render to a temporary file in the same
+> directory, then `rename` it over the target. Never truncate-and-rewrite the
+> file in place.
+
+The watcher can read a truncated in-place write mid-flight. A partial-but-valid
+document — one that parses with only `bridge.id` and no routes — swaps live and
+**stops forwarding traffic while `/health` and `/ready` stay green**. Validation
+checks `bridge.id` first and the graph validator permits an empty route graph
+(`config/validate.go:47-63`, `validate.ValidateBlueprintGraph`), so the runtime
+loads the empty config as valid and logs no error. `rename` is atomic, so the
+watcher only ever sees the complete old or complete new file.
+
+GoBridge's own writer already renames; this requirement is only for external
+writers. See [External config writers must write atomically](runbooks/external-config-atomic-writes.md)
+for the failure mode and the fix.
+
+### Admin Config Transactions and the Single-Writer Posture
+
+The admin API supports **config transactions** (`/api/v1/admin/config/transactions`)
+that **durably** rewrite the bridge config on commit. The file-based profile's
+config store is a `parser.FileStore` over the shared EFS volume, which is
+**non-CAS** (it has no atomic compare-and-swap `SaveIfVersion`). On a non-CAS
+store, two admin instances that both read version *N* could each pass the
+read-time version guard and clobber each other's acknowledged commit (a silent
+lost update). To prevent that, the admin server **fails closed**: a durable
+commit is **refused with HTTP 500** unless the process asserts it is the **sole
+durable writer** of the store (`httpapi.Config.ConfigSingleWriter = true`).
+
+The bootstrap App derives that assertion from **`node_role`**:
+
+| `node_role` | Single-writer asserted? | Config-txn commit |
+|-------------|-------------------------|-------------------|
+| `control` (and the default) | Yes | Permitted — this node owns the RW config store and is the only admin writer |
+| `worker` | No | Refused (fail closed) — a worker mounts EFS read-only and is not a durable writer |
+
+This is correct for both reference topologies: `GoBridgeSingle` is a single
+task, and `GoBridgeCluster` forces the **control** service to `DesiredCount=1`
+(workers mount EFS read-only), so exactly one node is ever the config writer.
+
+**When you need a CAS config store instead.** If you build a genuine
+**multi-writer** deployment — more than one node accepting admin config
+transactions against the same shared backend concurrently — asserting
+single-writer would be unsafe. Such a deployment MUST wire a
+`ports.ConditionalConfigStore` (compare-and-swap) config store instead, which
+serializes concurrent commits safely regardless of the single-writer flag. The
+bundled `parser.FileStore` is **not** CAS today, so multi-writer config-txn
+commits remain refused on the file-based profile — keep to the single control
+writer, or supply a CAS store.
 
 ## Secret Management
 
@@ -446,6 +499,116 @@ genuinely ready to carry traffic. An unknown level returns `400`.
 
 Set the orchestrator's stop/termination timeout higher than `shutdown_timeout`
 to give GoBridge enough time to drain before the orchestrator sends `SIGKILL`.
+
+### Non-AWS Docker / Kubernetes (build your own image)
+
+The published image (`ghcr.io/mariotoffia/gobridge`) is the **AWS file-based
+profile**: it reads its bootstrap from env/SSM and registers the AWS-oriented
+composition root. It is **not** a general off-AWS image — running it outside AWS
+without SSM and the expected bootstrap will not work. For a non-AWS Docker/K8s
+deployment you ship **your own binary** built from a composition root that
+registers only the transports, stores, and processors you use.
+
+**1. Composition root.** Copy `cmd/gobridge/main.go` as the template and register
+your adapters (the `Register(reg)` decoder calls plus the supervisor factories).
+See [Reference Binary and Composition Root](#reference-binary-and-composition-root)
+and [PLUGIN.md](../PLUGIN.md).
+
+**2. Dockerfile skeleton** (multi-stage; the image ships no shell, so probe with
+the binary or an HTTP probe):
+
+```dockerfile
+# Build stage
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+# Point at YOUR composition root, not cmd/gobridge (the demo binary).
+RUN CGO_ENABLED=0 go build -o /out/mybridge ./cmd/mybridge
+
+# Runtime stage
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/mybridge /usr/local/bin/mybridge
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/mybridge", "-config", "/etc/gobridge/bridge.yaml"]
+```
+
+**3. Kubernetes manifests (template — requires your own image).** The snippets
+below are a starting point; substitute your image and the config your bridge
+actually references. The readiness probe uses `/api/v1/monitor/ready` (gate on a
+transport-level `?level=` — see [Readiness levels](#container-orchestrator-integration)).
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gobridge-config
+data:
+  bridge.yaml: |
+    bridge:
+      id: my-bridge
+    # sessions / receivers / senders / routes ...
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gobridge-secrets
+type: Opaque
+stringData:
+  admin-api-key: change-me-to-a-real-secret-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gobridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: gobridge }
+  template:
+    metadata:
+      labels: { app: gobridge }
+    spec:
+      containers:
+        - name: gobridge
+          image: registry.example.com/mybridge@sha256:...  # your image, pinned by digest
+          args: ["-config", "/etc/gobridge/bridge.yaml"]
+          ports:
+            - { name: admin, containerPort: 8080 }
+            - { name: monitor, containerPort: 8081 }
+          env:
+            - name: GOBRIDGE_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef: { name: gobridge-secrets, key: admin-api-key }
+          volumeMounts:
+            - { name: config, mountPath: /etc/gobridge }
+          livenessProbe:
+            httpGet: { path: /api/v1/monitor/live, port: 8081 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /api/v1/monitor/ready?level=subscribed, port: 8081 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: config
+          configMap: { name: gobridge-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gobridge
+spec:
+  selector: { app: gobridge }
+  ports:
+    - { name: monitor, port: 8081, targetPort: 8081 }
+```
+
+Expose the admin port (8080) through a Service with
+`publishNotReadyAddresses: true` (or a headless Service) so a not-ready pod's
+admin API stays reachable — see [Admin API reachability](#container-orchestrator-integration)
+above. Mount the config as a **volume**, not a `subPath`, so hot-reload works
+(see [Kubernetes ConfigMap Config](#kubernetes-configmap-config)).
 
 ### Kubernetes ConfigMap Config
 
