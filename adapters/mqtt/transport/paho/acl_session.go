@@ -18,11 +18,13 @@ import (
 // ConnectionManager returns the underlying autopaho.ConnectionManager.
 //
 // This accessor lives in the ACL because its return type is an SDK
-// pointer; port-side code MUST NOT call it. It is retained because
-// existing tests (and the historical Sender code path) use it as the
-// only way to reach the live CM. Tests that swap in a stub assign
-// Session.cm directly with a pahoConnection (typically a *pahoConn
-// wrapping a sentinel autopaho.ConnectionManager).
+// pointer; port-side code MUST NOT call it. It is retained solely for
+// tests that need to reach the raw CM; production egress now publishes
+// through the SDK-free pahoConnection.PublishEnvelope seam via
+// Session.connection() (F-2), so the Sender no longer depends on it.
+// Tests that swap in a stub assign Session.cm directly with a
+// pahoConnection (typically a *pahoConn wrapping a sentinel
+// autopaho.ConnectionManager).
 //
 //aclcheck:allow-export
 func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
@@ -288,11 +290,15 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	// record and re-invoked on replay after a crash, so a lost in-flight
 	// publish is re-sent. The MQTT plugin ALONE does not provide durable
 	// egress; do NOT rely on MQTT QoS 1/2 as the sole loss-prevention for
-	// outbound. Factory.NewSender emits a one-time advisory to this effect for
-	// QoS 1/2 senders (see warnOutboxDurabilityOnce), and docs/transports/mqtt.md
-	// documents the requirement. A file-backed session.SessionManager (assigned
-	// to cfg.Session) is the deferred, ADR-level alternative and is out of
-	// scope here (deferred finding M-6; see scenario-01 docs).
+	// outbound. The sender reports this via ports.NonDurableEgressReporter
+	// (Sender.NonDurableEgress ⇒ true for QoS ≥ 1); the bridge consults it in
+	// egressDurabilityAdvisory to warn only when a route's delivery mode would
+	// settle the source before this non-durable boundary. Both wired modes
+	// (direct_hold, shared_outbox) are loss-safe, so no advisory fires today.
+	// docs/transports/mqtt.md documents the requirement. A file-backed
+	// session.SessionManager (assigned to cfg.Session) is the deferred,
+	// ADR-level alternative and is out of scope here (deferred finding M-6; see
+	// scenario-01 docs).
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
@@ -496,7 +502,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, MapError(err)
 	}
 
-	return newPahoConn(cm), cmCancel, nil
+	return newPahoConn(cm, s.metrics), cmCancel, nil
 }
 
 // applyConnectCredentials sets the MQTT v5 CONNECT username/password fields

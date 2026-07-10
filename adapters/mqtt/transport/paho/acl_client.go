@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // pahoConnection is the unexported mock seam that wraps an
@@ -78,12 +79,19 @@ func connackReasonCode(err error) (code byte, ok bool) {
 // autopaho.ConnectionManager.
 type pahoConn struct {
 	cm *autopaho.ConnectionManager
+	// metrics is the session's exporter, threaded so PublishEnvelope can
+	// count egress header drops (MetricMQTTNonStringHeaderDropped) on the
+	// Sender path — the same counting the Sender used to do when it called
+	// PublishFromEnvelope directly (F-2). May be nil; PublishFromEnvelope
+	// tolerates a nil exporter (drop applied, uncounted).
+	metrics ports.MetricsExporter
 }
 
 // newPahoConn wraps a live autopaho.ConnectionManager so it can be
-// stored in Session.cm (typed pahoConnection).
-func newPahoConn(cm *autopaho.ConnectionManager) *pahoConn {
-	return &pahoConn{cm: cm}
+// stored in Session.cm (typed pahoConnection). metrics is the session's
+// exporter, used only by PublishEnvelope for egress drop counting.
+func newPahoConn(cm *autopaho.ConnectionManager, metrics ports.MetricsExporter) *pahoConn {
+	return &pahoConn{cm: cm, metrics: metrics}
 }
 
 // AwaitConnection blocks until the underlying ConnectionManager
@@ -143,7 +151,7 @@ func (c *pahoConn) PublishEnvelope(
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {
-	pub := PublishFromEnvelope(env, topic, opts, clk)
+	pub := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
 	resp, err := c.cm.Publish(ctx, pub)
 	if err != nil {
 		return publishResult{}, fmt.Errorf("paho: publish: %w", err)

@@ -94,13 +94,6 @@ type Session struct {
 	// on every reconcile.
 	sharedSubWarned bool
 
-	// outboxWarned latches the one-time advisory that outbound QoS 1/2 packet
-	// state is IN-MEMORY (autopaho), so durable egress needs the bridge's
-	// shared_outbox / idempotent replay, not MQTT session durability alone
-	// (HIGH-5). Guarded by mu; deduplicated so it fires once per session even
-	// when many QoS 1/2 senders bind to it.
-	outboxWarned bool
-
 	// activeSubs tracks topics for which SUBSCRIBE has been issued.
 	activeSubs map[string]byte // topic -> qos
 
@@ -225,8 +218,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	return s
 }
 
-// ConnectionManager returns the underlying autopaho.ConnectionManager.
-// Receiver and Sender use this to issue subscribe/publish calls.
+// clock returns the session clock (System when unset).
 func (s *Session) clock() clock.Clock {
 	if s.clk != nil {
 		return s.clk
@@ -234,37 +226,22 @@ func (s *Session) clock() clock.Clock {
 	return clock.System
 }
 
+// connection returns the current SDK-free connection seam (nil when the
+// session is not connected). The Sender publishes through this
+// pahoConnection.PublishEnvelope seam rather than reaching for the raw
+// autopaho.ConnectionManager, so port-side egress stays inside the ACL
+// boundary (F-2). The snapshot is taken under mu because Reload/reconnect
+// can swap s.cm; the returned value is used without the lock, exactly as
+// the pre-F-2 ConnectionManager() accessor was.
+func (s *Session) connection() pahoConnection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cm
+}
+
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
-}
-
-// warnOutboxDurabilityOnce logs, at most once per session, the HIGH-5 egress
-// durability boundary for QoS 1/2 senders: autopaho keeps outbound packet state
-// IN MEMORY (see the store note in acl_session.go), so publishes in flight at
-// process death are LOST and QoS 2 is not exactly-once across a restart. Durable
-// at-least-once egress is the bridge's shared_outbox / idempotent-replay
-// responsibility, not the MQTT session's — surface that so QoS 1/2 is not
-// mistaken for durable egress on its own. Deduplicated so binding many senders
-// to one session does not spam the advisory; QoS 0 senders never call it.
-func (s *Session) warnOutboxDurabilityOnce(logger *slog.Logger, senderID string, qos byte) {
-	if logger == nil {
-		return
-	}
-	s.mu.Lock()
-	first := !s.outboxWarned
-	s.outboxWarned = true
-	s.mu.Unlock()
-	if !first {
-		return
-	}
-	logger.Warn("mqtt: outbound QoS 1/2 packet state is IN-MEMORY (autopaho) — publishes in flight at process "+
-		"death are LOST and QoS 2 is not exactly-once across a restart; durable egress requires the bridge's "+
-		"shared_outbox / idempotent replay, not MQTT session durability alone",
-		"session_id", s.opts.ClientID,
-		"sender_id", senderID,
-		"qos", qos,
-	)
 }
 
 // ---------------------------------------------------------------------------

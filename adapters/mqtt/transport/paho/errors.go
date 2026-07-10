@@ -32,6 +32,16 @@ func MapError(err error) *shared.BridgeError {
 	}
 
 	s := err.Error()
+	// UPGRADE CHECKLIST (F-10): the two containsAny tables below classify
+	// broker/transport errors by case-insensitive SUBSTRING match on the SDK's
+	// error strings. This is correct against the pinned paho.golang v0.23.0
+	// (go.mod) but is inherently fragile: a paho bump can reword an error and
+	// silently reclassify it to the ErrUnavailable fallback, changing retry
+	// behaviour. On ANY paho.golang / autopaho version bump, re-verify these
+	// substrings against the new SDK's error strings (and prefer typed
+	// errors.As / reason codes over string matching where the SDK exposes them).
+	// The MQTT transport page's "Resilience Behavior" section carries the same
+	// note for operators.
 	if containsAny(s, "connection refused", "no route to host", "network unreachable") {
 		return shared.ErrConnectionLost.Wrap(err)
 	}

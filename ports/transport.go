@@ -271,6 +271,36 @@ type AddressValidatingSender interface {
 	ValidateAddress(address string) error
 }
 
+// NonDurableEgressReporter is an optional interface a Sender may implement to
+// declare that its egress path claims an at-least-once delivery guarantee whose
+// in-flight packet state is NOT durable across a process crash.
+//
+// The canonical case is the MQTT (autopaho) Sender at QoS 1/2: the broker
+// acknowledgement (PUBACK/PUBCOMP) proves broker acceptance, but the outbound
+// packet queue backing that handshake lives in memory, so a publish in flight
+// at process death is lost and QoS 2 is not exactly-once across a restart. A
+// QoS 0 (best-effort) Sender makes no delivery claim and reports false.
+//
+// The bridge uses this at build time to reason about egress durability
+// PER ROUTE: a non-durable-egress Sender only risks bridge-level message loss
+// on a delivery mode that acknowledges the SOURCE before the egress durability
+// boundary. Both current modes gate that boundary — direct_hold acks the source
+// only after the broker PUBACK/PUBCOMP, and shared_outbox only after a
+// version-fenced outbox persist — so a non-durable egress causes no
+// bridge-level loss on either. The advisory therefore stays silent today and
+// exists to flag a future non-gating delivery mode.
+//
+// A Sender that does not implement this interface is treated as durable-egress
+// (no advisory). Report true only when the delivery-guarantee-vs-durability gap
+// genuinely exists.
+type NonDurableEgressReporter interface {
+	Sender
+	// NonDurableEgress reports whether this Sender's accepted-but-in-flight
+	// egress can be lost at process crash despite claiming a delivery
+	// guarantee (QoS >= 1 for MQTT).
+	NonDurableEgress() bool
+}
+
 // SessionEventType classifies session lifecycle events.
 type SessionEventType int
 

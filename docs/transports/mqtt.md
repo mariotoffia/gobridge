@@ -38,6 +38,30 @@ the option. `clean_start: true` on an Exclusive session is a misconfiguration
 session-takeover loop); the adapter overrides it to `false` and logs a warning
 (`acl_session.go`).
 
+### Exclusive mode: lease store and failover timing
+
+**Lease store (platform requirement).** Exclusive mode elects a single holder
+through a distributed lease, so it needs a lease store that every instance
+shares. The only production-grade lease store today is **DynamoDB**
+(`store.type: dynamodb`). The in-process `memory` lease store coordinates only
+*within one process*: it is fine for a single-node deployment or tests, but it
+**cannot** enforce single-owner exclusivity across a multi-node cluster.
+A multi-node cluster running exclusive sessions therefore currently **requires
+AWS DynamoDB** — a non-AWS multi-node cluster cannot run exclusive sessions
+until a portable lease store (e.g. Postgres or Redis) is added. Single-node
+exclusive sessions have no such coupling. See
+[store configuration](../configuration-reference.md#stores----backing-store-configuration).
+
+**Failover timing.** When the lease holder dies, a standby reclaims the
+partition only after the lease TTL lapses, so the failover window is
+approximately `lease_ttl`. A clustered exclusive route that does **not** pin
+`lease_ttl`/`renew_interval` automatically starts from the 45s HA profile, which
+lands in the documented 30–60s band; pinning a looser `lease_ttl` (>60s) makes
+failover proportionally slower and emits a startup WARN so the trade-off is
+deliberate. See
+[Scenario 8 — High-Availability Profile](../scenarios/08-clustered-exclusive-sessions.md#high-availability-profile)
+for the failover math and the invariants.
+
 On a resumed (`clean_start=false`) session the broker replays its queued
 backlog on CONNACK before the route runners have registered their topic
 filters, so briefly some publishes match no handler. Those are buffered for
@@ -213,19 +237,35 @@ resume — but they do **not** make that outbound in-flight QoS 1/2 state
 durable: a bridge restart or crash still loses it, because it never leaves the
 in-memory packet store.
 
-**Production QoS 1/2 egress requires a durable outbox — MQTT QoS alone is not
-enough.** autopaho keeps the outbound packet queue **in memory**, so a publish
-that is in flight (sent, PUBACK/PUBCOMP not yet received) when the process dies
-is **lost**, and QoS 2 is **not** exactly-once across a restart. `client_id` /
-`clean_start=false` do not help — they resume *broker-side* state, not the
-*client-side* outbound queue. Durable, at-least-once egress is therefore the
-**bridge's** responsibility via the `shared_outbox` / idempotent-replay route
-pattern: the sender is invoked from a persisted outbox record and re-invoked on
-replay after a crash, so a lost in-flight publish is re-sent (idempotency keys
-suppress the duplicate). Do **not** treat MQTT QoS 1/2 as the sole
-loss-prevention for outbound traffic. The adapter logs a one-time advisory when
-a QoS 1/2 sender is built to make this boundary explicit. (A file-backed Paho
-session store is a deferred, ADR-level alternative and is not wired today.)
+**MQTT QoS 1/2 alone is not durable egress — but neither wired delivery mode
+loses a message.** autopaho keeps the outbound packet queue **in memory**, so a
+publish that is in flight (sent, PUBACK/PUBCOMP not yet received) when the
+process dies is lost at the *protocol* level, and MQTT QoS 2 is **not**
+exactly-once across a restart. `client_id` / `clean_start=false` do not help —
+they resume *broker-side* state, not the *client-side* outbound queue. What
+saves the message is where the route acknowledges the **source**:
+
+- **`direct_hold`** (the default) holds the source delivery un-acked until the
+  broker returns PUBACK (QoS 1) / PUBCOMP (QoS 2). A crash before that ack leaves
+  the source message un-acked, so the source redelivers it — the lost in-flight
+  publish is re-sent on recovery. No bridge-level loss.
+- **`shared_outbox`** invokes the sender from a version-fenced persisted outbox
+  record and marks it complete only **after** the send returns. A crash before
+  completion replays the record on restart, so the publish is re-sent
+  (idempotency keys collapse the duplicate). No bridge-level loss.
+
+So the in-memory packet store means MQTT-protocol QoS 2 exactly-once is not
+preserved across a restart — a redelivered duplicate is collapsed by the
+bridge's dedup — but it does **not** translate into lost messages on either
+delivery mode. The only way an in-flight loss could become bridge-level loss is
+a delivery mode that acks the source *before* the transport confirms the
+publish; no such mode exists today, so the bridge emits a route-aware startup
+advisory (`bridge.egressDurabilityAdvisory`) that stays silent for both current
+modes and exists only to flag such a future mode. Do **not** treat MQTT QoS 1/2
+as the sole loss-prevention for outbound traffic — pair loss-sensitive egress
+with `shared_outbox` (or the redelivery-backed `direct_hold` above). (A
+file-backed Paho session store is a deferred, ADR-level alternative and is not
+wired today.)
 
 ## Resilience Behavior
 
@@ -235,7 +275,12 @@ session store is a deferred, ADR-level alternative and is not wired today.)
 - **Case-insensitive error classification.** MQTT error messages from brokers
   are matched case-insensitively. `"Connection Refused"`, `"CONNECTION REFUSED"`,
   and `"connection refused"` are all correctly classified as `ErrConnectionLost`,
-  enabling proper retry behavior regardless of broker formatting.
+  enabling proper retry behavior regardless of broker formatting. This matching
+  is a **substring table over SDK error strings**, correct against the pinned
+  `paho.golang v0.23.0`. **Maintenance/upgrade checklist:** on any paho.golang
+  bump, re-verify the `MapError` string table (`errors.go`) — a reworded SDK
+  error can silently fall through to the `ErrUnavailable` default and change
+  retry behavior.
 - **Properties deep-copy for shared sessions.** When multiple receivers share an
   MQTT session, each handler goroutine receives an independent deep-copy of the
   MQTT Properties (User properties, CorrelationData, ContentType, etc.),
@@ -368,6 +413,23 @@ with `mqtt.topic`, `mqtt.retained`, or `mqtt.qos` is dropped during conversion,
 so a remote publisher cannot spoof the delivered topic, retained state, or QoS.
 Read them downstream to branch on retained snapshots or on the QoS a message
 arrived at.
+
+### Envelope ID derivation and dedup collisions
+
+When an inbound publish carries no explicit identity — no `mqtt.message-id` user
+property (the key a bridge peer stamps) and no correlation data — the adapter
+**derives** the `Envelope.ID` deterministically as a 128-bit hash of the publish
+**topic ⊕ payload**. Determinism is deliberate: a broker QoS 1 redelivery of the
+same publish yields the same ID, so downstream idempotency/dedup catches exactly
+those broker-created duplicates.
+
+**Collision is by design.** Two *distinct* business events that share the same
+topic **and** byte-identical payload derive the **same** envelope ID — on a
+dedup-backed route (`shared_outbox`) they collapse into one. Without a
+producer-supplied ID they are indistinguishable on the wire anyway. If an
+upstream legitimately emits byte-identical payloads that must be treated as
+separate events, it **must** stamp a unique `mqtt.message-id` user property (or a
+correlation ID); the adapter then uses that instead of the derived hash.
 
 ## Receiver Options
 

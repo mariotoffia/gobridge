@@ -261,6 +261,9 @@ func (b *Builder) wireRoutes(
 	}
 
 	registeredSessions := make(map[string]bool)
+	// slowFailoverWarned dedupes the F-1 advisory per session so a session
+	// shared by several routes is flagged at most once.
+	slowFailoverWarned := make(map[string]bool)
 
 	for _, routeDef := range b.cfg.Routes {
 		recv, ok := receivers[routeDef.ReceiverID]
@@ -278,6 +281,7 @@ func (b *Builder) wireRoutes(
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
 		}
 		applyBridgeDrainDefaults(sessCfg, b.cfg.Bridge)
+		b.warnSlowClusterFailover(routeDef, sessCfg, slowFailoverWarned)
 
 		// Assemble the session's desired topology from the blueprint so the
 		// session manager reconciles a non-empty plan. sessionPlanFor is the
@@ -372,6 +376,20 @@ func (b *Builder) wireRoutes(
 
 		if routeSender == nil {
 			return fmt.Errorf("bridge: route %q: no sender resolved", routeDef.ID)
+		}
+
+		// F-3: warn when a route's egress can lose an accepted publish at crash
+		// in a way that would become bridge-level loss. See
+		// egressDurabilityAdvisory — silent for both current delivery modes.
+		if b.logger != nil &&
+			egressDurabilityAdvisory(routing.DeliveryMode(routeDef.DeliveryMode), routeSender) {
+			b.logger.Warn("bridge: route egress is non-durable and its delivery mode acks the source "+
+				"before the egress durability boundary — an accepted publish lost at process crash becomes "+
+				"bridge-level message loss; use shared_outbox (durable persist) or a delivery mode that acks "+
+				"the source only after the transport confirms",
+				"route", routeDef.ID,
+				"delivery_mode", routeDef.DeliveryMode,
+			)
 		}
 
 		// A shared_outbox route drains its outbox through the drainer wired to
@@ -523,7 +541,101 @@ func (b *Builder) wireRoutes(
 	return nil
 }
 
-// validatePlanDrivenReceiverSessions fails the build when a receiver on a
+// failoverBandMaxTTL is the upper bound of the documented clustered-failover
+// band (30-60s). A clustered exclusive session whose lease TTL exceeds it will
+// not have a dead owner's partition reclaimed by a peer for that whole TTL, so
+// it misses the stated failover requirement (F-1).
+const failoverBandMaxTTL = 60 * time.Second
+
+// warnSlowClusterFailover emits the F-1 advisory once per session when a
+// CLUSTERED deployment runs an exclusive (lease-bearing) session whose effective
+// lease TTL is slower than the documented 30-60s failover band.
+//
+// Clustered sessions that do not pin lease timing already default to the 45s HA
+// profile (toSessionConfigE), which is in band and does NOT warn. This fires
+// only when the operator EXPLICITLY pinned a loose lease_ttl on a cluster,
+// making a slow failover a deliberate, visible choice rather than a silent
+// surprise. It is scoped to clustered deployments because failover — a peer
+// reclaiming a dead owner's partition — is only meaningful with a peer; a
+// single-node deployment has none, so a loose TTL there is not warned.
+func (b *Builder) warnSlowClusterFailover(
+	routeDef ports.RouteDef,
+	sessCfg *session.Config,
+	warned map[string]bool,
+) {
+	// sessCfg is non-nil only for a RouteSessionDef source, which is always an
+	// exclusive single-owner lease session — so a non-nil sessCfg already
+	// implies "exclusive".
+	if b.logger == nil || sessCfg == nil || routeDef.Session == nil {
+		return
+	}
+	if !deploymentClustered(b.cfg) || sessCfg.LeaseTTL <= failoverBandMaxTTL {
+		return
+	}
+	sid := routeDef.Session.SessionID
+	if warned[sid] {
+		return
+	}
+	warned[sid] = true
+	b.logger.Warn("bridge: clustered exclusive session has a lease TTL slower than the documented "+
+		"30-60s failover band — if the owning node dies, its partition is not reclaimed by a peer for "+
+		"the whole TTL; pin a lease_ttl within the band or omit lease timing to use the 45s HA default",
+		"session", sid,
+		"lease_ttl", sessCfg.LeaseTTL,
+		"failover_band_max", failoverBandMaxTTL,
+	)
+}
+
+// egressDurabilityAdvisory reports whether a route wiring warrants an
+// egress-durability WARN. Two conditions must both hold:
+//
+//  1. the route's Sender declares NON-DURABLE egress via
+//     ports.NonDurableEgressReporter — its accepted-but-in-flight packet state
+//     can be lost at process crash (MQTT autopaho at QoS 1/2); AND
+//  2. the delivery mode acknowledges the SOURCE before that egress durability
+//     boundary, so the lost publish is never redelivered nor replayed and the
+//     transport loss becomes BRIDGE-LEVEL message loss.
+//
+// A Sender that does not implement the reporter interface is treated as
+// durable-egress (no advisory).
+//
+// ponytail: this is a forward-guard and is SILENT for both current delivery
+// modes. direct_hold acks the source only after the broker PUBACK/PUBCOMP
+// (runtime/route/dispatch.go), and shared_outbox only after a version-fenced
+// outbox persist (runtime/validator.go), so neither acks the source ahead of
+// the egress durability boundary — a non-durable egress causes no bridge-level
+// loss on either. The advisory therefore fires today for nothing, by design; it
+// exists so that a future delivery mode which acks the source early trips a
+// startup WARN instead of losing messages silently in production. It inspects
+// the route's PRIMARY sender (the documented single-dispatch path); extending it
+// to per-binding fan-out senders is a trivial follow-up if such a mode is ever
+// added.
+//
+// An unset (empty) mode is normalised to the documented default (direct_hold),
+// matching how routing.RoutePolicy.WithDefaults resolves an omitted
+// delivery_mode, so a route that omits the field is treated as the loss-safe
+// default and stays silent. A non-empty UNRECOGNISED mode is left to trip the
+// default branch: config.Validate (validate.ValidateBlueprintGraph → the
+// delivery_mode validateEnum) rejects a typo up front, so the only non-empty
+// value that reaches the default branch is a genuinely NEW mode a future author
+// added to DeliveryMode without special-casing it here.
+func egressDurabilityAdvisory(mode routing.DeliveryMode, snd ports.Sender) bool {
+	reporter, ok := snd.(ports.NonDurableEgressReporter)
+	if !ok || !reporter.NonDurableEgress() {
+		return false
+	}
+	if mode == "" {
+		mode = routing.DeliveryDirectHold
+	}
+	switch mode {
+	case routing.DeliveryDirectHold, routing.DeliverySharedOutbox:
+		// Source ack is gated behind the egress durability boundary.
+		return false
+	default:
+		return true
+	}
+}
+
 // PLAN-DRIVEN transport (one advertising ports.CapPlanDrivenSubscriptions —
 // mqtt, amqp091) is bound to a session that gets NO session manager. Such a
 // session is never reconciled, so the receiver's subscriptions are never

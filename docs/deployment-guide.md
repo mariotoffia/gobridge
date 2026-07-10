@@ -413,6 +413,27 @@ A terminal runtime exits non-zero (`cmd/gobridge` → `1`) precisely so a Kubern
 `livenessProbe` or ECS health check restarts the task rather than leaving it
 wedged.
 
+**A restart policy is required — the process is designed to exit and be
+restarted.** GoBridge follows a let-it-exit recovery model: several paths end by
+*exiting non-zero on purpose* rather than wedging in place. The clearest is a
+single-use exclusive session that steps down from its lease and cannot reacquire
+it — it reaches a terminal state and the process exits (recovery leg 5; see
+[ADR 0004](adr/0004-single-use-runtime-lifecycle.md) and the Scenario 8 backstop
+note). This is safe **only** when something restarts the process so it can
+re-elect or reconnect. Kubernetes Pods (`restartPolicy` defaults to `Always`)
+and ECS services restart automatically, but a **bare `docker run` without
+`--restart` stays down** after such an exit. For any long-lived container
+deployment, set a restart policy explicitly:
+
+```bash
+docker run --restart unless-stopped ... your-gobridge-image
+```
+
+For `docker compose`, set `restart: unless-stopped` (or `always`) on the
+service; for systemd units, `Restart=always`. Only a plain `docker run` /
+`docker compose` without an explicit restart policy needs this called out —
+orchestrators already restart by default.
+
 ### Pin Images by Digest
 
 For reproducible builds, pin images by digest (`name@sha256:...`) rather than a

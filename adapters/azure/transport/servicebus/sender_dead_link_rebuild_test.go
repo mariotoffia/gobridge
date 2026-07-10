@@ -252,4 +252,3 @@ func TestSender_ConcurrentSendAndSendBatch_ClosedLink_NeverNilDerefs(t *testing.
 		"closed links were repeatedly torn down and rebuilt (no dead-link reuse, no nil seam)")
 	require.Nil(t, s.cfg.Client, "test drove the real build seam, not an injected client")
 }
-

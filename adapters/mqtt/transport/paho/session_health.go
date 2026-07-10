@@ -110,7 +110,15 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	select {
 	case s.events <- ev:
 	default:
-		// Drop oldest event to make room.
+		// Drop oldest event to make room. Known, accepted trade-off (F-6):
+		// under an event storm this can evict an unconsumed SessionConnected
+		// before the manager reads it, so a reconcile that would have run on
+		// that connect edge is deferred to the NEXT connect edge. This is
+		// bounded (the session reconnects and re-emits) and metered via
+		// MetricMQTTEventDropped; it is not hardened (non-evictable /
+		// coalesce-by-type) on purpose — the buffer is drop-oldest by design and
+		// the drop is observable. Alert on MetricMQTTEventDropped if it is
+		// non-zero in steady state.
 		select {
 		case <-s.events:
 		default:

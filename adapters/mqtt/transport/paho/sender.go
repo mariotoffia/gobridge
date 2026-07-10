@@ -24,6 +24,7 @@ type Sender struct {
 }
 
 var _ ports.Sender = (*Sender)(nil)
+var _ ports.NonDurableEgressReporter = (*Sender)(nil)
 
 // NewSender creates a Sender bound to the given Session.
 func NewSender(session *Session, opts SenderOptions) *Sender {
@@ -54,8 +55,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return shared.ErrInvalidPayload.WithMessage("nil envelope")
 	}
 
-	cm := s.session.ConnectionManager()
-	if cm == nil {
+	conn := s.session.connection()
+	if conn == nil {
 		return shared.ErrUnavailable.WithMessage("MQTT session not connected")
 	}
 
@@ -67,12 +68,10 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return shared.ErrInvalidTopic.WithMessage("no topic specified and no default topic configured")
 	}
 
-	pub := PublishFromEnvelope(env, topic, s.opts, s.session.clock(), s.metrics)
-
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: publishing",
 			"topic", topic,
-			"qos", pub.QoS,
+			"qos", s.opts.QoS,
 			"payload_len", len(env.Payload()),
 			"envelope_id", env.ID(),
 		)
@@ -85,8 +84,11 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: s.session.opts.ClientID}
 
+	// Publish through the ACL's domain-shaped seam (F-2) rather than the raw
+	// autopaho.ConnectionManager: the seam serialises the envelope and returns
+	// only the reason code, keeping port-side egress SDK-free.
 	start := s.session.clock().Now()
-	resp, err := cm.Publish(ctx, pub)
+	resp, err := conn.PublishEnvelope(ctx, env, topic, s.opts, s.session.clock())
 	elapsed := s.session.clock().Since(start)
 
 	if err != nil {
@@ -99,7 +101,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		return MapError(err)
 	}
 
-	if resp != nil && resp.ReasonCode != 0 {
+	if resp.ReasonCode != 0 {
 		if berr := s.publishReasonError(resp.ReasonCode, topic); berr != nil {
 			s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
 			s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
@@ -148,6 +150,17 @@ func (s *Sender) publishReasonError(code byte, topic string) *shared.BridgeError
 		result = result.WithRetryAfter(hint)
 	}
 	return result
+}
+
+// NonDurableEgress implements ports.NonDurableEgressReporter. It reports
+// true for QoS 1/2 because autopaho keeps the outbound packet queue in
+// memory: a publish in flight at process death is lost and QoS 2 is not
+// exactly-once across a restart, even though the PUBACK/PUBCOMP handshake
+// otherwise proves broker acceptance. QoS 0 is best-effort by protocol and
+// makes no delivery claim, so it reports false. The bridge uses this to
+// reason about egress durability per route (see the interface doc).
+func (s *Sender) NonDurableEgress() bool {
+	return s.opts.QoS >= 1
 }
 
 // defaultSendTimeout is the safety-net fallback used when

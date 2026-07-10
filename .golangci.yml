@@ -126,6 +126,12 @@ linters:
         # (wedgeableChannel) without a live broker.
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091.publisherChannel
         - github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10.amqpConn
+        # pahoConnection is the SDK-free publish seam the MQTT Sender drives
+        # (Session.connection() hands it back). Package-private so Sender.Send
+        # can publish through PublishEnvelope inside the ACL boundary and unit
+        # tests can inject a fake connection (F-2). *pahoConn is the sole
+        # production impl.
+        - github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho.pahoConnection
         - github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm.ssmAPI
         - github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch.cloudWatchAPI
         - github.com/mariotoffia/gobridge/adapters/aws/transport/sqs.sqsAPI

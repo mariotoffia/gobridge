@@ -146,14 +146,6 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if opts.ThrottleRetryAfter == 0 {
 		opts.ThrottleRetryAfter = DefaultSenderOptions().ThrottleRetryAfter
 	}
-	// HIGH-5: QoS 1/2 egress packet state is in-memory (autopaho), so it is
-	// NOT durable across process death. Surface the requirement once per
-	// session that durable egress is the bridge's shared_outbox / idempotent
-	// replay, not MQTT session durability. QoS 0 is best-effort by protocol
-	// and carries no such expectation, so it is not warned.
-	if opts.QoS >= 1 {
-		mqttSession.warnOutboxDurabilityOnce(f.Logger, spec.ID, opts.QoS)
-	}
 	return NewSender(mqttSession, opts), nil
 }
 

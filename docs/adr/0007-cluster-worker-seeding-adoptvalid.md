@@ -65,6 +65,19 @@ The seeder on the control task is the only read-write writer of EFS. Design in
 - Teams that need lock-step deploys give up the coexistence and opt into
   `AbortDeploy`, accepting that an Admin-API commit then blocks new workers until
   the asset is re-synthed to match.
+- **No staged/canary rollout — reconfiguration is fleet-wide on the next read.**
+  A live Admin-API commit is adopted by *every* `AdoptValid` worker the next time
+  it reads the shared config; there is no per-node canary, percentage rollout, or
+  blast-radius staging. A valid-but-wrong commit — one that parses and passes
+  validation but is operationally wrong — therefore propagates to the whole
+  fleet. The only guards are per-node: a worker fails fast on a corrupt or
+  unparseable config (it will not start on one), and an operator recovers by
+  committing a corrected config, which likewise propagates fleet-wide on the next
+  read. This is an accepted property of the single-file config model at the
+  current scale, not a defect. Deployments that need canary semantics must stage
+  at a higher layer — a separate pre-production cluster and config, or an external
+  progressive-delivery control in front of the Admin API. See the
+  [cluster reconfiguration runbook](../runbooks/cluster-reconfiguration.md).
 
 ## Rejected alternatives
 

@@ -217,7 +217,8 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 //
 // The returned *pahov5.Publish is the SDK boundary output this ACL helper
 // exists to produce; it is consumed by the pahoConn ACL seam
-// (acl_client.go PublishEnvelope) and by the legacy Sender path.
+// (acl_client.go PublishEnvelope), which is the single production egress
+// path since the Sender was routed through the seam (F-2).
 //
 // An optional MetricsExporter (variadic, mirroring NewSession) is used to
 // count bridge-to-bridge / application headers dropped because their value

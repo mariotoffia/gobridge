@@ -19,7 +19,7 @@ adapter cannot tell a genuinely orphaned topic from one whose subscription has
 not been reconciled yet.
 
 The design intent is documented in the adapter
-(`adapters/mqtt/transport/paho/acl_router.go:54-70`,
+(`adapters/mqtt/transport/paho/acl_router.go`,
 `session_reconcile.go`, and the package `doc.go`).
 
 ## Decision
@@ -28,32 +28,34 @@ Bound the ambiguity with a startup grace window, then reconcile orphans on
 evidence, guarding against removing subscriptions the plan still wants.
 
 - **Unmatched-grace window.** For `DefaultUnmatchedGrace = 30 * time.Second`
-  (`config.go:190`; a zero value falls back to it, `config.go:81`, `:203`) after
+  (`config.go`; a zero value falls back to it, `config.go`) after
   startup, a publish with no matching binding is buffered — the reconcile may
   still be installing the subscription that covers it.
 
 - **Ack-and-drop past grace.** Once the grace window elapses, an unmatched
   publish is acked and dropped. The topic is recorded as evidence of a live
   orphan subscription so the adapter can act on fact, not on the config diff
-  alone.
+  alone. **This was later refined (HIGH-1): past-grace handling now splits by
+  whether the current plan still covers the topic — a covered topic is retained,
+  not dropped. See the [2026-08-14 addendum](#addendum-2026-08-14-covered-qos-1-and-2-retention-past-grace).**
 
 - **Evidence-based, deduped, exact-topic UNSUBSCRIBE.** The router's grace-worker
-  goroutine (`acl_router.go:237`, `:253` `graceLoop`) drains an orphan topic off
+  goroutine (`acl_router.go` `graceLoop`) drains an orphan topic off
   `unsubCh` and invokes the wired `Session.unsubscribeOrphan`
-  (`session.go:128`, `session_reconcile.go:90`), which issues a best-effort
+  (`session.go`, `session_reconcile.go`), which issues a best-effort
   `UNSUBSCRIBE` for the EXACT topic that produced the orphan publish. The dedup
-  mark is set when the topic is enqueued (`acl_router.go:308`) and never cleared,
+  mark is set when the topic is enqueued (`acl_router.go`) and never cleared,
   so each orphan topic is unsubscribed at most once per process.
 
 - **Covered-topic guard.** Before unsubscribing, `unsubscribeOrphan`
-  (`session_reconcile.go:90`) calls `topicCoveredLocked`
-  (defined at `session_reconcile.go:146`, called at `:94`) to check whether a
+  (`session_reconcile.go`) calls `topicCoveredLocked`
+  (defined in `session_reconcile.go`) to check whether a
   still-desired subscription already covers the topic (an active broker
   subscription or a filter in the current plan). If so, the orphan unsubscribe is
   skipped — removing it would break a wanted subscription.
 
 - **No-op on empty plan.** Reconcile is a no-op when the new plan is empty and a
-  prior plan exists (`session_reconcile.go:26`), so a transient empty
+  prior plan exists (`session_reconcile.go`), so a transient empty
   configuration does not unsubscribe topics that are still in use or externally
   managed. Orphan unsubscribes are bounded by `orphanUnsubscribeTimeout` (10s,
   `session_reconcile.go`).
@@ -69,14 +71,14 @@ evidence, guarding against removing subscriptions the plan still wants.
 - A **wildcard** orphan subscription is never torn down. `UNSUBSCRIBE` matches a
   concrete topic, not a filter, and MQTT exposes no subscription listing, so the
   adapter can only unsubscribe the exact topic a publish arrived on
-  (`session_reconcile.go:71-76`). A wildcard orphan survives until process
+  (`session_reconcile.go`). A wildcard orphan survives until process
   restart; its publishes are acked-and-dropped indefinitely (broker and bandwidth
   cost, observable only via the drop metric), but they cannot re-stall the
   session.
 - `UNSUBSCRIBE` is best-effort and **not** retried. A `cm.Unsubscribe` failure
   leaves the dedup mark set, so the topic is not re-attempted until process
   restart; the only re-attempt path is the queue-overflow branch
-  (`acl_router.go:317-318`), where the enqueue failed and the mark was never set.
+  (`acl_router.go`), where the enqueue failed and the mark was never set.
   The adapter does not block routing on broker acknowledgment.
 - Operators tuning latency-sensitive startup can shorten `unmatched_grace`, at
   the cost of a higher chance of dropping an early publish for a
@@ -95,3 +97,35 @@ evidence, guarding against removing subscriptions the plan still wants.
   externally-managed subscription or an in-flight reconcile from a real orphan,
   and would tear down wanted topics. The covered-topic guard and evidence
   requirement exist to prevent that.
+
+## Addendum 2026-08-14: covered QoS 1 and 2 retention past grace
+
+The original **Ack-and-drop past grace** decision above described an
+*unconditional* ack-and-drop once the grace window elapses. That is no longer
+accurate. A later hardening (HIGH-1) split the past-grace path by whether the
+current routing plan still **covers** the publish's topic:
+
+- **Covered topic, handler registered late.** The publish is **retained
+  un-acked** and redelivered once the handler registers
+  (`MQTTRouterCoveredRetained`) — it is **never** acked-and-dropped, so a
+  late-registering *live* route cannot lose a QoS 1/2 message.
+- **Covered topic, QoS 0 the bounded buffer cannot hold.** Dropped best-effort
+  and counted `MQTTRouterCoveredDropped`. QoS 0 carries no redelivery contract,
+  so this is the only covered-topic drop.
+- **Uncovered topic (genuine orphan).** Acked, dropped, and exact-topic
+  UNSUBSCRIBEd exactly as the decision describes
+  (`MQTTRouterUnmatchedDropped`).
+
+So "ack-and-drop past grace" now applies only to a topic **no current route
+covers**; a covered topic is held, not dropped. This closes the loss window
+where an early publish for a still-reconciling QoS 1/2 subscription could be
+discarded. The metric semantics are documented on the
+[MQTT transport page](../transports/mqtt.md#session-modes) (see the
+covered-retention release note) and in
+[release-notes.md](../release-notes.md).
+
+**On line numbers.** The `file.go:NN` offsets originally cited in the body of
+this ADR have been dropped: they rot as the code moves and were already stale by
+this addendum. Cite the named files and symbols (e.g. `graceLoop`,
+`unsubscribeOrphan`, `topicCoveredLocked`) as the stable reference. New ADRs
+should follow the same rule — files and symbols, not line numbers.
