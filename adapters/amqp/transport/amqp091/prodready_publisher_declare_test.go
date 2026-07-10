@@ -20,11 +20,12 @@ import (
 // clock defaults to System via s.clock().
 func newDeclareTestSession(rec *ports.RecordingExporter) *Session {
 	return &Session{
-		mode:       connectivity.SessionMode("consumer"),
-		logger:     slog.Default(),
-		metrics:    rec,
-		events:     make(chan ports.SessionEvent, 4),
-		activeSubs: make(map[string]bool),
+		mode:           connectivity.SessionMode("consumer"),
+		logger:         slog.Default(),
+		metrics:        rec,
+		events:         make(chan ports.SessionEvent, 4),
+		activeSubs:     make(map[string]bool),
+		forceReconnect: make(chan struct{}, 1),
 	}
 }
 

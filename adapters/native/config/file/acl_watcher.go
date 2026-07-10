@@ -87,6 +87,20 @@ type Watcher struct {
 	// touches it, so no lock is needed.
 	lastHash [sha256.Size]byte
 
+	// pendingHash/pendingSet hold a not-yet-confirmed content change for the
+	// stability gate (torn in-place write). A change is applied only after the
+	// SAME new bytes are read TWICE across the settle window (w.debounce): the
+	// first read records the candidate here without emitting, and a confirming
+	// read one window later commits it. A non-atomic in-place edit that briefly
+	// leaves a truncated-but-parseable snapshot (valid YAML/JSON for only some
+	// routes) therefore does not get applied — the confirming read sees the
+	// content still changing (or settled to the full config) and the partial
+	// state is never emitted. Operators who write atomically (rename) see only
+	// the extra settle-window latency. Same single-goroutine confinement as
+	// lastHash, so no lock is needed.
+	pendingHash [sha256.Size]byte
+	pendingSet  bool
+
 	// readFailedLogged de-duplicates the read-failure WARN to once per
 	// fail streak (reset by the next successful read). A start-empty
 	// bridge legitimately watches a file that does not exist yet, and in
@@ -270,6 +284,11 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	// New watch cycle, new fail streak: the first read failure after this
 	// Watch must log even if a previous cycle ended mid-streak.
 	w.readFailedLogged = false
+	// A new watch cycle also starts the stability gate fresh: drop any
+	// not-yet-confirmed candidate left by a previous cycle so a change is only
+	// applied after being read twice WITHIN this cycle (relative to the baseline
+	// just set above), never carried across a Stop/Watch restart.
+	w.pendingSet = false
 
 	switch w.mode {
 	case ModePoll:
@@ -382,6 +401,20 @@ func (w *Watcher) runNotify(
 	resync := w.clk.NewTicker(w.resyncInterval)
 	defer resync.Stop()
 
+	// armDebounce (re)starts the debounce timer. It doubles as the stability
+	// settle window (HIGH-2): when reloadIfChanged reports a not-yet-confirmed
+	// change (pending), we re-arm here so the SAME bytes are re-read one window
+	// later; only a change that reads identically twice is applied, holding a
+	// torn mid-write snapshot back.
+	armDebounce := func() {
+		if debounceTimer == nil {
+			debounceTimer = w.clk.NewTimer(w.debounce)
+			debounceCh = debounceTimer.C()
+		} else {
+			debounceTimer.Reset(w.debounce)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -396,20 +429,21 @@ func (w *Watcher) runNotify(
 			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
-			if debounceTimer == nil {
-				debounceTimer = w.clk.NewTimer(w.debounce)
-				debounceCh = debounceTimer.C()
-			} else {
-				debounceTimer.Reset(w.debounce)
-			}
+			armDebounce()
 
 		case <-debounceCh:
 			debounceTimer = nil
 			debounceCh = nil
-			w.reloadIfChanged(ch)
+			// A pending (not-yet-stable) change re-arms the debounce so the
+			// confirming re-read happens one settle window later.
+			if w.reloadIfChanged(ch) {
+				armDebounce()
+			}
 
 		case <-resync.C():
-			w.reloadIfChanged(ch)
+			if w.reloadIfChanged(ch) {
+				armDebounce()
+			}
 
 		case err, ok := <-errs:
 			if !ok {
@@ -422,7 +456,9 @@ func (w *Watcher) runNotify(
 			// which means the kernel dropped events — may have hidden a
 			// config change. Force an immediate hash-check reload
 			// instead of waiting for the next resync tick.
-			w.reloadIfChanged(ch)
+			if w.reloadIfChanged(ch) {
+				armDebounce()
+			}
 		}
 	}
 }
@@ -430,7 +466,13 @@ func (w *Watcher) runNotify(
 // pollLoop periodically reads the file and emits on content change.
 // The content baseline (lastHash) is taken synchronously by Watch.
 func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, stopCh, doneCh chan struct{}) {
+	var confirmTimer clock.Timer
+	var confirmCh <-chan time.Time
+
 	defer func() {
+		if confirmTimer != nil {
+			confirmTimer.Stop()
+		}
 		close(ch)
 		w.mu.Lock()
 		w.running = false
@@ -441,6 +483,19 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 	ticker := w.clk.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
+	// armConfirm schedules the stability re-read (HIGH-2 torn-write guard).
+	// Poll mode has no debounce timer, so a dedicated one-shot timer (w.debounce)
+	// provides the settle window across which a change must read identically
+	// twice before it is applied.
+	armConfirm := func() {
+		if confirmTimer == nil {
+			confirmTimer = w.clk.NewTimer(w.debounce)
+			confirmCh = confirmTimer.C()
+		} else {
+			confirmTimer.Reset(w.debounce)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -448,24 +503,48 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 		case <-stopCh:
 			return
 		case <-ticker.C():
-			w.reloadIfChanged(ch)
+			if w.reloadIfChanged(ch) {
+				armConfirm()
+			}
+		case <-confirmCh:
+			confirmTimer = nil
+			confirmCh = nil
+			if w.reloadIfChanged(ch) {
+				armConfirm()
+			}
 		}
 	}
 }
 
 // reloadIfChanged re-parses and delivers the config only when the file
-// content actually differs from the last successfully delivered state.
-// lastHash advances only after a successful parse and enqueue, so a
-// transiently unreadable or syntactically broken file is retried on the
-// next event/tick rather than being recorded as "seen".
+// content actually differs from the last successfully delivered state AND has
+// STABILIZED across the settle window. lastHash advances only after a
+// successful parse and enqueue, so a transiently unreadable or syntactically
+// broken file is retried on the next event/tick rather than being recorded as
+// "seen".
 //
-// The file is read EXACTLY ONCE: the change hash and the parse both derive
-// from the same byte slice (Finding 1). Hashing one read and parsing another
-// let a truncating editor / slow copy be caught mid-write — parse succeeds on a
-// truncated-but-valid prefix while lastHash records the FINAL content's hash,
-// so the resync gate sees "no change" and the bridge silently runs a partial
-// config. Mirrors Source.Load's read-once pattern.
-func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) {
+// The file is read EXACTLY ONCE per attempt: the change hash and the parse both
+// derive from the same byte slice (Finding 1). Hashing one read and parsing
+// another let a truncating editor / slow copy be caught mid-write — parse
+// succeeds on a truncated-but-valid prefix while lastHash records the FINAL
+// content's hash, so the resync gate sees "no change" and the bridge silently
+// runs a partial config. Mirrors Source.Load's read-once pattern.
+//
+// Stability gate (HIGH-2, torn in-place write): a non-atomic write can briefly
+// leave the file holding a truncated-but-parseable snapshot. A single read at
+// that instant would parse and apply the partial config, dropping routes and
+// triggering a real runtime swap. So a newly-changed content is NOT emitted on
+// first sighting; it is recorded as a candidate and only applied once a second
+// read across the settle window returns the SAME bytes. reloadIfChanged returns
+// pending==true while a candidate awaits confirmation, so the watch loop
+// re-reads one settle window later (the debounce timer in notify mode, a
+// one-shot confirm timer in poll mode). A change that is still in flight keeps
+// updating the candidate and is never applied until it settles. This does not
+// substitute for atomic writes (a writer that pauses mid-write longer than the
+// window can still settle on a partial file) — see the required atomic-rename
+// discipline in docs/runbooks/external-config-atomic-writes.md — but it closes
+// the common torn-read window.
+func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) (pending bool) {
 	data, err := w.readFile(w.path)
 	if err != nil {
 		if w.logger != nil && !w.readFailedLogged {
@@ -473,16 +552,34 @@ func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) {
 				"path", w.path, "error", err)
 		}
 		w.readFailedLogged = true
-		return
+		// A read failure abandons any pending candidate: the next successful
+		// read starts the stability gate over.
+		w.pendingSet = false
+		return false
 	}
 	w.readFailedLogged = false
 	h := sha256.Sum256(data)
 	if h == w.lastHash {
-		return
+		// Content matches what is already applied (or the file settled back to
+		// it mid-write); drop any half-written candidate we were tracking.
+		w.pendingSet = false
+		return false
 	}
+	if !w.pendingSet || h != w.pendingHash {
+		// First sighting of this new content, or it changed again since the
+		// previous read (writer still active). Hold it for stability
+		// confirmation instead of applying a possibly torn snapshot.
+		w.pendingHash = h
+		w.pendingSet = true
+		return true
+	}
+	// Same new content observed twice across the settle window → the write has
+	// settled. Commit it: hash and parse derive from this single read.
 	if w.emitParsed(data, ch) {
 		w.lastHash = h
 	}
+	w.pendingSet = false
+	return false
 }
 
 // emitParsed parses the supplied file bytes and enqueues the result with

@@ -226,3 +226,16 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int, error) {
 	n, err := s.sess.purge(ctx, before)
 	return n, s.observe(ctx, err)
 }
+
+// Depth reports the current number of outstanding DLQ entries — the standing
+// backlog behind shared.MetricDLQDepth (ports.DLQDepthReporter, sampled by
+// runtime.ReportDLQDepth). Backed by an efficient COUNT(*), not a paging scan.
+// A transient backend read error is returned as-is (the caller treats it as
+// "depth unavailable this sample" and emits nothing).
+func (s *Store) Depth(ctx context.Context) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqlitedlq: depth")
+	}
+	n, err := s.sess.count(ctx)
+	return n, s.observe(ctx, err)
+}

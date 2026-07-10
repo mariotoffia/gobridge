@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -38,6 +39,19 @@ type SessionOptions struct {
 	// CONNECT/CONNACK). Zero means the autopaho default (10s). It maps
 	// to autopaho.ClientConfig.ConnectTimeout.
 	ReconnectTimeout time.Duration `mapstructure:"reconnect_timeout" yaml:"reconnect_timeout" json:"reconnect_timeout"`
+	// ReconcileTimeout bounds EACH broker SUBSCRIBE / UNSUBSCRIBE the
+	// session manager issues while reconciling the SessionPlan. The
+	// reconcile loop runs on the runtime's context, which may carry no
+	// deadline, so without an adapter-owned timeout a wedged broker (a
+	// SUBSCRIBE whose SUBACK never arrives on a half-open connection) hangs
+	// the reconcile — and any startup/hot-reload step awaiting it —
+	// indefinitely (HIGH-2). Each broker op is wrapped in
+	// context.WithTimeout(ctx, reconcile_timeout) so it fails fast and the
+	// caller can retry on the next reconcile. A non-positive value is
+	// coerced to DefaultReconcileTimeout (30s): unlike the tuning knobs
+	// that honour an explicit 0, this is a liveness safety bound that must
+	// not be disabled (a disabled reconcile timeout re-introduces the hang).
+	ReconcileTimeout time.Duration `mapstructure:"reconcile_timeout" yaml:"reconcile_timeout" json:"reconcile_timeout"`
 	// CleanStart is the MQTT 5 clean-start flag consulted for Persistent
 	// and Exclusive sessions (Ephemeral sessions always connect with
 	// CleanStart=true regardless). The default is FALSE: the modes that
@@ -54,6 +68,18 @@ type SessionOptions struct {
 	Username              string        `mapstructure:"username" yaml:"username" json:"username"`
 	Password              shared.Secret `mapstructure:"password" yaml:"password" json:"password"`
 	TLS                   *TLSConfig    `mapstructure:"tls" yaml:"tls" json:"tls"`
+	// AllowPlaintextCredentials opts IN to sending the MQTT CONNECT
+	// username/password over a NON-TLS broker URL (tcp://, mqtt://, ws://,
+	// or a schemeless URL), where autopaho dials in cleartext and the
+	// credentials travel on the wire in the clear (HIGH-4). It defaults
+	// FALSE and the adapter FAILS CLOSED when credentials are configured
+	// without every broker_urls entry using a TLS scheme (ssl://, mqtts://,
+	// tls://, mqtt+ssl://, tcps://, wss://). Note that tls.enable does NOT
+	// change this: autopaho selects TLS purely from the URL scheme, so a
+	// tcp:// URL is cleartext regardless of tls settings. Set true only for
+	// trusted transports (a private mesh, mTLS-terminating sidecar, or a
+	// localhost test broker) where the plaintext exposure is acceptable.
+	AllowPlaintextCredentials bool `mapstructure:"allow_plaintext_credentials" yaml:"allow_plaintext_credentials" json:"allow_plaintext_credentials"`
 	// Will configures an MQTT Last Will and Testament published by the
 	// broker when this session's connection terminates ungracefully,
 	// letting peers detect ungraceful death. Optional; nil means no will.
@@ -142,6 +168,93 @@ type SessionOptions struct {
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
 	Clock clock.Clock `mapstructure:"-" yaml:"-" json:"-"`
+}
+
+// schemeUsesTLS reports whether an MQTT broker URL's scheme selects a TLS
+// transport. autopaho (paho.golang autopaho/net.go) dials TLS ONLY for these
+// schemes; every other scheme (tcp, mqtt, ws, or schemeless) dials in
+// CLEARTEXT — and the CONNECT packet's username/password travel in the clear.
+// Note: cfg.TlsCfg is applied by autopaho ONLY on a TLS scheme, so tls.enable
+// on a tcp:// URL is a silent no-op (HIGH-4).
+func schemeUsesTLS(brokerURL string) bool {
+	u, err := url.Parse(brokerURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "ssl", "tls", "mqtts", "mqtt+ssl", "tcps", "wss":
+		return true
+	default:
+		return false
+	}
+}
+
+// allBrokerURLsUseTLS reports whether EVERY configured broker URL uses a TLS
+// scheme. A single plaintext URL in the list is a cleartext-credential vector
+// (the reconnect loop may dial any of them), so the security gate treats the
+// weakest link as the effective transport security. An empty list is not TLS.
+func allBrokerURLsUseTLS(urls []string) bool {
+	if len(urls) == 0 {
+		return false
+	}
+	for _, u := range urls {
+		if !schemeUsesTLS(u) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasCredentials reports whether the session carries MQTT CONNECT
+// authentication material (username or password). MQTT sends these in the
+// CONNECT packet in cleartext, so they are the credentials the HIGH-4 gate
+// protects. Unlike AMQP, autopaho does NOT source credentials from broker-URL
+// userinfo for the CONNECT — only these fields — so the gate checks them alone.
+func (o *SessionOptions) hasCredentials() bool {
+	return o.Username != "" || !o.Password.IsZero()
+}
+
+// plaintextCredentialViolation is the single source of truth for the HIGH-4
+// cleartext-credential gate: it reports whether sending the given credential
+// state over the given broker URLs would put username/password on the wire in
+// the clear without the explicit allow_plaintext_credentials opt-in. Both the
+// static-config validator (validatePlaintextCredentials) and the RUNTIME
+// credential-rotation gate (Session.ApplyCredentials) AND the dial-time
+// defense-in-depth guard route through this predicate so all three decide
+// identically. An empty broker-URL list is "transport unknown" and never
+// violates here — the factory re-validates once broker_urls are populated.
+func plaintextCredentialViolation(hasCreds, allowPlaintext bool, brokerURLs []string) bool {
+	if len(brokerURLs) == 0 {
+		return false
+	}
+	return hasCreds && !allowPlaintext && !allBrokerURLsUseTLS(brokerURLs)
+}
+
+// errPlaintextCredentials is the fail-closed error every HIGH-4 gate returns so
+// the message (and its BridgeError code) is identical whether the violation is
+// caught at static config validation, at runtime credential rotation, or at the
+// dial-time defense-in-depth guard.
+func errPlaintextCredentials() error {
+	return shared.ErrInvalidPayload.WithMessage(
+		"mqtt: username/password are sent in the MQTT CONNECT packet in cleartext but not all broker_urls " +
+			"use a TLS scheme; use ssl:// (or mqtts://, tls://, mqtt+ssl://, tcps://, wss://), or set " +
+			"allow_plaintext_credentials=true to send credentials in cleartext anyway")
+}
+
+// validatePlaintextCredentials fails closed when username/password credentials
+// are configured but NOT every broker URL uses a TLS scheme (HIGH-4). The MQTT
+// CONNECT packet carries username/password in cleartext, so on a tcp:// (or
+// other non-TLS) broker they travel on the wire in the clear. It is the
+// explicit-opt-in gate: allow_plaintext_credentials=true is the escape hatch
+// for trusted transports. The check is skipped when no broker URLs are known
+// yet (hand-built options validated before the factory populates them, or a
+// receiver/sender spec that inherits its connection identity from a session);
+// the factory re-runs it once broker_urls are populated.
+func (o *SessionOptions) validatePlaintextCredentials() error {
+	if plaintextCredentialViolation(o.hasCredentials(), o.AllowPlaintextCredentials, o.BrokerURLs) {
+		return errPlaintextCredentials()
+	}
+	return nil
 }
 
 // normalizeBrokerURLs folds the single-broker BrokerURL alias into the
@@ -285,6 +398,15 @@ const (
 	reconnectBackoffFactor = 2.0
 )
 
+// DefaultReconcileTimeout bounds each broker SUBSCRIBE / UNSUBSCRIBE issued
+// during SessionPlan reconciliation when reconcile_timeout is unset or
+// non-positive (HIGH-2). 30s comfortably covers a healthy broker's SUBACK /
+// UNSUBACK round-trip while ensuring a wedged broker cannot hang the reconcile
+// (and any startup / hot-reload step awaiting it) indefinitely. It is a
+// liveness safety bound, so a non-positive configured value is coerced UP to
+// this default rather than disabling the timeout.
+const DefaultReconcileTimeout = 30 * time.Second
+
 // DefaultSessionOptions returns SessionOptions with recommended defaults.
 //
 // CleanStart defaults to FALSE: only Persistent/Exclusive sessions
@@ -295,6 +417,7 @@ func DefaultSessionOptions() SessionOptions {
 		KeepAlive:        30,
 		ConnectTimeout:   30 * time.Second,
 		ReconnectTimeout: 30 * time.Second,
+		ReconcileTimeout: DefaultReconcileTimeout,
 		CleanStart:       false,
 		UnmatchedGrace:   DefaultUnmatchedGrace,
 		Clock:            clock.System,
@@ -379,6 +502,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := optDuration(m, "reconnect_timeout"); ok {
 		opts.ReconnectTimeout = v
 	}
+	if v, ok := optDuration(m, "reconcile_timeout"); ok {
+		opts.ReconcileTimeout = v
+	}
 	if v, ok := optDuration(m, "reconnect_delay"); ok {
 		opts.ReconnectDelay = v
 	}
@@ -426,6 +552,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := m["password"].(string); ok {
 		opts.Password = shared.NewSecret(v)
 	}
+	if v, ok := m["allow_plaintext_credentials"].(bool); ok {
+		opts.AllowPlaintextCredentials = v
+	}
 	if v, ok := m["tls"].(*TLSConfig); ok {
 		opts.TLS = v
 	}
@@ -441,6 +570,12 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 			return opts, err
 		}
 		opts.Will = will
+	}
+
+	// HIGH-4: reject cleartext username/password over a non-TLS broker unless
+	// explicitly opted in. Guarded internally by broker_urls being present.
+	if err := opts.validatePlaintextCredentials(); err != nil {
+		return opts, err
 	}
 
 	return opts, nil

@@ -122,7 +122,16 @@ func (c *recordingCloser) Close() error { close(c.closed); return nil }
 // broker (the production *senderChannel wraps a real *amqp.Channel). Close is
 // idempotent and observable via closed.
 type wedgeableChannel struct {
-	publish   func(ctx context.Context) (publishResult, error)
+	publish func(ctx context.Context) (publishResult, error)
+	// publishDeferred, when set, backs PublishDeferred so the pipelined
+	// SendBatch wedge branch can be driven. Left nil for Send-only tests, which
+	// must never touch the deferred path (it panics to catch a mis-wiring).
+	publishDeferred func(ctx context.Context) (pendingPublish, error)
+	// closeGate, when non-nil, blocks Close until it is closed — modelling the
+	// SDK channel.Close that waits for channel.close-ok on a half-dead broker.
+	// nil (the default) closes instantly. Used to prove the confirm-timeout
+	// path never calls Close under s.mu (review #1).
+	closeGate chan struct{}
 	closeOnce sync.Once
 	closed    chan struct{}
 }
@@ -138,9 +147,12 @@ func (c *wedgeableChannel) PublishConfirmed(
 }
 
 func (c *wedgeableChannel) PublishDeferred(
-	context.Context, string, string, bool, *messaging.Envelope, SenderConfig, clock.Clock,
-) (*pendingConfirm, error) {
-	panic("wedgeableChannel.PublishDeferred: not exercised by Send")
+	ctx context.Context, _, _ string, _ bool, _ *messaging.Envelope, _ SenderConfig, _ clock.Clock,
+) (pendingPublish, error) {
+	if c.publishDeferred == nil {
+		panic("wedgeableChannel.PublishDeferred: not exercised by this test")
+	}
+	return c.publishDeferred(ctx)
 }
 
 func (c *wedgeableChannel) IsClosed() bool {
@@ -153,6 +165,9 @@ func (c *wedgeableChannel) IsClosed() bool {
 }
 
 func (c *wedgeableChannel) Close() error {
+	if c.closeGate != nil {
+		<-c.closeGate
+	}
 	c.closeOnce.Do(func() { close(c.closed) })
 	return nil
 }

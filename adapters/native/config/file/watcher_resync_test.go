@@ -1,6 +1,7 @@
 package file
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -86,37 +87,61 @@ func TestWatcher_Notify_ConfigMapSymlinkSwap(t *testing.T) {
 }
 
 // TestWatcher_Notify_ResyncCatchesMissedEvents proves the notify-mode
-// hash-reconciliation backup: the config path is a symlink whose target
-// lives OUTSIDE the watched directory, so writing the target produces
-// no fsnotify event at all. The periodic resync tick must still detect
-// and deliver the change within one interval.
+// hash-reconciliation backup: when a config change produces NO fsnotify event
+// at all — a symlinked ConfigMap target written outside the watched directory,
+// or a kernel queue drop — the periodic resync tick must still detect and
+// deliver it.
+//
+// The missed event is modelled deterministically by driving runNotify with an
+// injected event channel that stays empty (rather than a real fsnotify watcher
+// on a symlink, whose event delivery is platform-dependent and races the fake
+// clock). Only the resync ticker can notice the change; the stability gate then
+// holds it for one settle window before applying.
 func TestWatcher_Notify_ResyncCatchesMissedEvents(t *testing.T) {
-	watchDir := t.TempDir()
-	targetDir := t.TempDir()
-
-	target := filepath.Join(targetDir, "bridge.yaml")
-	writeYAML(t, target, "initial")
-	cfgPath := filepath.Join(watchDir, "bridge.yaml")
-	if err := os.Symlink(target, cfgPath); err != nil {
-		t.Fatal(err)
-	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge.yaml")
+	writeYAML(t, path, "initial")
 
 	fc := clocktest.New()
-	w := NewWatcher(cfgPath, newTestRegistry(t), WithClock(fc))
+	w := NewWatcher(path, newTestRegistry(t), WithClock(fc))
+	// Count reads through the seam so the confirm step can be proven to RE-READ.
+	rec := newReadRecorder(os.ReadFile)
+	w.readFile = rec.read
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		<-doneCh
+	})
+
+	// Baseline as Watch would take it, then mutate the file with NO event
+	// delivered — the injected event channel never carries one.
+	var err error
+	w.lastHash, err = fileHash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeYAML(t, path, "resynced")
+
+	events := make(chan fsnotify.Event)
+	errs := make(chan error)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ch, err := w.Watch(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Stop()
+	ch := make(chan *ports.BridgeConfig, 1)
+	go w.runNotify(ctx, events, errs, func() error { return nil }, ch, stopCh, doneCh)
 
-	waitForTicker(t, fc) // resync ticker registered → baseline hash taken
+	waitForTicker(t, fc)         // resync ticker registered
+	fc.Advance(w.resyncInterval) // resync tick: detects the missed change, holds it pending
 
-	writeYAML(t, target, "resynced") // no event in watchDir
-	fc.Advance(defaultResyncInterval)
+	// Stability gate (HIGH-2): the resync-detected change is applied only after
+	// a confirming re-read one settle window (debounce) later returns the same
+	// bytes. The resync path arms that debounce re-read.
+	waitForTimer(t, fc)
+	detectRead := rec.last()
+	readsBeforeConfirm := rec.count()
+	fc.Advance(w.debounce)
 
 	select {
 	case cfg := <-ch:
@@ -125,6 +150,16 @@ func TestWatcher_Notify_ResyncCatchesMissedEvents(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out: resync tick did not deliver the missed change")
+	}
+
+	// #4: the confirm must have re-read the file (a genuine second read of
+	// identical bytes), not replayed cached first-sighting bytes on the timer.
+	if got := rec.count(); got <= readsBeforeConfirm {
+		t.Fatalf("confirm did not re-read the file: read count stayed at %d (expected > %d)", got, readsBeforeConfirm)
+	}
+	if confirmRead := rec.last(); !bytes.Equal(confirmRead, detectRead) {
+		t.Fatalf("confirm re-read %q differs from the detect read %q; the gate must confirm on IDENTICAL bytes",
+			confirmRead, detectRead)
 	}
 }
 
@@ -166,6 +201,12 @@ func TestWatcher_Notify_DedupIdenticalRewrite(t *testing.T) {
 
 	// Real change still delivered.
 	writeYAML(t, path, "changed")
+	waitForTimer(t, fc)
+	fc.Advance(defaultDebounce) // debounce fires: change detected, held for stability
+
+	// Stability gate (HIGH-2): the confirming re-read happens one settle window
+	// later (the debounce path re-arms itself when a change is pending). Advance
+	// through it so the settled change is delivered.
 	waitForTimer(t, fc)
 	fc.Advance(defaultDebounce)
 
@@ -216,6 +257,12 @@ func TestWatcher_Notify_OverflowForcesResync(t *testing.T) {
 	go w.runNotify(ctx, events, errs, func() error { return nil }, ch, stopCh, doneCh)
 
 	errs <- fsnotify.ErrEventOverflow
+
+	// The overflow forces a hash-check reload; the stability gate holds the
+	// detected change until a confirming re-read one settle window (debounce)
+	// later returns the same bytes. The errs path arms that debounce re-read.
+	waitForTimer(t, fc)
+	fc.Advance(w.debounce)
 
 	select {
 	case cfg := <-ch:

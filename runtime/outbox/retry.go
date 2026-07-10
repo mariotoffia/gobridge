@@ -46,6 +46,22 @@ var errReleaseFailed = errors.New("outbox: record release failed after transient
 // poisonAgeReached — see poisonMinAge.
 var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadline aborted send")
 
+// errCompletionFenced signals that a record's Send had returned but the
+// post-send fence (postSendFence) refused the Complete because the batch was
+// abandoned/cancelled AFTER the send returned (HIGH-2) while the drainer still
+// held a live lease. The watchdog abandons a ctx-ignoring sender and proceeds;
+// if that sender LATER returns nil, its abandoned goroutine must NOT complete a
+// claim the drainer already moved on from. The record was not completed and
+// stays Claimed for reclaim by the current owner. It is consumed inside
+// drainBatch's group loop — never propagated as a drain error — to STOP the
+// ordering group WITHOUT counting the head as a success or a hard failure (the
+// duplicate-risk metric is already emitted at the fence) and WITHOUT releasing
+// it (a concurrent/new drain cycle may already have reclaimed it, so releasing
+// would race). A lease LOSS is the distinct, harder condition and is instead
+// surfaced as shared.ErrStaleFencingToken so the drain loop backs off for a new
+// lease (HIGH-1).
+var errCompletionFenced = errors.New("outbox: completion fenced: batch abandoned after send returned")
+
 func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	timeout := d.policy.SendTimeout
 	if timeout <= 0 || timeout > 5*time.Second {
@@ -90,8 +106,86 @@ func (d *Drainer) emitDrop(category string) {
 	)
 }
 
+// postSendFence reports whether this drainer is still authoritative to Complete
+// a record whose Send has just returned. It is the SINGLE post-send guard every
+// terminal completion (success, permanent, expired, poison) routes through — via
+// guardComplete — so a stale owner can never settle work after step-down. It
+// fails CLOSED on two independent step-down conditions:
+//
+//   - Lease authority (HIGH-1): the record was claimed under `token`; if the
+//     current LIVE token (d.tokenFn — the runtime-side session token, since the
+//     store is not required to consult live lease state on Complete) is absent
+//     or carries a different Version, the lease was lost — possibly re-acquired
+//     by another owner — so this owner must NOT complete. Checked FIRST because a
+//     lost lease is the harder fencing violation; surfaced as
+//     shared.ErrStaleFencingToken so the drain loop stops sibling sends and backs
+//     off for a new lease.
+//   - Batch abandonment (HIGH-2): batchCtx was cancelled — the drain watchdog
+//     abandoned a ctx-ignoring sender's batch and the drainer proceeded, or a
+//     sibling cancelled it on a stale token. The lease may still be live, so this
+//     is NOT a stale token; surfaced as errCompletionFenced so the record is left
+//     Claimed for reclaim WITHOUT a spurious stale-lease backoff.
+//
+// Returns nil only when BOTH hold, i.e. it is safe to Complete.
+//
+// ponytail: SHUTDOWN-GRACE COHERENCE (cross-cutting, owned by the composition
+// root R2 — bridge.go / session manager, NOT this package). This fence makes the
+// lease-authority check runtime-side and observable, so during a SINGLE-instance
+// graceful shutdown a legitimate final send that outlives the manager-close grace
+// gets its live lease cleared at close, its final Complete fenced, and the record
+// resurfaces as an AVOIDABLE duplicate on restart (no other owner ever contended
+// for it). That is the accepted lesser-evil already documented in bridge.go Stop,
+// but it is only bounded if the shutdown grace covers the worst-case in-flight
+// completion: bridge.go's storeCloseGrace MUST stay >= SendTimeout +
+// completeBudget() (the bound this drainer reserves per record). R2 must keep
+// that inequality when wiring Stop; if the grace is shorter than a configured
+// SendTimeout, a healthy final delivery is needlessly re-sent after restart. This
+// package cannot enforce it (it does not own the shutdown sequence); the pointer
+// lives here because the fence is what makes the coherence load-bearing.
+func (d *Drainer) postSendFence(batchCtx context.Context, token persistence.LeaseToken) error {
+	if current, hasLease := d.tokenFn(); !hasLease || current.Version != token.Version {
+		return shared.ErrStaleFencingToken
+	}
+	if batchCtx.Err() != nil {
+		return errCompletionFenced
+	}
+	return nil
+}
+
+// guardComplete runs postSendFence and, when it trips, emits the duplicate-risk
+// metric plus a WARN and returns the fence error so the CALLER leaves the record
+// Claimed for reclaim instead of completing it under lost authority. It is the
+// one coherent post-send guard used by every terminal completion; the caller
+// must not touch OutboxStore.Complete when this returns non-nil.
+//
+// The record's Send already ran (success path: the target accepted the message;
+// terminal paths: DLQ evidence, if any, was already written), so leaving it
+// Claimed means it is re-claimed and re-processed by the current owner — a
+// duplicate-delivery / duplicate-DLQ risk we count via MetricOutboxDuplicateRisk
+// so the lease-transfer / watchdog-abandon window is observable rather than a
+// silent fencing hole.
+func (d *Drainer) guardComplete(batchCtx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) error {
+	err := d.postSendFence(batchCtx, token)
+	if err == nil {
+		return nil
+	}
+	d.metrics.Counter(shared.MetricOutboxDuplicateRisk, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID})
+	d.log(batchCtx, slog.LevelWarn,
+		"post-send fence tripped: drainer no longer authoritative (lease lost or batch abandoned); leaving record Claimed for reclaim instead of completing",
+		"record_id", rec.ID(), "error", err)
+	return err
+}
+
 // completeTerminal Completes a terminally-settled record and fires the delivery
 // hook's OnSettled, but only AFTER the store transition durably succeeds (M3).
+//
+// It first runs the shared post-send fence (guardComplete): a record whose
+// terminal path straddled a lease transfer or a watchdog abandonment is LEFT
+// Claimed for reclaim rather than settled by a stale owner (HIGH-1/HIGH-2). The
+// fence covers every terminal branch — permanent, expired, poison — because all
+// three route their Complete through here; the success path guards the same way
+// inline.
 //
 // Ordering is load-bearing. The terminal metric (emitDLQ / emitDrop /
 // MessagesExpired) is emitted by the CALLER BEFORE this, and is a per-write /
@@ -105,6 +199,9 @@ func (d *Drainer) emitDrop(category string) {
 // This keeps the metric (at-least-once) and the hook (exactly-once) mutually
 // consistent instead of both firing on a settlement whose Complete never landed.
 func (d *Drainer) completeTerminal(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken, outcome ports.DeliveryOutcome) error {
+	if fenceErr := d.guardComplete(ctx, rec, token); fenceErr != nil {
+		return fenceErr
+	}
 	completeCtx, completeCancel := d.completeCtx(ctx)
 	completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
 	completeCancel()
@@ -198,8 +295,15 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 		outbound.StampHeaders(messaging.MergeHeaders(outbound.Headers(), dh, true))
 	}
 
-	// Re-check lease before sending to minimize duplicate delivery window.
-	if _, hasLease := d.tokenFn(); !hasLease {
+	// Re-check lease authority before sending to minimize the duplicate-delivery
+	// window. This MUST match postSendFence's authority check (version, not just
+	// presence): a lease that has already been reacquired at a HIGHER version by
+	// another owner returns (hasLease=true) here, so a bare !hasLease check would
+	// still Send a record claimed under the superseded version — a duplicate
+	// target-side delivery that the post-send fence can no longer prevent (it
+	// only refuses the Complete, after the Send already fired). Comparing the
+	// live token Version to the claim token closes that pre-send delivery hole.
+	if current, hasLease := d.tokenFn(); !hasLease || current.Version != token.Version {
 		return shared.ErrStaleFencingToken
 	}
 
@@ -220,6 +324,15 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	})
 
 	if sendErr == nil {
+		// Post-send fence (HIGH-1/HIGH-2): the target accepted the message, but
+		// this owner may no longer be authoritative — its lease could have
+		// transferred while Send blocked, or the drain watchdog could have
+		// abandoned this batch. guardComplete leaves the record Claimed for
+		// reclaim (and counts the duplicate-delivery risk) rather than letting a
+		// stale owner Complete after step-down.
+		if fenceErr := d.guardComplete(ctx, rec, token); fenceErr != nil {
+			return fenceErr
+		}
 		completeCtx, completeCancel := d.completeCtx(ctx)
 		completeErr := d.outboxStore.Complete(completeCtx, []string{rec.ID()}, token)
 		completeCancel()

@@ -35,6 +35,10 @@ type fakeDDB struct {
 
 	getItemCalls  int
 	transactCalls int
+	// updateItemCalls counts UpdateItem calls (the Complete/Release mutation).
+	updateItemCalls int
+	// putItemCalls counts PutItem calls (the Persist mutation).
+	putItemCalls int
 	// queryCalls counts calls per index name ("" == base table).
 	queryCalls map[string]int
 }
@@ -54,6 +58,7 @@ func (f *fakeDDB) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...fun
 
 func (f *fakeDDB) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	f.mu.Lock()
+	f.updateItemCalls++
 	fn := f.updateItemFn
 	f.mu.Unlock()
 	if fn != nil {
@@ -79,6 +84,7 @@ func (f *fakeDDB) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*d
 
 func (f *fakeDDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 	f.mu.Lock()
+	f.putItemCalls++
 	fn := f.putItemFn
 	f.mu.Unlock()
 	if fn != nil {

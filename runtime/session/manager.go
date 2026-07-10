@@ -328,6 +328,12 @@ func (m *Manager) Token() (persistence.LeaseToken, bool) {
 	return m.token, m.hasLease
 }
 
+// Exclusive reports whether this session participates in lease-based failover.
+// A non-exclusive session never acquires a lease, so it must not count toward
+// the runtime's active/standby role classification (see roleUnlocked). The flag
+// is set once at construction and never mutates, so no lock is needed.
+func (m *Manager) Exclusive() bool { return m.exclusive }
+
 // Close closes the underlying session. When the manager still holds the lease
 // it is released best-effort under a DETACHED, bounded context (finding M-close)
 // so that an embedder calling Close AFTER cancelling the ctx it passed still
@@ -388,7 +394,13 @@ func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent)
 				"subscription_count", len(m.plan.Subscriptions),
 			)
 		}
-		if err := m.session.Reconcile(ctx, m.plan); err != nil {
+		// HIGH-6: race the reconnect Reconcile against a hard ceiling so a broker
+		// SDK call that ignores ctx cannot block the renew select loop and starve
+		// lease renewal into a silent expiry + dual-consumer split-brain. The
+		// renewal timer stays serviceable; on the ceiling the error flows through
+		// the session-failure path, which closes the source session (CRITICAL-1)
+		// before releasing the lease.
+		if err := m.boundedReconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(shared.MetricReconcileFailures, 1, sessionTag)
 			return fmt.Errorf("runtime: session-manager: reconcile on reconnect: %w", err)

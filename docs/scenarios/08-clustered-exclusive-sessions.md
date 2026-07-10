@@ -1,10 +1,10 @@
 # Scenario 8: Clustered MQTT with Exclusive Sessions
 
-Two GoBridge instances run behind a load balancer for high availability. Only one instance actively consumes from MQTT at a time (single-active consumer pattern). When the active instance fails, the standby takes over. A shared outbox backed by DynamoDB ensures no messages are lost during failover.
+Two GoBridge instances run behind a load balancer for high availability. Only one instance actively consumes from MQTT at a time (single-active consumer pattern). When the active instance fails, the standby takes over. A shared outbox backed by DynamoDB gives **at-least-once** delivery *once a message is persisted to the outbox*: after outbox persistence the message survives failover, but **duplicates are possible** at the destination, and `direct_hold` or drop policies can still lose messages that were in flight when the active instance crashed. See [`delivery_mode: shared_outbox` with exclusive session](#delivery_mode-shared_outbox-with-exclusive-session) below and the `MessagesDropped` / `MessagesExpired` loss signals.
 
 ## Use Case
 
-You have IoT devices publishing telemetry at high volume. A single SQS queue receives all processed events downstream. Running two bridge instances provides high availability, but MQTT subscription semantics create a problem: if both instances subscribe to the same topic, every message is delivered twice (once to each subscriber). You need exactly one instance actively consuming at any time, with automatic failover when the active instance becomes unavailable.
+You have IoT devices publishing telemetry at high volume. A single SQS queue receives all processed events downstream. Running two bridge instances provides high availability, but MQTT subscription semantics create a problem: if both instances subscribe to the same topic, every message is delivered twice (once to each subscriber). You need exactly one instance actively consuming at any time, with automatic failover when the active instance becomes unavailable. Single-active consumption removes the double-subscription duplication; it does **not** make end-to-end delivery exactly-once — a retry after outbox persistence can still deliver a duplicate to SQS, so downstream consumers must stay idempotent.
 
 The exclusive session pattern solves this with distributed lease coordination. One instance holds the lease and processes messages. The other instance watches the lease and takes over when the holder fails to renew.
 
@@ -221,7 +221,7 @@ When the instance later re-acquires the lease it re-establishes the session. How
 - **Restartable transports** reconnect the source session **in-process** and resume immediately.
 - The **MQTT (Paho) session is deliberately single-use** (once `Close` runs, `Start` returns `ErrUnavailable` rather than reconnecting, to avoid a zombie state where a freshly attached connection manager coexists with an already-closed events channel). Re-establishing it in-process is therefore impossible: the session manager releases the lease and surfaces the terminal sentinel `ErrSessionUnrecoverable` (wrapping the permanent `ErrUnavailable`) so a standby can take over, and the supervisor escalates that to a **terminal** runtime state rather than looping on the dead instance. The process then **restarts** with a fresh session — driven either by the liveness probe (`GET /api/v1/monitor/live` fails closed once terminal) or, on any deployment, by the built-in backstop that **exits the process with a non-zero code** when the runtime goes terminal.
 
-Either way **no message is lost**: un-acknowledged source messages are redelivered to whichever instance next holds the lease, and outbox fencing tokens prevent duplicate destination sends. The single-use path costs one process restart on re-acquisition rather than an in-process reconnect. A restart policy is therefore required: on Kubernetes the default `restartPolicy: Always` covers it (wiring a `livenessProbe` to `/api/v1/monitor/live` gives faster, more granular detection and is recommended); under systemd use `Restart=on-failure` (or `always`). Readiness alone is insufficient — it only removes the pod from the load balancer, it does not restart a terminal runtime.
+Either way, **no acknowledged message is lost under `shared_outbox` with `ack_after: outbox_persist`**: un-acknowledged source messages are redelivered to whichever instance next holds the lease, and outbox fencing tokens prevent duplicate destination sends. (A `direct_hold` or drop route carries no such guarantee — it can still lose messages that were in flight at crash time; see the opening note.) The single-use path costs one process restart on re-acquisition rather than an in-process reconnect. A restart policy is therefore required: on Kubernetes the default `restartPolicy: Always` covers it (wiring a `livenessProbe` to `/api/v1/monitor/live` gives faster, more granular detection and is recommended); under systemd use `Restart=on-failure` (or `always`). Readiness alone is insufficient — it only removes the pod from the load balancer, it does not restart a terminal runtime.
 
 ### `delivery_mode: shared_outbox` with exclusive session
 
@@ -385,13 +385,14 @@ bridge:
   instance_id: bridge-03
   deployment_mode: clustered
   cluster:
+    # THIS instance's advertised capability endpoints, keyed by capability with
+    # a full URL value (NOT a peer/instance map). The HTTP forwarder POSTs remote
+    # exclusive requests to endpoints["http"].
     endpoints:
-      bridge-01: "10.0.1.10:8080"
-      bridge-02: "10.0.1.11:8080"
-      bridge-03: "10.0.1.12:8080"
+      http: "http://10.0.1.12:8080"
 ```
 
-The `cluster.endpoints` map provides static endpoint discovery. This is optional -- without it, instances discover each other through the lease store metadata: each owner writes its own reachable endpoint into the lease row on acquire/renew. On ECS/Fargate the endpoint is resolved from the task metadata endpoint by the ECS resolver, which retries a bounded number of times (5 attempts, exponential backoff from 500ms capped at 4s, ~7.5s worst case) to absorb the brief window before the task metadata is populated. A missing metadata environment variable is treated as a permanent misconfiguration and fails immediately without retrying.
+The `cluster.endpoints` map is an optional **static override** for THIS instance's advertised capability endpoints, keyed by capability (`http`) with a full URL value. It is **not** a peer/instance membership map: the HTTP forwarder locates the owning instance's endpoint via `endpoints["http"]`, so a peer map (`instance-01: "10.0.1.10:8080"`) has no `http` key and makes every remote exclusive HTTP forward fail with `target has no HTTP endpoint` (502) — the config validator rejects that shape in clustered mode. Without the override, instances discover each other through the lease store metadata: each owner writes its own reachable endpoint into the lease row on acquire/renew. On ECS/Fargate the endpoint is resolved from the task metadata endpoint by the ECS resolver, which retries a bounded number of times (5 attempts, exponential backoff from 500ms capped at 4s, ~7.5s worst case) to absorb the brief window before the task metadata is populated. A missing metadata environment variable is treated as a permanent misconfiguration and fails immediately without retrying.
 
 ### Mixed Session Modes
 
@@ -430,6 +431,10 @@ The `sqs-to-sqs` route runs on both instances simultaneously (SQS handles compet
 ### High-Availability Profile
 
 The default lease timing trades fast failover for low renewal traffic: a dead owner is not detected until its `lease_ttl` (360s) lapses, so worst-case failover approaches 6 minutes. High-availability deployments usually want failover inside the 30--60s band. GoBridge ships a named preset that encodes the *correct interrelationship* between the lease-timing knobs. Getting that relationship wrong cannot break single-owner safety -- the lease store admits one non-expired lease at a time and the outbox fences every send by fencing-token version -- but it does cause spurious failovers, slower recovery, or a wider at-least-once duplicate-*send* window, so prefer the preset (or the recipe below) over hand-tuning.
+
+> **Clustered deployments default to the HA profile.** When `deployment_mode: clustered` (or a static `cluster.endpoints` override is present) and a lease-bearing exclusive session leaves `lease_ttl` AND `renew_interval` unset, the builder derives that session's baseline from the HA profile (`lease_ttl=45s`, ~45s warm failover) instead of the 6-minute default. Any explicit `lease_ttl`/`renew_interval` you set always wins. So in a clustered deployment you get 30--60s-band timing without opting in, and can still hand-tune per session.
+>
+> **The 30--60s band requires a WARM standby.** The failover math below assumes a standby that is *continuously polling* the lease store (or a surge replacement that has observed a full TTL before the active owner steps down). A **cold** standby that only begins observing *after* the active dies -- including any rolling/replacement deploy -- must first watch the lease tuple unchanged for a full TTL before it can even attempt the seizing `Acquire`, adding up to **one more `lease_ttl`** (~2×TTL total on DynamoDB) before takeover. Pinning `lease_ttl` low does not buy a strict ≤60s bound through a deploy; keep a warm standby across the rollout instead.
 
 **Code preset.** When you build the runtime programmatically, start from `session.HAConfig` instead of `session.DefaultConfig`:
 

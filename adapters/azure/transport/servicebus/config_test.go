@@ -43,6 +43,29 @@ func TestReceiverConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// HIGH-3: entityNameFor would silently select the queue and
+			// ignore the topic/subscription — reject the ambiguous config.
+			name: "both queue and topic+subscription rejected",
+			cfg: ReceiverConfig{
+				QueueName:        "q",
+				TopicName:        "my-topic",
+				SubscriptionName: "my-sub",
+				Connection:       ConnectionConfig{ConnectionString: shared.NewSecret("x")},
+			},
+			wantErr: true,
+		},
+		{
+			// A stray topic alongside a queue (even without a subscription)
+			// is still ambiguous and must be rejected.
+			name: "queue with stray topic rejected",
+			cfg: ReceiverConfig{
+				QueueName:  "q",
+				TopicName:  "my-topic",
+				Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")},
+			},
+			wantErr: true,
+		},
+		{
 			name:    "missing connection when no client",
 			cfg:     ReceiverConfig{QueueName: "q"},
 			wantErr: true,
@@ -131,6 +154,17 @@ func TestSenderConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// HIGH-3: entityName would silently select the queue and ignore
+			// the topic — reject the ambiguous config.
+			name: "both queue and topic rejected",
+			cfg: SenderConfig{
+				QueueName:  "q",
+				TopicName:  "t",
+				Connection: ConnectionConfig{ConnectionString: shared.NewSecret("x")},
+			},
+			wantErr: true,
+		},
+		{
 			name:    "missing connection when no client",
 			cfg:     SenderConfig{QueueName: "q"},
 			wantErr: true,
@@ -190,3 +224,60 @@ func TestConfig_Validate_LockDurationBounds(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// TestValidateReceiverEntity_RejectsBothQueueAndTopic pins HIGH-3 on the
+// plugin build boundary (factory.NewReceiver → Config.ValidateReceiverEntity):
+// a config that names BOTH a queue and a topic/subscription must fail fast
+// rather than silently consuming from the queue.
+//
+// Mutation: drop the validateReceiverEntityExclusive call in
+// ValidateReceiverEntity. Then the both-set cases return nil and the
+// wantErr assertions FAIL.
+func TestValidateReceiverEntity_RejectsBothQueueAndTopic(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  ReceiverParams
+		wantErr bool
+	}{
+		{"queue only", ReceiverParams{QueueName: "q"}, false},
+		{"topic+subscription only", ReceiverParams{TopicName: "t", SubscriptionName: "s"}, false},
+		{"neither rejected", ReceiverParams{}, true},
+		{"both queue and topic+subscription rejected", ReceiverParams{QueueName: "q", TopicName: "t", SubscriptionName: "s"}, true},
+		{"queue with stray topic rejected", ReceiverParams{QueueName: "q", TopicName: "t"}, true},
+		{"queue with stray subscription rejected", ReceiverParams{QueueName: "q", SubscriptionName: "s"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{Receiver: tt.params}.ValidateReceiverEntity()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateReceiverEntity() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateSenderEntity_RejectsBothQueueAndTopic pins HIGH-3 on the
+// sender build boundary (factory.NewSender → Config.ValidateSenderEntity).
+//
+// Mutation: drop the validateSenderEntityExclusive call. Then the both-set
+// case returns nil and the wantErr assertion FAILS.
+func TestValidateSenderEntity_RejectsBothQueueAndTopic(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  SenderParams
+		wantErr bool
+	}{
+		{"queue only", SenderParams{QueueName: "q"}, false},
+		{"topic only", SenderParams{TopicName: "t"}, false},
+		{"neither rejected", SenderParams{}, true},
+		{"both queue and topic rejected", SenderParams{QueueName: "q", TopicName: "t"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{Sender: tt.params}.ValidateSenderEntity()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSenderEntity() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}

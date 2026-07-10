@@ -22,16 +22,52 @@ const (
 const (
 	MetricOutboxPersistLatency = "OutboxPersistLatency"
 	MetricOutboxDrainLatency   = "OutboxDrainLatency"
-	// MetricOutboxDepth carries two gauges on one partition-keyed series. The
-	// ingress path emits the TRUE pending count (bounded by the configured
-	// MaxOutboxDepth); the drain path emits the claimed-batch size each poll —
-	// a liveness floor that SATURATES at the batch size (default 100, max 500),
-	// NOT the backlog. The default alarms read the Maximum statistic so the low
-	// drain-path value never clobbers the ingress depth. Consequence: with
-	// MaxOutboxDepth UNSET only the saturating drain-path value is emitted, so a
-	// deep backlog is indistinguishable from a full batch and the depth alarms
-	// (1000/10000) can never breach — set MaxOutboxDepth for a true depth signal.
-	MetricOutboxDepth             = "OutboxDepth"
+	// MetricOutboxDepth is the partition-keyed gauge of PENDING outbox records —
+	// the true backlog waiting to be drained. It is emitted from two sites, each
+	// reporting a real pending count (never a claim-batch size):
+	//   - the ingress path (runtime.InstrumentedOutboxStore.QueryPending) emits
+	//     the pending count it observed, bounded by the query limit (the
+	//     configured MaxOutboxDepth); and
+	//   - the drain path (runtime/outbox.Drainer) emits the EXACT remaining
+	//     pending count read from the store's OPTIONAL ports.OutboxDepthReporter
+	//     capability — a dedicated COUNT primitive that does not saturate at the
+	//     claim batch size. On a store that does NOT implement OutboxDepthReporter
+	//     the drain path falls back to the claimed count, which saturates at the
+	//     batch size (default 100, max 500) and is only a LOWER BOUND; implement
+	//     OutboxDepthReporter on the store for a true, unbounded depth signal.
+	// The default alarms read the Maximum statistic and treat missing data as
+	// breaching — the gauge is emitted continuously while an outbox exists, so
+	// silence means the drainer/bridge died. The per-cycle claim-batch liveness
+	// signal is kept SEPARATE as MetricOutboxClaimBatchSize so a full batch can
+	// never be mistaken for a shallow backlog (H-OBS).
+	//
+	// When a supported OutboxDepthReporter is present but its CountPending
+	// returns a REAL error (DB/read failure — NOT ports.ErrOutboxDepthUnsupported),
+	// the drainer SKIPS this gauge for that cycle rather than masking the failure
+	// behind the saturating claimed-count fallback, so the breaching-on-missing
+	// alarm catches a persistently broken depth query. The failure is recorded
+	// on MetricOutboxDepthFailures + a structured error log.
+	MetricOutboxDepth = "OutboxDepth"
+	// MetricOutboxClaimBatchSize is the partition-keyed gauge of how many records
+	// the drainer CLAIMED on its most recent poll cycle — a liveness/throughput
+	// signal, NOT a backlog measure. It saturates at the current adaptive batch
+	// size (the Claim ceiling) by design: a value at the ceiling means the drainer
+	// is running flat-out and there may be more pending, so consult
+	// MetricOutboxDepth for the true backlog. Split out from MetricOutboxDepth
+	// (H-OBS) so a saturating claim size can never masquerade as a healthy shallow
+	// depth. Tagged with the partition (TagKeyPartition), sharing the series shape
+	// with MetricOutboxDepth.
+	MetricOutboxClaimBatchSize = "OutboxClaimBatchSize"
+	// MetricOutboxDepthFailures counts drain cycles where a SUPPORTED outbox
+	// depth reporter's CountPending returned a REAL error (a DB/read failure,
+	// not ports.ErrOutboxDepthUnsupported). On such a cycle the drainer skips the
+	// MetricOutboxDepth emission (so the missing-data alarm can fire on a
+	// persistently broken query instead of the failure being masked by the
+	// saturating claimed-count fallback) and increments this counter, tagged with
+	// the partition (TagKeyPartition), alongside a structured error log. A rising
+	// value means the depth query itself is failing — investigate the store, not
+	// the backlog (H-OBS).
+	MetricOutboxDepthFailures     = "OutboxDepthFailures"
 	MetricOutboxClaimRecoveries   = "OutboxClaimRecoveries"
 	MetricOutboxCompletions       = "OutboxCompletions"
 	MetricOutboxExpiredBeforeSend = "OutboxExpiredBeforeSend"
@@ -67,6 +103,19 @@ const (
 	// stuck. The runtime does NOT kill the wedged goroutines — senders must honor
 	// ctx — so this is a diagnostic, not a recovery, signal.
 	MetricOutboxDrainStalled = "OutboxDrainStalled"
+	// MetricOutboxStranded counts durable outbox records left with no drainer
+	// after a live reload. The destructive-reload preflight proves an orphaned
+	// shared_outbox partition empty at CHECK time and refuses otherwise, but a
+	// record can still land in the swap window (late ingress) or a claimed send
+	// can fail; the supervisor re-queries each orphaned partition on the NEW
+	// runtime's store AFTER a successful swap and emits this counter (value = the
+	// pending count) so the residual strand is observable instead of silent.
+	// Tagged with the orphaned partition (TagKeyPartition). Non-zero means an
+	// operator must drain that partition manually or restore a route/session for
+	// it. Kept SEPARATE from MetricOutboxDepth (a steady-state gauge) and
+	// MetricConfigReloads (a reload-outcome counter) so the strand alarm is
+	// unambiguous.
+	MetricOutboxStranded = "OutboxStranded"
 )
 
 // Generic transport-agnostic delivery metric names.
@@ -79,8 +128,20 @@ const (
 const (
 	MetricDeliveryE2ELatency = "DeliveryE2ELatency"
 	MetricDLQEntries         = "DLQEntries"
-	MetricDLQWriteFailures   = "DLQWriteFailures"
-	MetricDeliveryPanics     = "DeliveryPanics"
+	// MetricDLQDepth is a gauge of the CURRENT number of outstanding entries in
+	// the dead-letter queue — the standing backlog — as opposed to
+	// MetricDLQEntries, which is an INGRESS COUNTER that only ever counts writes
+	// and never decreases. DLQEntries answers "how many were ever DLQ'd";
+	// DLQDepth answers "how many are sitting in the DLQ right now", so a stale
+	// backlog after a burst (writes have since stopped) is visible and alarmable
+	// instead of requiring a manual storage scan (H-OBS DLQ-1). It is sampled
+	// from a store's OPTIONAL ports.DLQDepthReporter capability via
+	// runtime.ReportDLQDepth and emitted with NO route dimension (a fleet total),
+	// so it matches the dimensionless default rollup alarm and stays low
+	// cardinality. Alarm on DLQDepth > 0 sustained.
+	MetricDLQDepth         = "DLQDepth"
+	MetricDLQWriteFailures = "DLQWriteFailures"
+	MetricDeliveryPanics   = "DeliveryPanics"
 	// MetricDLQRedrives counts DLQ entries an admin redrive claimed and
 	// re-injected successfully (route_id-tagged). MetricDLQRedriveFailures counts
 	// redrive attempts that failed after (or during) the claim — inject failed,

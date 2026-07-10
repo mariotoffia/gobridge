@@ -296,5 +296,51 @@ an unbounded stall into a prompt, retryable error the runtime can back off on.
 backpressure, not a failure. See [Troubleshooting](../troubleshooting.md) for
 the alarm-clearing checklist.
 
+### Publish timeouts and bounded at-least-once
+
+A publish is bounded by the sender's configured timeout even though the
+amqp091-go deferred-publish call ignores the context. When a publish (or its
+publisher confirm) exceeds the deadline on a half-dead broker, `Send` returns a
+transient error (`SERVICE_UNAVAILABLE` on cancel, `TIMEOUT` on deadline) and
+**abandons** the wedged channel to a background reaper instead of closing it
+under the sender mutex — a synchronous close would itself block on the same
+stalled broker and wedge every other publish, shutdown, and reconfiguration.
+The number of concurrently-abandoned channels is hard-capped per sender
+(default 8, internal — not operator-tunable): once saturated the sender fails
+fast with `BROKER_BUSY` until the wedged publishes drain (broker recovery or
+reconnect), so a black-holed connection cannot pile up unbounded reaper
+goroutines.
+
+`SendBatch` (non-mandatory) pipelines: it publishes every message, then awaits
+the confirms. This is **at-least-once with a bounded duplicate window**. A
+confirm that has already arrived is always honored with its real outcome, even
+if the batch deadline has since expired. But if the deadline fires while a
+publish is genuinely mid-flight, that message **and the still-unconfirmed prefix
+before it** are reported transient so the caller retries them — and a retry may
+duplicate any of that prefix the broker had in fact already accepted. The
+duplicate ceiling is the number of unsettled in-flight confirms at the instant
+the deadline fires. Consumers must be idempotent (this is inherent to
+at-least-once publishing under a hard deadline, not specific to this adapter).
+
+### Credential rotation and sustained outages
+
+`ApplyCredentials` rotates username/password and/or TLS material by
+**close-then-redial** (AMQP 0-9-1 has no re-auth primitive). When the caller's
+context is cancelled or deadlines mid-rotation, the adapter does **not** wait for
+the live connection's close to finish: it detaches the stale connection under
+the lock (drops it from the session, marks the session disconnected) and
+explicitly wakes the reconnect loop. A sender that grabs the connection after a
+rotation therefore can never publish on the old connection with the old
+credentials, and reconnect proceeds even if the old connection's close wedges on
+a half-dead broker.
+
+Every teardown path is bounded so a sustained outage cannot leak goroutines:
+topology declaration on start/reconnect is deadline-bounded (`ConnectTimeout`),
+each discarded connection is closed under a deadline (the dial timeout), and the
+number of concurrent close goroutines is capped — beyond the cap a connection is
+dropped without an explicit close (the OS reaps the socket and the broker reaps
+the peer when heartbeats stop), which is strictly better than an unbounded
+goroutine pile-up.
+
 ---
 

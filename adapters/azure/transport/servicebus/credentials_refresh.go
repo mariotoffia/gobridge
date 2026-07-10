@@ -2,12 +2,58 @@ package servicebus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 )
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// Sender, satisfying the bridge.AuthFailureReporter capability (matched
+// structurally by the CredentialRefresher in another module). A nil callback
+// clears it.
+func (s *Sender) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		s.authFailureCB.Store(nil)
+		return
+	}
+	s.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure invokes the injected reactive-recovery callback iff err is
+// an authorization failure. Safe to call on every live Send error: the callback
+// delegates to CredentialRefresher.NotifyAuthFailure, which is auth-gated and
+// per-URI rate-limited.
+func (s *Sender) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := s.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// Receiver. See Sender.SetAuthFailureCallback.
+func (r *Receiver) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		r.authFailureCB.Store(nil)
+		return
+	}
+	r.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure mirrors Sender.reportAuthFailure for the receive path.
+func (r *Receiver) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := r.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
 
 // credentialsToConnection translates a connectivity.CredentialSet into the
 // subset of ConnectionConfig that can be rotated. The convention is:
@@ -18,6 +64,16 @@ import (
 //   - Username and Password together become ClientID + ClientSecret
 //     when the session was configured for AAD auth. The caller must
 //     have set cfg.TenantID already; we don't attempt to derive it.
+//     UseManagedIdentity is cleared on this path: a supplied client
+//     secret unambiguously selects client-secret auth (managed identity
+//     never consumes a secret), and the credential builder evaluates
+//     UseManagedIdentity BEFORE client-secret, so leaving it set would
+//     ignore the rotated secret and keep authenticating as the wrong
+//     identity (HIGH-2).
+//   - A non-empty Username with an EMPTY Password is malformed (neither
+//     a valid client secret nor a connection string) and is rejected
+//     with shared.ErrInvalidPayload rather than silently clearing
+//     UseManagedIdentity and drifting to DefaultAzureCredential.
 //   - TLSMaterial maps onto CaPEM / ClientCertPEM / ClientKeyPEM.
 //     When any of those fields would change, the caller MUST rebuild
 //     the *azservicebus.Client; setting TLSConfig to nil here
@@ -25,15 +81,16 @@ import (
 //     fields.
 //
 // Returning changed=false signals "nothing rotatable in this set".
-func credentialsToConnection(existing ConnectionConfig, set *connectivity.CredentialSet) (ConnectionConfig, bool) {
+func credentialsToConnection(existing ConnectionConfig, set *connectivity.CredentialSet) (ConnectionConfig, bool, error) {
 	if set == nil {
-		return existing, false
+		return existing, false, nil
 	}
 	out := existing
 	changed := false
 
 	if set.Password() != nil {
-		if set.Password().Username() == "" {
+		switch {
+		case set.Password().Username() == "":
 			// Opaque connection string path.
 			if !out.ConnectionString.Equal(set.Password().Password()) {
 				out.ConnectionString = set.Password().Password()
@@ -41,12 +98,37 @@ func credentialsToConnection(existing ConnectionConfig, set *connectivity.Creden
 				out.ClientSecret = shared.Secret{}
 				changed = true
 			}
-		} else {
+		case set.Password().Password().IsZero():
+			// A username with NO secret is malformed: AAD client-secret
+			// auth needs BOTH, and the connection-string path requires an
+			// EMPTY username. Treating it as client-secret material would
+			// store a zero ClientSecret and clear UseManagedIdentity, after
+			// which rawNewAzClient skips both managed-identity and
+			// client-secret auth and silently falls through to
+			// DefaultAzureCredential — authenticating as the wrong identity.
+			// Reject loudly instead of drifting; leave the caller's existing
+			// connection untouched (HIGH-2 follow-up).
+			return existing, false, shared.ErrInvalidPayload.WithMessage(
+				"servicebus: rotated credential supplies a username but no client secret; provide the secret for AAD client-secret auth, or omit the username to rotate a connection string")
+		default:
+			// Explicit client-secret credentials (username + non-empty
+			// secret). The credential builder (rawNewAzClient) evaluates
+			// UseManagedIdentity BEFORE client-secret auth, so a lingering
+			// UseManagedIdentity=true would make it keep using managed
+			// identity and IGNORE the rotated secret — authenticating as the
+			// wrong identity. Managed identity never consumes a client
+			// secret, so a supplied secret unambiguously means "use
+			// client-secret auth"; clear the flag so the rotated secret
+			// takes effect. Including out.UseManagedIdentity in the change
+			// guard ensures a stuck flag alone still triggers the switch
+			// even when the ClientID/secret already match (HIGH-2).
 			if out.ClientID != set.Password().Username() ||
-				!out.ClientSecret.Equal(set.Password().Password()) {
+				!out.ClientSecret.Equal(set.Password().Password()) ||
+				out.UseManagedIdentity {
 				out.ClientID = set.Password().Username()
 				out.ClientSecret = set.Password().Password()
 				out.ConnectionString = shared.Secret{}
+				out.UseManagedIdentity = false
 				changed = true
 			}
 		}
@@ -68,7 +150,7 @@ func credentialsToConnection(existing ConnectionConfig, set *connectivity.Creden
 		}
 	}
 
-	return out, changed
+	return out, changed, nil
 }
 
 func joinASBPEMs(pems []string) string {
@@ -107,7 +189,10 @@ func (s *Sender) ApplyCredentials(ctx context.Context, set *connectivity.Credent
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("servicebus: nil credential set")
 	}
-	newConn, changed := credentialsToConnection(s.connectionSnapshot(), set)
+	newConn, changed, err := credentialsToConnection(s.connectionSnapshot(), set)
+	if err != nil {
+		return err
+	}
 	if !changed {
 		return nil
 	}
@@ -200,7 +285,7 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 	if r.rebuildPending {
 		base = r.pendingConn
 	}
-	newConn, changed := credentialsToConnection(base, set)
+	newConn, changed, credErr := credentialsToConnection(base, set)
 	injected := r.cfg.Client != nil
 	// A use_sessions receiver is live with a nil client seam between
 	// sessions (ensureSessionSeam accepts lazily), so the handle — not
@@ -210,6 +295,11 @@ func (r *Receiver) ApplyCredentials(ctx context.Context, set *connectivity.Crede
 	pending := r.rebuildPending
 	r.initMu.Unlock()
 
+	if credErr != nil {
+		// A malformed rotation credential (e.g. username without a secret)
+		// must surface, not silently drift the receiver's auth identity.
+		return credErr
+	}
 	if !changed && !pending {
 		return nil
 	}

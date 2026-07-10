@@ -136,10 +136,13 @@ The bridge maps `Ack`, `Retry(0)`, and `Retry(>0)` to AMQP 1.0 dispositions. `Ex
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = amqp10.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("amqp10", amqp10.NewFactory(logger)).
+    RegisterTransportFactory("amqp10", amqp10.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

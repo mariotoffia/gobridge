@@ -115,6 +115,22 @@ type Config struct {
 	// delegated to the config watcher (historical behavior).
 	ConfigApplier func(ctx context.Context, cfg *ports.BridgeConfig) error `json:"-"`
 
+	// ConfigSingleWriter asserts that THIS admin process is the SOLE writer of
+	// the durable config store (no other instance commits against the same
+	// file/NFS/EFS/backend). It is the explicit operator opt-in that permits a
+	// durable config-transaction commit through a ConfigStore that does NOT
+	// implement ports.ConditionalConfigStore (compare-and-swap).
+	//
+	// Fail-closed default: when the configured ConfigStore is non-CAS and this
+	// is false, a durable commit is REFUSED rather than falling back to a plain
+	// last-writer-wins Save. A plain Save on a shared non-CAS backend lets two
+	// admin instances that both read version N each pass the read-time version
+	// guard and clobber each other's acknowledged commit (silent lost update;
+	// see [HIGH-1]). Only assert this when the deployment guarantees a single
+	// admin writer; a multi-instance cluster MUST use a ConditionalConfigStore
+	// instead, which is always safe regardless of this flag.
+	ConfigSingleWriter bool `json:"config_single_writer,omitempty"`
+
 	// AuthFailureLimit bounds failed authentication attempts per client within
 	// AuthFailureWindow before further attempts from that client are rejected
 	// with 429. Zero uses defaultAuthFailureLimit. AuthFailureWindow zero uses
@@ -292,6 +308,13 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	}
 	if cfg.ConfigStore != nil && cfg.ConfigProvider != nil {
 		s.configTxn = newTxnManager(cfg.ConfigStore, cfg.ConfigProvider, cfg.ConfigApplier, s.logger, s.clk)
+		// Cluster-safety gate for durable commits: a non-CAS ConfigStore may
+		// only be committed to when the operator has explicitly asserted a
+		// single writer. newTxnManager defaults to single-writer (the in-process
+		// construction used by tests/embedders); the real server path must fail
+		// closed on a shared non-CAS store unless ConfigSingleWriter is set, so
+		// no silent last-writer-wins durable commit path remains (see [HIGH-1]).
+		s.configTxn.singleWriter = cfg.ConfigSingleWriter
 	}
 	s.adminThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)
 	s.monitorThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)

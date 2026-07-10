@@ -15,6 +15,69 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// Sender, satisfying the bridge.AuthFailureReporter capability (matched
+// structurally by the CredentialRefresher in another module). A nil callback
+// clears it.
+func (s *Sender) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		s.authFailureCB.Store(nil)
+		return
+	}
+	s.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure invokes the injected reactive-recovery callback iff err is
+// an authorization failure. Called on the classified verdict of a live send: an
+// error still inside the auth-grace window is ErrTemporaryAuthFailure and is
+// filtered here, so only a genuine revocation (escalated to ErrNotAuthorized)
+// forces a re-resolve. The callback is auth-gated and per-URI rate-limited.
+func (s *Sender) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := s.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
+
+// classify maps a live send error through the bounded auth-grace and reports a
+// permanent authorization failure to the reactive-recovery hook (HIGH-3). It is
+// the single chokepoint for both the single-send and batch-send paths.
+func (s *Sender) classify(err error) *shared.BridgeError {
+	be := s.authGrace.classify(err)
+	s.reportAuthFailure(be)
+	return be
+}
+
+// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// Receiver. See Sender.SetAuthFailureCallback.
+func (r *Receiver) SetAuthFailureCallback(cb func(error)) {
+	if cb == nil {
+		r.authFailureCB.Store(nil)
+		return
+	}
+	r.authFailureCB.Store(&cb)
+}
+
+// reportAuthFailure mirrors Sender.reportAuthFailure for the receive path.
+func (r *Receiver) reportAuthFailure(err error) {
+	if err == nil || !errors.Is(err, shared.ErrNotAuthorized) {
+		return
+	}
+	if cb := r.authFailureCB.Load(); cb != nil {
+		(*cb)(err)
+	}
+}
+
+// classify maps a live receive error through the bounded auth-grace and reports
+// a permanent authorization failure to the reactive-recovery hook (HIGH-3).
+func (r *Receiver) classify(err error) *shared.BridgeError {
+	be := r.authGrace.classify(err)
+	r.reportAuthFailure(be)
+	return be
+}
+
 // ErrTemporaryCredentialsUnsupported is returned when a credential set
 // carries STS/temporary material (an access-key id with the "ASIA"
 // prefix, which is only valid together with a session token) that

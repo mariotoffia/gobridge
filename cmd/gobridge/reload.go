@@ -83,6 +83,13 @@ type reloadPipeline struct {
 	registry *ports.Registry
 	logger   *slog.Logger
 
+	// notifier receives DEFINITIVE reconfiguration outcomes so the desired-config
+	// manager can close its desired-vs-running divergence gap (XCUT-A / config
+	// chunk-07 HIGH-1). It is a narrow interface (satisfied by *config.Manager's
+	// NotifyApplyResult) so reload.go stays free of a config-module import and
+	// tests can inject a fake. Nil disables the notification.
+	notifier applyResultNotifier
+
 	// out is the merged channel drained by Supervisor.Run. run is its sole
 	// writer and closes it on shutdown.
 	out chan *ports.BridgeConfig
@@ -118,6 +125,26 @@ type reloadPipeline struct {
 // reloadOption configures a reloadPipeline. Kept unexported: the composition
 // root uses the defaults and only tests tune the clock/deadline.
 type reloadOption func(*reloadPipeline)
+
+// applyResultNotifier receives DEFINITIVE reconfiguration outcomes so a
+// desired-config manager can close its desired-vs-running divergence gap
+// (config chunk-07 HIGH-1). *config.Manager satisfies it via NotifyApplyResult.
+// Declared here as a narrow interface so the composition-root reload plumbing
+// does not depend on the config module and tests can inject a fake.
+type applyResultNotifier interface {
+	NotifyApplyResult(cfg *ports.BridgeConfig, err error)
+}
+
+// withApplyResultNotifier wires the desired-config manager that receives
+// definitive apply results (XCUT-A). Nil is ignored, leaving the pipeline
+// notification-free (e.g. deployments with no divergence tracking).
+func withApplyResultNotifier(n applyResultNotifier) reloadOption {
+	return func(p *reloadPipeline) {
+		if n != nil {
+			p.notifier = n
+		}
+	}
+}
 
 // withApplyDeadline overrides the post-submission terminal-result wait.
 func withApplyDeadline(d time.Duration) reloadOption {
@@ -196,6 +223,15 @@ func (p *reloadPipeline) run(ctx context.Context, fileChanges <-chan *ports.Brid
 				continue
 			}
 			if p.isRedundantFileReload(cfg) {
+				// The watcher re-emitted the config an admin commit just applied
+				// in-band. The manager already recorded THIS pointer as
+				// desiredConfig, so skipping the swap without acking would pin
+				// ReconfigurePending true forever for a config the runtime
+				// already runs. The runtime runs this exact content — ack it as
+				// applied so desired-vs-running divergence clears (XCUT-A).
+				if p.notifier != nil {
+					p.notifier.NotifyApplyResult(cfg, nil)
+				}
 				if p.logger != nil {
 					p.logger.Debug("config: file reload matches the config just applied in-band; " +
 						"skipping redundant runtime swap")
@@ -343,6 +379,20 @@ func (p *reloadPipeline) onSwap(ev bridge.SwapEvent) {
 	p.mu.Lock()
 	w := p.waiters[ev.NewConfig]
 	p.mu.Unlock()
+
+	// Report DEFINITIVE reconfiguration outcomes back to the desired-config
+	// manager so it clears or raises desired-vs-running divergence (XCUT-A). A
+	// DEFERRED event (bridge paused: committed-but-not-applied, Error == nil) is
+	// NOT a definitive apply, so it is skipped — the manager keeps
+	// ReconfigurePending until a real result lands. ev.NewConfig is the EXACT
+	// pointer the manager emitted on its change channel (forwarded unchanged
+	// through the reconfig strategy, run, and the Supervisor), so the manager's
+	// pointer-identity correlation holds; an in-band admin swap carries a foreign
+	// pointer that NotifyApplyResult safely ignores.
+	if p.notifier != nil && !ev.Deferred {
+		p.notifier.NotifyApplyResult(ev.NewConfig, ev.Error)
+	}
+
 	if w == nil {
 		return
 	}

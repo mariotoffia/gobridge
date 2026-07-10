@@ -101,17 +101,29 @@ func httpConfig(c ports.PluginConfig) (Config, error) {
 	if c == nil {
 		return Config{}, nil
 	}
+	var cfg Config
 	switch v := c.(type) {
 	case *Config:
 		if v == nil {
 			return Config{}, nil
 		}
-		return *v, nil
+		cfg = *v
 	case Config:
-		return v, nil
+		cfg = v
 	default:
 		return Config{}, fmt.Errorf("http transport: expected Config, got %T", c)
 	}
+	// Validate the PROGRAMMATIC config here. The YAML decode path already
+	// validates (register.go), but a caller passing a Config struct
+	// directly to NewReceiver/NewSender would otherwise bypass every
+	// invariant Validate enforces — notably the mutually-exclusive
+	// fail_on_zero_delivery / at_most_once_accept_loss flags — and silently
+	// pick a behavior for a contradictory config (issue 4). Idempotent with
+	// the YAML path's own call.
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 // NewReceiver creates an HTTP POST handler that converts requests to deliveries.
@@ -174,19 +186,19 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, _ ports.Se
 	}
 
 	sender := newSSESender(sseSenderConfig{
-		id:                 spec.ID,
-		path:               path,
-		heartbeatInterval:  cfg.effectiveHeartbeat(),
-		writeTimeout:       cfg.effectiveWriteTimeout(),
-		maxClients:         cfg.MaxClients,
-		clientBufferSize:   cfg.effectiveClientBufferSize(),
-		failOnZeroDelivery: cfg.FailOnZeroDelivery,
-		apiKey:             cfg.APIKey.Reveal(),
-		redirectEndpoint:   cfg.RedirectEndpoint,
-		locator:            f.locator,
-		metrics:            f.metrics,
-		logger:             f.logger,
-		clock:              f.clock,
+		id:                     spec.ID,
+		path:                   path,
+		heartbeatInterval:      cfg.effectiveHeartbeat(),
+		writeTimeout:           cfg.effectiveWriteTimeout(),
+		maxClients:             cfg.MaxClients,
+		clientBufferSize:       cfg.effectiveClientBufferSize(),
+		acceptZeroDeliveryLoss: cfg.effectiveAcceptZeroDeliveryLoss(),
+		apiKey:                 cfg.APIKey.Reveal(),
+		redirectEndpoint:       cfg.RedirectEndpoint,
+		locator:                f.locator,
+		metrics:                f.metrics,
+		logger:                 f.logger,
+		clock:                  f.clock,
 	})
 
 	if err := f.registerHandler("GET "+path, path, sender.ServeHTTP); err != nil {

@@ -22,7 +22,7 @@ Routes define the message flow from a receiver through processors to bindings.
 | `session` | object | no | -- | Route session management (for exclusive sessions) |
 
 **Delivery modes:**
-- **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message.
+- **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.
 
 **Dispatch modes:**

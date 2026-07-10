@@ -197,6 +197,18 @@ make vulncheck    # Scan all modules for known vulnerabilities
 
 `make vulncheck` uses [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) (by the Go team) to check all modules against the Go vulnerability database.
 
+## Module versioning & references
+
+The repo is a multi-module `go.work` workspace. The rules below keep it consumable by external `go get` / `go install`; the release-side procedure (tag order, tag names, CI gate) is in [RELEASE.md](RELEASE.md).
+
+- **`go.work` is the only local override.** Inside the repo, builds and tests resolve sibling modules from disk via the workspace `use` directives. Never add a `replace` directive to a published module's go.mod: `go get` ignores replaces in dependency modules, and `go install pkg@version` refuses modules that contain them.
+- **Working against a local clone from another project:** use *your* project's `go.work` (`go work use ../gobridge/...`) or a `replace` in *your* go.mod — main-module replaces always apply and stay on your machine.
+- **Inter-module `require`s always name the latest published tag** (during development that is the previous release — the workspace gives you HEAD behavior locally). This keeps `make tidy`, `make update`, `make outdated`, and `make vulncheck` working: those loops run `go mod tidy` / `go list -m` per module, which ignore the workspace and resolve from the module proxy.
+- **The workspace can lie:** using a new sibling API at HEAD without bumping the require compiles locally but breaks consumers. `GOWORK=off go build ./...` in the module is the check; CI runs it per published module (see RELEASE.md).
+- **Internal-only modules** (`tests/`, `testutil/`, `scripts/`, `deployment/`) are never tagged or published and may keep local `replace` directives.
+
+> **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — First release checklist](RELEASE.md#first-release-checklist).
+
 ## CI Workflow
 
 ```bash

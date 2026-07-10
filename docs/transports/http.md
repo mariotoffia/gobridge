@@ -107,7 +107,8 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
 | `api_key` | string | -- | Per-sender API key (constant-time comparison; inline keys >= 16 chars) |
 | `max_clients` | int | 10000 | Maximum concurrent SSE connections (no uncapped mode) |
 | `client_buffer_size` | int | 256 | Per-subscriber event-queue depth. A full queue drops the event for that subscriber (`SSEDroppedEvents`) instead of blocking healthy subscribers. Raise it to tolerate bursty producers / briefly slow consumers. There is deliberately **no** slow-consumer disconnect policy keyed on this depth — a persistently slow subscriber is evicted by `write_timeout`. |
-| `fail_on_zero_delivery` | bool | `false` | When `true`, `Send` returns a **transient** (Unavailable-class) error if a broadcast reached zero subscribers (none connected, or every buffer full), instead of the default at-most-once success. For a durable redelivering source (SQS/ASB/AMQP) this drives retry-then-DLQ; for an HTTP-ingress (webhook→SSE) source it surfaces as **HTTP 500** to the producer with no bridge-side retry or DLQ. Stops silent loss; **not** a replay buffer — durable fan-out still needs a `shared_outbox` policy. |
+| `fail_on_zero_delivery` | bool | `false` | **Legacy / deprecated.** Retained for backward compatibility only. Zero-delivery now fails transient by *default* (see `at_most_once_accept_loss`), so `true` is a no-op equal to the default and `false` no longer means "ack the loss". Mutually exclusive with `at_most_once_accept_loss` — configuring both is **rejected at load time**. New config should use `at_most_once_accept_loss` to opt *out* of the safe default. |
+| `at_most_once_accept_loss` | bool | `false` | **Safe default (`false`):** a broadcast that reaches zero subscribers (none connected, or every buffer full) makes `Send` return a **transient** (Unavailable-class) error so the route runner does **not** ack a delivery that reached nobody. A durable source (SQS/ASB/AMQP) retries then DLQs; an HTTP-ingress (webhook→SSE) source surfaces **HTTP 500** to the producer. Set `true` to restore classic fire-and-forget at-most-once (ack even when delivery reached nobody). **Not** a replay buffer — durable fan-out still needs a `shared_outbox` policy. |
 | `redirect_endpoint` | string | -- (disabled) | `PeerInfo.Endpoints` key used to build a `307` redirect for a remote-owned route. Empty **disables** redirect (remote route → `503`) so an internal peer endpoint is never leaked to an SSE client. |
 | `credentials_uri` | string | -- | URI resolved by the bridge credential store at build time |
 
@@ -124,6 +125,11 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   ID of the form `http-<instance-entropy>-<unixnano>-<counter>` when the
   request omits `id`; the 8-byte crypto/rand instance entropy prevents
   cross-node collisions in dedup/DLQ records keyed on the ID.
+- **Ingress readiness fails fast (503).** A receiver dispatches only once the
+  route runner has wired its emit callback. A request that arrives before the
+  receiver is ready is refused **immediately** with `503 Service Unavailable`
+  via a non-blocking readiness check, rather than parking the request goroutine
+  until the client cancels. Treat the `503` as retriable.
 - **Ingress is at-least-once with a best-effort dedup window.** Each receiver
   keeps a bounded, node-local LRU of `Idempotency-Key` / `X-Dedup-Id` values of
   *successfully* processed requests (`dedup_window`, default 4096). A request
@@ -178,23 +184,42 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   outbox fencing still prevents a duplicate *commit*, so the only effect is a
   possible duplicate *send* on a direct-mode route, which the downstream
   idempotency already required for at-least-once delivery absorbs.
-- **SSE egress is at-most-once by default.** `Send` reports success even when
-  zero subscribers are connected or every subscriber's buffer is full -- the
-  route runner acks the source either way. Both zero-delivery cases are counted
-  (`SSENoSubscribers` / `SSEAllDropped`) and logged at **ERROR** level so the
-  loss is loud. Set `fail_on_zero_delivery: true` to make `Send` return a
-  **transient** error instead. What that buys depends on the source: a durable
-  source that redelivers with an incrementing receive count (SQS/ASB/AMQP) is
-  retried with backoff (letting a briefly-disconnected subscriber reconnect)
-  then dead-lettered once `MaxReplayAttempts` is exhausted; an **HTTP-ingress**
-  source (webhook → SSE) carries no redelivery count, so there is no
-  bridge-side retry or DLQ -- the transient error surfaces to the POSTing
-  producer as **HTTP 500** and retry is the producer's responsibility. Either
-  way this stops silent loss (a 500 instead of a false 200) but is **not** a
-  replay buffer: durable fan-out (delivery to a subscriber absent at broadcast
-  time) requires fronting SSE egress with a `shared_outbox` route policy.
-  "Delivery" means the event was enqueued to a connected subscriber's buffer,
-  not that the subscriber acknowledged receipt.
+- **SSE egress fails safe on zero delivery (default).** `Send` returns a
+  **transient** (Unavailable-class) error when a broadcast reaches zero
+  subscribers -- either none are connected or every subscriber's buffer is full
+  -- so the route runner does **not** ack a delivery that reached nobody. Both
+  zero-delivery cases are counted (`SSENoSubscribers` / `SSEAllDropped`) and
+  logged at **ERROR** level. What the transient error buys depends on the
+  source: a durable source that redelivers with an incrementing receive count
+  (SQS/ASB/AMQP) is retried with backoff (letting a briefly-disconnected
+  subscriber reconnect) then dead-lettered once `MaxReplayAttempts` is
+  exhausted; an **HTTP-ingress** source (webhook → SSE) carries no redelivery
+  count, so there is no bridge-side retry or DLQ -- the transient error
+  surfaces to the POSTing producer as **HTTP 500** and retry is the producer's
+  responsibility. This is **not** a replay buffer: durable fan-out (delivery to
+  a subscriber absent at broadcast time) requires fronting SSE egress with a
+  `shared_outbox` route policy. "Delivery" means the event was enqueued to the
+  buffer of a subscriber that is **currently connected and still reading** -- a
+  subscriber whose handler has already begun disconnecting does not count -- not
+  that the subscriber acknowledged receipt. If every remaining target has gone
+  or is buffer-full the broadcast counts as zero delivery and fails safe.
+  - **Opting out (accept loss).** Set `at_most_once_accept_loss: true` to
+    restore classic fire-and-forget at-most-once: `Send` acks (returns success)
+    even when delivery reached nobody. The metrics and ERROR logs still fire.
+    **Breaking change:** prior releases acked by default; the legacy
+    `fail_on_zero_delivery` flag is retained but redundant (its `true` == the
+    new default) and is mutually exclusive with `at_most_once_accept_loss`.
+  - **Close/reload also fails safe.** Once the sender is closing (hot reload or
+    shutdown) `Send` returns the transient Unavailable error **regardless** of
+    `at_most_once_accept_loss`, because the subscriber set has been (or is being)
+    drained and cannot receive the event. This prevents a reload/shutdown window
+    from silently acking or dropping an in-flight event. Conversely, an event
+    already **acked** before the sender began closing (enqueued to a live
+    subscriber's buffer) is **flushed on shutdown** before that subscriber's
+    stream closes, so a graceful `Close` does not drop an event `Send` already
+    reported as delivered. (A subscriber wedged mid-write when `Close` fires
+    cannot be flushed -- SSE is at-most-once with no per-subscriber durable
+    queue.)
 - **SSE per-subscriber buffering.** Each subscriber has an event queue of
   `client_buffer_size` (default 256). A broadcast that finds the queue full
   drops the event for that subscriber (`SSEDroppedEvents`) rather than blocking
@@ -209,6 +234,12 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
 - **SSE frames carry no `id:` field.** Emitting one would make `EventSource`
   clients send `Last-Event-ID` on reconnect and expect a replay window that does
   not exist. The envelope ID remains in the JSON payload.
+- **SSE `data:` framing is multiline-safe.** The serialised payload is split on
+  newlines and every physical line is emitted as its own `data:` field, per the
+  SSE wire format (an unescaped `\n` inside a `data:` value is a record
+  separator, not payload). `EventSource` rejoins the fields with `\n`, so a
+  payload carrying embedded newlines is reconstructed byte-for-byte instead of
+  being truncated at the first newline or split into phantom events.
 - **SSE egress header hygiene.** Internal-only reserved headers (`route-id`,
   `route-override`, `source-id`, `content-type`) are stripped before an envelope
   is serialised to a subscriber. Bridge-to-bridge propagated headers

@@ -642,3 +642,22 @@ func (s *sqlSession) queryPending(ctx context.Context, pk string, limit int) ([]
 
 	return scanOutboxRecords(rows)
 }
+
+// countPending returns the number of pending records under partition pk, or
+// across all partitions when pk is empty. Backed by the COUNT(*) queries in
+// acl_query.go (idx_outbox_partition_status), so it is an index scan, never a
+// full row materialisation — the efficient backlog primitive behind
+// ports.OutboxDepthReporter. A real read failure is wrapped and returned as-is.
+func (s *sqlSession) countPending(ctx context.Context, pk string) (int, error) {
+	var n int
+	if pk == "" {
+		if err := s.db.QueryRowContext(ctx, countPendingAllSQL).Scan(&n); err != nil {
+			return 0, wrapErr(err, "sqliteoutbox: count pending all")
+		}
+		return n, nil
+	}
+	if err := s.db.QueryRowContext(ctx, countPendingByPartitionSQL, pk).Scan(&n); err != nil {
+		return 0, wrapErr(err, "sqliteoutbox: count pending", "partitionKey", pk)
+	}
+	return n, nil
+}

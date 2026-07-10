@@ -215,6 +215,17 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// version, persistence.LeaseToken.Valid) can never own a real claim, so
+	// reject it as the FIRST statement — BEFORE the fence high-water-mark
+	// advances or any record is selected — so a miswired/buggy drainer cannot
+	// bypass lease ownership and claim work without a real lease.
+	if !token.Valid() {
+		return nil, shared.ErrStaleFencingToken.
+			WithMessage("claim rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: claim",
 			"partition_key", pk, "owner_id", token.Owner, "limit", limit)
@@ -282,6 +293,19 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 // fence mismatch (the durable backends report it identically via
 // rows-affected accounting).
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// version, persistence.LeaseToken.Valid) can never match a real claim's
+	// non-empty owner + non-zero version, so reject it as the FIRST statement
+	// before any fence check or state mutation. Defense-in-depth: checkFences
+	// and the OutboxRecord aggregate's own zero-claim guard also reject it, but
+	// the explicit guard makes the invalid-token rejection unconditional and
+	// independent of stored-row shape.
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("complete rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: complete",
 			"count", len(recordIDs))
@@ -311,6 +335,17 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // Like Complete, the batch is all-or-nothing: every fence is validated
 // before any record is mutated.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// version, persistence.LeaseToken.Valid) can never match a real claim, so
+	// reject it as the FIRST statement before any fence check or state mutation
+	// (defense-in-depth alongside checkFences and the aggregate's zero-claim
+	// guard).
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("release rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: release",
 			"count", len(recordIDs))
@@ -430,4 +465,36 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+// CountPending reports the number of records currently in the PENDING state —
+// the true, unbounded backlog behind shared.MetricOutboxDepth
+// (ports.OutboxDepthReporter). Claimed and terminal records are excluded so a
+// full claim batch cannot masquerade as a shallow backlog. An empty pk counts
+// across every partition; a concrete pk scopes the count to that partition
+// (matching runtime/outbox.Drainer.emitDepth, which always passes a concrete
+// partition key). It never mutates state.
+//
+// The in-memory store cannot fail a read, so it always returns a real count and
+// never returns ports.ErrOutboxDepthUnsupported — it genuinely reports depth.
+func (s *Store) CountPending(ctx context.Context, pk string) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: count_pending",
+			"partition_key", pk)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// ponytail: O(n) map scan, fine for in-memory store.
+	count := 0
+	for _, r := range s.records {
+		if r.Status() != persistence.OutboxPending {
+			continue
+		}
+		if pk != "" && partitionKey(r) != pk {
+			continue
+		}
+		count++
+	}
+	return count, nil
 }

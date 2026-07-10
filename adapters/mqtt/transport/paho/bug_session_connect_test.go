@@ -68,6 +68,9 @@ func TestBug_PasswordRotation_OnLiveCM_RebuildsViaReload(t *testing.T) {
 		ClientID:   "creds-live",
 		Username:   "u-old",
 		Password:   shared.NewSecret("p-old"),
+		// This test exercises the live-CM rebuild-on-rotation mechanics, not
+		// the HIGH-4 plaintext gate; opt in so the tcp:// rotation is allowed.
+		AllowPlaintextCredentials: true,
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
 

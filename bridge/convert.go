@@ -81,35 +81,66 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	return p, nil
 }
 
-func toSessionConfigE(rs *ports.RouteSessionDef) (*session.Config, error) {
+// deploymentClustered mirrors the builder's clustered predicate
+// (bridge/builder_prepare.go): a deployment is clustered when deployment_mode is
+// "clustered" OR a static cluster.endpoints override is present. It gates the
+// HA-timing baseline for lease-bearing sessions (finding HIGH-3).
+func deploymentClustered(cfg *ports.BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Bridge.DeploymentMode == "clustered" {
+		return true
+	}
+	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+}
+
+func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Config, error) {
 	if rs == nil {
 		return nil, nil
 	}
 
-	sc := session.DefaultConfig(rs.SessionID, true)
+	// A RouteSessionDef source is ALWAYS an exclusive, lease-bearing single-owner
+	// session (see the ConnectAfterLease note below). In a CLUSTERED deployment
+	// where the operator did NOT pin lease timing (lease_ttl AND renew_interval
+	// both empty), start from the HA profile (LeaseTTL=45s, ~45s failover) rather
+	// than DefaultConfig's ~6-minute baseline, so clustered failover lands in the
+	// documented 30-60s band by default (finding HIGH-3). Explicit operator
+	// timing always wins and keeps the DefaultConfig baseline + overrides below
+	// (backward-safe). This is also the only live wiring of session.HAConfig.
+	useHA := clustered && rs.LeaseTTL == "" && rs.RenewInterval == ""
+	var sc session.Config
+	if useHA {
+		// HAConfig pins RenewInterval=10s/RenewJitter=1s that are internally
+		// consistent with its 45s TTL (worst-case renew span 40.5s < 45s); keep
+		// them verbatim rather than resetting to derive.
+		sc = session.HAConfig(rs.SessionID, true)
+	} else {
+		sc = session.DefaultConfig(rs.SessionID, true)
+		// DefaultConfig pins RenewInterval to a fixed value (110s). Leaving it set
+		// suppresses the session manager's documented derive-from-TTL branch
+		// (runtime/session/manager.go), so a blueprint that only sets lease_ttl
+		// would silently keep the 110s renew cadence regardless of a much shorter
+		// TTL. Reset it to zero and only override when the operator explicitly
+		// configures renew_interval, letting the session manager derive it from
+		// LeaseTTL otherwise (contract C3).
+		sc.RenewInterval = 0
+		// DefaultConfig also pins RenewJitter (5s). The manager derives jitter only
+		// when BOTH RenewInterval and RenewJitter are zero (manager.go: derived
+		// only if RenewJitter==0 && renewIntervalDerived); leaving the pinned 5s
+		// suppresses derivation, so a lease_ttl-only session gets a fixed 5s jitter
+		// instead of the derived renew/4 -- and with a small lease_ttl the
+		// expiry-margin clamp then fires on every boot. Reset it to zero for the
+		// same reason as RenewInterval, overriding only when lease_renew_jitter is
+		// set explicitly (contract C3: the production path leaves both zero).
+		sc.RenewJitter = 0
+	}
 	// F6: default connect_after_lease ON for a RouteSessionDef source. It is
-	// always an exclusive single-owner session (DefaultConfig(...,true) above);
-	// deferring connect until the lease is won stops a booting standby from
-	// resuming a broker-persisted subscription and consuming without the lease.
-	// nil (omitted in the blueprint) => true; an explicit value is honored.
+	// always an exclusive single-owner session; deferring connect until the lease
+	// is won stops a booting standby from resuming a broker-persisted subscription
+	// and consuming without the lease. nil (omitted in the blueprint) => true; an
+	// explicit value is honored.
 	sc.ConnectAfterLease = rs.ConnectAfterLease == nil || *rs.ConnectAfterLease
-	// DefaultConfig pins RenewInterval to a fixed value (110s). Leaving it set
-	// suppresses the session manager's documented derive-from-TTL branch
-	// (runtime/session/manager.go), so a blueprint that only sets lease_ttl
-	// would silently keep the 110s renew cadence regardless of a much shorter
-	// TTL. Reset it to zero and only override when the operator explicitly
-	// configures renew_interval, letting the session manager derive it from
-	// LeaseTTL otherwise (contract C3).
-	sc.RenewInterval = 0
-	// DefaultConfig also pins RenewJitter (5s). The manager derives jitter only
-	// when BOTH RenewInterval and RenewJitter are zero (manager.go: derived
-	// only if RenewJitter==0 && renewIntervalDerived); leaving the pinned 5s
-	// suppresses derivation, so a lease_ttl-only session gets a fixed 5s jitter
-	// instead of the derived renew/4 -- and with a small lease_ttl the
-	// expiry-margin clamp then fires on every boot. Reset it to zero for the
-	// same reason as RenewInterval, overriding only when lease_renew_jitter is
-	// set explicitly (contract C3: the production path leaves both zero).
-	sc.RenewJitter = 0
 
 	if rs.LeaseTTL != "" {
 		d, err := time.ParseDuration(rs.LeaseTTL)

@@ -115,10 +115,25 @@ var errUnrepresentableBody = errors.New("amqp10: message body cannot be represen
 // the adapter's Receiver needs and converting incoming messages to
 // domain-typed *Delivery values inside the ACL.
 type receiverLink struct {
-	raw *amqp.Receiver
+	raw rawReceiver
 	// delayDeferredWarn dedupes the delayed-retry-deferred Warn to once
 	// per link (G-N2). It is shared with every Delivery this link creates.
 	delayDeferredWarn sync.Once
+}
+
+// rawReceiver is the subset of *amqp.Receiver operations the receiverLink
+// ACL wrapper depends on. It is defined inside the ACL boundary (where SDK
+// types are permitted) so a test double can inject a receiver whose
+// RejectMessage FAILS, making the malformed-ingress settlement-failure
+// path (HIGH-2) unit-testable without a live broker. It embeds settler
+// because a *Delivery settles through the same underlying link, so a
+// *amqp.Receiver satisfies both in one value.
+type rawReceiver interface {
+	settler
+	Receive(ctx context.Context, opts *amqp.ReceiveOptions) (*amqp.Message, error)
+	RejectMessage(ctx context.Context, msg *amqp.Message, e *amqp.Error) error
+	Address() string
+	Close(ctx context.Context) error
 }
 
 var _ linkReceiver = (*receiverLink)(nil)
@@ -149,11 +164,24 @@ func (r *receiverLink) Receive(
 	arrived := clk.Now()
 	env, err := messageToEnvelope(msg, clk)
 	if err != nil {
-		// Reject malformed message at the broker so it is not redelivered
-		// in an infinite loop. The errIngressRejected marker tells the
-		// receive loop this is a handled per-message event (settled via
-		// Reject), NOT a link fault — the loop counts it and continues.
-		_ = r.raw.RejectMessage(ctx, msg, nil)
+		// A malformed message is rejected at the broker so it is not
+		// redelivered in an infinite loop. HIGH-2: the reject is itself a
+		// settlement that can FAIL (deadline exceeded, connection dropped);
+		// if it does, the delivery is STILL UNSETTLED. Reporting
+		// errIngressRejected here would emit a false "rejected" metric,
+		// permanently leak this delivery's link-credit slot (go-amqp
+		// replenishes credit only on a completed disposition), and let the
+		// poison message redeliver in a loop while the link/session still
+		// look healthy. Surface the settlement error instead (NOT
+		// errIngressRejected) so the receive loop routes it through
+		// handleLinkError, rebuilding the link/session and reissuing the
+		// credit the broker holds for the unsettled delivery.
+		if rejErr := r.raw.RejectMessage(ctx, msg, nil); rejErr != nil {
+			return nil, fmt.Errorf("amqp10: reject malformed inbound message: %w", rejErr)
+		}
+		// The reject settled cleanly: mark it a handled per-message event
+		// so the receive loop counts it and continues — one poison message
+		// must not tear the route down.
 		return nil, fmt.Errorf("%w: %w", errIngressRejected, err)
 	}
 	d := NewDelivery(env, msg, r.raw, logger, metrics, clk)

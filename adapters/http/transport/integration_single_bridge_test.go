@@ -322,8 +322,8 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 		headers map[string]string
 		status  int
 	}{
-		{"valid_x_api_key", map[string]string{"X-API-Key": "secret-123"}, http.StatusOK},
-		{"valid_bearer", map[string]string{"Authorization": "Bearer secret-123"}, http.StatusOK},
+		{"valid_x_api_key", map[string]string{"X-API-Key": "secret-abcdefghij"}, http.StatusOK},
+		{"valid_bearer", map[string]string{"Authorization": "Bearer secret-abcdefghij"}, http.StatusOK},
 		{"missing_key", nil, http.StatusUnauthorized},
 		{"wrong_key", map[string]string{"X-API-Key": "wrong"}, http.StatusUnauthorized},
 	}
@@ -332,7 +332,7 @@ func TestIntegration_HTTPPost_APIKeyAuth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			factory := transport.NewFactory()
 			recv, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{
-				ID: "auth-" + tc.name, Config: transport.Config{APIKey: shared.NewSecret("secret-123")},
+				ID: "auth-" + tc.name, Config: transport.Config{APIKey: shared.NewSecret("secret-abcdefghij")},
 			}, nil)
 			if err != nil {
 				t.Fatalf("NewReceiver: %v", err)
@@ -506,7 +506,12 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 // 1.8 TestIntegration_HTTPPost_ReceiverNotReady
 // ---------------------------------------------------------------------------
 
-// Verifies that posting to a receiver before Run is called returns 503.
+// Verifies that posting to a receiver before Run is called returns 503
+// IMMEDIATELY (HIGH-4): readiness is a non-blocking check, so the handler
+// must return without any client-side cancellation. The request carries a
+// background context with NO timeout — without the fix ServeHTTP would
+// block on readiness until the (never-cancelled) context is done and the
+// bounded wait below would fail.
 func TestIntegration_HTTPPost_ReceiverNotReady(t *testing.T) {
 	factory := transport.NewFactory()
 	_, err := factory.NewReceiver(context.Background(), ports.ReceiverSpec{ID: "notready"}, nil)
@@ -515,15 +520,20 @@ func TestIntegration_HTTPPost_ReceiverNotReady(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]any{"subject": "test", "payload": json.RawMessage(`{}`)})
-	req := httptest.NewRequest("POST", "/transport/http/receivers/notready/messages", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/transport/http/receivers/notready/messages",
+		bytes.NewReader(body)).WithContext(context.Background())
 	req.Header.Set("Content-Type", "application/json")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	req = req.WithContext(ctx)
-
 	rec := httptest.NewRecorder()
-	factory.Handler().ServeHTTP(rec, req)
+	done := make(chan struct{})
+	go func() {
+		factory.Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// A block here is the HIGH-4 regression: readiness lag pinning the
+	// handler goroutine until the client gives up.
+	wait.RequireClosed(t, done, 2*time.Second)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())

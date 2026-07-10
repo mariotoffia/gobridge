@@ -141,6 +141,12 @@ func c7Session(t *testing.T, fake pahoConnection, topic string, qos byte) (*Sess
 	s.mu.Lock()
 	s.cm = fake
 	s.plan = &plan
+	// appliedPlan represents the LAST SUCCESSFULLY reconciled state (the plan
+	// whose broker subscribe actually landed): c7Session models a session that
+	// already reconciled this plan, so the applied history must mirror it —
+	// the reconnect-window teardown and empty-plan no-op both key off it
+	// (blocking-#2).
+	s.appliedPlan = &plan
 	s.activeSubs = map[string]byte{topic: qos} // active before the drop
 	s.mu.Unlock()
 	return s, plan

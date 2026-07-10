@@ -107,10 +107,13 @@ sequenceDiagram
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = sqs.Register(reg) // register the linked adapter's config decoder
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("sqs", sqs.NewFactory(logger)).
+    RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

@@ -33,22 +33,51 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // subscriptions cannot churn the broker.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	s.mu.Lock()
-	hasPriorPlan := s.plan != nil
-	priorPlanHadSubs := hasPriorPlan && len(s.plan.Subscriptions) > 0
-	// Snapshot the prior desired topics BEFORE overwriting s.plan: an empty
-	// target plan must tear these down even when a reconnect just reset the
-	// volatile activeSubs snapshot to empty (a clean_start=false broker
-	// resumed them), and the overwrite below would otherwise lose them.
-	priorPlanTopics := s.planTopicsLocked()
-	// Record the latest desired plan unconditionally — including an EMPTY plan
-	// (previously skipped to avoid clobbering the prior plan). Recording the
-	// empty plan is the durable "no subscription is desired any more" fact
-	// that makes a SUBSEQUENT empty reconcile a genuine no-op (rather than
-	// re-issuing the same UNSUBSCRIBE every reconcile) and stops topicCovered
-	// from treating a removed route as a still-live route.
+	// The empty-plan no-op and the reconnect-window teardown key off the
+	// last SUCCESSFULLY APPLIED plan (appliedPlan), NOT the desired plan
+	// (s.plan) that is overwritten below (blocking-#2). Committing the
+	// desired plan as history before the broker ops succeed is exactly the
+	// bug: a failed Unsubscribe would leave s.plan empty, and the NEXT empty
+	// Reconcile would no-op instead of RETRYING the unsubscribe.
+	appliedExists := s.appliedPlan != nil
+	appliedHadSubs := appliedExists && len(s.appliedPlan.Subscriptions) > 0
+	// Snapshot the last-APPLIED desired topics: an empty target plan must tear
+	// these down even when a reconnect just reset the volatile activeSubs
+	// snapshot to empty (a clean_start=false broker resumed them). Using the
+	// APPLIED plan (not the desired one) means a reconcile that FAILED to
+	// unsubscribe leaves these topics in the retry set for the next reconcile.
+	priorPlanTopics := s.appliedPlanTopicsLocked()
+	// Record the latest desired plan unconditionally — including an EMPTY plan.
+	// This is the desired-state stash OnConnectionUp replays on (re)connect and
+	// the source topicCovered consults; it is set even on the error path so a
+	// Reconcile-before-Start still stashes the plan. It is deliberately NOT the
+	// applied history (see appliedPlan, set only after the broker ops succeed).
 	s.plan = &plan
+	// Shared-subscription scale-out on a stable/shared-ClientID mode is the
+	// client_id-collision footgun (HIGH-3): every replica MUST use a UNIQUE
+	// client_id, else they form a single broker session and take each other
+	// over instead of load-balancing. We cannot see the other replicas'
+	// ClientIDs from one process, so surface the requirement once. Ephemeral
+	// sessions already get a unique ClientID + CleanStart, so they are the
+	// correctly-configured scale-out shape and are not warned.
+	warnSharedSubs := s.planHasSharedSubscriptionsLocked() &&
+		s.mode != connectivity.SessionEphemeral && !s.sharedSubWarned
+	if warnSharedSubs {
+		s.sharedSubWarned = true
+	}
 	cm := s.cm
 	s.mu.Unlock()
+
+	if warnSharedSubs && s.logger != nil {
+		s.logger.Warn("mqtt: shared subscriptions ($share) configured on a stable-client_id session — "+
+			"horizontal scale-out REQUIRES a UNIQUE client_id per instance; replicas that reuse this client_id "+
+			"form one broker session and take each other over (self-DOS) instead of load-balancing. A shared "+
+			"client_id is only safe behind an exclusive lease (a single active owner), which serialises rather "+
+			"than scales the subscription",
+			"client_id", s.opts.ClientID,
+			"session_mode", s.mode,
+		)
+	}
 
 	if cm == nil {
 		return shared.ErrUnavailable.WithMessage("session not started")
@@ -60,26 +89,53 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// delivering on stale subscriptions the router then ack-drops as orphans
 	// forever (c4-remove-subs).
 	//
-	// The teardown is gated on the DESIRED-STATE HISTORY (whether the prior
-	// plan held subscriptions), NOT on the volatile activeSubs snapshot.
-	// handleConnectionUp resets activeSubs to empty on every reconnect while a
-	// clean_start=false broker still holds the resumed subscriptions, so an
-	// empty plan reconciled in that post-reset/pre-resubscribe window would
-	// look like "nothing to remove" under an activeSubs guard and orphan the
-	// broker sub until the router's grace-sweep backstop. Gating on the prior
-	// plan closes that window: s.reconcile unsubscribes the prior desired
-	// topics (priorPlanTopics) even when activeSubs is empty.
+	// The teardown is gated on the last-APPLIED history (whether the plan we
+	// last SUCCESSFULLY reconciled held subscriptions), NOT on the volatile
+	// activeSubs snapshot and NOT on the desired plan. handleConnectionUp
+	// resets activeSubs to empty on every reconnect while a clean_start=false
+	// broker still holds the resumed subscriptions, so an empty plan reconciled
+	// in that post-reset/pre-resubscribe window would look like "nothing to
+	// remove" under an activeSubs guard and orphan the broker sub until the
+	// router's grace-sweep backstop. Gating on the applied plan closes that
+	// window: s.reconcile unsubscribes the applied desired topics
+	// (priorPlanTopics) even when activeSubs is empty.
 	//
-	// Only a genuinely subless transition — an empty plan re-affirming a prior
-	// plan that itself held no subscriptions (a sender-only session) — is a
-	// true no-op, so a SessionManager that never had subscriptions cannot
-	// churn the broker.
-	if len(plan.Subscriptions) == 0 && hasPriorPlan && !priorPlanHadSubs {
+	// Only a genuinely subless transition — an empty plan re-affirming an
+	// APPLIED plan that itself held no subscriptions (a sender-only session) —
+	// is a true no-op, so a SessionManager that never had subscriptions cannot
+	// churn the broker. Because the no-op keys off APPLIED (not desired) state,
+	// a FAILED unsubscribe (whose applied plan still holds subscriptions) is
+	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
+	if len(plan.Subscriptions) == 0 && appliedExists && !appliedHadSubs {
 		return nil
 	}
 
 	if err := s.reconcile(ctx, cm, plan, priorPlanTopics); err != nil {
 		return err
+	}
+
+	// The broker ops SUCCEEDED: commit this plan as the last-applied history so
+	// the next empty-plan reconcile can no-op and the reconnect-window teardown
+	// tears down the right topics. A FAILED reconcile returned above WITHOUT
+	// reaching here, so appliedPlan stays at the last successful value and the
+	// next reconcile retries the failed op (blocking-#2).
+	applied := plan
+	s.mu.Lock()
+	s.appliedPlan = &applied
+	s.mu.Unlock()
+
+	// A successful reconcile may have REMOVED coverage (an Unsubscribe tore
+	// down a topic a receiver was removed from config). A publish RETAINED as
+	// covered past the grace window on that topic is now a TRUE ORPHAN, but
+	// nothing else re-sweeps it — it would stay un-acked forever, pinning the
+	// broker Receive-Maximum window and wedging ingress (blocking-#1). Re-run
+	// the router's settle pass so any now-uncovered pending entry is
+	// reclassified (acked, dropped, unsubscribed) while still-covered entries
+	// stay put. This runs with NO session mutex held (reclassifyPending takes
+	// r.mu then releases it before calling covered(), preserving lock order),
+	// and is a cheap no-op when the pending buffer is empty (the steady state).
+	if s.router != nil {
+		s.router.reclassifyPending()
 	}
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
@@ -171,17 +227,20 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	}
 }
 
-// planTopicsLocked returns the topic filters of the current desired plan
-// (s.plan), or nil when no plan is set. Callers must hold s.mu. It is the
-// desired-state history Reconcile snapshots before overwriting s.plan so an
-// empty target plan can tear down the prior desired subscriptions even when a
-// reconnect has just reset the volatile activeSubs snapshot (c4-remove-subs).
-func (s *Session) planTopicsLocked() []string {
-	if s.plan == nil {
+// appliedPlanTopicsLocked returns the topic filters of the last SUCCESSFULLY
+// reconciled plan (s.appliedPlan), or nil when no plan has been applied yet. It
+// is the applied-state history Reconcile hands to s.reconcile so an empty
+// target plan tears down the topics actually established on the broker — even
+// when a reconnect has just reset the volatile activeSubs snapshot
+// (c4-remove-subs) AND even when a prior reconcile FAILED to unsubscribe them
+// (blocking-#2: the failed op's topics stay in the applied set until an
+// unsubscribe succeeds). Callers must hold s.mu.
+func (s *Session) appliedPlanTopicsLocked() []string {
+	if s.appliedPlan == nil {
 		return nil
 	}
-	topics := make([]string, 0, len(s.plan.Subscriptions))
-	for _, sub := range s.plan.Subscriptions {
+	topics := make([]string, 0, len(s.appliedPlan.Subscriptions))
+	for _, sub := range s.appliedPlan.Subscriptions {
 		topics = append(topics, sub.Topic)
 	}
 	return topics
@@ -212,6 +271,25 @@ func (s *Session) topicCoveredLocked(topic string) bool {
 	return false
 }
 
+// planHasSharedSubscriptionsLocked reports whether the last reconciled plan
+// contains at least one shared subscription ("$share/<group>/<filter>"). It is
+// the signal that this session participates in horizontal scale-out, which
+// REQUIRES a unique per-instance client_id (HIGH-3): it drives the one-time
+// reconcile advisory and escalates the severity of a session takeover (a
+// takeover while shared subscriptions are active is the observable symptom of
+// replicas sharing a client_id and DOSing each other). Callers must hold s.mu.
+func (s *Session) planHasSharedSubscriptionsLocked() bool {
+	if s.plan == nil {
+		return false
+	}
+	for _, sub := range s.plan.Subscriptions {
+		if isSharedSubscriptionFilter(sub.Topic) {
+			return true
+		}
+	}
+	return false
+}
+
 // topicCovered is the router's covered-topic predicate (wired via
 // withCovered in NewSession). It reports whether a concrete publish topic
 // is still covered by a subscription the session wants — so the router can
@@ -224,6 +302,19 @@ func (s *Session) topicCovered(topic string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.topicCoveredLocked(topic)
+}
+
+// reconcileTimeout returns the adapter-owned deadline applied to EACH broker
+// SUBSCRIBE / UNSUBSCRIBE during reconciliation (HIGH-2). A non-positive
+// configured value is coerced to DefaultReconcileTimeout: this is a liveness
+// safety bound (a wedged broker whose SUBACK/UNSUBACK never arrives must not
+// hang the reconcile, nor the startup / hot-reload step awaiting it), so unlike
+// the tuning knobs it cannot be disabled with an explicit 0.
+func (s *Session) reconcileTimeout() time.Duration {
+	if s.opts.ReconcileTimeout > 0 {
+		return s.opts.ReconcileTimeout
+	}
+	return DefaultReconcileTimeout
 }
 
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan, priorTopics []string) error {
@@ -283,7 +374,13 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing",
 				"client_id", s.opts.ClientID, "topics", toUnsub)
 		}
-		if err := cm.Unsubscribe(ctx, toUnsub); err != nil {
+		// Wrap the broker op in an adapter-owned deadline: the reconcile ctx may
+		// carry none, so a wedged broker (UNSUBACK never arrives on a half-open
+		// connection) would otherwise hang the reconcile indefinitely (HIGH-2).
+		unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+		err := cm.Unsubscribe(unsubCtx, toUnsub)
+		cancel()
+		if err != nil {
 			return MapError(err)
 		}
 		s.mu.Lock()
@@ -311,7 +408,12 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			s.logger.Log(ctx, logging.LevelTrace, "mqtt: subscribing",
 				"client_id", s.opts.ClientID, "topics", topics)
 		}
-		reasons, err := cm.Subscribe(ctx, toSub)
+		// Adapter-owned deadline per SUBSCRIBE too: a broker that accepts the
+		// connection but never returns SUBACK must not hang the reconcile — and
+		// any startup / hot-reload step awaiting it — indefinitely (HIGH-2).
+		subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+		reasons, err := cm.Subscribe(subCtx, toSub)
+		cancel()
 		if err != nil {
 			return MapError(err)
 		}

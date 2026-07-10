@@ -191,7 +191,7 @@ HTTP method receive HTTP 405 with a correct `Allow` header.
 | GET | `/api/v1/admin/dlq/messages/{id}` | Single DLQ entry with full payload (audited as `dlq.read_payload`) |
 | POST | `/api/v1/admin/dlq/redrive` | Redrive DLQ entries by ID (max 100); 207 on partial failure |
 | POST | `/api/v1/admin/dlq/delete` | Delete DLQ entries by ID (max 1000) |
-| POST | `/api/v1/admin/dlq/delete-by-filter` | Delete by filter (requires `confirm_delete_all` for an empty filter) |
+| POST | `/api/v1/admin/dlq/delete-by-filter` | Delete by filter (requires `confirm_delete_all` for an empty filter; a negative `limit` is rejected with 400, `limit` 0 means unbounded within the filter) |
 | POST | `/api/v1/admin/dlq/purge` | Purge the **entire** DLQ (requires `confirm_purge_all: true`) |
 
 Config-transaction endpoints (`/api/v1/admin/config...`) are registered only
@@ -321,27 +321,56 @@ per-entry `errors` array (200 only when every requested entry redrove):
 
 Maximum 100 IDs per request (duplicates are de-duplicated); request body limited
 to 1 MB and strict-decoded (unknown JSON fields are rejected). Redrive is
-**claim-by-delete before inject**: the entry is deleted first so a client retry
-or a concurrent admin instance cannot double-deliver (a crash between delete and
-inject accepts an at-most-once drop; an inject failure best-effort restores the
-entry). Replay is **binding-scoped** -- the entry's originating `binding_id` is
-carried **out-of-band** through the runtime's binding-scoped injection
-capability so a fan-out route re-delivers only to the binding that failed, not
-to its healthy siblings. It is **not** a header: `x-bridge.route-override` and
-the other reserved `x-bridge.*` keys are stripped at ingress before any
-consumption site reads them, so a header cannot steer the replay.
+**inject before delete**: the entry is re-injected first and removed only after
+the inject is confirmed, so a failed *or refused* inject always leaves the entry
+(and its failure evidence) intact -- never a delete after a no-op. The cost is a
+bounded at-least-once window: a crash between a confirmed inject and the delete
+re-drives on the next attempt. Replay is **binding-scoped** -- the entry's
+originating `binding_id` is carried **out-of-band** through the runtime's
+redrive-safe injection capability so a fan-out route re-delivers only to the
+binding that failed, not to its healthy siblings. It is **not** a header:
+`x-bridge.route-override` and the other reserved `x-bridge.*` keys are stripped
+at ingress before any consumption site reads them, so a header cannot steer the
+replay.
 
 Redrive uses **redrive-safe injection** (`InjectRedrive`) where the runtime
 supports it: the message is re-issued under a fresh envelope ID with the
-original stamped as provenance (`x-bridge.causation-id`). Reusing the original
-ID is a silent-loss path on `shared_outbox` routes -- the outbox retains
-completed/poisoned rows as dedup evidence keyed on `(envelope_id, binding_id)`,
-so re-persisting the same ID is swallowed as a duplicate, the dispatch ACKs, and
-the redrive reports the entry redriven while nothing is sent. When the runtime
-lacks `InjectRedrive` it falls back to plain binding-scoped injection
-(`InjectToBinding`) -- which reuses the original envelope ID -- and the response
-carries a non-fatal **`warning`** field so a bare success does not hide
-the possible no-op -- verify delivery in that case:
+original stamped as provenance (`x-bridge.causation-id`). The re-issue also
+**drops the stale transport dedup key** (`x-bridge.dedup-id`): a redrive is a
+deliberate operator re-issue, so the original dedup id -- whose whole purpose is
+to *suppress* re-delivery (e.g. it maps to an SQS FIFO `MessageDeduplicationId`)
+-- must not ride along, or an idempotent/FIFO sender would swallow the "fresh"
+replay and the redrive would delete the entry after a no-op. Non-suppressing
+keys (ordering-key, correlation-id) and the causation provenance are preserved.
+Reusing the original ID is a silent-loss path on `shared_outbox` routes -- the
+outbox retains completed/poisoned rows as dedup evidence keyed on
+`(envelope_id, binding_id)`, so re-persisting the same ID is swallowed as a
+duplicate, the dispatch ACKs, and the redrive reports the entry redriven while
+nothing is sent.
+
+When the runtime **lacks** `InjectRedrive`, redrive behaviour depends on the
+entry's scope:
+
+- **`shared_outbox` / binding-scoped entries are refused.** An entry that
+  records a non-empty `binding_id` would, on any legacy path, replay under the
+  original envelope ID and be swallowed by the outbox dedup row -- deleting the
+  DLQ entry after a no-op (silent loss of both the message and its evidence). So
+  the redrive is refused **before any inject** and the entry is **not** deleted;
+  its message and failure evidence are preserved. The per-entry error reads
+  `refused: runtime lacks redrive-safe injection ...` and the batch returns
+  `207`. Upgrade the runtime to one that implements `InjectRedrive` (the
+  built-in runtime does).
+- **Direct entries** (empty `binding_id`) still replay via a plain `Inject`
+  **only when they are collision-free** -- an empty envelope ID **and** no
+  `x-bridge.dedup-id` header -- so the runtime assigns a fresh ID and the
+  transport re-derives dedup from it. A direct entry that carries a non-empty
+  envelope ID **or** a dedup key is **refused** for the same reason as a
+  shared_outbox entry (an idempotent/FIFO sender could silently deduplicate the
+  replay and the entry would be deleted after a no-op); it returns `207` with a
+  per-entry `refused: runtime lacks redrive-safe injection ...` error and the
+  entry is preserved. A collision-free direct replay still carries a non-fatal
+  **`warning`** field so a bare success does not hide a possible no-op; verify
+  delivery in that case:
 
 ```json
 {
@@ -351,17 +380,17 @@ the possible no-op -- verify delivery in that case:
 }
 ```
 
-Before the first (irreversible) claim-by-delete, redrive emits a
-`dlq.redrive.begin` audit record (outcome `pending`) carrying the requested IDs,
-so a crash between delete and inject still leaves a trace of which entries were
-being redriven -- the per-batch `dlq.redrive` outcome record is written only if
-the handler returns.
+Before the inject→delete loop, redrive emits a `dlq.redrive.begin` audit record
+(outcome `pending`) carrying the requested IDs, so a crash between a confirmed
+inject and its delete still leaves a trace of which entries were being redriven
+(and which may re-drive on the next attempt) -- the per-batch `dlq.redrive`
+outcome record is written only if the handler returns.
 
 If the recorded `binding_id` no longer exists on a still-present but
 reconfigured route, the redrive fails that entry with `route or binding not
-found` (a permanent `ErrNotFound`) and the DLQ entry is preserved by a
-best-effort restore, rather than being fanned out to the route's current
-bindings. Re-file the entry against a binding that exists.
+found` (a permanent `ErrNotFound`) and the DLQ entry is preserved -- the failing
+inject never reaches the delete -- rather than being fanned out to the route's
+current bindings. Re-file the entry against a binding that exists.
 
 ### DLQ purge
 
@@ -463,7 +492,7 @@ Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
 | `auth.failure` | An API key check fails (also increments the per-client throttle) |
 | `auth.throttled` | A request is rejected with 429 because the client is over its failure limit |
 | `dlq.read_payload` | A single DLQ entry (with full payload) is read via `GET .../dlq/messages/{id}` |
-| `dlq.redrive.begin` | Emitted (outcome `pending`) before the first claim-by-delete of a redrive batch, recording the requested IDs |
+| `dlq.redrive.begin` | Emitted (outcome `pending`) before the inject→delete loop of a redrive batch, recording the requested IDs |
 
 ## Monitor API Endpoints
 

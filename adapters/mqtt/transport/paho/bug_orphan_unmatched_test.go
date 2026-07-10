@@ -380,11 +380,12 @@ func TestSession_TopicCoveredLocked(t *testing.T) {
 		"a topic covered by neither active subs nor the plan is a true orphan")
 }
 
-// NEW-DEFECT regression: a topic COVERED by a still-desired subscription
-// whose handler registers later than the grace window must be
-// acked-and-dropped (unavoidable, the broker already acked) but NEVER
-// unsubscribed — unsubscribing would silently kill a live route until the
-// next reconcile. A genuine orphan on a different topic is still
+// HIGH-1 regression: a topic COVERED by a still-desired subscription whose
+// handler registers later than the grace window must be RETAINED un-acked (so
+// at-least-once holds and the publish is delivered once the handler registers)
+// and NEVER unsubscribed — ack-dropping it would be acknowledged live-route
+// loss, and unsubscribing would silently kill a live route until the next
+// reconcile. A genuine orphan on a different topic is still acked-dropped and
 // unsubscribed. The single FIFO unsubscribe worker orders the covered topic
 // before the orphan, giving a deterministic "already handled" barrier.
 func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testing.T) {
@@ -432,18 +433,29 @@ func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testi
 		"the covered topic must NOT be unsubscribed; only the true orphan is")
 	require.Equal(t, int64(1), sess.Router().UnmatchedDroppedCount(),
 		"only the true orphan is counted as benign orphan cleanup (M-3 metric split)")
-	require.Equal(t, int64(1), sess.Router().CoveredDroppedCount(),
-		"the covered topic's drop is counted as REAL live-route loss, not orphan cleanup (M-3)")
+	require.Equal(t, int64(0), sess.Router().CoveredDroppedCount(),
+		"the covered topic's QoS 1 publish is RETAINED, not dropped (HIGH-1)")
+	require.Equal(t, int64(1), sess.Router().CoveredRetainedCount(),
+		"the covered topic's publish is RETAINED un-acked for its late handler (HIGH-1)")
+	require.Equal(t, 1, sess.Router().PendingCount(),
+		"the covered publish stays in the pending buffer until its handler registers")
 
-	// The still-live route works once its handler registers: subsequent
-	// publishes are delivered rather than dropped — proof it was not killed.
-	got := make(chan string, 1)
+	// The retained covered publish is DELIVERED (not lost) once its handler
+	// registers — proof the route was not killed AND that at-least-once held.
+	// RegisterFiltered enrolls the flush in r.wg, so Wait() is a deterministic
+	// barrier (no sleep).
+	got := make(chan string, 4)
 	sess.Router().RegisterFiltered("rx", []string{"sensors/temp"},
-		func(pub *pahov5.Publish, ack func() error) { _ = ack(); got <- pub.Topic })
+		func(pub *pahov5.Publish, ack func() error) { _ = ack(); got <- string(pub.Payload) })
+	sess.Router().Wait()
+	require.Equal(t, "21", <-got,
+		"the RETAINED covered publish is delivered once its handler registers (HIGH-1, not lost)")
+
+	// A fresh publish is also delivered — the route is fully alive.
 	sess.Router().dispatch(&pahov5.Publish{Topic: "sensors/temp", QoS: 1, Payload: []byte("22")},
 		func() error { return nil })
-	require.Equal(t, "sensors/temp", <-got,
-		"the covered route still delivers after the handler registers (route not killed)")
+	require.Equal(t, "22", <-got,
+		"the covered route still delivers fresh publishes after the handler registers (route not killed)")
 
 	require.NoError(t, sess.Close(context.Background()))
 }

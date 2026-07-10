@@ -85,3 +85,16 @@ func stripSharedSubscriptionPrefix(filter string) string {
 	}
 	return rest[idx+1:]
 }
+
+// isSharedSubscriptionFilter reports whether a subscription filter is a shared
+// subscription ("$share/<group>/<filter>"). A shared subscription makes the
+// broker LOAD-BALANCE a topic's deliveries across the group's members, which
+// is the horizontal scale-out path — and the one that REQUIRES a UNIQUE
+// per-instance client_id (HIGH-3): replicas that reuse a client_id form a
+// SINGLE broker session and take each other over (self-DOS) instead of sharing
+// the load. Any "$share/" prefix — even a malformed one — signals that
+// scale-out intent, so detection is intentionally broader than the strict
+// stripSharedSubscriptionPrefix parse.
+func isSharedSubscriptionFilter(filter string) bool {
+	return strings.HasPrefix(filter, "$share/")
+}

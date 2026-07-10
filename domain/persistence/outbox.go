@@ -217,7 +217,16 @@ func (r *OutboxRecord) OrderingKey() (string, bool) {
 // fencing-token version currentTokenVersion. A record is claimable when
 // it is Pending, or when it is Claimed by a strictly older fencing
 // token (the previous owner's lease has been preempted).
+//
+// A currentTokenVersion of 0 is NEVER claimable, for any state: a real
+// LeaseToken carries a non-zero, monotonically assigned Version (see
+// LeaseToken.Valid), so a zero version signals a missing/zero-value token.
+// Rejecting it here keeps a store that filters claim candidates through
+// IsClaimable from ever selecting a record for a zero-value token.
 func (r *OutboxRecord) IsClaimable(currentTokenVersion uint64) bool {
+	if currentTokenVersion == 0 {
+		return false
+	}
 	switch r.status {
 	case OutboxPending:
 		return true
@@ -247,6 +256,20 @@ func (r *OutboxRecord) IsClaimable(currentTokenVersion uint64) bool {
 // poison-message cap MUST apply the same budget gate rather than poisoning on
 // replay count alone.
 func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint64) *shared.BridgeError {
+	// Reject a zero-value / invalid fencing token before any state check: a
+	// real claim requires a non-empty owner AND a non-zero, monotonically
+	// assigned version (LeaseToken.Valid). Without this guard a miswired
+	// drainer could claim a Pending record with persistence.LeaseToken{},
+	// bypassing lease ownership and breaking clustering/fencing. Classified
+	// ErrStaleFencingToken because a zero token is the stalest possible token,
+	// matching the ports.OutboxStore fencing contract.
+	if claimedBy == "" || tokenVersion == 0 {
+		return shared.ErrStaleFencingToken.
+			WithMessage("outbox record requires a valid fencing token (non-empty owner and non-zero version) to claim").
+			With("recordID", r.id).
+			With("givenOwner", claimedBy).
+			With("givenTokenVersion", tokenVersion)
+	}
 	if !r.IsClaimable(tokenVersion) {
 		return shared.ErrOutboxNotClaimable.
 			WithMessage("outbox record is not claimable in its current state").
@@ -270,6 +293,30 @@ func (r *OutboxRecord) Claim(now time.Time, claimedBy string, tokenVersion uint6
 	return nil
 }
 
+// assertValidClaimIdentity rejects a Claimed record whose stored claim
+// identity is itself invalid — claimedBy == "" or claimVersion == 0. Claim
+// guarantees a real claim always carries a non-empty owner and a non-zero,
+// monotonically assigned version (LeaseToken.Valid), so such a "zero-claimed"
+// row is a corrupt or pre-fencing legacy invariant violation. It matters
+// because a store fences Complete/Release by matching the caller's token
+// against this stored identity: a zero-claimed row is exactly what a
+// zero-value LeaseToken{} would fraudulently MATCH. Refusing to mutate it here
+// makes the aggregate reject the mutation independent of the caller's token,
+// symmetric with Claim's own valid-token guard, so any adapter that routes the
+// transition through the aggregate is safe even before its own token guard is
+// in place. Classified ErrStaleFencingToken: a claim that cannot be
+// authenticated is treated as the stalest possible token.
+func (r *OutboxRecord) assertValidClaimIdentity(op string) *shared.BridgeError {
+	if r.claimedBy == "" || r.claimVersion == 0 {
+		return shared.ErrStaleFencingToken.
+			WithMessage("outbox record has an invalid claim identity (zero-claimed); refusing to "+op).
+			With("recordID", r.id).
+			With("claimedBy", r.claimedBy).
+			With("claimVersion", r.claimVersion)
+	}
+	return nil
+}
+
 // Complete transitions the aggregate from Claimed to Completed.
 // Returns shared.ErrOutboxNotInClaimedState when invoked from any
 // other state.
@@ -279,6 +326,9 @@ func (r *OutboxRecord) Complete(now time.Time) *shared.BridgeError {
 			WithMessage("outbox record must be in claimed state to complete").
 			With("recordID", r.id).
 			With("status", string(r.status))
+	}
+	if err := r.assertValidClaimIdentity("complete"); err != nil {
+		return err
 	}
 	r.status = OutboxCompleted
 	r.completedAt = now
@@ -297,6 +347,9 @@ func (r *OutboxRecord) Release(_ time.Time) *shared.BridgeError {
 			WithMessage("outbox record must be in claimed state to release").
 			With("recordID", r.id).
 			With("status", string(r.status))
+	}
+	if err := r.assertValidClaimIdentity("release"); err != nil {
+		return err
 	}
 	r.status = OutboxPending
 	r.claimedBy = ""

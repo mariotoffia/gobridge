@@ -156,13 +156,17 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	}, connectivity.SessionEphemeral, nil, rec)
 	s.mu.Lock()
 	s.cm = &pahoConn{cm: fakeCM}
-	// A SUBLESS prior plan (sender-only session): an empty target plan
-	// re-affirms "nothing desired" and is a genuine no-op. NOTE the prior
-	// setup used a prior plan WITH a subscription and an empty activeSubs —
-	// that is now the reconnect-window TEARDOWN case (the broker may still
-	// hold the resumed sub), not a no-op, so it must NOT be pinned here
-	// (c4-remove-subs gates teardown on desired-state history, not activeSubs).
+	// A SUBLESS prior APPLIED plan (sender-only session): an empty target plan
+	// re-affirms "nothing desired" and is a genuine no-op. The no-op now keys
+	// off the APPLIED history (blocking-#2), so seed appliedPlan (not just the
+	// desired s.plan) with an empty plan to model "a subless plan was already
+	// successfully reconciled". NOTE the prior setup used a plan WITH a
+	// subscription and an empty activeSubs — that is now the reconnect-window
+	// TEARDOWN case (the broker may still hold the resumed sub), not a no-op,
+	// so it must NOT be pinned here (c4-remove-subs gates teardown on
+	// applied-state history, not activeSubs).
 	s.plan = &connectivity.SessionPlan{}
+	s.appliedPlan = &connectivity.SessionPlan{}
 	s.mu.Unlock()
 
 	// Empty plan + subless prior plan = no-op short-circuit BEFORE reconcile().

@@ -254,7 +254,7 @@ func TestToSessionConfig_LeaseRenewJitter(t *testing.T) {
 func TestToSessionConfig_InvalidJitter_ReturnsError(t *testing.T) {
 	rs := &ports.RouteSessionDef{SessionID: "s1", RenewJitter: "not-a-duration"}
 
-	_, err := toSessionConfigE(rs)
+	_, err := toSessionConfigE(rs, false)
 	if err == nil {
 		t.Fatal("expected error for invalid lease_renew_jitter")
 	}

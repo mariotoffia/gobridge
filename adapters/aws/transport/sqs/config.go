@@ -66,6 +66,38 @@ type ReceiverConfig struct {
 	// extracts the inner message body. Default false.
 	SNSUnwrap bool
 
+	// PoisonMaxReceives is an adapter-enforced backstop for malformed
+	// ("poison") messages the receiver cannot convert to an Envelope. A
+	// poison message is normally dropped WITHOUT a DeleteMessage so the source
+	// queue's native redrive policy (maxReceiveCount -> DLQ) can move it;
+	// a source queue with NO redrive policy would instead redeliver it every
+	// visibility timeout forever (a permanent hot loop). When
+	// PoisonMaxReceives > 0 and a poison message's ApproximateReceiveCount
+	// reaches it, the receiver DELETES the message — a controlled, observable
+	// drop (SQSPoisonDropped counter + Error log) — to break that loop. 0
+	// (default) disables the backstop and relies entirely on native redrive.
+	// Set it comfortably ABOVE the source queue's native maxReceiveCount so
+	// native redrive still owns the message on correctly-configured queues; a
+	// message only climbs this high when nothing is draining it.
+	//
+	// ponytail: a controlled adapter-side delete is the ceiling — a true
+	// bridge-DLQ handoff for conversion failures needs a ports.Delivery-level
+	// poison sink the receiver does not own, because the message never becomes
+	// a Delivery (conversion fails first).
+	PoisonMaxReceives int32
+
+	// PoisonDropWithoutDLQ is the explicit opt-in required for the single most
+	// destructive poison backstop setting: a PoisonMaxReceives of exactly 1,
+	// which DELETES a poison message on its FIRST conversion failure — no
+	// redelivery, no window for a native DLQ to preserve the payload. Without
+	// this flag PoisonMaxReceives == 1 is rejected at config time because a
+	// single failed receive destroying data is almost never intended. It does
+	// NOT relax the startup guard (checkRedrivePolicy) that refuses a backstop
+	// which would preempt an EXISTING native redrive policy — that pre-emption
+	// is always a data-loss fault regardless of this flag, because a DLQ that
+	// exists would have preserved the payload.
+	PoisonDropWithoutDLQ bool
+
 	// Client allows injecting a pre-built SQS client (for tests).
 	// When set, Region/Endpoint/Profile are ignored.
 	Client sqsAPI
@@ -161,6 +193,35 @@ type SenderConfig struct {
 func (c *ReceiverConfig) validate() error {
 	if c.QueueURL == "" && c.QueueName == "" {
 		return errors.New("sqs: either QueueURL or QueueName is required")
+	}
+	if err := validatePoisonBackstop(c.PoisonMaxReceives, c.PoisonDropWithoutDLQ); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validatePoisonBackstop enforces the static, queue-INDEPENDENT invariants of
+// the adapter poison backstop, shared by the plugin Config.Validate and the
+// internal ReceiverConfig.validate so every construction path agrees:
+//
+//   - PoisonMaxReceives must be >= 0 (0 disables the backstop).
+//   - PoisonMaxReceives == 1 is refused unless PoisonDropWithoutDLQ is set: a
+//     value of 1 DELETES a poison message on its first conversion failure with
+//     no redelivery and no DLQ copy — almost never intended, so it demands an
+//     explicit opt-in.
+//
+// The queue-AWARE guard — refusing a backstop that would preempt an EXISTING
+// native redrive policy (PoisonMaxReceives <= native maxReceiveCount) — needs
+// the live RedrivePolicy and therefore runs at startup in checkRedrivePolicy,
+// not here.
+func validatePoisonBackstop(maxReceives int32, dropWithoutDLQ bool) error {
+	if maxReceives < 0 {
+		return errors.New("sqs: poison_max_receives must be >= 0 (0 disables the adapter poison backstop)")
+	}
+	if maxReceives == 1 && !dropWithoutDLQ {
+		return errors.New("sqs: poison_max_receives == 1 destroys a poison message on its first " +
+			"conversion failure (no redelivery, no DLQ copy); use poison_max_receives >= 2, or set " +
+			"poison_drop_without_dlq: true to explicitly accept destructive single-receive drops")
 	}
 	return nil
 }

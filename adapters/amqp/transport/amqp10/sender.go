@@ -58,6 +58,12 @@ type Sender struct {
 }
 
 // NewSender creates an AMQP 1.0 Sender.
+//
+// LOW-LEVEL constructor. It does NOT enforce the dedicated-session contract
+// (HIGH-3) — Factory.NewSender reserves the link so a sender cannot share a
+// session with a durable receiver. Production builds every link through the
+// ports.TransportFactory interface (Factory.NewSender); this constructor
+// stays permissive for tests. Use Factory.NewSender in production.
 func NewSender(cfg SenderConfig, session *Session) (*Sender, error) {
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {

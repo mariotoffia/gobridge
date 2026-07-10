@@ -1,12 +1,12 @@
 package transport_test
 
 // Deterministic tests for audit chunk C18, finding 2: SSE zero-delivery
-// acknowledgement semantics. By default SSE egress is at-most-once — Send
-// reports success even when the event reached nobody — but every
-// zero-delivery outcome must now be loud (ERROR level + counter), and
-// when Config.FailOnZeroDelivery is set Send must instead return a
-// TRANSIENT (Unavailable-class) error so the route runner retries and
-// then DLQs per policy rather than silently acking the producer.
+// acknowledgement semantics. SSE egress is now SAFE-BY-DEFAULT (HIGH-1):
+// a broadcast that reached nobody returns a TRANSIENT (Unavailable-class)
+// error so the route runner retries/DLQs instead of acking a lost event.
+// Every zero-delivery outcome is also loud (ERROR level + counter).
+// Accepting the loss (Send returns nil, source acked) requires the
+// explicit Config.AtMostOnceAcceptLoss opt-in.
 //
 // No sleeps: the all-buffers-full case is driven by a blocking writer
 // that parks the handler inside Write (so it never drains the client
@@ -129,16 +129,23 @@ func chunk18Envelope(id string) ports.OutboundMessage {
 	})}
 }
 
-// Zero subscribers, FailOnZeroDelivery unset (default): Send returns nil
-// (documented at-most-once) but the loss is loud — MetricSSENoSubscribers
-// fires and an ERROR record is logged.
-func TestChunk18_SSE_ZeroSubscribers_DefaultAcksButLogsError(t *testing.T) {
+// Zero subscribers, default config: Send returns a TRANSIENT
+// (Unavailable-class) error (HIGH-1 safe default) and the loss is loud —
+// MetricSSENoSubscribers fires and an ERROR record is logged.
+func TestChunk18_SSE_ZeroSubscribers_DefaultFailsTransient(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	cap := &capturingHandler{}
 	sender := newChunk18Sender(t, "zero-default", transport.Config{}, rec, slog.New(cap))
 
-	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
-		t.Fatalf("default zero-delivery must ack (nil), got %v", err)
+	err := sender.Send(context.Background(), chunk18Envelope("e0"))
+	if err == nil {
+		t.Fatal("default zero-delivery must return a transient error, got nil")
+	}
+	if !shared.IsRecoverableError(err) {
+		t.Fatalf("zero-delivery error must be transient/recoverable, got %v", err)
+	}
+	if !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("zero-delivery error must be Unavailable-class, got %v", err)
 	}
 	if got := len(rec.FindEntries(transport.MetricSSENoSubscribers)); got != 1 {
 		t.Fatalf("expected 1 %s emission, got %d", transport.MetricSSENoSubscribers, got)
@@ -148,6 +155,27 @@ func TestChunk18_SSE_ZeroSubscribers_DefaultAcksButLogsError(t *testing.T) {
 	}
 	// Every no-subscriber emission must be tagged with the owning sender.
 	assertTagged(t, rec.FindEntries(transport.MetricSSENoSubscribers), "sender_id", "zero-default")
+}
+
+// Zero subscribers with the explicit at_most_once_accept_loss opt-out:
+// Send returns nil (accepts loss, source acked) but still counts the loss
+// and logs it at ERROR level.
+func TestChunk18_SSE_ZeroSubscribers_AcceptLossAcksButLogsError(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	cap := &capturingHandler{}
+	sender := newChunk18Sender(t, "zero-acceptloss",
+		transport.Config{AtMostOnceAcceptLoss: true}, rec, slog.New(cap))
+
+	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
+		t.Fatalf("accept-loss zero-delivery must ack (nil), got %v", err)
+	}
+	if got := len(rec.FindEntries(transport.MetricSSENoSubscribers)); got != 1 {
+		t.Fatalf("expected 1 %s emission, got %d", transport.MetricSSENoSubscribers, got)
+	}
+	if !cap.hasErrorContaining("no subscribers") {
+		t.Fatal("zero-delivery must be logged at ERROR level even when loss is accepted")
+	}
+	assertTagged(t, rec.FindEntries(transport.MetricSSENoSubscribers), "sender_id", "zero-acceptloss")
 }
 
 // Zero subscribers, FailOnZeroDelivery set: Send returns a TRANSIENT
@@ -235,10 +263,11 @@ func TestChunk18_SSE_AllBuffersFull_FailOnZeroReturnsTransient(t *testing.T) {
 	assertTagged(t, rec.FindEntries(transport.MetricSSEAllDropped), "sender_id", "alldrop-fail")
 }
 
-// Negative control: all-buffers-full with FailOnZeroDelivery UNSET keeps
-// today's at-most-once behaviour — Send returns nil — but still counts
-// the all-dropped loss so operators can alert.
-func TestChunk18_SSE_AllBuffersFull_DefaultAcks(t *testing.T) {
+// All connected clients' buffers full, default config: the broadcast is
+// dropped for 100% of subscribers, so Send returns the same TRANSIENT
+// (Unavailable-class) error as the no-subscriber case (HIGH-1 safe
+// default) and still counts the all-dropped loss on MetricSSEAllDropped.
+func TestChunk18_SSE_AllBuffersFull_DefaultFailsTransient(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	sender := newChunk18Sender(t, "alldrop-default",
 		transport.Config{ClientBufferSize: 1}, rec, nil)
@@ -269,11 +298,57 @@ func TestChunk18_SSE_AllBuffersFull_DefaultAcks(t *testing.T) {
 	if err := sender.Send(context.Background(), chunk18Envelope("e1")); err != nil {
 		t.Fatalf("Send(e1): %v", err)
 	}
-	if err := sender.Send(context.Background(), chunk18Envelope("e2")); err != nil {
-		t.Fatalf("default all-dropped must ack (nil), got %v", err)
+	// e2 finds the buffer full for the only client → 100% dropped.
+	err := sender.Send(context.Background(), chunk18Envelope("e2"))
+	if err == nil {
+		t.Fatal("default all-buffers-full must return a transient error, got nil")
+	}
+	if !shared.IsRecoverableError(err) {
+		t.Fatalf("all-dropped error must be transient/recoverable, got %v", err)
+	}
+	if !errors.Is(err, shared.ErrUnavailable) {
+		t.Fatalf("all-dropped error must be Unavailable-class, got %v", err)
 	}
 	if got := len(rec.FindEntries(transport.MetricSSEAllDropped)); got != 1 {
 		t.Fatalf("expected 1 %s emission, got %d", transport.MetricSSEAllDropped, got)
+	}
+}
+
+// HIGH-2: after Close, Send must fail CLOSED with a TRANSIENT error rather
+// than ack (or accept-loss) an event whose subscribers Close has torn
+// down. The accept-loss subtest is the discriminating one — without the
+// shutdown check Send would observe zero clients and return nil (silent
+// drop during a reload/shutdown window); with it, Close wins and Send
+// returns a retryable error so the source is not acked.
+func TestChunk18_SSE_SendAfterCloseReturnsTransient(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  transport.Config
+	}{
+		{"safe_default", transport.Config{}},
+		{"accept_loss_opt_out", transport.Config{AtMostOnceAcceptLoss: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sender := newChunk18Sender(t, "closed-"+tc.name, tc.cfg, &ports.RecordingExporter{}, nil)
+
+			// No clients connected, so Close returns immediately after
+			// closing the shutdown channel.
+			if err := sender.Close(context.Background()); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			err := sender.Send(context.Background(), chunk18Envelope("after-close"))
+			if err == nil {
+				t.Fatal("Send after Close must return a transient error, got nil")
+			}
+			if !shared.IsRecoverableError(err) {
+				t.Fatalf("shutdown error must be transient/recoverable, got %v", err)
+			}
+			if !errors.Is(err, shared.ErrUnavailable) {
+				t.Fatalf("shutdown error must be Unavailable-class, got %v", err)
+			}
+		})
 	}
 }
 

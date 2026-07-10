@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -331,6 +332,13 @@ func (s *Session) handleServerDisconnect(code byte) {
 // backoff penalty (1s, 2s, ... capped at 64s — see takeoverPenalty) and
 // from the third occurrence an explicit Error log names the
 // misconfiguration. MetricMQTTSessionTakeover counts every occurrence.
+//
+// Exception (HIGH-3): when shared subscriptions ($share) are active and the
+// mode is NOT Exclusive, a single takeover already proves the scale-out
+// client_id-collision self-DOS (replicas that must be unique are sharing an
+// identity), so the Error log fires on the FIRST occurrence and names the
+// unique-client_id requirement. The backoff penalty is unchanged (still
+// streak-driven) — only the log severity/message is escalated.
 func (s *Session) noteSessionTakeover() {
 	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
@@ -341,7 +349,17 @@ func (s *Session) noteSessionTakeover() {
 	}
 	s.takeoverStreak++
 	streak := s.takeoverStreak
+	// A takeover while shared subscriptions ($share) are active is the
+	// smoking gun of the HIGH-3 self-DOS: another instance connected with the
+	// SAME client_id where scale-out demands UNIQUE ones. The only mode where
+	// a shared client_id is legitimate is Exclusive (a single leaseholder, so
+	// a takeover there is a normal lease handoff, not a collision). For every
+	// other mode, escalate on the FIRST occurrence rather than waiting for the
+	// streak to prove a storm.
+	sharedSubsActive := s.planHasSharedSubscriptionsLocked()
 	s.mu.Unlock()
+
+	sharedSubCollision := sharedSubsActive && s.mode != connectivity.SessionExclusive
 
 	s.metrics.Counter(MetricMQTTSessionTakeover, 1,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
@@ -351,14 +369,25 @@ func (s *Session) noteSessionTakeover() {
 	s.pushEvent(ports.SessionReconnecting, berr)
 
 	if s.logger != nil {
-		if streak >= 3 {
+		switch {
+		case sharedSubCollision:
+			s.logger.Error("mqtt: session takeover while shared subscriptions ($share) are active — another "+
+				"instance is using the SAME client_id where scale-out REQUIRES a UNIQUE client_id per instance; "+
+				"the instances are taking each other over (self-DOS) and load-balancing is broken. Give each "+
+				"replica a unique client_id, or move to an exclusive lease if a single active owner is intended",
+				"client_id", s.opts.ClientID,
+				"session_mode", s.mode,
+				"takeover_count", streak,
+				"backoff_penalty", s.takeoverPenalty(),
+			)
+		case streak >= 3:
 			s.logger.Error("mqtt: repeated session takeover — another live instance is using the same client_id; "+
 				"reconnects are being backed off (fix the client_id collision or the instances will keep kicking each other)",
 				"client_id", s.opts.ClientID,
 				"takeover_count", streak,
 				"backoff_penalty", s.takeoverPenalty(),
 			)
-		} else {
+		default:
 			s.logger.Warn("mqtt: session taken over by another connection with the same client_id",
 				"client_id", s.opts.ClientID,
 				"takeover_count", streak,

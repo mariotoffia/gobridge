@@ -3,6 +3,7 @@ package amqp091
 import (
 	"fmt"
 	"net/url"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -17,6 +18,13 @@ type amqpConnection interface {
 	Channel() (*amqpChannel, error)
 	// Close terminates the underlying connection.
 	Close() error
+	// CloseDeadline terminates the underlying connection, bounding the wait
+	// for the broker's connection.close-ok by a socket deadline. A raw Close
+	// blocks until the broker answers (ultimately only the heartbeat read
+	// deadline), so a fire-and-forget close of a half-dead broker parks a
+	// goroutine indefinitely; CloseDeadline caps that lifetime. Regardless of
+	// the error returned the connection is considered closed.
+	CloseDeadline(deadline time.Time) error
 	// NotifyClose returns a single-use channel that emits at most one
 	// error (the connection-close cause) and is then closed. Graceful
 	// closes deliver no value before closing.
@@ -66,6 +74,17 @@ func (c *sdkConnection) Close() error {
 	}
 	return nil
 }
+
+// CloseDeadline delegates to amqp091-go's deadline-bounded close so a
+// half-dead broker that never answers connection.close-ok cannot park the
+// caller (or a detached close goroutine) indefinitely.
+func (c *sdkConnection) CloseDeadline(deadline time.Time) error {
+	if err := c.raw.CloseDeadline(deadline); err != nil {
+		return fmt.Errorf("amqp091: close connection: %w", err)
+	}
+	return nil
+}
+
 func (c *sdkConnection) IsClosed() bool { return c.raw.IsClosed() }
 
 func (c *sdkConnection) NotifyClose() <-chan error {
@@ -102,8 +121,35 @@ func (c *sdkConnection) NotifyBlocked() <-chan connBlockState {
 // dialFunc abstracts the AMQP dial operation for test-double injection.
 type dialFunc func(url string) (amqpConnection, error)
 
+// defaultDialTimeout bounds the underlying TCP+TLS+AMQP handshake when the
+// session leaves ConnectTimeout unset. It mirrors amqp091-go's own
+// defaultConnectionTimeout so behaviour is unchanged for that case.
+const defaultDialTimeout = 30 * time.Second
+
+// dialTimeout resolves the deadline wired into amqp.Config.Dial. It floors to
+// defaultDialTimeout because amqp.DefaultDial(0) sets a deadline in the PAST
+// (time.Now()+0), which would make every dial fail instantly, and because
+// net.DialTimeout(0) means "no timeout" — either would defeat the bound.
+func dialTimeout(opts SessionOptions) time.Duration {
+	if opts.ConnectTimeout > 0 {
+		return opts.ConnectTimeout
+	}
+	return defaultDialTimeout
+}
+
 // dialConfig builds the amqp.Config used for every (re)dial. It carries
-// the heartbeat interval and the AMQP virtual host.
+// the heartbeat interval, the AMQP virtual host, and the dial deadline.
+//
+// Dial deadline: amqp091-go's DialConfig only applies its OWN 30s default
+// timeout when Config.Dial is nil; setting Config.Dial to
+// amqp.DefaultDial(ConnectTimeout) ties the TCP connect, TLS handshake, and
+// AMQP handshake to the SAME configured budget dialWithTimeout races ctx
+// against. Without it, dialWithTimeout gives up at ConnectTimeout while the
+// SDK dial goroutine lives on for the SDK's fixed 30s (or, on some hangs,
+// longer) — under a sustained outage those abandoned dial goroutines and
+// their drainers accumulate every reconnect attempt. Aligning the two makes
+// the abandoned dial unwind at essentially the same instant, so no new
+// attempt starts before the previous one is torn down.
 //
 // Vhost precedence: a non-empty SessionOptions.Vhost is forwarded to
 // amqp091-go's Config.Vhost, which DialConfig honours over whatever path
@@ -117,6 +163,7 @@ func dialConfig(opts SessionOptions) amqp.Config {
 	return amqp.Config{
 		Heartbeat: opts.Heartbeat,
 		Vhost:     opts.Vhost,
+		Dial:      amqp.DefaultDial(dialTimeout(opts)),
 	}
 }
 

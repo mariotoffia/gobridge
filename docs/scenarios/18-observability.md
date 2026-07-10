@@ -45,13 +45,17 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 |---|---|---|---|
 | `MessagesReceived` | Counter | `route_id` | Messages accepted for a route |
 | `MessagesSent` | Counter | `route_id` | Messages dispatched to a sender |
-| `MessagesDropped` | Counter | `route_id` | Messages dropped (retry unsupported, no DLQ) |
+| `MessagesDropped` | Counter | `route_id` | Messages dropped (retry unsupported, no DLQ) -- the SILENT-LOSS signal; alarmed by default (`MessagesDropped > 0`) |
+| `MessagesExpired` | Counter | `route_id` | Messages dropped by TTL under `on_expired=drop` -- alarmed by default when sustained |
 | `RouteErrors` | Counter | `route_id` | Recoverable route errors |
 | `DeliveryE2ELatency` | Timer | `route_id` | End-to-end delivery time per message |
 | `DeliveryPanics` | Counter | `route_id` | Recovered panics during delivery |
-| `DLQEntries` | Counter | `route_id`, `category` | Messages routed to the DLQ |
+| `DLQEntries` | Counter | `route_id`, `category` | DLQ ARRIVALS (ingress counter -- only increases) |
+| `DLQDepth` | Gauge | — | Standing DLQ BACKLOG right now (sampled via the store's optional `DLQDepthReporter`) -- alarmed by default (`DLQDepth > 0`) |
 | `DLQWriteFailures` | Counter | — | Failed DLQ writes |
-| `OutboxDepth` | Gauge | `partition` | Pending outbox records |
+| `OutboxDepth` | Gauge | `partition` | TRUE pending outbox backlog (exact count via the store's optional `OutboxDepthReporter`; falls back to the claimed-count lower bound until an adapter implements it) |
+| `OutboxClaimBatchSize` | Gauge | `partition` | Records claimed on the last drain poll -- liveness/throughput, NOT the backlog |
+| `OutboxDepthFailures` | Counter | `partition` | Depth-query failures on a supported reporter (real DB/read error); `OutboxDepth` is skipped that cycle so the missing-data alarm fires instead of masking the fault |
 | `OutboxDrainLatency` | Timer | `session_id` | Outbox drain cycle time |
 | `OutboxExpiredBeforeSend` | Counter | `route_id` | Claimed record found past its TTL before its send; handled by the route's `on_expired` policy |
 | `OutboxReplayCount` | Counter | `route_id` | A redelivered record (`ReplayCount > 1`) reprocessed on a later attempt |

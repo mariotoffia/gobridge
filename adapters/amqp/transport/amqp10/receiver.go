@@ -59,6 +59,16 @@ type Receiver struct {
 }
 
 // NewReceiver creates an AMQP 1.0 Receiver.
+//
+// LOW-LEVEL constructor. It builds and validates a Receiver but does NOT
+// enforce the durable-subscription safety gates — the explicit-container_id
+// requirement (HIGH-1) and the dedicated-session contract (HIGH-3) are
+// enforced by Factory.NewReceiver, which is the ONLY path production uses
+// (bridge/runtime build every link through the ports.TransportFactory
+// interface; see Factory.NewReceiver). This constructor stays permissive so
+// tests can build durable links directly on shared sessions to exercise
+// teardown behaviour. Do NOT call it directly for a production durable
+// receiver: use Factory.NewReceiver so the gates apply.
 func NewReceiver(cfg ReceiverConfig, session *Session) (*Receiver, error) {
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
@@ -478,9 +488,11 @@ func (r *Receiver) linkName() string {
 		// Only reachable for directly-constructed sessions (tests):
 		// SessionOptions.applyDefaults generates a per-instance
 		// container-id when none is configured, so sessions built via
-		// NewSession always have one. Operators using durable
-		// subscriptions should still set container_id explicitly — the
-		// generated identity does not survive process restarts.
+		// NewSession always have one. Production durable receivers built
+		// through the factory always carry an EXPLICIT container_id —
+		// Factory.NewReceiver rejects durability_mode > 0 on a session with
+		// a generated container-id (HIGH-1) — so this generated-identity
+		// fallback never anchors a real durable subscription.
 		return "gobridge:" + r.cfg.Address
 	}
 	return cid + ":" + r.cfg.Address
@@ -601,9 +613,12 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 	}
 }
 
-// handleLinkError detaches the receiver's link after a non-transient
-// failure, forwarding connection-level errors to the session via the
-// connection identity captured at link-creation time.
+// handleLinkError detaches the receiver's link after a receive-loop
+// failure. A NON-durable link is closed and rebuilt in isolation; only a
+// connection-scoped error escalates to a session teardown. A DURABLE link
+// is a special case: it can never be individually re-attached on a live
+// connection, so ANY error forces a full connection teardown (see the
+// durable branch below).
 func (r *Receiver) handleLinkError(err error) {
 	r.mu.Lock()
 	link := r.link
@@ -617,11 +632,33 @@ func (r *Receiver) handleLinkError(err error) {
 		r.session.markReceiverLink(r, false) // finding 4: link is down
 	}
 
-	if link != nil && r.cfg.DurabilityMode == 0 {
-		// Durable subscription links are never full-closed (go-amqp only
-		// sends Detach{Closed:true} = broker-side UNSUBSCRIBE, deleting
-		// retained messages); the failed link is abandoned locally and
-		// dies with the connection. See closeLink.
+	if r.cfg.DurabilityMode > 0 {
+		// A durable subscription link can NEVER be individually re-attached
+		// on a live connection: go-amqp can only emit a CLOSING detach
+		// (Detach{Closed:true}) = broker UNSUBSCRIBE, which destroys the
+		// terminus and every retained message. So the failed durable link
+		// is abandoned locally but STAYS attached on the wire. Re-creating
+		// it on the same connection would collide with the still-attached
+		// link, and the credit the broker holds for any unsettled delivery
+		// on it could NEVER be reissued — e.g. a malformed message whose
+		// reject settlement FAILED (HIGH-2), which MapError classifies as a
+		// transient ErrTimeout, NOT ConnectionLost/Unavailable, so the
+		// generic escalation below would leave the link stuck. The only
+		// recovery that PRESERVES the subscription is to drop the whole
+		// connection: the monitor reconnects, the link re-attaches cleanly,
+		// and a fresh link starts with full credit. Mirrors closeLink and
+		// forceSettleRebuild. HIGH-3 keeps a durable receiver alone on its
+		// session, so this teardown reaches no sibling link.
+		if r.session != nil && failedConn != nil {
+			r.session.notifyDisconnect(failedConn, err)
+		}
+		return
+	}
+
+	if link != nil {
+		// Non-durable links CAN be safely full-closed and rebuilt in
+		// isolation, so a link-scoped or transient fault rebuilds only THIS
+		// link without touching the shared connection.
 		closeCtx, cancel := context.WithTimeout(context.Background(), r.linkCloseTimeout())
 		_ = link.Close(closeCtx)
 		cancel()

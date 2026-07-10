@@ -40,10 +40,71 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 	if err != nil {
 		return nil, err
 	}
+	// HIGH-1: fail CLOSED on a resolver that returns ZERO dispatch plans. BOTH
+	// delivery modes resolve through this single choke point (direct_hold and
+	// shared_outbox), so one guard closes the shared_outbox silent-ACK path: an
+	// empty plan slice otherwise reached buildOutboxRecords, persisted zero
+	// records, and ACKed the source — message loss with no DLQ/outbox evidence.
+	// The error is a plain (non-BridgeError) value so handleResolveError treats
+	// it as recoverable and routes it through the replay-cap gate — bounded
+	// retry-with-backoff below MaxReplayAttempts, then poison to DLQ/drop at the
+	// cap — exactly like the validatePlanBindings orphan guard below. A resolver
+	// is a runtime function that may yield a valid plan on a later call, so
+	// bounded retry-then-poison (not a silent success) is the correct treatment.
+	if len(plans) == 0 {
+		return nil, fmt.Errorf("runtime: route-runner: route %q: resolver returned no dispatch plans; refusing to settle with zero delivery (fail-closed)",
+			r.routeID)
+	}
+	if err := r.validatePlanBindings(plans); err != nil {
+		return nil, err
+	}
 	if err := r.validatePlanAddresses(plans); err != nil {
 		return nil, err
 	}
 	return plans, nil
+}
+
+// validatePlanBindings fails CLOSED on any resolver plan that targets a binding
+// NOT declared on a route that HAS declared bindings (HIGH-5). A custom
+// DestinationResolver returning a DispatchPlan whose BindingID is absent from
+// r.bindings would otherwise reach senderForBinding, silently FALL BACK to the
+// route DEFAULT sender, pass only generic address sanity (not the intended
+// binding's validator), and ACK the source after a wrong-target send —
+// delivering outside the configured binding set and bypassing that binding's
+// sender/validator policy.
+//
+// The rejection is a RECOVERABLE error, matching the shared-outbox orphan guard
+// (buildOutboxRecords): the caller routes it through handleResolveError, which
+// applies the same replay-cap gate as every other transient failure — retry with
+// the policy backoff below MaxReplayAttempts, then poison to DLQ/drop per policy
+// at the cap. It is NEVER a default-sender send and NEVER a success ack. A
+// resolver is a runtime function that may return a valid binding on a later
+// call, so bounded retry-then-poison is the correct fail-closed treatment (the
+// finding permits "unsettle" here) and keeps direct-hold consistent with the
+// shared-outbox path, which already rejected these plans.
+//
+// Scope: the check applies ONLY when the route DECLARES bindings. A route with
+// NO bindings is a default-sender-only route — there is no binding set to escape
+// and no per-binding sender/validator to bypass, so every plan legitimately maps
+// to the single default sender (resolver-driven addressing). Two BindingIDs are
+// otherwise allowed even on a binding-declaring route:
+//   - "" (empty) keeps its meaning of "route default sender".
+//   - a declared binding id (hasBinding).
+func (r *RouteRunner) validatePlanBindings(plans []routing.DispatchPlan) error {
+	if len(r.bindings) == 0 {
+		return nil
+	}
+	for _, p := range plans {
+		if p.BindingID == "" {
+			continue
+		}
+		if r.hasBinding(p.BindingID) {
+			continue
+		}
+		return fmt.Errorf("runtime: route-runner: route %q: dispatch plan targets undeclared binding %q; refusing default-sender fallback (fail-closed)",
+			r.routeID, p.BindingID)
+	}
+	return nil
 }
 
 // resolveRawPlans returns dispatch plans from the configured resolver

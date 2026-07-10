@@ -224,6 +224,34 @@ func TestParseCredentials_TLS_CAOnlyAccepted(t *testing.T) {
 	assert.Equal(t, []string{"root-ca"}, creds.TLS().CAPEMs())
 }
 
+// TestParseCredentials_TLS_CAOnlyNormalisesBlankCertKey proves a CA-only
+// document whose cert/key fields are PRESENT but whitespace-only yields usable
+// CA-only TLS material with EMPTY cert/key, never blank-but-non-empty strings
+// that a transport would feed to tls.X509KeyPair and fail on at connect time.
+//
+// Mutation reasoning: dropping the whitespace-cert/key normalisation in
+// parseTLSJSON stores " "/"\n" verbatim, so CertPEM()/KeyPEM() come back
+// non-empty and the assert.Empty checks fail.
+func TestParseCredentials_TLS_CAOnlyNormalisesBlankCertKey(t *testing.T) {
+	creds, err := parseCredentials(`{"type":"tls","certPem":" ","keyPem":"\n","caPem":["root-ca"]}`)
+	require.NoError(t, err)
+	require.NotNil(t, creds.TLS())
+	assert.Empty(t, creds.TLS().CertPEM(), "whitespace cert must normalise to empty")
+	assert.Empty(t, creds.TLS().KeyPEM().Reveal(), "whitespace key must normalise to empty")
+	assert.Equal(t, []string{"root-ca"}, creds.TLS().CAPEMs())
+}
+
+// TestParseCredentials_TLS_RealCertKeyPreserved proves a genuine cert+key pair
+// is stored verbatim: the whitespace normalisation must touch only fields that
+// are entirely blank, never real material.
+func TestParseCredentials_TLS_RealCertKeyPreserved(t *testing.T) {
+	creds, err := parseCredentials(`{"type":"tls","certPem":"cert-pem","keyPem":"key-pem"}`)
+	require.NoError(t, err)
+	require.NotNil(t, creds.TLS())
+	assert.Equal(t, "cert-pem", creds.TLS().CertPEM())
+	assert.Equal(t, "key-pem", creds.TLS().KeyPEM().Reveal())
+}
+
 // Verifies simple username:password strings with an empty username or
 // password are rejected.
 //
@@ -716,6 +744,253 @@ func TestRepository_Create_InvalidURI(t *testing.T) {
 	r := New(WithClient(&mockSSM{}))
 	err := r.Create(context.Background(), "bad://uri", connectivity.NewCredentialSet(pwCred("u", "p"), nil))
 	assert.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// HIGH-1: write round-trip guard — never persist an unreadable credential
+// ---------------------------------------------------------------------------
+
+// TestSerialize_RejectsUnreadable proves the single Create/Update write path
+// (serializeCredentialSet) refuses to persist any credential set the package's
+// own reader could not parse back. Without the round-trip guard each case below
+// serializes to a value that every later Get / rotation poll then rejects with
+// "invalid payload", turning one bad admin write into a persistent credential
+// outage (HIGH-1).
+//
+// Mutation reasoning: deleting the ensureReadable call in serializeCredentialSet
+// makes every case serialize without error, so the require.Error assertions fail.
+func TestSerialize_RejectsUnreadable(t *testing.T) {
+	cases := []struct {
+		name  string
+		creds *connectivity.CredentialSet
+	}{
+		{"empty set (no password, no TLS)", connectivity.NewCredentialSet(nil, nil)},
+		{"empty username and empty password", connectivity.NewCredentialSet(pwCred("", ""), nil)},
+		{"whitespace-only opaque secret", connectivity.NewCredentialSet(pwCred("", "  \n\t"), nil)},
+		{"torn TLS: cert without key", connectivity.NewCredentialSet(nil, tlsMat("only-cert", "", nil, false))},
+		{"torn TLS: key without cert", connectivity.NewCredentialSet(nil, tlsMat("", "only-key", nil, false))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := serializeCredentialSet(tc.creds)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, shared.ErrInvalidPayload), "want ErrInvalidPayload, got %v", err)
+		})
+	}
+}
+
+// TestRepository_Create_RejectsUnreadableBeforePut proves an admin Create of an
+// unusable credential set is rejected BEFORE any PutParameter, so a bad write
+// can never reach SSM and become a value every later Get fails to parse (HIGH-1).
+func TestRepository_Create_RejectsUnreadableBeforePut(t *testing.T) {
+	putCalled := false
+	mock := &mockSSM{
+		putParameterFn: func(_ context.Context, _ *awsssm.PutParameterInput) (*awsssm.PutParameterOutput, error) {
+			putCalled = true
+			return &awsssm.PutParameterOutput{}, nil
+		},
+	}
+	r := New(WithClient(mock))
+	err := r.Create(context.Background(), "pms://ns/path", connectivity.NewCredentialSet(nil, nil))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrInvalidPayload), "want ErrInvalidPayload, got %v", err)
+	assert.False(t, putCalled, "PutParameter must not run for an unreadable credential set")
+}
+
+// TestRepository_Update_RejectsUnreadableBeforePut is the Update counterpart of
+// the HIGH-1 guard: a torn-TLS set must not overwrite a live parameter with a
+// value the reader would reject on the next rotation poll.
+func TestRepository_Update_RejectsUnreadableBeforePut(t *testing.T) {
+	putCalled := false
+	mock := &mockSSM{
+		putParameterFn: func(_ context.Context, _ *awsssm.PutParameterInput) (*awsssm.PutParameterOutput, error) {
+			putCalled = true
+			return &awsssm.PutParameterOutput{}, nil
+		},
+	}
+	r := New(WithClient(mock))
+	err := r.Update(context.Background(), "pms://ns/path",
+		connectivity.NewCredentialSet(nil, tlsMat("cert-only", "", nil, false)), 0)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrInvalidPayload), "want ErrInvalidPayload, got %v", err)
+	assert.False(t, putCalled, "PutParameter must not run for a torn-TLS credential set")
+}
+
+// ---------------------------------------------------------------------------
+// HIGH-2: opaque password-only credentials (e.g. Service Bus SAS strings)
+// ---------------------------------------------------------------------------
+
+// sasConnString is a representative Azure Service Bus SAS connection string —
+// an opaque single-value secret with no username.
+const sasConnString = "Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=abc123=="
+
+// TestParseCredentials_OpaqueSecret proves the explicit password-only "secret"
+// JSON shape parses into a PasswordCredential with an EMPTY username and the
+// whole value in the password — the runtime shape the Service Bus transport
+// consumes for a SAS connection string (HIGH-2).
+//
+// Mutation reasoning: before the fix, declaredCapabilities knew only
+// password/tls, so a "secret"-typed document matched no capability and
+// parseJSONCredentials returned "unable to determine credential type" — every
+// require.NoError below fails.
+func TestParseCredentials_OpaqueSecret(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"secret token + secret field", `{"type":"secret","secret":"` + sasConnString + `"}`},
+		{"secret token + password field", `{"type":"secret","password":"` + sasConnString + `"}`},
+		{"opaque alias", `{"type":"opaque","secret":"` + sasConnString + `"}`},
+		{"sas alias", `{"type":"sas","secret":"` + sasConnString + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			creds, err := parseCredentials(tc.input)
+			require.NoError(t, err)
+			require.NotNil(t, creds.Password())
+			assert.Equal(t, "", creds.Password().Username(), "opaque secret must have an empty username")
+			assert.Equal(t, sasConnString, creds.Password().Password().Reveal())
+			assert.Nil(t, creds.TLS())
+		})
+	}
+}
+
+// TestParseCredentials_SecretTokenWithUsername_BackwardCompatible proves a
+// secret/opaque/sas type token that appears ALONGSIDE a username parses as an
+// ordinary username/password credential, NOT as an opaque secret. Readers that
+// predate the opaque shape ignored these tokens and parsed such documents as
+// username/password; stored SSM values are not rewritten on upgrade, so this
+// read must stay backward compatible (the invariant: any JSON an earlier reader
+// accepted still parses to the same credential).
+//
+// Mutation reasoning: if the opaque shape were selected on the type token alone
+// (declaredSecret) instead of "declaredSecret AND no username", each row below
+// would be rejected as a username-bearing opaque secret and every
+// require.NoError fails — the exact upgrade regression this guards against.
+func TestParseCredentials_SecretTokenWithUsername_BackwardCompatible(t *testing.T) {
+	cases := []struct {
+		name, input, wantUser, wantPass string
+	}{
+		{"sas token + username/password", `{"type":"sas","username":"broker","password":"p"}`, "broker", "p"},
+		{"opaque token + user/pass aliases", `{"type":"opaque","user":"u","pass":"q"}`, "u", "q"},
+		{"secret token + username/password", `{"type":"secret","username":"root","password":"conn"}`, "root", "conn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			creds, err := parseCredentials(tc.input)
+			require.NoError(t, err)
+			require.NotNil(t, creds.Password())
+			assert.Equal(t, tc.wantUser, creds.Password().Username())
+			assert.Equal(t, tc.wantPass, creds.Password().Password().Reveal())
+			assert.Nil(t, creds.TLS())
+		})
+	}
+}
+
+// TestParseCredentials_OpaqueSecret_RejectsEmptyOrBlank proves a "secret" shape
+// whose value is missing, empty, or WHITESPACE-ONLY is rejected rather than
+// yielding an anonymous no-auth credential or a semantically empty connection
+// string that fails broker client creation downstream.
+//
+// Mutation reasoning: relaxing the opaque-value guard from
+// strings.TrimSpace(password) == "" back to password == "" lets the two
+// whitespace rows below parse successfully, so their require.Error fails.
+func TestParseCredentials_OpaqueSecret_RejectsEmptyOrBlank(t *testing.T) {
+	for _, input := range []string{
+		`{"type":"secret"}`,
+		`{"type":"secret","secret":""}`,
+		`{"type":"secret","secret":"   "}`,
+		`{"type":"sas","secret":"\n\t"}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			_, err := parseCredentials(input)
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestSerializeAndParseRoundTrip_OpaqueSecret proves a password-only credential
+// (empty username) survives serialize→parse intact, so SSM can both store and
+// rotate a Service Bus SAS connection string in the documented runtime shape
+// (HIGH-2). It also confirms the HIGH-1 write guard accepts this legitimate
+// shape rather than rejecting it as username-less.
+func TestSerializeAndParseRoundTrip_OpaqueSecret(t *testing.T) {
+	original := connectivity.NewCredentialSet(pwCred("", sasConnString), nil)
+
+	s, err := serializeCredentialSet(original)
+	require.NoError(t, err)
+
+	parsed, err := parseCredentials(s)
+	require.NoError(t, err)
+	require.NotNil(t, parsed.Password())
+	assert.Equal(t, "", parsed.Password().Username())
+	assert.Equal(t, sasConnString, parsed.Password().Password().Reveal())
+	assert.True(t, parsed.Equal(original), "opaque secret must round-trip to an equal credential set")
+}
+
+// TestRepository_OpaqueSecret_CreateGetRoundTrip proves the end-to-end HIGH-2
+// guarantee against an in-memory SSM mock: an admin Create of a password-only
+// (opaque SAS) credential persists a value that Get reads back intact.
+func TestRepository_OpaqueSecret_CreateGetRoundTrip(t *testing.T) {
+	var stored string
+	mock := &mockSSM{
+		putParameterFn: func(_ context.Context, input *awsssm.PutParameterInput) (*awsssm.PutParameterOutput, error) {
+			stored = *input.Value
+			return &awsssm.PutParameterOutput{Version: 1}, nil
+		},
+		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
+			return &awsssm.GetParameterOutput{
+				Parameter: &ssmtypes.Parameter{Value: aws.String(stored), Version: 1},
+			}, nil
+		},
+	}
+	r := New(WithClient(mock))
+	require.NoError(t, r.Create(context.Background(), "pms://ns/sb",
+		connectivity.NewCredentialSet(pwCred("", sasConnString), nil)))
+
+	got, err := r.Get(context.Background(), "pms://ns/sb")
+	require.NoError(t, err)
+	require.NotNil(t, got.Password())
+	assert.Equal(t, "", got.Password().Username())
+	assert.Equal(t, sasConnString, got.Password().Password().Reveal())
+}
+
+// ---------------------------------------------------------------------------
+// HIGH-3 (source-side support): Get is always uncached
+// ---------------------------------------------------------------------------
+
+// TestRepository_Get_NoInternalCache proves each Get fetches fresh from SSM
+// rather than serving a cached value. This is the source-side property the
+// reactive re-resolve path (HIGH-3) relies on: when a live transport reports a
+// broker auth failure and the refresher forces an out-of-band re-resolve
+// (runtime/credentials PollBasedWrapper.Refresh -> ResolveUncached ->
+// repository.Get), the repository must observe the rotated parameter, never a
+// stale copy. The transport->refresher wiring itself is a cross-cutting
+// dependency outside this module; this test guards the leaf the wiring depends on.
+func TestRepository_Get_NoInternalCache(t *testing.T) {
+	value := `{"username":"u","password":"old"}`
+	mock := &mockSSM{
+		getParameterFn: func(_ context.Context, _ *awsssm.GetParameterInput) (*awsssm.GetParameterOutput, error) {
+			return &awsssm.GetParameterOutput{
+				Parameter: &ssmtypes.Parameter{Value: aws.String(value), Version: 1},
+			}, nil
+		},
+	}
+	r := New(WithClient(mock))
+
+	first, err := r.Get(context.Background(), "pms://ns/p")
+	require.NoError(t, err)
+	require.NotNil(t, first.Password())
+	assert.Equal(t, "old", first.Password().Password().Reveal())
+
+	// Simulate an out-of-band rotation of the backing parameter.
+	value = `{"username":"u","password":"new"}`
+
+	second, err := r.Get(context.Background(), "pms://ns/p")
+	require.NoError(t, err)
+	require.NotNil(t, second.Password())
+	assert.Equal(t, "new", second.Password().Password().Reveal(),
+		"Get must re-read the backend, not serve a cached value")
 }
 
 // pwCred builds a *connectivity.PasswordCredential from the immutable value

@@ -243,6 +243,15 @@ func (s *Server) writeConfigTxnError(w http.ResponseWriter, r *http.Request, act
 		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
 		writeErr(w, http.StatusUnprocessableEntity, err.Error())
 
+	case errors.Is(err, errConfigStoreNotCAS):
+		// Deployment misconfiguration, not a client error: the durable commit
+		// was refused because the config store cannot compare-and-swap and no
+		// single-writer assertion was made. Surface the actionable message so
+		// the operator wires a CAS store or sets Config.ConfigSingleWriter; a
+		// retry against the same configuration will not succeed.
+		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, err.Error())
+
 	case isValidationError(err):
 		ve := extractValidationError(err)
 		s.emitAudit(r, action, "config", txnID, "failure", map[string]any{

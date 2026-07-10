@@ -101,16 +101,26 @@ package main
 
 import (
     "context"
+    "log/slog"
 
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
+    "github.com/mariotoffia/gobridge/ports"
     "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
     "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
     "github.com/mariotoffia/gobridge/processors/filter"
 )
 
 func main() {
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+    logger := slog.Default()
+
+    // Build the plugin registry and register each linked adapter's config
+    // decoder. ParseFile requires a non-nil registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = sqs.Register(reg)
+
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
     // Create filter: pass messages where the subject contains "temperature"
     tempFilter, _ := filter.New(filter.Config{
@@ -130,11 +140,11 @@ func main() {
         Action: filter.ActionPass,
     })
 
-    rt, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewFactory(nil)).
-        RegisterTransport("sqs", sqs.NewFactory(nil)).
-        RegisterProcessor(tempFilter).
-        RegisterProcessor(humidFilter).
+    rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+        RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+        RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
+        RegisterProcessor("temp-filter", tempFilter).
+        RegisterProcessor("humidity-filter", humidFilter).
         Build(context.Background())
 
     ctx, cancel := context.WithCancel(context.Background())

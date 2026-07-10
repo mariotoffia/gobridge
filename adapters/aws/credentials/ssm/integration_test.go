@@ -73,6 +73,48 @@ func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 	assert.Equal(t, creds.TLS().InsecureSkipVerify(), got.TLS().InsecureSkipVerify())
 }
 
+// Verifies full Create → Get round-trip for an opaque password-only credential
+// (empty username, e.g. an Azure Service Bus SAS connection string) against
+// LocalStack SSM (HIGH-2).
+func TestIntegration_SSM_CreateAndGet_OpaqueSecret(t *testing.T) {
+	ep := localstack.Endpoint(t)
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
+	ctx := context.Background()
+	uri := uniqueURI("opaque")
+
+	const conn = "Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=abc123=="
+	creds := connectivity.NewCredentialSet(pwCred("", conn), nil)
+
+	require.NoError(t, repo.Create(ctx, uri, creds))
+
+	got, err := repo.Get(ctx, uri)
+	require.NoError(t, err)
+	require.NotNil(t, got.Password())
+	assert.Equal(t, "", got.Password().Username())
+	assert.Equal(t, conn, got.Password().Password().Reveal())
+	assert.Nil(t, got.TLS())
+}
+
+// Verifies an admin Create of an unusable credential set is rejected locally
+// and never creates an SSM parameter, so a subsequent Get finds nothing
+// (HIGH-1 end-to-end against LocalStack).
+func TestIntegration_SSM_Create_RejectsUnreadable(t *testing.T) {
+	ep := localstack.Endpoint(t)
+	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
+	ctx := context.Background()
+	uri := uniqueURI("unreadable")
+
+	// Torn TLS (cert without key): the reader would reject this on the next
+	// Get, so the write must be refused before it reaches SSM.
+	err := repo.Create(ctx, uri, connectivity.NewCredentialSet(nil, tlsMat("only-cert", "", nil, false)))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrInvalidPayload), "want ErrInvalidPayload, got: %v", err)
+
+	_, getErr := repo.Get(ctx, uri)
+	require.Error(t, getErr)
+	assert.True(t, errors.Is(getErr, shared.ErrNotFound), "rejected write must not have created a parameter, got: %v", getErr)
+}
+
 // Verifies Create on an existing parameter returns ErrAlreadyExists.
 func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 	ep := localstack.Endpoint(t)

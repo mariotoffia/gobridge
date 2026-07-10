@@ -53,33 +53,62 @@ func validateRoutes(entries []*routeEntry, hasOutboxStore, hasLeaseStore, hasDLQ
 
 // drainRelevantPolicy is the subset of RoutePolicy a shared_outbox drainer
 // applies to EVERY record in its partition, independent of which route produced
-// the record. These are exactly the fields the drainer send path reads from
-// d.policy (SendTimeout, MaxReplayAttempts, OnExpired; poisonMinAge derives from
-// SendTimeout). Ingress-only fields (MaxInFlight, DepthCacheTTL, ...) are
-// excluded so routes that legitimately differ only on ingress behaviour are not
-// rejected for sharing a session.
+// the record. These are exactly the fields the drainer send/terminal path reads
+// from d.policy:
+//
+//   - SendTimeout          — bounds each send + the Complete window; also derives
+//     the poison min-age fallback (max(5×SendTimeout, 2m)).
+//   - MaxReplayAttempts    — the COUNT half of the poison gate.
+//   - ReplayBudget         — the wall-clock AGE half of the poison gate
+//     (replayBudgetExhausted); a record is only poisoned once BOTH halves hold.
+//   - OnExpired            — DLQ vs drop for an expired record.
+//   - OnPermanentFailure   — DLQ vs DROP for a permanent send failure OR a
+//     poisoned record. THIS is the CRITICAL-1 field: a single per-partition
+//     drainer bakes in one OnPermanentFailure, so a record persisted by a
+//     dlq-policy route but drained under a drop-policy route is DROPPED with no
+//     DLQ evidence after the source was already ACKed — silent message loss.
+//
+// All five are drain-branching fields; leaving any one out lets two routes with
+// divergent behaviour share one partition's single drainer, so the second
+// route's records are silently settled under the first route's policy. Ingress-
+// only fields (MaxInFlight, DepthCacheTTL, ...) are excluded so routes that
+// legitimately differ only on ingress behaviour are not rejected for sharing a
+// session. Compare over the WithDefaults-normalized policy so two routes that
+// both leave a field unset (same default) are NOT falsely rejected.
 type drainRelevantPolicy struct {
-	sendTimeout       time.Duration
-	maxReplayAttempts int
-	onExpired         routing.ExpiredAction
+	sendTimeout        time.Duration
+	maxReplayAttempts  int
+	replayBudget       time.Duration
+	onExpired          routing.ExpiredAction
+	onPermanentFailure routing.FailureAction
 }
 
 func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
 	return drainRelevantPolicy{
-		sendTimeout:       p.SendTimeout,
-		maxReplayAttempts: p.MaxReplayAttempts,
-		onExpired:         p.OnExpired,
+		sendTimeout:        p.SendTimeout,
+		maxReplayAttempts:  p.MaxReplayAttempts,
+		replayBudget:       p.ReplayBudget,
+		onExpired:          p.OnExpired,
+		onPermanentFailure: p.OnPermanentFailure,
 	}
 }
 
 // validateSharedOutboxPartitions rejects a configuration where two or more
 // shared_outbox routes drain the SAME session partition with divergent
-// drain-relevant policy (finding 17). A session partition has exactly one
-// drainer — the first route to claim it wins (bridge_start drainerSessions
-// guard) — so the other routes' records would be silently drained under the
-// first route's SendTimeout / MaxReplayAttempts / OnExpired. Rather than let
+// drain-relevant policy (finding 17 + CRITICAL-1). A session partition has
+// exactly one drainer — the first route to claim it wins (bridge_start
+// drainerSessions guard) — so the other routes' records would be silently
+// drained under the first route's SendTimeout / MaxReplayAttempts / ReplayBudget
+// / OnExpired / OnPermanentFailure. The OnPermanentFailure case is the
+// CRITICAL-1 message-loss hazard: a record persisted by a dlq-policy route,
+// source-ACKed after Persist, then drained (and permanently-failed or poisoned)
+// under a drop-policy route is Completed with NO DLQ entry — the source delivery
+// is gone and the DLQ evidence the operator configured is lost. Rather than let
 // that config bleed happen invisibly, fail fast at validation and tell the
 // operator to either align the policies or give the routes separate sessions.
+// Start's checkSharedOutboxDrainerConflicts enforces the same (plus sender
+// identity and drain tuning); this earlier, side-effect-free check keeps the
+// operator-facing ValidateRoutes consistent with Start.
 func validateSharedOutboxPartitions(ve *ValidationError, entries []*routeEntry) {
 	type claim struct {
 		routeID string
@@ -121,7 +150,8 @@ func validateSharedOutboxPartitions(ve *ValidationError, entries []*routeEntry) 
 			if prev.drain != dr {
 				ve.add(fmt.Sprintf(
 					"shared_outbox partition conflict: routes %q and %q both drain session %q "+
-						"but have divergent drain policy (SendTimeout/MaxReplayAttempts/OnExpired); "+
+						"but have divergent drain policy "+
+						"(SendTimeout/MaxReplayAttempts/ReplayBudget/OnExpired/OnPermanentFailure); "+
 						"the partition has a single drainer, so one route's records would be drained "+
 						"under the other's policy — give them separate sessions or align their policy",
 					prev.routeID, entry.config.ID, eff))
@@ -142,10 +172,28 @@ func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLe
 		validateSharedOutbox(ve, prefix, entry, policy, hasOutboxStore, hasLeaseStore)
 	}
 
+	validateZeroPlanResolver(ve, prefix, entry)
 	validateRetryFallback(ve, prefix, entry, hasDLQStore)
 	validateTerminalFailureSink(ve, prefix, policy, hasDLQStore)
 	validateTimeouts(ve, prefix, entry, hasDLQStore)
 	validateBackoff(ve, prefix, policy)
+}
+
+// validateZeroPlanResolver rejects a StaticResolver whose cardinality is fixed
+// at ZERO, for ANY delivery mode. Such a resolver is a statically-knowable DEAD
+// config: it can never yield a dispatch plan, so every message either strands
+// (shared_outbox: zero outbox records persisted then the source is ACKed —
+// silent loss) or retry-poisons forever (direct_hold: the resolvePlans
+// choke-point guard refuses to settle with zero delivery). Fail fast at
+// registration rather than per-message at runtime, mirroring the direct_hold
+// PlanCount()>1 rejection. The mode-specific PlanCount()>1 rules stay where they
+// are (>1 is legal fan-out for shared_outbox, illegal for direct_hold's single leg).
+func validateZeroPlanResolver(ve *ValidationError, prefix string, entry *routeEntry) {
+	if sr, ok := entry.config.Resolver.(*StaticResolver); ok && sr.PlanCount() == 0 {
+		ve.add(prefix + "invalid: static resolver yields 0 dispatch plans; the route can never " +
+			"produce a delivery (every message would strand or retry-poison); configure a resolver " +
+			"that yields at least one plan")
+	}
 }
 
 func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy) {

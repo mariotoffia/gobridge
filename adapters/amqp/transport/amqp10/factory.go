@@ -97,7 +97,42 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		Metrics:          f.Metrics,
 		Session:          amqpSession,
 	}
-	return NewReceiver(rc, amqpSession)
+	if rc.DurabilityMode > 0 {
+		// HIGH-1: a durable subscription's broker identity is
+		// container-id + link name. An auto-generated container-id is
+		// stable across reconnects but CHANGES on process restart, so the
+		// broker sees a NEW subscription after a restart and orphans every
+		// message retained for the old identity — durable mode looks
+		// configured but is not restart-safe. Fail closed unless an
+		// explicit, stable container_id is set. A stable subscription_name
+		// alone does not help: the container-id is part of the identity, so
+		// a regenerated one changes the subscription regardless.
+		if amqpSession.opts.containerIDGenerated {
+			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+				"amqp10 receiver %q: durability_mode=%d requires an explicit session.container_id — "+
+					"a durable subscription is keyed by container-id + link name, and a generated "+
+					"container-id changes across process restarts, orphaning the subscription and "+
+					"missing every message published while the bridge was down", spec.ID, rc.DurabilityMode))
+		}
+	}
+	// Construct and VALIDATE the receiver before reserving the link: a
+	// config error (e.g. link_credit overflow in ReceiverConfig.validate)
+	// must not leak a link reservation onto the session, which would then
+	// falsely trip the dedicated-session gate for a LATER durable receiver
+	// on the same session. Reserve only once construction has succeeded so
+	// the reservation count stays exact (review-3).
+	recv, err := NewReceiver(rc, amqpSession)
+	if err != nil {
+		return nil, err
+	}
+	// HIGH-3: enforce the dedicated-session contract at build time so a
+	// durable receiver's session-wide teardown blast radius cannot reach
+	// unrelated sibling links.
+	if err := amqpSession.reserveLink(rc.DurabilityMode > 0); err != nil {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp10 receiver %q: %s", spec.ID, err))
+	}
+	return recv, nil
 }
 
 // NewSender creates an AMQP 1.0 Sender bound to the given Session.
@@ -131,7 +166,22 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if sc.Timeout == 0 {
 		sc.Timeout = DefaultSenderOptions().Timeout
 	}
-	return NewSender(sc, amqpSession)
+	// Construct and VALIDATE before reserving so a config error cannot leak
+	// a reservation onto the session (review-3, symmetric with NewReceiver).
+	snd, err := NewSender(sc, amqpSession)
+	if err != nil {
+		return nil, err
+	}
+	// HIGH-3: a sender may not share a session with a durable receiver —
+	// the durable receiver's close forces a full connection teardown that
+	// would move this sender's in-flight publishes into unknown/duplicate
+	// territory. Reserve the link so a shared-session topology fails closed
+	// at build time (dedicated-session contract).
+	if err := amqpSession.reserveLink(false); err != nil {
+		return nil, shared.ErrInvalidPayload.WithMessage(
+			fmt.Sprintf("amqp10 sender %q: %s", spec.ID, err))
+	}
+	return snd, nil
 }
 
 // configFromSpec accepts both *Config and Config so registry-decoded

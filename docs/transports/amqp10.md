@@ -68,7 +68,7 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `address` | string | -- (required) | SINGLE broker URL to dial, e.g. `amqp://host:5672` or `amqps://host:5671`. No client-side broker list / failover -- resolve to a load balancer or DNS for HA. |
-| `container_id` | string | generated `gobridge-<16 hex chars>` | AMQP container ID identifying this client. When omitted, generated **once per session** with `crypto/rand` entropy — unique per replica and stable across reconnects, but NOT across process restarts. Durable subscriptions (`durability_mode > 0`) are keyed by container-id + link name, so they still require an explicit, per-replica-unique `container_id`. |
+| `container_id` | string | generated `gobridge-<16 hex chars>` | AMQP container ID identifying this client. When omitted, generated **once per session** with `crypto/rand` entropy — unique per replica and stable across reconnects, but NOT across process restarts. Durable subscriptions (`durability_mode > 0`) are keyed by container-id + link name, so they **require an explicit, per-replica-unique `container_id`**: building a durable receiver without one is **rejected at build time** (a generated id changes on restart and orphans the subscription). |
 | `connect_timeout` | duration | `30s` | Dial timeout per connection attempt |
 | `reconnect_delay` | duration | `1s` | Initial delay before reconnect |
 | `reconnect_max_delay` | duration | `30s` | Reconnect backoff ceiling |
@@ -127,13 +127,16 @@ than an opaque broker SASL failure at dial.
 | `subscription_name` | string | -- | Pins the AMQP link name so a durable subscription survives reconnects. When empty and `durability_mode > 0`, a stable name is derived from `container_id` + `address`. |
 | `routing` | string | `anycast` | `anycast` or `multicast` (Artemis routing type; case-insensitive). The typed decoder also accepts the legacy numeric forms `0` (anycast) and `1` (multicast). |
 
-> **Durable subscription identity.** A durable subscription
+> **Durable subscription identity (enforced).** A durable subscription
 > (`durability_mode > 0`) is identified by **container-id + link name**. A
 > stable link name is required for the broker to *resume* an existing
 > subscription rather than orphaning it and creating a new one on every
 > reconnect -- set `subscription_name` (or rely on the derived
 > `container_id`+`address` name) and keep `container_id` stable and unique per
-> replica.
+> replica. Because a generated `container_id` changes on process restart, a
+> durable receiver built **without an explicit `session.container_id` is
+> rejected at build time** (fail-closed): durable mode that silently loses
+> continuity across a restart is worse than a startup error.
 
 > **Multicast fans out duplicates.** `routing: multicast` uses pub-sub (topic)
 > semantics: the broker copies each message to **every** active subscription at
@@ -145,16 +148,18 @@ than an opaque broker SASL failure at dial.
 > subscription -- or a durable one orphaned by an unstable link name -- silently
 > misses everything sent in the gap.
 
-> **Durable receivers need a dedicated session.** Closing a durable receiver
-> (`durability_mode > 0`) cannot use a normal link detach: the pinned go-amqp can
-> only send a closing detach, which Artemis reads as UNSUBSCRIBE and destroys the
-> durable subscription (dropping every retained message). To detach the live link
-> while preserving the subscription the adapter drops the whole connection — a
-> non-closing detach of **every** link on that session. So a durable receiver
-> sharing a session with other receivers or senders blips all of them on close:
-> in-flight sender publishes relatch and non-durable receivers redeliver. Give
-> each durable (multicast) receiver its own `session_id` to confine a durable
-> close to that one session.
+> **Durable receivers need a dedicated session (enforced).** Closing a durable
+> receiver (`durability_mode > 0`) cannot use a normal link detach: the pinned
+> go-amqp can only send a closing detach, which Artemis reads as UNSUBSCRIBE and
+> destroys the durable subscription (dropping every retained message). To detach
+> the live link while preserving the subscription the adapter drops the whole
+> connection — a non-closing detach of **every** link on that session. So a
+> durable receiver sharing a session with other receivers or senders would blip
+> all of them on close: in-flight sender publishes relatch and non-durable
+> receivers redeliver. To keep that blast radius off unrelated traffic, the
+> factory **rejects at build time** any config that multiplexes a durable
+> receiver with another link on the same session — give each durable (multicast)
+> receiver its own `session_id`.
 
 > **No safe clustered durable multicast.** Two replicas that resume the same
 > durable multicast identity (container-id + link name) fight over the link: the

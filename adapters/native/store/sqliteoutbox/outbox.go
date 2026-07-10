@@ -149,6 +149,18 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 
 // Claim atomically claims up to limit pending records under partition pk.
 func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
+	// F1 fencing guard: reject a zero-value / invalid LeaseToken (empty owner
+	// OR zero version, persistence.LeaseToken.Valid) at the facade BEFORE any
+	// SQL runs, so the raw claim UPDATE never fences on an empty owner / zero
+	// version. The inner sqlSession.claim is only reachable through this method
+	// (single entry point), so this guard alone keeps the raw SQL from ever
+	// executing with a bad token.
+	if !token.Valid() {
+		return nil, shared.ErrStaleFencingToken.
+			WithMessage("claim rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: claim", "partition_key", pk, "limit", limit)
 	}
@@ -160,6 +172,16 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 // A successful Complete may piggyback a throttled retention compaction pass
 // (see WithRetention).
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// F1 fencing guard: reject a zero-value / invalid LeaseToken at the facade
+	// BEFORE any SQL runs (defense-in-depth: the guarded UPDATE's owner+version
+	// fence also rejects it, but the explicit guard keeps the raw SQL from
+	// running with a bad token).
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("complete rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: complete", "count", len(recordIDs))
 	}
@@ -176,6 +198,15 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // wall-clock stale-claim wait. Fencing is owner+version+status,
 // identical to Complete.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
+	// F1 fencing guard: reject a zero-value / invalid LeaseToken at the facade
+	// BEFORE any SQL runs (defense-in-depth alongside the guarded UPDATE's
+	// owner+version fence).
+	if !token.Valid() {
+		return shared.ErrStaleFencingToken.
+			WithMessage("release rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: release", "count", len(recordIDs))
 	}
@@ -240,6 +271,23 @@ func (s *Store) QueryPending(ctx context.Context, pk string, limit int) ([]*pers
 	}
 	recs, err := s.sess.queryPending(ctx, pk, limit)
 	return recs, s.observe(ctx, err)
+}
+
+// CountPending reports the number of PENDING records for pk — the true,
+// unbounded backlog behind shared.MetricOutboxDepth (ports.OutboxDepthReporter).
+// It is backed by an indexed COUNT(*) (idx_outbox_partition_status), never a
+// record-materialising scan like QueryPending, so it stays cheap on the
+// drainer's per-cycle call. An empty pk counts across every partition; a
+// concrete pk scopes the count. A real backend read failure is returned as-is
+// (the drainer skips the depth emission that cycle rather than masking it); the
+// store genuinely reports depth, so it never returns
+// ports.ErrOutboxDepthUnsupported.
+func (s *Store) CountPending(ctx context.Context, pk string) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: count_pending", "partition_key", pk)
+	}
+	n, err := s.sess.countPending(ctx, pk)
+	return n, s.observe(ctx, err)
 }
 
 // observe emits the store-health counter (MetricStoreUnhealthy) when err is a

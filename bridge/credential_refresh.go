@@ -43,6 +43,23 @@ type CredentialAware interface {
 	ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error
 }
 
+// AuthFailureReporter is an OPTIONAL capability of a CredentialAware target
+// (HIGH-3). The CredentialRefresher injects a URI-bound callback at Watch time;
+// the target invokes it when a LIVE broker op (reconnect/send/receive) maps an
+// error to shared.ErrNotAuthorized. That forces an immediate "Reactive
+// re-resolve" (UBIQUITOUS.md) instead of stalling on revoked credentials until
+// the next poll (default 5m). The callback delegates to NotifyAuthFailure,
+// which is already auth-error-gated and per-URI rate-limited, so targets may
+// call it freely on every mapped error — a reconnect storm collapses to at most
+// one backend fetch.
+//
+// A target that does NOT implement this capability is silently skipped, exactly
+// like a non-CredentialAware target: rotation still works, but recovery from a
+// hard revocation is poll-bounded rather than reactive.
+type AuthFailureReporter interface {
+	SetAuthFailureCallback(func(err error))
+}
+
 // CredentialRefresher owns the watcher goroutines that translate push
 // rotations into ApplyCredentials calls on transport sessions. One
 // Refresher is created per Build() when a PushCredentialStore is
@@ -199,6 +216,19 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 				"uri", shared.RedactURI(uri), "kind", kind)
 		}
 		return
+	}
+
+	// HIGH-3: inject the reactive-recovery hook. A target that also implements
+	// AuthFailureReporter gets a URI-bound callback so that when a LIVE broker
+	// op (reconnect/send/receive) maps an error to shared.ErrNotAuthorized it
+	// forces an immediate re-resolve instead of stalling on revoked credentials
+	// until the next poll. The callback closes over uri, so sessions stay
+	// URI-agnostic. Targets that do not implement the setter are silently
+	// skipped, matching the CredentialAware tolerance above. This is the single
+	// funnel for session/receiver/sender registration, so wiring it here once
+	// covers all three kinds.
+	if reporter, ok := target.(AuthFailureReporter); ok {
+		reporter.SetAuthFailureCallback(func(err error) { r.NotifyAuthFailure(uri, err) })
 	}
 
 	r.mu.Lock()

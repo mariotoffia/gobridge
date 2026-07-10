@@ -89,9 +89,23 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 //   - Pre-traffic:    /ready?level=full (strict, every route ready to dispatch)
 //
 // When ?level= is absent, the legacy contract applies: 200 with
-// {status, role} when running+healthy, 503 with {error: "not ready"}
-// otherwise. With ?level= the response is the structured form
-// {status, role, level, requested}, returning 503 when have<want.
+// {status, role} when the instance is ready for traffic, 503 with
+// {error: "not ready"} otherwise. With ?level= the response is the
+// structured form {status, role, level, requested}, returning 503 when
+// have<want.
+//
+// HIGH-3: the legacy (no ?level=) default now requires LevelFull — every
+// session subscribed AND every route ready to dispatch — rather than the old
+// running+healthy check. running+healthy stayed green while an ISOLATED route or
+// session was permanently faulting (superviseRoute/superviseSession record
+// per-component faults without flipping the global healthy flag), so a pod kept
+// taking traffic it could not serve. LevelFull is the conservative rung on the
+// readiness ladder that means "actually able to serve every route"; an isolated
+// route fault caps the achieved level at LevelSubscribed (< LevelFull) → 503.
+// A standby instance is capped at LevelSubscribed by design, so the legacy probe
+// returns 503 for a standby (it holds no lease and dispatches nothing) — use
+// ?level=connected/subscribed for standby-tolerant probes. The explicit
+// ?level= contract (running/connected/subscribed/full) is unchanged.
 //
 // Unknown levels return 400 Bad Request.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +121,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 	rawLevel := r.URL.Query().Get("level")
 	if rawLevel == "" {
-		// Legacy path: preserve historical {status,role} / {error} shape.
-		if !rt.IsRunning() || !rt.Healthy() {
+		// Legacy path: preserve historical {status,role} / {error} shape, but
+		// gate on the achieved readiness level (HIGH-3) so an isolated route or
+		// session fault sheds traffic instead of advertising a false green.
+		if rt.ReadinessLevel(r.Context()) < ports.LevelFull {
 			writeErr(w, http.StatusServiceUnavailable, "not ready")
 			return
 		}

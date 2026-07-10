@@ -84,6 +84,19 @@ type SessionOptions struct {
 	// dependency and must never be populated from YAML; the dash tag
 	// excludes it from the strict options decoder.
 	Clock clock.Clock `mapstructure:"-" yaml:"-" json:"-"`
+
+	// containerIDGenerated records that applyDefaults synthesised
+	// ContainerID (true) because none was configured, versus an operator
+	// supplying it explicitly (false). A generated id is unique-per-replica
+	// and stable across reconnects, but it CHANGES on every process
+	// restart, so it cannot anchor a durable-subscription identity
+	// (container-id + link name) across a restart — the broker would see a
+	// new subscription and orphan everything retained for the old one. The
+	// factory consults it to fail-closed a durable receiver
+	// (durability_mode > 0) built without an explicit container_id
+	// (HIGH-1). Unexported internal bookkeeping: never decoded from, nor
+	// marshalled to, config.
+	containerIDGenerated bool
 }
 
 // TLSConfig holds TLS settings for the AMQP 1.0 connection.
@@ -504,9 +517,12 @@ func (o *SessionOptions) applyDefaults() {
 		// would collide. Generating "gobridge-<entropy>" ONCE here makes
 		// the identity stable across reconnects for this session's
 		// lifetime and unique per instance. It still changes across
-		// process restarts — operators using durable subscriptions
-		// (durability_mode > 0) should set container_id explicitly.
+		// process restarts, so a durable receiver (durability_mode > 0)
+		// built through the factory without an explicit container_id is
+		// REJECTED at build time (HIGH-1); containerIDGenerated records
+		// that this id is synthesised so the factory can enforce that gate.
 		o.ContainerID = generateContainerID()
+		o.containerIDGenerated = true
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System

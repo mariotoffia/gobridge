@@ -81,7 +81,7 @@ func TestSSESender_Send_NoSubscribersEmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	factory := transport.NewFactory(transport.WithFactoryMetrics(rec))
 	sender, err := factory.NewSender(context.Background(),
-		ports.SenderSpec{ID: "nosub", Config: transport.Config{Mode: "sse"}}, nil)
+		ports.SenderSpec{ID: "nosub", Config: transport.Config{Mode: "sse", AtMostOnceAcceptLoss: true}}, nil)
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -89,10 +89,12 @@ func TestSSESender_Send_NoSubscribersEmitsMetric(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: "evt-nosub", Subject: "s.nosub", Payload: []byte(`{}`),
 	})
-	// SSE egress is at-most-once by contract: no subscribers is NOT an
-	// error, but it must be counted so operators can alert on it.
+	// With at_most_once_accept_loss opted in, zero subscribers is NOT an
+	// error, but the loss must still be counted so operators can alert. The
+	// safe default (no opt-in => transient error) is covered by
+	// TestChunk16_HIGH1_ZeroSubscribers_DefaultFailsTransient.
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
-		t.Fatalf("Send with zero subscribers must return nil (documented at-most-once), got %v", err)
+		t.Fatalf("Send with zero subscribers under accept-loss must return nil, got %v", err)
 	}
 
 	entries := rec.FindEntries(transport.MetricSSENoSubscribers)
@@ -406,6 +408,35 @@ func TestConfig_Validate_RejectsBadPaths(t *testing.T) {
 			}
 			if !tc.ok && err == nil {
 				t.Fatalf("Validate(%q): expected error", tc.path)
+			}
+		})
+	}
+}
+
+// HIGH-1: the safe-default zero-delivery switch (at_most_once_accept_loss)
+// and the legacy fail_on_zero_delivery flag are mutually exclusive — one
+// demands failure, the other demands accepting the loss — and the
+// contradiction is rejected at config-decode time rather than silently
+// resolved.
+func TestConfig_Validate_ZeroDeliveryFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  transport.Config
+		ok   bool
+	}{
+		{"default_none_set", transport.Config{}, true},
+		{"accept_loss_only", transport.Config{AtMostOnceAcceptLoss: true}, true},
+		{"legacy_fail_only", transport.Config{FailOnZeroDelivery: true}, true},
+		{"both_contradict", transport.Config{FailOnZeroDelivery: true, AtMostOnceAcceptLoss: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("Validate(): unexpected error %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("Validate(): expected error for contradictory zero-delivery flags")
 			}
 		})
 	}

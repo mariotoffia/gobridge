@@ -4,9 +4,11 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	cb "github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -42,6 +44,22 @@ type Processor struct {
 	lru            *list.List
 	totalEvictions int64
 	openEvictions  int64
+	// metricKeyMu guards metricKeys. It is a dedicated leaf lock (never
+	// p.mu) so bounding the metric-key dimension never contends with the
+	// hot-path breaker map and has no lock-ordering coupling: the
+	// onStateChange notifier fires from the breaker OUTSIDE p.mu.
+	metricKeyMu sync.Mutex
+	// metricKeys is the bounded set of NORMALIZED breaker keys already
+	// emitted as the "key" metric dimension. It never grows past
+	// metricKeyLimit entries, and each entry is length-capped by
+	// normalizeMetricKey, so total memory is bounded by
+	// metricKeyLimit * maxMetricKeyLen even under a caller-controlled,
+	// high-cardinality, large-value KeyExtractor.
+	metricKeys map[string]struct{}
+	// metricKeyLimit caps the number of DISTINCT breaker keys tagged
+	// verbatim on the shared circuit-breaker metrics; any further key
+	// collapses to metricKeyOverflow. See WithMetricKeyCardinality.
+	metricKeyLimit int
 }
 
 // breakerEntry pairs a cached breaker with a count of the Process calls
@@ -74,19 +92,24 @@ type breakerEntry struct {
 
 func New(name string, cfg cb.Config, opts ...Option) *Processor {
 	p := &Processor{
-		name:         name,
-		config:       cfg.WithDefaults(),
-		keyExtractor: GlobalKey,
-		maxBreakers:  defaultMaxBreakers,
-		clk:          clock.System,
-		breakers:     make(map[string]*breakerEntry),
-		lru:          list.New(),
+		name:           name,
+		config:         cfg.WithDefaults(),
+		keyExtractor:   GlobalKey,
+		maxBreakers:    defaultMaxBreakers,
+		clk:            clock.System,
+		breakers:       make(map[string]*breakerEntry),
+		lru:            list.New(),
+		metricKeys:     make(map[string]struct{}),
+		metricKeyLimit: defaultMetricKeyCardinality,
 	}
 	for _, o := range opts {
 		o(p)
 	}
 	if p.maxBreakers <= 0 {
 		p.maxBreakers = defaultMaxBreakers
+	}
+	if p.metricKeyLimit <= 0 {
+		p.metricKeyLimit = defaultMetricKeyCardinality
 	}
 	if p.clk == nil {
 		p.clk = clock.System
@@ -115,15 +138,22 @@ func New(name string, cfg cb.Config, opts ...Option) *Processor {
 		notify := p.onStateChange
 		metrics := p.metrics
 		name := p.Name()
+		proc := p
 		p.onStateChange = func(key string, from, to cb.State) {
+			// Bound the metric "key" dimension: the breaker key can be
+			// caller-controlled (HeaderKey over an untrusted header), so
+			// tagging it verbatim is an unbounded-cardinality DoS on the
+			// metrics backend. The default log/notifier still receives the
+			// RAW key (logs are not per-series cardinality-priced).
+			mkey := proc.metricKey(key)
 			metrics.Counter(shared.MetricCircuitBreakerStateChanged, 1,
 				shared.Tag{Key: "processor", Value: name},
-				shared.Tag{Key: "key", Value: key},
+				shared.Tag{Key: "key", Value: mkey},
 				shared.Tag{Key: "to", Value: to.String()})
 			if to == cb.StateOpen {
 				metrics.Counter(shared.MetricCircuitBreakerTrips, 1,
 					shared.Tag{Key: "processor", Value: name},
-					shared.Tag{Key: "key", Value: key})
+					shared.Tag{Key: "key", Value: mkey})
 			}
 			notify(key, from, to)
 		}
@@ -136,6 +166,95 @@ func (p *Processor) Name() string {
 		return "circuitbreaker"
 	}
 	return p.name
+}
+
+// metricKeyOverflow is the RESERVED sentinel "key" metric dimension value,
+// emitted once the bounded metric-key set is full (see metricKey): every
+// distinct breaker key beyond the configured limit shares this one series,
+// hard-capping cardinality. The name is deliberately reserved (double
+// underscores) so a collision with a real breaker key is extremely unlikely;
+// and a raw key that literally equals it is FOLDED into this same overflow
+// bucket, so the sentinel series is never ambiguous -- it always means "keys
+// beyond the cap, plus any key named the reserved sentinel". Treat this string
+// as reserved: do not emit it from a KeyExtractor as a meaningful key.
+const metricKeyOverflow = "__other__"
+
+// maxMetricKeyLen bounds the byte length of any value stored in p.metricKeys
+// and emitted as the "key" metric dimension. A caller-controlled KeyExtractor
+// (HeaderKey over an untrusted header) can produce arbitrarily long keys;
+// without this cap the bounded SET would still retain unbounded BYTES per entry
+// and emit giant metric labels. An oversized key is folded to a stable prefix
+// plus a short hash (see normalizeMetricKey), so distinct long keys keep
+// distinct labels with high probability while total memory stays bounded by
+// metricKeyLimit * maxMetricKeyLen.
+const maxMetricKeyLen = 128
+
+// defaultMetricKeyCardinality bounds the number of DISTINCT breaker keys
+// tagged verbatim on the shared circuit-breaker metrics when no
+// WithMetricKeyCardinality override is given. It is independent of (and far
+// below) defaultMaxBreakers: the breaker CACHE may legitimately hold many
+// keys, but the number of distinct metric SERIES the "key" dimension may
+// create must stay bounded so a high-cardinality KeyExtractor over untrusted
+// input (HeaderKey on a caller-controlled header) cannot explode the metrics
+// backend during the very outage the breaker should make observable.
+const defaultMetricKeyCardinality = 256
+
+// normalizeMetricKey caps a raw breaker key to at most maxMetricKeyLen bytes
+// for use as a metric label. A short key passes through verbatim; an oversized
+// key becomes "<utf8-safe prefix>#<16-hex fnv64a hash of the full key>", which
+// is bounded, stable across calls, and distinguishes distinct long keys with
+// high probability. The hash is a non-cryptographic bucketing aid, not a
+// security control.
+func normalizeMetricKey(key string) string {
+	if len(key) <= maxMetricKeyLen {
+		return key
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	const hexLen = 16                        // %016x of a uint64
+	prefix := key[:maxMetricKeyLen-hexLen-1] // leave room for the '#' separator
+	// Never split a multi-byte rune at the truncation point: keep the label
+	// valid UTF-8 for exporters that require it (at most 3 bytes trimmed).
+	for len(prefix) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(prefix); r != utf8.RuneError || size > 1 {
+			break
+		}
+		prefix = prefix[:len(prefix)-1]
+	}
+	return fmt.Sprintf("%s#%016x", prefix, h.Sum64())
+}
+
+// metricKey maps a raw breaker key to a bounded value for the "key" metric
+// dimension. The key can be caller-controlled (for example HeaderKey over an
+// untrusted header), so tagging it verbatim would let one producer drive both
+// unbounded metric cardinality AND unbounded label bytes -- a telemetry cost /
+// throttling DoS. Defence is two-layered: normalizeMetricKey caps the label
+// LENGTH (bounded bytes per series) and the bounded set caps the DISTINCT COUNT
+// (bounded number of series). The first metricKeyLimit distinct normalized keys
+// pass through so a trusted, bounded key space (GlobalKey, a handful of
+// subjects/tenants) stays fully observable; any further distinct key -- or a
+// key that literally equals the reserved overflow sentinel -- collapses to
+// metricKeyOverflow, capping the dimension at metricKeyLimit+1 series
+// regardless of input. Safe for concurrent use: the notifier fires from
+// multiple breaker goroutines and Process rejects concurrently.
+func (p *Processor) metricKey(key string) string {
+	label := normalizeMetricKey(key)
+	// A raw key that equals the reserved sentinel is folded into the overflow
+	// bucket so that series is never ambiguous; it is neither stored nor
+	// counted against the limit.
+	if label == metricKeyOverflow {
+		return metricKeyOverflow
+	}
+	p.metricKeyMu.Lock()
+	defer p.metricKeyMu.Unlock()
+	if _, ok := p.metricKeys[label]; ok {
+		return label
+	}
+	if len(p.metricKeys) >= p.metricKeyLimit {
+		return metricKeyOverflow
+	}
+	p.metricKeys[label] = struct{}{}
+	return label
 }
 
 // defaultMaxBreakers bounds the per-Processor breaker cache when no
@@ -184,7 +303,7 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		// sustained traffic is visible without log scraping.
 		p.metrics.Counter(shared.MetricCircuitBreakerRejections, 1,
 			shared.Tag{Key: "processor", Value: p.Name()},
-			shared.Tag{Key: "key", Value: key})
+			shared.Tag{Key: "key", Value: p.metricKey(key)})
 		return err
 	}
 
@@ -279,7 +398,7 @@ func (p *Processor) removeLocked(e *breakerEntry) {
 
 // Stats is a point-in-time snapshot of the breaker cache for observability.
 type Stats struct {
-	Capacity      int   // configured maximum number of cached breakers
+	Capacity      int   // configured SOFT cap on cached breakers (Size may briefly exceed it, see Stats)
 	Size          int   // breakers currently cached
 	Evictions     int64 // total breakers evicted to bound the cache
 	OpenEvictions int64 // subset of Evictions that dropped an OPEN breaker
@@ -288,6 +407,14 @@ type Stats struct {
 // Stats returns cache-pressure counters. A non-zero OpenEvictions means the
 // cache is too small for the key cardinality and active protection is being
 // dropped -- raise WithMaxBreakers or bound (and trust) the key space.
+//
+// Capacity is a SOFT cap, not a hard memory bound: when the cache is full and
+// every entry examined by evictLocked is in-flight (pinned), no victim is
+// evictable, so the new breaker is inserted anyway and Size temporarily exceeds
+// Capacity by the number of concurrently in-flight new keys. It self-corrects
+// as those calls drain. Route-level MaxInFlight bounds this overshoot in
+// practice; size WithMaxBreakers for your trusted key cardinality plus expected
+// concurrency headroom.
 func (p *Processor) Stats() Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()

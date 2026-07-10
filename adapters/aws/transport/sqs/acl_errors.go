@@ -177,6 +177,69 @@ func MapError(err error) *shared.BridgeError {
 	return shared.ErrUnavailable.Wrap(err)
 }
 
+// classifyBatchEntryCode maps a SendMessageBatch failed-entry Code
+// (sqstypes.BatchResultErrorEntry.Code) to a *shared.BridgeError using the
+// SAME retry policy as MapError for the codes that carry a retry-relevant
+// meaning — the KMS codes and the throttling / service-unavailable codes.
+//
+// SendMessageBatch reports a per-entry failure as a Code string plus a
+// SenderFault bool. The naive mapping (SenderFault ? rejected : transient)
+// throws the Code away, so a per-entry RETRYABLE target outage — a
+// KmsAccessDenied while a freshly-granted key policy is still propagating
+// (which SQS reports with SenderFault=true), KmsThrottled / ThrottlingException
+// back-pressure, a transient InternalError — was flattened to a terminal
+// rejected/transient verdict that does not match how the SAME condition
+// classifies on the single-message send path (MapError). Classifying the Code
+// first keeps a retryable target outage retryable (Chunk 13 HIGH-1) instead of
+// turning it into a permanent reject that costs the source its retry.
+//
+// It returns (nil, false) for a Code outside that set so the caller falls back
+// to the SenderFault verdict — preserving the established treatment of a
+// deterministic request fault (InvalidParameterValue, MissingParameter, a plain
+// AccessDenied at the entry level) as rejected.
+//
+// The KMS codes are matched (case-insensitively) BEFORE the throttling
+// substring logic, mirroring the typed-KMS-before-string ordering in MapError:
+// "KmsAccessDenied" contains "AccessDenied" and "KmsThrottled" contains
+// "throttl", so a substring-first pass would misclassify them.
+func classifyBatchEntryCode(code string) (*shared.BridgeError, bool) {
+	if code == "" {
+		return nil, false
+	}
+	switch {
+	case strings.EqualFold(code, "KmsThrottled"):
+		// KMS-side request throttling — transient, back off and retry.
+		return shared.ErrThrottled.WithMessage("kms throttled"), true
+	case strings.EqualFold(code, "KmsAccessDenied"):
+		// A freshly-granted key policy / IAM role commonly takes 10-120s to
+		// propagate; classify TEMPORARY so the send retries instead of DLQ-ing
+		// during that window (mirrors MapError's KmsAccessDenied treatment).
+		return shared.ErrTemporaryAuthFailure.
+			WithMessage("kms access denied (grant may still be propagating)"), true
+	case strings.EqualFold(code, "KmsDisabled"):
+		return shared.ErrNotAuthorized.WithMessage("kms key disabled"), true
+	case strings.EqualFold(code, "KmsInvalidState"):
+		return shared.ErrNotAuthorized.WithMessage("kms key invalid state"), true
+	case strings.EqualFold(code, "KmsNotFound"):
+		return shared.ErrNotAuthorized.WithMessage("kms key not found"), true
+	case strings.EqualFold(code, "KmsOptInRequired"):
+		return shared.ErrNotAuthorized.WithMessage("kms opt-in required"), true
+	case strings.EqualFold(code, "KmsInvalidKeyUsage"):
+		return shared.ErrNotAuthorized.WithMessage("kms invalid key usage"), true
+	}
+	// Throttling / rate-limit codes: transient, retry with back-off. Mirrors
+	// MapError's throttle substrings plus its typed OverLimit verdict.
+	if containsAny(code, "throttl", "rate exceeded", "RequestLimitExceeded", "OverLimit") {
+		return shared.ErrThrottled, true
+	}
+	// Server-side / service faults: transient, retry. Mirrors MapError's
+	// ServiceUnavailable / InternalError classification.
+	if containsAny(code, "ServiceUnavailable", "InternalError", "InternalFailure") {
+		return shared.ErrUnavailable, true
+	}
+	return nil, false
+}
+
 func containsAny(s string, substrs ...string) bool {
 	lower := strings.ToLower(s)
 	for _, sub := range substrs {

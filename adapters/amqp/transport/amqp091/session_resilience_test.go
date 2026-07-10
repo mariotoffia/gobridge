@@ -28,14 +28,15 @@ func newResilienceSession(dial dialFunc) *Session {
 	}
 	opts.applyDefaults()
 	return &Session{
-		opts:        opts,
-		mode:        connectivity.SessionMode("consumer"),
-		logger:      slog.Default(),
-		metrics:     &ports.NoopExporter{},
-		dial:        dial,
-		events:      make(chan ports.SessionEvent, 16),
-		activeSubs:  make(map[string]bool),
-		reconnected: make(chan struct{}, 1),
+		opts:           opts,
+		mode:           connectivity.SessionMode("consumer"),
+		logger:         slog.Default(),
+		metrics:        &ports.NoopExporter{},
+		dial:           dial,
+		events:         make(chan ports.SessionEvent, 16),
+		activeSubs:     make(map[string]bool),
+		reconnected:    make(chan struct{}, 1),
+		forceReconnect: make(chan struct{}, 1),
 	}
 }
 

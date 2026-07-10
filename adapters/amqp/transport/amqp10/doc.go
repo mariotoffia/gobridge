@@ -102,30 +102,50 @@
 // connection (the reconnect loop re-establishes it); operators on a
 // lossy/high-latency link may raise IdleTimeout explicitly.
 //
-// # Durable Subscriptions & the Dedicated-Session Contract
+// # Durable Subscriptions: Stable container_id + Dedicated Session (enforced)
 //
-// CONTRACT: a durable receiver (durability_mode > 0) MUST be placed on its
-// OWN dedicated Session (its own session_id) — do not multiplex a durable
-// receiver on the same session as other live receivers or senders.
+// A durable receiver (durability_mode > 0) has two build-time requirements,
+// both enforced FAIL-CLOSED by Factory.NewReceiver — a misconfiguration is
+// rejected at build, not discovered as silent message loss in production:
 //
-// Why: one Session owns exactly one AMQP connection and multiplexes ALL of
-// its receivers and senders over it. Closing a durable receiver cannot use
-// a normal link detach, because the pinned go-amqp (v1.5.1) can only emit a
-// CLOSING detach (Detach{Closed:true}); Artemis reads that as UNSUBSCRIBE
-// and DESTROYS the durable terminus (dropping every retained message). The
-// only way to detach the live durable link while PRESERVING the durable
-// subscription is to drop the whole connection — a non-closing detach of
-// every link on it (see Receiver.closeLink, c7-durable-close).
+//  1. Explicit, stable session.container_id (HIGH-1). A durable
+//     subscription's broker identity is container-id + link name. When
+//     container_id is omitted, applyDefaults synthesises a per-instance
+//     "gobridge-<entropy>" id: stable across reconnects but DIFFERENT on
+//     every process restart. After a pod restart the broker would see a new
+//     identity and orphan every message retained for the old subscription.
+//     So a durable receiver built without an explicit container_id is
+//     rejected. (A stable subscription_name alone is not enough: container-id
+//     is part of the identity, so a regenerated one changes it regardless.)
+//
+//  2. Dedicated session (HIGH-3). A durable receiver MUST be the only link
+//     on its Session (its own session_id) — the factory refuses to build a
+//     durable receiver on a session that already hosts a receiver or sender,
+//     and refuses any sibling link on a session already claimed by a durable
+//     receiver (Session.reserveLink).
+//
+// Why the dedicated session: one Session owns exactly one AMQP connection
+// and multiplexes ALL of its receivers and senders over it. Closing a
+// durable receiver cannot use a normal link detach, because the pinned
+// go-amqp (v1.5.1) can only emit a CLOSING detach (Detach{Closed:true});
+// Artemis reads that as UNSUBSCRIBE and DESTROYS the durable terminus
+// (dropping every retained message). The only way to detach the live
+// durable link while PRESERVING the durable subscription is to drop the
+// whole connection — a non-closing detach of every link on it (see
+// Receiver.closeLink, c7-durable-close).
 //
 // Consequence (blast radius): closing a durable receiver forces a full
 // connection teardown, which transiently blips EVERY sibling link on the
 // same Session — in-flight sender publishes must relatch and non-durable
 // receivers redeliver. The reconnect loop re-establishes the connection and
 // siblings resume, so recovery is BOUNDED, but the disruption is real.
-// Isolating durable receivers on a dedicated session confines a durable
-// close to that session and keeps unrelated traffic untouched. If go-amqp
-// ever supports a non-closing detach (or an Artemis unsubscribe-vs-detach
-// distinction), the connection teardown can be narrowed to a link detach.
+// Confining a durable receiver to a dedicated session keeps unrelated
+// traffic untouched, which is why the factory now enforces it rather than
+// merely documenting it. If go-amqp ever supports a non-closing detach (or
+// an Artemis unsubscribe-vs-detach distinction), the connection teardown
+// can be narrowed to a link detach and the dedicated-session requirement
+// relaxed. The low-level constructors (NewReceiver / NewSender) still permit
+// multiplexing for tests that exercise the teardown behaviour directly.
 //
 // # Credentials on the Wire
 //

@@ -104,7 +104,7 @@ classDiagram
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `endpoints` | map[string]string | no | auto-discovered | Static endpoint override `{instance_id: address}` |
+| `endpoints` | map[capability]url | no | auto-discovered | Static override for THIS instance's advertised capability endpoints, keyed by capability (`http`) with a full URL value (`http://host:port`). NOT a peer/instance map. |
 
 ```yaml
 bridge:
@@ -120,9 +120,12 @@ bridge:
   max_drain_timeout: 30s
   log_level: info
   cluster:
+    # THIS instance's advertised capability endpoints, keyed by capability with
+    # a full URL value. The HTTP forwarder POSTs remote exclusive requests to
+    # endpoints["http"], so a static override MUST carry an "http" key. This is
+    # NOT a peer/instance map — leave it unset to auto-discover instead.
     endpoints:
-      instance-01: "10.0.1.10:8080"
-      instance-02: "10.0.1.11:8080"
+      http: "http://10.0.1.10:8080"
 ```
 
 ## `config_watch` -- File Watch Settings

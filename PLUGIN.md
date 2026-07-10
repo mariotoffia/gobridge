@@ -361,8 +361,14 @@ transport that participates in rotation.
 A transport that authenticates on a live connection may call
 `CredentialRefresher.NotifyAuthFailure(uri, err)` when the broker reports
 `NOT_AUTHORIZED`, forcing an immediate credential re-resolve instead of waiting
-for the poll interval (rate-limited per URI). Resolve and rotation observability
-is built in and not your plugin's job: the resolver emits
+for the poll interval (rate-limited per URI). Stock transports do this
+automatically: implement the optional `bridge.AuthFailureReporter` capability
+(`SetAuthFailureCallback(func(err error))`) and the refresher injects a
+URI-bound callback at `Watch` time — the amqp10/amqp091/mqtt sessions report at
+reconnect, and the SQS/Service Bus sender+receiver report on the live send and
+receive paths. HTTP has no runtime-rotatable session, so it wires nothing.
+Resolve and rotation observability is built in and not your plugin's job: the
+resolver emits
 `CredentialResolveFailure` and `CredentialStaleServed`, the refresher emits
 `CredentialRotationApplied`, and the poll wrapper emits
 `CredentialRefreshFailures`.

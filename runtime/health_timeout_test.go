@@ -55,15 +55,16 @@ func TestDeepHealth_HungSessionHealthTimesOutNotReady(t *testing.T) {
 		t.Fatal("DeepHealth never entered Session.Health")
 	}
 
-	// The timeout is registered via rt.clk.After inside healthWithTimeout. Spin
-	// (yielding, no logic-driving sleep) until the fake clock sees the timer,
-	// then advance past it to fire the timeout deterministically.
+	// The timeout is registered via rt.clk.After inside probeSessionsHealth (one
+	// shared deadline for the whole sweep). Spin (yielding, no logic-driving
+	// sleep) until the fake clock sees the timer, then advance past it to fire the
+	// timeout deterministically.
 	deadline := time.Now().Add(2 * time.Second)
 	for fake.TimerCount() < 1 && time.Now().Before(deadline) {
 		stdruntime.Gosched()
 	}
 	if fake.TimerCount() < 1 {
-		t.Fatal("healthWithTimeout never registered its clock timeout")
+		t.Fatal("probeSessionsHealth never registered its clock timeout")
 	}
 	fake.Advance(defaultSessionHealthTimeout + time.Second)
 

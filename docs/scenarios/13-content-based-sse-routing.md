@@ -219,22 +219,32 @@ package main
 
 import (
     "context"
+    "log/slog"
     "net/http"
 
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
+    "github.com/mariotoffia/gobridge/ports"
     adaptershttp "github.com/mariotoffia/gobridge/adapters/http/transport"
     "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 )
 
 func main() {
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+    logger := slog.Default()
 
-    httpFactory := adaptershttp.NewBridgeFactory()
+    // Build the plugin registry and register each linked adapter's config
+    // decoder. ParseFile requires a non-nil registry.
+    reg := ports.NewRegistry()
+    _ = paho.Register(reg)
+    _ = adaptershttp.Register(reg)
 
-    sup, _ := bridge.NewBuilder(cfg).
-        RegisterTransport("mqtt", paho.NewFactory(nil)).
-        RegisterTransport("http", httpFactory).
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
+
+    httpFactory := adaptershttp.NewFactory(adaptershttp.WithFactoryLogger(logger))
+
+    rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+        RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+        RegisterTransportFactory("http", httpFactory).
         Build(context.Background())
 
     // Mount SSE endpoints on an HTTP server
@@ -247,9 +257,9 @@ func main() {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
-    sup.Start(ctx)
+    rt.Start(ctx)
     // ... wait for signal ...
-    sup.Stop(ctx)
+    rt.Stop(ctx)
 }
 ```
 

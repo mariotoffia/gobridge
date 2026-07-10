@@ -302,7 +302,11 @@ receivers:
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = servicebus.Register(reg)
+_ = sqs.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 tenantProc, _ := tenant.New(tenant.Config{
     Name:          "tenant-check",
@@ -311,8 +315,8 @@ tenantProc, _ := tenant.New(tenant.Config{
 }, tenant.WithValidator(myTenantValidator))
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("servicebus", servicebus.NewFactory(logger)).
-    RegisterTransport("sqs", sqs.NewFactory(logger)).
+    RegisterTransportFactory("servicebus", servicebus.NewFactory(logger)).
+    RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
     RegisterProcessor("tenant-check", tenantProc).
     Build(ctx)
 

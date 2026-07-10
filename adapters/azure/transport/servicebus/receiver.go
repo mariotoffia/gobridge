@@ -81,6 +81,15 @@ type Receiver struct {
 	closeOnce   sync.Once
 	started     chan struct{}
 	startedOnce sync.Once
+
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live poll maps
+	// an SDK error to shared.ErrNotAuthorized (SAS/AAD revocation), forcing an
+	// immediate re-resolve rather than warn-looping on revoked material until
+	// the next poll. atomic.Pointer gives safe publication across the builder
+	// goroutine (setter) and the poll goroutine (load).
+	authFailureCB atomic.Pointer[func(error)]
 }
 
 // receiverStack bundles the SDK client handle with the receiver and
@@ -691,6 +700,14 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			// HIGH-3 reactive-recovery chokepoint: the receive loop retries the
+			// RAW SDK error (it never classifies it here), so map it before
+			// reporting. When a SAS/AAD revocation makes it
+			// shared.ErrNotAuthorized, force an immediate re-resolve instead of
+			// warn-looping on revoked material until the next poll.
+			// reportAuthFailure filters non-auth receive errors, and runs before
+			// the mode-specific rebuild/backoff handling below.
+			r.reportAuthFailure(MapError(err))
 			if !sessionMode && isSessionRequiredError(err) {
 				// A non-session receiver on a session-enabled entity can
 				// never succeed: fail fast with a clear remedy instead of

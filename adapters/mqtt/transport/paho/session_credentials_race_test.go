@@ -36,6 +36,11 @@ func TestApplyCredentials_ConcurrentWithStart_NoRace(t *testing.T) {
 		ClientID:   "creds-race",
 		Username:   "u0",
 		Password:   shared.NewSecret("p0"),
+		// The point of this test is the -race window on the s.opts mutation;
+		// opt in to the plaintext gate so the rotation ACTUALLY mutates (a
+		// gate-rejected rotation would leave s.opts unchanged and make the
+		// race window vacuous). HIGH-4 itself is covered elsewhere.
+		AllowPlaintextCredentials: true,
 		TLS: &TLSConfig{
 			Enable:  true,
 			CertPEM: shared.NewSecret("not-a-cert-0"),

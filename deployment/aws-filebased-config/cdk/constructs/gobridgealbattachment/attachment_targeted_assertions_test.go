@@ -191,6 +191,75 @@ func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	}
 }
 
+// Test_T20_Attachment_TransportTG_HealthChecksLiveness pins [HIGH-2] as fixed
+// WITHOUT the ECS multi-TG recycle hazard: the transport (HTTP receiver)
+// target group health-checks the LIVENESS probe (/api/v1/monitor/live), the
+// SAME as control and monitor — NOT a broker-coupled readiness probe.
+//
+// Why liveness, not /ready?level=...: ECS replaces a task that is unhealthy in
+// ANY attached target group, and the worker service is attached to BOTH this
+// transport TG and the shared monitor TG. A readiness probe here would drive
+// task replacement, so a broker-wide outage or a deliberate admin pause would
+// flip every worker's /ready to 503 and recycle the whole fleet (a
+// crash-recycle storm that amplifies a transient downstream outage). Traffic
+// readiness is enforced at the request layer instead (the HTTP receiver
+// returns 5xx and records the dedup key only on success, so producers retry
+// with no message loss — adapters/http/transport/receiver.go:178,381,385).
+//
+// Mutation: flip the transport TG health-check default to /ready?level=full and
+// this fails.
+func Test_T20_Attachment_TransportTG_HealthChecksLiveness(t *testing.T) {
+	defer jsii.Close()
+	_, stack, vpc, listener := newApp(t)
+	// httpReceiverYAML declares HTTP receivers, so a dedicated transport
+	// (worker) target group is emitted alongside control + monitor.
+	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
+	single := newSingle(t, stack, vpc, src)
+	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
+		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
+	})
+	tpl := assertions.Template_FromStack(stack, nil)
+
+	transportRef := refOfAttribute(awscdk.Stack_Of(stack), att.WorkerTargetGroup().TargetGroupArn())
+	controlRef := refOfAttribute(awscdk.Stack_Of(stack), att.ControlTargetGroup().TargetGroupArn())
+	monitorRef := refOfAttribute(awscdk.Stack_Of(stack), att.MonitorTargetGroup().TargetGroupArn())
+	if transportRef == "" || controlRef == "" || monitorRef == "" {
+		t.Fatalf("could not resolve TG logical ids: transport=%q control=%q monitor=%q", transportRef, controlRef, monitorRef)
+	}
+	// With HTTP receivers the worker TG is the dedicated transport TG, not the
+	// monitor fallback — otherwise the transport-TG assertion would be vacuous.
+	if transportRef == monitorRef {
+		t.Fatalf("expected a dedicated transport TG, but WorkerTargetGroup fell back to the monitor TG")
+	}
+
+	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
+	pathOf := func(ref string) string {
+		t.Helper()
+		raw, ok := (*tgs)[ref]
+		if !ok {
+			t.Fatalf("TG %s not found in template", ref)
+		}
+		props := (*raw)["Properties"].(map[string]any)
+		p, _ := props["HealthCheckPath"].(string)
+		return p
+	}
+
+	// All three target groups — including the transport TG — probe /live. A
+	// broker-coupled readiness probe here would recycle the worker fleet on a
+	// broker outage/pause because of ECS multi-TG unhealthy semantics.
+	if got := pathOf(transportRef); got != "/api/v1/monitor/live" {
+		t.Fatalf("transport TG HealthCheckPath = %q, want /api/v1/monitor/live "+
+			"(a broker-coupled /ready probe would recycle the worker fleet via ECS multi-TG semantics; "+
+			"traffic readiness is enforced at the receiver instead)", got)
+	}
+	if got := pathOf(controlRef); got != "/api/v1/monitor/live" {
+		t.Fatalf("control TG HealthCheckPath = %q, want /api/v1/monitor/live", got)
+	}
+	if got := pathOf(monitorRef); got != "/api/v1/monitor/live" {
+		t.Fatalf("monitor TG HealthCheckPath = %q, want /api/v1/monitor/live", got)
+	}
+}
+
 // refOfAttribute resolves a CDK token (e.g. tg.TargetGroupArn() returns a
 // Ref to the TG logical id) and extracts the Ref string. Returns "" if the
 // resolved form is not a {"Ref": "..."} intrinsic.

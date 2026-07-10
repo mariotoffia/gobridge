@@ -113,7 +113,8 @@ func TestOutboxRecord_IsClaimable(t *testing.T) {
 		wantClaimable bool
 	}{
 		{"pending_any_version", persistence.OutboxPending, 0, 1, true},
-		{"pending_zero_version", persistence.OutboxPending, 0, 0, true},
+		{"pending_zero_version_rejected", persistence.OutboxPending, 0, 0, false},
+		{"claimed_zero_version_rejected", persistence.OutboxClaimed, 0, 0, false},
 		{"claimed_with_strictly_newer_token", persistence.OutboxClaimed, 1, 2, true},
 		{"claimed_with_equal_token", persistence.OutboxClaimed, 2, 2, false},
 		{"claimed_with_older_token", persistence.OutboxClaimed, 5, 3, false},
@@ -426,5 +427,165 @@ func TestOutboxRecord_ReplayCountCountsClaimsNotFailures(t *testing.T) {
 	if got := rec.ReplayCount(); got != 2 {
 		t.Fatalf("ReplayCount after claim→release→claim: got %d, want 2 "+
 			"(replay count must track claims, including deferrals, not failed sends)", got)
+	}
+}
+
+// TestOutboxRecord_ClaimRejectsInvalidToken validates that Claim rejects a
+// zero-value / invalid fencing token (empty owner OR zero version) with
+// shared.ErrStaleFencingToken WITHOUT transitioning the aggregate. This is the
+// aggregate-level guard that stops a miswired drainer from claiming a Pending
+// record with persistence.LeaseToken{} and bypassing lease ownership.
+func TestOutboxRecord_ClaimRejectsInvalidToken(t *testing.T) {
+	now := time.Unix(1_700_000_200, 0)
+
+	invalid := []struct {
+		name      string
+		claimedBy string
+		version   uint64
+	}{
+		{"zero_value", "", 0},
+		{"empty_owner", "", 1},
+		{"zero_version", "owner-A", 0},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, cerr := persistence.NewOutboxRecord(validSpec())
+			if cerr != nil {
+				t.Fatalf("construct: %v", cerr)
+			}
+			err := rec.Claim(now, tc.claimedBy, tc.version)
+			if !errors.Is(err, shared.ErrStaleFencingToken) {
+				t.Fatalf("Claim(%q,%d) err = %v, want ErrStaleFencingToken", tc.claimedBy, tc.version, err)
+			}
+			if rec.Status() != persistence.OutboxPending {
+				t.Fatalf("record must stay Pending after rejected claim, got %q", rec.Status())
+			}
+			if rec.ClaimedBy() != "" || rec.ReplayCount() != 0 || !rec.ClaimedAt().IsZero() {
+				t.Fatalf("record lifecycle state mutated by a rejected claim: claimedBy=%q replay=%d claimedAt=%v",
+					rec.ClaimedBy(), rec.ReplayCount(), rec.ClaimedAt())
+			}
+		})
+	}
+
+	// A valid token still claims the record after the rejected attempts.
+	t.Run("valid_token_after_rejections", func(t *testing.T) {
+		rec, cerr := persistence.NewOutboxRecord(validSpec())
+		if cerr != nil {
+			t.Fatalf("construct: %v", cerr)
+		}
+		if err := rec.Claim(now, "owner-A", 1); err != nil {
+			t.Fatalf("valid claim: %v", err)
+		}
+		if rec.Status() != persistence.OutboxClaimed {
+			t.Fatalf("status=%q want Claimed", rec.Status())
+		}
+	})
+}
+
+// zeroClaimedSnapshot builds a Claimed outbox snapshot whose claim identity is
+// itself invalid — claimedBy == "" and claimVersion == 0. This is the corrupt
+// / pre-fencing "zero-claimed" row a zero-value LeaseToken{} would fraudulently
+// MATCH at a store fence. It is not reachable through Claim (which requires a
+// valid token) but is reachable via RehydrateFromSnapshot, which stores use to
+// rebuild persisted rows — so the aggregate must defend against it directly.
+func zeroClaimedSnapshot(id string) persistence.OutboxSnapshot {
+	return persistence.OutboxSnapshot{
+		ID: id, RouteID: "rt", EnvelopeID: "e-" + id, BindingID: "b", SessionID: "s",
+		Status:       persistence.OutboxClaimed,
+		ClaimedBy:    "", // invalid: a real claim always has a non-empty owner
+		ClaimVersion: 0,  // invalid: a real claim always has a non-zero version
+	}
+}
+
+// TestOutboxRecord_CompleteRejectsZeroClaimIdentity proves Complete refuses to
+// mutate a Claimed record whose stored claim identity is invalid (claimedBy ""
+// or claimVersion 0), returning ErrStaleFencingToken WITHOUT changing state.
+// This is the aggregate-side defense that keeps a zero-value LeaseToken{} from
+// "matching" a zero-claimed row at the store fence and completing it. It is
+// symmetric with Claim's own valid-token guard.
+func TestOutboxRecord_CompleteRejectsZeroClaimIdentity(t *testing.T) {
+	now := time.Unix(1_700_000_400, 0)
+
+	cases := []struct {
+		name         string
+		claimedBy    string
+		claimVersion uint64
+	}{
+		{"empty_owner_and_zero_version", "", 0},
+		{"empty_owner_nonzero_version", "", 3},
+		{"owner_zero_version", "owner-x", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := zeroClaimedSnapshot("zci-" + tc.name)
+			snap.ClaimedBy = tc.claimedBy
+			snap.ClaimVersion = tc.claimVersion
+			rec := persistence.RehydrateFromSnapshot(snap)
+
+			err := rec.Complete(now)
+			if !errors.Is(err, shared.ErrStaleFencingToken) {
+				t.Fatalf("Complete err = %v, want ErrStaleFencingToken", err)
+			}
+			if rec.Status() != persistence.OutboxClaimed {
+				t.Fatalf("status = %q, want unchanged Claimed after rejected complete", rec.Status())
+			}
+			if !rec.CompletedAt().IsZero() {
+				t.Fatalf("completedAt = %v, want zero (no mutation)", rec.CompletedAt())
+			}
+		})
+	}
+
+	// A validly-claimed record still completes: the guard does not over-reach.
+	valid := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+		ID: "zci-valid", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
+		Status: persistence.OutboxClaimed, ClaimedBy: "owner-ok", ClaimVersion: 1,
+	})
+	if err := valid.Complete(now); err != nil {
+		t.Fatalf("valid claim identity must complete, got %v", err)
+	}
+}
+
+// TestOutboxRecord_ReleaseRejectsZeroClaimIdentity is the Release-side twin of
+// TestOutboxRecord_CompleteRejectsZeroClaimIdentity: a zero-claimed row must
+// not be returned to Pending by an unauthenticated caller.
+func TestOutboxRecord_ReleaseRejectsZeroClaimIdentity(t *testing.T) {
+	now := time.Unix(1_700_000_450, 0)
+
+	cases := []struct {
+		name         string
+		claimedBy    string
+		claimVersion uint64
+	}{
+		{"empty_owner_and_zero_version", "", 0},
+		{"empty_owner_nonzero_version", "", 3},
+		{"owner_zero_version", "owner-x", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := zeroClaimedSnapshot("zri-" + tc.name)
+			snap.ClaimedBy = tc.claimedBy
+			snap.ClaimVersion = tc.claimVersion
+			rec := persistence.RehydrateFromSnapshot(snap)
+
+			err := rec.Release(now)
+			if !errors.Is(err, shared.ErrStaleFencingToken) {
+				t.Fatalf("Release err = %v, want ErrStaleFencingToken", err)
+			}
+			if rec.Status() != persistence.OutboxClaimed {
+				t.Fatalf("status = %q, want unchanged Claimed after rejected release", rec.Status())
+			}
+		})
+	}
+
+	// A validly-claimed record still releases back to Pending.
+	valid := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+		ID: "zri-valid", RouteID: "rt", EnvelopeID: "e", BindingID: "b", SessionID: "s",
+		Status: persistence.OutboxClaimed, ClaimedBy: "owner-ok", ClaimVersion: 1,
+	})
+	if err := valid.Release(now); err != nil {
+		t.Fatalf("valid claim identity must release, got %v", err)
+	}
+	if valid.Status() != persistence.OutboxPending {
+		t.Fatalf("status = %q, want Pending after valid release", valid.Status())
 	}
 }

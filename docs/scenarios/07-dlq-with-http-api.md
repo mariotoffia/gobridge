@@ -250,6 +250,19 @@ Triggers in two scenarios:
 
 **Exhausted retries** -- Transient errors (`TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`) persist beyond `max_replay_attempts`.
 
+> **Count-less sources.** Sources that carry a native receive-count header
+> (SQS `ApproximateReceiveCount`, JetStream `num_delivered`, etc.) drive the
+> `max_replay_attempts` cap directly from that header. Sources WITHOUT one
+> (MQTT, AMQP 0-9-1, HTTP) are capped by a **bridge-owned attempt ledger**
+> keyed on a stable per-message identity (dedup key / envelope ID), so a
+> deterministic transient failure is DLQ'd or dropped after `max_replay_attempts`
+> instead of looping forever. The ledger is an in-process, bounded structure
+> evicted on every terminal settle; its cap is per bridge instance and does not
+> survive a restart or span instances. Full cross-instance / durable replay
+> accounting requires the source adapter to stamp a stable idempotency key that
+> survives redelivery (see `UBIQUITOUS.md` -- dedup key) and a durable ledger
+> port -- the upgrade path when a native receive count is unavailable.
+
 ### Decision Flow
 
 ```mermaid
@@ -297,11 +310,16 @@ The deep health endpoint returns 200 when ready for traffic, 503 otherwise, with
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = paho.Register(reg)
+_ = sqs.Register(reg)
+_ = nativestore.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewFactory(logger)).
-    RegisterTransport("sqs", sqs.NewFactory(logger)).
+    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+    RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
     RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
     Build(ctx)
 

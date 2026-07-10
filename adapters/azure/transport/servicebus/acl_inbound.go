@@ -506,8 +506,10 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 
 		enqueueAt := d.clk.Now().Add(after)
 		schedStart := d.clk.Now()
-		seqNums, err := d.scheduler.ScheduleMessages(ctx, []*azservicebus.Message{newMsg}, enqueueAt, nil)
-		if err != nil {
+		// The sequence numbers ScheduleMessages returns are intentionally
+		// discarded: the retry copy is durable the instant this returns and
+		// is NEVER cancelled on a later settle failure (see below).
+		if _, err := d.scheduler.ScheduleMessages(ctx, []*azservicebus.Message{newMsg}, enqueueAt, nil); err != nil {
 			return MapError(err)
 		}
 		d.metrics.Timer(MetricASBScheduleLatency, d.clk.Since(schedStart))
@@ -517,10 +519,27 @@ func (d *asbDelivery) Retry(ctx context.Context, after time.Duration, _ error) e
 		// settleReturned.
 		d.settleReturned.Store(true)
 		if completeErr != nil {
-			if cancelErr := d.scheduler.CancelScheduledMessages(ctx, seqNums, nil); cancelErr != nil && d.logger != nil {
-				d.logger.Error("servicebus: failed to cancel scheduled message after CompleteMessage failure",
+			// CRITICAL: the retry copy was already durably scheduled
+			// (ScheduleMessages returned success). CompleteMessage then
+			// failed AMBIGUOUSLY — the broker may have COMMITTED the
+			// complete while the client only observed a timeout /
+			// connection-lost response. Cancelling the scheduled copy here
+			// (the previous behaviour) would, in that commit-but-error case,
+			// remove the ONLY retry copy while the original is already
+			// completed: the message vanishes from both places — permanent
+			// loss. PREFER DUPLICATES OVER LOSS — keep the scheduled copy:
+			//   - complete committed → only the scheduled copy survives (the
+			//     intended single retry, no duplicate).
+			//   - complete did NOT commit → the original's lock lapses and
+			//     the broker redelivers it, so the copy plus the redelivered
+			//     original is a DUPLICATE that the copy's salted MessageID +
+			//     x-bridge.original-message-id let downstream dedup absorb.
+			// The client cannot distinguish the two cases, so a cancel is
+			// never safe; the copy is left scheduled deliberately.
+			if d.logger != nil {
+				d.logger.Warn("servicebus: CompleteMessage failed after scheduling a delayed retry; keeping the scheduled copy to avoid loss (the original may also redeliver as a duplicate)",
 					"message_id", d.msg.MessageID,
-					"error", cancelErr,
+					"error", completeErr,
 				)
 			}
 			return MapError(completeErr)

@@ -163,9 +163,18 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	start := r.cfg.clock.Now()
 	ctx := req.Context()
 
+	// Readiness is a NON-BLOCKING check: if Run has not yet stored the
+	// emit callback (pre-start or a reload rebind window) answer 503
+	// IMMEDIATELY rather than parking this handler goroutine on r.ready
+	// until the client gives up. Blocking here turned readiness lag into an
+	// availability sink — every early request pinned a goroutine and
+	// connection until cancellation, so a slow start could accumulate
+	// blocked handlers (HIGH-4). When ready IS closed the later emit read
+	// is guaranteed non-nil because Run stores emit and closes ready under
+	// the same lock.
 	select {
 	case <-r.ready:
-	case <-ctx.Done():
+	default:
 		writeError(w, http.StatusServiceUnavailable, "receiver not ready")
 		return
 	}

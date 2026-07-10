@@ -334,6 +334,128 @@ func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+// TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete pins [HIGH-2]: a
+// negative limit must be rejected with 400 BEFORE any DeleteByFilter call. The
+// DeleteByFilter port contract treats Limit <= 0 as "delete EVERY matching
+// entry", so copying a negative limit into the filter would silently turn a
+// bounded-looking request into an UNBOUNDED destructive delete.
+//
+// Mutation reasoning — remove the `if body.Limit < 0` guard and this test
+// fails: the handler builds a filter with Limit -1, calls DeleteByFilter (the
+// spy records the call), and returns 200 instead of 400.
+func TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete(t *testing.T) {
+	var calls int
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, _ routing.DLQFilter) (int, error) {
+			calls++
+			return 999, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"prod-route","limit":-1}`))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "limit must not be negative")
+	assert.Equal(t, 0, calls, "a negative limit must never reach the store's DeleteByFilter")
+}
+
+// TestHandleDLQDeleteByFilter_HugeLimitOnly_RejectedNoDelete pins [FINDING 1]:
+// a bare huge positive limit with no other predicate is BOTH an unconfirmed
+// delete-all AND an unbounded destructive scan. It must be rejected with 400 by
+// the max-limit cap BEFORE any DeleteByFilter call — a limit is a bound, not a
+// filter, so it can never bypass the confirm_delete_all guard nor launch a
+// 2.1-billion-row delete.
+//
+// Mutation reasoning — (a) restoring `|| filter.Limit > 0` in hasFilter would
+// make this bare-limit request "filtered" and skip confirm; (b) removing the
+// maxDeleteByFilterLimit cap would let it through to the store. Either regression
+// makes this test fail (DeleteByFilter called, 200 instead of 400).
+func TestHandleDLQDeleteByFilter_HugeLimitOnly_RejectedNoDelete(t *testing.T) {
+	var calls int
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, _ routing.DLQFilter) (int, error) {
+			calls++
+			return 2147483647, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"limit":2147483647}`))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "limit exceeds maximum")
+	assert.Equal(t, 0, calls, "a huge limit must never reach the store's DeleteByFilter")
+}
+
+// TestHandleDLQDeleteByFilter_BareLimit_RequiresConfirm pins the other half of
+// [FINDING 1] fix (a): a modest bare limit (within the cap) with NO route/
+// category/time predicate is still an unconfirmed delete-all and must be gated
+// by confirm_delete_all — a positive limit alone no longer satisfies hasFilter.
+func TestHandleDLQDeleteByFilter_BareLimit_RequiresConfirm(t *testing.T) {
+	var calls int
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, _ routing.DLQFilter) (int, error) {
+			calls++
+			return 10, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"limit":10}`))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "confirm_delete_all")
+	assert.Equal(t, 0, calls, "a bare limit must not bypass the delete-all confirmation")
+}
+
+// TestHandleDLQDeleteByFilter_PositiveLimit_BoundsDelete confirms a valid
+// positive limit WITH a real filter is still honoured and passed through to the
+// store (a bounded delete on route X must keep working).
+func TestHandleDLQDeleteByFilter_PositiveLimit_BoundsDelete(t *testing.T) {
+	var captured routing.DLQFilter
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, f routing.DLQFilter) (int, error) {
+			captured = f
+			return 5, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"prod-route","limit":5}`))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 5, captured.Limit)
+	var body map[string]int
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, 5, body["deleted"])
+}
+
+// TestHandleDLQDeleteByFilter_ZeroLimit_UnboundedWithinFilter documents the
+// deliberate [HIGH-2] decision: limit == 0 (the omitted-field default) stays
+// "unbounded within the provided filter" per the port contract — here, delete
+// all entries for the given route. The hasFilter guard keeps a limit==0 request
+// with NO other filter unambiguous (it still demands confirm_delete_all).
+func TestHandleDLQDeleteByFilter_ZeroLimit_UnboundedWithinFilter(t *testing.T) {
+	var captured routing.DLQFilter
+	var calls int
+	store := &mockDLQStore{
+		deleteByFilterFn: func(_ context.Context, f routing.DLQFilter) (int, error) {
+			calls++
+			captured = f
+			return 7, nil
+		},
+	}
+	_, mux := dlqServer(store)
+	rec := dlqDo(mux, dlqReq("POST", "/api/v1/admin/dlq/delete-by-filter",
+		`{"route_id":"prod-route","limit":0}`))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1, calls, "limit==0 with a route filter is a legitimate bounded-by-filter delete")
+	assert.Equal(t, 0, captured.Limit)
+	assert.Equal(t, "prod-route", captured.RouteID)
+}
+
 // TestHandleDLQDeleteByFilter_WithTimeRange validates Since and Before
 // are correctly parsed and passed to the store.
 func TestHandleDLQDeleteByFilter_WithTimeRange(t *testing.T) {

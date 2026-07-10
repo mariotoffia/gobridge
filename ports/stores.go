@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -86,6 +87,29 @@ type LeaseStore interface {
 //     DLQ routing.
 //
 // Fencing contract:
+//
+//   - Every guarded mutation (Claim, Complete, and OutboxReleaser.Release)
+//     REQUIRES a valid fencing token: token.Owner != "" AND token.Version > 0
+//     (persistence.LeaseToken.Valid). A store MUST reject a zero-value or
+//     otherwise invalid persistence.LeaseToken{} with shared.ErrStaleFencingToken
+//     BEFORE performing any state transition or advancing the per-partition
+//     fencing high-water-mark. A zero-value token is never a real lease:
+//     accepting one would let a miswired or buggy drainer claim or complete
+//     work without lease ownership, defeating clustering/fencing. (Expire takes
+//     no token; it is authorised solely by the caller's lease over the supplied
+//     partition.)
+//
+//     This rejection is on the token's OWN validity and is INDEPENDENT of the
+//     stored row's shape: it MUST fire before — and regardless of whether — the
+//     token matches the record's stored claim metadata. A corrupt or
+//     pre-fencing "zero-claimed" row (claimed_by == "" AND claim_version == 0)
+//     would otherwise be fraudulently MATCHED by a zero-value LeaseToken{} under
+//     a naive owner+version+status comparison and be completed or released by a
+//     caller that never held a lease. Stores that route the transition through
+//     the OutboxRecord aggregate inherit this guard (the aggregate refuses to
+//     Complete/Release a Claimed row whose stored claim identity is itself
+//     invalid); stores that mutate via raw SQL / conditional writes MUST add the
+//     token-validity check explicitly.
 //
 //   - Claim fencing is version-monotonic. A record is claimable when it is
 //     pending, or when it is claimed and its claim_version is strictly older
@@ -187,6 +211,10 @@ type OutboxStore interface {
 // mismatch the store MUST return shared.ErrStaleFencingToken rather than
 // silently skipping the record.
 //
+// A zero-value / invalid token (persistence.LeaseToken.Valid == false) is
+// rejected with shared.ErrStaleFencingToken: it can never match a real claim's
+// non-empty owner and non-zero version.
+//
 // Release is single-record-intended: the live drainer always passes exactly
 // one recordID. The recordIDs slice is retained for signature symmetry with
 // Complete. Only the memory backend validates the whole batch before mutating
@@ -202,6 +230,55 @@ type OutboxStore interface {
 type OutboxReleaser interface {
 	Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
 }
+
+// OutboxDepthReporter is an OPTIONAL OutboxStore capability that returns the
+// EXACT (or store-estimated) number of PENDING records for a partition — the
+// true backlog depth, independent of any claim batch size. It exists because
+// the drain path otherwise only knows how many records it just CLAIMED (a value
+// that saturates at the batch ceiling and cannot distinguish a deep backlog
+// from a full batch), and QueryPending is a record-materialising preview query
+// bounded by its limit, not an efficient count. A store that implements this
+// lets the drainer emit shared.MetricOutboxDepth as a true, unbounded backlog
+// gauge on every poll cycle (see runtime/outbox.Drainer and
+// runtime.InstrumentedOutboxStore, which forwards the capability).
+//
+// Contract:
+//
+//   - CountPending returns the number of records currently in the PENDING
+//     state for partitionKey (records already claimed by a live owner are NOT
+//     pending and MUST be excluded). It never mutates state.
+//   - It should be cheap relative to a Claim: back it by a COUNT / maintained
+//     counter / bounded metadata read, never by materialising every record.
+//     The drainer calls it at most once per poll cycle and only when there is a
+//     backlog to measure, but a DynamoDB backend in particular MUST avoid a
+//     full-partition scan (use a projection/counter to bound read cost).
+//   - A REAL backend error (DB/read failure) is returned AS-IS. The drainer
+//     treats such an error as a genuine failure — it does NOT mask it behind
+//     the saturating claimed-count fallback: it SKIPS the MetricOutboxDepth
+//     emission for that cycle (so a persistently broken query trips the
+//     missing-data alarm) and records it via MetricOutboxDepthFailures + a
+//     structured error log. A failing count never wedges the drain loop.
+//   - To signal "I cannot report depth" WITHOUT it being read as a real
+//     failure, return ErrOutboxDepthUnsupported (or wrap it); the drainer then
+//     falls back to the claimed-count lower bound silently. This is what
+//     runtime.InstrumentedOutboxStore returns when its inner store has not
+//     adopted the capability.
+//
+// This capability is OPTIONAL: stores that do not implement it keep the
+// (saturating) claimed-count fallback with no build or behaviour break.
+type OutboxDepthReporter interface {
+	CountPending(ctx context.Context, partitionKey string) (int, error)
+}
+
+// ErrOutboxDepthUnsupported is the sentinel an OutboxDepthReporter (or a
+// wrapper forwarding the capability) returns from CountPending to mean "this
+// store cannot report pending depth" — as opposed to a real backend failure.
+// The drainer uses errors.Is(err, ErrOutboxDepthUnsupported) to select the
+// benign saturating claimed-count FALLBACK; any OTHER non-nil error is treated
+// as a genuine depth-query failure (skip the depth emission this cycle, count +
+// log it) so a persistently broken count is not silently masked. Exported so
+// runtime.InstrumentedOutboxStore and store adapters share one sentinel.
+var ErrOutboxDepthUnsupported = errors.New("ports: outbox store does not report pending depth")
 
 // DLQReader is the read-side of the dead-letter queue: lookups and
 // scans that never mutate stored entries. Driving read adapters (the
@@ -241,6 +318,33 @@ type DLQAdmin interface {
 type DLQStore interface {
 	DLQReader
 	DLQAdmin
+}
+
+// DLQDepthReporter is an OPTIONAL dead-letter-queue capability that returns the
+// CURRENT number of outstanding entries — the standing DLQ backlog. It is the
+// read primitive behind shared.MetricDLQDepth (sampled via
+// runtime.ReportDLQDepth): the existing DLQEntries counter only ever COUNTS
+// writes and never decreases, so a stale backlog after a burst (writes have
+// since stopped, nothing redriven) is invisible without a manual storage scan.
+// Depth closes that gap so operators can alarm on "records sitting in the DLQ
+// right now".
+//
+// Contract:
+//
+//   - Depth returns the total number of entries currently stored (across all
+//     routes/categories). It never mutates. A fleet total keeps metric
+//     cardinality low and matches the dimensionless default rollup alarm; a
+//     per-route split, if ever needed, belongs on a separate method so the
+//     default depth series stays low cardinality.
+//   - Back it by an efficient COUNT / item-count metadata read, not by paging
+//     every entry — it is sampled periodically, so cost matters.
+//   - A transient backend error is returned as-is; callers treat it as "depth
+//     unavailable this sample" and emit nothing.
+//
+// OPTIONAL: DLQ adapters that do not implement it simply expose no DLQ-depth
+// gauge (runtime.ReportDLQDepth is a no-op), with no build or behaviour break.
+type DLQDepthReporter interface {
+	Depth(ctx context.Context) (int, error)
 }
 
 // OutboxRuntimeOptions carries runtime tuning knobs the bridge

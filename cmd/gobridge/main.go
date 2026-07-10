@@ -1,14 +1,22 @@
-// Command gobridge is a demonstration / reference binary for the GoBridge
-// runtime. It deliberately links a MINIMAL adapter set — the MQTT (paho)
-// transport plus the native in-memory and SQLite stores — so it builds with no
-// cloud SDK dependencies and runs out of the box for local development and the
+// Command gobridge is a DEMONSTRATION / REFERENCE binary for the GoBridge
+// runtime — it is NOT the production binary and must not be shipped as one.
+// It deliberately links a MINIMAL adapter set — the MQTT (paho) transport plus
+// the native in-memory and SQLite stores — so it builds with no cloud SDK
+// dependencies and runs out of the box for local development and the
 // documented scenarios.
 //
-// It is NOT a production build. A production deployment links only the
-// transports and stores it actually uses and registers them at the two sites
-// this binary already demonstrates: the config-decoder registry (reg.Register)
-// and the supervisor factories (sup.RegisterTransport / sup.RegisterStoreFactory).
-// See the AWS wiring guidance inline in run(), and the
+// Because only MQTT + native stores are registered, a config that references
+// any other transport or store (SQS, Azure Service Bus, AMQP, DynamoDB, …) is
+// REJECTED at startup or on reload: this binary is not a general "shipped
+// bridge". A production deployment links only the transports and stores it
+// actually uses and registers them at the two sites this binary already
+// demonstrates: the config-decoder registry (reg.Register) and the supervisor
+// factories (sup.RegisterTransport / sup.RegisterStoreFactory).
+//
+// The PRODUCTION binary/image is the file-based composition root
+// deployment/aws-filebased-config/lib/cmd/gobridge-filebased (published as
+// ghcr.io/mariotoffia/gobridge), or a custom composition root you build the
+// same way. See the AWS wiring guidance inline in run(), and the
 // deployment/aws-filebased-config profile for a complete production example.
 package main
 
@@ -51,6 +59,21 @@ func main() {
 // skips defers, so a terminal-triggered exit must flow through a return value
 // rather than an os.Exit buried in the body.
 func run() int {
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		// Usage is written to the flag output (stderr); a failed write there is
+		// not actionable, so the error is deliberately discarded.
+		_, _ = fmt.Fprintf(out, `gobridge — DEMO / REFERENCE binary (NOT for production).
+Links a minimal adapter set only: MQTT transport + native memory/SQLite stores.
+A config referencing any other transport/store (SQS, Azure, AMQP, DynamoDB, …)
+is REJECTED at startup/reload. For production use the composition root
+deployment/aws-filebased-config/lib/cmd/gobridge-filebased (image
+ghcr.io/mariotoffia/gobridge), or build your own.
+
+Usage of %s:
+`, os.Args[0])
+		flag.PrintDefaults()
+	}
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
 	credentialsDir := flag.String("credentials-dir", "credentials",
@@ -58,6 +81,14 @@ func run() int {
 	flag.Parse()
 
 	logger := newLogger(*logLevel)
+
+	// Loud, unmissable demo-only banner: this reference binary registers only
+	// MQTT + native stores and is NOT the production build. The production
+	// binary/image is deployment/aws-filebased-config/lib/cmd/gobridge-filebased
+	// (ghcr.io/mariotoffia/gobridge). Emitting it at WARN keeps it visible even
+	// at the default log level so nobody ships the demo by mistake.
+	logger.Warn("cmd/gobridge is a DEMO/REFERENCE binary (MQTT transport + native memory/SQLite stores only) — NOT for production; " +
+		"use deployment/aws-filebased-config/lib/cmd/gobridge-filebased (image ghcr.io/mariotoffia/gobridge) or a custom composition root")
 
 	// Build the per-process plugin registry by registering each
 	// adapter we link in. Adding a new transport/store means a new
@@ -116,7 +147,12 @@ func run() int {
 		return 1
 	}
 
-	pipeline := newReloadPipeline(reg, logger)
+	// The reload pipeline reports DEFINITIVE apply outcomes back to the config
+	// manager (XCUT-A) so the manager's desired-vs-running divergence tracking
+	// (RunningVersion / ReconfigurePending) actually clears after a swap. The
+	// manager correlates by the EXACT config pointer it emitted, which the
+	// pipeline forwards unchanged as SwapEvent.NewConfig.
+	pipeline := newReloadPipeline(reg, logger, withApplyResultNotifier(mgr))
 
 	// Credential store wiring (Finding 11). The stock binary registers the
 	// native file:// credential repository so file:// credential URIs in the
@@ -263,6 +299,15 @@ func run() int {
 		cancel()
 		return 1
 	}
+
+	// Boot apply confirmed: the supervisor built and published the initial
+	// runtime for the exact boot config pointer (mgr.Load's desiredConfig). Tell
+	// the manager so RunningVersion advances off its pre-apply sentinel and
+	// ReconfigurePending clears — otherwise the first divergence report would
+	// show the boot config as never-applied until a later reload (XCUT-A). This
+	// is the definitive success ack for the boot config; later reloads are acked
+	// through pipeline.onSwap.
+	mgr.NotifyApplyResult(cfg, nil)
 
 	if cfg.HTTP != nil {
 		apiCfg := httpapi.Config{

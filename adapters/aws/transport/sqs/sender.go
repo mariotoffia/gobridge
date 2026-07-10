@@ -46,6 +46,16 @@ type Sender struct {
 	// (Finding: c8-auth-permanent).
 	authGrace *authGrace
 
+	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// CredentialRefresher injects a URI-bound callback via
+	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
+	// SendMessage / SendMessageBatch call is classified as
+	// shared.ErrNotAuthorized (a static-key revocation past the auth-grace
+	// window), forcing an immediate re-resolve rather than DLQ-ing on revoked
+	// keys until the next poll. atomic.Pointer gives safe publication across the
+	// builder goroutine (setter) and the send goroutines (load).
+	authFailureCB atomic.Pointer[func(error)]
+
 	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
 	// enforced when selecting egress attributes. Defaults to
 	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for

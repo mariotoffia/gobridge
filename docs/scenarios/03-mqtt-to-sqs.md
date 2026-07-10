@@ -139,11 +139,15 @@ graph TD
 ## Go Bootstrap
 
 ```go
-cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+reg := ports.NewRegistry()
+_ = paho.Register(reg)
+_ = sqs.Register(reg)
+
+cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
 rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransport("mqtt", paho.NewFactory(logger)).
-    RegisterTransport("sqs", sqs.NewFactory(logger)).
+    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+    RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
     Build(ctx)
 
 rt.Start(ctx)

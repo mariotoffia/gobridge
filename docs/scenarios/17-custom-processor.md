@@ -211,17 +211,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"log/slog"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/ports"
 
 	"example.com/ratelimit"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	sqs  "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	sqs "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/bridge"
 )
 
@@ -229,7 +232,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.ParseFile("bridge.yaml", config.FormatAuto)
+	logger := slog.Default()
+
+	// Register each linked adapter's config decoder; ParseFile requires a
+	// non-nil registry.
+	reg := ports.NewRegistry()
+	if err := errors.Join(paho.Register(reg), sqs.Register(reg)); err != nil {
+		log.Fatal(err)
+	}
+
+	cfg, err := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -239,9 +251,9 @@ func main() {
 		Window:      time.Minute,
 	})
 
-	rt, err := bridge.NewBuilder(cfg).
-		RegisterTransport("mqtt", paho.NewFactory()).
-		RegisterTransport("sqs", sqs.NewFactory()).
+	rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+		RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
+		RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
 		RegisterProcessor("rate-limit", rl).
 		Build(ctx)
 	if err != nil {

@@ -232,6 +232,7 @@ func TestHandleConfigTxnCommit_ApplierFailureRollsBack(t *testing.T) {
 	apiCfg := testConfig()
 	apiCfg.ConfigStore = &parser.FileStore{Path: path, Registry: newTestRegistry(t)}
 	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
+	apiCfg.ConfigSingleWriter = true // non-CAS FileStore; single-process test is the sole writer
 	apiCfg.ConfigApplier = func(_ context.Context, _ *ports.BridgeConfig) error {
 		return errors.New("runtime rejected the new config")
 	}
@@ -268,6 +269,7 @@ func TestHandleConfigTxnCommit_ApplierSuccessApplies(t *testing.T) {
 	apiCfg := testConfig()
 	apiCfg.ConfigStore = &parser.FileStore{Path: path, Registry: newTestRegistry(t)}
 	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
+	apiCfg.ConfigSingleWriter = true // non-CAS FileStore; single-process test is the sole writer
 	apiCfg.ConfigApplier = func(_ context.Context, applied *ports.BridgeConfig) error {
 		appliedVersion = applied.Version
 		return nil

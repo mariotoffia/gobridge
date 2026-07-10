@@ -10,6 +10,18 @@ type LeaseToken struct {
 	Owner   string
 }
 
+// Valid reports whether the token is a usable fencing token. A real lease
+// always names a non-empty Owner and carries a non-zero, monotonically
+// assigned Version (LeaseStore.Acquire issues versions starting at 1), so a
+// zero-value LeaseToken{} is NEVER valid. Guarded writes — every OutboxStore
+// mutation (Claim/Complete/Release) and the OutboxRecord aggregate's claim
+// path — reject an invalid token so a miswired or buggy drainer cannot claim
+// or complete work without a real lease. See the ports.OutboxStore fencing
+// contract and OutboxRecord.Claim.
+func (t LeaseToken) Valid() bool {
+	return t.Owner != "" && t.Version > 0
+}
+
 // LeaseInfo is a READ-ONLY SNAPSHOT of a lease's state as returned by
 // LeaseStore.Current / Acquire / Renew. It is a plain DTO and carries no
 // behavior: the LeaseStore — not LeaseInfo — owns the lease lifecycle and

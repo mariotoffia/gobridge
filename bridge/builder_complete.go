@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +14,12 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
+
+// builderCloseBudget bounds the best-effort teardown of receivers/senders (and
+// their network clients / broker links) when complete() fails after building
+// them. It is detached from the possibly-already-expired build ctx so a
+// deadline-expired swap still releases the links (HIGH-5).
+const builderCloseBudget = 5 * time.Second
 
 // complete creates sessions, receivers, senders, wires routes, and
 // returns a ready-to-start Runtime. Callers must ensure the old
@@ -60,11 +67,28 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	if err != nil {
 		return nil, err
 	}
+	// Receivers may hold network clients / broker links (Service Bus, AMQP 1.0,
+	// HTTP SSE). A LATER failure in this phase (sender build, wireRoutes, or
+	// ValidateRoutes) would otherwise leak every one on each failed reload — the
+	// runtime that would own and Stop them is never returned. Close any that
+	// implement ports.ContextCloser on every failure path, mirroring the
+	// session/store defers (HIGH-5). Registered after the session defer so it
+	// runs BEFORE it (LIFO): tear the links down before their sessions.
+	defer func() {
+		if retErr != nil {
+			closeBuiltContextClosers(ctx, b.logger, "receiver", receivers)
+		}
+	}()
 
 	senders, senderURIs, err := b.buildSendersWithURIs(ctx, sessions)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if retErr != nil {
+			closeBuiltContextClosers(ctx, b.logger, "sender", senders)
+		}
+	}()
 
 	rt := runtime.New(prep.rtOpts...)
 
@@ -145,6 +169,31 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	return rt, nil
 }
 
+// closeBuiltContextClosers closes any built receivers or senders that implement
+// ports.ContextCloser when complete() fails after they were constructed. Several
+// production adapters (Service Bus receiver/sender, AMQP 1.0 receiver/sender,
+// HTTP SSE sender) hold network clients or broker links that would otherwise
+// leak on every failed reload, since the runtime that owns and Stops them is
+// never returned (HIGH-5). Teardown is best-effort and bounded by a fresh
+// budget DETACHED from ctx: complete() often fails BECAUSE ctx expired, and a
+// dead ctx would make every Close return immediately without releasing the link.
+func closeBuiltContextClosers[T any](ctx context.Context, logger *slog.Logger, kind string, items map[string]T) {
+	if len(items) == 0 {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), builderCloseBudget)
+	defer cancel()
+	for id, item := range items {
+		cc, ok := any(item).(ports.ContextCloser)
+		if !ok {
+			continue
+		}
+		if err := cc.Close(closeCtx); err != nil && logger != nil {
+			logger.Warn("closing "+kind+" after build failure", "id", id, "error", err)
+		}
+	}
+}
+
 // closeStoreHandles releases any store handles that hold OS resources (SQLite
 // file handles, network connections) when a build is abandoned before the
 // runtime that would own them is Started. In-memory stores do not implement
@@ -175,13 +224,23 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 // defaults but leaves RenewInterval unset so the session manager derives it
 // from LeaseTTL (contract C3), and applies bridge-level drain defaults.
 func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string) (session.Config, error) {
+	clustered := deploymentClustered(b.cfg)
 	if routeDef.Session != nil {
-		derived, err := toSessionConfigE(routeDef.Session)
+		derived, err := toSessionConfigE(routeDef.Session, clustered)
 		if err != nil {
 			return session.Config{}, err
 		}
 		sc := *derived
 		sc.SessionID = sessionID
+		applyBridgeDrainDefaults(&sc, b.cfg.Bridge)
+		return sc, nil
+	}
+	// No inline session block: this binding-only exclusive sender inherits the
+	// same clustered HA-timing default as the rest of the deployment (HIGH-3),
+	// so a clustered failover for it also lands in the 30-60s band. Non-clustered
+	// keeps DefaultConfig with RenewInterval reset so the manager derives it.
+	if clustered {
+		sc := session.HAConfig(sessionID, true)
 		applyBridgeDrainDefaults(&sc, b.cfg.Bridge)
 		return sc, nil
 	}
@@ -214,7 +273,7 @@ func (b *Builder) wireRoutes(
 		if policyErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, policyErr)
 		}
-		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session)
+		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session, deploymentClustered(b.cfg))
 		if sessCfgErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
 		}
@@ -733,9 +792,23 @@ func referencedSessionIDs(cfg *ports.BridgeConfig) map[string]bool {
 // buildReceiversWithURIs mirrors buildSessionsWithURIs: it returns the
 // receiver-level credentials_uri (captured BEFORE resolveCredentials
 // removes it) so CredentialRefresher can bind watchers per receiver.
-func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[string]ports.Session) (map[string]ports.Receiver, map[string]string, error) {
+func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[string]ports.Session) (_ map[string]ports.Receiver, _ map[string]string, retErr error) {
 	receivers := make(map[string]ports.Receiver, len(b.cfg.Receivers))
 	uris := make(map[string]string, len(b.cfg.Receivers))
+	// A mid-loop failure (a LATER receiver's NewReceiver erroring) returns
+	// (nil, nil, err), so complete's own receiver defer — which closes the
+	// RETURN value — sees nil and cannot release the receivers already built
+	// this pass. They may hold broker links (Service Bus, AMQP 1.0, HTTP SSE),
+	// so close the partial LOCAL map here (HIGH-5). The map returns stay blank
+	// (_) so `return nil, nil, err` does not nil out the map this defer reads.
+	// This is complementary to complete's defer, never a double close: a failed
+	// pass returns before complete registers its receiver defer, and a fully
+	// built pass leaves retErr nil here so only complete's defer runs.
+	defer func() {
+		if retErr != nil {
+			closeBuiltContextClosers(ctx, b.logger, "receiver", receivers)
+		}
+	}()
 	for _, rd := range b.cfg.Receivers {
 		transport := rd.Transport
 		if transport == "" {
@@ -782,9 +855,17 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 }
 
 // buildSendersWithURIs parallels buildReceiversWithURIs.
-func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]ports.Session) (map[string]ports.Sender, map[string]string, error) {
+func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]ports.Session) (_ map[string]ports.Sender, _ map[string]string, retErr error) {
 	senders := make(map[string]ports.Sender, len(b.cfg.Senders))
 	uris := make(map[string]string, len(b.cfg.Senders))
+	// See buildReceiversWithURIs: close the partial LOCAL map on a mid-loop
+	// failure so senders already built this pass (which may hold broker links)
+	// are not leaked past complete's return-value-scoped defer (HIGH-5).
+	defer func() {
+		if retErr != nil {
+			closeBuiltContextClosers(ctx, b.logger, "sender", senders)
+		}
+	}()
 	for _, sd := range b.cfg.Senders {
 		transport := sd.Transport
 		if transport == "" {

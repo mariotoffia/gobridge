@@ -71,6 +71,14 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
 	}
+	// HIGH-4: refuse to build a session that would ship username/password in
+	// cleartext over a non-TLS broker unless allow_plaintext_credentials is
+	// set. This is the build-time enforcement boundary — broker_urls are
+	// populated here, so the gate is always active for a real session.
+	if err := opts.validatePlaintextCredentials(); err != nil {
+		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: insecure credential transport", spec.ID))
+	}
 	if err := opts.Will.Validate(); err != nil {
 		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
@@ -137,6 +145,14 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	}
 	if opts.ThrottleRetryAfter == 0 {
 		opts.ThrottleRetryAfter = DefaultSenderOptions().ThrottleRetryAfter
+	}
+	// HIGH-5: QoS 1/2 egress packet state is in-memory (autopaho), so it is
+	// NOT durable across process death. Surface the requirement once per
+	// session that durable egress is the bridge's shared_outbox / idempotent
+	// replay, not MQTT session durability. QoS 0 is best-effort by protocol
+	// and carries no such expectation, so it is not warned.
+	if opts.QoS >= 1 {
+		mqttSession.warnOutboxDurabilityOnce(f.Logger, spec.ID, opts.QoS)
 	}
 	return NewSender(mqttSession, opts), nil
 }

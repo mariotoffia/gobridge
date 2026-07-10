@@ -212,6 +212,14 @@ Circuit breakers are partitioned by key. The key extractor determines granularit
 | `WithKeyExtractor(SubjectKey)` | Separate breaker per `Envelope.Subject`. |
 | `WithKeyExtractor(HeaderKey("tenant-id"))` | Separate breaker per header value. |
 
+> **Caution — untrusted keys.** Keying on a caller-controlled value (for example
+> `HeaderKey` over an untrusted header) creates one breaker per distinct value.
+> Only key on a header whose value space you trust and bound. The breaker
+> *cache* is bounded by `WithMaxBreakers` (LRU eviction) and the metric `key`
+> *dimension* is independently bounded (see [Metrics](#metrics)), so unique
+> values cannot exhaust memory or explode metric cardinality — but they still
+> fragment protection across many one-shot breakers, which is rarely intended.
+
 ### Go Example
 
 The processor wrapper lives in `processors/circuitbreaker`; `Config`, `State`,
@@ -238,11 +246,17 @@ proc := cbproc.New("my-cb", cb.Config{
 ```
 
 Each distinct key gets its own breaker instance, cached per-processor. The cache
-is bounded by `WithMaxBreakers` (default 10000) with LRU eviction. All evictions
-are counted in `Stats().Evictions`; an eviction that drops an OPEN breaker
-additionally increments `Stats().OpenEvictions` (the churn red-flag). Eviction
-never drops a busy breaker: entries with in-flight requests are skipped
-(in-flight pinning), so a concurrent outcome is never lost to an orphan.
+is bounded by `WithMaxBreakers` (default 10000) with LRU eviction. This is a
+**soft cap, not a hard memory bound**: eviction never drops a busy breaker
+(entries with in-flight requests are skipped via in-flight pinning, so a
+concurrent outcome is never lost to an orphan), so when the cache is full and
+every eviction candidate is in-flight, the new breaker is inserted anyway and
+`Stats().Size` temporarily exceeds `Stats().Capacity` by the number of
+concurrently in-flight new keys. It self-corrects as those calls drain; route
+`MaxInFlight` bounds the overshoot in practice. Size `WithMaxBreakers` for your
+trusted key cardinality plus concurrency headroom. All evictions are counted in
+`Stats().Evictions`; an eviction that drops an OPEN breaker additionally
+increments `Stats().OpenEvictions` (the churn red-flag).
 Generation tokens are unrelated to eviction -- they advance only on breaker
 **state transitions**, which is what makes a late outcome recorded against a
 previous circuit epoch stale (see `StaleOutcomes` below).
@@ -260,6 +274,27 @@ Retrieve per-key metrics at runtime via `proc.Metrics()`, which returns
 `TotalSuccesses`, `TotalFailures`, `ConsecutiveFailures`, `ConsecutiveSuccesses`,
 `StaleOutcomes` (outcomes discarded because their generation token was stale),
 and `LastFailureTime`.
+
+The processor also emits the shared circuit-breaker counters through the
+configured `WithMetrics` exporter: `CircuitBreakerStateChanged` and
+`CircuitBreakerTrips` on transitions, and `CircuitBreakerRejections` when an
+open breaker short-circuits a request. Each is tagged with the `processor` name
+and a **bounded** `key` dimension.
+
+**Bounded `key` cardinality.** Because a `KeyExtractor` can be
+caller-controlled (`HeaderKey` over an untrusted header), tagging the raw key
+verbatim would let one producer sending unique header values create an
+unbounded number of metric series — a metrics-backend cost / throttling DoS
+during the very outage the breaker should make observable. The `key` dimension
+is therefore capped: the first `N` **distinct** keys are tagged verbatim (so a
+trusted, bounded key space stays fully observable) and every further distinct
+key collapses to the `other` bucket, bounding the dimension at `N+1` series
+regardless of input. `N` defaults to 256 and is tunable with
+`WithMetricKeyCardinality(n)` (non-positive keeps the default). This is
+independent of `WithMaxBreakers`, which bounds the breaker *cache* (memory),
+not the number of metric series. The default state-change log line and any
+`WithOnStateChange` callback still receive the **raw** key — only the metric
+dimension is bounded.
 
 ---
 

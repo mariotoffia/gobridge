@@ -81,16 +81,26 @@ package main
 
 import (
     "context"
+    "log/slog"
+
     "github.com/mariotoffia/gobridge/bridge"
-    "github.com/mariotoffia/gobridge/config"
+    cfgparser "github.com/mariotoffia/gobridge/config/parser"
+    "github.com/mariotoffia/gobridge/ports"
     // adapter imports
 )
 
 func main() {
-    cfg, _ := config.ParseFile("bridge.yaml", config.FormatAuto)
+    logger := slog.Default()
 
-    rt, _ := bridge.NewBuilder(cfg).
-        // RegisterTransport / RegisterStoreFactory / RegisterProcessor calls
+    // Register each linked adapter's config decoder; ParseFile requires a
+    // non-nil registry.
+    reg := ports.NewRegistry()
+    // _ = paho.Register(reg) // one Register per linked adapter
+
+    cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
+
+    rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
+        // RegisterTransportFactory / RegisterStoreFactory / RegisterProcessor calls
         Build(context.Background())
 
     ctx, cancel := context.WithCancel(context.Background())

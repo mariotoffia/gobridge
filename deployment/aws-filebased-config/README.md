@@ -26,7 +26,7 @@ AWS deployment profile for GoBridge. Runs the bridge on **ECS Fargate** with **E
 | Construct | Package | Purpose |
 |-----------|---------|---------|
 | `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One Fargate control task with RW EFS. `DesiredCount=1` (deploy 0/100). |
-| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Control task (RW) + N worker tasks (RO) sharing one EFS. Default workers = 2; optional CPU autoscaling. |
+| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Control task (RW) + N worker tasks (RO) sharing one EFS. Replicated **scale-out**, **not** HA failover (no single-active lease owner). Default workers = 2; optional CPU autoscaling. |
 | `GoBridgeEfsConfig` | `cdk/constructs` | EFS file system + control & worker access points (always-on encryption, ELASTIC throughput, RETAIN). |
 | `GoBridgeALBAttachment` | `cdk/constructs/gobridgealbattachment` | Two target groups + listener rules derived from yaml admin paths and HTTP receivers. Reserves `[BasePriority, BasePriority+99]`. |
 | `GoBridgeAlarms` | `cdk/constructs/gobridgealarms` | Alarms: control absence, worker degraded, EFS IO, ALB unhealthy hosts, ALB 5xx. SNS-routed. |
@@ -201,6 +201,18 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 **`GoBridgeCluster`**
 
+> ⚠️ **REPLICATED SCALE-OUT, NOT HIGH AVAILABILITY.** Despite the name,
+> `GoBridgeCluster` is a *filesystem-replicated scale-out* topology: N replicas
+> independently read one shared EFS config to scale throughput for **independent
+> routes**. It is **not** coordinated active/standby lease failover. It
+> deliberately **forces** `topology=filesystem_replicated` and **rejects**
+> `shared_outbox` and `route.session` leases, so there is **no single-active
+> lease owner and no 30–60s (or any bounded) HA failover SLO** — replicas do not
+> take over for each other. Coordinated failover requires DynamoDB-backed
+> lease/outbox stores; a DynamoDB-backed HA construct is **future work**, out of
+> scope for this reference construct. See the `GoBridgeCluster` type doc
+> (`cdk/constructs/gobridgecluster/cluster.go`) for the full advisory.
+
 - All of the above, plus:
 - Worker ECS Fargate service (`WorkerDesiredCount` default `2`, standard rolling deploy, optional CPU target-tracking via `AutoScalingProps`).
 - Shared EFS file system with **two** access points (control RW, worker RO); RW/RO split enforced at IAM + ECS volume level.
@@ -220,7 +232,7 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 ## Constraints
 
 - **Singleton**: see above.
-- **Topology = `filesystem_replicated`** rejects routes that need cross-instance write coordination (`shared_outbox`, `route.session` lease). Those routes require a distributed lease/outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision — remove them from `bridge.yaml`, or provision your own DynamoDB-backed lease/outbox store. `GoBridgeCluster` **forces** `filesystem_replicated` on both task definitions regardless of the caller's `Bootstrap.Topology`, so these guards always fire for a multi-instance cluster.
+- **Topology = `filesystem_replicated` (SCALE-OUT, not HA failover)** rejects routes that need cross-instance write coordination (`shared_outbox`, `route.session` lease). Those routes require a distributed lease/outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision — remove them from `bridge.yaml`, or provision your own DynamoDB-backed lease/outbox store. `GoBridgeCluster` **forces** `filesystem_replicated` on both task definitions regardless of the caller's `Bootstrap.Topology`, so these guards always fire for a multi-instance cluster. Consequence: replicas are independent readers of the same config — there is **no single-active lease owner, no coordinated active/standby failover, and no 30–60s failover SLO**. Coordinated HA failover is future work (a DynamoDB-backed HA construct).
 - **`SSMEndpoint`** set without `DevMode = true` fails Bootstrap validation (production-bypass guard).
 - Bootstrap env payload capped at 1 MiB.
 - `GoBridgeALBAttachment` reserves listener-rule priorities `[BasePriority, BasePriority+99]`. Add the attachment last on a listener, or pick a `BasePriority` outside any consumer-managed range.

@@ -71,7 +71,7 @@ func TestToSessionConfig_InvalidDuration_ReturnsError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := toSessionConfigE(tt.def)
+			_, err := toSessionConfigE(tt.def, false)
 			if err == nil {
 				t.Fatal("expected error for invalid duration string, got nil")
 			}

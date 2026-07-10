@@ -63,8 +63,10 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 		}
 		// Route through the auth grace so a transient static-key rotation /
 		// IAM-propagation window classifies temporary (retryable) instead of
-		// permanent (Finding: c8-auth-permanent).
-		return s.authGrace.classify(err)
+		// permanent (Finding: c8-auth-permanent). classify ALSO reports a
+		// permanent authorization failure to the reactive-recovery hook (HIGH-3)
+		// so a hard key revocation forces an immediate re-resolve.
+		return s.classify(err)
 	}
 
 	// A successful send authenticated: end any pending auth-failure streak so
@@ -108,8 +110,9 @@ func (s *Sender) sendBatchChunk(
 
 	if err != nil {
 		// A whole-batch auth failure gets the same bounded grace as a
-		// single send (Finding: c8-auth-permanent).
-		e := s.authGrace.classify(err)
+		// single send (Finding: c8-auth-permanent) and reports a permanent
+		// authorization failure to the reactive-recovery hook (HIGH-3).
+		e := s.classify(err)
 		for j := range results {
 			results[j].Err = e
 		}
@@ -140,9 +143,20 @@ func (s *Sender) sendBatchChunk(
 		if convErr != nil || idx < 0 || idx >= len(results) {
 			continue
 		}
-		base := shared.ErrUnavailable
-		if f.SenderFault {
-			base = shared.ErrInvalidPayload
+		// Classify the failed-entry Code with the SAME policy as MapError
+		// (KMS + throttling + service codes) BEFORE falling back to the
+		// SenderFault verdict, so a per-entry retryable target outage (KMS
+		// grant still propagating, KMS/request throttling, a transient
+		// InternalError) stays retryable instead of becoming a terminal reject
+		// that costs the source its retry (Chunk 13 HIGH-1). A Code outside
+		// that set falls back to the SenderFault verdict: a request the caller
+		// malformed is rejected, anything else is treated as transient.
+		base, matched := classifyBatchEntryCode(derefStr(f.Code))
+		if !matched {
+			base = shared.ErrUnavailable
+			if f.SenderFault {
+				base = shared.ErrInvalidPayload
+			}
 		}
 		results[idx].Err = base.
 			Wrap(fmt.Errorf("sqs batch entry %s failed: %s",

@@ -172,3 +172,103 @@ func TestInjectRedrive_EmptyID_FallsBackToPlainInject(t *testing.T) {
 		t.Fatalf("no-ID redrive must not stamp provenance")
 	}
 }
+
+// TestInjectRedrive_StripsStaleDedupHeader pins [FINDING 2]: a fresh envelope ID
+// alone does NOT make a redrive safe when the DLQ'd envelope carries
+// x-bridge.dedup-id — an idempotent/FIFO sender prefers that header over the ID
+// (e.g. SQS FIFO maps it to MessageDeduplicationId), so a copied-through dedup
+// key would make the transport swallow the "fresh" redrive (ACK without
+// delivering) → Send returns nil → the admin handler deletes the DLQ entry after
+// a no-op. InjectRedrive must therefore DROP the stale dedup key so the sender
+// re-derives dedup from the fresh envelope ID, while keeping non-suppressing
+// keys (correlation/ordering) and the causation provenance.
+//
+// The route uses TrustBridgeHeaders so the propagated header class (dedup-id,
+// ordering-key, …) survives the ingress hop — exactly the deployment where a
+// stale dedup key would otherwise reach the sender (the default posture strips
+// ALL x-bridge.* at ingress, masking both the bug and the fix).
+//
+// Mutation reasoning — remove the `fresh.DeleteHeader(HeaderDeduplicationID)`
+// line in InjectRedrive and this test fails: the redriven record carries
+// x-bridge.dedup-id = "orig-dedup" (the original key rides through).
+func TestInjectRedrive_StripsStaleDedupHeader(t *testing.T) {
+	rt, outbox := redriveTrustedHeaderSetup(t)
+	ctx := context.Background()
+
+	orig := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:              "orig-env-dedup",
+		Subject:         "device.state.update",
+		Payload:         []byte("hello"),
+		DeduplicationID: "orig-dedup", // stamped as x-bridge.dedup-id
+		OrderingKey:     "order-1",    // must be preserved (does not suppress)
+	})
+
+	if err := rt.InjectRedrive(ctx, "outbox-route", "binding-a", orig); err != nil {
+		t.Fatalf("InjectRedrive: %v", err)
+	}
+
+	records := outbox.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count got %d, want 1", len(records))
+	}
+	env := records[0].Snapshot()
+
+	// Fresh ID, not the original.
+	if freshID := env.ID(); freshID == "orig-env-dedup" || freshID == "" {
+		t.Fatalf("redriven record must carry a fresh non-empty envelope ID, got %q", freshID)
+	}
+
+	// The stale transport dedup key must be GONE so the sender re-derives dedup
+	// from the fresh ID (the core FINDING 2 assertion).
+	if v, ok := env.Header(messaging.HeaderDeduplicationID); ok {
+		t.Fatalf("redrive must strip the stale x-bridge.dedup-id, but it rode through as %v", v)
+	}
+
+	// Non-suppressing keys and provenance survive (route trusts bridge headers).
+	if v, ok := env.Header(messaging.HeaderOrderingKey); !ok || v != "order-1" {
+		t.Fatalf("ordering-key must be preserved on redrive, got %v (present=%v)", v, ok)
+	}
+	if v, ok := env.Header(messaging.HeaderCausationID); !ok || v != "orig-env-dedup" {
+		t.Fatalf("redrive must stamp causation provenance = original ID, got %v (present=%v)", v, ok)
+	}
+}
+
+// redriveTrustedHeaderSetup builds a shared_outbox route with TrustBridgeHeaders
+// enabled, so the BRIDGE-TO-BRIDGE PROPAGATED header class (dedup-id,
+// ordering-key, …) survives the ingress hop onto the persisted outbox record.
+func redriveTrustedHeaderSetup(t *testing.T) (*goruntime.Runtime, *FakeOutboxStore) {
+	t.Helper()
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+	dlq := NewFakeDLQStore()
+
+	rt := newTestRuntime("bridge-redrive-trusted", outbox, lease, dlq)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sess := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-sess-redrive-trusted")
+
+	cfg := goruntime.RouteConfig{
+		ID: "outbox-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliverySharedOutbox,
+			TrustBridgeHeaders: true,
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "binding-a", Address: "devices/a/state"},
+		},
+	}
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	waitFor(t, 2*time.Second, "sess started", sess.IsStarted)
+	return rt, outbox
+}

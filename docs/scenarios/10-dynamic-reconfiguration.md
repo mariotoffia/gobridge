@@ -220,11 +220,21 @@ What this does and does not break:
 
 Operators who need an atomic cluster cutover must coordinate it externally -- for example, drain and stop all instances, deploy, then restart.
 
+### Cluster invariants refused by the local live reload
+
+Because there is no cross-node barrier, the Supervisor refuses -- **per process, at swap time** -- the specific live reloads whose safety depends on cluster-wide agreement, rather than letting them apply into a split cluster. Each keeps the OLD runtime serving and fails the swap (metric `ConfigReloads{state="failure"}`), unless the operator forces it with `WithAllowDestructiveReload`:
+
+- **Durable store identity change** -- a lease/outbox/DLQ store whose `type` or backing path/table changes (`storeIdentityChanged`). Repointing a store live strands the old store's backlog.
+- **Outbox/DLQ store removal, or an orphaned `shared_outbox` partition** -- a partition that loses its drainer in the new topology, gated fail-closed by the durable-reload preflight when backlog is present.
+- **Lease-bearing exclusive `session_id` change** -- changing a route's inline `session.session_id` changes the ownership **lease identity** (`leaseSessionIDChanged`). Under a rolling reload one instance would hold the lease for `session_id=X` while another still holds it for `session_id=Y` against the same logical source -- split ownership, elevated duplicate sends, and stranded backlog in the now-unreferenced key.
+
+These are the cluster invariants: **lease/outbox store identity and exclusive `session_id`**. Roll any of them with a **full stop/restart of all nodes** (drain, stop every instance, deploy, restart) -- never a live/rolling reconfiguration. The local refusal is not a cluster barrier; it only stops a single process from silently adopting a split-inducing config.
+
 To operate safely:
 
 - **Validate config before deploy.** The `version` CAS field (`BridgeConfig.Version`) guards concurrent *commits* to a shared config file (e.g. on AWS EFS); it does not gate the per-instance apply, so it is not a cluster rollout barrier.
 - **Roll instances one at a time** rather than reconfiguring the whole fleet at once.
-- **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is readable programmatically via `Supervisor.Config().Version`. There is no continuous metric or HTTP field for it today and the initial config load is not logged with a version, so for fleet-wide convergence monitoring scrape `Supervisor.Config().Version` (e.g. into a gauge) rather than relying on swap logs alone. Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `Config().Version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
+- **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is exposed on the authenticated monitor endpoint `GET /api/v1/monitor/topology` as the `config_version` field when a config provider is wired (`httpapi/monitor.go:186-211`), and programmatically via `Supervisor.Config().Version`. For fleet-wide convergence monitoring, scrape `config_version` from `/topology` across every instance rather than relying on swap logs alone (the initial config load is not logged with a version). Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `config_version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
 
 ## ReconfigStrategy Comparison
 

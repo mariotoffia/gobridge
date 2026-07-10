@@ -24,6 +24,13 @@ import (
 // .go-arch-lint.yml; only memorydlq carries an in-package ports assertion.
 var _ ports.OutboxReleaser = (*sqliteoutbox.Store)(nil)
 
+// Compile-time assertion that the SQLite store implements the optional
+// OutboxDepthReporter capability the drainer type-asserts to emit the true
+// pending backlog (shared.MetricOutboxDepth). Same test-package placement
+// rationale as the OutboxReleaser assertion above (no production ports import
+// per .go-arch-lint.yml).
+var _ ports.OutboxDepthReporter = (*sqliteoutbox.Store)(nil)
+
 func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	t.Helper()
 	dir := t.TempDir()

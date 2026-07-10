@@ -140,6 +140,17 @@ in-container path. A typical mapping:
 
 You should write the bridge config to EFS using one of the following methods.
 
+> **Pre-deploy checklist item — write atomically.** Whichever method you use,
+> the writer MUST write to a temporary file on the same EFS file system and then
+> `rename` it over `config_file_path` — never truncate and rewrite the file in
+> place. The poll watcher can read a torn in-place write mid-flight; a
+> partial-but-valid document carrying only `bridge.id` (an empty route graph is
+> permitted — `config/validate.go:47-63`) swaps live and **stops forwarding
+> traffic while `/health` and `/ready` stay green**. See
+> [External config writers must write atomically](../runbooks/external-config-atomic-writes.md).
+> The `cp` commands below overwrite in place; replace them with a
+> temp-file-plus-`mv` on the same mount for production writers.
+
 ### Init Container
 
 Add an init container to the ECS task definition that copies the config from
@@ -205,9 +216,50 @@ sudo cp bridge.yaml /mnt/efs/bridge.yaml
 sudo umount /mnt/efs
 ```
 
-You can also update bridge config through the admin API `PUT /config`
-endpoint, which writes directly to `config_file_path` on EFS with optimistic
-concurrency via the `Version` field.
+You can also update bridge config through the admin API config-transaction
+flow, which writes the new config durably and applies it in-band to the running
+runtime. There is **no `PUT /config` endpoint**: config changes go through a
+transaction (open → patch → commit), and the commit does the check-and-set on
+the `version` field. See [HTTP API — Config transactions](../http-api.md#config-transactions)
+for the full endpoint contract and commit outcomes.
+
+```bash
+API=https://bridge.internal:8080
+KEY="$ADMIN_API_KEY"
+
+# 1. Open a transaction against the current version.
+TXN=$(curl -s -X POST -H "X-API-Key: $KEY" \
+  "$API/api/v1/admin/config/transactions" | jq -r .txn_id)
+
+# 2. Stage a partial BridgeConfig overlay. PATCH is merge-only and cannot carry
+#    a plugin `options` block (an unknown field -> HTTP 400) or clear a field.
+curl -s -X PATCH -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  "$API/api/v1/admin/config/transactions/$TXN" \
+  -d '{"routes":[{"id":"orders","receiver_id":"in","bindings":["to-sqs"]}]}'
+
+# 3. Inspect the pending, redacted preview.
+curl -s -H "X-API-Key: $KEY" \
+  "$API/api/v1/admin/config/transactions/$TXN"
+
+# 4. Commit: validate, CAS on version, persist, then apply in-band.
+curl -s -X POST -H "X-API-Key: $KEY" \
+  "$API/api/v1/admin/config/transactions/$TXN/commit"
+```
+
+To abandon a pending change during a bad rollout, discard the transaction
+instead of committing it — the running runtime is untouched:
+
+```bash
+curl -s -X DELETE -H "X-API-Key: $KEY" \
+  "$API/api/v1/admin/config/transactions/$TXN"
+```
+
+A commit persists to `config_file_path` on EFS and returns a `status`
+(`committed`, `committed_applying`, `rolled_back`, `committed_not_applied`) —
+[read the outcome table](../http-api.md#config-transactions) before treating a
+non-200 as success. To roll a committed change back, open a new transaction and
+re-commit the previous config, or restore the file at its source (see
+[Config rollback](../runbooks/config-rollback.md)).
 
 ---
 
@@ -305,9 +357,11 @@ Follow this workflow for safe configuration updates in production.
 
 ### Update Flow
 
-1. **Update the YAML on EFS.** Use CI/CD, the admin API (`PUT /config`), or
-   a manual mount. The admin API enforces optimistic concurrency via the
-   `Version` field (check-and-set).
+1. **Update the YAML on EFS.** Use CI/CD, a manual mount, or the admin API
+   config-transaction flow (open → patch → commit). The commit enforces
+   optimistic concurrency via the `version` field (check-and-set). There is no
+   `PUT /config` endpoint — see
+   [HTTP API — Config transactions](../http-api.md#config-transactions).
 
 2. **Poll watcher detects the change.** Within one `poll_interval` cycle, the
    watcher reads the file, computes the SHA-256 hash, and detects the
@@ -346,9 +400,9 @@ bridge:
 # ...
 ```
 
-A `PUT /config` request must include the current `version` value. The write
+A config-transaction commit includes the current `version` value. The write
 succeeds only if the on-disk version matches. If another instance updated the
-file first, the request fails with a conflict error, and you should re-read
+file first, the commit fails with a conflict (`409`), and you should re-read
 and retry. A `version` of `0` (or absent) means the config has never been
 committed through the API.
 

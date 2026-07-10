@@ -37,6 +37,23 @@ type Config struct {
 	AutoExtend        *bool `mapstructure:"auto_extend" yaml:"auto_extend" json:"auto_extend"`
 	SNSUnwrap         bool  `mapstructure:"sns_unwrap" yaml:"sns_unwrap" json:"sns_unwrap"`
 
+	// PoisonMaxReceives surfaces the receiver's adapter-enforced poison
+	// backstop to config-driven (YAML) deployments. A malformed message the
+	// receiver cannot convert is normally dropped WITHOUT a delete so the
+	// source queue's native redrive policy (maxReceiveCount -> DLQ) can move
+	// it; a queue with NO redrive policy would redeliver it forever. When this
+	// is > 0 and the message's ApproximateReceiveCount reaches it, the receiver
+	// deletes the message to break the hot loop. 0/omitted disables the
+	// backstop (native redrive only). Set it ABOVE the queue's native
+	// maxReceiveCount so native redrive still wins where configured.
+	PoisonMaxReceives int32 `mapstructure:"poison_max_receives" yaml:"poison_max_receives,omitempty" json:"poison_max_receives,omitempty"`
+
+	// PoisonDropWithoutDLQ is the explicit opt-in required for the single most
+	// destructive poison backstop setting (poison_max_receives == 1, which
+	// deletes a poison message on its first conversion failure). Without it a
+	// value of 1 is rejected at config time. See ReceiverConfig for details.
+	PoisonDropWithoutDLQ bool `mapstructure:"poison_drop_without_dlq" yaml:"poison_drop_without_dlq,omitempty" json:"poison_drop_without_dlq,omitempty"`
+
 	// Receiver resilience tuning. These map directly to the
 	// ReceiverConfig backoff/init knobs that previously had no plugin
 	// surface, so outage/failover behaviour could not be tuned from
@@ -164,6 +181,16 @@ func (c Config) Validate() error {
 	if c.PollBackoffInitial > 0 && c.PollBackoffMax > 0 && c.PollBackoffMax < c.PollBackoffInitial {
 		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
 	}
+	// poison_max_receives is an adapter-enforced backstop for poison messages
+	// (Chunk 13 HIGH-2): 0 disables it (rely on native redrive), any positive
+	// value bounds the redelivery hot loop. Its destructive delete must not
+	// preempt a native DLQ, so poison_max_receives == 1 (drop on first receive)
+	// requires the explicit poison_drop_without_dlq opt-in; the queue-aware
+	// "must exceed native maxReceiveCount" guard runs at startup where the live
+	// redrive policy is readable (checkRedrivePolicy).
+	if err := validatePoisonBackstop(c.PoisonMaxReceives, c.PoisonDropWithoutDLQ); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -192,6 +219,8 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 		VisibilityTimeout:     c.VisibilityTimeout,
 		AutoExtend:            c.AutoExtend,
 		SNSUnwrap:             c.SNSUnwrap,
+		PoisonMaxReceives:     c.PoisonMaxReceives,
+		PoisonDropWithoutDLQ:  c.PoisonDropWithoutDLQ,
 		InitTimeout:           c.InitTimeout,
 		PollBackoffInitial:    c.PollBackoffInitial,
 		PollBackoffMax:        c.PollBackoffMax,

@@ -229,8 +229,36 @@ hook: when a rotation apply is itself rejected as unauthorized, `applyOne` calls
 `CredentialRefresher.NotifyAuthFailure(uri, err)`, and for a
 `shared.ErrNotAuthorized` error that forces an immediate out-of-band re-resolve
 (`PollBasedWrapper.Refresh`) instead of waiting for the poll timer.
-`NotifyAuthFailure` is also the public hook a live transport can call when its
+`NotifyAuthFailure` is also the public hook a live transport calls when its
 own connection reports `NOT_AUTHORIZED`.
+
+Stock transports are now wired to this hook (HIGH-3). At `Watch` time the
+refresher injects a URI-bound callback into any registered target that
+implements the optional `bridge.AuthFailureReporter` capability
+(`SetAuthFailureCallback(func(err error))`); the target invokes it from its live
+op path when a broker error maps to `shared.ErrNotAuthorized`. Because the
+callback closes over the URI, sessions stay URI-agnostic, and because
+`NotifyAuthFailure` is auth-gated and rate-limited (below) the target may call it
+on every auth failure. The wired transports and their report chokepoints are:
+
+| Transport | Report site | Rationale |
+|-----------|-------------|-----------|
+| AMQP 1.0 (`amqp10`) | reconnect (`Session.connect`) | session auth is established at connection open, so a revocation surfaces as a redial `amqp:unauthorized-access`, the single funnel |
+| AMQP 0-9-1 (`amqp091`) | reconnect (`Session.doReconnect`) | same: revocation surfaces as a 403 on redial |
+| MQTT (`paho`) | CONNECT failure (`handleConnectError`) | broker denial arrives as a `*autopaho.ConnackError` (reason 0x86/0x87) at connect |
+| AWS SQS (`sqs`) | live send + receive (`Sender`/`Receiver`) | request/response API calls carry credentials per-op; there is no reconnect loop |
+| Azure Service Bus (`servicebus`) | live send + batch send + receive (`Sender`/`Receiver`) | same request/response model; the client is rebuilt on rotation, not reconnected. Batch send reports from the aggregated per-message results so a batch-only sender still recovers |
+
+Session transports report only at the (re)connect chokepoint because credential
+revocation manifests at connection open, not per message. Request/response
+transports (SQS, Service Bus) have no reconnect loop, so they report from the
+send and receive op paths (each `Sender`/`Receiver` is separately
+`CredentialAware` and gets its own callback). The **HTTP** transport has no
+runtime-rotatable session: it is a server that validates inbound API keys, and
+its only outbound path (the SSE cluster forwarder) presents static per-peer keys
+from config, is not `CredentialAware`, is never `Watch`ed (no bound
+`credentials_uri`), and maps a peer 401 to `shared.ErrForwardFailed` — so there
+is nothing to wire and nothing is fabricated.
 
 `Refresh` is idempotent (a nudge already pending is coalesced) and rate-limited
 per URI to at most one honoured fetch per `DefaultReactiveReResolveInterval`

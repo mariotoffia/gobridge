@@ -246,6 +246,14 @@ The drainer is a background goroutine that runs the following loop:
 4. **Retry** -- Failed records are released back to pending with an incremented replay count
 5. **Wait** -- Sleep for `drain_interval` before the next cycle
 
+#### One drainer per session partition -- align policy or split sessions
+
+A session partition has **exactly one** drainer: the first `shared_outbox` route that references a given session builds it, and every other route that drains the same session shares it. That single drainer applies **one** set of drain-relevant policy to every record in the partition, regardless of which route persisted the record. The drain-relevant policy is `send_timeout`, `max_replay_attempts`, `replay_budget`, `on_expired`, and `on_permanent_failure`.
+
+Because a record is source-ACKed the moment it is persisted, a record persisted by one route may later be drained -- and terminally settled -- under another route's policy. If those policies diverged, that record would be settled under the wrong terminal behavior: for example, a record persisted by an `on_permanent_failure: dlq` route but drained under an `on_permanent_failure: drop` route would be dropped with **no DLQ evidence** after the source was already acknowledged -- silent message loss.
+
+To close that hazard, the runtime **fails closed at validation**: if two or more `shared_outbox` routes drain the same session partition with divergent drain-relevant policy, `ValidateRoutes`/`Start` reject the configuration and name both routes and the shared session. Give the routes their own sessions, or align their drain-relevant policy. Routes that differ only on ingress-side fields (for example `max_in_flight`) may still share a session -- only the drain-relevant policy must match.
+
 ### `drain_interval` and `drain_strategy`
 
 The `session.drain_interval` field sets a fixed polling interval:

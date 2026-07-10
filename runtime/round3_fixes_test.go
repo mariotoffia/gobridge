@@ -79,9 +79,13 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainTimeout: 5 * time.Second,
-		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
+		// Threshold: 1 (Run loop) + 1 (pre-send check) + 1 (post-send fence,
+		// HIGH-1) = 3. The token must stay live THROUGH the post-send fence for
+		// the record to complete; this test exercises the DrainTimeout-vs-
+		// SendTimeout window, not lease staleness, so the owner never loses the
+		// lease during the successful send.
 		TokenFn: func() (persistence.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 2 {
+			if tokenCalls.Add(1) <= 3 {
 				return token, true
 			}
 			return persistence.LeaseToken{}, false
@@ -140,7 +144,9 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 	pk := persistence.OutboxPartitionKey("sess-1", "")
 	_, _ = leaseStore.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
 
+	var completeCalls atomic.Int32
 	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
+		completeCalls.Add(1)
 		return shared.ErrStaleFencingToken
 	}
 
@@ -156,9 +162,15 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 		Policy:       routing.RoutePolicy{}.WithDefaults(),
 		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
 		Metrics:      rec,
-		// Threshold: 1 (Run loop) + 1 (pre-send check) = 2.
+		// Threshold: 1 (Run loop) + 1 (pre-send check) + 1 (post-send fence) = 3.
+		// The token must stay live THROUGH the post-send fence so the success path
+		// actually reaches Complete; otherwise the fence would short-circuit and
+		// this test would pass for the wrong reason (fence fired, not Complete
+		// failed). tokenFn returns the SAME token (v1) each call, so the pre-send
+		// and post-send version checks match — only the Complete-fails path is
+		// under test here.
 		TokenFn: func() (persistence.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 2 {
+			if tokenCalls.Add(1) <= 3 {
 				return token, true
 			}
 			return persistence.LeaseToken{}, false
@@ -184,6 +196,15 @@ func TestOutboxDrainer_MetricNotEmittedOnCompleteFail(t *testing.T) {
 
 	if sender.SentCount() == 0 {
 		t.Fatal("sender should have been invoked")
+	}
+
+	// The test must GENUINELY exercise the Complete-fails path: with the post-send
+	// fence in place, the live token has to survive the fence so Complete is
+	// actually attempted (and returns stale). If the fence had short-circuited,
+	// CompleteFn would never run and this test's "no completions" assertion would
+	// pass vacuously.
+	if got := completeCalls.Load(); got != 1 {
+		t.Fatalf("CompleteFn invoked %d times, want exactly 1 (test must reach Complete, not be short-circuited by the post-send fence)", got)
 	}
 
 	completions := rec.FindEntries(shared.MetricOutboxCompletions)

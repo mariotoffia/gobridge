@@ -234,16 +234,32 @@ func (e *conditionEvaluator) compare(value any) (bool, error) {
 		return e.matchesRegex(value), nil
 	case OperatorGreaterThan:
 		cmp, err := e.numericCompare(value)
-		return cmp > 0, err
+		if err != nil {
+			// Never report a match alongside a comparison error: on a
+			// non-numeric / non-finite operand cmp is 0, so cmp>=0 / cmp<=0
+			// would leak a spurious "equal" match if a caller forgot to
+			// check err first. Fail closed (no match) and surface the error.
+			return false, err
+		}
+		return cmp > 0, nil
 	case OperatorLessThan:
 		cmp, err := e.numericCompare(value)
-		return cmp < 0, err
+		if err != nil {
+			return false, err
+		}
+		return cmp < 0, nil
 	case OperatorGreaterOrEqual:
 		cmp, err := e.numericCompare(value)
-		return cmp >= 0, err
+		if err != nil {
+			return false, err
+		}
+		return cmp >= 0, nil
 	case OperatorLessOrEqual:
 		cmp, err := e.numericCompare(value)
-		return cmp <= 0, err
+		if err != nil {
+			return false, err
+		}
+		return cmp <= 0, nil
 	case OperatorIn:
 		return e.isIn(value), nil
 	default:
@@ -453,14 +469,46 @@ func (e *conditionEvaluator) isIn(value any) bool {
 	return false
 }
 
+// errNonFiniteFloat is returned by toFloat64 for a NaN or infinite operand.
+// Ordering comparisons (gt/lt/gte/lte) have no usable total order against a
+// non-finite operand: NaN is unordered, so numericCompare would see neither
+// < nor > and return 0 -- a gte/lte gate then matches as if EQUAL -- and
+// +/-Inf saturate every threshold. A message-controlled "NaN"/"Inf" string
+// (strconv.ParseFloat accepts both without error) or a config
+// math.NaN()/math.Inf() value would otherwise silently poison a
+// security/fairness filter into failing open or closed. It is content-free:
+// the value that produced it is provably a non-finite float literal and the
+// raw message/config value is never echoed, so it is safe to surface in
+// route logs and DLQ error metadata. The caller classifies it --
+// shared.ErrInvalidPayload for a message value (numericCompare),
+// ErrComparisonValueNotNumeric for a config value (newConditionEvaluator).
+var errNonFiniteFloat = errors.New("value is not a finite number")
+
 // toFloat64 coerces a numeric value (config- or message-derived) to a
-// float64 for ordering comparisons. On failure it NEVER formats the raw
-// value into the returned error: the value may be payload- or
-// header-derived and can carry secrets or PII. Failures are described by
-// the observed Go type, the observed byte length, and the conversion
-// target — see redactNumericConvErr — so the error stays useful for
-// debugging while leaking zero content into route logs and DLQ metadata.
+// FINITE float64 for ordering comparisons. A non-finite coercion result
+// (NaN, +Inf, -Inf) is rejected with errNonFiniteFloat rather than returned,
+// so an unordered/saturating operand can never reach numericCompare and
+// silently classify NaN as equality. On failure it NEVER formats the raw
+// value into the returned error: the value may be payload- or header-derived
+// and can carry secrets or PII. Failures are described by the observed Go
+// type, the observed byte length, and the conversion target — see
+// redactNumericConvErr — so the error stays useful for debugging while
+// leaking zero content into route logs and DLQ metadata.
 func toFloat64(v any) (float64, error) {
+	f, err := coerceFloat64(v)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, errNonFiniteFloat
+	}
+	return f, nil
+}
+
+// coerceFloat64 performs the raw numeric coercion for toFloat64 without the
+// finite-value guard. The integer kinds are always finite; only the float,
+// string, and json.Number kinds can produce NaN/Inf, which toFloat64 rejects.
+func coerceFloat64(v any) (float64, error) {
 	switch val := v.(type) {
 	case float64:
 		return val, nil

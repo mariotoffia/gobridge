@@ -97,6 +97,12 @@ senders:
 
 Either `queue_name` or both `topic_name` + `subscription_name` are required.
 
+> **Exactly one entity kind (HIGH-3).** Setting `queue_name` **and**
+> `topic_name`/`subscription_name` on the same receiver is rejected at build.
+> The two name a different entity; silently preferring the queue and ignoring
+> the topic would consume from the wrong place. Configure a queue **or** a
+> topic+subscription, never both.
+
 > **Session-required entities.** A session-enabled queue or subscription needs
 > either `session_id` (pin one session) or `use_sessions` (rotate over
 > available sessions); with neither, the receiver fails fast with
@@ -120,6 +126,11 @@ Either `queue_name` or both `topic_name` + `subscription_name` are required.
 | `timeout` | duration | `30s` | Per-call send timeout (applied per chunk in `SendBatch`) |
 
 Either `queue_name` or `topic_name` is required.
+
+> **Exactly one entity kind (HIGH-3).** Setting both `queue_name` and
+> `topic_name` on the same sender is rejected at build — a queue **or** a
+> topic, never both, so a message can never be published to a different entity
+> than intended.
 
 ## Connection Options (`options.connection.*`)
 
@@ -171,6 +182,17 @@ delayed `Retry` falls back to an immediate `Abandon` — the delay is dropped
 because a scheduled message addresses the topic and would fan out to sibling
 subscriptions. Redelivery still happens; only the delay is lost.
 
+> **Prefer duplicates over loss on an ambiguous settle (CRITICAL-1).** A
+> delayed `Retry` first schedules the copy, then completes the original. If the
+> copy is durably scheduled but `CompleteMessage` then fails **ambiguously**
+> (timeout / connection-lost — the broker may already have committed the
+> complete), the adapter does **not** cancel the scheduled copy and surfaces the
+> error. Cancelling would, in the commit-but-error case, erase the only retry
+> copy while the original is already gone — permanent loss. Keeping the copy
+> yields at worst a duplicate (the original's lock lapses and the broker
+> redelivers it) that the copy's salted `MessageID` + `x-bridge.original-message-id`
+> let downstream dedup absorb.
+
 ## Empty MessageID Fallback
 
 A broker message with no `MessageID` does not get a fresh random envelope ID per
@@ -209,6 +231,25 @@ same credentials) retries it, and `currentClient()` returns nil until it
 succeeds. The gap is visible and recoverable — never a nil-panic — but it is a
 real no-client window that the non-session path does not have.
 
+**Managed identity → client secret takes precedence (HIGH-2).** When a rotation
+delivers an AAD **client secret** (a username/password credential), the adapter
+switches to client-secret auth and clears `use_managed_identity`. The credential
+builder evaluates managed identity *before* client-secret auth, so a lingering
+`use_managed_identity: true` would otherwise ignore the rotated secret and keep
+authenticating as the wrong identity. A supplied secret unambiguously means
+client-secret auth, so the flag is cleared even when the client ID and secret
+already match the current values (a stuck flag alone forces the switch).
+
+**A username without a secret is rejected, not silently downgraded.** A rotation
+credential that supplies a **username but an empty password/secret** is malformed:
+AAD client-secret auth needs *both*, and the connection-string path requires an
+*empty* username. Rather than treat the empty secret as client-secret material —
+which would clear `use_managed_identity`, store a zero secret, and drift the
+identity to `DefaultAzureCredential` — the adapter rejects the rotation with
+`ErrInvalidPayload` and leaves the existing connection untouched. Supply the
+secret for client-secret auth, or omit the username to rotate a connection
+string.
+
 ## Resilience Behavior
 
 - **`lock_duration` is a client-side mirror.** It does not configure the
@@ -225,6 +266,20 @@ real no-client window that the non-session path does not have.
   build even when the broker entity permits a longer lock. Set `lock_duration`
   to match the broker entity LockDuration so the declared window reflects what
   the broker enforces.
+- **Sender rebuilds a terminally closed link (HIGH-1).** A sender link that the
+  broker reports as terminally **closed** (`CodeClosed`) never recovers on its
+  own. On such an error the sender tears the dead link down and rebuilds a fresh
+  one on the next `Send`/`SendBatch`, so a single closed link no longer wedges
+  the sender until process restart. A self-healing transient error
+  (`CodeConnectionLost`, which the SDK reopens on the next send) does **not**
+  trigger a rebuild. The teardown is fenced by link identity: if a concurrent
+  credential rotation already swapped in a fresh link, the stale teardown is a
+  no-op and never destroys the healthy replacement. Concurrent `Send`/`SendBatch`
+  callers resolve the live link **atomically** — a single locked ensure-and-
+  snapshot — so a closed-link teardown that nils the seam can never be observed
+  between "ensure" and "use". Each caller captures one guaranteed-non-nil link
+  and finishes against it; there is no nil-dereference window under concurrent
+  sends racing a rebuild.
 
 ---
 

@@ -146,8 +146,10 @@ func (rt *Runtime) InjectToBinding(ctx context.Context, routeID, bindingID strin
 // of both message and evidence. A fresh ID bypasses the dedup row (this is a
 // NEW delivery attempt, deliberately re-issued by an operator) while the
 // causation header preserves the audit link to the original envelope.
-// Subject, payload, timestamps and ALL headers (including propagated reserved
-// headers such as ordering/dedup keys) are preserved from the source envelope.
+// Subject, payload and timestamps are preserved from the source envelope, as
+// are the propagated bridge headers EXCEPT the transport dedup key: a redrive is
+// a DELIBERATE operator re-issue, so x-bridge.dedup-id must NOT ride along (see
+// below).
 func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
 	originalID := env.ID()
 	if originalID == "" {
@@ -167,10 +169,22 @@ func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string,
 		return fmt.Errorf("runtime: inject redrive: fresh envelope: %w", err)
 	}
 	// StampHeaders is the trusted whole-map setter (no reserved-prefix strip):
-	// propagated reserved headers (correlation-id, ordering-key, dedup-id, …)
-	// on the DLQ'd envelope survive onto the re-issued one. The ingress strip
-	// in doHandleDelivery still applies its normal posture afterwards.
+	// propagated reserved headers (correlation-id, ordering-key, …) on the DLQ'd
+	// envelope survive onto the re-issued one. The ingress strip in
+	// doHandleDelivery still applies its normal posture afterwards.
 	fresh.StampHeaders(src.HeadersSnapshot())
+	// The stale transport dedup key MUST NOT ride along. x-bridge.dedup-id maps
+	// to an idempotent/FIFO sender's dedup id (e.g. SQS FIFO
+	// MessageDeduplicationId), whose whole job is to SUPPRESS re-delivery. Copied
+	// onto the "fresh" envelope it would make the transport swallow the redrive
+	// (ACK without delivering) → Send returns nil → the admin redrive would report
+	// success and DELETE the DLQ entry after a no-op: silent evidence loss via
+	// TRANSPORT dedup instead of outbox dedup — a fresh envelope ID alone does not
+	// prevent it because the sender prefers a present dedup header over the ID.
+	// Drop it so the sender re-derives dedup from the FRESH envelope ID. Ordering
+	// and correlation keys are kept (they do not suppress delivery); provenance is
+	// preserved via the causation link injectToBinding stamps from originalID.
+	fresh.DeleteHeader(messaging.HeaderDeduplicationID)
 	return rt.injectToBinding(ctx, routeID, bindingID, fresh, originalID)
 }
 

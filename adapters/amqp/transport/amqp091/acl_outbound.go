@@ -373,12 +373,25 @@ type senderChannel struct {
 // are exposed; production wires it via openSenderChannel.
 type publisherChannel interface {
 	PublishConfirmed(ctx context.Context, exchange, routingKey string, mandatory bool, env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) (publishResult, error)
-	PublishDeferred(ctx context.Context, exchange, routingKey string, mandatory bool, env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) (*pendingConfirm, error)
+	PublishDeferred(ctx context.Context, exchange, routingKey string, mandatory bool, env *messaging.Envelope, cfg SenderConfig, clk clock.Clock) (pendingPublish, error)
 	IsClosed() bool
 	Close() error
 }
 
 var _ publisherChannel = (*senderChannel)(nil)
+
+// pendingPublish is the SDK-free handle for one in-flight pipelined publish
+// awaiting its broker confirmation. *pendingConfirm is the sole production
+// implementation; the interface is the seam that lets the batch confirm-drain
+// logic (honour an already-settled confirm before an expired deadline) be
+// unit-tested with a scriptable settled/wedged confirm, without a live broker.
+type pendingPublish interface {
+	DeliveryTag() uint64
+	Settled() (done bool, err error)
+	Wait(ctx context.Context) error
+}
+
+var _ pendingPublish = (*pendingConfirm)(nil)
 
 // openSenderChannel opens a fresh AMQP channel on the connection and
 // installs publisher-confirm bookkeeping.
@@ -481,12 +494,44 @@ type pendingConfirm struct {
 // DeliveryTag returns the broker delivery tag assigned to this publish.
 func (p *pendingConfirm) DeliveryTag() uint64 { return p.dc.DeliveryTag }
 
+// Settled reports, WITHOUT blocking, whether the broker has already settled
+// this publish and, if so, its outcome: nil on a positive confirm,
+// errPublishNacked on a broker nack, errConfirmChannelClosed when the channel
+// died with the confirm outstanding. done=false means the confirm is still
+// in flight. The pipelined batch loop uses it to honour an already-arrived
+// confirm even after the batch deadline has expired, rather than losing a
+// ready confirm to the ctx.Done() select race and misreporting a published
+// message as transient (which would duplicate it on retry).
+func (p *pendingConfirm) Settled() (done bool, err error) {
+	select {
+	case <-p.dc.Done():
+	default:
+		return false, nil
+	}
+	if p.dc.Acked() {
+		return true, nil
+	}
+	if p.ch.raw.IsClosed() {
+		return true, errConfirmChannelClosed
+	}
+	return true, errPublishNacked
+}
+
 // Wait blocks until the broker settles this publish or ctx expires.
 // It returns nil on a positive confirm, errPublishNacked on a broker
 // nack, errConfirmChannelClosed when the channel died with the confirm
 // outstanding (the SDK nacks all pending confirms on channel close),
 // and a wrapped ctx error on cancellation.
+//
+// Confirm-preferred: an already-settled confirm is honoured BEFORE ctx, so a
+// confirm that arrived in the same instant the deadline fired is never lost to
+// the SDK WaitContext's random select between ctx.Done() and the confirm
+// channel — a lost race would misreport a delivered message as transient and
+// duplicate it on retry.
 func (p *pendingConfirm) Wait(ctx context.Context) error {
+	if done, err := p.Settled(); done {
+		return err
+	}
 	acked, err := p.dc.WaitContext(ctx)
 	if err != nil {
 		return fmt.Errorf("wait for publish confirmation: %w", err)
@@ -508,6 +553,14 @@ func (p *pendingConfirm) Wait(ctx context.Context) error {
 //
 // On a publish error the channel is unusable and must be discarded by
 // the caller (Sender.resetChannelLocked closes it).
+//
+// pendingPublish is an adapter-internal seam (category 5): returning the
+// interface lets the pipelined batch confirm-drain be unit-tested with a
+// scriptable settled/wedged confirm double, since a real *pendingConfirm wraps
+// an SDK *amqp.DeferredConfirmation with unexported fields (not constructible
+// in a hermetic test).
+//
+//nolint:ireturn // adapter-internal test seam (category 5); see comment above.
 func (sc *senderChannel) PublishDeferred(
 	ctx context.Context,
 	exchange, routingKey string,
@@ -515,7 +568,7 @@ func (sc *senderChannel) PublishDeferred(
 	env *messaging.Envelope,
 	cfg SenderConfig,
 	clk clock.Clock,
-) (*pendingConfirm, error) {
+) (pendingPublish, error) {
 	pub := envelopeToPublishing(env, cfg, clk)
 
 	// Defensive drain: under the deterministic ordering documented on

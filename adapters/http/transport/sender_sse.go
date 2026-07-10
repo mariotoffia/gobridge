@@ -32,12 +32,14 @@ type sseSenderConfig struct {
 	// that client rather than blocking the fan-out. Zero defaults to
 	// defaultSSEClientBuffer in newSSESender.
 	clientBufferSize int
-	// failOnZeroDelivery makes Send return a transient error when a
-	// broadcast reached nobody (no subscribers, or every buffer full)
-	// instead of the default at-most-once success. See
-	// Config.FailOnZeroDelivery.
-	failOnZeroDelivery bool
-	apiKey             string
+	// acceptZeroDeliveryLoss OPTS OUT of the safe default: when true a
+	// broadcast that reached nobody (no subscribers, or every buffer full)
+	// is reported as an at-most-once SUCCESS and the route runner acks the
+	// source. When false (the DEFAULT) zero delivery returns a TRANSIENT
+	// (Unavailable-class) error so the source is retried/DLQ'd instead of
+	// losing the event. Set from Config.AtMostOnceAcceptLoss.
+	acceptZeroDeliveryLoss bool
+	apiKey                 string
 	// redirectEndpoint is the PeerInfo.Endpoints key consulted for
 	// cross-cluster SSE client redirects. Empty (the default) disables
 	// redirecting entirely: a request for a remote route is refused with
@@ -52,14 +54,28 @@ type sseSenderConfig struct {
 type sseClient struct {
 	id     string
 	events chan []byte
+	// done is closed by this client's own handler when it stops reading
+	// events (any exit path), BEFORE it deregisters under the lock. A
+	// fan-out that observes done closed must NOT count an enqueue to this
+	// client as delivery: the buffered channel would accept the write but
+	// nobody will ever read it (issue 1). A nil done — hand-built test
+	// clients — is never ready, so such a client is treated as live.
+	done chan struct{}
 }
 
 // SSESender implements ports.Sender by broadcasting envelopes to connected SSE clients.
 type SSESender struct {
-	cfg       sseSenderConfig
-	mu        sync.RWMutex
-	clients   map[string]*sseClient
-	routeID   string
+	cfg     sseSenderConfig
+	mu      sync.RWMutex
+	clients map[string]*sseClient
+	routeID string
+	// closing is set true under mu by Close BEFORE it closes shutdown.
+	// Send reads it under the read lock held across its fan-out, so the
+	// ack decision is atomic with respect to Close: observing closing
+	// false there orders the enqueues before Close, guaranteeing the
+	// handlers drain them on shutdown rather than abandoning an already
+	// acked event (issues 2 & 3).
+	closing   bool
 	shutdown  chan struct{}
 	closeOnce sync.Once
 }
@@ -99,7 +115,16 @@ func newSSESender(cfg sseSenderConfig) *SSESender {
 // via Factory.Close) BEFORE http.Server.Shutdown. Safe to call multiple
 // times.
 func (s *SSESender) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() { close(s.shutdown) })
+	s.closeOnce.Do(func() {
+		// Mark closing UNDER THE LOCK before closing shutdown so a
+		// concurrent Send either observes closing (and refuses to ack) or
+		// completes its fan-out first — its enqueues then happen-before
+		// this close and are drained by the handlers on shutdown (issue 2).
+		s.mu.Lock()
+		s.closing = true
+		s.mu.Unlock()
+		close(s.shutdown)
+	})
 	for {
 		if s.ClientCount() == 0 {
 			return nil
@@ -163,6 +188,30 @@ func (s *SSESender) tag() shared.Tag {
 	return shared.Tag{Key: tagKeySenderID, Value: s.cfg.id}
 }
 
+// isClosing reports whether Close has begun (s.closing set under mu). Read
+// under the lock so it is coherent with Close, which sets s.closing under
+// the write lock before closing s.shutdown. A Send that observes this must
+// fail CLOSED with a transient error instead of acking a broadcast whose
+// subscribers Close is tearing down (issue 2). This is a cheap early-out;
+// the race-free decision is the s.closing read under the fan-out lock in
+// Send.
+func (s *SSESender) isClosing() bool {
+	s.mu.RLock()
+	closing := s.closing
+	s.mu.RUnlock()
+	return closing
+}
+
+// shuttingDownErr is the TRANSIENT (Unavailable-class) error Send returns
+// when a broadcast races Close. Transient so the route runner retries
+// after the listener rebinds (or a durable source redelivers) rather than
+// dropping the event during a config reload / shutdown window.
+func (s *SSESender) shuttingDownErr(env *messaging.Envelope) error {
+	return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
+		"sse: sender is shutting down, event not delivered (sender %q, envelope %q)",
+		s.cfg.id, env.ID()))
+}
+
 // Send broadcasts an envelope to all connected SSE clients.
 //
 // Address validation: an SSESender is bound at construction to a
@@ -188,6 +237,15 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 	start := s.cfg.clock.Now()
 
+	// A broadcast that races Close (config reload / process shutdown) must
+	// never be acked. Cheap early-out — checked BEFORE ctx so a
+	// shutdown+cancel race surfaces as a retryable Unavailable rather than
+	// Canceled. The AUTHORITATIVE, race-free decision is the s.closing read
+	// under the fan-out lock below (issue 2).
+	if s.isClosing() {
+		return s.shuttingDownErr(env)
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -212,75 +270,103 @@ func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 
 	eventBytes := formatSSE("message", data)
 
+	// Fan out under the READ LOCK, iterating the LIVE client map rather
+	// than a released snapshot. Two correctness reasons:
+	//   - issue 1: a snapshot lets a client deregister after the copy is
+	//     taken yet still receive a phantom enqueue nobody reads, which the
+	//     old code miscounted as delivery. Iterating the live map — and
+	//     skipping any client whose handler has closed done — counts only
+	//     enqueues to a still-reading subscriber.
+	//   - issue 2: Close sets s.closing under the WRITE lock before it
+	//     closes s.shutdown, so reading closing==false while holding this
+	//     read lock orders every enqueue below BEFORE Close; those events
+	//     are therefore drained by the handlers on shutdown (issue 3),
+	//     never silently abandoned.
+	// Every enqueue is non-blocking (select default), so holding the read
+	// lock across the loop cannot stall.
 	s.mu.RLock()
-	clients := make([]*sseClient, 0, len(s.clients))
+	if s.closing {
+		s.mu.RUnlock()
+		return s.shuttingDownErr(env)
+	}
+	total := len(s.clients)
+	delivered := 0
+	var droppedIDs []string
 	for _, c := range s.clients {
-		clients = append(clients, c)
+		// A handler closes done when it stops reading; enqueuing to such a
+		// client is lost, so it is not a live delivery target (issue 1). A
+		// nil done (hand-built test client) is never ready → treated live.
+		select {
+		case <-c.done:
+			continue
+		default:
+		}
+		select {
+		case c.events <- eventBytes:
+			delivered++
+		default:
+			droppedIDs = append(droppedIDs, c.id)
+		}
 	}
 	s.mu.RUnlock()
+
+	for _, id := range droppedIDs {
+		s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1, s.tag())
+		if s.cfg.logger != nil {
+			s.cfg.logger.Warn("sse: client buffer full, dropping event",
+				"client", id, "event_id", env.ID())
+		}
+	}
 
 	if logging.TraceEnabled(s.cfg.logger) {
 		s.cfg.logger.Log(ctx, logging.LevelTrace, "sse: broadcasting",
 			"sender_id", s.cfg.id,
 			"envelope_id", env.ID(),
-			"client_count", len(clients),
+			"client_count", total,
+			"delivered", delivered,
 		)
 	}
 
-	// SSE egress is AT-MOST-ONCE by default (see doc.go): Send reports
-	// success even when the event reached nobody, and the route runner
-	// then acks the source. Both zero-delivery cases — no subscribers at
-	// all, and every subscriber's buffer full — are counted and logged at
-	// ERROR level so the loss is loud, never silent. When
-	// FailOnZeroDelivery is set the zero-delivery cases instead return a
-	// TRANSIENT (Unavailable-class) error so the runner RETRIES (letting a
-	// briefly-disconnected subscriber reconnect) and then DLQs per the
-	// route's retry-exhaustion policy.
-	if len(clients) == 0 {
+	s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
+
+	// SSE egress is SAFE-BY-DEFAULT: a broadcast that reached NO live
+	// subscriber — none connected, or every one already gone/full —
+	// returns a TRANSIENT (Unavailable-class) error so the route runner
+	// does NOT ack the source. A durable source RETRIES (letting a
+	// briefly-disconnected subscriber reconnect) then DLQs per policy; an
+	// HTTP-ingress source surfaces HTTP 500 to the producer. Both cases are
+	// counted and logged at ERROR level so the loss is loud. Only when the
+	// operator EXPLICITLY opts into loss (Config.AtMostOnceAcceptLoss) does
+	// Send report success and let the source be acked though the event
+	// reached nobody.
+	if total == 0 {
 		s.cfg.metrics.Counter(MetricSSENoSubscribers, 1, s.tag())
 		if s.cfg.logger != nil {
 			s.cfg.logger.Error("sse: no subscribers connected, event not delivered",
 				"sender_id", s.cfg.id, "envelope_id", env.ID())
 		}
-		s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
-		if s.cfg.failOnZeroDelivery {
+		if !s.cfg.acceptZeroDeliveryLoss {
 			return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
 				"sse: zero delivery — no subscribers connected (sender %q, envelope %q)",
 				s.cfg.id, env.ID()))
 		}
 		return nil
 	}
-
-	dropped := 0
-	for _, c := range clients {
-		select {
-		case <-ctx.Done():
-			s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
-			return ctx.Err()
-		case c.events <- eventBytes:
-		default:
-			dropped++
-			s.cfg.metrics.Counter(MetricSSEDroppedEvents, 1, s.tag())
-			if s.cfg.logger != nil {
-				s.cfg.logger.Warn("sse: client buffer full, dropping event",
-					"client", c.id, "event_id", env.ID())
-			}
-		}
-	}
-	allDropped := dropped == len(clients)
-	if allDropped {
+	if delivered == 0 {
+		// Every connected subscriber was gone or buffer-full: the event
+		// reached nobody live. Keep the historical "all subscriber buffers
+		// full" wording (the dominant cause) so operator log filters match.
 		s.cfg.metrics.Counter(MetricSSEAllDropped, 1, s.tag())
 		if s.cfg.logger != nil {
 			s.cfg.logger.Error("sse: all subscriber buffers full, event delivered to nobody",
-				"sender_id", s.cfg.id, "envelope_id", env.ID(), "client_count", len(clients))
+				"sender_id", s.cfg.id, "envelope_id", env.ID(), "client_count", total)
 		}
-	}
-
-	s.cfg.metrics.Timer(MetricSSEBroadcastLatency, s.cfg.clock.Since(start), s.tag())
-	if allDropped && s.cfg.failOnZeroDelivery {
-		return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
-			"sse: zero delivery — all %d subscriber buffers full (sender %q, envelope %q)",
-			len(clients), s.cfg.id, env.ID()))
+		if !s.cfg.acceptZeroDeliveryLoss {
+			return shared.ErrUnavailable.WithMessage(fmt.Sprintf(
+				"sse: zero delivery — %d subscriber(s) gone or full (sender %q, envelope %q)",
+				total, s.cfg.id, env.ID()))
+		}
+		return nil
 	}
 	return nil
 }
@@ -350,6 +436,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := &sseClient{
 		id:     clientID,
 		events: make(chan []byte, s.cfg.clientBufferSize),
+		done:   make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -368,6 +455,11 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer func() {
+		// Signal the fan-out FIRST — before deregistering — that this
+		// handler has stopped reading, so a concurrent Send holding the
+		// read lock skips our now-unread buffer instead of counting an
+		// enqueue to it as a live delivery (issue 1).
+		close(client.done)
 		s.mu.Lock()
 		delete(s.clients, clientID)
 		count := len(s.clients)
@@ -421,13 +513,26 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for {
+		// Priority shutdown check. With several channels ready at once Go's
+		// select picks uniformly at random, so a buffered event and a closed
+		// shutdown could be served in either order. Check shutdown FIRST and
+		// DRAIN already-enqueued (already-acked) events before returning, so
+		// Close never abandons an event Send already reported as delivered
+		// (issue 3).
+		select {
+		case <-s.shutdown:
+			s.drainOnShutdown(w, rc, flusher, client)
+			return
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.shutdown:
-			// Graceful drain (Close): unblock the handler so
-			// http.Server.Shutdown can complete instead of hanging on
-			// long-lived SSE streams.
+			// Graceful drain (Close): flush already-acked buffered events,
+			// then unblock so http.Server.Shutdown can complete instead of
+			// hanging on long-lived SSE streams.
+			s.drainOnShutdown(w, rc, flusher, client)
 			return
 		case <-recheckC:
 			// A transient locator error must NOT disconnect a healthy
@@ -452,6 +557,34 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
+		}
+	}
+}
+
+// drainOnShutdown flushes events already enqueued to this client — events
+// Send already reported as delivered — before the handler returns on
+// Close, so a graceful shutdown does not silently drop an acked event
+// (issue 3). It is a SINGLE non-blocking pass: Send refuses to enqueue
+// once s.closing is set (Close sets it under the write lock before closing
+// s.shutdown), so no new events arrive once shutdown is observed and the
+// buffer is quiescent. The per-write deadline still bounds a stalled
+// socket so a wedged reader cannot pin shutdown.
+//
+// ponytail: a client wedged mid-Write when Close fires cannot be drained —
+// SSE is at-most-once with no per-subscriber durable queue, so an event
+// already handed to a stuck socket is lost. Lifting this ceiling means
+// durable per-client queues, which are explicitly out of scope.
+func (s *SSESender) drainOnShutdown(w http.ResponseWriter, rc *http.ResponseController, flusher http.Flusher, client *sseClient) {
+	for {
+		select {
+		case event := <-client.events:
+			s.armWriteDeadline(rc)
+			if _, err := w.Write(event); err != nil {
+				return
+			}
+			flusher.Flush()
+		default:
+			return
 		}
 	}
 }
@@ -518,16 +651,47 @@ type sseEvent struct {
 // client is disconnected are lost). Omitting the id keeps the wire
 // contract honestly at-most-once; the envelope ID remains available in
 // the JSON payload's "id" field. See doc.go "SSE delivery semantics".
+//
+// The data value is framed PER SSE RULES: a "data:" field is a single
+// physical line, so any line terminator inside data is emitted as a new
+// "data:" line (the client rejoins segments with "\n"). A single "data:"
+// prefix in front of multi-line bytes would make EventSource keep only
+// the first physical line and mis-parse the rest — silent data loss at
+// the SSE boundary (HIGH-3). json.Marshal already compacts the RawMessage
+// payload (stripping structural newlines), but the formatter must not
+// depend on the shape produced by its only caller.
 func formatSSE(event string, data []byte) []byte {
 	event = sanitizeSSEField(event)
-	size := len("event: ") + len(event) + 1 +
-		len("data: ") + len(data) + 2
-	buf := make([]byte, 0, size)
+	// Preallocate for the common single-line case; multi-line data grows
+	// the slice by one "data: " prefix per extra segment.
+	buf := make([]byte, 0, len("event: ")+len(event)+1+len("data: ")+len(data)+2)
 	buf = append(buf, "event: "...)
 	buf = append(buf, event...)
 	buf = append(buf, '\n')
-	buf = append(buf, "data: "...)
-	buf = append(buf, data...)
+	buf = appendSSEData(buf, data)
 	buf = append(buf, '\n', '\n')
+	return buf
+}
+
+// appendSSEData appends data as one or more "data:" lines. Every SSE line
+// terminator (LF, CR, or CRLF) starts a fresh "data:" line so the frame
+// stays a valid single-event body no matter what bytes data carries.
+func appendSSEData(buf, data []byte) []byte {
+	buf = append(buf, "data: "...)
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\n':
+			buf = append(buf, "\ndata: "...)
+		case '\r':
+			buf = append(buf, "\ndata: "...)
+			// Collapse CRLF into a single break rather than emitting an
+			// empty extra data line.
+			if i+1 < len(data) && data[i+1] == '\n' {
+				i++
+			}
+		default:
+			buf = append(buf, data[i])
+		}
+	}
 	return buf
 }
