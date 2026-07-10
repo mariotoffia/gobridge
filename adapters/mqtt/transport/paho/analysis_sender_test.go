@@ -113,13 +113,13 @@ func TestAnaSender_ApplyTimeout_PreservesShorterParentDeadline(t *testing.T) {
 	}
 }
 
-// TestAnaSender_ApplyTimeout_LongerParentDeadline_NotShortenedByOpts
-// characterises the current behaviour: when the parent deadline is
-// LONGER than opts.Timeout, opts.Timeout is IGNORED. The deadline is
-// the longer parent deadline. This is a known design choice ("do not
-// shorten an existing deadline") but operators should be aware it
-// means SenderOptions.Timeout is effectively only a floor.
-func TestAnaSender_ApplyTimeout_LongerParentDeadline_NotShortenedByOpts(t *testing.T) {
+// TestAnaSender_ApplyTimeout_ConfiguredTimeoutTightensLongerParentDeadline
+// pins the M-1 fix: when the configured SenderOptions.Timeout is STRICTER
+// (shorter) than the caller's deadline, applyTimeout tightens to it, so an
+// operator-set sender.timeout is no longer silently shadowed by a looser
+// route policy.send_timeout. (The reverse — a configured timeout LOOSER than
+// the caller's deadline — is still ignored; see PreservesShorterParentDeadline.)
+func TestAnaSender_ApplyTimeout_ConfiguredTimeoutTightensLongerParentDeadline(t *testing.T) {
 	s := &Sender{opts: SenderOptions{Timeout: 100 * time.Millisecond}, metrics: &noopTestExporter{}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -128,10 +128,13 @@ func TestAnaSender_ApplyTimeout_LongerParentDeadline_NotShortenedByOpts(t *testi
 	got, gcancel := s.applyTimeout(ctx)
 	defer gcancel()
 
-	d, _ := got.Deadline()
+	d, ok := got.Deadline()
+	if !ok {
+		t.Fatal("expected a deadline on the returned context")
+	}
 	remaining := time.Until(d)
-	if remaining < 4*time.Second {
-		t.Fatalf("remaining = %v; expected ~5s (parent), opts.Timeout was NOT applied (by design)", remaining)
+	if remaining > 500*time.Millisecond {
+		t.Fatalf("remaining = %v; expected ~100ms (stricter opts.Timeout applied over the 5s parent)", remaining)
 	}
 }
 

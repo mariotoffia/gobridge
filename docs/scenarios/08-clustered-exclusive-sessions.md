@@ -92,7 +92,7 @@ sessions:
     options:
       session:
         broker_url: tls://mqtt.prod.example.com:8883
-        client_id: bridge-01        # unique per instance
+        client_id: telemetry-bridge  # SAME on every instance (see the client_id walkthrough)
         keep_alive: 30
         connect_timeout: 30s
         clean_start: false
@@ -188,6 +188,38 @@ A stable, unique identifier for this instance. Used as the lease holder identity
 > pod identity (a StatefulSet ordinal, or `metadata.name` via the downward API)
 > so dashboards and logs can tell the replicas apart.
 
+### `client_id: telemetry-bridge` (SHARED across instances)
+
+In an **exclusive** session the `client_id` MUST be **stable and identical on
+every instance** of the logical session — the opposite of `instance_id`. This is
+the MQTT identity contract that makes lease failover carry the broker session:
+
+> When the active instance dies and the standby reconnects with the **same**
+> `client_id`, the broker performs *session takeover* and hands the resumed
+> session — its `$share` subscription and its queued QoS 1/2 messages — to the
+> new owner. The lease guarantees only one instance is ever connected at a time,
+> so a shared `client_id` never causes a live collision; it is exactly what lets
+> the standby inherit the dead owner's session.
+
+> **Do NOT use a unique-per-instance `client_id` on an exclusive session.** A
+> unique id (`bridge-01`, `bridge-02`, …) makes each instance a **separate**
+> broker session. When `bridge-01` dies, *its* session keeps the `$share`
+> subscription and accumulates queued QoS 1/2 deliveries; `bridge-02` connects as
+> a different session and the broker does **not** hand it that queue. Those
+> messages are **stranded broker-side** until the dead session expires (up to
+> `session_expiry_interval`, an hour in this example) — a silent loss that
+> `shared_outbox` cannot recover, because it protects messages only *after* the
+> bridge receives them. With unique ids you lose the very failover continuity this
+> scenario exists to provide.
+
+Because `client_id` is shared, it can live in the replicated config file
+unchanged — only `instance_id` needs to differ per instance. (For the *opposite*
+posture — stateless `$share` scale-out with `session_mode: ephemeral`, where each
+replica needs a **distinct** `client_id` — set `client_id_suffix: hostname` or
+`nonce` so one shared config file still yields unique ids per pod; see the MQTT
+transport reference. That option is rejected on exclusive sessions precisely
+because it would strand messages as described above.)
+
 ### `session_mode: exclusive`
 
 On the session, `exclusive` means that only one instance in the cluster may own this session at a time. Ownership is determined by a lease stored in `stores.lease`. The instance that acquires the lease becomes the active consumer. All other instances remain in standby, periodically checking whether the lease has expired.
@@ -210,7 +242,7 @@ In this scenario we use both for defense in depth: the exclusive session ensures
 
 When set, the bridge does not open the MQTT connection until the lease is acquired. The standby instance has no open TCP connection to the broker. This is important for two reasons:
 
-1. **Client ID uniqueness.** MQTT brokers disconnect existing connections when a new client connects with the same `client_id`. Without `connect_after_lease`, both instances would connect simultaneously and fight over the client ID.
+1. **A shared `client_id` stays safe.** Exclusive instances share one stable `client_id` (above), so the lease is what guarantees only one of them is ever connected. `connect_after_lease` enforces that: the standby holds no connection, so it cannot take over the active owner's broker session before it actually owns the lease. Without it, a booting standby would connect with the shared `client_id` and *session-takeover-kick* the live owner mid-stream. (This is the reverse hazard from the H-1 stranding one: shared id + no lease gate = mutual kicking; unique id = stranded queues. The lease + a shared id + `connect_after_lease` is the only combination that both serialises connections and carries the session on failover.)
 
 2. **Resource conservation.** The standby instance consumes no broker resources until it takes over.
 
@@ -406,7 +438,7 @@ sessions:
     options:
       session:
         broker_url: tls://mqtt.prod.example.com:8883
-        client_id: bridge-01
+        client_id: mqtt-exclusive-bridge  # SAME on every instance (exclusive: stable shared id)
 
 routes:
   - id: mqtt-to-sqs

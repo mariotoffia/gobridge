@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
@@ -57,10 +58,20 @@ const HeaderMQTTQoS = "mqtt.qos"
 
 const maxHeaderValueLen = 256
 
-// isPrintableASCII reports whether every byte in s is printable ASCII (0x20–0x7E).
-func isPrintableASCII(s string) bool {
+// isSafeHeaderValue reports whether s is a safe MQTT header string: valid
+// UTF-8 with no control characters. MQTT v5 user properties, ContentType,
+// ResponseTopic and CorrelationData are UTF-8 strings by spec, so this
+// admits legal non-ASCII values (e.g. "Malmö") that the previous
+// printable-ASCII-only filter dropped silently (M-2). Control characters
+// (including NUL, newline, and C1 controls) are still rejected to prevent
+// log/header injection; invalid UTF-8 (arbitrary binary, e.g. non-text
+// CorrelationData) is rejected because it cannot round-trip as a header.
+func isSafeHeaderValue(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
 	for _, r := range s {
-		if r > unicode.MaxASCII || !unicode.IsPrint(r) {
+		if unicode.IsControl(r) {
 			return false
 		}
 	}
@@ -86,8 +97,16 @@ func isPrintableASCII(s string) bool {
 // helper exists to translate; its only callers are ACL files
 // (acl_router.go), so the SDK type does not cross into port-side code.
 //
+// An optional MetricsExporter (variadic, mirroring PublishFromEnvelope)
+// counts application/bridge user properties dropped by the safety filter
+// (unsafe key/value or over-length) on MetricMQTTIngressHeaderDropped, so
+// the otherwise-silent ingress drop is observable (M-2). Reserved and
+// adapter-controlled keys stripped by policy are NOT counted. When no
+// exporter is supplied the drop is still applied, just uncounted
+// (test/legacy call sites).
+//
 //aclcheck:allow-export
-func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelope {
+func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.MetricsExporter) *messaging.Envelope {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -101,23 +120,24 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 	var mqttMsgID string
 	var subject string
 	var expiresAt time.Time
+	droppedUserProps := 0
 
 	if pub.Properties != nil {
 		if pub.Properties.CorrelationData != nil {
 			corr := string(pub.Properties.CorrelationData)
-			if len(corr) <= maxHeaderValueLen && isPrintableASCII(corr) {
+			if len(corr) <= maxHeaderValueLen && isSafeHeaderValue(corr) {
 				headers[messaging.HeaderCorrelationID] = corr
 			}
 		}
 		if pub.Properties.ContentType != "" {
 			ct := pub.Properties.ContentType
-			if len(ct) <= maxHeaderValueLen && isPrintableASCII(ct) {
+			if len(ct) <= maxHeaderValueLen && isSafeHeaderValue(ct) {
 				headers[messaging.HeaderContentType] = ct
 			}
 		}
 		if pub.Properties.ResponseTopic != "" {
 			rt := pub.Properties.ResponseTopic
-			if len(rt) <= maxHeaderValueLen && isPrintableASCII(rt) {
+			if len(rt) <= maxHeaderValueLen && isSafeHeaderValue(rt) {
 				headers[headerMQTTResponseTopic] = rt
 			}
 		}
@@ -127,7 +147,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 
 		for _, u := range pub.Properties.User {
 			if u.Key == HeaderGobridgeSubject {
-				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
+				if len(u.Value) <= maxHeaderValueLen && isSafeHeaderValue(u.Value) {
 					subject = u.Value
 				}
 				continue
@@ -139,7 +159,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 				continue
 			}
 			if u.Key == HeaderMessageID {
-				if len(u.Value) <= maxHeaderValueLen && isPrintableASCII(u.Value) {
+				if len(u.Value) <= maxHeaderValueLen && isSafeHeaderValue(u.Value) {
 					mqttMsgID = u.Value
 					headers[HeaderMessageID] = u.Value
 				}
@@ -149,13 +169,19 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock) *messaging.Envelo
 				continue
 			}
 			if len(u.Key) > maxHeaderValueLen || len(u.Value) > maxHeaderValueLen {
+				droppedUserProps++
 				continue
 			}
-			if !isPrintableASCII(u.Key) || !isPrintableASCII(u.Value) {
+			if !isSafeHeaderValue(u.Key) || !isSafeHeaderValue(u.Value) {
+				droppedUserProps++
 				continue
 			}
 			headers[u.Key] = u.Value
 		}
+	}
+
+	if droppedUserProps > 0 && len(metrics) > 0 && metrics[0] != nil {
+		metrics[0].Counter(MetricMQTTIngressHeaderDropped, int64(droppedUserProps))
 	}
 
 	// Determine ID before construction — MustEnvelope requires a non-empty ID.

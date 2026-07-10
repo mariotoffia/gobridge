@@ -1365,7 +1365,7 @@ func (r *router) OverflowDroppedCount() int64 {
 // for publishes that need no protocol ack (QoS 0 / legacy Route path).
 func (r *router) RegisterEnvelope(id string, clk clock.Clock, filters []string, h func(*messaging.Envelope, func() error)) {
 	r.RegisterFiltered(id, filters, func(pub *pahov5.Publish, ack func() error) {
-		h(EnvelopeFromPublish(pub, clk), ack)
+		h(EnvelopeFromPublish(pub, clk, r.metrics), ack)
 	})
 }
 

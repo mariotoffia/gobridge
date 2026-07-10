@@ -1,8 +1,10 @@
 package paho
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net/url"
@@ -25,6 +27,26 @@ type SessionOptions struct {
 	// single-broker config and re-serializes on the canonical broker_urls key.
 	BrokerURL string `mapstructure:"broker_url" yaml:"broker_url,omitempty" json:"broker_url,omitempty"`
 	ClientID  string `mapstructure:"client_id" yaml:"client_id" json:"client_id"`
+	// ClientIDSuffix, when set, appends a per-replica-unique token to
+	// ClientID at build time so N replicas sharing ONE config file (a
+	// Kubernetes Deployment or ECS service with replicas>1 and a single
+	// ConfigMap) get DISTINCT client_ids — which $share scale-out REQUIRES —
+	// without per-pod config templating (M-3). Supported tokens:
+	//   - "hostname": append "-<os.Hostname()>" (the pod name under K8s, the
+	//     task id under ECS). STABLE across restarts of the same replica, so
+	//     it is the preferred choice and a resumed Persistent session keeps
+	//     its identity.
+	//   - "nonce": append "-<random>", a fresh value each process start. Use
+	//     for Ephemeral $share workers where per-restart identity churn is
+	//     acceptable (a Persistent/Exclusive session would orphan its prior
+	//     broker session on every restart).
+	// It is REJECTED (build fails) for session_mode: exclusive, whose
+	// identity contract requires a STABLE, SHARED client_id across instances:
+	// the lease serialises connections and the standby resumes the broker
+	// session on takeover, so a unique-per-instance id would strand queued
+	// QoS messages (see acl_session.go and scenario 08 / H-1). Empty means
+	// ClientID is used verbatim (the default).
+	ClientIDSuffix string `mapstructure:"client_id_suffix" yaml:"client_id_suffix,omitempty" json:"client_id_suffix,omitempty"`
 	// KeepAlive is the MQTT keep-alive interval in seconds. The registry
 	// decode path pre-fills the documented default (30) before decoding,
 	// so an omitted key gets 30 while an EXPLICIT `keep_alive: 0`
@@ -695,6 +717,10 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	}
 
 	tlsCfg := &tls.Config{
+		// Explicit floor (Go's client default is already TLS 1.2, so this
+		// changes no accepted-version behaviour) — a documented minimum is
+		// cheaper defence-in-depth than relying on the library default (L-3).
+		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // caller-controlled
 	}
 
@@ -737,6 +763,14 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
+// optDuration extracts a duration from a hand-built options map for the
+// SessionOptionsFromMap library-consumer path. An invalid or negative value
+// returns (0, false) — the caller keeps the field's default — rather than an
+// error: this map path is intentionally lenient for programmatic callers, and
+// strict validation of malformed input lives on the registry/YAML surface
+// (register.go's decoder rejects unknown or unparseable keys). L-1: the two
+// public config surfaces differ in strictness by design; this leniency is the
+// documented behaviour of the map path, not an oversight.
 func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	v, ok := m[key]
 	if !ok {
@@ -772,4 +806,52 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// ClientIDSuffixHostname and ClientIDSuffixNonce are the supported
+// client_id_suffix tokens (M-3).
+const (
+	ClientIDSuffixHostname = "hostname"
+	ClientIDSuffixNonce    = "nonce"
+)
+
+// resolveClientIDSuffix returns base with the suffix token expanded and
+// appended ("-<value>"), producing a per-replica-unique client_id for
+// $share scale-out from a single shared config file (M-3). An empty suffix
+// returns base unchanged. An unsupported token, or a failed hostname
+// lookup, returns an error so the misconfiguration fails the build rather
+// than silently colliding client_ids. Callers must reject the suffix for
+// exclusive sessions before calling this (see factory.NewSession).
+func resolveClientIDSuffix(base, suffix string) (string, error) {
+	switch suffix {
+	case "":
+		return base, nil
+	case ClientIDSuffixHostname:
+		host, err := os.Hostname()
+		if err != nil {
+			return "", fmt.Errorf("client_id_suffix %q: hostname lookup failed: %w", suffix, err)
+		}
+		if host == "" {
+			return "", fmt.Errorf("client_id_suffix %q: hostname is empty", suffix)
+		}
+		return base + "-" + host, nil
+	case ClientIDSuffixNonce:
+		return base + "-" + randomClientNonce(), nil
+	default:
+		return "", fmt.Errorf("client_id_suffix %q: unsupported (want %q or %q)",
+			suffix, ClientIDSuffixHostname, ClientIDSuffixNonce)
+	}
+}
+
+// randomClientNonce returns a short random hex token (8 chars) used to
+// disambiguate replica client_ids. crypto/rand.Read effectively never
+// fails; the clock.System fallback (the documented default clock) keeps
+// the function total without an error return for what is a best-effort
+// disambiguator.
+func randomClientNonce() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", clock.System.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }

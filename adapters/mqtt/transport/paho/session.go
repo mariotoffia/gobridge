@@ -54,7 +54,13 @@ type Session struct {
 	// the current connection came up. Both guarded by mu; used to damp
 	// ClientID-collision takeover storms.
 	takeoverStreak int
-	connUpAt       int64 // unix nanos of last OnConnectionUp; 0 when down
+	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
+	// is set on every connect edge and never reset to 0 on disconnect: the
+	// takeover-damping math only asks "was the connection stable for
+	// takeoverStabilityWindow before this takeover?", which needs the last
+	// up-transition, not a live up/down flag (connected covers that).
+	// Zeroing it on down would also make the reset race the 0x8E callback.
+	connUpAt int64
 
 	// reconcileMu serializes concurrent Reconcile calls so their
 	// subscribe/unsubscribe operations cannot interleave and corrupt

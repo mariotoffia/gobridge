@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -77,8 +78,8 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		)
 	}
 
-	// Apply timeout: use configured value, or a 60s safety-net fallback
-	// when Timeout<=0 and the caller's context has no deadline.
+	// Apply timeout: honour whichever of the configured sender timeout and
+	// the caller's deadline is stricter (see applyTimeout for the M-1 rule).
 	ctx, timeoutCancel := s.applyTimeout(ctx)
 	defer timeoutCancel()
 
@@ -167,17 +168,38 @@ func (s *Sender) NonDurableEgress() bool {
 // SenderOptions.Timeout is zero and the context has no deadline.
 const defaultSendTimeout = 60 * time.Second
 
-// applyTimeout returns a context with a deadline derived from the
-// configured Timeout. When Timeout <= 0 the fallback of 60 s is used.
-// If the context already carries a deadline, no additional timeout is
-// applied so we do not accidentally shorten an existing one.
+// applyTimeout derives the send context's deadline from SenderOptions.Timeout
+// and the caller's own deadline, honouring whichever is STRICTER:
+//
+//   - Timeout <= 0 (unset): apply the 60 s safety net ONLY when the caller
+//     imposed no deadline (direct library consumers). A bridge route always
+//     wraps the send in context.WithTimeout(policy.send_timeout), so the net
+//     never shadows a route deadline.
+//   - Timeout > 0 (configured): apply it whenever it is stricter than the
+//     caller's remaining deadline (or there is none). This stops an
+//     operator-set options.sender.timeout from being silently shadowed by a
+//     looser route policy.send_timeout (M-1). A configured timeout LOOSER
+//     than the caller's deadline is ignored — we never extend the caller's
+//     ceiling, so the route send_timeout remains the upper bound.
 func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, hasDeadline := ctx.Deadline()
+
 	timeout := s.opts.Timeout
 	if timeout <= 0 {
-		timeout = defaultSendTimeout
+		if hasDeadline {
+			return ctx, func() {}
+		}
+		return context.WithTimeout(ctx, defaultSendTimeout)
 	}
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		return context.WithTimeout(ctx, timeout)
+
+	// Compare the caller's remaining budget against the configured timeout via
+	// clock.System (never time.Until): a context deadline is wall-clock — set by
+	// the route dispatcher's context.WithTimeout — and clock.System is that same
+	// wall clock, so this matches how the context itself will expire. applyTimeout
+	// is also exercised without a Session, so there is no injectable clock at this
+	// seam.
+	if hasDeadline && deadline.Sub(clock.System.Now()) <= timeout {
+		return ctx, func() {} // caller's deadline is already stricter
 	}
-	return ctx, func() {} // noop cancel — caller's deadline is already shorter
+	return context.WithTimeout(ctx, timeout)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -66,6 +67,26 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	if opts.ClientID == "" {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))
+	}
+	// M-3: expand client_id_suffix into a per-replica-unique client_id so a
+	// single shared config file can drive $share scale-out. Rejected for
+	// exclusive mode, whose identity contract requires a stable SHARED
+	// client_id across instances (a unique-per-instance id strands queued
+	// QoS messages on failover — see acl_session.go / H-1).
+	if opts.ClientIDSuffix != "" {
+		if spec.SessionMode == connectivity.SessionExclusive {
+			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+				"mqtt session %q: client_id_suffix must not be set for session_mode: exclusive "+
+					"(exclusive requires a stable client_id shared across instances; the lease "+
+					"serialises connections and the standby resumes the broker session on takeover)",
+				spec.ID))
+		}
+		resolved, err := resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
+		if err != nil {
+			return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
+		}
+		opts.ClientID = resolved
 	}
 	if len(opts.BrokerURLs) == 0 {
 		return nil, shared.ErrInvalidPayload.WithMessage(

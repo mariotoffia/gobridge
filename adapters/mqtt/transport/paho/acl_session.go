@@ -476,6 +476,15 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		if err != nil {
 			return nil, nil, shared.ErrUnavailable.Wrap(err).WithMessage("build TLS config")
 		}
+		if tlsOpts.InsecureSkipVerify && s.logger != nil {
+			// insecure_skip_verify disables server-certificate validation,
+			// exposing the connection to MITM. It has legitimate test/mesh
+			// uses, but must never pass unnoticed in production (L-3).
+			s.logger.Warn("mqtt: TLS certificate verification DISABLED "+
+				"(insecure_skip_verify) — the broker's identity is NOT "+
+				"validated; use only on a trusted transport",
+				"client_id", s.opts.ClientID)
+		}
 		cfg.TlsCfg = tlsCfg
 	}
 

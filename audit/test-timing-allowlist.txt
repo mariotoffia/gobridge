@@ -21,7 +21,7 @@
 ./adapters/http/transport/subject_address_test.go:303:		time.Sleep(10 * time.Millisecond)
 ./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_router_test.go:236:	time.Sleep(100 * time.Millisecond) // OTHER: race window — let concurrent register/unregister/route goroutines exercise
-./adapters/mqtt/transport/paho/analysis_sender_test.go:243:	time.Sleep(80 * time.Millisecond)
+./adapters/mqtt/transport/paho/analysis_sender_test.go:246:	time.Sleep(80 * time.Millisecond)
 ./adapters/mqtt/transport/paho/analysis_session_test.go:289:			time.Sleep(time.Duration(trial+1) * 100 * time.Microsecond) // OTHER: race window — Close during concurrent pushEvent
 ./adapters/mqtt/transport/paho/analysis_session_test.go:338:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 ./adapters/mqtt/transport/paho/analysis_session_test.go:385:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping

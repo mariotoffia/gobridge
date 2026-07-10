@@ -62,6 +62,18 @@ deliberate. See
 [Scenario 8 — High-Availability Profile](../scenarios/08-clustered-exclusive-sessions.md#high-availability-profile)
 for the failover math and the invariants.
 
+**Restart policy is a deployment requirement.** The Paho session is
+single-use: once `Close` runs (on lease loss / step-down) it does not reconnect
+in-process. Re-acquiring the lease therefore costs a **process restart**, driven
+by the runtime going terminal (liveness fails closed and a non-zero-exit backstop
+fires). A clustered exclusive deployment **must** run under a restart policy that
+brings the process back: on Kubernetes the default `restartPolicy: Always`
+suffices (a `livenessProbe` on `/api/v1/monitor/live` gives faster detection);
+under systemd use `Restart=on-failure` (or `always`); under bare `docker run` use
+`--restart unless-stopped`. Readiness alone is insufficient — it removes the pod
+from the load balancer but does not restart a terminal runtime. See
+[scenario 08 `connect_after_lease`](../scenarios/08-clustered-exclusive-sessions.md#connect_after_lease-true).
+
 On a resumed (`clean_start=false`) session the broker replays its queued
 backlog on CONNACK before the route runners have registered their topic
 filters, so briefly some publishes match no handler. Those are buffered for
@@ -162,8 +174,9 @@ senders:
 |-----|------|---------|-------------|
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
 | `broker_urls` | []string | -- | Multiple broker URLs for failover |
-| `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`factory.go:59-66`, `NewSession`); an empty value is accepted at parse time. |
-| `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the pinger. |
+| `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`factory.go:59-66`, `NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
+| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id` at build time, so one shared config file (ConfigMap, ECS task def) can still give every replica a distinct id. `hostname` appends `-<hostname>` (the pod/container name — deterministic and human-readable in logs); `nonce` appends `-<8 hex>` from `crypto/rand` (unique per process; use when the hostname is not distinct). Unset (default) leaves `client_id` verbatim. **Rejected on `session_mode: exclusive`** — exclusive failover requires a *stable shared* id across instances (see [scenario 08](../scenarios/08-clustered-exclusive-sessions.md)); build fails if set there. Use it only for `ephemeral`/`persistent` `$share` scale-out. |
+| `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |
 | `reconcile_timeout` | duration | `30s` (`DefaultReconcileTimeout`) | Bounds **each** broker SUBSCRIBE / UNSUBSCRIBE issued while reconciling the session plan. The reconcile runs on a possibly deadline-less runtime context, so without this an unresponsive broker (SUBACK/UNSUBACK never arrives on a half-open connection) would hang the reconcile — and any startup / hot-reload step awaiting it — indefinitely. This is a **liveness safety bound**: a non-positive value is coerced **up** to `30s` and cannot be disabled. |
@@ -172,7 +185,7 @@ senders:
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at Start with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
-| `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × max_payload_bytes` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
+| `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. **The ~128 KiB is deliberate slack for MQTT properties/topic overhead, not a hard body cap:** a payload up to ~128 KiB *over* `max_payload_bytes` is still broker-admitted, because the advertised limit bounds the whole packet, not the body alone. Size `max_payload_bytes` for the intended body and treat the effective admitted-body ceiling as `max_payload_bytes + ~128 KiB`. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × (max_payload_bytes + slack)` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `username` | string | -- | Authentication username. Sent in the MQTT CONNECT packet in **cleartext** — see `allow_plaintext_credentials` and use a TLS broker scheme (`ssl://`, `mqtts://`, …). |
 | `password` | string | -- | Authentication password (redacted on marshal). Sent in the MQTT CONNECT packet in **cleartext** — protect it with a TLS broker scheme. |
@@ -197,7 +210,7 @@ senders:
 | `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. |
 | `qos` | int | `1` | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
-| `timeout` | duration | `30s` | Per-publish timeout |
+| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. With **no** caller deadline (direct library use, no route dispatcher) a `0` applies a 60s safety-net and a positive value applies as-is. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
 | `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
 ## Credential URI (`options.credentials_uri`)
@@ -269,9 +282,17 @@ wired today.)
 
 ## Resilience Behavior
 
-- **Publish timeout fallback.** When `timeout` is set to `0` (or omitted and no
-  context deadline is present), the sender applies a 60-second safety-net
-  timeout to prevent indefinite hangs on stalled broker connections.
+- **Publish timeout — route policy vs. sender timeout.** The sender applies the
+  **stricter** of `options.sender.timeout` and the caller's remaining context
+  deadline. On a bridge route the dispatcher always wraps each send in the route's
+  `policy.send_timeout` (default 30s), so that deadline is the ceiling: a
+  `sender.timeout` **shorter** than the remaining route deadline tightens the
+  publish (useful for a route that must fail fast to a slow broker), while a
+  **longer** `sender.timeout` is capped by the route deadline and does not extend
+  it. The 60-second safety-net fires **only** when there is no caller deadline at
+  all — i.e. a direct library consumer that calls `Send` without a route
+  dispatcher and leaves `timeout` at `0`. In a bridge deployment `sender.timeout`
+  therefore only ever *tightens* a send; it cannot loosen the route ceiling.
 - **Case-insensitive error classification.** MQTT error messages from brokers
   are matched case-insensitively. `"Connection Refused"`, `"CONNECTION REFUSED"`,
   and `"connection refused"` are all correctly classified as `ErrConnectionLost`,
@@ -379,8 +400,9 @@ misconfigure into a self-DOS. The broker load-balances a `$share` group across
   takeover** (MQTT `0x8E`) that kicks the first off, which reconnects and kicks
   the second off, and so on. The result is a reconnect storm that consumes
   nothing (self-DOS), not load-balancing. Use `session_mode: ephemeral` (unique
-  `client_id` + `clean_start=true`) or give each replica a per-instance
-  `client_id` suffix.
+  `client_id` + `clean_start=true`) and give each replica a distinct `client_id`
+  — set `client_id_suffix: hostname` (or `nonce`) so one shared config file still
+  yields a unique id per pod (recipe below).
 - **A shared/stable `client_id` is only safe behind an exclusive lease.** In
   `session_mode: exclusive`, one holder connects at a time (the lease
   guarantees it), so a stable `client_id` is correct and a takeover is a
@@ -396,6 +418,41 @@ logged at **Error** on the first occurrence — that combination is the
 smoking-gun of a reused `client_id`. `MQTTSessionTakeover` counts every
 takeover; a persistent non-zero rate on a `$share` deployment means the
 `client_id`s are colliding.
+
+#### Recipe: unique `client_id` per replica from one config file
+
+A Kubernetes Deployment or ECS service scales one config (ConfigMap / task
+definition) to `replicas: N`, so every pod reads the **same** `client_id` — the
+self-DOS above. `client_id_suffix` resolves it at build time without per-pod
+templating:
+
+```yaml
+sessions:
+  - id: telemetry-in
+    transport: mqtt
+    session_mode: ephemeral        # scale-out, NOT exclusive
+    options:
+      session:
+        broker_url: tls://mqtt.prod.example.com:8883
+        client_id: telemetry-consumer   # shared base in the ConfigMap
+        client_id_suffix: hostname       # -> telemetry-consumer-<pod name>
+        clean_start: true
+```
+
+- `hostname` appends the container/pod hostname (`telemetry-consumer-web-7d9f-abc12`).
+  On K8s the pod name is already unique and stable for the pod's life, and it
+  shows up verbatim in broker logs — prefer it when the hostname is distinct
+  (the default for Deployments and StatefulSets).
+- `nonce` appends 8 hex characters from `crypto/rand`, unique per **process**.
+  Use it when replicas do not have distinct hostnames (some flat container
+  networks) — but note a pod restart yields a *new* id, so the broker sees a new
+  ephemeral session rather than a resumed one (fine for `clean_start: true`).
+
+> **Do not set `client_id_suffix` on an exclusive session.** Exclusive failover
+> needs a *stable shared* `client_id` so the standby can resume the dead owner's
+> broker session; a per-instance suffix would strand queued QoS 1/2 messages on
+> every failover. The build **rejects** `client_id_suffix` when `session_mode:
+> exclusive`. See [scenario 08](../scenarios/08-clustered-exclusive-sessions.md).
 
 ## Ingress headers (`mqtt.*`)
 
@@ -413,6 +470,32 @@ with `mqtt.topic`, `mqtt.retained`, or `mqtt.qos` is dropped during conversion,
 so a remote publisher cannot spoof the delivered topic, retained state, or QoS.
 Read them downstream to branch on retained snapshots or on the QoS a message
 arrived at.
+
+### User-property ingestion and the header filter
+
+Beyond the reserved `mqtt.*` keys, every MQTT v5 **user property** on an inbound
+publish is copied onto the envelope headers under its own name, so a route can
+filter or branch on peer-supplied metadata. Two admission rules apply per
+property, and a value that fails either is **dropped** (the key never appears on
+the envelope):
+
+- **Length.** A key or value longer than 256 **bytes** is dropped (a bound on
+  per-message header memory; note this is UTF-8 byte length, so a multi-byte
+  value reaches the cap in fewer visible characters).
+- **Content.** Both the key and the value must be **valid UTF-8 with no control
+  characters**. MQTT v5 user properties are UTF-8 string pairs by spec, so
+  ordinary non-ASCII text is preserved — `location: Malmö` arrives intact. Only
+  genuinely unsafe values (invalid UTF-8, or embedded control characters such as
+  `NUL`, newline, or other `unicode.IsControl` runes) are rejected, matching the
+  reserved-header safety model.
+
+Every dropped user property is counted on **`MQTTIngressHeaderDropped`**, the
+ingress counterpart to egress's `MQTTNonStringHeaderDropped`. A non-zero rate
+means a peer is sending headers the bridge cannot admit (over-length or unsafe);
+watch it if a route that filters on a peer header starts misrouting — a silent
+drop here is now observable rather than invisible. (Reserved-key collisions
+described above are a separate, deliberate anti-spoof drop and are not counted on
+this metric.)
 
 ### Envelope ID derivation and dedup collisions
 
@@ -435,6 +518,15 @@ correlation ID); the adapter then uses that instead of the derived hash.
 
 MQTT receivers have no transport-specific options. Subscriptions are declared
 in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
+
+> **Receiver IDs must be unique (library-consumer note).** A receiver registers
+> its topic filters on the shared session keyed by its **ID**. Constructing two
+> receivers with the *same* ID on one session makes the second silently overwrite
+> the first's registration (and an unregister for that ID removes whichever is
+> current), so one of them stops receiving with no error. In a bridge deployment
+> the runtime guarantees unique route/receiver IDs, so this cannot happen from
+> YAML — it is a hazard only for code that drives the adapter directly. Give every
+> receiver a distinct ID.
 
 ---
 

@@ -19,6 +19,17 @@ const (
 	// PublishFromEnvelope so the otherwise-silent drop is observable.
 	MetricMQTTNonStringHeaderDropped = "MQTTNonStringHeaderDropped"
 
+	// MetricMQTTIngressHeaderDropped counts inbound MQTT user properties
+	// dropped on ingress because their key or value is unsafe (not valid
+	// UTF-8, or contains a control character) or exceeds maxHeaderValueLen.
+	// It is the ingress counterpart to MetricMQTTNonStringHeaderDropped:
+	// without it a peer publishing a spec-legal-but-rejected header (e.g. an
+	// over-long value) loses it silently, and a route filtering on that
+	// header misroutes with nothing to debug from (M-2). Reserved and
+	// adapter-controlled keys stripped on purpose are NOT counted here — only
+	// application/bridge user properties lost to the safety filter.
+	MetricMQTTIngressHeaderDropped = "MQTTIngressHeaderDropped"
+
 	// MetricMQTTRouterBuffered counts publishes that arrived before any
 	// matching handler registered (e.g. the persistent-session backlog
 	// delivered on CONNACK before Receiver.Run runs) and were held in the
