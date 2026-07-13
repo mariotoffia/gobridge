@@ -50,6 +50,31 @@ type pahoConnection interface {
 type subscribeSpec struct {
 	Topic string
 	QoS   byte
+	// NoLocal requests that the broker NOT deliver a message back to the
+	// connection that published it (MQTT5 §3.8.3.1). It breaks the
+	// MQTT->MQTT self-delivery loop: a session that subscribes and publishes on
+	// filters that overlap would otherwise receive its OWN forwarded publishes
+	// and re-forward them, an unbounded self-amplification (Scenario 01). It is
+	// opt-in per session (SessionOptions.NoLocal / `no_local`, default off) and
+	// MUST stay false for a shared subscription ($share), where NoLocal is a
+	// Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery
+	// is unaffected: NoLocal is per-connection, and distinct bridges use
+	// distinct client_ids.
+	NoLocal bool
+	// RetainHandling controls WHEN the broker sends retained messages for the
+	// filter at subscribe time (MQTT5 §3.8.3.1):
+	//   0 — always send retained on subscribe;
+	//   1 — send retained only if the subscription did not already exist;
+	//   2 — never send retained on subscribe.
+	// Ephemeral sessions use 0 (each connect is a brand-new subscription, so
+	// retained state must be (re)hydrated). Persistent/exclusive sessions use 1:
+	// on the FIRST subscribe the subscription does not exist yet so retained
+	// state still arrives, but on every reconnect that RESUMES the session the
+	// subscription already exists broker-side, so the broker suppresses a full
+	// retained replay — avoiding the reconnect-storm where each network blip
+	// re-delivers every retained message per filter and direct routes
+	// re-process retained state (A-7).
+	RetainHandling byte
 }
 
 // publishResult is the SDK-free view of a paho PUBACK / PUBREC. Only
@@ -118,7 +143,12 @@ func (c *pahoConn) Disconnect(ctx context.Context) error {
 func (c *pahoConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte, error) {
 	opts := make([]pahov5.SubscribeOptions, len(subs))
 	for i, s := range subs {
-		opts[i] = pahov5.SubscribeOptions{Topic: s.Topic, QoS: s.QoS}
+		opts[i] = pahov5.SubscribeOptions{
+			Topic:          s.Topic,
+			QoS:            s.QoS,
+			NoLocal:        s.NoLocal,
+			RetainHandling: s.RetainHandling,
+		}
 	}
 	sa, err := c.cm.Subscribe(ctx, &pahov5.Subscribe{Subscriptions: opts})
 	if err != nil {

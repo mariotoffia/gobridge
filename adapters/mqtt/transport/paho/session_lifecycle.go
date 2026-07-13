@@ -253,28 +253,34 @@ func (s *Session) Close(ctx context.Context) error {
 // with an inline reconcile that swallowed its own failure, could leave a
 // topic silently unsubscribed with no error surfaced (finding C7).
 //
-// Lock discipline (finding C7-N4 — analysed, deliberately deferred): this
-// callback takes ONLY s.mu for the activeSubs reset and MUST NOT acquire
-// reconcileMu. autopaho invokes OnConnectionUp synchronously on its sole
-// connection-management goroutine and documents that the callback "must
-// not block" (autopaho.ClientConfig.OnConnectionUp, auto.go). reconcileMu
-// is held by reconcile() for the entire duration of a network SUBSCRIBE /
-// UNSUBSCRIBE round-trip, so blocking on it here would stall that
-// goroutine — the owner of reconnect and error handling — on a network
-// call, violating the SDK contract and coupling liveness to paho's
-// in-flight-request teardown behaviour. The TOCTOU this guard would close
-// (a prior-connect reconcile writing stale subscriptions into activeSubs
-// after this reset) is a sub-microsecond, ephemeral-only window whose
-// worst case is a redundant re-subscribe or a Subscribe error that goes
-// terminal — never silent subscription loss (persistent/exclusive
-// sessions resume server-side, so a non-empty activeSubs is correct there
-// anyway). The deadlock/contract hazard therefore outweighs the benefit;
-// do NOT add reconcileMu here without revisiting the autopaho contract.
+// Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
+// activeSubs reset and MUST NOT acquire reconcileMu. autopaho invokes
+// OnConnectionUp synchronously on its sole connection-management goroutine and
+// documents that the callback "must not block" (autopaho.ClientConfig.
+// OnConnectionUp, auto.go). reconcileMu is held by reconcile() for the entire
+// duration of a network SUBSCRIBE / UNSUBSCRIBE round-trip, so blocking on it
+// here would stall that goroutine — the owner of reconnect and error handling
+// — on a network call, violating the SDK contract and coupling liveness to
+// paho's in-flight-request teardown behaviour.
+//
+// The TOCTOU a lock here would close — a prior-connection reconcile writing
+// stale subscriptions into activeSubs AFTER this reset — is instead closed
+// WITHOUT any new lock by the connEpoch generation counter (A-3): this reset
+// bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
+// longer matches. That keeps activeSubs empty for the new connection, so the
+// authoritative reconnect reconcile issues a full re-subscribe rather than
+// computing an empty delta against a stale set and silently dropping
+// subscriptions on an ephemeral (clean_start) session. Do NOT add reconcileMu
+// here — the epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.activeSubs = make(map[string]byte)
+	// Bump the connection generation so any reconcile that snapshotted
+	// activeSubs under the PRIOR connection abandons its (now stale) write-back
+	// instead of polluting this fresh set (A-3).
+	s.connEpoch++
 	s.mu.Unlock()
 
 	// Restart the router's unmatched-publish grace window for this
@@ -348,6 +354,7 @@ func (s *Session) noteSessionTakeover() {
 		s.takeoverStreak = 0
 	}
 	s.takeoverStreak++
+	s.lastTakeoverAt = now
 	streak := s.takeoverStreak
 	// A takeover while shared subscriptions ($share) are active is the
 	// smoking gun of the HIGH-3 self-DOS: another instance connected with the
@@ -397,14 +404,25 @@ func (s *Session) noteSessionTakeover() {
 }
 
 // takeoverPenalty returns the extra reconnect delay applied on top of
-// the configured backoff while a takeover storm is in progress:
+// the configured backoff while a takeover storm is IN PROGRESS:
 // 0 for streak <= 1 (single takeover = legitimate failover; the standby
 // must not be slowed down), then 1s << (streak-2) capped at 64s.
+//
+// The penalty is gated on recency (A-4): it only applies while takeovers are
+// still actively arriving (the last one within takeoverStabilityWindow). Once
+// the collision resolves and no takeover has occurred for that window, the
+// penalty decays to 0 even though takeoverStreak is still high — an ordinary
+// reconnect (a network blip long after the storm) must not be stuck paying a
+// stale storm's backoff. The streak itself is only reset when a NEW takeover
+// arrives after a stable connection (noteSessionTakeover), so a takeover
+// recurring within the window resumes damping at the accumulated level.
 func (s *Session) takeoverPenalty() time.Duration {
+	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
 	streak := s.takeoverStreak
+	last := s.lastTakeoverAt
 	s.mu.Unlock()
-	if streak <= 1 {
+	if streak <= 1 || last == 0 || now-last >= int64(takeoverStabilityWindow) {
 		return 0
 	}
 	shift := streak - 2

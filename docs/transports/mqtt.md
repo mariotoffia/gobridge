@@ -183,10 +183,11 @@ senders:
 | `reconnect_delay` | duration | `10s` (`DefaultReconnectDelay`) | **Base** delay of a jittered exponential reconnect backoff. Starts at `reconnect_delay`, grows 2× (`reconnectBackoffFactor`) per failed attempt, caps at `reconnect_max_delay`, then equal-jitters to `[d/2, d)` to desynchronise a reconnecting fleet (anti thundering-herd). `0` → `10s`. |
 | `reconnect_max_delay` | duration | `2m` (`DefaultReconnectMaxDelay`) | Caps the jittered-exponential reconnect envelope. Must be ≥ `reconnect_delay`; a smaller value is clamped up to the base at Start. `0` → `2m`. |
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
-| `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at Start with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
+| `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
 | `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. **The ~128 KiB is deliberate slack for MQTT properties/topic overhead, not a hard body cap:** a payload up to ~128 KiB *over* `max_payload_bytes` is still broker-admitted, because the advertised limit bounds the whole packet, not the body alone. Size `max_payload_bytes` for the intended body and treat the effective admitted-body ceiling as `max_payload_bytes + ~128 KiB`. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × (max_payload_bytes + slack)` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
+| `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
 | `username` | string | -- | Authentication username. Sent in the MQTT CONNECT packet in **cleartext** — see `allow_plaintext_credentials` and use a TLS broker scheme (`ssl://`, `mqtts://`, …). |
 | `password` | string | -- | Authentication password (redacted on marshal). Sent in the MQTT CONNECT packet in **cleartext** — protect it with a TLS broker scheme. |
 | `allow_plaintext_credentials` | bool | `false` | Opt IN to sending `username`/`password` over a **non-TLS** broker URL (`tcp://`, `mqtt://`, `ws://`, or schemeless). Default `false` **fails closed**: if credentials are configured and any `broker_urls` entry is not a TLS scheme, session build is rejected (the credentials would travel in cleartext). `tls.enable` does **not** satisfy this — autopaho selects TLS from the URL scheme only. Set `true` only for trusted transports (private mesh, TLS-terminating sidecar, or a localhost test broker). |
@@ -207,10 +208,10 @@ senders:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. |
+| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. Validated as an MQTT publish topic at **build time** (wildcards `+`/`#`, a `$`-reserved prefix, and null bytes are rejected), because it bypasses the runtime address validator — a malformed value would otherwise only fail at first publish, as a broker DISCONNECT that tears down the shared session for every route on it. |
 | `qos` | int | `1` | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
-| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. With **no** caller deadline (direct library use, no route dispatcher) a `0` applies a 60s safety-net and a positive value applies as-is. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
+| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. **Note the coercion asymmetry:** unlike an explicit `qos: 0` or `keep_alive: 0` (honoured as-is), a configured `timeout: 0` is coerced **up** to the `30s` default at build. The 60s Send-time safety-net for a zero timeout is therefore reachable only by a direct library consumer that constructs `SenderOptions` and leaves `Timeout` at `0`, bypassing the factory — via config, a `0` becomes `30s`. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
 | `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
 ## Credential URI (`options.credentials_uri`)
@@ -230,6 +231,16 @@ sets the CONNECT password flag independently of the username flag, so a
 token-in-password credential is no longer dropped for want of a username.
 
 ## Settlement Semantics
+
+> **QoS 2 is NOT exactly-once across a bridge restart.** autopaho keeps the
+> outbound packet queue **in memory**, so an in-flight QoS 1/2 publish (sent,
+> PUBACK/PUBCOMP not yet received) is lost at the MQTT-protocol level on a crash
+> or restart — `client_id` / `clean_start=false` resume *broker-side* state, not
+> the *client-side* outbound queue. This is not bridge-level loss: the wired
+> delivery modes (`direct_hold`, `shared_outbox`) recover the message on the
+> source side and the dedup layer collapses the redelivered duplicate (detailed
+> below). Operators evaluating an end-to-end exactly-once claim must account for
+> this — see also [ADR 0009](../adr/0009-durable-outbound-mqtt-session-state.md).
 
 MQTT deliveries are acknowledged **after** the bridge settles them, not on
 receipt. The adapter connects with manual acknowledgement and holds the PUBACK
@@ -327,6 +338,15 @@ wired today.)
   and counts `MQTTQoSDowngraded` with a loud warning once per subscription
   transition — initial subscribe, reconnect, or a plan that changes the requested
   QoS. Any non-zero value warrants checking the broker's QoS-cap policy.
+- **Retained replay is suppressed on reconnect.** Persistent and Exclusive
+  re-subscribes carry MQTT 5 **Retain Handling = 1** ("send retained only if the
+  subscription did not already exist"), so a `clean_start=false` session resuming
+  broker-side state is not flooded with a retained-message replay for every
+  filter on every reconnect — the retained set already delivered on the first
+  subscribe would otherwise re-enter the pending buffer as a thundering backlog.
+  Ephemeral sessions use Retain Handling = 0 (always send retained): each connect
+  is a fresh subscription with no prior broker-side state to dedupe against, so
+  the initial retained snapshot is the intended first-delivery.
 
 ## Backpressure and dispatch
 

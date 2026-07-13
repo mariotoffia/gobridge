@@ -120,25 +120,35 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	var mqttMsgID string
 	var subject string
 	var expiresAt time.Time
-	droppedUserProps := 0
+	// droppedHeaders counts every inbound header that fails the length/safety
+	// filter — both MQTT v5 properties (correlation data, content type, response
+	// topic) and arbitrary user properties. It feeds MetricMQTTIngressHeaderDropped
+	// so a correlation-id loss is observable rather than silent (A-14).
+	droppedHeaders := 0
 
 	if pub.Properties != nil {
 		if pub.Properties.CorrelationData != nil {
 			corr := string(pub.Properties.CorrelationData)
 			if len(corr) <= maxHeaderValueLen && isSafeHeaderValue(corr) {
 				headers[messaging.HeaderCorrelationID] = corr
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.ContentType != "" {
 			ct := pub.Properties.ContentType
 			if len(ct) <= maxHeaderValueLen && isSafeHeaderValue(ct) {
 				headers[messaging.HeaderContentType] = ct
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.ResponseTopic != "" {
 			rt := pub.Properties.ResponseTopic
 			if len(rt) <= maxHeaderValueLen && isSafeHeaderValue(rt) {
 				headers[headerMQTTResponseTopic] = rt
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.MessageExpiry != nil {
@@ -169,19 +179,19 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 				continue
 			}
 			if len(u.Key) > maxHeaderValueLen || len(u.Value) > maxHeaderValueLen {
-				droppedUserProps++
+				droppedHeaders++
 				continue
 			}
 			if !isSafeHeaderValue(u.Key) || !isSafeHeaderValue(u.Value) {
-				droppedUserProps++
+				droppedHeaders++
 				continue
 			}
 			headers[u.Key] = u.Value
 		}
 	}
 
-	if droppedUserProps > 0 && len(metrics) > 0 && metrics[0] != nil {
-		metrics[0].Counter(MetricMQTTIngressHeaderDropped, int64(droppedUserProps))
+	if droppedHeaders > 0 && len(metrics) > 0 && metrics[0] != nil {
+		metrics[0].Counter(MetricMQTTIngressHeaderDropped, int64(droppedHeaders))
 	}
 
 	// Determine ID before construction — MustEnvelope requires a non-empty ID.

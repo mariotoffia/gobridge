@@ -329,6 +329,12 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 
 	s.mu.Lock()
 	current := maps.Clone(s.activeSubs)
+	// Capture the connection generation alongside the snapshot. Every
+	// activeSubs write-back below is gated on this still matching: a reconnect
+	// (handleConnectionUp) landing mid-reconcile bumps s.connEpoch and resets
+	// activeSubs, so a stale write-back must be abandoned rather than pollute
+	// the fresh set (A-3).
+	startEpoch := s.connEpoch
 	s.mu.Unlock()
 	if current == nil {
 		current = make(map[string]byte)
@@ -384,8 +390,10 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			return MapError(err)
 		}
 		s.mu.Lock()
-		for _, t := range toUnsub {
-			delete(s.activeSubs, t)
+		if s.connEpoch == startEpoch {
+			for _, t := range toUnsub {
+				delete(s.activeSubs, t)
+			}
 		}
 		s.mu.Unlock()
 	}
@@ -395,7 +403,23 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	for topic, qos := range desired {
 		curQoS, exists := current[topic]
 		if !exists || curQoS != qos {
-			toSub = append(toSub, subscribeSpec{Topic: topic, QoS: qos})
+			// No-Local is opt-in per session (no_local config, default off).
+			// When enabled it breaks the same-session MQTT->MQTT self-delivery
+			// loop (Scenario 01) but MUST stay off for a shared subscription
+			// ($share), where it is an MQTT 5 Protocol Error the broker rejects
+			// with a DISCONNECT (A-2).
+			//
+			// RetainHandling is 1 for persistent/exclusive sessions so a
+			// reconnect that resumes the session does not trigger a full
+			// retained-message replay per filter (A-7); ephemeral sessions keep
+			// 0 (each connect is a fresh subscription that must rehydrate
+			// retained state).
+			toSub = append(toSub, subscribeSpec{
+				Topic:          topic,
+				QoS:            qos,
+				NoLocal:        s.opts.NoLocal && !isSharedSubscriptionFilter(topic),
+				RetainHandling: retainHandlingForMode(s.mode),
+			})
 		}
 	}
 
@@ -426,16 +450,22 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
 		if len(succeeded) > 0 {
 			s.mu.Lock()
-			for _, opt := range succeeded {
-				// Persist the REQUESTED QoS (intent), NOT the broker-granted
-				// QoS. activeSubs is the reconcile delta's baseline, so keying
-				// it off the requested QoS keeps a granted-QoS DOWNGRADE from
-				// leaving the topic permanently "dirty" (granted != requested)
-				// and re-SUBSCRIBING + re-warning on EVERY reconcile. opt.QoS is
-				// the GRANTED QoS (see classifySubackReasons) and is used only
-				// for the downgrade comparison below; desired[opt.Topic] is the
-				// requested QoS we store (c4-qos-downgrade MEDIUM).
-				s.activeSubs[opt.Topic] = desired[opt.Topic]
+			// Skip the write-back if a reconnect reset activeSubs while this
+			// reconcile ran (A-3): the SUBACK we are committing belongs to the
+			// PRIOR connection, so writing it into the fresh set would mask the
+			// re-subscribe the new connection still needs.
+			if s.connEpoch == startEpoch {
+				for _, opt := range succeeded {
+					// Persist the REQUESTED QoS (intent), NOT the broker-granted
+					// QoS. activeSubs is the reconcile delta's baseline, so keying
+					// it off the requested QoS keeps a granted-QoS DOWNGRADE from
+					// leaving the topic permanently "dirty" (granted != requested)
+					// and re-SUBSCRIBING + re-warning on EVERY reconcile. opt.QoS is
+					// the GRANTED QoS (see classifySubackReasons) and is used only
+					// for the downgrade comparison below; desired[opt.Topic] is the
+					// requested QoS we store (c4-qos-downgrade MEDIUM).
+					s.activeSubs[opt.Topic] = desired[opt.Topic]
+				}
 			}
 			s.mu.Unlock()
 			// Surface any granted-QoS downgrade (broker granted a weaker QoS
@@ -483,4 +513,18 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	}
 
 	return nil
+}
+
+// retainHandlingForMode returns the MQTT5 RetainHandling value for a session of
+// the given mode (A-7). Persistent and exclusive sessions resume across
+// reconnects, so RetainHandling 1 ("send retained only if the subscription did
+// not already exist") hydrates retained state on the first subscribe yet
+// suppresses a redundant retained replay on every subsequent reconnect that
+// resumes the session. Ephemeral sessions start clean each connect and use 0
+// (always send retained), because their subscription never pre-exists.
+func retainHandlingForMode(mode connectivity.SessionMode) byte {
+	if mode == connectivity.SessionEphemeral {
+		return 0
+	}
+	return 1
 }

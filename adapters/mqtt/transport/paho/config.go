@@ -2,6 +2,7 @@ package paho
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -186,6 +187,28 @@ type SessionOptions struct {
 	// unsubscribed (see acl_router.go / doc.go). The window RESTARTS on
 	// every (re)connect. Zero falls back to DefaultUnmatchedGrace (30s).
 	UnmatchedGrace time.Duration `mapstructure:"unmatched_grace" yaml:"unmatched_grace" json:"unmatched_grace"`
+	// NoLocal opts IN to MQTT 5 No-Local delivery (§3.8.3.1) on every
+	// ordinary subscription this session issues: the broker is asked NOT to
+	// deliver a message back to the connection that published it.
+	//
+	// It exists for the same-broker MQTT->MQTT bridge topology where ONE
+	// session both subscribes and publishes on OVERLAPPING filters — e.g. a
+	// route that consumes `sensors/#` and republishes under `sensors/archive/…`
+	// on the SAME session. Without No-Local the broker echoes each republish
+	// back to the session's own `sensors/#` subscription, which re-forwards it,
+	// an unbounded self-amplification loop at line rate (Scenario 01). Turning
+	// this on breaks that loop at the broker.
+	//
+	// It defaults FALSE to preserve the least-surprising MQTT delivery
+	// contract: a session receiving its OWN publishes is legitimate (request/
+	// reply on one client, a loopback verifier), and only the overlap-plus-
+	// republish topology loops. Enable it only on a session whose subscribe
+	// filters overlap its own publish topics. Cross-bridge delivery is never
+	// affected — No-Local is per-connection and distinct bridges use distinct
+	// client_ids. A shared subscription ($share) ALWAYS ignores this flag:
+	// No-Local on $share is an MQTT 5 Protocol Error the broker rejects with a
+	// DISCONNECT, so reconcile forces it off there regardless.
+	NoLocal bool `mapstructure:"no_local" yaml:"no_local" json:"no_local"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
@@ -539,6 +562,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if v, ok := m["clean_start"].(bool); ok {
 		opts.CleanStart = v
 	}
+	if v, ok := m["no_local"].(bool); ok {
+		opts.NoLocal = v
+	}
 	if raw, exists := m["session_expiry_interval"]; exists {
 		// MQTT v5 SessionExpiryInterval is an unsigned 32-bit value
 		// (seconds; 0xFFFFFFFF = "never expire"). Reject negative
@@ -698,6 +724,22 @@ func tlsConfigFromMap(m map[string]any) *TLSConfig {
 	if v, ok := m["key_file"].(string); ok {
 		cfg.KeyFile = v
 	}
+	// In-memory PEM material (ca_cert_pem / cert_pem / key_pem). The typed
+	// decode path and BuildTLSConfig fully support these and let them WIN over
+	// the *_file keys, but this map path previously ignored them: a library
+	// consumer passing PEM through the map silently got system roots and no
+	// client certificate — an opaque auth failure (A-8). Parse them here so both
+	// config paths behave identically. They are shared.Secret so key material
+	// redacts on marshal/log.
+	if v, ok := m["ca_cert_pem"].(string); ok && v != "" {
+		cfg.CACertPEM = shared.NewSecret(v)
+	}
+	if v, ok := m["cert_pem"].(string); ok && v != "" {
+		cfg.CertPEM = shared.NewSecret(v)
+	}
+	if v, ok := m["key_pem"].(string); ok && v != "" {
+		cfg.KeyPEM = shared.NewSecret(v)
+	}
 	if v, ok := m["insecure_skip_verify"].(bool); ok {
 		cfg.InsecureSkipVerify = v
 	}
@@ -845,13 +887,29 @@ func resolveClientIDSuffix(base, suffix string) (string, error) {
 
 // randomClientNonce returns a short random hex token (8 chars) used to
 // disambiguate replica client_ids. crypto/rand.Read effectively never
-// fails; the clock.System fallback (the documented default clock) keeps
-// the function total without an error return for what is a best-effort
-// disambiguator.
+// fails; the fallback keeps the function total without an error return for
+// what is a best-effort disambiguator.
 func randomClientNonce() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%x", clock.System.Now().UnixNano())
+		// crypto/rand failed (effectively never). A bare UnixNano fallback can
+		// collide for two replicas started in the same tick on VMs with coarse
+		// clocks, and identical client_ids trigger a mutual-takeover storm that
+		// the collision damping then obscures (A-15). Mix in PID and hostname —
+		// distinct per process and per host — so the token still disambiguates.
+		host, _ := os.Hostname()
+		return clientNonceFallback(clock.System.Now().UnixNano(), os.Getpid(), host)
 	}
 	return hex.EncodeToString(b)
+}
+
+// clientNonceFallback derives the degraded-path nonce from the process/host
+// identity plus the clock, hashed back down to the same 8-char width as the
+// crypto/rand happy path. It is pure (all inputs explicit) so the A-15
+// disambiguation property — two replicas differing only in PID or hostname
+// still get DISTINCT tokens — is unit-testable without forcing a rand failure.
+func clientNonceFallback(nowNanos int64, pid int, host string) string {
+	seed := fmt.Sprintf("%d-%d-%s", nowNanos, pid, host)
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:4])
 }

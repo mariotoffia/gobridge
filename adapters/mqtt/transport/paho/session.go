@@ -54,6 +54,15 @@ type Session struct {
 	// the current connection came up. Both guarded by mu; used to damp
 	// ClientID-collision takeover storms.
 	takeoverStreak int
+	// lastTakeoverAt is the unix-nanos time of the most recent session-takeover
+	// (0x8E) disconnect, or 0 if none. takeoverPenalty gates on it: the penalty
+	// only spaces out reconnects DURING an active storm, so once no takeover has
+	// occurred for takeoverStabilityWindow the penalty decays to 0 even though
+	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
+	// (only reset when a NEW takeover arrives post-stability) would make every
+	// later ordinary reconnect pay the stale penalty forever, busting the
+	// failover window (A-4). Guarded by mu.
+	lastTakeoverAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
 	// is set on every connect edge and never reset to 0 on disconnect: the
 	// takeover-damping math only asks "was the connection stable for
@@ -61,6 +70,17 @@ type Session struct {
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64
+	// connEpoch is the broker-connection generation, bumped under mu on every
+	// handleConnectionUp (the connect edge that resets activeSubs). reconcile
+	// captures it when it snapshots activeSubs and re-checks it before each
+	// write-back: a reconnect landing MID-reconcile (after a SUBACK succeeded on
+	// the prior connection but before the write-back) would otherwise let the
+	// stale reconcile write its subscriptions into the FRESH, just-reset
+	// activeSubs, so the next connect-edge reconcile computes an empty delta and
+	// silently skips re-subscribing on an ephemeral (clean_start) session — a
+	// real, if narrow, subscription-loss window (A-3). Distinct from the
+	// router's own connEpoch (different struct, different mutex). Guarded by mu.
+	connEpoch uint64
 
 	// reconcileMu serializes concurrent Reconcile calls so their
 	// subscribe/unsubscribe operations cannot interleave and corrupt
@@ -214,6 +234,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withUnmatchedGrace(opts.UnmatchedGrace),
 		withUnsubscribe(s.unsubscribeOrphan),
 		withCovered(s.topicCovered),
+		withSessionTag(opts.ClientID),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window

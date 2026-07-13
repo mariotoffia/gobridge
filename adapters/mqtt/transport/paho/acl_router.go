@@ -14,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -92,6 +93,14 @@ type router struct {
 	// bytes). Guarded by mu.
 	pending      []pendingPublish
 	pendingLimit int
+	// connEpoch identifies the CURRENT broker connection generation. It is
+	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
+	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
+	// purges every entry whose epoch predates connEpoch: those carry dead acks
+	// and the broker redelivers their QoS 1/2 fresh, so keeping them would
+	// double-count against the receive_maximum count cap and ack-drop a live
+	// message as a bogus overflow (A-1). Guarded by mu.
+	connEpoch uint64
 	// pendingBytes is the running sum of buffered payload sizes; capped
 	// by pendingBytesLimit so a flood of large publishes cannot buffer
 	// multiple gigabytes during a grace window. Guarded by mu.
@@ -167,8 +176,13 @@ type router struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 
-	logger           *slog.Logger
-	metrics          ports.MetricsExporter
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
+	// sessionID tags every router loss/drop metric so a multi-session
+	// deployment can attribute an orphan/overflow/stale-purge drop to the
+	// session that produced it (A-11). Empty when the router is built without
+	// a session (legacy/test construction); the tag is then omitted.
+	sessionID        string
 	routeCount       atomic.Int64 // total messages received by dispatch
 	dropCount        atomic.Int64 // messages dropped (pending-buffer overflow)
 	bufferedCount    atomic.Int64 // messages held for a not-yet-registered handler
@@ -176,6 +190,7 @@ type router struct {
 	coveredDropped   atomic.Int64 // covered-topic QoS 0 dropped past grace when the buffer could not hold it
 	coveredRetained  atomic.Int64 // covered-topic messages RETAINED un-acked past grace (HIGH-1; NOT lost)
 	overflowDropped  atomic.Int64 // QoS 1/2 acked-and-dropped because a broker exceeded receive_maximum (protocol violation; unreachable with a compliant broker)
+	stalePurged      atomic.Int64 // pre-registration entries discarded on reconnect (A-1); QoS 1/2 redelivered, QoS 0 best-effort loss
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -205,6 +220,11 @@ type dispatchItem struct {
 type pendingPublish struct {
 	pub *pahov5.Publish
 	ack func() error
+	// epoch is the router.connEpoch under which this entry was buffered. A
+	// reconnect (beginGrace) purges every entry whose epoch predates the new
+	// connEpoch: its ack is dead and the broker redelivers the QoS 1/2 fresh
+	// (A-1). Set under r.mu at buffer time.
+	epoch uint64
 	// retainCounted latches once this entry has been counted on
 	// MetricMQTTRouterCoveredRetained (blocking-#4 dedup). Both the grace-end
 	// sweep (settlePending) and the post-grace dispatch retention
@@ -277,6 +297,12 @@ func withCovered(fn func(topic string) bool) routerOption {
 	return func(r *router) { r.covered = fn }
 }
 
+// withSessionTag records the session's client_id so router loss/drop metrics
+// carry a session_id tag (A-11). Empty values are ignored (the tag is omitted).
+func withSessionTag(id string) routerOption {
+	return func(r *router) { r.sessionID = id }
+}
+
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
@@ -315,6 +341,16 @@ func (r *router) setPendingLimit(n int) {
 	r.mu.Unlock()
 }
 
+// sessionTag returns the session_id metric tag for this router's drops, or
+// nil when the router was built without a session (legacy/test). Spread it
+// into a metrics Counter call: r.metrics.Counter(name, n, r.sessionTag()...).
+func (r *router) sessionTag() []shared.Tag {
+	if r.sessionID == "" {
+		return nil
+	}
+	return []shared.Tag{{Key: shared.TagKeySessionID, Value: r.sessionID}}
+}
+
 // beginGrace (re)starts the unmatched-publish grace window for the
 // current broker connection. It is called on every OnConnectionUp so a
 // resumed session gets a fresh window covering re-subscription and
@@ -327,7 +363,18 @@ func (r *router) setPendingLimit(n int) {
 func (r *router) beginGrace() {
 	r.mu.Lock()
 	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
+	// Advance the connection generation. Entries buffered from here on are
+	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
+	// entries stamped with a prior epoch are purged (A-1).
+	r.connEpoch++
 	if r.graceStarted {
+		// Reconnect. A clean_start=false broker replays every un-acked QoS 1/2
+		// from the prior connection with FRESH packet IDs, so any entry still
+		// buffered under a previous epoch is a stale twin whose ack died with
+		// the old connection. Purge them: keeping them lets a redelivered copy
+		// accumulate beside its ghost until the count cap (== receive_maximum)
+		// ack-drops a LIVE message as a bogus overflow, breaking at-least-once.
+		r.purgeStalePendingLocked()
 		if r.graceTimer != nil {
 			r.graceTimer.Reset(r.graceWindow)
 		}
@@ -423,13 +470,38 @@ func (r *router) graceLoop(timerC <-chan time.Time, unsubCh <-chan string) {
 		case <-r.stop:
 			return
 		case <-timerC:
-			r.sweepUnmatched()
+			r.sweepIfExpired()
 		case topic := <-unsubCh:
 			if r.unsubscribe != nil {
 				r.unsubscribe(topic)
 			}
 		}
 	}
+}
+
+// sweepIfExpired runs the grace-end settle, but ONLY when the grace window has
+// truly elapsed. beginGrace and rearmGrace re-arm the shared grace timer with
+// Timer.Reset from another goroutine; if that timer had ALREADY fired, a stale
+// tick is left sitting in the timer channel and the worker would act on it
+// immediately after the re-arm — sweeping BEFORE the new deadline, ack-dropping
+// orphans and firing retention metrics ahead of the configured grace (A-12).
+// graceDeadline is advanced under r.mu on every arm, so comparing it against
+// now distinguishes a genuine expiry from a stale tick: a premature tick re-arms
+// the timer for the remaining window and skips the sweep. Runs on the grace
+// worker; the check and the re-arm are done under r.mu so they never interleave
+// with a concurrent beginGrace/rearmGrace Reset.
+func (r *router) sweepIfExpired() {
+	r.mu.Lock()
+	remaining := r.graceDeadline.Sub(r.clk.Now())
+	if remaining > 0 {
+		if r.graceTimer != nil {
+			r.graceTimer.Reset(remaining)
+		}
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	r.sweepUnmatched()
 }
 
 // sweepUnmatched runs when the startup grace window ends: it settles every
@@ -586,7 +658,7 @@ func (r *router) enqueueUnsub(topic string) {
 // released (covered() takes the session mutex).
 func (r *router) dropOrphan(pub *pahov5.Publish, ack func() error) {
 	r.unmatchedDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of dropped orphan publish failed",
@@ -668,7 +740,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 	// Covered QoS 0 the buffer cannot hold: best-effort drop (no redelivery
 	// contract). Counted on the covered-drop metric for visibility.
 	r.coveredDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of covered QoS 0 overflow-dropped publish failed",
@@ -692,7 +764,7 @@ func (r *router) noteCoveredRetained(topic string, n int) {
 		return
 	}
 	r.coveredRetained.Add(int64(n))
-	r.metrics.Counter(MetricMQTTRouterCoveredRetained, int64(n))
+	r.metrics.Counter(MetricMQTTRouterCoveredRetained, int64(n), r.sessionTag()...)
 	r.mu.Lock()
 	_, warned := r.coveredWarned[topic]
 	if !warned {
@@ -721,7 +793,7 @@ func (r *router) noteCoveredRetained(topic string, n int) {
 func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 	r.dropCount.Add(1)
 	r.overflowDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of overflow-dropped QoS 1/2 publish failed",
@@ -747,7 +819,7 @@ func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 // hold NEITHER r.mu.
 func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
 	r.dropCount.Add(1)
-	r.metrics.Counter(MetricMQTTRouterDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
 		r.logger.Warn("mqtt: dropped QoS 0 publish (pending buffer full during startup grace)",
 			"topic", pub.Topic,
@@ -823,7 +895,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	}
 	if pub.QoS == 0 {
 		r.dropCount.Add(1)
-		r.metrics.Counter(MetricMQTTRouterDropped, 1)
+		r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 		if r.logger != nil {
 			r.logger.Warn("mqtt: dropped QoS 0 publish (dispatch queue full under flood)",
 				"topic", pub.Topic)
@@ -965,7 +1037,7 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 			// redelivery contract, no ack to strand).
 			return false
 		}
-		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 		r.pendingBytes += size
 		return true
 	}
@@ -982,9 +1054,38 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 		// exceeded its granted Receive Maximum (protocol violation).
 		return false
 	}
-	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 	r.pendingBytes += size
 	return true
+}
+
+// purgeStalePendingLocked drops every pending entry stamped with an epoch
+// older than the current connEpoch — i.e. buffered under a PREVIOUS broker
+// connection (A-1). Their protocol acks are dead (paho returns
+// ErrPacketNotFound for a packet ID from a closed connection), so they are
+// deliberately NOT invoked; a clean_start=false broker redelivers the QoS 1/2
+// fresh on the new connection. QoS 0 stale entries are a best-effort loss (no
+// redelivery across a disconnect, by protocol). Every purged entry is metered
+// on MetricMQTTRouterStalePurged. Caller holds r.mu.
+func (r *router) purgeStalePendingLocked() {
+	if len(r.pending) == 0 {
+		return
+	}
+	kept := r.pending[:0]
+	var purged int64
+	for i := range r.pending {
+		if r.pending[i].epoch < r.connEpoch {
+			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			purged++
+			continue
+		}
+		kept = append(kept, r.pending[i])
+	}
+	r.pending = kept
+	if purged > 0 {
+		r.stalePurged.Add(purged)
+		r.metrics.Counter(MetricMQTTRouterStalePurged, purged, r.sessionTag()...)
+	}
 }
 
 // evictOldestQoS0Locked removes the OLDEST QoS 0 entry from the pending buffer
@@ -997,7 +1098,7 @@ func (r *router) evictOldestQoS0Locked() bool {
 			r.pendingBytes -= pubBytes(r.pending[i].pub)
 			r.pending = append(r.pending[:i], r.pending[i+1:]...)
 			r.dropCount.Add(1)
-			r.metrics.Counter(MetricMQTTRouterDropped, 1)
+			r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 			return true
 		}
 	}
@@ -1355,6 +1456,16 @@ func (r *router) CoveredRetainedCount() int64 {
 // (CoveredDroppedCount / UnmatchedDroppedCount).
 func (r *router) OverflowDroppedCount() int64 {
 	return r.overflowDropped.Load()
+}
+
+// StalePurgedCount returns the number of pre-registration pending publishes
+// DISCARDED across reconnects because they were buffered under a prior broker
+// connection (A-1). QoS 1/2 entries counted here are redelivered fresh by a
+// clean_start=false broker (not lost); QoS 0 entries are a best-effort loss.
+// A steadily rising value indicates frequent reconnects while receivers
+// register slowly, not data loss for QoS 1/2.
+func (r *router) StalePurgedCount() int64 {
+	return r.stalePurged.Load()
 }
 
 // RegisterEnvelope adapts a domain-shaped handler so port-side files

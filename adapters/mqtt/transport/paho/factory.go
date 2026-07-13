@@ -167,6 +167,21 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if opts.ThrottleRetryAfter == 0 {
 		opts.ThrottleRetryAfter = DefaultSenderOptions().ThrottleRetryAfter
 	}
+	// Validate a configured default_topic as an MQTT PUBLISH topic (A-6). It is
+	// used verbatim as the publish topic when an outbound message carries no
+	// Address (sender.go), bypassing the runtime AddressValidator that guards
+	// resolved addresses. A wildcard, $-reserved, or otherwise malformed
+	// default_topic would therefore only fail at first publish — as a broker
+	// DISCONNECT (publishing to a wildcard is an MQTT protocol error) that tears
+	// down the shared session for every sender on it. Fail closed at build time
+	// instead. Empty means "no fallback" and is validated at Send.
+	if opts.DefaultTopic != "" {
+		if err := ValidateMQTTTopic(opts.DefaultTopic); err != nil {
+			return nil, shared.ErrInvalidPayload.WithMessage(
+				fmt.Sprintf("mqtt sender %q: default_topic %q is not a valid MQTT publish topic: %s",
+					spec.ID, opts.DefaultTopic, err))
+		}
+	}
 	return NewSender(mqttSession, opts), nil
 }
 

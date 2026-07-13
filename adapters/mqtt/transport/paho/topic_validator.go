@@ -29,10 +29,18 @@ func NewAddressValidator() ports.AddressValidator {
 	return topicValidator{}
 }
 
-// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments,
-// null bytes, reserved $-prefixed topics, and topics exceeding the spec
-// maximum length in a rendered topic string. Call this on resolved
-// addresses before publishing to MQTT.
+// ValidateMQTTTopic rejects MQTT wildcard characters, null bytes,
+// reserved $-prefixed topics, and topics exceeding the spec maximum
+// length in a rendered topic string. Call this on resolved addresses
+// before publishing to MQTT.
+//
+// Empty topic levels are permitted: "a//b", "/leading", "trailing/" and
+// even "/" are all legal MQTT publish topics (MQTT 5.0 §4.7.1.1 — only the
+// WHOLE Topic Name must be at least one character; individual levels may be
+// zero-length). Real devices produce such topics, and a dynamic-destination
+// mirror route re-publishing a source topic must not reject them (A-13). The
+// wildcard, $-prefix, null and length rules below are the only structural
+// constraints on a publish Topic Name.
 //
 // It is exported so callers (and tests) outside the runtime dispatch
 // can perform the same MQTT-spec checks; the canonical wire-up is via
@@ -56,11 +64,6 @@ func ValidateMQTTTopic(topic string) error {
 	}
 	if strings.ContainsRune(topic, 0) {
 		return fmt.Errorf("MQTT topic must not contain null character")
-	}
-	for _, seg := range strings.Split(topic, "/") {
-		if seg == "" {
-			return fmt.Errorf("MQTT topic must not contain empty segments")
-		}
 	}
 	return nil
 }

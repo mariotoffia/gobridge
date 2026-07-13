@@ -101,6 +101,22 @@ const (
 	// masked (c4-qos12-overflow / F-2 / M-1).
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
+	// MetricMQTTRouterStalePurged counts pre-registration pending publishes
+	// DISCARDED from the router buffer on a reconnect because they were
+	// buffered under a PRIOR broker connection (A-1). Their protocol acks died
+	// with the old connection (paho ErrPacketNotFound), and a clean_start=false
+	// broker REDELIVERS every un-acked QoS 1/2 from the prior connection with
+	// FRESH packet IDs — so keeping the stale twins would let a redelivered copy
+	// pile up beside its ghost until the count cap (== receive_maximum)
+	// ack-drops a LIVE message as a bogus MetricMQTTRouterOverflowDropped,
+	// breaking at-least-once. Purging the stale entries lets only the fresh
+	// redelivered copies remain. QoS 1/2 entries counted here are NOT lost (the
+	// broker redelivers them); QoS 0 entries are a best-effort loss (no
+	// redelivery contract, as always across a disconnect). A steadily rising
+	// count means frequent reconnects while receivers register slowly — expected
+	// churn, not data loss for QoS 1/2.
+	MetricMQTTRouterStalePurged = "MQTTRouterStalePurged"
+
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
 	// 0x8E (session taken over): another client connected with the same
 	// ClientID. A steadily increasing count signals two instances sharing a

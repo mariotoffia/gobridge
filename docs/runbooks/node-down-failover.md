@@ -40,6 +40,16 @@ may need a process restart to complete takeover.
      the TTL plus the new owner's acquire — expect up to ~6 minutes.
    - **HA preset (`HAConfig`):** `LeaseTTL = 45s`. Worst-case takeover is roughly
      the TTL plus acquire — expect ~45–60s.
+
+   **A clustered deployment already defaults to the HA preset** — you do not have
+   to opt in. When the deployment is clustered (`bridge.cluster.endpoints` set)
+   and the route session leaves **both** `lease_ttl` and `renew_interval` unset,
+   the bridge auto-selects `HAConfig` (45s TTL) instead of the 360s baseline
+   (`bridge/convert.go`), so clustered failover lands in the ~45–60s band by
+   default. Setting **either** value pins the timing explicitly and keeps the
+   360s-baseline `DefaultConfig` plus your overrides. So if you see ~45–60s
+   takeover on a cluster you did not hand-tune, that is expected — do **not**
+   re-tune toward the 6-minute default.
    If more time than that has passed with no `LeaseTransfers` advance and
    `LeaseAcquireFailures` is rising, takeover is stuck — go to Action.
 

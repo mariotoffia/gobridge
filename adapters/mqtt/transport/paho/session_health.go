@@ -22,7 +22,11 @@ import (
 // sessions must therefore gate on ServiceLevel == Full (which the monitor
 // exposes via ?level=full), not on Ready. ServiceLevel describes
 // operational completeness:
-//   - Full: all desired subscriptions active and handlers registered (when expected)
+//   - Full: all desired subscriptions active and handlers registered, and no
+//     publishes are still buffered waiting for a handler (A-5: a covered
+//     subscription whose receiver died keeps its messages retained in the
+//     pending buffer, so a non-empty buffer degrades readiness even while a
+//     surviving receiver keeps the session-total handler count above zero)
 //   - Degraded: connected but not all desired subscriptions are active
 //   - None: not connected, or no subscriptions/handlers registered
 //
@@ -30,7 +34,13 @@ import (
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
-	plan := s.plan
+	// Capture wantedCount UNDER the lock (B-4): s.plan is swapped by pointer on
+	// Reconcile, so dereferencing a captured pointer after unlocking could race
+	// that swap under the race detector. Read the length while holding s.mu.
+	wantedCount := 0
+	if s.plan != nil {
+		wantedCount = len(s.plan.Subscriptions)
+	}
 	activeCount := len(s.activeSubs)
 	connected := cm != nil && s.connected
 	topics := make([]string, 0, len(s.activeSubs))
@@ -38,11 +48,13 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		topics = append(topics, t)
 	}
 	s.mu.Unlock()
-	wantedCount := 0
-	if plan != nil {
-		wantedCount = len(plan.Subscriptions)
-	}
 	handlerCount := s.router.HandlerCount()
+	// pendingCount is the router's pre-registration / covered-retained backlog.
+	// In steady state (every subscription's handler registered) an incoming
+	// publish dispatches immediately and never enters the buffer, so this is 0;
+	// a non-zero value means some covered subscription still lacks a live
+	// handler (A-5).
+	pendingCount := s.router.PendingCount()
 
 	var sl ports.ServiceLevel
 	switch {
@@ -51,7 +63,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	case wantedCount == 0:
 		// Sender-only session: no subscriptions expected.
 		sl = ports.ServiceLevelFull
-	case activeCount == wantedCount && handlerCount > 0:
+	case activeCount == wantedCount && handlerCount > 0 && pendingCount == 0:
 		sl = ports.ServiceLevelFull
 	case activeCount == 0 && handlerCount == 0:
 		sl = ports.ServiceLevelNone
@@ -110,23 +122,30 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	select {
 	case s.events <- ev:
 	default:
-		// Drop oldest event to make room. Known, accepted trade-off (F-6):
-		// under an event storm this can evict an unconsumed SessionConnected
-		// before the manager reads it, so a reconcile that would have run on
-		// that connect edge is deferred to the NEXT connect edge. This is
-		// bounded (the session reconnects and re-emits) and metered via
-		// MetricMQTTEventDropped; it is not hardened (non-evictable /
-		// coalesce-by-type) on purpose — the buffer is drop-oldest by design and
-		// the drop is observable. Alert on MetricMQTTEventDropped if it is
-		// non-zero in steady state.
+		// Channel full: drop the OLDEST event to make room for this one.
+		// This drop-oldest eviction is the common back-pressure path under an
+		// event storm (F-6): it can evict an unconsumed SessionConnected before
+		// the manager reads it, so a reconcile that would have run on that
+		// connect edge is deferred to the NEXT connect edge. Bounded (the
+		// session reconnects and re-emits) and drop-oldest by design — not
+		// hardened (non-evictable / coalesce-by-type) on purpose.
+		//
+		// Every actually-lost event increments MetricMQTTEventDropped exactly
+		// once: the evicted oldest here (B-2/D-2 — previously this drop was
+		// silent and only the impossible double-failure below was metered), and
+		// the new event below if it still cannot be enqueued. Alert on
+		// MetricMQTTEventDropped if it is non-zero in steady state.
 		select {
 		case <-s.events:
+			s.metrics.Counter(MetricMQTTEventDropped, 1)
 		default:
 		}
 		select {
 		case s.events <- ev:
 		default:
-			// Event channel still full after draining oldest; event lost.
+			// Still full after evicting the oldest — only reachable if a
+			// producer we do not serialise under s.mu refilled the slot; the
+			// new event is lost, so count it too.
 			s.metrics.Counter(MetricMQTTEventDropped, 1)
 		}
 	}

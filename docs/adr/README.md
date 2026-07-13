@@ -17,6 +17,9 @@ behavior that already ships, not proposals.
 | [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | accepted |
 | [0007](0007-cluster-worker-seeding-adoptvalid.md) | Cluster worker seeding: AdoptValid default | accepted |
 | [0008](0008-cross-hop-identity-lift.md) | Cross-hop bridge-to-bridge identity lift | accepted |
+| [0009](0009-durable-outbound-mqtt-session-state.md) | Durable outbound MQTT session state: in-memory store, route-layer durability | accepted |
+| [0010](0010-mqtt-loop-prevention-contract.md) | MQTT bridge-to-bridge loop-prevention contract | accepted |
+| [0011](0011-cluster-client-id-uniqueness.md) | Cluster client-ID uniqueness enforcement | accepted |
 
 ## Numbering
 
