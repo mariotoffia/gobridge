@@ -124,16 +124,12 @@ const (
 	// Invalid — a different condition — and is NOT counted here.)
 	MetricMQTTSessionTakeover = "MQTTSessionTakeover"
 
-	// MetricMQTTQoSDowngraded counts subscriptions the broker accepted at a
-	// LOWER QoS than requested (a granted-QoS downgrade: e.g. requested QoS 2,
-	// SUBACK reason 0x00 = granted QoS 0). The route assumes the requested
-	// delivery guarantee, so a silent downgrade quietly removes offline /
-	// redelivery guarantees and opens a disconnect-gap loss window. The
-	// reconcile loop stores the REQUESTED QoS in activeSubs (its delta baseline,
-	// so a stable downgraded sub is not re-subscribed every cycle) and
-	// increments this counter with a loud warning ONCE per subscription
-	// transition — initial subscribe, reconnect, or a plan that changes the
-	// requested QoS — rather than on every reconcile (c4-qos-downgrade). ANY
+	// MetricMQTTQoSDowngraded counts subscriptions the broker granted at a
+	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason
+	// 0x00 granting QoS 0). Reconcile emits a loud warning, leaves the filter
+	// inactive, and returns ErrQoSNotSupported with topic, requested QoS, and
+	// granted QoS context, so readiness remains non-Full. Because the inactive
+	// filter is retried, each reconcile attempt may increment this counter. Any
 	// non-zero value warrants investigating a broker QoS-cap policy.
 	MetricMQTTQoSDowngraded = "MQTTQoSDowngraded"
 )
