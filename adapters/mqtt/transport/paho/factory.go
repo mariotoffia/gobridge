@@ -89,7 +89,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 					"serialises connections and the standby resumes the broker session on takeover)",
 				spec.ID))
 		}
-		resolved, err := resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
+		resolved, err := cfg.resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
 		if err != nil {
 			return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))

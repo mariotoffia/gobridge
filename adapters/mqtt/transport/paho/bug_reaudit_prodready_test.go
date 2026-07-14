@@ -133,8 +133,8 @@ func TestResolveClientIDSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nonce suffix: unexpected err %v", err)
 	}
-	if !strings.HasPrefix(got, "base-") || len(got) != len("base-")+8 {
-		t.Fatalf("nonce suffix = %q, want base-<8 hex chars>", got)
+	if !strings.HasPrefix(got, "base-") || len(got) != len("base-")+32 {
+		t.Fatalf("nonce suffix = %q, want base-<32 hex chars>", got)
 	}
 	// The process nonce is resolved once so preflight and a later build compare
 	// the same effective client ID throughout this process.

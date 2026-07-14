@@ -631,9 +631,10 @@ Both methods are mandatory and both must do real work — an empty
 Typed transport configs may also implement narrowly scoped optional capabilities
 from `ports/plugin_config.go`:
 
-- `DurableSessionIdentityConfig` returns an opaque, secret-safe fingerprint for
-  transport-owned durable broker state. Include effective storage identity only;
-  exclude credentials and runtime tuning. Never return or log the raw descriptor.
+- `DurableSessionIdentityConfig` returns opaque, secret-safe fingerprints for
+  transport-owned durable broker state and for its broker/client collision domain.
+  Include effective storage identity only; exclude credentials and runtime tuning.
+  Never return or log either raw descriptor.
 - `ReplicaIdentityConfig` declares the effective per-replica identity strategy
   used by clustered shared consumers. Validation fails closed when a shared
   subscription cannot prove a strategy.

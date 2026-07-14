@@ -404,7 +404,7 @@ func TestSupervisor_PausedDestructiveReload_AllowedWithDiscardFlag(t *testing.T)
 	ev := awaitSwap(t, swaps)
 	require.NoError(t, ev.Error, "the discard flag forces the paused reload to be recorded")
 	assert.True(t, ev.Deferred, "a forced paused reload is deferred (committed-not-applied), not applied now")
-	assert.Same(t, newCfg, s.Config(), "the forced config becomes the resume target")
+	assert.Equal(t, newCfg, s.Config(), "the forced config becomes the resume target")
 }
 
 // ---------------------------------------------------------------------------

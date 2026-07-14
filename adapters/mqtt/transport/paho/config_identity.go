@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -17,52 +16,73 @@ import (
 // broker-side state selected by this config. Credential and tuning fields are
 // deliberately absent. In particular, broker URL userinfo is removed before
 // hashing because it is authentication material, not broker identity.
-func (c *Config) DurableSessionIdentity(mode connectivity.SessionMode) (string, error) {
-	if c == nil {
-		return "", errors.New("mqtt: durable session identity unavailable")
-	}
-	if mode == "" {
-		mode = connectivity.SessionEphemeral
-	}
-	if mode != connectivity.SessionEphemeral &&
-		mode != connectivity.SessionPersistent &&
-		mode != connectivity.SessionExclusive {
-		return "", errors.New("mqtt: durable session identity has invalid session mode")
-	}
-	if c.Session.ClientIDSuffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
-		return "", errors.New("mqtt: nonce replica identity is valid only for ephemeral sessions")
-	}
-
-	clientID, err := resolveClientIDSuffix(c.Session.ClientID, c.Session.ClientIDSuffix)
-	if err != nil {
-		return "", errors.New("mqtt: durable session identity cannot resolve client ID suffix")
-	}
-	brokers, err := canonicalBrokerSet(c.Session.BrokerURLs, c.Session.BrokerURL)
+func (c Config) DurableSessionIdentity(mode connectivity.SessionMode) (string, error) {
+	clientID, brokers, normalizedMode, err := c.durableSessionIdentityCoordinates(mode)
 	if err != nil {
 		return "", err
 	}
-	cleanStart, expiry := effectiveSessionState(c.Session, mode)
+	cleanStart, expiry := effectiveSessionState(c.Session, normalizedMode)
 
 	// Length-prefix every component so concatenation is unambiguous. The raw
 	// descriptor exists only in this stack frame and is never returned/logged.
 	var descriptor strings.Builder
-	appendIdentityPart(&descriptor, string(mode))
+	appendIdentityPart(&descriptor, string(normalizedMode))
 	appendIdentityPart(&descriptor, clientID)
 	appendIdentityPart(&descriptor, strconv.FormatBool(cleanStart))
 	appendIdentityPart(&descriptor, strconv.FormatUint(uint64(expiry), 10))
 	for _, broker := range brokers {
 		appendIdentityPart(&descriptor, broker)
 	}
-	sum := sha256.Sum256([]byte(descriptor.String()))
-	return hex.EncodeToString(sum[:]), nil
+	return identityDigest(descriptor.String()), nil
+}
+
+// DurableSessionIdentityDomain fingerprints the canonical broker sequence and
+// effective client ID only. It detects two sessions that would contend for one
+// broker client identity even if clean-start, expiry, or mode differ.
+func (c Config) DurableSessionIdentityDomain(mode connectivity.SessionMode) (string, error) {
+	clientID, brokers, _, err := c.durableSessionIdentityCoordinates(mode)
+	if err != nil {
+		return "", err
+	}
+	var descriptor strings.Builder
+	appendIdentityPart(&descriptor, clientID)
+	for _, broker := range brokers {
+		appendIdentityPart(&descriptor, broker)
+	}
+	return identityDigest(descriptor.String()), nil
+}
+
+func (c Config) durableSessionIdentityCoordinates(mode connectivity.SessionMode) (string, []string, connectivity.SessionMode, error) {
+	if mode == "" {
+		mode = connectivity.SessionEphemeral
+	}
+	if mode != connectivity.SessionEphemeral &&
+		mode != connectivity.SessionPersistent &&
+		mode != connectivity.SessionExclusive {
+		return "", nil, "", errors.New("mqtt: durable session identity has invalid session mode")
+	}
+	if c.Session.ClientIDSuffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
+		return "", nil, "", errors.New("mqtt: nonce replica identity is valid only for ephemeral sessions")
+	}
+	clientID, err := c.resolveClientIDSuffix(c.Session.ClientID, c.Session.ClientIDSuffix)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("mqtt: durable session identity cannot resolve client ID suffix: %w", err)
+	}
+	brokers, err := canonicalBrokerSet(c.Session.BrokerURLs, c.Session.BrokerURL)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return clientID, brokers, mode, nil
+}
+
+func identityDigest(descriptor string) string {
+	sum := sha256.Sum256([]byte(descriptor))
+	return hex.EncodeToString(sum[:])
 }
 
 // ReplicaIdentityStrategy reports the configured per-replica client-ID
 // strategy without resolving or exposing the effective client ID.
-func (c *Config) ReplicaIdentityStrategy() string {
-	if c == nil {
-		return ""
-	}
+func (c Config) ReplicaIdentityStrategy() string {
 	return c.Session.ClientIDSuffix
 }
 
@@ -90,7 +110,7 @@ func canonicalBrokerSet(brokerURLs []string, brokerURL string) ([]string, error)
 	if len(urls) == 0 && brokerURL != "" {
 		urls = append(urls, brokerURL)
 	}
-	set := make(map[string]struct{}, len(urls))
+	canonical := make([]string, 0, len(urls))
 	for _, raw := range urls {
 		u, err := url.Parse(raw)
 		if err != nil {
@@ -100,13 +120,8 @@ func canonicalBrokerSet(brokerURLs []string, brokerURL string) ([]string, error)
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
 		u.RawQuery = u.Query().Encode()
-		set[u.String()] = struct{}{}
+		canonical = append(canonical, u.String())
 	}
-	canonical := make([]string, 0, len(set))
-	for broker := range set {
-		canonical = append(canonical, broker)
-	}
-	slices.Sort(canonical)
 	return canonical, nil
 }
 

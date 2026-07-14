@@ -12,13 +12,20 @@ import (
 )
 
 type durableIdentityTestConfig struct {
-	identity string
-	err      error
+	identity  string
+	collision string
+	err       error
 }
 
 func (durableIdentityTestConfig) Kind() string    { return "identity" }
 func (durableIdentityTestConfig) Validate() error { return nil }
 func (c durableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
+	return c.identity, c.err
+}
+func (c durableIdentityTestConfig) DurableSessionIdentityDomain(connectivity.SessionMode) (string, error) {
+	if c.collision != "" {
+		return c.collision, c.err
+	}
 	return c.identity, c.err
 }
 
@@ -90,9 +97,113 @@ func TestSupervisor_SessionIdentityChangeRefusedBeforeBuildAndOldRuntimeContinue
 			ev := awaitSwap(t, swaps)
 			require.Error(t, ev.Error)
 			assert.Same(t, oldRuntime, s.Runtime(), "refusal must leave the old runtime serving")
-			assert.Same(t, oldCfg, s.Config(), "refusal must preserve old config and version")
+			assert.Equal(t, oldCfg, s.Config(), "refusal must preserve old config and version")
+			assert.Equal(t, 1, s.Config().Version)
 			afterSessions, _, _ := factory.Counts()
 			assert.Equal(t, beforeSessions, afterSessions, "replacement must not be built before identity preflight")
 		})
 	}
+}
+
+func TestSupervisor_InPlaceSessionIdentityMutationUsesAppliedSnapshot(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	factory := &countingTransportFactory{}
+	s := NewSupervisor(WithOnSwap(onSwap))
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterTransport("identity", factory)
+
+	cfg := configWithDurableSessionIdentity(1, "opaque-a")
+	changes := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, cfg, changes)
+	defer func() { cancel(); <-errCh }()
+
+	oldRuntime := s.Runtime()
+	require.NotNil(t, oldRuntime)
+	beforeSessions, _, _ := factory.Counts()
+
+	// Mutate the caller-held object that Supervisor previously retained directly,
+	// then submit that same pointer as a reload.
+	cfg.Version = 2
+	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-b"}
+	require.True(t, sendConfig(changes, cfg, time.Second))
+
+	ev := awaitSwap(t, swaps)
+	require.Error(t, ev.Error)
+	assert.Same(t, oldRuntime, s.Runtime())
+	require.NotNil(t, s.Config())
+	assert.Equal(t, 1, s.Config().Version, "caller mutation must not alter the applied blueprint snapshot")
+	afterSessions, _, _ := factory.Counts()
+	assert.Equal(t, beforeSessions, afterSessions, "identity refusal must happen before replacement build")
+}
+
+func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReload(t *testing.T) {
+	duplicate := configWithDurableSessionIdentity(2, "opaque-a")
+	duplicate.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	duplicate.Sessions = append(duplicate.Sessions, ports.SessionDef{
+		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
+		Config: durableIdentityTestConfig{identity: "opaque-b", collision: "shared-domain"},
+	})
+
+	require.Error(t, durableSessionIdentityChanged(nil, duplicate),
+		"initial startup must reject duplicate effective identities")
+
+	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
+	require.Error(t, durableSessionIdentityChanged(oldCfg, duplicate),
+		"reload must reject a newly-added duplicate effective identity")
+}
+
+func TestSupervisor_DuplicateDurableIdentityRejectedBeforeInitialBuild(t *testing.T) {
+	factory := &countingTransportFactory{}
+	s := NewSupervisor()
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterTransport("identity", factory)
+
+	cfg := configWithDurableSessionIdentity(1, "opaque-a")
+	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{
+		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
+		Config: durableIdentityTestConfig{identity: "opaque-b", collision: "shared-domain"},
+	})
+
+	err := s.Run(t.Context(), cfg, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate effective broker identities")
+	sessions, receivers, senders := factory.Counts()
+	assert.Zero(t, sessions)
+	assert.Zero(t, receivers)
+	assert.Zero(t, senders)
+	assert.Nil(t, s.Runtime())
+	assert.Nil(t, s.Config())
+}
+
+func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	factory := &countingTransportFactory{}
+	s := NewSupervisor(WithOnSwap(onSwap))
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterTransport("identity", factory)
+
+	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
+	oldCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	changes := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
+	defer func() { cancel(); <-errCh }()
+
+	oldRuntime := s.Runtime()
+	beforeSessions, _, _ := factory.Counts()
+	newCfg := configWithDurableSessionIdentity(2, "opaque-a")
+	newCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	newCfg.Sessions = append(newCfg.Sessions, ports.SessionDef{
+		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
+		Config: durableIdentityTestConfig{identity: "different-state", collision: "shared-domain"},
+	})
+	require.True(t, sendConfig(changes, newCfg, time.Second))
+
+	ev := awaitSwap(t, swaps)
+	require.Error(t, ev.Error)
+	assert.Contains(t, ev.Error.Error(), "duplicate effective broker identities")
+	assert.Same(t, oldRuntime, s.Runtime())
+	assert.Equal(t, 1, s.Config().Version)
+	afterSessions, _, _ := factory.Counts()
+	assert.Equal(t, beforeSessions, afterSessions, "duplicate refusal must precede replacement build")
 }

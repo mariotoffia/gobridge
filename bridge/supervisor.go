@@ -66,6 +66,7 @@ type Supervisor struct {
 	mu                  sync.RWMutex
 	rt                  *runtime.Runtime
 	cfg                 *ports.BridgeConfig
+	durableIdentities   durableSessionIdentitySnapshot
 	transports          map[string]ports.TransportFactory
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
@@ -372,7 +373,12 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	s.baseCtx = ctx
 	s.mu.Unlock()
 
-	rt, err := s.buildRuntime(ctx, initial)
+	appliedInitial := cloneConfigForBuild(initial)
+	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
+	if err != nil {
+		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
+	}
+	rt, err := s.buildRuntime(ctx, appliedInitial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial build: %w", err)
 	}
@@ -382,13 +388,14 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 		// started; returning here without releasing them leaks every connection
 		// set (HIGH: initial Start failure leaks the built runtime). Mirror the
 		// swap paths' careful stopAbandoned before returning.
-		s.stopAbandoned(ctx, rt, initial)
+		s.stopAbandoned(ctx, rt, appliedInitial)
 		return fmt.Errorf("supervisor: initial start: %w", err)
 	}
 
 	s.mu.Lock()
 	s.rt = rt
-	s.cfg = initial
+	s.cfg = appliedInitial
+	s.durableIdentities = initialIdentities
 	s.mu.Unlock()
 
 	if changes == nil {
@@ -555,6 +562,7 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	rt := s.rt
 	cfg := s.cfg
 	baseCtx := s.baseCtx
+	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
 	if rt != nil && rt.IsRunning() {
 		return nil
@@ -566,6 +574,13 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 		// Run has not been entered, so there is no process-scoped context to own
 		// the runtime's lifetime. Refuse rather than bind it to the request ctx.
 		return fmt.Errorf("supervisor: not running; cannot start bridge")
+	}
+	proposedIdentities, err := snapshotDurableSessionIdentities(cfg)
+	if err == nil {
+		err = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
+	}
+	if err != nil {
+		return fmt.Errorf("supervisor: start bridge durable session identity preflight: %w", err)
 	}
 	// Bound the BUILD by the admin-request ctx (so the handler stays responsive to
 	// its operation timeout), but START the runtime under the long-lived Run ctx:
@@ -601,20 +616,23 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.mu.RLock()
 	paused := s.paused
 	oldCfgAtPreflight := s.cfg
+	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
-	if oldCfgAtPreflight != nil {
-		if identityErr := durableSessionIdentityChanged(oldCfgAtPreflight, newCfg); identityErr != nil {
-			if s.logger != nil {
-				s.logger.Error("supervisor: refusing reload that changes durable broker session identity; "+
-					"externally drain, unsubscribe, and cut over the old session first",
-					"error", identityErr, "attempted_config_version", newCfg.Version)
-			}
-			s.emitConfigReload(false)
-			if s.onSwap != nil {
-				s.safeOnSwap(SwapEvent{OldConfig: oldCfgAtPreflight, NewConfig: newCfg, Error: identityErr})
-			}
-			return
+	proposedIdentities, identityErr := snapshotDurableSessionIdentities(newCfg)
+	if identityErr == nil {
+		identityErr = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
+	}
+	if identityErr != nil {
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing reload that changes or duplicates durable broker session identity; "+
+				"externally drain, unsubscribe, and cut over the old session first",
+				"error", identityErr, "attempted_config_version", newCfg.Version)
 		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{OldConfig: oldCfgAtPreflight, NewConfig: newCfg, Error: identityErr})
+		}
+		return
 	}
 
 	// While an operator has deliberately paused the bridge (StopBridge), a config
@@ -657,7 +675,8 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			return
 		}
 		s.mu.Lock()
-		s.cfg = newCfg
+		s.cfg = cloneConfigForBuild(newCfg)
+		s.durableIdentities = proposedIdentities
 		s.mu.Unlock()
 		if s.logger != nil {
 			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
@@ -836,7 +855,8 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	} else {
 		s.mu.Lock()
 		s.rt = newRt
-		s.cfg = newCfg
+		s.cfg = cloneConfigForBuild(newCfg)
+		s.durableIdentities = proposedIdentities
 		s.wedged = false
 		s.degraded = false
 		s.degradedReason = ""
@@ -1177,47 +1197,84 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 	return SwapOverlap
 }
 
-// durableSessionIdentityChanged refuses a live mutation or removal of a
-// durable broker session identified by a stable SessionDef ID. Fingerprints are
-// opaque and are never included in diagnostics. If the old config advertises
-// the capability, the new config must advertise it too so comparison fails
-// closed rather than silently bypassing broker-state protection.
+// durableSessionIdentitySnapshot is immutable after publication on Supervisor.
+// Both keys and fingerprints are opaque comparison material and must not be
+// logged. The plugin kind scopes fingerprints from unrelated transports.
+type durableSessionIdentitySnapshot map[string]durableSessionIdentity
+
+type durableSessionIdentity struct {
+	kind                 string
+	fingerprint          string
+	collisionFingerprint string
+}
+
+// durableSessionIdentityChanged remains the config-to-config seam used by unit
+// tests. Supervisor reloads compare the proposed snapshot with the immutable
+// snapshot captured when the current config was accepted.
 func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
-	if oldCfg == nil || newCfg == nil {
-		return nil
+	oldIdentities, err := snapshotDurableSessionIdentities(oldCfg)
+	if err != nil {
+		return err
 	}
-	newByID := make(map[string]ports.SessionDef, len(newCfg.Sessions))
-	for _, session := range newCfg.Sessions {
-		newByID[session.ID] = session
+	newIdentities, err := snapshotDurableSessionIdentities(newCfg)
+	if err != nil {
+		return err
 	}
-	for _, oldSession := range oldCfg.Sessions {
-		oldIdentityConfig, ok := oldSession.Config.(ports.DurableSessionIdentityConfig)
+	return compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities)
+}
+
+func snapshotDurableSessionIdentities(cfg *ports.BridgeConfig) (durableSessionIdentitySnapshot, error) {
+	snapshot := make(durableSessionIdentitySnapshot)
+	if cfg == nil {
+		return snapshot, nil
+	}
+	owners := make(map[string]string)
+	for _, session := range cfg.Sessions {
+		identityConfig, ok := session.Config.(ports.DurableSessionIdentityConfig)
 		if !ok {
 			continue
 		}
-		oldIdentity, err := oldIdentityConfig.DurableSessionIdentity(normalizedSessionMode(oldSession.SessionMode))
-		if err != nil {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q identity cannot be verified", oldSession.ID)
+		mode := normalizedSessionMode(session.SessionMode)
+		fingerprint, err := identityConfig.DurableSessionIdentity(mode)
+		if err != nil || fingerprint == "" {
+			return nil, fmt.Errorf("bridge: durable session %q identity cannot be verified", session.ID)
 		}
-		newSession, ok := newByID[oldSession.ID]
+		collisionFingerprint, err := identityConfig.DurableSessionIdentityDomain(mode)
+		if err != nil || collisionFingerprint == "" {
+			return nil, fmt.Errorf("bridge: durable session %q identity domain cannot be verified", session.ID)
+		}
+		identity := durableSessionIdentity{
+			kind: session.Config.Kind(), fingerprint: fingerprint, collisionFingerprint: collisionFingerprint,
+		}
+		collisionKey := identity.kind + "\x00" + identity.collisionFingerprint
+		if owner, duplicate := owners[collisionKey]; duplicate {
+			return nil, fmt.Errorf("bridge: durable sessions %q and %q have duplicate effective broker identities", owner, session.ID)
+		}
+		owners[collisionKey] = session.ID
+		snapshot[session.ID] = identity
+	}
+	return snapshot, nil
+}
+
+func compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities durableSessionIdentitySnapshot) error {
+	for sessionID, oldIdentity := range oldIdentities {
+		newIdentity, ok := newIdentities[sessionID]
 		if !ok {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed or renamed; "+
-				"its broker state could be stranded", oldSession.ID)
-		}
-		newIdentityConfig, ok := newSession.Config.(ports.DurableSessionIdentityConfig)
-		if !ok {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q identity capability is unavailable", oldSession.ID)
-		}
-		newIdentity, err := newIdentityConfig.DurableSessionIdentity(normalizedSessionMode(newSession.SessionMode))
-		if err != nil {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q identity cannot be verified", oldSession.ID)
+			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed, renamed, or lost its identity capability; its broker state could be stranded", sessionID)
 		}
 		if oldIdentity != newIdentity {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; "+
-				"externally drain queued messages, unsubscribe the old session, and perform a cutover", oldSession.ID)
+			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; externally drain queued messages, unsubscribe the old session, and perform a cutover", sessionID)
 		}
 	}
 	return nil
+}
+
+func cloneDurableSessionIdentitySnapshot(in durableSessionIdentitySnapshot) durableSessionIdentitySnapshot {
+	out := make(durableSessionIdentitySnapshot, len(in))
+	for id, identity := range in {
+		out[id] = identity
+	}
+	return out
 }
 
 func normalizedSessionMode(mode string) connectivity.SessionMode {

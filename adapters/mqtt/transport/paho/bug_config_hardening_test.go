@@ -1,6 +1,7 @@
 package paho
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,35 +41,11 @@ func TestBug_TLSConfigFromMap_ParsesInlinePEM(t *testing.T) {
 	assert.True(t, empty.CACertPEM.IsZero(), "empty ca_cert_pem must stay zero")
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// A-15 (LOW): the crypto/rand-failure fallback for the client-id nonce must mix
-// in PID and hostname. A bare timestamp fallback collides for two replicas
-// started in the same tick on a host with a coarse clock, and identical
-// client_ids trigger a mutual-takeover storm. Mixing PID (distinct per process)
-// and hostname (distinct per host) keeps the token disambiguating even when the
-// clock does not move.
-//
-// Mutation killed:
-//   - drop the `%d` PID field from the seed → the differing-PID case collides
-//     and its NotEqual assertion fails.
-//   - drop the `%s` host field from the seed → the differing-host case collides
-//     and its NotEqual assertion fails.
-//
-// ═══════════════════════════════════════════════════════════════════════════
-func TestBug_ClientNonceFallback_MixesPIDAndHost(t *testing.T) {
-	base := clientNonceFallback(1000, 42, "host-a")
-
-	// Deterministic for identical inputs.
-	assert.Equal(t, base, clientNonceFallback(1000, 42, "host-a"))
-
-	// Same tick + same host, different process → must differ.
-	assert.NotEqual(t, base, clientNonceFallback(1000, 43, "host-a"),
-		"PID must disambiguate two replicas started in the same tick on one host")
-
-	// Same tick + same process, different host → must differ.
-	assert.NotEqual(t, base, clientNonceFallback(1000, 42, "host-b"),
-		"hostname must disambiguate replicas on different hosts")
-
-	// 4 bytes → 8 hex chars, matching the crypto/rand happy path width.
-	assert.Len(t, base, 8)
+// TestBug_ClientNonceUses128Bits verifies the replica nonce has the required
+// 128 bits of entropy and deterministic hex encoding for a supplied reader.
+func TestBug_ClientNonceUses128Bits(t *testing.T) {
+	nonce, err := randomClientNonce(bytes.NewReader(make([]byte, 16)))
+	require.NoError(t, err)
+	assert.Len(t, nonce, 32)
+	assert.Equal(t, "00000000000000000000000000000000", nonce)
 }

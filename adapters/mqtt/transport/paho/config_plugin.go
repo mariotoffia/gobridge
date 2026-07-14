@@ -11,7 +11,9 @@ import (
 // Compile-time interface contract.
 var (
 	_ ports.CredentialedConfig           = (*Config)(nil)
+	_ ports.DurableSessionIdentityConfig = Config{}
 	_ ports.DurableSessionIdentityConfig = (*Config)(nil)
+	_ ports.ReplicaIdentityConfig        = Config{}
 	_ ports.ReplicaIdentityConfig        = (*Config)(nil)
 )
 
@@ -26,6 +28,11 @@ type Config struct {
 	// credential store at build time. Resolved material is applied
 	// via ApplyCredentials.
 	CredentialsURIRef string `mapstructure:"credentials_uri" yaml:"credentials_uri,omitempty" json:"credentials_uri,omitempty"`
+
+	// clientIDSuffixIdentity is process-shared by default and may be overridden
+	// by tests. Keeping the pointer in Config makes value copies resolve the same
+	// effective suffix as the config instance they were copied from.
+	clientIDSuffixIdentity *clientIDSuffixProcessIdentity `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // Kind reports the registry discriminator.

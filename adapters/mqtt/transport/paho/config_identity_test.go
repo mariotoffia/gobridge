@@ -1,6 +1,7 @@
 package paho
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -61,18 +62,72 @@ func TestConfig_DurableSessionIdentity_ChangesForEveryBrokerStateField(t *testin
 	assert.NotEqual(t, baseID, identityFingerprint(t, base, connectivity.SessionEphemeral), "session mode is identity")
 }
 
+func TestConfig_DurableSessionIdentityDomain_RejectsClientCollisionAcrossStateSettings(t *testing.T) {
+	first := durableIdentityConfig()
+	second := cloneIdentityConfig(first)
+	second.Session.CleanStart = true
+	second.Session.SessionExpiryInterval++
+
+	firstState := identityFingerprint(t, first, connectivity.SessionPersistent)
+	secondState := identityFingerprint(t, second, connectivity.SessionPersistent)
+	require.NotEqual(t, firstState, secondState)
+
+	firstDomain, err := first.DurableSessionIdentityDomain(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	secondDomain, err := second.DurableSessionIdentityDomain(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	assert.Equal(t, firstDomain, secondDomain, "same brokers and effective client ID collide regardless of state settings")
+}
+
+func TestConfig_DurableSessionIdentity_BrokerOrderAndDuplicatesAreIdentity(t *testing.T) {
+	base := durableIdentityConfig()
+	want := identityFingerprint(t, base, connectivity.SessionPersistent)
+
+	reordered := cloneIdentityConfig(base)
+	reordered.Session.BrokerURLs[0], reordered.Session.BrokerURLs[1] =
+		reordered.Session.BrokerURLs[1], reordered.Session.BrokerURLs[0]
+	assert.NotEqual(t, want, identityFingerprint(t, reordered, connectivity.SessionPersistent),
+		"Paho attempts brokers in configured order")
+
+	duplicated := cloneIdentityConfig(base)
+	duplicated.Session.BrokerURLs = append(duplicated.Session.BrokerURLs, duplicated.Session.BrokerURLs[0])
+	assert.NotEqual(t, want, identityFingerprint(t, duplicated, connectivity.SessionPersistent),
+		"Paho does not deduplicate configured brokers")
+}
+
+func TestConfig_IdentityCapabilities_ValueAndPointerParity(t *testing.T) {
+	value := *durableIdentityConfig()
+	pointer := &value
+
+	valueIdentity, valueOK := any(value).(ports.DurableSessionIdentityConfig)
+	pointerIdentity, pointerOK := any(pointer).(ports.DurableSessionIdentityConfig)
+	require.True(t, valueOK, "factory-supported value Config must expose durable identity")
+	require.True(t, pointerOK)
+
+	valueFingerprint, err := valueIdentity.DurableSessionIdentity(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	pointerFingerprint, err := pointerIdentity.DurableSessionIdentity(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	assert.Equal(t, pointerFingerprint, valueFingerprint)
+
+	valueReplica, valueOK := any(value).(ports.ReplicaIdentityConfig)
+	pointerReplica, pointerOK := any(pointer).(ports.ReplicaIdentityConfig)
+	require.True(t, valueOK, "factory-supported value Config must expose replica identity")
+	require.True(t, pointerOK)
+	assert.Equal(t, pointerReplica.ReplicaIdentityStrategy(), valueReplica.ReplicaIdentityStrategy())
+}
+
 func TestConfig_DurableSessionIdentity_CanonicalAndSecretSafe(t *testing.T) {
 	base := durableIdentityConfig()
 	want := identityFingerprint(t, base, connectivity.SessionPersistent)
 
 	canonical := cloneIdentityConfig(base)
 	canonical.Session.BrokerURLs = []string{
-		"ssl://broker-a.example:8883",
-		"ssl://other-user:new-secret@broker-b.example:8883?a=1&b=2",
-		"ssl://broker-a.example:8883",
+		"ssl://other-user:new-secret@BROKER-B.example:8883?a=1&b=2",
+		"ssl://BROKER-A.example:8883",
 	}
 	assert.Equal(t, want, identityFingerprint(t, canonical, connectivity.SessionPersistent),
-		"broker order, duplicates, and URL credentials are not identity")
+		"per-URL spelling and URL credentials are not identity")
 
 	nonIdentity := cloneIdentityConfig(base)
 	nonIdentity.CredentialsURIRef = "vault://rotated/mqtt"
@@ -184,4 +239,43 @@ func TestFactoryNewSession_ClientIDSuffixNonce_AllowsDefaultEphemeralMode(t *tes
 	session, err := factory.NewSession(t.Context(), ports.SessionSpec{ID: "session", Config: cfg})
 	require.NoError(t, err)
 	require.NotNil(t, session)
+}
+
+type failingNonceReader struct{}
+
+func (failingNonceReader) Read([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+
+func TestConfig_ClientIDNonceEntropyFailurePropagatesWithoutFallback(t *testing.T) {
+	cfg := durableIdentityConfig()
+	cfg.Session.ClientIDSuffix = ClientIDSuffixNonce
+	cfg.clientIDSuffixIdentity = &clientIDSuffixProcessIdentity{random: failingNonceReader{}}
+
+	fingerprint, err := cfg.DurableSessionIdentity(connectivity.SessionEphemeral)
+	require.Error(t, err)
+	assert.Empty(t, fingerprint)
+	assert.Contains(t, err.Error(), "entropy unavailable")
+	assert.NotContains(t, err.Error(), cfg.Session.ClientID)
+
+	copied := *cfg
+	_, err = NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+		ID: "session", SessionMode: connectivity.SessionEphemeral, Config: copied,
+	})
+	require.Error(t, err, "session construction must not silently fall back")
+	assert.Contains(t, err.Error(), "invalid client_id_suffix")
+}
+
+func TestConfig_ClientIDNonceStableAcrossValueCopies(t *testing.T) {
+	cfg := durableIdentityConfig()
+	cfg.Session.ClientIDSuffix = ClientIDSuffixNonce
+	cfg.clientIDSuffixIdentity = &clientIDSuffixProcessIdentity{
+		random: strings.NewReader("0123456789abcdef"),
+	}
+	copied := *cfg
+
+	first, err := cfg.resolveClientIDSuffix(cfg.Session.ClientID, ClientIDSuffixNonce)
+	require.NoError(t, err)
+	second, err := copied.resolveClientIDSuffix(copied.Session.ClientID, ClientIDSuffixNonce)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+	assert.Len(t, strings.TrimPrefix(first, cfg.Session.ClientID+"-"), 32)
 }

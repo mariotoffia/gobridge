@@ -51,7 +51,13 @@ var ErrNilDecoder = shared.NewBridgeError(
 // durable state. It must remain stable for the same effective config within a
 // process. Callers compare it for equality only and must not log identity input.
 type DurableSessionIdentityConfig interface {
+	// DurableSessionIdentity fingerprints all effective broker-state fields and
+	// is used to reject state-stranding reload changes.
 	DurableSessionIdentity(mode connectivity.SessionMode) (string, error)
+	// DurableSessionIdentityDomain fingerprints only the broker connection
+	// domain and effective client identity. Two sessions in this domain would
+	// connect as the same broker client even when their state settings differ.
+	DurableSessionIdentityDomain(mode connectivity.SessionMode) (string, error)
 }
 
 // Replica identity strategy values understood by transport-neutral validation.
