@@ -104,7 +104,7 @@ func TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline(t *testing.T) {
 	// context.Background() has NO deadline: the bound must come from the adapter.
 	require.Nil(t, deadlineOf(context.Background()), "test precondition: caller ctx must be deadline-less")
 
-	err := s.reconcile(context.Background(), probe, plan, []string{"stale/route"})
+	err := s.reconcile(context.Background(), probe, plan, []string{"stale/route"}, s.connEpoch)
 	require.NoError(t, err)
 
 	probe.mu.Lock()
@@ -136,7 +136,7 @@ func TestBug_Reconcile_WedgedSubscribe_FailsBoundedNotHang(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.reconcile(context.Background(), probe, plan, nil)
+		done <- s.reconcile(context.Background(), probe, plan, nil, s.connEpoch)
 	}()
 
 	select {
@@ -163,7 +163,7 @@ func TestBug_Reconcile_WedgedUnsubscribe_FailsBoundedNotHang(t *testing.T) {
 	// Empty desired plan + a prior topic ⇒ an UNSUBSCRIBE with no SUBSCRIBE.
 	done := make(chan error, 1)
 	go func() {
-		done <- s.reconcile(context.Background(), probe, connectivity.SessionPlan{}, []string{"stale/route"})
+		done <- s.reconcile(context.Background(), probe, connectivity.SessionPlan{}, []string{"stale/route"}, s.connEpoch)
 	}()
 
 	select {

@@ -113,9 +113,10 @@ func TestBug_Reconcile_ReconnectMidFlight_SkipsStaleActiveSubsWriteBack(t *testi
 
 	// Reconcile a plan wanting topic A. The SUBACK succeeds, but the injected
 	// reconnect bumps the epoch mid-flight, so the write-back must be skipped.
-	require.NoError(t, sess.Reconcile(context.Background(), connectivity.SessionPlan{
+	err := sess.Reconcile(context.Background(), connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "A", QoS: 1}},
-	}))
+	})
+	require.Error(t, err, "the prior-generation reconcile must reject the new connection epoch")
 
 	require.Equal(t, 1, fake.subscribeCalls(), "the reconcile issued exactly one SUBSCRIBE")
 

@@ -153,7 +153,8 @@ func TestCredentialReload_InvalidatesConvergenceBeforeDelayedConnectionUp(t *tes
 			connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil)))
 		require.Equal(t, 2, dialCount)
 		close(oldConn.release)
-		require.NoError(t, <-reconcileDone)
+		require.Error(t, <-reconcileDone,
+			"prior-generation reconcile must reject the replacement epoch")
 
 		s.mu.Lock()
 		_, observedB := s.observedSubs["reload/b"]
@@ -209,7 +210,7 @@ func TestReconcile_EmptyPlanShortcutDoesNotRelatchAfterConnectionUp(t *testing.T
 	// that snapshot. The shortcut must not restore satisfaction for epoch 30.
 	s.handleConnectionUp()
 	close(resume)
-	require.NoError(t, <-reconcileDone)
+	require.Error(t, <-reconcileDone)
 
 	s.mu.Lock()
 	epoch := s.connEpoch
@@ -218,4 +219,75 @@ func TestReconcile_EmptyPlanShortcutDoesNotRelatchAfterConnectionUp(t *testing.T
 	require.Equal(t, uint64(31), epoch)
 	require.False(t, satisfied)
 	require.NotEqual(t, ports.ServiceLevelFull, s.Health(context.Background()).ServiceLevel)
+}
+
+func TestReconcile_UnchangedPlanReloadBetweenSnapshotsRejectsOldOperation(t *testing.T) {
+	oldConn := &fakeReconcileConn{}
+	newConn := &fakeReconcileConn{}
+	var dialCount int
+	s := NewSession(SessionOptions{
+		BrokerURLs:                []string{"tcp://192.0.2.1:1883"},
+		ClientID:                  "unchanged-plan-reload",
+		Username:                  "old-user",
+		Password:                  shared.NewSecret("old-password"),
+		AllowPlaintextCredentials: true,
+	}, connectivity.SessionEphemeral, nil)
+	defer func() { _ = s.Close(context.Background()) }()
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dialCount++
+		s.mu.Lock()
+		s.liveCreds = mqttCredentials{Username: s.opts.Username, Password: s.opts.Password.Reveal()}
+		s.mu.Unlock()
+		if dialCount == 1 {
+			return oldConn, func() {}, nil
+		}
+		return newConn, func() {}, nil
+	}
+
+	require.NoError(t, s.Start(context.Background()))
+	s.mu.Lock()
+	s.connEpoch = 40
+	s.mu.Unlock()
+	s.router.Register("rx-reload", func(*pahov5.Publish) {})
+	plan := connectivity.SessionPlan{
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "reload/unchanged", QoS: 1}},
+		ExpectedReceiverIDs: []string{"rx-reload"},
+	}
+	require.NoError(t, s.Reconcile(context.Background(), plan))
+	require.Equal(t, ports.ServiceLevelFull, s.Health(context.Background()).ServiceLevel)
+	oldSubscribeCalls := oldConn.subscribeCallCount()
+
+	outerSnapshotTaken := make(chan struct{})
+	resume := make(chan struct{})
+	s.mu.Lock()
+	s.reconcileSnapshotHook = func() {
+		close(outerSnapshotTaken)
+		<-resume
+	}
+	s.mu.Unlock()
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- s.Reconcile(context.Background(), plan) }()
+	<-outerSnapshotTaken
+
+	// Reload replaces cm and advances the connection epoch after Reconcile has
+	// captured the old pair, but before the unchanged-plan helper snapshots maps.
+	require.NoError(t, s.ApplyCredentials(context.Background(),
+		connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil)))
+	require.Equal(t, 2, dialCount)
+	close(resume)
+	err := <-reconcileDone
+	s.mu.Lock()
+	s.reconcileSnapshotHook = nil
+	epoch := s.connEpoch
+	satisfied := s.subscriptionsSatisfied
+	s.mu.Unlock()
+
+	require.Error(t, err, "an old-cm reconcile must reject the replacement connection epoch")
+	require.Equal(t, uint64(41), epoch)
+	require.False(t, satisfied)
+	require.NotEqual(t, ports.ServiceLevelFull, s.Health(context.Background()).ServiceLevel)
+	require.Equal(t, oldSubscribeCalls, oldConn.subscribeCallCount(),
+		"unchanged stale operation must not issue another broker call on old cm")
+	require.Equal(t, 0, newConn.subscribeCallCount(),
+		"old operation must not pair replacement epoch/state with the new cm")
 }

@@ -124,14 +124,16 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
 	if len(desiredPlan.Subscriptions) == 0 && appliedExists && !appliedHadSubs && !observedHadSubs {
 		s.mu.Lock()
-		if s.connEpoch == startEpoch {
-			s.subscriptionsSatisfied = true
+		if err := reconcileEpochMismatch(startEpoch, s.connEpoch); err != nil {
+			s.mu.Unlock()
+			return err
 		}
+		s.subscriptionsSatisfied = true
 		s.mu.Unlock()
 		return nil
 	}
 
-	if err := s.reconcile(ctx, cm, desiredPlan, priorPlanTopics); err != nil {
+	if err := s.reconcile(ctx, cm, desiredPlan, priorPlanTopics, startEpoch); err != nil {
 		return err
 	}
 
@@ -142,6 +144,10 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// next reconcile retries the failed op (blocking-#2).
 	applied := cloneSessionPlan(desiredPlan)
 	s.mu.Lock()
+	if err := reconcileEpochMismatch(startEpoch, s.connEpoch); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.appliedPlan = &applied
 	s.mu.Unlock()
 
@@ -157,6 +163,10 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// and is a cheap no-op when the pending buffer is empty (the steady state).
 	if s.router != nil {
 		s.router.reclassifyPending()
+	}
+
+	if err := s.requireReconcileEpoch(startEpoch); err != nil {
+		return err
 	}
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
@@ -356,7 +366,13 @@ func (s *Session) reconcileTimeout() time.Duration {
 	return DefaultReconcileTimeout
 }
 
-func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan, priorTopics []string) error {
+func (s *Session) reconcile(
+	ctx context.Context,
+	cm pahoConnection,
+	plan connectivity.SessionPlan,
+	priorTopics []string,
+	operationEpoch uint64,
+) error {
 	reconcileStart := s.clock().Now()
 
 	desired := make(map[string]byte, len(plan.Subscriptions))
@@ -368,6 +384,10 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	}
 
 	s.mu.Lock()
+	if err := reconcileEpochMismatch(operationEpoch, s.connEpoch); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	current := maps.Clone(s.activeSubs)
 	observed := maps.Clone(s.observedSubs)
 	if observed == nil {
@@ -380,12 +400,9 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			observed[topic] = subscriptionGrant{Requested: qos, Granted: qos}
 		}
 	}
-	// Capture the connection generation alongside the snapshot. Every
-	// subscription-state write-back below is gated on this still matching: a reconnect
-	// (handleConnectionUp) landing mid-reconcile bumps s.connEpoch and resets
-	// both maps, so a stale write-back must be abandoned rather than pollute
-	// the fresh set (A-3).
-	startEpoch := s.connEpoch
+	// The maps and cm belong to operationEpoch captured by Reconcile. Never
+	// re-capture a newer generation here: pairing old cm with replacement state
+	// would make an unchanged plan appear converged after Reload.
 	s.mu.Unlock()
 	if current == nil {
 		current = make(map[string]byte)
@@ -445,6 +462,9 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		// Wrap the broker op in an adapter-owned deadline: the reconcile ctx may
 		// carry none, so a wedged broker (UNSUBACK never arrives on a half-open
 		// connection) would otherwise hang the reconcile indefinitely (HIGH-2).
+		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+			return err
+		}
 		unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
 		err := cm.Unsubscribe(unsubCtx, toUnsub)
 		cancel()
@@ -452,11 +472,13 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			return MapError(err)
 		}
 		s.mu.Lock()
-		if s.connEpoch == startEpoch {
-			for _, t := range toUnsub {
-				delete(s.observedSubs, t)
-				delete(s.activeSubs, t)
-			}
+		if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
+			s.mu.Unlock()
+			return epochErr
+		}
+		for _, t := range toUnsub {
+			delete(s.observedSubs, t)
+			delete(s.activeSubs, t)
 		}
 		s.mu.Unlock()
 	}
@@ -498,11 +520,17 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		// Adapter-owned deadline per SUBSCRIBE too: a broker that accepts the
 		// connection but never returns SUBACK must not hang the reconcile — and
 		// any startup / hot-reload step awaiting it — indefinitely (HIGH-2).
+		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+			return err
+		}
 		subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
 		reasons, err := cm.Subscribe(subCtx, toSub)
 		cancel()
 		if err != nil {
 			return MapError(err)
+		}
+		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+			return err
 		}
 		// Walk every reason code so every successful broker grant is observed,
 		// while only contract-satisfying grants become active. This preserves
@@ -532,18 +560,20 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		}
 		if len(succeeded) > 0 {
 			s.mu.Lock()
-			if s.connEpoch == startEpoch {
-				if s.observedSubs == nil {
-					s.observedSubs = make(map[string]subscriptionGrant)
-				}
-				for _, opt := range succeeded {
-					req := desired[opt.Topic]
-					s.observedSubs[opt.Topic] = subscriptionGrant{Requested: req, Granted: opt.QoS}
-					if opt.QoS >= req {
-						s.activeSubs[opt.Topic] = opt.QoS
-					} else {
-						delete(s.activeSubs, opt.Topic)
-					}
+			if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
+				s.mu.Unlock()
+				return epochErr
+			}
+			if s.observedSubs == nil {
+				s.observedSubs = make(map[string]subscriptionGrant)
+			}
+			for _, opt := range succeeded {
+				req := desired[opt.Topic]
+				s.observedSubs[opt.Topic] = subscriptionGrant{Requested: req, Granted: opt.QoS}
+				if opt.QoS >= req {
+					s.activeSubs[opt.Topic] = opt.QoS
+				} else {
+					delete(s.activeSubs, opt.Topic)
 				}
 			}
 			s.mu.Unlock()
@@ -556,14 +586,19 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		}
 	}
 
-	if downgradeErr := s.observedQoSDowngrade(desired); downgradeErr != nil {
+	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+		return err
+	}
+	if downgradeErr := observedQoSDowngrade(desired, observed); downgradeErr != nil {
 		return downgradeErr
 	}
 
 	s.mu.Lock()
-	if s.connEpoch == startEpoch {
-		s.subscriptionsSatisfied = subscriptionStateConverged(desired, s.observedSubs, s.activeSubs)
+	if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
+		s.mu.Unlock()
+		return epochErr
 	}
+	s.subscriptionsSatisfied = subscriptionStateConverged(desired, s.observedSubs, s.activeSubs)
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(reconcileStart)
@@ -602,11 +637,10 @@ func subscriptionStateConverged(
 	return true
 }
 
-func (s *Session) observedQoSDowngrade(desired map[string]byte) *shared.BridgeError {
-	s.mu.Lock()
-	observed := maps.Clone(s.observedSubs)
-	s.mu.Unlock()
-
+func observedQoSDowngrade(
+	desired map[string]byte,
+	observed map[string]subscriptionGrant,
+) *shared.BridgeError {
 	topics := make([]string, 0, len(desired))
 	for topic := range desired {
 		topics = append(topics, topic)
@@ -620,6 +654,22 @@ func (s *Session) observedQoSDowngrade(desired map[string]byte) *shared.BridgeEr
 		}
 	}
 	return nil
+}
+
+func (s *Session) requireReconcileEpoch(operationEpoch uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return reconcileEpochMismatch(operationEpoch, s.connEpoch)
+}
+
+func reconcileEpochMismatch(operationEpoch, currentEpoch uint64) error {
+	if operationEpoch == currentEpoch {
+		return nil
+	}
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: connection changed during reconcile").
+		With("operation_epoch", operationEpoch).
+		With("current_epoch", currentEpoch)
 }
 
 func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeError {

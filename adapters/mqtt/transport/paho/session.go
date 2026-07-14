@@ -75,10 +75,11 @@ type Session struct {
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64
-	// connEpoch is the broker-connection generation, bumped under mu on every
-	// handleConnectionUp (the connect edge that resets activeSubs). reconcile
-	// captures it when it snapshots activeSubs and re-checks it before each
-	// write-back: a reconnect landing MID-reconcile (after a SUBACK succeeded on
+	// connEpoch is the broker-connection generation, bumped under mu on Reload
+	// teardown and every handleConnectionUp. Reconcile captures it once with cm,
+	// carries that operation epoch through all helper snapshots and broker calls,
+	// and rejects a mismatch before state commits: a reconnect landing
+	// MID-reconcile (after a SUBACK succeeded on
 	// the prior connection but before the write-back) would otherwise let the
 	// stale reconcile write its subscriptions into the FRESH, just-reset
 	// activeSubs, so the next connect-edge reconcile computes an empty delta and
