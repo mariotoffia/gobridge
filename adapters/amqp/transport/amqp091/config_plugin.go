@@ -156,6 +156,9 @@ func cloneAMQPArguments(src map[string]any) map[string]any {
 	return cloned
 }
 
+// cloneAMQPArgumentValue recursively owns every mutable AMQP field form:
+// bridge-native maps, SDK Tables, field arrays, and byte arrays. The remaining
+// SDK-supported field forms are immutable scalar values and can be shared.
 func cloneAMQPArgumentValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -169,6 +172,9 @@ func cloneAMQPArgumentValue(value any) any {
 	case []byte:
 		return append([]byte(nil), typed...)
 	default:
+		if cloned, ok := cloneSDKAMQPArgumentValue(value); ok {
+			return cloned
+		}
 		return value
 	}
 }

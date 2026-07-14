@@ -5,6 +5,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,4 +29,33 @@ func TestConfig_FreezePluginConfig_PreservesCredentialRollback(t *testing.T) {
 	frozen.Subscription.QueueArguments["nested"].(map[string]any)["limit"] = 2
 	assert.Equal(t, "ca.pem", cfg.Session.TLS.CACertFile)
 	assert.Equal(t, 1, cfg.Subscription.QueueArguments["nested"].(map[string]any)["limit"])
+}
+
+func TestConfig_FreezePluginConfig_DeepClonesNestedAMQPTableValues(t *testing.T) {
+	nested := amqp.Table{
+		"bytes": []byte{1, 2},
+		"array": []any{
+			amqp.Table{"deep": []byte{3, 4}},
+			[]byte{5, 6},
+		},
+	}
+	cfg := Config{Subscription: SubscriptionParams{
+		QueueArguments: map[string]any{"nested": nested},
+	}}
+
+	frozen := cfg.FreezePluginConfig().(*Config)
+
+	nested["bytes"].([]byte)[0] = 9
+	array := nested["array"].([]any)
+	array[0].(amqp.Table)["deep"].([]byte)[0] = 8
+	array[1].([]byte)[0] = 7
+	array[0] = "replaced"
+	nested["new"] = []byte{10}
+
+	frozenNested := frozen.Subscription.QueueArguments["nested"].(amqp.Table)
+	assert.Equal(t, []byte{1, 2}, frozenNested["bytes"])
+	frozenArray := frozenNested["array"].([]any)
+	assert.Equal(t, []byte{3, 4}, frozenArray[0].(amqp.Table)["deep"])
+	assert.Equal(t, []byte{5, 6}, frozenArray[1])
+	assert.NotContains(t, frozenNested, "new")
 }
