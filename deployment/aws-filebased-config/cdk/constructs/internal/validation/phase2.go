@@ -150,8 +150,8 @@ func checkEndpoints(cfg *ports.BridgeConfig, emit func(string)) {
 }
 
 // checkDynamoStores warns for each DynamoDB-backed store (lease,
-// outbox, DLQ) that omits table_name. Such a store is valid — the
-// adapter falls back to its built-in default table — but the grant
+// outbox, DLQ, managed subscriptions) that omits table_name. Such a store is
+// valid — the adapter falls back to its built-in default table — but the grant
 // path in gobridgebase cannot import a table it cannot name, so the
 // task role receives no IAM grant and the store hits AccessDenied at
 // runtime. A warning (not an error) preserves the documented escape
@@ -164,6 +164,7 @@ func checkDynamoStores(cfg *ports.BridgeConfig, warn func(string)) {
 		{"lease", cfg.Stores.Lease},
 		{"outbox", cfg.Stores.Outbox},
 		{"dlq", cfg.Stores.DLQ},
+		{"managed_subscriptions", cfg.Stores.ManagedSubscriptions},
 	}
 	for _, r := range roles {
 		if r.store == nil || !strings.EqualFold(r.store.Type, awsstore.DynamoDBKind) {
@@ -259,7 +260,7 @@ func collectSSMURIs(cfg *ports.BridgeConfig) []string {
 	for i := range cfg.Bindings {
 		add(cfg.Bindings[i].Config)
 	}
-	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
 		if sc != nil {
 			add(sc.Config)
 		}

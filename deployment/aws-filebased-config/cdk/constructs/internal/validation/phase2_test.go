@@ -334,8 +334,8 @@ func TestRunPhase2_NilScopeOrCfg_NoOp(t *testing.T) {
 }
 
 // dynamoStore builds a config with one DynamoDB-backed store in the
-// given role ("lease"/"outbox"/"dlq") carrying tableName (empty to
-// omit it).
+// given role ("lease"/"outbox"/"dlq"/"managed_subscriptions") carrying
+// tableName (empty to omit it).
 func dynamoStore(role, tableName string) *ports.BridgeConfig {
 	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
 	sc := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
@@ -347,6 +347,8 @@ func dynamoStore(role, tableName string) *ports.BridgeConfig {
 		cfg.Stores.Outbox = sc
 	case "dlq":
 		cfg.Stores.DLQ = sc
+	case "managed_subscriptions":
+		cfg.Stores.ManagedSubscriptions = sc
 	}
 	return cfg
 }
@@ -365,6 +367,33 @@ func TestRunPhase2_DynamoStoreNoTableName_EmitsWarningNotError(t *testing.T) {
 	got := warningMessages(t, stack)
 	if !containsAll(t, got, "dynamodb lease store", "table_name", "AccessDenied") {
 		t.Fatalf("missing dynamodb table_name warning: %v", got)
+	}
+}
+
+func TestRunPhase2_ManagedSubscriptionDynamoStoreNoTableName_EmitsWarning(t *testing.T) {
+	stack := newStack(t)
+	cfg := dynamoStore("managed_subscriptions", "")
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	got := warningMessages(t, stack)
+	if !containsAll(t, got, "dynamodb managed_subscriptions store", "table_name", "AccessDenied") {
+		t.Fatalf("missing managed-subscription table_name warning: %v", got)
+	}
+}
+
+func TestRunPhase2_ManagedSubscriptionStoreSSMURI_IsCollected(t *testing.T) {
+	stack := newStack(t)
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
+	sc := &ports.StoreConfig{Type: "credentialed-test-store"}
+	sc.SetDecoded(&sqs.Config{CredentialsURIRef: "pms://bridge/managed-store"}, nil)
+	cfg.Stores.ManagedSubscriptions = sc
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	got := errorMessages(t, stack)
+	if !containsAll(t, got, "no SsmParamRegistry was supplied", "pms://bridge/managed-store") {
+		t.Fatalf("missing managed-subscription SSM URI error: %v", got)
 	}
 }
 

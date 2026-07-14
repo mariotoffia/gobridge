@@ -309,6 +309,24 @@ func Test_TierB_Validation_StorePathOutsideMount(t *testing.T) {
 	}
 }
 
+func Test_TierB_Validation_ManagedSubscriptionStorePathOutsideMount(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Stores.ManagedSubscriptions = storeWithRaw("sqlite", map[string]any{
+		"path": "/var/lib/managed-subscriptions.db",
+	})
+	err := Phase1(baseInput(cfg))
+	if err == nil {
+		t.Fatal("expected ErrStorePathOutsideMount, got nil")
+	}
+	var typed *ErrStorePathOutsideMount
+	if !errors.As(err, &typed) {
+		t.Fatalf("expected *ErrStorePathOutsideMount, got %T: %v", err, err)
+	}
+	if typed.Store != "stores.managed_subscriptions" {
+		t.Fatalf("Store = %q, want stores.managed_subscriptions", typed.Store)
+	}
+}
+
 // Test_TierB_Validation_StorePath_NoRaw_SkipsSilently confirms the
 // documented behaviour for hand-built configs: Raw() == nil → no
 // path checks, no false positives.

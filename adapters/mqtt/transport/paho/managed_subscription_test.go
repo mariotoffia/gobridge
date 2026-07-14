@@ -279,6 +279,37 @@ func TestManagedSubscriptionForgetOutageRetainsHistoryForRetry(t *testing.T) {
 	}
 }
 
+func TestManagedSubscriptionForgetRetryAfterNoSubscriptionDoesNotRecycleAgain(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{
+		operations: &operations,
+		values:     map[string]map[string]struct{}{"safe-session-id": {"old/#": {}}},
+		forgetErr:  errors.New("history unavailable"),
+	}
+	conn := &managedConnFake{operations: &operations}
+	session := newManagedTestSession(t, store, conn)
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err == nil {
+		t.Fatal("initial Forget outage must fail reconcile")
+	}
+	if conn.disconnects != 1 {
+		t.Fatalf("initial confirmed removal disconnects = %d, want 1", conn.disconnects)
+	}
+
+	conn.unsubReasons = []byte{0x11}
+	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err == nil {
+		t.Fatal("retry Forget outage must keep reconcile degraded")
+	}
+	if conn.disconnects != 1 {
+		t.Fatalf("broker already-absent retry recycled again: disconnects=%d, want 1", conn.disconnects)
+	}
+	if got := store.snapshot("safe-session-id"); !equalManagedStrings(got, []string{"old/#"}) {
+		t.Fatalf("failed Forget must retain history, got %v", got)
+	}
+}
+
 func TestManagedSubscriptionHistoryOutagePreventsBrokerActivation(t *testing.T) {
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{}, listErr: errors.New("history unavailable")}

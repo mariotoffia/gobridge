@@ -52,7 +52,8 @@ func (e *ErrFilesystemProfile) Error() string {
 
 // ErrStorePathOutsideMount is returned when a store config carries a
 // filesystem path that is not under the EFS mount root. Store is the
-// dotted store identifier (stores.lease / stores.outbox / stores.dlq),
+// dotted store identifier (stores.lease / stores.outbox / stores.dlq /
+// stores.managed_subscriptions),
 // Path is the offending value, Mount is the configured mount root.
 type ErrStorePathOutsideMount struct {
 	Store string

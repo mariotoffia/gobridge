@@ -258,10 +258,10 @@ func (s *Session) unsubscribeOrphan(topic string) {
 
 	reasons, err := cm.Unsubscribe(ctx, []string{topic})
 	if err == nil {
-		succeeded, firstErr, _ := classifyUnsubackReasons([]string{topic}, reasons)
-		if firstErr != nil {
-			err = firstErr
-		} else if len(succeeded) != 1 {
+		confirmation := classifyUnsubackReasons([]string{topic}, reasons)
+		if confirmation.firstErr != nil {
+			err = confirmation.firstErr
+		} else if len(confirmation.confirmed) != 1 {
 			err = shared.ErrProtocolError.WithMessage("mqtt: orphan UNSUBACK did not confirm removal")
 		}
 	}
@@ -517,15 +517,15 @@ func (s *Session) reconcile(
 	sort.Strings(toUnsub)
 
 	if len(toUnsub) > 0 && !managed {
-		succeeded, firstErr, errTopic, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
+		confirmation, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
 		if err != nil {
 			return err
 		}
-		if err := s.removeObservedSubscriptions(operationEpoch, succeeded); err != nil {
+		if err := s.removeObservedSubscriptions(operationEpoch, confirmation.confirmed); err != nil {
 			return err
 		}
-		if firstErr != nil {
-			return firstErr.With("topic", errTopic)
+		if confirmation.firstErr != nil {
+			return confirmation.firstErr.With("topic", confirmation.errTopic)
 		}
 	}
 
@@ -633,40 +633,8 @@ func (s *Session) reconcile(
 	}
 
 	if managed && len(toUnsub) > 0 {
-		succeeded, firstErr, errTopic, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
-		if err != nil {
+		if err := s.reconcileManagedUnsubscribe(ctx, cm, toUnsub, operationEpoch, managedStore, managedIdentity); err != nil {
 			return err
-		}
-		if err := s.removeObservedSubscriptions(operationEpoch, succeeded); err != nil {
-			return err
-		}
-		var forgetErr error
-		if len(succeeded) > 0 {
-			if err := managedStore.Forget(ctx, managedIdentity, succeeded); err != nil {
-				forgetErr = shared.ErrUnavailable.WithMessage("mqtt: forget confirmed managed subscriptions").Wrap(err)
-			} else {
-				s.mu.Lock()
-				for _, filter := range succeeded {
-					delete(s.managedHistory, filter)
-				}
-				s.mu.Unlock()
-			}
-			// Stale shared deliveries may already be buffered. Recycle the
-			// connection so router.beginGrace purges the prior epoch without ACK,
-			// returning those deliveries to the broker before handler dispatch.
-			if reloadErr := s.Reload(ctx); reloadErr != nil {
-				return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
-			}
-			if forgetErr != nil {
-				return forgetErr
-			}
-			if firstErr != nil {
-				return firstErr.With("topic", errTopic)
-			}
-			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription cleanup recycled the connection; reconcile the replacement generation")
-		}
-		if firstErr != nil {
-			return firstErr.With("topic", errTopic)
 		}
 	}
 
@@ -778,52 +746,115 @@ func retainHandlingForMode(mode connectivity.SessionMode) byte {
 	return 1
 }
 
-func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, topics []string, operationEpoch uint64) ([]string, *shared.BridgeError, string, error) {
+func (s *Session) reconcileManagedUnsubscribe(
+	ctx context.Context,
+	cm pahoConnection,
+	toUnsub []string,
+	operationEpoch uint64,
+	managedStore ports.ManagedSubscriptionStore,
+	managedIdentity string,
+) error {
+	confirmation, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
+	if err != nil {
+		return err
+	}
+	if err := s.removeObservedSubscriptions(operationEpoch, confirmation.confirmed); err != nil {
+		return err
+	}
+
+	var forgetErr error
+	if len(confirmation.confirmed) > 0 {
+		if err := managedStore.Forget(ctx, managedIdentity, confirmation.confirmed); err != nil {
+			forgetErr = shared.ErrUnavailable.WithMessage("mqtt: forget confirmed managed subscriptions").Wrap(err)
+		} else {
+			s.mu.Lock()
+			for _, filter := range confirmation.confirmed {
+				delete(s.managedHistory, filter)
+			}
+			s.mu.Unlock()
+		}
+		if confirmation.removedAny {
+			// A successful removal may have left shared deliveries buffered on
+			// this connection. Recycle once so router.beginGrace purges the old
+			// epoch without ACK and returns them to the broker. A later 0x11
+			// confirms the filter is already absent and must not churn again when
+			// only the durable Forget remains unavailable.
+			if reloadErr := s.Reload(ctx); reloadErr != nil {
+				return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
+			}
+			if forgetErr != nil {
+				return forgetErr
+			}
+			if confirmation.firstErr != nil {
+				return confirmation.firstErr.With("topic", confirmation.errTopic)
+			}
+			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription cleanup recycled the connection; reconcile the replacement generation")
+		}
+		if forgetErr != nil {
+			return forgetErr
+		}
+	}
+	if confirmation.firstErr != nil {
+		return confirmation.firstErr.With("topic", confirmation.errTopic)
+	}
+	return nil
+}
+
+type unsubscribeConfirmation struct {
+	confirmed  []string
+	removedAny bool
+	firstErr   *shared.BridgeError
+	errTopic   string
+}
+
+func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, topics []string, operationEpoch uint64) (unsubscribeConfirmation, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing", "client_id", s.opts.ClientID, "topics", topics)
 	}
 	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
-		return nil, nil, "", err
+		return unsubscribeConfirmation{}, err
 	}
 	unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
 	reasons, err := cm.Unsubscribe(unsubCtx, topics)
 	cancel()
 	if err != nil {
-		return nil, nil, "", MapError(err)
+		return unsubscribeConfirmation{}, MapError(err)
 	}
 	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
-		return nil, nil, "", err
+		return unsubscribeConfirmation{}, err
 	}
-	succeeded, firstErr, errTopic := classifyUnsubackReasons(topics, reasons)
-	return succeeded, firstErr, errTopic, nil
+	return classifyUnsubackReasons(topics, reasons), nil
 }
 
-func classifyUnsubackReasons(topics []string, reasons []byte) ([]string, *shared.BridgeError, string) {
-	succeeded := make([]string, 0, len(topics))
-	var firstErr *shared.BridgeError
-	var errTopic string
+func classifyUnsubackReasons(topics []string, reasons []byte) unsubscribeConfirmation {
+	result := unsubscribeConfirmation{confirmed: make([]string, 0, len(topics))}
 	for i, topic := range topics {
 		if i >= len(reasons) {
-			if firstErr == nil {
-				firstErr = shared.ErrProtocolError.WithMessage("mqtt: UNSUBACK returned fewer reason codes than requested filters")
-				errTopic = topic
+			if result.firstErr == nil {
+				result.firstErr = shared.ErrProtocolError.WithMessage("mqtt: UNSUBACK returned fewer reason codes than requested filters")
+				result.errTopic = topic
 			}
 			continue
 		}
-		if reasons[i] == 0x00 || reasons[i] == 0x11 {
-			succeeded = append(succeeded, topic)
+		switch reasons[i] {
+		case 0x00:
+			result.confirmed = append(result.confirmed, topic)
+			result.removedAny = true
+			continue
+		case 0x11:
+			result.confirmed = append(result.confirmed, topic)
 			continue
 		}
 		berr := MapSubscribeReasonCode(reasons[i])
 		if berr == nil {
 			berr = shared.ErrProtocolError.WithMessage("mqtt: invalid UNSUBACK success reason code")
 		}
-		if firstErr == nil {
-			firstErr = berr
-			errTopic = topic
+		if result.firstErr == nil {
+			result.firstErr = berr
+			result.errTopic = topic
 		}
 	}
-	return succeeded, firstErr, errTopic
+	return result
 }
 
 func (s *Session) removeObservedSubscriptions(operationEpoch uint64, topics []string) error {
