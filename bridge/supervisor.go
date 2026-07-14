@@ -358,7 +358,17 @@ func (s *Supervisor) Runtime() *runtime.Runtime {
 func (s *Supervisor) Config() *ports.BridgeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return cloneConfigForBuild(s.cfg)
+	return cloneConfigSnapshot(s.cfg)
+}
+
+// cloneConfigSnapshot is used only for already-accepted Supervisor state. Its
+// freeze contract was validated before publication, so failure here is defensive.
+func cloneConfigSnapshot(cfg *ports.BridgeConfig) *ports.BridgeConfig {
+	cloned, err := cloneConfigForBuild(cfg)
+	if err != nil {
+		return nil
+	}
+	return cloned
 }
 
 // Run builds and starts the initial runtime, then watches the
@@ -373,7 +383,10 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	s.baseCtx = ctx
 	s.mu.Unlock()
 
-	appliedInitial := cloneConfigForBuild(initial)
+	appliedInitial, err := cloneConfigForBuild(initial)
+	if err != nil {
+		return fmt.Errorf("supervisor: initial config freeze: %w", err)
+	}
 	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
@@ -613,7 +626,20 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// preflight, build, stored snapshot, and recovery decision below uses this
 	// same immutable content; SwapEvent keeps the original pointer solely for
 	// config-manager acknowledgement correlation.
-	frozenCfg := cloneConfigForBuild(newCfg)
+	frozenCfg, freezeErr := cloneConfigForBuild(newCfg)
+	if freezeErr != nil {
+		s.mu.RLock()
+		oldCfg := s.cfg
+		s.mu.RUnlock()
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing config whose plugin snapshot cannot be frozen", "error", freezeErr)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigSnapshot(oldCfg), NewConfig: newCfg, Error: freezeErr})
+		}
+		return
+	}
 
 	// MQTT and similar durable broker sessions are external stores. Changing or
 	// removing their identity can strand subscriptions and queued QoS messages,
@@ -636,7 +662,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		}
 		s.emitConfigReload(false)
 		if s.onSwap != nil {
-			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigForBuild(oldCfgAtPreflight), NewConfig: newCfg, Error: identityErr})
+			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigSnapshot(oldCfgAtPreflight), NewConfig: newCfg, Error: identityErr})
 		}
 		return
 	}
@@ -673,7 +699,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			s.emitConfigReload(false)
 			if s.onSwap != nil {
 				s.safeOnSwap(SwapEvent{
-					OldConfig: cloneConfigForBuild(oldCfg),
+					OldConfig: cloneConfigSnapshot(oldCfg),
 					NewConfig: newCfg,
 					Error:     err,
 				})
@@ -695,7 +721,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// with a committed-not-applied (no-rollback) outcome.
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigForBuild(oldCfg),
+				OldConfig: cloneConfigSnapshot(oldCfg),
 				NewConfig: newCfg,
 				Deferred:  true,
 			})
@@ -826,7 +852,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	}
 
 	ev := SwapEvent{
-		OldConfig: cloneConfigForBuild(oldCfg),
+		OldConfig: cloneConfigSnapshot(oldCfg),
 		NewConfig: newCfg,
 		SwapMode:  mode,
 		Error:     err,
@@ -1217,11 +1243,19 @@ type durableSessionIdentity struct {
 // tests. Supervisor reloads compare the proposed snapshot with the immutable
 // snapshot captured when the current config was accepted.
 func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
-	oldIdentities, err := snapshotDurableSessionIdentities(cloneConfigForBuild(oldCfg))
+	frozenOld, err := cloneConfigForBuild(oldCfg)
 	if err != nil {
 		return err
 	}
-	newIdentities, err := snapshotDurableSessionIdentities(cloneConfigForBuild(newCfg))
+	oldIdentities, err := snapshotDurableSessionIdentities(frozenOld)
+	if err != nil {
+		return err
+	}
+	frozenNew, err := cloneConfigForBuild(newCfg)
+	if err != nil {
+		return err
+	}
+	newIdentities, err := snapshotDurableSessionIdentities(frozenNew)
 	if err != nil {
 		return err
 	}

@@ -326,6 +326,7 @@ func TestConfig_FreezePluginConfig_DeepOwnsConfigAndSharesRuntimeIdentity(t *tes
 	cfg := durableIdentityConfig()
 	cfg.Session.TLS = &TLSConfig{CACertFile: "ca.pem"}
 	cfg.Session.Will = &WillOptions{Topic: "status", Payload: "offline"}
+	cfg.CredentialsURIRef = "vault://mqtt"
 	state := &clientIDSuffixProcessIdentity{}
 	cfg.clientIDSuffixIdentity = state
 
@@ -338,6 +339,10 @@ func TestConfig_FreezePluginConfig_DeepOwnsConfigAndSharesRuntimeIdentity(t *tes
 		"process-stable suffix dependency must retain identity")
 	assert.Equal(t, cfg.Session.Clock, frozen.Session.Clock,
 		"opaque clock dependency must be preserved intentionally")
+	require.NoError(t, frozen.ApplyCredentials(nil))
+	assert.Equal(t, "vault://mqtt", cfg.CredentialsURIRef,
+		"credential application to the frozen build config must not corrupt rollback state")
+	assert.Empty(t, frozen.CredentialsURIRef)
 
 	cfg.Session.BrokerURLs[0] = "ssl://mutated.example:8883"
 	cfg.Session.TLS.CACertFile = "mutated.pem"

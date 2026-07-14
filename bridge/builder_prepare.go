@@ -173,7 +173,11 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	// credential application and construction cannot mutate the Supervisor's
 	// rollback/restart config. Unknown opaque plugin configs are never reflect-
 	// copied or falsely treated as deep-frozen.
-	b.cfg = cloneConfigForBuild(b.cfg)
+	var err error
+	b.cfg, err = cloneConfigForBuild(b.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: freeze config for build: %w", err)
+	}
 
 	if err := runtime.CheckRandSource(); err != nil {
 		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)

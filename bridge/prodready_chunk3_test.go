@@ -43,7 +43,8 @@ func TestCloneConfigForBuild_KeepsCanonicalConfigPristine(t *testing.T) {
 		},
 	}
 
-	clone := cloneConfigForBuild(orig)
+	clone, err := cloneConfigForBuild(orig)
+	require.NoError(t, err)
 
 	// The clone's configs are DISTINCT pointers from the originals.
 	require.NotSame(t, orig.Sessions[0].Config, clone.Sessions[0].Config)

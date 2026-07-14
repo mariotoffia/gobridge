@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -407,4 +408,97 @@ func TestSnapshotDurableSessionIdentities_RequiresAdapterOwnedFreezeCapability(t
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "freeze")
 	assert.Contains(t, err.Error(), "stable-session")
+}
+
+type freezeOutputConfig struct{ kind string }
+
+func (c freezeOutputConfig) Kind() string                           { return c.kind }
+func (freezeOutputConfig) Validate() error                          { return nil }
+func (c freezeOutputConfig) FreezePluginConfig() ports.PluginConfig { return c }
+
+type maliciousDurableFreezer struct{ output ports.PluginConfig }
+
+func (maliciousDurableFreezer) Kind() string    { return "identity" }
+func (maliciousDurableFreezer) Validate() error { return nil }
+func (maliciousDurableFreezer) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
+	return "state", nil
+}
+func (maliciousDurableFreezer) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
+	return []string{"domain"}, nil
+}
+func (c maliciousDurableFreezer) FreezePluginConfig() ports.PluginConfig { return c.output }
+
+type nonFreezableCredentialConfig struct {
+	credentialsURICalled bool
+	applyCalled          bool
+}
+
+func (*nonFreezableCredentialConfig) Kind() string    { return "credentialed" }
+func (*nonFreezableCredentialConfig) Validate() error { return nil }
+func (c *nonFreezableCredentialConfig) CredentialsURI() string {
+	c.credentialsURICalled = true
+	return "vault://credentials"
+}
+func (c *nonFreezableCredentialConfig) ApplyCredentials(*connectivity.CredentialSet) error {
+	c.applyCalled = true
+	return nil
+}
+
+func TestFreezePluginConfig_RejectsInvalidAdapterOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output ports.PluginConfig
+	}{
+		{name: "nil", output: nil},
+		{name: "typed nil", output: (*mutableIdentityTestConfig)(nil)},
+		{name: "wrong kind", output: freezeOutputConfig{kind: "other"}},
+		{name: "durable capability removed", output: freezeOutputConfig{kind: "identity"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := freezePluginConfig(maliciousDurableFreezer{output: tt.output})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+		})
+	}
+}
+
+func TestCloneConfigForBuild_RejectsNonFreezableCredentialConfigBeforeMutation(t *testing.T) {
+	pluginCfg := &nonFreezableCredentialConfig{}
+	cfg := supervisorTestConfig("r1")
+	cfg.Receivers[0].Config = pluginCfg
+
+	_, err := cloneConfigForBuild(cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+	assert.False(t, pluginCfg.credentialsURICalled)
+	assert.False(t, pluginCfg.applyCalled)
+}
+
+func TestSupervisor_InvalidFrozenOutputLeavesRuntimeAndConfigUntouched(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	factory := &countingTransportFactory{}
+	s := NewSupervisor(WithOnSwap(onSwap))
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterTransport("identity", factory)
+
+	oldCfg := configWithDurableSessionIdentity(1, "stable-state")
+	changes := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
+	defer func() { cancel(); <-errCh }()
+
+	oldRuntime := s.Runtime()
+	beforeSessions, _, _ := factory.Counts()
+	proposed := configWithDurableSessionIdentity(2, "stable-state")
+	proposed.Sessions[0].Config = maliciousDurableFreezer{output: nil}
+	require.True(t, sendConfig(changes, proposed, time.Second))
+
+	ev := awaitSwap(t, swaps)
+	require.Error(t, ev.Error)
+	assert.ErrorIs(t, ev.Error, shared.ErrInvalidConfig)
+	assert.Same(t, oldRuntime, s.Runtime())
+	require.NotNil(t, s.Config())
+	assert.Equal(t, 1, s.Config().Version)
+	afterSessions, _, _ := factory.Counts()
+	assert.Equal(t, beforeSessions, afterSessions)
 }

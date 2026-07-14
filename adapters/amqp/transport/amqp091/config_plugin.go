@@ -13,6 +13,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.FreezableConfig = Config{}
 var _ ports.PublishingConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the AMQP 0-9-1 (RabbitMQ)
@@ -127,6 +128,49 @@ type PublisherParams struct {
 	// ExchangeArguments are passed as the exchange-declare arguments
 	// table (see SubscriptionParams.ExchangeArguments).
 	ExchangeArguments map[string]any `mapstructure:"exchange_arguments" yaml:"exchange_arguments" json:"exchange_arguments"`
+}
+
+// FreezePluginConfig returns a deep-owned build snapshot. Clock remains shared:
+// it is an injected runtime dependency, not mutable configuration data.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	if c.Session.TLS != nil {
+		tlsCopy := *c.Session.TLS
+		frozen.Session.TLS = &tlsCopy
+	}
+	frozen.Subscription.QueueArguments = cloneAMQPArguments(c.Subscription.QueueArguments)
+	frozen.Subscription.ExchangeArguments = cloneAMQPArguments(c.Subscription.ExchangeArguments)
+	frozen.Subscription.BindingArguments = cloneAMQPArguments(c.Subscription.BindingArguments)
+	frozen.Publisher.ExchangeArguments = cloneAMQPArguments(c.Publisher.ExchangeArguments)
+	return &frozen
+}
+
+func cloneAMQPArguments(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(src))
+	for key, value := range src {
+		cloned[key] = cloneAMQPArgumentValue(value)
+	}
+	return cloned
+}
+
+func cloneAMQPArgumentValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAMQPArguments(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i := range typed {
+			cloned[i] = cloneAMQPArgumentValue(typed[i])
+		}
+		return cloned
+	case []byte:
+		return append([]byte(nil), typed...)
+	default:
+		return value
+	}
 }
 
 // Kind reports the registry discriminator.

@@ -584,3 +584,10 @@ func TestSupervisor_ConcurrentStartBridge_BuildsExactlyOnce(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+func (c *credentialedReceiverConfig) FreezePluginConfig() ports.PluginConfig {
+	frozen := *c
+	return &frozen
+}
+
+var _ ports.FreezableConfig = (*credentialedReceiverConfig)(nil)

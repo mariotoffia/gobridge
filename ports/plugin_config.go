@@ -66,7 +66,9 @@ type DurableSessionIdentityConfig interface {
 // boundaries. FreezePluginConfig must return a deep-owned copy of every mutable
 // configuration value while intentionally sharing only opaque immutable or
 // runtime dependencies that must retain identity (for example a client handle,
-// clock, mutex-bearing state, or process-stable suffix resolver).
+// clock, mutex-bearing state, or process-stable suffix resolver). The result must
+// be non-nil, retain the source Kind and this freeze capability, and preserve
+// any durable-identity and credential capabilities exposed by the source.
 type FreezableConfig interface {
 	FreezePluginConfig() PluginConfig
 }

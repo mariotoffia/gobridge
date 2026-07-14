@@ -12,6 +12,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.FreezableConfig = Config{}
 
 // Config is the typed PluginConfig for the AMQP 1.0 transport. It
 // nests session/receiver/sender role configs and is shared across
@@ -51,6 +52,21 @@ type SenderParams struct {
 	// messages. Unset defaults to true (persistent); set to false to
 	// opt into non-persistent (faster, lost on broker restart) sends.
 	Durable *bool `mapstructure:"durable" yaml:"durable,omitempty" json:"durable,omitempty"`
+}
+
+// FreezePluginConfig returns a deep-owned build snapshot. Clock remains shared:
+// it is an injected runtime dependency, not mutable configuration data.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	if c.Session.TLS != nil {
+		tlsCopy := *c.Session.TLS
+		frozen.Session.TLS = &tlsCopy
+	}
+	if c.Sender.Durable != nil {
+		durable := *c.Sender.Durable
+		frozen.Sender.Durable = &durable
+	}
+	return &frozen
 }
 
 // Kind reports the plugin discriminator.

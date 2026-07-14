@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -53,11 +54,11 @@ func (b *Builder) resolveConfigCredentials(ctx context.Context, cfg ports.Plugin
 // adapter to freeze its own opaque PluginConfig when it advertises
 // ports.FreezableConfig. Unknown plugin configs remain intentionally opaque and
 // shared: bridge never copies mutexes, clients, map keys, or private state it
-// cannot understand. Durable identity preflight separately requires the
-// adapter-owned freeze capability before invoking identity methods.
-func cloneConfigForBuild(cfg *ports.BridgeConfig) *ports.BridgeConfig {
+// cannot understand. Configs that the bridge mutates or uses for durable identity
+// must be adapter-freezable so rollback and preflight state cannot be corrupted.
+func cloneConfigForBuild(cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 	out := *cfg
 	if cfg.ConfigWatch != nil {
@@ -69,29 +70,51 @@ func cloneConfigForBuild(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 		cluster.Endpoints = cloneStringMap(cfg.Bridge.Cluster.Endpoints)
 		out.Bridge.Cluster = &cluster
 	}
-	out.Stores.Lease = cloneStoreConfig(cfg.Stores.Lease)
-	out.Stores.Outbox = cloneStoreConfig(cfg.Stores.Outbox)
-	out.Stores.DLQ = cloneStoreConfig(cfg.Stores.DLQ)
+	var err error
+	if out.Stores.Lease, err = cloneStoreConfig(cfg.Stores.Lease); err != nil {
+		return nil, fmt.Errorf("bridge: freeze lease store config: %w", err)
+	}
+	if out.Stores.Outbox, err = cloneStoreConfig(cfg.Stores.Outbox); err != nil {
+		return nil, fmt.Errorf("bridge: freeze outbox store config: %w", err)
+	}
+	if out.Stores.DLQ, err = cloneStoreConfig(cfg.Stores.DLQ); err != nil {
+		return nil, fmt.Errorf("bridge: freeze dlq store config: %w", err)
+	}
 
 	out.Sessions = append([]ports.SessionDef(nil), cfg.Sessions...)
 	for i := range out.Sessions {
-		out.Sessions[i].Config = freezePluginConfig(out.Sessions[i].Config)
+		out.Sessions[i].Config, err = freezePluginConfig(out.Sessions[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze session %q config: %w", out.Sessions[i].ID, err)
+		}
 	}
 	out.Receivers = append([]ports.ReceiverDef(nil), cfg.Receivers...)
 	for i := range out.Receivers {
-		out.Receivers[i].Config = freezePluginConfig(out.Receivers[i].Config)
+		out.Receivers[i].Config, err = freezePluginConfig(out.Receivers[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze receiver %q config: %w", out.Receivers[i].ID, err)
+		}
 		out.Receivers[i].Topics = append([]ports.SubscriptionDef(nil), cfg.Receivers[i].Topics...)
 		for j := range out.Receivers[i].Topics {
-			out.Receivers[i].Topics[j].Config = freezePluginConfig(out.Receivers[i].Topics[j].Config)
+			out.Receivers[i].Topics[j].Config, err = freezePluginConfig(out.Receivers[i].Topics[j].Config)
+			if err != nil {
+				return nil, fmt.Errorf("bridge: freeze receiver %q topic config: %w", out.Receivers[i].ID, err)
+			}
 		}
 	}
 	out.Senders = append([]ports.SenderDef(nil), cfg.Senders...)
 	for i := range out.Senders {
-		out.Senders[i].Config = freezePluginConfig(out.Senders[i].Config)
+		out.Senders[i].Config, err = freezePluginConfig(out.Senders[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze sender %q config: %w", out.Senders[i].ID, err)
+		}
 	}
 	out.Bindings = append([]ports.BindingDef(nil), cfg.Bindings...)
 	for i := range out.Bindings {
-		out.Bindings[i].Config = freezePluginConfig(out.Bindings[i].Config)
+		out.Bindings[i].Config, err = freezePluginConfig(out.Bindings[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze binding %q config: %w", out.Bindings[i].ID, err)
+		}
 	}
 	out.Routes = append([]ports.RouteDef(nil), cfg.Routes...)
 	for i := range out.Routes {
@@ -101,27 +124,72 @@ func cloneConfigForBuild(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 		copy := *cfg.HTTP
 		out.HTTP = &copy
 	}
-	return &out
+	return &out, nil
 }
 
-func freezePluginConfig(config ports.PluginConfig) ports.PluginConfig {
-	if ports.IsNilPluginConfig(config) {
-		return config
-	}
-	freezable, ok := config.(ports.FreezableConfig)
-	if !ok {
-		return config
-	}
-	return freezable.FreezePluginConfig()
-}
-
-func cloneStoreConfig(config *ports.StoreConfig) *ports.StoreConfig {
+func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 	if config == nil {
-		return nil
+		return nil, nil
+	}
+	if ports.IsNilPluginConfig(config) {
+		return nil, shared.ErrInvalidConfig.WithMessage("bridge: typed-nil plugin config")
+	}
+
+	sourceKind := config.Kind()
+	freezable, canFreeze := config.(ports.FreezableConfig)
+	_, credentialed := config.(ports.CredentialedConfig)
+	_, durable := config.(ports.DurableSessionIdentityConfig)
+	if !canFreeze {
+		if credentialed {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: credentialed plugin config kind %q does not support freezing", sourceKind))
+		}
+		if durable {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: durable plugin config kind %q does not support freezing", sourceKind))
+		}
+		return config, nil
+	}
+
+	frozen := freezable.FreezePluginConfig()
+	if frozen == nil || ports.IsNilPluginConfig(frozen) {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q froze to nil", sourceKind))
+	}
+	if frozen.Kind() != sourceKind {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q froze to a different kind", sourceKind))
+	}
+	if durable {
+		if _, ok := frozen.(ports.DurableSessionIdentityConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: durable plugin config kind %q lost its identity capability when frozen", sourceKind))
+		}
+	}
+	if credentialed {
+		if _, ok := frozen.(ports.CredentialedConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: credentialed plugin config kind %q lost its credential capability when frozen", sourceKind))
+		}
+	}
+	if _, ok := frozen.(ports.FreezableConfig); !ok {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q lost its freeze capability when frozen", sourceKind))
+	}
+	return frozen, nil
+}
+
+func cloneStoreConfig(config *ports.StoreConfig) (*ports.StoreConfig, error) {
+	if config == nil {
+		return nil, nil
 	}
 	copy := *config
-	copy.Config = freezePluginConfig(config.Config)
-	return &copy
+	var err error
+	copy.Config, err = freezePluginConfig(config.Config)
+	if err != nil {
+		return nil, err
+	}
+	return &copy, nil
 }
 
 func cloneRouteDef(dst, src *ports.RouteDef) {

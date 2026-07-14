@@ -11,6 +11,7 @@ import (
 // Compile-time interface contract: only *Config satisfies
 // CredentialedConfig because ApplyCredentials mutates the receiver.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.FreezableConfig = Config{}
 var _ ports.VisibilityTimeoutConfig = (*Config)(nil)
 
 // Config is the typed PluginConfig for the SQS transport. A single
@@ -90,6 +91,18 @@ type Config struct {
 	// SDK chain (Finding 3/HIGH). It is unexported and never decoded from
 	// config; the redaction-safe PasswordCredential keeps it log-safe.
 	resolvedCreds *connectivity.PasswordCredential
+}
+
+// FreezePluginConfig returns a deep-owned build snapshot. resolvedCreds is a
+// secret-safe immutable value object and may be shared until ApplyCredentials
+// replaces the pointer on the frozen copy.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	if c.AutoExtend != nil {
+		autoExtend := *c.AutoExtend
+		frozen.AutoExtend = &autoExtend
+	}
+	return &frozen
 }
 
 // CredentialsURI implements ports.CredentialedConfig.

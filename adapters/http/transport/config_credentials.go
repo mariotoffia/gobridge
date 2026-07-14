@@ -9,6 +9,14 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.FreezableConfig = Config{}
+
+// FreezePluginConfig returns a build-owned copy. Config currently contains
+// scalar/value-object fields only, so a value copy is a complete freeze.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	return &frozen
+}
 
 // CredentialsURI implements ports.CredentialedConfig.
 func (c *Config) CredentialsURI() string {
