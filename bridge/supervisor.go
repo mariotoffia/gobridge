@@ -1217,11 +1217,11 @@ type durableSessionIdentity struct {
 // tests. Supervisor reloads compare the proposed snapshot with the immutable
 // snapshot captured when the current config was accepted.
 func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
-	oldIdentities, err := snapshotDurableSessionIdentities(oldCfg)
+	oldIdentities, err := snapshotDurableSessionIdentities(cloneConfigForBuild(oldCfg))
 	if err != nil {
 		return err
 	}
-	newIdentities, err := snapshotDurableSessionIdentities(newCfg)
+	newIdentities, err := snapshotDurableSessionIdentities(cloneConfigForBuild(newCfg))
 	if err != nil {
 		return err
 	}
@@ -1245,8 +1245,11 @@ func snapshotDurableSessionIdentities(cfg *ports.BridgeConfig) (durableSessionId
 		if !ok {
 			continue
 		}
-		if isNilInterface(identityConfig) {
+		if ports.IsNilPluginConfig(session.Config) {
 			return nil, fmt.Errorf("bridge: durable session %q identity config is nil", session.ID)
+		}
+		if _, ok := session.Config.(ports.FreezableConfig); !ok {
+			return nil, fmt.Errorf("bridge: durable session %q identity config lacks adapter-owned freeze capability", session.ID)
 		}
 		fingerprint, err := identityConfig.DurableSessionIdentity(mode)
 		if err != nil || fingerprint == "" {

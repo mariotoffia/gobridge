@@ -11,6 +11,14 @@ import (
 
 type replicaIdentityTestConfig struct{ strategy string }
 
+type typedNilReplicaIdentityConfig struct{}
+
+func (*typedNilReplicaIdentityConfig) Kind() string    { return "shared-consumer" }
+func (*typedNilReplicaIdentityConfig) Validate() error { return nil }
+func (*typedNilReplicaIdentityConfig) ReplicaIdentityStrategy() string {
+	panic("typed nil replica identity invoked")
+}
+
 func (replicaIdentityTestConfig) Kind() string                      { return "shared-consumer" }
 func (replicaIdentityTestConfig) Validate() error                   { return nil }
 func (c replicaIdentityTestConfig) ReplicaIdentityStrategy() string { return c.strategy }
@@ -71,4 +79,15 @@ func TestValidateBlueprintGraph_StandaloneSharedDoesNotRequireReplicaCapability(
 	if result != nil {
 		assert.False(t, result.HasErrors(), result.Error())
 	}
+}
+
+func TestValidateBlueprintGraph_TypedNilReplicaIdentityReturnsError(t *testing.T) {
+	var typedNil *typedNilReplicaIdentityConfig
+	var result *ports.BlueprintValidationError
+	require.NotPanics(t, func() {
+		result = validate.ValidateBlueprintGraph(clusteredSharedConfig("persistent", typedNil))
+	})
+	require.NotNil(t, result)
+	assert.True(t, result.HasErrors())
+	assert.Contains(t, result.Error(), "replica identity")
 }

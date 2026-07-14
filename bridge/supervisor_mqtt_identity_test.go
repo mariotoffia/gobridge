@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,11 @@ func (c durableIdentityTestConfig) DurableSessionIdentityDomains(connectivity.Se
 		return c.domains, c.err
 	}
 	return []string{c.identity}, c.err
+}
+func (c durableIdentityTestConfig) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	frozen.domains = append([]string(nil), c.domains...)
+	return frozen
 }
 
 func configWithDurableSessionIdentity(version int, identity string) *ports.BridgeConfig {
@@ -292,9 +298,14 @@ func TestSnapshotDurableSessionIdentities_TypedNilCapabilityReturnsError(t *test
 	assert.Contains(t, err.Error(), "stable-session")
 }
 
+type opaqueRuntimeDependency struct {
+	mu     sync.Mutex
+	client *struct{ name string }
+}
+
 type mutableIdentityTestConfig struct {
-	Brokers  []string
-	Metadata map[string][]string
+	identityParts []string
+	dependency    *opaqueRuntimeDependency
 
 	domainStarted  chan struct{}
 	domainContinue chan struct{}
@@ -306,62 +317,94 @@ func (*mutableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMod
 	return "stable-state", nil
 }
 func (c *mutableIdentityTestConfig) ownershipDomains() ([]string, error) {
-	domain := c.Brokers[0]
+	domain := c.identityParts[0]
 	if c.domainStarted != nil {
 		close(c.domainStarted)
 		<-c.domainContinue
 	}
 	return []string{domain}, nil
 }
-
 func (c *mutableIdentityTestConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
 	return c.ownershipDomains()
+}
+
+// FreezePluginConfig is adapter-owned: private identity state becomes
+// deep-owned while the opaque mutex/client dependency deliberately stays shared.
+func (c *mutableIdentityTestConfig) FreezePluginConfig() ports.PluginConfig {
+	frozen := *c
+	frozen.identityParts = append([]string(nil), c.identityParts...)
+	return &frozen
+}
+
+type unfreezableDurableIdentityConfig struct{ identity string }
+
+func (unfreezableDurableIdentityConfig) Kind() string    { return "identity" }
+func (unfreezableDurableIdentityConfig) Validate() error { return nil }
+func (c unfreezableDurableIdentityConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
+	return c.identity, nil
+}
+func (c unfreezableDurableIdentityConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
+	return []string{c.identity}, nil
 }
 
 func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	type capturedConfig struct {
-		broker string
-		label  string
+		identity   string
+		dependency *opaqueRuntimeDependency
 	}
 	captured := make(chan capturedConfig, 2)
 	factory := &countingTransportFactory{SessionFn: func(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 		cfg := spec.Config.(*mutableIdentityTestConfig)
-		captured <- capturedConfig{broker: cfg.Brokers[0], label: cfg.Metadata["cluster"][0]}
+		captured <- capturedConfig{identity: cfg.identityParts[0], dependency: cfg.dependency}
 		return &fakeSession{}, nil
 	}}
 	s := NewSupervisor(WithOnSwap(onSwap))
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("identity", factory)
 
+	dependency := &opaqueRuntimeDependency{client: &struct{ name string }{name: "shared-client"}}
 	oldCfg := configWithDurableSessionIdentity(1, "stable-state")
 	oldCfg.Sessions[0].Config = &mutableIdentityTestConfig{
-		Brokers: []string{"broker-a"}, Metadata: map[string][]string{"cluster": {"stable"}},
+		identityParts: []string{"broker-a"}, dependency: dependency,
 	}
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
 	defer func() { cancel(); <-errCh }()
-	require.Equal(t, capturedConfig{broker: "broker-a", label: "stable"}, <-captured)
+	require.Equal(t, capturedConfig{identity: "broker-a", dependency: dependency}, <-captured)
 
 	started := make(chan struct{})
 	proceed := make(chan struct{})
 	newCfg := configWithDurableSessionIdentity(2, "stable-state")
 	proposed := &mutableIdentityTestConfig{
-		Brokers: []string{"broker-a"}, Metadata: map[string][]string{"cluster": {"stable"}},
+		identityParts: []string{"broker-a"}, dependency: dependency,
 		domainStarted: started, domainContinue: proceed,
 	}
 	newCfg.Sessions[0].Config = proposed
 	require.True(t, sendConfig(changes, newCfg, time.Second))
 	<-started
-	proposed.Brokers[0] = "broker-mutated-after-preflight"
-	proposed.Metadata["cluster"][0] = "map-mutated-after-preflight"
+	proposed.identityParts[0] = "broker-mutated-after-preflight"
 	close(proceed)
 
 	ev := awaitSwap(t, swaps)
 	require.NoError(t, ev.Error)
-	assert.Equal(t, capturedConfig{broker: "broker-a", label: "stable"}, <-captured,
-		"build must use the exact frozen proposal checked by preflight")
+	built := <-captured
+	assert.Equal(t, "broker-a", built.identity, "build must use the adapter-frozen identity state")
+	assert.Same(t, dependency, built.dependency, "opaque runtime dependency must not be copied or detached")
+	dependency.mu.Lock()
+	assert.Equal(t, "shared-client", dependency.client.name)
+	dependency.mu.Unlock()
 	stored := s.Config().Sessions[0].Config.(*mutableIdentityTestConfig)
-	assert.Equal(t, []string{"broker-a"}, stored.Brokers)
-	assert.Equal(t, map[string][]string{"cluster": {"stable"}}, stored.Metadata)
+	assert.Equal(t, []string{"broker-a"}, stored.identityParts)
+	assert.Same(t, dependency, stored.dependency)
+}
+
+func TestSnapshotDurableSessionIdentities_RequiresAdapterOwnedFreezeCapability(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "state")
+	cfg.Sessions[0].Config = unfreezableDurableIdentityConfig{identity: "state"}
+
+	_, err := snapshotDurableSessionIdentities(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "freeze")
+	assert.Contains(t, err.Error(), "stable-session")
 }

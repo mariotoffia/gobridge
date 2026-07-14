@@ -170,6 +170,10 @@ type testCredConfig struct {
 func (c *testCredConfig) Kind() string           { return "test.cred" }
 func (c *testCredConfig) Validate() error        { return nil }
 func (c *testCredConfig) CredentialsURI() string { return c.URI }
+func (c *testCredConfig) FreezePluginConfig() ports.PluginConfig {
+	frozen := *c
+	return &frozen
+}
 func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) error {
 	if creds != nil && creds.Password() != nil {
 		if c.Username == "" {

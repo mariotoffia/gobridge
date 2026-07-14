@@ -343,6 +343,10 @@ func validateClusteredMQTTSubscriptions(ve *ports.BlueprintValidationError, cfg 
 
 		strategy := ""
 		if capabilityAvailable {
+			if ports.IsNilPluginConfig(pluginConfig) {
+				ve.Addf("%s: replica identity config is nil", prefix)
+				continue
+			}
 			strategy = replicaConfig.ReplicaIdentityStrategy()
 		}
 		if sessionMode == string(connectivity.SessionExclusive) {

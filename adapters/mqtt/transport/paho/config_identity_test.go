@@ -321,3 +321,28 @@ func stringSetsOverlap(left, right []string) bool {
 	}
 	return false
 }
+
+func TestConfig_FreezePluginConfig_DeepOwnsConfigAndSharesRuntimeIdentity(t *testing.T) {
+	cfg := durableIdentityConfig()
+	cfg.Session.TLS = &TLSConfig{CACertFile: "ca.pem"}
+	cfg.Session.Will = &WillOptions{Topic: "status", Payload: "offline"}
+	state := &clientIDSuffixProcessIdentity{}
+	cfg.clientIDSuffixIdentity = state
+
+	frozen, ok := cfg.FreezePluginConfig().(*Config)
+	require.True(t, ok)
+	require.NotSame(t, cfg, frozen)
+	assert.NotSame(t, cfg.Session.TLS, frozen.Session.TLS)
+	assert.NotSame(t, cfg.Session.Will, frozen.Session.Will)
+	assert.Same(t, state, frozen.clientIDSuffixIdentity,
+		"process-stable suffix dependency must retain identity")
+	assert.Equal(t, cfg.Session.Clock, frozen.Session.Clock,
+		"opaque clock dependency must be preserved intentionally")
+
+	cfg.Session.BrokerURLs[0] = "ssl://mutated.example:8883"
+	cfg.Session.TLS.CACertFile = "mutated.pem"
+	cfg.Session.Will.Topic = "mutated"
+	assert.NotEqual(t, cfg.Session.BrokerURLs, frozen.Session.BrokerURLs)
+	assert.Equal(t, "ca.pem", frozen.Session.TLS.CACertFile)
+	assert.Equal(t, "status", frozen.Session.Will.Topic)
+}

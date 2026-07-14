@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -50,117 +49,142 @@ func (b *Builder) resolveConfigCredentials(ctx context.Context, cfg ports.Plugin
 	return uri, nil
 }
 
-// cloneConfigForBuild deep-clones a blueprint before validation or build. It
-// freezes every exported pointer, interface, slice, and map recursively,
-// including mutable collections nested inside adapter-owned PluginConfig
-// values, without importing adapter types. Unexported fields are retained by a
-// shallow struct copy; this deliberately preserves private process-stable
-// identity state such as a cached client-ID suffix.
+// cloneConfigForBuild copies the bridge-owned blueprint graph and asks each
+// adapter to freeze its own opaque PluginConfig when it advertises
+// ports.FreezableConfig. Unknown plugin configs remain intentionally opaque and
+// shared: bridge never copies mutexes, clients, map keys, or private state it
+// cannot understand. Durable identity preflight separately requires the
+// adapter-owned freeze capability before invoking identity methods.
 func cloneConfigForBuild(cfg *ports.BridgeConfig) *ports.BridgeConfig {
 	if cfg == nil {
 		return nil
 	}
-	cloned := deepCloneConfigValue(reflect.ValueOf(cfg), make(map[cloneVisit]reflect.Value))
-	return cloned.Interface().(*ports.BridgeConfig)
-}
-
-type cloneVisit struct {
-	typeOf reflect.Type
-	kind   reflect.Kind
-	ptr    uintptr
-}
-
-func deepCloneConfigValue(value reflect.Value, seen map[cloneVisit]reflect.Value) reflect.Value {
-	if !value.IsValid() {
-		return value
+	out := *cfg
+	if cfg.ConfigWatch != nil {
+		copy := *cfg.ConfigWatch
+		out.ConfigWatch = &copy
 	}
+	if cfg.Bridge.Cluster != nil {
+		cluster := *cfg.Bridge.Cluster
+		cluster.Endpoints = cloneStringMap(cfg.Bridge.Cluster.Endpoints)
+		out.Bridge.Cluster = &cluster
+	}
+	out.Stores.Lease = cloneStoreConfig(cfg.Stores.Lease)
+	out.Stores.Outbox = cloneStoreConfig(cfg.Stores.Outbox)
+	out.Stores.DLQ = cloneStoreConfig(cfg.Stores.DLQ)
 
-	switch value.Kind() {
-	case reflect.Interface:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
+	out.Sessions = append([]ports.SessionDef(nil), cfg.Sessions...)
+	for i := range out.Sessions {
+		out.Sessions[i].Config = freezePluginConfig(out.Sessions[i].Config)
+	}
+	out.Receivers = append([]ports.ReceiverDef(nil), cfg.Receivers...)
+	for i := range out.Receivers {
+		out.Receivers[i].Config = freezePluginConfig(out.Receivers[i].Config)
+		out.Receivers[i].Topics = append([]ports.SubscriptionDef(nil), cfg.Receivers[i].Topics...)
+		for j := range out.Receivers[i].Topics {
+			out.Receivers[i].Topics[j].Config = freezePluginConfig(out.Receivers[i].Topics[j].Config)
 		}
-		cloned := deepCloneConfigValue(value.Elem(), seen)
-		out := reflect.New(value.Type()).Elem()
-		out.Set(cloned)
-		return out
-	case reflect.Pointer:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		visit := cloneVisit{typeOf: value.Type(), kind: value.Kind(), ptr: value.Pointer()}
-		if prior, ok := seen[visit]; ok {
-			return prior
-		}
-		out := reflect.New(value.Type().Elem())
-		seen[visit] = out
-		out.Elem().Set(deepCloneConfigValue(value.Elem(), seen))
-		return out
-	case reflect.Slice:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		visit := cloneVisit{typeOf: value.Type(), kind: value.Kind(), ptr: value.Pointer()}
-		if visit.ptr != 0 {
-			if prior, ok := seen[visit]; ok {
-				return prior
+	}
+	out.Senders = append([]ports.SenderDef(nil), cfg.Senders...)
+	for i := range out.Senders {
+		out.Senders[i].Config = freezePluginConfig(out.Senders[i].Config)
+	}
+	out.Bindings = append([]ports.BindingDef(nil), cfg.Bindings...)
+	for i := range out.Bindings {
+		out.Bindings[i].Config = freezePluginConfig(out.Bindings[i].Config)
+	}
+	out.Routes = append([]ports.RouteDef(nil), cfg.Routes...)
+	for i := range out.Routes {
+		cloneRouteDef(&out.Routes[i], &cfg.Routes[i])
+	}
+	if cfg.HTTP != nil {
+		copy := *cfg.HTTP
+		out.HTTP = &copy
+	}
+	return &out
+}
+
+func freezePluginConfig(config ports.PluginConfig) ports.PluginConfig {
+	if ports.IsNilPluginConfig(config) {
+		return config
+	}
+	freezable, ok := config.(ports.FreezableConfig)
+	if !ok {
+		return config
+	}
+	return freezable.FreezePluginConfig()
+}
+
+func cloneStoreConfig(config *ports.StoreConfig) *ports.StoreConfig {
+	if config == nil {
+		return nil
+	}
+	copy := *config
+	copy.Config = freezePluginConfig(config.Config)
+	return &copy
+}
+
+func cloneRouteDef(dst, src *ports.RouteDef) {
+	dst.Bindings = append([]string(nil), src.Bindings...)
+	dst.Processors = append([]string(nil), src.Processors...)
+	if src.Resolver != nil {
+		resolver := *src.Resolver
+		resolver.HeaderMap = cloneStringMap(src.Resolver.HeaderMap)
+		resolver.Rules = append([]ports.RuleDef(nil), src.Resolver.Rules...)
+		for i := range resolver.Rules {
+			resolver.Rules[i].Match = append([]ports.ConditionDef(nil), src.Resolver.Rules[i].Match...)
+			for j := range resolver.Rules[i].Match {
+				resolver.Rules[i].Match[j].Value = cloneBlueprintValue(resolver.Rules[i].Match[j].Value)
 			}
 		}
-		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
-		if visit.ptr != 0 {
-			seen[visit] = out
+		dst.Resolver = &resolver
+	}
+	if src.Session != nil {
+		session := *src.Session
+		if src.Session.DrainStrategy != nil {
+			strategy := *src.Session.DrainStrategy
+			session.DrainStrategy = &strategy
 		}
-		for i := range value.Len() {
-			out.Index(i).Set(deepCloneConfigValue(value.Index(i), seen))
+		if src.Session.ConnectAfterLease != nil {
+			connectAfterLease := *src.Session.ConnectAfterLease
+			session.ConnectAfterLease = &connectAfterLease
 		}
-		return out
-	case reflect.Map:
-		if value.IsNil() {
-			return reflect.Zero(value.Type())
-		}
-		visit := cloneVisit{typeOf: value.Type(), kind: value.Kind(), ptr: value.Pointer()}
-		if prior, ok := seen[visit]; ok {
-			return prior
-		}
-		out := reflect.MakeMapWithSize(value.Type(), value.Len())
-		seen[visit] = out
-		iter := value.MapRange()
-		for iter.Next() {
-			out.SetMapIndex(iter.Key(), deepCloneConfigValue(iter.Value(), seen))
-		}
-		return out
-	case reflect.Struct:
-		out := reflect.New(value.Type()).Elem()
-		out.Set(value)
-		for i := range value.NumField() {
-			// Reflect cannot safely traverse an unexported field from another
-			// package. The whole-struct Set above already preserved its value.
-			if value.Type().Field(i).PkgPath != "" {
-				continue
-			}
-			out.Field(i).Set(deepCloneConfigValue(value.Field(i), seen))
-		}
-		return out
-	case reflect.Array:
-		out := reflect.New(value.Type()).Elem()
-		for i := range value.Len() {
-			out.Index(i).Set(deepCloneConfigValue(value.Index(i), seen))
-		}
-		return out
-	default:
-		return value
+		dst.Session = &session
 	}
 }
 
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
 	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
+	out := make(map[string]string, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneBlueprintValue(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = cloneBlueprintValue(typed[i])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = cloneBlueprintValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case []byte:
+		return append([]byte(nil), typed...)
+	case map[string]string:
+		return cloneStringMap(typed)
 	default:
-		return false
+		return value
 	}
 }

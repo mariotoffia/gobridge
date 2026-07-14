@@ -168,13 +168,11 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		return nil, errors.Join(b.regErrs...)
 	}
 
-	// Build against a copy whose credentialed configs are cloned so the
-	// in-place ApplyCredentials mutation during complete() cannot pollute the
-	// caller's canonical config — which the Supervisor retains as its
-	// rollback/restart snapshot (builder_resolve.go:42, Chunk 3). Reassigning
-	// b.cfg here means both prepare() and the later complete() (Build or
-	// Plan/Commit) operate on the private copy while the original stays
-	// pristine and re-resolvable on recovery.
+	// Build against a bridge-owned structural copy. Plugin configs advertising
+	// ports.FreezableConfig provide their adapter-owned isolated snapshot, so
+	// credential application and construction cannot mutate the Supervisor's
+	// rollback/restart config. Unknown opaque plugin configs are never reflect-
+	// copied or falsely treated as deep-frozen.
 	b.cfg = cloneConfigForBuild(b.cfg)
 
 	if err := runtime.CheckRandSource(); err != nil {

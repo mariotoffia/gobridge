@@ -15,6 +15,7 @@ package ports
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -58,6 +59,32 @@ type DurableSessionIdentityConfig interface {
 	// canonical broker endpoint combined with the effective client identity.
 	// Any shared key means two sessions can connect as the same broker client.
 	DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error)
+}
+
+// FreezableConfig is an OPTIONAL adapter-owned capability for typed plugin
+// configs that need an isolated snapshot across asynchronous validation/build
+// boundaries. FreezePluginConfig must return a deep-owned copy of every mutable
+// configuration value while intentionally sharing only opaque immutable or
+// runtime dependencies that must retain identity (for example a client handle,
+// clock, mutex-bearing state, or process-stable suffix resolver).
+type FreezableConfig interface {
+	FreezePluginConfig() PluginConfig
+}
+
+// IsNilPluginConfig detects a nil interface and an interface holding a typed nil
+// pointer/map/slice/function/channel. Capability callers must check this before
+// invoking methods whose value-receiver method set can otherwise panic.
+func IsNilPluginConfig(config PluginConfig) bool {
+	if config == nil {
+		return true
+	}
+	value := reflect.ValueOf(config)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // Replica identity strategy values understood by transport-neutral validation.

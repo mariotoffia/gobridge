@@ -634,7 +634,11 @@ from `ports/plugin_config.go`:
 - `DurableSessionIdentityConfig` returns opaque, secret-safe fingerprints for
   transport-owned durable broker state and one broker/client ownership domain per
   canonical endpoint. Include effective storage identity only; exclude credentials
-  and runtime tuning. Never return or log raw descriptors.
+  and runtime tuning. Never return or log raw descriptors. A durable identity config
+  must also implement `FreezableConfig`.
+- `FreezableConfig` lets the adapter produce a deep-owned immutable configuration
+  snapshot while intentionally preserving opaque runtime dependencies whose identity
+  must remain stable. Core code never reflect-clones adapter configs.
 - `ReplicaIdentityConfig` declares the effective per-replica identity strategy
   used by clustered shared consumers. Validation fails closed when a shared
   subscription cannot prove a strategy.

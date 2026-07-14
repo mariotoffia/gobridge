@@ -11,6 +11,8 @@ import (
 // Compile-time interface contract.
 var (
 	_ ports.CredentialedConfig           = (*Config)(nil)
+	_ ports.FreezableConfig              = Config{}
+	_ ports.FreezableConfig              = (*Config)(nil)
 	_ ports.DurableSessionIdentityConfig = Config{}
 	_ ports.DurableSessionIdentityConfig = (*Config)(nil)
 	_ ports.ReplicaIdentityConfig        = Config{}
@@ -33,6 +35,25 @@ type Config struct {
 	// by tests. Keeping the pointer in Config makes value copies resolve the same
 	// effective suffix as the config instance they were copied from.
 	clientIDSuffixIdentity *clientIDSuffixProcessIdentity `mapstructure:"-" yaml:"-" json:"-"`
+}
+
+// FreezePluginConfig implements ports.FreezableConfig. Mutable configuration
+// collections and nested config pointers become deep-owned. Clock and
+// clientIDSuffixIdentity are intentionally shared opaque runtime dependencies:
+// clock identity/injection must be preserved, and suffix preflight/build must
+// resolve through the same process-stable state.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	frozen.Session.BrokerURLs = append([]string(nil), c.Session.BrokerURLs...)
+	if c.Session.TLS != nil {
+		tlsCopy := *c.Session.TLS
+		frozen.Session.TLS = &tlsCopy
+	}
+	if c.Session.Will != nil {
+		willCopy := *c.Session.Will
+		frozen.Session.Will = &willCopy
+	}
+	return &frozen
 }
 
 // Kind reports the registry discriminator.
