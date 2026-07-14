@@ -381,7 +381,7 @@ func TestSupervisor_PausedDestructiveReload_Refused(t *testing.T) {
 	require.Error(t, ev.Error, "a paused destructive reload must resolve as a FAILURE, not a deferred success")
 	assert.False(t, ev.Deferred, "a refusal is a definitive failure, not a deferred (committed-not-applied) event")
 	assert.Contains(t, ev.Error.Error(), "paused destructive reload")
-	assert.Same(t, oldCfg, s.Config(),
+	assert.Equal(t, oldCfg, s.Config(),
 		"the destructive config must NOT be recorded; oldCfg stays the resume target")
 }
 

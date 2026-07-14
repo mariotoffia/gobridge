@@ -62,7 +62,7 @@ func TestConfig_DurableSessionIdentity_ChangesForEveryBrokerStateField(t *testin
 	assert.NotEqual(t, baseID, identityFingerprint(t, base, connectivity.SessionEphemeral), "session mode is identity")
 }
 
-func TestConfig_DurableSessionIdentityDomain_RejectsClientCollisionAcrossStateSettings(t *testing.T) {
+func TestConfig_DurableSessionIdentityDomains_RejectClientCollisionAcrossStateSettings(t *testing.T) {
 	first := durableIdentityConfig()
 	second := cloneIdentityConfig(first)
 	second.Session.CleanStart = true
@@ -72,11 +72,11 @@ func TestConfig_DurableSessionIdentityDomain_RejectsClientCollisionAcrossStateSe
 	secondState := identityFingerprint(t, second, connectivity.SessionPersistent)
 	require.NotEqual(t, firstState, secondState)
 
-	firstDomain, err := first.DurableSessionIdentityDomain(connectivity.SessionPersistent)
+	firstDomains, err := first.DurableSessionIdentityDomains(connectivity.SessionPersistent)
 	require.NoError(t, err)
-	secondDomain, err := second.DurableSessionIdentityDomain(connectivity.SessionPersistent)
+	secondDomains, err := second.DurableSessionIdentityDomains(connectivity.SessionPersistent)
 	require.NoError(t, err)
-	assert.Equal(t, firstDomain, secondDomain, "same brokers and effective client ID collide regardless of state settings")
+	assert.Equal(t, firstDomains, secondDomains, "same brokers and effective client ID collide regardless of state settings")
 }
 
 func TestConfig_DurableSessionIdentity_BrokerOrderAndDuplicatesAreIdentity(t *testing.T) {
@@ -278,4 +278,46 @@ func TestConfig_ClientIDNonceStableAcrossValueCopies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 	assert.Len(t, strings.TrimPrefix(first, cfg.Session.ClientID+"-"), 32)
+}
+
+func TestConfig_DurableSessionIdentityDomains_ArePerCanonicalEndpoint(t *testing.T) {
+	type endpointDomains interface {
+		DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error)
+	}
+
+	first := durableIdentityConfig()
+	first.Session.BrokerURLs = []string{"ssl://broker-a.example:8883", "ssl://broker-b.example:8883"}
+	overlap := cloneIdentityConfig(first)
+	overlap.Session.BrokerURLs = []string{"ssl://BROKER-A.example:8883", "ssl://broker-c.example:8883"}
+	disjoint := cloneIdentityConfig(first)
+	disjoint.Session.BrokerURLs = []string{"ssl://broker-c.example:8883", "ssl://broker-d.example:8883"}
+
+	capability, ok := any(first).(endpointDomains)
+	require.True(t, ok, "Paho must expose one opaque ownership domain per broker endpoint")
+	firstDomains, err := capability.DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	overlapDomains, err := any(overlap).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	require.NoError(t, err)
+	disjointDomains, err := any(disjoint).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	require.NoError(t, err)
+
+	assert.Len(t, firstDomains, 2)
+	assert.True(t, stringSetsOverlap(firstDomains, overlapDomains))
+	assert.False(t, stringSetsOverlap(firstDomains, disjointDomains))
+	for _, domain := range append(append(firstDomains, overlapDomains...), disjointDomains...) {
+		assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{64}$`), domain)
+	}
+}
+
+func stringSetsOverlap(left, right []string) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		seen[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := seen[value]; ok {
+			return true
+		}
+	}
+	return false
 }

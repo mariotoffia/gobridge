@@ -36,20 +36,23 @@ func (c Config) DurableSessionIdentity(mode connectivity.SessionMode) (string, e
 	return identityDigest(descriptor.String()), nil
 }
 
-// DurableSessionIdentityDomain fingerprints the canonical broker sequence and
-// effective client ID only. It detects two sessions that would contend for one
-// broker client identity even if clean-start, expiry, or mode differ.
-func (c Config) DurableSessionIdentityDomain(mode connectivity.SessionMode) (string, error) {
+// DurableSessionIdentityDomains returns one opaque ownership key for each
+// canonical broker endpoint paired with the effective client ID. The ordered
+// whole-list fingerprint remains separate so failover-order changes are still
+// detected, while overlapping failover lists collide on their shared endpoint.
+func (c Config) DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error) {
 	clientID, brokers, _, err := c.durableSessionIdentityCoordinates(mode)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var descriptor strings.Builder
-	appendIdentityPart(&descriptor, clientID)
+	domains := make([]string, 0, len(brokers))
 	for _, broker := range brokers {
+		var descriptor strings.Builder
+		appendIdentityPart(&descriptor, clientID)
 		appendIdentityPart(&descriptor, broker)
+		domains = append(domains, identityDigest(descriptor.String()))
 	}
-	return identityDigest(descriptor.String()), nil
+	return domains, nil
 }
 
 func (c Config) durableSessionIdentityCoordinates(mode connectivity.SessionMode) (string, []string, connectivity.SessionMode, error) {

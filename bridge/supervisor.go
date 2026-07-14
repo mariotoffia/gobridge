@@ -358,7 +358,7 @@ func (s *Supervisor) Runtime() *runtime.Runtime {
 func (s *Supervisor) Config() *ports.BridgeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg
+	return cloneConfigForBuild(s.cfg)
 }
 
 // Run builds and starts the initial runtime, then watches the
@@ -609,6 +609,12 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
+	// Freeze the proposal exactly once at the Supervisor boundary. Every
+	// preflight, build, stored snapshot, and recovery decision below uses this
+	// same immutable content; SwapEvent keeps the original pointer solely for
+	// config-manager acknowledgement correlation.
+	frozenCfg := cloneConfigForBuild(newCfg)
+
 	// MQTT and similar durable broker sessions are external stores. Changing or
 	// removing their identity can strand subscriptions and queued QoS messages,
 	// so compare the typed plugin fingerprints before stopping the old runtime,
@@ -618,7 +624,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	oldCfgAtPreflight := s.cfg
 	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
-	proposedIdentities, identityErr := snapshotDurableSessionIdentities(newCfg)
+	proposedIdentities, identityErr := snapshotDurableSessionIdentities(frozenCfg)
 	if identityErr == nil {
 		identityErr = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
 	}
@@ -626,11 +632,11 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: refusing reload that changes or duplicates durable broker session identity; "+
 				"externally drain, unsubscribe, and cut over the old session first",
-				"error", identityErr, "attempted_config_version", newCfg.Version)
+				"error", identityErr, "attempted_config_version", frozenCfg.Version)
 		}
 		s.emitConfigReload(false)
 		if s.onSwap != nil {
-			s.safeOnSwap(SwapEvent{OldConfig: oldCfgAtPreflight, NewConfig: newCfg, Error: identityErr})
+			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigForBuild(oldCfgAtPreflight), NewConfig: newCfg, Error: identityErr})
 		}
 		return
 	}
@@ -655,19 +661,19 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// out of scope. Fire a FAILED swap event (Error set, Deferred false) so an
 		// in-band applier waiting on this exact config resolves as a failure
 		// instead of hanging to its deadline; keep oldCfg as the resume target.
-		if destructiveReloadShape(oldCfg, newCfg) && !s.allowDestructiveReload {
+		if destructiveReloadShape(oldCfg, frozenCfg) && !s.allowDestructiveReload {
 			err := fmt.Errorf("bridge: refusing paused destructive reload: it would strand durable " +
 				"backlog on resume (removed/retargeted outbox|dlq store, changed store identity, or " +
 				"orphaned shared_outbox partition); drain before pausing or set WithAllowDestructiveReload")
 			if s.logger != nil {
 				s.logger.Error("supervisor: refusing paused config change that would strand durable "+
 					"backlog on resume; drain before pausing or force with WithAllowDestructiveReload",
-					"error", err, "attempted_config_version", newCfg.Version)
+					"error", err, "attempted_config_version", frozenCfg.Version)
 			}
 			s.emitConfigReload(false)
 			if s.onSwap != nil {
 				s.safeOnSwap(SwapEvent{
-					OldConfig: oldCfg,
+					OldConfig: cloneConfigForBuild(oldCfg),
 					NewConfig: newCfg,
 					Error:     err,
 				})
@@ -675,12 +681,12 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			return
 		}
 		s.mu.Lock()
-		s.cfg = cloneConfigForBuild(newCfg)
+		s.cfg = frozenCfg
 		s.durableIdentities = proposedIdentities
 		s.mu.Unlock()
 		if s.logger != nil {
 			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
-				"config_version", newCfg.Version)
+				"config_version", frozenCfg.Version)
 		}
 		// onSwap MUST be total: an in-band applier blocks on the swap result for
 		// this exact config, so a paused apply that returned without firing
@@ -689,7 +695,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// with a committed-not-applied (no-rollback) outcome.
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: oldCfg,
+				OldConfig: cloneConfigForBuild(oldCfg),
 				NewConfig: newCfg,
 				Deferred:  true,
 			})
@@ -710,7 +716,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	}()
 
 	start := s.clk.Now()
-	mode := s.detectSwapMode(newCfg)
+	mode := s.detectSwapMode(frozenCfg)
 
 	s.mu.RLock()
 	oldRt := s.rt
@@ -726,7 +732,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// while unprocessed durable rows sit in the old one, silently missed until
 	// manual recovery (supervisor.go:681, Chunk 10). Detect it before touching
 	// either runtime.
-	identErr := storeIdentityChanged(oldCfg, newCfg)
+	identErr := storeIdentityChanged(oldCfg, frozenCfg)
 
 	// A live reload that changes a lease-bearing exclusive route's session_id
 	// changes the lease IDENTITY, splitting cluster ownership domains: with no
@@ -737,7 +743,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// operator forces it with the same WithAllowDestructiveReload escape hatch.
 	var leaseIdentErr error
 	if oldRt != nil && !s.allowDestructiveReload {
-		leaseIdentErr = leaseSessionIDChanged(oldCfg, newCfg)
+		leaseIdentErr = leaseSessionIDChanged(oldCfg, frozenCfg)
 	}
 
 	// Dropping a durable store entirely (non-nil -> nil) is a deliberate
@@ -747,9 +753,9 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// orphaning) DOES strand durable backlog; that is gated fail-closed by the
 	// durable-reload preflight below, not merely warned (HIGH-2/HIGH-3).
 	if s.logger != nil {
-		if removed := removedStoreRoles(oldCfg, newCfg); slices.Contains(removed, "lease") {
+		if removed := removedStoreRoles(oldCfg, frozenCfg); slices.Contains(removed, "lease") {
 			s.logger.Warn("supervisor: reload removes the lease store; its fencing state is discarded "+
-				"(holds no message backlog)", "attempted_config_version", newCfg.Version)
+				"(holds no message backlog)", "attempted_config_version", frozenCfg.Version)
 		}
 	}
 
@@ -761,7 +767,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// when a store identity change has not already refused the swap.
 	var preflightErr error
 	if oldRt != nil && identErr == nil {
-		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg)
+		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
 	switch {
@@ -774,7 +780,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: refusing reload that changes a durable store identity; "+
 				"draining/migrating the old store is required to avoid stranding its backlog",
-				"error", err, "attempted_config_version", newCfg.Version)
+				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case oldRt != nil && preflightErr != nil:
 		// Refuse the swap and keep the old runtime serving so its durable
@@ -783,7 +789,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: refusing reload that would strand durable backlog; drain the "+
 				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
-				"error", err, "attempted_config_version", newCfg.Version)
+				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case oldRt != nil && leaseIdentErr != nil:
 		// Refuse the swap and keep the old runtime serving under the CURRENT
@@ -795,12 +801,12 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			s.logger.Error("supervisor: refusing reload that changes a lease-bearing exclusive "+
 				"session_id (cluster ownership invariant); roll it with a full stop/restart of all "+
 				"nodes or force with WithAllowDestructiveReload",
-				"error", err, "attempted_config_version", newCfg.Version)
+				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case mode == SwapPrepareCommit:
-		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, newCfg)
+		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, frozenCfg)
 	default:
-		newRt, err = s.applyOverlap(ctx, oldRt, oldCfg, newCfg)
+		newRt, err = s.applyOverlap(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
 	// Observable residual (HIGH-2/3): the preflight proved the orphaned
@@ -816,11 +822,11 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// surfaces only when it reverts to pending; the point-in-time refusal above
 	// remains the primary guard.
 	if err == nil && newRt != nil && oldRt != nil {
-		s.reportOrphanedStrand(ctx, newRt, oldCfg, newCfg)
+		s.reportOrphanedStrand(ctx, newRt, oldCfg, frozenCfg)
 	}
 
 	ev := SwapEvent{
-		OldConfig: oldCfg,
+		OldConfig: cloneConfigForBuild(oldCfg),
 		NewConfig: newCfg,
 		SwapMode:  mode,
 		Error:     err,
@@ -849,13 +855,13 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: reconfiguration failed",
 				"swap_mode", mode, "error", err, "duration", ev.Duration,
-				"config_version", oldVersion, "attempted_config_version", newCfg.Version)
+				"config_version", oldVersion, "attempted_config_version", frozenCfg.Version)
 		}
 		s.emitConfigReload(false)
 	} else {
 		s.mu.Lock()
 		s.rt = newRt
-		s.cfg = cloneConfigForBuild(newCfg)
+		s.cfg = frozenCfg
 		s.durableIdentities = proposedIdentities
 		s.wedged = false
 		s.degraded = false
@@ -865,7 +871,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Info("supervisor: reconfiguration complete",
 				"swap_mode", mode, "duration", ev.Duration,
-				"config_version", newCfg.Version, "old_config_version", oldVersion)
+				"config_version", frozenCfg.Version, "old_config_version", oldVersion)
 		}
 		// A successful reload clears any prior degraded state; export both the
 		// gauge reset and the success counter so operators see recovery.
@@ -1203,9 +1209,8 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 type durableSessionIdentitySnapshot map[string]durableSessionIdentity
 
 type durableSessionIdentity struct {
-	kind                 string
-	fingerprint          string
-	collisionFingerprint string
+	kind        string
+	fingerprint string
 }
 
 // durableSessionIdentityChanged remains the config-to-config seam used by unit
@@ -1228,29 +1233,40 @@ func snapshotDurableSessionIdentities(cfg *ports.BridgeConfig) (durableSessionId
 	if cfg == nil {
 		return snapshot, nil
 	}
+	referenced := referencedSessionIDs(cfg)
 	owners := make(map[string]string)
 	for _, session := range cfg.Sessions {
+		mode := normalizedSessionMode(session.SessionMode)
+		if _, ok := referenced[session.ID]; !ok ||
+			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+			continue
+		}
 		identityConfig, ok := session.Config.(ports.DurableSessionIdentityConfig)
 		if !ok {
 			continue
 		}
-		mode := normalizedSessionMode(session.SessionMode)
+		if isNilInterface(identityConfig) {
+			return nil, fmt.Errorf("bridge: durable session %q identity config is nil", session.ID)
+		}
 		fingerprint, err := identityConfig.DurableSessionIdentity(mode)
 		if err != nil || fingerprint == "" {
 			return nil, fmt.Errorf("bridge: durable session %q identity cannot be verified", session.ID)
 		}
-		collisionFingerprint, err := identityConfig.DurableSessionIdentityDomain(mode)
-		if err != nil || collisionFingerprint == "" {
-			return nil, fmt.Errorf("bridge: durable session %q identity domain cannot be verified", session.ID)
+		domains, err := identityConfig.DurableSessionIdentityDomains(mode)
+		if err != nil || len(domains) == 0 {
+			return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
 		}
-		identity := durableSessionIdentity{
-			kind: session.Config.Kind(), fingerprint: fingerprint, collisionFingerprint: collisionFingerprint,
+		identity := durableSessionIdentity{kind: session.Config.Kind(), fingerprint: fingerprint}
+		for _, domain := range domains {
+			if domain == "" {
+				return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
+			}
+			collisionKey := identity.kind + "\x00" + domain
+			if owner, duplicate := owners[collisionKey]; duplicate && owner != session.ID {
+				return nil, fmt.Errorf("bridge: durable sessions %q and %q have duplicate effective broker identities", owner, session.ID)
+			}
+			owners[collisionKey] = session.ID
 		}
-		collisionKey := identity.kind + "\x00" + identity.collisionFingerprint
-		if owner, duplicate := owners[collisionKey]; duplicate {
-			return nil, fmt.Errorf("bridge: durable sessions %q and %q have duplicate effective broker identities", owner, session.ID)
-		}
-		owners[collisionKey] = session.ID
 		snapshot[session.ID] = identity
 	}
 	return snapshot, nil

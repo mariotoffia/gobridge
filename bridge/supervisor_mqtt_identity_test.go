@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -12,9 +13,9 @@ import (
 )
 
 type durableIdentityTestConfig struct {
-	identity  string
-	collision string
-	err       error
+	identity string
+	domains  []string
+	err      error
 }
 
 func (durableIdentityTestConfig) Kind() string    { return "identity" }
@@ -22,11 +23,12 @@ func (durableIdentityTestConfig) Validate() error { return nil }
 func (c durableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
 	return c.identity, c.err
 }
-func (c durableIdentityTestConfig) DurableSessionIdentityDomain(connectivity.SessionMode) (string, error) {
-	if c.collision != "" {
-		return c.collision, c.err
+
+func (c durableIdentityTestConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
+	if c.domains != nil {
+		return c.domains, c.err
 	}
-	return c.identity, c.err
+	return []string{c.identity}, c.err
 }
 
 func configWithDurableSessionIdentity(version int, identity string) *ports.BridgeConfig {
@@ -138,10 +140,13 @@ func TestSupervisor_InPlaceSessionIdentityMutationUsesAppliedSnapshot(t *testing
 
 func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReload(t *testing.T) {
 	duplicate := configWithDurableSessionIdentity(2, "opaque-a")
-	duplicate.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	duplicate.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
 	duplicate.Sessions = append(duplicate.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "opaque-b", collision: "shared-domain"},
+		Config: durableIdentityTestConfig{identity: "opaque-b", domains: []string{"shared-domain"}},
+	})
+	duplicate.Senders = append(duplicate.Senders, ports.SenderDef{
+		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
 	})
 
 	require.Error(t, durableSessionIdentityChanged(nil, duplicate),
@@ -159,10 +164,13 @@ func TestSupervisor_DuplicateDurableIdentityRejectedBeforeInitialBuild(t *testin
 	s.RegisterTransport("identity", factory)
 
 	cfg := configWithDurableSessionIdentity(1, "opaque-a")
-	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
 	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "opaque-b", collision: "shared-domain"},
+		Config: durableIdentityTestConfig{identity: "opaque-b", domains: []string{"shared-domain"}},
+	})
+	cfg.Senders = append(cfg.Senders, ports.SenderDef{
+		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
 	})
 
 	err := s.Run(t.Context(), cfg, nil)
@@ -184,7 +192,7 @@ func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing
 	s.RegisterTransport("identity", factory)
 
 	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-	oldCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	oldCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
 	defer func() { cancel(); <-errCh }()
@@ -192,10 +200,13 @@ func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing
 	oldRuntime := s.Runtime()
 	beforeSessions, _, _ := factory.Counts()
 	newCfg := configWithDurableSessionIdentity(2, "opaque-a")
-	newCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", collision: "shared-domain"}
+	newCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
 	newCfg.Sessions = append(newCfg.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "different-state", collision: "shared-domain"},
+		Config: durableIdentityTestConfig{identity: "different-state", domains: []string{"shared-domain"}},
+	})
+	newCfg.Senders = append(newCfg.Senders, ports.SenderDef{
+		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
 	})
 	require.True(t, sendConfig(changes, newCfg, time.Second))
 
@@ -206,4 +217,151 @@ func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing
 	assert.Equal(t, 1, s.Config().Version)
 	afterSessions, _, _ := factory.Counts()
 	assert.Equal(t, beforeSessions, afterSessions, "duplicate refusal must precede replacement build")
+}
+
+type typedNilDurableIdentityConfig struct{}
+
+func (*typedNilDurableIdentityConfig) Kind() string    { return "identity" }
+func (*typedNilDurableIdentityConfig) Validate() error { return nil }
+func (*typedNilDurableIdentityConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
+	panic("typed nil durable identity invoked")
+}
+
+func (*typedNilDurableIdentityConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
+	panic("typed nil durable identity domains invoked")
+}
+
+func TestSnapshotDurableSessionIdentities_RejectsOverlappingEndpointDomainsOnly(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "state-a")
+	cfg.Sessions[0].Config = durableIdentityTestConfig{
+		identity: "state-a", domains: []string{"endpoint-a", "endpoint-b"},
+	}
+	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{
+		ID: "second-session", Transport: "identity", SessionMode: "persistent",
+		Config: durableIdentityTestConfig{
+			identity: "state-b", domains: []string{"endpoint-a", "endpoint-c"},
+		},
+	})
+	cfg.Senders = append(cfg.Senders, ports.SenderDef{
+		ID: "second-sender", Transport: "identity", SessionID: "second-session",
+	})
+
+	_, err := snapshotDurableSessionIdentities(cfg)
+	require.Error(t, err, "one overlapping broker endpoint plus client identity must collide")
+
+	cfg.Sessions[1].Config = durableIdentityTestConfig{
+		identity: "state-b", domains: []string{"endpoint-c", "endpoint-d"},
+	}
+	_, err = snapshotDurableSessionIdentities(cfg)
+	require.NoError(t, err, "non-overlapping broker endpoints must not collide")
+}
+
+func TestSnapshotDurableSessionIdentities_OnlyReferencedDurableSessions(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "referenced-durable")
+	cfg.Sessions = append(cfg.Sessions,
+		ports.SessionDef{
+			ID: "unreferenced-persistent", Transport: "identity", SessionMode: "persistent",
+			Config: durableIdentityTestConfig{err: errors.New("must not be evaluated")},
+		},
+		ports.SessionDef{
+			ID: "referenced-ephemeral", Transport: "identity", SessionMode: "ephemeral",
+			Config: durableIdentityTestConfig{err: errors.New("must not be evaluated")},
+		},
+	)
+	cfg.Senders = append(cfg.Senders, ports.SenderDef{
+		ID: "ephemeral-sender", Transport: "identity", SessionID: "referenced-ephemeral",
+	})
+
+	snapshot, err := snapshotDurableSessionIdentities(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, durableSessionIdentitySnapshot{
+		"stable-session": {kind: "identity", fingerprint: "referenced-durable"},
+	}, snapshot)
+}
+
+func TestSnapshotDurableSessionIdentities_TypedNilCapabilityReturnsError(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "unused")
+	var typedNil *typedNilDurableIdentityConfig
+	cfg.Sessions[0].Config = typedNil
+
+	var err error
+	require.NotPanics(t, func() {
+		_, err = snapshotDurableSessionIdentities(cfg)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stable-session")
+}
+
+type mutableIdentityTestConfig struct {
+	Brokers  []string
+	Metadata map[string][]string
+
+	domainStarted  chan struct{}
+	domainContinue chan struct{}
+}
+
+func (*mutableIdentityTestConfig) Kind() string    { return "identity" }
+func (*mutableIdentityTestConfig) Validate() error { return nil }
+func (*mutableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
+	return "stable-state", nil
+}
+func (c *mutableIdentityTestConfig) ownershipDomains() ([]string, error) {
+	domain := c.Brokers[0]
+	if c.domainStarted != nil {
+		close(c.domainStarted)
+		<-c.domainContinue
+	}
+	return []string{domain}, nil
+}
+
+func (c *mutableIdentityTestConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
+	return c.ownershipDomains()
+}
+
+func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	type capturedConfig struct {
+		broker string
+		label  string
+	}
+	captured := make(chan capturedConfig, 2)
+	factory := &countingTransportFactory{SessionFn: func(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
+		cfg := spec.Config.(*mutableIdentityTestConfig)
+		captured <- capturedConfig{broker: cfg.Brokers[0], label: cfg.Metadata["cluster"][0]}
+		return &fakeSession{}, nil
+	}}
+	s := NewSupervisor(WithOnSwap(onSwap))
+	s.RegisterTransport("fake", &fakeTransportFactory{})
+	s.RegisterTransport("identity", factory)
+
+	oldCfg := configWithDurableSessionIdentity(1, "stable-state")
+	oldCfg.Sessions[0].Config = &mutableIdentityTestConfig{
+		Brokers: []string{"broker-a"}, Metadata: map[string][]string{"cluster": {"stable"}},
+	}
+	changes := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
+	defer func() { cancel(); <-errCh }()
+	require.Equal(t, capturedConfig{broker: "broker-a", label: "stable"}, <-captured)
+
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	newCfg := configWithDurableSessionIdentity(2, "stable-state")
+	proposed := &mutableIdentityTestConfig{
+		Brokers: []string{"broker-a"}, Metadata: map[string][]string{"cluster": {"stable"}},
+		domainStarted: started, domainContinue: proceed,
+	}
+	newCfg.Sessions[0].Config = proposed
+	require.True(t, sendConfig(changes, newCfg, time.Second))
+	<-started
+	proposed.Brokers[0] = "broker-mutated-after-preflight"
+	proposed.Metadata["cluster"][0] = "map-mutated-after-preflight"
+	close(proceed)
+
+	ev := awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+	assert.Equal(t, capturedConfig{broker: "broker-a", label: "stable"}, <-captured,
+		"build must use the exact frozen proposal checked by preflight")
+	stored := s.Config().Sessions[0].Config.(*mutableIdentityTestConfig)
+	assert.Equal(t, []string{"broker-a"}, stored.Brokers)
+	assert.Equal(t, map[string][]string{"cluster": {"stable"}}, stored.Metadata)
 }
