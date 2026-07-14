@@ -116,6 +116,8 @@ func TestSessionManager_RenewFailReadSucceed_ForcesStepDownPastDeadline(t *testi
 	defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 	wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 	// One renew cycle BEFORE expiry: the write fails, MaxRenewFails is reached,
@@ -181,6 +183,8 @@ func TestSessionManager_TransientBlipBeforeDeadline_NoStepDown(t *testing.T) {
 	defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 	wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 	// Renew #1 succeeds (deadline extends well before any advance nears TTL).

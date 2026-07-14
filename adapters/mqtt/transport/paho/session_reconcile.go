@@ -214,7 +214,9 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		return err
 	}
 	if s.managedRequired && s.router != nil {
-		s.router.resumeManagedDispatch()
+		if err := s.router.resumeManagedDispatch(ctx); err != nil {
+			return err
+		}
 	}
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
@@ -868,11 +870,14 @@ func (s *Session) reconcileManagedUnsubscribe(
 		return errManagedCleanupRecycled
 	}
 
-	// On the replacement generation UNSUBACK 0x11 proves the filters are absent.
-	// Before durable Forget, inspect the still-gated pending buffer. A match is a
-	// broker-pinned replay that cannot be portably redistributed; never ACK/drop
-	// it or claim convergence. Disconnect terminally while preserving history so
-	// an operator can restore the exact old handler and drain it.
+	// UNSUBACK 0x11 proves only that the filter is absent NOW. After a crash, the
+	// prior process may have received 0x00 and removed the filter but died before
+	// recording in-memory verification/Forget; this replacement can still receive
+	// a delayed broker-pinned replay. Always wait the current generation's full
+	// replay-grace before Forget, even without managedCleanupVerification state.
+	if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
+		return err
+	}
 	if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
 		return err
 	}

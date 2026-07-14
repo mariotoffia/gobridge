@@ -122,6 +122,8 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 		wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+		wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+		wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 		// Renew #1 succeeds.
@@ -182,6 +184,8 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 		wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+		wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+		wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 		fake.Advance(renewInterval) // renew #1 success
@@ -227,6 +231,8 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 		wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+		wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+		wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 		fake.Advance(renewInterval) // renew #1 success
@@ -272,6 +278,8 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		defer func() { cancel(); runWG.Wait(); _ = mgr.Close(context.Background()) }()
 
 		wait.RequireReceive(t, sess.startedCh, 2*time.Second)
+		wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+		wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 		fake.Advance(renewInterval) // renew #1 success

@@ -68,6 +68,8 @@ func TestSessionManager_StepDown_SkipsGraceWhenDrainIdle(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("source session was not started on lease acquisition")
 	}
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool {
 		return fake.TimerCount() >= 1
@@ -157,6 +159,8 @@ func TestSessionManager_StepDown_WaitsGraceWhenDrainBusy(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("source session was not started on lease acquisition")
 	}
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool {
 		return fake.TimerCount() >= 1

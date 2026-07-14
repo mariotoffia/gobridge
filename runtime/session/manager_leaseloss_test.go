@@ -104,21 +104,25 @@ func (s *leaseLossStore) wasReleased(v uint64) bool {
 // realistically. The events channel is reopened on Start after a Close so the
 // renew loop does not observe a permanently closed channel across terms.
 type countingSession struct {
-	mu        sync.Mutex
-	starts    int
-	closes    int
-	connected bool
-	closed    bool
-	events    chan ports.SessionEvent
-	startedCh chan int
-	closedCh  chan int
+	mu           sync.Mutex
+	starts       int
+	closes       int
+	connected    bool
+	closed       bool
+	events       chan ports.SessionEvent
+	startedCh    chan int
+	reconciledCh chan int
+	eventsReadCh chan struct{}
+	closedCh     chan int
 }
 
 func newCountingSession() *countingSession {
 	return &countingSession{
-		events:    make(chan ports.SessionEvent),
-		startedCh: make(chan int, 8),
-		closedCh:  make(chan int, 8),
+		events:       make(chan ports.SessionEvent),
+		startedCh:    make(chan int, 8),
+		reconciledCh: make(chan int, 8),
+		eventsReadCh: make(chan struct{}, 8),
+		closedCh:     make(chan int, 8),
 	}
 }
 
@@ -140,7 +144,16 @@ func (s *countingSession) Start(context.Context) error {
 	return nil
 }
 
-func (s *countingSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
+func (s *countingSession) Reconcile(context.Context, connectivity.SessionPlan) error {
+	s.mu.Lock()
+	n := s.starts
+	s.mu.Unlock()
+	select {
+	case s.reconciledCh <- n:
+	default:
+	}
+	return nil
+}
 
 func (s *countingSession) Health(context.Context) ports.SessionHealth {
 	s.mu.Lock()
@@ -154,8 +167,13 @@ func (s *countingSession) Health(context.Context) ports.SessionHealth {
 
 func (s *countingSession) Events() <-chan ports.SessionEvent {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.events
+	events := s.events
+	s.mu.Unlock()
+	select {
+	case s.eventsReadCh <- struct{}{}:
+	default:
+	}
+	return events
 }
 
 func (s *countingSession) Close(context.Context) error {
@@ -253,6 +271,8 @@ func runLeaseLossScenario(t *testing.T, connectAfterLease bool) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("source session was not started on lease acquisition")
 	}
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 
 	// Wait until the renew loop has registered its timer on the fake clock
 	// before advancing, so the advance is never lost to a scheduling race.

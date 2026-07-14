@@ -140,6 +140,8 @@ func TestSessionManager_StepDownConcurrentWithInflightDelivery(t *testing.T) {
 	}()
 
 	// ── Force step-down: renew #1 succeeds, renew #2 fails ───────────────
+	wait.RequireReceive(t, sess.reconciledCh, 2*time.Second)
+	wait.RequireReceive(t, sess.eventsReadCh, 2*time.Second)
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool {
 		return fake.TimerCount() >= 1
 	})

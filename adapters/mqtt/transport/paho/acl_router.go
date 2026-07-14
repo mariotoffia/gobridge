@@ -102,6 +102,9 @@ type router struct {
 	// pendingChanged is rotated whenever a publish is buffered so managed
 	// migration verification can wait event-wise for broker replay. Guarded by mu.
 	pendingChanged chan struct{}
+	// awaitManagedReplayHook is a deterministic test seam invoked when replay
+	// verification starts. Production leaves it nil. Guarded by mu.
+	awaitManagedReplayHook func()
 	// connEpoch identifies the CURRENT broker connection generation. It is
 	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
 	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
@@ -1188,37 +1191,54 @@ func (r *router) callbackDone() {
 
 // resumeManagedDispatch releases the recycle gate only after replacement
 // convergence and routes buffered replacement deliveries before live traffic.
-func (r *router) resumeManagedDispatch() {
+func (r *router) resumeManagedDispatch(ctx context.Context) error {
 	if r == nil {
-		return
+		return nil
 	}
-	// Keep quiesced true while draining. New live ingress therefore appends to
-	// pending and is picked up by the next loop iteration, preserving buffered-
-	// before-live ordering without holding a lock across handler callbacks.
+	// Keep quiesced true while draining entries that have a handler NOW. An
+	// unmatched current-epoch entry stays pending for RegisterFiltered instead of
+	// being extracted, rebuffered by dispatchCore, and selected again in a busy
+	// loop. Process one entry at a time so cancellation is checked between
+	// callbacks without losing an extracted batch.
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		r.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
 		r.discarding = false
-		flush := make([]pendingPublish, 0, len(r.pending))
-		keep := r.pending[:0]
-		for _, pending := range r.pending {
-			if pending.epoch == r.connEpoch && (len(r.managedCleanupFilters) == 0 || !matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic)) {
-				flush = append(flush, pending)
-				r.pendingBytes -= pubBytes(pending.pub)
+		idx := -1
+		for i := range r.pending {
+			pending := r.pending[i]
+			if pending.epoch != r.connEpoch ||
+				(len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic)) {
 				continue
 			}
-			keep = append(keep, pending)
+			for _, handler := range r.handlers {
+				if matchesAnyFilter(handler.filters, pending.pub.Topic) {
+					idx = i
+					break
+				}
+			}
+			if idx >= 0 {
+				break
+			}
 		}
-		r.pending = keep
-		epoch := r.connEpoch
-		if len(flush) == 0 {
+		if idx < 0 {
 			r.quiesced = false
 			r.mu.Unlock()
-			return
+			return nil
 		}
+		pending := r.pending[idx]
+		copy(r.pending[idx:], r.pending[idx+1:])
+		r.pending = r.pending[:len(r.pending)-1]
+		r.pendingBytes -= pubBytes(pending.pub)
+		epoch := r.connEpoch
 		r.mu.Unlock()
-		for _, pending := range flush {
-			r.dispatchCore(pending.pub, pending.ack, epoch, false, true)
-		}
+		r.dispatchCore(pending.pub, pending.ack, epoch, false, true)
 	}
 }
 
@@ -1689,6 +1709,12 @@ func (r *router) pendingMatching(filters []string) int {
 func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool, error) {
 	if r == nil || len(filters) == 0 {
 		return false, nil
+	}
+	r.mu.RLock()
+	hook := r.awaitManagedReplayHook
+	r.mu.RUnlock()
+	if hook != nil {
+		hook()
 	}
 	for {
 		r.mu.RLock()

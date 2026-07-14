@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -882,4 +883,104 @@ func equalManagedStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestManagedSubscriptionCrashRestartAlreadyAbsentAwaitsDelayedReplay(t *testing.T) {
+	operations := []string{}
+	const staleFilter = "$share/group/crash/#"
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {staleFilter: {}},
+	}}
+	conn := &managedConnFake{operations: &operations, unsubReasons: []byte{0x11}}
+	session := newManagedTestSession(t, store, conn)
+	session.router.graceWindow = time.Minute
+	verificationStarted := make(chan struct{})
+	var verificationOnce sync.Once
+	session.router.awaitManagedReplayHook = func() {
+		verificationOnce.Do(func() { close(verificationStarted) })
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	session.handleConnectionUp()
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
+	wait.RequireReceive(t, verificationStarted, 2*time.Second)
+
+	var staleACKs atomic.Int32
+	session.router.dispatch(&pahov5.Publish{Topic: "crash/delayed", QoS: 1}, func() error {
+		staleACKs.Add(1)
+		return nil
+	})
+	err := wait.RequireReceive(t, reconcileDone, 2*time.Second)
+	if !errors.Is(err, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("delayed crash-replay error = %v, want terminal marker", err)
+	}
+	if got := store.snapshot("safe-session-id"); !equalManagedStrings(got, []string{staleFilter}) {
+		t.Fatalf("history after delayed 0x11 replay = %v, want preserved", got)
+	}
+	if got := staleACKs.Load(); got != 0 {
+		t.Fatalf("delayed crash replay ACKs = %d, want 0", got)
+	}
+	if slices.Contains(operations, "forget") {
+		t.Fatalf("delayed crash replay forgot history: operations=%v", operations)
+	}
+}
+
+func TestRouterResumeManagedDispatchLeavesUnmatchedPendingUntilHandlerRegisters(t *testing.T) {
+	r := newRouter(nil, nil)
+	r.mu.Lock()
+	r.quiesced = true
+	r.mu.Unlock()
+
+	var acked atomic.Int32
+	r.dispatch(&pahov5.Publish{Topic: "late/one", QoS: 1}, func() error {
+		acked.Add(1)
+		return nil
+	})
+	if err := r.resumeManagedDispatch(t.Context()); err != nil {
+		t.Fatalf("resume without handler: %v", err)
+	}
+	if got := r.PendingCount(); got != 1 {
+		t.Fatalf("pending after bounded no-handler resume = %d, want 1", got)
+	}
+	if got := acked.Load(); got != 0 {
+		t.Fatalf("unmatched resume ACKs = %d, want 0", got)
+	}
+
+	handled := make(chan struct{}, 1)
+	r.RegisterFiltered("late", []string{"late/#"}, func(_ *pahov5.Publish, ack func() error) {
+		if ack != nil {
+			_ = ack()
+		}
+		handled <- struct{}{}
+	})
+	t.Cleanup(func() { r.Unregister("late") })
+	wait.RequireReceive(t, handled, 2*time.Second)
+	if got := acked.Load(); got != 1 {
+		t.Fatalf("handler-registration ACKs = %d, want 1", got)
+	}
+	if got := r.PendingCount(); got != 0 {
+		t.Fatalf("pending after handler registration = %d, want 0", got)
+	}
+}
+
+func TestRouterResumeManagedDispatchHonorsCancellation(t *testing.T) {
+	r := newRouter(nil, nil)
+	r.mu.Lock()
+	r.quiesced = true
+	r.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.resumeManagedDispatch(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled resume error = %v, want context.Canceled", err)
+	}
+	r.mu.Lock()
+	quiesced := r.quiesced
+	r.mu.Unlock()
+	if !quiesced {
+		t.Fatal("canceled resume reopened ingress")
+	}
 }

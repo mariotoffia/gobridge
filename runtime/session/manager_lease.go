@@ -155,6 +155,89 @@ func (m *Manager) releaseOwnedLeaseBestEffort(ctx context.Context, token persist
 	m.log(ctx, slog.LevelInfo, "lease released", "reason", reason)
 }
 
+// postAcquireActivationDeadline returns the earlier of the configured hard
+// activation ceiling and the locally safe lease deadline. The safe deadline
+// reserves the existing bounded teardown/release margin before the fail-closed
+// lease deadline recorded from the pre-Acquire timestamp. Source disconnection
+// must complete inside that margin; best-effort Release follows only after the
+// source is stopped and therefore cannot create consumer overlap.
+func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, error) {
+	m.mu.Lock()
+	leaseDeadline := m.leaseDeadline
+	m.mu.Unlock()
+	now := m.clk.Now()
+	if leaseDeadline.IsZero() {
+		return time.Time{}, 0, shared.ErrUnavailable.WithMessage("exclusive post-acquire activation has no local lease deadline")
+	}
+	margin := m.releaseTimeout()
+	safeDeadline := leaseDeadline.Add(-margin)
+	if hard := m.eventReconcileTimeout(); hard > 0 {
+		hardDeadline := now.Add(hard)
+		if hardDeadline.Before(safeDeadline) {
+			safeDeadline = hardDeadline
+		}
+	}
+	remaining := safeDeadline.Sub(now)
+	if remaining <= 0 {
+		return safeDeadline, 0, shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient,
+			"exclusive post-acquire activation has no safe lease time remaining")
+	}
+	return safeDeadline, remaining, nil
+}
+
+// runPostAcquireActivation bounds the complete Start/ensureConnected +
+// Reconcile sequence under one budget. A real context deadline bounds blocking
+// I/O; boundedCallResult's injected-clock timer is the deterministic hard
+// backstop for an adapter that ignores context. Completion exactly on the safe
+// boundary is accepted; one nanosecond beyond it is terminal.
+func (m *Manager) runPostAcquireActivation(
+	ctx context.Context,
+	token persistence.LeaseToken,
+	fn func(context.Context) error,
+) (error, bool) {
+	deadline, budget, budgetErr := m.postAcquireActivationDeadline()
+	if budgetErr != nil {
+		return m.failPostAcquireActivation(ctx, token, budgetErr, true), true
+	}
+
+	activationCtx, cancel := context.WithTimeout(ctx, budget)
+	err, completed := m.boundedCallResult(activationCtx, budget, "exclusive post-acquire activation", fn)
+	activationCtxErr := activationCtx.Err()
+	cancel()
+
+	deadlineExceeded := !completed || errors.Is(activationCtxErr, context.DeadlineExceeded) || m.clk.Now().After(deadline)
+	if !deadlineExceeded {
+		return err, false
+	}
+	cause := shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient,
+		"exclusive post-acquire activation exceeded its locally safe lease deadline")
+	if err != nil {
+		cause = cause.Wrap(err)
+	}
+	return m.failPostAcquireActivation(ctx, token, cause, completed), true
+}
+
+// failPostAcquireActivation removes local authorization, disconnects and
+// quiesces the source, then releases only when both activation and teardown
+// completed. A still-parked activation or Close retains the lease until natural
+// expiry so no new owner can overlap work that may still mutate/send.
+func (m *Manager) failPostAcquireActivation(
+	ctx context.Context,
+	token persistence.LeaseToken,
+	cause error,
+	activationCompleted bool,
+) error {
+	m.mu.Lock()
+	m.hasLease = false
+	m.mu.Unlock()
+	terminal := fmt.Errorf("%w: post-acquire activation failed closed: %w", ErrSessionUnrecoverable, cause)
+	closed := m.closeSourceBounded(ctx, "post-acquire activation deadline")
+	if activationCompleted && closed {
+		m.releaseOwnedLeaseBestEffort(ctx, token, "post-acquire activation deadline")
+	}
+	return terminal
+}
+
 func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 	sessionStarted := false
 	iteration := 0
@@ -185,26 +268,31 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 			)
 		}
 
-		if !sessionStarted {
-			if err := m.session.Start(ctx); err != nil {
-				// First connect after acquiring the lease: a fresh session that
-				// has not been closed yet. Release the lease and let
-				// superviseSession retry in isolation (a broker blip is
-				// transient); do NOT escalate to terminal.
-				return m.releaseAndReturn(ctx, token, err, "deferred connect failure", false)
+		phase := "reconcile failure"
+		escalatable := false
+		activationErr, deadlineHandled := m.runPostAcquireActivation(ctx, token, func(activationCtx context.Context) error {
+			if !sessionStarted {
+				phase = "deferred connect failure"
+				if err := m.session.Start(activationCtx); err != nil {
+					return err
+				}
+				sessionStarted = true
+			} else {
+				phase = "deferred reconnect failure"
+				escalatable = true
+				if err := m.ensureConnected(activationCtx); err != nil {
+					return err
+				}
 			}
-			sessionStarted = true
-		} else if err := m.ensureConnected(ctx); err != nil {
-			// Re-acquire reconnect: the source session was closed by a prior
-			// term's step-down. For a single-use session this Start cannot
-			// succeed (it wraps ErrTransportClosedPermanently) — escalate to
-			// terminal so the pod restarts with a fresh session instead of
-			// looping on the zombie (finding C3-CRITICAL). Lease released either way.
-			return m.releaseAndReturn(ctx, token, err, "deferred reconnect failure", true)
-		}
-
-		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return m.releaseAndReturn(ctx, token, err, "reconcile failure", false)
+			phase = "reconcile failure"
+			escalatable = false
+			return m.session.Reconcile(activationCtx, m.plan)
+		})
+		if activationErr != nil {
+			if deadlineHandled {
+				return activationErr
+			}
+			return m.releaseAndReturn(ctx, token, activationErr, phase, escalatable)
 		}
 
 		err = m.renewLoop(ctx)
@@ -250,22 +338,25 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 			)
 		}
 
-		if reacquired {
-			// A previous term's stepDown closed the source session to stop a
-			// non-owner from consuming/ACKing source messages. Now that we own
-			// the lease again, re-establish the session before reconciling. For
-			// a single-use session this Start cannot succeed (it wraps
-			// ErrTransportClosedPermanently); escalate to terminal so the pod
-			// restarts with a fresh session instead of looping on the zombie,
-			// releasing the lease so a healthy standby takes over immediately
-			// (finding C3-CRITICAL).
-			if err := m.ensureConnected(ctx); err != nil {
-				return m.releaseAndReturn(ctx, token, err, "reconnect failure", true)
+		phase := "reconcile failure"
+		escalatable := false
+		activationErr, deadlineHandled := m.runPostAcquireActivation(ctx, token, func(activationCtx context.Context) error {
+			if reacquired {
+				phase = "reconnect failure"
+				escalatable = true
+				if err := m.ensureConnected(activationCtx); err != nil {
+					return err
+				}
 			}
-		}
-
-		if err := m.session.Reconcile(ctx, m.plan); err != nil {
-			return m.releaseAndReturn(ctx, token, err, "reconcile failure", false)
+			phase = "reconcile failure"
+			escalatable = false
+			return m.session.Reconcile(activationCtx, m.plan)
+		})
+		if activationErr != nil {
+			if deadlineHandled {
+				return activationErr
+			}
+			return m.releaseAndReturn(ctx, token, activationErr, phase, escalatable)
 		}
 
 		err = m.renewLoop(ctx)
