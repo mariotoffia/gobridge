@@ -123,13 +123,18 @@ func (m *Manager) withCallTimeout(ctx context.Context) (context.Context, context
 	return context.WithTimeout(ctx, m.renewCallTimeout)
 }
 
-// releaseTimeout bounds a best-effort lease Release.
-func (m *Manager) releaseTimeout() time.Duration {
-	t := m.stepDownGrace
-	if t <= 0 || t > 5*time.Second {
-		t = 5 * time.Second
+// boundedReleaseTimeout is the shared teardown/release margin used by both
+// pre-build timing validation and the live manager.
+func boundedReleaseTimeout(stepDownGrace time.Duration) time.Duration {
+	if stepDownGrace <= 0 || stepDownGrace > 5*time.Second {
+		return 5 * time.Second
 	}
-	return t
+	return stepDownGrace
+}
+
+// releaseTimeout bounds a best-effort lease Release and source teardown.
+func (m *Manager) releaseTimeout() time.Duration {
+	return boundedReleaseTimeout(m.stepDownGrace)
 }
 
 // releaseOwnedLeaseBestEffort releases the lease we still hold, detaching
@@ -155,12 +160,14 @@ func (m *Manager) releaseOwnedLeaseBestEffort(ctx context.Context, token persist
 	m.log(ctx, slog.LevelInfo, "lease released", "reason", reason)
 }
 
-// postAcquireActivationDeadline returns the earlier of the configured hard
-// activation ceiling and the locally safe lease deadline. The safe deadline
-// reserves the existing bounded teardown/release margin before the fail-closed
-// lease deadline recorded from the pre-Acquire timestamp. Source disconnection
-// must complete inside that margin; best-effort Release follows only after the
-// source is stopped and therefore cannot create consumer overlap.
+// postAcquireActivationDeadline returns the locally safe lease deadline for
+// initial Start/Reconcile. It reserves the existing bounded teardown/release
+// margin before the fail-closed lease deadline recorded from the pre-Acquire
+// timestamp. Unlike recurring reconnect-event reconciliation, initial durable
+// migration uses the FULL remaining lease-safe budget because MQTT replay
+// verification may intentionally wait its complete unmatched-grace window.
+// Source disconnection must complete inside the reserved margin; best-effort
+// Release follows only after the source is stopped.
 func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, error) {
 	m.mu.Lock()
 	leaseDeadline := m.leaseDeadline
@@ -171,12 +178,6 @@ func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, err
 	}
 	margin := m.releaseTimeout()
 	safeDeadline := leaseDeadline.Add(-margin)
-	if hard := m.eventReconcileTimeout(); hard > 0 {
-		hardDeadline := now.Add(hard)
-		if hardDeadline.Before(safeDeadline) {
-			safeDeadline = hardDeadline
-		}
-	}
 	remaining := safeDeadline.Sub(now)
 	if remaining <= 0 {
 		return safeDeadline, 0, shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient,
@@ -187,7 +188,7 @@ func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, err
 
 // runPostAcquireActivation bounds the complete Start/ensureConnected +
 // Reconcile sequence under one budget. A real context deadline bounds blocking
-// I/O; boundedCallResult's injected-clock timer is the deterministic hard
+// I/O; boundedCallResult's injected-clock timer is the deterministic lease-safe
 // backstop for an adapter that ignores context. Completion exactly on the safe
 // boundary is accepted; one nanosecond beyond it is terminal.
 func (m *Manager) runPostAcquireActivation(

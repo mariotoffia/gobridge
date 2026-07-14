@@ -4,7 +4,6 @@ import (
 	"context"
 	"math/rand/v2"
 	"net/url"
-	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -537,7 +536,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 
 	connectTimeout := s.opts.ConnectTimeout
 	if connectTimeout == 0 {
-		connectTimeout = 30 * time.Second
+		connectTimeout = DefaultConnectTimeout
 	}
 	awaitCtx, awaitCancel := context.WithTimeout(ctx, connectTimeout)
 	defer awaitCancel()

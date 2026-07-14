@@ -188,6 +188,9 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 			return nil, fmt.Errorf("bridge: config validation: %w", err)
 		}
 	}
+	if err := b.validatePostAcquireActivationTimings(); err != nil {
+		return nil, err
+	}
 
 	stores, err := b.buildStores(ctx)
 	if err != nil {

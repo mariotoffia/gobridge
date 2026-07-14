@@ -3,6 +3,7 @@ package paho
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -10,13 +11,15 @@ import (
 
 // Compile-time interface contract.
 var (
-	_ ports.CredentialedConfig           = (*Config)(nil)
-	_ ports.FreezableConfig              = Config{}
-	_ ports.FreezableConfig              = (*Config)(nil)
-	_ ports.DurableSessionIdentityConfig = Config{}
-	_ ports.DurableSessionIdentityConfig = (*Config)(nil)
-	_ ports.ReplicaIdentityConfig        = Config{}
-	_ ports.ReplicaIdentityConfig        = (*Config)(nil)
+	_ ports.CredentialedConfig                = (*Config)(nil)
+	_ ports.FreezableConfig                   = Config{}
+	_ ports.FreezableConfig                   = (*Config)(nil)
+	_ ports.DurableSessionIdentityConfig      = Config{}
+	_ ports.DurableSessionIdentityConfig      = (*Config)(nil)
+	_ ports.ReplicaIdentityConfig             = Config{}
+	_ ports.ReplicaIdentityConfig             = (*Config)(nil)
+	_ ports.PostAcquireActivationTimingConfig = Config{}
+	_ ports.PostAcquireActivationTimingConfig = (*Config)(nil)
 )
 
 // Config is the typed PluginConfig for the MQTT (Eclipse Paho)
@@ -54,6 +57,36 @@ func (c Config) FreezePluginConfig() ports.PluginConfig {
 		frozen.Session.Will = &willCopy
 	}
 	return &frozen
+}
+
+// PostAcquireActivationTiming exposes effective post-lease phase bounds to
+// transport-neutral builder validation. Connect/Reconcile are upper bounds (the
+// healthy path is normally much faster); ReplayGrace is the mandatory no-replay
+// observation window used only by durable session modes.
+func (c Config) PostAcquireActivationTiming(mode connectivity.SessionMode) ports.SessionActivationTiming {
+	connectTimeout := c.Session.ConnectTimeout
+	if connectTimeout == 0 {
+		connectTimeout = DefaultConnectTimeout
+	}
+	reconnectTimeout := c.Session.ReconnectTimeout
+	if reconnectTimeout <= 0 {
+		reconnectTimeout = DefaultReconnectAttemptTimeout
+	}
+	reconcileTimeout := c.Session.ReconcileTimeout
+	if reconcileTimeout <= 0 {
+		reconcileTimeout = DefaultReconcileTimeout
+	}
+	replayGrace := time.Duration(0)
+	if mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive {
+		replayGrace = c.Session.UnmatchedGrace
+		if replayGrace <= 0 {
+			replayGrace = DefaultUnmatchedGrace
+		}
+	}
+	return ports.SessionActivationTiming{
+		ConnectTimeout: connectTimeout, ReconnectTimeout: reconnectTimeout,
+		ReconcileTimeout: reconcileTimeout, ReplayGrace: replayGrace,
+	}
 }
 
 // Kind reports the registry discriminator.

@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	runtimesession "github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -165,6 +168,91 @@ func TestMQTTPersistentSubscriptionMigrationReleasesWildcardAndSharedFilters(t *
 	}
 }
 
+func TestMQTTExclusiveDefaultProfileNoBufferMigrationConvergesWithinLease(t *testing.T) {
+	brokerURL := mqttlocal.BrokerURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	t.Cleanup(cancel)
+
+	clientID := mqttlocal.UniqueClientID("managed-default-exclusive")
+	filter := mqttlocal.UniqueClientID("managed-default-exclusive-topic") + "/#"
+	storePath := filepath.Join(t.TempDir(), "managed-subscriptions", "managed-subscriptions.db")
+	cfg := paho.DefaultConfig()
+	cfg.Session.BrokerURLs = []string{brokerURL}
+	cfg.Session.ClientID = clientID
+	cfg.Session.SessionExpiryInterval = 300
+	identity, err := cfg.DurableSessionIdentity(connectivity.SessionExclusive)
+	if err != nil {
+		t.Fatalf("derive exclusive durable identity: %v", err)
+	}
+
+	store, err := sqlitemanagedsubscriptions.NewStore(storePath)
+	if err != nil {
+		t.Fatalf("open managed-subscription store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Remember(ctx, identity, nil); err != nil {
+		t.Fatalf("seed managed baseline: %v", err)
+	}
+	newSession := func() *paho.Session {
+		raw, buildErr := paho.NewFactory(nil, nil).NewSession(ctx, ports.SessionSpec{
+			ID:                           "managed-default-exclusive",
+			Transport:                    "mqtt",
+			SessionMode:                  connectivity.SessionExclusive,
+			Config:                       cfg,
+			ManagedSubscriptionStore:     store,
+			ManagedSubscriptionIdentity:  identity,
+			ManagedSubscriptionsRequired: true,
+		})
+		if buildErr != nil {
+			t.Fatalf("NewSession: %v", buildErr)
+		}
+		return raw.(*paho.Session)
+	}
+
+	old := newSession()
+	if err := old.Start(ctx); err != nil {
+		t.Fatalf("old exclusive session Start: %v", err)
+	}
+	if err := old.Reconcile(ctx, connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: filter, QoS: 1}}}); err != nil {
+		t.Fatalf("old exclusive session Reconcile: %v", err)
+	}
+	if err := old.Close(ctx); err != nil {
+		t.Fatalf("old exclusive session Close: %v", err)
+	}
+
+	replacement := newSession()
+	leaseStore := memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))
+	managerCfg := runtimesession.HAConfig("managed-default-exclusive", true)
+	managerCfg.ConnectAfterLease = true
+	managerCfg.Plan = connectivity.SessionPlan{}
+	manager := runtimesession.NewWithMetrics(managerCfg, replacement, leaseStore, "owner-default-exclusive", nil, &ports.NoopExporter{}, clock.System)
+	runErr := make(chan error, 1)
+	go func() { runErr <- manager.Run(ctx) }()
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+
+	var activationErr error
+	wait.Until(t, 45*time.Second, "default exclusive managed migration convergence", func() bool {
+		select {
+		case activationErr = <-runErr:
+			return true
+		default:
+		}
+		history, listErr := store.List(ctx, identity)
+		return listErr == nil && len(history) == 0 && replacement.Health(ctx).ServiceLevel == ports.ServiceLevelFull
+	})
+	if activationErr != nil {
+		t.Fatalf("default exclusive activation failed before 30s replay grace converged: %v", activationErr)
+	}
+	if history, listErr := store.List(ctx, identity); listErr != nil || len(history) != 0 {
+		t.Fatalf("managed history after default exclusive migration = %v, err=%v; want empty", history, listErr)
+	}
+
+	cancel()
+	if err := wait.RequireReceive(t, runErr, 5*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("manager Run after convergence cancellation = %v, want context.Canceled", err)
+	}
+}
+
 func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreDrainRetry(t *testing.T) {
 	brokerURL := mqttlocal.BrokerURL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -250,26 +338,6 @@ func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreD
 		return received == 1
 	})
 
-	peer := setupMQTTSession(t, mqttlocal.UniqueClientID("managed-pinned-peer"), connectivity.SessionEphemeral)
-	if err := peer.Reconcile(ctx, connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: sharedFilter, QoS: 1}}}); err != nil {
-		t.Fatalf("peer Reconcile: %v", err)
-	}
-	peerReceiver := paho.NewReceiver("managed-pinned-peer", peer, paho.WithTopicFilters(sharedFilter))
-	peerReceived := make(chan string, 64)
-	peerCtx, peerCancel := context.WithCancel(ctx)
-	t.Cleanup(peerCancel)
-	go func() {
-		_ = peerReceiver.Run(peerCtx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
-			id := delivery.Envelope().ID()
-			if err := delivery.Ack(deliveryCtx); err != nil {
-				return err
-			}
-			peerReceived <- id
-			return nil
-		})
-	}()
-	wait.RequireReceive(t, peerReceiver.Started(), 5*time.Second)
-
 	err = failedCutover.Reconcile(ctx, connectivity.SessionPlan{})
 	if !errors.Is(err, shared.ErrTransportClosedPermanently) {
 		t.Fatalf("pinned migration error = %v, want terminal migration-required marker", err)
@@ -325,6 +393,29 @@ func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreD
 	if err := restored.Close(ctx); err != nil {
 		t.Fatalf("restored old-config session Close: %v", err)
 	}
+
+	// Join the shared peer only after the pinned delivery has been drained. A
+	// broker may otherwise redistribute an unacknowledged shared delivery on the
+	// first recycle, so that sequence cannot portably prove the fail-closed path.
+	peer := setupMQTTSession(t, mqttlocal.UniqueClientID("managed-pinned-peer"), connectivity.SessionEphemeral)
+	if err := peer.Reconcile(ctx, connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: sharedFilter, QoS: 1}}}); err != nil {
+		t.Fatalf("peer Reconcile: %v", err)
+	}
+	peerReceiver := paho.NewReceiver("managed-pinned-peer", peer, paho.WithTopicFilters(sharedFilter))
+	peerReceived := make(chan string, 64)
+	peerCtx, peerCancel := context.WithCancel(ctx)
+	t.Cleanup(peerCancel)
+	go func() {
+		_ = peerReceiver.Run(peerCtx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
+			id := delivery.Envelope().ID()
+			if err := delivery.Ack(deliveryCtx); err != nil {
+				return err
+			}
+			peerReceived <- id
+			return nil
+		})
+	}()
+	wait.RequireReceive(t, peerReceiver.Started(), 5*time.Second)
 
 	// Retry the removal after the old handler drained the broker-pinned delivery.
 	retry := newSession(nil)

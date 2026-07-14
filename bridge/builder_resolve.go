@@ -142,6 +142,7 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 	freezable, canFreeze := config.(ports.FreezableConfig)
 	_, credentialed := config.(ports.CredentialedConfig)
 	_, durable := config.(ports.DurableSessionIdentityConfig)
+	_, activationTimed := config.(ports.PostAcquireActivationTimingConfig)
 	if !canFreeze {
 		if credentialed {
 			return nil, shared.ErrInvalidConfig.WithMessage(
@@ -167,6 +168,12 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 		if _, ok := frozen.(ports.DurableSessionIdentityConfig); !ok {
 			return nil, shared.ErrInvalidConfig.WithMessage(
 				fmt.Sprintf("bridge: durable plugin config kind %q lost its identity capability when frozen", sourceKind))
+		}
+	}
+	if activationTimed {
+		if _, ok := frozen.(ports.PostAcquireActivationTimingConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: plugin config kind %q lost its post-acquire activation timing capability when frozen", sourceKind))
 		}
 	}
 	if credentialed {

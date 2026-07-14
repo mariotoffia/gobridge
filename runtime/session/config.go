@@ -341,6 +341,25 @@ func clampRenewTimings(ttl, renewInterval, renewJitter, renewCallTimeout time.Du
 	return renewInterval, renewJitter, renewCallTimeout, true
 }
 
+// PostAcquireActivationBudget returns the full lease-safe budget available to
+// Start/Reconcile after a successful Acquire and the teardown margin reserved at
+// its end. It resolves zero values exactly like Manager construction. The budget
+// deliberately does not use the short recurring reconnect-event cap: initial
+// durable migration may need the transport's full replay-verification grace.
+func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Duration) {
+	defaults := DefaultConfig(c.SessionID, c.Exclusive)
+	ttl := c.LeaseTTL
+	if ttl <= 0 {
+		ttl = defaults.LeaseTTL
+	}
+	stepDownGrace := c.StepDownGrace
+	if stepDownGrace <= 0 {
+		stepDownGrace = defaults.StepDownGrace
+	}
+	teardownMargin = boundedReleaseTimeout(stepDownGrace)
+	return ttl - teardownMargin, teardownMargin
+}
+
 // Validate reports whether the lease timings are internally consistent. It is
 // intended for callers (e.g. the composition root) that want to fail fast on a
 // misconfigured session rather than rely on the manager's defensive clamp.

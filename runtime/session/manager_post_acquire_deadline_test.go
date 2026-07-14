@@ -106,13 +106,41 @@ func (s *postAcquireDeadlineSession) Close(context.Context) error {
 	return nil
 }
 
+func TestSessionManager_PostAcquireActivationUsesFullLeaseSafeBudget(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC))
+	store := &postAcquireDeadlineStore{clk: fake}
+	// HA recurring reconnect reconciliation is capped at 3s, but initial
+	// activation owns LeaseTTL(45s)-teardown(5s)=40s. Four seconds therefore
+	// proves the short recurring-event cap is not reused here.
+	sess := newPostAcquireDeadlineSession(fake, 4*time.Second)
+	cfg := HAConfig("post-acquire-full-budget", true)
+	cfg.ConnectAfterLease = true
+	mgr := NewWithMetrics(cfg, sess, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- mgr.Run(ctx) }()
+	wait.RequireReceive(t, sess.reconciled, 2*time.Second)
+	wait.Silent(t, runErr, 25*time.Millisecond)
+	if got := sess.closes.Load(); got != 0 {
+		t.Fatalf("activation inside full lease-safe budget closed session: %d", got)
+	}
+	if _, held := mgr.Token(); !held {
+		t.Fatal("activation inside full lease-safe budget lost local authorization")
+	}
+	cancel()
+	if err := wait.RequireReceive(t, runErr, 2*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run after cancellation = %v, want context.Canceled", err)
+	}
+}
+
 func TestSessionManager_PostAcquireActivationAtSafeDeadlineBoundary(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC))
 	boundaryClock := &postAcquireBoundaryClock{Fake: fake}
 	store := &postAcquireDeadlineStore{clk: fake, acquireElapsed: 42 * time.Second}
 	// TTL 45s with a 1s teardown/release margin: the local safe activation
-	// deadline is t0+44s. Acquire consumed 42s, leaving exactly 2s even though
-	// the configured hard ceiling is 3s.
+	// deadline is t0+44s. Acquire consumed 42s, leaving exactly 2s of the
+	// full lease-safe budget.
 	sess := newPostAcquireDeadlineSession(fake, 2*time.Second)
 	mgr := NewWithMetrics(Config{
 		SessionID: "post-acquire-boundary", Exclusive: true, ConnectAfterLease: true,

@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -61,6 +62,27 @@ type DurableSessionIdentityConfig interface {
 	DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error)
 }
 
+// SessionActivationTiming reports the effective upper bounds and mandatory
+// replay-grace wait that may run after an exclusive lease is acquired but before
+// the session can converge. The composition root compares each phase with the
+// lease-safe post-acquire budget; actual execution remains bounded by the one
+// aggregate lease deadline in runtime/session.
+type SessionActivationTiming struct {
+	ConnectTimeout   time.Duration
+	ReconnectTimeout time.Duration
+	ReconcileTimeout time.Duration
+	ReplayGrace      time.Duration
+}
+
+// PostAcquireActivationTimingConfig is an OPTIONAL typed-config capability for
+// stateful transports whose initial/replacement reconciliation can include a
+// mandatory replay-verification wait. Values must be effective (defaults already
+// resolved), non-secret durations. ReplayGrace is zero when the selected session
+// mode has no durable replay verification.
+type PostAcquireActivationTimingConfig interface {
+	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
+}
+
 // FreezableConfig is an OPTIONAL adapter-owned capability for typed plugin
 // configs that need an isolated snapshot across asynchronous validation/build
 // boundaries. FreezePluginConfig must return a deep-owned copy of every mutable
@@ -68,7 +90,8 @@ type DurableSessionIdentityConfig interface {
 // runtime dependencies that must retain identity (for example a client handle,
 // clock, mutex-bearing state, or process-stable suffix resolver). The result must
 // be non-nil, retain the source Kind and this freeze capability, and preserve
-// any durable-identity and credential capabilities exposed by the source.
+// any durable-identity, post-acquire timing, and credential capabilities
+// exposed by the source.
 type FreezableConfig interface {
 	FreezePluginConfig() PluginConfig
 }

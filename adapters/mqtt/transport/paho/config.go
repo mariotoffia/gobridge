@@ -405,6 +405,15 @@ type TLSConfig struct {
 // (0xFFFFFFFF "never expire" was deliberately rejected).
 const DefaultPersistentSessionExpiry uint32 = 86400
 
+// DefaultConnectTimeout bounds the initial connection await when
+// connect_timeout is unset or zero.
+const DefaultConnectTimeout = 30 * time.Second
+
+// DefaultReconnectAttemptTimeout is autopaho's effective per-attempt timeout
+// when reconnect_timeout is explicitly zero (an omitted decoded config keeps the
+// documented 30s value from DefaultSessionOptions).
+const DefaultReconnectAttemptTimeout = 10 * time.Second
+
 // DefaultUnmatchedGrace is the UnmatchedGrace applied by NewSession /
 // the router when the session does not configure unmatched_grace. It is
 // sized to comfortably cover the legitimate startup window on a resumed
@@ -462,7 +471,7 @@ const DefaultReconcileTimeout = 30 * time.Second
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
 		KeepAlive:        30,
-		ConnectTimeout:   30 * time.Second,
+		ConnectTimeout:   DefaultConnectTimeout,
 		ReconnectTimeout: 30 * time.Second,
 		ReconcileTimeout: DefaultReconcileTimeout,
 		CleanStart:       false,
