@@ -6,6 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -18,34 +21,186 @@ type Store struct{ db *sql.DB }
 
 var _ ports.ManagedSubscriptionStore = (*Store)(nil)
 
-// NewStore opens dbPath, applies durable SQLite settings, and creates the
-// minimal baseline and exact-filter tables.
+// NewStore opens dbPath with a non-cancelable compatibility context.
+// Config-driven construction uses NewStoreContext so build cancellation reaches
+// every blocking SQLite operation.
 func NewStore(dbPath string) (*Store, error) {
+	return NewStoreContext(context.Background(), dbPath)
+}
+
+// NewStoreContext opens dbPath, enforces owner-only filesystem permissions,
+// applies durable SQLite settings, and creates the minimal exact-filter schema.
+func NewStoreContext(ctx context.Context, dbPath string) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if dbPath == "" {
 		return nil, shared.ErrInvalidConfig.WithMessage("managed subscription SQLite path is required")
 	}
+
+	var acl *sqliteACL
+	if dbPath != ":memory:" {
+		var err error
+		acl, err = prepareSQLiteACL(ctx, dbPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, unavailable("open managed subscription store", err)
 	}
 	db.SetMaxOpenConns(1)
+	closeWithACL := func() {
+		_ = db.Close()
+		if acl != nil {
+			_ = acl.secureCreatedFiles()
+		}
+	}
 	for _, pragma := range []string{
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=FULL",
 		"PRAGMA foreign_keys=ON",
 	} {
-		if _, err := db.ExecContext(context.Background(), pragma); err != nil {
-			_ = db.Close()
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			closeWithACL()
 			return nil, unavailable("configure managed subscription store", err)
 		}
 	}
 	store := &Store{db: db}
-	if err := store.init(context.Background()); err != nil {
-		_ = db.Close()
+	if err := store.init(ctx); err != nil {
+		closeWithACL()
 		return nil, err
 	}
+	if acl != nil {
+		if err := acl.secureCreatedFiles(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return store, nil
+}
+
+type sqliteACL struct {
+	path        string
+	preexisting map[string]bool
+}
+
+func prepareSQLiteACL(ctx context.Context, dbPath string) (*sqliteACL, error) {
+	parent := filepath.Dir(dbPath)
+	if err := ensureSQLiteParent(ctx, parent); err != nil {
+		return nil, err
+	}
+	acl := &sqliteACL{path: dbPath, preexisting: make(map[string]bool, 3)}
+	for _, path := range acl.paths() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		info, err := os.Lstat(path)
+		switch {
+		case err == nil:
+			acl.preexisting[path] = true
+			if err := validateOwnerOnlyRegular(path, info); err != nil {
+				return nil, err
+			}
+		case errors.Is(err, os.ErrNotExist):
+			// SQLite creates WAL/SHM itself. The main database is pre-created with
+			// O_EXCL so its permissions never depend on process umask.
+			if path != dbPath {
+				continue
+			}
+			file, createErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+			if createErr != nil {
+				return nil, unavailable("create managed subscription SQLite database", createErr)
+			}
+			if chmodErr := file.Chmod(0o600); chmodErr != nil {
+				_ = file.Close()
+				return nil, unavailable("secure managed subscription SQLite database", chmodErr)
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				return nil, unavailable("close new managed subscription SQLite database", closeErr)
+			}
+		default:
+			return nil, unavailable("inspect managed subscription SQLite files", err)
+		}
+	}
+	return acl, nil
+}
+
+func ensureSQLiteParent(ctx context.Context, parent string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(parent)
+	if err == nil {
+		if !info.IsDir() {
+			return shared.ErrInvalidConfig.WithMessage("managed subscription SQLite parent is not a directory")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return unavailable("inspect managed subscription SQLite parent", err)
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return unavailable("create managed subscription SQLite parent", err)
+	}
+	// MkdirAll is umask-sensitive. This directory did not exist before this
+	// adapter call, so it is adapter-owned and may be tightened deterministically.
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return unavailable("secure managed subscription SQLite parent", err)
+	}
+	return nil
+}
+
+func (a *sqliteACL) paths() []string {
+	return []string{a.path, a.path + "-wal", a.path + "-shm"}
+}
+
+func (a *sqliteACL) secureCreatedFiles() error {
+	for _, path := range a.paths() {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return unavailable("inspect managed subscription SQLite files", err)
+		}
+		if a.preexisting[path] {
+			if err := validateOwnerOnlyRegular(path, info); err != nil {
+				return err
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q must be regular and must not be a symlink", path))
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return unavailable("secure managed subscription SQLite files", err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			return unavailable("verify managed subscription SQLite files", err)
+		}
+		if err := validateOwnerOnlyRegular(path, info); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOwnerOnlyRegular(path string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q must be regular and must not be a symlink", path))
+	}
+	if info.Mode().Perm() != 0o600 {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q has insecure permissions %04o; require 0600", path, info.Mode().Perm()))
+	}
+	return nil
 }
 
 func (s *Store) init(ctx context.Context) error {

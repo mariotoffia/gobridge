@@ -131,6 +131,12 @@ for the full mechanism.
 
 ## Managed subscription history
 
+A persistent/exclusive MQTT session is restricted to **one distinct canonical
+broker URL**. Its exact managed-filter ledger is global to that broker-session
+identity, so independent multi-broker failover could apply one broker's filter
+history to another and is rejected at build time. Ephemeral sessions may still
+use multiple broker URLs.
+
 A persistent/exclusive MQTT session with desired subscriptions requires
 `stores.managed_subscriptions` (`sqlite` for one process, `dynamodb` for a
 cluster). Startup strongly loads the exact history by the opaque
@@ -143,9 +149,14 @@ candidate before `SUBSCRIBE`; failed/partial SUBACK candidates remain history;
 it computes exact `history - desired`; sends those exact wildcard/shared strings
 in `UNSUBSCRIBE`; and `Forget`s only filters whose UNSUBACK reason is success
 (`0x00` or `0x11`). Failed, short, or partial acknowledgements stay durable for
-retry. If any stale filter is removed, GoBridge reconnects before normal handler
-dispatch so prior-epoch shared deliveries are purged without ACK and can return
-to the broker.
+retry. While cleanup is slow or failing, every concrete topic matching an exact
+pending wildcard/shared history filter remains coverage-protected past
+`unmatched_grace`; those deliveries stay un-ACKed. If any stale filter is removed,
+GoBridge reconnects before normal handler dispatch so prior-epoch shared
+deliveries are purged without ACK and can return to the broker, then reconciles
+the replacement generation before reporting success. Exclusive mode keeps its
+lease throughout that recycle/convergence; any failure disconnects the
+replacement before lease release.
 
 **Upgrade baseline is mandatory.** Existing broker sessions predate this ledger,
 so GoBridge cannot discover their filters from MQTT. Before enabling this build,
@@ -243,7 +254,7 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
-| `broker_urls` | []string | -- | Multiple broker URLs for failover |
+| `broker_urls` | []string | -- | Broker URLs for failover. Ephemeral sessions may use multiple independent URLs. Persistent/exclusive sessions reject more than one distinct canonical URL because one managed-filter history cannot safely span independent broker-session domains. |
 | `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`factory.go:59-66`, `NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
 | `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname and is preferred for Ephemeral/Persistent sessions. `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |

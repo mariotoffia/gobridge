@@ -2,6 +2,9 @@ package nativestore_test
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -191,5 +194,29 @@ func TestSQLiteConfig_ValidateDurations(t *testing.T) {
 	bad := nativestore.SQLiteConfig{Path: ":memory:", StaleClaimDuration: -time.Second}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected validation error for negative stale_claim_duration")
+	}
+}
+
+func TestSQLiteStoreFactory_NewManagedSubscriptionStoreHonorsCanceledBuildContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-created", "managed.db")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(
+		ctx, &nativestore.SQLiteConfig{Path: path},
+	)
+	if store != nil {
+		t.Fatal("canceled build returned a store")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if _, statErr := os.Lstat(candidate); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("canceled build created %q: %v", candidate, statErr)
+		}
+	}
+	if _, statErr := os.Lstat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("canceled build created parent directory: %v", statErr)
 	}
 }

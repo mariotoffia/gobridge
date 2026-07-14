@@ -353,32 +353,18 @@ func dynamoStore(role, tableName string) *ports.BridgeConfig {
 	return cfg
 }
 
-func TestRunPhase2_DynamoStoreNoTableName_EmitsWarningNotError(t *testing.T) {
-	stack := newStack(t)
-	cfg := dynamoStore("lease", "")
-
-	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
-
-	// Omitting table_name is a valid (if risky) choice: warn, never
-	// fail synth.
-	if got := errorMessages(t, stack); len(got) != 0 {
-		t.Fatalf("expected zero errors (missing table_name is a warning), got %d: %v", len(got), got)
-	}
-	got := warningMessages(t, stack)
-	if !containsAll(t, got, "dynamodb lease store", "table_name", "AccessDenied") {
-		t.Fatalf("missing dynamodb table_name warning: %v", got)
-	}
-}
-
-func TestRunPhase2_ManagedSubscriptionDynamoStoreNoTableName_EmitsWarning(t *testing.T) {
-	stack := newStack(t)
-	cfg := dynamoStore("managed_subscriptions", "")
-
-	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
-
-	got := warningMessages(t, stack)
-	if !containsAll(t, got, "dynamodb managed_subscriptions store", "table_name", "AccessDenied") {
-		t.Fatalf("missing managed-subscription table_name warning: %v", got)
+func TestRunPhase2_DynamoStoreNoTableName_UsesRuntimeDefaultWithoutWarning(t *testing.T) {
+	for _, role := range []string{"lease", "outbox", "dlq", "managed_subscriptions"} {
+		t.Run(role, func(t *testing.T) {
+			stack := newStack(t)
+			validation.RunPhase2(stack, validation.Phase2Input{Cfg: dynamoStore(role, "")})
+			if got := errorMessages(t, stack); len(got) != 0 {
+				t.Fatalf("default table name emitted errors: %v", got)
+			}
+			if got := warningMessages(t, stack); len(got) != 0 {
+				t.Fatalf("default table name emitted warnings: %v", got)
+			}
+		})
 	}
 }
 

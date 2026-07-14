@@ -25,3 +25,13 @@ func GrantDynamoDBStore(role awsiam.IGrantable, table awsdynamodb.ITable) {
 		ResourceArns: jsii.Strings(*table.TableArn()),
 	})
 }
+
+// GrantDynamoDBLeasePreflight grants the additional lease-only control-plane
+// read required to verify that DynamoDB TTL is disabled on the fencing table.
+// TTL on that table can delete the monotonic fence row and reset its version.
+func GrantDynamoDBLeasePreflight(role awsiam.IGrantable, table awsdynamodb.ITable) {
+	awsiam.Grant_AddToPrincipal(&awsiam.GrantOnPrincipalOptions{
+		Grantee: role, Actions: jsii.Strings("dynamodb:DescribeTimeToLive"),
+		ResourceArns: jsii.Strings(*table.TableArn()),
+	})
+}

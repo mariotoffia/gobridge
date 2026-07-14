@@ -82,6 +82,26 @@ func TestFactory_NewSession_ValidOptions(t *testing.T) {
 	}
 }
 
+func TestFactory_NewSession_DurableModeRejectsIndependentBrokerURLs(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		ClientID:   "durable-client",
+		BrokerURLs: []string{"ssl://broker-a.example:8883", "ssl://broker-b.example:8883"},
+	}}
+	factory := NewFactory(nil)
+
+	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
+		_, err := factory.NewSession(t.Context(), ports.SessionSpec{ID: "durable", SessionMode: mode, Config: cfg})
+		if !errors.Is(err, shared.ErrInvalidPayload) {
+			t.Fatalf("mode %s error = %v, want ErrInvalidPayload", mode, err)
+		}
+	}
+	if _, err := factory.NewSession(t.Context(), ports.SessionSpec{
+		ID: "ephemeral", SessionMode: connectivity.SessionEphemeral, Config: cfg,
+	}); err != nil {
+		t.Fatalf("ephemeral multi-broker failover must remain valid: %v", err)
+	}
+}
+
 // TestFactory_NewReceiver_WrongSessionType validates that the factory returns
 // an error when the session is not an MQTT *Session.
 func TestFactory_NewReceiver_WrongSessionType(t *testing.T) {

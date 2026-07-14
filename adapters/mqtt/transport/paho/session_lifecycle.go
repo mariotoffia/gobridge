@@ -80,6 +80,8 @@ func (s *Session) Reload(ctx context.Context) error {
 	// return with a replacement CM whose OnConnectionUp callback is still queued.
 	// A prior-generation reconcile then cannot write into replacement state.
 	s.subscriptionsSatisfied = false
+	s.observedSubs = make(map[string]subscriptionGrant)
+	s.activeSubs = make(map[string]byte)
 	s.connEpoch++
 	s.mu.Unlock()
 
@@ -113,6 +115,34 @@ func (s *Session) Reload(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// disconnectFailedReconcile detaches the current generation and tears down its
+// connection without terminally closing the Session. Exclusive managers call
+// Reconcile while holding a lease and release that lease on any returned error;
+// detaching first prevents an unfenced consumer from surviving the release. A
+// later supervisor retry may Start this same session again.
+func (s *Session) disconnectFailedReconcile(ctx context.Context) {
+	s.mu.Lock()
+	cm := s.cm
+	s.cm = nil
+	cmCancel := s.cmCancel
+	s.cmCancel = nil
+	s.connected = false
+	s.subscriptionsSatisfied = false
+	s.observedSubs = make(map[string]subscriptionGrant)
+	s.activeSubs = make(map[string]byte)
+	s.connEpoch++
+	s.mu.Unlock()
+
+	disconnectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.reconcileTimeout())
+	defer cancel()
+	if cm != nil {
+		_ = cm.Disconnect(disconnectCtx)
+	}
+	if cmCancel != nil {
+		cmCancel()
+	}
 }
 
 // closeEventsLocked closes the session's lifecycle-event channel exactly

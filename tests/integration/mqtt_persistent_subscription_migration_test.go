@@ -107,11 +107,8 @@ func TestMQTTPersistentSubscriptionMigrationReleasesWildcardAndSharedFilters(t *
 		t.Fatalf("replacement persistent session Start: %v", err)
 	}
 	t.Cleanup(func() { _ = replacement.Close(context.Background()) })
-	if err := replacement.Reconcile(ctx, connectivity.SessionPlan{}); err == nil {
-		t.Fatal("stale filter removal must recycle the resumed broker connection")
-	}
 	if err := replacement.Reconcile(ctx, connectivity.SessionPlan{}); err != nil {
-		t.Fatalf("replacement post-recycle Reconcile: %v", err)
+		t.Fatalf("stale cleanup/recycle must converge the replacement generation: %v", err)
 	}
 	if history, err := replacementStore.List(ctx, storageIdentity); err != nil || len(history) != 0 {
 		t.Fatalf("managed history after replacement = %v, err=%v; want empty", history, err)

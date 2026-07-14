@@ -106,11 +106,8 @@ func TestIntegration_ManagedHistoryRestartRemovesWildcardAndSharedFilters(t *tes
 		t.Fatalf("replacement Start: %v", err)
 	}
 	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: desired, QoS: 1}}}
-	if err := replacement.Reconcile(ctx, plan); err == nil {
-		t.Fatal("stale cleanup must recycle the resumed connection")
-	}
 	if err := replacement.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("replacement post-recycle Reconcile: %v", err)
+		t.Fatalf("replacement cleanup/recycle convergence: %v", err)
 	}
 	defer func() { _ = replacement.Close(context.Background()) }()
 	if got := history.snapshot(identity); len(got) != 1 || got[0] != desired {

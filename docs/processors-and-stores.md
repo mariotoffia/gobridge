@@ -475,7 +475,7 @@ state.
 
 ## Store Backends
 
-Three store roles handle different coordination concerns, each configured
+Four store roles handle different coordination concerns, each configured
 independently in the `stores` section.
 
 | Role | Interface | Purpose |
@@ -483,6 +483,7 @@ independently in the `stores` section.
 | **Lease** | `ports.LeaseStore` | Distributed lease acquisition for exclusive sessions. |
 | **Outbox** | `ports.OutboxStore` | Durable outbox for at-least-once delivery with shared sessions. |
 | **DLQ** | `ports.DLQStore` | Dead-letter queue for permanently failed messages. |
+| **Managed subscriptions** | `ports.ManagedSubscriptionStore` | Durable exact MQTT filter history for persistent/exclusive sessions. |
 
 ### YAML Structure
 
@@ -525,7 +526,7 @@ stores:
 
 - Persistent across restarts. Single-instance only.
 - Suitable for single-instance production with disk durability.
-- WAL journalling is always on; a single writer connection plus `busy_timeout` serialises in-process writers safely.
+- WAL journalling is always on; a single writer connection plus `busy_timeout` serialises in-process writers safely. Managed-subscription databases enforce `0600` on the database/WAL/SHM, create owned parent directories as `0700`, and reject insecure existing files or symlinks.
 - Outbox honours the runtime-derived `stale_claim_duration`: a claim stranded by a crashed owner is reclaimed once it goes stale (in addition to immediate higher-version reclaim). Pair it with a durable lease store for strict multi-restart crash recovery; `memory` lease resets its fencing version on restart.
 - No SQLite lease store exists -- use memory or DynamoDB for leases.
 
@@ -558,7 +559,7 @@ entirely.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `table_name` | `string` | `"gobridge-leases"` / `"gobridge-outbox"` / `"gobridge-dlq"` | DynamoDB table name (per role). |
+| `table_name` | `string` | `"gobridge-leases"` / `"gobridge-outbox"` / `"gobridge-dlq"` / `"gobridge-managed-subscriptions"` | DynamoDB table name (per role). |
 | `stale_claim_duration` | `string` (duration) | runtime-derived (outbox only) | How long before an uncompleted outbox claim is reclaimed. Explicit value wins; when omitted, derived as `maxStepDownGrace + max(2 × maxStepDownGrace, 15s)` across all sessions (see [Configuration Reference](configuration-reference.md)). Failover reclaim via a higher fencing version is always immediate. |
 | `compaction_grace` | duration | store default (`1h`) | Outbox only -- window terminal items are kept before the DynamoDB item TTL deletes them. |
 | `retention` | duration | none (keep forever) | DLQ only -- TTL on dead-letter entries (`failed_at + retention`). |
@@ -568,11 +569,10 @@ entirely.
 - Required for clustered deployments with lease-based coordination.
 - **Boot-time schema preflight.** Each store validates its table key schema at
   build time. A confirmed schema mismatch is fatal at boot; a `DescribeTable`
-  call that fails on a missing IAM permission or a throttle logs a WARN and fails
-  open (boot proceeds, the missing/mismatched table then fails loudly at first
-  operation). The lease role additionally runs a best-effort `DescribeTimeToLive`
-  check that warns if TTL is enabled on the fencing table; if that call fails it
-  is silently skipped. See
+  call that cannot verify the table (missing IAM permission, throttle, or backend
+  gap) also fails closed. The lease role additionally requires
+  `DescribeTimeToLive` and fails closed unless TTL is verified disabled on the
+  fencing table. See
   [IAM Least Privilege](aws-deployment/overview.md#iam-least-privilege) for the
   exact actions and posture.
 - **Retention is the deduplication window.** The outbox keeps completed and

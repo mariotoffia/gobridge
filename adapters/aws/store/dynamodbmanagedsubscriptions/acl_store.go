@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	defaultTableName = "gobridge-managed-subscriptions"
+	// DefaultTableName is the adapter default used when no table override is configured.
+	DefaultTableName = "gobridge-managed-subscriptions"
 	attrIdentity     = "storage_identity"
 	attrBaseline     = "baseline"
 	attrFilters      = "filters"
@@ -45,7 +46,7 @@ func WithTableName(name string) Option { return func(s *Store) { s.tableName = n
 //
 //aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
-	store := &Store{client: client, tableName: defaultTableName}
+	store := &Store{client: client, tableName: DefaultTableName}
 	for _, opt := range opts {
 		opt(store)
 	}

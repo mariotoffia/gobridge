@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	defaultTableName = "gobridge-dlq"
+	// DefaultTableName is the adapter default used when no table override is configured.
+	DefaultTableName = "gobridge-dlq"
 
 	// defaultMaxScanPages bounds unfiltered/index-less List and Purge scans
 	// so an operator query on a large DLQ table cannot walk the entire table
@@ -122,7 +123,7 @@ func WithLogger(l *slog.Logger) Option {
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:       client,
-		tableName:    defaultTableName,
+		tableName:    DefaultTableName,
 		maxScanPages: defaultMaxScanPages,
 	}
 	for _, o := range opts {

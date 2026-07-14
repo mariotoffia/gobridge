@@ -9,7 +9,6 @@ import (
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
-	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
@@ -42,16 +41,15 @@ type Phase2Input struct {
 // RunPhase2 emits one CDK Annotation per actionable problem so a
 // single synth pass surfaces them all. Messages include (a) what was
 // found, (b) what was expected and (c) how to fix. Unresolved
-// references are errors (they fail synth); a DynamoDB store that omits
-// table_name is a warning — the config is valid, but the stack cannot
-// grant a table it cannot name.
+// references are errors (they fail synth). DynamoDB store defaults are
+// resolved by the grant path using the same authoritative role defaults as the
+// runtime adapters, so an omitted table_name needs no warning.
 //
 // Order of checks (deterministic, alphabetised within each bucket):
 //
 //  1. SQS queue-name resolution against QueueRegistry (error).
 //  2. SSM parameter-URI resolution against SsmParamRegistry (error).
 //  3. bridge.cluster.endpoints URL parse (error).
-//  4. DynamoDB stores missing table_name (warning).
 //
 // RunPhase2 never panics on a nil registry — see Phase2Input.
 func RunPhase2(scope constructs.Construct, in Phase2Input) {
@@ -62,14 +60,9 @@ func RunPhase2(scope constructs.Construct, in Phase2Input) {
 	emit := func(msg string) {
 		awscdk.Annotations_Of(scope).AddError(jsii.String(msg))
 	}
-	warn := func(msg string) {
-		awscdk.Annotations_Of(scope).AddWarning(jsii.String(msg))
-	}
-
 	checkSQS(in.Cfg, in.QueueRegistry, emit)
 	checkSSM(in.Cfg, in.SsmParamRegistry, emit)
 	checkEndpoints(in.Cfg, emit)
-	checkDynamoStores(in.Cfg, warn)
 }
 
 // checkSQS extracts the logical queue names referenced by SQS
@@ -147,59 +140,6 @@ func checkEndpoints(cfg *ports.BridgeConfig, emit func(string)) {
 			emit(formatEndpointError(e))
 		}
 	}
-}
-
-// checkDynamoStores warns for each DynamoDB-backed store (lease,
-// outbox, DLQ, managed subscriptions) that omits table_name. Such a store is
-// valid — the adapter falls back to its built-in default table — but the grant
-// path in gobridgebase cannot import a table it cannot name, so the
-// task role receives no IAM grant and the store hits AccessDenied at
-// runtime. A warning (not an error) preserves the documented escape
-// hatch of granting the default table externally.
-func checkDynamoStores(cfg *ports.BridgeConfig, warn func(string)) {
-	roles := []struct {
-		name  string
-		store *ports.StoreConfig
-	}{
-		{"lease", cfg.Stores.Lease},
-		{"outbox", cfg.Stores.Outbox},
-		{"dlq", cfg.Stores.DLQ},
-		{"managed_subscriptions", cfg.Stores.ManagedSubscriptions},
-	}
-	for _, r := range roles {
-		if r.store == nil || !strings.EqualFold(r.store.Type, awsstore.DynamoDBKind) {
-			continue
-		}
-		if dynamoTableName(r.store) != "" {
-			continue
-		}
-		warn(fmt.Sprintf(
-			"dynamodb %s store omits table_name; the adapter falls back to its built-in default table, "+
-				"which this stack cannot import or grant, so the task role hits DynamoDB AccessDenied at runtime. "+
-				"Expected: an explicit table_name so the stack imports the table and attaches a GrantReadWriteData policy. "+
-				"Fix: set table_name on the %s store, or grant the default table to the task role externally.",
-			r.name, r.name,
-		))
-	}
-}
-
-// dynamoTableName reads the configured DynamoDB table name from a
-// store config, preferring the typed DynamoDBConfig and falling back
-// to a raw probe. Returns "" when unset. Mirrors the resolver in
-// gobridgebase.grants (kept local so validation does not import the
-// internal construct package).
-func dynamoTableName(sc *ports.StoreConfig) string {
-	if dc, ok := sc.Config.(*awsstore.DynamoDBConfig); ok {
-		return dc.TableName
-	}
-	if raw := sc.Raw(); raw != nil {
-		var probe struct {
-			TableName string `yaml:"table_name" json:"table_name" mapstructure:"table_name"`
-		}
-		_ = raw.Decode(&probe)
-		return probe.TableName
-	}
-	return ""
 }
 
 // collectSQSQueueNames walks Receivers and Senders, deduplicates the

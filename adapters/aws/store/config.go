@@ -2,8 +2,14 @@ package awsstore
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -16,6 +22,37 @@ var (
 // DynamoDBKind is the registry discriminator for DynamoDB-backed
 // lease, outbox, DLQ, and managed-subscription stores.
 const DynamoDBKind = "dynamodb"
+
+const (
+	// DefaultDynamoDBLeaseTableName is the authoritative lease-table default.
+	DefaultDynamoDBLeaseTableName = dynamodblease.DefaultTableName
+	// DefaultDynamoDBOutboxTableName is the authoritative outbox-table default.
+	DefaultDynamoDBOutboxTableName = dynamodboutbox.DefaultTableName
+	// DefaultDynamoDBDLQTableName is the authoritative DLQ-table default.
+	DefaultDynamoDBDLQTableName = dynamodbdlq.DefaultTableName
+	// DefaultDynamoDBManagedSubscriptionsTableName is the authoritative exact-filter history-table default.
+	DefaultDynamoDBManagedSubscriptionsTableName = dynamodbmanagedsubscriptions.DefaultTableName
+)
+
+// ResolveDynamoDBTableName resolves the exact table used by a store role before
+// runtime preflight or deployment IAM grants. Explicit names always win.
+func ResolveDynamoDBTableName(role, configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	switch strings.ToLower(role) {
+	case "lease":
+		return DefaultDynamoDBLeaseTableName, nil
+	case "outbox":
+		return DefaultDynamoDBOutboxTableName, nil
+	case "dlq":
+		return DefaultDynamoDBDLQTableName, nil
+	case "managed_subscriptions":
+		return DefaultDynamoDBManagedSubscriptionsTableName, nil
+	default:
+		return "", fmt.Errorf("awsstore: unknown DynamoDB store role %q", role)
+	}
+}
 
 // DynamoDBConfig is the typed PluginConfig for DynamoDB-backed
 // stores. It is shared across lease, outbox, DLQ, and managed-subscription

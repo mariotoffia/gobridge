@@ -182,23 +182,22 @@ add an explicit `kms:Decrypt` grant for the ECS task role on that key.
 
 ### DynamoDB Stores
 
-When the bridge config uses DynamoDB-backed stores (`lease`, `outbox`, or
-`dlq`), the stack grants the ECS task role read/write access on each table the
-store names. Two operator responsibilities follow:
+When the bridge config uses DynamoDB-backed stores (`lease`, `outbox`, `dlq`,
+or `managed_subscriptions`), the stack grants the ECS task role read/write access
+on each table the store names. Two operator responsibilities follow:
 
 - **Pre-provision the tables.** The stack imports each table by name and grants
   access to it; it does **not** create the table, its key schema, or its TTL.
   Provision each DynamoDB table out-of-band (matching the adapter's expected key
   schema) before deploying.
-- **Set `table_name` on every store.** A store that omits `table_name` falls
-  back to the adapter's built-in default table, which the stack cannot name and
-  therefore cannot grant — the task role would hit `AccessDenied` at runtime.
-  Synth emits a warning for this case; set `table_name`, or grant the default
-  table to the task role externally.
+- **Use `table_name` only to override a role default.** When omitted, runtime
+  preflight and the stack resolve and grant the same exact default:
+  `gobridge-leases`, `gobridge-outbox`, `gobridge-dlq`, or
+  `gobridge-managed-subscriptions`.
 
 The adapter's expected key schemas -- what an out-of-band table must match, and
 what the store's own `EnsureTable`/`CreateTable` helper provisions -- are below.
-All three tables are created `PAY_PER_REQUEST` (on-demand).
+All four tables are created `PAY_PER_REQUEST` (on-demand).
 
 **Lease table** (default `gobridge-leases`)
 
@@ -244,6 +243,15 @@ degrades to the scan path if the index becomes unusable.
 
 DLQ entries carry no TTL by default. Setting a `retention` window enables
 DynamoDB TTL on the `ttl` attribute through the store's `EnsureTable` helper.
+
+**Managed-subscriptions table** (default `gobridge-managed-subscriptions`)
+
+| Attribute | Type | Role |
+|---|---|---|
+| `storage_identity` | `S` | Partition key |
+
+No sort key and no GSIs. It stores one baseline and an exact filter String Set
+per secret-safe durable MQTT identity.
 
 ### DevMode Guard
 
@@ -600,7 +608,7 @@ per table for tighter least privilege:
 Each store also runs a boot-time schema **preflight** that adds control-plane
 actions on top of the data-plane set above:
 
-- Outbox and DLQ additionally call `dynamodb:DescribeTable`.
+- Outbox, DLQ, and managed-subscriptions additionally call `dynamodb:DescribeTable`.
 - Lease additionally calls `dynamodb:DescribeTable` **and**
   `dynamodb:DescribeTimeToLive` -- it enforces that DynamoDB TTL is **disabled**
   on the fencing table, which a reaper would otherwise use to delete lease rows
@@ -624,8 +632,10 @@ Preflight posture is **fail-closed** and matters for how you grant these actions
   verify** the TTL state (missing `dynamodb:DescribeTimeToLive`, a throttle, or a
   backend that does not implement it) is **fatal for the same reason**: it proves
   nothing about the TTL state, and a TTL-reaped fence row is a split-brain hazard.
-- Both `dynamodb:DescribeTable` (every store role) and `dynamodb:DescribeTimeToLive`
-  (the lease role) are therefore **required** for boot under the default posture,
+- The generated CDK task-role policy grants `dynamodb:DescribeTable` on every
+  configured/default store table and additionally grants
+  `dynamodb:DescribeTimeToLive` on the exact lease table. Both are therefore
+  **required** for boot under the default posture,
   and TTL must stay disabled on the lease table.
 
 The advisory opt-outs are **Go-code-level factory options, not config keys.**

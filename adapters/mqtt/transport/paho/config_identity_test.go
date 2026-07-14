@@ -16,7 +16,7 @@ import (
 
 func durableIdentityConfig() *Config {
 	return &Config{Session: SessionOptions{
-		BrokerURLs:            []string{"ssl://user:old-secret@broker-b.example:8883?b=2&a=1", "ssl://broker-a.example:8883"},
+		BrokerURLs:            []string{"ssl://broker-a.example:8883"},
 		ClientID:              "bridge-client",
 		SessionExpiryInterval: 3600,
 	}}
@@ -41,12 +41,31 @@ func cloneIdentityConfig(c *Config) *Config {
 	return &clone
 }
 
+func TestConfig_ValidateSessionModeRejectsIndependentDurableBrokerURLs(t *testing.T) {
+	cfg := durableIdentityConfig()
+	cfg.Session.BrokerURLs = []string{"ssl://broker-a.example:8883", "ssl://broker-b.example:8883"}
+
+	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
+		require.Error(t, cfg.ValidateSessionMode(mode), "durable mode %s must not span independent broker-session domains", mode)
+	}
+	require.NoError(t, cfg.ValidateSessionMode(connectivity.SessionEphemeral),
+		"ephemeral failover may use independent broker URLs")
+
+	duplicate := cloneIdentityConfig(cfg)
+	duplicate.Session.BrokerURLs = []string{
+		"ssl://BROKER-A.example:8883?a=1&b=2",
+		"ssl://user:pass@broker-a.example:8883?b=2&a=1",
+	}
+	require.NoError(t, duplicate.ValidateSessionMode(connectivity.SessionPersistent),
+		"canonical duplicates prove one broker-session domain")
+}
+
 func TestConfig_DurableSessionIdentity_ChangesForEveryBrokerStateField(t *testing.T) {
 	base := durableIdentityConfig()
 	baseID := identityFingerprint(t, base, connectivity.SessionPersistent)
 
 	tests := map[string]func(*Config){
-		"broker set":          func(c *Config) { c.Session.BrokerURLs[1] = "ssl://broker-c.example:8883" },
+		"broker set":          func(c *Config) { c.Session.BrokerURLs[0] = "ssl://broker-c.example:8883" },
 		"effective client ID": func(c *Config) { c.Session.ClientID = "other-client" },
 		"client ID suffix":    func(c *Config) { c.Session.ClientIDSuffix = ClientIDSuffixHostname },
 		"clean start":         func(c *Config) { c.Session.CleanStart = true },
@@ -79,20 +98,23 @@ func TestConfig_DurableSessionIdentityDomains_RejectClientCollisionAcrossStateSe
 	assert.Equal(t, firstDomains, secondDomains, "same brokers and effective client ID collide regardless of state settings")
 }
 
-func TestConfig_DurableSessionIdentity_BrokerOrderAndDuplicatesAreIdentity(t *testing.T) {
+func TestConfig_DurableSessionIdentity_EphemeralBrokerOrderAndDuplicatesAreIdentity(t *testing.T) {
 	base := durableIdentityConfig()
-	want := identityFingerprint(t, base, connectivity.SessionPersistent)
+	base.Session.BrokerURLs = []string{"ssl://broker-a.example:8883", "ssl://broker-b.example:8883"}
+	want := identityFingerprint(t, base, connectivity.SessionEphemeral)
 
 	reordered := cloneIdentityConfig(base)
 	reordered.Session.BrokerURLs[0], reordered.Session.BrokerURLs[1] =
 		reordered.Session.BrokerURLs[1], reordered.Session.BrokerURLs[0]
-	assert.NotEqual(t, want, identityFingerprint(t, reordered, connectivity.SessionPersistent),
-		"Paho attempts brokers in configured order")
+	assert.NotEqual(t, want, identityFingerprint(t, reordered, connectivity.SessionEphemeral),
+		"Paho attempts ephemeral failover brokers in configured order")
 
 	duplicated := cloneIdentityConfig(base)
 	duplicated.Session.BrokerURLs = append(duplicated.Session.BrokerURLs, duplicated.Session.BrokerURLs[0])
-	assert.NotEqual(t, want, identityFingerprint(t, duplicated, connectivity.SessionPersistent),
-		"Paho does not deduplicate configured brokers")
+	assert.NotEqual(t, want, identityFingerprint(t, duplicated, connectivity.SessionEphemeral),
+		"Paho does not deduplicate configured ephemeral brokers")
+	_, err := base.DurableSessionIdentity(connectivity.SessionPersistent)
+	require.Error(t, err, "durable identity must reject independent broker domains")
 }
 
 func TestConfig_IdentityCapabilities_ValueAndPointerParity(t *testing.T) {
@@ -122,10 +144,7 @@ func TestConfig_DurableSessionIdentity_CanonicalAndSecretSafe(t *testing.T) {
 	want := identityFingerprint(t, base, connectivity.SessionPersistent)
 
 	canonical := cloneIdentityConfig(base)
-	canonical.Session.BrokerURLs = []string{
-		"ssl://other-user:new-secret@BROKER-B.example:8883?a=1&b=2",
-		"ssl://BROKER-A.example:8883",
-	}
+	canonical.Session.BrokerURLs = []string{"ssl://user:rotated@BROKER-A.example:8883"}
 	assert.Equal(t, want, identityFingerprint(t, canonical, connectivity.SessionPersistent),
 		"per-URL spelling and URL credentials are not identity")
 
@@ -223,6 +242,7 @@ func TestConfig_ReplicaIdentityStrategy(t *testing.T) {
 func TestFactoryNewSession_ClientIDSuffixNonce_RejectsDurableModes(t *testing.T) {
 	cfg := durableIdentityConfig()
 	cfg.Session.ClientIDSuffix = ClientIDSuffixNonce
+	cfg.Session.BrokerURLs = cfg.Session.BrokerURLs[:1]
 	factory := NewFactory(nil)
 	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
 		_, err := factory.NewSession(t.Context(), ports.SessionSpec{ID: "session", SessionMode: mode, Config: cfg})
@@ -294,11 +314,13 @@ func TestConfig_DurableSessionIdentityDomains_ArePerCanonicalEndpoint(t *testing
 
 	capability, ok := any(first).(endpointDomains)
 	require.True(t, ok, "Paho must expose one opaque ownership domain per broker endpoint")
-	firstDomains, err := capability.DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	_, err := capability.DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	require.Error(t, err, "durable ownership domains must reject independent brokers")
+	firstDomains, err := capability.DurableSessionIdentityDomains(connectivity.SessionEphemeral)
 	require.NoError(t, err)
-	overlapDomains, err := any(overlap).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	overlapDomains, err := any(overlap).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionEphemeral)
 	require.NoError(t, err)
-	disjointDomains, err := any(disjoint).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionPersistent)
+	disjointDomains, err := any(disjoint).(endpointDomains).DurableSessionIdentityDomains(connectivity.SessionEphemeral)
 	require.NoError(t, err)
 
 	assert.Len(t, firstDomains, 2)

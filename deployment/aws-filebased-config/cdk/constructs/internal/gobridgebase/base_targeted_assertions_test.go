@@ -3,6 +3,7 @@
 package gobridgebase_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,6 +303,52 @@ stores:
     options:
       table_name: bridge-outbox-tbl
 `
+
+const t20BaseDefaultDynamoStoreYAML = `
+bridge:
+  id: test-bridge
+stores:
+  outbox:
+    type: dynamodb
+`
+
+func Test_T20_Base_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultDynamoStoreYAML)
+	assembly := awscdk.App_Of(stack).Synth(nil)
+	rendered := assembly.GetStackByName(stack.StackName()).Template()
+	renderedJSON, err := json.Marshal(rendered)
+	if err != nil {
+		t.Fatalf("marshal synthesized template: %v", err)
+	}
+	if !strings.Contains(string(renderedJSON), "gobridge-outbox") {
+		t.Fatalf("synthesized grants do not reference runtime default table: %s", renderedJSON)
+	}
+}
+
+const t20BaseDefaultLeaseStoreYAML = `
+bridge:
+  id: test-bridge
+stores:
+  lease:
+    type: dynamodb
+`
+
+func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultLeaseStoreYAML)
+	assembly := awscdk.App_Of(stack).Synth(nil)
+	rendered, err := json.Marshal(assembly.GetStackByName(stack.StackName()).Template())
+	if err != nil {
+		t.Fatalf("marshal synthesized template: %v", err)
+	}
+	if !strings.Contains(string(rendered), "gobridge-leases") {
+		t.Fatalf("lease grant does not reference the runtime default table: %s", rendered)
+	}
+	if !t20CollectPolicyActions(assertions.Template_FromStack(stack, nil))["dynamodb:DescribeTimeToLive"] {
+		t.Fatal("default lease table is missing dynamodb:DescribeTimeToLive")
+	}
+}
 
 // Test_T20_Base_IAM_DynamoDBStoreGrant asserts that a bridge config
 // referencing a DynamoDB-backed store with an explicit table_name emits

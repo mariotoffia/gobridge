@@ -5,14 +5,18 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
+	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 type managedHistoryFake struct {
@@ -90,6 +94,11 @@ type managedConnFake struct {
 	operations   *[]string
 	subReasons   []byte
 	unsubReasons []byte
+	subErr       error
+	unsubErr     error
+	unsubEntered chan struct{}
+	unsubRelease chan struct{}
+	unsubOnce    sync.Once
 	subscribed   []string
 	unsubscribed []string
 	disconnects  int
@@ -106,6 +115,9 @@ func (c *managedConnFake) Subscribe(_ context.Context, subs []subscribeSpec) ([]
 	for _, sub := range subs {
 		c.subscribed = append(c.subscribed, sub.Topic)
 	}
+	if c.subErr != nil {
+		return nil, c.subErr
+	}
 	if c.subReasons != nil {
 		return append([]byte(nil), c.subReasons...), nil
 	}
@@ -115,9 +127,22 @@ func (c *managedConnFake) Subscribe(_ context.Context, subs []subscribeSpec) ([]
 	}
 	return reasons, nil
 }
-func (c *managedConnFake) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
+func (c *managedConnFake) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
 	*c.operations = append(*c.operations, "unsubscribe")
 	c.unsubscribed = append(c.unsubscribed, topics...)
+	if c.unsubEntered != nil {
+		c.unsubOnce.Do(func() { close(c.unsubEntered) })
+	}
+	if c.unsubRelease != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.unsubRelease:
+		}
+	}
+	if c.unsubErr != nil {
+		return nil, c.unsubErr
+	}
 	if c.unsubReasons != nil {
 		return append([]byte(nil), c.unsubReasons...), nil
 	}
@@ -141,6 +166,137 @@ func newManagedTestSession(t *testing.T, store *managedHistoryFake, conn *manage
 	return session
 }
 
+func TestManagedSubscriptionPendingCleanupRemainsCoverageProtectedPastGrace(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {
+			"sensors/#":                     {},
+			"$share/group/shared-sensors/#": {},
+		},
+	}}
+	conn := &managedConnFake{
+		operations:   &operations,
+		unsubErr:     errors.New("cleanup unavailable"),
+		unsubEntered: make(chan struct{}),
+		unsubRelease: make(chan struct{}),
+	}
+	session := newManagedTestSession(t, store, conn)
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	var acked atomic.Int32
+	for _, topic := range []string{"sensors/one", "shared-sensors/two"} {
+		session.router.dispatch(&pahov5.Publish{Topic: topic, QoS: 1, Payload: []byte("pending")}, func() error {
+			acked.Add(1)
+			return nil
+		})
+	}
+
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
+	wait.RequireReceive(t, conn.unsubEntered, 2*time.Second)
+
+	// Deterministically execute the post-grace classification while exact cleanup
+	// is still blocked. Both ordinary and shared managed filters must retain their
+	// concrete deliveries unacknowledged.
+	session.router.sweepUnmatched()
+	if got := acked.Load(); got != 0 {
+		t.Fatalf("pending managed cleanup ACK-dropped %d deliveries past grace", got)
+	}
+	session.router.mu.Lock()
+	pending := len(session.router.pending)
+	session.router.mu.Unlock()
+	if pending != 2 {
+		t.Fatalf("pending deliveries after past-grace cleanup stall = %d, want 2", pending)
+	}
+
+	close(conn.unsubRelease)
+	if err := <-reconcileDone; err == nil {
+		t.Fatal("failed cleanup must keep reconciliation degraded")
+	}
+	if got := acked.Load(); got != 0 {
+		t.Fatalf("failed cleanup ACK-dropped %d managed deliveries", got)
+	}
+}
+
+func TestManagedSubscriptionCleanupConvergesReplacementGeneration(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"old/#": {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations}
+	session := newManagedTestSession(t, store, first)
+	dials := 0
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials++
+		if dials == 1 {
+			return first, func() {}, nil
+		}
+		session.handleConnectionUp()
+		return replacement, func() {}, nil
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "new/#", QoS: 1}}}
+	if err := session.Reconcile(t.Context(), plan); err != nil {
+		t.Fatalf("cleanup must converge the replacement generation before returning: %v", err)
+	}
+	if !equalManagedStrings(replacement.subscribed, []string{"new/#"}) {
+		t.Fatalf("replacement subscriptions = %v, want [new/#]", replacement.subscribed)
+	}
+	if first.disconnects != 1 || replacement.disconnects != 0 {
+		t.Fatalf("disconnects first=%d replacement=%d, want 1/0", first.disconnects, replacement.disconnects)
+	}
+	health := session.Health(t.Context())
+	if health.SubscriptionsSatisfied == nil || !*health.SubscriptionsSatisfied {
+		t.Fatalf("replacement generation did not converge subscriptions: %+v", health)
+	}
+}
+
+func TestExclusiveManagedCleanupFailureDisconnectsReplacementBeforeLeaseRelease(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"old/#": {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations, subErr: errors.New("replacement SUBSCRIBE failed")}
+	session := newManagedTestSession(t, store, first)
+	session.mode = connectivity.SessionExclusive
+	dials := 0
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials++
+		if dials == 1 {
+			return first, func() {}, nil
+		}
+		session.handleConnectionUp()
+		return replacement, func() {}, nil
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "new/#", QoS: 1}}}
+	if err := session.Reconcile(t.Context(), plan); err == nil {
+		t.Fatal("replacement convergence failure must propagate")
+	}
+	// The exclusive manager releases its lease after Reconcile returns. A nil
+	// connection and a disconnected replacement prove no broker consumer can
+	// survive into that lease-release boundary.
+	if replacement.disconnects != 1 {
+		t.Fatalf("replacement disconnects before lease release = %d, want 1", replacement.disconnects)
+	}
+	if session.connection() != nil {
+		t.Fatal("replacement connection remains active at the lease-release boundary")
+	}
+}
+
 func TestManagedSubscriptionsWriteAheadExactCleanupAndRecycle(t *testing.T) {
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
@@ -152,10 +308,10 @@ func TestManagedSubscriptionsWriteAheadExactCleanupAndRecycle(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/new/#", QoS: 1}}}
-	if err := session.Reconcile(t.Context(), plan); err == nil {
-		t.Fatal("cleanup recycle must interrupt the old connection generation")
+	if err := session.Reconcile(t.Context(), plan); err != nil {
+		t.Fatalf("cleanup must converge the replacement generation: %v", err)
 	}
-	wantOps := []string{"list", "remember", "subscribe", "unsubscribe", "forget", "disconnect"}
+	wantOps := []string{"list", "remember", "subscribe", "unsubscribe", "forget", "disconnect", "remember", "subscribe"}
 	if !equalManagedStrings(operations, wantOps) {
 		t.Fatalf("operations = %v, want %v", operations, wantOps)
 	}
@@ -184,8 +340,8 @@ func TestManagedSubscriptionsEmptyAppliedPlanDoesNotHideDurableHistory(t *testin
 	}
 	empty := connectivity.SessionPlan{}
 	session.appliedPlan = &empty
-	if err := session.Reconcile(t.Context(), empty); err == nil {
-		t.Fatal("durable stale cleanup must recycle the connection generation")
+	if err := session.Reconcile(t.Context(), empty); err != nil {
+		t.Fatalf("durable stale cleanup must converge after recycling: %v", err)
 	}
 	if !equalManagedStrings(conn.unsubscribed, []string{"stale/#"}) {
 		t.Fatalf("UNSUBSCRIBE = %v, want durable stale filter", conn.unsubscribed)
@@ -271,8 +427,8 @@ func TestManagedSubscriptionForgetOutageRetainsHistoryForRetry(t *testing.T) {
 	store.mu.Lock()
 	store.forgetErr = nil
 	store.mu.Unlock()
-	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err == nil {
-		t.Fatal("successful retry cleanup must recycle the connection generation")
+	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err != nil {
+		t.Fatalf("successful retry cleanup must converge after recycling: %v", err)
 	}
 	if got := store.snapshot("safe-session-id"); len(got) != 0 {
 		t.Fatalf("history after successful retry = %v", got)

@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"sort"
@@ -33,9 +34,18 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // an empty plan re-affirming a prior plan that had no subscriptions (a
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
-func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
+func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) (retErr error) {
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
+	// The exclusive manager releases its lease whenever Reconcile returns an
+	// error. Detach and disconnect first so no broker consumer can survive past
+	// that fencing boundary, including a replacement generation created by the
+	// managed-history cleanup recycle below.
+	defer func() {
+		if retErr != nil && s.mode == connectivity.SessionExclusive {
+			s.disconnectFailedReconcile(ctx)
+		}
+	}()
 
 	desiredPlan := cloneSessionPlan(plan)
 	s.mu.Lock()
@@ -138,8 +148,26 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		return nil
 	}
 
-	if err := s.reconcile(ctx, cm, desiredPlan, priorPlanTopics, startEpoch); err != nil {
-		return err
+	for {
+		err := s.reconcile(ctx, cm, desiredPlan, priorPlanTopics, startEpoch)
+		if !errors.Is(err, errManagedCleanupRecycled) {
+			if err != nil {
+				return err
+			}
+			break
+		}
+
+		// Managed cleanup removed broker state and Reload established a new
+		// connection. Reconcile that replacement generation while still holding
+		// reconcileMu (and, for exclusive sessions, while the manager still owns
+		// its lease). Calling public Reconcile recursively would deadlock.
+		s.mu.Lock()
+		cm = s.cm
+		startEpoch = s.connEpoch
+		s.mu.Unlock()
+		if cm == nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: managed cleanup replacement connection is unavailable")
+		}
 	}
 
 	// The broker ops SUCCEEDED: commit this plan as the last-applied history so
@@ -311,14 +339,14 @@ func (s *Session) appliedPlanTopicsLocked() []string {
 }
 
 // topicCoveredLocked reports whether a concrete publish topic is covered by
-// a subscription the session still wants — either an active broker
-// subscription (s.activeSubs) or a desired filter in the current plan.
+// a subscription the session still wants or must still clean up: an active
+// broker subscription, a desired filter, or an exact pending managed-history filter.
 // Both maps/plans are keyed by topic FILTERS (possibly wildcarded), so the
 // concrete topic is matched against each filter with the same MQTT
 // topic-filter logic the router uses for dispatch. Such a topic is never an
 // orphan, only a route whose handler has not registered yet. An empty
-// activeSubs and a nil plan therefore cover nothing (every unmatched topic
-// is a genuine orphan). Callers must hold s.mu.
+// activeSubs, a nil plan, and empty managed history therefore cover nothing
+// (every unmatched topic is a genuine orphan). Callers must hold s.mu.
 func (s *Session) topicCoveredLocked(topic string) bool {
 	for filter := range s.activeSubs {
 		if matchTopicFilter(filter, topic) {
@@ -330,6 +358,16 @@ func (s *Session) topicCoveredLocked(topic string) bool {
 			if matchTopicFilter(sub.Topic, topic) {
 				return true
 			}
+		}
+	}
+	// Exact durable history remains coverage-protecting while a stale wildcard
+	// or shared filter is pending cleanup. Otherwise a slow/failed UNSUBSCRIBE
+	// can outlive startup grace and make the router ACK-drop traffic the broker
+	// still delivers through that filter. Never infer filters from the concrete
+	// topic; match only persisted exact filters.
+	for filter := range s.managedHistory {
+		if matchTopicFilter(filter, topic) {
+			return true
 		}
 	}
 	return false
@@ -746,6 +784,8 @@ func retainHandlingForMode(mode connectivity.SessionMode) byte {
 	return 1
 }
 
+var errManagedCleanupRecycled = errors.New("mqtt: managed subscription cleanup recycled connection")
+
 func (s *Session) reconcileManagedUnsubscribe(
 	ctx context.Context,
 	cm pahoConnection,
@@ -763,41 +803,56 @@ func (s *Session) reconcileManagedUnsubscribe(
 	}
 
 	var forgetErr error
+	forgot := false
 	if len(confirmation.confirmed) > 0 {
 		if err := managedStore.Forget(ctx, managedIdentity, confirmation.confirmed); err != nil {
 			forgetErr = shared.ErrUnavailable.WithMessage("mqtt: forget confirmed managed subscriptions").Wrap(err)
 		} else {
-			s.mu.Lock()
-			for _, filter := range confirmation.confirmed {
-				delete(s.managedHistory, filter)
-			}
-			s.mu.Unlock()
+			forgot = true
 		}
-		if confirmation.removedAny {
-			// A successful removal may have left shared deliveries buffered on
-			// this connection. Recycle once so router.beginGrace purges the old
-			// epoch without ACK and returns them to the broker. A later 0x11
-			// confirms the filter is already absent and must not churn again when
-			// only the durable Forget remains unavailable.
-			if reloadErr := s.Reload(ctx); reloadErr != nil {
-				return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
-			}
-			if forgetErr != nil {
-				return forgetErr
-			}
-			if confirmation.firstErr != nil {
-				return confirmation.firstErr.With("topic", confirmation.errTopic)
-			}
-			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription cleanup recycled the connection; reconcile the replacement generation")
+	}
+
+	if confirmation.removedAny {
+		// A successful removal may have left shared deliveries buffered on this
+		// connection. Recycle once so router.beginGrace purges the old epoch
+		// without ACK and returns them to the broker. Keep in-memory history until
+		// the recycle completes so a concurrent post-grace sweep remains covered.
+		if reloadErr := s.Reload(ctx); reloadErr != nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
+		}
+		if forgot {
+			s.removeManagedHistory(confirmation.confirmed)
 		}
 		if forgetErr != nil {
 			return forgetErr
 		}
+		if confirmation.firstErr != nil {
+			return confirmation.firstErr.With("topic", confirmation.errTopic)
+		}
+		return errManagedCleanupRecycled
+	}
+
+	// UNSUBACK 0x11 proves a filter is already absent. Forget it locally only
+	// after durable Forget succeeds; if Forget remains unavailable, return the
+	// existing degraded error without another connection recycle.
+	if forgot {
+		s.removeManagedHistory(confirmation.confirmed)
+	}
+	if forgetErr != nil {
+		return forgetErr
 	}
 	if confirmation.firstErr != nil {
 		return confirmation.firstErr.With("topic", confirmation.errTopic)
 	}
 	return nil
+}
+
+func (s *Session) removeManagedHistory(filters []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, filter := range filters {
+		delete(s.managedHistory, filter)
+	}
 }
 
 type unsubscribeConfirmation struct {

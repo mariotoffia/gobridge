@@ -1,7 +1,7 @@
 package gobridgebase
 
 import (
-	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -100,39 +100,49 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 		}
 	}
 
-	// DynamoDB stores (lease/outbox/DLQ/managed subscriptions). Grant read/write data on each
-	// table the config names. Stores that omit table_name would fall back
-	// to the adapter's built-in default table name, which this profile
-	// cannot resolve to an ARN -- those FAIL AT SYNTH (see below) rather
-	// than silently deploying a task that AccessDenies at runtime. Dedupe
-	// by name so a table shared across store roles yields a single import +
-	// grant.
-	granted := map[string]struct{}{}
-	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
-		if sc == nil || !isKind(sc.Type, awsstore.DynamoDBKind) {
+	// DynamoDB stores (lease/outbox/DLQ/managed subscriptions). Resolve the
+	// same role-specific defaults the runtime passes into its adapters before
+	// importing tables, then preserve role information while deduplicating so a
+	// shared lease table still receives its lease-only TTL preflight grant.
+	type tableGrant struct {
+		name  string
+		lease bool
+	}
+	byName := map[string]tableGrant{}
+	roles := []struct {
+		name  string
+		store *ports.StoreConfig
+	}{
+		{name: "lease", store: cfg.Stores.Lease},
+		{name: "outbox", store: cfg.Stores.Outbox},
+		{name: "dlq", store: cfg.Stores.DLQ},
+		{name: "managed_subscriptions", store: cfg.Stores.ManagedSubscriptions},
+	}
+	for _, role := range roles {
+		if role.store == nil || !isKind(role.store.Type, awsstore.DynamoDBKind) {
 			continue
 		}
-		name := dynamoTableName(sc)
-		if name == "" {
-			// A DynamoDB store with no explicit table_name would fall back to
-			// the adapter's built-in default table name, which this profile
-			// cannot resolve to an ARN — so no IAM grant is emitted and the
-			// runtime dies with AccessDenied on first use. Fail fast at synth
-			// with an actionable message instead of shipping a task that
-			// cannot reach its own store.
-			panic(fmt.Sprintf(
-				"gobridgebase: DynamoDB store %q omits table_name; the deployment cannot resolve a "+
-					"table ARN to grant and the runtime would fail with AccessDenied. Set an explicit "+
-					"table_name on the store config (or grant the table externally and remove the store "+
-					"from the parsed config).",
-				sc.Type))
+		name, err := awsstore.ResolveDynamoDBTableName(role.name, dynamoTableName(role.store))
+		if err != nil {
+			continue // role names above are closed and authoritative
 		}
-		if _, done := granted[name]; done {
-			continue
-		}
-		granted[name] = struct{}{}
+		grant := byName[name]
+		grant.name = name
+		grant.lease = grant.lease || role.name == "lease"
+		byName[name] = grant
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		grant := byName[name]
 		table := awsdynamodb.Table_FromTableName(scope, jsii.String("DynamoStoreGrant"+name), jsii.String(name))
 		grants.GrantDynamoDBStore(role, table)
+		if grant.lease {
+			grants.GrantDynamoDBLeasePreflight(role, table)
+		}
 	}
 }
 
@@ -164,7 +174,7 @@ func sqsQueueName(raw ports.RawConfig) string {
 // bridgecfg builder and by the two-stage parser, since Materialize's
 // registry registers the awsstore decoder) and falls back to a raw
 // probe. Returns "" when unset -- the adapter then uses its built-in
-// default table name, which this profile cannot resolve to an ARN.
+// default table name; callers resolve that default by store role.
 func dynamoTableName(sc *ports.StoreConfig) string {
 	if sc == nil {
 		return ""

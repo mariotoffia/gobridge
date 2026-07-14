@@ -12,6 +12,35 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
+// ValidateSessionMode rejects durable MQTT failover across independent broker
+// session domains. Managed subscription history is keyed by one durable
+// identity, so applying it to unrelated brokers could unsubscribe filters on
+// one broker based on state established on another. Ephemeral sessions carry no
+// durable broker state and may continue to use multi-URL failover.
+func (c Config) ValidateSessionMode(mode connectivity.SessionMode) error {
+	if mode == "" {
+		mode = connectivity.SessionEphemeral
+	}
+	if mode == connectivity.SessionEphemeral {
+		return nil
+	}
+	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
+		return errors.New("mqtt: invalid session mode")
+	}
+	brokers, err := canonicalBrokerSet(c.Session.BrokerURLs, c.Session.BrokerURL)
+	if err != nil {
+		return err
+	}
+	domains := make(map[string]struct{}, len(brokers))
+	for _, broker := range brokers {
+		domains[broker] = struct{}{}
+	}
+	if len(domains) > 1 {
+		return errors.New("mqtt: persistent and exclusive sessions require one broker-session domain; independent multi-broker failover is unsafe for durable managed subscription history")
+	}
+	return nil
+}
+
 // DurableSessionIdentity returns an opaque SHA-256 fingerprint of the
 // broker-side state selected by this config. Credential and tuning fields are
 // deliberately absent. In particular, broker URL userinfo is removed before
@@ -63,6 +92,9 @@ func (c Config) durableSessionIdentityCoordinates(mode connectivity.SessionMode)
 		mode != connectivity.SessionPersistent &&
 		mode != connectivity.SessionExclusive {
 		return "", nil, "", errors.New("mqtt: durable session identity has invalid session mode")
+	}
+	if err := c.ValidateSessionMode(mode); err != nil {
+		return "", nil, "", err
 	}
 	if c.Session.ClientIDSuffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
 		return "", nil, "", errors.New("mqtt: nonce replica identity is valid only for ephemeral sessions")

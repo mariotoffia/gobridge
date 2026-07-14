@@ -100,12 +100,16 @@ func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginC
 }
 
 // NewManagedSubscriptionStore creates a dedicated exact-filter history.
-func (f *SQLiteStoreFactory) NewManagedSubscriptionStore(_ context.Context, cfg ports.PluginConfig) (ports.ManagedSubscriptionStore, error) { //nolint:ireturn // Factory port intentionally returns the narrow role interface.
+func (f *SQLiteStoreFactory) NewManagedSubscriptionStore(ctx context.Context, cfg ports.PluginConfig) (ports.ManagedSubscriptionStore, error) { //nolint:ireturn // Factory port intentionally returns the narrow role interface.
 	sc, err := requiredSQLiteConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return sqlitemanagedsubscriptions.NewStore(sc.Path) //nolint:wrapcheck // adapter classifies errors
+	store, err := sqlitemanagedsubscriptions.NewStoreContext(ctx, sc.Path)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // adapter classifies errors
+	}
+	return store, nil
 }
 
 // NewDLQStore creates a SQLite DLQ store from the typed config. A positive

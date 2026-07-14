@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	defaultTableName = "gobridge-leases"
+	// DefaultTableName is the adapter default used when no table override is configured.
+	DefaultTableName = "gobridge-leases"
 
 	attrPK         = "PK"
 	attrOwner      = "owner"
@@ -159,7 +160,7 @@ func WithTTLPreflightAdvisory() Option {
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:    client,
-		tableName: defaultTableName,
+		tableName: DefaultTableName,
 		clk:       clock.System,
 	}
 	for _, o := range opts {

@@ -68,6 +68,10 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	if mode == "" {
 		mode = connectivity.SessionEphemeral
 	}
+	if err := cfg.ValidateSessionMode(mode); err != nil {
+		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid broker-session domain configuration", spec.ID))
+	}
 	if opts.ClientID == "" {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))

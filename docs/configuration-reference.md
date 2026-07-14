@@ -170,7 +170,7 @@ Configures the backing stores for lease coordination, outbox persistence, dead-l
 
 | Option | Type | Applies to | Default | Description |
 |--------|------|------------|---------|-------------|
-| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` for an in-process DB) |
+| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` for an in-process DB). Managed-subscription SQLite creates adapter-owned parents as `0700` and the database/WAL/SHM as `0600`; insecure existing files are rejected. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | How long a same-owner stranded claim waits before another claim attempt may take it. Failover reclaim via a higher fencing version is always immediate and independent of this. |
 | `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
 
@@ -178,7 +178,7 @@ Configures the backing stores for lease coordination, outbox persistence, dead-l
 
 | Option | Type | Applies to | Default | Description |
 |--------|------|------------|---------|-------------|
-| `table_name` | string | all roles | store built-in | Overrides the DynamoDB table name. |
+| `table_name` | string | all roles | `gobridge-leases` / `gobridge-outbox` / `gobridge-dlq` / `gobridge-managed-subscriptions` | Overrides the role-specific DynamoDB table name. Runtime preflight and the AWS CDK grant path resolve the same default when omitted. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | Same semantics as the SQLite outbox key above. |
 | `compaction_grace` | duration | outbox | store default | Window completed/expired outbox items are kept before the DynamoDB item TTL deletes them. Keep above any upstream redelivery window. |
 | `retention` | duration | DLQ | none (kept until deleted) | TTL on dead-letter entries (`ttl = failed_at + retention`). Use a days-scale value so investigators have time to inspect dead-lettered messages. |

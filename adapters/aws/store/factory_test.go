@@ -140,3 +140,26 @@ func TestDynamoDBConfig_ValidateRejectsNegativeDurations(t *testing.T) {
 		t.Fatalf("negative max_scan_pages should validate (disables bound): %v", err)
 	}
 }
+
+func TestResolveDynamoDBTableNameUsesRoleDefaults(t *testing.T) {
+	for role, want := range map[string]string{
+		"lease":                 "gobridge-leases",
+		"outbox":                "gobridge-outbox",
+		"dlq":                   "gobridge-dlq",
+		"managed_subscriptions": "gobridge-managed-subscriptions",
+	} {
+		got, err := awsstore.ResolveDynamoDBTableName(role, "")
+		if err != nil {
+			t.Fatalf("ResolveDynamoDBTableName(%q): %v", role, err)
+		}
+		if got != want {
+			t.Fatalf("ResolveDynamoDBTableName(%q) = %q, want %q", role, got, want)
+		}
+	}
+	if got, err := awsstore.ResolveDynamoDBTableName("lease", "custom"); err != nil || got != "custom" {
+		t.Fatalf("explicit table resolution = %q, %v; want custom, nil", got, err)
+	}
+	if _, err := awsstore.ResolveDynamoDBTableName("unknown", ""); err == nil {
+		t.Fatal("unknown role without an explicit table must fail")
+	}
+}
