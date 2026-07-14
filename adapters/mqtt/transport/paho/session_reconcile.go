@@ -3,6 +3,8 @@ package paho
 import (
 	"context"
 	"maps"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -32,6 +34,7 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
+	desiredPlan := cloneSessionPlan(plan)
 	s.mu.Lock()
 	// The empty-plan no-op and the reconnect-window teardown key off the
 	// last SUCCESSFULLY APPLIED plan (appliedPlan), NOT the desired plan
@@ -41,6 +44,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// Reconcile would no-op instead of RETRYING the unsubscribe.
 	appliedExists := s.appliedPlan != nil
 	appliedHadSubs := appliedExists && len(s.appliedPlan.Subscriptions) > 0
+	observedHadSubs := len(s.observedSubs) > 0 || len(s.activeSubs) > 0
 	// Snapshot the last-APPLIED desired topics: an empty target plan must tear
 	// these down even when a reconnect just reset the volatile activeSubs
 	// snapshot to empty (a clean_start=false broker resumed them). Using the
@@ -52,7 +56,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// the source topicCovered consults; it is set even on the error path so a
 	// Reconcile-before-Start still stashes the plan. It is deliberately NOT the
 	// applied history (see appliedPlan, set only after the broker ops succeed).
-	s.plan = &plan
+	s.plan = &desiredPlan
 	// Shared-subscription scale-out on a stable/shared-ClientID mode is the
 	// client_id-collision footgun (HIGH-3): every replica MUST use a UNIQUE
 	// client_id, else they form a single broker session and take each other
@@ -101,16 +105,16 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// (priorPlanTopics) even when activeSubs is empty.
 	//
 	// Only a genuinely subless transition — an empty plan re-affirming an
-	// APPLIED plan that itself held no subscriptions (a sender-only session) —
-	// is a true no-op, so a SessionManager that never had subscriptions cannot
-	// churn the broker. Because the no-op keys off APPLIED (not desired) state,
-	// a FAILED unsubscribe (whose applied plan still holds subscriptions) is
+	// APPLIED plan that itself held no subscriptions (a sender-only session) and
+	// has no broker-observed grants — is a true no-op, so a SessionManager that
+	// never had subscriptions cannot churn the broker. Because the no-op keys off
+	// APPLIED (not desired) state, a FAILED unsubscribe (whose applied plan still holds subscriptions) is
 	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
-	if len(plan.Subscriptions) == 0 && appliedExists && !appliedHadSubs {
+	if len(desiredPlan.Subscriptions) == 0 && appliedExists && !appliedHadSubs && !observedHadSubs {
 		return nil
 	}
 
-	if err := s.reconcile(ctx, cm, plan, priorPlanTopics); err != nil {
+	if err := s.reconcile(ctx, cm, desiredPlan, priorPlanTopics); err != nil {
 		return err
 	}
 
@@ -119,7 +123,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// tears down the right topics. A FAILED reconcile returned above WITHOUT
 	// reaching here, so appliedPlan stays at the last successful value and the
 	// next reconcile retries the failed op (blocking-#2).
-	applied := plan
+	applied := cloneSessionPlan(desiredPlan)
 	s.mu.Lock()
 	s.appliedPlan = &applied
 	s.mu.Unlock()
@@ -150,6 +154,13 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// delta was already satisfied) still signals reconciled.
 	s.pushEvent(ports.SessionReconciled, nil)
 	return nil
+}
+
+func cloneSessionPlan(plan connectivity.SessionPlan) connectivity.SessionPlan {
+	plan.Subscriptions = slices.Clone(plan.Subscriptions)
+	plan.Publishers = slices.Clone(plan.Publishers)
+	plan.ExpectedReceiverIDs = slices.Clone(plan.ExpectedReceiverIDs)
+	return plan
 }
 
 // unsubscribeOrphan issues a best-effort UNSUBSCRIBE for a topic whose
@@ -332,10 +343,21 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 
 	s.mu.Lock()
 	current := maps.Clone(s.activeSubs)
+	observed := maps.Clone(s.observedSubs)
+	if observed == nil {
+		observed = make(map[string]subscriptionGrant)
+	}
+	// Hand-built legacy sessions may only seed activeSubs. Treat those entries
+	// as equal requested/granted observations for delta and cleanup purposes.
+	for topic, qos := range current {
+		if _, ok := observed[topic]; !ok {
+			observed[topic] = subscriptionGrant{Requested: qos, Granted: qos}
+		}
+	}
 	// Capture the connection generation alongside the snapshot. Every
-	// activeSubs write-back below is gated on this still matching: a reconnect
+	// subscription-state write-back below is gated on this still matching: a reconnect
 	// (handleConnectionUp) landing mid-reconcile bumps s.connEpoch and resets
-	// activeSubs, so a stale write-back must be abandoned rather than pollute
+	// both maps, so a stale write-back must be abandoned rather than pollute
 	// the fresh set (A-3).
 	startEpoch := s.connEpoch
 	s.mu.Unlock()
@@ -348,24 +370,35 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 			"client_id", s.opts.ClientID,
 			"desired", len(desired),
 			"active", len(current),
+			"observed", len(observed),
 		)
 	}
 
 	// Unsubscribe topics no longer desired. Candidates are the UNION of the
-	// active broker subscriptions we know about (current) AND the prior plan's
-	// desired topics (priorTopics). The prior-plan topics matter in the
-	// reconnect window: handleConnectionUp reset activeSubs to empty but a
+	// broker-observed successful grants, contract-active subscriptions, AND the
+	// prior plan's desired topics (priorTopics). The prior-plan topics matter in
+	// the reconnect window: handleConnectionUp reset activeSubs to empty but a
 	// clean_start=false broker still holds the resumed subscriptions, so
 	// without them an empty plan would fail to tear anything down and orphan
 	// the broker sub (c4-remove-subs). Unsubscribing a topic the broker does
 	// not actually hold is harmless (the broker ignores it).
 	var toUnsub []string
 	unsubSeen := make(map[string]struct{})
-	for topic := range current {
+	for topic := range observed {
 		if _, ok := desired[topic]; !ok {
 			toUnsub = append(toUnsub, topic)
 			unsubSeen[topic] = struct{}{}
 		}
+	}
+	for topic := range current {
+		if _, wanted := desired[topic]; wanted {
+			continue
+		}
+		if _, seen := unsubSeen[topic]; seen {
+			continue
+		}
+		toUnsub = append(toUnsub, topic)
+		unsubSeen[topic] = struct{}{}
 	}
 	for _, topic := range priorTopics {
 		if _, ok := desired[topic]; ok {
@@ -395,6 +428,7 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		s.mu.Lock()
 		if s.connEpoch == startEpoch {
 			for _, t := range toUnsub {
+				delete(s.observedSubs, t)
 				delete(s.activeSubs, t)
 			}
 		}
@@ -404,8 +438,8 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	// Subscribe to new or changed topics
 	var toSub []subscribeSpec
 	for topic, qos := range desired {
-		curQoS, exists := current[topic]
-		if !exists || curQoS != qos {
+		grant, exists := observed[topic]
+		if !exists || grant.Requested != qos {
 			// No-Local is opt-in per session (no_local config, default off).
 			// When enabled it breaks the same-session MQTT->MQTT self-delivery
 			// loop (Scenario 01) but MUST stay off for a shared subscription
@@ -444,16 +478,14 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		if err != nil {
 			return MapError(err)
 		}
-		// Walk every reason code so every contract-satisfying topic is persisted
-		// even when a sibling is rejected or downgraded. This preserves partial
-		// SUBACK success without treating a weaker QoS grant as active.
+		// Walk every reason code so every successful broker grant is observed,
+		// while only contract-satisfying grants become active. This preserves
+		// cleanup knowledge without treating a weaker QoS grant as ready.
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
-		accepted := make([]subscribeSpec, 0, len(succeeded))
 		var downgradeErr *shared.BridgeError
 		for _, opt := range succeeded {
 			req := desired[opt.Topic]
 			if opt.QoS >= req {
-				accepted = append(accepted, opt)
 				continue
 			}
 
@@ -469,18 +501,23 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 				)
 			}
 			if downgradeErr == nil {
-				downgradeErr = shared.ErrQoSNotSupported.
-					WithMessage("mqtt: broker granted subscription QoS below requested").
-					With("topic", opt.Topic).
-					With("requested_qos", int(req)).
-					With("granted_qos", int(opt.QoS))
+				downgradeErr = qosDowngradeError(opt.Topic, req, opt.QoS)
 			}
 		}
-		if len(accepted) > 0 {
+		if len(succeeded) > 0 {
 			s.mu.Lock()
 			if s.connEpoch == startEpoch {
-				for _, opt := range accepted {
-					s.activeSubs[opt.Topic] = opt.QoS
+				if s.observedSubs == nil {
+					s.observedSubs = make(map[string]subscriptionGrant)
+				}
+				for _, opt := range succeeded {
+					req := desired[opt.Topic]
+					s.observedSubs[opt.Topic] = subscriptionGrant{Requested: req, Granted: opt.QoS}
+					if opt.QoS >= req {
+						s.activeSubs[opt.Topic] = opt.QoS
+					} else {
+						delete(s.activeSubs, opt.Topic)
+					}
 				}
 			}
 			s.mu.Unlock()
@@ -491,6 +528,10 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
 		}
+	}
+
+	if downgradeErr := s.observedQoSDowngrade(desired); downgradeErr != nil {
+		return downgradeErr
 	}
 
 	elapsed := s.clock().Since(reconcileStart)
@@ -506,6 +547,34 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	}
 
 	return nil
+}
+
+func (s *Session) observedQoSDowngrade(desired map[string]byte) *shared.BridgeError {
+	s.mu.Lock()
+	observed := maps.Clone(s.observedSubs)
+	s.mu.Unlock()
+
+	topics := make([]string, 0, len(desired))
+	for topic := range desired {
+		topics = append(topics, topic)
+	}
+	sort.Strings(topics)
+	for _, topic := range topics {
+		req := desired[topic]
+		grant, ok := observed[topic]
+		if ok && grant.Requested == req && grant.Granted < req {
+			return qosDowngradeError(topic, req, grant.Granted)
+		}
+	}
+	return nil
+}
+
+func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeError {
+	return shared.ErrQoSNotSupported.
+		WithMessage("mqtt: broker granted subscription QoS below requested").
+		With("topic", topic).
+		With("requested_qos", int(requested)).
+		With("granted_qos", int(granted))
 }
 
 // retainHandlingForMode returns the MQTT5 RetainHandling value for a session of

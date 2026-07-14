@@ -8,6 +8,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -202,7 +203,10 @@ func TestHealth_ServiceLevelFull_RequiresActualFilterAndQoSAtBoundary(t *testing
 				ExpectedReceiverIDs: []string{"rx-orders"},
 			}, tc.active, "rx-orders")
 
-			assert.Equal(t, tc.want, s.Health(context.Background()).ServiceLevel)
+			h := s.Health(context.Background())
+			assert.Equal(t, tc.want, h.ServiceLevel)
+			require.NotNil(t, h.SubscriptionsSatisfied)
+			assert.Equal(t, tc.want == ports.ServiceLevelFull, *h.SubscriptionsSatisfied)
 		})
 	}
 }

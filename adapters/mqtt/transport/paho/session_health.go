@@ -91,14 +91,15 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	}
 
 	return ports.SessionHealth{
-		Connected:           connected,
-		SubscriptionsWanted: wantedCount,
-		SubscriptionsActive: activeCount,
-		HandlersRegistered:  handlerCount,
-		ReceiveMaximum:      rm,
-		Ready:               connected,
-		ServiceLevel:        sl,
-		ActiveTopics:        topics,
+		Connected:              connected,
+		SubscriptionsWanted:    wantedCount,
+		SubscriptionsActive:    activeCount,
+		SubscriptionsSatisfied: &subscriptionsSatisfied,
+		HandlersRegistered:     handlerCount,
+		ReceiveMaximum:         rm,
+		Ready:                  connected,
+		ServiceLevel:           sl,
+		ActiveTopics:           topics,
 	}
 }
 

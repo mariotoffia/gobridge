@@ -128,8 +128,9 @@ const (
 	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason
 	// 0x00 granting QoS 0). Reconcile emits a loud warning, leaves the filter
 	// inactive, and returns ErrQoSNotSupported with topic, requested QoS, and
-	// granted QoS context, so readiness remains non-Full. Because the inactive
-	// filter is retried, each reconcile attempt may increment this counter. Any
-	// non-zero value warrants investigating a broker QoS-cap policy.
+	// granted QoS context, so readiness remains non-Full. The broker-observed
+	// grant suppresses an unchanged immediate re-subscribe; this counter advances
+	// only when a broker SUBACK newly reports the downgrade. Any non-zero value
+	// warrants investigating a broker QoS-cap policy.
 	MetricMQTTQoSDowngraded = "MQTTQoSDowngraded"
 )

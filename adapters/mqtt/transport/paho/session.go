@@ -13,6 +13,11 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+type subscriptionGrant struct {
+	Requested byte
+	Granted   byte
+}
+
 // Session implements ports.Session for MQTT, owning the broker connection,
 // ClientID identity, and subscription reconciliation.
 type Session struct {
@@ -120,8 +125,13 @@ type Session struct {
 	// on every reconcile.
 	sharedSubWarned bool
 
-	// activeSubs tracks topic filters the broker confirmed at or above the
-	// requested QoS. The value is the granted QoS.
+	// observedSubs tracks every successful SUBACK grant, including grants below
+	// the requested QoS. Reconcile uses it for cleanup and to avoid repeatedly
+	// subscribing an unchanged downgraded filter. Guarded by mu.
+	observedSubs map[string]subscriptionGrant
+
+	// activeSubs is the contract-active subset of observedSubs: filters whose
+	// granted QoS meets or exceeds the requested QoS. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
 
 	// liveCreds is the most recently applied credential material. It is
@@ -216,13 +226,14 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		}
 	}
 	s := &Session{
-		opts:       opts,
-		mode:       mode,
-		logger:     logger,
-		metrics:    m,
-		clk:        opts.Clock,
-		events:     make(chan ports.SessionEvent, sessionEventsBuffer),
-		activeSubs: make(map[string]byte),
+		opts:         opts,
+		mode:         mode,
+		logger:       logger,
+		metrics:      m,
+		clk:          opts.Clock,
+		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
+		observedSubs: make(map[string]subscriptionGrant),
+		activeSubs:   make(map[string]byte),
 	}
 	// The router shares the session's (possibly fake) clock so the startup
 	// grace window is deterministic under test, and calls back through

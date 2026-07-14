@@ -340,15 +340,16 @@ const (
 // Transports that manage subscriptions (e.g., MQTT) should populate
 // the subscription and handler fields so callers can determine readiness.
 type SessionHealth struct {
-	Connected           bool
-	LastError           error
-	SubscriptionsWanted int          // Number of unique desired subscription filters
-	SubscriptionsActive int          // Number of unique broker-confirmed subscription filters
-	HandlersRegistered  int          // Number of receiver handlers on the message router
-	ReceiveMaximum      uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
-	Ready               bool         // Connected to the broker (connectivity only)
-	ServiceLevel        ServiceLevel // Operational completeness (none/degraded/full)
-	ActiveTopics        []string     // topics with active broker subscription
+	Connected              bool
+	LastError              error
+	SubscriptionsWanted    int          // Number of unique desired subscription filters
+	SubscriptionsActive    int          // Number of unique contract-active subscription filters
+	SubscriptionsSatisfied *bool        // Explicit desired filter/QoS satisfaction; nil means legacy unknown
+	HandlersRegistered     int          // Number of receiver handlers on the message router
+	ReceiveMaximum         uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	Ready                  bool         // Connected to the broker (connectivity only)
+	ServiceLevel           ServiceLevel // Operational completeness (none/degraded/full)
+	ActiveTopics           []string     // contract-active subscription filters
 }
 
 // HasTopic reports whether the given topic is among the active subscriptions.

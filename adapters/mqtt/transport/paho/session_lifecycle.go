@@ -254,7 +254,7 @@ func (s *Session) Close(ctx context.Context) error {
 // topic silently unsubscribed with no error surfaced (finding C7).
 //
 // Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
-// activeSubs reset and MUST NOT acquire reconcileMu. autopaho invokes
+// subscription-state reset and MUST NOT acquire reconcileMu. autopaho invokes
 // OnConnectionUp synchronously on its sole connection-management goroutine and
 // documents that the callback "must not block" (autopaho.ClientConfig.
 // OnConnectionUp, auto.go). reconcileMu is held by reconcile() for the entire
@@ -264,21 +264,22 @@ func (s *Session) Close(ctx context.Context) error {
 // paho's in-flight-request teardown behaviour.
 //
 // The TOCTOU a lock here would close — a prior-connection reconcile writing
-// stale subscriptions into activeSubs AFTER this reset — is instead closed
+// stale subscription state AFTER this reset — is instead closed
 // WITHOUT any new lock by the connEpoch generation counter (A-3): this reset
 // bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
 // longer matches. That keeps activeSubs empty for the new connection, so the
 // authoritative reconnect reconcile issues a full re-subscribe rather than
-// computing an empty delta against a stale set and silently dropping
+// computing an empty delta against stale state and silently dropping
 // subscriptions on an ephemeral (clean_start) session. Do NOT add reconcileMu
 // here — the epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
+	s.observedSubs = make(map[string]subscriptionGrant)
 	s.activeSubs = make(map[string]byte)
 	// Bump the connection generation so any reconcile that snapshotted
-	// activeSubs under the PRIOR connection abandons its (now stale) write-back
+	// subscription state under the PRIOR connection abandons its stale write-back
 	// instead of polluting this fresh set (A-3).
 	s.connEpoch++
 	s.mu.Unlock()

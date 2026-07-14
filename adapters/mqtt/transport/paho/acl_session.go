@@ -61,7 +61,8 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 //   - Granted QoS (c4-qos-downgrade): a success reason code (0x00/0x01/
 //     0x02) IS the QoS the broker granted, which may be LOWER than the
 //     requested QoS. The succeeded spec carries the GRANTED QoS so the caller
-//     can reject a downgrade and keep that topic out of activeSubs.
+//     can retain broker-observed state for cleanup while keeping that topic out
+//     of the contract-active activeSubs map.
 func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 	succeeded []subscribeSpec, firstErr *shared.BridgeError, errTopic string,
 ) {
@@ -86,7 +87,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 			continue
 		}
 		// Success: carry the GRANTED QoS (the reason-code value) so the caller
-		// can reject a downgrade and record only contract-satisfying grants.
+		// can distinguish broker-observed from contract-active state.
 		granted := opt
 		granted.QoS = reasons[i]
 		succeeded = append(succeeded, granted)

@@ -43,15 +43,16 @@ type RouteHealth struct {
 // subscription readiness and lease ownership. Part of the read-side
 // contract surfaced through RuntimeQuery.DeepHealth.
 type SessionHealthDetail struct {
-	SessionID           string
-	Connected           bool
-	HasLease            bool
-	ConnectAfterLease   bool // source session defers Start until this instance wins the lease
-	SubscriptionsWanted int
-	SubscriptionsActive int
-	ActiveTopics        []string // topics the broker has ACK'd subscriptions for
-	Ready               bool
-	ServiceLevel        ServiceLevel
+	SessionID              string
+	Connected              bool
+	HasLease               bool
+	ConnectAfterLease      bool // source session defers Start until this instance wins the lease
+	SubscriptionsWanted    int
+	SubscriptionsActive    int
+	SubscriptionsSatisfied *bool    // explicit desired filter/QoS satisfaction; nil means legacy unknown
+	ActiveTopics           []string // contract-active topic filters
+	Ready                  bool
+	ServiceLevel           ServiceLevel
 }
 
 // DeepHealth is a comprehensive health snapshot of a runtime instance.
@@ -91,9 +92,9 @@ const (
 	// has SessionHealth.Connected == true. Per-session reconnect storms
 	// drop us below this until the session reconnects.
 	LevelConnected
-	// LevelSubscribed means LevelConnected plus every session has
-	// SubscriptionsActive == SubscriptionsWanted (broker has ACKed
-	// every SUBSCRIBE). Routes can safely register handlers at this
+	// LevelSubscribed means LevelConnected plus every session explicitly
+	// satisfies its desired subscription filters and requested QoS (legacy
+	// snapshots fall back to active/wanted counts). Routes can safely register handlers at this
 	// point without missing messages from subsequent publishes.
 	LevelSubscribed
 	// LevelFull means LevelSubscribed plus every route has Ready == true
@@ -197,7 +198,13 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 			allSubscribed = false
 			break
 		}
-		if sh.SubscriptionsActive != sh.SubscriptionsWanted {
+		if sh.SubscriptionsSatisfied != nil {
+			if !*sh.SubscriptionsSatisfied {
+				allSubscribed = false
+			}
+		} else if sh.SubscriptionsActive != sh.SubscriptionsWanted {
+			// Compatibility for health snapshots produced before explicit
+			// filter/QoS satisfaction was available.
 			allSubscribed = false
 		}
 		// A session that is connected + subscribed can still be unable to serve:

@@ -443,15 +443,16 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	for i, snap := range sessSnaps {
 		sh := sessHealth[i]
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
-			SessionID:           snap.sid,
-			Connected:           sh.Connected,
-			HasLease:            snap.hasLease,
-			ConnectAfterLease:   snap.connectAfterLease,
-			SubscriptionsWanted: sh.SubscriptionsWanted,
-			SubscriptionsActive: sh.SubscriptionsActive,
-			ActiveTopics:        sh.ActiveTopics,
-			Ready:               sh.Ready,
-			ServiceLevel:        sh.ServiceLevel,
+			SessionID:              snap.sid,
+			Connected:              sh.Connected,
+			HasLease:               snap.hasLease,
+			ConnectAfterLease:      snap.connectAfterLease,
+			SubscriptionsWanted:    sh.SubscriptionsWanted,
+			SubscriptionsActive:    sh.SubscriptionsActive,
+			SubscriptionsSatisfied: sh.SubscriptionsSatisfied,
+			ActiveTopics:           sh.ActiveTopics,
+			Ready:                  sh.Ready,
+			ServiceLevel:           sh.ServiceLevel,
 		})
 		// A deferred-connect standby's source session intentionally stays
 		// disconnected until this instance wins the lease; excluding it from the

@@ -57,6 +57,18 @@ func TestReadinessLevelFromDeepHealth(t *testing.T) {
 			want: ports.LevelConnected,
 		},
 		{
+			name: "equal aggregate counts but explicit subscription mismatch pins connected",
+			dh: ports.DeepHealth{
+				Running: true, Healthy: true,
+				Sessions: []ports.SessionHealthDetail{{
+					SessionID: "s1", Connected: true,
+					SubscriptionsWanted: 1, SubscriptionsActive: 1,
+					SubscriptionsSatisfied: boolPointer(false),
+				}},
+			},
+			want: ports.LevelConnected,
+		},
+		{
 			name: "subscribed but a route not ready pins subscribed",
 			dh: ports.DeepHealth{
 				Running: true, Healthy: true,
@@ -175,3 +187,5 @@ func TestReadinessLevelFromDeepHealth(t *testing.T) {
 		})
 	}
 }
+
+func boolPointer(value bool) *bool { return &value }

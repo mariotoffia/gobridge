@@ -9,6 +9,7 @@ import (
 
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -196,4 +197,39 @@ func TestBug_Reconcile_FailedUnsubscribe_RetriedNotNoOped(t *testing.T) {
 	require.Len(t, sess.appliedPlan.Subscriptions, 0,
 		"applied history advances to the empty plan only after the unsubscribe SUCCEEDS")
 	require.Len(t, sess.activeSubs, 0, "activeSubs is cleared once the unsubscribe succeeds")
+}
+
+func TestReconcile_RetainedPlansDoNotAliasCallerSlices(t *testing.T) {
+	fake := &fakeReconcileConn{}
+	sess := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
+		ClientID:   "plan-copy",
+	}, connectivity.SessionEphemeral, nil)
+	sess.mu.Lock()
+	sess.cm = fake
+	sess.mu.Unlock()
+	plan := connectivity.SessionPlan{
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "original/sub", QoS: 1}},
+		Publishers:          []connectivity.PublisherPlan{{Topic: "original/pub", QoS: 1}},
+		ExpectedReceiverIDs: []string{"original-rx"},
+	}
+
+	require.NoError(t, sess.Reconcile(context.Background(), plan))
+
+	plan.Subscriptions[0].Topic = "mutated/sub"
+	plan.Publishers[0].Topic = "mutated/pub"
+	plan.ExpectedReceiverIDs[0] = "mutated-rx"
+
+	sess.mu.Lock()
+	desired := *sess.plan
+	applied := *sess.appliedPlan
+	sess.mu.Unlock()
+	for name, retained := range map[string]connectivity.SessionPlan{
+		"desired": desired,
+		"applied": applied,
+	} {
+		assert.Equal(t, "original/sub", retained.Subscriptions[0].Topic, name)
+		assert.Equal(t, "original/pub", retained.Publishers[0].Topic, name)
+		assert.Equal(t, "original-rx", retained.ExpectedReceiverIDs[0], name)
+	}
 }
