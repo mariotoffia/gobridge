@@ -401,11 +401,9 @@ func TestAnaRecv_RouterRoutingWithoutAnyReceiver_BuffersUntilRegistration(t *tes
 	}
 }
 
-// TestAnaRecv_HandlerSeesIndependentEnvelope verifies the EnvelopeFromPublish
-// path produces an independent Envelope per delivery: distinct
-// publishes get distinct IDs, while a redelivered (byte-identical)
-// publish derives the SAME fallback ID so downstream dedup can catch
-// broker redeliveries (deterministic topic+payload hash).
+// TestAnaRecv_HandlerSeesIndependentEnvelope verifies every no-ID publish
+// receives an independent fallback identity, including byte-identical broker
+// redelivery that MQTT cannot prove is the same application event.
 func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
@@ -439,8 +437,8 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 		// Distinct payloads → distinct application messages.
 		sess.Router().Route(newTestPacketPublish("t/x", []byte{byte(i)}))
 	}
-	// One byte-identical redelivery of the first publish: must NOT get a
-	// fresh ID (QoS 1 redelivery dedup contract).
+	// A byte-identical no-ID redelivery receives a fresh ID. MQTT packet IDs
+	// are reusable and cannot safely prove application identity.
 	sess.Router().Route(newTestPacketPublish("t/x", []byte{0}))
 
 	deadline := time.After(2 * time.Second)
@@ -464,17 +462,8 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	for _, id := range ids {
 		seen[id]++
 	}
-	if len(seen) != n {
-		t.Fatalf("got %d distinct envelope IDs for %d distinct messages (+1 redelivery), want %d", len(seen), n, n)
-	}
-	dups := 0
-	for _, c := range seen {
-		if c == 2 {
-			dups++
-		}
-	}
-	if dups != 1 {
-		t.Fatalf("redelivered publish should share its original ID exactly once, got %d duplicated IDs", dups)
+	if len(seen) != n+1 {
+		t.Fatalf("got %d distinct envelope IDs for %d no-ID publishes, want %d", len(seen), n+1, n+1)
 	}
 }
 
@@ -522,4 +511,63 @@ func TestAnaRecv_HandlerCount_TracksRunLifecycle(t *testing.T) {
 	// Suppress unused warning of helper.
 	var c atomic.Int32
 	_ = staticHandler(&c)
+}
+
+// TestAnaRecv_FanoutIdentity_StablePerPublish verifies the router stamps one
+// fallback identity before fan-out, so every receiver conversion of one
+// publish observes the same Envelope ID while the next equal-valued publish
+// receives a new ID.
+func TestAnaRecv_FanoutIdentity_StablePerPublish(t *testing.T) {
+	r := newRouter(nil, nil)
+	var (
+		mu  sync.Mutex
+		ids = map[string][]string{"a": nil, "b": nil}
+	)
+	for _, name := range []string{"a", "b"} {
+		name := name
+		r.RegisterEnvelope(name, nil, nil, func(env *messaging.Envelope, _ func() error) {
+			mu.Lock()
+			ids[name] = append(ids[name], env.ID())
+			mu.Unlock()
+		})
+	}
+
+	for range 2 {
+		r.Route(newTestPacketPublish("identity/fanout", []byte("same")))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids["a"]) != 2 || len(ids["b"]) != 2 {
+		t.Fatalf("fan-out counts = a:%d b:%d, want 2 each", len(ids["a"]), len(ids["b"]))
+	}
+	if ids["a"][0] != ids["b"][0] || ids["a"][1] != ids["b"][1] {
+		t.Fatalf("one publish must have one fan-out identity: a=%v b=%v", ids["a"], ids["b"])
+	}
+	if ids["a"][0] == ids["a"][1] {
+		t.Fatalf("separate equal-valued publishes must differ: %v", ids["a"])
+	}
+}
+
+// TestAnaRecv_IngressIdentity_DoesNotMutateBrokerPublish verifies identity is
+// stamped on the router-owned clone, not on the Paho callback object that may
+// be observed by later SDK callbacks.
+func TestAnaRecv_IngressIdentity_DoesNotMutateBrokerPublish(t *testing.T) {
+	r := newRouter(nil, nil)
+	var id string
+	r.RegisterEnvelope("identity-owner", nil, nil, func(env *messaging.Envelope, _ func() error) {
+		id = env.ID()
+	})
+	original := &pahov5.Publish{Topic: "identity/ownership", QoS: 1, Payload: []byte("same")}
+
+	handled, err := r.onPublishReceived(pahov5.PublishReceived{Packet: original})
+	if err != nil || !handled {
+		t.Fatalf("onPublishReceived = handled:%v err:%v", handled, err)
+	}
+	if id == "" {
+		t.Fatal("handler did not receive a generated identity")
+	}
+	if original.Properties != nil {
+		t.Fatalf("broker-owned publish was mutated: %+v", original.Properties)
+	}
 }

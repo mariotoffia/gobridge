@@ -517,22 +517,30 @@ drop here is now observable rather than invisible. (Reserved-key collisions
 described above are a separate, deliberate anti-spoof drop and are not counted on
 this metric.)
 
-### Envelope ID derivation and dedup collisions
+### Envelope identity and no-ID redelivery
 
-When an inbound publish carries no explicit identity — no `mqtt.message-id` user
-property (the key a bridge peer stamps) and no correlation data — the adapter
-**derives** the `Envelope.ID` deterministically as a 128-bit hash of the publish
-**topic ⊕ payload**. Determinism is deliberate: a broker QoS 1 redelivery of the
-same publish yields the same ID, so downstream idempotency/dedup catches exactly
-those broker-created duplicates.
+Inbound identity uses this precedence:
 
-**Collision is by design.** Two *distinct* business events that share the same
-topic **and** byte-identical payload derive the **same** envelope ID — on a
-dedup-backed route (`shared_outbox`) they collapse into one. Without a
-producer-supplied ID they are indistinguishable on the wire anyway. If an
-upstream legitimately emits byte-identical payloads that must be treated as
-separate events, it **must** stamp a unique `mqtt.message-id` user property (or a
-correlation ID); the adapter then uses that instead of the derived hash.
+1. a valid `mqtt.message-id` user property, which GoBridge peers stamp from
+   `Envelope.ID`;
+2. valid MQTT correlation data;
+3. an RFC 4122 UUIDv4 generated once for the received publish and stamped on the
+   router-owned Paho publish before buffering or fan-out.
+
+Every handler reached by one publish therefore sees the same generated
+`Envelope.ID`. Two separate publishes receive separate IDs even when their topic
+and payload bytes are identical. Packet ID, topic, payload, QoS, and DUP are
+never fallback identity inputs: packet IDs are reusable within an MQTT session
+and none of those fields proves application-event identity.
+
+A broker redelivery without `mqtt.message-id` or correlation data may receive a
+new ID and therefore duplicate downstream. MQTT cannot prove that a no-ID
+publish is the same application event across reconnect and packet-ID reuse.
+GoBridge deliberately accepts that at-least-once duplicate because delivering a
+possible duplicate is safer than silently collapsing two legitimate equal-valued
+publishes in `shared_outbox`. Producers that require stable deduplication across
+redelivery must provide a stable `mqtt.message-id` (preferred) or correlation
+identity and reuse it for every delivery attempt.
 
 ## Receiver Options
 

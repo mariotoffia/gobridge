@@ -258,32 +258,17 @@ func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) 
 	}
 }
 
-// TestAnaHdr_DeriveEnvelopeID_DeterministicAndDistinct verifies the
-// fallback envelope ID is a deterministic function of topic + payload
-// (same inputs → same ID, so QoS 1 redeliveries from non-bridge
-// publishers dedup downstream) while distinct inputs — including
-// topic/payload boundary shifts — yield distinct IDs.
-func TestAnaHdr_DeriveEnvelopeID_DeterministicAndDistinct(t *testing.T) {
-	a := deriveEnvelopeID("sensors/temp", []byte("21.5"))
-	b := deriveEnvelopeID("sensors/temp", []byte("21.5"))
-	if a == "" {
-		t.Fatal("empty id derived")
-	}
-	if a != b {
-		t.Fatalf("same topic+payload must derive the same id: %s vs %s", a, b)
-	}
+// TestAnaHdr_IngressIdentity_IgnoresPacketAndContentFields verifies that
+// fallback identity is per received publish, not derived from MQTT delivery
+// fields that brokers reuse or alter during redelivery.
+func TestAnaHdr_IngressIdentity_IgnoresPacketAndContentFields(t *testing.T) {
+	first := &pahov5.Publish{PacketID: 7, QoS: 1, Topic: "sensors/temp", Payload: []byte("21.5")}
+	second := &pahov5.Publish{PacketID: 7, QoS: 1, Topic: "sensors/temp", Payload: []byte("21.5")}
 
-	distinct := map[string]string{
-		"different payload":      deriveEnvelopeID("sensors/temp", []byte("22.0")),
-		"different topic":        deriveEnvelopeID("sensors/hum", []byte("21.5")),
-		"boundary shift (t+p)":   deriveEnvelopeID("sensors/temp2", []byte("1.5")),
-		"empty payload":          deriveEnvelopeID("sensors/temp", nil),
-		"topic bytes as payload": deriveEnvelopeID("", []byte("sensors/temp21.5")),
-	}
-	for name, id := range distinct {
-		if id == a {
-			t.Errorf("%s collided with base id %s", name, a)
-		}
+	a := EnvelopeFromPublish(first, nil)
+	b := EnvelopeFromPublish(second, nil)
+	if a.ID() == b.ID() {
+		t.Fatalf("packet ID, QoS, topic, and payload must not define fallback identity: %q", a.ID())
 	}
 }
 

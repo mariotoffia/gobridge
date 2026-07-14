@@ -839,6 +839,51 @@ func (r *router) shutdown() {
 	r.stopOnce.Do(func() { close(r.stop) })
 }
 
+// clonePublish makes a router-owned deep copy of the mutable Paho publish
+// fields. Paho v0.23.0 invokes OnPublishReceived callbacks serially with the
+// same *Publish (client.go routePublishPackets); retaining or stamping that
+// broker-owned object after this callback returns could race a later callback.
+func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
+	if pub == nil {
+		return nil
+	}
+	cloned := *pub
+	if pub.Payload != nil {
+		cloned.Payload = make([]byte, len(pub.Payload))
+		copy(cloned.Payload, pub.Payload)
+	}
+	if pub.Properties == nil {
+		return &cloned
+	}
+	properties := *pub.Properties
+	if pub.Properties.User != nil {
+		properties.User = make(pahov5.UserProperties, len(pub.Properties.User))
+		copy(properties.User, pub.Properties.User)
+	}
+	if pub.Properties.CorrelationData != nil {
+		properties.CorrelationData = make([]byte, len(pub.Properties.CorrelationData))
+		copy(properties.CorrelationData, pub.Properties.CorrelationData)
+	}
+	if pub.Properties.SubscriptionIdentifier != nil {
+		v := *pub.Properties.SubscriptionIdentifier
+		properties.SubscriptionIdentifier = &v
+	}
+	if pub.Properties.PayloadFormat != nil {
+		v := *pub.Properties.PayloadFormat
+		properties.PayloadFormat = &v
+	}
+	if pub.Properties.MessageExpiry != nil {
+		v := *pub.Properties.MessageExpiry
+		properties.MessageExpiry = &v
+	}
+	if pub.Properties.TopicAlias != nil {
+		v := *pub.Properties.TopicAlias
+		properties.TopicAlias = &v
+	}
+	cloned.Properties = &properties
+	return &cloned
+}
+
 // onPublishReceived is the Paho client's publish callback (installed
 // via paho.ClientConfig.OnPublishReceived in Session.Start). It binds
 // the manual-acknowledgment callback to the originating publish and
@@ -846,12 +891,13 @@ func (r *router) shutdown() {
 // never returned because failure handling is the runtime's job via the
 // Delivery contract.
 func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
-	pub := pr.Packet
+	received := pr.Packet
+	pub := clonePublish(received)
 	client := pr.Client
 	var ack func() error
-	if pub != nil && pub.QoS > 0 && client != nil {
+	if received != nil && received.QoS > 0 && client != nil {
 		ack = func() error {
-			if err := client.Ack(pub); err != nil {
+			if err := client.Ack(received); err != nil {
 				if errors.Is(err, pahov5.ErrPacketNotFound) {
 					// The connection cycled between receive and settle:
 					// the client's ack tracker was reset, the broker will
@@ -931,6 +977,7 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	r.routeCount.Add(1)
+	ensurePublishIdentity(pub)
 
 	r.mu.Lock()
 	matching := make([]routerHandler, 0, len(r.handlers))
@@ -1130,40 +1177,7 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 	r.wg.Add(len(handlers))
 	local.Add(len(handlers))
 	for i, h := range handlers {
-		p := *pub
-		if pub.Payload != nil {
-			p.Payload = make([]byte, len(pub.Payload))
-			copy(p.Payload, pub.Payload)
-		}
-		if len(handlers) > 1 && pub.Properties != nil && i > 0 {
-			orig := pub.Properties
-			cp := *orig
-			if orig.User != nil {
-				cp.User = make(pahov5.UserProperties, len(orig.User))
-				copy(cp.User, orig.User)
-			}
-			if orig.CorrelationData != nil {
-				cp.CorrelationData = make([]byte, len(orig.CorrelationData))
-				copy(cp.CorrelationData, orig.CorrelationData)
-			}
-			if orig.SubscriptionIdentifier != nil {
-				si := *orig.SubscriptionIdentifier
-				cp.SubscriptionIdentifier = &si
-			}
-			if orig.PayloadFormat != nil {
-				pf := *orig.PayloadFormat
-				cp.PayloadFormat = &pf
-			}
-			if orig.MessageExpiry != nil {
-				me := *orig.MessageExpiry
-				cp.MessageExpiry = &me
-			}
-			if orig.TopicAlias != nil {
-				ta := *orig.TopicAlias
-				cp.TopicAlias = &ta
-			}
-			p.Properties = &cp
-		}
+		p := clonePublish(pub)
 		go func(handler routerHandler, ackPart func() error) {
 			defer r.wg.Done()
 			defer local.Done()
@@ -1195,7 +1209,7 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 				handler.emitMu.Lock()
 				defer handler.emitMu.Unlock()
 			}
-			handler.fn(&p, ackPart)
+			handler.fn(p, ackPart)
 		}(h, acks[i])
 	}
 	// Block until all handlers for THIS publish have returned. This is
