@@ -76,6 +76,11 @@ func (s *Session) Reload(ctx context.Context) error {
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
 	s.connected = false
+	// Invalidate readiness and the old connection generation before Start can
+	// return with a replacement CM whose OnConnectionUp callback is still queued.
+	// A prior-generation reconcile then cannot write into replacement state.
+	s.subscriptionsSatisfied = false
+	s.connEpoch++
 	s.mu.Unlock()
 
 	if cm != nil {

@@ -156,6 +156,11 @@ type Session struct {
 	// real dial lives in acl_session.go.
 	connectOverride func(ctx context.Context) (pahoConnection, context.CancelFunc, error)
 
+	// reconcileSnapshotHook is a deterministic test seam invoked after
+	// Reconcile captures the connection epoch and releases mu. Production leaves
+	// it nil. Guarded by mu when read or written.
+	reconcileSnapshotHook func()
+
 	// authFailureCB is the reactive-recovery hook (HIGH-3). The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live CONNECT

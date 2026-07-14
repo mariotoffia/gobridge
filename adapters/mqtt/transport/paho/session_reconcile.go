@@ -48,6 +48,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	appliedExists := s.appliedPlan != nil
 	appliedHadSubs := appliedExists && len(s.appliedPlan.Subscriptions) > 0
 	observedHadSubs := len(s.observedSubs) > 0 || len(s.activeSubs) > 0
+	startEpoch := s.connEpoch
 	// Snapshot the last-APPLIED desired topics: an empty target plan must tear
 	// these down even when a reconnect just reset the volatile activeSubs
 	// snapshot to empty (a clean_start=false broker resumed them). Using the
@@ -76,7 +77,12 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		s.sharedSubWarned = true
 	}
 	cm := s.cm
+	reconcileSnapshotHook := s.reconcileSnapshotHook
 	s.mu.Unlock()
+
+	if reconcileSnapshotHook != nil {
+		reconcileSnapshotHook()
+	}
 
 	if warnSharedSubs && s.logger != nil {
 		s.logger.Warn("mqtt: shared subscriptions ($share) configured on a stable-client_id session — "+
@@ -118,7 +124,9 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
 	if len(desiredPlan.Subscriptions) == 0 && appliedExists && !appliedHadSubs && !observedHadSubs {
 		s.mu.Lock()
-		s.subscriptionsSatisfied = true
+		if s.connEpoch == startEpoch {
+			s.subscriptionsSatisfied = true
+		}
 		s.mu.Unlock()
 		return nil
 	}
