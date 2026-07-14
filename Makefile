@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-cdk-norace test-integration test-long-running lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -73,6 +73,11 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 		grep -E "^FAIL\s" reports/test-unit.log || true; \
 	fi; \
 	exit $$rc'
+
+test-cdk-norace: ## Run CDK IAM assertions excluded from race builds
+	@echo "Running non-race CDK IAM policy assertions..."
+	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
+		./constructs/internal/grants ./constructs/internal/gobridgebase
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports

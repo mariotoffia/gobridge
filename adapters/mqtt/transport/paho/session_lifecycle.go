@@ -123,6 +123,11 @@ func (s *Session) Reload(ctx context.Context) error {
 // detaching first prevents an unfenced consumer from surviving the release. A
 // later supervisor retry may Start this same session again.
 func (s *Session) disconnectFailedReconcile(ctx context.Context) {
+	if s.router != nil {
+		// The exclusive manager releases its lease as soon as Reconcile returns.
+		// Quiesce handler work and invalidate pending ACKs before detaching the CM.
+		s.router.quiesceForRecycle()
+	}
 	s.mu.Lock()
 	cm := s.cm
 	s.cm = nil
@@ -192,6 +197,15 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.connected = false
+	if s.starting && !s.connectionUpCompleted {
+		s.connectionUpErr = shared.ErrUnavailable.WithMessage("mqtt: session closed before connection-up callback completed")
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+		// Any callback queued by the discarded construction is stale.
+		s.connectionGeneration++
+	}
 	cm := s.cm
 	s.cm = nil
 	cmCancel := s.cmCancel
@@ -309,30 +323,96 @@ func (s *Session) Close(ctx context.Context) error {
 // here — the epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+	s.handleConnectionUpGeneration(generation)
+}
+
+func (s *Session) handleConnectionUpGeneration(generation uint64) {
+	s.mu.Lock()
+	if generation != s.connectionGeneration || s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.observedSubs = make(map[string]subscriptionGrant)
 	s.activeSubs = make(map[string]byte)
 	s.subscriptionsSatisfied = false
-	// Bump the connection generation so any reconcile that snapshotted
-	// subscription state under the PRIOR connection abandons its stale write-back
-	// instead of polluting this fresh set (A-3).
 	s.connEpoch++
 	s.mu.Unlock()
 
-	// Restart the router's unmatched-publish grace window for this
-	// connection: a resumed clean_start=false session begins delivering
-	// its queued backlog on CONNACK before the receivers re-register their
-	// filters, so unmatched publishes must be buffered (not judged orphan)
-	// for one fresh window per connection.
+	// This reset is part of connection-up completion: Start/Reload must not
+	// return until the replacement router epoch is active.
 	s.router.beginGrace()
 
+	s.completeConnectionUpBarrier(generation, nil)
+	s.mu.Lock()
+	current := generation == s.connectionGeneration && s.connectionUpErr == nil && s.connected && !s.closed
+	s.mu.Unlock()
+	if !current {
+		return
+	}
 	s.pushEvent(ports.SessionConnected, nil)
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
 			"client_id", s.opts.ClientID)
 	}
+}
+
+func (s *Session) completeConnectionUpBarrier(generation uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration || s.connectionUpCompleted {
+		return
+	}
+	s.connectionUpErr = err
+	s.connectionUpCompleted = true
+	if s.connectionUpDone != nil {
+		close(s.connectionUpDone)
+	}
+}
+
+func (s *Session) invalidateConnectionGeneration(generation uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration {
+		return
+	}
+	if !s.connectionUpCompleted {
+		s.connectionUpErr = err
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+	}
+	// Ignore callbacks still queued by the discarded ConnectionManager.
+	s.connectionGeneration++
+}
+
+func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
+	s.mu.Lock()
+	if generation != s.connectionGeneration || s.closed {
+		s.mu.Unlock()
+		return false
+	}
+	s.connected = false
+	s.subscriptionsSatisfied = false
+	if !s.connectionUpCompleted {
+		s.connectionUpErr = shared.ErrUnavailable.WithMessage("mqtt: connection closed before connection-up callback completed")
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+	}
+	s.mu.Unlock()
+	s.pushEvent(ports.SessionDisconnected, nil)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
+			"client_id", s.opts.ClientID)
+	}
+	return true
 }
 
 // disconnectSessionTakenOver is the MQTT v5 DISCONNECT reason code the

@@ -53,6 +53,13 @@ type Session struct {
 	// Start returned nil while the winner was still connecting).
 	// Replaced with a fresh channel each time a Start attempt begins.
 	startDone chan struct{}
+	// connectionGeneration identifies one ConnectionManager construction. Start
+	// waits for connectionUpDone so AwaitConnection cannot return before the
+	// matching OnConnectionUp callback has reset epochs/router state.
+	connectionGeneration  uint64
+	connectionUpDone      chan struct{}
+	connectionUpCompleted bool
+	connectionUpErr       error
 
 	// takeoverStreak counts consecutive session-takeover disconnects
 	// (0x8E) without an intervening stable connection; connUpAt is when
@@ -166,6 +173,9 @@ type Session struct {
 	// file need not import the vendor SDK. Production leaves it nil; the
 	// real dial lives in acl_session.go.
 	connectOverride func(ctx context.Context) (pahoConnection, context.CancelFunc, error)
+	// Test-only: require connectOverride to signal handleConnectionUp instead of
+	// treating the returned fake connection as callback-complete.
+	connectOverrideAwaitConnectionUp bool
 
 	// reconcileSnapshotHook is a deterministic test seam invoked after
 	// Reconcile captures the connection epoch and releases mu. Production leaves

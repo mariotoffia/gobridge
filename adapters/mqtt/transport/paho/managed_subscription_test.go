@@ -91,22 +91,27 @@ func (s *managedHistoryFake) snapshot(identity string) []string {
 }
 
 type managedConnFake struct {
-	operations   *[]string
-	subReasons   []byte
-	unsubReasons []byte
-	subErr       error
-	unsubErr     error
-	unsubEntered chan struct{}
-	unsubRelease chan struct{}
-	unsubOnce    sync.Once
-	subscribed   []string
-	unsubscribed []string
-	disconnects  int
+	operations        *[]string
+	subReasons        []byte
+	unsubReasons      []byte
+	subErr            error
+	unsubErr          error
+	unsubEntered      chan struct{}
+	unsubRelease      chan struct{}
+	unsubOnce         sync.Once
+	subscribed        []string
+	unsubscribed      []string
+	disconnects       int
+	disconnectEntered chan struct{}
+	disconnectOnce    sync.Once
 }
 
 func (*managedConnFake) AwaitConnection(context.Context) error { return nil }
 func (c *managedConnFake) Disconnect(context.Context) error {
 	c.disconnects++
+	if c.disconnectEntered != nil {
+		c.disconnectOnce.Do(func() { close(c.disconnectEntered) })
+	}
 	*c.operations = append(*c.operations, "disconnect")
 	return nil
 }
@@ -221,6 +226,133 @@ func TestManagedSubscriptionPendingCleanupRemainsCoverageProtectedPastGrace(t *t
 	}
 }
 
+func TestManagedSubscriptionCleanupGatesOverlappingDesiredHandlerAndPurgesWithoutACK(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"$share/group/sensors/#": {}},
+	}}
+	conn := &managedConnFake{
+		operations:   &operations,
+		unsubEntered: make(chan struct{}),
+		unsubRelease: make(chan struct{}),
+	}
+	session := newManagedTestSession(t, store, conn)
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	var handled atomic.Int32
+	var acked atomic.Int32
+	session.router.RegisterFiltered("desired", []string{"sensors/+/temperature"}, func(_ *pahov5.Publish, _ func() error) {
+		handled.Add(1)
+	})
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/+/temperature", QoS: 1}}}
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(t.Context(), plan) }()
+	wait.RequireReceive(t, conn.unsubEntered, 2*time.Second)
+
+	// The concrete topic matches the desired handler and the stale shared
+	// wildcard. Cleanup gating must win before handler matching so this old-
+	// generation delivery remains unacknowledged for broker redelivery.
+	session.router.dispatch(&pahov5.Publish{Topic: "sensors/one/temperature", QoS: 1}, func() error {
+		acked.Add(1)
+		return nil
+	})
+	if got := handled.Load(); got != 0 {
+		t.Fatalf("handler processed stale-shared delivery during cleanup: %d", got)
+	}
+	if got := acked.Load(); got != 0 {
+		t.Fatalf("stale-shared delivery ACKed during cleanup: %d", got)
+	}
+
+	close(conn.unsubRelease)
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("successful cleanup/recycle: %v", err)
+	}
+	if got := handled.Load(); got != 0 {
+		t.Fatalf("handler processed purged stale-shared delivery after recycle: %d", got)
+	}
+	if got := acked.Load(); got != 0 {
+		t.Fatalf("recycle ACKed stale-shared delivery: %d", got)
+	}
+	session.router.mu.Lock()
+	pending := len(session.router.pending)
+	session.router.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("old-epoch pending deliveries after recycle = %d, want 0", pending)
+	}
+}
+
+func TestManagedSubscriptionReloadAwaitsConnectionUpCompletionWithoutExtraRecycle(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"old/#": {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations}
+	session := newManagedTestSession(t, store, first)
+	dials := 0
+	replacementDialed := make(chan struct{})
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials++
+		if dials == 1 {
+			return first, func() {}, nil
+		}
+		close(replacementDialed)
+		return replacement, func() {}, nil
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	session.connectOverrideAwaitConnectionUp = true
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "new/#", QoS: 1}}}
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(t.Context(), plan) }()
+	wait.RequireReceive(t, replacementDialed, 2*time.Second)
+	wait.Silent(t, reconcileDone, 25*time.Millisecond)
+
+	// Complete the exact replacement generation callback. Reconcile must now
+	// converge that generation once, without an epoch mismatch or another reload.
+	session.handleConnectionUp()
+	if err := wait.RequireReceive(t, reconcileDone, 2*time.Second); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if dials != 2 {
+		t.Fatalf("connection attempts = %d, want initial + one replacement", dials)
+	}
+	if first.disconnects != 1 || replacement.disconnects != 0 {
+		t.Fatalf("disconnects first=%d replacement=%d, want 1/0", first.disconnects, replacement.disconnects)
+	}
+}
+
+func TestStartConnectionUpBarrierUnblocksSafelyOnClose(t *testing.T) {
+	operations := []string{}
+	conn := &managedConnFake{operations: &operations}
+	session := NewSession(SessionOptions{ClientID: "client-a"}, connectivity.SessionEphemeral, nil)
+	dialed := make(chan struct{})
+	session.connectOverrideAwaitConnectionUp = true
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		close(dialed)
+		return conn, func() {}, nil
+	}
+	startDone := make(chan error, 1)
+	go func() { startDone <- session.Start(context.Background()) }()
+	wait.RequireReceive(t, dialed, 2*time.Second)
+
+	if err := session.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := wait.RequireReceive(t, startDone, 2*time.Second); err == nil {
+		t.Fatal("Start must fail when Close cancels its callback barrier")
+	}
+	if conn.disconnects != 1 {
+		t.Fatalf("fresh connection disconnects = %d, want 1", conn.disconnects)
+	}
+}
+
 func TestManagedSubscriptionCleanupConvergesReplacementGeneration(t *testing.T) {
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
@@ -264,7 +396,12 @@ func TestExclusiveManagedCleanupFailureDisconnectsReplacementBeforeLeaseRelease(
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
 		"safe-session-id": {"old/#": {}},
 	}}
-	first := &managedConnFake{operations: &operations}
+	first := &managedConnFake{
+		operations:        &operations,
+		unsubEntered:      make(chan struct{}),
+		unsubRelease:      make(chan struct{}),
+		disconnectEntered: make(chan struct{}),
+	}
 	replacement := &managedConnFake{operations: &operations, subErr: errors.New("replacement SUBSCRIBE failed")}
 	session := newManagedTestSession(t, store, first)
 	session.mode = connectivity.SessionExclusive
@@ -282,8 +419,28 @@ func TestExclusiveManagedCleanupFailureDisconnectsReplacementBeforeLeaseRelease(
 	}
 	t.Cleanup(func() { _ = session.Close(context.Background()) })
 
+	handlerEntered := make(chan struct{})
+	handlerRelease := make(chan struct{})
+	session.router.RegisterFiltered("desired", []string{"new/#"}, func(_ *pahov5.Publish, _ func() error) {
+		close(handlerEntered)
+		<-handlerRelease
+	})
 	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "new/#", QoS: 1}}}
-	if err := session.Reconcile(t.Context(), plan); err == nil {
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(t.Context(), plan) }()
+	wait.RequireReceive(t, first.unsubEntered, 2*time.Second)
+	dispatchDone := make(chan struct{})
+	go func() {
+		session.router.dispatch(&pahov5.Publish{Topic: "new/one", QoS: 1}, nil)
+		close(dispatchDone)
+	}()
+	wait.RequireReceive(t, handlerEntered, 2*time.Second)
+	close(first.unsubRelease)
+	wait.Silent(t, first.disconnectEntered, 25*time.Millisecond)
+	close(handlerRelease)
+	wait.RequireReceive(t, dispatchDone, 2*time.Second)
+	wait.RequireReceive(t, first.disconnectEntered, 2*time.Second)
+	if err := wait.RequireReceive(t, reconcileDone, 2*time.Second); err == nil {
 		t.Fatal("replacement convergence failure must propagate")
 	}
 	// The exclusive manager releases its lease after Reconcile returns. A nil

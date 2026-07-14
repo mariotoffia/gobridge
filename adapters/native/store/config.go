@@ -48,7 +48,8 @@ func (MemoryConfig) Validate() error { return nil }
 // outbox/DLQ/managed-subscription stores.
 type SQLiteConfig struct {
 	// Path is the SQLite database file path. ":memory:" selects an
-	// in-process database (used by tests).
+	// in-process database for roles that permit it. Managed subscriptions are
+	// durable and require a plain absolute, clean filesystem path.
 	Path string `mapstructure:"path" yaml:"path" json:"path"`
 
 	// StaleClaimDuration (outbox only) overrides the runtime-derived

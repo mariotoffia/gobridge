@@ -20,6 +20,9 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Run non-race CDK IAM policy assertions
+        run: make test-cdk-norace
+
       - name: Run uncached module tests
         run: make test
 

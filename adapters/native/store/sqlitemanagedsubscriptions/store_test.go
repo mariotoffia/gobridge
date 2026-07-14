@@ -14,7 +14,7 @@ import (
 )
 
 func TestStoreConformance(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "managed-subscriptions.db")
+	path := filepath.Join(t.TempDir(), "adapter-owned", "managed-subscriptions.db")
 	open := func(t *testing.T) ports.ManagedSubscriptionStore {
 		t.Helper()
 		store, err := sqlitemanagedsubscriptions.NewStore(path)
@@ -33,13 +33,17 @@ func TestNewStoreContextCreatesOwnerOnlyDatabaseAndSidecars(t *testing.T) {
 	if os.PathSeparator != '/' {
 		t.Skip("POSIX file permission test")
 	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("Chmod temp root: %v", err)
+	}
 	oldUmask := syscall.Umask(0)
 	t.Cleanup(func() { syscall.Umask(oldUmask) })
 
 	for _, mask := range []int{0, 0o077} {
 		t.Run(fmt.Sprintf("umask-%03o", mask), func(t *testing.T) {
 			syscall.Umask(mask)
-			path := filepath.Join(t.TempDir(), "adapter-owned", "managed.db")
+			path := filepath.Join(root, fmt.Sprintf("mask-%03o", mask), "managed.db")
 			store, err := sqlitemanagedsubscriptions.NewStoreContext(context.Background(), path)
 			if err != nil {
 				t.Fatalf("NewStoreContext: %v", err)
@@ -55,7 +59,11 @@ func TestNewStoreContextCreatesOwnerOnlyDatabaseAndSidecars(t *testing.T) {
 }
 
 func TestNewStoreContextRejectsInsecureExistingDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "managed.db")
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("Chmod parent: %v", err)
+	}
+	path := filepath.Join(parent, "managed.db")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -81,11 +89,15 @@ func TestNewStoreContextRejectsInsecureExistingDatabase(t *testing.T) {
 }
 
 func TestNewStoreContextRejectsDatabaseSymlink(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "target.db")
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o700); err != nil {
+		t.Fatalf("Chmod parent: %v", err)
+	}
+	target := filepath.Join(parent, "target.db")
 	if err := os.WriteFile(target, nil, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "managed.db")
+	path := filepath.Join(parent, "managed.db")
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
@@ -96,6 +108,94 @@ func TestNewStoreContextRejectsDatabaseSymlink(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("database symlink must be rejected")
+	}
+}
+
+func TestNewStoreContextRejectsNonCanonicalFilesystemPaths(t *testing.T) {
+	absolute := filepath.Join(t.TempDir(), "managed.db")
+	for _, path := range []string{
+		":memory:",
+		"managed.db",
+		"file:" + absolute,
+		"file:" + absolute + "?mode=rwc",
+		absolute + "?mode=rwc",
+		absolute + "#fragment",
+		filepath.Dir(absolute) + "/nested/../managed.db",
+	} {
+		t.Run(fmt.Sprintf("%q", path), func(t *testing.T) {
+			store, err := sqlitemanagedsubscriptions.NewStoreContext(t.Context(), path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("unsafe/non-canonical path returned a store")
+			}
+			if err == nil {
+				t.Fatal("unsafe/non-canonical path must be rejected")
+			}
+		})
+	}
+}
+
+func TestNewStoreContextRejectsSymlinkedOrUnsafeParentChain(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	unsafeParent := filepath.Join(root, "unsafe")
+	if err := os.Mkdir(unsafeParent, 0o777); err != nil {
+		t.Fatalf("Mkdir unsafe: %v", err)
+	}
+	if err := os.Chmod(unsafeParent, 0o777); err != nil {
+		t.Fatalf("Chmod unsafe: %v", err)
+	}
+
+	for _, path := range []string{
+		filepath.Join(linkedParent, "managed.db"),
+		filepath.Join(unsafeParent, "managed.db"),
+	} {
+		store, err := sqlitemanagedsubscriptions.NewStoreContext(t.Context(), path)
+		if store != nil {
+			_ = store.Close()
+			t.Fatalf("unsafe parent path %q returned a store", path)
+		}
+		if err == nil {
+			t.Fatalf("unsafe parent path %q must be rejected", path)
+		}
+	}
+}
+
+func TestNewStoreContextRejectsPreexistingSidecarSymlinks(t *testing.T) {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		t.Run(suffix, func(t *testing.T) {
+			parent := t.TempDir()
+			if err := os.Chmod(parent, 0o700); err != nil {
+				t.Fatalf("Chmod parent: %v", err)
+			}
+			path := filepath.Join(parent, "managed.db")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatalf("WriteFile db: %v", err)
+			}
+			target := filepath.Join(parent, "target")
+			if err := os.WriteFile(target, nil, 0o600); err != nil {
+				t.Fatalf("WriteFile target: %v", err)
+			}
+			if err := os.Symlink(target, path+suffix); err != nil {
+				t.Fatalf("Symlink sidecar: %v", err)
+			}
+			store, err := sqlitemanagedsubscriptions.NewStoreContext(t.Context(), path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("sidecar symlink returned a store")
+			}
+			if err == nil {
+				t.Fatal("sidecar symlink must be rejected")
+			}
+		})
 	}
 }
 

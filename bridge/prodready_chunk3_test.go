@@ -377,6 +377,17 @@ func (c *pathIdentifiedStoreConfig) Kind() string            { return "sqlite" }
 func (c *pathIdentifiedStoreConfig) Validate() error         { return nil }
 func (c *pathIdentifiedStoreConfig) StorageIdentity() string { return c.path }
 
+type roleDefaultIdentifiedStoreConfig struct{ table string }
+
+func (*roleDefaultIdentifiedStoreConfig) Kind() string    { return "dynamodb" }
+func (*roleDefaultIdentifiedStoreConfig) Validate() error { return nil }
+func (c *roleDefaultIdentifiedStoreConfig) StorageIdentityForRole(role string) string {
+	if c.table != "" {
+		return c.table
+	}
+	return "default-" + role
+}
+
 func TestStoreIdentityChanged_Unit(t *testing.T) {
 	t.Parallel()
 
@@ -414,6 +425,12 @@ func TestStoreIdentityChanged_Unit(t *testing.T) {
 	t.Run("tuning-only change via StorageIdentity allowed", func(t *testing.T) {
 		old := mk("outbox", &ports.StoreConfig{Type: "sqlite", Config: &pathIdentifiedStoreConfig{path: "outbox.db", tune: "2m"}})
 		nw := mk("outbox", &ports.StoreConfig{Type: "sqlite", Config: &pathIdentifiedStoreConfig{path: "outbox.db", tune: "5m"}})
+		assert.NoError(t, storeIdentityChanged(old, nw))
+	})
+
+	t.Run("omitted and explicit role default are reload-equivalent", func(t *testing.T) {
+		old := mk("outbox", &ports.StoreConfig{Type: "dynamodb", Config: &roleDefaultIdentifiedStoreConfig{}})
+		nw := mk("outbox", &ports.StoreConfig{Type: "dynamodb", Config: &roleDefaultIdentifiedStoreConfig{table: "default-outbox"}})
 		assert.NoError(t, storeIdentityChanged(old, nw))
 	})
 

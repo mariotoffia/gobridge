@@ -109,6 +109,16 @@ func (c DynamoDBConfig) FreezePluginConfig() ports.PluginConfig { frozen := c; r
 // same table. The table name is not a secret.
 func (c DynamoDBConfig) StorageIdentity() string { return c.TableName }
 
+// StorageIdentityForRole canonicalizes an omitted table to the exact runtime
+// default for that store role before live-reload identity comparison.
+func (c DynamoDBConfig) StorageIdentityForRole(role string) string {
+	resolved, err := ResolveDynamoDBTableName(role, c.TableName)
+	if err != nil {
+		return c.TableName
+	}
+	return resolved
+}
+
 // Validate rejects nonsensical duration values. TableName is optional.
 func (c DynamoDBConfig) Validate() error {
 	if c.StaleClaimDuration < 0 {

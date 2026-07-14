@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 )
 
@@ -38,14 +41,11 @@ func NewStoreContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, shared.ErrInvalidConfig.WithMessage("managed subscription SQLite path is required")
 	}
 
-	var acl *sqliteACL
-	if dbPath != ":memory:" {
-		var err error
-		acl, err = prepareSQLiteACL(ctx, dbPath)
-		if err != nil {
-			return nil, err
-		}
+	acl, err := prepareSQLiteACL(ctx, dbPath)
+	if err != nil {
+		return nil, err
 	}
+	defer acl.close()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -57,9 +57,7 @@ func NewStoreContext(ctx context.Context, dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	closeWithACL := func() {
 		_ = db.Close()
-		if acl != nil {
-			_ = acl.secureCreatedFiles()
-		}
+		_ = acl.secureCreatedFiles()
 	}
 	for _, pragma := range []string{
 		"PRAGMA busy_timeout=5000",
@@ -77,128 +75,254 @@ func NewStoreContext(ctx context.Context, dbPath string) (*Store, error) {
 		closeWithACL()
 		return nil, err
 	}
-	if acl != nil {
-		if err := acl.secureCreatedFiles(); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
+	if err := acl.secureCreatedFiles(); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	return store, nil
 }
 
 type sqliteACL struct {
 	path        string
+	base        string
+	dirFD       int
+	dirDev      uint64
+	dirIno      uint64
 	preexisting map[string]bool
 }
 
+func (a *sqliteACL) close() {
+	if a != nil && a.dirFD >= 0 {
+		_ = unix.Close(a.dirFD)
+		a.dirFD = -1
+	}
+}
+
 func prepareSQLiteACL(ctx context.Context, dbPath string) (*sqliteACL, error) {
-	parent := filepath.Dir(dbPath)
-	if err := ensureSQLiteParent(ctx, parent); err != nil {
+	if err := validateSQLitePath(dbPath); err != nil {
 		return nil, err
 	}
-	acl := &sqliteACL{path: dbPath, preexisting: make(map[string]bool, 3)}
-	for _, path := range acl.paths() {
+	parent := filepath.Dir(dbPath)
+	dirFD, stat, err := openSecureSQLiteParent(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	acl := &sqliteACL{
+		path: dbPath, base: filepath.Base(dbPath), dirFD: dirFD,
+		dirDev: uint64(stat.Dev), dirIno: uint64(stat.Ino),
+		preexisting: make(map[string]bool, 4),
+	}
+	failed := true
+	defer func() {
+		if failed {
+			acl.close()
+		}
+	}()
+
+	for _, name := range acl.names() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		info, err := os.Lstat(path)
-		switch {
-		case err == nil:
-			acl.preexisting[path] = true
-			if err := validateOwnerOnlyRegular(path, info); err != nil {
-				return nil, err
-			}
-		case errors.Is(err, os.ErrNotExist):
-			// SQLite creates WAL/SHM itself. The main database is pre-created with
-			// O_EXCL so its permissions never depend on process umask.
-			if path != dbPath {
-				continue
-			}
-			file, createErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-			if createErr != nil {
-				return nil, unavailable("create managed subscription SQLite database", createErr)
-			}
-			if chmodErr := file.Chmod(0o600); chmodErr != nil {
-				_ = file.Close()
-				return nil, unavailable("secure managed subscription SQLite database", chmodErr)
-			}
-			if closeErr := file.Close(); closeErr != nil {
-				return nil, unavailable("close new managed subscription SQLite database", closeErr)
-			}
-		default:
-			return nil, unavailable("inspect managed subscription SQLite files", err)
+		exists, inspectErr := acl.inspectRelative(name, false)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		if exists {
+			acl.preexisting[name] = true
+			continue
+		}
+		if name != acl.base {
+			continue
+		}
+		fd, createErr := unix.Openat(acl.dirFD, name,
+			unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		if createErr != nil {
+			return nil, unavailable("create managed subscription SQLite database", createErr)
+		}
+		if chmodErr := unix.Fchmod(fd, 0o600); chmodErr != nil {
+			_ = unix.Close(fd)
+			return nil, unavailable("secure managed subscription SQLite database", chmodErr)
+		}
+		if validateErr := validateSQLiteFileFD(fd, dbPath); validateErr != nil {
+			_ = unix.Close(fd)
+			return nil, validateErr
+		}
+		if closeErr := unix.Close(fd); closeErr != nil {
+			return nil, unavailable("close new managed subscription SQLite database", closeErr)
 		}
 	}
+	failed = false
 	return acl, nil
 }
 
-func ensureSQLiteParent(ctx context.Context, parent string) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func validateSQLitePath(dbPath string) error {
+	if dbPath == "" {
+		return shared.ErrInvalidConfig.WithMessage("managed subscription SQLite path is required")
 	}
-	info, err := os.Lstat(parent)
-	if err == nil {
-		if !info.IsDir() {
-			return shared.ErrInvalidConfig.WithMessage("managed subscription SQLite parent is not a directory")
+	if !filepath.IsAbs(dbPath) || filepath.Clean(dbPath) != dbPath ||
+		strings.HasPrefix(strings.ToLower(dbPath), "file:") ||
+		strings.ContainsAny(dbPath, "?#") || strings.ContainsRune(dbPath, 0) {
+		return shared.ErrInvalidConfig.WithMessage(
+			"managed subscription SQLite path must be a plain absolute clean filesystem path without URI or query syntax")
+	}
+	if filepath.Base(dbPath) == "." || filepath.Base(dbPath) == string(filepath.Separator) {
+		return shared.ErrInvalidConfig.WithMessage("managed subscription SQLite path must name a database file")
+	}
+	return nil
+}
+
+func openSecureSQLiteParent(ctx context.Context, parent string) (int, unix.Stat_t, error) {
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, unix.Stat_t{}, unavailable("open managed subscription SQLite root", err)
+	}
+	components := strings.Split(strings.TrimPrefix(parent, string(filepath.Separator)), string(filepath.Separator))
+	// Darwin exposes /var as a root-owned compatibility symlink to /private/var.
+	// Walk its immutable canonical target descriptor-relatively; all service-local
+	// symlink components remain rejected by O_NOFOLLOW below.
+	if runtime.GOOS == "darwin" && len(components) > 0 && components[0] == "var" {
+		components = append([]string{"private", "var"}, components[1:]...)
+	}
+	for i, component := range components {
+		if component == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			_ = unix.Close(fd)
+			return -1, unix.Stat_t{}, err
+		}
+		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		created := false
+		if openErr == unix.ENOENT {
+			if mkdirErr := unix.Mkdirat(fd, component, 0o700); mkdirErr != nil {
+				_ = unix.Close(fd)
+				return -1, unix.Stat_t{}, unavailable("create managed subscription SQLite parent", mkdirErr)
+			}
+			next, openErr = unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			created = true
+		}
+		if openErr != nil {
+			_ = unix.Close(fd)
+			return -1, unix.Stat_t{}, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("managed subscription SQLite parent component %q must be a non-symlink directory", component)).Wrap(openErr)
+		}
+		_ = unix.Close(fd)
+		fd = next
+		if created {
+			if chmodErr := unix.Fchmod(fd, 0o700); chmodErr != nil {
+				_ = unix.Close(fd)
+				return -1, unix.Stat_t{}, unavailable("secure managed subscription SQLite parent", chmodErr)
+			}
+		}
+		var stat unix.Stat_t
+		if statErr := unix.Fstat(fd, &stat); statErr != nil {
+			_ = unix.Close(fd)
+			return -1, unix.Stat_t{}, unavailable("inspect managed subscription SQLite parent", statErr)
+		}
+		final := i == len(components)-1
+		if validateErr := validateSQLiteDirectory(component, stat, final); validateErr != nil {
+			_ = unix.Close(fd)
+			return -1, unix.Stat_t{}, validateErr
+		}
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return -1, unix.Stat_t{}, unavailable("inspect managed subscription SQLite parent", err)
+	}
+	return fd, stat, nil
+}
+
+func validateSQLiteDirectory(component string, stat unix.Stat_t, final bool) error {
+	perm := uint32(stat.Mode) & 0o7777
+	uid := uint32(os.Geteuid())
+	if stat.Uid != 0 && stat.Uid != uid {
+		return shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("managed subscription SQLite parent component %q has an unsafe owner", component))
+	}
+	if final {
+		if stat.Uid != uid || perm != 0o700 {
+			return shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("managed subscription SQLite final parent %q must be owned by the process user with permissions 0700", component))
 		}
 		return nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return unavailable("inspect managed subscription SQLite parent", err)
-	}
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return unavailable("create managed subscription SQLite parent", err)
-	}
-	// MkdirAll is umask-sensitive. This directory did not exist before this
-	// adapter call, so it is adapter-owned and may be tightened deterministically.
-	if err := os.Chmod(parent, 0o700); err != nil {
-		return unavailable("secure managed subscription SQLite parent", err)
+	if perm&0o022 != 0 && (perm&0o1000 == 0 || stat.Uid != 0) {
+		return shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("managed subscription SQLite parent component %q is writable by group or other", component))
 	}
 	return nil
 }
 
-func (a *sqliteACL) paths() []string {
-	return []string{a.path, a.path + "-wal", a.path + "-shm"}
+func (a *sqliteACL) names() []string {
+	return []string{a.base, a.base + "-wal", a.base + "-shm", a.base + "-journal"}
+}
+
+func (a *sqliteACL) inspectRelative(name string, allowTighten bool) (bool, error) {
+	fd, err := unix.Openat(a.dirFD, name, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err == unix.ENOENT {
+		return false, nil
+	}
+	if err != nil {
+		return false, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("managed subscription SQLite file %q must be regular and must not be a symlink", filepath.Join(filepath.Dir(a.path), name))).Wrap(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := validateSQLiteFileFD(fd, filepath.Join(filepath.Dir(a.path), name)); err != nil {
+		if !allowTighten {
+			return false, err
+		}
+		var stat unix.Stat_t
+		if statErr := unix.Fstat(fd, &stat); statErr != nil || stat.Uid != uint32(os.Geteuid()) || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return false, err
+		}
+		if chmodErr := unix.Fchmod(fd, 0o600); chmodErr != nil {
+			return false, unavailable("secure managed subscription SQLite files", chmodErr)
+		}
+		if verifyErr := validateSQLiteFileFD(fd, filepath.Join(filepath.Dir(a.path), name)); verifyErr != nil {
+			return false, verifyErr
+		}
+	}
+	return true, nil
+}
+
+func validateSQLiteFileFD(fd int, path string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return unavailable("inspect managed subscription SQLite files", err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uint32(os.Geteuid()) {
+		return shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("managed subscription SQLite file %q must be an owner-controlled regular file", path))
+	}
+	if stat.Mode&0o777 != 0o600 {
+		return shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("managed subscription SQLite file %q has insecure permissions %04o; require 0600", path, stat.Mode&0o777))
+	}
+	return nil
+}
+
+func (a *sqliteACL) verifyHeldParent() error {
+	fd, stat, err := openSecureSQLiteParent(context.Background(), filepath.Dir(a.path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if uint64(stat.Dev) != a.dirDev || uint64(stat.Ino) != a.dirIno {
+		return shared.ErrInvalidConfig.WithMessage("managed subscription SQLite parent changed during initialization")
+	}
+	return nil
 }
 
 func (a *sqliteACL) secureCreatedFiles() error {
-	for _, path := range a.paths() {
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return unavailable("inspect managed subscription SQLite files", err)
-		}
-		if a.preexisting[path] {
-			if err := validateOwnerOnlyRegular(path, info); err != nil {
-				return err
-			}
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q must be regular and must not be a symlink", path))
-		}
-		if err := os.Chmod(path, 0o600); err != nil {
-			return unavailable("secure managed subscription SQLite files", err)
-		}
-		info, err = os.Lstat(path)
-		if err != nil {
-			return unavailable("verify managed subscription SQLite files", err)
-		}
-		if err := validateOwnerOnlyRegular(path, info); err != nil {
+	if err := a.verifyHeldParent(); err != nil {
+		return err
+	}
+	for _, name := range a.names() {
+		allowTighten := !a.preexisting[name]
+		if _, err := a.inspectRelative(name, allowTighten); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func validateOwnerOnlyRegular(path string, info os.FileInfo) error {
-	if !info.Mode().IsRegular() {
-		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q must be regular and must not be a symlink", path))
-	}
-	if info.Mode().Perm() != 0o600 {
-		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("managed subscription SQLite file %q has insecure permissions %04o; require 0600", path, info.Mode().Perm()))
 	}
 	return nil
 }

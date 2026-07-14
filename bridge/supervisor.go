@@ -1347,6 +1347,12 @@ type storageIdentifiedConfig interface {
 	StorageIdentity() string
 }
 
+// roleStorageIdentifiedConfig resolves role-dependent defaults before durable
+// identity comparison (for example one DynamoDB config shared by four roles).
+type roleStorageIdentifiedConfig interface {
+	StorageIdentityForRole(role string) string
+}
+
 // storeIdentityChanged reports an error when a hot reload would repoint an
 // EXISTING durable store (lease/outbox/DLQ present in BOTH configs) to a
 // different backing identity — a changed Type, or a changed path/table.
@@ -1378,7 +1384,7 @@ func storeIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
 		if r.old == nil || r.new == nil {
 			continue
 		}
-		if storeIdentity(r.old) != storeIdentity(r.new) {
+		if storeIdentity(r.name, r.old) != storeIdentity(r.name, r.new) {
 			// The identity fingerprint (path/table, or a raw options blob that
 			// could carry credentials) is NEVER put in the error. Surface only
 			// the role and the non-secret type discriminators, and adapt the
@@ -1762,9 +1768,12 @@ func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Ru
 // two same-type configs pointing at DIFFERENT backings are still distinguished
 // (fail-safe: any field difference trips the guard) rather than collapsing to
 // the Type discriminator alone and silently stranding a backlog.
-func storeIdentity(sc *ports.StoreConfig) string {
+func storeIdentity(role string, sc *ports.StoreConfig) string {
 	if sc == nil {
 		return ""
+	}
+	if si, ok := sc.Config.(roleStorageIdentifiedConfig); ok {
+		return sc.Type + "|id=" + si.StorageIdentityForRole(role)
 	}
 	if si, ok := sc.Config.(storageIdentifiedConfig); ok {
 		return sc.Type + "|id=" + si.StorageIdentity()

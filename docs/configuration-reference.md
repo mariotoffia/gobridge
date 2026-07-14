@@ -170,7 +170,7 @@ Configures the backing stores for lease coordination, outbox persistence, dead-l
 
 | Option | Type | Applies to | Default | Description |
 |--------|------|------------|---------|-------------|
-| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` for an in-process DB). Managed-subscription SQLite creates adapter-owned parents as `0700` and the database/WAL/SHM as `0600`; insecure existing files are rejected. |
+| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` remains available to non-durable test roles). For `managed_subscriptions`, this must be a plain absolute, already-clean filesystem path: `:memory:`, relative paths, `file:` URIs, queries, and fragments are rejected. The final parent must be owner-controlled `0700` (missing adapter-owned parents are created as `0700`); the database, WAL, SHM, and journal are descriptor-validated non-symlink regular files at `0600`. Insecure existing paths are rejected, never silently chmodded. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | How long a same-owner stranded claim waits before another claim attempt may take it. Failover reclaim via a higher fencing version is always immediate and independent of this. |
 | `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
 

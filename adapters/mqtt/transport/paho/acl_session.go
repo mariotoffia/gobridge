@@ -149,6 +149,12 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	s.starting = true
 	s.startDone = make(chan struct{})
+	s.connectionGeneration++
+	connectionGeneration := s.connectionGeneration
+	s.connectionUpDone = make(chan struct{})
+	s.connectionUpCompleted = false
+	s.connectionUpErr = nil
+	connectionUpDone := s.connectionUpDone
 	if s.eventsClosed {
 		// F-1: a prior Reload-failure closed s.events to signal terminal
 		// death and trigger this supervisor re-Start. Re-materialise a
@@ -197,12 +203,42 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	conn, cmCancel, err := dial(ctx)
 	if err != nil {
+		s.invalidateConnectionGeneration(connectionGeneration, err)
 		finishStart()
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
 				"client_id", s.opts.ClientID, "error", err)
 		}
 		return err
+	}
+
+	// Test fakes historically model AwaitConnection and callback completion as
+	// one operation. Production and explicit delayed-callback tests must signal
+	// the barrier from handleConnectionUpGeneration.
+	if s.connectOverride != nil && !s.connectOverrideAwaitConnectionUp {
+		s.completeConnectionUpBarrier(connectionGeneration, nil)
+	}
+	select {
+	case <-connectionUpDone:
+		s.mu.Lock()
+		upErr := s.connectionUpErr
+		currentGeneration := s.connectionGeneration
+		s.mu.Unlock()
+		if currentGeneration != connectionGeneration || upErr != nil {
+			cmCancel()
+			_ = conn.Disconnect(context.Background())
+			finishStart()
+			if upErr != nil {
+				return upErr
+			}
+			return shared.ErrUnavailable.WithMessage("mqtt: connection generation changed before callback completion")
+		}
+	case <-ctx.Done():
+		s.invalidateConnectionGeneration(connectionGeneration, ctx.Err())
+		cmCancel()
+		_ = conn.Disconnect(context.Background())
+		finishStart()
+		return MapError(ctx.Err()).WithMessage("mqtt: await connection-up callback completion")
 	}
 
 	// Close/Start race guard: dial released s.mu and may have blocked for
@@ -261,6 +297,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	credsPresent := s.liveCreds.Username != "" || s.liveCreds.Password != ""
 	allowPlaintext := s.opts.AllowPlaintextCredentials
 	brokerURLs := s.opts.BrokerURLs
+	connectionGeneration := s.connectionGeneration
 	s.mu.Unlock()
 
 	// HIGH-4 defense-in-depth: Factory.NewSession validates the plaintext-
@@ -317,22 +354,13 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// handleConnectionUp for the reset-before-signal ordering that lets
 		// the manager observe an empty subscription set on reconnect.
 		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *pahov5.Connack) {
-			s.handleConnectionUp()
+			s.handleConnectionUpGeneration(connectionGeneration)
 		},
 		OnConnectError: func(err error) {
 			s.handleConnectError(err)
 		},
 		OnConnectionDown: func() bool {
-			s.mu.Lock()
-			s.connected = false
-			s.subscriptionsSatisfied = false
-			s.mu.Unlock()
-			s.pushEvent(ports.SessionDisconnected, nil)
-			if logging.DebugEnabled(s.logger) {
-				s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
-					"client_id", s.opts.ClientID)
-			}
-			return true
+			return s.handleConnectionDownGeneration(connectionGeneration)
 		},
 
 		ClientConfig: pahov5.ClientConfig{

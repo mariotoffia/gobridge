@@ -163,3 +163,18 @@ func TestResolveDynamoDBTableNameUsesRoleDefaults(t *testing.T) {
 		t.Fatal("unknown role without an explicit table must fail")
 	}
 }
+
+func TestDynamoDBStorageIdentityCanonicalizesOmittedRoleDefaults(t *testing.T) {
+	omitted := awsstore.DynamoDBConfig{}
+	for role, explicit := range map[string]string{
+		"lease":                 awsstore.DefaultDynamoDBLeaseTableName,
+		"outbox":                awsstore.DefaultDynamoDBOutboxTableName,
+		"dlq":                   awsstore.DefaultDynamoDBDLQTableName,
+		"managed_subscriptions": awsstore.DefaultDynamoDBManagedSubscriptionsTableName,
+	} {
+		want := (awsstore.DynamoDBConfig{TableName: explicit}).StorageIdentityForRole(role)
+		if got := omitted.StorageIdentityForRole(role); got != want {
+			t.Fatalf("role %q omitted identity = %q, explicit identity = %q", role, got, want)
+		}
+	}
+}

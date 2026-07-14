@@ -301,6 +301,8 @@ vendors:
     # a trailing "/**" matches subpackages only, not the package itself.
     { in: ["github.com/aws/aws-sdk-go-v2/**", "github.com/aws/smithy-go", "github.com/aws/smithy-go/**"] }
   sqlite: { in: ["modernc.org/sqlite", "modernc.org/sqlite/lib"] }
+  # Descriptor-relative, O_NOFOLLOW filesystem hardening for durable SQLite.
+  xsys_unix: { in: golang.org/x/sys/unix }
   otel:
     {
       in:
@@ -802,7 +804,7 @@ deps:
     canUse: [sqlite]
   adapter_store_native_sqlitemanagedsubscriptions:
     mayDependOn: [domain_shared, ports]
-    canUse: [sqlite]
+    canUse: [sqlite, xsys_unix]
   adapter_store_aws_dynamodblease:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [aws]

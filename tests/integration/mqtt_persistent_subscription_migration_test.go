@@ -31,7 +31,7 @@ func TestMQTTPersistentSubscriptionMigrationReleasesWildcardAndSharedFilters(t *
 	topicRoot := mqttlocal.UniqueClientID("managed-migration-topic")
 	ordinaryFilter := topicRoot + "/#"
 	sharedFilter := "$share/" + mqttlocal.UniqueClientID("managed-migration-group") + "/" + topicRoot + "/#"
-	storePath := filepath.Join(t.TempDir(), "managed-subscriptions.db")
+	storePath := filepath.Join(t.TempDir(), "managed-subscriptions", "managed-subscriptions.db")
 	const unmatchedGrace = 300 * time.Millisecond
 	sessionConfig := paho.Config{Session: paho.SessionOptions{
 		BrokerURLs:            []string{brokerURL},

@@ -113,7 +113,7 @@ func TestSQLiteStoreFactory_NewOutboxStore_WithStaleClaimDuration(t *testing.T) 
 // Verifies the SQLite factory exposes the optional managed-subscription role.
 func TestSQLiteStoreFactory_NewManagedSubscriptionStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
-	store, err := f.NewManagedSubscriptionStore(t.Context(), &nativestore.SQLiteConfig{Path: t.TempDir() + "/managed.db"})
+	store, err := f.NewManagedSubscriptionStore(t.Context(), &nativestore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "adapter-owned", "managed.db")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,6 +194,22 @@ func TestSQLiteConfig_ValidateDurations(t *testing.T) {
 	bad := nativestore.SQLiteConfig{Path: ":memory:", StaleClaimDuration: -time.Second}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected validation error for negative stale_claim_duration")
+	}
+}
+
+func TestSQLiteStoreFactory_NewManagedSubscriptionStoreRejectsSQLiteURI(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "escaped.db")
+	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(
+		t.Context(), &nativestore.SQLiteConfig{Path: "file:" + target + "?mode=rwc"},
+	)
+	if store != nil {
+		t.Fatal("SQLite URI returned a managed subscription store")
+	}
+	if err == nil {
+		t.Fatal("SQLite URI must fail managed subscription store validation")
+	}
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("URI bypass created target database: %v", statErr)
 	}
 }
 

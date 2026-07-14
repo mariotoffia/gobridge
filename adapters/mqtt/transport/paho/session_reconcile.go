@@ -91,6 +91,10 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	reconcileSnapshotHook := s.reconcileSnapshotHook
 	s.mu.Unlock()
 
+	// Install history-minus-desired in the router before any broker cleanup or
+	// handler matching. History was initially gated in full before broker dial.
+	s.syncManagedCleanupGate(desiredPlan)
+
 	if reconcileSnapshotHook != nil {
 		reconcileSnapshotHook()
 	}
@@ -184,6 +188,11 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	s.appliedPlan = &applied
 	s.mu.Unlock()
 
+	// Durable history may have changed after exact cleanup; narrow the router
+	// gate before pending reclassification, but keep global recycle quiescence
+	// until the replacement epoch is proved below.
+	s.syncManagedCleanupGate(desiredPlan)
+
 	// A successful reconcile may have REMOVED coverage (an Unsubscribe tore
 	// down a topic a receiver was removed from config). A publish RETAINED as
 	// covered past the grace window on that topic is now a TRUE ORPHAN, but
@@ -200,6 +209,9 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 
 	if err := s.requireReconcileEpoch(startEpoch); err != nil {
 		return err
+	}
+	if s.managedRequired && s.router != nil {
+		s.router.resumeManagedDispatch()
 	}
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
@@ -813,6 +825,12 @@ func (s *Session) reconcileManagedUnsubscribe(
 	}
 
 	if confirmation.removedAny {
+		// Stop new handler dispatch and await active handler callbacks before the
+		// old socket is disconnected. Pending old-epoch deliveries are purged
+		// without ACK so a shared broker peer or this replacement receives them.
+		if s.router != nil {
+			s.router.quiesceForRecycle()
+		}
 		// A successful removal may have left shared deliveries buffered on this
 		// connection. Recycle once so router.beginGrace purges the old epoch
 		// without ACK and returns them to the broker. Keep in-memory history until
@@ -952,10 +970,42 @@ func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
 		history[filter] = struct{}{}
 	}
 	s.mu.Lock()
+	installed := false
 	if !s.managedLoaded {
 		s.managedHistory = history
 		s.managedLoaded = true
+		installed = true
 	}
 	s.mu.Unlock()
+	if installed && s.router != nil {
+		// Desired state is not declared until Reconcile. Gate every durable
+		// historical filter before broker activation so resumed traffic cannot
+		// reach a handler through a stale wildcard/shared subscription.
+		s.router.setManagedCleanupFilters(filters)
+	}
 	return nil
+}
+
+func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
+	if s.router == nil {
+		return
+	}
+	desired := make(map[string]struct{}, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		desired[sub.Topic] = struct{}{}
+	}
+	s.mu.Lock()
+	if !s.managedRequired {
+		s.mu.Unlock()
+		s.router.setManagedCleanupFilters(nil)
+		return
+	}
+	filters := make([]string, 0, len(s.managedHistory))
+	for filter := range s.managedHistory {
+		if _, keep := desired[filter]; !keep {
+			filters = append(filters, filter)
+		}
+	}
+	s.mu.Unlock()
+	s.router.setManagedCleanupFilters(filters)
 }
