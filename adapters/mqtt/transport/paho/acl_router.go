@@ -961,7 +961,10 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 // protocol-ack callback (the Paho client auto-acks when it drives a
 // Router); production traffic enters through onPublishReceived.
 func (r *router) Route(pb *packets.Publish) {
-	r.dispatch(pahov5.PublishFromPacketPublish(pb), nil)
+	// PublishFromPacketPublish retains the packet payload backing array. Clone
+	// at this compatibility boundary so fanout can transfer its router-owned
+	// publish to one handler without allowing that handler to mutate pb.
+	r.dispatch(clonePublish(pahov5.PublishFromPacketPublish(pb)), nil)
 }
 
 // dispatch fans a publish out to every registered handler whose topic
@@ -1176,8 +1179,21 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 	var local sync.WaitGroup
 	r.wg.Add(len(handlers))
 	local.Add(len(handlers))
+
+	// The callback/Route boundary already gave the router ownership of pub.
+	// Pre-clone all but one dispatch before starting any handler, then transfer
+	// pub itself to the remaining handler. Pre-cloning preserves isolation even
+	// when the transferred handler mutates immediately, while avoiding one full
+	// payload allocation per received publish.
+	dispatches := make([]*pahov5.Publish, len(handlers))
+	for i := 1; i < len(dispatches); i++ {
+		dispatches[i] = clonePublish(pub)
+	}
+	if len(dispatches) > 0 {
+		dispatches[0] = pub
+	}
 	for i, h := range handlers {
-		p := clonePublish(pub)
+		p := dispatches[i]
 		go func(handler routerHandler, ackPart func() error) {
 			defer r.wg.Done()
 			defer local.Done()
