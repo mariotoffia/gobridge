@@ -324,7 +324,10 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 
 	desired := make(map[string]byte, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
-		desired[sub.Topic] = byte(sub.QoS)
+		qos := byte(sub.QoS)
+		if current, ok := desired[sub.Topic]; !ok || qos > current {
+			desired[sub.Topic] = qos
+		}
 	}
 
 	s.mu.Lock()
@@ -441,59 +444,49 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		if err != nil {
 			return MapError(err)
 		}
-		// Walk every reason code so we persist EVERY accepted topic
-		// even when an earlier one was rejected. Without this, an
-		// early-return on the first rejected reason would leave the
-		// broker holding subscriptions our local activeSubs map does
-		// not know about (BUG-RPS) — the next reconcile delta would
-		// then re-subscribe and the delta accounting would be wrong.
+		// Walk every reason code so every contract-satisfying topic is persisted
+		// even when a sibling is rejected or downgraded. This preserves partial
+		// SUBACK success without treating a weaker QoS grant as active.
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
-		if len(succeeded) > 0 {
+		accepted := make([]subscribeSpec, 0, len(succeeded))
+		var downgradeErr *shared.BridgeError
+		for _, opt := range succeeded {
+			req := desired[opt.Topic]
+			if opt.QoS >= req {
+				accepted = append(accepted, opt)
+				continue
+			}
+
+			s.metrics.Counter(MetricMQTTQoSDowngraded, 1,
+				shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+			if s.logger != nil {
+				s.logger.Warn("mqtt: broker downgraded subscription QoS below requested; "+
+					"delivery guarantee is weaker than the route assumes",
+					"client_id", s.opts.ClientID,
+					"topic", opt.Topic,
+					"requested_qos", req,
+					"granted_qos", opt.QoS,
+				)
+			}
+			if downgradeErr == nil {
+				downgradeErr = shared.ErrQoSNotSupported.
+					WithMessage("mqtt: broker granted subscription QoS below requested").
+					With("topic", opt.Topic).
+					With("requested_qos", int(req)).
+					With("granted_qos", int(opt.QoS))
+			}
+		}
+		if len(accepted) > 0 {
 			s.mu.Lock()
-			// Skip the write-back if a reconnect reset activeSubs while this
-			// reconcile ran (A-3): the SUBACK we are committing belongs to the
-			// PRIOR connection, so writing it into the fresh set would mask the
-			// re-subscribe the new connection still needs.
 			if s.connEpoch == startEpoch {
-				for _, opt := range succeeded {
-					// Persist the REQUESTED QoS (intent), NOT the broker-granted
-					// QoS. activeSubs is the reconcile delta's baseline, so keying
-					// it off the requested QoS keeps a granted-QoS DOWNGRADE from
-					// leaving the topic permanently "dirty" (granted != requested)
-					// and re-SUBSCRIBING + re-warning on EVERY reconcile. opt.QoS is
-					// the GRANTED QoS (see classifySubackReasons) and is used only
-					// for the downgrade comparison below; desired[opt.Topic] is the
-					// requested QoS we store (c4-qos-downgrade MEDIUM).
-					s.activeSubs[opt.Topic] = desired[opt.Topic]
+				for _, opt := range accepted {
+					s.activeSubs[opt.Topic] = opt.QoS
 				}
 			}
 			s.mu.Unlock()
-			// Surface any granted-QoS downgrade (broker granted a weaker QoS
-			// than requested). The route assumes the requested delivery
-			// guarantee, so a silent downgrade would quietly remove offline /
-			// redelivery guarantees (c4-qos-downgrade). Because activeSubs is
-			// keyed off the REQUESTED QoS, a stable downgraded subscription
-			// yields an EMPTY delta on the next reconcile and is not
-			// re-subscribed — so this fires ONCE per subscription transition
-			// (initial subscribe, reconnect, or a plan that changes the
-			// requested QoS), not on every reconcile. Warn loudly and record on
-			// a dedicated metric rather than silently accepting the weaker
-			// guarantee.
-			for _, opt := range succeeded {
-				if req, ok := desired[opt.Topic]; ok && opt.QoS < req {
-					s.metrics.Counter(MetricMQTTQoSDowngraded, 1,
-						shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
-					if s.logger != nil {
-						s.logger.Warn("mqtt: broker downgraded subscription QoS below requested; "+
-							"delivery guarantee is weaker than the route assumes",
-							"client_id", s.opts.ClientID,
-							"topic", opt.Topic,
-							"requested_qos", req,
-							"granted_qos", opt.QoS,
-						)
-					}
-				}
-			}
+		}
+		if downgradeErr != nil {
+			return downgradeErr
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)

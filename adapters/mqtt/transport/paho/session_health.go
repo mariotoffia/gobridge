@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"sort"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -22,8 +23,9 @@ import (
 // sessions must therefore gate on ServiceLevel == Full (which the monitor
 // exposes via ?level=full), not on Ready. ServiceLevel describes
 // operational completeness:
-//   - Full: all desired subscriptions active and handlers registered, and no
-//     publishes are still buffered waiting for a handler (A-5: a covered
+//   - Full: every unique desired topic filter is active at or above requested
+//     QoS, every expected receiver handler is registered, and no publishes are
+//     still buffered waiting for a handler (A-5: a covered
 //     subscription whose receiver died keeps its messages retained in the
 //     pending buffer, so a non-empty buffer degrades readiness even while a
 //     surviving receiver keeps the session-total handler count above zero)
@@ -34,36 +36,48 @@ import (
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
-	// Capture wantedCount UNDER the lock (B-4): s.plan is swapped by pointer on
-	// Reconcile, so dereferencing a captured pointer after unlocking could race
-	// that swap under the race detector. Read the length while holding s.mu.
-	wantedCount := 0
+	desired := make(map[string]byte)
+	var expectedReceiverIDs []string
 	if s.plan != nil {
-		wantedCount = len(s.plan.Subscriptions)
+		for _, sub := range s.plan.Subscriptions {
+			qos := byte(sub.QoS)
+			if current, ok := desired[sub.Topic]; !ok || qos > current {
+				desired[sub.Topic] = qos
+			}
+		}
+		expectedReceiverIDs = append(expectedReceiverIDs, s.plan.ExpectedReceiverIDs...)
 	}
-	activeCount := len(s.activeSubs)
-	connected := cm != nil && s.connected
+	active := make(map[string]byte, len(s.activeSubs))
 	topics := make([]string, 0, len(s.activeSubs))
-	for t := range s.activeSubs {
-		topics = append(topics, t)
+	for topic, qos := range s.activeSubs {
+		active[topic] = qos
+		topics = append(topics, topic)
 	}
+	connected := cm != nil && s.connected
 	s.mu.Unlock()
-	handlerCount := s.router.HandlerCount()
-	// pendingCount is the router's pre-registration / covered-retained backlog.
-	// In steady state (every subscription's handler registered) an incoming
-	// publish dispatches immediately and never enters the buffer, so this is 0;
-	// a non-zero value means some covered subscription still lacks a live
-	// handler (A-5).
+	sort.Strings(topics)
+
+	handlerIDs := s.router.HandlerIDs()
+	handlerCount := len(handlerIDs)
 	pendingCount := s.router.PendingCount()
+	wantedCount := len(desired)
+	activeCount := len(active)
+	subscriptionsSatisfied := desiredSubscriptionsActive(desired, active)
+	handlersSatisfied := expectedHandlersRegistered(expectedReceiverIDs, handlerIDs)
+	if len(expectedReceiverIDs) == 0 && wantedCount > 0 {
+		// Plans assembled before ExpectedReceiverIDs was added retain the legacy
+		// contract: at least one handler proves receiver-side registration.
+		handlersSatisfied = handlerCount > 0
+	}
 
 	var sl ports.ServiceLevel
 	switch {
 	case !connected:
 		sl = ports.ServiceLevelNone
-	case wantedCount == 0:
-		// Sender-only session: no subscriptions expected.
+	case wantedCount == 0 && len(expectedReceiverIDs) == 0:
+		// Sender-only session: no subscriptions or receiver handlers expected.
 		sl = ports.ServiceLevelFull
-	case activeCount == wantedCount && handlerCount > 0 && pendingCount == 0:
+	case subscriptionsSatisfied && handlersSatisfied && pendingCount == 0:
 		sl = ports.ServiceLevelFull
 	case activeCount == 0 && handlerCount == 0:
 		sl = ports.ServiceLevelNone
@@ -73,10 +87,6 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	rm := s.opts.ReceiveMaximum
 	if rm == 0 {
-		// NewSession coerces a zero ReceiveMaximum to DefaultReceiveMaximum,
-		// so s.opts.ReceiveMaximum is normally non-zero here. This fallback
-		// only covers a Session built by hand (bypassing NewSession) and
-		// reports the same effective default the CONNECT would carry.
 		rm = DefaultReceiveMaximum
 	}
 
@@ -90,6 +100,32 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		ServiceLevel:        sl,
 		ActiveTopics:        topics,
 	}
+}
+
+func desiredSubscriptionsActive(desired, active map[string]byte) bool {
+	for topic, requestedQoS := range desired {
+		actualQoS, ok := active[topic]
+		if !ok || actualQoS < requestedQoS {
+			return false
+		}
+	}
+	return true
+}
+
+func expectedHandlersRegistered(expected, registered []string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	registeredSet := make(map[string]struct{}, len(registered))
+	for _, id := range registered {
+		registeredSet[id] = struct{}{}
+	}
+	for _, id := range expected {
+		if _, ok := registeredSet[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // Events returns the channel on which session lifecycle events are emitted.

@@ -120,8 +120,9 @@ type Session struct {
 	// on every reconcile.
 	sharedSubWarned bool
 
-	// activeSubs tracks topics for which SUBSCRIBE has been issued.
-	activeSubs map[string]byte // topic -> qos
+	// activeSubs tracks topic filters the broker confirmed at or above the
+	// requested QoS. The value is the granted QoS.
+	activeSubs map[string]byte // topic filter -> granted qos
 
 	// liveCreds is the most recently applied credential material. It is
 	// consulted by the ConnectPacketBuilder on every (re)connect so that

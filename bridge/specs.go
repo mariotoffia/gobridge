@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"log/slog"
+	"sort"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -59,7 +60,8 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // per-subscription Config on both the spec and the reconcile plan.
 //
 // It is computed deterministically from the config (receiver declaration
-// order) and independent of which route triggers it, so every route
+// order for subscriptions; sorted, deduplicated receiver IDs) and independent
+// of which route triggers it, so every route
 // sharing the session derives an identical plan. That keeps the runtime's
 // first-wins session-manager dedup (runtime/bridge_start.go) safe:
 // whichever route's sessCfg the manager is built from carries the same
@@ -92,15 +94,22 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 		return connectivity.SessionPlan{}
 	}
 	var subs []connectivity.SubscriptionPlan
+	receiverIDs := make(map[string]struct{})
 	for i := range cfg.Receivers {
 		rd := cfg.Receivers[i]
 		if rd.SessionID != sessionID {
 			continue
 		}
+		receiverIDs[rd.ID] = struct{}{}
 		// Reuse the exact receiverSpecFrom mapping so the spec and the
 		// reconcile plan never drift.
 		subs = append(subs, receiverSpecFrom(rd).Subscriptions...)
 	}
+	expectedReceiverIDs := make([]string, 0, len(receiverIDs))
+	for id := range receiverIDs {
+		expectedReceiverIDs = append(expectedReceiverIDs, id)
+	}
+	sort.Strings(expectedReceiverIDs)
 	var pubs []connectivity.PublisherPlan
 	// kept records, per exchange name, the FIRST sender that declared it so a
 	// later sibling naming the same exchange can be compared against it.
@@ -146,7 +155,11 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 		kept[topic] = keptPublisher{senderID: sd.ID, decl: decl}
 		pubs = append(pubs, connectivity.PublisherPlan{Topic: topic, Config: sd.Config})
 	}
-	return connectivity.SessionPlan{Subscriptions: subs, Publishers: pubs}
+	return connectivity.SessionPlan{
+		Subscriptions:       subs,
+		Publishers:          pubs,
+		ExpectedReceiverIDs: expectedReceiverIDs,
+	}
 }
 
 // Package bridge specs.go intentionally omits a StoreSpec converter:

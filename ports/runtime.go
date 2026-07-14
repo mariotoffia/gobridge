@@ -97,8 +97,8 @@ const (
 	// point without missing messages from subsequent publishes.
 	LevelSubscribed
 	// LevelFull means LevelSubscribed plus every route has Ready == true
-	// (route runner started AND receiver started AND, for MQTT,
-	// HandlersRegistered > 0) AND every non-deferred session is at
+	// (route runner started AND receiver started AND, for MQTT, every expected
+	// receiver handler is registered) AND every non-deferred session is at
 	// ServiceLevelFull (a flow-control-blocked / degraded session caps below
 	// Full). Equivalent to ReadyForTraffic + ServiceLevelFull.
 	LevelFull

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1430,6 +1431,18 @@ func (r *router) Unregister(id string) {
 			"handler_id", id,
 		)
 	}
+}
+
+// HandlerIDs returns a sorted snapshot of the registered handler IDs.
+func (r *router) HandlerIDs() []string {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.handlers))
+	for id := range r.handlers {
+		ids = append(ids, id)
+	}
+	r.mu.RUnlock()
+	sort.Strings(ids)
+	return ids
 }
 
 // HandlerCount returns the number of registered handlers.
