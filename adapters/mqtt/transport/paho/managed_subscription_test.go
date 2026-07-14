@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -161,7 +162,7 @@ func (*managedConnFake) Underlying() *autopaho.ConnectionManager { return nil }
 
 func newManagedTestSession(t *testing.T, store *managedHistoryFake, conn *managedConnFake) *Session {
 	t.Helper()
-	session := NewSession(SessionOptions{ClientID: "client-a"}, connectivity.SessionPersistent, nil)
+	session := NewSession(SessionOptions{ClientID: "client-a", UnmatchedGrace: time.Millisecond}, connectivity.SessionPersistent, nil)
 	session.managedStore = store
 	session.managedIdentity = "safe-session-id"
 	session.managedRequired = true
@@ -169,6 +170,166 @@ func newManagedTestSession(t *testing.T, store *managedHistoryFake, conn *manage
 		return conn, func() {}, nil
 	}
 	return session
+}
+
+func TestRouterQuiesceForRecycleIsBoundedByContextWithStuckHandler(t *testing.T) {
+	r := newRouter(nil, nil)
+	handlerEntered := make(chan struct{})
+	handlerRelease := make(chan struct{})
+	r.RegisterFiltered("stuck", []string{"desired/#"}, func(_ *pahov5.Publish, _ func() error) {
+		close(handlerEntered)
+		<-handlerRelease
+	})
+
+	dispatchDone := make(chan struct{})
+	go func() {
+		r.dispatch(&pahov5.Publish{Topic: "desired/one", QoS: 1}, nil)
+		close(dispatchDone)
+	}()
+	wait.RequireReceive(t, handlerEntered, 2*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.quiesceForRecycle(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("quiesce error = %v, want context cancellation", err)
+	}
+
+	// The timed-out quiesce remains fail-closed: later ingress cannot start a
+	// second callback while the first callback is still stuck.
+	var laterHandled atomic.Int32
+	r.RegisterFiltered("later", []string{"later/#"}, func(_ *pahov5.Publish, _ func() error) {
+		laterHandled.Add(1)
+	})
+	r.dispatch(&pahov5.Publish{Topic: "later/one", QoS: 1}, nil)
+	if got := laterHandled.Load(); got != 0 {
+		t.Fatalf("post-timeout dispatch callbacks = %d, want 0", got)
+	}
+
+	close(handlerRelease)
+	wait.RequireReceive(t, dispatchDone, 2*time.Second)
+}
+
+func TestRouterQuiesceForRecycleWaitsForRuntimeSettlementAfterCallback(t *testing.T) {
+	r := newRouter(nil, nil)
+	callbackReturned := make(chan struct{})
+	r.RegisterFiltered("accepted", []string{"desired/#"}, func(_ *pahov5.Publish, _ func() error) {
+		close(callbackReturned)
+	})
+	r.dispatch(&pahov5.Publish{Topic: "desired/one", QoS: 1}, nil)
+	wait.RequireReceive(t, callbackReturned, 2*time.Second)
+
+	settlementEntered := make(chan struct{})
+	settlementRelease := make(chan struct{})
+	quiesced := make(chan error, 1)
+	go func() {
+		quiesced <- r.quiesceForRecycle(context.Background(), func(ctx context.Context) error {
+			close(settlementEntered)
+			select {
+			case <-settlementRelease:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	wait.RequireReceive(t, settlementEntered, 2*time.Second)
+	wait.Silent(t, quiesced, 25*time.Millisecond)
+	close(settlementRelease)
+	if err := wait.RequireReceive(t, quiesced, 2*time.Second); err != nil {
+		t.Fatalf("quiesce after settlement: %v", err)
+	}
+}
+
+func TestManagedCleanupStuckHandlerReturnsBoundedAndDisconnects(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"stale/#": {}},
+	}}
+	conn := &managedConnFake{operations: &operations, unsubEntered: make(chan struct{}), unsubRelease: make(chan struct{})}
+	session := newManagedTestSession(t, store, conn)
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	handlerEntered := make(chan struct{})
+	handlerRelease := make(chan struct{})
+	session.router.RegisterFiltered("desired", []string{"desired/#"}, func(_ *pahov5.Publish, _ func() error) {
+		close(handlerEntered)
+		<-handlerRelease
+	})
+
+	reconcileCtx, cancel := context.WithCancel(context.Background())
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "desired/#", QoS: 1}}}
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(reconcileCtx, plan) }()
+	wait.RequireReceive(t, conn.unsubEntered, 2*time.Second)
+	dispatchDone := make(chan struct{})
+	go func() {
+		session.router.dispatch(&pahov5.Publish{Topic: "desired/one", QoS: 1}, nil)
+		close(dispatchDone)
+	}()
+	wait.RequireReceive(t, handlerEntered, 2*time.Second)
+	close(conn.unsubRelease)
+	wait.Until(t, 2*time.Second, "router enters recycle quiescence", func() bool {
+		session.router.mu.Lock()
+		defer session.router.mu.Unlock()
+		return session.router.quiesced
+	})
+	cancel()
+
+	err := wait.RequireReceive(t, reconcileDone, 2*time.Second)
+	if !errors.Is(err, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("stuck-handler reconcile error = %v, want terminal marker", err)
+	}
+	if conn.disconnects != 1 || session.connection() != nil {
+		t.Fatalf("stuck-handler timeout did not disconnect: disconnects=%d connection=%v", conn.disconnects, session.connection())
+	}
+	if health := session.Health(t.Context()); health.ServiceLevel == ports.ServiceLevelFull {
+		t.Fatalf("stuck-handler timeout retained Full readiness: %+v", health)
+	}
+
+	close(handlerRelease)
+	wait.RequireReceive(t, dispatchDone, 2*time.Second)
+}
+
+func TestManagedCleanupQuiescenceCancellationDisconnectsAndFailsClosed(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"stale/#": {}},
+	}}
+	conn := &managedConnFake{operations: &operations}
+	session := newManagedTestSession(t, store, conn)
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	settlementEntered := make(chan struct{})
+	session.SetIngressQuiescenceWaiter(func(ctx context.Context) error {
+		close(settlementEntered)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	reconcileCtx, cancel := context.WithCancel(context.Background())
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- session.Reconcile(reconcileCtx, connectivity.SessionPlan{}) }()
+	wait.RequireReceive(t, settlementEntered, 2*time.Second)
+	cancel()
+	err := wait.RequireReceive(t, reconcileDone, 2*time.Second)
+	if !errors.Is(err, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("quiescence cancellation error = %v, want terminal transport marker", err)
+	}
+	if conn.disconnects != 1 {
+		t.Fatalf("disconnects after quiescence cancellation = %d, want 1", conn.disconnects)
+	}
+	if session.connection() != nil {
+		t.Fatal("connection remains active after quiescence cancellation")
+	}
+	if health := session.Health(t.Context()); health.ServiceLevel == ports.ServiceLevelFull {
+		t.Fatalf("terminal quiescence failure retained Full readiness: %+v", health)
+	}
 }
 
 func TestManagedSubscriptionPendingCleanupRemainsCoverageProtectedPastGrace(t *testing.T) {
@@ -353,6 +514,55 @@ func TestStartConnectionUpBarrierUnblocksSafelyOnClose(t *testing.T) {
 	}
 }
 
+func TestManagedSubscriptionPinnedReplayFailsClosedAndPreservesHistory(t *testing.T) {
+	operations := []string{}
+	const staleFilter = "$share/group/stale/#"
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {staleFilter: {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations, unsubReasons: []byte{0x11}}
+	session := newManagedTestSession(t, store, first)
+	dials := 0
+	var staleACKs atomic.Int32
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials++
+		if dials == 1 {
+			return first, func() {}, nil
+		}
+		session.handleConnectionUp()
+		session.router.dispatch(&pahov5.Publish{Topic: "stale/one", QoS: 1}, func() error {
+			staleACKs.Add(1)
+			return nil
+		})
+		return replacement, func() {}, nil
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	err := session.Reconcile(t.Context(), connectivity.SessionPlan{})
+	if !errors.Is(err, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("pinned replay migration error = %v, want terminal marker", err)
+	}
+	if !strings.Contains(err.Error(), "restore the old configuration") {
+		t.Fatalf("migration error does not describe restore/drain protocol: %v", err)
+	}
+	if got := store.snapshot("safe-session-id"); !equalManagedStrings(got, []string{staleFilter}) {
+		t.Fatalf("durable history after pinned replay = %v, want preserved %q", got, staleFilter)
+	}
+	if got := staleACKs.Load(); got != 0 {
+		t.Fatalf("pinned replay stale ACKs = %d, want 0", got)
+	}
+	if replacement.disconnects != 1 || session.connection() != nil {
+		t.Fatalf("pinned replay did not fail closed: disconnects=%d connection=%v", replacement.disconnects, session.connection())
+	}
+	if health := session.Health(t.Context()); health.ServiceLevel == ports.ServiceLevelFull {
+		t.Fatalf("pinned replay migration falsely reported Full: %+v", health)
+	}
+}
+
 func TestManagedSubscriptionCleanupConvergesReplacementGeneration(t *testing.T) {
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
@@ -468,7 +678,7 @@ func TestManagedSubscriptionsWriteAheadExactCleanupAndRecycle(t *testing.T) {
 	if err := session.Reconcile(t.Context(), plan); err != nil {
 		t.Fatalf("cleanup must converge the replacement generation: %v", err)
 	}
-	wantOps := []string{"list", "remember", "subscribe", "unsubscribe", "forget", "disconnect", "remember", "subscribe"}
+	wantOps := []string{"list", "remember", "subscribe", "unsubscribe", "disconnect", "forget", "remember", "subscribe"}
 	if !equalManagedStrings(operations, wantOps) {
 		t.Fatalf("operations = %v, want %v", operations, wantOps)
 	}

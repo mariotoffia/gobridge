@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	runsession "github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // closeOnce returns a function that closes ch at most once, safe to
@@ -41,6 +42,57 @@ func helperQuiescentRoute(id string, release <-chan struct{}) (goruntime.RouteCo
 		}
 	}
 	return cfg, NewFakeReceiver(), sender
+}
+
+func TestSessionIngressQuiescenceWaiterUsesSourceRouteSettlementAccounting(t *testing.T) {
+	release := make(chan struct{})
+	releaseOnce := closeOnce(release)
+	rt := goruntime.New(goruntime.WithInstanceID("session-ingress-quiescence"))
+	cfg, recv, sender := helperQuiescentRoute("source-route", release)
+	sess := NewFakeSession()
+	sessCfg := runsession.Config{SessionID: "source-session"}
+	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		releaseOnce()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	})
+
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readyCancel()
+	if err := rt.WaitRouteReady(readyCtx, "source-route"); err != nil {
+		t.Fatalf("WaitRouteReady: %v", err)
+	}
+	if err := recv.Emit(context.Background(),
+		NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "settlement-1", Subject: "source"}))); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	settled := make(chan error, 1)
+	go func() { settled <- sess.WaitIngressQuiescent(waitCtx) }()
+	select {
+	case err := <-settled:
+		t.Fatalf("session quiescence returned before source settlement: %v", err)
+	default:
+	}
+
+	releaseOnce()
+	select {
+	case err := <-settled:
+		if err != nil {
+			t.Fatalf("session quiescence after source settlement: %v", err)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("session quiescence did not observe route settlement")
+	}
 }
 
 // TestWaitRouteReady_ReturnsOnStartedClose verifies that WaitRouteReady

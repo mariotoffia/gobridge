@@ -120,6 +120,11 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	for {
+		if s.terminalErr != nil {
+			err := s.terminalErr
+			s.mu.Unlock()
+			return err
+		}
 		if s.closed {
 			s.mu.Unlock()
 			return shared.ErrUnavailable.

@@ -39,9 +39,10 @@ var errSessionEventsClosed = errors.New("session events channel closed unexpecte
 // retrying the same dead session forever — the pre-fix behaviour that wedged the
 // cluster: each capped-backoff retry re-Acquired via the store's same-owner
 // fast path, bumped the lease version, and perpetually reset every standby's
-// observation window (finding C3-CRITICAL). The lease is RELEASED before this is
-// returned, so a healthy standby takes over immediately while the orchestrator
-// restarts this pod with a fresh session instance.
+// observation window (finding C3-CRITICAL). Ordinary permanently-closed restart
+// paths release the lease before returning. Fail-closed managed migration is the
+// exception: accepted route work or a broker-pinned delivery may remain, so the
+// lease expires naturally while the orchestrator restarts the pod.
 var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
 
 // releaseAndReturn is the connect-failure recovery path (finding C3-CRITICAL /
@@ -58,11 +59,19 @@ var ErrSessionUnrecoverable = errors.New("session cannot be re-established in th
 // so superviseSession escalates to terminal rather than looping on the dead
 // instance. All other failures (a first-connect broker blip, a transient reconcile
 // rejection, a plain transient ErrUnavailable) are returned as-is for isolated
-// capped-backoff retry.
+// capped-backoff retry. A non-escalatable permanent marker means managed
+// migration already failed closed; it is made terminal without releasing the
+// lease so ownership cannot transfer under unsettled work.
 func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseToken, err error, phase string, escalatable bool) error {
 	m.mu.Lock()
 	m.hasLease = false
 	m.mu.Unlock()
+	if errors.Is(err, shared.ErrTransportClosedPermanently) && !escalatable {
+		// Managed migration failed closed after a broker-pinned delivery. The
+		// transport already disconnected, but durable route work may still unwind;
+		// preserve single ownership until natural TTL and force a fresh process.
+		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
+	}
 	m.releaseOwnedLeaseBestEffort(ctx, token, phase)
 	if escalatesToUnrecoverable(err, escalatable) {
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
@@ -707,6 +716,14 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 			// until the standby takes over.
 			return fmt.Errorf("%w: source session close ignored ctx and did not complete on session-failure recovery: %w",
 				ErrSessionUnrecoverable, err)
+		}
+		if errors.Is(err, ErrSessionUnrecoverable) {
+			// A managed-cleanup quiescence timeout means previously accepted
+			// route work may still mutate/send even though the broker socket is
+			// disconnected. Do not transfer ownership underneath that work. The
+			// supervisor marks the runtime terminal and cancellation stops
+			// cooperative work; this lease expires naturally after process exit.
+			return err
 		}
 		m.releaseOwnedLeaseBestEffort(ctx, token, "session failure")
 		return err

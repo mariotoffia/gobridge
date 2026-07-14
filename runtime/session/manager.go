@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -230,7 +231,12 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 // When ConnectAfterLease is set, the session is not started until the
 // lease has been acquired, preventing premature broker connections that
 // would displace the current owner.
-func (m *Manager) Run(ctx context.Context) error {
+func (m *Manager) Run(ctx context.Context) (retErr error) {
+	defer func() {
+		if retErr != nil && errors.Is(retErr, shared.ErrTransportClosedPermanently) && !errors.Is(retErr, ErrSessionUnrecoverable) {
+			retErr = fmt.Errorf("%w: %w", ErrSessionUnrecoverable, retErr)
+		}
+	}()
 	if m.exclusive && m.leaseStore != nil && m.connectAfterLease {
 		return m.runExclusiveDeferred(ctx)
 	}

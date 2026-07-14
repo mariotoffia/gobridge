@@ -152,11 +152,45 @@ in `UNSUBSCRIBE`; and `Forget`s only filters whose UNSUBACK reason is success
 retry. While cleanup is slow or failing, every concrete topic matching an exact
 pending wildcard/shared history filter remains coverage-protected past
 `unmatched_grace`; those deliveries stay un-ACKed. If any stale filter is removed,
-GoBridge reconnects before normal handler dispatch so prior-epoch shared
-deliveries are purged without ACK and can return to the broker, then reconciles
-the replacement generation before reporting success. Exclusive mode keeps its
-lease throughout that recycle/convergence; any failure disconnects the
-replacement before lease release.
+GoBridge reconnects before normal handler dispatch and keeps the exact history
+durable while it checks the replacement generation. This safely handles the
+no-buffer case, but MQTT does **not** portably guarantee that an unacknowledged
+shared QoS 1/2 delivery will be redistributed: a broker may pin it to the
+persistent client session and replay it to the same ClientID. GoBridge never
+ACKs or drops such a replay and never reports convergence/Full. It disconnects,
+enters the terminal migration-required path, retains the managed-filter history,
+and requires the restore/drain/retry procedure below. Exclusive mode keeps the
+lease until natural expiry on this fail-closed path so work cannot continue
+under a new owner while accepted work may still settle.
+
+### Removing filters: restore, drain, retry
+
+Before removing persistent/exclusive filters, stop publishers or otherwise drain
+traffic covered by the old wildcard/shared filters. A no-buffer cutover removes
+the exact filters, recycles, waits one `unmatched_grace` verification window,
+then forgets verified history and reaches Full. A shorter reconcile context or
+store outage is uncertainty and therefore fails closed.
+
+If startup/reconcile reports that managed subscription migration requires the
+old configuration, readiness must remain below Full. Do **not** delete/empty the
+ledger, use `clean_start`, expire/delete the broker session, or change ClientID;
+those shortcuts can discard the pinned delivery. Instead:
+
+1. Stop the failed migration runtime. For Exclusive mode, wait for its retained
+   lease to expire before another owner starts.
+2. Restore a fresh runtime with the **same broker URL, ClientID, session expiry,
+   and `stores.managed_subscriptions` identity**, plus the exact old filters and
+   handlers.
+3. Let the broker replay the pinned delivery and confirm its normal source
+   settlement and downstream durable drain. Keep ingress stopped until the old
+   session backlog is empty.
+4. Stop that runtime cleanly, reapply the desired configuration, and retry the
+   migration. Reach Full only after exact cleanup, recycle, and verification
+   complete; then resume publishers and verify a shared peer receives new
+   traffic without stale theft.
+
+See the [managed-filter migration runbook](../runbooks/mqtt-managed-subscription-migration.md)
+for the operational checklist. GoBridge makes no portable redistribution claim.
 
 **Upgrade baseline is mandatory.** Existing broker sessions predate this ledger,
 so GoBridge cannot discover their filters from MQTT. Before enabling this build,
@@ -267,7 +301,7 @@ senders:
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
 | `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. **The ~128 KiB is deliberate slack for MQTT properties/topic overhead, not a hard body cap:** a payload up to ~128 KiB *over* `max_payload_bytes` is still broker-admitted, because the advertised limit bounds the whole packet, not the body alone. Size `max_payload_bytes` for the intended body and treat the effective admitted-body ceiling as `max_payload_bytes + ~128 KiB`. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × (max_payload_bytes + slack)` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
-| `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
+| `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. It is also the post-recycle no-replay verification window for managed-filter removal; a pinned matching replay or a shorter reconciliation deadline fails migration closed and preserves history. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
 | `username` | string | -- | Authentication username. Sent in the MQTT CONNECT packet in **cleartext** — see `allow_plaintext_credentials` and use a TLS broker scheme (`ssl://`, `mqtts://`, …). |
 | `password` | string | -- | Authentication password (redacted on marshal). Sent in the MQTT CONNECT packet in **cleartext** — protect it with a TLS broker scheme. |

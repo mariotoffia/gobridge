@@ -81,7 +81,7 @@ func TestIntegration_ManagedHistoryRestartRemovesWildcardAndSharedFilters(t *tes
 		t.Helper()
 		raw, err := factory.NewSession(ctx, ports.SessionSpec{
 			ID: "managed", Transport: "mqtt", SessionMode: connectivity.SessionPersistent,
-			Config:                   paho.Config{Session: paho.SessionOptions{BrokerURLs: []string{brokerURL}, ClientID: clientID, ConnectTimeout: 5 * time.Second, KeepAlive: 10}},
+			Config:                   paho.Config{Session: paho.SessionOptions{BrokerURLs: []string{brokerURL}, ClientID: clientID, ConnectTimeout: 5 * time.Second, KeepAlive: 10, UnmatchedGrace: 300 * time.Millisecond}},
 			ManagedSubscriptionStore: history, ManagedSubscriptionIdentity: identity, ManagedSubscriptionsRequired: true,
 		})
 		if err != nil {

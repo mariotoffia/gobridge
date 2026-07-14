@@ -43,7 +43,10 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// managed-history cleanup recycle below.
 	defer func() {
 		if retErr != nil && s.mode == connectivity.SessionExclusive {
-			s.disconnectFailedReconcile(ctx)
+			if disconnectErr := s.disconnectFailedReconcile(ctx); disconnectErr != nil &&
+				!errors.Is(retErr, shared.ErrTransportClosedPermanently) {
+				retErr = errors.Join(retErr, disconnectErr)
+			}
 		}
 	}()
 
@@ -479,10 +482,27 @@ func (s *Session) reconcile(
 	managedStore := s.managedStore
 	managedIdentity := s.managedIdentity
 	managedHistory := maps.Clone(s.managedHistory)
+	cleanupVerification := maps.Clone(s.managedCleanupVerification)
 	s.mu.Unlock()
 	if managed {
 		if !managedLoaded || managedStore == nil || managedIdentity == "" {
 			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription history was not loaded before reconcile")
+		}
+		if len(cleanupVerification) > 0 {
+			verified := make([]string, 0, len(cleanupVerification))
+			for filter := range cleanupVerification {
+				verified = append(verified, filter)
+			}
+			sort.Strings(verified)
+			if err := s.verifyManagedReplay(ctx, verified); err != nil {
+				return err
+			}
+			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, verified); err != nil {
+				return err
+			}
+			for _, filter := range verified {
+				delete(managedHistory, filter)
+			}
 		}
 		candidates := make([]string, 0, len(desired))
 		for filter := range desired {
@@ -814,50 +834,47 @@ func (s *Session) reconcileManagedUnsubscribe(
 		return err
 	}
 
-	var forgetErr error
-	forgot := false
-	if len(confirmation.confirmed) > 0 {
-		if err := managedStore.Forget(ctx, managedIdentity, confirmation.confirmed); err != nil {
-			forgetErr = shared.ErrUnavailable.WithMessage("mqtt: forget confirmed managed subscriptions").Wrap(err)
-		} else {
-			forgot = true
-		}
-	}
-
 	if confirmation.removedAny {
-		// Stop new handler dispatch and await active handler callbacks before the
-		// old socket is disconnected. Pending old-epoch deliveries are purged
-		// without ACK so a shared broker peer or this replacement receives them.
-		if s.router != nil {
-			s.router.quiesceForRecycle()
+		s.mu.Lock()
+		if s.managedCleanupVerification == nil {
+			s.managedCleanupVerification = make(map[string]struct{})
 		}
-		// A successful removal may have left shared deliveries buffered on this
-		// connection. Recycle once so router.beginGrace purges the old epoch
-		// without ACK and returns them to the broker. Keep in-memory history until
-		// the recycle completes so a concurrent post-grace sweep remains covered.
+		for _, filter := range confirmation.confirmed {
+			s.managedCleanupVerification[filter] = struct{}{}
+		}
+		s.mu.Unlock()
+		// Stop new handler dispatch and await both accepted callbacks and runtime
+		// source settlement before disconnecting the old broker generation.
+		if err := s.quiesceForRecycle(ctx); err != nil {
+			return s.failClosedAfterQuiescence(ctx, err)
+		}
+		// Do NOT Forget durable history yet. MQTT brokers may pin an unacknowledged
+		// QoS1 shared delivery to this persistent client session and replay it on
+		// the replacement connection instead of redistributing it. The replacement
+		// generation must prove no such delivery was buffered before history can be
+		// removed; otherwise restoring the old config could not identify/drain it.
 		if reloadErr := s.Reload(ctx); reloadErr != nil {
 			return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
 		}
-		if forgot {
-			s.removeManagedHistory(confirmation.confirmed)
-		}
-		if forgetErr != nil {
-			return forgetErr
-		}
 		if confirmation.firstErr != nil {
+			if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
+				return err
+			}
+			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
+				return err
+			}
 			return confirmation.firstErr.With("topic", confirmation.errTopic)
 		}
 		return errManagedCleanupRecycled
 	}
 
-	// UNSUBACK 0x11 proves a filter is already absent. Forget it locally only
-	// after durable Forget succeeds; if Forget remains unavailable, return the
-	// existing degraded error without another connection recycle.
-	if forgot {
-		s.removeManagedHistory(confirmation.confirmed)
-	}
-	if forgetErr != nil {
-		return forgetErr
+	// On the replacement generation UNSUBACK 0x11 proves the filters are absent.
+	// Before durable Forget, inspect the still-gated pending buffer. A match is a
+	// broker-pinned replay that cannot be portably redistributed; never ACK/drop
+	// it or claim convergence. Disconnect terminally while preserving history so
+	// an operator can restore the exact old handler and drain it.
+	if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
+		return err
 	}
 	if confirmation.firstErr != nil {
 		return confirmation.firstErr.With("topic", confirmation.errTopic)
@@ -865,12 +882,39 @@ func (s *Session) reconcileManagedUnsubscribe(
 	return nil
 }
 
-func (s *Session) removeManagedHistory(filters []string) {
+func (s *Session) verifyManagedReplay(ctx context.Context, filters []string) error {
+	if len(filters) == 0 || s.router == nil {
+		return nil
+	}
+	pinned, err := s.router.awaitManagedReplay(ctx, filters)
+	if err != nil || pinned {
+		return s.failClosedForManagedMigration(ctx)
+	}
+	return nil
+}
+
+func (s *Session) finalizeManagedCleanup(
+	ctx context.Context,
+	managedStore ports.ManagedSubscriptionStore,
+	managedIdentity string,
+	filters []string,
+) error {
+	if len(filters) == 0 {
+		return nil
+	}
+	if s.router != nil && s.router.pendingMatching(filters) > 0 {
+		return s.failClosedForManagedMigration(ctx)
+	}
+	if err := managedStore.Forget(ctx, managedIdentity, filters); err != nil {
+		return shared.ErrUnavailable.WithMessage("mqtt: forget verified managed subscriptions").Wrap(err)
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, filter := range filters {
 		delete(s.managedHistory, filter)
+		delete(s.managedCleanupVerification, filter)
 	}
+	s.mu.Unlock()
+	return nil
 }
 
 type unsubscribeConfirmation struct {

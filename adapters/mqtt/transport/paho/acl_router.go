@@ -85,16 +85,23 @@ import (
 // capacity is sized to the session's Receive Maximum, which bounds how
 // many un-acked QoS 1/2 publishes the broker may have in flight.
 type router struct {
-	mu           sync.RWMutex
-	dispatchGate sync.RWMutex
-	wg           sync.WaitGroup
-	handlers     map[string]routerHandler
+	mu       sync.RWMutex
+	wg       sync.WaitGroup
+	handlers map[string]routerHandler
+	// callbacksInFlight counts callbacks accepted under mu but not yet returned.
+	// callbacksIdle closes on the transition to zero, allowing recycle quiescence
+	// to wait with a context instead of an unbounded WaitGroup.Wait goroutine.
+	callbacksInFlight int
+	callbacksIdle     chan struct{}
 
 	// pending buffers publishes that matched no registered handler,
 	// bounded by pendingLimit (entries) AND pendingBytesLimit (payload
 	// bytes). Guarded by mu.
 	pending      []pendingPublish
 	pendingLimit int
+	// pendingChanged is rotated whenever a publish is buffered so managed
+	// migration verification can wait event-wise for broker replay. Guarded by mu.
+	pendingChanged chan struct{}
 	// connEpoch identifies the CURRENT broker connection generation. It is
 	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
 	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
@@ -321,6 +328,7 @@ func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...route
 	}
 	r := &router{
 		handlers:          make(map[string]routerHandler),
+		pendingChanged:    make(chan struct{}),
 		pendingLimit:      defaultPendingLimit,
 		pendingBytesLimit: defaultPendingBytesLimit,
 		dispatchSize:      defaultDispatchSize,
@@ -569,6 +577,8 @@ func (r *router) settlePending(countRetained bool) {
 	for i := range r.pending {
 		snapshot[i] = r.pending[i].pub
 	}
+	managedGateAll := r.quiesced
+	managedFilters := append([]string(nil), r.managedCleanupFilters...)
 	r.mu.Unlock()
 
 	orphan := make(map[*pahov5.Publish]struct{}, len(snapshot))
@@ -577,6 +587,12 @@ func (r *router) settlePending(countRetained bool) {
 		coveredSnap = make(map[*pahov5.Publish]struct{}, len(snapshot))
 	}
 	for _, pub := range snapshot {
+		if managedGateAll || (len(managedFilters) > 0 && matchesAnyFilter(managedFilters, pub.Topic)) {
+			if countRetained {
+				coveredSnap[pub] = struct{}{}
+			}
+			continue
+		}
 		if r.covered != nil && r.covered(pub.Topic) {
 			if countRetained {
 				coveredSnap[pub] = struct{}{}
@@ -724,6 +740,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 		}
 	}
 	if len(matching) > 0 {
+		r.addCallbacksLocked(len(matching))
 		r.mu.Unlock()
 		r.fanout(pub, ack, matching)
 		return
@@ -1005,14 +1022,13 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 }
 
 func (r *router) dispatchAtEpoch(pub *pahov5.Publish, ack func() error, epoch uint64, count bool) {
-	r.dispatchGate.RLock()
-	defer r.dispatchGate.RUnlock()
-	r.dispatchCore(pub, ack, epoch, count)
+	r.dispatchCore(pub, ack, epoch, count, false)
 }
 
 // dispatchCore applies managed cleanup/quiesce gates before inspecting handlers.
-// The caller holds dispatchGate for reading or writing.
-func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint64, count bool) {
+// bypassQuiesce is reserved for resumeManagedDispatch while it drains buffered
+// replacement-generation publishes before reopening live ingress.
+func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint64, count, bypassQuiesce bool) {
 	if pub == nil {
 		return
 	}
@@ -1032,7 +1048,7 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 		r.mu.Unlock()
 		return
 	}
-	if r.quiesced || (len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pub.Topic)) {
+	if (!bypassQuiesce && r.quiesced) || (len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pub.Topic)) {
 		buffered := r.bufferLocked(pub, ack)
 		r.mu.Unlock()
 		r.finishHeldPublish(pub, ack, buffered)
@@ -1045,6 +1061,9 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 			h.inflight.Add(1)
 			matching = append(matching, h)
 		}
+	}
+	if len(matching) > 0 {
+		r.addCallbacksLocked(len(matching))
 	}
 	if len(matching) == 0 {
 		if r.clk.Now().Before(r.graceDeadline) {
@@ -1099,31 +1118,72 @@ func (r *router) setManagedCleanupFilters(filters []string) {
 	}
 	copyFilters := append([]string(nil), filters...)
 	sort.Strings(copyFilters)
-	r.dispatchGate.Lock()
 	r.mu.Lock()
 	r.managedCleanupFilters = copyFilters
 	r.mu.Unlock()
-	r.dispatchGate.Unlock()
 }
 
 // quiesceForRecycle waits for active handler dispatch, purges old-epoch pending
 // deliveries without ACK, and makes subsequent old-socket ingress discard-only.
-func (r *router) quiesceForRecycle() {
+func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(context.Context) error) error {
 	if r == nil {
-		return
+		return nil
 	}
-	r.dispatchGate.Lock()
+	// The state transition is under the same mutex dispatchCore uses before
+	// handler matching. It therefore stops acceptance immediately without
+	// waiting behind a stuck callback.
 	r.mu.Lock()
 	r.quiesced = true
 	r.discarding = true
 	r.connEpoch++
 	r.purgeStalePendingLocked()
+	callbacks := r.callbacksInFlight
+	idle := r.callbacksIdle
 	r.mu.Unlock()
-	r.dispatchGate.Unlock()
-	// RegisterFiltered flush work is tracked by the same WaitGroup but does not
-	// enter dispatchGate. No new flush can Add after quiesced is visible under
-	// r.mu, so this wait is safe and completes before socket disconnect.
-	r.wg.Wait()
+
+	if callbacks > 0 {
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	// Callback return only means the RouteRunner accepted a Delivery. Its
+	// authoritative in-flight counter remains non-zero through processing and
+	// settlement, so wait on the runtime-installed barrier as the second phase.
+	if waitSettlement != nil {
+		if err := waitSettlement(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addCallbacksLocked records callbacks before dispatch releases mu, closing the
+// match-to-quiesce race where a callback had been selected but not yet added to
+// a WaitGroup. Caller must hold r.mu.
+func (r *router) addCallbacksLocked(n int) {
+	if n <= 0 {
+		return
+	}
+	if r.callbacksInFlight == 0 {
+		r.callbacksIdle = make(chan struct{})
+	}
+	r.callbacksInFlight += n
+}
+
+func (r *router) callbackDone() {
+	r.mu.Lock()
+	// fanout is an internal legacy test seam that can be invoked directly,
+	// outside dispatch selection. Such calls are still covered by r.wg for Close
+	// but were never accepted into the recycle counter.
+	if r.callbacksInFlight > 0 {
+		r.callbacksInFlight--
+		if r.callbacksInFlight == 0 && r.callbacksIdle != nil {
+			close(r.callbacksIdle)
+		}
+	}
+	r.mu.Unlock()
 }
 
 // resumeManagedDispatch releases the recycle gate only after replacement
@@ -1132,27 +1192,34 @@ func (r *router) resumeManagedDispatch() {
 	if r == nil {
 		return
 	}
-	r.dispatchGate.Lock()
-	r.mu.Lock()
-	r.quiesced = false
-	r.discarding = false
-	flush := make([]pendingPublish, 0, len(r.pending))
-	keep := r.pending[:0]
-	for _, pending := range r.pending {
-		if pending.epoch == r.connEpoch && (len(r.managedCleanupFilters) == 0 || !matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic)) {
-			flush = append(flush, pending)
-			r.pendingBytes -= pubBytes(pending.pub)
-			continue
+	// Keep quiesced true while draining. New live ingress therefore appends to
+	// pending and is picked up by the next loop iteration, preserving buffered-
+	// before-live ordering without holding a lock across handler callbacks.
+	for {
+		r.mu.Lock()
+		r.discarding = false
+		flush := make([]pendingPublish, 0, len(r.pending))
+		keep := r.pending[:0]
+		for _, pending := range r.pending {
+			if pending.epoch == r.connEpoch && (len(r.managedCleanupFilters) == 0 || !matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic)) {
+				flush = append(flush, pending)
+				r.pendingBytes -= pubBytes(pending.pub)
+				continue
+			}
+			keep = append(keep, pending)
 		}
-		keep = append(keep, pending)
+		r.pending = keep
+		epoch := r.connEpoch
+		if len(flush) == 0 {
+			r.quiesced = false
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+		for _, pending := range flush {
+			r.dispatchCore(pending.pub, pending.ack, epoch, false, true)
+		}
 	}
-	r.pending = keep
-	epoch := r.connEpoch
-	r.mu.Unlock()
-	for _, pending := range flush {
-		r.dispatchCore(pending.pub, pending.ack, epoch, false)
-	}
-	r.dispatchGate.Unlock()
 }
 
 // bufferLocked appends the publish to the pre-registration pending buffer,
@@ -1195,6 +1262,7 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 		}
 		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 		r.pendingBytes += size
+		r.signalPendingChangedLocked()
 		return true
 	}
 
@@ -1212,7 +1280,15 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 	}
 	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 	r.pendingBytes += size
+	r.signalPendingChangedLocked()
 	return true
+}
+
+func (r *router) signalPendingChangedLocked() {
+	if r.pendingChanged != nil {
+		close(r.pendingChanged)
+	}
+	r.pendingChanged = make(chan struct{})
 }
 
 // purgeStalePendingLocked drops every pending entry stamped with an epoch
@@ -1302,6 +1378,7 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 		p := dispatches[i]
 		go func(handler routerHandler, ackPart func() error) {
 			defer r.wg.Done()
+			defer r.callbackDone()
 			defer local.Done()
 			// inflight was incremented under r.mu in dispatch (or in
 			// RegisterFiltered for the flush path); release it here so
@@ -1407,10 +1484,6 @@ func (r *router) Register(id string, h func(*pahov5.Publish)) {
 // (pre-registration) publishes matching the filters are flushed to the
 // new handler in arrival order.
 func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Publish, func() error)) {
-	// Acquire the dispatch gate before publishing the handler. When a pending
-	// flush is needed the read lock transfers to that goroutine, so cleanup
-	// quiescence waits for it without a writer/emitMu lock cycle.
-	r.dispatchGate.RLock()
 	entry := routerHandler{
 		fn:       h,
 		filters:  filters,
@@ -1438,13 +1511,14 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 		entry.emitMu.Lock()
 		entry.inflight.Add(1)
 		r.wg.Add(1)
+		r.addCallbacksLocked(1)
 	}
 	r.mu.Unlock()
 
 	if doFlush {
 		go func() {
-			defer r.dispatchGate.RUnlock()
 			defer r.wg.Done()
+			defer r.callbackDone()
 			defer entry.inflight.Done()
 			defer entry.emitMu.Unlock()
 			r.mu.Lock()
@@ -1471,8 +1545,6 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 				r.emitOne(entry, pending.pub, pending.ack)
 			}
 		}()
-	} else {
-		r.dispatchGate.RUnlock()
 	}
 
 	if logging.DebugEnabled(r.logger) {
@@ -1590,6 +1662,64 @@ func (r *router) PendingCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.pending)
+}
+
+// pendingMatching reports how many buffered publishes match exact managed
+// filters. It never settles or removes entries; migration uses it after a
+// cleanup recycle to detect broker-pinned QoS1 deliveries and fail closed.
+func (r *router) pendingMatching(filters []string) int {
+	if r == nil || len(filters) == 0 {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, pending := range r.pending {
+		if matchesAnyFilter(filters, pending.pub.Topic) {
+			count++
+		}
+	}
+	return count
+}
+
+// awaitManagedReplay waits through the current connection startup-grace window
+// for a broker-pinned replay matching filters. The managed gate remains active,
+// so any match stays buffered and unacknowledged. Routers without a live grace
+// generation (unit fakes/direct dispatch) return their immediate snapshot.
+func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool, error) {
+	if r == nil || len(filters) == 0 {
+		return false, nil
+	}
+	for {
+		r.mu.RLock()
+		for _, pending := range r.pending {
+			if matchesAnyFilter(filters, pending.pub.Topic) {
+				r.mu.RUnlock()
+				return true, nil
+			}
+		}
+		if !r.graceStarted {
+			r.mu.RUnlock()
+			return false, nil
+		}
+		deadline := r.graceDeadline
+		changed := r.pendingChanged
+		remaining := deadline.Sub(r.clk.Now())
+		r.mu.RUnlock()
+		if remaining <= 0 {
+			return false, nil
+		}
+		timer := r.clk.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, ctx.Err()
+		case <-changed:
+			timer.Stop()
+		case <-timer.C():
+			return false, nil
+		}
+	}
 }
 
 // Stats returns diagnostic counters for the message router.

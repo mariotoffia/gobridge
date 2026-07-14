@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -117,17 +118,78 @@ func (s *Session) Reload(ctx context.Context) error {
 	return nil
 }
 
-// disconnectFailedReconcile detaches the current generation and tears down its
-// connection without terminally closing the Session. Exclusive managers call
-// Reconcile while holding a lease and release that lease on any returned error;
-// detaching first prevents an unfenced consumer from surviving the release. A
-// later supervisor retry may Start this same session again.
-func (s *Session) disconnectFailedReconcile(ctx context.Context) {
-	if s.router != nil {
-		// The exclusive manager releases its lease as soon as Reconcile returns.
-		// Quiesce handler work and invalidate pending ACKs before detaching the CM.
-		s.router.quiesceForRecycle()
+// quiesceForRecycle atomically stops new router callback acceptance, waits for
+// accepted callbacks to return, then waits for the runtime RouteRunner settlement
+// counters. The reconcile/session context is always honored; ReconcileTimeout is
+// an additional ceiling for direct callers that supplied no shorter deadline.
+func (s *Session) quiesceForRecycle(ctx context.Context) error {
+	s.mu.Lock()
+	waiter := s.ingressQuiescenceWaiter
+	s.mu.Unlock()
+	if s.router == nil {
+		if waiter != nil {
+			return waiter(ctx)
+		}
+		return nil
 	}
+	quiesceCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.router.quiesceForRecycle(quiesceCtx, waiter)
+}
+
+func terminalIngressQuiescenceError(cause error) error {
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: source ingress did not quiesce before connection recycle; session is fail-closed").
+		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
+}
+
+// failClosedAfterQuiescence disconnects the broker generation immediately and
+// permanently latches this Session instance. Runtime/session translates the
+// permanent marker to ErrSessionUnrecoverable; exclusive owners then retain the
+// lease until natural TTL instead of releasing while old route work can mutate.
+func (s *Session) failClosedAfterQuiescence(ctx context.Context, cause error) error {
+	return s.failClosed(ctx, terminalIngressQuiescenceError(cause))
+}
+
+func managedMigrationRequiredError() error {
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: managed subscription migration cannot safely settle a broker-pinned delivery; restore the old configuration and exact handler, drain it, then retry the cutover").
+		Wrap(shared.ErrTransportClosedPermanently)
+}
+
+func (s *Session) failClosedForManagedMigration(ctx context.Context) error {
+	return s.failClosed(ctx, managedMigrationRequiredError())
+}
+
+func (s *Session) failClosed(ctx context.Context, terminal error) error {
+	s.mu.Lock()
+	if s.terminalErr == nil {
+		s.terminalErr = terminal
+	} else {
+		terminal = s.terminalErr
+	}
+	s.mu.Unlock()
+	s.disconnectGeneration(ctx)
+	return terminal
+}
+
+// disconnectFailedReconcile detaches the current generation and tears down its
+// connection without terminally closing the Session when ingress drains safely.
+// A failed drain is unrecoverable in-process and is returned to the manager.
+func (s *Session) disconnectFailedReconcile(ctx context.Context) error {
+	s.mu.Lock()
+	terminal := s.terminalErr
+	s.mu.Unlock()
+	if terminal == nil {
+		if err := s.quiesceForRecycle(ctx); err != nil {
+			return s.failClosedAfterQuiescence(ctx, err)
+		}
+	}
+	s.disconnectGeneration(ctx)
+	return terminal
+}
+
+func (s *Session) disconnectGeneration(ctx context.Context) {
 	s.mu.Lock()
 	cm := s.cm
 	s.cm = nil

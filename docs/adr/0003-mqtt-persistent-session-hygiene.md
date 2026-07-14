@@ -129,3 +129,18 @@ this ADR have been dropped: they rot as the code moves and were already stale by
 this addendum. Cite the named files and symbols (e.g. `graceLoop`,
 `unsubscribeOrphan`, `topicCoveredLocked`) as the stable reference. New ADRs
 should follow the same rule — files and symbols, not line numbers.
+
+## Addendum: durable exact-filter migration
+
+Persistent/exclusive sessions no longer use concrete delivered topics to infer
+wildcard/shared filters. They require a durable managed-subscription ledger and
+remove exact historical filters before dispatch. The legacy exact-topic orphan
+cleanup described above remains an Ephemeral-session behavior.
+
+A successful UNSUBACK is not sufficient evidence that an unacknowledged shared
+QoS 1/2 delivery was redistributed. Brokers may pin it to the persistent
+ClientID. GoBridge now retains history through reconnect verification; a matching
+replay is held unacknowledged and causes terminal fail-closed migration. Operators
+must restore the exact old identity/configuration and handler, drain the replay,
+and retry. See the [MQTT transport reference](../transports/mqtt.md#removing-filters-restore-drain-retry)
+and [migration runbook](../runbooks/mqtt-managed-subscription-migration.md).

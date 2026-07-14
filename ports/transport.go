@@ -372,6 +372,20 @@ type Session interface {
 	Close(ctx context.Context) error
 }
 
+// IngressQuiescenceConfigurer is an optional session capability used by a
+// stateful source transport before recycling a broker generation. The runtime
+// installs a waiter backed by the source RouteRunner in-flight counters. Once
+// the transport has stopped accepting new callbacks, invoking the waiter blocks
+// until every delivery already accepted by those routes has finished runtime
+// processing and settlement, or ctx is cancelled.
+//
+// The setter is called during Runtime.Start before session and route goroutines
+// begin. Implementations must replace the waiter atomically and must treat a nil
+// waiter as no additional runtime settlement barrier.
+type IngressQuiescenceConfigurer interface {
+	SetIngressQuiescenceWaiter(waiter func(context.Context) error)
+}
+
 // Capability describes a routing-relevant transport feature.
 type Capability string
 

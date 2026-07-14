@@ -30,9 +30,10 @@ them under a rolling reload splits ownership or strands durable records:
 - A route or session `session_id` on a lease-bearing exclusive session — changes
   the **lease identity**, so two instances can hold "its" lease in different keys
   and drain independently (duplicate sends + stranded backlog).
-- A lease, outbox, or DLQ store's `type` or backing path/table — repointing a
-  store live strands the old store's backlog.
-- Removing an outbox/DLQ store, or orphaning a `shared_outbox` partition.
+- A lease, outbox, DLQ, or managed-subscription store's `type` or backing
+  path/table — repointing a store live strands durable records/history.
+- Removing an outbox/DLQ store, orphaning a `shared_outbox` partition, or
+  removing/renaming a persistent/exclusive MQTT session identity.
 
 These are **hard-refused at swap time**, per process, not merely warned. The
 Supervisor rejects the reload and keeps the OLD runtime serving (metric
@@ -61,6 +62,14 @@ Roll a cluster-invariant change with a full stop/restart, never a rolling reload
 3. Stop **every** instance.
 4. Deploy the new config to the shared source.
 5. Restart the fleet.
+
+Persistent/exclusive MQTT filter removal has a stricter protocol because a
+broker may pin an unacknowledged shared delivery to the old ClientID. Preserve
+the managed-filter ledger and follow the
+[persistent MQTT managed-filter migration runbook](mqtt-managed-subscription-migration.md);
+a terminal migration-required result means restore the exact old identity and
+handlers, drain, then retry. `WithAllowDestructiveReload` does not make this
+safe, and GoBridge does not claim portable broker redistribution.
 
 ## Rollback
 
@@ -95,4 +104,5 @@ config it cannot load — inspect its logs before forcing anything.
 - [Config rollback](config-rollback.md)
 - [Outbox backlog / stuck drain](outbox-backlog-stuck-drain.md)
 - [Node down / failover](node-down-failover.md)
+- [Persistent MQTT managed-filter migration](mqtt-managed-subscription-migration.md)
 - [Scenario 10: Dynamic reconfiguration](../scenarios/10-dynamic-reconfiguration.md)

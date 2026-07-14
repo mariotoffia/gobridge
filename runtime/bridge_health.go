@@ -580,7 +580,7 @@ func isClosed(ch <-chan struct{}) bool {
 // QuiescenceOptions controls WaitQuiescent behaviour.
 type QuiescenceOptions struct {
 	Routes   []string      // only watch these routes (empty = all)
-	MinQuiet time.Duration // how long all routes must stay at zero in-flight
+	MinQuiet time.Duration // zero defaults to 50ms; negative returns on the first all-zero snapshot
 	Timeout  time.Duration // overall deadline (0 = rely on ctx)
 }
 
@@ -595,6 +595,7 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 	}
+	noQuietWindow := opts.MinQuiet < 0
 	if opts.MinQuiet == 0 {
 		opts.MinQuiet = 50 * time.Millisecond
 	}
@@ -622,6 +623,9 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		rt.mu.Unlock()
 
 		if allZero {
+			if noQuietWindow {
+				return nil
+			}
 			if quietSince.IsZero() {
 				quietSince = rt.clk.Now()
 			}
@@ -636,6 +640,9 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		// the remaining window; otherwise fall back to MinQuiet so we
 		// re-check on routes that never fire an idle transition.
 		sanity := opts.MinQuiet
+		if noQuietWindow {
+			sanity = 50 * time.Millisecond
+		}
 		if !quietSince.IsZero() {
 			sanity = opts.MinQuiet - rt.clk.Since(quietSince)
 			if sanity <= 0 {

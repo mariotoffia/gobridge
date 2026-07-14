@@ -212,19 +212,36 @@ func (s *FakeSender) SetSendErr(err error) {
 // ---------------------------------------------------------------------------
 
 type FakeSession struct {
-	mu           sync.Mutex
-	Started      bool
-	Closed       bool
-	Plans        []connectivity.SessionPlan
-	events       chan ports.SessionEvent
-	closeOnce    sync.Once
-	StartErr     error
-	CloseErr     error
-	ReconcileErr error
+	mu                      sync.Mutex
+	Started                 bool
+	Closed                  bool
+	Plans                   []connectivity.SessionPlan
+	events                  chan ports.SessionEvent
+	closeOnce               sync.Once
+	StartErr                error
+	CloseErr                error
+	ReconcileErr            error
+	IngressQuiescenceWaiter func(context.Context) error
 }
 
 func NewFakeSession() *FakeSession {
 	return &FakeSession{events: make(chan ports.SessionEvent, 16)}
+}
+
+func (s *FakeSession) SetIngressQuiescenceWaiter(waiter func(context.Context) error) {
+	s.mu.Lock()
+	s.IngressQuiescenceWaiter = waiter
+	s.mu.Unlock()
+}
+
+func (s *FakeSession) WaitIngressQuiescent(ctx context.Context) error {
+	s.mu.Lock()
+	waiter := s.IngressQuiescenceWaiter
+	s.mu.Unlock()
+	if waiter == nil {
+		return shared.ErrUnavailable.WithMessage("ingress quiescence waiter was not configured")
+	}
+	return waiter(ctx)
 }
 
 func (s *FakeSession) Start(_ context.Context) error {

@@ -45,8 +45,11 @@ type Session struct {
 	// s.events) when the supervisor re-Starts a Reload-failed session.
 	eventsClosed bool
 	closed       bool
-	connected    bool // true when autopaho reports connection is up
-	starting     bool // true while a Start() attempt is in flight
+	// terminalErr latches a fail-closed generation whose ingress could not be
+	// quiesced safely. This Session instance must never reconnect in-process.
+	terminalErr error
+	connected   bool // true when autopaho reports connection is up
+	starting    bool // true while a Start() attempt is in flight
 	// startDone is closed when the in-flight Start attempt finishes
 	// (success or failure) so concurrent Start callers can wait for the
 	// outcome instead of returning a false success (finding: concurrent
@@ -136,6 +139,14 @@ type Session struct {
 	managedRequired bool
 	managedLoaded   bool
 	managedHistory  map[string]struct{}
+	// managedCleanupVerification retains filters confirmed removed until the
+	// replacement generation proves no broker-pinned replay is buffered. Durable
+	// history is not forgotten before this set clears. Guarded by mu.
+	managedCleanupVerification map[string]struct{}
+	// ingressQuiescenceWaiter is installed by the runtime and is backed by
+	// source RouteRunner settlement accounting. Managed cleanup invokes it only
+	// after the router has stopped accepting callbacks. Guarded by mu.
+	ingressQuiescenceWaiter func(context.Context) error
 
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
@@ -202,7 +213,19 @@ type mqttCredentials struct {
 	Password string
 }
 
-var _ ports.Session = (*Session)(nil)
+var (
+	_ ports.Session                     = (*Session)(nil)
+	_ ports.IngressQuiescenceConfigurer = (*Session)(nil)
+)
+
+// SetIngressQuiescenceWaiter installs the runtime-owned source-settlement
+// barrier used before a managed-subscription recycle disconnects the broker
+// generation. Runtime.Start calls this before background work begins.
+func (s *Session) SetIngressQuiescenceWaiter(waiter func(context.Context) error) {
+	s.mu.Lock()
+	s.ingressQuiescenceWaiter = waiter
+	s.mu.Unlock()
+}
 
 // sessionEventsBuffer is the capacity of the session lifecycle-event
 // channel. It is a named constant so the Reload-failure re-Start
