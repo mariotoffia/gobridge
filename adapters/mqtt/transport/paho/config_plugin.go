@@ -9,7 +9,11 @@ import (
 )
 
 // Compile-time interface contract.
-var _ ports.CredentialedConfig = (*Config)(nil)
+var (
+	_ ports.CredentialedConfig           = (*Config)(nil)
+	_ ports.DurableSessionIdentityConfig = (*Config)(nil)
+	_ ports.ReplicaIdentityConfig        = (*Config)(nil)
+)
 
 // Config is the typed PluginConfig for the MQTT (Eclipse Paho)
 // transport. It nests session/sender role configs and is shared

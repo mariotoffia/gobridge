@@ -628,6 +628,20 @@ type PluginConfig interface {
 Both methods are mandatory and both must do real work — an empty
 `Validate()` is rejected by `make lint`.
 
+Typed transport configs may also implement narrowly scoped optional capabilities
+from `ports/plugin_config.go`:
+
+- `DurableSessionIdentityConfig` returns an opaque, secret-safe fingerprint for
+  transport-owned durable broker state. Include effective storage identity only;
+  exclude credentials and runtime tuning. Never return or log the raw descriptor.
+- `ReplicaIdentityConfig` declares the effective per-replica identity strategy
+  used by clustered shared consumers. Validation fails closed when a shared
+  subscription cannot prove a strategy.
+
+These capabilities keep `bridge/` and `validate/` transport-neutral: core code
+asserts the generic interface and never switches on a transport name or imports
+an adapter config type.
+
 ### Registering the decoder
 
 Each adapter ships a `register.go` exposing an exported

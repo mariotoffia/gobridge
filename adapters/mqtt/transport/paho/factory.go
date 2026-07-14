@@ -64,6 +64,10 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
 	}
 	opts := cfg.Session
+	mode := spec.SessionMode
+	if mode == "" {
+		mode = connectivity.SessionEphemeral
+	}
 	if opts.ClientID == "" {
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))
@@ -74,7 +78,11 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	// client_id across instances (a unique-per-instance id strands queued
 	// QoS messages on failover — see acl_session.go / H-1).
 	if opts.ClientIDSuffix != "" {
-		if spec.SessionMode == connectivity.SessionExclusive {
+		if opts.ClientIDSuffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
+			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+				"mqtt session %q: client_id_suffix nonce is valid only for session_mode: ephemeral", spec.ID))
+		}
+		if mode == connectivity.SessionExclusive {
 			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
 				"mqtt session %q: client_id_suffix must not be set for session_mode: exclusive "+
 					"(exclusive requires a stable client_id shared across instances; the lease "+
@@ -104,7 +112,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
 	}
-	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
+	return NewSession(opts, mode, f.Logger, f.Metrics), nil
 }
 
 // NewReceiver creates an MQTT Receiver bound to the given Session. The

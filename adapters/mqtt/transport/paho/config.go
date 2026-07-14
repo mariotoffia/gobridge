@@ -6,11 +6,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -862,23 +864,42 @@ const (
 // $share scale-out from a single shared config file (M-3). An empty suffix
 // returns base unchanged. An unsupported token, or a failed hostname
 // lookup, returns an error so the misconfiguration fails the build rather
-// than silently colliding client_ids. Callers must reject the suffix for
-// exclusive sessions before calling this (see factory.NewSession).
+// than silently colliding client_ids. Callers must enforce mode-specific
+// suffix restrictions before calling this (see factory.NewSession).
+type clientIDSuffixProcessIdentity struct {
+	hostnameOnce sync.Once
+	hostname     string
+	hostnameErr  error
+	nonceOnce    sync.Once
+	nonce        string
+}
+
+// processClientIDSuffixIdentity intentionally has process scope: reload
+// preflight and later session construction must resolve the same effective ID.
+var processClientIDSuffixIdentity clientIDSuffixProcessIdentity //nolint:gochecknoglobals
+
+// resolveClientIDSuffix resolves process identity exactly once. This keeps
+// durable-identity preflight and the later session build truthful even if the
+// host environment changes during a reload. nonce remains unique per process,
+// but repeated resolutions in that process intentionally return the same ID.
 func resolveClientIDSuffix(base, suffix string) (string, error) {
 	switch suffix {
 	case "":
 		return base, nil
 	case ClientIDSuffixHostname:
-		host, err := os.Hostname()
-		if err != nil {
-			return "", fmt.Errorf("client_id_suffix %q: hostname lookup failed: %w", suffix, err)
+		processClientIDSuffixIdentity.hostnameOnce.Do(func() {
+			processClientIDSuffixIdentity.hostname, processClientIDSuffixIdentity.hostnameErr = os.Hostname()
+			if processClientIDSuffixIdentity.hostnameErr == nil && processClientIDSuffixIdentity.hostname == "" {
+				processClientIDSuffixIdentity.hostnameErr = errors.New("hostname is empty")
+			}
+		})
+		if processClientIDSuffixIdentity.hostnameErr != nil {
+			return "", fmt.Errorf("client_id_suffix %q: hostname lookup failed: %w", suffix, processClientIDSuffixIdentity.hostnameErr)
 		}
-		if host == "" {
-			return "", fmt.Errorf("client_id_suffix %q: hostname is empty", suffix)
-		}
-		return base + "-" + host, nil
+		return base + "-" + processClientIDSuffixIdentity.hostname, nil
 	case ClientIDSuffixNonce:
-		return base + "-" + randomClientNonce(), nil
+		processClientIDSuffixIdentity.nonceOnce.Do(func() { processClientIDSuffixIdentity.nonce = randomClientNonce() })
+		return base + "-" + processClientIDSuffixIdentity.nonce, nil
 	default:
 		return "", fmt.Errorf("client_id_suffix %q: unsupported (want %q or %q)",
 			suffix, ClientIDSuffixHostname, ClientIDSuffixNonce)

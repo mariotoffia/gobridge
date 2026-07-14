@@ -273,7 +273,9 @@ func WithSupervisorBlueprintValidator(v ports.BlueprintValidator) SupervisorOpti
 // Default (false) fails CLOSED — GoBridge never silently discards durable
 // messages. Set true ONLY when the operator truly intends to DISCARD that
 // backlog; the supervisor then WARN-logs the discarded partitions/stores and
-// proceeds with the swap.
+// proceeds with the swap. This option never bypasses durable broker-session
+// identity protection; those migrations require an external drain/unsubscribe/
+// backlog/cutover procedure.
 func WithAllowDestructiveReload(allow bool) SupervisorOption {
 	return func(s *Supervisor) { s.allowDestructiveReload = allow }
 }
@@ -592,17 +594,35 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
+	// MQTT and similar durable broker sessions are external stores. Changing or
+	// removing their identity can strand subscriptions and queued QoS messages,
+	// so compare the typed plugin fingerprints before stopping the old runtime,
+	// building a replacement, or honoring any destructive-reload override.
+	s.mu.RLock()
+	paused := s.paused
+	oldCfgAtPreflight := s.cfg
+	s.mu.RUnlock()
+	if oldCfgAtPreflight != nil {
+		if identityErr := durableSessionIdentityChanged(oldCfgAtPreflight, newCfg); identityErr != nil {
+			if s.logger != nil {
+				s.logger.Error("supervisor: refusing reload that changes durable broker session identity; "+
+					"externally drain, unsubscribe, and cut over the old session first",
+					"error", identityErr, "attempted_config_version", newCfg.Version)
+			}
+			s.emitConfigReload(false)
+			if s.onSwap != nil {
+				s.safeOnSwap(SwapEvent{OldConfig: oldCfgAtPreflight, NewConfig: newCfg, Error: identityErr})
+			}
+			return
+		}
+	}
+
 	// While an operator has deliberately paused the bridge (StopBridge), a config
 	// reload must NOT silently resume it. Record the new config so a later
 	// StartBridge resumes on the latest desired state, but do not build or start
 	// a runtime now.
-	s.mu.RLock()
-	paused := s.paused
-	s.mu.RUnlock()
 	if paused {
-		s.mu.Lock()
-		oldCfg := s.cfg
-		s.mu.Unlock()
+		oldCfg := oldCfgAtPreflight
 		// A paused reload cannot prove-drained: StopBridge already Stopped the
 		// old runtime and CLOSED its outbox/DLQ stores, so there is no live store
 		// to query. Refuse a DESTRUCTIVE topology change (removed/retargeted
@@ -1155,6 +1175,56 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 		}
 	}
 	return SwapOverlap
+}
+
+// durableSessionIdentityChanged refuses a live mutation or removal of a
+// durable broker session identified by a stable SessionDef ID. Fingerprints are
+// opaque and are never included in diagnostics. If the old config advertises
+// the capability, the new config must advertise it too so comparison fails
+// closed rather than silently bypassing broker-state protection.
+func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
+	if oldCfg == nil || newCfg == nil {
+		return nil
+	}
+	newByID := make(map[string]ports.SessionDef, len(newCfg.Sessions))
+	for _, session := range newCfg.Sessions {
+		newByID[session.ID] = session
+	}
+	for _, oldSession := range oldCfg.Sessions {
+		oldIdentityConfig, ok := oldSession.Config.(ports.DurableSessionIdentityConfig)
+		if !ok {
+			continue
+		}
+		oldIdentity, err := oldIdentityConfig.DurableSessionIdentity(normalizedSessionMode(oldSession.SessionMode))
+		if err != nil {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q identity cannot be verified", oldSession.ID)
+		}
+		newSession, ok := newByID[oldSession.ID]
+		if !ok {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed or renamed; "+
+				"its broker state could be stranded", oldSession.ID)
+		}
+		newIdentityConfig, ok := newSession.Config.(ports.DurableSessionIdentityConfig)
+		if !ok {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q identity capability is unavailable", oldSession.ID)
+		}
+		newIdentity, err := newIdentityConfig.DurableSessionIdentity(normalizedSessionMode(newSession.SessionMode))
+		if err != nil {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q identity cannot be verified", oldSession.ID)
+		}
+		if oldIdentity != newIdentity {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; "+
+				"externally drain queued messages, unsubscribe the old session, and perform a cutover", oldSession.ID)
+		}
+	}
+	return nil
+}
+
+func normalizedSessionMode(mode string) connectivity.SessionMode {
+	if mode == "" {
+		return connectivity.SessionEphemeral
+	}
+	return connectivity.SessionMode(mode)
 }
 
 // storageIdentifiedConfig is an OPTIONAL store PluginConfig capability that

@@ -38,6 +38,25 @@ the option. `clean_start: true` on an Exclusive session is a misconfiguration
 session-takeover loop); the adapter overrides it to `false` and logs a warning
 (`acl_session.go`).
 
+### Clustered shared-subscription identity
+
+A clustered non-Exclusive receiver using `$share/<group>/<topic>` must configure
+an effective per-replica client identity. Use `client_id_suffix: hostname` by
+default. The hostname is captured once per process, so validation, reload
+preflight, and session construction resolve the same effective client ID. Ensure
+the deployment gives every live replica a unique hostname (Kubernetes pod names
+and ECS task hostnames normally satisfy this).
+
+`client_id_suffix: nonce` is allowed only for Ephemeral sessions. Its random
+value is generated once per process, remaining stable across reload checks while
+still differing between replicas. Persistent and Exclusive modes reject `nonce`
+because a restart would make prior broker state unreachable. Exclusive mode
+rejects every suffix: the lease serializes access to one stable client ID shared
+by active and standby replicas.
+
+Validation fails closed when a clustered `$share` subscription has no typed
+replica-identity capability, an empty strategy, or a durable mode using `nonce`.
+
 ### Exclusive mode: lease store and failover timing
 
 **Lease store (platform requirement).** Exclusive mode elects a single holder
@@ -107,6 +126,23 @@ for the full mechanism.
 > is not consuming and the receive-window is being pinned — investigate the route,
 > not the buffer. `MQTTRouterUnmatchedDropped` remains orphan-cleanup only.
 
+## Durable identity and live-reload migration
+
+The Supervisor fingerprints the canonical broker set (URL userinfo removed),
+effective client ID after suffix resolution, session mode, effective clean-start
+behavior, and effective session expiry. A live reload that changes or removes
+that identity is refused before the old runtime is stopped or a replacement is
+built. Credential rotation, TLS material/path changes, keepalive, reconnect,
+reconcile, and other tuning do not change this durable identity.
+
+`WithAllowDestructiveReload` cannot bypass this guard. GoBridge intentionally
+does not automate broker-state migration. To change a durable MQTT identity,
+operators must externally orchestrate a maintenance cutover: stop new ingress,
+drain and verify the old broker backlog, UNSUBSCRIBE/remove the old session,
+apply the new identity, then resume traffic and verify consumption. In a cluster,
+perform this as a coordinated versioned rollout; independent per-process reloads
+are unsafe.
+
 ## YAML Example
 
 ```yaml
@@ -175,7 +211,7 @@ senders:
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
 | `broker_urls` | []string | -- | Multiple broker URLs for failover |
 | `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`factory.go:59-66`, `NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
-| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id` at build time, so one shared config file (ConfigMap, ECS task def) can still give every replica a distinct id. `hostname` appends `-<hostname>` (the pod/container name — deterministic and human-readable in logs); `nonce` appends `-<8 hex>` from `crypto/rand` (unique per process; use when the hostname is not distinct). Unset (default) leaves `client_id` verbatim. **Rejected on `session_mode: exclusive`** — exclusive failover requires a *stable shared* id across instances (see [scenario 08](../scenarios/08-clustered-exclusive-sessions.md)); build fails if set there. Use it only for `ephemeral`/`persistent` `$share` scale-out. |
+| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname and is preferred for Ephemeral/Persistent sessions. `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |

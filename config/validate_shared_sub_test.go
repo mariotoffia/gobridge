@@ -31,11 +31,19 @@ import (
 //                           └── no  → ERROR
 // ═══════════════════════════════════════════════════════════════════
 
+type sharedSubscriptionIdentityConfig struct{ strategy string }
+
+func (sharedSubscriptionIdentityConfig) Kind() string    { return "test-shared-consumer" }
+func (sharedSubscriptionIdentityConfig) Validate() error { return nil }
+func (c sharedSubscriptionIdentityConfig) ReplicaIdentityStrategy() string {
+	return c.strategy
+}
+
 func clusteredMQTTConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1", DeploymentMode: "clustered"},
 		Sessions: []ports.SessionDef{
-			{ID: "mqtt-sess", Transport: "mqtt", SessionMode: "persistent"},
+			{ID: "mqtt-sess", Transport: "mqtt", SessionMode: "persistent", Config: sharedSubscriptionIdentityConfig{strategy: ports.ReplicaIdentityHostname}},
 		},
 		Receivers: []ports.ReceiverDef{
 			{
@@ -88,6 +96,7 @@ func TestValidate_ClusteredMQTTWithSharePrefix_OK(t *testing.T) {
 func TestValidate_ClusteredMQTTExclusiveSession_OK(t *testing.T) {
 	cfg := clusteredMQTTConfig()
 	cfg.Sessions[0].SessionMode = "exclusive"
+	cfg.Sessions[0].Config = nil
 
 	err := Validate(cfg)
 
@@ -230,6 +239,7 @@ func TestValidate_ClusteredMQTTExplicitTransportNoSession_Error(t *testing.T) {
 				ID:        "rx-mqtt-nosess",
 				Transport: "mqtt",
 				Topics:    []ports.SubscriptionDef{{Topic: "devices/temp", QoS: 1}},
+				Config:    sharedSubscriptionIdentityConfig{strategy: ports.ReplicaIdentityHostname},
 			},
 		},
 		Senders: []ports.SenderDef{
@@ -318,4 +328,35 @@ func TestValidate_ClusteredMQTTCaseInsensitiveTransport_Error(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "clustered MQTT receiver requires $share/ topic prefix")
+}
+
+func TestValidate_ClusteredSharedSubscription_ReplicaIdentityStrategies(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		config  ports.PluginConfig
+		wantErr bool
+	}{
+		{name: "hostname persistent", mode: "persistent", config: sharedSubscriptionIdentityConfig{strategy: ports.ReplicaIdentityHostname}},
+		{name: "nonce ephemeral", mode: "ephemeral", config: sharedSubscriptionIdentityConfig{strategy: ports.ReplicaIdentityNonce}},
+		{name: "nonce persistent", mode: "persistent", config: sharedSubscriptionIdentityConfig{strategy: ports.ReplicaIdentityNonce}, wantErr: true},
+		{name: "empty strategy", mode: "persistent", config: sharedSubscriptionIdentityConfig{}, wantErr: true},
+		{name: "capability unavailable", mode: "persistent", config: nil, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := clusteredMQTTConfig()
+			cfg.Sessions[0].SessionMode = tc.mode
+			cfg.Sessions[0].Config = tc.config
+			cfg.Receivers[0].Topics[0].Topic = "$share/workers/devices/#"
+
+			err := Validate(cfg)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "replica identity")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }

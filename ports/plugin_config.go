@@ -18,6 +18,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -43,6 +44,33 @@ var ErrNilDecoder = shared.NewBridgeError(
 	shared.ErrorPermanent,
 	"ports: nil ConfigDecoder",
 )
+
+// DurableSessionIdentityConfig is an OPTIONAL interface for typed transport
+// configs whose broker-side session state can outlive a process. The returned
+// value is an opaque, secret-safe fingerprint of every field that selects that
+// durable state. It must remain stable for the same effective config within a
+// process. Callers compare it for equality only and must not log identity input.
+type DurableSessionIdentityConfig interface {
+	DurableSessionIdentity(mode connectivity.SessionMode) (string, error)
+}
+
+// Replica identity strategy values understood by transport-neutral validation.
+const (
+	// ReplicaIdentityHostname is a stable per-replica identity derived from the
+	// process hostname (for example, a Kubernetes pod name).
+	ReplicaIdentityHostname = "hostname"
+	// ReplicaIdentityNonce is a process-unique identity suitable only when
+	// broker-side session state is intentionally ephemeral.
+	ReplicaIdentityNonce = "nonce"
+)
+
+// ReplicaIdentityConfig is an OPTIONAL interface for typed transport configs
+// that support per-replica connection identities. The strategy is declarative:
+// validation uses it to prove clustered shared consumers cannot collide before
+// any transport is built. Empty means no per-replica identity strategy.
+type ReplicaIdentityConfig interface {
+	ReplicaIdentityStrategy() string
+}
 
 // PluginConfig is the marker interface every plugin implements with
 // its own concrete config struct. Implementations are typically a
