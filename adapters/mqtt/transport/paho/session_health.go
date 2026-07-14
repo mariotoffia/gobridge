@@ -23,8 +23,10 @@ import (
 // sessions must therefore gate on ServiceLevel == Full (which the monitor
 // exposes via ?level=full), not on Ready. ServiceLevel describes
 // operational completeness:
-//   - Full: every unique desired topic filter is active at or above requested
-//     QoS, every expected receiver handler is registered, and no publishes are
+//   - Full: the latest explicit plan has successfully converged exactly (no
+//     missing or stale broker subscriptions), every unique desired topic filter
+//     is active at or above requested QoS, every expected receiver handler is
+//     registered, and no publishes are
 //     still buffered waiting for a handler (A-5: a covered
 //     subscription whose receiver died keeps its messages retained in the
 //     pending buffer, so a non-empty buffer degrades readiness even while a
@@ -38,7 +40,8 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	cm := s.cm
 	desired := make(map[string]byte)
 	var expectedReceiverIDs []string
-	if s.plan != nil {
+	planDeclared := s.plan != nil
+	if planDeclared {
 		for _, sub := range s.plan.Subscriptions {
 			qos := byte(sub.QoS)
 			if current, ok := desired[sub.Topic]; !ok || qos > current {
@@ -54,6 +57,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		topics = append(topics, topic)
 	}
 	connected := cm != nil && s.connected
+	latchedSubscriptionsSatisfied := s.subscriptionsSatisfied
 	s.mu.Unlock()
 	sort.Strings(topics)
 
@@ -62,7 +66,12 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	pendingCount := s.router.PendingCount()
 	wantedCount := len(desired)
 	activeCount := len(active)
-	subscriptionsSatisfied := desiredSubscriptionsActive(desired, active)
+	subscriptionsSatisfied := latchedSubscriptionsSatisfied
+	if !planDeclared {
+		// Compatibility for zero-value/programmatic sessions that have not
+		// declared an explicit plan through Reconcile.
+		subscriptionsSatisfied = desiredSubscriptionsActive(desired, active)
+	}
 	handlersSatisfied := expectedHandlersRegistered(expectedReceiverIDs, handlerIDs)
 	if len(expectedReceiverIDs) == 0 && wantedCount > 0 {
 		// Plans assembled before ExpectedReceiverIDs was added retain the legacy
@@ -74,8 +83,9 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	switch {
 	case !connected:
 		sl = ports.ServiceLevelNone
-	case wantedCount == 0 && len(expectedReceiverIDs) == 0:
+	case wantedCount == 0 && len(expectedReceiverIDs) == 0 && (!planDeclared || subscriptionsSatisfied):
 		// Sender-only session: no subscriptions or receiver handlers expected.
+		// An explicit empty plan is Full only after stale removals converge.
 		sl = ports.ServiceLevelFull
 	case subscriptionsSatisfied && handlersSatisfied && pendingCount == 0:
 		sl = ports.ServiceLevelFull
@@ -104,6 +114,9 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 }
 
 func desiredSubscriptionsActive(desired, active map[string]byte) bool {
+	if len(desired) != len(active) {
+		return false
+	}
 	for topic, requestedQoS := range desired {
 		actualQoS, ok := active[topic]
 		if !ok || actualQoS < requestedQoS {

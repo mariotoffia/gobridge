@@ -49,7 +49,7 @@ type SessionHealthDetail struct {
 	ConnectAfterLease      bool // source session defers Start until this instance wins the lease
 	SubscriptionsWanted    int
 	SubscriptionsActive    int
-	SubscriptionsSatisfied *bool    // explicit desired filter/QoS satisfaction; nil means legacy unknown
+	SubscriptionsSatisfied *bool    // exact explicit-plan convergence, including removals; nil means legacy unknown
 	ActiveTopics           []string // contract-active topic filters
 	Ready                  bool
 	ServiceLevel           ServiceLevel
@@ -93,9 +93,9 @@ const (
 	// drop us below this until the session reconnects.
 	LevelConnected
 	// LevelSubscribed means LevelConnected plus every session explicitly
-	// satisfies its desired subscription filters and requested QoS (legacy
-	// snapshots fall back to active/wanted counts). Routes can safely register handlers at this
-	// point without missing messages from subsequent publishes.
+	// converged exactly to its desired filters and requested QoS, including stale
+	// removals (legacy snapshots fall back to active/wanted counts). Routes can
+	// safely register handlers at this point without missing subsequent publishes.
 	LevelSubscribed
 	// LevelFull means LevelSubscribed plus every route has Ready == true
 	// (route runner started AND receiver started AND, for MQTT, every expected

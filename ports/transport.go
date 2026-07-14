@@ -330,9 +330,9 @@ const (
 	// ServiceLevelDegraded indicates the session is connected but its desired
 	// subscription, requested QoS, expected-handler, or backlog contract is incomplete.
 	ServiceLevelDegraded ServiceLevel = "degraded"
-	// ServiceLevelFull indicates every unique desired subscription is active at
-	// or above requested QoS, every expected receiver handler is registered, and
-	// no pre-registration backlog remains.
+	// ServiceLevelFull indicates subscription state exactly matches the desired
+	// filters at or above requested QoS, every expected receiver handler is
+	// registered, and no pre-registration backlog remains.
 	ServiceLevelFull ServiceLevel = "full"
 )
 
@@ -344,7 +344,7 @@ type SessionHealth struct {
 	LastError              error
 	SubscriptionsWanted    int          // Number of unique desired subscription filters
 	SubscriptionsActive    int          // Number of unique contract-active subscription filters
-	SubscriptionsSatisfied *bool        // Explicit desired filter/QoS satisfaction; nil means legacy unknown
+	SubscriptionsSatisfied *bool        // Exact explicit-plan convergence, including removals; nil means legacy unknown
 	HandlersRegistered     int          // Number of receiver handlers on the message router
 	ReceiveMaximum         uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
 	Ready                  bool         // Connected to the broker (connectivity only)

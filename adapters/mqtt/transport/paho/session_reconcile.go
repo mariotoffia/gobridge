@@ -34,6 +34,9 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
 	desiredPlan := cloneSessionPlan(plan)
 	s.mu.Lock()
 	// The empty-plan no-op and the reconnect-window teardown key off the
@@ -57,6 +60,9 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// Reconcile-before-Start still stashes the plan. It is deliberately NOT the
 	// applied history (see appliedPlan, set only after the broker ops succeed).
 	s.plan = &desiredPlan
+	// An explicit plan is unsatisfied until this operation proves exact broker
+	// convergence. Errors and reconnect generation changes leave it false.
+	s.subscriptionsSatisfied = false
 	// Shared-subscription scale-out on a stable/shared-ClientID mode is the
 	// client_id-collision footgun (HIGH-3): every replica MUST use a UNIQUE
 	// client_id, else they form a single broker session and take each other
@@ -111,6 +117,9 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// APPLIED (not desired) state, a FAILED unsubscribe (whose applied plan still holds subscriptions) is
 	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
 	if len(desiredPlan.Subscriptions) == 0 && appliedExists && !appliedHadSubs && !observedHadSubs {
+		s.mu.Lock()
+		s.subscriptionsSatisfied = true
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -192,10 +201,18 @@ func cloneSessionPlan(plan connectivity.SessionPlan) connectivity.SessionPlan {
 // It is invoked from the router's own goroutine (never the paho publish
 // callback), tracked by the router WaitGroup so Session.Close awaits it.
 func (s *Session) unsubscribeOrphan(topic string) {
+	// Use the reconciliation serialization boundary so an orphan decision and
+	// destructive broker operation cannot interleave with a route re-add.
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
+	// Recheck coverage only after owning reconcileMu, immediately before the
+	// broker operation. Reconcile holds the same lock while declaring its plan.
 	s.mu.Lock()
 	cm := s.cm
 	closed := s.closed
 	covered := s.topicCoveredLocked(topic)
+	startEpoch := s.connEpoch
 	s.mu.Unlock()
 	if cm == nil || closed {
 		return
@@ -227,7 +244,10 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	}
 
 	s.mu.Lock()
-	delete(s.activeSubs, topic)
+	if s.connEpoch == startEpoch {
+		delete(s.observedSubs, topic)
+		delete(s.activeSubs, topic)
+	}
 	s.mu.Unlock()
 
 	if logging.DebugEnabled(s.logger) {
@@ -330,8 +350,6 @@ func (s *Session) reconcileTimeout() time.Duration {
 
 func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connectivity.SessionPlan, priorTopics []string) error {
 	reconcileStart := s.clock().Now()
-	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
 
 	desired := make(map[string]byte, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
@@ -534,6 +552,12 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 		return downgradeErr
 	}
 
+	s.mu.Lock()
+	if s.connEpoch == startEpoch {
+		s.subscriptionsSatisfied = subscriptionStateConverged(desired, s.observedSubs, s.activeSubs)
+	}
+	s.mu.Unlock()
+
 	elapsed := s.clock().Since(reconcileStart)
 	s.metrics.Timer(MetricMQTTReconcileLatency, elapsed,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
@@ -547,6 +571,27 @@ func (s *Session) reconcile(ctx context.Context, cm pahoConnection, plan connect
 	}
 
 	return nil
+}
+
+func subscriptionStateConverged(
+	desired map[string]byte,
+	observed map[string]subscriptionGrant,
+	active map[string]byte,
+) bool {
+	if len(observed) != len(desired) || len(active) != len(desired) {
+		return false
+	}
+	for topic, requested := range desired {
+		grant, ok := observed[topic]
+		if !ok || grant.Requested != requested || grant.Granted < requested {
+			return false
+		}
+		qos, ok := active[topic]
+		if !ok || qos != grant.Granted {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Session) observedQoSDowngrade(desired map[string]byte) *shared.BridgeError {

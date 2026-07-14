@@ -127,6 +127,7 @@ func TestHealth_ServiceLevel(t *testing.T) {
 				for i := range tc.activeSubs {
 					s.activeSubs["test/topic/"+string(rune('a'+i))] = 1
 				}
+				s.subscriptionsSatisfied = tc.wantedSubs == tc.activeSubs
 				s.mu.Unlock()
 			}
 
@@ -231,6 +232,14 @@ func fullHealthSession(t *testing.T, plan connectivity.SessionPlan, active map[s
 	s.connected = true
 	s.plan = &plan
 	s.activeSubs = active
+	desired := make(map[string]byte, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		qos := byte(sub.QoS)
+		if current, ok := desired[sub.Topic]; !ok || qos > current {
+			desired[sub.Topic] = qos
+		}
+	}
+	s.subscriptionsSatisfied = desiredSubscriptionsActive(desired, active)
 	s.mu.Unlock()
 	for _, id := range handlerIDs {
 		s.router.Register(id, func(*pahov5.Publish) {})

@@ -47,6 +47,7 @@ func TestBug_Health_PendingBacklog_DegradesFromFull(t *testing.T) {
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "test/topic/a", QoS: 1}},
 	}
 	s.activeSubs["test/topic/a"] = 1
+	s.subscriptionsSatisfied = true
 	s.mu.Unlock()
 	s.router.Register("handler-0", func(*pahov5.Publish) {})
 

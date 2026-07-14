@@ -320,6 +320,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		OnConnectionDown: func() bool {
 			s.mu.Lock()
 			s.connected = false
+			s.subscriptionsSatisfied = false
 			s.mu.Unlock()
 			s.pushEvent(ports.SessionDisconnected, nil)
 			if logging.DebugEnabled(s.logger) {

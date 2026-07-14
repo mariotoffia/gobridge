@@ -257,7 +257,7 @@ func (s *Session) Close(ctx context.Context) error {
 // subscription-state reset and MUST NOT acquire reconcileMu. autopaho invokes
 // OnConnectionUp synchronously on its sole connection-management goroutine and
 // documents that the callback "must not block" (autopaho.ClientConfig.
-// OnConnectionUp, auto.go). reconcileMu is held by reconcile() for the entire
+// OnConnectionUp, auto.go). reconcileMu is held by Reconcile for the entire
 // duration of a network SUBSCRIBE / UNSUBSCRIBE round-trip, so blocking on it
 // here would stall that goroutine — the owner of reconnect and error handling
 // — on a network call, violating the SDK contract and coupling liveness to
@@ -278,6 +278,7 @@ func (s *Session) handleConnectionUp() {
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.observedSubs = make(map[string]subscriptionGrant)
 	s.activeSubs = make(map[string]byte)
+	s.subscriptionsSatisfied = false
 	// Bump the connection generation so any reconcile that snapshotted
 	// subscription state under the PRIOR connection abandons its stale write-back
 	// instead of polluting this fresh set (A-3).

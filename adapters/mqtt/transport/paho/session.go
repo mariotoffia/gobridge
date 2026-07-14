@@ -92,8 +92,9 @@ type Session struct {
 	// activeSubs (e.g. the SessionManager-driven reconcile on
 	// SessionConnected racing a rotation- or caller-triggered Reconcile).
 	// Per finding C7 the SessionManager is the single owner of
-	// reconciliation; OnConnectionUp (handleConnectionUp) does NOT
-	// reconcile inline — it only resets activeSubs and signals the
+	// reconciliation; Reconcile holds it across plan declaration and broker
+	// convergence. OnConnectionUp (handleConnectionUp) does NOT reconcile
+	// inline — it only resets subscription state and signals the
 	// manager — so it is intentionally not a holder of this mutex (see
 	// handleConnectionUp for why it must not block on it).
 	reconcileMu sync.Mutex
@@ -133,6 +134,12 @@ type Session struct {
 	// activeSubs is the contract-active subset of observedSubs: filters whose
 	// granted QoS meets or exceeds the requested QoS. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
+
+	// subscriptionsSatisfied is latched false when an explicit plan starts
+	// reconciling or the connection generation changes. Only an exact successful
+	// convergence of broker-observed and contract-active state sets it true.
+	// Guarded by mu.
+	subscriptionsSatisfied bool
 
 	// liveCreds is the most recently applied credential material. It is
 	// consulted by the ConnectPacketBuilder on every (re)connect so that

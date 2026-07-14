@@ -99,7 +99,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 |---|---|
 | **Session** | A live connection to a transport (one MQTT/AMQP/SQS/ASB/HTTP connection) with subscriptions and publishers attached. |
 | **SessionMode** | `ephemeral` (no durable subscriptions), `persistent` (durable, resumed across restarts), `exclusive` (single-owner). |
-| **SessionPlan** | The desired state of a session: lists of `SubscriptionPlan`, `PublisherPlan`, and sorted/deduplicated `ExpectedReceiverIDs`. Adapters reconcile actual state toward the plan; Full readiness requires every expected receiver handler. An empty expected-ID list preserves compatibility for programmatic legacy plans. |
+| **SessionPlan** | The desired state of a session: lists of `SubscriptionPlan`, `PublisherPlan`, and sorted/deduplicated `ExpectedReceiverIDs`. Adapters reconcile actual state toward the plan; Full readiness requires exact successful subscription convergence (including stale removals) and every expected receiver handler. An empty expected-ID list preserves compatibility for programmatic legacy plans. |
 | **SubscriptionPlan** | Desired subscription: `Topic`, `QoS`, transport-typed `Config`. |
 | **PublisherPlan** | Desired publisher: `Topic`, `QoS`, transport-typed `Config`. |
 | **Reconcile** | The act of bringing a session's actual subscriptions/publishers in line with its `SessionPlan`. |

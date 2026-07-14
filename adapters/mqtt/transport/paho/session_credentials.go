@@ -50,6 +50,7 @@ func (s *Session) reportAuthFailure(err error) {
 func (s *Session) handleConnectError(err error) {
 	s.mu.Lock()
 	s.connected = false
+	s.subscriptionsSatisfied = false
 	s.mu.Unlock()
 	mapped := mapConnectError(err)
 	s.reportAuthFailure(mapped)
