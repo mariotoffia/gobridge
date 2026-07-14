@@ -27,6 +27,7 @@ func TestGrantDynamoDBStore(t *testing.T) {
 		"dynamodb:DeleteItem",
 		"dynamodb:Query",
 		"dynamodb:Scan",
+		"dynamodb:DescribeTable",
 	)
 }
 

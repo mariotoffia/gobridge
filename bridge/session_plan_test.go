@@ -185,7 +185,7 @@ func TestBuilder_AssemblesAndThreadsSessionPlan_SharedSessionUnion(t *testing.T)
 			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 		Sessions: []ports.SessionDef{
-			{ID: "s1", Transport: "mqtt", SessionMode: "exclusive"},
+			{ID: "s1", Transport: "mqtt", SessionMode: "ephemeral"},
 		},
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "mqtt", SessionID: "s1", Topics: []ports.SubscriptionDef{

@@ -28,7 +28,7 @@ type pahoConnection interface {
 	AwaitConnection(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	Subscribe(ctx context.Context, subs []subscribeSpec) (reasons []byte, err error)
-	Unsubscribe(ctx context.Context, topics []string) error
+	Unsubscribe(ctx context.Context, topics []string) (reasons []byte, err error)
 	PublishEnvelope(
 		ctx context.Context,
 		env *messaging.Envelope,
@@ -161,11 +161,15 @@ func (c *pahoConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte,
 }
 
 // Unsubscribe issues an UNSUBSCRIBE for the given topics.
-func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) error {
-	if _, err := c.cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: topics}); err != nil {
-		return fmt.Errorf("paho: unsubscribe: %w", err)
+func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
+	ack, err := c.cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: topics})
+	if err != nil {
+		return nil, fmt.Errorf("paho: unsubscribe: %w", err)
 	}
-	return nil
+	if ack == nil {
+		return nil, nil
+	}
+	return ack.Reasons, nil
 }
 
 // PublishEnvelope serialises the given messaging.Envelope into a paho

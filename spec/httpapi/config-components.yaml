@@ -252,6 +252,9 @@ schemas:
         $ref: "#/schemas/StoreConfig"
       dlq:
         $ref: "#/schemas/StoreConfig"
+      managed_subscriptions:
+        $ref: "#/schemas/StoreConfig"
+        description: Exact durable MQTT topic-filter history.
 
   StoreConfig:
     type: object

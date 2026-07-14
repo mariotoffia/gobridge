@@ -3,11 +3,12 @@ package grants
 import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
+	"github.com/aws/jsii-runtime-go"
 )
 
 // GrantDynamoDBStore grants the principal full read/write data
 // access on table — sufficient for the file-based-config bridge's
-// outbox, lease and DLQ stores backed by DynamoDB. Stream actions
+// outbox, lease, DLQ and managed-subscription stores backed by DynamoDB. Stream actions
 // are intentionally omitted: the bridge does not consume DynamoDB
 // streams.
 //
@@ -16,4 +17,11 @@ import (
 // grant aggregator.
 func GrantDynamoDBStore(role awsiam.IGrantable, table awsdynamodb.ITable) {
 	table.GrantReadWriteData(role)
+	// Every DynamoDB store factory fails closed on schema preflight. Data-plane
+	// grants omit DescribeTable, so grant that exact control-plane read on the
+	// same table ARN rather than widening to dynamodb:*.
+	awsiam.Grant_AddToPrincipal(&awsiam.GrantOnPrincipalOptions{
+		Grantee: role, Actions: jsii.Strings("dynamodb:DescribeTable"),
+		ResourceArns: jsii.Strings(*table.TableArn()),
+	})
 }

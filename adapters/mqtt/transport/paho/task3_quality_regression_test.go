@@ -20,14 +20,14 @@ type orphanReaddConn struct {
 	releaseUnsub chan struct{}
 }
 
-func (c *orphanReaddConn) Unsubscribe(_ context.Context, topics []string) error {
+func (c *orphanReaddConn) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
 	c.mu.Lock()
 	c.unsubCalls++
 	c.unsubTopics = append(c.unsubTopics, append([]string(nil), topics...))
 	c.mu.Unlock()
 	close(c.unsubEntered)
 	<-c.releaseUnsub
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 func TestOrphanUnsubscribe_SerializesWithReconcileAndCannotEraseReaddedSubscription(t *testing.T) {
@@ -106,7 +106,7 @@ type blockingRemovalConn struct {
 	firstUnsubOnce sync.Once
 }
 
-func (c *blockingRemovalConn) Unsubscribe(_ context.Context, topics []string) error {
+func (c *blockingRemovalConn) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
 	c.mu.Lock()
 	c.unsubCalls++
 	c.unsubTopics = append(c.unsubTopics, append([]string(nil), topics...))
@@ -119,9 +119,9 @@ func (c *blockingRemovalConn) Unsubscribe(_ context.Context, topics []string) er
 	if call == 1 {
 		c.firstUnsubOnce.Do(func() { close(c.firstEntered) })
 		<-c.releaseFirst
-		return errors.New("forced unsubscribe failure")
+		return nil, errors.New("forced unsubscribe failure")
 	}
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 func TestHealth_SubscriptionsUnsatisfiedUntilExactRemovalConverges(t *testing.T) {
@@ -231,13 +231,13 @@ type epochChangingOrphanConn struct {
 	topic   string
 }
 
-func (c *epochChangingOrphanConn) Unsubscribe(context.Context, []string) error {
+func (c *epochChangingOrphanConn) Unsubscribe(context.Context, []string) ([]byte, error) {
 	c.session.handleConnectionUp()
 	c.session.mu.Lock()
 	c.session.observedSubs[c.topic] = subscriptionGrant{Requested: 1, Granted: 1}
 	c.session.activeSubs[c.topic] = 1
 	c.session.mu.Unlock()
-	return nil
+	return nil, nil
 }
 
 func TestHealth_ExplicitEmptyPlanUnsatisfiedAcrossReconnectUntilReconciled(t *testing.T) {

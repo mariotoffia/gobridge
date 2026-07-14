@@ -34,20 +34,6 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")
 	}
 
-	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if retErr != nil {
-			for id, s := range sessions {
-				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
-				}
-			}
-		}
-	}()
-
 	// If the build fails after the runtime takes ownership of the prep-opened
 	// stores, the discarded runtime is never Started and therefore never
 	// Stopped, so its lease/outbox/DLQ handles (e.g. SQLite files) would leak on
@@ -60,6 +46,20 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	defer func() {
 		if retErr != nil {
 			b.closeStoreHandles(prep.stores)
+		}
+	}()
+
+	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx, prep.stores.managedSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			for id, s := range sessions {
+				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
+					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
+				}
+			}
 		}
 	}()
 
@@ -205,7 +205,7 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 	if stores == nil {
 		return
 	}
-	for _, s := range []any{stores.outbox, stores.dlq, stores.lease} {
+	for _, s := range []any{stores.managedSubscriptions, stores.outbox, stores.dlq, stores.lease} {
 		c, ok := s.(io.Closer)
 		if !ok {
 			continue
@@ -816,7 +816,7 @@ func validateSharedOutboxBindingSessions(cfg *ports.BridgeConfig) error {
 	}
 	return nil
 }
-func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.Session, map[string]string, error) {
+func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.ManagedSubscriptionStore) (map[string]ports.Session, map[string]string, error) {
 	sessions := make(map[string]ports.Session, len(b.cfg.Sessions))
 	uris := make(map[string]string, len(b.cfg.Sessions))
 
@@ -860,7 +860,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 		if uri != "" {
 			uris[sd.ID] = uri
 		}
-		sess, err := tf.NewSession(ctx, sessionSpecFrom(sd))
+		spec, err := sessionSpecWithManagedSubscriptions(sd, b.cfg, managedStore)
+		if err != nil {
+			cleanup("")
+			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
+		}
+		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
 			cleanup("")
 			return nil, nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)

@@ -100,7 +100,7 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 		}
 	}
 
-	// DynamoDB stores (lease/outbox/DLQ). Grant read/write data on each
+	// DynamoDB stores (lease/outbox/DLQ/managed subscriptions). Grant read/write data on each
 	// table the config names. Stores that omit table_name would fall back
 	// to the adapter's built-in default table name, which this profile
 	// cannot resolve to an ARN -- those FAIL AT SYNTH (see below) rather
@@ -108,7 +108,7 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	// by name so a table shared across store roles yields a single import +
 	// grant.
 	granted := map[string]struct{}{}
-	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
 		if sc == nil || !isKind(sc.Type, awsstore.DynamoDBKind) {
 			continue
 		}

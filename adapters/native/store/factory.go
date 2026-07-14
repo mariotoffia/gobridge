@@ -8,13 +8,15 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
+	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var (
-	_ ports.StoreFactory = (*MemoryStoreFactory)(nil)
-	_ ports.StoreFactory = (*SQLiteStoreFactory)(nil)
+	_ ports.StoreFactory                    = (*MemoryStoreFactory)(nil)
+	_ ports.StoreFactory                    = (*SQLiteStoreFactory)(nil)
+	_ ports.ManagedSubscriptionStoreFactory = (*SQLiteStoreFactory)(nil)
 )
 
 // MemoryStoreFactory creates in-memory store instances.
@@ -95,6 +97,15 @@ func (f *SQLiteStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginC
 	}
 
 	return sqliteoutbox.NewStore(sc.Path, opts...) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqliteoutbox.NewStore already classifies via mapError.
+}
+
+// NewManagedSubscriptionStore creates a dedicated exact-filter history.
+func (f *SQLiteStoreFactory) NewManagedSubscriptionStore(_ context.Context, cfg ports.PluginConfig) (ports.ManagedSubscriptionStore, error) { //nolint:ireturn // Factory port intentionally returns the narrow role interface.
+	sc, err := requiredSQLiteConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return sqlitemanagedsubscriptions.NewStore(sc.Path) //nolint:wrapcheck // adapter classifies errors
 }
 
 // NewDLQStore creates a SQLite DLQ store from the typed config. A positive

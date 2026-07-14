@@ -33,7 +33,15 @@ func (b *Builder) WithDynamoDBDLQ(tableName string) *Builder {
 	return b
 }
 
-// dynamoDBStore is the shared assembly path for the three DynamoDB
+// WithDynamoDBManagedSubscriptions installs the exact durable MQTT
+// topic-filter history store. Persistent/exclusive MQTT sessions with desired
+// subscriptions require this store before broker activation.
+func (b *Builder) WithDynamoDBManagedSubscriptions(tableName string) *Builder {
+	b.cfg.Stores.ManagedSubscriptions = dynamoDBStore(tableName)
+	return b
+}
+
+// dynamoDBStore is the shared assembly path for the four DynamoDB
 // store methods. DynamoDBConfig.Validate is a no-op (table_name is
 // optional) so the builder cannot fail here.
 func dynamoDBStore(tableName string) *ports.StoreConfig {

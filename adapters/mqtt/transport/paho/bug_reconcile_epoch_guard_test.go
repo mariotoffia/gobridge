@@ -71,7 +71,9 @@ func (c *reconnectDuringSubscribeConn) Subscribe(_ context.Context, subs []subsc
 	return reasons, nil
 }
 
-func (c *reconnectDuringSubscribeConn) Unsubscribe(context.Context, []string) error { return nil }
+func (c *reconnectDuringSubscribeConn) Unsubscribe(context.Context, []string) ([]byte, error) {
+	return nil, nil
+}
 
 func (c *reconnectDuringSubscribeConn) PublishEnvelope(
 	context.Context, *messaging.Envelope, string, SenderOptions, clock.Clock,

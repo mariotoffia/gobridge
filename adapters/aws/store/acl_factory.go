@@ -10,17 +10,19 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var (
-	_ ports.StoreFactory            = (*DynamoDBStoreFactory)(nil)
-	_ ports.DistributedStoreFactory = (*DynamoDBStoreFactory)(nil)
+	_ ports.StoreFactory                    = (*DynamoDBStoreFactory)(nil)
+	_ ports.ManagedSubscriptionStoreFactory = (*DynamoDBStoreFactory)(nil)
+	_ ports.DistributedStoreFactory         = (*DynamoDBStoreFactory)(nil)
 )
 
-// DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, and DLQ stores.
+// DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, DLQ, and managed-subscription stores.
 type DynamoDBStoreFactory struct {
 	client *dynamodb.Client
 	logger *slog.Logger
@@ -260,6 +262,24 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(ctx context.Context, cfg ports.Plu
 		opts = append(opts, dynamodboutbox.WithMetrics(runtime.Metrics))
 	}
 	store := dynamodboutbox.NewStore(f.client, opts...)
+	if err := f.preflight(ctx, store); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// NewManagedSubscriptionStore creates a dedicated exact-filter history and
+// verifies its one-hash-key schema before exposing it to the runtime.
+func (f *DynamoDBStoreFactory) NewManagedSubscriptionStore(ctx context.Context, cfg ports.PluginConfig) (ports.ManagedSubscriptionStore, error) { //nolint:ireturn // Factory port intentionally returns the narrow role interface.
+	dc, err := dynamoDBConfigFromOrZero(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var opts []dynamodbmanagedsubscriptions.Option
+	if dc.TableName != "" {
+		opts = append(opts, dynamodbmanagedsubscriptions.WithTableName(dc.TableName))
+	}
+	store := dynamodbmanagedsubscriptions.NewStore(f.client, opts...)
 	if err := f.preflight(ctx, store); err != nil {
 		return nil, err
 	}

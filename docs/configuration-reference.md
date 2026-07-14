@@ -146,7 +146,7 @@ config_watch:
 
 ## `stores` -- Backing Store Configuration
 
-Configures the backing stores for lease coordination, outbox persistence, and dead-letter queue.
+Configures the backing stores for lease coordination, outbox persistence, dead-letter queue, and exact managed MQTT subscription history.
 
 ### Store Roles
 
@@ -155,6 +155,7 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 | `lease` | Distributed lease ownership | Exclusive sessions in clustered mode |
 | `outbox` | Durable message outbox | `delivery_mode: shared_outbox` |
 | `dlq` | Dead-letter queue | `on_expired: dlq`, `on_permanent_failure: dlq`, or `on_filtered: dlq` |
+| `managed_subscriptions` | Exact durable MQTT topic-filter history | Persistent/exclusive MQTT session with desired subscriptions |
 
 ### Store Config Fields
 
@@ -163,7 +164,7 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 | `type` | string | **yes** | Store backend: `memory`, `sqlite`, `dynamodb` |
 | `options` | map | no | Backend-specific options |
 
-**Memory**: no options required.
+**Memory**: no options required. Memory does **not** implement `managed_subscriptions`, because process-local history cannot survive restart.
 
 **SQLite** (`type: sqlite`):
 
@@ -186,6 +187,15 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 > The AWS region and endpoint are NOT store options: they come from the standard
 > AWS SDK configuration chain (environment, shared config, IAM role). Supplying
 > `options.region` or `options.endpoint` is rejected by the strict decoder.
+
+**Managed-subscription data models and startup contract.** SQLite keeps a baseline
+identity row plus exact `(storage_identity, filter)` rows. DynamoDB uses a
+`storage_identity` string HASH key, a `baseline` BOOL, and an optional `filters`
+String Set; grant `GetItem`, `UpdateItem`, and `DescribeTable` (the standard
+read/write-data grant is a permitted superset). The identity is an opaque,
+secret-safe durable-session fingerprint. A missing baseline or any store outage
+fails startup before the MQTT broker connection is opened; seed an explicit
+empty baseline for a genuinely new durable session.
 
 **DLQ read ordering** is oldest-first (`failed_at ASC`) across all backends, so
 operators triage the earliest failures first.
@@ -225,6 +235,10 @@ stores:
       stale_claim_duration: 30s
   dlq:
     type: memory
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
 ```
 
 ## `sessions` -- Transport Sessions

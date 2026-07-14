@@ -195,7 +195,7 @@ var _ ports.TransportFactory = (*Factory)(nil)
 
 ## Store Adapters
 
-Store adapters provide persistence for leases, outbox records, and DLQ entries.
+Store adapters provide persistence for leases, outbox records, DLQ entries, and exact managed-subscription history.
 
 ### Port Interfaces
 
@@ -223,6 +223,12 @@ type DLQStore interface {
     Replay(ctx context.Context, entryIDs []string) error
     Purge(ctx context.Context, before time.Time) (int, error)
 }
+
+type ManagedSubscriptionStore interface {
+    List(ctx context.Context, storageIdentity string) ([]string, error)
+    Remember(ctx context.Context, storageIdentity string, filters []string) error
+    Forget(ctx context.Context, storageIdentity string, filters []string) error
+}
 ```
 
 ### Store Factory (ports-first)
@@ -243,8 +249,9 @@ registered on `*ports.Registry` (see
 its own type assertion on the concrete config type — it never sees
 `map[string]any`.
 
-Optional companion interface:
+Optional companion interfaces:
 
+- `ports.ManagedSubscriptionStoreFactory.NewManagedSubscriptionStore(...)` — exact durable MQTT filter history; separate from `StoreFactory` so unrelated plugins are not widened.
 - `ports.DistributedStoreFactory.IsDistributed() bool` — returns true
   when the store provides cross-process coordination. Required for
   clustered deployments.
@@ -286,7 +293,7 @@ These suites verify all required behaviors (idempotency, filtering, fencing, etc
 
 - **Memory**: `adapters/native/store/memory*/` -- sync.Mutex + maps, good for tests
 - **SQLite**: `adapters/native/store/sqlite*/` -- WAL mode, modernc.org/sqlite, JSON marshaling
-- **DynamoDB**: `adapters/aws/store/dynamodb*/` -- conditional writes, GSIs, TTL compaction
+- **DynamoDB**: `adapters/aws/store/dynamodb*/` -- conditional writes, GSIs, TTL compaction, and atomic managed-filter sets
 
 ## Credential Adapters
 

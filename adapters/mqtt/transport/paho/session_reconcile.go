@@ -48,6 +48,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	appliedExists := s.appliedPlan != nil
 	appliedHadSubs := appliedExists && len(s.appliedPlan.Subscriptions) > 0
 	observedHadSubs := len(s.observedSubs) > 0 || len(s.activeSubs) > 0
+	managedHistoryRequired := s.managedRequired
 	startEpoch := s.connEpoch
 	// Snapshot the last-APPLIED desired topics: an empty target plan must tear
 	// these down even when a reconnect just reset the volatile activeSubs
@@ -120,9 +121,13 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	// APPLIED plan that itself held no subscriptions (a sender-only session) and
 	// has no broker-observed grants — is a true no-op, so a SessionManager that
 	// never had subscriptions cannot churn the broker. Because the no-op keys off
-	// APPLIED (not desired) state, a FAILED unsubscribe (whose applied plan still holds subscriptions) is
-	// NOT mistaken for a settled subless session and IS retried (blocking-#2).
-	if len(desiredPlan.Subscriptions) == 0 && appliedExists && !appliedHadSubs && !observedHadSubs {
+	// APPLIED (not desired) state, a FAILED unsubscribe (whose applied plan
+	// still holds subscriptions) is NOT mistaken for a settled subless session
+	// and IS retried (blocking-#2). A managed session never takes this process-
+	// local shortcut: durable history remains authoritative even after an empty
+	// plan was applied, because write-ahead candidates may still need cleanup.
+	if len(desiredPlan.Subscriptions) == 0 &&
+		appliedExists && !appliedHadSubs && !observedHadSubs && !managedHistoryRequired {
 		s.mu.Lock()
 		if err := reconcileEpochMismatch(startEpoch, s.connEpoch); err != nil {
 			s.mu.Unlock()
@@ -230,9 +235,10 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	cm := s.cm
 	closed := s.closed
 	covered := s.topicCoveredLocked(topic)
+	managed := s.managedRequired
 	startEpoch := s.connEpoch
 	s.mu.Unlock()
-	if cm == nil || closed {
+	if cm == nil || closed || managed {
 		return
 	}
 
@@ -250,12 +256,21 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	ctx, cancel := context.WithTimeout(context.Background(), orphanUnsubscribeTimeout)
 	defer cancel()
 
-	if err := cm.Unsubscribe(ctx, []string{topic}); err != nil {
+	reasons, err := cm.Unsubscribe(ctx, []string{topic})
+	if err == nil {
+		succeeded, firstErr, _ := classifyUnsubackReasons([]string{topic}, reasons)
+		if firstErr != nil {
+			err = firstErr
+		} else if len(succeeded) != 1 {
+			err = shared.ErrProtocolError.WithMessage("mqtt: orphan UNSUBACK did not confirm removal")
+		}
+	}
+	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("mqtt: failed to unsubscribe orphan topic",
 				"client_id", s.opts.ClientID,
 				"topic", topic,
-				"error", MapError(err),
+				"error", err,
 			)
 		}
 		return
@@ -408,6 +423,42 @@ func (s *Session) reconcile(
 		current = make(map[string]byte)
 	}
 
+	s.mu.Lock()
+	managed := s.managedRequired
+	managedLoaded := s.managedLoaded
+	managedStore := s.managedStore
+	managedIdentity := s.managedIdentity
+	managedHistory := maps.Clone(s.managedHistory)
+	s.mu.Unlock()
+	if managed {
+		if !managedLoaded || managedStore == nil || managedIdentity == "" {
+			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription history was not loaded before reconcile")
+		}
+		candidates := make([]string, 0, len(desired))
+		for filter := range desired {
+			candidates = append(candidates, filter)
+		}
+		sort.Strings(candidates)
+		if len(candidates) > 0 {
+			// Write-ahead is load-bearing: a crash after SUBSCRIBE but before
+			// local state commit must still leave the exact filter removable.
+			if err := managedStore.Remember(ctx, managedIdentity, candidates); err != nil {
+				return shared.ErrUnavailable.WithMessage("mqtt: remember managed subscription candidates before SUBSCRIBE").Wrap(err)
+			}
+			if managedHistory == nil {
+				managedHistory = make(map[string]struct{})
+			}
+			for _, filter := range candidates {
+				managedHistory[filter] = struct{}{}
+			}
+			s.mu.Lock()
+			for _, filter := range candidates {
+				s.managedHistory[filter] = struct{}{}
+			}
+			s.mu.Unlock()
+		}
+	}
+
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: reconcile",
 			"client_id", s.opts.ClientID,
@@ -427,60 +478,55 @@ func (s *Session) reconcile(
 	// not actually hold is harmless (the broker ignores it).
 	var toUnsub []string
 	unsubSeen := make(map[string]struct{})
-	for topic := range observed {
-		if _, ok := desired[topic]; !ok {
+	if managed {
+		// Durable cleanup is derived ONLY from exact persisted filters. Never
+		// infer a wildcard/shared filter from a delivered concrete topic.
+		for filter := range managedHistory {
+			if _, wanted := desired[filter]; !wanted {
+				toUnsub = append(toUnsub, filter)
+			}
+		}
+	} else {
+		for topic := range observed {
+			if _, ok := desired[topic]; !ok {
+				toUnsub = append(toUnsub, topic)
+				unsubSeen[topic] = struct{}{}
+			}
+		}
+		for topic := range current {
+			if _, wanted := desired[topic]; wanted {
+				continue
+			}
+			if _, seen := unsubSeen[topic]; seen {
+				continue
+			}
+			toUnsub = append(toUnsub, topic)
+			unsubSeen[topic] = struct{}{}
+		}
+		for _, topic := range priorTopics {
+			if _, ok := desired[topic]; ok {
+				continue
+			}
+			if _, dup := unsubSeen[topic]; dup {
+				continue
+			}
 			toUnsub = append(toUnsub, topic)
 			unsubSeen[topic] = struct{}{}
 		}
 	}
-	for topic := range current {
-		if _, wanted := desired[topic]; wanted {
-			continue
-		}
-		if _, seen := unsubSeen[topic]; seen {
-			continue
-		}
-		toUnsub = append(toUnsub, topic)
-		unsubSeen[topic] = struct{}{}
-	}
-	for _, topic := range priorTopics {
-		if _, ok := desired[topic]; ok {
-			continue
-		}
-		if _, dup := unsubSeen[topic]; dup {
-			continue
-		}
-		toUnsub = append(toUnsub, topic)
-		unsubSeen[topic] = struct{}{}
-	}
+	sort.Strings(toUnsub)
 
-	if len(toUnsub) > 0 {
-		if logging.TraceEnabled(s.logger) {
-			s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing",
-				"client_id", s.opts.ClientID, "topics", toUnsub)
-		}
-		// Wrap the broker op in an adapter-owned deadline: the reconcile ctx may
-		// carry none, so a wedged broker (UNSUBACK never arrives on a half-open
-		// connection) would otherwise hang the reconcile indefinitely (HIGH-2).
-		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+	if len(toUnsub) > 0 && !managed {
+		succeeded, firstErr, errTopic, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
+		if err != nil {
 			return err
 		}
-		unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-		err := cm.Unsubscribe(unsubCtx, toUnsub)
-		cancel()
-		if err != nil {
-			return MapError(err)
+		if err := s.removeObservedSubscriptions(operationEpoch, succeeded); err != nil {
+			return err
 		}
-		s.mu.Lock()
-		if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
-			s.mu.Unlock()
-			return epochErr
+		if firstErr != nil {
+			return firstErr.With("topic", errTopic)
 		}
-		for _, t := range toUnsub {
-			delete(s.observedSubs, t)
-			delete(s.activeSubs, t)
-		}
-		s.mu.Unlock()
 	}
 
 	// Subscribe to new or changed topics
@@ -580,6 +626,44 @@ func (s *Session) reconcile(
 		}
 		if downgradeErr != nil {
 			return downgradeErr
+		}
+		if firstErr != nil {
+			return firstErr.With("topic", errTopic)
+		}
+	}
+
+	if managed && len(toUnsub) > 0 {
+		succeeded, firstErr, errTopic, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
+		if err != nil {
+			return err
+		}
+		if err := s.removeObservedSubscriptions(operationEpoch, succeeded); err != nil {
+			return err
+		}
+		var forgetErr error
+		if len(succeeded) > 0 {
+			if err := managedStore.Forget(ctx, managedIdentity, succeeded); err != nil {
+				forgetErr = shared.ErrUnavailable.WithMessage("mqtt: forget confirmed managed subscriptions").Wrap(err)
+			} else {
+				s.mu.Lock()
+				for _, filter := range succeeded {
+					delete(s.managedHistory, filter)
+				}
+				s.mu.Unlock()
+			}
+			// Stale shared deliveries may already be buffered. Recycle the
+			// connection so router.beginGrace purges the prior epoch without ACK,
+			// returning those deliveries to the broker before handler dispatch.
+			if reloadErr := s.Reload(ctx); reloadErr != nil {
+				return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
+			}
+			if forgetErr != nil {
+				return forgetErr
+			}
+			if firstErr != nil {
+				return firstErr.With("topic", errTopic)
+			}
+			return shared.ErrUnavailable.WithMessage("mqtt: managed subscription cleanup recycled the connection; reconcile the replacement generation")
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
@@ -692,4 +776,100 @@ func retainHandlingForMode(mode connectivity.SessionMode) byte {
 		return 0
 	}
 	return 1
+}
+
+func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, topics []string, operationEpoch uint64) ([]string, *shared.BridgeError, string, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing", "client_id", s.opts.ClientID, "topics", topics)
+	}
+	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+		return nil, nil, "", err
+	}
+	unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	reasons, err := cm.Unsubscribe(unsubCtx, topics)
+	cancel()
+	if err != nil {
+		return nil, nil, "", MapError(err)
+	}
+	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+		return nil, nil, "", err
+	}
+	succeeded, firstErr, errTopic := classifyUnsubackReasons(topics, reasons)
+	return succeeded, firstErr, errTopic, nil
+}
+
+func classifyUnsubackReasons(topics []string, reasons []byte) ([]string, *shared.BridgeError, string) {
+	succeeded := make([]string, 0, len(topics))
+	var firstErr *shared.BridgeError
+	var errTopic string
+	for i, topic := range topics {
+		if i >= len(reasons) {
+			if firstErr == nil {
+				firstErr = shared.ErrProtocolError.WithMessage("mqtt: UNSUBACK returned fewer reason codes than requested filters")
+				errTopic = topic
+			}
+			continue
+		}
+		if reasons[i] == 0x00 || reasons[i] == 0x11 {
+			succeeded = append(succeeded, topic)
+			continue
+		}
+		berr := MapSubscribeReasonCode(reasons[i])
+		if berr == nil {
+			berr = shared.ErrProtocolError.WithMessage("mqtt: invalid UNSUBACK success reason code")
+		}
+		if firstErr == nil {
+			firstErr = berr
+			errTopic = topic
+		}
+	}
+	return succeeded, firstErr, errTopic
+}
+
+func (s *Session) removeObservedSubscriptions(operationEpoch uint64, topics []string) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := reconcileEpochMismatch(operationEpoch, s.connEpoch); err != nil {
+		return err
+	}
+	for _, topic := range topics {
+		delete(s.observedSubs, topic)
+		delete(s.activeSubs, topic)
+	}
+	return nil
+}
+
+func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.managedRequired || s.managedLoaded {
+		s.mu.Unlock()
+		return nil
+	}
+	store := s.managedStore
+	identity := s.managedIdentity
+	s.mu.Unlock()
+	if store == nil || identity == "" {
+		return shared.ErrInvalidConfig.WithMessage("mqtt: managed subscription history is required but not configured")
+	}
+	filters, err := store.List(ctx, identity)
+	if err != nil {
+		return shared.ErrUnavailable.WithMessage("mqtt: load managed subscription history before broker activation").Wrap(err)
+	}
+	history := make(map[string]struct{}, len(filters))
+	for _, filter := range filters {
+		if filter == "" {
+			return shared.ErrInvalidConfig.WithMessage("mqtt: managed subscription history contains an empty filter")
+		}
+		history[filter] = struct{}{}
+	}
+	s.mu.Lock()
+	if !s.managedLoaded {
+		s.managedHistory = history
+		s.managedLoaded = true
+	}
+	s.mu.Unlock()
+	return nil
 }

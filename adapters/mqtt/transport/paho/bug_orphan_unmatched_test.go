@@ -284,11 +284,11 @@ func (c *recordingUnsubConn) Subscribe(context.Context, []subscribeSpec) ([]byte
 	return nil, nil
 }
 
-func (c *recordingUnsubConn) Unsubscribe(_ context.Context, topics []string) error {
+func (c *recordingUnsubConn) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.topics = append(c.topics, topics...)
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 func (c *recordingUnsubConn) PublishEnvelope(

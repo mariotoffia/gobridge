@@ -105,11 +105,14 @@ publish is delivered once the handler registers. The one exception is a covered
 **QoS 0** publish the bounded pending buffer cannot hold: QoS 0 has no
 redelivery contract, so it is dropped best-effort and counted
 `MQTTRouterCoveredDropped` (QoS 1/2 are never dropped for a covered topic —
-they are held instead). Otherwise the topic is an **orphan subscription** —
-typically a route removed from config whose broker-side subscription survived
-the resume — and the adapter acks-and-drops it, UNSUBSCRIBEs its exact topic,
-and counts `MQTTRouterUnmatchedDropped` (benign cleanup), so the orphan no
-longer stalls in-order acking for the rest of the shared session. See
+they are held instead). Otherwise the topic is an **orphan subscription**. Ephemeral sessions preserve
+the legacy best-effort concrete-topic cleanup. Persistent/exclusive sessions do
+**not** infer a subscription filter from the delivered topic: wildcard and
+`$share` filters cannot be reconstructed that way. They use Managed subscription
+history (defined below), remove exact filters before handler dispatch, and
+recycle the connection so buffered stale QoS 1/2 deliveries remain un-ACKed and
+return to the broker. `MQTTRouterUnmatchedDropped` remains the ephemeral orphan
+cleanup signal. See
 [`paho/doc.go`](../../adapters/mqtt/transport/paho/doc.go)
 for the full mechanism.
 
@@ -126,6 +129,37 @@ for the full mechanism.
 > is not consuming and the receive-window is being pinned — investigate the route,
 > not the buffer. `MQTTRouterUnmatchedDropped` remains orphan-cleanup only.
 
+## Managed subscription history
+
+A persistent/exclusive MQTT session with desired subscriptions requires
+`stores.managed_subscriptions` (`sqlite` for one process, `dynamodb` for a
+cluster). Startup strongly loads the exact history by the opaque
+`DurableSessionIdentity` **before broker activation**. Missing history is not an
+empty set: it is an unknown migration state and startup fails below Full. A
+store outage has the same fail-closed result; there is no in-memory fallback.
+
+Reconciliation is crash-safe and per-filter: GoBridge `Remember`s every desired
+candidate before `SUBSCRIBE`; failed/partial SUBACK candidates remain history;
+it computes exact `history - desired`; sends those exact wildcard/shared strings
+in `UNSUBSCRIBE`; and `Forget`s only filters whose UNSUBACK reason is success
+(`0x00` or `0x11`). Failed, short, or partial acknowledgements stay durable for
+retry. If any stale filter is removed, GoBridge reconnects before normal handler
+dispatch so prior-epoch shared deliveries are purged without ACK and can return
+to the broker.
+
+**Upgrade baseline is mandatory.** Existing broker sessions predate this ledger,
+so GoBridge cannot discover their filters from MQTT. Before enabling this build,
+either seed each durable identity with every exact existing filter (including
+`sensors/#` and the complete `$share/group/sensors/#` form), or perform a
+controlled maintenance migration: stop ingress, exact-UNSUBSCRIBE every old
+filter, verify broker backlog/drain, seed an explicit empty baseline, then start.
+Never seed empty merely to bypass startup when subscriptions may still exist.
+
+Ordinary live removal/rename/identity change of a persistent/exclusive session is
+refused even with `WithAllowDestructiveReload`, because managed filters may
+remain. Externally drain, exact-unsubscribe, seed/cut over the new identity, and
+only then change configuration.
+
 ## Durable identity and live-reload migration
 
 The Supervisor fingerprints the canonical broker set (URL userinfo removed),
@@ -138,7 +172,7 @@ reconcile, and other tuning do not change this durable identity.
 `WithAllowDestructiveReload` cannot bypass this guard. GoBridge intentionally
 does not automate broker-state migration. To change a durable MQTT identity,
 operators must externally orchestrate a maintenance cutover: stop new ingress,
-drain and verify the old broker backlog, UNSUBSCRIBE/remove the old session,
+drain and verify the old broker backlog, exact-UNSUBSCRIBE every managed filter, remove the old session,
 apply the new identity, then resume traffic and verify consumption. In a cluster,
 perform this as a coordinated versioned rollout; independent per-process reloads
 are unsafe.

@@ -280,6 +280,35 @@ type OutboxDepthReporter interface {
 // runtime.InstrumentedOutboxStore and store adapters share one sentinel.
 var ErrOutboxDepthUnsupported = errors.New("ports: outbox store does not report pending depth")
 
+// ManagedSubscriptionStore persists the exact topic-filter history owned by
+// durable transport sessions. The storageIdentity is a secret-safe durable
+// identity, never a broker URL, credential, or mutable display name.
+//
+// List returns a lexicographically sorted, duplicate-free snapshot. It returns
+// shared.ErrNotFound when no baseline has ever been established for the
+// identity; an established empty baseline returns an empty slice and nil.
+// Remember atomically establishes the baseline and adds every filter.
+// Remember(identity, nil) is therefore the explicit empty-baseline operation.
+// Forget atomically removes the listed filters while preserving the baseline;
+// unknown filters and Forget(identity, nil) are idempotent no-ops, but an
+// identity without a baseline returns shared.ErrNotFound.
+//
+// All operations reject an empty identity or any empty filter with
+// shared.ErrInvalidConfig before mutation. Implementations must honor context
+// cancellation and must not expose storageIdentity or filters in error text.
+type ManagedSubscriptionStore interface {
+	List(ctx context.Context, storageIdentity string) ([]string, error)
+	Remember(ctx context.Context, storageIdentity string, filters []string) error
+	Forget(ctx context.Context, storageIdentity string, filters []string) error
+}
+
+// ManagedSubscriptionStoreFactory is the optional store-factory capability for
+// exact durable subscription history. It remains separate from StoreFactory so
+// lease/outbox/DLQ-only plugins are not forced to implement an unrelated port.
+type ManagedSubscriptionStoreFactory interface {
+	NewManagedSubscriptionStore(ctx context.Context, cfg PluginConfig) (ManagedSubscriptionStore, error)
+}
+
 // DLQReader is the read-side of the dead-letter queue: lookups and
 // scans that never mutate stored entries. Driving read adapters (the
 // runtime read port, monitor endpoints) depend on this narrow port so

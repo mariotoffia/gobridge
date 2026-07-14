@@ -8,16 +8,19 @@ import (
 )
 
 // Compile-time interface contract.
-var _ ports.PluginConfig = (*DynamoDBConfig)(nil)
+var (
+	_ ports.PluginConfig    = (*DynamoDBConfig)(nil)
+	_ ports.FreezableConfig = (*DynamoDBConfig)(nil)
+)
 
 // DynamoDBKind is the registry discriminator for DynamoDB-backed
-// lease, outbox, and DLQ stores.
+// lease, outbox, DLQ, and managed-subscription stores.
 const DynamoDBKind = "dynamodb"
 
 // DynamoDBConfig is the typed PluginConfig for DynamoDB-backed
-// stores. It is shared across lease/outbox/DLQ since the same
-// table-name knob applies to all three roles; role-specific knobs
-// are ignored by the other roles.
+// stores. It is shared across lease, outbox, DLQ, and managed-subscription
+// roles. The same table-name knob applies to all four roles; role-specific
+// knobs are ignored by the other roles.
 type DynamoDBConfig struct {
 	// TableName overrides the default DynamoDB table name. When
 	// empty, the underlying store uses its built-in default.
@@ -55,6 +58,9 @@ type DynamoDBConfig struct {
 
 // Kind reports the registry discriminator.
 func (DynamoDBConfig) Kind() string { return DynamoDBKind }
+
+// FreezePluginConfig returns an isolated scalar snapshot for asynchronous build.
+func (c DynamoDBConfig) FreezePluginConfig() ports.PluginConfig { frozen := c; return &frozen }
 
 // StorageIdentity reports the DynamoDB table name — the stable descriptor of
 // this store's durable backing, and nothing tunable. The supervisor's

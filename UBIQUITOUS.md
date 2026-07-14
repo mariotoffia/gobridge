@@ -104,6 +104,8 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **ReplicaIdentityStrategy** | Optional typed plugin-config declaration proving how clustered shared consumers obtain unique connection identities. `hostname` is stable and preferred; process-unique `nonce` is valid only for Ephemeral sessions. Exclusive sessions use no suffix and retain one stable shared identity. |
 | **SessionPlan** | The desired state of a session: lists of `SubscriptionPlan`, `PublisherPlan`, and sorted/deduplicated `ExpectedReceiverIDs`. Adapters reconcile actual state toward the plan; Full readiness requires exact successful subscription convergence (including stale removals) and every expected receiver handler. An empty expected-ID list preserves compatibility for programmatic legacy plans. |
 | **SubscriptionPlan** | Desired subscription: `Topic`, `QoS`, transport-typed `Config`. |
+| **ManagedSubscriptionStore** | Connectivity-owned port that persists the exact MQTT topic-filter history for one secret-safe `DurableSessionIdentity`. `List` distinguishes a missing baseline from an explicit empty baseline; `Remember` is write-ahead before `SUBSCRIBE`; `Forget` follows only per-filter successful `UNSUBACK`. Results are sorted/deduplicated and all operations are idempotent. |
+| **Managed subscription history** | The durable set of exact filters GoBridge may remove from a persistent/exclusive MQTT broker session. It includes ordinary wildcard filters and the complete `$share/<group>/<filter>` string; it is never inferred from a delivered concrete topic. |
 | **PublisherPlan** | Desired publisher: `Topic`, `QoS`, transport-typed `Config`. |
 | **Reconcile** | The act of bringing a session's actual subscriptions/publishers in line with its `SessionPlan`. |
 | **Credential** | Authentication material. One of: `password`, `tls`. |
@@ -224,7 +226,7 @@ Adapter-owned names that surface in config keys, headers, or metrics.
 
 ## Store adapters (`adapters/*/store`)
 
-Adapter-owned names for the lease / outbox / DLQ persistence stores, surfacing in config keys, functional options, and DynamoDB schema.
+Adapter-owned names for the lease / outbox / DLQ / managed-subscription persistence stores, surfacing in config keys, functional options, and DynamoDB schema.
 
 | Term | Meaning |
 |---|---|

@@ -107,6 +107,25 @@ func TestSQLiteStoreFactory_NewOutboxStore_WithStaleClaimDuration(t *testing.T) 
 	}
 }
 
+// Verifies the SQLite factory exposes the optional managed-subscription role.
+func TestSQLiteStoreFactory_NewManagedSubscriptionStore(t *testing.T) {
+	f := nativestore.NewSQLiteStoreFactory()
+	store, err := f.NewManagedSubscriptionStore(t.Context(), &nativestore.SQLiteConfig{Path: t.TempDir() + "/managed.db"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store == nil {
+		t.Fatal("expected non-nil ManagedSubscriptionStore")
+	}
+	if err := store.Remember(t.Context(), "identity", []string{"sensors/#"}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	filters, err := store.List(t.Context(), "identity")
+	if err != nil || len(filters) != 1 || filters[0] != "sensors/#" {
+		t.Fatalf("List = %v, %v", filters, err)
+	}
+}
+
 // Verifies the SQLite factory builds a DLQ store from a typed config.
 func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
@@ -121,7 +140,7 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies SQLite outbox and DLQ construction fail when the typed config is missing.
+// Verifies SQLite outbox, DLQ, and managed-subscription construction fail when the typed config is missing.
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 

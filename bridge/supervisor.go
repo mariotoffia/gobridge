@@ -1313,7 +1313,7 @@ func compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities durable
 	for sessionID, oldIdentity := range oldIdentities {
 		newIdentity, ok := newIdentities[sessionID]
 		if !ok {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed, renamed, or lost its identity capability; its broker state could be stranded", sessionID)
+			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed, renamed, or lost its identity capability; its broker state and managed filter history could be stranded; externally drain and exact-unsubscribe every managed filter before cutover", sessionID)
 		}
 		if oldIdentity != newIdentity {
 			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; externally drain queued messages, unsubscribe the old session, and perform a cutover", sessionID)
@@ -1369,8 +1369,12 @@ func storeIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
 		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
 		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
 		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+		{"managed_subscriptions", oldCfg.Stores.ManagedSubscriptions, newCfg.Stores.ManagedSubscriptions},
 	}
 	for _, r := range roles {
+		if r.name == "managed_subscriptions" && r.old != nil && r.new == nil {
+			return fmt.Errorf("bridge: refusing live reload: managed subscription store was removed while persistent/exclusive MQTT subscriptions remain; exact broker-filter history would be unavailable")
+		}
 		if r.old == nil || r.new == nil {
 			continue
 		}
@@ -1497,6 +1501,7 @@ func removedStoreRoles(oldCfg, newCfg *ports.BridgeConfig) []string {
 		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
 		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
 		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+		{"managed_subscriptions", oldCfg.Stores.ManagedSubscriptions, newCfg.Stores.ManagedSubscriptions},
 	}
 	for _, r := range roles {
 		if r.old != nil && r.new == nil {

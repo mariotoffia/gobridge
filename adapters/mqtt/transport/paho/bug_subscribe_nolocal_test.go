@@ -52,7 +52,7 @@ func (c *captureSubConn) Subscribe(_ context.Context, subs []subscribeSpec) ([]b
 	return reasons, nil
 }
 
-func (c *captureSubConn) Unsubscribe(context.Context, []string) error { return nil }
+func (c *captureSubConn) Unsubscribe(context.Context, []string) ([]byte, error) { return nil, nil }
 func (c *captureSubConn) PublishEnvelope(
 	context.Context, *messaging.Envelope, string, SenderOptions, clock.Clock,
 ) (publishResult, error) {

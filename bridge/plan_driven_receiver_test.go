@@ -38,7 +38,7 @@ func TestBuilder_PlanDrivenReceiverWithoutSessionManager_ADVP4FU1(t *testing.T) 
 		return &ports.BridgeConfig{
 			Bridge: ports.BridgeSettings{ID: "b-fu1"},
 			Sessions: []ports.SessionDef{
-				{ID: "s-src", Transport: sourceTransport, SessionMode: "exclusive"},
+				{ID: "s-src", Transport: sourceTransport, SessionMode: "ephemeral"},
 			},
 			Receivers: []ports.ReceiverDef{
 				{ID: "rx", Transport: sourceTransport, SessionID: "s-src", Topics: []ports.SubscriptionDef{

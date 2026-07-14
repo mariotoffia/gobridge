@@ -62,9 +62,11 @@ expect adapter_store_native_memoryoutbox  /adapters/native/store/memoryoutbox
 expect adapter_store_native_memorydlq     /adapters/native/store/memorydlq
 expect adapter_store_native_sqliteoutbox  /adapters/native/store/sqliteoutbox
 expect adapter_store_native_sqlitedlq     /adapters/native/store/sqlitedlq
+expect adapter_store_native_sqlitemanagedsubscriptions /adapters/native/store/sqlitemanagedsubscriptions
 expect adapter_store_aws_dynamodblease    /adapters/aws/store/dynamodblease
 expect adapter_store_aws_dynamodboutbox   /adapters/aws/store/dynamodboutbox
 expect adapter_store_aws_dynamodbdlq      /adapters/aws/store/dynamodbdlq
+expect adapter_store_aws_dynamodbmanagedsubscriptions /adapters/aws/store/dynamodbmanagedsubscriptions
 
 # Store factory aggregators.
 expect adapter_store_native_factory  /adapters/native/store

@@ -136,9 +136,10 @@ func (b BridgeSettings) MaxDrainTimeoutDuration() time.Duration {
 
 // StoresConfig configures the backing stores for lease, outbox, and DLQ.
 type StoresConfig struct {
-	Lease  *StoreConfig `yaml:"lease,omitempty" json:"lease,omitempty"`
-	Outbox *StoreConfig `yaml:"outbox,omitempty" json:"outbox,omitempty"`
-	DLQ    *StoreConfig `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	Lease                *StoreConfig `yaml:"lease,omitempty" json:"lease,omitempty"`
+	Outbox               *StoreConfig `yaml:"outbox,omitempty" json:"outbox,omitempty"`
+	DLQ                  *StoreConfig `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	ManagedSubscriptions *StoreConfig `yaml:"managed_subscriptions,omitempty" json:"managed_subscriptions,omitempty"`
 }
 
 // StoreConfig describes a single store backend.

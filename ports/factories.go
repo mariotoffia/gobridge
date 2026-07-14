@@ -15,6 +15,14 @@ type SessionSpec struct {
 	Transport   string
 	SessionMode connectivity.SessionMode
 	Config      PluginConfig
+
+	// ManagedSubscriptionStore carries exact durable topic-filter history for
+	// persistent/exclusive sessions. Identity is an opaque secret-safe durable
+	// fingerprint. Required is true only when the session must fail closed if
+	// history cannot be loaded before broker activation.
+	ManagedSubscriptionStore     ManagedSubscriptionStore
+	ManagedSubscriptionIdentity  string
+	ManagedSubscriptionsRequired bool
 }
 
 // ReceiverSpec holds ingress behavior configuration.

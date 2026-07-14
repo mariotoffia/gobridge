@@ -195,9 +195,11 @@ components:
   adapter_store_native_sqliteoutbox:
     { in: [adapters/native/store/sqliteoutbox] }
   adapter_store_native_sqlitedlq: { in: [adapters/native/store/sqlitedlq] }
+  adapter_store_native_sqlitemanagedsubscriptions: { in: [adapters/native/store/sqlitemanagedsubscriptions] }
   adapter_store_aws_dynamodblease: { in: [adapters/aws/store/dynamodblease] }
   adapter_store_aws_dynamodboutbox: { in: [adapters/aws/store/dynamodboutbox] }
   adapter_store_aws_dynamodbdlq: { in: [adapters/aws/store/dynamodbdlq] }
+  adapter_store_aws_dynamodbmanagedsubscriptions: { in: [adapters/aws/store/dynamodbmanagedsubscriptions] }
 
   # Aggregator components: the only place allowed to import its own
   # store implementations. This expresses the hexagonal rule that an
@@ -798,6 +800,9 @@ deps:
     # sweep and dynamodbdlq relies on server-side TTL, so neither needs it.
     mayDependOn: [domain_clock, domain_routing, domain_shared, logging]
     canUse: [sqlite]
+  adapter_store_native_sqlitemanagedsubscriptions:
+    mayDependOn: [domain_shared, ports]
+    canUse: [sqlite]
   adapter_store_aws_dynamodblease:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [aws]
@@ -806,6 +811,10 @@ deps:
     canUse: [aws]
   adapter_store_aws_dynamodbdlq:
     mayDependOn: [domain_routing, domain_shared, logging, ports]
+    canUse: [aws]
+
+  adapter_store_aws_dynamodbmanagedsubscriptions:
+    mayDependOn: [domain_shared, ports]
     canUse: [aws]
 
   # ---- Layer 3: Store factory aggregators ----
@@ -826,6 +835,7 @@ deps:
       - adapter_store_native_memorydlq
       - adapter_store_native_sqliteoutbox
       - adapter_store_native_sqlitedlq
+      - adapter_store_native_sqlitemanagedsubscriptions
 
   adapter_store_aws_factory:
     # Narrowed to ACTUAL usage (M-23): composes the three DynamoDB store
@@ -850,6 +860,7 @@ deps:
       - adapter_store_aws_dynamodblease
       - adapter_store_aws_dynamodboutbox
       - adapter_store_aws_dynamodbdlq
+      - adapter_store_aws_dynamodbmanagedsubscriptions
     canUse: [aws]
 
   # ---- Layer 3: Config-source adapters ----

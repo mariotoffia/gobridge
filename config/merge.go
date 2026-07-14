@@ -14,7 +14,7 @@ import (
 //   - Bridge settings: overlay non-zero fields override base
 //   - Bridge.Cluster: overlay replaces base if non-nil (endpoint map cloned)
 //   - ConfigWatch: overlay replaces base if non-nil
-//   - Stores: overlay replaces base per store role (lease/outbox/dlq individually)
+//   - Stores: overlay replaces base per store role (lease/outbox/dlq/managed-subscriptions individually)
 //   - Sessions, Receivers, Senders, Bindings: overlay adds new entries; for an
 //     entry that matches an existing one by ID the overlay is merged FIELD-LEVEL
 //     on top of the base entry — non-empty overlay scalar fields win and the
@@ -187,6 +187,7 @@ func mergeStores(base, overlay *ports.StoresConfig) {
 	base.Lease = mergeStoreRole(base.Lease, overlay.Lease)
 	base.Outbox = mergeStoreRole(base.Outbox, overlay.Outbox)
 	base.DLQ = mergeStoreRole(base.DLQ, overlay.DLQ)
+	base.ManagedSubscriptions = mergeStoreRole(base.ManagedSubscriptions, overlay.ManagedSubscriptions)
 }
 
 // mergeStoreRole returns a clone of the overlay store when set, otherwise a

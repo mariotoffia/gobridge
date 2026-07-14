@@ -151,8 +151,8 @@ throughout this document.
    │                                                                                        │
    │  Driven (stores — leaves):                                                             │
    │     adapter_store_native_{memorylease, memoryoutbox, memorydlq,                        │
-   │                            sqliteoutbox, sqlitedlq}                                    │
-   │     adapter_store_aws_{dynamodblease, dynamodboutbox, dynamodbdlq}                     │
+   │                            sqliteoutbox, sqlitedlq, sqlitemanagedsubscriptions}                                    │
+   │     adapter_store_aws_{dynamodblease, dynamodboutbox, dynamodbdlq, dynamodbmanagedsubscriptions}                     │
    │  Driven (store factories — only place that may import its own leaves):                 │
    │     adapter_store_native_factory ──▶ adapter_store_native_*                            │
    │     adapter_store_aws_factory    ──▶ adapter_store_aws_*                               │
@@ -690,8 +690,8 @@ type DLQStore interface {
 | Store | Backend | Use Case |
 |---|---|---|
 | `memorylease`, `memoryoutbox`, `memorydlq` | In-memory | Testing and development |
-| `sqliteoutbox`, `sqlitedlq` | SQLite | Single-process production |
-| `dynamodblease`, `dynamodboutbox`, `dynamodbdlq` | DynamoDB | Distributed production |
+| `sqliteoutbox`, `sqlitedlq`, `sqlitemanagedsubscriptions` | SQLite | Single-process production |
+| `dynamodblease`, `dynamodboutbox`, `dynamodbdlq`, `dynamodbmanagedsubscriptions` | DynamoDB | Distributed production |
 
 ---
 
@@ -1040,7 +1040,8 @@ gobridge/
 │   │   ├── store/                       # DynamoDB store factory
 │   │   │   ├── dynamodblease/
 │   │   │   ├── dynamodboutbox/
-│   │   │   └── dynamodbdlq/
+│   │   │   ├── dynamodbdlq/
+│   │   │   └── dynamodbmanagedsubscriptions/
 │   │   ├── credentials/ssm/            # AWS SSM credentials
 │   │   ├── metrics/cloudwatch/          # CloudWatch metrics
 │   │   ├── config/dynamodb/             # DynamoDB config loader
@@ -1055,7 +1056,8 @@ gobridge/
 │   │   │   ├── memoryoutbox/
 │   │   │   ├── memorydlq/
 │   │   │   ├── sqliteoutbox/
-│   │   │   └── sqlitedlq/
+│   │   │   ├── sqlitedlq/
+│   │   │   └── sqlitemanagedsubscriptions/
 │   │   ├── credentials/file/           # File-based credentials
 │   │   ├── config/file/                # File config loader/watcher
 │   │   └── cluster/                    # Native cluster resolver

@@ -601,7 +601,7 @@ func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
 // is part of the fingerprint contract: two configs that differ only in the
 // position of an otherwise-identical plugin option must fingerprint differently.
 func forEachPluginConfig(cfg *ports.BridgeConfig, fn func(ports.PluginConfig) error) error {
-	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
 		if sc == nil {
 			continue
 		}

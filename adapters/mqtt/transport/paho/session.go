@@ -120,6 +120,16 @@ type Session struct {
 	// nil until the first reconcile succeeds. Guarded by mu.
 	appliedPlan *connectivity.SessionPlan
 
+	// managedStore/history are the durable exact-filter ledger for persistent
+	// and exclusive sessions. History is loaded before the first broker dial;
+	// managedRequired makes missing/outage fail closed rather than falling back
+	// to process-local appliedPlan. Guarded by mu except store calls.
+	managedStore    ports.ManagedSubscriptionStore
+	managedIdentity string
+	managedRequired bool
+	managedLoaded   bool
+	managedHistory  map[string]struct{}
+
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
 	// mode — the client_id-collision footgun for scale-out (HIGH-3). Guarded

@@ -65,7 +65,7 @@ func (c *reconcileProbeCM) Subscribe(ctx context.Context, subs []subscribeSpec) 
 	return reasons, nil
 }
 
-func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) error {
+func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
 	_, hasDDL := ctx.Deadline()
 	c.mu.Lock()
 	c.unsubscribeCalled = true
@@ -73,9 +73,9 @@ func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) err
 	c.mu.Unlock()
 	if c.block {
 		<-ctx.Done()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 var _ pahoConnection = (*reconcileProbeCM)(nil)

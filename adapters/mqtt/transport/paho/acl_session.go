@@ -173,6 +173,11 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Unlock()
 	}
 
+	if err := s.loadManagedSubscriptionHistory(ctx); err != nil {
+		finishStart()
+		return err
+	}
+
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connecting",
 			"client_id", s.opts.ClientID,

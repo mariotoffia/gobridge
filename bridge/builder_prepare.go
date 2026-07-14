@@ -198,6 +198,7 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		runtime.WithLeaseStore(stores.lease),
 		runtime.WithOutboxStore(stores.outbox),
 		runtime.WithDLQStore(stores.dlq),
+		runtime.WithManagedSubscriptionStore(stores.managedSubscriptions),
 	}
 	if b.cfg.Bridge.InstanceID != "" {
 		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
@@ -261,12 +262,14 @@ func (b *Builder) Build(ctx context.Context) (*runtime.Runtime, error) {
 }
 
 type storeResult struct {
-	lease      ports.LeaseStore
-	outbox     ports.OutboxStore
-	dlq        ports.DLQStore
-	leaseDist  bool
-	outboxDist bool
-	dlqDist    bool
+	lease                    ports.LeaseStore
+	outbox                   ports.OutboxStore
+	dlq                      ports.DLQStore
+	leaseDist                bool
+	outboxDist               bool
+	dlqDist                  bool
+	managedSubscriptions     ports.ManagedSubscriptionStore
+	managedSubscriptionsDist bool
 }
 
 func isDistributedFactory(sf ports.StoreFactory) bool {
@@ -348,6 +351,28 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		res.outbox = s
 		res.outboxDist = isDistributedFactory(sf)
 	}
+	if sc := b.cfg.Stores.ManagedSubscriptions; sc != nil {
+		sf, ok := b.storeFactories[sc.Type]
+		if !ok {
+			return nil, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
+		}
+		mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
+		if !ok {
+			return nil, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
+		}
+		store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: create managed subscription store: %w", err)
+		}
+		if store == nil {
+			return nil, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
+		}
+		res.managedSubscriptions = store
+		res.managedSubscriptionsDist = isDistributedFactory(sf)
+	}
+	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
+		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
+	}
 	if sc := b.cfg.Stores.DLQ; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
@@ -380,6 +405,9 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		if res.dlq != nil && !res.dlqDist {
 			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
+		}
+		if res.managedSubscriptions != nil && !res.managedSubscriptionsDist {
+			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed ManagedSubscriptionStore; the configured store is process-local")
 		}
 	}
 

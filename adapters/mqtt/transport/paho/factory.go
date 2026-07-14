@@ -112,7 +112,19 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
 	}
-	return NewSession(opts, mode, f.Logger, f.Metrics), nil
+	if spec.ManagedSubscriptionsRequired {
+		if mode == connectivity.SessionEphemeral {
+			return nil, shared.ErrInvalidConfig.WithMessage("mqtt: ephemeral session cannot require managed subscription history")
+		}
+		if spec.ManagedSubscriptionStore == nil || spec.ManagedSubscriptionIdentity == "" {
+			return nil, shared.ErrInvalidConfig.WithMessage("mqtt: durable managed subscription store and secret-safe identity are required")
+		}
+	}
+	session := NewSession(opts, mode, f.Logger, f.Metrics)
+	session.managedStore = spec.ManagedSubscriptionStore
+	session.managedIdentity = spec.ManagedSubscriptionIdentity
+	session.managedRequired = spec.ManagedSubscriptionsRequired
+	return session, nil
 }
 
 // NewReceiver creates an MQTT Receiver bound to the given Session. The

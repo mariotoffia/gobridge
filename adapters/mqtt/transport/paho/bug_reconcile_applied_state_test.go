@@ -113,15 +113,15 @@ func (c *failThenOKUnsubConn) Subscribe(context.Context, []subscribeSpec) ([]byt
 	return nil, nil
 }
 
-func (c *failThenOKUnsubConn) Unsubscribe(_ context.Context, topics []string) error {
+func (c *failThenOKUnsubConn) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unsubCalls++
 	if c.unsubCalls == 1 {
-		return errors.New("mqtt: unsubscribe timed out")
+		return nil, errors.New("mqtt: unsubscribe timed out")
 	}
 	c.unsubTopics = append(c.unsubTopics, topics...)
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 func (c *failThenOKUnsubConn) PublishEnvelope(

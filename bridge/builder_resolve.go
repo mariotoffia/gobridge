@@ -80,6 +80,9 @@ func cloneConfigForBuild(cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	if out.Stores.DLQ, err = cloneStoreConfig(cfg.Stores.DLQ); err != nil {
 		return nil, fmt.Errorf("bridge: freeze dlq store config: %w", err)
 	}
+	if out.Stores.ManagedSubscriptions, err = cloneStoreConfig(cfg.Stores.ManagedSubscriptions); err != nil {
+		return nil, fmt.Errorf("bridge: freeze managed subscription store config: %w", err)
+	}
 
 	out.Sessions = append([]ports.SessionDef(nil), cfg.Sessions...)
 	for i := range out.Sessions {

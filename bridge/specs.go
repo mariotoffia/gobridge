@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"log/slog"
 	"sort"
 
@@ -18,6 +19,64 @@ func sessionSpecFrom(def ports.SessionDef) ports.SessionSpec {
 		SessionMode: connectivity.SessionMode(def.SessionMode),
 		Config:      def.Config,
 	}
+}
+
+func sessionSpecWithManagedSubscriptions(def ports.SessionDef, cfg *ports.BridgeConfig, store ports.ManagedSubscriptionStore) (ports.SessionSpec, error) {
+	spec := sessionSpecFrom(def)
+	mode := connectivity.SessionMode(def.SessionMode)
+	if def.Transport != "mqtt" || (mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+		return spec, nil
+	}
+	// A configured store is also injected for an EMPTY desired plan: this is
+	// how a replacement removes filters remembered by the prior runtime. With
+	// no desired subscriptions and no store there is no managed ownership.
+	if !sessionHasDesiredSubscriptions(cfg, def.ID) && store == nil {
+		return spec, nil
+	}
+	if store == nil {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session with desired subscriptions requires stores.managed_subscriptions")
+	}
+	identityConfig, ok := def.Config.(ports.DurableSessionIdentityConfig)
+	if !ok || ports.IsNilPluginConfig(def.Config) {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session config does not expose a durable storage identity")
+	}
+	identity, err := identityConfig.DurableSessionIdentity(mode)
+	if err != nil {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: derive managed subscription storage identity: %w", err)
+	}
+	if identity == "" {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: managed subscription storage identity is empty")
+	}
+	spec.ManagedSubscriptionStore = store
+	spec.ManagedSubscriptionIdentity = identity
+	spec.ManagedSubscriptionsRequired = true
+	return spec, nil
+}
+
+func sessionHasDesiredSubscriptions(cfg *ports.BridgeConfig, sessionID string) bool {
+	if cfg == nil {
+		return false
+	}
+	for i := range cfg.Receivers {
+		if cfg.Receivers[i].SessionID == sessionID && len(cfg.Receivers[i].Topics) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func requiresManagedSubscriptionStore(cfg *ports.BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	for i := range cfg.Sessions {
+		def := &cfg.Sessions[i]
+		mode := connectivity.SessionMode(def.SessionMode)
+		if def.Transport == "mqtt" && (mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive) && sessionHasDesiredSubscriptions(cfg, def.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 // receiverSpecFrom converts a ports.ReceiverDef to a ports.ReceiverSpec.

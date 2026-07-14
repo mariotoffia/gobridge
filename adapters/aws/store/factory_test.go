@@ -33,6 +33,18 @@ func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
+// Verifies NewManagedSubscriptionStore returns the dedicated optional role.
+func TestDynamoDBStoreFactory_NewManagedSubscriptionStore(t *testing.T) {
+	f := awsstore.NewDynamoDBStoreFactory(nil)
+	store, err := f.NewManagedSubscriptionStore(t.Context(), &awsstore.DynamoDBConfig{TableName: "managed-table"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store == nil {
+		t.Fatal("expected non-nil ManagedSubscriptionStore")
+	}
+}
+
 // Verifies NewDLQStore returns a non-nil DLQ store for nil config.
 func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
@@ -45,7 +57,7 @@ func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies optional table_name in the typed config is accepted for lease, outbox, and DLQ stores.
+// Verifies optional table_name in the typed config is accepted for lease, outbox, DLQ, and managed-subscription stores.
 func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	cfg := &awsstore.DynamoDBConfig{TableName: "custom-table"}
