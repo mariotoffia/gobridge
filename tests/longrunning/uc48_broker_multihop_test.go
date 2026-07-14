@@ -4,6 +4,7 @@ package longrunning_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -446,12 +447,15 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	collector.wg.Add(1)
 	go func() {
 		defer collector.wg.Done()
-		_ = colRecv.Run(colCtx, func(_ context.Context, del ports.Delivery) error {
+		err := colRecv.Run(colCtx, func(ctx context.Context, del ports.Delivery) error {
 			collector.mu.Lock()
 			collector.messages = append(collector.messages, del.Envelope())
 			collector.mu.Unlock()
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("persistent collector Receiver.Run: %v", err)
+		}
 	}()
 	t.Cleanup(func() {
 		colCancel()

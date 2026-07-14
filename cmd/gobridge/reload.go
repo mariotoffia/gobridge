@@ -93,8 +93,10 @@ type reloadPipeline struct {
 	// out is the merged channel drained by Supervisor.Run. run is its sole
 	// writer and closes it on shutdown.
 	out chan *ports.BridgeConfig
-	// admin carries committed configs from applyCommitted to run.
-	admin chan *ports.BridgeConfig
+	// admin carries committed configs from applyCommitted to run. handoff
+	// resolves only after run either hands the config to the Supervisor or
+	// observes cancellation; acceptance by this channel alone is not submission.
+	admin chan adminApply
 
 	mu sync.Mutex
 	// lastAppliedFingerprint is the canonical content hash of the config the
@@ -125,6 +127,12 @@ type reloadPipeline struct {
 // reloadOption configures a reloadPipeline. Kept unexported: the composition
 // root uses the defaults and only tests tune the clock/deadline.
 type reloadOption func(*reloadPipeline)
+
+type adminApply struct {
+	ctx     context.Context
+	cfg     *ports.BridgeConfig
+	handoff chan error
+}
 
 // applyResultNotifier receives DEFINITIVE reconfiguration outcomes so a
 // desired-config manager can close its desired-vs-running divergence gap
@@ -169,7 +177,7 @@ func newReloadPipeline(registry *ports.Registry, logger *slog.Logger, opts ...re
 		registry:      registry,
 		logger:        logger,
 		out:           make(chan *ports.BridgeConfig),
-		admin:         make(chan *ports.BridgeConfig),
+		admin:         make(chan adminApply),
 		waiters:       make(map[*ports.BridgeConfig]chan error),
 		clk:           clock.System,
 		applyDeadline: defaultApplyDeadline,
@@ -241,8 +249,8 @@ func (p *reloadPipeline) run(ctx context.Context, fileChanges <-chan *ports.Brid
 			if !p.forward(ctx, cfg) {
 				return
 			}
-		case cfg := <-p.admin:
-			if !p.forward(ctx, cfg) {
+		case apply := <-p.admin:
+			if !p.forwardAdmin(ctx, apply) {
 				return
 			}
 		}
@@ -265,6 +273,25 @@ func (p *reloadPipeline) forward(ctx context.Context, cfg *ports.BridgeConfig) b
 	case p.out <- cfg:
 		return true
 	case <-ctx.Done():
+		return false
+	}
+}
+
+// forwardAdmin hands a committed config to the Supervisor. Cancellation of the
+// request remains rollback-safe until the Supervisor receives the config. Once
+// received, a nil handoff result makes applyCommitted wait for the terminal
+// swap result independently of the request lifetime.
+func (p *reloadPipeline) forwardAdmin(ctx context.Context, apply adminApply) bool {
+	p.clearAppliedFingerprint()
+	select {
+	case p.out <- apply.cfg:
+		apply.handoff <- nil
+		return true
+	case <-apply.ctx.Done():
+		apply.handoff <- apply.ctx.Err()
+		return true
+	case <-ctx.Done():
+		apply.handoff <- ports.ErrApplyInFlight
 		return false
 	}
 }
@@ -302,6 +329,11 @@ func (p *reloadPipeline) clearAppliedFingerprint() {
 // exposes the unambiguous signal regardless.
 func (p *reloadPipeline) applyCommitted(ctx context.Context, cfg *ports.BridgeConfig) error {
 	done := make(chan error, 1)
+	apply := adminApply{
+		ctx:     ctx,
+		cfg:     cfg,
+		handoff: make(chan error, 1),
+	}
 	p.mu.Lock()
 	p.waiters[cfg] = done
 	p.mu.Unlock()
@@ -312,13 +344,19 @@ func (p *reloadPipeline) applyCommitted(ctx context.Context, cfg *ports.BridgeCo
 	}()
 
 	select {
-	case p.admin <- cfg:
-		// Submitted: cfg is now in-flight to the Supervisor.
+	case p.admin <- apply:
+		// Accepted by the pipeline. Submission is confirmed below only after the
+		// Supervisor drains changes().
 	case <-ctx.Done():
 		// Pre-submission cancellation: cfg never reached the Supervisor, so the
 		// runtime is untouched and rolling the durable config back is safe.
 		return fmt.Errorf("apply committed config: %w", ctx.Err())
 	}
+
+	if err := <-apply.handoff; err != nil {
+		return fmt.Errorf("apply committed config: %w", err)
+	}
+	// Submitted: cfg is now in-flight to the Supervisor.
 
 	// cfg is in-flight. Wait for the terminal onSwap result under the apply
 	// deadline ONLY — deliberately NOT the request ctx: the swap cannot be

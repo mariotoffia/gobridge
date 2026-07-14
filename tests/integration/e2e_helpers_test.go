@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -260,12 +261,15 @@ func newMQTTCollector(t *testing.T, topic string, clientIDPrefix string) *mqttCo
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			c.mu.Lock()
 			c.messages = append(c.messages, del.Envelope())
 			c.mu.Unlock()
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("collector Receiver.Run: %v", err)
+		}
 	}()
 
 	t.Cleanup(func() {

@@ -13,6 +13,7 @@ import (
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
@@ -111,6 +112,18 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	// are all operational — no sleep required.
 	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 	requireMQTTSessionReady(t, rt, sessionID)
+
+	// Outbox completion is a separate durability assertion from collector
+	// delivery. A healthy collector cannot mask records stranded in persistence.
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		pending, supported, err := rt.OutboxPending(
+			ctx,
+			persistence.OutboxPartitionKey(sessionID, ""),
+		)
+		require.NoError(collect, err)
+		require.True(collect, supported, "outbox store must report pending depth")
+		assert.Zero(collect, pending, "outbox must drain after broker recovery")
+	}, 180*time.Second, 500*time.Millisecond)
 
 	// Wait for all messages to arrive after recovery.
 	// EnvelopeFromPublish now sets Envelope.ID from mqtt.message-id,

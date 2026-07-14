@@ -86,7 +86,7 @@
 ./tests/integration/e2e_failover_test.go:307:	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
 ./tests/integration/e2e_failover_test.go:457:	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
 ./tests/integration/e2e_failover_test.go:82:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
-./tests/integration/e2e_helpers_test.go:114:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/integration/e2e_helpers_test.go:115:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/integration/e2e_routing_test.go:152:	time.Sleep(2 * time.Second) // NEGATIVE: verify unmatched clients received nothing
 ./tests/integration/e2e_sqs_mqtt_test.go:254:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/e2e_sqs_mqtt_test.go:347:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
@@ -119,11 +119,11 @@
 ./tests/longrunning/gap_processor_lifecycle_test.go:172:	time.Sleep(4 * time.Second) // ESSENTIAL: wait for circuit breaker ResetTimeout expiry
 ./tests/longrunning/gap_processor_lifecycle_test.go:183:		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
 ./tests/longrunning/gap_shutdown_edge_test.go:122:	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
-./tests/longrunning/longrunning_helpers_test.go:310:	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
-./tests/longrunning/longrunning_helpers_test.go:636:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
-./tests/longrunning/longrunning_helpers_test.go:687:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
+./tests/longrunning/longrunning_helpers_test.go:311:	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
+./tests/longrunning/longrunning_helpers_test.go:643:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
+./tests/longrunning/longrunning_helpers_test.go:694:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:448:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/longrunning_test.go:452:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:144:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
 ./tests/longrunning/res_gap_validation_test.go:265:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
@@ -135,11 +135,11 @@
 ./tests/longrunning/uc38_outbox_modes_test.go:199:			time.Sleep(500 * time.Millisecond) // SYNC: poll interval for SQS queue depth check
 ./tests/longrunning/uc38_outbox_modes_test.go:289:	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
 ./tests/longrunning/uc38_outbox_modes_test.go:95:	time.Sleep(10 * time.Second) // OTHER: let outbox fill while sender is paused
-./tests/longrunning/uc42_broker_resilience_test.go:103:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc42_broker_resilience_test.go:216:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc48_broker_multihop_test.go:142:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc48_broker_multihop_test.go:279:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
-./tests/longrunning/uc48_broker_multihop_test.go:506:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
+./tests/longrunning/uc42_broker_resilience_test.go:104:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:229:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc48_broker_multihop_test.go:143:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc48_broker_multihop_test.go:280:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
+./tests/longrunning/uc48_broker_multihop_test.go:510:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
 ./tests/longrunning/uc52_sqs_resilience_test.go:194:	time.Sleep(10 * time.Second) // NEGATIVE: verify dedup discards most duplicates
 ./tests/longrunning/uc57_outbox_lease_test.go:108:	time.Sleep(5 * time.Second) // ESSENTIAL: wait for lease TTL (2s) to expire + margin
 ./tests/longrunning/uc59_outbox_edge_test.go:166:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart

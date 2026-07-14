@@ -53,11 +53,12 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 	@mkdir -p reports
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
-	@bash -c 'for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		echo "--- Testing $$dir ---"; \
-		(cd "$$dir" && go test -short -race -timeout 120s ./...) || true; \
-	done 2>&1 | tee reports/test-unit.log; \
+		(cd "$$dir" && go test -count=1 -short -race -timeout 120s ./...) || rc=$$?; \
+	done; exit $$rc; } 2>&1 | tee reports/test-unit.log; \
+	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
 	echo "  Test Report: reports/test-unit.log"; \
@@ -70,19 +71,20 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 		echo ""; \
 		echo "FAILED packages ($$failed):"; \
 		grep -E "^FAIL\s" reports/test-unit.log || true; \
-		exit 1; \
-	fi'
+	fi; \
+	exit $$rc'
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"
-	@bash -c 'for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-			go test -p 1 -race -timeout 600s -v ./...) || true; \
-	done 2>&1 | tee reports/test-integration.log; \
+			go test -count=1 -p 1 -race -timeout 600s -v ./...) || rc=$$?; \
+	done; exit $$rc; } 2>&1 | tee reports/test-integration.log; \
+	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
 	echo "  Test Report: reports/test-integration.log"; \
@@ -95,8 +97,8 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 		echo ""; \
 		echo "FAILED packages ($$failed):"; \
 		grep -E "^FAIL\s" reports/test-integration.log || true; \
-		exit 1; \
-	fi'
+	fi; \
+	exit $$rc'
 
 test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
@@ -106,7 +108,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
 	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
 	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
-		go test -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/... 2>&1 | tee reports/test-long-running.log; \
+		go test -count=1 -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/... 2>&1 | tee reports/test-long-running.log; \
 		rc=$$?; \
 		echo ""; \
 		echo "========================================"; \

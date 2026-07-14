@@ -293,9 +293,10 @@ long-running test without the tag is a CI accident.
 
 ### 6.3 How they run
 
-- Locally: `make test-long-running` (10 800 s timeout, requires
+- Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
   Docker, writes `reports/test-long-running.log`).
-- CI: scheduled (nightly / pre-release), not on every PR.
+- CI: scheduled nightly and available through manual workflow dispatch, not on
+  every PR.
 - Never run inside `make test` or `make test-integration` — Makefile
   excludes `tests/longrunning/` explicitly.
 
@@ -344,10 +345,11 @@ the same shape. Do not inline its logic.
 ## 8. Running the suite
 
 ```bash
-# Unit tests + timing audits. Must pass on every save.
+# Uncached unit tests + timing audits. Must pass on every save.
 make test
 
-# Unit + integration. Requires Docker. Used by `make check-all`.
+# Uncached unit + integration. Requires Docker. Mandatory in CI and used by
+# `make check-all`.
 make test-integration
 
 # Long-running suite (build tag `longrunning`, Docker required, hours).
@@ -357,6 +359,9 @@ make test-long-running
 make check       # build + lint + unit
 make check-all   # build + lint + integration
 ```
+
+Every test target passes `-count=1`, writes its report under `reports/`, and
+returns the failing `go test` status after report generation.
 
 `make test` is the contract: must remain green on a fresh laptop with
 no Docker. A unit-test change that breaks that contract is wrong.

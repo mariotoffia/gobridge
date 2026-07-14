@@ -210,20 +210,24 @@ func TestReloadPipeline_ClearsFingerprintOnExternalEditThenRevert(t *testing.T) 
 }
 
 // TestReloadPipeline_ApplierUnblocksOnContextCancel proves applyCommitted does
-// not hang if the Supervisor never drains the channel and the request context
-// is cancelled.
+// not treat acceptance by the pipeline as submission to the Supervisor. Until
+// the Supervisor drains changes(), request cancellation is rollback-safe and
+// must unblock the applier.
 func TestReloadPipeline_ApplierUnblocksOnContextCancel(t *testing.T) {
 	p := newReloadPipeline(ports.NewRegistry(), discardLogger())
 
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
-	// No supervisor drains p.changes(), so the merged channel backpressures.
-	go p.run(runCtx, make(chan *ports.BridgeConfig))
+	pipelineAccepted := make(chan struct{})
+	go func() {
+		apply := <-p.admin
+		close(pipelineAccepted)
+		p.forwardAdmin(context.Background(), apply)
+	}()
 
 	reqCtx, reqCancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- p.applyCommitted(reqCtx, testConfig("bridge-demo", 7, "info")) }()
 
+	<-pipelineAccepted
 	reqCancel()
 
 	select {

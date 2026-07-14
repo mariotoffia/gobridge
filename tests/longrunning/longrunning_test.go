@@ -4,6 +4,7 @@ package longrunning_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -258,7 +259,7 @@ func newMQTTCollector(
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			c.mu.Lock()
 			c.messages = append(c.messages, del.Envelope())
 			n := len(c.messages)
@@ -266,8 +267,11 @@ func newMQTTCollector(
 			if n <= 5 || n%500 == 0 {
 				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID())
 			}
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("collector Receiver.Run: %v", err)
+		}
 	}()
 
 	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
