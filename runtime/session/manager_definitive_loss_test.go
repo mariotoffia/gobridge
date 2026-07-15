@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -599,5 +600,58 @@ func TestEscalatesToUnrecoverable(t *testing.T) {
 					tc.err, tc.escalatable, got, tc.want)
 			}
 		})
+	}
+}
+
+type singleUseTerminalSession struct {
+	starts  atomic.Int32
+	events  chan ports.SessionEvent
+	started chan struct{}
+}
+
+func newSingleUseTerminalSession() *singleUseTerminalSession {
+	return &singleUseTerminalSession{
+		events:  make(chan ports.SessionEvent),
+		started: make(chan struct{}, 1),
+	}
+}
+
+func (s *singleUseTerminalSession) Start(context.Context) error {
+	if s.starts.Add(1) > 1 {
+		return shared.ErrUnavailable.WithMessage("single-use terminal session").
+			Wrap(shared.ErrTransportClosedPermanently)
+	}
+	s.started <- struct{}{}
+	return nil
+}
+func (*singleUseTerminalSession) Reconcile(context.Context, connectivity.SessionPlan) error {
+	return nil
+}
+func (*singleUseTerminalSession) Health(context.Context) ports.SessionHealth {
+	return ports.SessionHealth{}
+}
+func (s *singleUseTerminalSession) Events() <-chan ports.SessionEvent { return s.events }
+func (*singleUseTerminalSession) Close(context.Context) error         { return nil }
+
+func TestSessionManager_TerminalSignalRestartsThenEscalatesSingleUseSession(t *testing.T) {
+	sess := newSingleUseTerminalSession()
+	mgr := NewWithMetrics(Config{SessionID: "single-use-terminal"}, sess, nil, "owner", nil, &ports.NoopExporter{}, clock.System)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	firstRun := make(chan error, 1)
+	go func() { firstRun <- mgr.Run(ctx) }()
+	wait.RequireReceive(t, sess.started, time.Second)
+	close(sess.events)
+
+	firstErr := wait.RequireReceive(t, firstRun, time.Second)
+	if !errors.Is(firstErr, errSessionEventsClosed) {
+		t.Fatalf("first Run error = %v, want events-closed failure", firstErr)
+	}
+	secondErr := mgr.Run(ctx)
+	if !errors.Is(secondErr, ErrSessionUnrecoverable) || !errors.Is(secondErr, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("second Run error = %v, want single-use terminal escalation", secondErr)
+	}
+	if got := sess.starts.Load(); got != 2 {
+		t.Fatalf("Start calls = %d, want 2", got)
 	}
 }

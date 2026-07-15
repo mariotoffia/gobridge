@@ -423,14 +423,21 @@ config knob:
 - the rebuild preserves `client_id` and session expiry while forcing
   `clean_start=false`;
 - CONNACK must report **Session Present**. If it does not, the broker cannot
-  prove the unsettled packet survived. The Session instance fails closed and
-  remains below Full readiness until the composition root or orchestrator
-  replaces it; it never treats a second connection to a newly-created empty
-  session as recovery. Session Present evidence is stamped with the exact
-  connection epoch; recovery captures its target epoch after reconnect, and
-  reconciliation rejects evidence from any older or newer epoch. Session Present
-  alone is not completion: readiness stays degraded until exact-epoch
-  replacement reconciliation succeeds within the same deadline.
+  prove the unsettled packet survived. Session Present evidence is stamped with
+  the exact connection epoch; recovery captures its target epoch after reconnect,
+  and reconciliation rejects evidence from any older or newer epoch. Session
+  Present alone is not completion: readiness stays degraded until exact-epoch
+  replacement reconciliation succeeds within the same deadline;
+- every queued or active recovery failure (gate timeout/cancellation, bounded
+  drain, disconnect/reconnect, Session Present, or reconcile) enters one
+  idempotent terminal transition. It clears pending attempt state, latches a
+  permanent error, quiesces ingress, disconnects the generation within the
+  activation bound, emits one terminal SessionError, then closes the lifecycle
+  event channel. The manager therefore tears down before releasing an exclusive
+  lease; its supervisor retries once, and the existing single-use contract then
+  escalates `ErrSessionUnrecoverable` for orchestrator replacement. Future Retry,
+  Reconcile, credential, and Start calls return the terminal error rather than
+  reactivating the dead Session instance.
 
 The adapter tracks every current-connection QoS 1/2 packet from receipt until a
 successful protocol Ack or connection-epoch change. Deep health exposes

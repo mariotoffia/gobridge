@@ -78,22 +78,82 @@ func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.D
 	}
 }
 
-func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
+func settlementRecoveryTerminalError(cause error) error {
+	if cause == nil {
+		cause = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery failed")
+	}
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: settlement recovery failed; session is terminal").
+		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
+}
+
+// terminateFailedRecovery is the single terminal transition for every queued or
+// active settlement-recovery failure. State latches synchronously and exactly
+// once; teardown may run asynchronously for callback callers. The Events channel
+// closes only after ingress quiescence and connection teardown, which is the
+// manager-visible signal that preserves exclusive lease ordering.
+func (s *Session) terminateFailedRecovery(generation uint64, cause error, async, alreadyQuiesced bool) bool {
+	terminal := settlementRecoveryTerminalError(cause)
 	s.mu.Lock()
-	if !s.recoveryPending || s.recoveryAttemptActive || s.recoveryGeneration != generation {
+	if s.recoveryGeneration != generation || (!s.recoveryPending && !s.recoveryAttemptActive) {
 		s.mu.Unlock()
 		return false
 	}
-	s.recoveryErr = attemptErr
+	if s.terminalErr != nil {
+		s.mu.Unlock()
+		return false
+	}
+	s.terminalErr = terminal
+	s.recoveryErr = terminal
+	s.recoveryPending = false
+	s.recoveryAttemptActive = false
+	s.recoveryNeedsSessionPresent = false
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
+	s.lastRecoveryCompleted = s.clock().Now()
+	cancelAttempt := s.recoveryAttemptCancel
+	s.recoveryAttemptCancel = nil
 	hook := s.recoveryQueuedFailureHook
 	s.mu.Unlock()
+	if cancelAttempt != nil {
+		cancelAttempt()
+	}
 	if hook != nil {
 		hook()
+	}
+
+	finish := func() {
+		terminalCtx, cancel := s.contextWithClockTimeout(context.Background(), s.recoveryAttemptTimeout())
+		if !alreadyQuiesced {
+			_ = s.quiesceForRecycle(terminalCtx)
+		}
+		s.disconnectGeneration(terminalCtx)
+		cancel()
+		s.pushEvent(ports.SessionError, terminal)
+		s.mu.Lock()
+		s.closeEventsLocked()
+		s.mu.Unlock()
+	}
+	if async {
+		go finish()
+	} else {
+		finish()
 	}
 	return true
 }
 
+func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
+	return s.terminateFailedRecovery(generation, attemptErr, false, false)
+}
+
 func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
+	if !success {
+		if attemptErr == nil {
+			attemptErr = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery did not complete")
+		}
+		return s.terminateFailedRecovery(generation, attemptErr, false, true)
+	}
+
 	s.mu.Lock()
 	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
 		s.mu.Unlock()
@@ -103,18 +163,11 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	s.lastRecoveryCompleted = s.clock().Now()
 	cancel := s.recoveryAttemptCancel
 	s.recoveryAttemptCancel = nil
-	if success {
-		s.recoveryPending = false
-		s.recoveryNeedsSessionPresent = false
-		s.recoverySessionPresentEpoch = 0
-		s.recoveryTargetEpoch = 0
-		s.recoveryErr = nil
-	} else {
-		if attemptErr == nil {
-			attemptErr = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery did not complete")
-		}
-		s.recoveryErr = attemptErr
-	}
+	s.recoveryPending = false
+	s.recoveryNeedsSessionPresent = false
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
+	s.recoveryErr = nil
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -164,7 +217,12 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 		return shared.ErrNotSupported
 	}
 	s.mu.Lock()
-	if s.closed || s.terminalErr != nil {
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
+	if s.closed {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("mqtt: session recovery requested after session closure")
 	}
@@ -258,10 +316,15 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		case <-drainDone:
 		}
 	}()
-	_ = s.quiesceForRecycle(drainCtx)
+	drainErr := s.quiesceForRecycle(drainCtx)
 	close(drainDone)
 	drainLimit.Stop()
 	cancelDrain()
+	if drainErr != nil {
+		s.completeRecoveryAttempt(generation,
+			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr), false)
+		return
+	}
 
 	if !s.recordRecoveryRecycleStart(generation) {
 		return
@@ -319,6 +382,11 @@ func (s *Session) Reload(ctx context.Context) error {
 // reloadGate, the shared ConnectionManager-reload serialization gate.
 func (s *Session) reloadLocked(ctx context.Context) error {
 	s.mu.Lock()
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
 	if s.closed {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
@@ -373,11 +441,23 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	s.connEpoch++
 	s.mu.Unlock()
 
+	var disconnectErr error
 	if cm != nil {
-		_ = cm.Disconnect(ctx)
+		disconnectErr = cm.Disconnect(ctx)
 	}
 	if cmCancel != nil {
 		cmCancel()
+	}
+	if disconnectErr != nil {
+		mapped := MapError(disconnectErr).WithMessage("mqtt reload: disconnect current generation")
+		s.mu.Lock()
+		recoveryOwnsTerminalSignal := s.recoveryPending ||
+			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
+		if !recoveryOwnsTerminalSignal {
+			s.closeEventsLocked()
+		}
+		s.mu.Unlock()
+		return mapped
 	}
 
 	if err := s.Start(ctx); err != nil {
@@ -398,7 +478,11 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 		// spin on a closed channel. The close is guarded (closeEventsLocked)
 		// so a concurrent/subsequent Close cannot double-close it.
 		s.mu.Lock()
-		s.closeEventsLocked()
+		recoveryOwnsTerminalSignal := s.recoveryPending ||
+			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
+		if !recoveryOwnsTerminalSignal {
+			s.closeEventsLocked()
+		}
 		s.mu.Unlock()
 		return err
 	}
@@ -695,14 +779,17 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	}
 	if s.recoveryNeedsSessionPresent && !sessionPresent {
 		err := shared.ErrUnavailable.WithMessage(
-			"mqtt: settlement recovery did not resume the broker session (Session Present=false)").
-			Wrap(shared.ErrTransportClosedPermanently)
+			"mqtt: settlement recovery did not resume the broker session (Session Present=false)")
+		recoveryGeneration := s.recoveryGeneration
+		alreadyQuiesced := s.recoveryAttemptActive
 		s.connected = false
 		s.subscriptionsSatisfied = false
-		s.recoveryErr = err
-		s.terminalErr = err
 		s.mu.Unlock()
-		s.completeConnectionUpBarrier(generation, err)
+		s.terminateFailedRecovery(recoveryGeneration, err, true, alreadyQuiesced)
+		s.mu.Lock()
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(generation, terminal)
 		return
 	}
 	nextEpoch := s.connEpoch + 1

@@ -189,70 +189,44 @@ func (c *recoveryDisconnectConn) Disconnect(context.Context) error {
 	return nil
 }
 
-func TestSessionRecovery_DrainBoundedAndCompletedAttemptsRateLimited(t *testing.T) {
+func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	clk := clocktest.New()
 	metrics := &ports.RecordingExporter{}
-	firstDisconnected := make(chan struct{})
-	secondDisconnected := make(chan struct{})
+	disconnected := make(chan struct{})
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
-		ClientID:   "recovery-bounds",
+		ClientID:   "recovery-drain-timeout",
 		Clock:      clk,
 	}, connectivity.SessionPersistent, nil, metrics)
 	s.mu.Lock()
-	s.cm = &recoveryDisconnectConn{disconnected: firstDisconnected}
+	s.cm = &recoveryDisconnectConn{disconnected: disconnected}
 	s.connected = true
 	s.mu.Unlock()
+	events := s.Events()
 
-	waiterEntered := make(chan struct{}, 2)
+	waiterEntered := make(chan struct{}, 1)
 	s.SetIngressQuiescenceWaiter(func(ctx context.Context) error {
 		waiterEntered <- struct{}{}
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	var dials atomic.Int32
-	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
-		if dials.Add(1) == 1 {
-			return &recoveryDisconnectConn{disconnected: secondDisconnected}, func() {}, nil
-		}
-		return &fakeLiveConn{}, func() {}, nil
-	}
 
 	require.NoError(t, s.requestRecovery(t.Context()))
 	<-waiterEntered
+	clk.Advance(settlementRecoveryDrainLimit - time.Nanosecond)
 	select {
-	case <-firstDisconnected:
-		t.Fatal("recovery disconnected before its drain bound")
+	case <-disconnected:
+		t.Fatal("recovery disconnected before its five-second drain bound")
 	default:
 	}
-	clk.Advance(settlementRecoveryDrainLimit - time.Second)
-	select {
-	case <-firstDisconnected:
-		t.Fatal("recovery disconnected before five seconds")
-	default:
-	}
-	clk.Advance(time.Second)
-	<-firstDisconnected
-	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
-	require.Len(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle), 1)
-
-	require.NoError(t, s.requestRecovery(t.Context()))
-	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
-	require.Eventually(t, func() bool {
-		return clk.TimerCount() > 0 || len(waiterEntered) > 0
-	}, time.Second, time.Millisecond)
-	assert.Empty(t, waiterEntered, "the second drain must not start inside the minimum interval")
-	clk.Advance(settlementRecoveryMinInterval - time.Second)
-	select {
-	case <-secondDisconnected:
-		t.Fatal("second completed recovery started inside the minimum interval")
-	default:
-	}
-	clk.Advance(time.Second)
-	<-waiterEntered
-	clk.Advance(settlementRecoveryDrainLimit)
-	<-secondDisconnected
-	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	clk.Advance(time.Nanosecond)
+	<-disconnected
+	wait.RequireClosed(t, events, time.Second)
+	assert.Empty(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle))
+	health := s.Health(t.Context())
+	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
+	assert.Error(t, health.LastError)
+	assert.ErrorIs(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}), shared.ErrTransportClosedPermanently)
 }
 
 func TestSessionRecovery_MissingSessionPresentFailsAndStaysDegraded(t *testing.T) {
@@ -621,6 +595,7 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 	s.cm = conn
 	s.connected = true
 	s.mu.Unlock()
+	events := s.Events()
 	planA := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "a/#", QoS: 1}}}
 	planB := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "b/#", QoS: 1}}}
 
@@ -646,6 +621,7 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 
 	clk.Advance(s.recoveryAttemptTimeout())
 	<-queuedFailed
+	wait.RequireClosed(t, events, time.Second)
 	assert.Empty(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle))
 	assert.Zero(t, s.Health(t.Context()).RecoveryRecycleCount)
 
@@ -653,13 +629,15 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 	go func() { secondDone <- s.Reconcile(t.Context(), planB) }()
 	require.Equal(t, "wait", <-gateState)
 	close(conn.releaseFirst)
-	require.NoError(t, <-firstDone)
-	<-conn.secondEntered
-	require.NoError(t, <-secondDone)
+	require.Error(t, <-firstDone)
+	secondErr := <-secondDone
+	require.ErrorIs(t, secondErr, shared.ErrTransportClosedPermanently)
 
-	assert.Equal(t, int32(2), conn.calls.Load())
+	assert.Equal(t, int32(1), conn.calls.Load())
 	assert.Equal(t, int32(1), conn.maxActive.Load())
-	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
+	health := s.Health(t.Context())
+	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
+	assert.Error(t, health.LastError)
 }
 
 type queuedRecoveryConn struct {
@@ -804,4 +782,84 @@ func TestSessionRecovery_RecycleMetricStartsOnlyAfterGate(t *testing.T) {
 	<-blocked.exited
 	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 	assert.Equal(t, uint64(1), s.Health(t.Context()).RecoveryRecycleCount)
+}
+
+func TestSessionRecovery_FailedAttemptTerminatesLifecycle(t *testing.T) {
+	disconnected := make(chan struct{})
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "terminal-recovery-failure",
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &queuedRecoveryConn{disconnected: disconnected}
+	s.connected = true
+	s.mu.Unlock()
+	events := s.Events()
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		return nil, nil, shared.ErrUnavailable.WithMessage("forced recovery reconnect failure")
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	<-disconnected
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+			require.ErrorIs(t, event.Err, shared.ErrTransportClosedPermanently)
+		}
+	}
+	assert.Equal(t, 1, terminalEvents)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	pending := s.recoveryPending
+	active := s.recoveryAttemptActive
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
+	assert.False(t, pending)
+	assert.False(t, active)
+	require.Error(t, terminalErr)
+	assert.ErrorIs(t, terminalErr, shared.ErrTransportClosedPermanently)
+	assert.ErrorIs(t, s.requestRecovery(t.Context()), shared.ErrTransportClosedPermanently)
+	assert.ErrorIs(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}), shared.ErrTransportClosedPermanently)
+}
+
+func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
+	var disconnects atomic.Int32
+	s := NewSession(SessionOptions{ClientID: "terminal-coalesce"}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{disconnects: &disconnects}
+	s.connected = true
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+	events := s.Events()
+
+	require.NoError(t, s.acquireReload(t.Context()))
+	require.NoError(t, s.requestRecovery(t.Context()))
+	const failures = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(failures)
+	for range failures {
+		go func() {
+			defer wg.Done()
+			<-start
+			s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+		}
+	}
+	assert.Equal(t, 1, terminalEvents)
+	assert.Equal(t, int32(1), disconnects.Load())
+	s.releaseReload()
 }

@@ -41,6 +41,11 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	defer s.releaseReload()
 
 	s.mu.Lock()
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
 	recoveryGeneration := uint64(0)
 	if s.recoveryAttemptActive {
 		recoveryGeneration = s.recoveryGeneration
