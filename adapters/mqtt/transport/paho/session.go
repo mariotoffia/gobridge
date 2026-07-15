@@ -208,6 +208,8 @@ type Session struct {
 	recoverySessionPresentEpoch uint64
 	recoveryTargetEpoch         uint64
 	recoveryAttemptActive       bool
+	recoveryQuiesced            bool
+	recoveryQuiescedGeneration  uint64
 	recoveryGeneration          uint64
 	recoveryAttemptCancel       context.CancelFunc
 	recoveryErr                 error

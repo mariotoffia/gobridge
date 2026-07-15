@@ -433,7 +433,11 @@ config knob:
   idempotent terminal transition. It clears pending attempt state, latches a
   permanent error, quiesces ingress, disconnects the generation within the
   activation bound, emits one terminal SessionError, then closes the lifecycle
-  event channel. The manager therefore tears down before releasing an exclusive
+  event channel. Terminal teardown skips the settlement barrier only when the
+  current recovery generation explicitly recorded a successful bounded quiesce;
+  Session Present failure before or during drain must wait for that barrier or
+  its bounded abort before signaling the manager. The manager therefore tears
+  down before releasing an exclusive
   lease; its supervisor retries once, and the existing single-use contract then
   escalates `ErrSessionUnrecoverable` for orchestrator replacement. Future Retry,
   Reconcile, credential, and Start calls return the terminal error rather than

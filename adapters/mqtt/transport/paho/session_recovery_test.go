@@ -204,7 +204,7 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	s.mu.Unlock()
 	events := s.Events()
 
-	waiterEntered := make(chan struct{}, 1)
+	waiterEntered := make(chan struct{}, 2)
 	s.SetIngressQuiescenceWaiter(func(ctx context.Context) error {
 		waiterEntered <- struct{}{}
 		<-ctx.Done()
@@ -220,6 +220,8 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	default:
 	}
 	clk.Advance(time.Nanosecond)
+	wait.RequireReceive(t, waiterEntered, time.Second)
+	clk.Advance(s.recoveryAttemptTimeout())
 	<-disconnected
 	wait.RequireClosed(t, events, time.Second)
 	assert.Empty(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle))
@@ -862,4 +864,86 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 	assert.Equal(t, 1, terminalEvents)
 	assert.Equal(t, int32(1), disconnects.Load())
 	s.releaseReload()
+}
+
+func TestSessionRecovery_FailClosedWinnerStillCompletesUnifiedTerminalTransition(t *testing.T) {
+	var disconnects atomic.Int32
+	s := NewSession(SessionOptions{ClientID: "fail-closed-wins"}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{disconnects: &disconnects}
+	s.connected = true
+	s.recoveryPending = true
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 11
+	s.mu.Unlock()
+	events := s.Events()
+	firstCause := managedMigrationRequiredError()
+	secondCause := shared.ErrUnavailable.WithMessage("later recovery finalizer")
+
+	terminal := s.failClosed(t.Context(), firstCause)
+	require.ErrorIs(t, terminal, shared.ErrTransportClosedPermanently)
+	assert.False(t, s.completeRecoveryAttempt(11, secondCause, false))
+
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+		}
+	}
+	s.mu.Lock()
+	pending := s.recoveryPending
+	active := s.recoveryAttemptActive
+	latched := s.terminalErr
+	s.mu.Unlock()
+	assert.False(t, pending)
+	assert.False(t, active)
+	assert.Equal(t, 1, terminalEvents)
+	assert.Equal(t, int32(1), disconnects.Load())
+	assert.ErrorIs(t, latched, shared.ErrTransportClosedPermanently)
+}
+
+func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *testing.T) {
+	var disconnects atomic.Int32
+	s := NewSession(SessionOptions{ClientID: "absent-during-drain"}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{disconnects: &disconnects}
+	s.connected = true
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+	events := s.Events()
+	barrierEntered := make(chan struct{}, 2)
+	releaseBarrier := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseBarrier:
+		default:
+			close(releaseBarrier)
+		}
+	})
+	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		barrierEntered <- struct{}{}
+		<-releaseBarrier
+		return nil
+	})
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireReceive(t, barrierEntered, time.Second)
+	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+	wait.RequireReceive(t, barrierEntered, time.Second)
+	select {
+	case <-events:
+		t.Fatal("terminal signal became observable before settlement barrier released")
+	default:
+	}
+	assert.Zero(t, disconnects.Load())
+
+	close(releaseBarrier)
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+		}
+	}
+	assert.Equal(t, 1, terminalEvents)
+	assert.Equal(t, int32(1), disconnects.Load())
 }
