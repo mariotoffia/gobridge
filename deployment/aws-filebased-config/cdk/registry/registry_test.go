@@ -172,3 +172,34 @@ func TestSsmParamRegistry_AddRejectsInvalid(t *testing.T) {
 		registry.NewSsmParamRegistry().AddParameter("/x", nil)
 	})
 }
+
+func TestSsmParamRegistry_NormalizesAllSupportedReferenceForms(t *testing.T) {
+	stack := newStack(t)
+	parameter := awsssm.StringParameter_FromStringParameterName(stack, jsii.String("P"), jsii.String("/name/path"))
+	reg := registry.NewSsmParamRegistry()
+	reg.AddParameter("pms:///name/path", parameter)
+
+	for _, ref := range []string{"/name/path", "name/path", "pms://name/path", "pms:///name/path"} {
+		if !reg.Has(ref) {
+			t.Errorf("Has(%q) = false after canonical registration", ref)
+		}
+		if got := reg.Ref(ref).Parameter(); got != parameter {
+			t.Errorf("Ref(%q) did not resolve the canonical parameter", ref)
+		}
+	}
+}
+
+func TestSsmParamRegistry_CanonicalDuplicatePanics(t *testing.T) {
+	stack := newStack(t)
+	parameter := awsssm.StringParameter_FromStringParameterName(stack, jsii.String("P"), jsii.String("/name/path"))
+	reg := registry.NewSsmParamRegistry()
+	reg.AddParameter("pms://name/path", parameter)
+
+	defer func() {
+		recovered := recover()
+		if recovered == nil || !strings.Contains(recovered.(string), "/name/path") {
+			t.Fatalf("canonical duplicate panic = %v, want /name/path", recovered)
+		}
+	}()
+	reg.AddParameter("/name/path", parameter)
+}

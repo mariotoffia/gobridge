@@ -47,7 +47,7 @@ func TestNormalizeParameterRef(t *testing.T) {
 		{
 			name:    "pms URL with empty host returns error",
 			input:   "pms://",
-			wantErr: "requires a parameter-name host",
+			wantErr: "requires authority or absolute-path form",
 		},
 	}
 

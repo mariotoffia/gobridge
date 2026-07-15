@@ -45,7 +45,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **Parameter reference** | A bootstrap field value identifying an SSM parameter. Either the canonical `pms://name/path` URI or an absolute SSM name (`/foo/bar`). Normalized by `normalizeParameterRef`. |
+| **Parameter reference** | A bootstrap field value identifying an SSM parameter. Either `pms://name/path` (authority form), `pms:///name/path` (absolute-path form), or an absolute SSM name (`/foo/bar`). Normalized by `normalizeParameterRef`. |
 | **Parameter resolver** | The `parameterResolver` interface used by `resolveInputs`. Default is SSM-backed; tests inject custom implementations via `WithParameterResolver`. |
 | **DevMode** | Bootstrap flag that authorizes use of `SSMEndpoint` overrides (e.g. LocalStack). Production safety guard: `SSMEndpoint` without `DevMode` fails `Validate()`. |
 | **Admin/Monitor key param** | SSM references for the admin (required) and monitor (optional) HTTP API `X-API-Key` values. Re-resolved on every reload. |

@@ -20,12 +20,6 @@ import (
 // the resolver to reject at runtime.
 const pmsScheme = "pms://"
 
-// sqsTransport is the discriminator the SQS adapter registers under.
-// Mirrors the bridgecfg constant; duplicated here so the validation
-// package does not depend on bridgecfg (which itself depends on
-// validation peers).
-const sqsTransport = "sqs"
-
 // Phase2Input bundles the inputs needed by the aggregated, synth-time
 // Phase 2 validator. QueueRegistry and SsmParamRegistry are
 // conditionally required: nil is allowed when the yaml does not use
@@ -160,7 +154,7 @@ func collectSQSQueueNames(cfg *ports.BridgeConfig) []string {
 	}
 	for i := range cfg.Receivers {
 		r := &cfg.Receivers[i]
-		if r.Transport != sqsTransport {
+		if !sqs.IsKind(r.Transport) {
 			continue
 		}
 		if c, ok := r.Config.(*sqs.Config); ok && c != nil && c.QueueURL == "" {
@@ -169,7 +163,7 @@ func collectSQSQueueNames(cfg *ports.BridgeConfig) []string {
 	}
 	for i := range cfg.Senders {
 		s := &cfg.Senders[i]
-		if s.Transport != sqsTransport {
+		if !sqs.IsKind(s.Transport) {
 			continue
 		}
 		if c, ok := s.Config.(*sqs.Config); ok && c != nil && c.QueueURL == "" {

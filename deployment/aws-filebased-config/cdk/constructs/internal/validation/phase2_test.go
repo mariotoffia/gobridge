@@ -152,6 +152,17 @@ func TestRunPhase2_SQSReceiver_MissingFromRegistry_EmitsError(t *testing.T) {
 	}
 }
 
+func TestRunPhase2_AWSSQSAlias_MissingFromRegistry_EmitsError(t *testing.T) {
+	stack := newStack(t)
+	cfg := sqsReceiverNamed("alias-queue")
+	cfg.Receivers[0].Transport = "aws.sqs"
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg, QueueRegistry: registry.NewQueueRegistry()})
+	got := errorMessages(t, stack)
+	if !containsAll(t, got, "SQS queue \"alias-queue\"", "no such entry in QueueRegistry") {
+		t.Fatalf("aws.sqs alias bypassed QueueRegistry validation: %v", got)
+	}
+}
+
 func TestRunPhase2_SQSSender_MissingFromRegistry_EmitsError(t *testing.T) {
 	stack := newStack(t)
 	cfg := sqsSenderNamed("orders-out")

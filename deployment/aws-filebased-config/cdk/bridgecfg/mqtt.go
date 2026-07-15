@@ -92,7 +92,7 @@ func WithMQTTClientID(clientID string) MQTTOption {
 
 // mqttTransport is the registered short discriminator for the paho
 // MQTT adapter.
-const mqttTransport = "mqtt"
+const mqttTransport = paho.ShortKind
 
 // paramRefToPMS converts an SsmParamRegistry ref's logical name into
 // the canonical pms:// URI form. The repository contract (see

@@ -7,7 +7,7 @@ import (
 )
 
 func TestNormalizeParameterPath_MatchesRuntimePMSContract(t *testing.T) {
-	for _, ref := range []string{"pms://name/path", "/name/path", "name/path"} {
+	for _, ref := range []string{"pms://name/path", "pms:///name/path", "/name/path", "name/path"} {
 		got, err := registry.NormalizeParameterPath(ref)
 		if err != nil {
 			t.Fatalf("NormalizeParameterPath(%q): %v", ref, err)
@@ -19,7 +19,7 @@ func TestNormalizeParameterPath_MatchesRuntimePMSContract(t *testing.T) {
 }
 
 func TestNormalizeParameterPath_RejectsNonCanonicalOrNonPMSURI(t *testing.T) {
-	for _, ref := range []string{"pms:///name/path", "file:///name/path"} {
+	for _, ref := range []string{"pms://name/path?x=1", "file:///name/path"} {
 		if _, err := registry.NormalizeParameterPath(ref); err == nil {
 			t.Fatalf("NormalizeParameterPath(%q) accepted invalid reference", ref)
 		}

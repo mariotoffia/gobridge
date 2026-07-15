@@ -86,8 +86,8 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// by paho.Register and sqsadapter.Register. Both names resolve to the same
 	// factory instance; no duplicate transport/session state is created.
 	transports := map[string]ports.TransportFactory{
-		"mqtt": mqttFactory, "mqtt.paho": mqttFactory,
-		"sqs": sqsFactory, "aws.sqs": sqsFactory,
+		paho.ShortKind: mqttFactory, paho.QualifiedKind: mqttFactory,
+		sqsadapter.ShortKind: sqsFactory, sqsadapter.QualifiedKind: sqsFactory,
 	}
 
 	// The metrics exporter reaches HTTP receivers/SSE senders through the

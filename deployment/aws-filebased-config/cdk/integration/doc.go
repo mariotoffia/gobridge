@@ -13,7 +13,9 @@
 //	GOBRIDGE_INT_AWS_ACCOUNT   AWS account id used for the CDK env
 //	GOBRIDGE_INT_AWS_REGION    AWS region used for the CDK env
 //	GOBRIDGE_INT_VPC_ID        existing VPC id used for ECS + ALB
-//	GOBRIDGE_INT_SUBNET_IDS    comma-separated subnet ids in that VPC
+//	GOBRIDGE_INT_AVAILABILITY_ZONES comma-separated ordered AZs
+//	GOBRIDGE_INT_SUBNET_IDS         comma-separated private subnet ids, one per AZ
+//	GOBRIDGE_INT_PUBLIC_SUBNET_IDS  comma-separated public subnet ids, one per AZ
 //
 // Optional:
 //

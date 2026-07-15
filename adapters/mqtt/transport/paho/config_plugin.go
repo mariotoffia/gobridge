@@ -122,7 +122,7 @@ func conservativeActivationDuration(phases ...time.Duration) time.Duration {
 }
 
 // Kind reports the registry discriminator.
-func (Config) Kind() string { return "mqtt.paho" }
+func (Config) Kind() string { return QualifiedKind }
 
 // Validate validates the unified config. Empty role-specific fields
 // are allowed because the same Config is reused across all three

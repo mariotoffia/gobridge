@@ -353,7 +353,7 @@ func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
 			continue
 		}
 		mqtt, ok := session.Config.(*paho.Config)
-		if !ok || mqtt == nil {
+		if !ok || mqtt == nil || !paho.IsKind(session.Transport) {
 			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q must use the MQTT Paho config", session.ID)
 		}
 		if err := mqtt.ValidateEffectiveSession(connectivity.SessionExclusive); err != nil {
@@ -453,6 +453,9 @@ func requiredDynamoDBStore(role string, store *ports.StoreConfig) (string, error
 	name, err := awsstore.ResolveDynamoDBTableName(role, cfg.TableName)
 	if err != nil {
 		return "", err
+	}
+	if unresolved := awscdk.Token_IsUnresolved(name); unresolved != nil && *unresolved {
+		return "", fmt.Errorf("stores.%s table_name must be a resolved physical table_name; deploy-time tokens cannot be embedded safely in the immutable config asset", role)
 	}
 	return name, nil
 }

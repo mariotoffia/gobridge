@@ -93,7 +93,9 @@ bypass synth admission.
 
 The facade creates exactly three encrypted on-demand tables. Names come from
 the actual store configs; omitted `table_name` fields resolve through the
-adapter defaults.
+adapter defaults. Overrides must be literal resolved physical names. Unresolved
+CDK tokens are rejected because token markers cannot be substituted inside the
+immutable S3 config asset.
 
 | Store | Default name | Primary key | Required indexes | TTL |
 |---|---|---|---|---|
@@ -204,7 +206,9 @@ Required variables when `GOBRIDGE_INT_HA=1`:
 GOBRIDGE_INT_AWS_ACCOUNT
 GOBRIDGE_INT_AWS_REGION
 GOBRIDGE_INT_VPC_ID
+GOBRIDGE_INT_AVAILABILITY_ZONES
 GOBRIDGE_INT_SUBNET_IDS
+GOBRIDGE_INT_PUBLIC_SUBNET_IDS
 GOBRIDGE_INT_IMAGE
 GOBRIDGE_INT_HA_MQTT_BROKER_URL
 GOBRIDGE_INT_HA_MQTT_CLIENT_ID
@@ -212,6 +216,10 @@ GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
 GOBRIDGE_INT_HA_ADMIN_PARAM
 GOBRIDGE_INT_HA_PROBE_CIDR
 ```
+
+The availability-zone, private-subnet, and public-subnet lists must have the
+same order and cardinality. The harness imports these concrete attributes and
+produces an assembly with no VPC lookup context.
 
 Optional: `GOBRIDGE_INT_HA_SAMPLES` (1–20, default 1),
 `GOBRIDGE_INT_STACK_PREFIX`, and `GOBRIDGE_INT_KEEP=1`.
@@ -402,7 +410,8 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 - The fluent builder runs `ScanForPlaintextSecrets` from `Build()`. Default sensitive field names (matched on the deepest map key, case-insensitive): `password`, `secret`, `api_key`, `apikey`, `client_secret`, `bearer_token`, `private_key`, `privatekey`, `token`, `auth_token`, `access_token`, `refresh_token`, `passphrase`. See `cdk/bridgecfg/secrets.go`.
 - Any literal string at one of those keys is rejected unless it is a credential URI from the registered allow-list (`pms`, `file` — extend with `bridgecfg.RegisterCredentialScheme(...)`).
-- The supported secret backend is **SSM Parameter Store SecureString**, addressed as `pms://path/to/param`. Wire each `pms://` URI through `SsmParamRegistry.AddParameter`; the construct grants `ssm:GetParameter[s]` (and KMS decrypt where applicable) only for registered parameters.
+- The supported secret backend is **SSM Parameter Store SecureString**, addressed as either authority form `pms://path/to/param` or absolute-path form
+  `pms:///path/to/param`; both normalize to `/path/to/param`. Wire each `pms://` URI through `SsmParamRegistry.AddParameter`; the construct grants `ssm:GetParameter[s]` (and KMS decrypt where applicable) only for registered parameters.
 - The asset path (`BridgeYamlAsset`) and the marshalled inline config (`BridgeYamlInline`) are both run through the same parser plus tier-B validators, so the scan applies regardless of authoring path.
 
 ## What It Provisions

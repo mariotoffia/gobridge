@@ -21,6 +21,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/jsii-runtime-go"
 
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealarms"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
 	ha "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha"
@@ -310,6 +312,35 @@ func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
 	if bridge == nil {
 		t.Fatal("mqtt.paho alias returned nil HA facade")
 	}
+}
+
+func TestGoBridgeDynamoDBHA_RejectsUnresolvedTableNameToken(t *testing.T) {
+	defer jsii.Close()
+	t.Cleanup(singleton.ResetForTest)
+	asset := source.NewAsset(writeHAYAML(t, validHAYAML))
+	materialized, err := asset.Materialize()
+	if err != nil {
+		t.Fatalf("materialize fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = materialized.Close() })
+	leaseConfig := materialized.Config.Stores.Lease.Config.(*awsstore.DynamoDBConfig)
+	leaseConfig.TableName = *awscdk.Token_AsString(awscdk.Fn_ImportValue(jsii.String("LeaseTableName")), nil)
+
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("TokenStack"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
+	defer func() {
+		recovered := recover()
+		if recovered == nil || !strings.Contains(fmt.Sprint(recovered), "resolved physical table_name") {
+			t.Fatalf("unresolved table token panic = %v, want resolved physical table_name", recovered)
+		}
+	}()
+	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
+		Vpc:          vpc,
+		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:    haBootstrap(),
+		BridgeConfig: source.NewInline(materialized.Config),
+	})
 }
 
 func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {

@@ -265,21 +265,13 @@ func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(
 
 	var successor verifiedHolder
 	err = pollUntil(ctx, 2*time.Second, 8*time.Minute, func() (bool, error) {
-		lease, readErr := f.readLease(ctx)
-		if readErr != nil {
+		candidate, accepted, attemptErr := verifySuccessorFullAttempt(
+			ctx, holder, f.readLease, f.taskForLeaseEndpoint, exactTaskFull,
+		)
+		if attemptErr != nil || !accepted {
 			return false, nil
 		}
-		if lease.owner == holder.lease.owner || lease.version <= holder.lease.version {
-			return false, nil
-		}
-		task, mapErr := f.taskForLeaseEndpoint(ctx, lease.endpoint)
-		if mapErr != nil || task.arn == holder.task.arn || task.lastStatus != "RUNNING" {
-			return false, nil
-		}
-		if fullErr := exactTaskFull(ctx, lease.endpoint); fullErr != nil {
-			return false, nil
-		}
-		successor = verifiedHolder{lease: lease, task: task}
+		successor = candidate
 		return true, nil
 	})
 	if err != nil {
@@ -300,6 +292,40 @@ func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(
 		t.Fatalf("measured failure-to-Full %s exceeds declared objective %.0fms", duration, f.objectiveMS)
 	}
 	return duration, path
+}
+
+func verifySuccessorFullAttempt(
+	ctx context.Context,
+	previous verifiedHolder,
+	readLease func(context.Context) (haLeaseSnapshot, error),
+	taskForEndpoint func(context.Context, string) (haTask, error),
+	probeFull func(context.Context, string) error,
+) (verifiedHolder, bool, error) {
+	lease, err := readLease(ctx)
+	if err != nil {
+		return verifiedHolder{}, false, err
+	}
+	if lease.owner == previous.lease.owner || lease.version <= previous.lease.version || lease.endpoint == "" {
+		return verifiedHolder{}, false, nil
+	}
+	task, err := taskForEndpoint(ctx, lease.endpoint)
+	if err != nil {
+		return verifiedHolder{}, false, err
+	}
+	if task.arn == previous.task.arn || task.lastStatus != "RUNNING" {
+		return verifiedHolder{}, false, nil
+	}
+	if err := probeFull(ctx, lease.endpoint); err != nil {
+		return verifiedHolder{}, false, err
+	}
+	confirmed, err := readLease(ctx)
+	if err != nil {
+		return verifiedHolder{}, false, err
+	}
+	if confirmed.owner != lease.owner || confirmed.version != lease.version || confirmed.endpoint != lease.endpoint {
+		return verifiedHolder{}, false, nil
+	}
+	return verifiedHolder{lease: lease, task: task}, true, nil
 }
 
 func classifyFailoverPath(successorARN string, warmSnapshot map[string]struct{}) string {
@@ -556,5 +582,47 @@ func TestClassifyFailoverPath_RequiresPreFailureWarmTask(t *testing.T) {
 	}
 	if got := classifyFailoverPath("arn:replacement", warmSnapshot); got != "cold" {
 		t.Fatalf("replacement task classified as %q, want cold", got)
+	}
+}
+
+func TestVerifySuccessorFullAttempt_RejectsTurnoverDuringProbe(t *testing.T) {
+	previous := verifiedHolder{lease: haLeaseSnapshot{owner: "old", version: 1}, task: haTask{arn: "old-task"}}
+	candidate := haLeaseSnapshot{owner: "new-a", version: 2, endpoint: "http://10.0.0.2:8080"}
+	turnover := haLeaseSnapshot{owner: "new-b", version: 3, endpoint: "http://10.0.0.3:8080"}
+	reads := []haLeaseSnapshot{candidate, turnover}
+	read := func(context.Context) (haLeaseSnapshot, error) {
+		value := reads[0]
+		reads = reads[1:]
+		return value, nil
+	}
+	taskFor := func(context.Context, string) (haTask, error) {
+		return haTask{arn: "new-task", lastStatus: "RUNNING"}, nil
+	}
+	probe := func(context.Context, string) error { return nil }
+
+	_, accepted, err := verifySuccessorFullAttempt(t.Context(), previous, read, taskFor, probe)
+	if err != nil {
+		t.Fatalf("verifySuccessorFullAttempt: %v", err)
+	}
+	if accepted {
+		t.Fatal("successor turnover during Full probe was accepted")
+	}
+}
+
+func TestVerifySuccessorFullAttempt_AcceptsStableTuple(t *testing.T) {
+	previous := verifiedHolder{lease: haLeaseSnapshot{owner: "old", version: 1}, task: haTask{arn: "old-task"}}
+	candidate := haLeaseSnapshot{owner: "new", version: 2, endpoint: "http://10.0.0.2:8080"}
+	read := func(context.Context) (haLeaseSnapshot, error) { return candidate, nil }
+	taskFor := func(context.Context, string) (haTask, error) {
+		return haTask{arn: "new-task", lastStatus: "RUNNING"}, nil
+	}
+	probe := func(context.Context, string) error { return nil }
+
+	got, accepted, err := verifySuccessorFullAttempt(t.Context(), previous, read, taskFor, probe)
+	if err != nil || !accepted {
+		t.Fatalf("stable successor accepted=%v err=%v", accepted, err)
+	}
+	if got.lease != candidate || got.task.arn != "new-task" {
+		t.Fatalf("stable successor = %+v", got)
 	}
 }

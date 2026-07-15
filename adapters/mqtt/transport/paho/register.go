@@ -6,6 +6,17 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+const (
+	// ShortKind is the conventional YAML transport discriminator.
+	ShortKind = "mqtt"
+	// QualifiedKind is the fully-qualified Paho transport discriminator.
+	QualifiedKind = "mqtt.paho"
+)
+
+// IsKind reports whether kind is one of the decoder/factory aliases owned by
+// this adapter.
+func IsKind(kind string) bool { return kind == ShortKind || kind == QualifiedKind }
+
 // Register installs this adapter's PluginConfig decoder under the
 // short ("mqtt") and fully-qualified ("mqtt.paho") discriminators.
 //
@@ -42,7 +53,7 @@ func Register(reg *ports.Registry) error {
 		return &c, nil
 	}
 	return errors.Join(
-		reg.Register("mqtt", dec),
-		reg.Register("mqtt.paho", dec),
+		reg.Register(ShortKind, dec),
+		reg.Register(QualifiedKind, dec),
 	)
 }

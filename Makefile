@@ -78,7 +78,9 @@ test-cdk-norace: ## Run CDK assertions excluded from race builds
 	@echo "Running non-race CDK assertion suites..."
 	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
 		./constructs/internal/grants ./constructs/internal/gobridgebase \
-		./constructs/gobridgedynamodbha ./constructs/gobridgealarms
+		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
+		./constructs/gobridgealbattachment ./constructs/internal/singleton \
+		./constructs/internal/validation ./registry
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports

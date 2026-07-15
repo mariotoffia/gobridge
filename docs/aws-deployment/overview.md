@@ -176,7 +176,9 @@ GOBRIDGE_INT_HA=1
 GOBRIDGE_INT_AWS_ACCOUNT
 GOBRIDGE_INT_AWS_REGION
 GOBRIDGE_INT_VPC_ID
+GOBRIDGE_INT_AVAILABILITY_ZONES
 GOBRIDGE_INT_SUBNET_IDS
+GOBRIDGE_INT_PUBLIC_SUBNET_IDS
 GOBRIDGE_INT_IMAGE
 GOBRIDGE_INT_HA_MQTT_BROKER_URL
 GOBRIDGE_INT_HA_MQTT_CLIENT_ID
@@ -184,6 +186,10 @@ GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
 GOBRIDGE_INT_HA_ADMIN_PARAM
 GOBRIDGE_INT_HA_PROBE_CIDR
 ```
+
+The availability-zone, private-subnet, and public-subnet lists must have the
+same order and cardinality. The harness imports these concrete attributes and
+produces an assembly with no VPC lookup context.
 
 Optional `GOBRIDGE_INT_HA_SAMPLES` controls separate warm/cold sample counts
 (1–20, default 1). Run:
@@ -341,7 +347,9 @@ on each table and required index the store names. Two operator responsibilities 
   its mandatory lease, outbox, and managed-subscription tables and a same-name
   resource would collide. Only an optional HA DynamoDB DLQ remains
   operator-provisioned/imported.
-- **Use `table_name` only to override a role default.** When omitted, runtime
+- **Use a resolved physical `table_name` only to override a role default.** HA
+  rejects unresolved CDK tokens because token strings cannot be substituted in
+  the immutable config asset. When omitted, runtime
   preflight and the stack resolve and grant the same exact default:
   `gobridge-leases`, `gobridge-outbox`, `gobridge-dlq`, or
   `gobridge-managed-subscriptions`.

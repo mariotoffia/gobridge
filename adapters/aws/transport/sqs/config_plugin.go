@@ -142,7 +142,7 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 }
 
 // Kind reports the registry discriminator.
-func (Config) Kind() string { return "aws.sqs" }
+func (Config) Kind() string { return QualifiedKind }
 
 // DefaultConfig returns a Config pre-filled with the documented receiver
 // defaults that are otherwise indistinguishable from an explicit zero on

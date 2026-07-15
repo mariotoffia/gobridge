@@ -6,6 +6,17 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+const (
+	// ShortKind is the conventional YAML transport discriminator.
+	ShortKind = "sqs"
+	// QualifiedKind is the fully-qualified transport discriminator and Config.Kind value.
+	QualifiedKind = "aws.sqs"
+)
+
+// IsKind reports whether kind is one of the decoder/factory aliases owned by
+// this adapter.
+func IsKind(kind string) bool { return kind == ShortKind || kind == QualifiedKind }
+
 // Register installs this adapter's PluginConfig decoder under the
 // short ("sqs") and fully-qualified ("aws.sqs") discriminators.
 // Composition roots call Register exactly once per registry.
@@ -46,7 +57,7 @@ func Register(reg *ports.Registry) error {
 	// and the long form (`aws.sqs`) used by Kind() for documentation
 	// and any consumer that prefers a fully-qualified name.
 	return errors.Join(
-		reg.Register("sqs", dec),
-		reg.Register("aws.sqs", dec),
+		reg.Register(ShortKind, dec),
+		reg.Register(QualifiedKind, dec),
 	)
 }

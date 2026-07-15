@@ -9,6 +9,7 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
@@ -67,10 +68,10 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	// SQS receivers (consumers) and senders (producers).
 	for i := range cfg.Receivers {
 		r := &cfg.Receivers[i]
-		if !isKind(r.Transport, "sqs", "aws.sqs") {
+		if !sqsadapter.IsKind(r.Transport) {
 			continue
 		}
-		name := sqsQueueName(r.Raw())
+		name := sqsQueueName(r.Config, r.Raw())
 		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
 			continue
 		}
@@ -78,10 +79,10 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	}
 	for i := range cfg.Senders {
 		s := &cfg.Senders[i]
-		if !isKind(s.Transport, "sqs", "aws.sqs") {
+		if !sqsadapter.IsKind(s.Transport) {
 			continue
 		}
-		name := sqsQueueName(s.Raw())
+		name := sqsQueueName(s.Config, s.Raw())
 		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
 			continue
 		}
@@ -136,18 +137,21 @@ func isKind(have string, want ...string) bool {
 	return false
 }
 
-// sqsQueueName extracts the logical "name" field from an SQS
-// receiver/sender raw plugin config. Returns "" when the field is
+// sqsQueueName extracts the logical queue_name from the typed SQS config,
+// with a raw-config fallback for defensive compatibility. Returns "" when the field is
 // missing or unparseable; the caller treats that as "skip".
-func sqsQueueName(raw ports.RawConfig) string {
+func sqsQueueName(config ports.PluginConfig, raw ports.RawConfig) string {
+	if typed, ok := config.(*sqsadapter.Config); ok && typed != nil {
+		return typed.QueueName
+	}
 	if raw == nil {
 		return ""
 	}
 	var probe struct {
-		Name string `yaml:"name" json:"name"`
+		QueueName string `yaml:"queue_name" json:"queue_name" mapstructure:"queue_name"`
 	}
 	_ = raw.Decode(&probe)
-	return probe.Name
+	return probe.QueueName
 }
 
 // dynamoTableName extracts the DynamoDB table name from a store
