@@ -396,10 +396,13 @@ reconnect cannot redeliver them safely.
 Recovery applies these safety bounds without introducing a recovery-specific
 config knob:
 
-- readiness drops below Full synchronously when Retry queues recovery. This
-  request state carries no active-attempt or target-epoch evidence; the worker
-  publishes those only after acquiring the session gate, so an ordinary
-  reconcile that wins the gate first cannot validate or abort queued recovery;
+- readiness drops below Full synchronously when Retry queues recovery. Queueing
+  immediately arms Session Present enforcement: any subsequent ConnectionUp with
+  `Session Present=false` irreversibly fails that recovery, even before the
+  worker owns the gate. The request still carries no active-attempt or target-
+  epoch evidence; the worker publishes those only after acquiring the session
+  gate, so an ordinary reconcile that wins first cannot validate or abort queued
+  recovery;
 - concurrent requests coalesce into one recycle;
 - the router stops accepting new callbacks, lets other accepted settlements
   drain for at most **5 seconds**, then disconnects even if that drain remains
@@ -439,7 +442,7 @@ successful protocol Ack or connection-epoch change. Deep health exposes
 | `MQTTUnsettled` | gauge, packets | Current-epoch QoS 1/2 packets awaiting protocol settlement. |
 | `MQTTOldestUnsettledAge` | gauge, seconds | Age of the oldest current-epoch unsettled packet. |
 | `MQTTReceiveWindowUtilization` | gauge, ratio | `unsettled_count / receive_maximum`; sustained values near 1 indicate ingress is close to flow-control exhaustion. |
-| `MQTTSessionRecoveryRecycle` | counter | Completed recovery recycle attempts, including failed attempts. |
+| `MQTTSessionRecoveryRecycle` | counter | Actual recycle attempts started after acquiring the session gate. Queue timeout/cancellation before recycle does not increment. |
 
 All four metrics use only the existing `session_id` tag. Message IDs, topics,
 and failure reasons are deliberately not dimensions, so cardinality remains

@@ -350,7 +350,7 @@ type SessionHealth struct {
 	UnsettledCount           int           // Current connection-epoch deliveries awaiting terminal protocol settlement
 	OldestUnsettledAge       time.Duration // Age of the oldest current-epoch unsettled delivery
 	ReceiveWindowUtilization float64       // UnsettledCount / ReceiveMaximum (0 when not applicable)
-	RecoveryRecycleCount     uint64        // Completed transport recovery recycle attempts
+	RecoveryRecycleCount     uint64        // Recovery recycle attempts started after transport serialization
 	Ready                    bool          // Connected to the broker (connectivity only)
 	ServiceLevel             ServiceLevel  // Operational completeness (none/degraded/full)
 	ActiveTopics             []string      // contract-active subscription filters

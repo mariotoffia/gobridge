@@ -432,6 +432,8 @@ func TestSessionRecovery_BlockedDisconnectHonorsCompleteAttemptBound(t *testing.
 	})
 	wait.RequireClosed(t, blocked.exited, time.Second)
 	<-metrics.recycled
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
 	health := s.Health(t.Context())
 	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
 	assert.Error(t, health.LastError)
@@ -627,6 +629,8 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 	<-conn.firstEntered
 
 	gateState := make(chan string, 4)
+	queuedFailed := make(chan struct{})
+	s.recoveryQueuedFailureHook = func() { close(queuedFailed) }
 	s.reloadGateWaitHook = func() { gateState <- "wait" }
 	s.reloadGateAcquiredHook = func() { gateState <- "acquired" }
 	require.NoError(t, s.requestRecovery(t.Context()))
@@ -641,7 +645,9 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 	require.ErrorIs(t, <-credentialDone, context.Canceled)
 
 	clk.Advance(s.recoveryAttemptTimeout())
-	<-metrics.recycled
+	<-queuedFailed
+	assert.Empty(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle))
+	assert.Zero(t, s.Health(t.Context()).RecoveryRecycleCount)
 
 	secondDone := make(chan error, 1)
 	go func() { secondDone <- s.Reconcile(t.Context(), planB) }()
@@ -716,8 +722,86 @@ func TestSessionRecovery_QueuedRequestPublishesAttemptOnlyAfterGate(t *testing.T
 	<-disconnected
 	<-dialed
 	<-metrics.recycled
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
 	health := s.Health(t.Context())
 	assert.Equal(t, uint64(1), health.RecoveryRecycleCount)
 	assert.NotEqual(t, ports.ServiceLevelDegraded, health.ServiceLevel)
 	assert.NoError(t, health.LastError)
+}
+
+func TestSessionRecovery_QueuedSessionAbsentIrreversiblyFailsBeforeGate(t *testing.T) {
+	s := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
+		ClientID:   "queued-session-absent",
+	}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+	var dials atomic.Int32
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials.Add(1)
+		s.mu.Lock()
+		currentGeneration := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(currentGeneration, true)
+		return &fakeLiveConn{}, func() {}, nil
+	}
+	queuedFailed := make(chan struct{})
+	s.recoveryQueuedFailureHook = func() { close(queuedFailed) }
+
+	require.NoError(t, s.acquireReload(t.Context()))
+	require.NoError(t, s.requestRecovery(t.Context()))
+	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
+	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+	assert.Error(t, s.Health(t.Context()).LastError)
+
+	s.releaseReload()
+	<-queuedFailed
+	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+	health := s.Health(t.Context())
+	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
+	assert.Error(t, health.LastError)
+	assert.Zero(t, health.RecoveryRecycleCount)
+	assert.Zero(t, dials.Load())
+}
+
+func TestSessionRecovery_RecycleMetricStartsOnlyAfterGate(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	blocked := &contextBlockedDisconnectConn{
+		entered: make(chan struct{}),
+		exited:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recycle-metric-gate",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = blocked
+	s.connected = true
+	s.mu.Unlock()
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		return &fakeLiveConn{}, func() {}, nil
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	<-blocked.entered
+	<-metrics.recycled
+	assert.Equal(t, uint64(1), s.Health(t.Context()).RecoveryRecycleCount)
+	close(blocked.release)
+	<-blocked.exited
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	assert.Equal(t, uint64(1), s.Health(t.Context()).RecoveryRecycleCount)
 }

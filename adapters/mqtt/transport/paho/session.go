@@ -102,9 +102,10 @@ type Session struct {
 	// reloadGate is the one context-aware serialization gate shared by
 	// ordinary reconciliation, credential/managed-migration reloads, and
 	// settlement recovery. Internal under-gate helpers never reacquire it.
-	reloadGate             chan struct{}
-	reloadGateWaitHook     func() // deterministic package-test barrier; nil in production
-	reloadGateAcquiredHook func() // deterministic package-test barrier; nil in production
+	reloadGate                chan struct{}
+	reloadGateWaitHook        func() // deterministic package-test barrier; nil in production
+	reloadGateAcquiredHook    func() // deterministic package-test barrier; nil in production
+	recoveryQueuedFailureHook func() // deterministic package-test barrier; nil in production
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router

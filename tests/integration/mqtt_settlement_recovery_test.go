@@ -83,11 +83,17 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	publishRecoveryMessage(t, brokerURL, topic, originalID)
 	wait.RequireReceive(t, dlq.attempted, 5*time.Second)
 	wait.RequireReceive(t, receiver.retryReturned, 5*time.Second)
+	if id := wait.RequireReceive(t, receiver.received, 5*time.Second); id != originalID {
+		t.Fatalf("initial producer ID = %q, want %q", id, originalID)
+	}
 	if got := sess.Health(ctx).ServiceLevel; got != ports.ServiceLevelDegraded {
 		t.Fatalf("readiness after recovery request = %q, want degraded", got)
 	}
 
 	wait.RequireReceive(t, metrics.recycled, 10*time.Second)
+	if id := wait.RequireReceive(t, receiver.received, 10*time.Second); id != originalID {
+		t.Fatalf("redelivered producer ID = %q, want %q", id, originalID)
+	}
 	publishRecoveryMessage(t, brokerURL, topic, laterID)
 
 	succeeded := map[string]int{}
@@ -137,6 +143,7 @@ func publishRecoveryMessage(t *testing.T, brokerURL, topic, id string) {
 type settlementRecoveryReceiver struct {
 	inner         *paho.Receiver
 	retryReturned chan struct{}
+	received      chan string
 	acked         chan string
 	retryOnce     sync.Once
 	mu            sync.Mutex
@@ -147,6 +154,7 @@ func newSettlementRecoveryReceiver(inner *paho.Receiver) *settlementRecoveryRece
 	return &settlementRecoveryReceiver{
 		inner:         inner,
 		retryReturned: make(chan struct{}),
+		received:      make(chan string, 4),
 		acked:         make(chan string, 4),
 		receipts:      make(map[string]int),
 	}
@@ -157,8 +165,10 @@ func (r *settlementRecoveryReceiver) Started() <-chan struct{} { return r.inner.
 func (r *settlementRecoveryReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	return r.inner.Run(ctx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
 		r.mu.Lock()
-		r.receipts[delivery.Envelope().ID()]++
+		id := delivery.Envelope().ID()
+		r.receipts[id]++
 		r.mu.Unlock()
+		r.received <- id
 		return emit(deliveryCtx, &settlementRecoveryDelivery{Delivery: delivery, recovered: r})
 	})
 }

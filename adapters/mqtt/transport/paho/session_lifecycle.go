@@ -84,12 +84,12 @@ func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
 		s.mu.Unlock()
 		return false
 	}
-	s.lastRecoveryCompleted = s.clock().Now()
-	s.recoveryRecycleCount++
 	s.recoveryErr = attemptErr
+	hook := s.recoveryQueuedFailureHook
 	s.mu.Unlock()
-	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
-		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	if hook != nil {
+		hook()
+	}
 	return true
 }
 
@@ -101,7 +101,6 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	}
 	s.recoveryAttemptActive = false
 	s.lastRecoveryCompleted = s.clock().Now()
-	s.recoveryRecycleCount++
 	cancel := s.recoveryAttemptCancel
 	s.recoveryAttemptCancel = nil
 	if success {
@@ -120,6 +119,17 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	if cancel != nil {
 		cancel()
 	}
+	return true
+}
+
+func (s *Session) recordRecoveryRecycleStart(generation uint64) bool {
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	s.recoveryRecycleCount++
+	s.mu.Unlock()
 	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	return true
@@ -163,6 +173,8 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 		return nil
 	}
 	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoverySessionPresentEpoch = 0
 	s.recoveryGeneration++
 	generation := s.recoveryGeneration
 	s.recoveryErr = nil
@@ -198,6 +210,12 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		return
 	}
 	defer s.releaseReload()
+	if err := ctx.Err(); err != nil {
+		cancelAttempt()
+		s.failQueuedRecovery(generation,
+			MapError(err).WithMessage("mqtt: settlement recovery cancelled after serialization"))
+		return
+	}
 
 	// Request state becomes attempt state only after owning the single session
 	// gate. An ordinary Reconcile that ran before this point saw only degraded,
@@ -206,6 +224,19 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	if !s.recoveryPending || s.recoveryGeneration != generation {
 		s.mu.Unlock()
 		cancelAttempt()
+		return
+	}
+	if s.closed || s.terminalErr != nil || s.recoveryErr != nil {
+		queuedErr := s.recoveryErr
+		if queuedErr == nil {
+			queuedErr = s.terminalErr
+		}
+		if queuedErr == nil {
+			queuedErr = shared.ErrUnavailable.WithMessage("mqtt: session closed before queued recovery began")
+		}
+		s.mu.Unlock()
+		cancelAttempt()
+		s.failQueuedRecovery(generation, queuedErr)
 		return
 	}
 	s.recoveryAttemptActive = true
@@ -232,6 +263,9 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	drainLimit.Stop()
 	cancelDrain()
 
+	if !s.recordRecoveryRecycleStart(generation) {
+		return
+	}
 	if err := s.reloadLocked(ctx); err != nil {
 		s.completeRecoveryAttempt(generation, err, false)
 		return
@@ -651,6 +685,12 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	s.mu.Lock()
 	if generation != s.connectionGeneration || s.closed {
 		s.mu.Unlock()
+		return
+	}
+	if s.terminalErr != nil {
+		err := s.terminalErr
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(generation, err)
 		return
 	}
 	if s.recoveryNeedsSessionPresent && !sessionPresent {
