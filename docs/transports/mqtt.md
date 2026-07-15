@@ -396,7 +396,10 @@ reconnect cannot redeliver them safely.
 Recovery applies these safety bounds without introducing a recovery-specific
 config knob:
 
-- readiness drops below Full synchronously when Retry requests recovery;
+- readiness drops below Full synchronously when Retry queues recovery. This
+  request state carries no active-attempt or target-epoch evidence; the worker
+  publishes those only after acquiring the session gate, so an ordinary
+  reconcile that wins the gate first cannot validate or abort queued recovery;
 - concurrent requests coalesce into one recycle;
 - the router stops accepting new callbacks, lets other accepted settlements
   drain for at most **5 seconds**, then disconnects even if that drain remains

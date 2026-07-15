@@ -655,3 +655,69 @@ func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
 	assert.Equal(t, int32(1), conn.maxActive.Load())
 	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
 }
+
+type queuedRecoveryConn struct {
+	fakeLiveConn
+	disconnected chan struct{}
+	once         sync.Once
+}
+
+func (c *queuedRecoveryConn) Disconnect(context.Context) error {
+	c.once.Do(func() { close(c.disconnected) })
+	return nil
+}
+
+func TestSessionRecovery_QueuedRequestPublishesAttemptOnlyAfterGate(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	disconnected := make(chan struct{})
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "queued-recovery-publication",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = &queuedRecoveryConn{disconnected: disconnected}
+	s.connected = true
+	s.lastRecoveryCompleted = clk.Now()
+	s.mu.Unlock()
+	s.connectOverrideAwaitConnectionUp = true
+	dialed := make(chan struct{}, 1)
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+		dialed <- struct{}{}
+		return &fakeLiveConn{}, func() {}, nil
+	}
+
+	require.NoError(t, s.acquireReload(t.Context()))
+	gateWait := make(chan struct{}, 2)
+	s.reloadGateWaitHook = func() { gateWait <- struct{}{} }
+	require.NoError(t, s.requestRecovery(t.Context()))
+	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
+
+	ordinaryDone := make(chan error, 1)
+	go func() { ordinaryDone <- s.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
+	<-gateWait
+	clk.Advance(settlementRecoveryMinInterval)
+	<-gateWait
+	s.releaseReload()
+
+	require.NoError(t, <-ordinaryDone,
+		"ordinary reconcile ahead of the worker must not validate queued recovery state")
+	<-disconnected
+	<-dialed
+	<-metrics.recycled
+	health := s.Health(t.Context())
+	assert.Equal(t, uint64(1), health.RecoveryRecycleCount)
+	assert.NotEqual(t, ports.ServiceLevelDegraded, health.ServiceLevel)
+	assert.NoError(t, health.LastError)
+}

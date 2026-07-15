@@ -78,6 +78,21 @@ func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.D
 	}
 }
 
+func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
+	s.mu.Lock()
+	if !s.recoveryPending || s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	s.lastRecoveryCompleted = s.clock().Now()
+	s.recoveryRecycleCount++
+	s.recoveryErr = attemptErr
+	s.mu.Unlock()
+	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	return true
+}
+
 func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
 	s.mu.Lock()
 	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
@@ -148,9 +163,6 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 		return nil
 	}
 	s.recoveryPending = true
-	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresentEpoch = 0
-	s.recoveryTargetEpoch = 0
 	s.recoveryGeneration++
 	generation := s.recoveryGeneration
 	s.recoveryErr = nil
@@ -178,6 +190,18 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	}
 	attemptTimeout := s.recoveryAttemptTimeout()
 	attemptCtx, cancelAttempt := s.contextWithClockTimeout(ctx, attemptTimeout)
+	ctx = attemptCtx
+	if err := s.acquireReload(ctx); err != nil {
+		mapped := MapError(err).WithMessage("mqtt: settlement recovery waiting for session serialization")
+		cancelAttempt()
+		s.failQueuedRecovery(generation, mapped)
+		return
+	}
+	defer s.releaseReload()
+
+	// Request state becomes attempt state only after owning the single session
+	// gate. An ordinary Reconcile that ran before this point saw only degraded,
+	// coalescing request state and could not validate or complete this recovery.
 	s.mu.Lock()
 	if !s.recoveryPending || s.recoveryGeneration != generation {
 		s.mu.Unlock()
@@ -186,24 +210,9 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	}
 	s.recoveryAttemptActive = true
 	s.recoveryAttemptCancel = cancelAttempt
-	s.mu.Unlock()
-	ctx = attemptCtx
-
-	if err := s.acquireReload(ctx); err != nil {
-		s.completeRecoveryAttempt(generation,
-			MapError(err).WithMessage("mqtt: settlement recovery waiting for reload serialization"), false)
-		return
-	}
-	defer s.releaseReload()
-	// A credential reload may have completed while this rate-limited request was
-	// queued. Re-arm the Session Present requirement only after owning the shared
-	// reload gate so the connection this attempt creates must satisfy it.
-	s.mu.Lock()
-	if s.recoveryAttemptActive && s.recoveryGeneration == generation {
-		s.recoveryNeedsSessionPresent = true
-		s.recoverySessionPresentEpoch = 0
-		s.recoveryTargetEpoch = 0
-	}
+	s.recoveryNeedsSessionPresent = true
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
 	s.mu.Unlock()
 
 	// Stop new ingress immediately, but let already accepted route work settle
