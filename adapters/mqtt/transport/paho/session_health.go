@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -61,6 +62,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	latchedSubscriptionsSatisfied := s.subscriptionsSatisfied
 	recoveryPending := s.recoveryPending
 	recoveryErr := s.recoveryErr
+	terminalErr := s.terminalErr
 	recoveryRecycleCount := s.recoveryRecycleCount
 	s.mu.Unlock()
 	sort.Strings(topics)
@@ -85,7 +87,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	var sl ports.ServiceLevel
 	switch {
-	case !connected:
+	case !connected || terminalErr != nil:
 		sl = ports.ServiceLevelNone
 	case recoveryPending:
 		sl = ports.ServiceLevelDegraded
@@ -113,7 +115,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	return ports.SessionHealth{
 		Connected:                connected,
-		LastError:                recoveryErr,
+		LastError:                errors.Join(recoveryErr, terminalErr),
 		SubscriptionsWanted:      wantedCount,
 		SubscriptionsActive:      activeCount,
 		SubscriptionsSatisfied:   &subscriptionsSatisfied,
@@ -123,7 +125,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		OldestUnsettledAge:       unsettled.OldestAge,
 		ReceiveWindowUtilization: unsettled.ReceiveWindowUtilization,
 		RecoveryRecycleCount:     recoveryRecycleCount,
-		Ready:                    connected,
+		Ready:                    connected && terminalErr == nil,
 		ServiceLevel:             sl,
 		ActiveTopics:             topics,
 	}

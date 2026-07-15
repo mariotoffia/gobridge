@@ -331,6 +331,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withSessionTag(opts.ClientID),
 		withDispatchCapacity(int(opts.ReceiveMaximum)),
 		withMaxPayloadBytes(opts.MaxPayloadBytes),
+		withIngressPoison(s.rejectIngressPoison),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window

@@ -603,7 +603,7 @@ func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadByt
 		cp.Properties.ReceiveMaximum = &rm
 	}
 	if maxPayloadBytes > 0 {
-		mps, err := maxPacketSizeFor(maxPayloadBytes)
+		mps, err := wirePacketSizeFor(maxPayloadBytes)
 		if err != nil {
 			return err
 		}

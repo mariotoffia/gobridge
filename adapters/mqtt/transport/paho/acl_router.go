@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -135,10 +136,21 @@ type router struct {
 	// and run inline). Guarded by mu.
 	dispatchCh   chan dispatchItem
 	dispatchSize int
+	// queueReserved is the single ownership budget shared by dispatchCh and
+	// pending. queueChanged is rotated on release so blocked QoS 1/2 callbacks
+	// can wait without polling. Reservations are keyed by immutable Publish
+	// identity and released idempotently exactly once.
+	queueReserved     int
+	queueChanged      chan struct{}
+	queueReservations map[*pahov5.Publish]struct{}
 	// maxPayloadBytes is the effective application-body ceiling. The CONNECT
 	// packet advertises the corresponding whole-packet limit, while this local
 	// guard rejects a non-compliant broker's oversize body before cloning it.
 	maxPayloadBytes uint32
+	// ingressPoison latches a packet that violates the accepted payload/metadata
+	// representation contract into the owning Session's existing terminal
+	// teardown lifecycle. Immutable after construction.
+	ingressPoison func(error)
 	// dispatchDone is closed by dispatchLoop when it exits, so Close can
 	// JOIN the worker (awaitDispatchLoop) before r.wg.Wait(). Without the
 	// join, a dispatchLoop draining a buffered item after r.stop is closed
@@ -344,6 +356,10 @@ func withMaxPayloadBytes(maxPayloadBytes uint32) routerOption {
 	return func(r *router) { r.maxPayloadBytes = maxPayloadBytes }
 }
 
+func withIngressPoison(fn func(error)) routerOption {
+	return func(r *router) { r.ingressPoison = fn }
+}
+
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
@@ -351,6 +367,8 @@ func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...route
 	r := &router{
 		handlers:          make(map[string]routerHandler),
 		pendingChanged:    make(chan struct{}),
+		queueChanged:      make(chan struct{}),
+		queueReservations: make(map[*pahov5.Publish]struct{}),
 		pendingLimit:      defaultPendingLimit,
 		pendingBytesLimit: defaultPendingBytesLimit,
 		dispatchSize:      defaultDispatchSize,
@@ -391,6 +409,50 @@ func (r *router) ingressMemoryStats() (depth, capacity int) {
 		depth = len(r.dispatchCh)
 	}
 	return depth, r.dispatchSize
+}
+
+func (r *router) reserveQueueSlot(pub *pahov5.Publish, qos byte) bool {
+	for {
+		r.mu.Lock()
+		if r.closing {
+			r.mu.Unlock()
+			return false
+		}
+		if r.queueReserved < r.dispatchSize {
+			r.queueReserved++
+			r.queueReservations[pub] = struct{}{}
+			r.mu.Unlock()
+			return true
+		}
+		changed := r.queueChanged
+		r.mu.Unlock()
+		if qos == 0 {
+			return false
+		}
+		select {
+		case <-changed:
+		case <-r.stop:
+			return false
+		}
+	}
+}
+
+func (r *router) releaseQueueReservation(pub *pahov5.Publish) {
+	r.mu.Lock()
+	r.releaseQueueReservationLocked(pub)
+	r.mu.Unlock()
+}
+
+func (r *router) releaseQueueReservationLocked(pub *pahov5.Publish) {
+	if _, reserved := r.queueReservations[pub]; !reserved {
+		return
+	}
+	delete(r.queueReservations, pub)
+	if r.queueReserved > 0 {
+		r.queueReserved--
+	}
+	close(r.queueChanged)
+	r.queueChanged = make(chan struct{})
 }
 
 // sessionTag returns the session_id metric tag for this router's drops, or
@@ -794,6 +856,7 @@ func (r *router) enqueueUnsub(topic string) {
 // at-least-once. Orphan classification is done by the caller with r.mu
 // released (covered() takes the session mutex).
 func (r *router) dropOrphan(pub *pahov5.Publish, ack func() error) {
+	r.releaseQueueReservation(pub)
 	r.unmatchedDropped.Add(1)
 	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1, r.sessionTag()...)
 	if ack != nil {
@@ -849,6 +912,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 	if len(matching) > 0 {
 		r.addCallbacksLocked(len(matching))
 		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
 		r.fanout(pub, ack, matching)
 		return
 	}
@@ -929,6 +993,7 @@ func (r *router) noteCoveredRetained(topic string, n int) {
 // on handler registration. Bumps the aggregate drop counter and the dedicated
 // protocol-violation metric. Caller must hold NEITHER r.mu.
 func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
+	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
 	r.overflowDropped.Add(1)
 	r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1, r.sessionTag()...)
@@ -956,6 +1021,7 @@ func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 // drop is best-effort and counted only on the generic drop metric. Caller must
 // hold NEITHER r.mu.
 func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
+	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
 	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
@@ -973,14 +1039,20 @@ func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
 func (r *router) shutdown() {
 	r.mu.Lock()
 	r.closing = true
+	clear(r.queueReservations)
+	r.queueReserved = 0
+	close(r.queueChanged)
+	r.queueChanged = make(chan struct{})
 	r.mu.Unlock()
 	r.stopOnce.Do(func() { close(r.stop) })
 }
 
-// clonePublish makes a router-owned deep copy of the mutable Paho publish
-// fields. Paho v0.23.0 invokes OnPublishReceived callbacks serially with the
-// same *Publish (client.go routePublishPackets); retaining or stamping that
-// broker-owned object after this callback returns could race a later callback.
+// clonePublish makes an isolated deep copy for the legacy Router and
+// multi-handler compatibility boundaries, whose public callers historically
+// may mutate payload/properties. Production OnPublishReceived instead retains
+// immutable Paho callback backing: Paho allocates a Publish wrapper per packet
+// and its acknowledgement tracker retains the underlying wire packet until
+// settlement, so callback return does not invalidate payload/property strings.
 func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
 	if pub == nil {
 		return nil
@@ -994,10 +1066,7 @@ func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
 		return &cloned
 	}
 	properties := *pub.Properties
-	if pub.Properties.User != nil {
-		properties.User = make(pahov5.UserProperties, len(pub.Properties.User))
-		copy(properties.User, pub.Properties.User)
-	}
+	properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
 	if pub.Properties.CorrelationData != nil {
 		properties.CorrelationData = make([]byte, len(pub.Properties.CorrelationData))
 		copy(properties.CorrelationData, pub.Properties.CorrelationData)
@@ -1030,10 +1099,10 @@ func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
 // Delivery contract.
 func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	received := pr.Packet
-	if r.rejectOversizePayload(received) {
+	if r.rejectIngressPacket(received) {
 		return true, nil
 	}
-	pub := clonePublish(received)
+	pub := publishWithIdentity(received)
 	client := pr.Client
 	var ack func() error
 	if received != nil && received.QoS > 0 && client != nil {
@@ -1056,28 +1125,89 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	return true, nil
 }
 
-func (r *router) rejectOversizePayload(pub *pahov5.Publish) bool {
-	if pub == nil || r.maxPayloadBytes == 0 || uint64(len(pub.Payload)) <= uint64(r.maxPayloadBytes) {
+func (r *router) rejectIngressPacket(pub *pahov5.Publish) bool {
+	if pub == nil {
 		return false
 	}
-	if pub.QoS > 0 {
-		// Do not acknowledge an oversize QoS 1/2 publish. A compliant broker
-		// cannot send it because CONNECT advertises Maximum Packet Size; leaving
-		// a violating packet unsettled preserves at-least-once and bounds it by
-		// Receive Maximum rather than converting rejection into data loss.
-		_ = r.trackUnsettledPacket()
+	userProperties := 0
+	if pub.Properties != nil {
+		userProperties = len(pub.Properties.User)
+	}
+	var violation error
+	switch {
+	case r.maxPayloadBytes > 0 && uint64(len(pub.Payload)) > uint64(r.maxPayloadBytes):
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound payload %d exceeds max_payload_bytes %d",
+			len(pub.Payload), r.maxPayloadBytes,
+		))
+	case userProperties > maxIngressUserProperties:
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound User Properties count %d exceeds retained-memory cap %d",
+			userProperties, maxIngressUserProperties,
+		))
+	case ingressMetadataBytes(pub) > maxIngressMetadataBytes:
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound metadata exceeds retained-memory cap %d bytes",
+			maxIngressMetadataBytes,
+		))
+	}
+	if violation == nil {
+		return false
 	}
 	r.dropCount.Add(1)
 	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
-		r.logger.Warn("mqtt: rejected inbound payload larger than max_payload_bytes before adapter copy or enqueue",
+		r.logger.Error("mqtt: rejected inbound packet before adapter enqueue; terminating session",
 			"topic", pub.Topic,
 			"qos", pub.QoS,
 			"payload_bytes", len(pub.Payload),
 			"max_payload_bytes", r.maxPayloadBytes,
+			"user_properties", userProperties,
+			"error", violation,
 		)
 	}
+	if r.ingressPoison != nil {
+		r.ingressPoison(violation)
+	}
 	return true
+}
+
+func ingressMetadataBytes(pub *pahov5.Publish) uint64 {
+	if pub == nil {
+		return 0
+	}
+	// Fixed header + worst-case Remaining Length + topic length prefix +
+	// packet identifier + worst-case property-length VBI.
+	total := uint64(1 + 4 + 2 + len(pub.Topic) + 2 + 4)
+	if pub.Properties == nil {
+		return total
+	}
+	props := pub.Properties
+	if props.PayloadFormat != nil {
+		total += 2
+	}
+	if props.MessageExpiry != nil {
+		total += 5
+	}
+	if props.ContentType != "" {
+		total += uint64(3 + len(props.ContentType))
+	}
+	if props.ResponseTopic != "" {
+		total += uint64(3 + len(props.ResponseTopic))
+	}
+	if props.CorrelationData != nil {
+		total += uint64(3 + len(props.CorrelationData))
+	}
+	if props.SubscriptionIdentifier != nil {
+		total += 5
+	}
+	if props.TopicAlias != nil {
+		total += 3
+	}
+	for _, property := range props.User {
+		total += uint64(5 + len(property.Key) + len(property.Value))
+	}
+	return total
 }
 
 // enqueueDispatch hands a publish to the serialized dispatch worker
@@ -1092,12 +1222,19 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	if pub == nil {
 		return
 	}
+	if !r.reserveQueueSlot(pub, pub.QoS) {
+		if pub.QoS == 0 {
+			r.dropQoS0Overflow(pub)
+		}
+		return
+	}
 	r.mu.Lock()
 	ch := r.dispatchCh
 	epoch := r.connEpoch
 	discarding := r.discarding
 	r.mu.Unlock()
 	if discarding {
+		r.releaseQueueReservation(pub)
 		return
 	}
 	if ch == nil {
@@ -1111,6 +1248,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	default:
 	}
 	if pub.QoS == 0 {
+		r.releaseQueueReservation(pub)
 		r.dropCount.Add(1)
 		r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 		if r.logger != nil {
@@ -1124,6 +1262,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	select {
 	case ch <- item:
 	case <-r.stop:
+		r.releaseQueueReservation(pub)
 	}
 }
 
@@ -1136,10 +1275,10 @@ func (r *router) Route(pb *packets.Publish) {
 	// at this compatibility boundary so fanout can transfer its router-owned
 	// publish to one handler without allowing that handler to mutate pb.
 	pub := pahov5.PublishFromPacketPublish(pb)
-	if r.rejectOversizePayload(pub) {
+	if r.rejectIngressPacket(pub) {
 		return
 	}
-	r.dispatch(clonePublish(pub), nil)
+	r.dispatch(clonePublish(publishWithIdentity(pub)), nil)
 }
 
 // dispatch fans a publish out to every registered handler whose topic
@@ -1174,17 +1313,17 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 	if count {
 		r.routeCount.Add(1)
 	}
-	ensurePublishIdentity(pub)
-
 	r.mu.Lock()
 	if epoch != r.connEpoch {
 		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
 		r.stalePurged.Add(1)
 		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
 		return
 	}
 	if r.discarding {
 		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
 		return
 	}
 	if (!bypassQuiesce && r.quiesced) || (len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pub.Topic)) {
@@ -1225,6 +1364,7 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 		return
 	}
 	r.mu.Unlock()
+	r.releaseQueueReservation(pub)
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(context.Background(), logging.LevelTrace,
@@ -1465,6 +1605,7 @@ func (r *router) purgeStalePendingLocked() {
 	for i := range r.pending {
 		if r.pending[i].epoch < r.connEpoch {
 			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			r.releaseQueueReservationLocked(r.pending[i].pub)
 			purged++
 			continue
 		}
@@ -1485,6 +1626,7 @@ func (r *router) evictOldestQoS0Locked() bool {
 	for i := range r.pending {
 		if r.pending[i].pub.QoS == 0 {
 			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			r.releaseQueueReservationLocked(r.pending[i].pub)
 			r.pending = append(r.pending[:i], r.pending[i+1:]...)
 			r.dropCount.Add(1)
 			r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
@@ -1681,6 +1823,9 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 			r.mu.Lock()
 			ready := flush
 			if r.discarding {
+				for _, pending := range flush {
+					r.releaseQueueReservationLocked(pending.pub)
+				}
 				ready = nil // old socket ACKs die with the recycled generation
 			} else if r.quiesced || len(r.managedCleanupFilters) > 0 {
 				ready = make([]pendingPublish, 0, len(flush))
@@ -1699,6 +1844,7 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 			}
 			r.mu.Unlock()
 			for _, pending := range ready {
+				r.releaseQueueReservation(pending.pub)
 				r.emitOne(entry, pending.pub, pending.ack)
 			}
 		}()
@@ -1718,18 +1864,14 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 	}
 }
 
-// emitOne invokes handler.fn with an independent copy of pub (payload
-// copied so the handler cannot race the shared backing array), recovering
-// panics into the handler-panic metric. It does NOT touch emitMu,
+// emitOne invokes handler.fn with an immutable shallow Publish copy, recovering
+// panics into the handler-panic metric. Payload/properties backing is shared and
+// must remain read-only. It does NOT touch emitMu,
 // inflight or the shared WaitGroup — the caller owns that bookkeeping.
 // Used by the pending-flush path, where a single handler consumes the
 // publish so its Properties pointer may be shared safely.
 func (r *router) emitOne(handler routerHandler, pub *pahov5.Publish, ack func() error) {
 	p := *pub
-	if pub.Payload != nil {
-		p.Payload = make([]byte, len(pub.Payload))
-		copy(p.Payload, pub.Payload)
-	}
 	defer func() {
 		if rv := recover(); rv != nil {
 			r.metrics.Counter(MetricMQTTHandlerPanics, 1)

@@ -12,6 +12,7 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -124,7 +125,7 @@ func TestMQTTMemoryProfile_DividesReservationAcrossIngressSessions(t *testing.T)
 	}
 }
 
-func TestMQTTMemoryProfile_SenderOnlySessionsDoNotConsumeIngressAllocation(t *testing.T) {
+func TestMQTTMemoryProfile_EphemeralSenderOnlySessionsDoNotConsumeIngressAllocation(t *testing.T) {
 	cfg, sessions := mqttMemoryProfileConfig(1, 1)
 
 	require.NoError(t, applyMQTTMemoryProfile(cfg, deployinfra.BootstrapConfig{
@@ -135,6 +136,50 @@ func TestMQTTMemoryProfile_SenderOnlySessionsDoNotConsumeIngressAllocation(t *te
 	assert.Zero(t, sessions[1].Session.IngressMemoryBudgetBytes)
 	assert.Zero(t, sessions[1].Session.ReceiveMaximum,
 		"sender-only sessions are not normalized or allocated as ingress")
+}
+
+func TestMQTTMemoryProfile_DurableSenderOnlySessionConsumesIngressAllocation(t *testing.T) {
+	sessionCfg := paho.DefaultConfig()
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "durable-sender-memory"},
+		Sessions: []ports.SessionDef{{
+			ID:          "mqtt-durable-sender",
+			Transport:   "mqtt",
+			SessionMode: string(connectivity.SessionPersistent),
+			Config:      &sessionCfg,
+		}},
+		Receivers: []ports.ReceiverDef{{
+			ID:        "source",
+			Transport: "sqs",
+		}},
+		Senders: []ports.SenderDef{{
+			ID:        "mqtt-sender",
+			Transport: "mqtt",
+			SessionID: "mqtt-durable-sender",
+		}},
+		Bindings: []ports.BindingDef{{
+			ID:       "mqtt-binding",
+			SenderID: "mqtt-sender",
+			Address:  "memory/out",
+		}},
+		Routes: []ports.RouteDef{{
+			ID:         "route",
+			ReceiverID: "source",
+			Bindings:   []string{"mqtt-binding"},
+		}},
+	}
+
+	require.NoError(t, applyMQTTMemoryProfile(cfg, deployinfra.BootstrapConfig{
+		ContainerMemoryBytes: 1 << 30,
+	}))
+	assert.Equal(t, uint64(256<<20), sessionCfg.Session.IngressMemoryBudgetBytes)
+	wantReceive, err := paho.LargestSafeReceiveMaximum(
+		paho.DefaultMaxPayloadBytes,
+		256<<20,
+		0,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, wantReceive, sessionCfg.Session.ReceiveMaximum)
 }
 
 func TestMQTTMemoryProfile_HeadroomExactBoundaryAcceptsAndOneByteExcessRejects(t *testing.T) {

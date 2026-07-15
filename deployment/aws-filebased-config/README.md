@@ -239,8 +239,10 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
   into bootstrap. Runtime reserves 25% for consumed MQTT ingress sessions,
   divides it equally by session, and derives each default Receive Maximum with
   the adapter's byte model. `reserved_memory_bytes` plus this reservation must
-  leave at least 20% task headroom. Sender-only MQTT sessions consume no share;
-  impossible or explicitly unsafe profiles fail startup/reload.
+  leave at least 20% task headroom. Used Persistent/Exclusive sender-only
+  sessions consume a share with route concurrency zero because resumed durable
+  state can deliver stale backlog; Ephemeral sender-only sessions consume no
+  share. Impossible or explicitly unsafe profiles fail startup/reload.
 - `GoBridgeALBAttachment` reserves listener-rule priorities `[BasePriority, BasePriority+99]`. Add the attachment last on a listener, or pick a `BasePriority` outside any consumer-managed range.
 - `ControlAbsence` / `WorkerDegraded` alarms read Container Insights metrics: when passing your own `Cluster`, enable Container Insights yourself.
 

@@ -460,6 +460,12 @@ type Processor interface {
 }
 ```
 
+Envelope payload bytes are immutable at plugin boundaries. `Payload()` returns
+a defensive copy and `SetPayload` installs a new owned backing. Runtime and
+outbox clones may therefore share unchanged payload backing; processors must
+use `SetPayload` for transformations and must not retain or mutate bytes
+obtained through transport-specific internals.
+
 A processor can:
 - **Pass through**: call `next(ctx, env)` to continue the chain
 - **Modify**: mutate `env` before calling `next`

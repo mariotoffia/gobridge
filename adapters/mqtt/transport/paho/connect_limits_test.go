@@ -3,7 +3,9 @@ package paho
 import (
 	"math"
 	"testing"
+	"unsafe"
 
+	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/require"
 )
@@ -99,11 +101,38 @@ func TestApplyConnectLimits(t *testing.T) {
 func TestMaxPacketSizeFor(t *testing.T) {
 	got, err := maxPacketSizeFor(0)
 	require.NoError(t, err)
-	require.Equal(t, uint32(mqttPacketOverheadAllowance), got,
-		"a zero payload still reserves the header allowance (callers guard >0)")
+	require.Equal(t,
+		uint32(mqttPacketOverheadAllowance+
+			maxIngressUserProperties*retainedUserPropertyBytes+
+			retainedPacketFixedBytes),
+		got,
+		"retained packet size includes wire metadata and structural heap allowance")
 	got, err = maxPacketSizeFor(256 << 10)
 	require.NoError(t, err)
-	require.Equal(t, uint32(256<<10)+uint32(mqttPacketOverheadAllowance), got)
+	require.Equal(t,
+		uint32(256<<10)+uint32(mqttPacketOverheadAllowance+
+			maxIngressUserProperties*retainedUserPropertyBytes+
+			retainedPacketFixedBytes),
+		got)
 	_, err = maxPacketSizeFor(math.MaxUint32)
 	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")
+}
+
+func TestMaxPacketSizeFor_CoversPahoDecodedPropertyRepresentations(t *testing.T) {
+	perProperty := uint64(unsafe.Sizeof(packets.User{})) +
+		uint64(unsafe.Sizeof(pahov5.UserProperty{}))
+	require.LessOrEqual(t, perProperty, retainedUserPropertyBytes,
+		"allowance must retain both Paho wire and callback User Property structs")
+
+	propertyStructures := uint64(maxIngressUserProperties) * perProperty
+	require.LessOrEqual(t, propertyStructures,
+		uint64(maxIngressUserProperties)*retainedUserPropertyBytes)
+
+	fixedStructures := uint64(unsafe.Sizeof(packets.Publish{})) +
+		uint64(unsafe.Sizeof(pahov5.Publish{})) +
+		uint64(unsafe.Sizeof(pahov5.PublishProperties{})) +
+		uint64(unsafe.Sizeof(dispatchItem{})) +
+		uint64(unsafe.Sizeof(pendingPublish{}))
+	require.LessOrEqual(t, fixedStructures, retainedPacketFixedBytes,
+		"fixed retained packet allowance must cover SDK and adapter queue structs")
 }

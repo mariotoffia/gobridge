@@ -427,11 +427,25 @@ const mqttPacketOverheadAllowance uint64 = 128 << 10
 // mqttMaxPacketSize is the MQTT v5 Maximum Packet Size ceiling: 256 MiB - 1.
 const mqttMaxPacketSize uint64 = 268_435_455
 
-// maxPacketSizeFor returns the whole MQTT v5 PUBLISH packet ceiling for an
-// application payload limit. It rejects a payload that cannot retain the full
-// worst-case metadata allowance; silently clamping such an explicit value would
-// advertise a smaller limit than the operator configured.
-func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+const (
+	// maxIngressUserProperties bounds per-property Go struct amplification for
+	// packets retained beyond the Paho callback.
+	maxIngressUserProperties = 128
+	// maxIngressMetadataBytes bounds encoded topic/properties metadata retained
+	// by an accepted packet.
+	maxIngressMetadataBytes uint64 = mqttPacketOverheadAllowance
+	// retainedUserPropertyBytes covers the Paho wire-packet and callback
+	// UserProperty structs retained simultaneously for one formula slot.
+	retainedUserPropertyBytes uint64 = 64
+	// retainedPacketFixedBytes covers Publish/Properties structs, accepted
+	// Envelope header-map buckets, outbox/queue item state, and allocator
+	// page/size-class rounding observed by the finite-cgroup proof.
+	retainedPacketFixedBytes uint64 = 32 << 10
+)
+
+// wirePacketSizeFor returns the MQTT v5 Maximum Packet Size advertised to the
+// broker.
+func wirePacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	if uint64(maxPayloadBytes) > mqttMaxPacketSize-mqttPacketOverheadAllowance {
 		return 0, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
 			"mqtt: max_payload_bytes %d exceeds the largest value %d that fits the MQTT v5 packet ceiling with metadata overhead",
@@ -439,6 +453,23 @@ func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 		))
 	}
 	return uint32(uint64(maxPayloadBytes) + mqttPacketOverheadAllowance), nil
+}
+
+// maxPacketSizeFor returns a conservative retained-heap base for one accepted
+// packet representation. The wire limit is augmented by the accepted
+// UserProperty structural cap and fixed Go/queue representation allowance.
+func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+	wire, err := wirePacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	retained := uint64(wire) +
+		maxIngressUserProperties*retainedUserPropertyBytes +
+		retainedPacketFixedBytes
+	if retained > math.MaxUint32 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: retained packet memory exceeds uint32")
+	}
+	return uint32(retained), nil
 }
 
 // ingressMemoryPacketBytes returns

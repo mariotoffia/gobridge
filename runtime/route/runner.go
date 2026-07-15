@@ -774,22 +774,24 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	// goroutine has returned (happens-before close(done) in invokeProcessor),
 	// so the clone is quiescent and we merge its processor-owned mutations
 	// (subject, payload, headers) back onto env for dispatch.
-	chainEnv := env.Clone()
-	if err := RunChain(ctx, r.processors, chainEnv,
-		WithChainLogger(r.logger),
-		WithChainMetrics(r.metrics),
-		WithChainTimeout(r.policy.ProcessorTimeout),
-		WithChainRouteID(r.routeID),
-		WithChainClock(r.clk),
-		WithChainOnProcessorTimeout(r.onProcessorAbandoned),
-	); err != nil {
-		pErr := r.handleProcessorError(ctx, del, env, err)
-		if !errors.Is(err, shared.ErrMessageFiltered) {
-			span.SetError(err)
+	if len(r.processors) > 0 {
+		chainEnv := env.Clone()
+		if err := RunChain(ctx, r.processors, chainEnv,
+			WithChainLogger(r.logger),
+			WithChainMetrics(r.metrics),
+			WithChainTimeout(r.policy.ProcessorTimeout),
+			WithChainRouteID(r.routeID),
+			WithChainClock(r.clk),
+			WithChainOnProcessorTimeout(r.onProcessorAbandoned),
+		); err != nil {
+			pErr := r.handleProcessorError(ctx, del, env, err)
+			if !errors.Is(err, shared.ErrMessageFiltered) {
+				span.SetError(err)
+			}
+			return pErr
 		}
-		return pErr
+		mergeProcessedEnvelope(env, chainEnv)
 	}
-	mergeProcessedEnvelope(env, chainEnv)
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "processors complete",

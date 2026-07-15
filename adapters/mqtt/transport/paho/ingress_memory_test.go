@@ -2,6 +2,8 @@ package paho
 
 import (
 	"math"
+	"strings"
+	"sync"
 	"testing"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -119,8 +121,229 @@ func TestRouterIngressMemory_OversizePayloadRejectsBeforeCopyOrEnqueue(t *testin
 	assert.Zero(t, dispatchDepth)
 	assert.Equal(t, 2, dispatchCapacity)
 	assert.Zero(t, session.router.PendingCount())
-	assert.Equal(t, 1, session.Health(t.Context()).UnsettledCount,
-		"oversize QoS 1 remains protocol-unsettled so at-least-once is not weakened")
+	assert.Zero(t, session.Health(t.Context()).UnsettledCount,
+		"poison rejection must not create an unfinishable unsettled tracker entry")
+	session.mu.Lock()
+	terminalErr := session.terminalErr
+	session.mu.Unlock()
+	require.Error(t, terminalErr, "poison rejection must synchronously latch terminal state")
+}
+
+func TestRouterIngressMemory_MetadataCapRejectsOnceBeforeEnqueue(t *testing.T) {
+	session := NewSession(SessionOptions{
+		MaxPayloadBytes: 16,
+		ReceiveMaximum:  2,
+	}, connectivity.SessionPersistent, nil)
+	session.router.beginGrace()
+	properties := make(pahov5.UserProperties, maxIngressUserProperties+1)
+	for i := range properties {
+		properties[i] = pahov5.UserProperty{Key: "k", Value: "v"}
+	}
+	packet := &pahov5.Publish{
+		Topic:      "memory/metadata-poison",
+		QoS:        1,
+		Payload:    []byte("ok"),
+		Properties: &pahov5.PublishProperties{User: properties},
+	}
+
+	for range 2 {
+		handled, err := session.router.onPublishReceived(pahov5.PublishReceived{Packet: packet})
+		require.NoError(t, err)
+		assert.True(t, handled)
+	}
+
+	assert.Zero(t, session.router.PendingCount())
+	depth, _ := session.IngressMemoryStats()
+	assert.Zero(t, depth)
+	assert.Zero(t, session.Health(t.Context()).UnsettledCount)
+	session.mu.Lock()
+	terminalErr := session.terminalErr
+	session.mu.Unlock()
+	require.Error(t, terminalErr)
+}
+
+func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessTerminates(t *testing.T) {
+	const topicBytes = 65535
+	valueBytes := int(maxIngressMetadataBytes) - (1 + 4 + 2 + topicBytes + 2 + 4) - (5 + 1)
+	require.Positive(t, valueBytes)
+	properties := func(extra int) *pahov5.PublishProperties {
+		return &pahov5.PublishProperties{User: pahov5.UserProperties{{
+			Key: "k", Value: strings.Repeat("v", valueBytes+extra),
+		}}}
+	}
+
+	accepted := NewSession(SessionOptions{
+		MaxPayloadBytes: 16,
+		ReceiveMaximum:  2,
+	}, connectivity.SessionEphemeral, nil)
+	packet := &pahov5.Publish{
+		Topic: strings.Repeat("t", topicBytes), QoS: 1,
+		Payload: []byte("ok"), Properties: properties(0),
+	}
+	require.Equal(t, maxIngressMetadataBytes, ingressMetadataBytes(packet))
+	handled, err := accepted.router.onPublishReceived(pahov5.PublishReceived{Packet: packet})
+	require.NoError(t, err)
+	assert.True(t, handled)
+	assert.Equal(t, 1, accepted.router.PendingCount())
+	accepted.mu.Lock()
+	acceptedTerminal := accepted.terminalErr
+	accepted.mu.Unlock()
+	assert.NoError(t, acceptedTerminal)
+
+	rejected := NewSession(SessionOptions{
+		MaxPayloadBytes: 16,
+		ReceiveMaximum:  2,
+	}, connectivity.SessionEphemeral, nil)
+	packet.Properties = properties(1)
+	require.Equal(t, maxIngressMetadataBytes+1, ingressMetadataBytes(packet))
+	handled, err = rejected.router.onPublishReceived(pahov5.PublishReceived{Packet: packet})
+	require.NoError(t, err)
+	assert.True(t, handled)
+	assert.Zero(t, rejected.router.PendingCount())
+	rejected.mu.Lock()
+	rejectedTerminal := rejected.terminalErr
+	rejected.mu.Unlock()
+	require.Error(t, rejectedTerminal)
+}
+
+func TestRouterIngressMemory_AcceptedPacketRetainsImmutableCallbackBacking(t *testing.T) {
+	session := NewSession(SessionOptions{
+		MaxPayloadBytes: 16,
+		ReceiveMaximum:  2,
+	}, connectivity.SessionEphemeral, nil)
+	packet := &pahov5.Publish{
+		Topic:   "memory/ownership",
+		QoS:     1,
+		Payload: []byte("immutable"),
+		Properties: &pahov5.PublishProperties{User: pahov5.UserProperties{{
+			Key: HeaderMessageID, Value: "stable-id",
+		}}},
+	}
+
+	handled, err := session.router.onPublishReceived(pahov5.PublishReceived{Packet: packet})
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	session.router.mu.RLock()
+	require.Len(t, session.router.pending, 1)
+	retained := session.router.pending[0].pub
+	session.router.mu.RUnlock()
+	assert.Same(t, packet, retained)
+	assert.Equal(t, &packet.Payload[0], &retained.Payload[0])
+	assert.Same(t, packet.Properties, retained.Properties)
+}
+
+func TestRouterIngressMemory_PendingAndDispatchShareCapacity(t *testing.T) {
+	router := newRouter(nil, nil, withDispatchCapacity(2), withMaxPayloadBytes(16))
+	pendingQoS1 := &pahov5.Publish{Topic: "pending/1", QoS: 1}
+	pendingQoS0 := &pahov5.Publish{Topic: "pending/2", QoS: 0}
+	require.True(t, router.reserveQueueSlot(pendingQoS1, pendingQoS1.QoS))
+	router.dispatch(pendingQoS1, nil)
+	require.True(t, router.reserveQueueSlot(pendingQoS0, pendingQoS0.QoS))
+	router.dispatch(pendingQoS0, nil)
+
+	dispatchQoS0 := &pahov5.Publish{Topic: "dispatch/full", QoS: 0}
+	assert.False(t, router.reserveQueueSlot(dispatchQoS0, dispatchQoS0.QoS),
+		"dispatch must not reserve independently after pending owns all capacity")
+
+	router.mu.RLock()
+	assert.Len(t, router.pending, 2)
+	assert.Equal(t, 2, router.queueReserved)
+	assert.Len(t, router.queueReservations, 2)
+	router.mu.RUnlock()
+}
+
+func TestRouterIngressMemory_ReservationReleaseIsIdempotentAcrossLifecyclePaths(t *testing.T) {
+	t.Run("matching dispatch", func(t *testing.T) {
+		router := newRouter(nil, nil, withDispatchCapacity(1))
+		delivered := make(chan struct{}, 1)
+		router.RegisterFiltered("receiver", []string{"match/#"}, func(*pahov5.Publish, func() error) {
+			delivered <- struct{}{}
+		})
+		pub := &pahov5.Publish{Topic: "match/one", QoS: 1}
+		require.True(t, router.reserveQueueSlot(pub, pub.QoS))
+		router.dispatch(pub, nil)
+		<-delivered
+		router.releaseQueueReservation(pub)
+		assertRouterReservations(t, router, 0)
+	})
+
+	t.Run("stale epoch purge", func(t *testing.T) {
+		router := newRouter(nil, nil, withDispatchCapacity(1))
+		pub := &pahov5.Publish{Topic: "pending/stale", QoS: 1}
+		require.True(t, router.reserveQueueSlot(pub, pub.QoS))
+		router.dispatch(pub, nil)
+
+		router.mu.Lock()
+		router.connEpoch++
+		router.purgeStalePendingLocked()
+		router.mu.Unlock()
+		assertRouterReservations(t, router, 0)
+		assert.Zero(t, router.PendingCount())
+	})
+
+	t.Run("managed migration pending", func(t *testing.T) {
+		router := newRouter(nil, nil, withDispatchCapacity(1))
+		router.mu.Lock()
+		router.quiesced = true
+		router.mu.Unlock()
+
+		pub := &pahov5.Publish{Topic: "managed/replay", QoS: 1}
+		require.True(t, router.reserveQueueSlot(pub, pub.QoS))
+		router.dispatch(pub, nil)
+		assertRouterReservations(t, router, 1)
+		assert.Equal(t, 1, router.PendingCount())
+
+		router.mu.Lock()
+		router.quiesced = false
+		router.mu.Unlock()
+		delivered := make(chan struct{}, 1)
+		router.RegisterFiltered("replacement", []string{"managed/#"}, func(*pahov5.Publish, func() error) {
+			delivered <- struct{}{}
+		})
+		<-delivered
+		assertRouterReservations(t, router, 0)
+	})
+
+	t.Run("shutdown unblocks waiter", func(t *testing.T) {
+		router := newRouter(nil, nil, withDispatchCapacity(1))
+		first := &pahov5.Publish{Topic: "pending/first", QoS: 1}
+		require.True(t, router.reserveQueueSlot(first, first.QoS))
+		waiterDone := make(chan bool, 1)
+		go func() {
+			second := &pahov5.Publish{Topic: "pending/second", QoS: 2}
+			waiterDone <- router.reserveQueueSlot(second, second.QoS)
+		}()
+
+		router.shutdown()
+		assert.False(t, <-waiterDone)
+		assertRouterReservations(t, router, 0)
+	})
+
+	t.Run("concurrent cleanup", func(t *testing.T) {
+		router := newRouter(nil, nil, withDispatchCapacity(1))
+		pub := &pahov5.Publish{Topic: "pending/race", QoS: 1}
+		require.True(t, router.reserveQueueSlot(pub, pub.QoS))
+
+		var releases sync.WaitGroup
+		for range 16 {
+			releases.Add(1)
+			go func() {
+				defer releases.Done()
+				router.releaseQueueReservation(pub)
+			}()
+		}
+		releases.Wait()
+		assertRouterReservations(t, router, 0)
+	})
+}
+
+func assertRouterReservations(t *testing.T, router *router, want int) {
+	t.Helper()
+	router.mu.RLock()
+	defer router.mu.RUnlock()
+	assert.Equal(t, want, router.queueReserved)
+	assert.Len(t, router.queueReservations, want)
 }
 
 func TestConfigIngressMemory_ExplicitUnsafePacketSizeRejectsWithoutClamp(t *testing.T) {

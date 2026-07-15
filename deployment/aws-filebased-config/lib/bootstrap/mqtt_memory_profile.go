@@ -5,6 +5,7 @@ import (
 	"math"
 
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -17,7 +18,9 @@ type mqttMemoryAllocationResult struct {
 // applyMQTTMemoryProfile reserves one quarter of container memory for all
 // memory-profile-aware ingress sessions, divides it equally by session, and
 // asks each transport config to derive or validate its receive concurrency.
-// Sessions used only by senders consume no ingress allocation.
+// Used durable sender-only sessions are included with zero route concurrency:
+// they can resume stale broker backlog before managed cleanup. Ephemeral
+// sender-only sessions consume no ingress allocation.
 func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.BootstrapConfig) error {
 	if cfg == nil {
 		return shared.ErrInvalidConfig.WithMessage("bootstrap: MQTT memory profile requires a bridge config")
@@ -46,6 +49,7 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 		}
 	}
 	routeConcurrency := make(map[string]uint64, len(profiles))
+	includedSessions := make(map[string]struct{}, len(profiles))
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
 		sessionID := receiverSession[route.ReceiverID]
@@ -69,27 +73,68 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 			))
 		}
 		routeConcurrency[sessionID] = current + add
+		includedSessions[sessionID] = struct{}{}
 	}
-	if len(routeConcurrency) == 0 {
-		// SQS/HTTP-only configurations and MQTT sender-only configurations do
-		// not instantiate an MQTT ingress window.
+
+	senderSessions := make(map[string]string, len(cfg.Senders))
+	for i := range cfg.Senders {
+		senderSessions[cfg.Senders[i].ID] = cfg.Senders[i].SessionID
+	}
+	bindings := make(map[string]string, len(cfg.Bindings))
+	for i := range cfg.Bindings {
+		binding := &cfg.Bindings[i]
+		sessionID := binding.SessionID
+		if sessionID == "" {
+			sessionID = senderSessions[binding.SenderID]
+		}
+		bindings[binding.ID] = sessionID
+	}
+	usedSessions := make(map[string]struct{})
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		if route.Session != nil && route.Session.SessionID != "" {
+			usedSessions[route.Session.SessionID] = struct{}{}
+		}
+		for _, bindingID := range route.Bindings {
+			if sessionID := bindings[bindingID]; sessionID != "" {
+				usedSessions[sessionID] = struct{}{}
+			}
+		}
+	}
+	for i := range cfg.Sessions {
+		session := &cfg.Sessions[i]
+		if _, profile := profiles[session.ID]; !profile {
+			continue
+		}
+		if _, used := usedSessions[session.ID]; !used {
+			continue
+		}
+		mode := connectivity.SessionMode(session.SessionMode)
+		if mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive {
+			includedSessions[session.ID] = struct{}{}
+		}
+	}
+
+	if len(includedSessions) == 0 {
+		// SQS/HTTP-only configurations and ephemeral MQTT sender-only
+		// configurations do not instantiate an MQTT ingress window.
 		return nil
 	}
 
 	allocation, err := mqttMemoryAllocation(
 		bootstrapCfg.ContainerMemoryBytes,
 		bootstrapCfg.ReservedMemoryBytes,
-		uint64(len(routeConcurrency)),
+		uint64(len(includedSessions)),
 	)
 	if err != nil {
 		return err
 	}
 	for i := range cfg.Sessions {
 		session := &cfg.Sessions[i]
-		routeMaxInFlight := routeConcurrency[session.ID]
-		if routeMaxInFlight == 0 {
+		if _, included := includedSessions[session.ID]; !included {
 			continue
 		}
+		routeMaxInFlight := routeConcurrency[session.ID]
 		profile := profiles[session.ID]
 		if err := profile.ConfigureIngressMemory(
 			allocation.perSessionBudgetBytes,

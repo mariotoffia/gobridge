@@ -168,6 +168,7 @@ func (s *Session) transitionTerminal(
 	if terminal == nil {
 		terminal = shared.ErrUnavailable.WithMessage("mqtt: session is terminal")
 	}
+
 	if !errors.Is(terminal, shared.ErrTransportClosedPermanently) {
 		terminal = shared.ErrUnavailable.
 			WithMessage("mqtt: session is terminal").
@@ -264,6 +265,13 @@ func (s *Session) transitionTerminal(
 		finish()
 	}
 	return terminal, true
+}
+
+// rejectIngressPoison synchronously latches terminal readiness and delegates
+// bounded disconnect/cleanup to the existing Task 6 terminal lifecycle. It must
+// return promptly because it runs on Paho's publish callback goroutine.
+func (s *Session) rejectIngressPoison(cause error) {
+	_, _ = s.transitionTerminal(context.Background(), cause, 0, true, false)
 }
 
 func (s *Session) terminateFailedRecovery(generation uint64, cause error, async bool) bool {

@@ -203,8 +203,10 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	}
 
 	// id is always non-empty (generate fallback above); now is non-zero.
-	// NewEnvelope cannot fail here; the panic guards an impossible branch.
-	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+	// Paho's acknowledgement tracker retains the immutable wire-packet backing
+	// until settlement, so the Envelope can share payload without a route copy.
+	// Construction cannot fail here; the panic guards an impossible branch.
+	env, err := messaging.NewEnvelopeFromImmutablePayload(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   subject,
 		Payload:   pub.Payload,
@@ -381,19 +383,25 @@ func publishIdentity(pub *pahov5.Publish) string {
 	return ""
 }
 
-// ensurePublishIdentity stamps one generated identity on a router-owned Paho
-// publish before it can be buffered or fanned out. Producer message IDs and
-// valid correlation identities take precedence and are never overwritten.
-func ensurePublishIdentity(pub *pahov5.Publish) {
+// publishWithIdentity returns pub unchanged when it already carries an
+// identity. Otherwise it creates a shallow immutable wrapper and copies only
+// the bounded UserProperty slice needed to append one generated identity;
+// payload/string backing remains shared with Paho's callback packet.
+func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
 	if pub == nil || publishIdentity(pub) != "" {
-		return
+		return pub
 	}
-	if pub.Properties == nil {
-		pub.Properties = &pahov5.PublishProperties{}
+	owned := *pub
+	var properties pahov5.PublishProperties
+	if pub.Properties != nil {
+		properties = *pub.Properties
+		properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
 	}
-	pub.Properties.User = append(pub.Properties.User, pahov5.UserProperty{
+	properties.User = append(properties.User, pahov5.UserProperty{
 		Key: HeaderMessageID, Value: newIngressEnvelopeID(),
 	})
+	owned.Properties = &properties
+	return &owned
 }
 
 // newIngressEnvelopeID returns an RFC 4122 UUIDv4 using the standard-library
