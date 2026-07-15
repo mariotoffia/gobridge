@@ -126,6 +126,24 @@ func (s *Session) clearRecoveryDrainLocked(generation uint64) {
 	s.recoveryDrainDone = nil
 }
 
+func (s *Session) awaitStartCleanup(ctx context.Context) {
+	s.mu.Lock()
+	starting := s.starting
+	done := s.startDone
+	hook := s.terminalAwaitStartHook
+	s.mu.Unlock()
+	if !starting || done == nil {
+		return
+	}
+	if hook != nil {
+		hook()
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
 func settlementRecoveryTerminalError(cause error) error {
 	if cause == nil {
 		cause = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery failed")
@@ -231,6 +249,7 @@ func (s *Session) transitionTerminal(
 		case !recoveryInFlight && !callerQuiesced:
 			_ = s.quiesceForRecycle(terminalCtx)
 		}
+		s.awaitStartCleanup(terminalCtx)
 		s.disconnectGeneration(terminalCtx)
 		cancel()
 		s.pushEvent(ports.SessionError, terminal)

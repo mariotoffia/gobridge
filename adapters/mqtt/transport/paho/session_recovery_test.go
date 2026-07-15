@@ -957,3 +957,100 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 	assert.Equal(t, int32(1), disconnects.Load())
 	assert.Equal(t, int32(1), quiesceCalls.Load())
 }
+
+type terminalReconcileConn struct {
+	fakeLiveConn
+}
+
+func (*terminalReconcileConn) Subscribe(context.Context, []subscribeSpec) ([]byte, error) {
+	return nil, shared.ErrUnavailable.WithMessage("forced exclusive reconcile failure")
+}
+
+func TestSessionRecovery_ExclusiveReconcileFailureUsesOneTerminalTeardown(t *testing.T) {
+	var disconnects atomic.Int32
+	var quiesceCalls atomic.Int32
+	conn := &terminalReconcileConn{fakeLiveConn: fakeLiveConn{disconnects: &disconnects}}
+	s := NewSession(SessionOptions{ClientID: "exclusive-terminal-owner"}, connectivity.SessionExclusive, nil)
+	s.mu.Lock()
+	s.cm = conn
+	s.connected = true
+	s.connEpoch = 10
+	s.recoveryPending = true
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 1
+	s.mu.Unlock()
+	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		quiesceCalls.Add(1)
+		return nil
+	})
+
+	err := s.Reconcile(t.Context(), connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "failed/#", QoS: 1}},
+	})
+	require.Error(t, err)
+	s.mu.Lock()
+	epoch := s.connEpoch
+	s.mu.Unlock()
+	assert.Equal(t, int32(1), quiesceCalls.Load())
+	assert.Equal(t, int32(1), disconnects.Load())
+	assert.Equal(t, uint64(11), epoch)
+}
+
+type blockedStartCleanupConn struct {
+	fakeLiveConn
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockedStartCleanupConn) Disconnect(context.Context) error {
+	c.once.Do(func() { close(c.entered) })
+	<-c.release
+	return nil
+}
+
+func TestSessionRecovery_TerminalSignalWaitsForStartLocalCleanup(t *testing.T) {
+	conn := &blockedStartCleanupConn{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
+		ClientID:   "start-local-terminal",
+	}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoveryGeneration = 1
+	s.mu.Unlock()
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+		return conn, func() {}, nil
+	}
+	events := s.Events()
+	terminalWaitingStart := make(chan struct{})
+	s.terminalAwaitStartHook = func() { close(terminalWaitingStart) }
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	<-conn.entered
+	<-terminalWaitingStart
+	select {
+	case <-events:
+		t.Fatal("terminal signal preceded Start-local connection cleanup")
+	default:
+	}
+
+	close(conn.release)
+	require.Error(t, <-startDone)
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+		}
+	}
+	assert.Equal(t, 1, terminalEvents)
+}

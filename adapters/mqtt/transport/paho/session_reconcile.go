@@ -97,7 +97,7 @@ func (s *Session) reconcileUnderGate(
 	// that fencing boundary, including a replacement generation created by the
 	// managed-history cleanup recycle below.
 	defer func() {
-		if retErr != nil && s.mode == connectivity.SessionExclusive {
+		if retErr != nil && recoveryGeneration == 0 && s.mode == connectivity.SessionExclusive {
 			if disconnectErr := s.disconnectFailedReconcile(ctx); disconnectErr != nil &&
 				!errors.Is(retErr, shared.ErrTransportClosedPermanently) {
 				retErr = errors.Join(retErr, disconnectErr)

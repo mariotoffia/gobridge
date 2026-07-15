@@ -114,6 +114,7 @@ type Session struct {
 	reloadGateWaitHook        func() // deterministic package-test barrier; nil in production
 	reloadGateAcquiredHook    func() // deterministic package-test barrier; nil in production
 	recoveryQueuedFailureHook func() // deterministic package-test barrier; nil in production
+	terminalAwaitStartHook    func() // deterministic package-test barrier; nil in production
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
