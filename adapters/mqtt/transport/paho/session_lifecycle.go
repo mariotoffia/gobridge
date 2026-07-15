@@ -681,13 +681,16 @@ func (s *Session) disconnectFailedReconcile(ctx context.Context) error {
 	s.mu.Lock()
 	terminal := s.terminalErr
 	s.mu.Unlock()
-	if terminal == nil {
-		if err := s.quiesceForRecycle(ctx); err != nil {
-			return s.failClosedAfterQuiescence(ctx, err)
-		}
+	if terminal != nil {
+		// transitionTerminal already owns quiesce, disconnect and manager signal.
+		// A deferred exclusive-error cleanup must not increment the epoch again.
+		return terminal
+	}
+	if err := s.quiesceForRecycle(ctx); err != nil {
+		return s.failClosedAfterQuiescence(ctx, err)
 	}
 	s.disconnectGeneration(ctx)
-	return terminal
+	return nil
 }
 
 func (s *Session) disconnectGeneration(ctx context.Context) {

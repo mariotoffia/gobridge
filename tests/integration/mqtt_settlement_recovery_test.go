@@ -40,6 +40,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}, connectivity.SessionPersistent, nil, metrics)
 	innerReceiver := paho.NewReceiver(receiverID, sess, paho.WithTopicFilters(topic))
 	receiver := newSettlementRecoveryReceiver(innerReceiver)
+	t.Cleanup(receiver.releaseRetry)
 	sender := newSettlementRecoverySender(originalID)
 	dlq := newUnavailableRecoveryDLQ()
 
@@ -89,6 +90,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	if got := sess.Health(ctx).ServiceLevel; got != ports.ServiceLevelDegraded {
 		t.Fatalf("readiness after recovery request = %q, want degraded", got)
 	}
+	receiver.releaseRetry()
 
 	wait.RequireReceive(t, metrics.recycled, 10*time.Second)
 	if id := wait.RequireReceive(t, receiver.received, 10*time.Second); id != originalID {
@@ -146,6 +148,8 @@ type settlementRecoveryReceiver struct {
 	received      chan string
 	acked         chan string
 	retryOnce     sync.Once
+	releaseOnce   sync.Once
+	releaseFirst  chan struct{}
 	mu            sync.Mutex
 	receipts      map[string]int
 }
@@ -154,6 +158,7 @@ func newSettlementRecoveryReceiver(inner *paho.Receiver) *settlementRecoveryRece
 	return &settlementRecoveryReceiver{
 		inner:         inner,
 		retryReturned: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
 		received:      make(chan string, 4),
 		acked:         make(chan string, 4),
 		receipts:      make(map[string]int),
@@ -161,6 +166,10 @@ func newSettlementRecoveryReceiver(inner *paho.Receiver) *settlementRecoveryRece
 }
 
 func (r *settlementRecoveryReceiver) Started() <-chan struct{} { return r.inner.Started() }
+
+func (r *settlementRecoveryReceiver) releaseRetry() {
+	r.releaseOnce.Do(func() { close(r.releaseFirst) })
+}
 
 func (r *settlementRecoveryReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	return r.inner.Run(ctx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
@@ -199,7 +208,14 @@ func (d *settlementRecoveryDelivery) Ack(ctx context.Context) error {
 func (d *settlementRecoveryDelivery) Retry(ctx context.Context, after time.Duration, reason error) error {
 	err := d.Delivery.Retry(ctx, after, reason)
 	if err == nil {
-		d.recovered.retryOnce.Do(func() { close(d.recovered.retryReturned) })
+		blockFirst := false
+		d.recovered.retryOnce.Do(func() {
+			close(d.recovered.retryReturned)
+			blockFirst = true
+		})
+		if blockFirst {
+			<-d.recovered.releaseFirst
+		}
 	}
 	return err
 }

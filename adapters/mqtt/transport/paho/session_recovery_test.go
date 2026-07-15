@@ -1054,3 +1054,32 @@ func TestSessionRecovery_TerminalSignalWaitsForStartLocalCleanup(t *testing.T) {
 	}
 	assert.Equal(t, 1, terminalEvents)
 }
+
+func TestManagedFailClosed_DeferredExclusiveTeardownDoesNotDisconnectTwice(t *testing.T) {
+	var disconnects atomic.Int32
+	s := NewSession(SessionOptions{ClientID: "managed-terminal-owner"}, connectivity.SessionExclusive, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{disconnects: &disconnects}
+	s.connected = true
+	s.connEpoch = 30
+	s.mu.Unlock()
+	events := s.Events()
+
+	firstErr := s.failClosedForManagedMigration(t.Context())
+	require.ErrorIs(t, firstErr, shared.ErrTransportClosedPermanently)
+	secondErr := s.disconnectFailedReconcile(t.Context())
+	require.ErrorIs(t, secondErr, shared.ErrTransportClosedPermanently)
+
+	terminalEvents := 0
+	for event := range events {
+		if event.Type == ports.SessionError {
+			terminalEvents++
+		}
+	}
+	s.mu.Lock()
+	epoch := s.connEpoch
+	s.mu.Unlock()
+	assert.Equal(t, int32(1), disconnects.Load())
+	assert.Equal(t, uint64(31), epoch)
+	assert.Equal(t, 1, terminalEvents)
+}
