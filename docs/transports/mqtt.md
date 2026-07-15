@@ -393,7 +393,8 @@ Retry that wins can never be followed by a protocol Ack for that delivery.
 QoS 0 and every Ephemeral-session Retry remain `ErrNotSupported` because a
 reconnect cannot redeliver them safely.
 
-Recovery applies these fixed safety bounds; there are no operator knobs:
+Recovery applies these safety bounds without introducing a recovery-specific
+config knob:
 
 - readiness drops below Full synchronously when Retry requests recovery;
 - concurrent requests coalesce into one recycle;
@@ -402,13 +403,22 @@ Recovery applies these fixed safety bounds; there are no operator knobs:
   incomplete;
 - completed recovery attempts are spaced by at least **30 seconds**, using the
   session clock, to prevent a DLQ-outage reconnect storm;
-- the rebuild uses the existing serialized `Session.Reload` path shared with
-  credential/TLS rotation, preserving `client_id` and session expiry while
-  forcing `clean_start=false`;
+- credential/TLS reload and settlement recovery use the same context-aware
+  reload serialization gate; a caller cancelled while queued leaves promptly;
+- one hard deadline covers waiting for that gate, the settlement drain,
+  disconnect, reconnect, and replacement-generation reconcile. It reuses the
+  conservative post-acquire activation timing derived from `connect_timeout`,
+  `reconcile_timeout`, and `unmatched_grace`; there is no duplicate recovery
+  timeout setting;
+- the rebuild preserves `client_id` and session expiry while forcing
+  `clean_start=false`;
 - CONNACK must report **Session Present**. If it does not, the broker cannot
   prove the unsettled packet survived. The Session instance fails closed and
-  remains below Full readiness until the composition root or orchestrator replaces
-  it; it never treats a second connection to a newly-created empty session as recovery.
+  remains below Full readiness until the composition root or orchestrator
+  replaces it; it never treats a second connection to a newly-created empty
+  session as recovery. Session Present alone is not completion: readiness stays
+  degraded until replacement-generation reconciliation succeeds within the same
+  deadline.
 
 The adapter tracks every current-connection QoS 1/2 packet from receipt until a
 successful protocol Ack or connection-epoch change. Deep health exposes

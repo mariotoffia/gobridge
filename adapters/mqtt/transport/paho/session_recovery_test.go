@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func TestSessionRecovery_RequestDegradesSynchronouslyAndCoalesces(t *testing.T) {
@@ -54,6 +55,7 @@ func TestSessionRecovery_RequestDegradesSynchronouslyAndCoalesces(t *testing.T) 
 	assert.Empty(t, entered, "concurrent recovery requests must share one recycle")
 	close(release)
 	<-dialed
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 	assert.Equal(t, int32(1), disconnects.Load())
 }
 
@@ -106,6 +108,7 @@ func TestDeliveryDisposition_PersistentQoSRetryRequestsRecovery(t *testing.T) {
 	require.ErrorIs(t, <-runDone, context.Canceled)
 	close(releaseRecovery)
 	<-recoveryDialed
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 }
 
 func TestUnsettled_CurrentEpochTracksUntilAckOrEpochChange(t *testing.T) {
@@ -230,9 +233,8 @@ func TestSessionRecovery_DrainBoundedAndCompletedAttemptsRateLimited(t *testing.
 	}
 	clk.Advance(time.Second)
 	<-firstDisconnected
-	require.Eventually(t, func() bool {
-		return len(metrics.FindEntries(MetricMQTTSessionRecoveryRecycle)) == 1
-	}, time.Second, time.Millisecond)
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	require.Len(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle), 1)
 
 	require.NoError(t, s.requestRecovery(t.Context()))
 	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
@@ -250,6 +252,7 @@ func TestSessionRecovery_DrainBoundedAndCompletedAttemptsRateLimited(t *testing.
 	<-waiterEntered
 	clk.Advance(settlementRecoveryDrainLimit)
 	<-secondDisconnected
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 }
 
 func TestSessionRecovery_MissingSessionPresentFailsAndStaysDegraded(t *testing.T) {
@@ -282,4 +285,229 @@ func TestSessionRecovery_MissingSessionPresentFailsAndStaysDegraded(t *testing.T
 	secondErr := s.Start(t.Context())
 	require.Error(t, secondErr)
 	assert.Equal(t, int32(1), dials.Load(), "lost broker state must remain failed until this Session instance is rebuilt")
+}
+
+type serializedReloadConn struct {
+	fakeLiveConn
+	disconnectEntered chan struct{}
+	releaseDisconnect chan struct{}
+	once              sync.Once
+}
+
+func (c *serializedReloadConn) Disconnect(ctx context.Context) error {
+	c.once.Do(func() { close(c.disconnectEntered) })
+	select {
+	case <-c.releaseDisconnect:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestSessionRecovery_CredentialReloadSharesCancelableSerializationGate(t *testing.T) {
+	disconnectEntered := make(chan struct{})
+	releaseDisconnect := make(chan struct{})
+	s := NewSession(SessionOptions{
+		BrokerURLs:                []string{"tcp://127.0.0.1:1883"},
+		ClientID:                  "credential-recovery-gate",
+		Username:                  "old",
+		Password:                  shared.NewSecret("old"),
+		AllowPlaintextCredentials: true,
+	}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &serializedReloadConn{
+		disconnectEntered: disconnectEntered,
+		releaseDisconnect: releaseDisconnect,
+	}
+	s.connected = true
+	s.mu.Unlock()
+
+	dialed := make(chan struct{}, 3)
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dialed <- struct{}{}
+		return &fakeLiveConn{}, func() {}, nil
+	}
+	credentialDone := make(chan error, 1)
+	go func() {
+		password := connectivity.NewPasswordCredential("new", "new")
+		credentialDone <- s.ApplyCredentials(t.Context(), connectivity.NewCredentialSet(&password, nil))
+	}()
+	<-disconnectEntered
+
+	gateWait := make(chan struct{}, 2)
+	s.reloadGateWaitHook = func() { gateWait <- struct{}{} }
+	require.NoError(t, s.requestRecovery(t.Context()))
+	<-gateWait
+	select {
+	case <-dialed:
+		t.Fatal("settlement recovery overlapped credential-triggered reload")
+	default:
+	}
+
+	waitCtx, cancelWait := context.WithCancel(t.Context())
+	waitingReload := make(chan error, 1)
+	go func() { waitingReload <- s.Reload(waitCtx) }()
+	<-gateWait
+	cancelWait()
+	require.ErrorIs(t, <-waitingReload, context.Canceled)
+
+	close(releaseDisconnect)
+	require.NoError(t, <-credentialDone)
+	<-dialed
+	<-dialed
+}
+
+type contextBlockedDisconnectConn struct {
+	fakeLiveConn
+	entered chan struct{}
+	exited  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *contextBlockedDisconnectConn) Disconnect(ctx context.Context) error {
+	c.once.Do(func() { close(c.entered) })
+	defer close(c.exited)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.release:
+		return nil
+	}
+}
+
+type recoveryCountExporter struct {
+	*ports.RecordingExporter
+	recycled chan struct{}
+	once     sync.Once
+}
+
+func (m *recoveryCountExporter) Counter(name string, value int64, tags ...shared.Tag) {
+	m.RecordingExporter.Counter(name, value, tags...)
+	if name == MetricMQTTSessionRecoveryRecycle {
+		m.once.Do(func() { close(m.recycled) })
+	}
+}
+
+func TestSessionRecovery_BlockedDisconnectHonorsCompleteAttemptBound(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	blocked := &contextBlockedDisconnectConn{
+		entered: make(chan struct{}),
+		exited:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recovery-hard-bound",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = blocked
+	s.connected = true
+	s.mu.Unlock()
+	s.connectOverride = func(ctx context.Context) (pahoConnection, context.CancelFunc, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		return &fakeLiveConn{}, func() {}, nil
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	<-blocked.entered
+	attemptBound := (Config{Session: s.opts}).PostAcquireActivationTiming(s.mode).WorstCaseDuration
+	clk.Advance(attemptBound)
+	t.Cleanup(func() {
+		select {
+		case <-blocked.exited:
+		default:
+			close(blocked.release)
+		}
+	})
+	wait.RequireClosed(t, blocked.exited, time.Second)
+	<-metrics.recycled
+	health := s.Health(t.Context())
+	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
+	assert.Error(t, health.LastError)
+}
+
+var _ ports.MetricsExporter = (*recoveryCountExporter)(nil)
+
+func TestSessionRecovery_CompletionPublishesRateLimitBeforeConcurrentRequest(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &ports.RecordingExporter{}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recovery-completion-boundary",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.mu.Unlock()
+
+	settlementDrain := make(chan struct{}, 3)
+	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		settlementDrain <- struct{}{}
+		return nil
+	})
+	callbackWindow := make(chan struct{})
+	releaseFirstDial := make(chan struct{})
+	var dials atomic.Int32
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+		if dials.Add(1) == 1 {
+			close(callbackWindow)
+			<-releaseFirstDial
+		}
+		return &fakeLiveConn{}, func() {}, nil
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	<-settlementDrain
+	<-callbackWindow
+	s.mu.Lock()
+	firstGeneration := s.recoveryGeneration
+	s.mu.Unlock()
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	s.mu.Lock()
+	concurrentGeneration := s.recoveryGeneration
+	s.mu.Unlock()
+	assert.Equal(t, firstGeneration, concurrentGeneration,
+		"a request in the connection-up/completion window must coalesce")
+
+	close(releaseFirstDial)
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	assert.Equal(t, uint64(1), s.Health(t.Context()).RecoveryRecycleCount)
+
+	clk.Advance(settlementRecoveryMinInterval - time.Nanosecond)
+	require.NoError(t, s.requestRecovery(t.Context()))
+	s.mu.Lock()
+	boundaryGeneration := s.recoveryGeneration
+	s.mu.Unlock()
+	assert.Equal(t, firstGeneration+1, boundaryGeneration)
+	select {
+	case <-settlementDrain:
+		t.Fatal("next recovery began before the exact minimum-interval boundary")
+	default:
+	}
+
+	clk.Advance(time.Nanosecond)
+	<-settlementDrain
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	assert.Equal(t, uint64(2), s.Health(t.Context()).RecoveryRecycleCount)
 }

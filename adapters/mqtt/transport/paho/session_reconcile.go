@@ -35,8 +35,44 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) (retErr error) {
+	ctx, cancelRecoveryBound, recoveryGeneration := s.recoveryReconcileContext(ctx)
+	defer cancelRecoveryBound()
+	if recoveryGeneration != 0 {
+		if err := s.acquireReload(ctx); err != nil {
+			return MapError(err).WithMessage("mqtt: recovery reconcile waiting for reload serialization")
+		}
+		defer s.releaseReload()
+	}
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
+	defer func() {
+		if recoveryGeneration == 0 {
+			return
+		}
+		if retErr != nil {
+			s.completeRecoveryAttempt(recoveryGeneration, retErr, false)
+			return
+		}
+		s.mu.Lock()
+		resumed := s.recoveryAttemptActive &&
+			s.recoveryGeneration == recoveryGeneration && s.recoverySessionPresent
+		recoveryErr := s.recoveryErr
+		s.mu.Unlock()
+		if !resumed {
+			if recoveryErr != nil {
+				retErr = recoveryErr
+			} else {
+				retErr = shared.ErrUnavailable.WithMessage(
+					"mqtt: settlement recovery reconciliation completed without resumed broker state")
+			}
+			s.completeRecoveryAttempt(recoveryGeneration, retErr, false)
+			return
+		}
+		if !s.completeRecoveryAttempt(recoveryGeneration, nil, true) {
+			retErr = shared.ErrUnavailable.WithMessage(
+				"mqtt: settlement recovery completion raced its hard deadline")
+		}
+	}()
 	// The exclusive manager releases its lease whenever Reconcile returns an
 	// error. Detach and disconnect first so no broker consumer can survive past
 	// that fencing boundary, including a replacement generation created by the

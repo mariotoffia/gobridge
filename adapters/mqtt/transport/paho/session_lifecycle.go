@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -15,6 +16,107 @@ const (
 	settlementRecoveryDrainLimit  = 5 * time.Second
 	settlementRecoveryMinInterval = 30 * time.Second
 )
+
+func (s *Session) acquireReload(ctx context.Context) error {
+	select {
+	case <-s.reloadGate:
+		return nil
+	default:
+	}
+	if s.reloadGateWaitHook != nil {
+		s.reloadGateWaitHook()
+	}
+	select {
+	case <-s.reloadGate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Session) releaseReload() { s.reloadGate <- struct{}{} }
+
+func (s *Session) recoveryAttemptTimeout() time.Duration {
+	s.mu.Lock()
+	opts := s.opts
+	mode := s.mode
+	s.mu.Unlock()
+	return (Config{Session: opts}).PostAcquireActivationTiming(mode).WorstCaseDuration
+}
+
+// contextWithClockTimeout applies a cancellable hard bound using the injected
+// session clock, so recovery I/O observes deterministic cancellation in tests
+// and no phase can outlive the adapter activation budget.
+func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	if timeout <= 0 {
+		cancel()
+		return ctx, func() {}
+	}
+	timer := s.clock().NewTimer(timeout)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-timer.C():
+			cancel()
+		case <-done:
+		}
+	}()
+	var cancelOnce sync.Once
+	return ctx, func() {
+		cancelOnce.Do(func() {
+			timer.Stop()
+			close(done)
+			cancel()
+		})
+	}
+}
+
+func (s *Session) recoveryReconcileContext(parent context.Context) (context.Context, context.CancelFunc, uint64) {
+	s.mu.Lock()
+	active := s.recoveryAttemptActive
+	generation := s.recoveryGeneration
+	deadline := s.recoveryAttemptDeadline
+	s.mu.Unlock()
+	if !active || deadline.IsZero() {
+		return parent, func() {}, 0
+	}
+	remaining := deadline.Sub(s.clock().Now())
+	ctx, cancel := s.contextWithClockTimeout(parent, remaining)
+	return ctx, cancel, generation
+}
+
+func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	s.recoveryAttemptActive = false
+	s.recoveryAttemptDeadline = time.Time{}
+	s.lastRecoveryCompleted = s.clock().Now()
+	s.recoveryRecycleCount++
+	cancel := s.recoveryAttemptCancel
+	s.recoveryAttemptCancel = nil
+	if success {
+		s.recoveryPending = false
+		s.recoveryNeedsSessionPresent = false
+		s.recoverySessionPresent = false
+		s.recoveryErr = nil
+	} else {
+		if attemptErr == nil {
+			attemptErr = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery did not complete")
+		}
+		s.recoveryErr = attemptErr
+	}
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	return true
+}
 
 // requestRecovery records the Retry synchronously, then recycles the durable
 // broker session asynchronously. Retry cannot perform the recycle inline: the
@@ -35,6 +137,9 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	}
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
+	s.recoverySessionPresent = false
+	s.recoveryGeneration++
+	generation := s.recoveryGeneration
 	s.recoveryErr = nil
 	s.subscriptionsSatisfied = false
 	var rateLimit <-chan time.Time
@@ -46,11 +151,11 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
-	go s.runRecovery(context.WithoutCancel(ctx), rateLimit)
+	go s.runRecovery(context.WithoutCancel(ctx), rateLimit, generation)
 	return nil
 }
 
-func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time) {
+func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, generation uint64) {
 	if rateLimit != nil {
 		select {
 		case <-rateLimit:
@@ -58,6 +163,41 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time) {
 			return
 		}
 	}
+	attemptTimeout := s.recoveryAttemptTimeout()
+	attemptCtx, cancelAttempt := s.contextWithClockTimeout(ctx, attemptTimeout)
+	s.mu.Lock()
+	if !s.recoveryPending || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		cancelAttempt()
+		return
+	}
+	s.recoveryAttemptActive = true
+	s.recoveryAttemptDeadline = s.clock().Now().Add(attemptTimeout)
+	s.recoveryAttemptCancel = cancelAttempt
+	s.mu.Unlock()
+	ctx = attemptCtx
+
+	if err := s.acquireReload(ctx); err != nil {
+		s.completeRecoveryAttempt(generation,
+			MapError(err).WithMessage("mqtt: settlement recovery waiting for reload serialization"), false)
+		return
+	}
+	gateHeld := true
+	defer func() {
+		if gateHeld {
+			s.releaseReload()
+		}
+	}()
+	// A credential reload may have completed while this rate-limited request was
+	// queued. Re-arm the Session Present requirement only after owning the shared
+	// reload gate so the connection this attempt creates must satisfy it.
+	s.mu.Lock()
+	if s.recoveryAttemptActive && s.recoveryGeneration == generation {
+		s.recoveryNeedsSessionPresent = true
+		s.recoverySessionPresent = false
+	}
+	s.mu.Unlock()
+
 	// Stop new ingress immediately, but let already accepted route work settle
 	// for a bounded interval before the old socket is detached.
 	drainCtx, cancelDrain := context.WithCancel(ctx)
@@ -75,23 +215,21 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time) {
 	drainLimit.Stop()
 	cancelDrain()
 
-	err := s.Reload(ctx)
-	s.mu.Lock()
-	s.lastRecoveryCompleted = s.clock().Now()
-	s.recoveryRecycleCount++
-	if err == nil {
-		// The real connection callback additionally verifies Session Present.
-		// connectOverride represents an already-verified connection in unit tests.
-		if s.connectOverride != nil {
-			s.recoveryNeedsSessionPresent = false
-			s.recoveryPending = false
-		}
-	} else {
-		s.recoveryErr = err
+	if err := s.reloadLocked(ctx); err != nil {
+		s.completeRecoveryAttempt(generation, err, false)
+		return
 	}
-	s.mu.Unlock()
-	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
-		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+
+	// Reconnect reconciliation is owned by the runtime session manager. Release
+	// the shared gate so it can converge the replacement generation, but keep the
+	// attempt pending and bounded until Reconcile records the terminal outcome.
+	s.releaseReload()
+	gateHeld = false
+	<-ctx.Done()
+	if s.completeRecoveryAttempt(generation,
+		MapError(ctx.Err()).WithMessage("mqtt: settlement recovery exceeded complete-attempt bound"), false) {
+		return
+	}
 }
 
 // Reload tears down the current ConnectionManager and re-runs Start
@@ -114,6 +252,16 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time) {
 // options. Reload is narrower — the options are not re-read, only the
 // TLS handshake + transport layer are rebuilt.
 func (s *Session) Reload(ctx context.Context) error {
+	if err := s.acquireReload(ctx); err != nil {
+		return MapError(err).WithMessage("mqtt reload: waiting for serialization gate")
+	}
+	defer s.releaseReload()
+	return s.reloadLocked(ctx)
+}
+
+// reloadLocked performs one ConnectionManager replacement while the caller owns
+// reloadGate, the shared ConnectionManager-reload serialization gate.
+func (s *Session) reloadLocked(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -497,7 +645,7 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	}
 	if s.recoveryNeedsSessionPresent {
 		s.recoveryNeedsSessionPresent = false
-		s.recoveryPending = false
+		s.recoverySessionPresent = true
 		s.recoveryErr = nil
 	}
 	s.connected = true

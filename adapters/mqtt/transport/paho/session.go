@@ -110,6 +110,10 @@ type Session struct {
 	// manager — so it is intentionally not a holder of this mutex (see
 	// handleConnectionUp for why it must not block on it).
 	reconcileMu sync.Mutex
+	// reloadGate is the one context-aware serialization gate shared by
+	// credential, managed-migration, and settlement-recovery reloads.
+	reloadGate         chan struct{}
+	reloadGateWaitHook func() // deterministic package-test barrier; nil in production
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
@@ -209,6 +213,11 @@ type Session struct {
 	// broker session. Concurrent Retry requests coalesce on this state.
 	recoveryPending             bool
 	recoveryNeedsSessionPresent bool
+	recoverySessionPresent      bool
+	recoveryAttemptActive       bool
+	recoveryGeneration          uint64
+	recoveryAttemptDeadline     time.Time
+	recoveryAttemptCancel       context.CancelFunc
 	recoveryErr                 error
 	lastRecoveryCompleted       time.Time
 	recoveryRecycleCount        uint64
@@ -298,9 +307,11 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		metrics:      m,
 		clk:          opts.Clock,
 		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
+		reloadGate:   make(chan struct{}, 1),
 		observedSubs: make(map[string]subscriptionGrant),
 		activeSubs:   make(map[string]byte),
 	}
+	s.reloadGate <- struct{}{}
 	// The router shares the session's (possibly fake) clock so the startup
 	// grace window is deterministic under test, and calls back through
 	// s.unsubscribeOrphan to converge broker state for orphan topics. The

@@ -220,6 +220,12 @@ func (s *Session) Start(ctx context.Context) error {
 	// one operation. Production and explicit delayed-callback tests must signal
 	// the barrier from handleConnectionUpGeneration.
 	if s.connectOverride != nil && !s.connectOverrideAwaitConnectionUp {
+		s.mu.Lock()
+		if s.recoveryNeedsSessionPresent {
+			s.recoveryNeedsSessionPresent = false
+			s.recoverySessionPresent = true
+		}
+		s.mu.Unlock()
 		s.completeConnectionUpBarrier(connectionGeneration, nil)
 	}
 	select {
