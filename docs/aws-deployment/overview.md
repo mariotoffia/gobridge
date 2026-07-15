@@ -259,7 +259,13 @@ warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`
 
 GoBridge uses a **poll watcher** (default interval: 1 second) to detect config
 file changes on the mounted EFS volume. When the file changes, the runtime
-reloads routes, processors, and transports without dropping in-flight messages.
+reloads routes, processors, and transports, draining in-flight messages within a
+bounded window. What survives the reload is conditional: a Persistent/Exclusive
+QoS 1/2 source redelivers anything not settled before the drain completes, so
+those messages are not lost. An Ephemeral session, a QoS 0 source, or a drain
+that aborts on timeout can drop in-flight messages. See
+[MQTT — settlement semantics](../transports/mqtt.md#settlement-semantics) for the
+drain bound and loss windows.
 
 ### Access Point Design
 

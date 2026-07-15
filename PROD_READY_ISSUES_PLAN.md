@@ -814,7 +814,7 @@ feat(aws): add DynamoDB-coordinated bridge HA
 
 ## Task 12: Correct production claims and pin container inputs
 
-**Status:** Complete
+**Status:** Complete (spec-review round 2 resolved; make lint + make test + both seeder resolver paths green)
 
 **Agents/Skills:** thiink:doc-markdown-writer, thiink:doc-markdown-reviewer,
 thiink:security-auditor
@@ -834,6 +834,11 @@ thiink:security-auditor
 - Modify: `docs/aws-deployment/overview.md`
 - Modify: `deployment/aws-filebased-config/README.md`
 - Modify: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/scripts/update-image.sh`
+- Modify: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/MANIFEST.md`
+- Modify: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/tests/run.sh`
+- Create: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/tests/fixtures/bin/crane`
+- Create: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/tests/fixtures/bin/docker`
+- Create: `deployment/aws-filebased-config/cdk/constructs/internal/seeder/tests/fixtures/bin/curl`
 - Modify: `DEVELOPMENT.md`
 - Modify: `TESTS.md`
 
@@ -847,9 +852,16 @@ Done: `docs/transports/mqtt.md` now carries the single canonical
 "Source-to-destination guarantee matrix"; the "neither wired delivery mode
 loses a message" claim is removed there and in
 `docs/adr/0009-durable-outbound-mqtt-session-state.md`, which links the matrix
-instead of duplicating it. QoS 0, Ephemeral clean-start, source offline-queue
-expiry, crash-before-Persist, explicit drop policy, missing/non-unique producer
-ID, and accepted-then-unconfirmed sends are all stated as loss/ambiguous rows.
+instead of duplicating it. Round-2 review expanded the matrix into distinct rows
+(verified against code): durable vs **volatile** (in-memory, test-only) outbox
+store restart-safety; **missing** producer ID (per-publish UUID, no collapse) vs
+**reused** producer ID (`ErrDuplicateRecord` collapse of a distinct event);
+redeliverable **crash-before-Persist** (Persist precedes source ack, so the
+source redelivers) split from the non-redeliverable QoS0/Ephemeral case; source
+retention/expiry and store retention/capacity instead of "any"; and configured
+drop / DLQ / retry-cap outcomes. Prohibited `actually` removed (finding 10).
+`docs/aws-deployment/overview.md` EFS-reload "without dropping in-flight messages"
+qualified by source redelivery and bounded/aborted drain (finding 3).
 
 - [x] **Step 2: Correct subscription, failover, and ACK text**
 
@@ -870,11 +882,17 @@ seam, not a production settlement-conformance statement.
 Use `git log --follow` and implementing commits to set decision/effective dates.
 Future decisions remain Proposed, never future-dated Accepted.
 
-Done: future date 2026-08-14 replaced with the real commit dates — ADRs
-0009/0010/0011 → 2026-07-13 (commit 4d8d76d; 0009's boundary landed 2026-07-10
-in 9d8effb); ADR 0003 covered-retention addendum → 2026-07-10 (commit 9d8effb).
-Each ADR links its implementing commit. All remain Accepted because the
-implementation is present at or before the audited revision (2026-07-13).
+Done: future date 2026-08-14 replaced with the real commit dates and roles.
+ADR 0009 → decision recorded 4d8d76d (2026-07-13); implementation
+(`NonDurableEgressReporter`/`egressDurabilityAdvisory`) in 9d8effb (2026-07-10).
+ADR 0010 → 4d8d76d (2026-07-13). ADR 0011 → decision recorded 4d8d76d
+(2026-07-13); original takeover (`noteSessionTakeover`) 761a048 (2026-07-03),
+suffix uniquifier `e48e879` (2026-07-10), penalty/nonce hardening 4d8d76d.
+ADR 0003 covered-retention addendum → implementation 438139a (2026-07-10),
+refactor 4d8d76d (2026-07-13), addendum text 9d8effb (2026-07-10). All remain
+Accepted because the implementation is present at or before the audited revision
+(2026-07-13). Round-2 review corrected the coarse "landed together"/"Implemented"
+lines to distinct commit roles verified with `git log -S`/`git show`.
 
 - [x] **Step 4: Pin image indexes**
 
@@ -888,10 +906,15 @@ Done via `docker buildx imagetools inspect` (no tools installed):
 and `gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b`,
 both verified as OCI indexes including linux/amd64 + linux/arm64. `Dockerfile`
 pinned (GO_VERSION ARG removed; stale "until then mutable" comments removed).
-`update-image.sh` repaired (stdin JSON, amd64+arm64 gate, fail-closed, digest
-computed from verified bytes, no unpinned install) with seeder shell-test
-coverage. Refresh/verify workflow recorded in DEVELOPMENT.md, TESTS.md,
-overview.md, and the deployment README.
+`update-image.sh` rewritten (round 2): the upstream aws-cli image has no floating
+`2` tag (registry-verified), so the script discovers the highest concrete `2.x.y`
+tag (`crane ls` or ECR Public v2 API via curl), resolves that tag's top-level
+index via crane or docker buildx, verifies amd64+arm64, computes the digest from
+verified bytes, fails closed (never pins the mutable `2`), and cites reviewed
+resolver versions (crane v0.21.7+, buildx v0.34.1+) with no unpinned install.
+Seeder tests cover BOTH resolver paths with fake crane/docker/curl. Real docker
+path validated live: resolved `aws-cli:2.35.24@sha256:f7e6c7fb…`. Workflow
+recorded in DEVELOPMENT.md, TESTS.md, MANIFEST.md, overview.md, deployment README.
 
 - [x] **Step 5: Review docs**
 

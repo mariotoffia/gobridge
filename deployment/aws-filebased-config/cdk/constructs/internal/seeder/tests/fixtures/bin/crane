@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Fake `crane` for update-image.sh tests. Deterministic, no network.
+# Fake `crane` for update-image.sh tests. Deterministic, no network. Models the
+# real crane sub-commands the script uses and logs every invocation so a test
+# can assert the EXACT reference the resolver received.
 #
-# Supports only the two sub-commands the repaired update-image.sh uses:
-#   crane manifest <ref>  → cat ${FAKE_CRANE_MANIFEST}   (the raw index bytes)
-#   crane ls <repo>       → cat ${FAKE_CRANE_TAGS} or nothing
-#
-# `crane digest` is intentionally a hard failure: the repaired script must
-# compute the digest from the verified manifest bytes, never from a separate
-# digest call that could disagree with what it verified.
+#   crane ls <repo>       → cat ${FAKE_CRANE_TAGS}     (one tag per line)
+#   crane manifest <ref>  → cat ${FAKE_CRANE_MANIFEST} (raw index/list bytes)
+#   crane digest <ref>    → hard failure: the script must compute the digest from
+#                           the verified manifest bytes, never a separate call.
 set -euo pipefail
+printf 'crane %s\n' "$*" >> "${FAKE_TOOL_LOG:-/dev/null}"
 case "${1:-}" in
+  ls)
+    : "${FAKE_CRANE_TAGS:?FAKE_CRANE_TAGS not set}"
+    cat -- "$FAKE_CRANE_TAGS"
+    ;;
   manifest)
     : "${FAKE_CRANE_MANIFEST:?FAKE_CRANE_MANIFEST not set}"
     cat -- "$FAKE_CRANE_MANIFEST"
-    ;;
-  ls)
-    if [ -n "${FAKE_CRANE_TAGS:-}" ]; then cat -- "$FAKE_CRANE_TAGS"; fi
     ;;
   digest)
     echo "fake-crane: digest unsupported (script must compute from manifest)" >&2

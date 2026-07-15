@@ -33,6 +33,11 @@ fully-qualified `repo:tag@sha256:digest` reference.
 make -C deployment/aws-filebased-config update-seeder-image
 ```
 
-Resolves the latest `aws-cli:2` digest via `crane` (preferred) or
-`docker manifest inspect` and rewrites `image.txt` in place. Run periodically
-(e.g. weekly via CI cron); commit the diff.
+Discovers the highest concrete `aws-cli:2.x.y` tag (the upstream image has no
+floating `2` tag), resolves that tag's top-level multi-platform index digest via
+`crane` (preferred) or `docker buildx imagetools inspect`, verifies the index
+includes both `linux/amd64` and `linux/arm64`, and rewrites BOTH `image.txt` and
+the seeder `Dockerfile` FROM to the pinned `repo:tag@sha256:digest`. Fails closed
+on a missing tag, digest, or platform, and never installs a tool. Run
+periodically (e.g. weekly via CI cron); commit the diff. Reviewed resolver
+versions: crane v0.21.7+ or docker buildx v0.34.1+.

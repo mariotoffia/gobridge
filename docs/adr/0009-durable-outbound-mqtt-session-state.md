@@ -3,7 +3,8 @@
 Status: accepted
 Date: 2026-07-13
 Deciders: GoBridge core
-Implemented: commit 4d8d76d (2026-07-13); the `NonDurableEgressReporter` boundary landed in commit 9d8effb (2026-07-10)
+Decision recorded: commit 4d8d76d (2026-07-13, this ADR file)
+Implementation: `NonDurableEgressReporter`, `Sender.NonDurableEgress`, and `egressDurabilityAdvisory` in commit 9d8effb (2026-07-10)
 
 ## Context
 
@@ -96,7 +97,7 @@ runtime can reason about it.
   deferred `M-6` alternative.
 - **Advertise MQTT QoS 2 as the durability guarantee.** Rejected — the in-memory
   store makes that claim false across a restart, and it would invite operators to
-  drop the route-layer outbox that actually provides the guarantee.
+  drop the route-layer outbox that provides the guarantee.
 - **Silently accept in-flight loss as acceptable.** Rejected — the loss is only
   acceptable *because* the route mode recovers it; leaving that implicit would
   let a future ack-early delivery mode reintroduce real loss unnoticed. Reporting

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fake `curl` for update-image.sh docker-path tag discovery (ECR Public v2 API).
+# Deterministic, no network. Recognizes the token and tags-list URLs by
+# substring and ignores the -f/-s/-S/-L/-H flags the script passes.
+#
+#   .../token/       → a fixed anonymous token JSON
+#   .../tags/list    → cat ${FAKE_REGISTRY_TAGS}   (a v2 tags-list JSON body)
+set -euo pipefail
+url=""
+for arg in "$@"; do
+  case "$arg" in
+    http://*|https://*) url="$arg" ;;
+  esac
+done
+case "$url" in
+  */token/*)
+    printf '{"token":"fake-anonymous-token"}'
+    ;;
+  */tags/list*)
+    : "${FAKE_REGISTRY_TAGS:?FAKE_REGISTRY_TAGS not set}"
+    cat -- "$FAKE_REGISTRY_TAGS"
+    ;;
+  *)
+    echo "fake-curl: unexpected url: ${url:-<none>}" >&2
+    exit 22
+    ;;
+esac

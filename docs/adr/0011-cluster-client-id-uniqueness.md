@@ -3,7 +3,8 @@
 Status: accepted
 Date: 2026-07-13
 Deciders: GoBridge core
-Implemented: commit 4d8d76d (2026-07-13)
+Decision recorded: commit 4d8d76d (2026-07-13, this ADR file)
+Implementation: original Session-Taken-Over handling (`noteSessionTakeover`) in commit 761a048 (2026-07-03); opt-in `client_id_suffix` uniquifier and Exclusive-session rejection in commit e48e879 (2026-07-10); takeover-penalty/decay and nonce fail-closed (A-15) hardening in commit 4d8d76d (2026-07-13)
 
 ## Context
 

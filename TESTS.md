@@ -413,12 +413,17 @@ They cover two scripts:
 - `seeder.sh` — the EFS config-seeder contract (single-line JSON outcome, hash
   match/mismatch, adopt/abort modes). A PATH shim mocks the `aws` CLI over
   fixture files.
-- `scripts/update-image.sh` — the base-image digest refresh. A fake `crane` on
-  PATH feeds canned manifests, and the checks assert the script pins a top-level
-  multi-platform index, **verifies `linux/amd64` + `linux/arm64` before it
-  writes**, prints only the pinned `image@sha256` reference, and **fails closed**
-  (rewrites nothing) on a missing platform, a single-arch manifest, or empty
-  registry output. The script never installs a tool.
+- `scripts/update-image.sh` — the base-image digest refresh, exercised on BOTH
+  resolver paths (crane and docker buildx) with fake `crane`, `docker`, and
+  `curl` tools that model real command output and exit codes. The checks assert
+  each resolver receives the exact concrete `2.x.y` reference, the manifest JSON
+  reaches the verifier on stdin (the pinned digest equals the hash of the exact
+  bytes), the script pins a top-level multi-platform index (OCI index or Docker
+  manifest list), **verifies `linux/amd64` + `linux/arm64` before it writes**,
+  prints only the pinned `image@sha256` reference, and **fails closed** (rewrites
+  nothing) on a missing platform, a single-arch manifest, malformed JSON, or a
+  registry that advertises no concrete `2.x.y` tag (so the mutable `2` tag is
+  never pinned). The script never installs a tool.
 
 These are the verification gates for the container-input pins. The resolve/verify
 workflow the root `Dockerfile` follows is in [DEVELOPMENT.md](DEVELOPMENT.md)

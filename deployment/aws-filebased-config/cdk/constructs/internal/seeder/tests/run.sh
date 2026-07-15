@@ -126,73 +126,119 @@ echo "====================="
 
 UPDATE_IMAGE="${ROOT}/scripts/update-image.sh"
 
-# Multi-platform index with amd64 + arm64 (happy path). The trailing
-# unknown/unknown attestation entry must be ignored.
-cat > "${WORKDIR}/ui-ok.json" <<'JSON'
+# --- manifest fixtures -------------------------------------------------------
+# OCI image index with amd64 + arm64 (happy path); the unknown/unknown
+# attestation entry must be ignored.
+cat > "${WORKDIR}/idx-ok.json" <<'JSON'
 {"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
  {"platform":{"os":"linux","architecture":"amd64"}},
  {"platform":{"os":"linux","architecture":"arm64","variant":"v8"}},
  {"platform":{"os":"unknown","architecture":"unknown"}}
 ]}
 JSON
+# Docker manifest list (what real `docker buildx imagetools inspect --raw`
+# returns for aws-cli) with amd64 + arm64 — must also be accepted.
+cat > "${WORKDIR}/idx-dockerlist.json" <<'JSON'
+{"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json","manifests":[
+ {"platform":{"os":"linux","architecture":"amd64"}},
+ {"platform":{"os":"linux","architecture":"arm64"}}
+]}
+JSON
 # Index missing arm64 → must fail closed.
-cat > "${WORKDIR}/ui-noarm.json" <<'JSON'
+cat > "${WORKDIR}/idx-noarm.json" <<'JSON'
 {"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
  {"platform":{"os":"linux","architecture":"amd64"}}
 ]}
 JSON
 # A single-arch image manifest (not a multi-platform index) → must fail closed.
-cat > "${WORKDIR}/ui-single.json" <<'JSON'
+cat > "${WORKDIR}/idx-single.json" <<'JSON'
 {"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{},"layers":[]}
 JSON
-# Empty registry output → must fail closed.
-: > "${WORKDIR}/ui-empty.json"
+# Malformed JSON → must fail closed.
+printf '{not valid json' > "${WORKDIR}/idx-bad.json"
 
-# update_image_case name manifest-fixture want_exit want_written(yes|no)
-update_image_case() {
-  local name="$1" manifest="$2" want_exit="$3" want_written="$4"
-  local img="${WORKDIR}/ui-${name}-image.txt"
-  local dfile="${WORKDIR}/ui-${name}-Dockerfile"
+# --- tag-list fixtures (crane `ls` lines + registry v2 JSON) ------------------
+# "concrete" advertises the mutable 2 and latest plus real 2.x.y tags; the
+# script must pick the HIGHEST concrete 2.x.y (2.35.24), never the mutable 2.
+printf '%s\n' latest 2 1.0.0 2.4.0 2.35.9 2.35.24 > "${WORKDIR}/tags-concrete.txt"
+cat > "${WORKDIR}/tags-concrete.json" <<'JSON'
+{"tags":["latest","2","1.0.0","2.4.0","2.35.9","2.35.24"]}
+JSON
+# "none" advertises only mutable/floating tags → no concrete 2.x.y exists.
+printf '%s\n' latest 2 > "${WORKDIR}/tags-none.txt"
+cat > "${WORKDIR}/tags-none.json" <<'JSON'
+{"tags":["latest","2"]}
+JSON
+
+# run_ui tool name manifest tagset want_exit want_written [expect_tag]
+run_ui() {
+  local tool="$1" name="$2" manifest="$3" tagset="$4" want_exit="$5" want_written="$6" expect_tag="${7:-}"
+  local img="${WORKDIR}/ui-${tool}-${name}-image.txt"
+  local dfile="${WORKDIR}/ui-${tool}-${name}-Dockerfile"
+  local toollog="${WORKDIR}/ui-${tool}-${name}-tool.log"
   printf 'SENTINEL-OLD\n' > "$img"
   printf 'FROM placeholder:old@sha256:0000\nRUN true\n' > "$dfile"
+  : > "$toollog"
   local out rc=0
   set +e
-  out=$(FAKE_CRANE_MANIFEST="$manifest" \
+  out=$(UPDATE_IMAGE_TOOL="$tool" FAKE_TOOL_LOG="$toollog" \
+        FAKE_CRANE_MANIFEST="$manifest" FAKE_DOCKER_MANIFEST="$manifest" \
+        FAKE_CRANE_TAGS="${WORKDIR}/tags-${tagset}.txt" \
+        FAKE_REGISTRY_TAGS="${WORKDIR}/tags-${tagset}.json" \
         IMAGE_TXT="$img" SEEDER_DOCKERFILE="$dfile" \
         bash "$UPDATE_IMAGE" 2>/dev/null)
   rc=$?
   set -e
+  local label="ui-${tool}-${name}"
   if [ "$rc" -ne "$want_exit" ]; then
-    nope "ui-$name" "want exit $want_exit got $rc; out: $out"; return
+    nope "$label" "want exit $want_exit got $rc; out: $out; log: $(cat "$toollog")"; return
   fi
   if [ "$want_written" = "yes" ]; then
-    case "$out" in
-      *$'\n'*) nope "ui-$name" "stdout must be one pinned line, got: $out"; return ;;
-    esac
-    if ! printf '%s' "$out" | grep -Eq '^public\.ecr\.aws/aws-cli/aws-cli:2@sha256:[0-9a-f]{64}$'; then
-      nope "ui-$name" "stdout is not a single pinned image@sha256 ref: '$out'"; return
+    case "$out" in *$'\n'*) nope "$label" "stdout must be one line, got: $out"; return ;; esac
+    local expect_ref="public.ecr.aws/aws-cli/aws-cli:${expect_tag}"
+    # The resolver must receive the EXACT concrete reference.
+    if [ "$tool" = "crane" ]; then
+      grep -qF "crane manifest ${expect_ref}" "$toollog" \
+        || { nope "$label" "crane resolver ref != ${expect_ref}; log: $(cat "$toollog")"; return; }
+    else
+      grep -qF "docker buildx imagetools inspect ${expect_ref} --raw" "$toollog" \
+        || { nope "$label" "docker resolver ref != ${expect_ref}; log: $(cat "$toollog")"; return; }
+    fi
+    # The digest must be computed from the exact bytes that reached the verifier
+    # on stdin (proves the JSON was piped in, not clobbered).
+    local expect_digest
+    expect_digest="sha256:$(python3 -c 'import sys,hashlib;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$manifest")"
+    if [ "$out" != "${expect_ref}@${expect_digest}" ]; then
+      nope "$label" "stdout '$out' != ${expect_ref}@${expect_digest}"; return
     fi
     if [ "$(cat "$img")" != "$out" ]; then
-      nope "ui-$name" "image.txt content != printed pinned ref"; return
+      nope "$label" "image.txt content != printed pinned ref"; return
     fi
     if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM $out" ]; then
-      nope "ui-$name" "Dockerfile FROM not synced to the pinned ref"; return
+      nope "$label" "Dockerfile FROM not synced to the pinned ref"; return
     fi
   else
     if [ "$(cat "$img")" != "SENTINEL-OLD" ]; then
-      nope "ui-$name" "image.txt was rewritten on a failing (fail-closed) run"; return
+      nope "$label" "image.txt was rewritten on a fail-closed run"; return
     fi
     if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM placeholder:old@sha256:0000" ]; then
-      nope "ui-$name" "Dockerfile was rewritten on a failing (fail-closed) run"; return
+      nope "$label" "Dockerfile was rewritten on a fail-closed run"; return
     fi
   fi
-  ok "ui-$name"
+  ok "$label"
 }
 
-update_image_case "ok"           "${WORKDIR}/ui-ok.json"     0 yes
-update_image_case "missing-arm64" "${WORKDIR}/ui-noarm.json"  3 no
-update_image_case "not-an-index" "${WORKDIR}/ui-single.json" 3 no
-update_image_case "empty-output" "${WORKDIR}/ui-empty.json"  3 no
+# Both resolver paths: crane (crane ls + crane manifest) and docker buildx
+# (registry API tag list + imagetools inspect --raw).
+for tool in crane docker; do
+  run_ui "$tool" "ok"              "${WORKDIR}/idx-ok.json"     concrete 0 yes 2.35.24
+  run_ui "$tool" "missing-arm64"   "${WORKDIR}/idx-noarm.json"  concrete 3 no
+  run_ui "$tool" "not-an-index"    "${WORKDIR}/idx-single.json" concrete 3 no
+  run_ui "$tool" "malformed-json"  "${WORKDIR}/idx-bad.json"    concrete 3 no
+  run_ui "$tool" "rejects-mutable-2" "${WORKDIR}/idx-ok.json"   none     3 no
+done
+# The docker path must also accept a Docker manifest-list mediaType.
+run_ui "docker" "docker-manifest-list" "${WORKDIR}/idx-dockerlist.json" concrete 0 yes 2.35.24
 
 echo "------------"
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"

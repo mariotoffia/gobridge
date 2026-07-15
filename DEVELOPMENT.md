@@ -223,7 +223,8 @@ the exact reviewed bytes:
 Both indexes were verified to include `linux/amd64` and `linux/arm64`.
 
 Refresh and verify a digest before committing it. This needs `docker buildx`
-(a documented prerequisite); `crane` works too. It never installs a tool:
+(a documented prerequisite; reviewed version v0.34.1+); `crane` v0.21.7+ works
+too. It never installs a tool:
 
 ```bash
 IMG=golang:1.25-bookworm   # or gcr.io/distroless/static-debian12:nonroot
@@ -243,11 +244,15 @@ reproducible only to the extent these pinned bases, the locked per-module
 `go.sum`, and the Go toolchain are fixed. The build claims no bit-for-bit
 reproducibility beyond those facts.
 
-The seeder base image (`public.ecr.aws/aws-cli/aws-cli:2`) is pinned the same
-way. `make -C deployment/aws-filebased-config update-seeder-image` resolves,
-verifies (amd64 + arm64), computes the digest from the verified bytes, and
-rewrites its pin, failing closed on a missing digest or platform. Its shell
-checks run under `make -C deployment/aws-filebased-config test` (see
+The seeder base image (`public.ecr.aws/aws-cli/aws-cli`, pinned to a concrete
+`2.x.y` tag) uses the same discipline. `make -C deployment/aws-filebased-config
+update-seeder-image` discovers the highest concrete `2.x.y` tag (the upstream
+image publishes no floating `2` tag), resolves and verifies its top-level index
+(amd64 + arm64), computes the digest from the verified bytes, and rewrites both
+`image.txt` and the seeder `Dockerfile`, failing closed on a missing tag, digest,
+or platform. It never installs a tool; reviewed resolver versions are crane
+v0.21.7+ or docker buildx v0.34.1+. Its shell checks (both the crane and docker
+paths) run under `make -C deployment/aws-filebased-config test` (see
 [TESTS.md](TESTS.md), Deployment shell tests).
 
 ## CI Workflow

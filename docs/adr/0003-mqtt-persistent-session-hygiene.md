@@ -116,8 +116,10 @@ evidence, guarding against removing subscriptions the plan still wants.
 
 ## Addendum 2026-07-10: covered QoS 1 and 2 retention past grace
 
-Implemented in commit 9d8effb (2026-07-10); the `MQTTRouterCoveredRetained`
-retention path and this addendum landed together.
+Provenance: the covered-retention implementation (`MQTTRouterCoveredRetained` and
+the covered-topic past-grace split) landed in commit 438139a (2026-07-10) and was
+later refactored in commit 4d8d76d (2026-07-13); this addendum text was written in
+commit 9d8effb (2026-07-10). The date above is the addendum's commit date.
 
 The original **Ack-and-drop past grace** decision above described an
 *unconditional* ack-and-drop once the grace window elapses. That is no longer

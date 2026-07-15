@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-07-13
 Deciders: GoBridge core
-Implemented: commit 4d8d76d (2026-07-13)
+Decision recorded and implemented: commit 4d8d76d (2026-07-13; the opt-in `no_local`/`NoLocal` subscribe path). The reserved `x-bridge.forwarded-*` headers this ADR references predate it (commit f74b4ec, 2026-06-29) and remain reserved-but-unenforced.
 
 ## Context
 

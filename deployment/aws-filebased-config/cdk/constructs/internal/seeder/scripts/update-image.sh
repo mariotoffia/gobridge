@@ -1,44 +1,82 @@
 #!/usr/bin/env bash
-# update-image.sh — pin image.txt (and the seeder Dockerfile FROM) to the current
-# top-level multi-platform OCI index digest of the aws-cli:2 base image.
+# update-image.sh — pin image.txt and the seeder Dockerfile FROM to the current
+# top-level multi-platform digest of the latest concrete aws-cli 2.x release.
 #
-# It resolves the RAW top-level index once, verifies that index is a genuine
-# multi-platform index that includes BOTH linux/amd64 and linux/arm64, computes
-# the digest from the exact verified bytes, and only then rewrites the pins. It
-# fails closed on a missing/invalid digest or missing platforms, and prints ONLY
-# the pinned `image:tag@sha256:<digest>` line on success.
+# The upstream AWS CLI public image publishes concrete `2.x.y` tags and `latest`;
+# it does NOT publish a floating `2` tag. So this script DISCOVERS the highest
+# concrete `2.x.y` tag, resolves that tag's top-level index (OCI image index or
+# Docker manifest list), verifies the index includes BOTH linux/amd64 and
+# linux/arm64, computes the digest from the exact verified bytes, and only then
+# rewrites the pins. It fails closed on any missing tag, digest, or platform, and
+# prints ONLY the pinned image@sha256 line on success.
 #
-# Tooling: `crane` (preferred) or `docker buildx imagetools` — both standard
-# container tooling. This script never installs a tool and never pins to an
-# unverified digest.
+# Resolver tools (reviewed versions — this script NEVER installs a tool):
+#   - crane          >= v0.21.7  (github.com/google/go-containerregistry)  [preferred]
+#   - docker buildx  >= v0.34.1  (github.com/docker/buildx)                [fallback]
+# Tag discovery uses `crane ls` (crane path) or the ECR Public registry HTTP v2
+# API via curl (docker path). Force a path with UPDATE_IMAGE_TOOL=crane|docker.
 set -euo pipefail
 IFS=$'\n\t'
 
 REPO="public.ecr.aws/aws-cli/aws-cli"
-TAG="2"
+REGISTRY_PATH="aws-cli/aws-cli"          # path under public.ecr.aws for the v2 API
+TAG_RE='^2\.[0-9]+\.[0-9]+$'             # concrete 2.x.y only; NOT the floating "2"
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # Overridable for tests; default to the committed pins next to the seeder.
 IMAGE_TXT="${IMAGE_TXT:-${HERE}/../image.txt}"
 DOCKERFILE="${SEEDER_DOCKERFILE:-${HERE}/../Dockerfile}"
 
-# Pick the resolver. buildx is needed for the docker path (imagetools).
-TOOL=""
-if command -v crane >/dev/null 2>&1; then
-  TOOL="crane"
-elif command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
-  TOOL="docker"
-else
-  cat >&2 <<'EOF'
-update-image.sh: need `crane` or `docker buildx` to resolve a multi-platform
-index digest. Both are standard container tooling; install either from its
-official distribution. This script never installs tools and never pins to an
-unverified digest.
+# Pick the resolver. UPDATE_IMAGE_TOOL forces one (also used by the tests).
+TOOL="${UPDATE_IMAGE_TOOL:-}"
+if [ -z "$TOOL" ]; then
+  if command -v crane >/dev/null 2>&1; then
+    TOOL="crane"
+  elif command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
+    TOOL="docker"
+  else
+    cat >&2 <<'EOF'
+update-image.sh: need a reviewed resolver to pin a multi-platform index digest:
+  - crane          >= v0.21.7  (github.com/google/go-containerregistry)
+  - docker buildx  >= v0.34.1  (github.com/docker/buildx)
+Install a reviewed release from its official distribution. This script never
+installs a tool and never pins to an unverified digest.
 EOF
-  exit 2
+    exit 2
+  fi
 fi
 
-# fetch_raw_index prints the RAW top-level manifest/index bytes for a ref. Both
+# --- tag discovery -----------------------------------------------------------
+list_tags_registry_api() {
+  # ECR Public anonymous token, then the v2 tags list. curl + python3 only.
+  local token
+  token=$(curl -fsSL "https://public.ecr.aws/token/" \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin).get("token", ""))') || return 1
+  [ -n "$token" ] || return 1
+  curl -fsSL -H "Authorization: Bearer ${token}" \
+    "https://public.ecr.aws/v2/${REGISTRY_PATH}/tags/list" \
+    | python3 -c 'import sys, json; [print(t) for t in json.load(sys.stdin).get("tags", [])]'
+}
+
+resolve_concrete_tag() {
+  local tags
+  if [ "$TOOL" = "crane" ]; then
+    tags=$(crane ls "$REPO") || return 1
+  else
+    tags=$(list_tags_registry_api) || return 1
+  fi
+  printf '%s\n' "$tags" | grep -E "$TAG_RE" | sort -V | tail -n 1
+}
+
+CONCRETE_TAG=$(resolve_concrete_tag || true)
+if [ -z "$CONCRETE_TAG" ]; then
+  echo "update-image.sh: no concrete ${REPO} 2.x.y tag found (the upstream image publishes no floating '2' tag)" >&2
+  exit 3
+fi
+RESOLVE_REF="${REPO}:${CONCRETE_TAG}"
+
+# --- digest + platform verification -----------------------------------------
+# fetch_raw_index prints the RAW top-level index/manifest-list bytes. Both
 # resolvers return the exact stored bytes, so their sha256 equals the registry
 # index digest.
 fetch_raw_index() {
@@ -104,18 +142,6 @@ if missing:
 sys.stdout.write(digest + "\n")
 '
 }
-
-# Prefer a concrete 2.x.y tag when the resolver can list it (crane only); fall
-# back to the floating tag. The digest below is authoritative either way.
-CONCRETE_TAG="$TAG"
-if [ "$TOOL" = "crane" ]; then
-  resolved=$(crane ls "$REPO" 2>/dev/null | grep -E '^2\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
-  if [ -n "$resolved" ]; then
-    CONCRETE_TAG="$resolved"
-  fi
-fi
-
-RESOLVE_REF="${REPO}:${CONCRETE_TAG}"
 
 # Resolve + verify + digest in one pipeline: the tool's stdout is the JSON
 # parser's stdin. A failure anywhere (tool error, non-index, missing platform,
