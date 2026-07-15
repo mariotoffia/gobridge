@@ -59,34 +59,52 @@ func (c Config) FreezePluginConfig() ports.PluginConfig {
 	return &frozen
 }
 
-// PostAcquireActivationTiming exposes effective post-lease phase bounds to
-// transport-neutral builder validation. Connect/Reconcile are upper bounds (the
-// healthy path is normally much faster); ReplayGrace is the mandatory no-replay
-// observation window used only by durable session modes.
+// PostAcquireActivationTiming exposes one conservative hard bound for every
+// sequential phase a durable managed-filter activation may execute. Two broker
+// connections cover initial Start plus cleanup recycle. Four reconcile-owned
+// waits cover initial SUBSCRIBE, exact UNSUBSCRIBE, bounded ingress quiescence,
+// and replacement-generation SUBSCRIBE. Two replay windows cover crash residue
+// followed by filters removed in the current attempt. The SDK reconnect-attempt
+// timeout is nested inside each connection await and is therefore not added
+// again.
 func (c Config) PostAcquireActivationTiming(mode connectivity.SessionMode) ports.SessionActivationTiming {
-	connectTimeout := c.Session.ConnectTimeout
-	if connectTimeout == 0 {
-		connectTimeout = DefaultConnectTimeout
+	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
+		return ports.SessionActivationTiming{}
 	}
-	reconnectTimeout := c.Session.ReconnectTimeout
-	if reconnectTimeout <= 0 {
-		reconnectTimeout = DefaultReconnectAttemptTimeout
+	connectTimeout := c.Session.ConnectTimeout
+	if connectTimeout <= 0 {
+		connectTimeout = DefaultConnectTimeout
 	}
 	reconcileTimeout := c.Session.ReconcileTimeout
 	if reconcileTimeout <= 0 {
 		reconcileTimeout = DefaultReconcileTimeout
 	}
-	replayGrace := time.Duration(0)
-	if mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive {
-		replayGrace = c.Session.UnmatchedGrace
-		if replayGrace <= 0 {
-			replayGrace = DefaultUnmatchedGrace
+	replayGrace := c.Session.UnmatchedGrace
+	if replayGrace <= 0 {
+		replayGrace = DefaultUnmatchedGrace
+	}
+	return ports.SessionActivationTiming{WorstCaseDuration: conservativeActivationDuration(
+		connectTimeout, connectTimeout,
+		reconcileTimeout, reconcileTimeout, reconcileTimeout, reconcileTimeout,
+		replayGrace, replayGrace,
+	)}
+}
+
+// conservativeActivationDuration saturates instead of allowing a maliciously
+// large duration to overflow negative and bypass the composition-root bound.
+func conservativeActivationDuration(phases ...time.Duration) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
+	var total time.Duration
+	for _, phase := range phases {
+		if phase <= 0 {
+			continue
 		}
+		if total > maxDuration-phase {
+			return maxDuration
+		}
+		total += phase
 	}
-	return ports.SessionActivationTiming{
-		ConnectTimeout: connectTimeout, ReconnectTimeout: reconnectTimeout,
-		ReconcileTimeout: reconcileTimeout, ReplayGrace: replayGrace,
-	}
+	return total
 }
 
 // Kind reports the registry discriminator.

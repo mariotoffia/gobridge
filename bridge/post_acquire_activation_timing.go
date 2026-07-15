@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -10,10 +9,9 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
-// validatePostAcquireActivationTimings rejects an exclusive transport timing
-// profile before stores or transports are built when one configured phase cannot
-// fit inside LeaseTTL minus the manager's reserved teardown margin. The live
-// manager still enforces one aggregate deadline across the complete sequence.
+// validatePostAcquireActivationTimings rejects unsafe production lease floors
+// and transport activation bounds before stores or transports are built. The
+// live manager renews the lease throughout the bounded activation sequence.
 func (b *Builder) validatePostAcquireActivationTimings() error {
 	if b == nil || b.cfg == nil {
 		return nil
@@ -27,7 +25,7 @@ func (b *Builder) validatePostAcquireActivationTimings() error {
 				if err != nil {
 					return fmt.Errorf("bridge: route %q: %w", route.ID, err)
 				}
-				if err := validateSessionActivationTiming(route.ID, sessionID, sc, findSession(b.cfg, sessionID)); err != nil {
+				if err := configureSessionActivationTiming(route.ID, sessionID, sc, findSession(b.cfg, sessionID)); err != nil {
 					return err
 				}
 				validated[sessionID] = struct{}{}
@@ -49,7 +47,7 @@ func (b *Builder) validatePostAcquireActivationTimings() error {
 				return fmt.Errorf("bridge: route %q: binding %q session config: %w", route.ID, bindingID, err)
 			}
 			sc.ConnectAfterLease = true
-			if err := validateSessionActivationTiming(route.ID, binding.SessionID, &sc, findSession(b.cfg, binding.SessionID)); err != nil {
+			if err := configureSessionActivationTiming(route.ID, binding.SessionID, &sc, findSession(b.cfg, binding.SessionID)); err != nil {
 				return err
 			}
 			validated[binding.SessionID] = struct{}{}
@@ -58,8 +56,21 @@ func (b *Builder) validatePostAcquireActivationTimings() error {
 	return nil
 }
 
-func validateSessionActivationTiming(routeID, sessionID string, sc *session.Config, def *ports.SessionDef) error {
-	if sc == nil || def == nil || ports.IsNilPluginConfig(def.Config) {
+// configureSessionActivationTiming applies the transport's conservative bound
+// to the runtime manager config. A direct caller may pin a larger hard bound;
+// pinning one below the transport's effective worst case is rejected.
+func configureSessionActivationTiming(routeID, sessionID string, sc *session.Config, def *ports.SessionDef) error {
+	if sc == nil {
+		return nil
+	}
+	ttl := sc.EffectiveLeaseTTL()
+	if sc.Exclusive && ttl < session.MinimumProductionLeaseTTL {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"bridge: route %q: session %q: effective lease_ttl=%s is below production minimum=%s",
+			routeID, sessionID, ttl, session.MinimumProductionLeaseTTL,
+		))
+	}
+	if def == nil || ports.IsNilPluginConfig(def.Config) {
 		return nil
 	}
 	timingConfig, ok := def.Config.(ports.PostAcquireActivationTimingConfig)
@@ -67,31 +78,22 @@ func validateSessionActivationTiming(routeID, sessionID string, sc *session.Conf
 		return nil
 	}
 	mode := connectivity.SessionMode(def.SessionMode)
-	if mode == "" {
+	if sc.Exclusive {
+		mode = connectivity.SessionExclusive
+	} else if mode == "" {
 		mode = connectivity.SessionEphemeral
 	}
-	timing := timingConfig.PostAcquireActivationTiming(mode)
-	if !sc.ConnectAfterLease {
-		timing.ConnectTimeout = 0
+	worst := timingConfig.PostAcquireActivationTiming(mode).WorstCaseDuration
+	if worst <= 0 {
+		return nil
 	}
-	budget, teardownMargin := sc.PostAcquireActivationBudget()
-	phases := []struct {
-		name     string
-		duration time.Duration
-	}{
-		{name: "connect_timeout", duration: timing.ConnectTimeout},
-		{name: "reconnect_timeout", duration: timing.ReconnectTimeout},
-		{name: "reconcile_timeout", duration: timing.ReconcileTimeout},
-		{name: "replay_grace", duration: timing.ReplayGrace},
+	if sc.PostAcquireActivationTimeout == 0 {
+		sc.PostAcquireActivationTimeout = worst
 	}
-	for _, phase := range phases {
-		if phase.duration <= budget {
-			continue
-		}
+	if sc.PostAcquireActivationTimeout < worst {
 		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"bridge: route %q: session %q: configured %s=%s exceeds lease-safe post-acquire activation budget=%s "+
-				"(LeaseTTL=%s - teardown_margin=%s)",
-			routeID, sessionID, phase.name, phase.duration, budget, sc.LeaseTTL, teardownMargin,
+			"bridge: route %q: session %q: conservative post-acquire activation duration=%s exceeds configured post-acquire activation timeout=%s",
+			routeID, sessionID, worst, sc.PostAcquireActivationTimeout,
 		))
 	}
 	return nil

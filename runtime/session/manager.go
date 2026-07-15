@@ -61,6 +61,7 @@ type Manager struct {
 	renewCallTimeout  time.Duration
 	maxRenewFails     int
 	stepDownGrace     time.Duration
+	activationTimeout time.Duration
 	endpoints         map[string]string
 	drainIdle         func() bool
 	metrics           ports.MetricsExporter
@@ -105,9 +106,7 @@ func NewWithMetrics(cfg Config, session ports.Session, leaseStore ports.LeaseSto
 
 func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *Manager {
 	defaults := DefaultConfig(cfg.SessionID, cfg.Exclusive)
-	if cfg.LeaseTTL <= 0 {
-		cfg.LeaseTTL = defaults.LeaseTTL
-	}
+	cfg.LeaseTTL = cfg.EffectiveLeaseTTL()
 	if cfg.MaxRenewFails <= 0 {
 		cfg.MaxRenewFails = defaults.MaxRenewFails
 	}
@@ -216,6 +215,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 		renewCallTimeout:  cfg.RenewCallTimeout,
 		maxRenewFails:     cfg.MaxRenewFails,
 		stepDownGrace:     cfg.StepDownGrace,
+		activationTimeout: cfg.PostAcquireActivationTimeout,
 		metrics:           &ports.NoopExporter{},
 		audit:             ports.NoopAuditLogger{},
 		logger:            logger,

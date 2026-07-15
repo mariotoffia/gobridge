@@ -93,7 +93,7 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 |-------|------|----------|---------|-------------|
 | `session_id` | string | **yes** | -- | Reference to an exclusive session |
 | `sender_id` | string | **yes** | -- | Reference to a sender on that session |
-| `lease_ttl` | duration | no | `360s` | Lease validity duration |
+| `lease_ttl` | duration | no | `360s` | Lease validity duration. Effective production values below `5s` are rejected uniformly before any lease-store backend is opened. |
 | `renew_interval` | duration | no | derived | Lease renewal interval (default: lease_ttl / max_renew_fails) |
 | `lease_renew_jitter` | duration | no | derived | Bounded random jitter added to each renewal timer to avoid a cluster-wide renewal thundering herd. Empty means the session manager derives it from `renew_interval`. |
 | `max_renew_fails` | int | no | 3 | Consecutive renewal failures before step-down |

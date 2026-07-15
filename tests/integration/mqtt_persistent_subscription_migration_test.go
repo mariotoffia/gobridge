@@ -225,7 +225,9 @@ func TestMQTTExclusiveDefaultProfileNoBufferMigrationConvergesWithinLease(t *tes
 	managerCfg := runtimesession.HAConfig("managed-default-exclusive", true)
 	managerCfg.ConnectAfterLease = true
 	managerCfg.Plan = connectivity.SessionPlan{}
-	manager := runtimesession.NewWithMetrics(managerCfg, replacement, leaseStore, "owner-default-exclusive", nil, &ports.NoopExporter{}, clock.System)
+	managerCfg.PostAcquireActivationTimeout = cfg.PostAcquireActivationTiming(connectivity.SessionExclusive).WorstCaseDuration
+	managerMetrics := &ports.RecordingExporter{}
+	manager := runtimesession.NewWithMetrics(managerCfg, replacement, leaseStore, "owner-default-exclusive", nil, managerMetrics, clock.System)
 	runErr := make(chan error, 1)
 	go func() { runErr <- manager.Run(ctx) }()
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
@@ -245,6 +247,9 @@ func TestMQTTExclusiveDefaultProfileNoBufferMigrationConvergesWithinLease(t *tes
 	}
 	if history, listErr := store.List(ctx, identity); listErr != nil || len(history) != 0 {
 		t.Fatalf("managed history after default exclusive migration = %v, err=%v; want empty", history, listErr)
+	}
+	if entries := managerMetrics.FindEntries(shared.MetricLeaseRenewLatency); len(entries) == 0 {
+		t.Fatal("default exclusive migration completed without renewing during activation")
 	}
 
 	cancel()

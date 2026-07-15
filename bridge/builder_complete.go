@@ -280,6 +280,12 @@ func (b *Builder) wireRoutes(
 		if sessCfgErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
 		}
+		if sessCfg != nil && routeDef.Session != nil {
+			if timingErr := configureSessionActivationTiming(routeDef.ID, routeDef.Session.SessionID, sessCfg,
+				findSession(b.cfg, routeDef.Session.SessionID)); timingErr != nil {
+				return timingErr
+			}
+		}
 		applyBridgeDrainDefaults(sessCfg, b.cfg.Bridge)
 		b.warnSlowClusterFailover(routeDef, sessCfg, slowFailoverWarned)
 
@@ -518,6 +524,10 @@ func (b *Builder) wireRoutes(
 				return fmt.Errorf("bridge: route %q: binding %q session config: %w", routeDef.ID, bd.ID, scErr)
 			}
 			sc.ConnectAfterLease = true
+			if timingErr := configureSessionActivationTiming(routeDef.ID, bd.SessionID, &sc,
+				findSession(b.cfg, bd.SessionID)); timingErr != nil {
+				return timingErr
+			}
 			// Thread the session's desired topology so a session registered only
 			// via a binding (Path-2) still reconciles its receivers' subscriptions
 			// and sender exchanges instead of an empty plan (F1-P4). Mirrors the

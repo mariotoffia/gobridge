@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 type activationTimingPluginConfig struct {
@@ -22,7 +23,7 @@ func (c activationTimingPluginConfig) PostAcquireActivationTiming(connectivity.S
 	return c.timing
 }
 
-func activationTimingBlueprint(timing ports.SessionActivationTiming) *ports.BridgeConfig {
+func activationTimingBlueprint(leaseTTL, stepDownGrace string, timing ports.SessionActivationTiming) *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "activation-timing"},
 		Sessions: []ports.SessionDef{{
@@ -31,53 +32,70 @@ func activationTimingBlueprint(timing ports.SessionActivationTiming) *ports.Brid
 		}},
 		Routes: []ports.RouteDef{{
 			ID: "migration", Session: &ports.RouteSessionDef{
-				SessionID: "exclusive-mqtt", LeaseTTL: "45s", StepDownGrace: "5s",
+				SessionID: "exclusive-mqtt", LeaseTTL: leaseTTL, StepDownGrace: stepDownGrace,
 			},
 		}},
 	}
 }
 
-func TestBuilderPlan_ExclusiveActivationTimingAtLeaseSafeBoundary(t *testing.T) {
-	plan, err := NewBuilder(activationTimingBlueprint(ports.SessionActivationTiming{
-		ConnectTimeout: 40 * time.Second, ReconnectTimeout: 40 * time.Second,
-		ReconcileTimeout: 40 * time.Second, ReplayGrace: 40 * time.Second,
+func TestBuilderPlan_ExclusiveActivationConservativeBoundMayExceedLeaseTTL(t *testing.T) {
+	plan, err := NewBuilder(activationTimingBlueprint("45s", "5s", ports.SessionActivationTiming{
+		WorstCaseDuration: 4 * time.Minute,
 	})).Plan(t.Context())
 	if err != nil {
-		t.Fatalf("Plan at exact activation boundary: %v", err)
+		t.Fatalf("Plan with renewable conservative activation bound: %v", err)
 	}
 	plan.Close()
 }
 
-func TestBuilderPlan_ExclusiveActivationTimingOneNanosecondOverRejectedBeforeBuild(t *testing.T) {
-	const safe = 40 * time.Second
-	tests := []struct {
-		name   string
-		phase  string
-		timing ports.SessionActivationTiming
-	}{
-		{name: "connect", phase: "connect_timeout", timing: ports.SessionActivationTiming{ConnectTimeout: safe + time.Nanosecond}},
-		{name: "reconnect", phase: "reconnect_timeout", timing: ports.SessionActivationTiming{ReconnectTimeout: safe + time.Nanosecond}},
-		{name: "reconcile", phase: "reconcile_timeout", timing: ports.SessionActivationTiming{ReconcileTimeout: safe + time.Nanosecond}},
-		{name: "replay grace", phase: "replay_grace", timing: ports.SessionActivationTiming{ReplayGrace: safe + time.Nanosecond}},
+func TestConfigureSessionActivationTimingExactHardBoundBoundary(t *testing.T) {
+	derived := session.HAConfig("exclusive-mqtt", true)
+	derivedDef := &ports.SessionDef{SessionMode: string(connectivity.SessionExclusive), Config: activationTimingPluginConfig{
+		timing: ports.SessionActivationTiming{WorstCaseDuration: 4 * time.Minute},
+	}}
+	if err := configureSessionActivationTiming("migration", "exclusive-mqtt", &derived, derivedDef); err != nil {
+		t.Fatalf("derive hard activation bound: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			plan, err := NewBuilder(activationTimingBlueprint(tt.timing)).Plan(t.Context())
-			if plan != nil {
-				plan.Close()
-				t.Fatal("unsafe activation timing returned a build plan")
-			}
-			if err == nil {
-				t.Fatal("unsafe activation timing must fail before stores/transports are built")
-			}
-			if !errors.Is(err, shared.ErrInvalidConfig) {
-				t.Fatalf("activation timing error = %v, want ErrInvalidConfig", err)
-			}
-			want := "session \"exclusive-mqtt\": configured " + tt.phase + "=40.000000001s exceeds lease-safe post-acquire activation budget=40s (LeaseTTL=45s - teardown_margin=5s)"
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("activation timing error = %v, want substring %q", err, want)
-			}
-		})
+	if derived.PostAcquireActivationTimeout != 4*time.Minute {
+		t.Fatalf("derived hard activation bound = %s, want 4m", derived.PostAcquireActivationTimeout)
+	}
+
+	sc := session.HAConfig("exclusive-mqtt", true)
+	sc.PostAcquireActivationTimeout = 4 * time.Minute
+	def := &ports.SessionDef{SessionMode: string(connectivity.SessionExclusive), Config: activationTimingPluginConfig{
+		timing: ports.SessionActivationTiming{WorstCaseDuration: 4 * time.Minute},
+	}}
+	if err := configureSessionActivationTiming("migration", "exclusive-mqtt", &sc, def); err != nil {
+		t.Fatalf("exact hard activation boundary: %v", err)
+	}
+
+	def.Config = activationTimingPluginConfig{timing: ports.SessionActivationTiming{WorstCaseDuration: 4*time.Minute + time.Nanosecond}}
+	err := configureSessionActivationTiming("migration", "exclusive-mqtt", &sc, def)
+	if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "exceeds configured post-acquire activation timeout") {
+		t.Fatalf("one nanosecond over hard activation bound = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestBuilderPlan_ProductionLeaseTTLAtFiveSecondFloorAccepted(t *testing.T) {
+	plan, err := NewBuilder(activationTimingBlueprint("5s", "1s", ports.SessionActivationTiming{
+		WorstCaseDuration: time.Minute,
+	})).Plan(t.Context())
+	if err != nil {
+		t.Fatalf("Plan at production lease TTL floor: %v", err)
+	}
+	plan.Close()
+}
+
+func TestBuilderPlan_ProductionLeaseTTLBelowFiveSecondFloorRejected(t *testing.T) {
+	plan, err := NewBuilder(activationTimingBlueprint("4.999999999s", "1s", ports.SessionActivationTiming{
+		WorstCaseDuration: time.Minute,
+	})).Plan(t.Context())
+	if plan != nil {
+		plan.Close()
+		t.Fatal("sub-floor production lease TTL returned a build plan")
+	}
+	if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "effective lease_ttl=4.999999999s is below production minimum=5s") {
+		t.Fatalf("sub-floor lease TTL error = %v, want exact production floor diagnostic", err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // errLeaseLostAfterRenewal is the sentinel stepDown returns once consecutive
@@ -25,6 +26,19 @@ var errLeaseLostAfterRenewal = errors.New("lease lost after renewal failures")
 // loss) so superviseSession restarts the one session in isolation (finding
 // L14).
 var errSessionEventsClosed = errors.New("session events channel closed unexpectedly")
+var errStepDownCloseFailed = errors.New("source session close failed during lease step-down")
+
+// activationLeaseLoss records that the existing renewal loop detected lease
+// loss while initial activation was still running. In that phase the loop
+// cancels activation and disconnects immediately, but defers Release until the
+// activation callback is proved settled.
+type activationLeaseLoss struct {
+	token          persistence.LeaseToken
+	closeCompleted bool
+}
+
+func (*activationLeaseLoss) Error() string { return "lease lost during post-acquire activation" }
+func (*activationLeaseLoss) Unwrap() error { return errLeaseLostAfterRenewal }
 
 // ErrSessionUnrecoverable marks a lease-owning term that failed because the
 // underlying session cannot be re-established IN THIS PROCESS. A single-use
@@ -160,19 +174,19 @@ func (m *Manager) releaseOwnedLeaseBestEffort(ctx context.Context, token persist
 	m.log(ctx, slog.LevelInfo, "lease released", "reason", reason)
 }
 
-// postAcquireActivationDeadline returns the locally safe lease deadline for
-// initial Start/Reconcile. It reserves the existing bounded teardown/release
-// margin before the fail-closed lease deadline recorded from the pre-Acquire
-// timestamp. Unlike recurring reconnect-event reconciliation, initial durable
-// migration uses the FULL remaining lease-safe budget because MQTT replay
-// verification may intentionally wait its complete unmatched-grace window.
-// Source disconnection must complete inside the reserved margin; best-effort
-// Release follows only after the source is stopped.
+// postAcquireActivationDeadline returns the hard deadline for initial
+// Start/Reconcile. Production composition roots configure the transport's
+// conservative whole-activation bound; direct-manager callers that leave it
+// zero retain the legacy fallback to LeaseTTL minus the teardown margin.
 func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, error) {
+	now := m.clk.Now()
+	if m.activationTimeout > 0 {
+		return now.Add(m.activationTimeout), m.activationTimeout, nil
+	}
+
 	m.mu.Lock()
 	leaseDeadline := m.leaseDeadline
 	m.mu.Unlock()
-	now := m.clk.Now()
 	if leaseDeadline.IsZero() {
 		return time.Time{}, 0, shared.ErrUnavailable.WithMessage("exclusive post-acquire activation has no local lease deadline")
 	}
@@ -186,36 +200,109 @@ func (m *Manager) postAcquireActivationDeadline() (time.Time, time.Duration, err
 	return safeDeadline, remaining, nil
 }
 
-// runPostAcquireActivation bounds the complete Start/ensureConnected +
-// Reconcile sequence under one budget. A real context deadline bounds blocking
-// I/O; boundedCallResult's injected-clock timer is the deterministic lease-safe
-// backstop for an adapter that ignores context. Completion exactly on the safe
-// boundary is accepted; one nanosecond beyond it is terminal.
+// runPostAcquireActivation runs Start/Reconcile under the configured hard
+// activation bound. Lease renewal is owned by the concurrently running, existing
+// renewLoop; this helper only classifies callback completion and timeout.
 func (m *Manager) runPostAcquireActivation(
 	ctx context.Context,
-	token persistence.LeaseToken,
 	fn func(context.Context) error,
-) (error, bool) {
+) (deadlineExceeded, completed bool, err error) {
 	deadline, budget, budgetErr := m.postAcquireActivationDeadline()
 	if budgetErr != nil {
-		return m.failPostAcquireActivation(ctx, token, budgetErr, true), true
+		return true, true, budgetErr
 	}
 
 	activationCtx, cancel := context.WithTimeout(ctx, budget)
-	err, completed := m.boundedCallResult(activationCtx, budget, "exclusive post-acquire activation", fn)
+	err, completed = m.boundedCallResult(activationCtx, budget, "exclusive post-acquire activation", fn)
 	activationCtxErr := activationCtx.Err()
 	cancel()
 
-	deadlineExceeded := !completed || errors.Is(activationCtxErr, context.DeadlineExceeded) || m.clk.Now().After(deadline)
+	deadlineExceeded = !completed || errors.Is(activationCtxErr, context.DeadlineExceeded) || m.clk.Now().After(deadline)
 	if !deadlineExceeded {
-		return err, false
+		return false, completed, err
 	}
 	cause := shared.NewBridgeError(shared.ErrCodeTimeout, shared.ErrorTransient,
-		"exclusive post-acquire activation exceeded its locally safe lease deadline")
+		"exclusive post-acquire activation exceeded its configured hard deadline")
 	if err != nil {
 		cause = cause.Wrap(err)
 	}
-	return m.failPostAcquireActivation(ctx, token, cause, completed), true
+	return true, completed, cause
+}
+
+// leaseTermResult separates activation failure from the steady renewal-loop
+// exit so callers preserve the existing phase-specific error handling.
+type leaseTermResult struct {
+	activationErr             error
+	activationDeadlineHandled bool
+	renewErr                  error
+	terminalErr               error
+}
+
+// runRenewingActivation starts the existing renewal loop immediately after
+// Acquire, gates session events until activation converges, and then leaves that
+// same loop running for the rest of the ownership term. Exactly one renewer is
+// active. Lease loss cancels activation and disconnects before this returns.
+func (m *Manager) runRenewingActivation(
+	ctx context.Context,
+	token persistence.LeaseToken,
+	fn func(context.Context) error,
+) leaseTermResult {
+	activationCtx, cancelActivation := context.WithCancel(ctx)
+	defer cancelActivation()
+	renewCtx, cancelRenew := context.WithCancel(ctx)
+	defer cancelRenew()
+
+	activationReady := make(chan struct{})
+	renewStarted := make(chan struct{})
+	renewDone := make(chan error, 1)
+	go func() {
+		renewDone <- m.renewLoop(renewCtx, activationReady, renewStarted, cancelActivation)
+	}()
+	<-renewStarted
+
+	deadlineExceeded, completed, activationErr := m.runPostAcquireActivation(activationCtx, fn)
+	if activationErr == nil {
+		close(activationReady)
+		renewErr := <-renewDone
+		if lossResult := m.finishActivationLeaseLoss(ctx, renewErr, completed); lossResult != nil {
+			if errors.Is(lossResult, errLeaseLostAfterRenewal) {
+				return leaseTermResult{renewErr: lossResult}
+			}
+			return leaseTermResult{terminalErr: lossResult}
+		}
+		return leaseTermResult{renewErr: renewErr}
+	}
+
+	cancelRenew()
+	renewErr := <-renewDone
+	if lossResult := m.finishActivationLeaseLoss(ctx, renewErr, completed); lossResult != nil {
+		if errors.Is(lossResult, errLeaseLostAfterRenewal) {
+			return leaseTermResult{renewErr: lossResult}
+		}
+		return leaseTermResult{terminalErr: lossResult}
+	}
+
+	if deadlineExceeded {
+		return leaseTermResult{
+			activationErr:             m.failPostAcquireActivation(ctx, token, activationErr, completed),
+			activationDeadlineHandled: true,
+		}
+	}
+	return leaseTermResult{activationErr: activationErr}
+}
+
+// finishActivationLeaseLoss completes step-down only after activation has
+// settled. A parked activation or failed disconnect is terminal and the lease is
+// deliberately not released underneath work that may still mutate/send.
+func (m *Manager) finishActivationLeaseLoss(ctx context.Context, renewErr error, activationCompleted bool) error {
+	var loss *activationLeaseLoss
+	if !errors.As(renewErr, &loss) {
+		return nil
+	}
+	if !activationCompleted || !loss.closeCompleted {
+		return fmt.Errorf("%w: lease lost during post-acquire activation before source work quiesced", ErrSessionUnrecoverable)
+	}
+	return m.finishStepDown(ctx, loss.token, true)
 }
 
 // failPostAcquireActivation removes local authorization, disconnects and
@@ -271,7 +358,7 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 
 		phase := "reconcile failure"
 		escalatable := false
-		activationErr, deadlineHandled := m.runPostAcquireActivation(ctx, token, func(activationCtx context.Context) error {
+		term := m.runRenewingActivation(ctx, token, func(activationCtx context.Context) error {
 			if !sessionStarted {
 				phase = "deferred connect failure"
 				if err := m.session.Start(activationCtx); err != nil {
@@ -289,14 +376,17 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 			escalatable = false
 			return m.session.Reconcile(activationCtx, m.plan)
 		})
-		if activationErr != nil {
-			if deadlineHandled {
-				return activationErr
+		if term.terminalErr != nil {
+			return term.terminalErr
+		}
+		if term.activationErr != nil {
+			if term.activationDeadlineHandled {
+				return term.activationErr
 			}
-			return m.releaseAndReturn(ctx, token, activationErr, phase, escalatable)
+			return m.releaseAndReturn(ctx, token, term.activationErr, phase, escalatable)
 		}
 
-		err = m.renewLoop(ctx)
+		err = term.renewErr
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -341,7 +431,7 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 
 		phase := "reconcile failure"
 		escalatable := false
-		activationErr, deadlineHandled := m.runPostAcquireActivation(ctx, token, func(activationCtx context.Context) error {
+		term := m.runRenewingActivation(ctx, token, func(activationCtx context.Context) error {
 			if reacquired {
 				phase = "reconnect failure"
 				escalatable = true
@@ -353,14 +443,17 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 			escalatable = false
 			return m.session.Reconcile(activationCtx, m.plan)
 		})
-		if activationErr != nil {
-			if deadlineHandled {
-				return activationErr
+		if term.terminalErr != nil {
+			return term.terminalErr
+		}
+		if term.activationErr != nil {
+			if term.activationDeadlineHandled {
+				return term.activationErr
 			}
-			return m.releaseAndReturn(ctx, token, activationErr, phase, escalatable)
+			return m.releaseAndReturn(ctx, token, term.activationErr, phase, escalatable)
 		}
 
-		err = m.renewLoop(ctx)
+		err = term.renewErr
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -512,17 +605,39 @@ func (m *Manager) leaseStillHeld(ctx context.Context) bool {
 	return info.Owner == m.ownerID && m.clk.Now().Before(info.ExpiresAt)
 }
 
-func (m *Manager) renewLoop(ctx context.Context) error {
+func (m *Manager) renewLoop(
+	ctx context.Context,
+	activationReady <-chan struct{},
+	started chan<- struct{},
+	cancelActivation context.CancelFunc,
+) error {
 	consecutiveFailures := 0
-	events := m.session.Events()
+	var events <-chan ports.SessionEvent
+	if activationReady == nil {
+		events = m.session.Events()
+	}
 
 	timer := m.clk.NewTimer(m.nextRenewDelay())
 	defer timer.Stop()
+	close(started)
+
+	stepDownForLoss := func() error {
+		if activationReady == nil {
+			return m.stepDown(ctx)
+		}
+		cancelActivation()
+		token, closed := m.beginStepDown(ctx)
+		return &activationLeaseLoss{token: token, closeCompleted: closed}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case <-activationReady:
+			activationReady = nil
+			events = m.session.Events()
 
 		case ev, ok := <-events:
 			if !ok {
@@ -559,7 +674,7 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 				m.log(ctx, slog.LevelWarn,
 					"local lease deadline reached; stepping down (fail-closed)")
 				m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
-				return m.stepDown(ctx)
+				return stepDownForLoss()
 			}
 
 			m.mu.Lock()
@@ -595,7 +710,7 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 				m.log(ctx, slog.LevelWarn, "lease definitively lost, stepping down immediately",
 					"error", err)
 				m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
-				return m.stepDown(ctx)
+				return stepDownForLoss()
 
 			default:
 				// Transient store error (timeout, throttling, unavailability):
@@ -640,7 +755,7 @@ func (m *Manager) renewLoop(ctx context.Context) error {
 						consecutiveFailures = m.maxRenewFails - 1
 					} else {
 						m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
-						return m.stepDown(ctx)
+						return stepDownForLoss()
 					}
 				}
 			}
@@ -675,6 +790,14 @@ func (m *Manager) ensureConnected(ctx context.Context) error {
 // 2. Wait grace period for in-flight completions
 // 3. Release the lease
 func (m *Manager) stepDown(ctx context.Context) error {
+	token, closed := m.beginStepDown(ctx)
+	return m.finishStepDown(ctx, token, closed)
+}
+
+// beginStepDown removes local authorization and disconnects the source before
+// any release can occur. It is split from finishStepDown so lease loss during
+// activation can wait for the activation callback to settle before hand-off.
+func (m *Manager) beginStepDown(ctx context.Context) (persistence.LeaseToken, bool) {
 	m.log(ctx, slog.LevelWarn, "stepping down from lease")
 
 	if logging.DebugEnabled(m.logger) {
@@ -691,52 +814,22 @@ func (m *Manager) stepDown(ctx context.Context) error {
 
 	m.emitLeaseAudit(ctx, "lease.stepdown", "success", token, nil)
 	m.pushLeaseEvent(LeaseStateSteppedDown, token, nil)
+	return token, m.closeSourceBounded(ctx, "lease step-down")
+}
 
-	// Stop accepting source messages now that we no longer hold the lease.
-	// A stepped-down owner must not keep consuming or ACKing from the source
-	// while a new owner takes over (split-brain). In the common case source and
-	// destination are distinct sessions, so closing the source does not abort
-	// the grace drain below: that drain settles in-flight outbox Send+Complete
-	// on the destination side, which does not need the source connection. A
-	// source ACK lost on close is redelivered to the new owner (at-least-once;
-	// see Config.StepDownGrace docs).
-	//
-	// Caveat: in a same-broker MQTT->MQTT topology the factory can hand the same
-	// *Session to both receiver and sender (paho/factory.go), so closing it also
-	// closes the destination publish path. There the grace drain cannot complete
-	// in-process; in-flight outbox records instead settle via the durable,
-	// fencing-protected retry path after the next acquisition. Still no loss —
-	// only the in-grace settlement optimization is forfeited for that topology.
-	if err := m.session.Close(ctx); err != nil {
-		m.log(ctx, slog.LevelWarn, "source session close failed during step-down", "error", err)
+// finishStepDown waits the existing settlement grace and releases only after a
+// completed source disconnect. A wedged Close is terminal and retains the lease
+// until natural expiry.
+func (m *Manager) finishStepDown(ctx context.Context, token persistence.LeaseToken, closeCompleted bool) error {
+	if !closeCompleted {
+		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, errStepDownCloseFailed)
 	}
-
-	// Grace period must NOT be aborted by caller cancellation. Its contract
-	// (Config.StepDownGrace) is to give in-flight outbox Send+Complete a full
-	// settle window; aborting it on shutdown leaves work the new owner re-sends
-	// as a fenced duplicate. Run it on a detached (WithoutCancel) timer and wait
-	// it out unconditionally — reaching stepDown already means the lease is lost,
-	// not that the caller is shutting down (a shutdown cancels renewLoop via its
-	// ctx.Done() case before any renewal-failure step-down) (finding M13).
-	//
-	// F9: skip the wait entirely when the destination drainer reports idle — no
-	// claimable pending outbox work remains to settle, so the grace would add
-	// only takeover latency. "Idle" means no CLAIMABLE pending records, not
-	// "nothing in flight at the store": a record already claimed whose Send
-	// succeeded but Complete failed is momentarily invisible to the idle check
-	// and is re-sent (fenced) by the new owner after its claim lapses. That, and
-	// a source message ACKed just after this check landing in the outbox (stale
-	// idle), both settle via the new owner's fenced retry — within the documented
-	// at-least-once window (Config.StepDownGrace / AckBoundary): no loss, no
-	// double-commit.
 	if m.drainIdle == nil || !m.drainIdle() {
 		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), m.stepDownGrace)
 		defer graceCancel()
 		<-graceCtx.Done()
 	}
-
 	m.releaseOwnedLeaseBestEffort(ctx, token, "step-down")
-
 	return errLeaseLostAfterRenewal
 }
 
@@ -785,6 +878,12 @@ func (m *Manager) stepDown(ctx context.Context) error {
 // A clean events-closed exit (err == nil) keeps the pre-existing re-acquire
 // behaviour: it falls through to the lease-loss branch below.
 func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.LeaseToken, err error) error {
+	if errors.Is(err, errStepDownCloseFailed) {
+		m.mu.Lock()
+		m.hasLease = false
+		m.mu.Unlock()
+		return err
+	}
 	if err != nil && !errors.Is(err, errLeaseLostAfterRenewal) {
 		m.pushLeaseEvent(LeaseStateReconcileFailed, token, err)
 		m.mu.Lock()

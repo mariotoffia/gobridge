@@ -7,7 +7,13 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
+
+// MinimumProductionLeaseTTL is the uniform lower bound accepted by production
+// composition roots and Config.Validate. Direct manager construction remains
+// available to deterministic tests that intentionally use compressed time.
+const MinimumProductionLeaseTTL = 5 * time.Second
 
 // Config configures session management for exclusive sessions.
 type Config struct {
@@ -72,6 +78,13 @@ type Config struct {
 	PerRecordDrainTimeout time.Duration
 	// MaxDrainTimeout is the upper bound of the scaled drain formula.
 	MaxDrainTimeout time.Duration
+
+	// PostAcquireActivationTimeout is the conservative hard bound for the
+	// complete initial Start/Reconcile/migration sequence after lease acquisition.
+	// Composition roots derive it from the stateful transport's typed timing
+	// capability. Zero preserves the direct-manager fallback to the remaining
+	// locally safe lease window.
+	PostAcquireActivationTimeout time.Duration
 
 	// ConnectAfterLease defers session.Start until the lease is acquired.
 	// This avoids connecting to a broker (e.g. MQTT with an exclusive
@@ -341,17 +354,23 @@ func clampRenewTimings(ttl, renewInterval, renewJitter, renewCallTimeout time.Du
 	return renewInterval, renewJitter, renewCallTimeout, true
 }
 
-// PostAcquireActivationBudget returns the full lease-safe budget available to
-// Start/Reconcile after a successful Acquire and the teardown margin reserved at
-// its end. It resolves zero values exactly like Manager construction. The budget
-// deliberately does not use the short recurring reconnect-event cap: initial
-// durable migration may need the transport's full replay-verification grace.
+// EffectiveLeaseTTL resolves the lease lifetime exactly as Manager construction
+// does. Production validation, activation wiring, and the live manager use this
+// one semantic so backend choice cannot change whether a configuration is safe.
+func (c Config) EffectiveLeaseTTL() time.Duration {
+	if c.LeaseTTL > 0 {
+		return c.LeaseTTL
+	}
+	return DefaultConfig(c.SessionID, c.Exclusive).LeaseTTL
+}
+
+// PostAcquireActivationBudget returns the legacy direct-manager fallback used
+// when PostAcquireActivationTimeout is zero: one lease lifetime minus the
+// reserved teardown margin. Production composition roots install a conservative
+// transport bound and renew throughout activation instead of using this window.
 func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Duration) {
 	defaults := DefaultConfig(c.SessionID, c.Exclusive)
-	ttl := c.LeaseTTL
-	if ttl <= 0 {
-		ttl = defaults.LeaseTTL
-	}
+	ttl := c.EffectiveLeaseTTL()
 	stepDownGrace := c.StepDownGrace
 	if stepDownGrace <= 0 {
 		stepDownGrace = defaults.StepDownGrace
@@ -371,7 +390,8 @@ func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Durat
 // concurrently. Zero-valued knobs are treated as "derive" and are always safe.
 func (c Config) Validate() error {
 	if c.LeaseTTL < 0 || c.RenewInterval < 0 || c.RenewJitter < 0 ||
-		c.StepDownGrace < 0 || c.AcquirePollInterval < 0 || c.RenewCallTimeout < 0 {
+		c.StepDownGrace < 0 || c.AcquirePollInterval < 0 || c.RenewCallTimeout < 0 ||
+		c.PostAcquireActivationTimeout < 0 {
 		return fmt.Errorf("session %q: lease timings must be non-negative", c.SessionID)
 	}
 	if c.MaxRenewFails < 0 {
@@ -379,9 +399,12 @@ func (c Config) Validate() error {
 	}
 
 	defaults := DefaultConfig(c.SessionID, c.Exclusive)
-	ttl := c.LeaseTTL
-	if ttl == 0 {
-		ttl = defaults.LeaseTTL
+	ttl := c.EffectiveLeaseTTL()
+	if c.Exclusive && ttl < MinimumProductionLeaseTTL {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"session %q: effective LeaseTTL=%s is below production minimum=%s",
+			c.SessionID, ttl, MinimumProductionLeaseTTL,
+		))
 	}
 	maxFails := c.MaxRenewFails
 	if maxFails == 0 {

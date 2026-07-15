@@ -73,7 +73,9 @@ exclusive sessions have no such coupling. See
 
 **Failover timing.** When the lease holder dies, a standby reclaims the
 partition only after the lease TTL lapses, so the failover window is
-approximately `lease_ttl`. A clustered exclusive route that does **not** pin
+approximately `lease_ttl`. Production validation rejects an effective
+`lease_ttl` below 5s uniformly, before selecting or opening a lease-store
+backend. A clustered exclusive route that does **not** pin
 `lease_ttl`/`renew_interval` automatically starts from the 45s HA profile, which
 lands in the documented 30–60s band; pinning a looser `lease_ttl` (>60s) makes
 failover proportionally slower and emits a startup WARN so the trade-off is
@@ -169,16 +171,24 @@ Before removing persistent/exclusive filters, stop publishers or otherwise drain
 traffic covered by the old wildcard/shared filters. A no-buffer cutover removes
 the exact filters, recycles, waits one `unmatched_grace` verification window,
 then forgets verified history and reaches Full. Initial Exclusive activation
-uses the full lease-safe budget, `lease_ttl - teardown_margin` (a positive
-`step_down_grace` capped at 5s; 5s otherwise), rather than the short recurring
-reconnect reconcile cap. Before stores or transports are built, GoBridge rejects
-a configured effective `connect_timeout`, `reconnect_timeout`,
-`reconcile_timeout`, or durable replay verification grace that individually
-exceeds that budget. The clustered 45s/5s default therefore provides 40s and
-admits MQTT's 30s defaults. The live
-manager still places one aggregate deadline around the complete sequence; a
-slow combination that exhausts the budget, a shorter caller context, or a store
-outage remains uncertainty and fails closed.
+uses one conservative whole-path hard bound rather than the short recurring
+reconnect reconcile cap. Paho computes it from every potentially sequential
+phase: initial and recycle connection waits, initial/final subscription broker
+operations, exact cleanup, bounded ingress quiescence, and both possible replay
+verification windows. Nested reconnect-attempt limits are not double-counted.
+With the 30s MQTT defaults this conservative bound is 4m, longer than the 45s HA
+lease TTL.
+
+The existing lease-renewal loop therefore starts immediately after Acquire and
+remains the **only** renewer throughout bounded activation. Successful Renew
+keeps the fencing token/current local deadline valid; definitive loss or the
+existing renewal-failure step-down cancels activation and disconnects/quiesces
+before returning. A parked
+activation or failed disconnect is terminal and never releases ownership under
+work that may still mutate. This removes backend-dependent timing acceptance and
+keeps safe defaults usable, but it does **not** claim the Task 9 failover SLO.
+A hard-bound expiry, shorter caller context, or store outage remains uncertainty
+and fails closed.
 
 If startup/reconcile reports that managed subscription migration requires the
 old configuration, readiness must remain below Full. Do **not** delete/empty the

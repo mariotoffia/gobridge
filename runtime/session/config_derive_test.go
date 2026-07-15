@@ -1,8 +1,12 @@
 package session
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract C3 and
@@ -243,5 +247,22 @@ func TestRenewWorstCaseSpan_FoldsInCallTimeout(t *testing.T) {
 	haWorst := renewWorstCaseSpan(ha.RenewInterval, ha.RenewJitter, ha.RenewCallTimeout, ha.MaxRenewFails)
 	if haWorst >= ha.LeaseTTL {
 		t.Fatalf("HAConfig worst-case span %s must be < LeaseTTL %s", haWorst, ha.LeaseTTL)
+	}
+}
+
+func TestConfigValidateRejectsEffectiveProductionLeaseTTLBelowStoreFloor(t *testing.T) {
+	cfg := HAConfig("sub-floor", true)
+	cfg.LeaseTTL = MinimumProductionLeaseTTL - time.Nanosecond
+	if err := cfg.Validate(); !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "below production minimum") {
+		t.Fatalf("Validate sub-floor lease TTL = %v, want ErrInvalidConfig production minimum error", err)
+	}
+	cfg.LeaseTTL = MinimumProductionLeaseTTL
+	cfg.StepDownGrace = time.Second
+	cfg.RenewInterval = time.Second
+	cfg.RenewJitter = 0
+	cfg.RenewCallTimeout = 100 * time.Millisecond
+	cfg.MaxRenewFails = 3
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate at lease TTL floor: %v", err)
 	}
 }

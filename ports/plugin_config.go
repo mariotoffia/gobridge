@@ -62,23 +62,22 @@ type DurableSessionIdentityConfig interface {
 	DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error)
 }
 
-// SessionActivationTiming reports the effective upper bounds and mandatory
-// replay-grace wait that may run after an exclusive lease is acquired but before
-// the session can converge. The composition root compares each phase with the
-// lease-safe post-acquire budget; actual execution remains bounded by the one
-// aggregate lease deadline in runtime/session.
+// SessionActivationTiming reports one conservative effective bound for the
+// complete sequential activation path after an exclusive lease is acquired but
+// before the session can converge. The composition root installs that bound on
+// the runtime manager, which renews the lease throughout activation.
 type SessionActivationTiming struct {
-	ConnectTimeout   time.Duration
-	ReconnectTimeout time.Duration
-	ReconcileTimeout time.Duration
-	ReplayGrace      time.Duration
+	// WorstCaseDuration is the conservative hard bound for every sequential
+	// phase that may run between exclusive lease acquisition and convergence.
+	// Nested per-attempt limits must not be double-counted.
+	WorstCaseDuration time.Duration
 }
 
 // PostAcquireActivationTimingConfig is an OPTIONAL typed-config capability for
 // stateful transports whose initial/replacement reconciliation can include a
-// mandatory replay-verification wait. Values must be effective (defaults already
-// resolved), non-secret durations. ReplayGrace is zero when the selected session
-// mode has no durable replay verification.
+// mandatory replay-verification wait. The returned duration must be conservative,
+// effective (defaults already resolved), and non-secret. It is zero when the
+// selected session mode has no post-acquire durable activation sequence.
 type PostAcquireActivationTimingConfig interface {
 	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
 }
