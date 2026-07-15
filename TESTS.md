@@ -396,3 +396,30 @@ Walk this before pushing:
       logging and continuing.
 
 A reviewer checks the same list.
+
+---
+
+## 10. Deployment shell tests
+
+The file-based AWS deployment ships pure-bash tests that need no Go, no Docker,
+and no network:
+
+```bash
+make -C deployment/aws-filebased-config test
+```
+
+They cover two scripts:
+
+- `seeder.sh` — the EFS config-seeder contract (single-line JSON outcome, hash
+  match/mismatch, adopt/abort modes). A PATH shim mocks the `aws` CLI over
+  fixture files.
+- `scripts/update-image.sh` — the base-image digest refresh. A fake `crane` on
+  PATH feeds canned manifests, and the checks assert the script pins a top-level
+  multi-platform index, **verifies `linux/amd64` + `linux/arm64` before it
+  writes**, prints only the pinned `image@sha256` reference, and **fails closed**
+  (rewrites nothing) on a missing platform, a single-arch manifest, or empty
+  registry output. The script never installs a tool.
+
+These are the verification gates for the container-input pins. The resolve/verify
+workflow the root `Dockerfile` follows is in [DEVELOPMENT.md](DEVELOPMENT.md)
+(Base image digests).

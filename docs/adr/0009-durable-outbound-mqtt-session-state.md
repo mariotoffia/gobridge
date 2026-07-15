@@ -1,8 +1,9 @@
 # 0009 — Durable outbound MQTT session state
 
 Status: accepted
-Date: 2026-08-14
+Date: 2026-07-13
 Deciders: GoBridge core
+Implemented: commit 4d8d76d (2026-07-13); the `NonDurableEgressReporter` boundary landed in commit 9d8effb (2026-07-10)
 
 ## Context
 
@@ -36,17 +37,22 @@ runtime can reason about it.
   `egressDurabilityAdvisory` and warns **only** when a route's delivery mode
   would settle the source *before* this non-durable boundary.
 
-- **The route delivery modes carry durability.** Both wired modes are loss-safe
-  across a crash of an in-flight publish:
+- **The route delivery modes carry durability, under stated conditions.** Both
+  wired modes recover an in-flight-publish crash on the source side, but each
+  only within its own boundary:
   - `direct_hold` holds the source delivery un-acked until the broker returns
     PUBACK/PUBCOMP; a crash before that ack leaves the source message un-acked,
-    so the source redelivers and the lost publish is re-sent on recovery.
+    so the source redelivers **when the source transport/session redelivers**. A
+    QoS 0 source, an Ephemeral clean-start restart, or an expired source offline
+    queue has nothing to redeliver.
   - `shared_outbox` invokes the sender from a version-fenced persisted outbox
     record and marks it complete only **after** the send returns; a crash before
-    completion replays the record on restart, and idempotency keys collapse the
-    duplicate.
-  Because both modes recover the in-flight loss on the source side, no durability
-  advisory fires today.
+    completion replays the record **when it acquired a unique durable identity
+    and was persisted**, and idempotency keys collapse the duplicate.
+  Because both modes recover the in-flight loss on the source side within those
+  boundaries, no durability advisory fires today. The full conditional contract —
+  the rows that are safe and the rows that can still lose or duplicate — is the
+  [source-to-destination guarantee matrix](../transports/mqtt.md#source-to-destination-guarantee-matrix).
 
 - **The stance is documented for operators.** The MQTT transport page states
   prominently that QoS 2 is not exactly-once across a restart and that durability
@@ -55,11 +61,17 @@ runtime can reason about it.
 
 ## Consequences
 
-- A bridge restart never loses a message on either wired delivery mode: the
-  source-side hold or the outbox replay re-sends the in-flight publish, and the
-  dedup layer collapses the redelivered duplicate. MQTT-protocol QoS 2
-  exactly-once is *not* preserved across the restart, but that degrades to a
-  collapsed duplicate, never to loss.
+- A bridge restart does not lose an in-flight publish **within each mode's
+  boundary**: the source-side hold re-sends it when the source redelivers, and
+  the outbox replay re-sends a persisted uniquely-identified record, with the
+  dedup layer collapsing the redelivered duplicate. MQTT-protocol QoS 2
+  exactly-once is *not* preserved across the restart; within the boundary it
+  degrades to a collapsed duplicate. Outside the boundary — QoS 0, an Ephemeral
+  clean-start source, a source offline-queue expiry, a crash before Persist, or
+  an explicit drop policy — loss is possible, and an accepted-but-unconfirmed
+  send can duplicate. The [guarantee
+  matrix](../transports/mqtt.md#source-to-destination-guarantee-matrix) is the
+  source of truth for which row applies.
 - An operator evaluating an end-to-end exactly-once claim must account for the
   in-memory store: the guarantee is at-least-once-plus-dedup, delivered by the
   route mode, not exactly-once at the MQTT protocol.
@@ -77,8 +89,9 @@ runtime can reason about it.
   Assigning a persistent store to `cfg.Session` would make in-flight outbound
   QoS 1/2 survive a restart at the protocol level. Deferred, not rejected: it
   adds a local-disk durability dependency and a crash-consistency surface that
-  the route-layer outbox already covers loss-safely, so it buys protocol-level
-  exactly-once we do not currently need. It remains the natural extension if a
+  the route-layer outbox already covers within its boundary (a persisted,
+  uniquely-identified record), so it buys protocol-level exactly-once we do not
+  currently need. It remains the natural extension if a
   future route mode settles the source ahead of the transport. Tracked as the
   deferred `M-6` alternative.
 - **Advertise MQTT QoS 2 as the durability guarantee.** Rejected — the in-memory

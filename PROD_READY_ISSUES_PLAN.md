@@ -814,7 +814,7 @@ feat(aws): add DynamoDB-coordinated bridge HA
 
 ## Task 12: Correct production claims and pin container inputs
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:doc-markdown-writer, thiink:doc-markdown-reviewer,
 thiink:security-auditor
@@ -837,37 +837,69 @@ thiink:security-auditor
 - Modify: `DEVELOPMENT.md`
 - Modify: `TESTS.md`
 
-- [ ] **Step 1: Replace absolute delivery claims**
+- [x] **Step 1: Replace absolute delivery claims**
 
 Add a source QoS/session × delivery mode × producer identity × store durability
 × outage-duration matrix. State every configured loss boundary and ambiguous
 send duplicate boundary.
 
-- [ ] **Step 2: Correct subscription, failover, and ACK text**
+Done: `docs/transports/mqtt.md` now carries the single canonical
+"Source-to-destination guarantee matrix"; the "neither wired delivery mode
+loses a message" claim is removed there and in
+`docs/adr/0009-durable-outbound-mqtt-session-state.md`, which links the matrix
+instead of duplicating it. QoS 0, Ephemeral clean-start, source offline-queue
+expiry, crash-before-Persist, explicit drop policy, missing/non-unique producer
+ID, and accepted-then-unconfirmed sends are all stated as loss/ambiguous rows.
+
+- [x] **Step 2: Correct subscription, failover, and ACK text**
 
 State that persistent restart does not remove unknown wildcard/shared filters;
 warm and cold takeover have distinct bounds; fencing cannot undo a completed
 destination send; production Paho uses manual acknowledgement.
 
-- [ ] **Step 3: Correct ADR provenance**
+Done: ADR 0003 corrected (empty-plan reconcile unsubscribes known managed subs;
+a same-`client_id` restart resumes the broker session so unknown filters
+survive). `docs/runbooks/node-down-failover.md` fencing wording fixed
+(prevents stale-owner outbox mutation, cannot undo an accepted destination
+send). `docs/timing-audit.md` identity precedence corrected to the per-publish
+UUID fallback. `analysis_receiver_test.go` reworded/renamed as a legacy router
+seam, not a production settlement-conformance statement.
+
+- [x] **Step 3: Correct ADR provenance**
 
 Use `git log --follow` and implementing commits to set decision/effective dates.
 Future decisions remain Proposed, never future-dated Accepted.
 
-- [ ] **Step 4: Pin image indexes**
+Done: future date 2026-08-14 replaced with the real commit dates — ADRs
+0009/0010/0011 → 2026-07-13 (commit 4d8d76d; 0009's boundary landed 2026-07-10
+in 9d8effb); ADR 0003 covered-retention addendum → 2026-07-10 (commit 9d8effb).
+Each ADR links its implementing commit. All remain Accepted because the
+implementation is present at or before the audited revision (2026-07-13).
+
+- [x] **Step 4: Pin image indexes**
 
 Resolve and commit top-level multi-platform index digests for Go 1.25 bookworm
 and distroless static Debian 12 nonroot. Repair the existing digest script so
 JSON parsing receives stdin, verifies amd64/arm64, and never recommends an
 unpinned tool install.
 
-- [ ] **Step 5: Review docs**
+Done via `docker buildx imagetools inspect` (no tools installed):
+`golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58`
+and `gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b`,
+both verified as OCI indexes including linux/amd64 + linux/arm64. `Dockerfile`
+pinned (GO_VERSION ARG removed; stale "until then mutable" comments removed).
+`update-image.sh` repaired (stdin JSON, amd64+arm64 gate, fail-closed, digest
+computed from verified bytes, no unpinned install) with seeder shell-test
+coverage. Refresh/verify workflow recorded in DEVELOPMENT.md, TESTS.md,
+overview.md, and the deployment README.
+
+- [x] **Step 5: Review docs**
 
 ```bash
 git diff --check
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 docs: state MQTT production boundaries exactly

@@ -458,11 +458,14 @@ token-in-password credential is no longer dropped for want of a username.
 > outbound packet queue **in memory**, so an in-flight QoS 1/2 publish (sent,
 > PUBACK/PUBCOMP not yet received) is lost at the MQTT-protocol level on a crash
 > or restart — `client_id` / `clean_start=false` resume *broker-side* state, not
-> the *client-side* outbound queue. This is not bridge-level loss: the wired
-> delivery modes (`direct_hold`, `shared_outbox`) recover the message on the
-> source side and the dedup layer collapses the redelivered duplicate (detailed
-> below). Operators evaluating an end-to-end exactly-once claim must account for
-> this — see also [ADR 0009](../adr/0009-durable-outbound-mqtt-session-state.md).
+> the *client-side* outbound queue. Whether the wired delivery modes
+> (`direct_hold`, `shared_outbox`) recover this loss on the source side is
+> conditional. It depends on source redelivery, durable outbox persistence, and
+> producer identity. See the [source-to-destination guarantee
+> matrix](#source-to-destination-guarantee-matrix) below for the rows that are
+> safe and the rows that can still lose or duplicate. Operators evaluating an
+> end-to-end exactly-once claim must account for this — see also
+> [ADR 0009](../adr/0009-durable-outbound-mqtt-session-state.md).
 
 MQTT deliveries are acknowledged **after** the bridge settles them, not on
 receipt. The adapter connects with manual acknowledgement and holds the PUBACK
@@ -562,35 +565,76 @@ resume — but they do **not** make that outbound in-flight QoS 1/2 state
 durable: a bridge restart or crash still loses it, because it never leaves the
 in-memory packet store.
 
-**MQTT QoS 1/2 alone is not durable egress — but neither wired delivery mode
-loses a message.** autopaho keeps the outbound packet queue **in memory**, so a
-publish that is in flight (sent, PUBACK/PUBCOMP not yet received) when the
-process dies is lost at the *protocol* level, and MQTT QoS 2 is **not**
+**MQTT QoS 1/2 alone is not durable egress, and neither wired delivery mode is
+unconditionally loss-proof.** autopaho keeps the outbound packet queue **in
+memory**, so a publish that is in flight (sent, PUBACK/PUBCOMP not yet received)
+when the process dies is lost at the *protocol* level, and MQTT QoS 2 is **not**
 exactly-once across a restart. `client_id` / `clean_start=false` do not help —
-they resume *broker-side* state, not the *client-side* outbound queue. What
-saves the message is where the route acknowledges the **source**:
+they resume *broker-side* state, not the *client-side* outbound queue. What each
+delivery mode recovers, and the conditions it depends on, is stated in the
+matrix below:
 
 - **`direct_hold`** (the default) holds the source delivery un-acked until the
-  broker returns PUBACK (QoS 1) / PUBCOMP (QoS 2). A crash before that ack leaves
-  the source message un-acked, so the source redelivers it — the lost in-flight
-  publish is re-sent on recovery. No bridge-level loss.
+  broker returns PUBACK (QoS 1) / PUBCOMP (QoS 2). It recovers an in-flight loss
+  **only when the source transport/session actually redelivers** the un-acked
+  input. A QoS 0 source, an Ephemeral clean-start source that restarts, or a
+  source broker that already expired its offline queue has nothing to redeliver,
+  so there is no held recovery.
 - **`shared_outbox`** invokes the sender from a version-fenced persisted outbox
-  record and marks it complete only **after** the send returns. A crash before
-  completion replays the record on restart, so the publish is re-sent
-  (idempotency keys collapse the duplicate). No bridge-level loss.
+  record and marks it complete only **after** the send returns. It recovers a
+  loss **only for records that acquired a unique durable identity and were
+  successfully persisted** before the crash. A record that never reached the
+  store (crash before Persist) has nothing to replay, and two legitimate
+  equal-valued publishes that lack a producer ID are not the same record.
 
-So the in-memory packet store means MQTT-protocol QoS 2 exactly-once is not
-preserved across a restart — a redelivered duplicate is collapsed by the
-bridge's dedup — but it does **not** translate into lost messages on either
-delivery mode. The only way an in-flight loss could become bridge-level loss is
-a delivery mode that acks the source *before* the transport confirms the
-publish; no such mode exists today, so the bridge emits a route-aware startup
-advisory (`bridge.egressDurabilityAdvisory`) that stays silent for both current
-modes and exists only to flag such a future mode. Do **not** treat MQTT QoS 1/2
-as the sole loss-prevention for outbound traffic — pair loss-sensitive egress
-with `shared_outbox` (or the redelivery-backed `direct_hold` above). (A
-file-backed Paho session store is a deferred, ADR-level alternative and is not
-wired today.)
+Neither mode proves that a broker-retained message existed before the bridge
+received it, and neither turns an ambiguous send into a certainty. Pair
+loss-sensitive egress with `shared_outbox` (or the redelivery-backed
+`direct_hold`), keep producers stamping a stable `mqtt.message-id`, and keep the
+downstream idempotent. A file-backed Paho session store is a deferred,
+ADR-level alternative and is not wired today — see
+[ADR 0009](../adr/0009-durable-outbound-mqtt-session-state.md).
+
+### Source-to-destination guarantee matrix
+
+The delivery guarantee is conditional on five inputs: the source QoS/session, the
+route delivery mode, whether the publish carries a producer identity, whether the
+outbox store durably persisted the record, and how long the outage lasted. "No
+source-side loss" means the bridge does not drop the message. It does **not** mean
+exactly-once: an accepted-then-unconfirmed send can still duplicate at the
+destination, so downstream idempotency is required in every row.
+
+| Source QoS / session | Delivery mode | Producer identity | Store durability | Outage duration | Guarantee |
+|---|---|---|---|---|---|
+| QoS 1/2, Persistent/Exclusive | `direct_hold` | any | n/a | within source session expiry | No source-side loss: un-acked input is redelivered on resume and the in-flight publish is re-sent. |
+| QoS 1/2, Persistent/Exclusive | `shared_outbox` | unique, persisted | record persisted | any | No source-side loss: the fenced record replays after restart; dedup collapses the re-send. |
+| QoS 1/2, Persistent/Exclusive | `shared_outbox` | missing or non-unique | record persisted | any | Two legitimate equal-valued publishes without a producer ID get distinct per-publish IDs; both flow through, with no cross-redelivery dedup. Content hashes are not a substitute (see below). |
+| QoS 0, any session | either | any | any | any | Possible loss: QoS 0 has no source redelivery, so there is nothing to hold or to replay before persist. |
+| QoS 1/2, Ephemeral (clean start) | `direct_hold` | any | n/a | any restart | Possible loss: a clean-start restart cannot redeliver the unsettled input packet. |
+| any | `shared_outbox` | any | crash before Persist | any | Possible loss: a record that never reached the store durably has nothing to replay. |
+| QoS 1/2, source broker offline | either | any | any | queue expiry/drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever sees the message. |
+| any | explicit drop/failure policy | any | any | any | Loss by design: a configured drop/failure policy acknowledges the message is discarded. |
+| any | either | any | any | send accepted, response lost | Ambiguous: a send timeout after the destination accepted the publish is indistinguishable from a real failure, and a retry may duplicate. Downstream must dedupe. |
+
+Producer identity is a stable `mqtt.message-id` (or MQTT correlation data); a
+content hash of topic+payload is **not** a producer ID, because two legitimate
+equal-valued events would hash the same and one would be silently collapsed. When
+no producer ID is present, GoBridge stamps a fresh per-publish UUID so distinct
+publishes stay distinct — see
+[Envelope identity and no-ID redelivery](#envelope-identity-and-no-id-redelivery).
+
+What the bridge **records** is the settlement and outbox state it observes:
+`unsettled_count`, outbox record status, DLQ entries, and drop counters. What it
+**cannot know** is whether a message sat in a broker's offline queue before the
+bridge connected, or whether a destination that never returned a response
+committed the publish. Those unknowns are why the matrix labels those rows
+possible-loss or ambiguous rather than safe.
+
+The only way an in-flight loss becomes bridge-level loss outside the rows above is
+a delivery mode that acks the source *before* the transport confirms the publish.
+No such mode exists today, so the bridge emits a route-aware startup advisory
+(`bridge.egressDurabilityAdvisory`) that stays silent for both current modes and
+exists only to flag such a future mode.
 
 ## Resilience Behavior
 

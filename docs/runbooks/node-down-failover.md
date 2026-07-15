@@ -76,8 +76,11 @@ may need a process restart to complete takeover.
 
 - **Takeover completed (`LeaseTransfers` advanced, standby `running`, `ready`):**
   no action. The dead node's un-acked source messages are redelivered to the new
-  owner; outbox fencing prevents duplicate destination sends. Duplicates at the
-  destination are still possible — downstream must stay idempotent.
+  owner. Outbox fencing prevents a stale owner from committing or continuing
+  outbox work on a fenced record — it does **not** undo a destination send the
+  old owner already had accepted before it lost the response or died. Duplicates
+  at the destination are therefore still possible; downstream must stay
+  idempotent.
 - **New owner terminal / not restarting:** a single-active session that went
   terminal needs a process restart. On Kubernetes `restartPolicy: Always` (plus
   a `livenessProbe` on `/api/v1/monitor/live`) covers it; under systemd use

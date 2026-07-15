@@ -209,6 +209,47 @@ The repo is a multi-module `go.work` workspace. The rules below keep it consumab
 
 > **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — First release checklist](RELEASE.md#first-release-checklist).
 
+## Base image digests
+
+The root `Dockerfile` pins both base images to a **top-level multi-platform OCI
+index digest** (the index, not a per-architecture manifest), so a rebuild pulls
+the exact reviewed bytes:
+
+| Stage | Image | Pinned index digest |
+|-------|-------|---------------------|
+| build | `golang:1.25-bookworm` | `sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58` |
+| runtime | `gcr.io/distroless/static-debian12:nonroot` | `sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b` |
+
+Both indexes were verified to include `linux/amd64` and `linux/arm64`.
+
+Refresh and verify a digest before committing it. This needs `docker buildx`
+(a documented prerequisite); `crane` works too. It never installs a tool:
+
+```bash
+IMG=golang:1.25-bookworm   # or gcr.io/distroless/static-debian12:nonroot
+
+# Top-level index digest to pin:
+docker buildx imagetools inspect "$IMG" --format '{{.Manifest.Digest}}'
+
+# Confirm it is a multi-platform index covering amd64 AND arm64:
+docker buildx imagetools inspect "$IMG" --raw | \
+  jq -r '.manifests[] | select(.platform != null) |
+         "\(.platform.os)/\(.platform.architecture)"' | sort -u
+```
+
+Update the `FROM image:tag@sha256:<digest>` lines only through a reviewed change,
+keeping the human-readable tag alongside the digest. A source rebuild is
+reproducible only to the extent these pinned bases, the locked per-module
+`go.sum`, and the Go toolchain are fixed. The build claims no bit-for-bit
+reproducibility beyond those facts.
+
+The seeder base image (`public.ecr.aws/aws-cli/aws-cli:2`) is pinned the same
+way. `make -C deployment/aws-filebased-config update-seeder-image` resolves,
+verifies (amd64 + arm64), computes the digest from the verified bytes, and
+rewrites its pin, failing closed on a missing digest or platform. Its shell
+checks run under `make -C deployment/aws-filebased-config test` (see
+[TESTS.md](TESTS.md), Deployment shell tests).
+
 ## CI Workflow
 
 ```bash

@@ -498,8 +498,13 @@ leaves the level unchanged).
 **Container image.** Built by the repository-root `Dockerfile`
 (`make docker-build`): a static, CGO-free `gobridge-filebased` on
 `distroless/static:nonroot` (runs as uid:gid `65532:65532`, no shell/curl/wget).
-Published to `ghcr.io/mariotoffia/gobridge:<tag>` by the release workflow on
-core `v*` tags.
+Both base images are pinned by top-level multi-platform OCI index digest
+(`linux/amd64` + `linux/arm64`); refresh them only through a reviewed change per
+[DEVELOPMENT.md](../../DEVELOPMENT.md) (Base image digests). A source rebuild is
+reproducible only to the extent the pinned bases, the locked module `go.sum`, and
+the Go toolchain are fixed — nothing here claims bit-for-bit reproducibility
+beyond those. Published to `ghcr.io/mariotoffia/gobridge:<tag>` by the release
+workflow on core `v*` tags.
 
 ## Integration Tests
 

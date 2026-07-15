@@ -120,6 +120,80 @@ PRESEED="${FIXTURES_DIR}/bridge.yaml.bad" \
 MODE=AdoptValid ASSET_S3_URI=s3://test/bridge.yaml \
   assert_run "AdoptValid-target-unparseable" 30 "yaml_unparseable"
 
+echo
+echo "update-image.sh tests"
+echo "====================="
+
+UPDATE_IMAGE="${ROOT}/scripts/update-image.sh"
+
+# Multi-platform index with amd64 + arm64 (happy path). The trailing
+# unknown/unknown attestation entry must be ignored.
+cat > "${WORKDIR}/ui-ok.json" <<'JSON'
+{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+ {"platform":{"os":"linux","architecture":"amd64"}},
+ {"platform":{"os":"linux","architecture":"arm64","variant":"v8"}},
+ {"platform":{"os":"unknown","architecture":"unknown"}}
+]}
+JSON
+# Index missing arm64 → must fail closed.
+cat > "${WORKDIR}/ui-noarm.json" <<'JSON'
+{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+ {"platform":{"os":"linux","architecture":"amd64"}}
+]}
+JSON
+# A single-arch image manifest (not a multi-platform index) → must fail closed.
+cat > "${WORKDIR}/ui-single.json" <<'JSON'
+{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{},"layers":[]}
+JSON
+# Empty registry output → must fail closed.
+: > "${WORKDIR}/ui-empty.json"
+
+# update_image_case name manifest-fixture want_exit want_written(yes|no)
+update_image_case() {
+  local name="$1" manifest="$2" want_exit="$3" want_written="$4"
+  local img="${WORKDIR}/ui-${name}-image.txt"
+  local dfile="${WORKDIR}/ui-${name}-Dockerfile"
+  printf 'SENTINEL-OLD\n' > "$img"
+  printf 'FROM placeholder:old@sha256:0000\nRUN true\n' > "$dfile"
+  local out rc=0
+  set +e
+  out=$(FAKE_CRANE_MANIFEST="$manifest" \
+        IMAGE_TXT="$img" SEEDER_DOCKERFILE="$dfile" \
+        bash "$UPDATE_IMAGE" 2>/dev/null)
+  rc=$?
+  set -e
+  if [ "$rc" -ne "$want_exit" ]; then
+    nope "ui-$name" "want exit $want_exit got $rc; out: $out"; return
+  fi
+  if [ "$want_written" = "yes" ]; then
+    case "$out" in
+      *$'\n'*) nope "ui-$name" "stdout must be one pinned line, got: $out"; return ;;
+    esac
+    if ! printf '%s' "$out" | grep -Eq '^public\.ecr\.aws/aws-cli/aws-cli:2@sha256:[0-9a-f]{64}$'; then
+      nope "ui-$name" "stdout is not a single pinned image@sha256 ref: '$out'"; return
+    fi
+    if [ "$(cat "$img")" != "$out" ]; then
+      nope "ui-$name" "image.txt content != printed pinned ref"; return
+    fi
+    if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM $out" ]; then
+      nope "ui-$name" "Dockerfile FROM not synced to the pinned ref"; return
+    fi
+  else
+    if [ "$(cat "$img")" != "SENTINEL-OLD" ]; then
+      nope "ui-$name" "image.txt was rewritten on a failing (fail-closed) run"; return
+    fi
+    if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM placeholder:old@sha256:0000" ]; then
+      nope "ui-$name" "Dockerfile was rewritten on a failing (fail-closed) run"; return
+    fi
+  fi
+  ok "ui-$name"
+}
+
+update_image_case "ok"           "${WORKDIR}/ui-ok.json"     0 yes
+update_image_case "missing-arm64" "${WORKDIR}/ui-noarm.json"  3 no
+update_image_case "not-an-index" "${WORKDIR}/ui-single.json" 3 no
+update_image_case "empty-output" "${WORKDIR}/ui-empty.json"  3 no
+
 echo "------------"
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" = "0" ]

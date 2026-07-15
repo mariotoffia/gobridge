@@ -37,7 +37,7 @@ evidence, guarding against removing subscriptions the plan still wants.
   orphan subscription so the adapter can act on fact, not on the config diff
   alone. **This was later refined (HIGH-1): past-grace handling now splits by
   whether the current plan still covers the topic — a covered topic is retained,
-  not dropped. See the [2026-08-14 addendum](#addendum-2026-08-14-covered-qos-1-and-2-retention-past-grace).**
+  not dropped. See the [2026-07-10 addendum](#addendum-2026-07-10-covered-qos-1-and-2-retention-past-grace).**
 
 - **Evidence-based, deduped, exact-topic UNSUBSCRIBE.** The router's grace-worker
   goroutine (`acl_router.go` `graceLoop`) drains an orphan topic off
@@ -54,10 +54,17 @@ evidence, guarding against removing subscriptions the plan still wants.
   subscription or a filter in the current plan). If so, the orphan unsubscribe is
   skipped — removing it would break a wanted subscription.
 
-- **No-op on empty plan.** Reconcile is a no-op when the new plan is empty and a
-  prior plan exists (`session_reconcile.go`), so a transient empty
-  configuration does not unsubscribe topics that are still in use or externally
-  managed. Orphan unsubscribes are bounded by `orphanUnsubscribeTimeout` (10s,
+- **Empty plan removes managed subscriptions; it is not a blanket no-op.** When
+  the new plan is empty and the last successfully applied plan held
+  subscriptions, reconcile intentionally UNSUBSCRIBEs every managed subscription
+  it established (`session_reconcile.go`;
+  `TestC7_Reconcile_EmptyPlanRemovesManagedSubs`), so the broker stops delivering
+  on stale filters the router would otherwise ack-drop as orphans forever. Only a
+  genuinely sender-only transition — an empty plan re-affirming an applied plan
+  that itself held no subscriptions, with no broker-observed grants and no managed
+  history — is a true no-op. UNSUBSCRIBE removes only the exact filters the
+  adapter knows it applied; unknown broker-only filters are not touched. Orphan
+  unsubscribes are bounded by `orphanUnsubscribeTimeout` (10s,
   `session_reconcile.go`).
 
 ## Consequences
@@ -68,18 +75,27 @@ evidence, guarding against removing subscriptions the plan still wants.
 - An exact-topic orphan subscription is torn down on evidence — after the adapter
   observes a message it cannot route, and only when no wanted subscription covers
   the topic — so it stops stalling the shared session.
-- A **wildcard** orphan subscription is never torn down. `UNSUBSCRIBE` matches a
-  concrete topic, not a filter, and MQTT exposes no subscription listing, so the
-  adapter can only unsubscribe the exact topic a publish arrived on
-  (`session_reconcile.go`). A wildcard orphan survives until process
-  restart; its publishes are acked-and-dropped indefinitely (broker and bandwidth
-  cost, observable only via the drop metric), but they cannot re-stall the
-  session.
-- `UNSUBSCRIBE` is best-effort and **not** retried. A `cm.Unsubscribe` failure
-  leaves the dedup mark set, so the topic is not re-attempted until process
-  restart; the only re-attempt path is the queue-overflow branch
-  (`acl_router.go`), where the enqueue failed and the mark was never set.
-  The adapter does not block routing on broker acknowledgment.
+- A **wildcard** orphan subscription is never torn down by this path.
+  `UNSUBSCRIBE` matches a concrete topic, not a filter, and MQTT exposes no
+  subscription listing, so the adapter can only unsubscribe the exact topic a
+  publish arrived on (`session_reconcile.go`). Its publishes are
+  acked-and-dropped (broker and bandwidth cost, observable via the drop metric)
+  without re-stalling the session. A process restart does **not** clear it: with
+  the same persistent `client_id` and `clean_start=false`, the restarted process
+  RESUMES the same broker session, so the wildcard/shared filter survives, and a
+  fresh in-memory `Session` has lost the applied-plan history it would need to
+  remove an unknown filter. A wildcard/shared orphan is removed only by a
+  successful `UNSUBSCRIBE` of that exact filter, a verified managed-migration
+  drain, a clean start / session deletion, session expiry, a **changed** client
+  ID (which abandons the old broker state rather than proving it was cleaned up),
+  or broker administration.
+- `UNSUBSCRIBE` is best-effort and **not** retried within the process. A
+  `cm.Unsubscribe` failure leaves the dedup mark set, so the exact topic is not
+  re-attempted for the life of the process; the only re-attempt path is the
+  queue-overflow branch (`acl_router.go`), where the enqueue failed and the mark
+  was never set. A restart with the same persistent identity resumes the broker
+  session and does not re-issue the failed unsubscribe. The adapter does not block
+  routing on broker acknowledgment.
 - Operators tuning latency-sensitive startup can shorten `unmatched_grace`, at
   the cost of a higher chance of dropping an early publish for a
   still-reconciling subscription. See the MQTT release note in
@@ -98,7 +114,10 @@ evidence, guarding against removing subscriptions the plan still wants.
   and would tear down wanted topics. The covered-topic guard and evidence
   requirement exist to prevent that.
 
-## Addendum 2026-08-14: covered QoS 1 and 2 retention past grace
+## Addendum 2026-07-10: covered QoS 1 and 2 retention past grace
+
+Implemented in commit 9d8effb (2026-07-10); the `MQTTRouterCoveredRetained`
+retention path and this addendum landed together.
 
 The original **Ack-and-drop past grace** decision above described an
 *unconditional* ack-and-drop once the grace window elapses. That is no longer

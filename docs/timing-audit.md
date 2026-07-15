@@ -98,13 +98,18 @@ The `ExtractTID` function tries the header first, then falls back to
 the JSON `_tid` field, so it works even when transport headers are
 stripped (e.g. SQS → body-only polling).
 
-**MQTT Envelope.ID round-trip**: `PublishFromEnvelope` includes the
-`Envelope.ID` as a `mqtt.message-id` user property.
-`EnvelopeFromPublish` recovers it in priority order:
+**MQTT Envelope.ID round-trip**: `PublishFromEnvelope` stamps the
+`Envelope.ID` as a `mqtt.message-id` user property, so a peer bridge's
+producer identity survives the hop. `EnvelopeFromPublish` recovers the
+inbound identity in precedence order:
 
-1. `mqtt.message-id` user property
-2. `x-bridge.correlation-id` from CorrelationData
-3. Random fallback
+1. a valid `mqtt.message-id` user property (the producer ID a peer stamped);
+2. valid MQTT correlation data (`x-bridge.correlation-id`);
+3. a per-publish RFC 4122 UUIDv4, generated once for the received publish
+   (`newIngressEnvelopeID`). This is **not** a topic+payload hash: two
+   legitimate equal-valued publishes with no producer ID get distinct IDs, so
+   `shared_outbox` does not silently collapse them. See
+   [MQTT — Envelope identity and no-ID redelivery](transports/mqtt.md#envelope-identity-and-no-id-redelivery).
 
 This enables `countUnique()` to work correctly on MQTT collectors for
 all throughput, resilience, and backpressure tests.

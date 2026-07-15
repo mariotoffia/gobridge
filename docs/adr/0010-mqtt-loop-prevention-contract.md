@@ -1,8 +1,9 @@
 # 0010 — MQTT bridge-to-bridge loop-prevention contract
 
 Status: accepted
-Date: 2026-08-14
+Date: 2026-07-13
 Deciders: GoBridge core
+Implemented: commit 4d8d76d (2026-07-13)
 
 ## Context
 
