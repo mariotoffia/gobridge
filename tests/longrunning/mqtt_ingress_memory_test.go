@@ -3,7 +3,6 @@
 package longrunning_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -35,24 +35,32 @@ func TestMQTTIngressMemory_PeakRSSBelowContainerLimit(t *testing.T) {
 
 	memoryLimit, limitSource, err := reliableProcessMemoryLimitBytes()
 	if err != nil {
-		t.Skipf("reliable configured process/container memory limit unavailable: %v", err)
+		memoryProofUnavailable(t, "reliable configured process/container memory limit unavailable: %v", err)
 	}
 	ingressBound, err := paho.IngressMemoryBound(maxPayloadBytes, receiveMaximum, routeMaxInFlight)
 	require.NoError(t, err)
 	if ingressBound > memoryLimit/4 {
-		t.Skipf("configured memory limit from %s is too small for measured profile: ingress bound %d > 25%% allocation %d",
+		memoryProofUnavailable(t,
+			"configured memory limit from %s is too small for measured profile: ingress bound %d > 25%% allocation %d",
 			limitSource, ingressBound, memoryLimit/4)
 	}
+	brokerURL := os.Getenv("MQTT_MEMORY_BROKER_URL")
+	if brokerURL == "" {
+		if os.Getenv("GOBRIDGE_REQUIRE_MEMORY_LIMIT") == "1" {
+			t.Fatal("required memory proof must provide MQTT_MEMORY_BROKER_URL for the externally managed CI broker")
+		}
+		broker := mqttlocal.NewBrokerInstance(t,
+			mqttlocal.WithMaxInflightMessages(receiveMaximum),
+			mqttlocal.WithMessageSizeLimit(maxPayloadBytes),
+		)
+		brokerURL = broker.URL()
+	}
 
-	broker := mqttlocal.NewBrokerInstance(t,
-		mqttlocal.WithMaxInflightMessages(receiveMaximum),
-		mqttlocal.WithMessageSizeLimit(maxPayloadBytes),
-	)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	t.Cleanup(cancel)
 
 	source := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:               []string{broker.URL()},
+		BrokerURLs:               []string{brokerURL},
 		ClientID:                 mqttlocal.UniqueClientID("ingress-memory-source"),
 		KeepAlive:                30,
 		ConnectTimeout:           15 * time.Second,
@@ -116,33 +124,28 @@ func TestMQTTIngressMemory_PeakRSSBelowContainerLimit(t *testing.T) {
 	debug.FreeOSMemory()
 	sampler, err := startRSSSampler(ctx, 10*time.Millisecond)
 	if err != nil {
-		t.Skipf("reliable continuous RSS sampling unavailable: %v", err)
+		memoryProofUnavailable(t, "reliable continuous RSS sampling unavailable: %v", err)
 	}
 	t.Cleanup(func() { _, _ = sampler.Stop() })
 
-	payload := make([]byte, maxPayloadBytes)
-
-	publishStarted := make(chan struct{}, receiveMaximum)
+	publishStarted := make(chan struct{}, 1)
+	publisherDone := make(chan error, 1)
 	var publishers sync.WaitGroup
-	publishers.Add(receiveMaximum)
-	for range receiveMaximum {
-		go func() {
-			defer publishers.Done()
-			_ = publishFromBrokerContainer(
-				ctx, broker.ContainerName(), topic, 1, payload, publishStarted,
-			)
-		}()
-	}
+	publishers.Add(1)
+	go func() {
+		defer publishers.Done()
+		publisherDone <- publishFromHelperProcess(
+			ctx, brokerURL, topic, 1, receiveMaximum, maxPayloadBytes, publishStarted,
+		)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		publishers.Wait()
 	})
-	for range receiveMaximum {
-		select {
-		case <-publishStarted:
-		case <-ctx.Done():
-			t.Fatal("QoS 1 publisher did not start")
-		}
+	select {
+	case <-publishStarted:
+	case <-ctx.Done():
+		t.Fatal("QoS 1 publisher helper did not start")
 	}
 	for range routeMaxInFlight {
 		select {
@@ -163,13 +166,12 @@ func TestMQTTIngressMemory_PeakRSSBelowContainerLimit(t *testing.T) {
 		return source.Health(ctx).UnsettledCount == receiveMaximum
 	}, 15*time.Second, 10*time.Millisecond,
 		"QoS 1 publishes must fill the broker receive window")
+	require.NoError(t, <-publisherDone)
 
 	_, dispatchCapacity := source.IngressMemoryStats()
-	for range dispatchCapacity + 1 {
-		require.NoError(t, publishFromBrokerContainer(
-			ctx, broker.ContainerName(), topic, 0, payload, nil,
-		))
-	}
+	require.NoError(t, publishFromHelperProcess(
+		ctx, brokerURL, topic, 0, dispatchCapacity+1, maxPayloadBytes, nil,
+	))
 	require.Eventually(t, func() bool {
 		depth, capacity := source.IngressMemoryStats()
 		return capacity == dispatchCapacity && depth == capacity
@@ -199,6 +201,14 @@ func TestMQTTIngressMemory_PeakRSSBelowContainerLimit(t *testing.T) {
 		peakRSS, memoryLimit, limitSource)
 }
 
+func memoryProofUnavailable(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("GOBRIDGE_REQUIRE_MEMORY_LIMIT") == "1" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func currentRSSBytes() (uint64, error) {
 	data, err := os.ReadFile("/proc/self/statm")
 	if err != nil {
@@ -220,40 +230,79 @@ func currentRSSBytes() (uint64, error) {
 	return residentPages * pageSize, nil
 }
 
-func publishFromBrokerContainer(
+func publishFromHelperProcess(
 	ctx context.Context,
-	containerName string,
+	brokerURL string,
 	topic string,
 	qos int,
-	payload []byte,
+	count int,
+	payloadBytes int,
 	started chan<- struct{},
 ) error {
-	docker, err := exec.LookPath("docker")
+	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("find docker: %w", err)
+		return fmt.Errorf("resolve test executable: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, docker,
-		"exec", "-i", containerName,
-		"mosquitto_pub",
-		"-h", "127.0.0.1",
-		"-p", "1883",
-		"-t", topic,
-		"-q", strconv.Itoa(qos),
-		"-s",
+	cmd := exec.CommandContext(ctx, executable,
+		"-test.run", "^TestMQTTIngressMemoryPublisherProcess$",
+		"-test.count=1",
 	)
-	cmd.Stdin = bytes.NewReader(payload)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Env = append(os.Environ(),
+		"GOBRIDGE_MQTT_MEMORY_PUBLISHER_HELPER=1",
+		"GOBRIDGE_MQTT_MEMORY_BROKER_URL="+brokerURL,
+		"GOBRIDGE_MQTT_MEMORY_TOPIC="+topic,
+		"GOBRIDGE_MQTT_MEMORY_QOS="+strconv.Itoa(qos),
+		"GOBRIDGE_MQTT_MEMORY_COUNT="+strconv.Itoa(count),
+		"GOBRIDGE_MQTT_MEMORY_PAYLOAD_BYTES="+strconv.Itoa(payloadBytes),
+	)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start mosquitto_pub QoS %d: %w", qos, err)
+		return fmt.Errorf("start MQTT publisher helper QoS %d: %w", qos, err)
 	}
 	if started != nil {
 		started <- struct{}{}
 	}
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("mosquitto_pub QoS %d: %w (%s)", qos, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("MQTT publisher helper QoS %d: %w", qos, err)
 	}
 	return nil
+}
+
+func TestMQTTIngressMemoryPublisherProcess(t *testing.T) {
+	if os.Getenv("GOBRIDGE_MQTT_MEMORY_PUBLISHER_HELPER") != "1" {
+		t.Skip("subprocess-only MQTT ingress memory publisher")
+	}
+	qos, err := strconv.Atoi(os.Getenv("GOBRIDGE_MQTT_MEMORY_QOS"))
+	require.NoError(t, err)
+	count, err := strconv.Atoi(os.Getenv("GOBRIDGE_MQTT_MEMORY_COUNT"))
+	require.NoError(t, err)
+	payloadBytes, err := strconv.Atoi(os.Getenv("GOBRIDGE_MQTT_MEMORY_PAYLOAD_BYTES"))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	t.Cleanup(cancel)
+	session := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:     []string{os.Getenv("GOBRIDGE_MQTT_MEMORY_BROKER_URL")},
+		ClientID:       mqttlocal.UniqueClientID("ingress-memory-publisher"),
+		KeepAlive:      30,
+		ConnectTimeout: 15 * time.Second,
+		CleanStart:     true,
+	}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	require.NoError(t, session.Start(ctx))
+
+	sender := paho.NewSender(session, paho.SenderOptions{
+		QoS:     byte(qos),
+		Timeout: 30 * time.Second,
+	})
+	message := ports.OutboundMessage{
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
+			Payload: make([]byte, payloadBytes),
+		}),
+		Address: os.Getenv("GOBRIDGE_MQTT_MEMORY_TOPIC"),
+	}
+	for range count {
+		require.NoError(t, sender.Send(ctx, message))
+	}
 }
 
 func reliableProcessMemoryLimitBytes() (uint64, string, error) {

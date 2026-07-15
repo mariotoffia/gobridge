@@ -134,3 +134,103 @@ func TestConfigIngressMemory_ExplicitUnsafePacketSizeRejectsWithoutClamp(t *test
 	require.Error(t, err)
 	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }
+
+func TestConfigIngressMemory_DirectMapIntegerBoundaries(t *testing.T) {
+	twoTo64 := math.Ldexp(1, 64)
+	nextBelowTwoTo64 := math.Nextafter(twoTo64, 0)
+	tests := []struct {
+		name      string
+		key       string
+		value     any
+		wantErr   bool
+		wantValue uint64
+	}{
+		{
+			name: "receive maximum exact max",
+			key:  "receive_maximum", value: uint64(math.MaxUint16),
+			wantValue: math.MaxUint16,
+		},
+		{
+			name: "receive maximum max plus one",
+			key:  "receive_maximum", value: uint64(math.MaxUint16) + 1,
+			wantErr: true,
+		},
+		{
+			name: "payload exact uint32 max",
+			key:  "max_payload_bytes", value: uint64(math.MaxUint32),
+			wantValue: math.MaxUint32,
+		},
+		{
+			name: "payload uint32 max plus one",
+			key:  "max_payload_bytes", value: uint64(math.MaxUint32) + 1,
+			wantErr: true,
+		},
+		{
+			name: "ingress budget exact uint64 max",
+			key:  "ingress_memory_budget_bytes", value: uint64(math.MaxUint64),
+			wantValue: math.MaxUint64,
+		},
+		{
+			name: "float nextafter below two to 64 accepted for uint64",
+			key:  "ingress_memory_budget_bytes", value: nextBelowTwoTo64,
+			wantValue: uint64(nextBelowTwoTo64),
+		},
+		{
+			name: "float nextafter below two to 64 rejected for uint16",
+			key:  "receive_maximum", value: nextBelowTwoTo64,
+			wantErr: true,
+		},
+		{
+			name: "float exactly two to 64 rejected",
+			key:  "ingress_memory_budget_bytes", value: twoTo64,
+			wantErr: true,
+		},
+		{
+			name: "negative int64 rejected",
+			key:  "ingress_memory_budget_bytes", value: int64(-1),
+			wantErr: true,
+		},
+		{
+			name: "nan rejected",
+			key:  "ingress_memory_budget_bytes", value: math.NaN(),
+			wantErr: true,
+		},
+		{
+			name: "positive infinity rejected",
+			key:  "ingress_memory_budget_bytes", value: math.Inf(1),
+			wantErr: true,
+		},
+		{
+			name: "negative infinity rejected",
+			key:  "ingress_memory_budget_bytes", value: math.Inf(-1),
+			wantErr: true,
+		},
+		{
+			name: "fraction rejected",
+			key:  "ingress_memory_budget_bytes", value: 1.5,
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options, err := SessionOptionsFromMap(map[string]any{test.key: test.value})
+			if test.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+				return
+			}
+			require.NoError(t, err)
+			var value uint64
+			switch test.key {
+			case "receive_maximum":
+				value = uint64(options.ReceiveMaximum)
+			case "max_payload_bytes":
+				value = uint64(options.MaxPayloadBytes)
+			case "ingress_memory_budget_bytes":
+				value = options.IngressMemoryBudgetBytes
+			}
+			assert.Equal(t, test.wantValue, value)
+		})
+	}
+}

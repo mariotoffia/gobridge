@@ -1044,39 +1044,85 @@ func optUint64(m map[string]any, key string, maximum uint64) (uint64, bool, erro
 	if !exists {
 		return 0, false, nil
 	}
-	var value uint64
+	value, err := checkedConfigUint64(raw, key)
+	if err != nil {
+		return 0, false, err
+	}
+	if value > maximum {
+		return 0, false, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("%s must be ≤ %d, got %d", key, maximum, value),
+		)
+	}
+	return value, true, nil
+}
+
+func checkedConfigUint64(raw any, key string) (uint64, error) {
 	switch number := raw.(type) {
 	case int:
 		if number < 0 {
-			return 0, false, fmt.Errorf("%s must be non-negative, got %d", key, number)
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be non-negative, got %d", key, number),
+			)
 		}
-		value = uint64(number)
+		return uint64(number), nil
+	case int8:
+		if number < 0 {
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be non-negative, got %d", key, number),
+			)
+		}
+		return uint64(number), nil
+	case int16:
+		if number < 0 {
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be non-negative, got %d", key, number),
+			)
+		}
+		return uint64(number), nil
+	case int32:
+		if number < 0 {
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be non-negative, got %d", key, number),
+			)
+		}
+		return uint64(number), nil
 	case int64:
 		if number < 0 {
-			return 0, false, fmt.Errorf("%s must be non-negative, got %d", key, number)
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be non-negative, got %d", key, number),
+			)
 		}
-		value = uint64(number)
+		return uint64(number), nil
+	case uint:
+		return uint64(number), nil
+	case uint8:
+		return uint64(number), nil
 	case uint16:
-		value = uint64(number)
+		return uint64(number), nil
 	case uint32:
-		value = uint64(number)
+		return uint64(number), nil
 	case uint64:
-		value = number
+		return number, nil
 	case float64:
 		if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 || math.Trunc(number) != number {
-			return 0, false, fmt.Errorf("%s must be a finite non-negative integer, got %v", key, number)
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be a finite non-negative integer, got %v", key, number),
+			)
 		}
-		if number > float64(maximum) {
-			return 0, false, fmt.Errorf("%s must be ≤ %d, got %v", key, maximum, number)
+		// float64(math.MaxUint64) rounds UP to 2^64, so comparing against it
+		// would admit 2^64 and wrap on conversion. Use the exact exclusive
+		// power-of-two boundary instead.
+		if number >= math.Ldexp(1, 64) {
+			return 0, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("%s must be less than 2^64, got %v", key, number),
+			)
 		}
-		value = uint64(number)
+		return uint64(number), nil
 	default:
-		return 0, false, fmt.Errorf("%s must be a number, got %T", key, raw)
+		return 0, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("%s must be a number, got %T", key, raw),
+		)
 	}
-	if value > maximum {
-		return 0, false, fmt.Errorf("%s must be ≤ %d, got %d", key, maximum, value)
-	}
-	return value, true, nil
 }
 
 // ClientIDSuffixHostname and ClientIDSuffixNonce are the supported

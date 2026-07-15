@@ -296,7 +296,11 @@ long-running test without the tag is a CI accident.
 - Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
   Docker, writes `reports/test-long-running.log`).
 - CI: scheduled nightly and available through manual workflow dispatch, not on
-  every PR.
+  every PR. One focused exception runs on every integration job:
+  `TestMQTTIngressMemory` is compiled with the long-running tag and executed
+  inside a Docker container with a finite 512 MiB cgroup limit. CI sets
+  `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1`, so unavailable/unlimited cgroup accounting
+  fails instead of skipping; local Darwin runs retain the explicit skip.
 - Never run inside `make test` or `make test-integration` — Makefile
   excludes `tests/longrunning/` explicitly.
 
