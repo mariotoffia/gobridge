@@ -143,6 +143,7 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 	_, credentialed := config.(ports.CredentialedConfig)
 	_, durable := config.(ports.DurableSessionIdentityConfig)
 	_, activationTimed := config.(ports.PostAcquireActivationTimingConfig)
+	_, ingressMemoryAware := config.(ports.IngressMemoryConfig)
 	if !canFreeze {
 		if credentialed {
 			return nil, shared.ErrInvalidConfig.WithMessage(
@@ -174,6 +175,12 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 		if _, ok := frozen.(ports.PostAcquireActivationTimingConfig); !ok {
 			return nil, shared.ErrInvalidConfig.WithMessage(
 				fmt.Sprintf("bridge: plugin config kind %q lost its post-acquire activation timing capability when frozen", sourceKind))
+		}
+		if ingressMemoryAware {
+			if _, ok := frozen.(ports.IngressMemoryConfig); !ok {
+				return nil, shared.ErrInvalidConfig.WithMessage(
+					fmt.Sprintf("bridge: plugin config kind %q lost its ingress memory capability when frozen", sourceKind))
+			}
 		}
 	}
 	if credentialed {

@@ -113,56 +113,32 @@ type SessionOptions struct {
 	// CONNECT packet. This limits the number of QoS 1/2 messages the
 	// broker may have in flight (sent but not yet PUBACK/PUBCOMP-settled)
 	// at once. Zero means "unset" and is coerced by NewSession to
-	// DefaultReceiveMaximum (1024) — 0 is not a legal MQTT v5 Receive
-	// Maximum. Set higher for high-throughput scenarios.
+	// DefaultReceiveMaximum (192) — 0 is not a legal MQTT v5 Receive Maximum.
 	//
-	// MEMORY EQUATION: paho buffers up to ReceiveMaximum full publishes
-	// under manual acknowledgement, and this adapter's startup pending
-	// buffer is sized to the same value, so worst-case buffered memory is
-	// roughly `receive_maximum × max_payload_size`. Example: 65535 × 256 KiB
-	// ≈ 16 GiB — the reason the default was lowered. ReceiveMaximum is the
-	// operator's lever for QoS 1/2 pending memory: the startup buffer's 64 MiB
-	// payload-byte ceiling bounds QoS 0 ONLY (a QoS 0 flood), because dropping
-	// a QoS 1/2 publish is incompatible with at-least-once (ack+drop loses it;
-	// un-ack+drop head-of-line-blocks paho's contiguous-prefix ack stream), so
-	// QoS 1/2 is never dropped for the byte ceiling — its memory is bounded
-	// instead by this count.
-	//
-	// The `max_payload_size` term is NOT merely documented: when MaxPayloadBytes
-	// is set the adapter advertises an MQTT v5 Maximum Packet Size in the CONNECT
-	// (see acl_session.go), so the broker is FORBIDDEN from delivering a packet
-	// larger than max_payload_bytes (+ a bounded header allowance). The
-	// worst-case bound `receive_maximum × max_payload_bytes` is therefore
-	// broker-ENFORCED, not merely a hope about the broker's own max-message
-	// policy. Leaving MaxPayloadBytes unset (0) advertises no packet-size limit,
-	// so the bound is only as tight as the broker's policy (prior behaviour).
-	//
-	// ponytail: the effective default was lowered from the MQTT protocol
-	// maximum (65535) to 1024 (M-5). Operators who need the old ceiling set
-	// receive_maximum explicitly.
-	//
-	// ponytail: Receive Maximum bounds ONLY the QoS 1/2 un-acked window —
-	// it does not throttle QoS 0, so a QoS 0 flood can still outrun a slow
-	// downstream regardless of this setting (see the package doc's QoS 0
-	// flood ceiling). Lowering it trades ingress throughput for a smaller
-	// redelivery blast radius after a crash (and a smaller startup pending
-	// buffer, which is sized to this value).
+	// Receive Maximum also sizes the serialized dispatch queue and startup
+	// pending-entry cap. The full byte equation, including route concurrency,
+	// is enforced by ValidateIngressMemory.
 	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
 	// MaxPayloadBytes is the maximum application PAYLOAD size (message body, in
-	// bytes) this session will admit from the broker. When non-zero the adapter
+	// bytes) this session will admit from the broker. Zero selects
+	// DefaultMaxPayloadBytes (256 KiB). The adapter
 	// advertises an MQTT v5 Maximum Packet Size in the CONNECT derived from this
-	// value plus a bounded protocol-overhead allowance (see acl_session.go's
-	// maxPacketSizeFor), so the broker MUST NOT deliver a packet whose payload
-	// exceeds this limit. Together with ReceiveMaximum this makes the worst-case
-	// pending-buffer memory bound `receive_maximum × max_payload_bytes`
-	// broker-ENFORCED rather than dependent on the broker's own max-message
-	// policy.
-	//
-	// Zero (the default) means "unset": no Maximum Packet Size is advertised and
-	// the broker's own max-message policy is the only ceiling (prior behaviour).
-	// This governs the ADVERTISED inbound packet ceiling only; it is not an
-	// outbound publish validator.
+	// value plus the bounded worst-case protocol metadata allowance. A local
+	// callback guard rejects a non-compliant broker's oversize body before the
+	// adapter copies or enqueues it. This is an inbound limit only.
 	MaxPayloadBytes uint32 `mapstructure:"max_payload_bytes" yaml:"max_payload_bytes" json:"max_payload_bytes"`
+	// IngressMemoryBudgetBytes is the maximum conservative byte bound for this
+	// session's inbound MQTT packet window. Zero selects
+	// DefaultIngressMemoryBudgetBytes. The bridge validates the effective route
+	// concurrency against this budget before opening stores or transports.
+	IngressMemoryBudgetBytes uint64 `mapstructure:"ingress_memory_budget_bytes" yaml:"ingress_memory_budget_bytes" json:"ingress_memory_budget_bytes"`
+	// ingressDefaultsApplied distinguishes decoder-prefilled defaults from
+	// non-zero values supplied by a programmatic caller. The AWS deployment
+	// profile uses the explicit markers to reject an unsafe operator value
+	// instead of silently reducing it.
+	ingressDefaultsApplied      bool `mapstructure:"-" yaml:"-" json:"-"`
+	receiveMaximumExplicit      bool `mapstructure:"-" yaml:"-" json:"-"`
+	ingressMemoryBudgetExplicit bool `mapstructure:"-" yaml:"-" json:"-"`
 	// ReconnectDelay is the BASE delay for the jittered exponential
 	// reconnect backoff (M-4): the delay before the first reconnect
 	// attempt after a failure, grown by reconnectBackoffFactor per
@@ -425,16 +401,197 @@ const DefaultReconnectAttemptTimeout = 10 * time.Second
 // long.
 const DefaultUnmatchedGrace = 30 * time.Second
 
-// DefaultReceiveMaximum is the effective MQTT v5 Receive Maximum applied
-// by NewSession when receive_maximum is unset (0). It was deliberately
-// lowered from the protocol maximum (65535) so that worst-case buffered
-// memory — roughly `receive_maximum × max_payload_size` (paho's in-flight
-// QoS 1/2 window plus this adapter's equally-sized startup pending buffer)
-// — stays bounded by default. 1024 in-flight QoS 1/2 publishes is ample
-// throughput for the bridge workload while capping a large-payload flood
-// at ~gigabyte-fraction rather than multi-gigabyte. Operators who need the
-// old ceiling set receive_maximum explicitly (M-5).
-const DefaultReceiveMaximum uint16 = 1024
+const (
+	// DefaultMaxPayloadBytes is the effective inbound application-payload
+	// ceiling when max_payload_bytes is zero.
+	DefaultMaxPayloadBytes uint32 = 256 << 10
+	// DefaultReceiveMaximum is the effective MQTT v5 Receive Maximum when
+	// receive_maximum is zero.
+	DefaultReceiveMaximum uint16 = 192
+	// DefaultIngressMemoryBudgetBytes is the per-session conservative ingress
+	// memory budget when ingress_memory_budget_bytes is zero.
+	DefaultIngressMemoryBudgetBytes uint64 = 256 << 20
+)
+
+// mqttPacketOverheadAllowance is the maximum metadata allowance admitted in
+// addition to a full max_payload_bytes body. The 128 KiB allowance includes the
+// MQTT v5 PUBLISH fixed-header byte, the worst-case four-byte Remaining Length
+// encoding, the two-byte topic-length prefix plus a 65,535-byte topic, a
+// two-byte QoS packet identifier, the worst-case four-byte properties-length
+// encoding, and 65,524 bytes of properties. A packet with a smaller body may
+// use more metadata, but Maximum Packet Size still caps the whole admitted
+// packet at max_payload_bytes + this allowance, so the byte model never
+// undercounts an admitted packet.
+const mqttPacketOverheadAllowance uint64 = 128 << 10
+
+// mqttMaxPacketSize is the MQTT v5 Maximum Packet Size ceiling: 256 MiB - 1.
+const mqttMaxPacketSize uint64 = 268_435_455
+
+// maxPacketSizeFor returns the whole MQTT v5 PUBLISH packet ceiling for an
+// application payload limit. It rejects a payload that cannot retain the full
+// worst-case metadata allowance; silently clamping such an explicit value would
+// advertise a smaller limit than the operator configured.
+func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+	if uint64(maxPayloadBytes) > mqttMaxPacketSize-mqttPacketOverheadAllowance {
+		return 0, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: max_payload_bytes %d exceeds the largest value %d that fits the MQTT v5 packet ceiling with metadata overhead",
+			maxPayloadBytes, mqttMaxPacketSize-mqttPacketOverheadAllowance,
+		))
+	}
+	return uint32(uint64(maxPayloadBytes) + mqttPacketOverheadAllowance), nil
+}
+
+// ingressMemoryPacketBytes returns
+// ceil(maxPacketSize(maxPayloadBytes) * 1.25). The 25 percent accounts for Go
+// object, slice, queue-node, and SDK bookkeeping around the complete admitted
+// MQTT packet.
+func ingressMemoryPacketBytes(maxPayloadBytes uint32) (uint64, error) {
+	if maxPayloadBytes == 0 {
+		maxPayloadBytes = DefaultMaxPayloadBytes
+	}
+	packetSize, err := maxPacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	packet := uint64(packetSize)
+	quarter := packet / 4
+	if packet%4 != 0 {
+		var addErr error
+		quarter, addErr = checkedAddUint64(quarter, 1)
+		if addErr != nil {
+			return 0, addErr
+		}
+	}
+	return checkedAddUint64(packet, quarter)
+}
+
+// IngressMemoryBound calculates the conservative per-session byte bound:
+//
+//	packet = ceil(maxPacketSize(maxPayloadBytes) * 1.25)
+//	window = receiveMaximum + dispatchCapacity + routeMaxInFlight + 1
+//	bound  = packet * window
+//
+// Dispatch capacity equals the effective Receive Maximum. Zero payload and
+// receive values select the adapter defaults.
+func IngressMemoryBound(
+	maxPayloadBytes uint32,
+	receiveMaximum uint16,
+	routeMaxInFlight uint64,
+) (uint64, error) {
+	if receiveMaximum == 0 {
+		receiveMaximum = DefaultReceiveMaximum
+	}
+	packet, err := ingressMemoryPacketBytes(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	window, err := checkedAddUint64(uint64(receiveMaximum), uint64(receiveMaximum))
+	if err != nil {
+		return 0, err
+	}
+	window, err = checkedAddUint64(window, routeMaxInFlight)
+	if err != nil {
+		return 0, err
+	}
+	window, err = checkedAddUint64(window, 1)
+	if err != nil {
+		return 0, err
+	}
+	return checkedMulUint64(packet, window)
+}
+
+// LargestSafeReceiveMaximum derives the largest legal MQTT v5 Receive Maximum
+// whose ingress-memory bound fits budgetBytes for the supplied payload and route
+// concurrency. It rejects a budget that cannot fit one receive slot, one
+// dispatch slot, the route window, and the current packet.
+func LargestSafeReceiveMaximum(
+	maxPayloadBytes uint32,
+	budgetBytes uint64,
+	routeMaxInFlight uint64,
+) (uint16, error) {
+	packet, err := ingressMemoryPacketBytes(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	if budgetBytes == 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory budget must be greater than zero")
+	}
+	maxWindow := budgetBytes / packet
+	baseWindow, err := checkedAddUint64(routeMaxInFlight, 1)
+	if err != nil {
+		return 0, err
+	}
+	minWindow, err := checkedAddUint64(baseWindow, 2)
+	if err != nil {
+		return 0, err
+	}
+	if maxWindow < minWindow {
+		minimumBytes, mulErr := checkedMulUint64(packet, minWindow)
+		if mulErr != nil {
+			return 0, mulErr
+		}
+		return 0, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: ingress memory budget %d bytes is too small for one receive packet (requires at least %d bytes)",
+			budgetBytes, minimumBytes,
+		))
+	}
+	receive := (maxWindow - baseWindow) / 2
+	if receive > math.MaxUint16 {
+		receive = math.MaxUint16
+	}
+	if receive == 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory budget cannot fit a legal Receive Maximum")
+	}
+	bound, err := IngressMemoryBound(maxPayloadBytes, uint16(receive), routeMaxInFlight)
+	if err != nil {
+		return 0, err
+	}
+	if bound > budgetBytes {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: derived Receive Maximum exceeds ingress memory budget")
+	}
+	return uint16(receive), nil
+}
+
+func checkedAddUint64(a, b uint64) (uint64, error) {
+	if b > math.MaxUint64-a {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory calculation overflows integer addition")
+	}
+	return a + b, nil
+}
+
+func checkedMulUint64(a, b uint64) (uint64, error) {
+	if a != 0 && b > math.MaxUint64/a {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory calculation overflows integer multiplication")
+	}
+	return a * b, nil
+}
+
+func (o SessionOptions) normalizedIngressMemory() SessionOptions {
+	out := o
+	if !out.ingressDefaultsApplied {
+		out.receiveMaximumExplicit = out.ReceiveMaximum != 0
+		out.ingressMemoryBudgetExplicit = out.IngressMemoryBudgetBytes != 0
+	} else {
+		if out.ReceiveMaximum != 0 && out.ReceiveMaximum != DefaultReceiveMaximum {
+			out.receiveMaximumExplicit = true
+		}
+		if out.IngressMemoryBudgetBytes != 0 &&
+			out.IngressMemoryBudgetBytes != DefaultIngressMemoryBudgetBytes {
+			out.ingressMemoryBudgetExplicit = true
+		}
+	}
+	if out.MaxPayloadBytes == 0 {
+		out.MaxPayloadBytes = DefaultMaxPayloadBytes
+	}
+	if out.ReceiveMaximum == 0 {
+		out.ReceiveMaximum = DefaultReceiveMaximum
+	}
+	if out.IngressMemoryBudgetBytes == 0 {
+		out.IngressMemoryBudgetBytes = DefaultIngressMemoryBudgetBytes
+	}
+	out.ingressDefaultsApplied = true
+	return out
+}
 
 // Reconnect-backoff defaults (M-4). autopaho's reconnect loop calls
 // ReconnectBackoff(attempt) before each (re)connect; attempt 0 (the first
@@ -470,13 +627,19 @@ const DefaultReconcileTimeout = 30 * time.Second
 // exist to resume broker session state.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		KeepAlive:        30,
-		ConnectTimeout:   DefaultConnectTimeout,
-		ReconnectTimeout: 30 * time.Second,
-		ReconcileTimeout: DefaultReconcileTimeout,
-		CleanStart:       false,
-		UnmatchedGrace:   DefaultUnmatchedGrace,
-		Clock:            clock.System,
+		KeepAlive:                   30,
+		ConnectTimeout:              DefaultConnectTimeout,
+		ReconnectTimeout:            30 * time.Second,
+		ReconcileTimeout:            DefaultReconcileTimeout,
+		CleanStart:                  false,
+		ReceiveMaximum:              DefaultReceiveMaximum,
+		MaxPayloadBytes:             DefaultMaxPayloadBytes,
+		IngressMemoryBudgetBytes:    DefaultIngressMemoryBudgetBytes,
+		UnmatchedGrace:              DefaultUnmatchedGrace,
+		Clock:                       clock.System,
+		ingressDefaultsApplied:      true,
+		receiveMaximumExplicit:      false,
+		ingressMemoryBudgetExplicit: false,
 	}
 }
 
@@ -605,6 +768,23 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		}
 		opts.SessionExpiryInterval = uint32(v)
 	}
+	if value, exists, err := optUint64(m, "receive_maximum", math.MaxUint16); err != nil {
+		return opts, err
+	} else if exists {
+		opts.ReceiveMaximum = uint16(value)
+		opts.receiveMaximumExplicit = value != 0
+	}
+	if value, exists, err := optUint64(m, "max_payload_bytes", math.MaxUint32); err != nil {
+		return opts, err
+	} else if exists {
+		opts.MaxPayloadBytes = uint32(value)
+	}
+	if value, exists, err := optUint64(m, "ingress_memory_budget_bytes", math.MaxUint64); err != nil {
+		return opts, err
+	} else if exists {
+		opts.IngressMemoryBudgetBytes = value
+		opts.ingressMemoryBudgetExplicit = value != 0
+	}
 	if v, ok := m["username"].(string); ok {
 		opts.Username = v
 	}
@@ -637,7 +817,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		return opts, err
 	}
 
-	return opts, nil
+	return opts.normalizedIngressMemory(), nil
 }
 
 // willOptionsFromMap extracts WillOptions from a generic options map.
@@ -829,6 +1009,7 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	if !ok {
 		return 0, false
 	}
+
 	switch d := v.(type) {
 	case time.Duration:
 		if d < 0 {
@@ -859,6 +1040,46 @@ func optDuration(m map[string]any, key string) (time.Duration, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func optUint64(m map[string]any, key string, maximum uint64) (uint64, bool, error) {
+	raw, exists := m[key]
+	if !exists {
+		return 0, false, nil
+	}
+	var value uint64
+	switch number := raw.(type) {
+	case int:
+		if number < 0 {
+			return 0, false, fmt.Errorf("%s must be non-negative, got %d", key, number)
+		}
+		value = uint64(number)
+	case int64:
+		if number < 0 {
+			return 0, false, fmt.Errorf("%s must be non-negative, got %d", key, number)
+		}
+		value = uint64(number)
+	case uint16:
+		value = uint64(number)
+	case uint32:
+		value = uint64(number)
+	case uint64:
+		value = number
+	case float64:
+		if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 || math.Trunc(number) != number {
+			return 0, false, fmt.Errorf("%s must be a finite non-negative integer, got %v", key, number)
+		}
+		if number > float64(maximum) {
+			return 0, false, fmt.Errorf("%s must be ≤ %d, got %v", key, maximum, number)
+		}
+		value = uint64(number)
+	default:
+		return 0, false, fmt.Errorf("%s must be a number, got %T", key, raw)
+	}
+	if value > maximum {
+		return 0, false, fmt.Errorf("%s must be ≤ %d, got %d", key, maximum, value)
+	}
+	return value, true, nil
 }
 
 // ClientIDSuffixHostname and ClientIDSuffixNonce are the supported

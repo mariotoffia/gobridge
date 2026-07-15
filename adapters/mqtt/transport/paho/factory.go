@@ -67,6 +67,10 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid configuration", spec.ID))
+	}
 	opts := cfg.Session
 	mode := spec.SessionMode
 	if mode == "" {

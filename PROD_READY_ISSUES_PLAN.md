@@ -535,7 +535,7 @@ fix(mqtt): require isolated ingress sessions
 
 ## Task 8: Bound MQTT ingress memory by bytes
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:runtime-expert, thiink:golang-pro,
 thiink:cost-auditor, thiink:test-reviewer
@@ -556,13 +556,13 @@ thiink:cost-auditor, thiink:test-reviewer
 - Create: `tests/longrunning/mqtt_ingress_memory_test.go`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Write overflow and boundary tests**
+- [x] **Step 1: Write overflow and boundary tests**
 
 Cover zero/default normalization, exact budget boundary, one-byte excess,
 integer overflow, route concurrency, multiple sessions, and a budget too small
 for one packet.
 
-- [ ] **Step 2: Implement the byte model**
+- [x] **Step 2: Implement the byte model**
 
 Use:
 
@@ -576,19 +576,19 @@ Perform division checks before multiplication. Set conservative defaults:
 256 KiB payload, 192 receive maximum, 256 MiB ingress budget. Size dispatch
 capacity from the effective receive maximum instead of fixed 1024.
 
-- [ ] **Step 3: Derive the AWS profile**
+- [x] **Step 3: Derive the AWS profile**
 
 Reserve one quarter of task memory for MQTT ingress, divide it across ingress
 sessions, derive the largest safe receive maximum, and reject configurations
 without 20 percent container headroom.
 
-- [ ] **Step 4: Add measured memory proof**
+- [x] **Step 4: Add measured memory proof**
 
 Fill receive and dispatch windows with maximum payload while downstream is
 blocked. Assert peak RSS remains below 80 percent of the configured container
 limit.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 ```bash
 (cd adapters/mqtt/transport/paho && go test -race -count=1 -run Test.*IngressMemory ./...)
@@ -599,7 +599,7 @@ go test -race -count=1 -tags=longrunning ./tests/longrunning \
   -run TestMQTTIngressMemory
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 fix(mqtt): enforce byte-based ingress budgets

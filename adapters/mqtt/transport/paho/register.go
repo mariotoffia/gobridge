@@ -22,8 +22,22 @@ func Register(reg *ports.Registry) error {
 			if err := raw.Decode(&c); err != nil {
 				return nil, err
 			}
+			var decoded map[string]any
+			if err := raw.Decode(&decoded); err != nil {
+				return nil, err
+			}
+			if session, ok := decoded["session"].(map[string]any); ok {
+				_, receiveMaximumSet := session["receive_maximum"]
+				c.Session.receiveMaximumExplicit =
+					receiveMaximumSet && c.Session.ReceiveMaximum != 0
+				_, ingressBudgetSet := session["ingress_memory_budget_bytes"]
+				c.Session.ingressMemoryBudgetExplicit =
+					ingressBudgetSet && c.Session.IngressMemoryBudgetBytes != 0
+			}
 		}
+
 		c.Session.normalizeBrokerURLs()
+		c.Session = c.Session.normalizedIngressMemory()
 		if err := c.Validate(); err != nil {
 			return nil, err
 		}

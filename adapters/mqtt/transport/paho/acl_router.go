@@ -135,6 +135,10 @@ type router struct {
 	// and run inline). Guarded by mu.
 	dispatchCh   chan dispatchItem
 	dispatchSize int
+	// maxPayloadBytes is the effective application-body ceiling. The CONNECT
+	// packet advertises the corresponding whole-packet limit, while this local
+	// guard rejects a non-compliant broker's oversize body before cloning it.
+	maxPayloadBytes uint32
 	// dispatchDone is closed by dispatchLoop when it exits, so Close can
 	// JOIN the worker (awaitDispatchLoop) before r.wg.Wait(). Without the
 	// join, a dispatchLoop draining a buffered item after r.stop is closed
@@ -278,11 +282,9 @@ const defaultPendingLimit = 65535
 // at-least-once.
 const defaultPendingBytesLimit int64 = 64 << 20
 
-// defaultDispatchSize bounds the serialized dispatch queue that decouples
-// the paho publish-callback goroutine from the synchronous dispatch path.
-// It absorbs a burst without unbounded growth; on overflow QoS 0 is
-// dropped and QoS 1/2 applies backpressure (see dispatchCh).
-const defaultDispatchSize = 1024
+// defaultDispatchSize is used only by routers constructed without a Session.
+// Session construction overrides it with the effective Receive Maximum.
+const defaultDispatchSize = int(DefaultReceiveMaximum)
 
 // routerOption customises a router at construction (functional options
 // so new knobs do not churn the newRouter signature).
@@ -330,6 +332,18 @@ func withSessionTag(id string) routerOption {
 	return func(r *router) { r.sessionID = id }
 }
 
+func withDispatchCapacity(capacity int) routerOption {
+	return func(r *router) {
+		if capacity > 0 {
+			r.dispatchSize = capacity
+		}
+	}
+}
+
+func withMaxPayloadBytes(maxPayloadBytes uint32) routerOption {
+	return func(r *router) { r.maxPayloadBytes = maxPayloadBytes }
+}
+
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
@@ -364,9 +378,19 @@ func (r *router) setPendingLimit(n int) {
 	if n < 1 {
 		return
 	}
+
 	r.mu.Lock()
 	r.pendingLimit = n
 	r.mu.Unlock()
+}
+
+func (r *router) ingressMemoryStats() (depth, capacity int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.dispatchCh != nil {
+		depth = len(r.dispatchCh)
+	}
+	return depth, r.dispatchSize
 }
 
 // sessionTag returns the session_id metric tag for this router's drops, or
@@ -1006,6 +1030,9 @@ func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
 // Delivery contract.
 func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	received := pr.Packet
+	if r.rejectOversizePayload(received) {
+		return true, nil
+	}
 	pub := clonePublish(received)
 	client := pr.Client
 	var ack func() error
@@ -1019,6 +1046,7 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 					// duplicate. Not a settlement failure.
 					return nil
 				}
+
 				return MapError(err)
 			}
 			return nil
@@ -1026,6 +1054,30 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	}
 	r.enqueueDispatch(pub, ack)
 	return true, nil
+}
+
+func (r *router) rejectOversizePayload(pub *pahov5.Publish) bool {
+	if pub == nil || r.maxPayloadBytes == 0 || uint64(len(pub.Payload)) <= uint64(r.maxPayloadBytes) {
+		return false
+	}
+	if pub.QoS > 0 {
+		// Do not acknowledge an oversize QoS 1/2 publish. A compliant broker
+		// cannot send it because CONNECT advertises Maximum Packet Size; leaving
+		// a violating packet unsettled preserves at-least-once and bounds it by
+		// Receive Maximum rather than converting rejection into data loss.
+		_ = r.trackUnsettledPacket()
+	}
+	r.dropCount.Add(1)
+	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+	if r.logger != nil {
+		r.logger.Warn("mqtt: rejected inbound payload larger than max_payload_bytes before adapter copy or enqueue",
+			"topic", pub.Topic,
+			"qos", pub.QoS,
+			"payload_bytes", len(pub.Payload),
+			"max_payload_bytes", r.maxPayloadBytes,
+		)
+	}
+	return true
 }
 
 // enqueueDispatch hands a publish to the serialized dispatch worker
@@ -1083,7 +1135,11 @@ func (r *router) Route(pb *packets.Publish) {
 	// PublishFromPacketPublish retains the packet payload backing array. Clone
 	// at this compatibility boundary so fanout can transfer its router-owned
 	// publish to one handler without allowing that handler to mutate pb.
-	r.dispatch(clonePublish(pahov5.PublishFromPacketPublish(pb)), nil)
+	pub := pahov5.PublishFromPacketPublish(pb)
+	if r.rejectOversizePayload(pub) {
+		return
+	}
+	r.dispatch(clonePublish(pub), nil)
 }
 
 // dispatch fans a publish out to every registered handler whose topic

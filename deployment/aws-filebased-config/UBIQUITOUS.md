@@ -12,6 +12,9 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **Bridge config** | The application's `ports.BridgeConfig` (YAML on EFS). Hot-reloadable. The same artifact whether on disk, in `logicalRef`, or in `appliedRef`. |
 | **Logical state** | The bridge config last *seen* on disk and parsed successfully (`logicalRef`). Updated even when the subsequent runtime swap is rejected. |
 | **Applied state** | The bridge config the *currently running* runtime was built from (`appliedRef`). On the happy path equals logical state. Diverges only after a failed reload — then logical = rejected new config, applied = last good. Used by `Stop` for `DrainTimeout` and by `recoverPrevious`. |
+| **ContainerMemoryBytes** | Bootstrap container hard limit. Defaults to 1 GiB outside CDK; the CDK base always overwrites it from the effective Fargate task `MemoryMiB`, preventing runtime accounting from diverging from the deployed limit. |
+| **ReservedMemoryBytes** | Bootstrap reservation for non-MQTT runtime memory. Together with the AWS MQTT memory profile's 25% ingress reservation, it must leave at least 20% of `ContainerMemoryBytes` as headroom. |
+| **AWS MQTT memory profile** | Runtime bootstrap policy applied to initial config and every reload: divide 25% of container memory across unique consumed MQTT ingress sessions and derive each default Receive Maximum with the Paho ingress byte model. Sender-only MQTT sessions consume no share. |
 
 > **Not a layer:** the `resolvedCfg` produced inside `resolveInputs` is a transient working copy with SSM secrets patched into HTTP `Config.APIKey`. It is consumed by the builder and discarded — no ref, no name to learn.
 

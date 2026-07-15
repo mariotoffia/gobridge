@@ -731,6 +731,9 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 	if err != nil {
 		return nil, err
 	}
+	if err := applyMQTTMemoryProfile(inputs.RuntimeConfig, a.cfg); err != nil {
+		return nil, err
+	}
 
 	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
 	mode := registry.detectSwapMode(inputs.RuntimeConfig)

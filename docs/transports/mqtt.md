@@ -288,7 +288,9 @@ sessions:
         reconnect_delay: "5s"
         clean_start: false
         session_expiry_interval: 86400
-        receive_maximum: 100
+        receive_maximum: 192
+        max_payload_bytes: 262144
+        ingress_memory_budget_bytes: 268435456
         username: "bridge"
         password: "secret"
         will:
@@ -342,8 +344,9 @@ senders:
 | `reconnect_max_delay` | duration | `2m` (`DefaultReconnectMaxDelay`) | Caps the jittered-exponential reconnect envelope. Must be ≥ `reconnect_delay`; a smaller value is clamped up to the base at Start. `0` → `2m`. |
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
-| `receive_maximum` | int | `0` → **1024** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is not a legal MQTT v5 value, so an unset/`0` is coerced to **1024** to bound worst-case buffered memory — set it explicitly to `65535` for the old protocol ceiling. Bounds only the QoS 1/2 un-acked window — it does **not** throttle QoS 0. Also sizes the startup pending buffer used during `unmatched_grace`. |
-| `max_payload_bytes` | int | `0` (unset) | Maximum application payload (message body) in bytes the session admits from the broker. When non-zero the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from this value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT v5 four-byte ceiling (256 MiB − 1), so the broker must not deliver a larger packet. **The ~128 KiB is deliberate slack for MQTT properties/topic overhead, not a hard body cap:** a payload up to ~128 KiB *over* `max_payload_bytes` is still broker-admitted, because the advertised limit bounds the whole packet, not the body alone. Size `max_payload_bytes` for the intended body and treat the effective admitted-body ceiling as `max_payload_bytes + ~128 KiB`. With `receive_maximum` this makes the worst-case pending memory `receive_maximum × (max_payload_bytes + slack)` broker-enforced. `0` advertises no packet-size limit (the broker's own max-message policy is the only ceiling). Governs the advertised inbound packet ceiling only; it is not an outbound publish validator. |
+| `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes the serialized dispatch queue and startup pending-entry cap. A non-zero value is accepted only when the complete ingress byte bound fits `ingress_memory_budget_bytes`; unsafe explicit values are rejected, never clamped. |
+| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a whole-packet Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance; the callback separately rejects a non-compliant broker's body above this exact value before copying/enqueueing. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
+| `ingress_memory_budget_bytes` | int | `0` → **268435456** (`DefaultIngressMemoryBudgetBytes`) | Per-session conservative MQTT ingress budget (256 MiB). The bridge validates the full packet/window equation below using the route's effective `max_in_flight` before opening stores or transports. Exact boundary is accepted; one byte over budget and every arithmetic overflow are rejected as invalid config. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. It is also the post-recycle no-replay verification window for managed-filter removal; a pinned matching replay or a shorter reconciliation deadline fails migration closed and preserves history. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
 | `username` | string | -- | Authentication username. Sent in the MQTT CONNECT packet in **cleartext** — see `allow_plaintext_credentials` and use a TLS broker scheme (`ssl://`, `mqtts://`, …). |
@@ -361,6 +364,36 @@ senders:
 | `tls.cert_pem` | string | -- | Client certificate PEM material (requires `key_pem`; wins over `cert_file`) |
 | `tls.key_pem` | string | -- | Client private key PEM material (redacted on marshal; requires `cert_pem`) |
 | `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
+
+### Ingress byte model
+
+Every consumed MQTT session is validated independently:
+
+```text
+packet = ceil(maxPacketSize(maxPayloadBytes) * 1.25)
+window = receiveMaximum + dispatchCapacity + routeMaxInFlight + 1
+bound  = packet * window
+```
+
+`dispatchCapacity` is the effective `receiveMaximum`, not a fixed queue size.
+`maxPacketSize` is the complete admitted MQTT v5 PUBLISH packet. Its 128 KiB
+metadata allowance covers the fixed-header byte, worst-case four-byte Remaining
+Length encoding, maximal 65,535-byte topic plus its two-byte length, QoS packet
+identifier, worst-case properties-length encoding, and bounded property bytes.
+The 25% factor covers Go/SDK object, slice, and queue bookkeeping. The `+1`
+covers the packet currently crossing queue/handler ownership. Checked division
+and overflow guards run before every addition or multiplication.
+
+The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
+produce a 238,387,200-byte bound, below the 256 MiB default budget. Raising
+payload size, Receive Maximum, or route concurrency may require a larger budget.
+Do not tune only the message count.
+
+The AWS file-based profile reserves 25% of the effective Fargate task memory,
+divides it across unique consumed MQTT sessions, and derives the largest safe
+default Receive Maximum with this same formula. It rejects a profile that cannot
+leave 20% container headroom after `reserved_memory_bytes` plus MQTT ingress.
+Sender-only MQTT sessions consume no ingress allocation.
 
 ## Sender Options Reference (`options.sender.*`)
 
@@ -592,7 +625,8 @@ servicing PINGRESP/PUBACK and the connection dies of keepalive starvation. The
 adapter therefore hands each inbound publish to a serialized dispatch queue and
 returns:
 
-- The **dispatch queue** holds up to `defaultDispatchSize` (1024) items. When it
+- The **dispatch queue** holds up to the effective `receive_maximum` (default
+  **192**) items. When it
   is full under a flood, a **QoS 0** publish is dropped (`MQTTRouterDropped`,
   logged) because QoS 0 carries no delivery contract; a **QoS 1/2** publish
   blocks until a slot drains (bounded by the broker's Receive-Maximum window), so
@@ -600,36 +634,27 @@ returns:
 - The **pre-registration pending buffer** absorbs the CONNACK backlog that
   arrives before receivers register (see [Session Modes](#session-modes)). It has
   two independent bounds applied asymmetrically by QoS: an entry-count cap sized
-  to `receive_maximum` (default **1024**) and a **64 MiB** payload ceiling
+  to `receive_maximum` (default **192**) and a **64 MiB** payload ceiling
   (`defaultPendingBytesLimit`). The byte ceiling governs **QoS 0 only**. A QoS 0
   publish over either cap is dropped (`MQTTRouterDropped`) — it carries no
   delivery contract. A **QoS 1/2** publish is never dropped for the byte ceiling:
   it evicts the oldest QoS 0 entry to reclaim memory and buffers regardless,
   bounded by the count cap. QoS 1/2 memory needs no byte cap because the broker's
   Receive-Maximum flow control never delivers more than `receive_maximum` un-acked
-  QoS 1/2 at once, so at most `receive_maximum × max_payload_bytes` of QoS 1/2 is
-  ever pending. The single path that drops a QoS 1/2 publish is the count cap hit
+  QoS 1/2 at once. The complete packet/window allocation is covered by the
+  validated ingress byte model above. The single path that drops a QoS 1/2 publish is the count cap hit
   with no QoS 0 left to evict — reachable only when a broker exceeds the Receive
   Maximum it was granted (a protocol violation). That publish is acked-and-dropped
   (dropping-with-ack keeps paho's in-order ack stream draining) and counted on
   `MQTTRouterOverflowDropped`, so any non-zero value points at a broker bug, not
   operator mis-sizing. Publishes held in the buffer count on `MQTTRouterBuffered`.
 
-> **Byte accounting is partial.** The dispatch queue is bounded by **count**
-> (1024 items), and paho's in-flight `publishPackets` window is bounded by
-> `receive_maximum` -- neither is byte-bounded on its own. A burst of
-> large-payload QoS 1/2 publishes can pin roughly `(1024 + receive_maximum) ×
-> payload` bytes in memory before the blocking backpressure engages -- 1024 is the
-> dispatch-queue count ceiling, the second term is paho's in-flight window.
-> Because `receive_maximum` now defaults to **1024** instead of 65535, the default
-> worst case falls from `(1024 + 65535) × payload` to `(1024 + 1024) × payload` --
-> roughly 32× smaller. Bound the `payload` term too: set `max_payload_bytes` and
-> the adapter advertises an MQTT v5 Maximum Packet Size in CONNECT, derived from
-> that value plus a ~128 KiB protocol-overhead allowance and clamped to the MQTT
-> v5 four-byte ceiling (256 MiB − 1). The broker is then forbidden from delivering
-> a larger packet, so the `receive_maximum × max_payload_bytes` bound is
-> broker-enforced. Left unset (`0`) it advertises no packet-size limit -- the
-> broker's own max-message policy is the only ceiling.
+The dispatch queue, broker receive window, route concurrency, current packet,
+whole-packet ceiling, and runtime bookkeeping are all included in the validated
+byte bound. A non-compliant broker can still put one decoded packet in the SDK
+before the callback sees it, but an oversize body is rejected before the adapter
+makes its own copy or enqueues it; QoS 1/2 remains unacknowledged, preserving
+at-least-once semantics.
 
 ## Shared subscriptions (`$share`)
 
@@ -793,4 +818,3 @@ in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
 > session. Receiver IDs remain globally unique in bridge configuration.
 
 ---
-

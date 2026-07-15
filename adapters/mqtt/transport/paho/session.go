@@ -287,30 +287,21 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	if opts.Clock == nil {
 		opts.Clock = clock.System
 	}
+	receiveMaximumUnset := opts.ReceiveMaximum == 0
+	opts = opts.normalizedIngressMemory()
+	if receiveMaximumUnset && logger != nil {
+		logger.Warn("mqtt: receive_maximum unset; applying byte-bounded ingress default",
+			"receive_maximum", opts.ReceiveMaximum,
+			"max_payload_bytes", opts.MaxPayloadBytes,
+			"ingress_memory_budget_bytes", opts.IngressMemoryBudgetBytes,
+		)
+	}
 	if mode != connectivity.SessionEphemeral && opts.SessionExpiryInterval == 0 {
 		opts.SessionExpiryInterval = DefaultPersistentSessionExpiry
 		if logger != nil {
 			logger.Warn("mqtt: session_expiry_interval 0 gives zero offline retention; defaulting",
 				"mode", string(mode),
 				"session_expiry_interval", opts.SessionExpiryInterval,
-			)
-		}
-	}
-	if opts.ReceiveMaximum == 0 {
-		// ponytail: BEHAVIOR CHANGE — the effective Receive Maximum default
-		// was lowered from the MQTT protocol maximum (65535) to
-		// DefaultReceiveMaximum (1024) to bound worst-case buffered memory
-		// (receive_maximum × max_payload; paho buffers up to Receive Maximum
-		// full publishes, and the startup pending buffer is sized to it too).
-		// 0 is not a legal MQTT v5 Receive Maximum, so coercing it is
-		// correct. Operators who want the old ceiling set receive_maximum
-		// explicitly.
-		opts.ReceiveMaximum = DefaultReceiveMaximum
-		if logger != nil {
-			logger.Warn("mqtt: receive_maximum unset; defaulting to bound worst-case buffered "+
-				"memory (receive_maximum × max_payload) at the cost of QoS 1/2 in-flight "+
-				"parallelism — set receive_maximum explicitly (e.g. 65535) to restore the prior ceiling",
-				"receive_maximum", opts.ReceiveMaximum,
 			)
 		}
 	}
@@ -338,6 +329,8 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withUnsubscribe(s.unsubscribeOrphan),
 		withCovered(s.topicCovered),
 		withSessionTag(opts.ClientID),
+		withDispatchCapacity(int(opts.ReceiveMaximum)),
+		withMaxPayloadBytes(opts.MaxPayloadBytes),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window
@@ -372,6 +365,16 @@ func (s *Session) connection() pahoConnection {
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
+}
+
+// IngressMemoryStats returns the current serialized dispatch depth and its
+// validated capacity. It is an observable barrier for memory/load proofs and
+// does not expose queued messages.
+func (s *Session) IngressMemoryStats() (dispatchDepth, dispatchCapacity int) {
+	if s == nil || s.router == nil {
+		return 0, 0
+	}
+	return s.router.ingressMemoryStats()
 }
 
 // reserveDedicatedIngressReceiver atomically assigns the session's sole

@@ -20,6 +20,7 @@ func TestBootstrapConfig_Normalized_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, DefaultAdminAddr, c.AdminAddr)
 	assert.Equal(t, DefaultMonitorAddr, c.MonitorAddr)
 	assert.Equal(t, DefaultTransportHTTPAddr, c.TransportHTTPAddr)
+	assert.Equal(t, DefaultContainerMemoryBytes, c.ContainerMemoryBytes)
 	assert.NotNil(t, c.HTTPReceiverAPIKeyParams)
 	assert.NotNil(t, c.HTTPSenderAPIKeyParams)
 }

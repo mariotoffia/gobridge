@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -196,6 +198,9 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	// buildStores or complete creates any store, session, receiver, sender, or
 	// runtime resource: a rejected topology must leave the live system untouched.
 	if err := b.validateDedicatedIngressSessions(); err != nil {
+		return nil, err
+	}
+	if err := b.validateIngressMemory(); err != nil {
 		return nil, err
 	}
 
@@ -658,4 +663,65 @@ func hasTransportCapability(factory ports.TransportFactory, want ports.Capabilit
 		}
 	}
 	return false
+}
+
+// validateIngressMemory invokes the optional config capability once for each
+// session that actually feeds a route. Dedicated-ingress cardinality runs first,
+// so a topology Task 7 rejects is never counted as multiple memory windows.
+// Sender-only sessions and unconsumed receivers do not reserve ingress memory.
+func (b *Builder) validateIngressMemory() error {
+	if b.cfg == nil {
+		return nil
+	}
+
+	receiverSession := make(map[string]string, len(b.cfg.Receivers))
+	for i := range b.cfg.Receivers {
+		receiver := &b.cfg.Receivers[i]
+		if receiver.SessionID != "" {
+			receiverSession[receiver.ID] = receiver.SessionID
+		}
+	}
+	routeConcurrency := make(map[string]uint64, len(b.cfg.Sessions))
+	for i := range b.cfg.Routes {
+		route := &b.cfg.Routes[i]
+		sessionID := receiverSession[route.ReceiverID]
+		if sessionID == "" {
+			continue
+		}
+		if route.Policy.MaxInFlight < 0 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: route %q: policy.max_in_flight must not be negative", route.ID,
+			))
+		}
+		maxInFlight := route.Policy.MaxInFlight
+		if maxInFlight == 0 {
+			maxInFlight = routing.DefaultMaxInFlight
+		}
+		current := routeConcurrency[sessionID]
+		add := uint64(maxInFlight)
+		if add > math.MaxUint64-current {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q route concurrency overflows ingress memory calculation", sessionID,
+			))
+		}
+		routeConcurrency[sessionID] = current + add
+	}
+
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		maxInFlight := routeConcurrency[sessionDef.ID]
+		if maxInFlight == 0 {
+			continue
+		}
+		memoryConfig, ok := sessionDef.Config.(ports.IngressMemoryConfig)
+		if !ok {
+			continue
+		}
+		if err := memoryConfig.ValidateIngressMemory(maxInFlight); err != nil {
+			return shared.ErrInvalidConfig.Wrap(err).WithMessage(fmt.Sprintf(
+				"bridge: session %q ingress memory validation failed", sessionDef.ID,
+			))
+		}
+	}
+	return nil
 }

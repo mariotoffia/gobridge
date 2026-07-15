@@ -32,7 +32,7 @@ import (
 func TestApplyConnectLimits(t *testing.T) {
 	t.Run("both_set", func(t *testing.T) {
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 1024, 1<<20) // rm=1024, max_payload=1 MiB
+		require.NoError(t, applyConnectLimits(cp, 1024, 1<<20)) // rm=1024, max_payload=1 MiB
 
 		require.NotNil(t, cp.Properties)
 		require.NotNil(t, cp.Properties.ReceiveMaximum)
@@ -47,7 +47,7 @@ func TestApplyConnectLimits(t *testing.T) {
 
 	t.Run("payload_unset_leaves_packet_size_absent", func(t *testing.T) {
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 1024, 0) // max_payload unset ⇒ no packet-size cap
+		require.NoError(t, applyConnectLimits(cp, 1024, 0)) // max_payload unset ⇒ no packet-size cap
 
 		require.NotNil(t, cp.Properties)
 		require.NotNil(t, cp.Properties.ReceiveMaximum)
@@ -57,7 +57,7 @@ func TestApplyConnectLimits(t *testing.T) {
 
 	t.Run("receive_maximum_unset_payload_set", func(t *testing.T) {
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 0, 4096)
+		require.NoError(t, applyConnectLimits(cp, 0, 4096))
 
 		require.NotNil(t, cp.Properties)
 		require.Nil(t, cp.Properties.ReceiveMaximum,
@@ -68,7 +68,7 @@ func TestApplyConnectLimits(t *testing.T) {
 
 	t.Run("neither_set_leaves_properties_nil", func(t *testing.T) {
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 0, 0)
+		require.NoError(t, applyConnectLimits(cp, 0, 0))
 		require.Nil(t, cp.Properties, "no limits configured ⇒ no CONNECT properties added")
 	})
 
@@ -78,30 +78,32 @@ func TestApplyConnectLimits(t *testing.T) {
 		// ceiling, so a legitimate maximum-size message is never rejected.
 		const maxPayload uint32 = 512 * 1024
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 1024, maxPayload)
+		require.NoError(t, applyConnectLimits(cp, 1024, maxPayload))
 
 		require.NotNil(t, cp.Properties.MaximumPacketSize)
 		require.Greater(t, *cp.Properties.MaximumPacketSize, maxPayload,
 			"MaximumPacketSize must exceed max_payload_bytes so a full-size payload plus headers is admitted")
 	})
 
-	t.Run("clamped_to_mqtt_ceiling", func(t *testing.T) {
-		// A huge max_payload_bytes must not advertise an out-of-range (protocol
-		// -violating) Maximum Packet Size; it is clamped to the MQTT v5 maximum.
+	t.Run("payload_that_cannot_fit_metadata_is_rejected", func(t *testing.T) {
 		cp := &pahov5.Connect{}
-		applyConnectLimits(cp, 1024, math.MaxUint32)
+		err := applyConnectLimits(cp, 1024, math.MaxUint32)
 
-		require.NotNil(t, cp.Properties.MaximumPacketSize)
-		require.Equal(t, uint32(mqttMaxPacketSize), *cp.Properties.MaximumPacketSize,
-			"the derived Maximum Packet Size is clamped to the MQTT v5 four-byte-integer maximum")
+		require.Error(t, err)
+		require.Nil(t, cp.Properties.MaximumPacketSize,
+			"an explicit unsafe payload ceiling is rejected, never silently clamped")
 	})
 }
 
 // TestMaxPacketSizeFor covers the pure derivation the helper delegates to.
 func TestMaxPacketSizeFor(t *testing.T) {
-	require.Equal(t, uint32(mqttPacketOverheadAllowance), maxPacketSizeFor(0),
+	got, err := maxPacketSizeFor(0)
+	require.NoError(t, err)
+	require.Equal(t, uint32(mqttPacketOverheadAllowance), got,
 		"a zero payload still reserves the header allowance (callers guard >0)")
-	require.Equal(t, uint32(256<<10)+uint32(mqttPacketOverheadAllowance), maxPacketSizeFor(256<<10))
-	require.Equal(t, uint32(mqttMaxPacketSize), maxPacketSizeFor(math.MaxUint32),
-		"overflow past the MQTT ceiling is clamped, never wrapped")
+	got, err = maxPacketSizeFor(256 << 10)
+	require.NoError(t, err)
+	require.Equal(t, uint32(256<<10)+uint32(mqttPacketOverheadAllowance), got)
+	_, err = maxPacketSizeFor(math.MaxUint32)
+	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")
 }

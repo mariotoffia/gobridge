@@ -505,7 +505,9 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// Receive Maximum (in-flight QoS 1/2 count) and — when MaxPayloadBytes
 		// is set — Maximum Packet Size, which makes the pending-memory bound
 		// receive_maximum × max_payload_bytes broker-ENFORCED (c-mempkt).
-		applyConnectLimits(cp, rm, maxPayload)
+		if err := applyConnectLimits(cp, rm, maxPayload); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		user := s.liveCreds.Username
 		pass := s.liveCreds.Password
@@ -579,49 +581,19 @@ func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
 	}
 }
 
-// mqttPacketOverheadAllowance is the byte headroom ADDED to the configured
-// max payload when advertising the MQTT v5 Maximum Packet Size. MaximumPacketSize
-// bounds the WHOLE packet (fixed header + variable header + properties +
-// payload), so advertising exactly max_payload_bytes would make the broker
-// reject a legitimate payload of exactly that size. 128 KiB comfortably covers
-// the MQTT PUBLISH fixed header (≤5 B), a maximal topic name (≤65 535 B, a
-// 2-byte length field), the packet identifier and a bounded set of properties —
-// so an application payload up to max_payload_bytes is always admitted while the
-// broker still refuses anything materially larger.
-const mqttPacketOverheadAllowance uint64 = 128 << 10
-
-// mqttMaxPacketSize is the MQTT v5 Maximum Packet Size ceiling: the largest
-// value a Four Byte Integer may carry per the spec (§2.2.2.2), 256 MiB − 1.
-// The derived packet-size limit is clamped to this so a huge max_payload_bytes
-// cannot advertise an out-of-range (protocol-violating) value.
-const mqttMaxPacketSize uint64 = 268_435_455
-
-// maxPacketSizeFor derives the MQTT v5 Maximum Packet Size to advertise from the
-// configured maximum application PAYLOAD size, adding mqttPacketOverheadAllowance
-// so a payload of exactly maxPayloadBytes is still admitted (the limit covers
-// the whole packet, not just the payload). The result is clamped to
-// mqttMaxPacketSize. Callers guard maxPayloadBytes > 0 before advertising.
-func maxPacketSizeFor(maxPayloadBytes uint32) uint32 {
-	sz := uint64(maxPayloadBytes) + mqttPacketOverheadAllowance
-	if sz > mqttMaxPacketSize {
-		return uint32(mqttMaxPacketSize)
-	}
-	return uint32(sz)
-}
-
 // applyConnectLimits populates the MQTT v5 CONNECT properties advertising the
 // self-imposed limits the broker must honour: Receive Maximum (in-flight QoS 1/2
 // count) and, when a per-message payload ceiling is configured, Maximum Packet
-// Size (derived via maxPacketSizeFor). Both are broker-enforced, together
-// bounding worst-case pending memory to receive_maximum × max_payload_bytes.
+// Size (derived via maxPacketSizeFor). Together they make the validated ingress
+// byte model broker-enforced.
 //
 // A zero receiveMaximum or a zero maxPayloadBytes leaves its respective property
 // UNSET (0 is not a legal MQTT v5 value for either, and an unset Maximum Packet
 // Size means "no limit" — the prior behaviour). Like applyConnectCredentials it
 // takes the SDK *paho.Connect and therefore lives in the ACL.
-func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadBytes uint32) {
+func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadBytes uint32) error {
 	if receiveMaximum == 0 && maxPayloadBytes == 0 {
-		return
+		return nil
 	}
 	if cp.Properties == nil {
 		cp.Properties = &pahov5.ConnectProperties{}
@@ -631,7 +603,11 @@ func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadByt
 		cp.Properties.ReceiveMaximum = &rm
 	}
 	if maxPayloadBytes > 0 {
-		mps := maxPacketSizeFor(maxPayloadBytes)
+		mps, err := maxPacketSizeFor(maxPayloadBytes)
+		if err != nil {
+			return err
+		}
 		cp.Properties.MaximumPacketSize = &mps
 	}
+	return nil
 }

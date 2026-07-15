@@ -96,6 +96,14 @@ Optional companion interfaces (also in `ports`):
 
 - `ports.VisibilityTimeoutProvider` — declares the source visibility
   timeout used by the runtime validator (e.g. SQS).
+- `ports.IngressMemoryConfig` — lets a typed session config validate a
+  transport-owned ingress byte bound against the route's effective concurrency.
+  The bridge calls it after dedicated-session cardinality checks and before
+  opening stores or transports.
+- `ports.IngressMemoryProfileConfig` — extends that contract for deployment
+  profiles that assign a per-session byte budget and derive safe transport
+  concurrency. Implementations must preserve safe explicit values and reject
+  unsafe explicit values rather than silently clamping them.
 
 Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
 sink) deliberately do not have a port-level abstraction: HTTP handlers

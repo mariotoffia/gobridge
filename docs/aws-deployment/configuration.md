@@ -63,6 +63,8 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. **Reserved / non-operative at runtime** -- every node starts the transport, admin, and monitor servers regardless of this value. Validated for shape and consumed only at deploy time by the CDK single/cluster facades (per-service role + synth validation). Reserved for future multi-node coordination. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica) or `"filesystem_replicated"` (N replicas sharing EFS). |
 | `poll_interval` | `string` | No | `"1s"` | Go duration string for how often the poll watcher checks the bridge config file for changes. |
+| `container_memory_bytes` | `uint64` | No | `1073741824` | Runtime container hard limit used by the MQTT memory profile. CDK overwrites this field from the effective Fargate `MemoryMiB`; do not set it independently in CDK deployments. |
+| `reserved_memory_bytes` | `uint64` | No | `0` | Non-MQTT memory already committed to other runtime components. This reservation plus the profile's 25% MQTT ingress allocation must leave at least 20% of `container_memory_bytes` as headroom. |
 | `admin_addr` | `string` | No | `":8080"` | Listen address for the admin HTTP server. |
 | `monitor_addr` | `string` | No | `":8081"` | Listen address for the monitor HTTP server. |
 | `cors_origins` | `string` | No | `""` | Comma-separated CORS allowed origins. Empty disables CORS. Wildcard `*` is rejected. |
@@ -115,6 +117,11 @@ Validation fails if:
 - `topology` is not `"single"` or `"filesystem_replicated"` (after normalization).
 - `metrics_exporter` is set to anything other than `""`, `"noop"`, or `"cloudwatch"`.
 - `ssm_endpoint` is set but `dev_mode` is `false`.
+- `container_memory_bytes` is zero after normalization, or
+  `reserved_memory_bytes` alone leaves less than 20% headroom.
+- A consumed MQTT session cannot fit its payload, receive/dispatch window, and
+  route concurrency in its equal share of the 25% MQTT ingress reservation.
+  Sender-only MQTT sessions do not consume a share.
 
 When `metrics_exporter` is `"cloudwatch"`, the CDK base grants
 `cloudwatch:PutMetricData` scoped by a `cloudwatch:namespace` condition to the
