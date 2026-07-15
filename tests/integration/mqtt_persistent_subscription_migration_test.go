@@ -373,16 +373,27 @@ func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreD
 	if err := restored.Start(ctx); err != nil {
 		t.Fatalf("restored old-config session Start: %v", err)
 	}
-	restoredReceiver := paho.NewReceiver("restored-old-handler", restored, paho.WithTopicFilters(sharedFilter))
-	restoredReceived := make(chan string, 4)
+	restoredReceiver := paho.NewReceiver("restored-old-handler", restored,
+		paho.WithTopicFilters(ordinaryFilter, sharedFilter))
+	restoredPinned := make(chan string, 4)
+	restoredBarrier := make(chan string, 1)
+	restoredUnexpected := make(chan string, 1)
 	restoredCtx, restoredCancel := context.WithCancel(ctx)
+	const restoreBarrierID = "managed-pinned-restore-suback-barrier"
 	go func() {
 		_ = restoredReceiver.Run(restoredCtx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
 			id := delivery.Envelope().ID()
 			if err := delivery.Ack(deliveryCtx); err != nil {
 				return err
 			}
-			restoredReceived <- id
+			switch id {
+			case pinnedID:
+				restoredPinned <- id
+			case restoreBarrierID:
+				restoredBarrier <- id
+			default:
+				restoredUnexpected <- id
+			}
 			return nil
 		})
 	}()
@@ -390,10 +401,43 @@ func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreD
 	if err := restored.Reconcile(ctx, oldPlan); err != nil {
 		t.Fatalf("restore old config Reconcile: %v", err)
 	}
-	if id := wait.RequireReceive(t, restoredReceived, 10*time.Second); id != pinnedID {
+	if health := restored.Health(ctx); !health.Connected || health.ServiceLevel != ports.ServiceLevelFull {
+		t.Fatalf("restored old session not connected and reconciled after SUBACK: %+v", health)
+	}
+
+	// Broker-side hand-off barrier: MQTT permits only one live connection for a
+	// ClientID. Start's completed CONNACK, Reconcile's successful batched SUBACK
+	// (ordinary + shared filters), and this QoS1 ordinary-filter delivery to the
+	// restored handler together prove Mosquitto retired the failed-cutover socket
+	// and is routing the resumed session through this fresh instance. Do not await
+	// the broker-pinned shared replay until that boundary is established.
+	barrier := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID: restoreBarrierID, Subject: "managed-pinned-proof", Payload: []byte(restoreBarrierID),
+	})
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: barrier, Address: ordinaryRoot + "/restore-barrier"}); err != nil {
+		t.Fatalf("publish restored-session broker barrier: %v", err)
+	}
+	if id := wait.RequireReceive(t, restoredBarrier, 5*time.Second); id != restoreBarrierID {
+		t.Fatalf("restored broker barrier = %q, want %q", id, restoreBarrierID)
+	}
+	if health := failedCutover.Health(ctx); health.Connected {
+		t.Fatalf("failed-cutover session reconnected across broker hand-off barrier: %+v", health)
+	}
+	if id := wait.RequireReceive(t, restoredPinned, 10*time.Second); id != pinnedID {
 		t.Fatalf("restored handler drained %q, want %q", id, pinnedID)
 	}
-	wait.Silent(t, restoredReceived, 2*unmatchedGrace)
+	wait.Silent(t, restoredPinned, 2*unmatchedGrace)
+	select {
+	case id := <-restoredUnexpected:
+		t.Fatalf("restored handler received unexpected envelope %q", id)
+	default:
+	}
+	if _, dropped := failedCutover.Router().Stats(); dropped != 0 {
+		t.Fatalf("unsubscribe/disconnect sequence dropped %d stale deliveries", dropped)
+	}
+	if entries := recorder.FindEntries(paho.MetricMQTTRouterUnmatchedDropped); len(entries) != 0 {
+		t.Fatalf("unsubscribe/disconnect sequence ACK-dropped pinned delivery: %v", entries)
+	}
 	restoredCancel()
 	if err := restored.Close(ctx); err != nil {
 		t.Fatalf("restored old-config session Close: %v", err)
