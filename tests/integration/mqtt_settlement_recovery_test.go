@@ -108,32 +108,14 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 		health := sess.Health(recoveryCtx)
 		return health.ServiceLevel == ports.ServiceLevelFull && health.RecoveryRecycleCount == 1
 	})
-	publishRecoveryMessage(t, brokerURL, topic, laterID)
-	receivedAfterRecovery := map[string]int{}
-	for len(receivedAfterRecovery) < 2 {
-		id := wait.RequireReceive(t, receiver.received, recoveryRemaining(t, recoveryCtx))
-		receivedAfterRecovery[id]++
-	}
-	if receivedAfterRecovery[originalID] != 1 || receivedAfterRecovery[laterID] != 1 {
-		t.Fatalf("post-recovery producer-ID accounting = %v, want one redelivery and one later message", receivedAfterRecovery)
-	}
+	requireRecoveryID(t, recoveryCtx, "original redelivery receive", receiver.received, originalID)
+	requireRecoveryID(t, recoveryCtx, "original redelivery sender success", sender.succeeded, originalID)
+	requireRecoveryID(t, recoveryCtx, "original redelivery ack", receiver.acked, originalID)
 
-	succeeded := map[string]int{}
-	for len(succeeded) < 2 {
-		id := wait.RequireReceive(t, sender.succeeded, recoveryRemaining(t, recoveryCtx))
-		succeeded[id]++
-	}
-	if succeeded[originalID] != 1 || succeeded[laterID] != 1 {
-		t.Fatalf("successful producer-ID accounting = %v, want one original and one later", succeeded)
-	}
-	acked := map[string]int{}
-	for len(acked) < 2 {
-		id := wait.RequireReceive(t, receiver.acked, recoveryRemaining(t, recoveryCtx))
-		acked[id]++
-	}
-	if acked[originalID] != 1 || acked[laterID] != 1 {
-		t.Fatalf("acknowledged producer-ID accounting = %v, want one original and one later", acked)
-	}
+	publishRecoveryMessage(t, brokerURL, topic, laterID)
+	requireRecoveryID(t, recoveryCtx, "later publish receive", receiver.received, laterID)
+	requireRecoveryID(t, recoveryCtx, "later publish sender success", sender.succeeded, laterID)
+	requireRecoveryID(t, recoveryCtx, "later publish ack", receiver.acked, laterID)
 	if got := receiver.receiptCounts(); got[originalID] != 2 || got[laterID] != 1 {
 		t.Fatalf("receipt producer-ID accounting = %v, want original redelivered once and later delivered once", got)
 	}
@@ -146,6 +128,24 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}
 	if health.RecoveryRecycleCount != 1 {
 		t.Fatalf("recovery recycle count = %d, want 1", health.RecoveryRecycleCount)
+	}
+}
+
+func requireRecoveryID(
+	t *testing.T,
+	ctx context.Context,
+	phase string,
+	values <-chan string,
+	want string,
+) {
+	t.Helper()
+	select {
+	case got := <-values:
+		if got != want {
+			t.Fatalf("%s producer ID = %q, want %q", phase, got, want)
+		}
+	case <-ctx.Done():
+		t.Fatalf("%s did not complete within configured recovery bound: %v", phase, ctx.Err())
 	}
 }
 
