@@ -43,7 +43,7 @@ func failoverBudgetBlueprint(slo string, cfg ports.PluginConfig) *ports.BridgeCo
 }
 
 func TestBuilderPlan_FailoverBudgetExactBoundaryPasses(t *testing.T) {
-	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{BrokerConnectTimeout: 2 * time.Second, ReconcileTimeout: 3 * time.Second}})
+	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	plan, err := NewBuilder(cfg).Plan(t.Context())
 	if err != nil {
 		t.Fatalf("exact boundary: %v", err)
@@ -52,7 +52,7 @@ func TestBuilderPlan_FailoverBudgetExactBoundaryPasses(t *testing.T) {
 }
 
 func TestBuilderPlan_FailoverBudgetOneNanosecondExcessRejects(t *testing.T) {
-	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{BrokerConnectTimeout: 2 * time.Second, ReconcileTimeout: 3 * time.Second}})
+	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	plan, err := NewBuilder(cfg).Plan(t.Context())
 	if plan != nil {
 		plan.Close()
@@ -66,8 +66,7 @@ func TestBuilderPlan_FailoverBudgetOneNanosecondExcessRejects(t *testing.T) {
 func TestBuilderPlan_DeclaredFailoverSLORequiresKnownTransportTiming(t *testing.T) {
 	cases := map[string]ports.PluginConfig{
 		"missing-capability": failoverNoTimingPluginConfig{},
-		"unknown-connect":    failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{ReconcileTimeout: time.Second}},
-		"unknown-reconcile":  failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{BrokerConnectTimeout: time.Second}},
+		"unknown-activation": failoverTimingPluginConfig{},
 	}
 	for name, plugin := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -108,7 +107,7 @@ func (f *failoverCountingStoreFactory) NewDLQStore(context.Context, ports.Plugin
 }
 
 func TestBuilderPlan_FailoverBudgetRejectsBeforeStores(t *testing.T) {
-	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{BrokerConnectTimeout: 2 * time.Second, ReconcileTimeout: 3 * time.Second}})
+	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	cfg.Stores.Lease = &ports.StoreConfig{Type: "count"}
 	factory := &failoverCountingStoreFactory{}
 	plan, err := NewBuilder(cfg).RegisterStoreFactory("count", factory).Plan(t.Context())
@@ -124,7 +123,7 @@ func TestBuilderPlan_FailoverBudgetRejectsBeforeStores(t *testing.T) {
 }
 
 func TestCheckedFailoverBudgetArithmeticRejectsOverflow(t *testing.T) {
-	_, err := checkedFailoverBudget(time.Duration(math.MaxInt64), time.Nanosecond, time.Nanosecond, time.Nanosecond, time.Nanosecond, time.Nanosecond)
+	_, err := checkedFailoverBudget(time.Duration(math.MaxInt64), time.Nanosecond, time.Nanosecond, time.Nanosecond, time.Nanosecond)
 	if !errors.Is(err, shared.ErrInvalidConfig) {
 		t.Fatalf("overflow=%v", err)
 	}

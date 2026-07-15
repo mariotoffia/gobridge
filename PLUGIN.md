@@ -676,9 +676,11 @@ from `ports/plugin_config.go`:
 - `ReplicaIdentityConfig` declares the effective per-replica identity strategy
   used by clustered shared consumers. Validation fails closed when a shared
   subscription cannot prove a strategy.
-- `TransportFailoverTimingConfig` exposes conservative effective broker-connect
-  and reconcile durations. A declared `failover_slo` fails closed when either
-  duration or this capability is unavailable; core code remains transport-neutral.
+- `TransportFailoverTimingConfig` exposes one conservative complete post-takeover
+  activation bound through `ServiceLevelFull`, including connect, cleanup/replay,
+  recycle/reconnect, and final reconciliation exactly once. A declared
+  `failover_slo` fails closed when the aggregate bound is unavailable; core code
+  must not add nested phases again and remains transport-neutral.
 
 These capabilities keep `bridge/` and `validate/` transport-neutral: core code
 asserts the generic interface and never switches on a transport name or imports

@@ -44,13 +44,13 @@ type observationEvidence struct {
 func (r leaseRow) tuple() leaseTuple {
 	return leaseTuple{
 		owner:            r.owner,
-		ownerPresent:     r.ownerPresent || r.owner != "",
+		ownerPresent:     r.ownerPresent,
 		version:          r.version,
-		versionPresent:   r.versionPresent || r.version != 0,
+		versionPresent:   r.versionPresent,
 		renewedAt:        r.renewedAt,
-		renewedAtPresent: r.renewedAtPresent || r.renewedAt != 0,
+		renewedAtPresent: r.renewedAtPresent,
 		expiresAt:        r.expiresAt,
-		expiresAtPresent: r.expiresAtPresent || r.expiresAt != 0,
+		expiresAtPresent: r.expiresAtPresent,
 	}
 }
 
@@ -66,15 +66,9 @@ func (t leaseTuple) fingerprint() string {
 	return hex.EncodeToString(sum[:])
 }
 
-func requiredObservationDuration(row leaseRow, fallback time.Duration) (time.Duration, error) {
-	if fallback <= 0 {
-		return 0, shared.ErrInvalidConfig.WithMessage("dynamodblease: takeover observation TTL must be positive")
-	}
+func requiredObservationDuration(row leaseRow) (time.Duration, error) {
 	tuple := row.tuple()
-	if !tuple.renewedAtPresent {
-		return fallback, nil
-	}
-	if tuple.renewedAt <= 0 || !tuple.expiresAtPresent || tuple.expiresAt <= tuple.renewedAt {
+	if !tuple.renewedAtPresent || !tuple.expiresAtPresent || tuple.renewedAt <= 0 || tuple.expiresAt <= tuple.renewedAt {
 		return 0, shared.ErrInvalidConfig.WithMessage("dynamodblease: malformed lease liveness duration")
 	}
 	deltaMillis := tuple.expiresAt - tuple.renewedAt
@@ -127,8 +121,8 @@ func decodeObservationEvidence(item map[string]ddbtypes.AttributeValue) (observa
 	if err != nil {
 		return observationEvidence{}, fmt.Errorf("dynamodblease: invalid takeover observation generation: %w", err)
 	}
-	if generation == 0 {
-		return observationEvidence{}, fmt.Errorf("dynamodblease: takeover observation generation must be positive")
+	if generation == 0 || generation == math.MaxUint64 {
+		return observationEvidence{}, fmt.Errorf("dynamodblease: takeover observation generation must be positive and incrementable")
 	}
 	return observationEvidence{present: true, fingerprint: fp.Value, elapsed: time.Duration(elapsed), generation: generation}, nil
 }

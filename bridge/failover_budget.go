@@ -38,12 +38,12 @@ func (b *Builder) validateFailoverBudgets() error {
 			mode = connectivity.SessionExclusive
 		}
 		transportTiming := capability.TransportFailoverTiming(mode)
-		if transportTiming.BrokerConnectTimeout <= 0 || transportTiming.ReconcileTimeout <= 0 {
-			return failoverBudgetError(route.ID, route.Session.SessionID, "broker connect or reconcile worst-case duration is unknown")
+		if transportTiming.PostTakeoverActivation <= 0 {
+			return failoverBudgetError(route.ID, route.Session.SessionID, "complete post-takeover activation duration is unknown")
 		}
 		ttl, acquirePoll, renewCallTimeout := sc.EffectiveFailoverLeaseTiming()
 		budget, err := checkedFailoverBudget(ttl, acquirePoll, renewCallTimeout,
-			transportTiming.BrokerConnectTimeout, transportTiming.ReconcileTimeout, sc.StartupAllowance)
+			transportTiming.PostTakeoverActivation, sc.StartupAllowance)
 		if err != nil {
 			return fmt.Errorf("bridge: route %q: session %q: %w", route.ID, route.Session.SessionID, err)
 		}
@@ -64,13 +64,13 @@ func failoverBudgetError(routeID, sessionID, detail string) error {
 	))
 }
 
-func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, brokerConnectTimeout, reconcileTimeout, startupAllowance time.Duration) (time.Duration, error) {
+func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, postTakeoverActivation, startupAllowance time.Duration) (time.Duration, error) {
 	required := []struct {
 		name  string
 		value time.Duration
 	}{
 		{"lease TTL", leaseTTL}, {"acquire poll", acquirePoll}, {"renew call timeout", renewCallTimeout},
-		{"broker connect timeout", brokerConnectTimeout}, {"reconcile timeout", reconcileTimeout},
+		{"complete post-takeover activation", postTakeoverActivation},
 	}
 	for _, part := range required {
 		if part.value <= 0 {
@@ -88,7 +88,7 @@ func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, brokerConnec
 		return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget acquire poll margin overflows time.Duration")
 	}
 	adjustedPoll := acquirePoll + pollMargin
-	parts := []time.Duration{leaseTTL, adjustedPoll, renewCallTimeout, brokerConnectTimeout, reconcileTimeout, startupAllowance}
+	parts := []time.Duration{leaseTTL, adjustedPoll, renewCallTimeout, postTakeoverActivation, startupAllowance}
 	var total time.Duration
 	for _, part := range parts {
 		if part > time.Duration(math.MaxInt64)-total {

@@ -82,15 +82,17 @@ type PostAcquireActivationTimingConfig interface {
 	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
 }
 
-// TransportFailoverTiming reports conservative effective durations used by a
-// replacement owner between lease acquisition and ServiceLevelFull readiness.
+// TransportFailoverTiming reports one conservative effective bound for the
+// complete post-takeover transport activation through ServiceLevelFull. The
+// bound includes broker connect, subscription cleanup/replay, any required
+// recycle/reconnect, and final reconciliation exactly once.
 type TransportFailoverTiming struct {
-	BrokerConnectTimeout time.Duration
-	ReconcileTimeout     time.Duration
+	PostTakeoverActivation time.Duration
 }
 
 // TransportFailoverTimingConfig is an OPTIONAL generic typed-config capability.
-// A declared failover SLO requires both durations to be known and positive.
+// A declared failover SLO requires the aggregate activation bound to be known
+// and positive. Callers must not add nested connect/reconcile phases again.
 type TransportFailoverTimingConfig interface {
 	TransportFailoverTiming(mode connectivity.SessionMode) TransportFailoverTiming
 }

@@ -48,14 +48,38 @@ func TestConfigPostAcquireActivationTimingSaturatesDurationOverflow(t *testing.T
 	}
 }
 
-func TestConfigTransportFailoverTimingUsesEffectiveTimeouts(t *testing.T) {
-	defaults := (Config{}).TransportFailoverTiming(connectivity.SessionExclusive)
-	if defaults.BrokerConnectTimeout != DefaultConnectTimeout || defaults.ReconcileTimeout != DefaultReconcileTimeout {
-		t.Fatalf("default failover timing = %+v", defaults)
+func TestConfigTransportFailoverTimingUsesCompleteDefaultActivation(t *testing.T) {
+	got := (Config{}).TransportFailoverTiming(connectivity.SessionExclusive)
+	want := (Config{}).PostAcquireActivationTiming(connectivity.SessionExclusive).WorstCaseDuration
+	if got.PostTakeoverActivation != want {
+		t.Fatalf("default failover activation = %s, want complete activation %s", got.PostTakeoverActivation, want)
 	}
-	cfg := Config{Session: SessionOptions{ConnectTimeout: 7 * time.Second, ReconcileTimeout: 11 * time.Second}}
+}
+
+func TestConfigTransportFailoverTimingIncludesManagedMigrationRecycleAndReplay(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		ConnectTimeout: 7 * time.Second, ReconnectTimeout: 6 * time.Second,
+		ReconcileTimeout: 8 * time.Second, UnmatchedGrace: 9 * time.Second,
+	}}
 	got := cfg.TransportFailoverTiming(connectivity.SessionExclusive)
-	if got.BrokerConnectTimeout != 7*time.Second || got.ReconcileTimeout != 11*time.Second {
-		t.Fatalf("configured failover timing = %+v", got)
+	// Initial connect + cleanup recycle connect, initial SUBSCRIBE, exact
+	// UNSUBSCRIBE, bounded ingress quiescence, replacement SUBSCRIBE, and two
+	// replay-verification grace windows. ReconnectTimeout is nested and not added.
+	const want = 2*7*time.Second + 4*8*time.Second + 2*9*time.Second
+	if got.PostTakeoverActivation != want {
+		t.Fatalf("migration/recycle failover activation = %s, want %s", got.PostTakeoverActivation, want)
+	}
+	if got.PostTakeoverActivation <= cfg.Session.ConnectTimeout+cfg.Session.ReconcileTimeout {
+		t.Fatalf("failover activation undercounted cleanup/recycle/replay phases: %s", got.PostTakeoverActivation)
+	}
+}
+
+func TestConfigTransportFailoverTimingSaturatesCompleteActivationOverflow(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		ConnectTimeout: time.Duration(1<<63 - 1), ReconcileTimeout: time.Second,
+		UnmatchedGrace: time.Second,
+	}}
+	if got := cfg.TransportFailoverTiming(connectivity.SessionExclusive).PostTakeoverActivation; got != time.Duration(1<<63-1) {
+		t.Fatalf("overflowing failover activation = %s, want saturated maximum", got)
 	}
 }

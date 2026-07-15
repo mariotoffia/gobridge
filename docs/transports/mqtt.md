@@ -98,10 +98,12 @@ exclusive sessions have no such coupling. See
 **Failover timing.** A clustered exclusive route that leaves lease timing
 unset uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO.
 Declare `routes[].session.failover_slo` to validate lease TTL, jittered acquire
-polling, renew-call timeout, effective Paho connect and reconcile timeouts, and
-startup allowance before resources are opened. Validation is necessary but warm
+polling, renew-call timeout, the complete conservative Paho post-takeover
+activation bound, and startup allowance before resources are opened. Validation is necessary but warm
 and cold failure-detection-to-`ServiceLevelFull` measurements are required before
-publishing any latency claim. See
+publishing any latency claim. The activation bound includes initial connect,
+managed cleanup/replay, recycle/reconnect, final reconciliation, and grace
+windows exactly once. See
 [Scenario 8 — Failover SLO Validation](../scenarios/08-clustered-exclusive-sessions.md#failover-slo-validation).
 
 **Restart policy is a deployment requirement.** The Paho session is

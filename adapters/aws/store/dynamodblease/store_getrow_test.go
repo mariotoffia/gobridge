@@ -2,6 +2,7 @@ package dynamodblease_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
@@ -59,7 +61,7 @@ func TestGetRowSurfacesCorruptVersion(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Current must surface a corrupt fence, got version=%d (silent fence reset)", info.Version)
 	}
-	if !strings.Contains(err.Error(), "parse number attribute") {
+	if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "corrupt lease row") {
 		t.Fatalf("Current error must identify the unparseable fence attribute, got: %v", err)
 	}
 
@@ -72,7 +74,7 @@ func TestGetRowSurfacesCorruptVersion(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Acquire takeover must surface a corrupt fence, got token version=%d (silent fence reset)", tok.Version)
 	}
-	if !strings.Contains(err.Error(), "parse number attribute") {
+	if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "corrupt lease row") {
 		t.Fatalf("Acquire error must identify the unparseable fence attribute, got: %v", err)
 	}
 }

@@ -161,8 +161,9 @@ routes:
       max_renew_fails: 3
       connect_after_lease: true
       # Optional declared objective: failure detection to ServiceLevelFull.
-      # Budget = 300s + ceil(1.25*5s) + 5s + 30s + 30s + 10s = 381.25s.
-      failover_slo: 390s
+      # Paho activation = 2*30s connect + 4*30s reconcile + 2*30s grace = 240s.
+      # Budget = 300s + ceil(1.25*5s) + 5s + 240s + 10s = 561.25s.
+      failover_slo: 570s
       startup_allowance: 10s
       drain_batch_size: 10
       drain_strategy:
@@ -476,22 +477,24 @@ is opened, the builder validates:
 lease_ttl
 + ceil(1.25 * acquire_poll_interval)
 + renew_call_timeout
-+ broker connect timeout
-+ reconcile timeout
++ complete post-takeover transport activation
 + startup_allowance
 <= failover_slo
 ```
 
 The exact boundary passes; one nanosecond over fails. Checked duration arithmetic
 fails closed on non-positive required terms, negative values, unknown transport
-timing, or overflow. The Paho adapter supplies effective `connect_timeout` and
-`reconcile_timeout` values through the generic transport timing capability.
+timing, or overflow. The generic capability is one aggregate duration, so the
+builder never double-counts nested connect/reconcile phases. Paho reuses its
+complete post-acquire phase calculator: initial connect, managed cleanup/replay,
+recycle/reconnect, four reconcile-owned waits, and two grace windows.
 `startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
 `failover_slo` means that no objective is declared.
 
-The example in this scenario declares `390s`. Its conservative budget is
-`300s + 6.25s + 5s + 30s + 30s + 10s = 381.25s`, so preflight accepts it.
-This is an admission check, not proof that the deployment meets 390 seconds.
+The example in this scenario declares `570s`. Paho default post-takeover
+activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the full
+budget is `300s + 6.25s + 5s + 240s + 10s = 561.25s`, so preflight accepts it.
+This is an admission check, not proof that the deployment meets 570 seconds.
 Warm and cold failure-detection-to-`ServiceLevelFull` samples must be measured in
 the target environment before publishing an SLO claim.
 
@@ -510,6 +513,16 @@ early takeover. Renewal, release, acquisition, takeover, and any tuple mutation
 reset evidence atomically. Legacy rows without evidence start at zero. The lease
 table still has DynamoDB TTL disabled because the row is the permanent fencing
 counter.
+
+**Upgrade policy.** A pre-observation row may omit all three observation fields;
+it starts at zero. The base tuple is never optional. Active rows require exact
+key, non-empty owner, positive version/`renewed_at`, and `expires_at > renewed_at`;
+released rows retain positive version/`renewed_at` with empty owner and
+`expires_at: 0`. Partial evidence, missing base fields, negative/overflow values,
+or impossible ordering fails closed as `shared.ErrInvalidConfig`. Rows from
+builds that predate `renewed_at` require an offline migration: quiesce every
+lease user, preserve each fencing version, write a valid active or released
+tuple, verify it, then restart. GoBridge does not auto-heal an ambiguous owner.
 
 Persisted evidence removes the former mandatory second-TTL penalty for a process
 replacement. It does not manufacture observation time: if no observer had

@@ -119,12 +119,14 @@ When `renew_interval` is left empty the interval, jitter, and call timeout are
 all derived and this check is skipped.
 
 **Declared failover budget.** When `failover_slo` is present, preflight requires
-`lease_ttl + ceil(1.25 × acquire_poll_interval) + renew_call_timeout + broker
-connect timeout + reconcile timeout + startup_allowance <= failover_slo` using
+`lease_ttl + ceil(1.25 × acquire_poll_interval) + renew_call_timeout + complete
+post-takeover transport activation + startup_allowance <= failover_slo` using
 checked duration arithmetic. The exact boundary passes. Validation runs before
 stores and transports are opened. It is necessary admission control, not evidence
 of an achieved SLO; publish claims only after warm and cold measurements in the
-target deployment. `session.HAConfig` is a lease-renewal cadence, not an
+target deployment. The transport activation capability is one aggregate bound;
+connect, cleanup/replay, recycle/reconnect, grace, and final reconcile phases are
+not added separately. `session.HAConfig` is a lease-renewal cadence, not an
 end-to-end preset.
 
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
@@ -159,7 +161,7 @@ routes:
       sender_id: sqs-out
       lease_ttl: 300s
       step_down_grace: 20s
-      failover_slo: 390s
+      failover_slo: 570s
       startup_allowance: 10s
       drain_strategy:
         type: adaptive_backoff

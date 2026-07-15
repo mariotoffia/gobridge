@@ -182,6 +182,9 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	if ttl <= 0 {
 		return persistence.LeaseToken{}, shared.ErrInvalidConfig.WithMessage("dynamodblease: lease TTL must be positive")
 	}
+	if ownerID == "" {
+		return persistence.LeaseToken{}, shared.ErrInvalidConfig.WithMessage("dynamodblease: lease owner must be non-empty")
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
 	}
@@ -223,6 +226,9 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 	// Item exists. Read it (strongly consistent) to choose the takeover path.
 	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return persistence.LeaseToken{}, err
+		}
 		return persistence.LeaseToken{}, wrapErr(err, "lease takeover read failed", "leaseID", leaseID, "ownerID", ownerID)
 	}
 	if !row.present {
@@ -232,7 +238,7 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 			With("leaseID", leaseID)
 	}
 
-	if row.owner == "" || row.expiresAt <= 0 {
+	if row.owner == "" {
 		condition, names, values := takeoverCondition(row, true)
 		token, takeoverErr := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
 			condition, names, values)
@@ -244,12 +250,12 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		return token, nil
 	}
 
-	return s.observeOrSeize(ctx, leaseID, ownerID, ttl, endpoints, now, expiresAt, row)
+	return s.observeOrSeize(ctx, leaseID, ownerID, endpoints, now, expiresAt, row)
 }
 
 // observeOrSeize advances persisted monotonic observation evidence and takes
 // over an actively-held lease only after a full unchanged-tuple duration.
-func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string, now, expiresAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
+func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
 	row.leaseID = leaseID
 	if row.owner == ownerID {
 		condition, names, values := takeoverCondition(row, true)
@@ -262,7 +268,7 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 		return token, nil
 	}
 
-	required, err := requiredObservationDuration(row, ttl)
+	required, err := requiredObservationDuration(row)
 	if err != nil {
 		s.clearObservation(leaseID)
 		return persistence.LeaseToken{}, err
@@ -351,7 +357,7 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt time.Time, cond string, extraNames map[string]string, extraValues map[string]ddbtypes.AttributeValue) (persistence.LeaseToken, error) {
 	pk := leaseKey(leaseID)
 
-	updateExpr := "SET #own = :owner, #ver = if_not_exists(#ver, :zero) + :one, #acq = :now_ms, #exp = :exp_ms, #ren = :now_ms"
+	updateExpr := "SET #own = :owner, #ver = #ver + :one, #acq = :now_ms, #exp = :exp_ms, #ren = :now_ms"
 	exprNames := map[string]string{
 		"#own": attrOwner,
 		"#ver": attrVersion,
@@ -362,7 +368,6 @@ func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoi
 	exprValues := map[string]ddbtypes.AttributeValue{
 		":owner":  &ddbtypes.AttributeValueMemberS{Value: ownerID},
 		":one":    &ddbtypes.AttributeValueMemberN{Value: "1"},
-		":zero":   &ddbtypes.AttributeValueMemberN{Value: "0"},
 		":now_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(now)},
 		":exp_ms": &ddbtypes.AttributeValueMemberN{Value: millisStr(expiresAt)},
 	}
@@ -425,10 +430,12 @@ type leaseRow struct {
 	renewedAt        int64
 	renewedAtPresent bool
 	observation      observationEvidence
+	endpoints        map[string]string
 }
 
-// getRow reads the lease item with a strongly consistent read and decodes the
-// exact tuple and persisted takeover observation evidence.
+// getRow reads and validates the complete persisted lease-row contract. Rows
+// predating observation evidence are accepted with zero evidence; no base tuple
+// field is optional.
 func (s *Store) getRow(ctx context.Context, leaseID string) (leaseRow, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: &s.tableName,
@@ -444,34 +451,67 @@ func (s *Store) getRow(ctx context.Context, leaseID string) (leaseRow, error) {
 	if len(result.Item) == 0 {
 		return leaseRow{leaseID: leaseID, present: false}, nil
 	}
-	owner, ownerPresent, err := optionalStringAttr(result.Item, attrOwner)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	row, decodeErr := decodeLeaseRow(result.Item, leaseID)
+	if decodeErr != nil {
+		s.clearObservation(leaseID)
+		return leaseRow{}, decodeErr
 	}
-	version, versionPresent, err := optionalUintAttr(result.Item, attrVersion)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	return row, nil
+}
+
+func decodeLeaseRow(item map[string]ddbtypes.AttributeValue, leaseID string) (leaseRow, error) {
+	pk, pkPresent, err := optionalStringAttr(item, attrPK)
+	if err != nil || !pkPresent || pk != leaseKey(leaseID) {
+		return leaseRow{}, corruptLeaseRow(leaseID, "missing, non-string, or mismatched lease key")
 	}
-	expiresAt, expiresAtPresent, err := optionalInt64Attr(result.Item, attrExpiresAt)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	owner, ownerPresent, err := optionalStringAttr(item, attrOwner)
+	if err != nil || !ownerPresent {
+		return leaseRow{}, corruptLeaseRow(leaseID, "owner must be present and string-typed")
 	}
-	renewedAt, renewedAtPresent, err := optionalInt64Attr(result.Item, attrRenewedAt)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	version, versionPresent, err := optionalUintAttr(item, attrVersion)
+	if err != nil || !versionPresent || version == 0 || version == ^uint64(0) {
+		return leaseRow{}, corruptLeaseRow(leaseID, "version must be present, positive, fit uint64, and remain incrementable")
 	}
-	observation, err := decodeObservationEvidence(result.Item)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	renewedAt, renewedAtPresent, err := optionalInt64Attr(item, attrRenewedAt)
+	if err != nil || !renewedAtPresent || renewedAt <= 0 {
+		return leaseRow{}, corruptLeaseRow(leaseID, "renewed_at must be present, positive, and fit int64 epoch milliseconds")
 	}
-	return leaseRow{
+	expiresAt, expiresAtPresent, err := optionalInt64Attr(item, attrExpiresAt)
+	if err != nil || !expiresAtPresent {
+		return leaseRow{}, corruptLeaseRow(leaseID, "expires_at must be present, non-negative, and fit int64 epoch milliseconds")
+	}
+	row := leaseRow{
 		leaseID: leaseID, present: true,
-		owner: owner, ownerPresent: ownerPresent,
-		version: version, versionPresent: versionPresent,
-		expiresAt: expiresAt, expiresAtPresent: expiresAtPresent,
-		renewedAt: renewedAt, renewedAtPresent: renewedAtPresent,
-		observation: observation,
-	}, nil
+		owner: owner, ownerPresent: true,
+		version: version, versionPresent: true,
+		expiresAt: expiresAt, expiresAtPresent: true,
+		renewedAt: renewedAt, renewedAtPresent: true,
+	}
+	if owner == "" {
+		if expiresAt != 0 {
+			return leaseRow{}, corruptLeaseRow(leaseID, "empty owner is valid only for an explicitly released row with expires_at zero")
+		}
+	} else {
+		if expiresAt <= renewedAt {
+			return leaseRow{}, corruptLeaseRow(leaseID, "active lease expires_at must be greater than renewed_at")
+		}
+		if _, durationErr := requiredObservationDuration(row); durationErr != nil {
+			return leaseRow{}, corruptLeaseRow(leaseID, "active lease duration is negative or overflows time.Duration")
+		}
+	}
+	observation, err := decodeObservationEvidence(item)
+	if err != nil {
+		return leaseRow{}, corruptLeaseRow(leaseID, "observation evidence is partial, negative, or overflows")
+	}
+	row.observation = observation
+	row.endpoints = unmarshalEndpoints(item)
+	return row, nil
+}
+
+func corruptLeaseRow(leaseID, detail string) error {
+	return shared.ErrInvalidConfig.
+		WithMessage("dynamodblease: corrupt lease row: "+detail).
+		With("leaseID", leaseID)
 }
 
 func (s *Store) observationFor(leaseID string) (leaseObservation, bool) {
@@ -601,44 +641,23 @@ func (s *Store) Release(ctx context.Context, leaseID string, token persistence.L
 	return nil
 }
 
-// Current reads the lease state with a strongly consistent read.
+// Current reads and validates the lease state with a strongly consistent read.
 func (s *Store) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
-	pk := leaseKey(leaseID)
-
-	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
-		},
-		ConsistentRead: aws.Bool(true),
-	})
+	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return persistence.LeaseInfo{}, err
+		}
 		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
 	}
-	owner := strAttr(result.Item, attrOwner)
-	if len(result.Item) == 0 || owner == "" {
+	if !row.present || row.owner == "" {
 		return persistence.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
-
-	// Surface a corrupt (present-but-unparseable) fencing version instead of
-	// silently coercing it to 0 — see optionalNumAttr / getRow.
-	version, err := optionalNumAttr(result.Item, attrVersion)
-	if err != nil {
-		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
-	}
-	expiresAtMillis, err := optionalNumAttr(result.Item, attrExpiresAt)
-	if err != nil {
-		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
-	}
-
 	return persistence.LeaseInfo{
-		LeaseID:   leaseID,
-		Owner:     owner,
-		Version:   version,
-		ExpiresAt: time.UnixMilli(int64(expiresAtMillis)),
-		Endpoints: unmarshalEndpoints(result.Item),
+		LeaseID: leaseID, Owner: row.owner, Version: row.version,
+		ExpiresAt: time.UnixMilli(row.expiresAt), Endpoints: row.endpoints,
 	}, nil
 }
 
@@ -714,22 +733,17 @@ func (s *Store) warnIfTTLEnabled(ctx context.Context) {
 // classifyConditionFailure distinguishes between "item not found" and
 // "item exists but token doesn't match" after a ConditionalCheckFailedException.
 func (s *Store) classifyConditionFailure(ctx context.Context, leaseID string) error {
-	pk := leaseKey(leaseID)
-	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
-		},
-		ConsistentRead: aws.Bool(true),
-	})
+	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return err
+		}
 		return shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch (follow-up read failed)").
 			With("leaseID", leaseID).
 			Wrap(err)
 	}
-	// Treat missing items and released items (empty owner) as not found.
-	if len(result.Item) == 0 || strAttr(result.Item, attrOwner) == "" {
+	if !row.present || row.owner == "" {
 		return shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
@@ -801,8 +815,11 @@ func optionalInt64Attr(attrs map[string]ddbtypes.AttributeValue, key string) (in
 		return 0, true, fmt.Errorf("attribute %q is not a number", key)
 	}
 	parsed, err := strconv.ParseInt(number.Value, 10, 64)
-	if err != nil || parsed < 0 {
+	if err != nil {
 		return 0, true, fmt.Errorf("dynamodblease: parse non-negative number attribute %q: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, true, fmt.Errorf("dynamodblease: number attribute %q must be non-negative", key)
 	}
 	return parsed, true, nil
 }

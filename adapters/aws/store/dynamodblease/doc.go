@@ -17,6 +17,27 @@
 //
 //	Primary key : PK (S, HASH)   — no range key, no GSIs
 //
+// # Persisted row compatibility and migration
+//
+// Every existing lease item must carry the complete base tuple: exact PK,
+// string owner, positive incrementable uint64 version, positive renewed_at epoch milliseconds,
+// and non-negative expires_at epoch milliseconds. An active row has a non-empty
+// owner and expires_at > renewed_at. An explicitly released row has an empty
+// owner and expires_at == 0; renewed_at and the positive fencing version remain.
+// Any other shape is corrupt and every read/acquire fails closed with
+// shared.ErrInvalidConfig. The store never treats missing fields as release and
+// never recreates an existing fencing counter at version 1.
+//
+// The only supported legacy omission is the complete set of takeover-observation
+// attributes. If fingerprint, elapsed duration, and generation are all absent,
+// observation starts at zero. Partial, negative, or overflowing evidence is
+// corrupt. Deployments upgrading from rows that predate renewed_at must migrate
+// those rows offline before starting this version: quiesce all lease users,
+// preserve each positive version, write a valid renewed_at/expires_at pair (or
+// the explicit released shape), verify the rows, then restart. Automatic healing
+// is intentionally forbidden because it cannot distinguish a dead owner from a
+// live foreign writer safely.
+//
 // # TTL invariant: DynamoDB TTL MUST be DISABLED on the lease table
 //
 // Lease rows ARE the fencing counter of record. If DynamoDB TTL is enabled on

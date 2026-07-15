@@ -322,27 +322,7 @@ func TestAcquire_LivenessTupleAndLegacyMutationsResetEvidence(t *testing.T) {
 			}
 		})
 	}
-	t.Run("legacy-expiry", func(t *testing.T) {
-		const ttl = 20 * time.Second
-		base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-		client := seededObservationClient(base, ttl, true)
-		clk := clocktest.NewAt(base)
-		store := &Store{client: client, tableName: "leases", clk: clk}
-		_, _ = store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
-		clk.Advance(10 * time.Second)
-		_, _ = store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
-		client.mu.Lock()
-		client.item[attrExpiresAt] = &ddbtypes.AttributeValueMemberN{Value: millisStr(base.Add(2 * ttl))}
-		client.mu.Unlock()
-		clk.Advance(10 * time.Second)
-		_, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
-		if !errors.Is(err, shared.ErrAlreadyExists) {
-			t.Fatalf("legacy takeover: %v", err)
-		}
-		if got := persistedObservationElapsed(t, client); got != 0 {
-			t.Fatalf("legacy retained=%s", got)
-		}
-	})
+
 }
 
 func TestAcquire_ReadWriteFailureAndClockRegressionRestart(t *testing.T) {

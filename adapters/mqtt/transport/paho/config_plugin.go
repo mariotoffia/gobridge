@@ -65,24 +65,12 @@ func (c Config) FreezePluginConfig() ports.PluginConfig {
 	return &frozen
 }
 
-// TransportFailoverTiming exposes the effective initial broker-connect and
-// reconcile bounds used by declared failure-detection to ServiceLevelFull SLOs.
+// TransportFailoverTiming reuses the complete post-acquire activation phase
+// calculator. It includes initial connect, managed cleanup and replay,
+// recycle/reconnect, final subscription convergence, and grace windows once.
 func (c Config) TransportFailoverTiming(mode connectivity.SessionMode) ports.TransportFailoverTiming {
-	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
-		return ports.TransportFailoverTiming{}
-	}
-	connectTimeout := c.Session.ConnectTimeout
-	if connectTimeout <= 0 {
-		connectTimeout = DefaultConnectTimeout
-	}
-	reconcileTimeout := c.Session.ReconcileTimeout
-	if reconcileTimeout <= 0 {
-		reconcileTimeout = DefaultReconcileTimeout
-	}
-	return ports.TransportFailoverTiming{
-		BrokerConnectTimeout: connectTimeout,
-		ReconcileTimeout:     reconcileTimeout,
-	}
+	activation := c.PostAcquireActivationTiming(mode)
+	return ports.TransportFailoverTiming{PostTakeoverActivation: activation.WorstCaseDuration}
 }
 
 // PostAcquireActivationTiming exposes one conservative hard bound for every

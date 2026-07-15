@@ -40,11 +40,13 @@ may need a process restart to complete takeover.
 
    ```text
    lease_ttl + ceil(1.25 * acquire_poll_interval) + renew_call_timeout
-   + broker connect timeout + reconcile timeout + startup_allowance
+   + complete post-takeover transport activation + startup_allowance
    <= failover_slo
    ```
 
-   The endpoint is failure detection to the successor reporting
+   The transport activation term already contains connect, cleanup/replay,
+   recycle/reconnect, grace windows, and final reconciliation; do not add those
+   nested phases again. The endpoint is failure detection to the successor reporting
    `ServiceLevelFull`. Configuration validation is necessary but not sufficient:
    compare the incident with measured warm and cold p50, p95, p99, maximum, and
    sample count from the same deployment profile. Alert on the measured
@@ -79,6 +81,11 @@ may need a process restart to complete takeover.
 - **Leadership bouncing (`LeaseTransfers` climbing repeatedly):** this is
   flapping, not a clean failover — see
   [Lease flapping / split-brain](lease-flapping-split-brain.md).
+- **`corrupt lease row` / `INVALID_CONFIG`:** stop the rollout and quiesce all
+  lease users. Preserve the positive fencing version and repair the complete
+  base tuple offline. Rows may omit all observation fields together, but may not
+  omit `owner`, `version`, `renewed_at`, or `expires_at`; never delete/recreate a
+  row because that resets fencing to version 1.
 
 ### Decision: restart vs. scale
 

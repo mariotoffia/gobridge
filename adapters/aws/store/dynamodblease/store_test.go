@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
@@ -18,6 +19,7 @@ import (
 var _ ports.LeaseStore = (*dynamodblease.Store)(nil)
 
 func TestMain(m *testing.M) {
+	ddblocal.Configure(ddblocal.WithCleanOrphans(true))
 	code := m.Run()
 	ddblocal.Shutdown()
 	os.Exit(code)
@@ -43,7 +45,8 @@ func TestConformanceSuite(t *testing.T) {
 func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	client := ddblocal.Client(t)
 	tableName := ddblocal.UniqueTable("leases-errmap")
-	store := dynamodblease.NewStore(client, dynamodblease.WithTableName(tableName))
+	fakeClock := clocktest.NewAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := dynamodblease.NewStore(client, dynamodblease.WithTableName(tableName), dynamodblease.WithClock(fakeClock))
 	ctx := context.Background()
 
 	if err := store.EnsureTable(ctx); err != nil {
@@ -102,7 +105,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 			t.Fatal("takeover before the observation window elapsed must be rejected")
 		}
 
-		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — emulator observation window keys on wall-clock renewed_at (M5)
+		fakeClock.Advance(2 * time.Second)
 
 		tok2, err := store.Acquire(ctx, "em-exp", "bridge-2", 30*time.Second, nil)
 		if err != nil {
@@ -135,7 +138,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 		// Owner renews: renewed_at advances (version stays the same). The short
 		// pause guarantees the renewed_at epoch-millis differs from the value the
 		// taker recorded at baseline, so the tuple change is observable.
-		time.Sleep(50 * time.Millisecond) // OTHER: real elapsed time — renewed_at epoch-millis must differ from baseline
+		fakeClock.Advance(50 * time.Millisecond)
 		if _, err := store.Renew(ctx, "em-obs", tokA, 1*time.Second, nil); err != nil {
 			t.Fatalf("owner-A renew: %v", err)
 		}
@@ -144,7 +147,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 		// ExpiredTakeoverIncrementsVersion) the taker would now seize; here the
 		// advanced renewed_at changes the tuple and resets the window, so the
 		// taker must NOT seize the still-recently-renewed lease.
-		time.Sleep(2 * time.Second) // OTHER: real elapsed time required — full TTL must pass to prove the window reset
+		fakeClock.Advance(2 * time.Second)
 
 		if _, err := store.Acquire(ctx, "em-obs", "bridge-B", 30*time.Second, nil); err == nil {
 			t.Fatal("takeover must be aborted after the owner renewed within the window")
