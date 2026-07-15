@@ -34,24 +34,27 @@ may need a process restart to complete takeover.
    ([monitoring.md#key-metrics](../aws-deployment/monitoring.md#key-metrics)):
    `LeaseTransfers` and `LeaseExpiries` should have advanced once, then settle.
 
-3. Apply the expected failover timeline for your lease preset
-   (`runtime/session/config.go`):
-   - **Default:** `LeaseTTL = 360s`. Worst-case takeover is bounded by roughly
-     the TTL plus the new owner's acquire — expect up to ~6 minutes.
-   - **HA preset (`HAConfig`):** `LeaseTTL = 45s`. Worst-case takeover is roughly
-     the TTL plus acquire — expect ~45–60s.
+3. Use the declared and measured failure-to-Full objective. A lease preset alone
+   is not a failover SLO. When `routes[].session.failover_slo` is set, startup
+   validates this conservative budget before stores or transports are opened:
 
-   **A clustered deployment already defaults to the HA preset** — you do not have
-   to opt in. When the deployment is clustered (`bridge.cluster.endpoints` set)
-   and the route session leaves **both** `lease_ttl` and `renew_interval` unset,
-   the bridge auto-selects `HAConfig` (45s TTL) instead of the 360s baseline
-   (`bridge/convert.go`), so clustered failover lands in the ~45–60s band by
-   default. Setting **either** value pins the timing explicitly and keeps the
-   360s-baseline `DefaultConfig` plus your overrides. So if you see ~45–60s
-   takeover on a cluster you did not hand-tune, that is expected — do **not**
-   re-tune toward the 6-minute default.
-   If more time than that has passed with no `LeaseTransfers` advance and
-   `LeaseAcquireFailures` is rising, takeover is stuck — go to Action.
+   ```text
+   lease_ttl + ceil(1.25 * acquire_poll_interval) + renew_call_timeout
+   + broker connect timeout + reconcile timeout + startup_allowance
+   <= failover_slo
+   ```
+
+   The endpoint is failure detection to the successor reporting
+   `ServiceLevelFull`. Configuration validation is necessary but not sufficient:
+   compare the incident with measured warm and cold p50, p95, p99, maximum, and
+   sample count from the same deployment profile. Alert on the measured
+   failure-detection-to-Full interval. `LeaseTransfers` confirms ownership moved;
+   it does not prove that the successor was fully serving.
+
+   DynamoDB persists confirmed unchanged-tuple observation evidence on the lease
+   row, so a replacement process can inherit elapsed confirmation without using
+   cross-host wall-clock subtraction. A cold process still pays its real startup
+   delay and starts observation at zero when no prior observer confirmed time.
 
 4. Distinguish a clean takeover from a stuck single-active session. The MQTT
    (Paho) session is **single-use**: once closed it cannot be re-`Start`ed, so
@@ -81,8 +84,11 @@ may need a process restart to complete takeover.
 
 - Restart the affected process when the runtime is terminal or the single-active
   session cannot re-establish in place.
-- Scale out only if the surviving instance is healthy but saturated; adding a
-  standby does not speed up a takeover already bounded by `LeaseTTL`.
+- Scale out when no healthy standby remains or the survivor is saturated. A
+  declared objective at or below 60 seconds requires a healthy continuously
+  polling warm standby. The current blueprint cannot verify replica count or
+  peer health; `PROD_READY_ISSUES_PLAN.md` Task 11 owns enforcement in the AWS
+  deployment model.
 
 ## Related runbooks
 

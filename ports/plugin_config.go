@@ -82,6 +82,19 @@ type PostAcquireActivationTimingConfig interface {
 	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
 }
 
+// TransportFailoverTiming reports conservative effective durations used by a
+// replacement owner between lease acquisition and ServiceLevelFull readiness.
+type TransportFailoverTiming struct {
+	BrokerConnectTimeout time.Duration
+	ReconcileTimeout     time.Duration
+}
+
+// TransportFailoverTimingConfig is an OPTIONAL generic typed-config capability.
+// A declared failover SLO requires both durations to be known and positive.
+type TransportFailoverTimingConfig interface {
+	TransportFailoverTiming(mode connectivity.SessionMode) TransportFailoverTiming
+}
+
 // FreezableConfig is an OPTIONAL adapter-owned capability for typed plugin
 // configs that need an isolated snapshot across asynchronous validation/build
 // boundaries. FreezePluginConfig must return a deep-owned copy of every mutable
@@ -89,7 +102,7 @@ type PostAcquireActivationTimingConfig interface {
 // runtime dependencies that must retain identity (for example a client handle,
 // clock, mutex-bearing state, or process-stable suffix resolver). The result must
 // be non-nil, retain the source Kind and this freeze capability, and preserve
-// any durable-identity, post-acquire timing, and credential capabilities
+// any durable-identity, post-acquire timing, failover timing, and credential capabilities
 // exposed by the source.
 type FreezableConfig interface {
 	FreezePluginConfig() PluginConfig

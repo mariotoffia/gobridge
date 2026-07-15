@@ -95,17 +95,14 @@ until a portable lease store (e.g. Postgres or Redis) is added. Single-node
 exclusive sessions have no such coupling. See
 [store configuration](../configuration-reference.md#stores----backing-store-configuration).
 
-**Failover timing.** When the lease holder dies, a standby reclaims the
-partition only after the lease TTL lapses, so the failover window is
-approximately `lease_ttl`. Production validation rejects an effective
-`lease_ttl` below 5s uniformly, before selecting or opening a lease-store
-backend. A clustered exclusive route that does **not** pin
-`lease_ttl`/`renew_interval` automatically starts from the 45s HA profile, which
-lands in the documented 30–60s band; pinning a looser `lease_ttl` (>60s) makes
-failover proportionally slower and emits a startup WARN so the trade-off is
-deliberate. See
-[Scenario 8 — High-Availability Profile](../scenarios/08-clustered-exclusive-sessions.md#high-availability-profile)
-for the failover math and the invariants.
+**Failover timing.** A clustered exclusive route that leaves lease timing
+unset uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO.
+Declare `routes[].session.failover_slo` to validate lease TTL, jittered acquire
+polling, renew-call timeout, effective Paho connect and reconcile timeouts, and
+startup allowance before resources are opened. Validation is necessary but warm
+and cold failure-detection-to-`ServiceLevelFull` measurements are required before
+publishing any latency claim. See
+[Scenario 8 — Failover SLO Validation](../scenarios/08-clustered-exclusive-sessions.md#failover-slo-validation).
 
 **Restart policy is a deployment requirement.** The Paho session is
 single-use: once `Close` runs (on lease loss / step-down) it does not reconnect

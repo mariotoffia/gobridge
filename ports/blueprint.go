@@ -365,6 +365,14 @@ type RouteSessionDef struct {
 	// means the session manager derives it from RenewInterval.
 	RenewCallTimeout string `yaml:"renew_call_timeout,omitempty" json:"renew_call_timeout,omitempty"`
 
+	// FailoverSLO is an optional failure-detection to ServiceLevelFull objective.
+	// It is a duration string; empty means no SLO is declared.
+	FailoverSLO string `yaml:"failover_slo,omitempty" json:"failover_slo,omitempty"`
+
+	// StartupAllowance is explicit bounded time reserved for process-side work
+	// outside lease, broker-connect, and reconcile calls. Empty means zero.
+	StartupAllowance string `yaml:"startup_allowance,omitempty" json:"startup_allowance,omitempty"`
+
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`
 	DrainMaxBatchSize   int               `yaml:"drain_max_batch_size,omitempty" json:"drain_max_batch_size,omitempty"`

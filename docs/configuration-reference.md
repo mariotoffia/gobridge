@@ -367,6 +367,7 @@ ID reference graph, delivery hooks, programmatic builder/lifecycle notes, and
 the validation-rules summary -- is documented in
 [Routes, Runtime & Validation Reference](routes-and-runtime-reference.md). That
 reference also covers the per-route lease-timing knobs under `routes[].session`,
-including `renew_call_timeout` and `acquire_poll_interval` and their role in the
-failover-latency budget.
+including `renew_call_timeout`, `acquire_poll_interval`, `failover_slo`, and
+`startup_allowance`. A declared SLO is validated from failure detection through
+`ServiceLevelFull`; measured warm and cold evidence is still required.
 

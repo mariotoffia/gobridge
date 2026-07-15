@@ -21,6 +21,8 @@ var (
 	_ ports.ReplicaIdentityConfig             = (*Config)(nil)
 	_ ports.PostAcquireActivationTimingConfig = Config{}
 	_ ports.PostAcquireActivationTimingConfig = (*Config)(nil)
+	_ ports.TransportFailoverTimingConfig     = Config{}
+	_ ports.TransportFailoverTimingConfig     = (*Config)(nil)
 	_ ports.IngressMemoryConfig               = Config{}
 	_ ports.IngressMemoryConfig               = (*Config)(nil)
 	_ ports.IngressMemoryProfileConfig        = (*Config)(nil)
@@ -61,6 +63,26 @@ func (c Config) FreezePluginConfig() ports.PluginConfig {
 		frozen.Session.Will = &willCopy
 	}
 	return &frozen
+}
+
+// TransportFailoverTiming exposes the effective initial broker-connect and
+// reconcile bounds used by declared failure-detection to ServiceLevelFull SLOs.
+func (c Config) TransportFailoverTiming(mode connectivity.SessionMode) ports.TransportFailoverTiming {
+	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
+		return ports.TransportFailoverTiming{}
+	}
+	connectTimeout := c.Session.ConnectTimeout
+	if connectTimeout <= 0 {
+		connectTimeout = DefaultConnectTimeout
+	}
+	reconcileTimeout := c.Session.ReconcileTimeout
+	if reconcileTimeout <= 0 {
+		reconcileTimeout = DefaultReconcileTimeout
+	}
+	return ports.TransportFailoverTiming{
+		BrokerConnectTimeout: connectTimeout,
+		ReconcileTimeout:     reconcileTimeout,
+	}
 }
 
 // PostAcquireActivationTiming exposes one conservative hard bound for every

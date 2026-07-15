@@ -194,6 +194,9 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if err := b.validatePostAcquireActivationTimings(); err != nil {
 		return nil, err
 	}
+	if err := b.validateFailoverBudgets(); err != nil {
+		return nil, err
+	}
 	// Cardinality is a pure capability-based preflight. It must run before
 	// buildStores or complete creates any store, session, receiver, sender, or
 	// runtime resource: a rejected topology must leave the live system untouched.

@@ -607,7 +607,7 @@ fix(mqtt): enforce byte-based ingress budgets
 
 ## Task 9: Make lease takeover inherit verified observation
 
-**Status:** Pending
+**Status:** Completed
 
 **Agents/Skills:** thiink:architect-aws-serverless, thiink:golang-pro,
 thiink:resilience-auditor, thiink:test-reviewer
@@ -629,20 +629,20 @@ thiink:resilience-auditor, thiink:test-reviewer
 - Modify: `docs/scenarios/08-clustered-exclusive-sessions.md`
 - Modify: `docs/runbooks/node-down-failover.md`
 
-- [ ] **Step 1: Write persisted-observation tests**
+- [x] **Step 1: Write persisted-observation tests**
 
 Use two stores and fake clocks. Prove replacement inherits elapsed confirmation,
 competing observers cannot double-count, renewal/release/takeover clear evidence,
 CAS loss restarts local timing, legacy expiry changes reset evidence, and clock
 skew cannot cause early takeover.
 
-- [ ] **Step 2: Persist observation on the lease row**
+- [x] **Step 2: Persist observation on the lease row**
 
 Condition every update on the exact owner/version/renewed/expires tuple and
 observation value. Add only locally measured monotonic elapsed time. Never
 enable DynamoDB TTL on the lease table.
 
-- [ ] **Step 3: Add failover-budget validation**
+- [x] **Step 3: Add failover-budget validation**
 
 For declared SLOs, reject:
 
@@ -659,13 +659,13 @@ lease TTL
 Use an optional transport timing capability. Do not advertise a 60-second
 preset until measurements prove it.
 
-- [ ] **Step 4: Measure the actual holder**
+- [x] **Step 4: Measure the actual holder**
 
 Update UC3 to query the lease, stop the verified owner, require owner/version
 change and successor `ServiceLevelFull`, and report warm/cold p50, p95, p99,
 and maximum separately.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 ```bash
 (cd adapters/aws/store/dynamodblease && go test -race -count=1 ./...)
@@ -674,7 +674,7 @@ go test -race -count=1 -tags=longrunning ./tests/longrunning \
   -run TestUC3ClusterFailover
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 fix(ha): persist takeover observation evidence

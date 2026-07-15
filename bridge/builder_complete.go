@@ -236,8 +236,8 @@ func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string
 		return sc, nil
 	}
 	// No inline session block: this binding-only exclusive sender inherits the
-	// same clustered HA-timing default as the rest of the deployment (HIGH-3),
-	// so a clustered failover for it also lands in the 30-60s band. Non-clustered
+	// same clustered lease-timing default as the rest of the deployment. This is
+	// a renewal-cadence choice, not an end-to-end failover SLO. Non-clustered
 	// keeps DefaultConfig with RenewInterval reset so the manager derives it.
 	if clustered {
 		sc := session.HAConfig(sessionID, true)
@@ -261,10 +261,6 @@ func (b *Builder) wireRoutes(
 	}
 
 	registeredSessions := make(map[string]bool)
-	// slowFailoverWarned dedupes the F-1 advisory per session so a session
-	// shared by several routes is flagged at most once.
-	slowFailoverWarned := make(map[string]bool)
-
 	for _, routeDef := range b.cfg.Routes {
 		recv, ok := receivers[routeDef.ReceiverID]
 		if !ok {
@@ -287,7 +283,6 @@ func (b *Builder) wireRoutes(
 			}
 		}
 		applyBridgeDrainDefaults(sessCfg, b.cfg.Bridge)
-		b.warnSlowClusterFailover(routeDef, sessCfg, slowFailoverWarned)
 
 		// Assemble the session's desired topology from the blueprint so the
 		// session manager reconciles a non-empty plan. sessionPlanFor is the
@@ -549,51 +544,6 @@ func (b *Builder) wireRoutes(
 	}
 
 	return nil
-}
-
-// failoverBandMaxTTL is the upper bound of the documented clustered-failover
-// band (30-60s). A clustered exclusive session whose lease TTL exceeds it will
-// not have a dead owner's partition reclaimed by a peer for that whole TTL, so
-// it misses the stated failover requirement (F-1).
-const failoverBandMaxTTL = 60 * time.Second
-
-// warnSlowClusterFailover emits the F-1 advisory once per session when a
-// CLUSTERED deployment runs an exclusive (lease-bearing) session whose effective
-// lease TTL is slower than the documented 30-60s failover band.
-//
-// Clustered sessions that do not pin lease timing already default to the 45s HA
-// profile (toSessionConfigE), which is in band and does NOT warn. This fires
-// only when the operator EXPLICITLY pinned a loose lease_ttl on a cluster,
-// making a slow failover a deliberate, visible choice rather than a silent
-// surprise. It is scoped to clustered deployments because failover — a peer
-// reclaiming a dead owner's partition — is only meaningful with a peer; a
-// single-node deployment has none, so a loose TTL there is not warned.
-func (b *Builder) warnSlowClusterFailover(
-	routeDef ports.RouteDef,
-	sessCfg *session.Config,
-	warned map[string]bool,
-) {
-	// sessCfg is non-nil only for a RouteSessionDef source, which is always an
-	// exclusive single-owner lease session — so a non-nil sessCfg already
-	// implies "exclusive".
-	if b.logger == nil || sessCfg == nil || routeDef.Session == nil {
-		return
-	}
-	if !deploymentClustered(b.cfg) || sessCfg.LeaseTTL <= failoverBandMaxTTL {
-		return
-	}
-	sid := routeDef.Session.SessionID
-	if warned[sid] {
-		return
-	}
-	warned[sid] = true
-	b.logger.Warn("bridge: clustered exclusive session has a lease TTL slower than the documented "+
-		"30-60s failover band — if the owning node dies, its partition is not reclaimed by a peer for "+
-		"the whole TTL; pin a lease_ttl within the band or omit lease timing to use the 45s HA default",
-		"session", sid,
-		"lease_ttl", sessCfg.LeaseTTL,
-		"failover_band_max", failoverBandMaxTTL,
-	)
 }
 
 // egressDurabilityAdvisory reports whether a route wiring warrants an

@@ -15,6 +15,10 @@ import (
 // available to deterministic tests that intentionally use compressed time.
 const MinimumProductionLeaseTTL = 5 * time.Second
 
+// MaxStartupAllowance bounds the explicit process-start contribution to a
+// declared failover SLO. Larger values indicate an unbounded deployment path.
+const MaxStartupAllowance = 10 * time.Minute
+
 // Config configures session management for exclusive sessions.
 type Config struct {
 	SessionID string
@@ -86,6 +90,14 @@ type Config struct {
 	// locally safe lease window.
 	PostAcquireActivationTimeout time.Duration
 
+	// FailoverSLO is the optional failure-detection to ServiceLevelFull objective.
+	// Zero means no objective is declared.
+	FailoverSLO time.Duration
+
+	// StartupAllowance reserves explicit bounded process startup work not already
+	// represented by lease, broker-connect, or reconcile durations.
+	StartupAllowance time.Duration
+
 	// ConnectAfterLease defers session.Start until the lease is acquired.
 	// This avoids connecting to a broker (e.g. MQTT with an exclusive
 	// ClientID) before ownership is confirmed, which would disconnect
@@ -118,17 +130,16 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 	}
 }
 
-// HAConfig returns a Config tuned for high-availability clusters that need a
-// worst-case failover of roughly 45s instead of DefaultConfig's ~360s. It
-// starts from DefaultConfig and tightens only the lease-timing knobs, keeping
-// the same drain strategy and batch sizes.
+// HAConfig returns a Config with a lower-latency lease renewal cadence for
+// high-availability clusters. It starts from DefaultConfig and tightens only
+// lease-timing knobs. It is not an end-to-end failover SLO: broker activation,
+// reconciliation, startup, and acquisition polling require separate validation.
 //
 // Timing: LeaseTTL=45s, RenewInterval=10s, MaxRenewFails=3, RenewJitter=1s,
 // RenewCallTimeout=3s, StepDownGrace=5s. Those values encode these invariants:
 //
-//   - Worst-case failover is approximately LeaseTTL (~45s) plus the new
-//     owner's acquire+connect time. A standby cannot acquire the Lease until
-//     the dead owner's TTL lapses.
+//   - Takeover requires a full TTL of persisted unchanged-tuple evidence. A
+//     replacement observer inherits already-confirmed evidence from the lease row.
 //   - StepDownGrace < LeaseTTL (5s vs 45s): the only step-down trigger is
 //     involuntary — MaxRenewFails consecutive renew failures, detected at
 //     roughly LeaseTTL — after which the owner stops claiming and drains
@@ -165,9 +176,8 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 // path). StepDownGrace + 15s (~20s) is just a convenient value that clears
 // that drain ceiling.
 //
-// The 45s LeaseTTL is a defensible midpoint of the 30-60s HA band; choose a
-// value in that band to trade failover speed against renew-write rate and
-// blip tolerance.
+// The 45s LeaseTTL trades renewal-write rate against lease-loss detection.
+// Declare and validate an end-to-end FailoverSLO before making latency claims.
 func HAConfig(sessionID string, exclusive bool) Config {
 	cfg := DefaultConfig(sessionID, exclusive)
 	cfg.LeaseTTL = 45 * time.Second
@@ -277,8 +287,8 @@ func deriveRenewCallTimeout(renewInterval time.Duration) time.Duration {
 // returns, so the real spacing between consecutive attempts is
 // interval + jitter/2 + call-duration, and a hung backend burns the full
 // RenewCallTimeout on every attempt. Omitting RenewCallTimeout under-counts the
-// span by MaxRenewFails × RenewCallTimeout, which in the recommended 30–60s HA
-// band pushed real detection PAST the lease TTL (finding H2/A9-J5). Keeping this
+// span by MaxRenewFails × RenewCallTimeout, which in short-TTL profiles can
+// push real detection PAST the lease TTL (finding H2/A9-J5). Keeping this
 // strictly below LeaseTTL guarantees the owner detects loss and steps down
 // before its OWN lease would expire, so it stops sending before a new owner
 // takes over (A8-R1 / A9-J5).
@@ -379,6 +389,41 @@ func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Durat
 	return ttl - teardownMargin, teardownMargin
 }
 
+// EffectiveFailoverLeaseTiming resolves the three lease-side inputs used by
+// failover-budget preflight exactly as Manager construction resolves them.
+func (c Config) EffectiveFailoverLeaseTiming() (ttl, acquirePoll, renewCallTimeout time.Duration) {
+	defaults := DefaultConfig(c.SessionID, c.Exclusive)
+	ttl = c.EffectiveLeaseTTL()
+	maxFails := c.MaxRenewFails
+	if maxFails <= 0 {
+		maxFails = defaults.MaxRenewFails
+	}
+	renewInterval := c.RenewInterval
+	renewDerived := renewInterval <= 0
+	if renewDerived {
+		renewInterval = deriveRenewInterval(ttl, maxFails)
+	}
+	renewJitter := c.RenewJitter
+	if renewJitter < 0 {
+		renewJitter = 0
+	}
+	if renewJitter == 0 && renewDerived {
+		renewJitter = deriveRenewJitter(renewInterval)
+	}
+	renewCallTimeout = c.RenewCallTimeout
+	if renewCallTimeout <= 0 {
+		renewCallTimeout = deriveRenewCallTimeout(renewInterval)
+	}
+	renewInterval, _, renewCallTimeout, _ = clampRenewTimings(
+		ttl, renewInterval, renewJitter, renewCallTimeout, maxFails,
+	)
+	acquirePoll = c.AcquirePollInterval
+	if acquirePoll <= 0 {
+		acquirePoll = deriveAcquirePollInterval(renewInterval, ttl)
+	}
+	return ttl, acquirePoll, renewCallTimeout
+}
+
 // Validate reports whether the lease timings are internally consistent. It is
 // intended for callers (e.g. the composition root) that want to fail fast on a
 // misconfigured session rather than rely on the manager's defensive clamp.
@@ -391,8 +436,14 @@ func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Durat
 func (c Config) Validate() error {
 	if c.LeaseTTL < 0 || c.RenewInterval < 0 || c.RenewJitter < 0 ||
 		c.StepDownGrace < 0 || c.AcquirePollInterval < 0 || c.RenewCallTimeout < 0 ||
-		c.PostAcquireActivationTimeout < 0 {
+		c.PostAcquireActivationTimeout < 0 || c.FailoverSLO < 0 || c.StartupAllowance < 0 {
 		return fmt.Errorf("session %q: lease timings must be non-negative", c.SessionID)
+	}
+	if c.StartupAllowance > MaxStartupAllowance {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"session %q: StartupAllowance=%s exceeds maximum=%s",
+			c.SessionID, c.StartupAllowance, MaxStartupAllowance,
+		))
 	}
 	if c.MaxRenewFails < 0 {
 		return fmt.Errorf("session %q: MaxRenewFails must be non-negative", c.SessionID)

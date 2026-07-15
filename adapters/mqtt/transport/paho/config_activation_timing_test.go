@@ -47,3 +47,15 @@ func TestConfigPostAcquireActivationTimingSaturatesDurationOverflow(t *testing.T
 		t.Fatalf("overflowing activation bound = %s, want saturated max duration", got)
 	}
 }
+
+func TestConfigTransportFailoverTimingUsesEffectiveTimeouts(t *testing.T) {
+	defaults := (Config{}).TransportFailoverTiming(connectivity.SessionExclusive)
+	if defaults.BrokerConnectTimeout != DefaultConnectTimeout || defaults.ReconcileTimeout != DefaultReconcileTimeout {
+		t.Fatalf("default failover timing = %+v", defaults)
+	}
+	cfg := Config{Session: SessionOptions{ConnectTimeout: 7 * time.Second, ReconcileTimeout: 11 * time.Second}}
+	got := cfg.TransportFailoverTiming(connectivity.SessionExclusive)
+	if got.BrokerConnectTimeout != 7*time.Second || got.ReconcileTimeout != 11*time.Second {
+		t.Fatalf("configured failover timing = %+v", got)
+	}
+}

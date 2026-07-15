@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,8 @@ type reviveBeforeSeizeClient struct {
 }
 
 func (c *reviveBeforeSeizeClient) UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-	if !c.fired && c.onUpdate != nil {
+	observationWrite := in.UpdateExpression != nil && strings.Contains(*in.UpdateExpression, "#obs_fp = :next_obs_fp")
+	if !observationWrite && !c.fired && c.onUpdate != nil {
 		c.fired = true
 		c.onUpdate()
 	}
@@ -182,28 +184,29 @@ func TestObserveOrSeize_LegacyRowNoExpiresAttr_AttributeNotExistsExpPermitsSeize
 	pk := leaseKey(leaseID)
 	const owner = "crashed-noexp-owner"
 
+	row := leaseRow{leaseID: leaseID, present: true, owner: owner, ownerPresent: true, version: 7, versionPresent: true}
+	tuple := row.tuple()
+	evidence := observationEvidence{present: true, fingerprint: tuple.fingerprint(), generation: 1}
+	row.observation = evidence
 	// Seed a row with owner + version but NEITHER renewed_at NOR expires_at.
 	if _, err := real.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &table,
 		Item: map[string]ddbtypes.AttributeValue{
-			attrPK:      &ddbtypes.AttributeValueMemberS{Value: pk},
-			attrOwner:   &ddbtypes.AttributeValueMemberS{Value: owner},
-			attrVersion: &ddbtypes.AttributeValueMemberN{Value: "7"},
+			attrPK:                     &ddbtypes.AttributeValueMemberS{Value: pk},
+			attrOwner:                  &ddbtypes.AttributeValueMemberS{Value: owner},
+			attrVersion:                &ddbtypes.AttributeValueMemberN{Value: "7"},
+			attrObservationFingerprint: &ddbtypes.AttributeValueMemberS{Value: evidence.fingerprint},
+			attrObservationElapsed:     &ddbtypes.AttributeValueMemberN{Value: "0"},
+			attrObservationGeneration:  &ddbtypes.AttributeValueMemberN{Value: "1"},
 		},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Pre-record an ELAPSED observation of this exact (owner, v7, ren=0, exp=0)
-	// tuple so observeOrSeize proceeds straight to the seize decision.
+	// Pre-record an elapsed local interval for the same persisted evidence.
 	s.recordObservation(leaseID, leaseObservation{
-		owner:     owner,
-		version:   7,
-		renewedAt: 0,
-		expiresAt: 0,
-		firstSeen: fake.Now().Add(-2 * ttl),
+		tuple: tuple, evidence: evidence, observedAt: fake.Now().Add(-2 * ttl),
 	})
-	row := leaseRow{present: true, owner: owner, version: 7, expiresAt: 0, renewedAt: 0}
 
 	tok, err := s.observeOrSeize(ctx, leaseID, "standby-1", ttl, nil, fake.Now(), fake.Now().Add(ttl), row)
 	if err != nil {

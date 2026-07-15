@@ -114,13 +114,13 @@ func TestAcquire_LegacyRowLiveExpiryAdvancing_ResetsWindowNoSeize(t *testing.T) 
 }
 
 // (owner, version) AND on the ABSENCE of renewed_at. An equality fence
-// `#ren = :obs_ren` (with :obs_ren="0") is FALSE against an absent attribute in
+// `#ren = :tuple_renewed` (with :obs_ren="0") is FALSE against an absent attribute in
 // DynamoDB, so it would fail the conditional write forever and the crashed
 // legacy owner would never fail over. This pins the ConditionExpression SHAPE
 // (the seizeClient fake does not evaluate conditions, so shape is what has
 // teeth here; the ddblocal integration test proves the write actually succeeds).
 //
-// Mutation killed: revert the seize condition to `#ren = :obs_ren` (drop the
+// Mutation killed: revert the seize condition to `#ren = :tuple_renewed` (drop the
 // attribute_not_exists branch). The fake still lets the seize "succeed", but the
 // attribute_not_exists(#ren) assertion below FAILs.
 func TestAcquire_LegacyRenewedAtZero_SeizeFencesOnAttributeNotExists(t *testing.T) {
@@ -144,26 +144,26 @@ func TestAcquire_LegacyRenewedAtZero_SeizeFencesOnAttributeNotExists(t *testing.
 		t.Fatalf("legacy takeover must fence on the ABSENCE of renewed_at "+
 			"(attribute_not_exists(#ren)); condition was %q", cond)
 	}
-	if strings.Contains(cond, ":obs_ren") {
+	if strings.Contains(cond, ":tuple_renewed") {
 		t.Fatalf("legacy takeover must NOT use an equality fence against an absent "+
-			"attribute (#ren = :obs_ren is FALSE for absent renewed_at); condition was %q", cond)
+			"attribute (#ren = :tuple_renewed is FALSE for absent renewed_at); condition was %q", cond)
 	}
 	// Still fenced on observed owner AND version so two standbys observing the
 	// same legacy row cannot both seize (only one version fence wins).
-	if !strings.Contains(cond, ":obs_own") || !strings.Contains(cond, ":obs_ver") {
+	if !strings.Contains(cond, ":tuple_owner") || !strings.Contains(cond, ":tuple_version") {
 		t.Fatalf("legacy takeover must still fence on observed (owner, version); condition was %q", cond)
 	}
 	// And on expires_at STABILITY (this legacy row has a present expires_at), so a
 	// dead owner that revives in the getRow→UpdateItem gap by advancing only
 	// expires_at cannot be seized (TOCTOU close).
-	if !strings.Contains(cond, "#exp = :obs_expires") {
+	if !strings.Contains(cond, "#exp = :tuple_expires") {
 		t.Fatalf("legacy takeover must fence on the observed expires_at "+
-			"(#exp = :obs_expires) to close the revive-at-seize TOCTOU; condition was %q", cond)
+			"(#exp = :tuple_expires) to close the revive-at-seize TOCTOU; condition was %q", cond)
 	}
 }
 
 // A MODERN row (renewed_at present & positive) must KEEP the exact-tuple equality
-// fence `#ren = :obs_ren`; the attribute_not_exists branch is legacy-exclusive.
+// fence `#ren = :tuple_renewed`; the attribute_not_exists branch is legacy-exclusive.
 func TestAcquire_ModernRow_SeizeFencesOnRenewedAtEquality(t *testing.T) {
 	ctx := context.Background()
 	ttl := 30 * time.Second
@@ -182,9 +182,9 @@ func TestAcquire_ModernRow_SeizeFencesOnRenewedAtEquality(t *testing.T) {
 	}
 
 	cond := c.lastUpdateExp
-	if !strings.Contains(cond, "#ren = :obs_ren") {
+	if !strings.Contains(cond, "#ren = :tuple_renewed") {
 		t.Fatalf("modern takeover must fence on the exact observed renewed_at "+
-			"(#ren = :obs_ren); condition was %q", cond)
+			"(#ren = :tuple_renewed); condition was %q", cond)
 	}
 	if strings.Contains(cond, "attribute_not_exists(#ren)") {
 		t.Fatalf("modern takeover must NOT use attribute_not_exists (that is legacy-only); condition was %q", cond)
