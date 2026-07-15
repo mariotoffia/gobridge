@@ -162,15 +162,16 @@ adapters/mycloud/transport/myqueue/
    - `CapDelayedSend` -- supports delayed delivery
    - `CapSharedConsumer` -- broker load-balances one subscription across a consumer group (e.g. MQTT `$share`)
    - `CapExclusiveIdentity` -- session owns a unique client identity (lease-based single holder); **must be single-use** -- see the lifecycle note below
-   - `CapDedicatedIngressSession` -- the session is one ingress dispatch/settlement failure domain and permits at most one logical receiver; senders may still share it
+   - `CapDedicatedIngressSession` -- the session is one ingress dispatch/settlement failure domain and permits at most one logical receiver consumed by at most one route runner; senders may still share it
 
 **Dedicated-ingress sessions fail during preflight.** When a factory declares
 `CapDedicatedIngressSession`, `bridge.Builder.Plan` counts receivers by session
-and rejects a second logical receiver before opening stores, sessions, receivers,
-senders, or runtime resources. This validation is capability-based: it does not
-switch on a transport name, and registering the same adapter under aliases does
-not change the session cardinality. Stateful adapters should also enforce the
-contract defensively in `NewReceiver` with a concurrency-safe reservation stored
+and route-runner consumers by receiver. It rejects either a second logical
+receiver or reuse of the sole receiver by multiple routes before opening stores,
+sessions, receivers, senders, or runtime resources. This validation is
+capability-based: it does not switch on a transport name, and registering the
+same adapter under aliases does not change the session cardinality. Stateful
+adapters should also enforce the contract defensively in `NewReceiver` with a concurrency-safe reservation stored
 on the `Session`, not on the `Factory`; a factory-local reservation can be
 bypassed by aliases or multiple factory values. Do not count `Sender`s in that
 reservation.

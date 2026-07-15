@@ -613,6 +613,11 @@ func (b *Builder) validateDedicatedIngressSessions() error {
 			receiversBySession[receiver.SessionID] = append(receiversBySession[receiver.SessionID], receiver.ID)
 		}
 	}
+	routesByReceiver := make(map[string][]string, len(b.cfg.Receivers))
+	for i := range b.cfg.Routes {
+		route := &b.cfg.Routes[i]
+		routesByReceiver[route.ReceiverID] = append(routesByReceiver[route.ReceiverID], route.ID)
+	}
 
 	for i := range b.cfg.Sessions {
 		sessionDef := &b.cfg.Sessions[i]
@@ -621,13 +626,24 @@ func (b *Builder) validateDedicatedIngressSessions() error {
 			continue
 		}
 		receiverIDs := receiversBySession[sessionDef.ID]
-		if len(receiverIDs) <= 1 {
+		if len(receiverIDs) > 1 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q (transport %q) requires dedicated ingress but has %d logical receivers %q; configure one session per ingress receiver (senders may still share a session)",
+				sessionDef.ID, sessionDef.Transport, len(receiverIDs), receiverIDs,
+			))
+		}
+		if len(receiverIDs) == 0 {
+			// Sender-only sessions do not create an ingress failure domain.
 			continue
 		}
-		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"bridge: session %q (transport %q) requires dedicated ingress but has %d logical receivers %q; configure one session per ingress receiver (senders may still share a session)",
-			sessionDef.ID, sessionDef.Transport, len(receiverIDs), receiverIDs,
-		))
+		receiverID := receiverIDs[0]
+		routeIDs := routesByReceiver[receiverID]
+		if len(routeIDs) > 1 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q (transport %q) requires dedicated ingress but receiver/source %q is consumed by conflicting route runners %q; configure a distinct session and receiver for each ingress route",
+				sessionDef.ID, sessionDef.Transport, receiverID, routeIDs,
+			))
+		}
 	}
 	return nil
 }

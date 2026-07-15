@@ -484,7 +484,7 @@ thiink:test-reviewer
 
 **Finding:** H6
 
-**Decision:** One ingress receiver per MQTT session. Connection-wide MQTT ACK
+**Decision:** At most one ingress receiver and one consuming route per MQTT session. Connection-wide MQTT ACK
 ordering means per-route queues cannot provide the requested isolation without
 durable staging or multiple broker connections.
 

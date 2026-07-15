@@ -6,7 +6,7 @@
 **Factory:** `paho.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `exclusive_identity`, `dedicated_ingress_session`, `shared_consumer`, `plan_driven_subscriptions`
 
-MQTT requires a session. Each session permits exactly one logical ingress
+MQTT requires a session. Each session permits at most one logical ingress
 receiver. Multiple senders may still share that session and its TCP connection.
 Session mode controls lifecycle and ownership semantics.
 
@@ -32,10 +32,12 @@ cannot isolate this MQTT acknowledgment domain without durable staging and ACK
 aggregation.
 
 Paho advertises `CapDedicatedIngressSession`. During `Builder.Plan`, the bridge
-rejects a second logical receiver bound to the same session before it opens any
-store, transport, or runtime resource. The check is capability-based rather than
-keyed to the `mqtt` transport name. Registering Paho under aliases cannot bypass
-it: `Factory.NewReceiver` also performs an atomic reservation on the concrete
+rejects a second logical receiver bound to the same session and rejects reuse of
+the sole receiver/source binding by multiple route runners. Both checks happen
+before it opens any store, transport, or runtime resource and name the conflicting
+session, receiver, and routes. Validation is capability-based rather than keyed
+to the `mqtt` transport name. Registering Paho under aliases cannot bypass it:
+`Factory.NewReceiver` also performs an atomic reservation on the concrete
 `Session`. Sender definitions do not consume that reservation and may share a
 session.
 
@@ -550,8 +552,8 @@ wired today.)
   retry behavior.
 - **Ingress properties are session-owned copies.** The router converts incoming
   MQTT Properties (User properties, CorrelationData, ContentType, etc.) into an
-  owned envelope before dispatch. Config-driven composition binds one receiver
-  to that session, so no route shares its dispatch or acknowledgment domain.
+  owned envelope before dispatch. Config-driven composition binds at most one
+  receiver to that session, so no route shares its dispatch or acknowledgment domain.
 - **Password rotation rebuilds the session.** Applying a rotated password calls
   `Session.Reload`, which tears down and rebuilds the connection manager so a
   fresh CONNECT carries the new credentials. It does **not** call

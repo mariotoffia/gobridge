@@ -114,6 +114,13 @@ func TestMQTTDedicatedSessionIsolation(t *testing.T) {
 	requireDedicatedIsolationID(t, proofCtx, "isolated route receive", isolatedReceiver.received, isolatedID)
 	requireDedicatedIsolationID(t, proofCtx, "isolated route send", isolatedSender.sent, isolatedID)
 	requireDedicatedIsolationID(t, proofCtx, "isolated route settlement", isolatedReceiver.settled, isolatedID)
+	requireDedicatedIsolationFull(t, proofCtx, "isolated session while blocked route is held", isolatedSession)
+	requireDedicatedIsolationCounts(t, "blocked route receive while held", blockedReceiver.receivedCounts.snapshot(), map[string]int{blockedID: 1})
+	requireDedicatedIsolationCounts(t, "blocked route sender while held", blockedSender.sentCounts.snapshot(), nil)
+	requireDedicatedIsolationCounts(t, "blocked route settlement while held", blockedReceiver.settledCounts.snapshot(), nil)
+	requireDedicatedIsolationCounts(t, "isolated route receive while blocked route is held", isolatedReceiver.receivedCounts.snapshot(), map[string]int{isolatedID: 1})
+	requireDedicatedIsolationCounts(t, "isolated route sender success while blocked route is held", isolatedSender.sentCounts.snapshot(), map[string]int{isolatedID: 1})
+	requireDedicatedIsolationCounts(t, "isolated route source ACK while blocked route is held", isolatedReceiver.settledCounts.snapshot(), map[string]int{isolatedID: 1})
 
 	select {
 	case got := <-blockedReceiver.settled:
@@ -124,6 +131,14 @@ func TestMQTTDedicatedSessionIsolation(t *testing.T) {
 	blockedSender.release()
 	requireDedicatedIsolationID(t, proofCtx, "released blocked route send", blockedSender.sent, blockedID)
 	requireDedicatedIsolationID(t, proofCtx, "released blocked route settlement", blockedReceiver.settled, blockedID)
+	requireDedicatedIsolationCounts(t, "released blocked route receive", blockedReceiver.receivedCounts.snapshot(), map[string]int{blockedID: 1})
+	requireDedicatedIsolationCounts(t, "released blocked route sender success", blockedSender.sentCounts.snapshot(), map[string]int{blockedID: 1})
+	requireDedicatedIsolationCounts(t, "released blocked route source ACK", blockedReceiver.settledCounts.snapshot(), map[string]int{blockedID: 1})
+	requireDedicatedIsolationCounts(t, "isolated route receive after release", isolatedReceiver.receivedCounts.snapshot(), map[string]int{isolatedID: 1})
+	requireDedicatedIsolationCounts(t, "isolated route sender success after release", isolatedSender.sentCounts.snapshot(), map[string]int{isolatedID: 1})
+	requireDedicatedIsolationCounts(t, "isolated route source ACK after release", isolatedReceiver.settledCounts.snapshot(), map[string]int{isolatedID: 1})
+	requireDedicatedIsolationFull(t, proofCtx, "blocked session after release", blockedSession)
+	requireDedicatedIsolationFull(t, proofCtx, "isolated session after release", isolatedSession)
 }
 
 func publishDedicatedIsolationMessage(t *testing.T, brokerURL, topic, id string) {
@@ -160,10 +175,56 @@ func requireDedicatedIsolationID(t *testing.T, ctx context.Context, phase string
 	}
 }
 
+func requireDedicatedIsolationFull(t *testing.T, ctx context.Context, phase string, session *paho.Session) {
+	t.Helper()
+	health := session.Health(ctx)
+	if health.ServiceLevel != ports.ServiceLevelFull || health.UnsettledCount != 0 {
+		t.Fatalf("%s health = %+v, want Full with no unsettled deliveries", phase, health)
+	}
+}
+
+func requireDedicatedIsolationCounts(t *testing.T, phase string, got, want map[string]int) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s counts = %v, want %v (duplicate or unexpected ID)", phase, got, want)
+	}
+	for id, wantCount := range want {
+		if got[id] != wantCount {
+			t.Fatalf("%s counts = %v, want %v (duplicate or unexpected ID)", phase, got, want)
+		}
+	}
+}
+
+type dedicatedIsolationCounter struct {
+	mu   sync.Mutex
+	byID map[string]int
+}
+
+func (c *dedicatedIsolationCounter) record(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byID == nil {
+		c.byID = make(map[string]int)
+	}
+	c.byID[id]++
+}
+
+func (c *dedicatedIsolationCounter) snapshot() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]int, len(c.byID))
+	for id, count := range c.byID {
+		out[id] = count
+	}
+	return out
+}
+
 type dedicatedIsolationReceiver struct {
-	inner    *paho.Receiver
-	received chan string
-	settled  chan string
+	inner          *paho.Receiver
+	received       chan string
+	settled        chan string
+	receivedCounts dedicatedIsolationCounter
+	settledCounts  dedicatedIsolationCounter
 }
 
 func newDedicatedIsolationReceiver(inner *paho.Receiver) *dedicatedIsolationReceiver {
@@ -176,14 +237,21 @@ func newDedicatedIsolationReceiver(inner *paho.Receiver) *dedicatedIsolationRece
 
 func (r *dedicatedIsolationReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	return r.inner.Run(ctx, func(deliveryCtx context.Context, delivery ports.Delivery) error {
-		r.received <- delivery.Envelope().ID()
-		return emit(deliveryCtx, &dedicatedIsolationDelivery{Delivery: delivery, settled: r.settled})
+		id := delivery.Envelope().ID()
+		r.receivedCounts.record(id)
+		r.received <- id
+		return emit(deliveryCtx, &dedicatedIsolationDelivery{
+			Delivery: delivery,
+			settled:  r.settled,
+			counts:   &r.settledCounts,
+		})
 	})
 }
 
 type dedicatedIsolationDelivery struct {
 	ports.Delivery
 	settled chan<- string
+	counts  *dedicatedIsolationCounter
 	once    sync.Once
 }
 
@@ -191,13 +259,18 @@ func (d *dedicatedIsolationDelivery) Ack(ctx context.Context) error {
 	if err := d.Delivery.Ack(ctx); err != nil {
 		return err
 	}
-	d.once.Do(func() { d.settled <- d.Envelope().ID() })
+	d.once.Do(func() {
+		id := d.Envelope().ID()
+		d.counts.record(id)
+		d.settled <- id
+	})
 	return nil
 }
 
 type dedicatedIsolationBarrierSender struct {
 	entered     chan string
 	sent        chan string
+	sentCounts  dedicatedIsolationCounter
 	releaseGate chan struct{}
 	releaseOnce sync.Once
 }
@@ -214,7 +287,9 @@ func (s *dedicatedIsolationBarrierSender) Send(ctx context.Context, msg ports.Ou
 	s.entered <- msg.Envelope.ID()
 	select {
 	case <-s.releaseGate:
-		s.sent <- msg.Envelope.ID()
+		id := msg.Envelope.ID()
+		s.sentCounts.record(id)
+		s.sent <- id
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -226,7 +301,8 @@ func (s *dedicatedIsolationBarrierSender) release() {
 }
 
 type dedicatedIsolationRecordingSender struct {
-	sent chan string
+	sent       chan string
+	sentCounts dedicatedIsolationCounter
 }
 
 func newDedicatedIsolationRecordingSender() *dedicatedIsolationRecordingSender {
@@ -234,6 +310,8 @@ func newDedicatedIsolationRecordingSender() *dedicatedIsolationRecordingSender {
 }
 
 func (s *dedicatedIsolationRecordingSender) Send(_ context.Context, msg ports.OutboundMessage) error {
-	s.sent <- msg.Envelope.ID()
+	id := msg.Envelope.ID()
+	s.sentCounts.record(id)
+	s.sent <- id
 	return nil
 }

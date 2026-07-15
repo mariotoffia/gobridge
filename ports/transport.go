@@ -405,8 +405,9 @@ const (
 	// CapDedicatedIngressSession marks a stateful transport whose session-level
 	// ingress dispatch and protocol settlement are shared by every receiver on
 	// that session. The bridge must bind at most one logical ingress Receiver to
-	// each such session so a blocked route cannot stall an unrelated route.
-	// Sender sharing is unaffected.
+	// each such session, and that receiver may feed at most one route runner, so
+	// a blocked route cannot stall an unrelated route. Sender sharing is
+	// unaffected.
 	CapDedicatedIngressSession Capability = "dedicated_ingress_session"
 
 	// CapPlanDrivenSubscriptions marks a transport whose receivers establish
