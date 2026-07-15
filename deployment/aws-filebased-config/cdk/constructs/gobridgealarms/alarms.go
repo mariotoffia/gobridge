@@ -412,9 +412,6 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge shared-outbox drain stalled.")
 
-		g.leaseAcquireFailures = newRollupAlarm(c, "HALeaseAcquireFailures", ns, metricLeaseAcquireFailures,
-			"Sum", jsii.Number(3), period, evals, topicAction,
-			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge standby lease acquisition is failing.")
 		g.leaseExpiries = newRollupAlarm(c, "HALeaseExpiries", ns, metricLeaseExpiries,
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge lease expiry or fail-closed step-down observed.")

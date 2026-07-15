@@ -2,7 +2,10 @@ package gobridgedynamodbha
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
@@ -141,10 +145,21 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: Phase 1 validation failed: %v", err))
 	}
 	inspected, err := inspectHAConfig(mat.Config)
-	_ = mat.Close()
 	if err != nil {
+		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: invalid coordinated HA config: %v", err))
 	}
+	fingerprint, err := profileConfigFingerprint(mat.Config)
+	_ = mat.Close()
+	if err != nil {
+		panic(fmt.Sprintf("GoBridgeDynamoDBHA: fingerprint coordinated HA config: %v", err))
+	}
+	bootstrapControl.DynamoDBHALeaseTableName = inspected.tables.lease
+	bootstrapControl.DynamoDBHAOutboxTableName = inspected.tables.outbox
+	bootstrapControl.DynamoDBHAManagedSubscriptionsTableName = inspected.tables.managedSubscriptions
+	bootstrapControl.DynamoDBHAConfigFingerprint = fingerprint
+	bootstrapWorker = bootstrapControl
+	bootstrapWorker.NodeRole = infra.NodeRoleWorker
 
 	selectedSubnets := props.VpcSubnets
 	if selectedSubnets == nil {
@@ -232,10 +247,10 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		TaskDefinition:              controlBuilt.TaskDefinition,
 		DesiredCount:                jsii.Number(1),
 		MinHealthyPercent:           jsii.Number(0),
-		MaxHealthyPercent:           jsii.Number(200),
+		MaxHealthyPercent:           jsii.Number(100),
 		VpcSubnets:                  selectedSubnets,
 		SecurityGroups:              &[]awsec2.ISecurityGroup{controlSG},
-		AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_ENABLED,
+		AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_DISABLED,
 		EnableExecuteCommand:        jsii.Bool(false),
 		CircuitBreaker:              &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
 	}
@@ -341,11 +356,8 @@ func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
 		if !ok || mqtt == nil {
 			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q must use the MQTT Paho config", session.ID)
 		}
-		if strings.TrimSpace(mqtt.Session.ClientID) == "" {
-			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q requires a stable MQTT client_id", session.ID)
-		}
-		if mqtt.Session.ClientIDSuffix != "" {
-			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q must use one shared stable MQTT client_id without client_id_suffix", session.ID)
+		if err := mqtt.ValidateEffectiveSession(connectivity.SessionExclusive); err != nil {
+			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q is not an effective stable MQTT session: %w", session.ID, err)
 		}
 		exclusive[session.ID] = struct{}{}
 	}
@@ -462,10 +474,22 @@ func validateTask9Admission(cfg *ports.BridgeConfig) error {
 	return nil
 }
 
+func profileConfigFingerprint(cfg *ports.BridgeConfig) (string, error) {
+	data, err := cfgparser.MarshalYAML(cfg)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func requireTwoAvailabilityZones(vpc awsec2.IVpc, selection *awsec2.SubnetSelection) {
 	selected := vpc.SelectSubnets(selection)
 	if selected.IsPendingLookup != nil && *selected.IsPendingLookup {
-		panic("GoBridgeDynamoDBHA: cannot verify that pending-lookup VpcSubnets span at least two Availability Zones")
+		// Vpc.FromLookup uses a two-pass CDK context provider. The first pass
+		// intentionally returns placeholder subnets; the app is re-run after
+		// context resolution, when this same function enforces the real AZ set.
+		return
 	}
 	zones := map[string]struct{}{}
 	if selected.AvailabilityZones != nil {
@@ -493,8 +517,17 @@ func validateProps(props *DynamoDBHAProps) {
 	if props.BridgeConfig == nil {
 		panic("GoBridgeDynamoDBHA: BridgeConfig is required")
 	}
-	if props.WorkerDesiredCount != nil && *props.WorkerDesiredCount < 2 {
-		panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be >= 2 to preserve a warm standby")
+	if props.WorkerDesiredCount != nil {
+		value := *props.WorkerDesiredCount
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2 to preserve a warm standby")
+		}
+		if unresolved := awscdk.Token_IsUnresolved(value); unresolved != nil && *unresolved {
+			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2; unresolved tokens cannot prove the warm-standby invariant")
+		}
+		if math.Trunc(value) != value || value < 2 {
+			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2 to preserve a warm standby")
+		}
 	}
 }
 

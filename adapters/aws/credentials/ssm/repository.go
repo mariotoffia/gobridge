@@ -212,8 +212,10 @@ func (r *Repository) checkVersion(ctx context.Context, paramPath string, version
 	return nil
 }
 
-// parseURI extracts the SSM parameter path from a pms:// URI.
-func parseURI(uri string) (string, error) {
+// ParameterPath extracts the absolute SSM parameter path from the canonical
+// pms://name/path URI. The host form is intentional and is the inverse of
+// pathToURI; triple-slash URIs have no host and are rejected.
+func ParameterPath(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		// Redact: url.Parse wraps the raw URI (which may embed userinfo) in a
@@ -225,6 +227,9 @@ func parseURI(uri string) (string, error) {
 	if u.Scheme != scheme {
 		return "", fmt.Errorf("ssm: expected scheme %s, got %s", scheme, u.Scheme)
 	}
+	if u.Host == "" {
+		return "", fmt.Errorf("ssm: pms URI requires a parameter-name host (use pms://name/path)")
+	}
 
 	path := "/" + u.Host
 	if u.Path != "" && u.Path != "/" {
@@ -233,6 +238,10 @@ func parseURI(uri string) (string, error) {
 	path = strings.TrimSuffix(path, "/")
 
 	return path, nil
+}
+
+func parseURI(uri string) (string, error) {
+	return ParameterPath(uri)
 }
 
 // pathToURI converts a parameter path back to a pms:// URI.

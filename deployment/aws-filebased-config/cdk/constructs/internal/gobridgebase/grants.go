@@ -11,6 +11,7 @@ import (
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -176,12 +177,12 @@ func dynamoTableName(sc *ports.StoreConfig) string {
 // URIs/paths the task role needs read access to.
 func collectSSMRefs(p *Props, cfg *ports.BridgeConfig) []string {
 	seen := map[string]struct{}{}
-	add := func(s string) {
-		s = stripPMS(s)
-		if s == "" {
+	add := func(ref string) {
+		path, err := registry.NormalizeParameterPath(ref)
+		if err != nil {
 			return
 		}
-		seen[s] = struct{}{}
+		seen[path] = struct{}{}
 	}
 
 	add(p.Bootstrap.AdminAPIKeyParam)
@@ -214,20 +215,6 @@ func collectSSMRefs(p *Props, cfg *ports.BridgeConfig) []string {
 	return out
 }
 
-// stripPMS strips a leading "pms://" or "pms:" scheme so callers
-// can compare against the raw parameter path the SsmParamRegistry
-// is keyed on.
-func stripPMS(s string) string {
-	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasPrefix(s, "pms://"):
-		return strings.TrimPrefix(s, "pms://")
-	case strings.HasPrefix(s, "pms:"):
-		return strings.TrimPrefix(s, "pms:")
-	}
-	return s
-}
-
 // scanRawForPMS walks a RawConfig looking for string values that
 // start with "pms://" and reports each via emit. Silently no-ops on
 // nil or undecodable raw payloads.
@@ -245,7 +232,7 @@ func scanRawForPMS(raw ports.RawConfig, emit func(string)) {
 func walkPMS(v any, emit func(string)) {
 	switch t := v.(type) {
 	case string:
-		if strings.HasPrefix(t, "pms://") || strings.HasPrefix(t, "pms:") {
+		if strings.HasPrefix(t, "pms://") {
 			emit(t)
 		}
 	case map[string]any:

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -302,30 +301,22 @@ func parseAdminKeys(raw string) (map[string]string, error) {
 }
 
 func normalizeParameterRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return "", fmt.Errorf("bootstrap: empty parameter reference")
 	}
-	if !strings.HasPrefix(ref, "pms://") {
-		if strings.HasPrefix(ref, "/") {
-			return ref, nil
+	if strings.HasPrefix(ref, "pms://") {
+		path, err := ssmrepo.ParameterPath(ref)
+		if err != nil {
+			return "", fmt.Errorf("bootstrap: invalid parameter reference: %w", err)
 		}
-		return "/" + ref, nil
+		return path, nil
 	}
-
-	u, err := url.Parse(ref)
-	if err != nil {
-		return "", fmt.Errorf("bootstrap: invalid parameter reference %q: %w", ref, err)
+	if strings.Contains(ref, "://") {
+		return "", fmt.Errorf("bootstrap: unsupported parameter reference %q", ref)
 	}
-	if u.Scheme != "pms" {
-		return "", fmt.Errorf("bootstrap: unsupported parameter scheme %q", u.Scheme)
+	if strings.HasPrefix(ref, "/") {
+		return ref, nil
 	}
-	path := "/" + u.Host
-	if u.Path != "" && u.Path != "/" {
-		path += u.Path
-	}
-	path = strings.TrimSuffix(path, "/")
-	if path == "" {
-		return "", fmt.Errorf("bootstrap: invalid empty parameter path in %q", ref)
-	}
-	return path, nil
+	return "/" + ref, nil
 }

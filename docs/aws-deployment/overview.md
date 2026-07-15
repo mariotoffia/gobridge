@@ -70,7 +70,9 @@ The CDK library deliberately exposes two different multi-task profiles:
 config-control task and at least two worker tasks across a subnet selection that
 spans at least two Availability Zones. All three tasks participate in DynamoDB
 lease acquisition, so the normal steady state has one active holder and at
-least two warm candidates. ECS Availability Zone rebalancing is enabled.
+least two warm candidates. Worker Availability Zone rebalancing is enabled;
+the RW control service uses a 0/100 non-overlapping replacement with rebalancing
+disabled.
 
 ### Coordinated HA data plane
 
@@ -104,6 +106,12 @@ outbox, and managed-subscription stores, `delivery_mode: shared_outbox`,
 storage identity. `client_id_suffix` is rejected for Exclusive sessions because
 a per-task MQTT identity strands queued broker state after holder loss.
 
+The facade also stamps the admitted canonical config fingerprint and exact table
+identities into deployment-owned bootstrap. Every process validates the EFS
+logical config against them before store or transport planning, so a stale or
+tampered SeedOnce/AdoptValid file cannot bypass synth-time identity/route/table
+admission.
+
 Static `bridge.cluster.endpoints` are rejected by this profile. The bootstrap
 registers the existing ECS metadata endpoint resolver and each holder writes its
 own reachable endpoint into the lease row. This endpoint also lets the
@@ -130,15 +138,16 @@ separately allow the required ECS/DynamoDB reads and
 ### Alarms and objective honesty
 
 The HA form of `GoBridgeAlarms` covers running/desired task count, minimum warm
-standby, all-table DynamoDB throttles/system errors, lease acquisition/expiry
-and takeover flapping, shared-outbox depth/drain latency/failures, DLQ
+standby, all-table DynamoDB throttles/system errors, lease expiry and takeover flapping, shared-outbox depth/drain latency/failures, DLQ
 signals, and `FailureToFullDuration`.
 
 `FailureToFullDuration` is emitted by the credentialed external health/failover
 probe, not by the runtime. The probe conservatively starts timing before the
 verified holder `StopTask` request, waits for that exact task to be `STOPPED`,
 requires both lease owner and fencing version to change, and waits for a
-different exact successor to report `ServiceLevelFull`. It publishes one
+different exact successor to report `ServiceLevelFull`. A sample is classified
+`warm` only when that successor task ARN was already running in the pre-failure
+standby snapshot; a replacement winner is classified `cold`. It publishes one
 no-dimension millisecond sample in the configured deployment namespace. The
 alarm uses `TreatMissingData=NOT_BREACHING`; the release test immediately
 queries CloudWatch for the exact sample and fails if it is absent. Continuous
@@ -225,7 +234,9 @@ The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
 scale-out profile (`GoBridgeCluster`) runs one control task plus
 `WorkerDesiredCount` workers (default 2); its worker CPU auto-scaling is opt-in
 through `AutoScalingProps`. The coordinated profile (`GoBridgeDynamoDBHA`) runs
-one control plus at least two workers and rejects a lower worker count. Size every
+one control plus at least two workers and requires a resolved finite integral
+worker count of at least two. Unresolved CDK numeric tokens are rejected because
+they cannot prove warm capacity. Size every
 warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`.
 
 ---
@@ -323,13 +334,13 @@ DynamoDB-backed stores (`lease`, `outbox`, `dlq`, or `managed_subscriptions`),
 the stack grants each ECS task role only the adapter-specific data operations
 on each table and required index the store names. Two operator responsibilities follow:
 
-- **Pre-provision imported tables.** Those two facades import each table by name
-  and grant access; they do **not** create the table, its key schema, or its TTL.
-  `GoBridgeDynamoDBHA` is the exception: it owns the three mandatory lease,
-  outbox, and managed-subscription tables described above. An optional DynamoDB
-  DLQ remains operator-provisioned.
-  Provision each DynamoDB table out-of-band (matching the adapter's expected key
-  schema) before deploying.
+- **Pre-provision only imported tables.** `GoBridgeSingle` and
+  `GoBridgeCluster` import every configured DynamoDB store, so provision those
+  tables out-of-band with the adapter schema before deploying. Do **not**
+  pre-provision the three names owned by `GoBridgeDynamoDBHA`: that facade creates
+  its mandatory lease, outbox, and managed-subscription tables and a same-name
+  resource would collide. Only an optional HA DynamoDB DLQ remains
+  operator-provisioned/imported.
 - **Use `table_name` only to override a role default.** When omitted, runtime
   preflight and the stack resolve and grant the same exact default:
   `gobridge-leases`, `gobridge-outbox`, `gobridge-dlq`, or
@@ -532,17 +543,19 @@ github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
 
 ### Construct Overview
 
-The library provides an EFS config construct plus two façade constructs, each
+The library provides an EFS config construct plus three façade constructs, each
 deploying a complete profile:
 
 | Construct | Package | Purpose |
 |-----------|---------|---------|
 | `GoBridgeEfsConfig` | `cdk/constructs` | EFS filesystem + access point for config mounting. |
 | `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, RW EFS mount, no worker, no clustering. |
-| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | One control task (RW EFS) plus `WorkerDesiredCount` worker tasks (RO EFS). |
+| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Independent filesystem scale-out: one control task plus workers. |
+| `GoBridgeDynamoDBHA` | `cdk/constructs/gobridgedynamodbha` | DynamoDB-coordinated active/warm-standby: one control plus at least two workers and three owned tables. |
 
-The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)` and
-`NewGoBridgeCluster(scope, id, *ClusterProps)`. There is no `GoBridgeService` or
+The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
+`NewGoBridgeCluster(scope, id, *ClusterProps)`, and
+`NewGoBridgeDynamoDBHA(scope, id, *DynamoDBHAProps)`. There is no `GoBridgeService` or
 `GoBridgeStack` construct and no `GoBridgeServiceProps` type.
 
 ### GoBridgeEfsConfigProps
@@ -590,6 +603,15 @@ both services), plus:
 The control task always runs a single copy (`DesiredCount` is hard-coded to 1).
 Auto-scaling applies to the worker service only and is off unless `AutoScaling`
 is set.
+
+### DynamoDBHAProps (selected)
+
+`DynamoDBHAProps` shares the common VPC, image, bootstrap, config, registry,
+sizing, and EFS fields. Its `WorkerDesiredCount` defaults to `2` and must be a
+resolved finite integer greater than or equal to `2`; unresolved numeric tokens
+are rejected. It has no worker auto-scaling surface. Table names and the
+canonical config fingerprint are derived from the admitted bridge config and
+injected into bootstrap by the facade, not supplied independently by callers.
 
 #### Worker seeder: AdoptValid vs AbortDeploy
 

@@ -29,6 +29,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.20 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.20 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.8 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
@@ -65,6 +66,7 @@ require (
 	github.com/cdklabs/cloud-assembly-schema-go/awscdkcloudassemblyschema/v53 v53.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/yuin/goldmark v1.7.16 // indirect
@@ -112,3 +114,7 @@ replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ..
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../../adapters/native/store/sqlitemanagedsubscriptions
 
 replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
+
+replace github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
+
+replace github.com/mariotoffia/gobridge/testutil/localstack => ../../../testutil/localstack

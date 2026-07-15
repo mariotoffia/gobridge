@@ -131,3 +131,16 @@ func TestNewFactoryRegistry_StandaloneLeavesEndpointResolverEmpty(t *testing.T) 
 	reg := app.newFactoryRegistry(&ports.BridgeConfig{Bridge: ports.BridgeSettings{DeploymentMode: "standalone"}})
 	require.True(t, builderField(t, reg.builder, "endpointResolver").IsNil())
 }
+
+func TestNewFactoryRegistry_WiresEveryCanonicalTransportAlias(t *testing.T) {
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	reg := app.newFactoryRegistry(&ports.BridgeConfig{})
+
+	for canonical, alias := range map[string]string{"mqtt": "mqtt.paho", "sqs": "aws.sqs"} {
+		canonicalFactory, canonicalOK := reg.transports[canonical]
+		aliasFactory, aliasOK := reg.transports[alias]
+		require.True(t, canonicalOK, canonical)
+		require.True(t, aliasOK, alias)
+		require.Same(t, canonicalFactory, aliasFactory, "alias must resolve to the same factory instance")
+	}
+}

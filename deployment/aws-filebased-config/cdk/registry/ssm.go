@@ -2,14 +2,46 @@ package registry
 
 import (
 	"fmt"
+	"strings"
+
+	ssmrepo "github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
 )
 
+// NormalizeParameterPath maps the canonical pms:// URI forms and direct
+// parameter names to the absolute SSM path used by SsmParamRegistry, runtime
+// resolution, and IAM ARN derivation. For example, pms://name/path resolves
+// to /name/path.
+func NormalizeParameterPath(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("registry: empty SSM parameter reference")
+	}
+	if strings.HasPrefix(ref, "pms://") {
+		path, err := ssmrepo.ParameterPath(ref)
+		if err != nil {
+			return "", fmt.Errorf("registry: normalize SSM parameter URI: %w", err)
+		}
+		return path, nil
+	}
+	if strings.Contains(ref, "://") {
+		return "", fmt.Errorf("registry: unsupported SSM parameter reference %q", ref)
+	}
+	path := strings.TrimSuffix(ref, "/")
+	if path == "" {
+		return "", fmt.Errorf("registry: empty SSM parameter path")
+	}
+	if strings.HasPrefix(path, "/") {
+		return path, nil
+	}
+	return "/" + path, nil
+}
+
 // SsmParamRegistry maps logical SSM parameter URIs/paths to
 // awsssm.IParameter handles. Keys are the full parameter path as
 // referenced in bridge.yaml credential fields (e.g. "/bridge/mqtt"
-// from a `pms:///bridge/mqtt` URI).
+// from a `pms://bridge/mqtt` URI).
 //
 // SsmParamRegistry is not safe for concurrent use.
 type SsmParamRegistry struct {

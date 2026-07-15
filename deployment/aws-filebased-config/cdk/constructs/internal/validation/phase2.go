@@ -118,7 +118,11 @@ func checkSSM(cfg *ports.BridgeConfig, reg *registry.SsmParamRegistry, emit func
 		return
 	}
 	for _, uri := range uris {
-		key := pmsURIToRegistryKey(uri)
+		key, err := registry.NormalizeParameterPath(uri)
+		if err != nil {
+			emit(fmt.Sprintf("yaml references invalid SSM parameter URI %q: %v", uri, err))
+			continue
+		}
 		if reg.Has(key) {
 			continue
 		}
@@ -221,21 +225,6 @@ func credentialsURI(pc ports.PluginConfig) string {
 		return ""
 	}
 	return cc.CredentialsURI()
-}
-
-// pmsURIToRegistryKey converts a pms://host/path URI into the
-// "/host/path" form used as the SsmParamRegistry key. Mirrors the
-// reverse mapping in bridgecfg.paramRefToPMS.
-func pmsURIToRegistryKey(uri string) string {
-	rest := strings.TrimPrefix(uri, pmsScheme)
-	if rest == "" {
-		return "/"
-	}
-	if strings.HasPrefix(rest, "/") {
-		// pms:///abs/path → already absolute; strip the empty host.
-		return rest
-	}
-	return "/" + rest
 }
 
 // sortedKeys returns the keys of a string-set in deterministic order.

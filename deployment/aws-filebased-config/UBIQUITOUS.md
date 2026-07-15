@@ -27,6 +27,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **Filesystem profile guard** | `validateFilesystemProfile` — rejects `shared_outbox` and `route.session` when topology is `filesystem_replicated`. |
 | **GoBridgeDynamoDBHA** | Separate coordinated active/warm-standby CDK facade for topology `dynamodb_coordinated_ha`; it reuses `internal/gobridgebase.New`, provisions one control task and at least two worker tasks, and does not change `GoBridgeCluster`. |
 | **DynamoDBHAProps** | Input contract for `GoBridgeDynamoDBHA`, including the shared bridge config, ECS/VPC placement, and registries. |
+| **DynamoDB HA config expectation** | Deployment-owned exact lease/outbox/managed-subscription table names plus canonical bridge-config SHA-256 fingerprint stamped into bootstrap by `GoBridgeDynamoDBHA`; every HA process checks the EFS logical config against it before planning stores or transports. |
 | **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; the sole profile API exposing the lease, shared-outbox, and managed-subscription table objects, names, and ARNs. |
 | **FailureToFullDuration** | External failover-probe CloudWatch metric in the deployment metrics namespace. One sample is the milliseconds from the conservative pre-`StopTask` timestamp through exact-holder `STOPPED`, owner plus fencing-version change, and the different successor reaching `ServiceLevelFull`. It has no runtime dimensions; warm/cold percentiles are reported separately by the credentialed harness. Missing samples are non-breaching for the alarm, while release proof must query and find its exact sample. |
 
@@ -44,7 +45,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **Parameter reference** | A bootstrap field value identifying an SSM parameter. Either a `pms://name/path` URI or an absolute SSM name (`/foo/bar`). Normalized by `normalizeParameterRef`. |
+| **Parameter reference** | A bootstrap field value identifying an SSM parameter. Either the canonical `pms://name/path` URI or an absolute SSM name (`/foo/bar`). Normalized by `normalizeParameterRef`. |
 | **Parameter resolver** | The `parameterResolver` interface used by `resolveInputs`. Default is SSM-backed; tests inject custom implementations via `WithParameterResolver`. |
 | **DevMode** | Bootstrap flag that authorizes use of `SSMEndpoint` overrides (e.g. LocalStack). Production safety guard: `SSMEndpoint` without `DevMode` fails `Validate()`. |
 | **Admin/Monitor key param** | SSM references for the admin (required) and monitor (optional) HTTP API `X-API-Key` values. Re-resolved on every reload. |

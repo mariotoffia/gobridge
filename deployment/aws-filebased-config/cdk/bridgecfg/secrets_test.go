@@ -108,7 +108,7 @@ func TestIsCredentialURI(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"pms:///bridge/admin", true},
+		{"pms://bridge/admin", true},
 		{"pms://x/y", true},
 		{"file:///etc/creds.yaml", true},
 		{"vault://kv/data/foo", true},
@@ -144,8 +144,8 @@ func TestScan_HTTPAdminAPIKey_Plaintext(t *testing.T) {
 func TestScan_HTTPAdminAPIKey_PmsURI_OK(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		HTTP: &ports.HTTPConfig{
-			AdminAPIKey:   shared.NewSecret("pms:///bridge/admin-key"),
-			MonitorAPIKey: shared.NewSecret("pms:///bridge/monitor-key"),
+			AdminAPIKey:   shared.NewSecret("pms://bridge/admin-key"),
+			MonitorAPIKey: shared.NewSecret("pms://bridge/monitor-key"),
 		},
 	}
 	if err := bridgecfg.ScanForPlaintextSecrets(cfg); err != nil {

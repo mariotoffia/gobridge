@@ -46,6 +46,23 @@ func TestSessionSpecManagedSubscriptionsForDurableMQTT(t *testing.T) {
 	}
 }
 
+func TestSessionSpecManagedSubscriptionsForFullyQualifiedMQTTAlias(t *testing.T) {
+	cfg := &ports.BridgeConfig{
+		Sessions:  []ports.SessionDef{{ID: "mqtt-sess", Transport: "mqtt.paho", SessionMode: "exclusive", Config: managedIdentityConfig{}}},
+		Receivers: []ports.ReceiverDef{{ID: "rx", SessionID: "mqtt-sess", Topics: []ports.SubscriptionDef{{Topic: "sensors/#"}}}},
+	}
+	spec, err := sessionSpecWithManagedSubscriptions(cfg.Sessions[0], cfg, managedSpecStore{})
+	if err != nil {
+		t.Fatalf("sessionSpecWithManagedSubscriptions: %v", err)
+	}
+	if !spec.ManagedSubscriptionsRequired || spec.ManagedSubscriptionStore == nil {
+		t.Fatal("mqtt.paho alias must preserve durable managed-subscription history")
+	}
+	if !requiresManagedSubscriptionStore(cfg) {
+		t.Fatal("mqtt.paho alias must require the managed-subscription store")
+	}
+}
+
 func TestSessionSpecEphemeralDoesNotOwnManagedHistory(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		Sessions:  []ports.SessionDef{{ID: "mqtt-sess", Transport: "mqtt", SessionMode: "ephemeral", Config: managedIdentityConfig{}}},

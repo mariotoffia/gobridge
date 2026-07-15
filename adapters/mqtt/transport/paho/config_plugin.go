@@ -161,6 +161,42 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// ValidateEffectiveSession performs the resource-free validation required once
+// a Config is attached to a concrete SessionMode. It validates the same broker
+// domain and stable connection identity that NewSession consumes, but it never
+// constructs a client or dials a broker. Deployment composition roots may call
+// it to fail at synth/startup preflight without duplicating Paho rules.
+func (c Config) ValidateEffectiveSession(mode connectivity.SessionMode) error {
+	if mode == "" {
+		mode = connectivity.SessionEphemeral
+	}
+	c.Session.normalizeBrokerURLs()
+	if err := c.ValidateSessionMode(mode); err != nil {
+		return err
+	}
+	if c.Session.ClientID == "" {
+		return errors.New("mqtt: client_id is required")
+	}
+	if suffix := c.Session.ClientIDSuffix; suffix != "" {
+		if suffix != ClientIDSuffixHostname && suffix != ClientIDSuffixNonce {
+			return fmt.Errorf("mqtt: unsupported client_id_suffix %q", suffix)
+		}
+		if suffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
+			return errors.New("mqtt: client_id_suffix nonce is valid only for session_mode: ephemeral")
+		}
+		if mode == connectivity.SessionExclusive {
+			return errors.New("mqtt: client_id_suffix must not be set for session_mode: exclusive")
+		}
+	}
+	if len(c.Session.BrokerURLs) == 0 {
+		return errors.New("mqtt: at least one broker URL is required")
+	}
+	if err := c.Session.validatePlaintextCredentials(); err != nil {
+		return err
+	}
+	return c.Session.Will.Validate()
+}
+
 // validateIngressMemoryPrerequisites checks the packet ceiling and proves the
 // configured budget can fit one legal receive slot, one dispatch slot, and the
 // raw/decode crossing slot. It deliberately does not choose a Receive Maximum:

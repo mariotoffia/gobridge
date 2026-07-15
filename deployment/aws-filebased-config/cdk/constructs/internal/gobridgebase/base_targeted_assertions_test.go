@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
 	"github.com/aws/jsii-runtime-go"
 
 	// Register the http transport plugin so yaml parsing of
@@ -22,6 +23,7 @@ import (
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
@@ -323,6 +325,41 @@ func Test_T20_Base_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
 	}
 	if !strings.Contains(string(renderedJSON), "gobridge-outbox") {
 		t.Fatalf("synthesized grants do not reference runtime default table: %s", renderedJSON)
+	}
+}
+
+const t20BasePMSHostPathYAML = `
+bridge:
+  id: test-bridge
+sessions:
+  - id: mqtt-session
+    transport: mqtt
+    options:
+      credentials_uri: pms://name/path
+`
+
+func Test_T20_Base_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
+	defer jsii.Close()
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("S"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
+	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{Vpc: vpc})
+	parameter := awsssm.StringParameter_FromStringParameterName(stack, jsii.String("Credential"), jsii.String("/name/path"))
+	params := registry.NewSsmParamRegistry()
+	params.AddParameter("/name/path", parameter)
+	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
+		Mode: gobridgebase.ModeControl, Vpc: vpc, EfsConfig: efs,
+		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap: t20BaseBootstrap(), Source: source.NewAsset(t20BaseWriteYAML(t, t20BasePMSHostPathYAML)),
+		SsmRegistry: params,
+	})
+	rendered, err := json.Marshal(app.Synth(nil).GetStackByName(stack.StackName()).Template())
+	if err != nil {
+		t.Fatalf("marshal template: %v", err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "ssm:GetParameter") || !strings.Contains(text, "parameter/name/path") {
+		t.Fatalf("canonical pms://name/path IAM grant missing exact /name/path ARN: %s", text)
 	}
 }
 

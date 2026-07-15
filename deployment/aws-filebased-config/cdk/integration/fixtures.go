@@ -74,7 +74,7 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	qr.AddQueue("outbound", outbound)
 
 	adminOpts := bridgecfg.AdminAPIDefaults()
-	adminOpts.AdminAPIKey = "pms:///gobridge/it/admin-key"
+	adminOpts.AdminAPIKey = "pms://gobridge/it/admin-key"
 
 	cfg, err := bridgecfg.New("it-bridge").
 		WithHTTPAdminAPI(adminOpts).
@@ -149,7 +149,7 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	qr.AddQueue("outbound", outbound)
 
 	adminOpts := bridgecfg.AdminAPIDefaults()
-	adminOpts.AdminAPIKey = "pms:///gobridge/it/admin-key"
+	adminOpts.AdminAPIKey = "pms://gobridge/it/admin-key"
 
 	cfg, err := bridgecfg.New("it-bridge-cluster").
 		WithHTTPAdminAPI(adminOpts).

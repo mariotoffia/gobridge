@@ -80,9 +80,14 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// SQS and MQTT adapter metric dead (Finding 8; the paho factory carried
 	// the same dead-metrics wiring bug). Mirrors the HTTP factory wiring
 	// below.
+	mqttFactory := paho.NewFactory(a.logger, a.metricsExporter)
+	sqsFactory := sqsadapter.NewFactory(a.logger, a.metricsExporter)
+	// Keep factory keys symmetric with the canonical decoder aliases registered
+	// by paho.Register and sqsadapter.Register. Both names resolve to the same
+	// factory instance; no duplicate transport/session state is created.
 	transports := map[string]ports.TransportFactory{
-		"mqtt": paho.NewFactory(a.logger, a.metricsExporter),
-		"sqs":  sqsadapter.NewFactory(a.logger, a.metricsExporter),
+		"mqtt": mqttFactory, "mqtt.paho": mqttFactory,
+		"sqs": sqsFactory, "aws.sqs": sqsFactory,
 	}
 
 	// The metrics exporter reaches HTTP receivers/SSE senders through the

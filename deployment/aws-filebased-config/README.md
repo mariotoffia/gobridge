@@ -78,12 +78,16 @@ lease_ttl
 ```
 
 The profile forces bootstrap topology `dynamodb_coordinated_ha`, enables the
-CloudWatch exporter, and leaves the exporter instance ID empty so each task
+CloudWatch exporter, stamps the admitted canonical config fingerprint plus exact
+three table identities into deployment-owned bootstrap, and leaves the exporter instance ID empty so each task
 derives a unique task-local metric identity. This does not alter the MQTT
 identity: every warm standby must use the same stable Exclusive MQTT
 `client_id`, broker-session settings, and managed-subscription storage
 identity. Per-task MQTT suffixes are rejected because they would strand the
-failed holder broker queue.
+failed holder broker queue. On every process initial apply, bootstrap compares
+the EFS-loaded config with those deployment-owned identities and fingerprint
+before it plans any store or transport, so SeedOnce/AdoptValid drift cannot
+bypass synth admission.
 
 ### Data tables
 
@@ -117,8 +121,12 @@ The facade provisions one control service task and a worker service with a
 minimum desired count of two. Every task participates in lease acquisition;
 `control` only identifies the EFS config writer. Therefore a three-task steady
 state has one active holder and at least two warm candidates. Worker counts
-below two are rejected. Selected private subnets must span at least two
-Availability Zones, and ECS Availability Zone rebalancing is enabled.
+below two are rejected. `WorkerDesiredCount` must be a resolved finite integral
+number at least two; unresolved CDK tokens fail because synth cannot prove the
+warm-standby invariant. Selected private subnets must span at least two
+Availability Zones. Worker AZ rebalancing is enabled. The single RW control
+service uses a 0/100 deployment and disables AZ rebalancing so two config writers
+never overlap.
 
 This is single-region HA. It is not cross-region disaster recovery and does not
 remove MQTT, DynamoDB, VPC, or regional failure domains.
@@ -148,7 +156,7 @@ Compose `GoBridgeAlarms` with `AlarmsProps.DynamoDBHA`. The HA bundle covers:
 
 - desired/running task count and loss of the minimum warm standby;
 - throttle and system-error metrics for all three DynamoDB tables;
-- `LeaseAcquireFailures`, `LeaseExpiries`, and lease-transfer flapping;
+- `LeaseExpiries` and lease-transfer flapping;
 - `OutboxDepth`, `OutboxDrainLatency`, depth-query failures, record failures,
   and stalled drains;
 - DLQ depth, entries, and write failures;
@@ -159,7 +167,8 @@ measure its own outage. The credentialed external probe verifies the exact lease
 owner, maps its advertised ECS endpoint to one exact task, takes a conservative
 timestamp before `StopTask`, waits for that task to be `STOPPED`, requires owner
 and fencing version to change, and probes the different successor directly for
-`ServiceLevelFull`. It then publishes one dimensionless millisecond sample in
+`ServiceLevelFull`. A sample is warm only when that successor task ARN appears in
+the pre-failure running-standby snapshot; a replacement winner is cold. It then publishes one dimensionless millisecond sample in
 the configured deployment metrics namespace. The alarm uses
 `TreatMissingData=NOT_BREACHING`; release proof immediately queries CloudWatch
 and fails unless the exact sample is present, so missing data cannot create a
@@ -393,7 +402,7 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 - The fluent builder runs `ScanForPlaintextSecrets` from `Build()`. Default sensitive field names (matched on the deepest map key, case-insensitive): `password`, `secret`, `api_key`, `apikey`, `client_secret`, `bearer_token`, `private_key`, `privatekey`, `token`, `auth_token`, `access_token`, `refresh_token`, `passphrase`. See `cdk/bridgecfg/secrets.go`.
 - Any literal string at one of those keys is rejected unless it is a credential URI from the registered allow-list (`pms`, `file` — extend with `bridgecfg.RegisterCredentialScheme(...)`).
-- The supported secret backend is **SSM Parameter Store SecureString**, addressed as `pms:///path/to/param`. Wire each `pms://` URI through `SsmParamRegistry.AddParameter`; the construct grants `ssm:GetParameter[s]` (and KMS decrypt where applicable) only for registered parameters.
+- The supported secret backend is **SSM Parameter Store SecureString**, addressed as `pms://path/to/param`. Wire each `pms://` URI through `SsmParamRegistry.AddParameter`; the construct grants `ssm:GetParameter[s]` (and KMS decrypt where applicable) only for registered parameters.
 - The asset path (`BridgeYamlAsset`) and the marshalled inline config (`BridgeYamlInline`) are both run through the same parser plus tier-B validators, so the scan applies regardless of authoring path.
 
 ## What It Provisions

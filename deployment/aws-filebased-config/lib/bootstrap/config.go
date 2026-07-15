@@ -270,3 +270,68 @@ func validateFilesystemProfile(cfg deployinfra.BootstrapConfig, logical *ports.B
 
 	return nil
 }
+
+func validateDeploymentProfile(cfg deployinfra.BootstrapConfig, logical *ports.BridgeConfig) error {
+	switch cfg.Topology {
+	case deployinfra.TopologyFilesystemReplicated:
+		return validateFilesystemProfile(cfg, logical)
+	case deployinfra.TopologyDynamoDBCoordinatedHA:
+		return validateDynamoDBHAProfile(cfg, logical)
+	default:
+		return nil
+	}
+}
+
+func validateDynamoDBHAProfile(cfg deployinfra.BootstrapConfig, logical *ports.BridgeConfig) error {
+	if logical == nil {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config is nil")
+	}
+	if logical.Bridge.DeploymentMode != "clustered" {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha requires bridge.deployment_mode=clustered")
+	}
+	if logical.Bridge.Cluster != nil && len(logical.Bridge.Cluster.Endpoints) > 0 {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha requires ECS-resolved endpoints; static bridge.cluster.endpoints is forbidden")
+	}
+	stores := []struct {
+		role     string
+		store    *ports.StoreConfig
+		expected string
+	}{
+		{role: "lease", store: logical.Stores.Lease, expected: cfg.DynamoDBHALeaseTableName},
+		{role: "outbox", store: logical.Stores.Outbox, expected: cfg.DynamoDBHAOutboxTableName},
+		{role: "managed_subscriptions", store: logical.Stores.ManagedSubscriptions, expected: cfg.DynamoDBHAManagedSubscriptionsTableName},
+	}
+	for _, item := range stores {
+		actual, err := dynamoDBHAStoreTable(item.role, item.store)
+		if err != nil {
+			return err
+		}
+		if actual != item.expected {
+			return fmt.Errorf("bootstrap: dynamodb_coordinated_ha stores.%s table %q does not match deployment-owned expected table %q", item.role, actual, item.expected)
+		}
+	}
+
+	fingerprint, err := configFingerprint(logical)
+	if err != nil {
+		return err
+	}
+	if fingerprint != cfg.DynamoDBHAConfigFingerprint {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config fingerprint does not match the deployment-owned admitted config")
+	}
+	return nil
+}
+
+func dynamoDBHAStoreTable(role string, store *ports.StoreConfig) (string, error) {
+	if store == nil || store.Type != awsstore.DynamoDBKind {
+		return "", fmt.Errorf("bootstrap: dynamodb_coordinated_ha stores.%s must use type=dynamodb", role)
+	}
+	config, ok := store.Config.(*awsstore.DynamoDBConfig)
+	if !ok || config == nil {
+		return "", fmt.Errorf("bootstrap: dynamodb_coordinated_ha stores.%s has incompatible DynamoDB config", role)
+	}
+	name, err := awsstore.ResolveDynamoDBTableName(role, config.TableName)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap: resolve dynamodb_coordinated_ha stores.%s table: %w", role, err)
+	}
+	return name, nil
+}

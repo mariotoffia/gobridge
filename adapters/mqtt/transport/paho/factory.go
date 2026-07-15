@@ -80,58 +80,26 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid ingress memory configuration", spec.ID))
 	}
-	opts := cfg.Session
 	mode := spec.SessionMode
 	if mode == "" {
 		mode = connectivity.SessionEphemeral
 	}
-	if err := cfg.ValidateSessionMode(mode); err != nil {
+	cfg.Session.normalizeBrokerURLs()
+	if err := cfg.ValidateEffectiveSession(mode); err != nil {
 		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
-			fmt.Sprintf("mqtt session %q: invalid broker-session domain configuration", spec.ID))
+			fmt.Sprintf("mqtt session %q: invalid effective session configuration", spec.ID))
 	}
-	if opts.ClientID == "" {
-		return nil, shared.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))
-	}
-	// M-3: expand client_id_suffix into a per-replica-unique client_id so a
-	// single shared config file can drive $share scale-out. Rejected for
-	// exclusive mode, whose identity contract requires a stable SHARED
-	// client_id across instances (a unique-per-instance id strands queued
-	// QoS messages on failover — see acl_session.go / H-1).
+	opts := cfg.Session
+	// Expand a validated per-replica suffix only at construction. The
+	// resource-free preflight above validates the token without resolving a
+	// hostname or consuming randomness.
 	if opts.ClientIDSuffix != "" {
-		if opts.ClientIDSuffix == ClientIDSuffixNonce && mode != connectivity.SessionEphemeral {
-			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
-				"mqtt session %q: client_id_suffix nonce is valid only for session_mode: ephemeral", spec.ID))
-		}
-		if mode == connectivity.SessionExclusive {
-			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
-				"mqtt session %q: client_id_suffix must not be set for session_mode: exclusive "+
-					"(exclusive requires a stable client_id shared across instances; the lease "+
-					"serialises connections and the standby resumes the broker session on takeover)",
-				spec.ID))
-		}
 		resolved, err := cfg.resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
 		if err != nil {
 			return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
 		}
 		opts.ClientID = resolved
-	}
-	if len(opts.BrokerURLs) == 0 {
-		return nil, shared.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
-	}
-	// HIGH-4: refuse to build a session that would ship username/password in
-	// cleartext over a non-TLS broker unless allow_plaintext_credentials is
-	// set. This is the build-time enforcement boundary — broker_urls are
-	// populated here, so the gate is always active for a real session.
-	if err := opts.validatePlaintextCredentials(); err != nil {
-		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
-			fmt.Sprintf("mqtt session %q: insecure credential transport", spec.ID))
-	}
-	if err := opts.Will.Validate(); err != nil {
-		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
-			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
 	}
 	if spec.ManagedSubscriptionsRequired {
 		if mode == connectivity.SessionEphemeral {

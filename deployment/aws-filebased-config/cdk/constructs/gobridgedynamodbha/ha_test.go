@@ -5,6 +5,7 @@ package gobridgedynamodbha_test
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,11 +191,15 @@ func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T
 	template.ResourceCountIs(jsii.String("AWS::ECS::TaskDefinition"), jsii.Number(2))
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
 	desired := map[float64]bool{}
-	for _, raw := range *services {
+	for logicalID, raw := range *services {
 		props := (*raw)["Properties"].(map[string]any)
 		desired[props["DesiredCount"].(float64)] = true
-		if props["AvailabilityZoneRebalancing"] != "ENABLED" {
-			t.Fatalf("AvailabilityZoneRebalancing = %v, want ENABLED", props["AvailabilityZoneRebalancing"])
+		wantRebalancing := "ENABLED"
+		if strings.Contains(logicalID, "ControlService") {
+			wantRebalancing = "DISABLED" // 0/100 single-writer deployment cannot use AZ rebalancing.
+		}
+		if props["AvailabilityZoneRebalancing"] != wantRebalancing {
+			t.Fatalf("%s AvailabilityZoneRebalancing = %v, want %s", logicalID, props["AvailabilityZoneRebalancing"], wantRebalancing)
 		}
 		network := props["NetworkConfiguration"].(map[string]any)["AwsvpcConfiguration"].(map[string]any)
 		subnets := network["Subnets"].([]any)
@@ -204,6 +209,27 @@ func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T
 	}
 	if !desired[1] || !desired[2] {
 		t.Fatalf("desired counts = %v, want control=1 and workers=2", desired)
+	}
+}
+
+func TestGoBridgeDynamoDBHA_ControlDeploymentPreventsConcurrentRWWriters(t *testing.T) {
+	defer jsii.Close()
+	h := newHAHarness(t, nil)
+	template := assertions.Template_FromStack(h.stack, nil)
+	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
+	found := false
+	for logicalID, raw := range *services {
+		if !strings.Contains(logicalID, "ControlService") {
+			continue
+		}
+		found = true
+		deployment := (*raw)["Properties"].(map[string]any)["DeploymentConfiguration"].(map[string]any)
+		if deployment["MinimumHealthyPercent"] != float64(0) || deployment["MaximumPercent"] != float64(100) {
+			t.Fatalf("control deployment = %v, want 0/100 to prevent concurrent RW config writers", deployment)
+		}
+	}
+	if !found {
+		t.Fatal("control ECS service not found")
 	}
 }
 
@@ -234,6 +260,14 @@ func TestGoBridgeDynamoDBHA_ForcesTopologyCloudWatchAndUniqueMetricIdentity(t *t
 		if cfg.InstanceID != "" {
 			t.Fatalf("instance_id = %q, want empty so each task derives a unique metric identity", cfg.InstanceID)
 		}
+		if cfg.DynamoDBHALeaseTableName != "gobridge-leases" ||
+			cfg.DynamoDBHAOutboxTableName != "gobridge-outbox" ||
+			cfg.DynamoDBHAManagedSubscriptionsTableName != "gobridge-managed-subscriptions" {
+			t.Fatalf("HA expected table identities not stamped into bootstrap: %+v", cfg)
+		}
+		if len(cfg.DynamoDBHAConfigFingerprint) != 64 {
+			t.Fatalf("HA config fingerprint length = %d, want SHA-256 hex", len(cfg.DynamoDBHAConfigFingerprint))
+		}
 	}
 	if !roles["control"] || !roles["worker"] {
 		t.Fatalf("node roles = %v, want control and worker", roles)
@@ -260,10 +294,34 @@ func TestGoBridgeDynamoDBHA_ConfigAndAccessors(t *testing.T) {
 	}
 }
 
+func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
+	defer jsii.Close()
+	t.Cleanup(singleton.ResetForTest)
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("AliasStack"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
+	aliased := strings.ReplaceAll(validHAYAML, "transport: mqtt", "transport: mqtt.paho")
+	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
+		Vpc:          vpc,
+		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:    haBootstrap(),
+		BridgeConfig: source.NewAsset(writeHAYAML(t, aliased)),
+	})
+	if bridge == nil {
+		t.Fatal("mqtt.paho alias returned nil HA facade")
+	}
+}
+
 func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 	cases := map[string]func(string) string{
 		"standalone deployment": func(s string) string {
 			return strings.Replace(s, "deployment_mode: clustered", "deployment_mode: standalone", 1)
+		},
+		"missing broker URL": func(s string) string {
+			return strings.Replace(s, "        broker_url: tls://mqtt.example.test:8883\n", "", 1)
+		},
+		"independent durable broker domains": func(s string) string {
+			return strings.Replace(s, "        broker_url: tls://mqtt.example.test:8883", "        broker_urls: [tls://mqtt-a.example.test:8883, tls://mqtt-b.example.test:8883]", 1)
 		},
 		"missing failover objective": func(s string) string {
 			return strings.Replace(s, `      failover_slo: 120s
@@ -308,16 +366,69 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 	}
 }
 
-func TestGoBridgeDynamoDBHA_RejectsFewerThanTwoWorkers(t *testing.T) {
+func TestGoBridgeDynamoDBHA_RejectsUnprovableWorkerDesiredCount(t *testing.T) {
+	cases := map[string]func() *float64{
+		"below minimum":     func() *float64 { return jsii.Number(1) },
+		"fractional":        func() *float64 { return jsii.Number(2.5) },
+		"nan":               func() *float64 { return jsii.Number(math.NaN()) },
+		"positive infinity": func() *float64 { return jsii.Number(math.Inf(1)) },
+		"unresolved token": func() *float64 {
+			return awscdk.Token_AsNumber(awscdk.Fn_ImportValue(jsii.String("WorkerCount")))
+		},
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer jsii.Close()
+			defer func() {
+				recovered := recover()
+				if recovered == nil || !strings.Contains(fmt.Sprint(recovered), "resolved finite integer >= 2") {
+					t.Fatalf("panic = %v, want resolved finite integer >= 2 invariant", recovered)
+				}
+			}()
+			newHAHarness(t, func(props *ha.DynamoDBHAProps) { props.WorkerDesiredCount = value() })
+		})
+	}
+}
+
+func TestGoBridgeDynamoDBHA_PendingVpcLookupDefersAZValidation(t *testing.T) {
 	defer jsii.Close()
+	t.Cleanup(singleton.ResetForTest)
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("PendingStack"), &awscdk.StackProps{
+		Env: &awscdk.Environment{Account: jsii.String("111122223333"), Region: jsii.String("eu-west-1")},
+	})
+	vpc := awsec2.Vpc_FromLookup(stack, jsii.String("Vpc"), &awsec2.VpcLookupOptions{VpcId: jsii.String("vpc-pending")})
 	defer func() {
-		recovered := recover()
-		if recovered == nil || !strings.Contains(fmt.Sprint(recovered), "WorkerDesiredCount") {
-			t.Fatalf("panic = %v, want WorkerDesiredCount invariant", recovered)
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("pending VPC context lookup must defer AZ validation until the context-resolved synth pass: %v", recovered)
 		}
 	}()
-	one := 1.0
-	newHAHarness(t, func(props *ha.DynamoDBHAProps) { props.WorkerDesiredCount = &one })
+	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
+		Vpc:          vpc,
+		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:    haBootstrap(),
+		BridgeConfig: source.NewAsset(writeHAYAML(t, validHAYAML)),
+	})
+}
+
+func TestGoBridgeDynamoDBHA_ResolvedSingleAZIsRejected(t *testing.T) {
+	defer jsii.Close()
+	t.Cleanup(singleton.ResetForTest)
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("SingleAZStack"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(1)})
+	defer func() {
+		recovered := recover()
+		if recovered == nil || !strings.Contains(fmt.Sprint(recovered), "at least two Availability Zones") {
+			t.Fatalf("panic = %v, want resolved two-AZ invariant", recovered)
+		}
+	}()
+	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
+		Vpc:          vpc,
+		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:    haBootstrap(),
+		BridgeConfig: source.NewAsset(writeHAYAML(t, validHAYAML)),
+	})
 }
 
 func TestGoBridgeDynamoDBHA_TaskRolesHaveExactDynamoDBDataPlaneGrants(t *testing.T) {
@@ -427,6 +538,22 @@ func normalizeActions(raw any) []string {
 	}
 }
 
+func TestGoBridgeDynamoDBHA_HealthyStandbyDoesNotInstallAcquireContentionAlarm(t *testing.T) {
+	defer jsii.Close()
+	h := newHAHarness(t, nil)
+	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
+	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
+		DynamoDBHA: h.bridge, Efs: h.bridge.EfsConfig(), AlarmTopic: topic,
+	})
+	alarms := assertions.Template_FromStack(h.stack, nil).FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
+	for logicalID, raw := range *alarms {
+		properties := (*raw)["Properties"].(map[string]any)
+		if properties["MetricName"] == "LeaseAcquireFailures" || strings.Contains(logicalID, "HALeaseAcquireFailures") {
+			t.Fatalf("healthy warm-standby contention must not install LeaseAcquireFailures alarm: %s %v", logicalID, properties)
+		}
+	}
+}
+
 func TestGoBridgeDynamoDBHA_ALBAttachmentTargetsHAServiceSet(t *testing.T) {
 	defer jsii.Close()
 	h := newHAHarness(t, nil)
@@ -494,7 +621,7 @@ func TestGoBridgeDynamoDBHA_AlarmsCoverHAAndExternalDuration(t *testing.T) {
 	}
 	for _, name := range []string{
 		"RunningTaskCount", "DesiredTaskCount", "SystemErrors", "ThrottledRequests",
-		"LeaseAcquireFailures", "LeaseExpiries", "LeaseTransfers",
+		"LeaseExpiries", "LeaseTransfers",
 		"OutboxDepth", "OutboxDrainLatency", "OutboxRecordFailures",
 		"DLQDepth", "DLQEntries", "DLQWriteFailures",
 	} {

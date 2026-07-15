@@ -732,7 +732,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 	// diagnosed. A no-op when no LevelVar was wired (WithLogLevelVar).
 	a.applyLogLevel(logical)
 
-	if err := validateFilesystemProfile(a.cfg, logical); err != nil {
+	if err := validateDeploymentProfile(a.cfg, logical); err != nil {
 		return err
 	}
 

@@ -24,7 +24,7 @@ func sessionSpecFrom(def ports.SessionDef) ports.SessionSpec {
 func sessionSpecWithManagedSubscriptions(def ports.SessionDef, cfg *ports.BridgeConfig, store ports.ManagedSubscriptionStore) (ports.SessionSpec, error) {
 	spec := sessionSpecFrom(def)
 	mode := connectivity.SessionMode(def.SessionMode)
-	if def.Transport != "mqtt" || (mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+	if !isMQTTPahoTransport(def.Transport) || (mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
 		return spec, nil
 	}
 	// A configured store is also injected for an EMPTY desired plan: this is
@@ -53,6 +53,10 @@ func sessionSpecWithManagedSubscriptions(def ports.SessionDef, cfg *ports.Bridge
 	return spec, nil
 }
 
+func isMQTTPahoTransport(kind string) bool {
+	return kind == "mqtt" || kind == "mqtt.paho"
+}
+
 func sessionHasDesiredSubscriptions(cfg *ports.BridgeConfig, sessionID string) bool {
 	if cfg == nil {
 		return false
@@ -72,7 +76,7 @@ func requiresManagedSubscriptionStore(cfg *ports.BridgeConfig) bool {
 	for i := range cfg.Sessions {
 		def := &cfg.Sessions[i]
 		mode := connectivity.SessionMode(def.SessionMode)
-		if def.Transport == "mqtt" && (mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive) && sessionHasDesiredSubscriptions(cfg, def.ID) {
+		if isMQTTPahoTransport(def.Transport) && (mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive) && sessionHasDesiredSubscriptions(cfg, def.ID) {
 			return true
 		}
 	}

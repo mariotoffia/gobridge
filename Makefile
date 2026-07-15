@@ -74,10 +74,11 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 	fi; \
 	exit $$rc'
 
-test-cdk-norace: ## Run CDK IAM assertions excluded from race builds
-	@echo "Running non-race CDK IAM policy assertions..."
+test-cdk-norace: ## Run CDK assertions excluded from race builds
+	@echo "Running non-race CDK assertion suites..."
 	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
-		./constructs/internal/grants ./constructs/internal/gobridgebase
+		./constructs/internal/grants ./constructs/internal/gobridgebase \
+		./constructs/gobridgedynamodbha ./constructs/gobridgealarms
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports

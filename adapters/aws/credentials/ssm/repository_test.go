@@ -396,6 +396,11 @@ func TestParseURI(t *testing.T) {
 			expected: "/single",
 		},
 		{
+			name:    "triple slash has no canonical host",
+			uri:     "pms:///secret/path",
+			wantErr: true,
+		},
+		{
 			name:    "wrong scheme",
 			uri:     "vault://secret/path",
 			wantErr: true,

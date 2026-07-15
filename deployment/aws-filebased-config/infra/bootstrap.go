@@ -5,6 +5,7 @@
 package infra
 
 import (
+	"encoding/hex"
 	"fmt"
 	"time"
 )
@@ -92,6 +93,15 @@ type BootstrapConfig struct {
 	// surfaced to the container as the GOBRIDGE_NODE_ROLE env var.
 	NodeRole NodeRole `json:"node_role,omitempty"`
 	Topology Topology `json:"topology,omitempty"`
+
+	// DynamoDBHA* fields are deployment-owned expectations stamped only by
+	// GoBridgeDynamoDBHA. The runtime checks the EFS-loaded logical config
+	// against these identities before planning stores or transports, preventing
+	// a tampered/stale file from bypassing synth-time HA admission.
+	DynamoDBHALeaseTableName                string `json:"dynamodb_ha_lease_table_name,omitempty"`
+	DynamoDBHAOutboxTableName               string `json:"dynamodb_ha_outbox_table_name,omitempty"`
+	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
+	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
 
 	ConfigFilePath string `json:"config_file_path"`
 	PollInterval   string `json:"poll_interval,omitempty"`
@@ -268,6 +278,22 @@ func (c BootstrapConfig) Validate() error {
 	case TopologySingle, TopologyFilesystemReplicated, TopologyDynamoDBCoordinatedHA:
 	default:
 		return fmt.Errorf("infra: unsupported topology %q (call Normalized() first)", c.Topology)
+	}
+
+	if c.Topology == TopologyDynamoDBCoordinatedHA {
+		if c.DynamoDBHALeaseTableName == "" || c.DynamoDBHAOutboxTableName == "" ||
+			c.DynamoDBHAManagedSubscriptionsTableName == "" {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha requires deployment-owned lease, outbox, and managed-subscription table names")
+		}
+		if c.DynamoDBHALeaseTableName == c.DynamoDBHAOutboxTableName ||
+			c.DynamoDBHALeaseTableName == c.DynamoDBHAManagedSubscriptionsTableName ||
+			c.DynamoDBHAOutboxTableName == c.DynamoDBHAManagedSubscriptionsTableName {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha expected table names must be distinct")
+		}
+		fingerprint, err := hex.DecodeString(c.DynamoDBHAConfigFingerprint)
+		if err != nil || len(fingerprint) != 32 {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha config fingerprint must be a 64-character SHA-256 hex value")
+		}
 	}
 
 	if c.BridgeID == "" {

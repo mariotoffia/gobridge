@@ -139,14 +139,18 @@ one config-control task definition and one worker task definition. The control
 service desired count is one and the worker service minimum is two. Every task
 runs the clustered runtime and can own a lease; node role controls only EFS
 config-write authority. Selected private subnets span at least two Availability
-Zones and ECS AZ rebalancing is enabled.
+Zones. Worker AZ rebalancing is enabled; the single RW control service uses a
+0/100 replacement policy with rebalancing disabled, preventing overlapping
+config writers.
 
 The facade owns exactly three on-demand, PITR-enabled, retained tables through
 `DynamoDBHAData`: `PK`-only lease with TTL omitted, `PK`/`SK` outbox with
 `ExpiryIndex`, `RecordIDIndex`, and `ClaimIndex`, and `storage_identity`-keyed
 managed-subscription history. It validates names from the parsed store configs,
 then runs the Task 9 builder admission path source-safely before creating
-resources. Static endpoints and per-replica Exclusive MQTT client-ID suffixes
+resources. The facade stamps the canonical admitted-config fingerprint and exact
+table identities into bootstrap; every process checks its EFS config against
+those expectations before planning stores or transports. Static endpoints and per-replica Exclusive MQTT client-ID suffixes
 are rejected; the bootstrap composition root registers `EcsEndpointResolver`
 for clustered configs.
 

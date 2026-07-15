@@ -92,10 +92,24 @@ func TestBootstrapConfig_Validate_DynamoDBCoordinatedHA(t *testing.T) {
 	c := BootstrapConfig{
 		BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
 		NodeRole: NodeRoleWorker, Topology: TopologyDynamoDBCoordinatedHA,
-		ContainerMemoryBytes: DefaultContainerMemoryBytes,
+		ContainerMemoryBytes:     DefaultContainerMemoryBytes,
+		DynamoDBHALeaseTableName: "leases", DynamoDBHAOutboxTableName: "outbox",
+		DynamoDBHAManagedSubscriptionsTableName: "history",
+		DynamoDBHAConfigFingerprint:             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("DynamoDB coordinated HA topology rejected: %v", err)
+	}
+}
+
+func TestBootstrapConfig_Validate_DynamoDBCoordinatedHARequiresExpectations(t *testing.T) {
+	c := BootstrapConfig{
+		BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
+		NodeRole: NodeRoleWorker, Topology: TopologyDynamoDBCoordinatedHA,
+		ContainerMemoryBytes: DefaultContainerMemoryBytes,
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("DynamoDB coordinated HA without deployment-owned expectations must be rejected")
 	}
 }
 

@@ -95,20 +95,34 @@ func TestHA_FailoverStopsVerifiedLeaseholder(t *testing.T) {
 
 	warm := make([]time.Duration, 0, env.Samples)
 	cold := make([]time.Duration, 0, env.Samples)
-	for sample := 0; sample < env.Samples; sample++ {
-		t.Logf("warm failover sample %d/%d", sample+1, env.Samples)
+	maxWarmAttempts := env.Samples * 3
+	for attempt := 0; len(warm) < env.Samples && attempt < maxWarmAttempts; attempt++ {
+		t.Logf("warm failover attempt %d (verified samples %d/%d)", attempt+1, len(warm), env.Samples)
 		holder := fixture.waitVerifiedHolder(t, ctx, 8*time.Minute)
-		duration := fixture.stopVerifiedHolderAndMeasure(t, ctx, holder, nil)
-		warm = append(warm, duration)
+		warmSnapshot := fixture.snapshotRunningStandbys(t, ctx, holder.task.arn)
+		duration, path := fixture.stopVerifiedHolderAndMeasure(t, ctx, holder, warmSnapshot, nil)
+		if path == "warm" {
+			warm = append(warm, duration)
+		} else {
+			cold = append(cold, duration)
+		}
 		fixture.restoreFleet(t, ctx)
+	}
+	if len(warm) < env.Samples {
+		t.Fatalf("collected %d/%d warm samples after %d attempts; replacement winners were correctly classified cold", len(warm), env.Samples, maxWarmAttempts)
+	}
 
+	for sample := 0; sample < env.Samples; sample++ {
 		t.Logf("cold failover sample %d/%d", sample+1, env.Samples)
 		fixture.scaleServices(t, ctx, 0, 1)
 		fixture.waitRunningTaskCount(t, ctx, 1, 8*time.Minute)
 		coldHolder := fixture.waitVerifiedHolder(t, ctx, 8*time.Minute)
-		duration = fixture.stopVerifiedHolderAndMeasure(t, ctx, coldHolder, func() {
+		duration, path := fixture.stopVerifiedHolderAndMeasure(t, ctx, coldHolder, nil, func() {
 			fixture.scaleServices(t, ctx, 1, 2)
 		})
+		if path != "cold" {
+			t.Fatalf("replacement-only failover classified as %q, want cold", path)
+		}
 		cold = append(cold, duration)
 		fixture.restoreFleet(t, ctx)
 	}
@@ -214,7 +228,9 @@ type verifiedHolder struct {
 	task  haTask
 }
 
-func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(t *testing.T, ctx context.Context, holder verifiedHolder, afterAccepted func()) time.Duration {
+func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(
+	t *testing.T, ctx context.Context, holder verifiedHolder, warmSnapshot map[string]struct{}, afterAccepted func(),
+) (time.Duration, string) {
 	t.Helper()
 	current, err := f.readLease(ctx)
 	if err != nil {
@@ -274,7 +290,8 @@ func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(t *testing.T, ctx context
 	if successor.lease.owner == holder.lease.owner || successor.lease.version <= holder.lease.version || successor.task.arn == holder.task.arn {
 		t.Fatalf("invalid successor: prior=%+v successor=%+v", holder, successor)
 	}
-	t.Logf("verified successor owner=%s version=%d task=%s failure-to-Full=%s", successor.lease.owner, successor.lease.version, successor.task.arn, duration)
+	path := classifyFailoverPath(successor.task.arn, warmSnapshot)
+	t.Logf("verified successor owner=%s version=%d task=%s path=%s failure-to-Full=%s", successor.lease.owner, successor.lease.version, successor.task.arn, path, duration)
 
 	sampleAt := time.Now().UTC()
 	f.publishFailureToFull(t, ctx, duration, sampleAt)
@@ -282,7 +299,32 @@ func (f haRuntimeFixture) stopVerifiedHolderAndMeasure(t *testing.T, ctx context
 	if float64(duration.Milliseconds()) > f.objectiveMS {
 		t.Fatalf("measured failure-to-Full %s exceeds declared objective %.0fms", duration, f.objectiveMS)
 	}
-	return duration
+	return duration, path
+}
+
+func classifyFailoverPath(successorARN string, warmSnapshot map[string]struct{}) string {
+	if _, existedBeforeFailure := warmSnapshot[successorARN]; existedBeforeFailure {
+		return "warm"
+	}
+	return "cold"
+}
+
+func (f haRuntimeFixture) snapshotRunningStandbys(t *testing.T, ctx context.Context, holderARN string) map[string]struct{} {
+	t.Helper()
+	tasks, err := f.runningTasks(ctx)
+	if err != nil {
+		t.Fatalf("snapshot running standbys: %v", err)
+	}
+	standbys := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		if task.arn != holderARN && task.lastStatus == "RUNNING" {
+			standbys[task.arn] = struct{}{}
+		}
+	}
+	if len(standbys) == 0 {
+		t.Fatal("warm failover requires at least one running pre-failure standby task")
+	}
+	return standbys
 }
 
 func (f haRuntimeFixture) waitTaskStopped(t *testing.T, ctx context.Context, taskARN string, timeout time.Duration) {
@@ -505,4 +547,14 @@ func (f haRuntimeFixture) logDiagnostics(t *testing.T, ctx context.Context) {
 	})
 	t.Logf("HA diagnostics lease=%+v lease_err=%v tasks=%+v task_err=%v services=%+v service_err=%v",
 		lease, leaseErr, tasks, taskErr, services.Services, serviceErr)
+}
+
+func TestClassifyFailoverPath_RequiresPreFailureWarmTask(t *testing.T) {
+	warmSnapshot := map[string]struct{}{"arn:standby-a": {}, "arn:standby-b": {}}
+	if got := classifyFailoverPath("arn:standby-a", warmSnapshot); got != "warm" {
+		t.Fatalf("existing standby classified as %q, want warm", got)
+	}
+	if got := classifyFailoverPath("arn:replacement", warmSnapshot); got != "cold" {
+		t.Fatalf("replacement task classified as %q, want cold", got)
+	}
 }
