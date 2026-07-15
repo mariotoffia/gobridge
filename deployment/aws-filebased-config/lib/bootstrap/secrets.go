@@ -301,17 +301,20 @@ func parseAdminKeys(raw string) (map[string]string, error) {
 }
 
 func normalizeParameterRef(ref string) (string, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" {
 		return "", fmt.Errorf("bootstrap: empty parameter reference")
 	}
-	if strings.HasPrefix(ref, "pms://") {
+	// Classify after trimming so whitespace cannot disguise a PMS URI, but pass
+	// the original bytes to the authoritative parser so it can reject them.
+	if strings.HasPrefix(trimmed, "pms://") {
 		path, err := ssmrepo.ParameterPath(ref)
 		if err != nil {
 			return "", fmt.Errorf("bootstrap: invalid parameter reference: %w", err)
 		}
 		return path, nil
 	}
+	ref = trimmed
 	if strings.Contains(ref, "://") {
 		return "", fmt.Errorf("bootstrap: unsupported parameter reference %q", ref)
 	}

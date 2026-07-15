@@ -81,6 +81,14 @@ test-cdk-norace: ## Run CDK assertions excluded from race builds
 		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
 		./constructs/gobridgealbattachment ./constructs/internal/singleton \
 		./constructs/internal/validation ./registry
+	@echo "Running race-enabled source-safe AWS integration harness validation..."
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -race -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestSandboxEnvFrom_' ./integration
+	@echo "Running non-race source-safe JSII VPC fixture synthesis..."
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports

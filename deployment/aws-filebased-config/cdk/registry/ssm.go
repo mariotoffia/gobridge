@@ -14,17 +14,20 @@ import (
 // resolution, and IAM ARN derivation. For example, pms://name/path resolves
 // to /name/path.
 func NormalizeParameterPath(ref string) (string, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" {
 		return "", fmt.Errorf("registry: empty SSM parameter reference")
 	}
-	if strings.HasPrefix(ref, "pms://") {
+	// Classify after trimming so whitespace cannot disguise a PMS URI, but pass
+	// the original bytes to the authoritative parser so it can reject them.
+	if strings.HasPrefix(trimmed, "pms://") {
 		path, err := ssmrepo.ParameterPath(ref)
 		if err != nil {
 			return "", fmt.Errorf("registry: normalize SSM parameter URI: %w", err)
 		}
 		return path, nil
 	}
+	ref = trimmed
 	if strings.Contains(ref, "://") {
 		return "", fmt.Errorf("registry: unsupported SSM parameter reference %q", ref)
 	}
