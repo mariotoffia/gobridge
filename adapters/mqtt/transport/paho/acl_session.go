@@ -222,8 +222,7 @@ func (s *Session) Start(ctx context.Context) error {
 	if s.connectOverride != nil && !s.connectOverrideAwaitConnectionUp {
 		s.mu.Lock()
 		if s.recoveryNeedsSessionPresent {
-			s.recoveryNeedsSessionPresent = false
-			s.recoverySessionPresent = true
+			s.recoverySessionPresentEpoch = s.connEpoch
 		}
 		s.mu.Unlock()
 		s.completeConnectionUpBarrier(connectionGeneration, nil)

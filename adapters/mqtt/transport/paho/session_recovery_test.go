@@ -511,3 +511,112 @@ func TestSessionRecovery_CompletionPublishesRateLimitBeforeConcurrentRequest(t *
 	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 	assert.Equal(t, uint64(2), s.Health(t.Context()).RecoveryRecycleCount)
 }
+
+func TestSessionRecovery_ReloadGateOrderCannotDeadlockManagedReconcile(t *testing.T) {
+	clk := clocktest.New()
+	operations := []string{}
+	store := &managedHistoryFake{
+		values: map[string]map[string]struct{}{
+			"safe-session-id": {"old/#": {}},
+		},
+		operations: &operations,
+	}
+	conn := &managedConnFake{operations: &operations}
+	s := NewSession(SessionOptions{
+		ClientID:         "reload-order",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil)
+	s.managedStore = store
+	s.managedIdentity = "safe-session-id"
+	s.managedRequired = true
+	s.mu.Lock()
+	s.cm = conn
+	s.connected = true
+	s.managedLoaded = true
+	s.managedHistory = map[string]struct{}{"old/#": {}}
+	s.mu.Unlock()
+
+	quiesceEntered := make(chan struct{})
+	releaseQuiesce := make(chan struct{})
+	var quiesceOnce sync.Once
+	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		quiesceOnce.Do(func() { close(quiesceEntered) })
+		<-releaseQuiesce
+		return nil
+	})
+	gateAcquired := make(chan struct{}, 2)
+	s.reloadGateAcquiredHook = func() { gateAcquired <- struct{}{} }
+
+	managedCtx, cancelManaged := context.WithCancel(t.Context())
+	managedDone := make(chan error, 1)
+	go func() { managedDone <- s.Reconcile(managedCtx, connectivity.SessionPlan{}) }()
+	<-quiesceEntered
+
+	s.mu.Lock()
+	s.recoveryPending = true
+	s.recoverySessionPresentEpoch = s.connEpoch
+	s.recoveryTargetEpoch = s.connEpoch
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 1
+	s.recoveryAttemptDeadline = clk.Now().Add(time.Second)
+	s.mu.Unlock()
+	recoveryDone := make(chan error, 1)
+	go func() { recoveryDone <- s.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
+	<-gateAcquired
+
+	clk.Advance(time.Second)
+	recoveryErr := wait.RequireReceive(t, recoveryDone, time.Second)
+	require.Error(t, recoveryErr)
+
+	cancelManaged()
+	close(releaseQuiesce)
+	require.Error(t, wait.RequireReceive(t, managedDone, time.Second))
+}
+
+func TestSessionRecovery_SessionPresentEvidenceRejectsStaleConnectionEpoch(t *testing.T) {
+	s := NewSession(SessionOptions{ClientID: "stale-session-present"}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.connEpoch = 10
+	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 1
+	s.recoveryAttemptDeadline = s.clock().Now().Add(time.Minute)
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+
+	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+	s.mu.Lock()
+	s.connEpoch++
+	s.mu.Unlock()
+	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+
+	err := s.captureRecoveryTargetEpoch(1)
+	require.Error(t, err)
+	assert.NotEqual(t, ports.ServiceLevelFull, s.Health(t.Context()).ServiceLevel)
+}
+
+func TestSessionRecovery_SessionPresentEvidenceAcceptsExactConnectionEpoch(t *testing.T) {
+	s := NewSession(SessionOptions{ClientID: "exact-session-present"}, connectivity.SessionPersistent, nil)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.connEpoch = 20
+	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 2
+	s.recoveryAttemptDeadline = s.clock().Now().Add(time.Minute)
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+
+	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+	require.NoError(t, s.captureRecoveryTargetEpoch(2))
+	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
+	assert.False(t, s.recoveryPending)
+}

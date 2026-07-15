@@ -37,13 +37,31 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) (retErr error) {
 	ctx, cancelRecoveryBound, recoveryGeneration := s.recoveryReconcileContext(ctx)
 	defer cancelRecoveryBound()
-	if recoveryGeneration != 0 {
+
+	// Lock order is reloadGate -> reconcileMu whenever both are needed. Start
+	// with reconcileMu only to classify an ordinary reconcile, then release it
+	// before waiting for reloadGate. Never wait for reloadGate while holding
+	// reconcileMu: managed migration and recovery would otherwise form ABBA.
+	reloadSerialized := recoveryGeneration != 0
+	if reloadSerialized {
 		if err := s.acquireReload(ctx); err != nil {
 			return MapError(err).WithMessage("mqtt: recovery reconcile waiting for reload serialization")
 		}
+		s.reconcileMu.Lock()
+	} else {
+		s.reconcileMu.Lock()
+		if len(s.managedCleanupFilters(plan)) > 0 {
+			s.reconcileMu.Unlock()
+			if err := s.acquireReload(ctx); err != nil {
+				return MapError(err).WithMessage("mqtt: managed reconcile waiting for reload serialization")
+			}
+			reloadSerialized = true
+			s.reconcileMu.Lock()
+		}
+	}
+	if reloadSerialized {
 		defer s.releaseReload()
 	}
-	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 	defer func() {
 		if recoveryGeneration == 0 {
@@ -55,7 +73,10 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		}
 		s.mu.Lock()
 		resumed := s.recoveryAttemptActive &&
-			s.recoveryGeneration == recoveryGeneration && s.recoverySessionPresent
+			s.recoveryGeneration == recoveryGeneration &&
+			s.recoveryTargetEpoch != 0 &&
+			s.recoverySessionPresentEpoch == s.recoveryTargetEpoch &&
+			s.connEpoch == s.recoveryTargetEpoch
 		recoveryErr := s.recoveryErr
 		s.mu.Unlock()
 		if !resumed {
@@ -891,7 +912,7 @@ func (s *Session) reconcileManagedUnsubscribe(
 		// the replacement connection instead of redistributing it. The replacement
 		// generation must prove no such delivery was buffered before history can be
 		// removed; otherwise restoring the old config could not identify/drain it.
-		if reloadErr := s.Reload(ctx); reloadErr != nil {
+		if reloadErr := s.reloadLocked(ctx); reloadErr != nil {
 			return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
 		}
 		if confirmation.firstErr != nil {
@@ -1071,19 +1092,15 @@ func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
-	if s.router == nil {
-		return
-	}
+func (s *Session) managedCleanupFilters(plan connectivity.SessionPlan) []string {
 	desired := make(map[string]struct{}, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
 		desired[sub.Topic] = struct{}{}
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.managedRequired {
-		s.mu.Unlock()
-		s.router.setManagedCleanupFilters(nil)
-		return
+		return nil
 	}
 	filters := make([]string, 0, len(s.managedHistory))
 	for filter := range s.managedHistory {
@@ -1091,6 +1108,12 @@ func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
 			filters = append(filters, filter)
 		}
 	}
-	s.mu.Unlock()
-	s.router.setManagedCleanupFilters(filters)
+	return filters
+}
+
+func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
+	if s.router == nil {
+		return
+	}
+	s.router.setManagedCleanupFilters(s.managedCleanupFilters(plan))
 }

@@ -112,8 +112,9 @@ type Session struct {
 	reconcileMu sync.Mutex
 	// reloadGate is the one context-aware serialization gate shared by
 	// credential, managed-migration, and settlement-recovery reloads.
-	reloadGate         chan struct{}
-	reloadGateWaitHook func() // deterministic package-test barrier; nil in production
+	reloadGate             chan struct{}
+	reloadGateWaitHook     func() // deterministic package-test barrier; nil in production
+	reloadGateAcquiredHook func() // deterministic package-test barrier; nil in production
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
@@ -213,7 +214,8 @@ type Session struct {
 	// broker session. Concurrent Retry requests coalesce on this state.
 	recoveryPending             bool
 	recoveryNeedsSessionPresent bool
-	recoverySessionPresent      bool
+	recoverySessionPresentEpoch uint64
+	recoveryTargetEpoch         uint64
 	recoveryAttemptActive       bool
 	recoveryGeneration          uint64
 	recoveryAttemptDeadline     time.Time

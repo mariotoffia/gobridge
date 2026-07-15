@@ -20,6 +20,9 @@ const (
 func (s *Session) acquireReload(ctx context.Context) error {
 	select {
 	case <-s.reloadGate:
+		if s.reloadGateAcquiredHook != nil {
+			s.reloadGateAcquiredHook()
+		}
 		return nil
 	default:
 	}
@@ -28,6 +31,9 @@ func (s *Session) acquireReload(ctx context.Context) error {
 	}
 	select {
 	case <-s.reloadGate:
+		if s.reloadGateAcquiredHook != nil {
+			s.reloadGateAcquiredHook()
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -101,7 +107,8 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	if success {
 		s.recoveryPending = false
 		s.recoveryNeedsSessionPresent = false
-		s.recoverySessionPresent = false
+		s.recoverySessionPresentEpoch = 0
+		s.recoveryTargetEpoch = 0
 		s.recoveryErr = nil
 	} else {
 		if attemptErr == nil {
@@ -116,6 +123,26 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	return true
+}
+
+func (s *Session) captureRecoveryTargetEpoch(generation uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		return shared.ErrUnavailable.WithMessage("mqtt: settlement recovery attempt is no longer active")
+	}
+	targetEpoch := s.connEpoch
+	s.recoveryTargetEpoch = targetEpoch
+	if s.recoveryErr != nil {
+		return s.recoveryErr
+	}
+	if targetEpoch == 0 || s.recoverySessionPresentEpoch != targetEpoch {
+		return shared.ErrUnavailable.
+			WithMessage("mqtt: Session Present evidence does not match recovery connection epoch").
+			With("target_epoch", targetEpoch).
+			With("session_present_epoch", s.recoverySessionPresentEpoch)
+	}
+	return nil
 }
 
 // requestRecovery records the Retry synchronously, then recycles the durable
@@ -137,7 +164,8 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	}
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresent = false
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
 	s.recoveryGeneration++
 	generation := s.recoveryGeneration
 	s.recoveryErr = nil
@@ -194,7 +222,8 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	s.mu.Lock()
 	if s.recoveryAttemptActive && s.recoveryGeneration == generation {
 		s.recoveryNeedsSessionPresent = true
-		s.recoverySessionPresent = false
+		s.recoverySessionPresentEpoch = 0
+		s.recoveryTargetEpoch = 0
 	}
 	s.mu.Unlock()
 
@@ -216,6 +245,10 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 	cancelDrain()
 
 	if err := s.reloadLocked(ctx); err != nil {
+		s.completeRecoveryAttempt(generation, err, false)
+		return
+	}
+	if err := s.captureRecoveryTargetEpoch(generation); err != nil {
 		s.completeRecoveryAttempt(generation, err, false)
 		return
 	}
@@ -643,9 +676,9 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.completeConnectionUpBarrier(generation, err)
 		return
 	}
+	nextEpoch := s.connEpoch + 1
 	if s.recoveryNeedsSessionPresent {
-		s.recoveryNeedsSessionPresent = false
-		s.recoverySessionPresent = true
+		s.recoverySessionPresentEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
 	s.connected = true
@@ -653,7 +686,7 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	s.observedSubs = make(map[string]subscriptionGrant)
 	s.activeSubs = make(map[string]byte)
 	s.subscriptionsSatisfied = false
-	s.connEpoch++
+	s.connEpoch = nextEpoch
 	s.mu.Unlock()
 
 	// This reset is part of connection-up completion: Start/Reload must not
