@@ -477,7 +477,7 @@ fix(mqtt): recycle persistent sessions on unsettled delivery
 
 ## Task 7: Remove session-wide ingress failure coupling
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:runtime-expert, thiink:clean-arch-reviewer,
 thiink:test-reviewer
@@ -491,6 +491,7 @@ durable staging or multiple broker connections.
 **Files:**
 - Modify: `ports/transport.go`
 - Modify: `adapters/mqtt/transport/paho/factory.go`
+- Modify: `adapters/mqtt/transport/paho/factory_test.go`
 - Modify: `adapters/mqtt/transport/paho/session.go`
 - Modify: `bridge/builder_prepare.go`
 - Modify: `bridge/builder_prepare_test.go`

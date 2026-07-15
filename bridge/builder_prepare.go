@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -189,6 +190,12 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		}
 	}
 	if err := b.validatePostAcquireActivationTimings(); err != nil {
+		return nil, err
+	}
+	// Cardinality is a pure capability-based preflight. It must run before
+	// buildStores or complete creates any store, session, receiver, sender, or
+	// runtime resource: a rejected topology must leave the live system untouched.
+	if err := b.validateDedicatedIngressSessions(); err != nil {
 		return nil, err
 	}
 
@@ -586,4 +593,53 @@ func explicitStaleClaimDuration(sc *ports.StoreConfig) (time.Duration, bool, err
 	default:
 		return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: must be a duration string or time.Duration, got %T", v)
 	}
+}
+
+// validateDedicatedIngressSessions enforces transport-declared session
+// cardinality without naming a transport or importing an adapter. The
+// capability belongs to the factory that creates the session, so every logical
+// receiver bound to that session counts even when receiver factories are
+// registered under different aliases. Sender definitions deliberately do not
+// participate: egress may continue sharing the connection.
+func (b *Builder) validateDedicatedIngressSessions() error {
+	if b.cfg == nil {
+		return nil
+	}
+
+	receiversBySession := make(map[string][]string, len(b.cfg.Sessions))
+	for i := range b.cfg.Receivers {
+		receiver := &b.cfg.Receivers[i]
+		if receiver.SessionID != "" {
+			receiversBySession[receiver.SessionID] = append(receiversBySession[receiver.SessionID], receiver.ID)
+		}
+	}
+
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		factory, ok := b.transports[sessionDef.Transport]
+		if !ok || !hasTransportCapability(factory, ports.CapDedicatedIngressSession) {
+			continue
+		}
+		receiverIDs := receiversBySession[sessionDef.ID]
+		if len(receiverIDs) <= 1 {
+			continue
+		}
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"bridge: session %q (transport %q) requires dedicated ingress but has %d logical receivers %q; configure one session per ingress receiver (senders may still share a session)",
+			sessionDef.ID, sessionDef.Transport, len(receiverIDs), receiverIDs,
+		))
+	}
+	return nil
+}
+
+func hasTransportCapability(factory ports.TransportFactory, want ports.Capability) bool {
+	if factory == nil {
+		return false
+	}
+	for _, capability := range factory.Capabilities() {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }

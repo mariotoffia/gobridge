@@ -4,10 +4,11 @@
 
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
-**Capabilities:** `stateful_session`, `exclusive_identity`, `shared_consumer`, `plan_driven_subscriptions`
+**Capabilities:** `stateful_session`, `exclusive_identity`, `dedicated_ingress_session`, `shared_consumer`, `plan_driven_subscriptions`
 
-MQTT requires a session. Multiple receivers and senders can share one session
-(one TCP connection). Session mode controls lifecycle and ownership semantics.
+MQTT requires a session. Each session permits exactly one logical ingress
+receiver. Multiple senders may still share that session and its TCP connection.
+Session mode controls lifecycle and ownership semantics.
 
 The `options:` block is decoded into the transport's nested typed config: session
 connection settings live under an `options.session` sub-block and sender settings
@@ -21,6 +22,27 @@ subscribes only when the session manager reconciles the session plan. The bridge
 builder therefore fails the build if an MQTT receiver is bound to a session that
 never gets a manager (it would otherwise be silently inert, subscribing to
 nothing).
+
+## Dedicated ingress sessions
+
+Paho has one serialized publish-dispatch worker and one protocol-ack ordering
+domain per MQTT session. A blocked processor, destination, DLQ write, or source
+settlement therefore pins later publishes on that connection. Per-route queues
+cannot isolate this MQTT acknowledgment domain without durable staging and ACK
+aggregation.
+
+Paho advertises `CapDedicatedIngressSession`. During `Builder.Plan`, the bridge
+rejects a second logical receiver bound to the same session before it opens any
+store, transport, or runtime resource. The check is capability-based rather than
+keyed to the `mqtt` transport name. Registering Paho under aliases cannot bypass
+it: `Factory.NewReceiver` also performs an atomic reservation on the concrete
+`Session`. Sender definitions do not consume that reservation and may share a
+session.
+
+Use one session (and therefore one broker connection and client ID) per ingress
+receiver. Two routes that need independent failure and backpressure boundaries
+must name two sessions. This is the supported isolation mechanism; GoBridge does
+not add speculative per-route queues or protocol-ACK aggregation.
 
 ## Session Modes
 
@@ -526,10 +548,10 @@ wired today.)
   bump, re-verify the `MapError` string table (`errors.go`) — a reworded SDK
   error can silently fall through to the `ErrUnavailable` default and change
   retry behavior.
-- **Properties deep-copy for shared sessions.** When multiple receivers share an
-  MQTT session, each handler goroutine receives an independent deep-copy of the
-  MQTT Properties (User properties, CorrelationData, ContentType, etc.),
-  preventing data races under concurrent dispatch.
+- **Ingress properties are session-owned copies.** The router converts incoming
+  MQTT Properties (User properties, CorrelationData, ContentType, etc.) into an
+  owned envelope before dispatch. Config-driven composition binds one receiver
+  to that session, so no route shares its dispatch or acknowledgment domain.
 - **Password rotation rebuilds the session.** Applying a rotated password calls
   `Session.Reload`, which tears down and rebuilds the connection manager so a
   fresh CONNECT carries the new credentials. It does **not** call
@@ -760,14 +782,13 @@ identity and reuse it for every delivery attempt.
 MQTT receivers have no transport-specific options. Subscriptions are declared
 in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
 
-> **Receiver IDs must be unique (library-consumer note).** A receiver registers
-> its topic filters on the shared session keyed by its **ID**. Constructing two
-> receivers with the *same* ID on one session makes the second silently overwrite
-> the first's registration (and an unregister for that ID removes whichever is
-> current), so one of them stops receiving with no error. In a bridge deployment
-> the runtime guarantees unique route/receiver IDs, so this cannot happen from
-> YAML — it is a hazard only for code that drives the adapter directly. Give every
-> receiver a distinct ID.
+> **Use the factory for production composition (library-consumer note).**
+> `Factory.NewReceiver` atomically reserves the session's sole ingress receiver
+> and returns `shared.ErrInvalidConfig` for a second call, including calls through
+> another factory value or registry alias. The low-level `paho.NewReceiver`
+> constructor exists for adapter diagnostics and focused router tests; it bypasses
+> factory preflight and must not be used to multiplex production routes onto one
+> session. Receiver IDs remain globally unique in bridge configuration.
 
 ---
 

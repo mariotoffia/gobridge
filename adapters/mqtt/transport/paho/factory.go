@@ -35,6 +35,10 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{
 		ports.CapStatefulSession,
 		ports.CapExclusiveIdentity,
+		// MQTT has one serialized ingress dispatch and protocol-ACK domain per
+		// session. One receiver per session confines route backpressure and
+		// settlement failure to that receiver's broker connection.
+		ports.CapDedicatedIngressSession,
 		// MQTT supports shared subscriptions ($share/<group>/<filter>): the
 		// broker load-balances a topic's deliveries across the group members,
 		// so multiple bridge instances can scale-out consumption of one
@@ -131,10 +135,9 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	return session, nil
 }
 
-// NewReceiver creates an MQTT Receiver bound to the given Session. The
-// receiver's subscription topics become its router topic filters, so a
-// shared session dispatches each publish only to the receivers whose
-// filters cover it.
+// NewReceiver creates the sole MQTT Receiver bound to the given Session. Its
+// subscription topics become router filters; a second factory-created receiver
+// is rejected because dispatch and protocol settlement are session-wide.
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
@@ -159,6 +162,12 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: at least one subscription topic is required "+
 				"(a receiver with no topics would subscribe to everything)", spec.ID))
+	}
+	// Reserve only after every fallible spec check. The reservation is stored on
+	// the Session and protected by its mutex, so aliases and concurrent factory
+	// callers cannot bypass the one-ingress-receiver contract.
+	if err := mqttSession.reserveDedicatedIngressReceiver(spec.ID); err != nil {
+		return nil, err
 	}
 	return NewReceiver(spec.ID, mqttSession, WithTopicFilters(filters...)), nil
 }

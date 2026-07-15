@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -118,6 +119,15 @@ type Session struct {
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
+
+	// ingressReceiverID is latched by Factory.NewReceiver. The factory-level
+	// reservation is session-local (rather than factory-local), so registering
+	// one Paho Factory under multiple aliases cannot create a second logical
+	// ingress receiver on the same serialized MQTT dispatch/ACK domain. Guarded
+	// by mu. Direct low-level NewReceiver construction remains an explicit
+	// diagnostic/test seam outside config-driven factory composition.
+	ingressReceiverID       string
+	ingressReceiverReserved bool
 
 	// plan is the last DESIRED session plan (the target the most recent
 	// Reconcile was asked to reach). It is stashed BEFORE the broker ops run
@@ -362,6 +372,24 @@ func (s *Session) connection() pahoConnection {
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
+}
+
+// reserveDedicatedIngressReceiver atomically assigns the session's sole
+// factory-created ingress receiver. The reservation lasts for the Session
+// lifetime because its router, dispatch worker, and MQTT acknowledgment domain
+// are session-scoped resources.
+func (s *Session) reserveDedicatedIngressReceiver(receiverID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ingressReceiverReserved {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt receiver %q: session already reserves dedicated ingress for receiver %q; configure a separate MQTT session",
+			receiverID, s.ingressReceiverID,
+		))
+	}
+	s.ingressReceiverID = receiverID
+	s.ingressReceiverReserved = true
+	return nil
 }
 
 // ---------------------------------------------------------------------------
