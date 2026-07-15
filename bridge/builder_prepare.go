@@ -412,9 +412,11 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	// instances with a process-local lease/outbox/DLQ store silently breaks
 	// exclusivity and durability, so the store-distribution guard keys on
 	// either signal.
-	clustered := b.cfg.Bridge.DeploymentMode == "clustered" ||
-		(b.cfg.Bridge.Cluster != nil && len(b.cfg.Bridge.Cluster.Endpoints) > 0)
-	if clustered {
+	// IsClusteredDeployment is the SHARED predicate (bridge/convert.go): the same
+	// deployment_mode-or-static-endpoints definition used by the reload guard, so
+	// the store-distribution guard and the fail-closed reload guard never disagree
+	// on which deployments are clustered.
+	if IsClusteredDeployment(b.cfg) {
 		if res.lease != nil && !res.leaseDist {
 			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed LeaseStore; the configured store is process-local")
 		}

@@ -1,12 +1,12 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -642,6 +642,73 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		return
 	}
 
+	// No-op detection and the clustered-reload guard run FIRST — before the
+	// durable-identity preflight, the paused handling, and any Plan/build/store
+	// query or Stop — so no clustered reload can slip through a paused or
+	// destructive path (finding H8) and a genuine no-op never needlessly rebuilds
+	// a runtime.
+	s.mu.RLock()
+	oldCfgForGuard := s.cfg
+	pausedForGuard := s.paused
+	s.mu.RUnlock()
+
+	// (1) No-op: a re-emit whose CANONICAL content matches the applied config is
+	// not a reconfiguration. Acknowledge it WITHOUT a swap so the running runtime,
+	// applied config, version, and reference are all preserved. onSwap MUST still
+	// fire (an in-band applier blocks on the result for this exact config pointer);
+	// mirror the paused/live distinction with Deferred so a no-op re-emit received
+	// while paused resolves as recorded-not-applied, not applied.
+	if oldCfgForGuard != nil && configContentEqual(oldCfgForGuard, frozenCfg) {
+		if s.logger != nil {
+			s.logger.Debug("supervisor: reload matches the running config; no swap performed",
+				"config_version", frozenCfg.Version)
+		}
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig: newCfg,
+				Deferred:  pausedForGuard,
+			})
+		}
+		return
+	}
+
+	// (2) Cluster guard: refuse the reload fail-closed when EITHER the applied OR
+	// the proposed config is clustered (entering and leaving a cohort are equally
+	// unsafe). A per-process reload has no cluster-wide version barrier or
+	// coordinated rollback, so a rolling live reload would split the cohort across
+	// config versions — require an externally coordinated whole-cohort
+	// stop/deploy/start (docs/runbooks/cluster-config-rollout.md). Deliberately NOT
+	// bypassable by WithAllowDestructiveReload: that escape hatch discards LOCAL
+	// durable backlog and cannot substitute for cluster consensus. Uses the SHARED
+	// IsClusteredDeployment predicate (bridge/convert.go) and reports through the
+	// EXISTING reload-failure paths (failure-tagged metric + failed SwapEvent), so
+	// the current runtime keeps serving unchanged. Not a no-op (checked above).
+	if IsClusteredDeployment(oldCfgForGuard) || IsClusteredDeployment(frozenCfg) {
+		err := fmt.Errorf("bridge: refusing live reload of a clustered deployment: a per-process "+
+			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload "+
+			"would split the cohort across config versions. Externally coordinate a whole-cohort "+
+			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, "+
+			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); "+
+			"see docs/runbooks/cluster-config-rollout.md. WithAllowDestructiveReload does not apply "+
+			"(attempted_config_version=%d)", frozenCfg.Version)
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing live reload of a clustered deployment; a per-process "+
+				"reload has no cluster-wide version barrier — coordinate an external whole-cohort "+
+				"stop/deploy/start (docs/runbooks/cluster-config-rollout.md)",
+				"error", err, "attempted_config_version", frozenCfg.Version)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig: newCfg,
+				Error:     err,
+			})
+		}
+		return
+	}
+
 	// MQTT and similar durable broker sessions are external stores. Changing or
 	// removing their identity can strand subscriptions and queued QoS messages,
 	// so compare the typed plugin fingerprints before stopping the old runtime,
@@ -753,34 +820,6 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	var newRt *runtime.Runtime
 	var err error
 
-	// A per-process live reload of (or INTO) a CLUSTERED deployment is refused
-	// fail-closed (finding H8). Reconfiguration is per-process and there is no
-	// cross-node version barrier, so a rolling live reload would leave the cohort
-	// split across config versions with no coordinated readiness gate or rollback
-	// — exactly the split the store-identity and lease-identity guards below try
-	// to contain piecemeal. Reject the whole class at the boundary and require an
-	// externally coordinated whole-cohort stop/deploy/start
-	// (docs/runbooks/cluster-config-rollout.md). IsClusteredDeployment is the
-	// SHARED predicate (bridge/convert.go): guard when EITHER the applied OR the
-	// proposed config is clustered, so both entering and leaving a cohort are
-	// covered. Detected BEFORE any Plan/build/store query or stop.
-	//
-	// This guard is deliberately NOT bypassable by WithAllowDestructiveReload:
-	// that escape hatch discards LOCAL durable backlog, which cannot substitute
-	// for cluster consensus. A genuine no-op re-emit (identical content) is not a
-	// reconfiguration and is allowed through — detected here, before the guard.
-	var clusterErr error
-	if (IsClusteredDeployment(oldCfg) || IsClusteredDeployment(frozenCfg)) &&
-		!sameConfigContent(oldCfg, frozenCfg) {
-		clusterErr = fmt.Errorf("bridge: refusing live reload of a clustered deployment: a per-process "+
-			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload "+
-			"would split the cohort across config versions. Externally coordinate a whole-cohort "+
-			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, "+
-			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); "+
-			"see docs/runbooks/cluster-config-rollout.md. WithAllowDestructiveReload does not apply "+
-			"(attempted_config_version=%d)", frozenCfg.Version)
-	}
-
 	// A live reload that repoints a durable store to a DIFFERENT backing
 	// identity (changed type, or changed path/table) would strand the OLD
 	// store's pending/claimed backlog — the new runtime opens the new location
@@ -821,22 +860,11 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// WithAllowDestructiveReload to discard it (HIGH-2/HIGH-3). Only meaningful
 	// when a store identity change has not already refused the swap.
 	var preflightErr error
-	if clusterErr == nil && oldRt != nil && identErr == nil {
+	if oldRt != nil && identErr == nil {
 		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
 	switch {
-	case clusterErr != nil:
-		// Keep the current runtime serving unchanged and fail the swap: the
-		// cohort must be replaced through an external, coordinated rollout, not a
-		// per-process live reload (H8). Not bypassable by WithAllowDestructiveReload.
-		err = clusterErr
-		if s.logger != nil {
-			s.logger.Error("supervisor: refusing live reload of a clustered deployment; a per-process "+
-				"reload has no cluster-wide version barrier — coordinate an external whole-cohort "+
-				"stop/deploy/start (docs/runbooks/cluster-config-rollout.md)",
-				"error", err, "attempted_config_version", frozenCfg.Version)
-		}
 	case oldRt != nil && identErr != nil:
 		// Refuse the swap and keep the old runtime (and its store) serving; an
 		// operator must drain/migrate deliberately. Coherent with the
@@ -1604,23 +1632,93 @@ func sharedOutboxPartitionSessions(cfg *ports.BridgeConfig) map[string]struct{} 
 	return out
 }
 
-// sameConfigContent reports whether two frozen configs describe the same
-// deployment content, ignoring ONLY the optimistic-concurrency Version counter
-// (a version-only bump is not a content change — this mirrors the config
-// manager's content fingerprint, which is likewise keyed on content, not the
-// non-unique Version). It lets a genuine no-op re-emit pass the clustered-reload
-// guard (H8) while any real topology/policy/store change is refused. Both
-// arguments are already frozen via cloneConfigForBuild, so a structural
-// comparison is stable: identical input yields deeply-equal clones.
-func sameConfigContent(a, b *ports.BridgeConfig) bool {
-	if a == nil || b == nil {
-		return a == b
+// configContentEqual reports whether two configs are the SAME deployment for the
+// purpose of the no-op / clustered-reload decision. It mirrors the project's
+// authoritative content identity — config.configFingerprint — rather than a
+// structural reflect.DeepEqual:
+//
+//   - It canonicalises each config to the JSON projection of its EXPORTED fields
+//     with secrets revealed (via shared.RevealSecrets, so a secret-only edit is
+//     still a change), then appends the JSON of every decoded PluginConfig in the
+//     same fixed order the fingerprint uses (the blueprint tags the Config fields
+//     json:"-", so a plugin-only change would otherwise be invisible).
+//   - It therefore INCLUDES BridgeConfig.Version: the project treats a version
+//     bump as a content change (the fingerprint json-encodes version), so a
+//     version-only reload is NOT a no-op and, when clustered, is still refused.
+//   - It IGNORES opaque unexported plugin internals (mutexes, clients, sync.Once):
+//     json marshals only exported fields, so an equivalent RE-EMIT of the same
+//     decoded config compares equal instead of being falsely rejected.
+//
+// On any marshal error it FAILS CLOSED (reports not-equal), so an
+// un-canonicalisable config is treated as a change rather than a spurious no-op.
+func configContentEqual(a, b *ports.BridgeConfig) bool {
+	ab, aok := configCanonicalBytes(a)
+	bb, bok := configCanonicalBytes(b)
+	if !aok || !bok {
+		return false
 	}
-	ac := *a
-	bc := *b
-	ac.Version = 0
-	bc.Version = 0
-	return reflect.DeepEqual(ac, bc)
+	return bytes.Equal(ab, bb)
+}
+
+// configCanonicalBytes returns the canonical content projection of cfg used by
+// configContentEqual (see there). ok is false on a marshal error so the caller
+// can fail closed. Both callers pass already-frozen configs, so the projection is
+// stable across repeated calls.
+func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
+	if cfg == nil {
+		return nil, true
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	if err := enc.Encode(shared.RevealSecrets(cfg)); err != nil {
+		return nil, false
+	}
+	ok := true
+	visitPluginConfigs(cfg, func(pc ports.PluginConfig) {
+		if !ok {
+			return
+		}
+		// enc.Encode writes each value followed by a newline, so the ordered
+		// stream of plugin payloads is self-delimiting; a nil PluginConfig encodes
+		// as "null", preserving its structural position.
+		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+			ok = false
+		}
+	})
+	if !ok {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// visitPluginConfigs visits every decoded PluginConfig on the blueprint in the
+// same fixed, deterministic order as config.forEachPluginConfig (stores, then
+// sessions, receivers + their topics, senders, bindings). The order is part of
+// the content contract: two configs differing only in the position of an
+// otherwise-identical plugin option must canonicalise differently. Bridge cannot
+// import the config package (arch-lint), so this mirrors that traversal locally.
+func visitPluginConfigs(cfg *ports.BridgeConfig, fn func(ports.PluginConfig)) {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
+		if sc == nil {
+			continue
+		}
+		fn(sc.Config)
+	}
+	for i := range cfg.Sessions {
+		fn(cfg.Sessions[i].Config)
+	}
+	for i := range cfg.Receivers {
+		fn(cfg.Receivers[i].Config)
+		for j := range cfg.Receivers[i].Topics {
+			fn(cfg.Receivers[i].Topics[j].Config)
+		}
+	}
+	for i := range cfg.Senders {
+		fn(cfg.Senders[i].Config)
+	}
+	for i := range cfg.Bindings {
+		fn(cfg.Bindings[i].Config)
+	}
 }
 
 // destructiveReloadShape reports whether newCfg would strand durable backlog

@@ -355,12 +355,14 @@ func TestClusteredReload(t *testing.T) {
 
 	standalone := func() *ports.BridgeConfig {
 		return &ports.BridgeConfig{
-			Bridge: ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "standalone", LogLevel: "info"},
+			Version: 3,
+			Bridge:  ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "standalone", LogLevel: "info"},
 		}
 	}
 	clustered := func() *ports.BridgeConfig {
 		return &ports.BridgeConfig{
-			Bridge: ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "clustered", LogLevel: "info"},
+			Version: 5,
+			Bridge:  ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "clustered", LogLevel: "info"},
 		}
 	}
 
@@ -377,14 +379,21 @@ func TestClusteredReload(t *testing.T) {
 		require.NoError(t, reload(t, app, standalone()))
 		oldRt := app.CurrentRuntime()
 		require.NotNil(t, oldRt)
+		// Capture the EXACT applied reference and version before the rejected
+		// reload so we can prove neither is mutated (finding 2).
+		beforeApplied := app.CurrentAppliedConfig()
+		require.NotNil(t, beforeApplied)
 
 		err := reload(t, app, clustered())
 		require.Error(t, err, "reloading a standalone runtime INTO a clustered config must fail closed")
 		assert.Contains(t, err.Error(), "clustered")
 		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
-		require.NotNil(t, app.CurrentAppliedConfig())
+		assert.Same(t, beforeApplied, app.CurrentAppliedConfig(),
+			"the applied reference pointer must be unchanged by a refused reload")
 		assert.Equal(t, "standalone", app.CurrentAppliedConfig().Bridge.DeploymentMode,
-			"the applied config/reference must remain the standalone one")
+			"the applied config must remain the standalone one")
+		assert.Equal(t, 3, app.CurrentAppliedConfig().Version,
+			"the applied version must not advance to the rejected clustered version")
 	})
 
 	t.Run("current clustered deployment refuses a live reload", func(t *testing.T) {
@@ -393,16 +402,55 @@ func TestClusteredReload(t *testing.T) {
 		require.NotNil(t, oldRt)
 		// Simulate a currently-clustered applied config (a fresh boot INTO
 		// clustered is legitimate; only a live reload is guarded).
+		appliedClustered := clustered()
 		app.mu.Lock()
-		app.appliedRef.Set(clustered())
+		app.appliedRef.Set(appliedClustered)
 		app.mu.Unlock()
 
 		err := reload(t, app, standalone())
 		require.Error(t, err, "leaving a clustered cohort via live reload must fail closed")
 		assert.Contains(t, err.Error(), "clustered")
 		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Same(t, appliedClustered, app.CurrentAppliedConfig(),
+			"the applied reference pointer must be unchanged by a refused reload")
 		assert.Equal(t, "clustered", app.CurrentAppliedConfig().Bridge.DeploymentMode,
-			"the applied config/reference must be unchanged")
+			"the applied config must be unchanged")
+		assert.Equal(t, 5, app.CurrentAppliedConfig().Version,
+			"the applied version must not change on a refused reload")
+	})
+
+	t.Run("committed clustered reload surfaces committed_not_applied", func(t *testing.T) {
+		// Finding 2: exercise the EXISTING committed failure path. An admin commit
+		// that carries a clustered reload must be rejected through
+		// applyCommittedConfig (which wraps the guard error as
+		// committed_not_applied), leaving runtime, applied reference/version, and
+		// the recorded fingerprint untouched — disk and runtime diverge until an
+		// externally coordinated cohort rollout, never a silent per-process swap.
+		app := newStartedApp(t)
+		require.NoError(t, reload(t, app, standalone()))
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+		beforeApplied := app.CurrentAppliedConfig()
+		require.NotNil(t, beforeApplied)
+		app.mu.Lock()
+		beforeFingerprint := app.lastAppliedFingerprint
+		app.mu.Unlock()
+
+		err := app.applyCommittedConfig(t.Context(), clustered())
+		require.Error(t, err, "a committed clustered reload must be rejected")
+		assert.Contains(t, err.Error(), "apply committed config",
+			"the failure must surface through the committed-not-applied path")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Same(t, beforeApplied, app.CurrentAppliedConfig(),
+			"the applied reference must be unchanged by a rejected committed reload")
+		assert.Equal(t, 3, app.CurrentAppliedConfig().Version,
+			"the applied version must not advance to the rejected clustered version")
+		app.mu.Lock()
+		afterFingerprint := app.lastAppliedFingerprint
+		app.mu.Unlock()
+		assert.Equal(t, beforeFingerprint, afterFingerprint,
+			"a rejected reload must not record the clustered config's fingerprint")
 	})
 
 	t.Run("no-op clustered reload stays accepted", func(t *testing.T) {

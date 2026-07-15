@@ -681,7 +681,7 @@ fix(ha): persist takeover observation evidence
 
 ## Task 10: Fail closed on clustered live reload
 
-**Status:** Done
+**Status:** Completed
 
 **Agents/Skills:** thiink:runtime-expert, thiink:clean-arch-reviewer,
 thiink:test-reviewer
@@ -702,13 +702,18 @@ thiink:test-reviewer
 For current or proposed clustered deployment, attempt a non-no-op live reload
 and prove the runtime, config, running version, and applied reference remain
 unchanged. Require failed swap event/metric. The destructive-reload option must
-not bypass the guard.
+not bypass the guard. A no-op re-emit is acknowledged WITHOUT a swap (runtime /
+config / version / reference preserved) and is detected before the guard; the
+shared predicate and the canonical (fingerprint-equivalent) no-op comparison are
+unit-tested at their boundaries (nil / static-endpoint / version-only).
 
 - [x] **Step 2: Add the shared guard**
 
-Expose `IsClusteredDeployment` from bridge conversion logic and apply it in both
-Supervisor and AWS composition-root reload paths after no-op detection but
-before Plan/build/stop.
+Expose `IsClusteredDeployment` from bridge conversion logic (reused by the
+builder store-distribution guard) and apply it in both Supervisor and AWS
+composition-root reload paths after no-op detection but before Plan/build/stop —
+in the Supervisor, ahead of the durable-identity preflight and the paused
+handling so a paused or destructive-mode clustered reload cannot slip through.
 
 - [x] **Step 3: Document external cohort rollout**
 

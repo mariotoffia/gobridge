@@ -8,25 +8,29 @@ ownership if rolled instead of drained.
 
 ## Overview
 
-Reconfiguration is **per-process**: each instance watches its own config source,
-reloads, validates, and swaps its runtime independently. There is **no
-cluster-wide version barrier and no coordinated rollback**
-([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#cluster-semantics-and-limitations)).
-During a rollout the fleet runs a mix of old and new definitions until every
-instance has converged — indefinitely if one stays wedged on a config it cannot
-load. This runbook covers which changes are safe to roll live, which must be
-drained and stopped, and how to verify convergence.
+**Current behaviour (finding H8): a clustered live reload is rejected
+fail-closed.** Every non-no-op live reload of (or into) a clustered deployment is
+refused by the runtime and by the AWS composition root, keeping the running
+instance on its last-good config. Clustered config changes MUST go through the
+externally coordinated whole-cohort procedure in
+[Cluster Config Rollout](cluster-config-rollout.md) (stage → validate all →
+quiesce → drain/stop all → commit → start all → verify version/readiness barrier
+→ re-enable ingress, with whole-cohort rollback). A genuine no-op re-emit is
+still accepted.
 
-> **Update (finding H8): clustered live reload is rejected fail-closed.** A
-> per-process live reload has no cluster-wide version barrier, so the runtime now
-> **refuses every non-no-op live reload of (or into) a clustered deployment** —
-> not only the invariant changes below. For any clustered config change, use the
-> whole-cohort procedure in
-> [Cluster Config Rollout](cluster-config-rollout.md) (stage → validate all →
-> quiesce → drain/stop all → commit → start all → verify version/readiness
-> barrier → re-enable ingress, with whole-cohort rollback). The classification
-> below still describes single-process (standalone) reload behaviour and the
-> *reasons* each change is unsafe in a cohort.
+**Historical hazard this guard now prevents.** Reconfiguration is **per-process**:
+each instance watches its own config source, reloads, validates, and swaps its
+runtime independently, with **no cluster-wide version barrier and no coordinated
+rollback**
+([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#cluster-semantics-and-limitations)).
+Before H8, rolling a config change through a cohort therefore let the fleet run a
+**mix of old and new definitions** until every instance converged — indefinitely
+if one stayed wedged on a config it could not load. That split-version window is
+exactly what the fail-closed guard now blocks: local config CAS / reference
+tracking is **not** cluster consensus and never was a version barrier, so it must
+not be relied on for live cohort reconfiguration. The classification below
+describes single-process (standalone) reload behaviour and the *reasons* each
+change is unsafe to roll across a cohort.
 
 ## Allowed vs. disallowed live changes
 

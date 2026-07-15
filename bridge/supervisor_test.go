@@ -695,18 +695,75 @@ func TestSupervisorClusteredReload(t *testing.T) {
 		assert.Same(t, oldRt, s.Runtime(), "the running runtime instance must be untouched")
 	})
 
-	t.Run("no-op clustered reload stays accepted", func(t *testing.T) {
+	t.Run("version-only change to a clustered deployment is still refused", func(t *testing.T) {
+		// Finding 7 boundary: the project treats BridgeConfig.Version as part of
+		// content identity (config.configFingerprint json-encodes it), so a
+		// version-only bump is NOT a no-op — it is a real reconfiguration and, on
+		// a clustered deployment, must still fail closed.
 		onSwap, swaps := swapChan(1)
 		s := newTestSupervisor(WithOnSwap(onSwap))
 		ch := make(chan *ports.BridgeConfig, 1)
 		cancel, errCh := quickSupervisorRun(s, clusteredCfg("r1"), ch)
 		defer func() { cancel(); <-errCh }()
 
-		// Re-emitting byte-identical content is a no-op, detected before the
-		// guard, so it must NOT be refused.
+		oldRt := s.Runtime()
+		require.NotNil(t, oldRt)
+
+		bumped := clusteredCfg("r1")
+		bumped.Version = 7 // identical topology, higher version only
+		require.True(t, sendConfig(ch, bumped, time.Second))
+
+		ev := awaitSwap(t, swaps)
+		require.Error(t, ev.Error, "a version-only change is content, not a no-op, so a clustered reload must be refused")
+		assert.Contains(t, ev.Error.Error(), "clustered")
+		assert.Same(t, oldRt, s.Runtime(), "the running runtime instance must be untouched")
+		assert.Equal(t, 0, s.Config().Version, "the applied config version must not advance")
+	})
+
+	t.Run("no-op clustered reload stays accepted without a swap", func(t *testing.T) {
+		// Findings 1 + 6: a byte-identical re-emit is detected BEFORE the guard and
+		// acknowledged WITHOUT a swap — the running runtime, applied config, and
+		// version are all preserved (no rebuild/stop/replace).
+		onSwap, swaps := swapChan(1)
+		s := newTestSupervisor(WithOnSwap(onSwap))
+		ch := make(chan *ports.BridgeConfig, 1)
+		cancel, errCh := quickSupervisorRun(s, clusteredCfg("r1"), ch)
+		defer func() { cancel(); <-errCh }()
+
+		oldRt := s.Runtime()
+		require.NotNil(t, oldRt)
+		oldCfg := s.Config()
+		require.NotNil(t, oldCfg)
+
 		require.True(t, sendConfig(ch, clusteredCfg("r1"), time.Second))
 
 		ev := awaitSwap(t, swaps)
 		require.NoError(t, ev.Error, "a no-op clustered reload must remain accepted")
+
+		// No swap happened: the runtime is the SAME instance, still running, and
+		// the applied config/version/reference is unchanged.
+		assert.Same(t, oldRt, s.Runtime(), "a no-op must not rebuild or replace the runtime")
+		assert.True(t, oldRt.IsRunning(), "the current runtime must keep serving")
+		assert.Equal(t, oldCfg, s.Config(), "a no-op must leave the applied config/reference unchanged")
+		assert.Equal(t, 0, s.Config().Version, "a no-op must not advance the applied version")
+	})
+
+	t.Run("a genuine route change on a standalone deployment still swaps", func(t *testing.T) {
+		// Guardrail for finding 7: the canonical no-op comparison must NOT classify
+		// a real route change as a no-op — single-process live reload is unchanged.
+		onSwap, swaps := swapChan(1)
+		s := newTestSupervisor(WithOnSwap(onSwap))
+		ch := make(chan *ports.BridgeConfig, 1)
+		cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
+		defer func() { cancel(); <-errCh }()
+
+		oldRt := s.Runtime()
+		require.NotNil(t, oldRt)
+
+		require.True(t, sendConfig(ch, quickCfg("r2"), time.Second))
+
+		ev := awaitSwap(t, swaps)
+		require.NoError(t, ev.Error, "a standalone route change must apply")
+		assert.NotSame(t, oldRt, s.Runtime(), "a real change must build and publish a new runtime")
 	})
 }
