@@ -1,13 +1,16 @@
 package bootstrap
 
 import (
+	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -37,6 +40,78 @@ func TestMQTTMemoryProfile_DerivesLargestSafeReceiveMaximum(t *testing.T) {
 	assert.LessOrEqual(t, bound, wantBudget)
 }
 
+func TestMQTTMemoryProfile_CloneParsePreservesDefaultAndExplicitReceiveMaximum(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-clone
+sessions:
+  - id: ingress-default
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress-default
+  - id: ingress-explicit
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress-explicit
+        receive_maximum: 100
+receivers:
+  - id: receiver-default
+    transport: mqtt
+    session_id: ingress-default
+    topics:
+      - topic: memory/default
+        qos: 1
+  - id: receiver-explicit
+    transport: mqtt
+    session_id: ingress-explicit
+    topics:
+      - topic: memory/explicit
+        qos: 1
+routes:
+  - id: route-default
+    receiver_id: receiver-default
+    policy:
+      max_in_flight: 1
+  - id: route-explicit
+    receiver_id: receiver-explicit
+    policy:
+      max_in_flight: 1
+`
+	registry := newDefaultPluginRegistry()
+	logical, err := cfgparser.Parse(strings.NewReader(configYAML), cfgparser.FormatYAML, registry)
+	require.NoError(t, err)
+	inputs, err := resolveInputs(context.Background(), staticParameterResolver{
+		"/admin": "admin-secret-key-123456",
+	}, deployinfra.BootstrapConfig{
+		AdminAPIKeyParam:     "/admin",
+		ContainerMemoryBytes: 1 << 30,
+	}, registry, logical)
+	require.NoError(t, err)
+
+	require.NoError(t, applyMQTTMemoryProfile(inputs.RuntimeConfig, deployinfra.BootstrapConfig{
+		ContainerMemoryBytes: 1 << 30,
+	}))
+
+	defaultConfig, ok := inputs.RuntimeConfig.Sessions[0].Config.(*paho.Config)
+	require.True(t, ok)
+	explicitConfig, ok := inputs.RuntimeConfig.Sessions[1].Config.(*paho.Config)
+	require.True(t, ok)
+	wantDerived, err := paho.LargestSafeReceiveMaximum(
+		paho.DefaultMaxPayloadBytes,
+		128<<20,
+		1,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, wantDerived, defaultConfig.Session.ReceiveMaximum)
+	assert.Equal(t, uint16(100), explicitConfig.Session.ReceiveMaximum)
+	assert.Equal(t, uint64(128<<20), defaultConfig.Session.IngressMemoryBudgetBytes)
+	assert.Equal(t, uint64(128<<20), explicitConfig.Session.IngressMemoryBudgetBytes)
+}
+
 func TestMQTTMemoryProfile_DividesReservationAcrossIngressSessions(t *testing.T) {
 	cfg, sessions := mqttMemoryProfileConfig(2, 0)
 
@@ -57,8 +132,9 @@ func TestMQTTMemoryProfile_SenderOnlySessionsDoNotConsumeIngressAllocation(t *te
 	}))
 
 	assert.Equal(t, uint64(256<<20), sessions[0].Session.IngressMemoryBudgetBytes)
-	assert.Equal(t, paho.DefaultIngressMemoryBudgetBytes, sessions[1].Session.IngressMemoryBudgetBytes)
-	assert.Equal(t, paho.DefaultReceiveMaximum, sessions[1].Session.ReceiveMaximum)
+	assert.Zero(t, sessions[1].Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, sessions[1].Session.ReceiveMaximum,
+		"sender-only sessions are not normalized or allocated as ingress")
 }
 
 func TestMQTTMemoryProfile_HeadroomExactBoundaryAcceptsAndOneByteExcessRejects(t *testing.T) {

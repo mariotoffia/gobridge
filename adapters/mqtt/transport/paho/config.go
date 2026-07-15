@@ -627,19 +627,13 @@ const DefaultReconcileTimeout = 30 * time.Second
 // exist to resume broker session state.
 func DefaultSessionOptions() SessionOptions {
 	return SessionOptions{
-		KeepAlive:                   30,
-		ConnectTimeout:              DefaultConnectTimeout,
-		ReconnectTimeout:            30 * time.Second,
-		ReconcileTimeout:            DefaultReconcileTimeout,
-		CleanStart:                  false,
-		ReceiveMaximum:              DefaultReceiveMaximum,
-		MaxPayloadBytes:             DefaultMaxPayloadBytes,
-		IngressMemoryBudgetBytes:    DefaultIngressMemoryBudgetBytes,
-		UnmatchedGrace:              DefaultUnmatchedGrace,
-		Clock:                       clock.System,
-		ingressDefaultsApplied:      true,
-		receiveMaximumExplicit:      false,
-		ingressMemoryBudgetExplicit: false,
+		KeepAlive:        30,
+		ConnectTimeout:   DefaultConnectTimeout,
+		ReconnectTimeout: 30 * time.Second,
+		ReconcileTimeout: DefaultReconcileTimeout,
+		CleanStart:       false,
+		UnmatchedGrace:   DefaultUnmatchedGrace,
+		Clock:            clock.System,
 	}
 }
 
@@ -652,8 +646,11 @@ func DefaultSenderOptions() SenderOptions {
 	}
 }
 
-// DefaultConfig returns a Config pre-filled with every documented
-// default. The registry decoder (register.go) decodes INTO this value:
+// DefaultConfig returns a Config pre-filled with documented defaults except the
+// three ingress-memory safety fields. Those remain zero ("unset") through
+// parse/clone/bootstrap so an omitted value cannot become indistinguishable from
+// an explicit operator value before the AWS profile derives its allocation.
+// The registry decoder (register.go) decodes INTO this value:
 // mapstructure only assigns fields present in the input map, so an
 // omitted key keeps its default while an explicit value — including an
 // explicit zero such as `qos: 0` or `keep_alive: 0` — overrides it.
@@ -675,7 +672,7 @@ func DefaultConfig() Config {
 func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	opts := DefaultSessionOptions()
 	if m == nil {
-		return opts, nil
+		return opts.normalizedIngressMemory(), nil
 	}
 
 	switch v := m["broker_urls"].(type) {

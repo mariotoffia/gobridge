@@ -384,6 +384,13 @@ The 25% factor covers Go/SDK object, slice, and queue bookkeeping. The `+1`
 covers the packet currently crossing queue/handler ownership. Checked division
 and overflow guards run before every addition or multiplication.
 
+The typed parser intentionally keeps zero/unset `receive_maximum`,
+`max_payload_bytes`, and `ingress_memory_budget_bytes` as zero through config
+clone/parse. This preserves whether an operator supplied a value. The AWS
+profile derives omitted values before build; other composition paths normalize
+them in `NewSession`. Explicit safe values survive both paths, while explicit
+unsafe values fail rather than being reduced.
+
 The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
 produce a 238,387,200-byte bound, below the 256 MiB default budget. Raising
 payload size, Receive Maximum, or route concurrency may require a larger budget.

@@ -31,6 +31,38 @@ func (*dedicatedIngressMemoryFactory) Capabilities() []ports.Capability {
 	return []ports.Capability{ports.CapDedicatedIngressSession}
 }
 
+type ingressOnlyFreezableConfig struct {
+	err error
+}
+
+func (*ingressOnlyFreezableConfig) Kind() string    { return "test.ingress-only" }
+func (*ingressOnlyFreezableConfig) Validate() error { return nil }
+func (c *ingressOnlyFreezableConfig) FreezePluginConfig() ports.PluginConfig {
+	copy := *c
+	return &copy
+}
+func (c *ingressOnlyFreezableConfig) ValidateIngressMemory(uint64) error { return c.err }
+
+type ingressCapabilityDroppingConfig struct{}
+
+func (*ingressCapabilityDroppingConfig) Kind() string    { return "test.ingress-drop" }
+func (*ingressCapabilityDroppingConfig) Validate() error { return nil }
+func (*ingressCapabilityDroppingConfig) ValidateIngressMemory(uint64) error {
+	return shared.ErrInvalidConfig
+}
+func (*ingressCapabilityDroppingConfig) FreezePluginConfig() ports.PluginConfig {
+	return &freezableWithoutIngressCapability{}
+}
+
+type freezableWithoutIngressCapability struct{}
+
+func (*freezableWithoutIngressCapability) Kind() string    { return "test.ingress-drop" }
+func (*freezableWithoutIngressCapability) Validate() error { return nil }
+func (c *freezableWithoutIngressCapability) FreezePluginConfig() ports.PluginConfig {
+	copy := *c
+	return &copy
+}
+
 func TestIngressMemory_AllIngressSessionsValidatedIndependently(t *testing.T) {
 	first := &recordingIngressMemoryConfig{}
 	second := &recordingIngressMemoryConfig{}
@@ -93,6 +125,29 @@ func TestIngressMemory_Task7ConflictRejectsBeforeMemoryAccounting(t *testing.T) 
 	assert.True(t, errors.Is(err, shared.ErrInvalidConfig))
 	assert.Empty(t, memoryCfg.routeMaxInFlight,
 		"routes rejected by dedicated-ingress preflight must not be double-counted")
+}
+
+func TestIngressMemory_IngressOnlyFreezableConfigReachesPreflight(t *testing.T) {
+	memoryCfg := &ingressOnlyFreezableConfig{
+		err: shared.ErrInvalidConfig.WithMessage("unsafe ingress-only bound"),
+	}
+	cfg := ingressMemoryBridgeConfig(memoryCfg, nil, nil)
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("memory-aware", &dedicatedIngressMemoryFactory{}).
+		prepare(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+}
+
+func TestIngressMemory_FreezeRejectsCapabilityLossWithoutActivationTiming(t *testing.T) {
+	cfg := ingressMemoryBridgeConfig(&ingressCapabilityDroppingConfig{}, nil, nil)
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("memory-aware", &dedicatedIngressMemoryFactory{}).
+		prepare(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }
 
 func ingressMemoryBridgeConfig(

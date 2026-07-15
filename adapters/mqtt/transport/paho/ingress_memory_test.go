@@ -15,9 +15,10 @@ import (
 func TestConfigIngressMemory_DefaultsNormalize(t *testing.T) {
 	cfg := DefaultConfig()
 
-	assert.Equal(t, uint32(256<<10), cfg.Session.MaxPayloadBytes)
-	assert.Equal(t, uint16(192), cfg.Session.ReceiveMaximum)
-	assert.Equal(t, uint64(256<<20), cfg.Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, cfg.Session.MaxPayloadBytes)
+	assert.Zero(t, cfg.Session.ReceiveMaximum)
+	assert.Zero(t, cfg.Session.IngressMemoryBudgetBytes,
+		"parsed defaults stay unset until deployment preflight/runtime normalization")
 
 	session := NewSession(SessionOptions{}, connectivity.SessionEphemeral, nil)
 	dispatchDepth, dispatchCapacity := session.IngressMemoryStats()
@@ -27,7 +28,7 @@ func TestConfigIngressMemory_DefaultsNormalize(t *testing.T) {
 	assert.Equal(t, DefaultIngressMemoryBudgetBytes, session.opts.IngressMemoryBudgetBytes)
 }
 
-func TestConfigIngressMemory_ExplicitZeroNormalizesToDefaults(t *testing.T) {
+func TestConfigIngressMemory_ExplicitZeroRemainsUnsetUntilRuntimeNormalization(t *testing.T) {
 	cfg := decodeRegistry(t, map[string]any{
 		"session": map[string]any{
 			"receive_maximum":             0,
@@ -36,9 +37,14 @@ func TestConfigIngressMemory_ExplicitZeroNormalizesToDefaults(t *testing.T) {
 		},
 	})
 
-	assert.Equal(t, DefaultReceiveMaximum, cfg.Session.ReceiveMaximum)
-	assert.Equal(t, DefaultMaxPayloadBytes, cfg.Session.MaxPayloadBytes)
-	assert.Equal(t, DefaultIngressMemoryBudgetBytes, cfg.Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, cfg.Session.ReceiveMaximum)
+	assert.Zero(t, cfg.Session.MaxPayloadBytes)
+	assert.Zero(t, cfg.Session.IngressMemoryBudgetBytes)
+
+	session := NewSession(cfg.Session, connectivity.SessionEphemeral, nil)
+	assert.Equal(t, DefaultReceiveMaximum, session.opts.ReceiveMaximum)
+	assert.Equal(t, DefaultMaxPayloadBytes, session.opts.MaxPayloadBytes)
+	assert.Equal(t, DefaultIngressMemoryBudgetBytes, session.opts.IngressMemoryBudgetBytes)
 }
 
 func TestConfigIngressMemory_ExactBoundaryAcceptsAndOneByteExcessRejects(t *testing.T) {
