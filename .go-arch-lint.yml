@@ -285,6 +285,8 @@ vendors:
   # Adapter SDKs.
   fsnotify: { in: github.com/fsnotify/fsnotify }
   paho: { in: ["github.com/eclipse/paho.golang/**"] }
+  gorilla_websocket: { in: github.com/gorilla/websocket }
+  xnet_proxy: { in: golang.org/x/net/proxy }
   amqp091: { in: github.com/rabbitmq/amqp091-go }
   amqp10: { in: github.com/Azure/go-amqp }
   asb:
@@ -734,10 +736,13 @@ deps:
 
   # MQTT Paho wraps its sender in a circuit breaker (cb_sender.go) but
   # consumes the ports.CircuitBreaker contract only — the implementation
-  # is supplied by the composition root.
+  # is supplied by the composition root. Its final connection composition
+  # boundary directly uses Paho's existing WebSocket/proxy transitive
+  # dependencies so the raw predecode ingress guard is installed after
+  # decryption for every supported broker URL scheme.
   adapter_transport_mqtt_paho:
     mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]
-    canUse: [paho]
+    canUse: [paho, gorilla_websocket, xnet_proxy]
 
   adapter_transport_sqs:
     mayDependOn: [domain_clock, domain_connectivity, domain_messaging, domain_shared, logging, ports]

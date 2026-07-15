@@ -665,20 +665,24 @@ func hasTransportCapability(factory ports.TransportFactory, want ports.Capabilit
 	return false
 }
 
-// validateIngressMemory invokes the optional config capability once for each
-// session that actually feeds a route. Dedicated-ingress cardinality runs first,
-// so a topology Task 7 rejects is never counted as multiple memory windows.
-// Sender-only sessions and unconsumed receivers do not reserve ingress memory.
+// validateIngressMemory invokes the optional config capability once for every
+// started session that can own inbound state. A ReceiverDef creates possible
+// ingress even when no route currently consumes it. Referenced Persistent and
+// Exclusive sessions are also included because resumed stale broker backlog can
+// arrive before durable subscription cleanup. Ephemeral sender-only and wholly
+// unreferenced sessions are excluded.
 func (b *Builder) validateIngressMemory() error {
 	if b.cfg == nil {
 		return nil
 	}
 
 	receiverSession := make(map[string]string, len(b.cfg.Receivers))
+	includedSessions := make(map[string]struct{}, len(b.cfg.Sessions))
 	for i := range b.cfg.Receivers {
 		receiver := &b.cfg.Receivers[i]
 		if receiver.SessionID != "" {
 			receiverSession[receiver.ID] = receiver.SessionID
+			includedSessions[receiver.SessionID] = struct{}{}
 		}
 	}
 	routeConcurrency := make(map[string]uint64, len(b.cfg.Sessions))
@@ -707,12 +711,23 @@ func (b *Builder) validateIngressMemory() error {
 		routeConcurrency[sessionID] = current + add
 	}
 
+	referenced := referencedSessionIDs(b.cfg)
 	for i := range b.cfg.Sessions {
 		sessionDef := &b.cfg.Sessions[i]
-		maxInFlight := routeConcurrency[sessionDef.ID]
-		if maxInFlight == 0 {
+		mode := normalizedSessionMode(sessionDef.SessionMode)
+		if !referenced[sessionDef.ID] ||
+			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
 			continue
 		}
+		includedSessions[sessionDef.ID] = struct{}{}
+	}
+
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		if _, included := includedSessions[sessionDef.ID]; !included {
+			continue
+		}
+		maxInFlight := routeConcurrency[sessionDef.ID]
 		memoryConfig, ok := sessionDef.Config.(ports.IngressMemoryConfig)
 		if !ok {
 			continue

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	pahov5 "github.com/eclipse/paho.golang/paho"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -14,6 +16,98 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
+
+func TestMQTTIngressPredecodeGuard_RealBrokerPropertyAmplificationNeverReachesSDKCallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires a real local MQTT broker")
+	}
+	const topic = "ingress-memory/predecode-property-amplification"
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	t.Cleanup(cancel)
+
+	broker := mqttlocal.NewBrokerInstance(t,
+		mqttlocal.WithMaxInflightMessages(4),
+		mqttlocal.WithMessageSizeLimit(1<<20),
+	)
+	t.Cleanup(broker.Stop)
+
+	source := NewSession(SessionOptions{
+		BrokerURLs:               []string{broker.URL()},
+		ClientID:                 mqttlocal.UniqueClientID("ingress-predecode-source"),
+		ConnectTimeout:           10 * time.Second,
+		KeepAlive:                30,
+		CleanStart:               true,
+		ReceiveMaximum:           4,
+		MaxPayloadBytes:          16,
+		IngressMemoryBudgetBytes: DefaultIngressMemoryBudgetBytes,
+	}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = source.Close(context.Background()) })
+	require.NoError(t, source.Start(ctx))
+	require.NoError(t, source.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
+	}))
+
+	publisher := NewSession(SessionOptions{
+		BrokerURLs:     []string{broker.URL()},
+		ClientID:       mqttlocal.UniqueClientID("ingress-predecode-publisher"),
+		ConnectTimeout: 10 * time.Second,
+		KeepAlive:      30,
+		CleanStart:     true,
+	}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = publisher.Close(context.Background()) })
+	require.NoError(t, publisher.Start(ctx))
+
+	properties := make(pahov5.UserProperties, maxIngressUserProperties+1)
+	for i := range properties {
+		properties[i] = pahov5.UserProperty{Key: "", Value: ""}
+	}
+	_, err := publisher.ConnectionManager().Publish(ctx, &pahov5.Publish{
+		Topic:      topic,
+		QoS:        1,
+		Payload:    []byte("ok"),
+		Properties: &pahov5.PublishProperties{User: properties},
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		health := source.Health(ctx)
+		var ingressErr *mqttIngressError
+		return !health.Ready &&
+			errors.As(health.LastError, &ingressErr) &&
+			ingressErr.kind == mqttIngressUserPropertiesTooLarge
+	}, 15*time.Second, 10*time.Millisecond)
+
+	health := source.Health(ctx)
+	assert.Zero(t, health.UnsettledCount,
+		"predecode rejection must not enter Paho's acknowledgment tracker")
+	dispatchDepth, _ := source.IngressMemoryStats()
+	assert.Zero(t, dispatchDepth)
+	assert.Zero(t, source.router.PendingCount())
+	assert.Zero(t, source.router.routeCount.Load(),
+		"raw property amplification must not reach the Paho publish callback")
+	assert.Zero(t, source.router.dropCount.Load(),
+		"the decoded callback poison path must not observe a predecode rejection")
+
+	terminalEvents := 0
+	for {
+		select {
+		case event, ok := <-source.Events():
+			if !ok {
+				assert.Equal(t, 1, terminalEvents,
+					"one raw violation must own one terminal lifecycle transition")
+				return
+			}
+			if event.Type == ports.SessionError {
+				terminalEvents++
+				var ingressErr *mqttIngressError
+				require.ErrorAs(t, event.Err, &ingressErr)
+				assert.Equal(t, mqttIngressUserPropertiesTooLarge, ingressErr.kind)
+			}
+		case <-ctx.Done():
+			t.Fatal("predecode terminal lifecycle did not close")
+		}
+	}
+}
 
 func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *testing.T) {
 	if testing.Short() {

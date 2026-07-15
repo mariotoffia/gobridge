@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -77,6 +78,30 @@ func TestIngressMemory_AllIngressSessionsValidatedIndependently(t *testing.T) {
 	assert.Equal(t, []uint64{routing.DefaultMaxInFlight}, first.routeMaxInFlight)
 	assert.Equal(t, []uint64{37}, second.routeMaxInFlight)
 	assert.Empty(t, senderOnly.routeMaxInFlight, "sender-only sessions consume no ingress budget")
+}
+
+func TestIngressMemory_UnconsumedReceiverStillRunsFullPreflight(t *testing.T) {
+	memoryCfg := &recordingIngressMemoryConfig{}
+	cfg := ingressMemoryBridgeConfig(memoryCfg, nil, nil)
+	cfg.Routes = nil
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("memory-aware", &dedicatedIngressMemoryFactory{}).
+		prepare(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []uint64{0}, memoryCfg.routeMaxInFlight)
+}
+
+func TestIngressMemory_ReferencedDurableSenderOnlySessionRunsFullPreflight(t *testing.T) {
+	memoryCfg := &recordingIngressMemoryConfig{}
+	cfg := ingressMemoryBridgeConfig(nil, nil, memoryCfg)
+	cfg.Sessions[len(cfg.Sessions)-1].SessionMode = string(connectivity.SessionPersistent)
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("memory-aware", &dedicatedIngressMemoryFactory{}).
+		prepare(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []uint64{0}, memoryCfg.routeMaxInFlight)
 }
 
 func TestIngressMemory_ValidationFailureIsTypedAndPrecedesResourceCreation(t *testing.T) {

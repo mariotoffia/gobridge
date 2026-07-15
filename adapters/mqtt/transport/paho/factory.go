@@ -71,6 +71,15 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid configuration", spec.ID))
 	}
+	// Config.Validate deliberately defers receive-dependent validation when the
+	// parser saw an omitted Receive Maximum so deployment profiles can derive a
+	// safe value. Session construction is the final adapter build boundary:
+	// require the complete effective window here as defense in depth even when a
+	// caller bypasses bridge.Builder's resource-free preflight.
+	if err := cfg.ValidateIngressMemory(0); err != nil {
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid ingress memory configuration", spec.ID))
+	}
 	opts := cfg.Session
 	mode := spec.SessionMode
 	if mode == "" {

@@ -532,6 +532,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		}
 		cfg.TlsCfg = tlsCfg
 	}
+	// Own the final connection composition seam so every decrypted inbound byte
+	// crosses the bounded raw MQTT guard before Paho's packets.ReadPacket can
+	// materialize topic/property/payload representations. AttemptConnection is
+	// called for initial connect and every autopaho reconnect generation.
+	cfg.AttemptConnection = s.attemptGuardedConnection
 
 	// The CM's reconnection loop must outlive the caller's context.
 	// We derive a background context that is only cancelled by Close().
@@ -584,7 +589,7 @@ func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
 // applyConnectLimits populates the MQTT v5 CONNECT properties advertising the
 // self-imposed limits the broker must honour: Receive Maximum (in-flight QoS 1/2
 // count) and, when a per-message payload ceiling is configured, Maximum Packet
-// Size (derived via maxPacketSizeFor). Together they make the validated ingress
+// Size (derived via wirePacketSizeFor). Together they make the validated ingress
 // byte model broker-enforced.
 //
 // A zero receiveMaximum or a zero maxPayloadBytes leaves its respective property

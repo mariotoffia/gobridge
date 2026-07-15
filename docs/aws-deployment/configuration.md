@@ -119,12 +119,13 @@ Validation fails if:
 - `ssm_endpoint` is set but `dev_mode` is `false`.
 - `container_memory_bytes` is zero after normalization, or
   `reserved_memory_bytes` alone leaves less than 20% headroom.
-- A consumed MQTT session cannot fit its payload, receive/dispatch window, and
-  route concurrency in its equal share of the 25% MQTT ingress reservation.
-  Every Persistent/Exclusive MQTT session referenced by a declared sender
-  consumes one deduplicated share with route concurrency zero even when no route
-  references that sender, because it is still built and durable state may resume
-  stale backlog. Ephemeral sender-only sessions do not consume a share.
+- An included MQTT session cannot fit its payload, receive/dispatch window, raw
+  predecode crossing packet, and route concurrency in its equal share of the 25%
+  MQTT ingress reservation. Every session referenced by a `ReceiverDef` consumes
+  one share even without a route. Every referenced Persistent/Exclusive session
+  also consumes a deduplicated share with route concurrency zero because durable
+  state may resume stale backlog before cleanup. Ephemeral sender-only sessions
+  with no receiver/subscription do not consume a share.
 
 When `metrics_exporter` is `"cloudwatch"`, the CDK base grants
 `cloudwatch:PutMetricData` scoped by a `cloudwatch:namespace` condition to the

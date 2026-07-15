@@ -350,6 +350,17 @@ Stateful transport connection lifecycle management for protocols that maintain l
 | `Events()` | Channel of lifecycle events (connected, disconnected, reconnecting, error) |
 | `Close(ctx)` | Graceful shutdown |
 
+The MQTT adapter composes an adapter-owned predecode ingress guard at the final
+`net.Conn` boundary after TLS/WebSocket decryption and before
+`paho.NewClient`. The guard buffers at most one advertised-maximum wire packet,
+validates Remaining Length before allocation, and checks raw PUBLISH variable
+header, properties, metadata, and payload limits before the SDK can materialize
+decoded objects. Writes, deadlines, close operations, addresses, partial reads,
+and non-PUBLISH bytes retain `net.Conn` behavior. A typed secret-safe violation
+is latched by the existing terminal session transition before the connection
+fails, so autopaho's `OnConnectionDown` observes terminal state and does not
+start a reconnect storm.
+
 ### Route
 
 A message route from a receiver through a processor chain to one or more sender bindings. Configured via `config.RouteDef` with: `receiver_id`, `delivery_mode`, `dispatch_mode`, `policy`, `bindings`, `processors`.
@@ -846,7 +857,8 @@ flowchart TD
     Plan --> Prepare["builder_prepare.go: prepare()"]
     Prepare --> CheckRand["runtime.CheckRandSource()"]
     Prepare --> Validate["validator(cfg)<br/>config.Validate / blueprint validator"]
-    Prepare --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
+    Validate --> Ingress["capability preflight<br/>dedicated ingress + full ingress-memory validation"]
+    Ingress --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
     Stores --> StoreFact["StoreFactory(.NewLeaseStore /<br/>NewOutboxStore / NewDLQStore)"]
     StoreFact --> Prep[(preparedBuild<br/>cfg + stores + rtOpts)]
 
@@ -869,6 +881,18 @@ state; `Commit` is single-use (a second call returns an error) so
 the supervisor's hot-reload state machine cannot accidentally
 double-commit. `Build` is the same `prepare → complete` collapsed
 into a single call.
+
+Plugin `Config.Validate` runs while parsing. For MQTT, an omitted Receive
+Maximum defers only the receive-dependent window decision so a deployment
+profile can derive safe concurrency; explicit values still receive full
+validation. Before any store or transport resource is opened, the Builder
+always invokes `IngressMemoryConfig.ValidateIngressMemory` for every
+ReceiverDef-backed session and every referenced Persistent/Exclusive session.
+This second stage applies generic defaults or verifies the deployment-derived
+profile with effective route concurrency. An unconsumed receiver is still
+possible ingress because `sessionPlanFor` includes every ReceiverDef
+subscription, while a durable session can resume stale broker backlog before
+managed cleanup.
 
 ---
 

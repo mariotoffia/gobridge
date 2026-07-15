@@ -10,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestConfigIngressMemory_DefaultsNormalize(t *testing.T) {
@@ -28,6 +30,51 @@ func TestConfigIngressMemory_DefaultsNormalize(t *testing.T) {
 	assert.Equal(t, int(DefaultReceiveMaximum), dispatchCapacity)
 	assert.Equal(t, DefaultMaxPayloadBytes, session.opts.MaxPayloadBytes)
 	assert.Equal(t, DefaultIngressMemoryBudgetBytes, session.opts.IngressMemoryBudgetBytes)
+}
+
+func TestConfigIngressMemory_OmittedReceiveMaximumDefersWindowValidation(t *testing.T) {
+	cfg := decodeRegistry(t, map[string]any{
+		"session": map[string]any{
+			"max_payload_bytes": 1 << 20,
+		},
+	})
+
+	require.Zero(t, cfg.Session.ReceiveMaximum)
+	require.NoError(t, cfg.Validate(),
+		"parse-time validation must leave omitted receive concurrency for deployment preflight")
+	require.Error(t, cfg.ValidateIngressMemory(0),
+		"full generic preflight must apply Receive Maximum 192 and reject the unsafe window")
+}
+
+func TestConfigIngressMemory_ExplicitReceiveMaximumRunsFullParseValidation(t *testing.T) {
+	reg := ports.NewRegistry()
+	require.NoError(t, Register(reg))
+
+	_, err := reg.Decode("mqtt", parser.NewRawConfig(map[string]any{
+		"session": map[string]any{
+			"max_payload_bytes": 1 << 20,
+			"receive_maximum":   192,
+		},
+	}))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+}
+
+func TestFactoryIngressMemory_OmittedReceiveMaximumRunsFullBuildValidation(t *testing.T) {
+	cfg := decodeRegistry(t, map[string]any{
+		"session": map[string]any{
+			"broker_url":        "tcp://broker:1883",
+			"client_id":         "generic-build",
+			"max_payload_bytes": 1 << 20,
+		},
+	})
+
+	_, err := NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+		ID:     "generic-build",
+		Config: cfg,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }
 
 func TestConfigIngressMemory_ExplicitZeroRemainsUnsetUntilRuntimeNormalization(t *testing.T) {

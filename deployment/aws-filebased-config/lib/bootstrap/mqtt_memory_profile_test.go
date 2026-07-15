@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/bridge"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -113,6 +114,132 @@ routes:
 	assert.Equal(t, uint64(128<<20), explicitConfig.Session.IngressMemoryBudgetBytes)
 }
 
+func TestMQTTMemoryProfile_RealYAMLOmittedReceiveMaximumDerivesForOneMiBPayload(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-one-mib
+sessions:
+  - id: ingress
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress
+        max_payload_bytes: 1048576
+receivers:
+  - id: receiver
+    transport: mqtt
+    session_id: ingress
+    topics:
+      - topic: memory/one-mib
+        qos: 1
+routes:
+  - id: route
+    receiver_id: receiver
+    policy:
+      max_in_flight: 1
+`
+	cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+	session := mqttProfileSessionConfig(t, cfg, "ingress")
+	wantReceive, err := paho.LargestSafeReceiveMaximum(1<<20, 256<<20, 1)
+	require.NoError(t, err)
+	assert.Equal(t, wantReceive, session.Session.ReceiveMaximum)
+	assert.Less(t, session.Session.ReceiveMaximum, paho.DefaultReceiveMaximum)
+}
+
+func TestMQTTMemoryProfile_RealYAMLExplicitReceiveMaximum192RejectsOneMiBPayload(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-explicit-one-mib
+sessions:
+  - id: ingress
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress
+        max_payload_bytes: 1048576
+        receive_maximum: 192
+receivers:
+  - id: receiver
+    transport: mqtt
+    session_id: ingress
+    topics:
+      - topic: memory/explicit
+        qos: 1
+`
+	registry := newDefaultPluginRegistry()
+	_, err := cfgparser.Parse(strings.NewReader(configYAML), cfgparser.FormatYAML, registry)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+}
+
+func TestMQTTMemoryProfile_RealYAMLGenericBridgePreflightUsesDefaultReceiveMaximum(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: generic-mqtt-one-mib
+sessions:
+  - id: ingress
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress
+        max_payload_bytes: 1048576
+receivers:
+  - id: receiver
+    transport: mqtt
+    session_id: ingress
+    topics:
+      - topic: memory/generic
+        qos: 1
+routes:
+  - id: route
+    receiver_id: receiver
+    policy:
+      max_in_flight: 1
+`
+	registry := newDefaultPluginRegistry()
+	logical, err := cfgparser.Parse(strings.NewReader(configYAML), cfgparser.FormatYAML, registry)
+	require.NoError(t, err, "omitted receive maximum must survive parser validation")
+
+	_, err = bridge.NewBuilder(logical).
+		RegisterTransportFactory("mqtt", paho.NewFactory(nil)).
+		Plan(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig,
+		"generic preflight must apply default Receive Maximum 192 before resources")
+}
+
+func TestMQTTMemoryProfile_RealYAMLPayloadRegressionsParseBeforeProfile(t *testing.T) {
+	for _, maxPayload := range []string{"262144", "2097152"} {
+		t.Run(maxPayload, func(t *testing.T) {
+			configYAML := `
+bridge:
+  id: aws-mqtt-payload-regression
+sessions:
+  - id: ingress
+    transport: mqtt
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress
+        max_payload_bytes: ` + maxPayload + `
+receivers:
+  - id: receiver
+    transport: mqtt
+    session_id: ingress
+    topics:
+      - topic: memory/regression
+        qos: 1
+`
+			cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+			session := mqttProfileSessionConfig(t, cfg, "ingress")
+			assert.NotZero(t, session.Session.ReceiveMaximum)
+		})
+	}
+}
+
 func TestMQTTMemoryProfile_DividesReservationAcrossIngressSessions(t *testing.T) {
 	cfg, sessions := mqttMemoryProfileConfig(2, 0)
 
@@ -136,6 +263,51 @@ func TestMQTTMemoryProfile_EphemeralSenderOnlySessionsDoNotConsumeIngressAllocat
 	assert.Zero(t, sessions[1].Session.IngressMemoryBudgetBytes)
 	assert.Zero(t, sessions[1].Session.ReceiveMaximum,
 		"sender-only sessions are not normalized or allocated as ingress")
+}
+
+func TestMQTTMemoryProfile_RealParseEphemeralReceiverWithoutRouteConsumesAllocation(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-unconsumed-receiver
+sessions:
+  - id: ingress
+    transport: mqtt
+    session_mode: ephemeral
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ingress
+receivers:
+  - id: receiver
+    transport: mqtt
+    session_id: ingress
+    topics:
+      - topic: memory/unconsumed
+        qos: 1
+`
+	cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+	session := mqttProfileSessionConfig(t, cfg, "ingress")
+	assert.Equal(t, uint64(256<<20), session.Session.IngressMemoryBudgetBytes)
+	assert.NotZero(t, session.Session.ReceiveMaximum)
+}
+
+func TestMQTTMemoryProfile_RealParseNoReceiverExcludesEphemeralSession(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-empty-session
+sessions:
+  - id: unused
+    transport: mqtt
+    session_mode: ephemeral
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: unused
+`
+	cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+	session := mqttProfileSessionConfig(t, cfg, "unused")
+	assert.Zero(t, session.Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, session.Session.ReceiveMaximum)
 }
 
 func TestMQTTMemoryProfile_DurableSenderOnlySessionConsumesIngressAllocation(t *testing.T) {

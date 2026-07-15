@@ -274,6 +274,22 @@ func (s *Session) rejectIngressPoison(cause error) {
 	_, _ = s.transitionTerminal(context.Background(), cause, 0, true, false)
 }
 
+// rejectPredecodeIngress preserves the exact secret-safe guard cause in the
+// terminal lifecycle before the guarded connection returns it to Paho. The
+// connection closes synchronously after this callback, so OnConnectionDown
+// observes terminalErr and existing reconnect policy stops the generation.
+func (s *Session) rejectPredecodeIngress(cause error) {
+	s.metrics.Counter(MetricMQTTRouterDropped, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	if s.logger != nil {
+		s.logger.Error("mqtt: rejected inbound packet before Paho decoding; terminating session",
+			"client_id", s.opts.ClientID,
+			"error", cause,
+		)
+	}
+	s.rejectIngressPoison(cause)
+}
+
 func (s *Session) terminateFailedRecovery(generation uint64, cause error, async bool) bool {
 	terminal := settlementRecoveryTerminalError(cause)
 	_, started := s.transitionTerminal(context.Background(), terminal, generation, async, false)

@@ -123,9 +123,10 @@ type SessionOptions struct {
 	// bytes) this session will admit from the broker. Zero selects
 	// DefaultMaxPayloadBytes (256 KiB). The adapter
 	// advertises an MQTT v5 Maximum Packet Size in the CONNECT derived from this
-	// value plus the bounded worst-case protocol metadata allowance. A local
-	// callback guard rejects a non-compliant broker's oversize body before the
-	// adapter copies or enqueues it. This is an inbound limit only.
+	// value plus the bounded worst-case protocol metadata allowance. A raw
+	// connection guard enforces body/metadata structure before Paho decoding;
+	// the callback repeats retained-representation checks as defense in depth.
+	// This is an inbound limit only.
 	MaxPayloadBytes uint32 `mapstructure:"max_payload_bytes" yaml:"max_payload_bytes" json:"max_payload_bytes"`
 	// IngressMemoryBudgetBytes is the maximum conservative byte bound for this
 	// session's inbound MQTT packet window. Zero selects
@@ -455,28 +456,58 @@ func wirePacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	return uint32(uint64(maxPayloadBytes) + mqttPacketOverheadAllowance), nil
 }
 
-// maxPacketSizeFor returns a conservative retained-heap base for one accepted
-// packet representation. The wire limit is augmented by the accepted
-// UserProperty structural cap and fixed Go/queue representation allowance.
+// decodedPacketSizeFor returns a conservative retained-heap base for one
+// accepted decoded packet representation.
+func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+	wire, err := wirePacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	decoded := uint64(wire) +
+		maxIngressUserProperties*retainedUserPropertyBytes +
+		retainedPacketFixedBytes
+	if decoded > math.MaxUint32 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: decoded packet memory exceeds uint32")
+	}
+	return uint32(decoded), nil
+}
+
+// maxPacketSizeFor returns the crossing-slot base: one complete raw wire packet
+// held by mqttIngressConn plus the conservative accepted decoded representation
+// Paho builds while consuming it. A rejected packet retains only the raw half,
+// so the same slot also covers a maximum-wire rejection.
 func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}
-	retained := uint64(wire) +
-		maxIngressUserProperties*retainedUserPropertyBytes +
-		retainedPacketFixedBytes
-	if retained > math.MaxUint32 {
-		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: retained packet memory exceeds uint32")
+	decoded, err := decodedPacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
 	}
-	return uint32(retained), nil
+	crossing, err := checkedAddUint64(uint64(wire), uint64(decoded))
+	if err != nil || crossing > math.MaxUint32 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: crossing packet memory exceeds uint32")
+	}
+	return uint32(crossing), nil
 }
 
 // ingressMemoryPacketBytes returns
-// ceil(maxPacketSize(maxPayloadBytes) * 1.25). The 25 percent accounts for Go
-// object, slice, queue-node, and SDK bookkeeping around the complete admitted
-// MQTT packet.
+// ceil(decodedPacketSize(maxPayloadBytes) * 1.25).
 func ingressMemoryPacketBytes(maxPayloadBytes uint32) (uint64, error) {
+	if maxPayloadBytes == 0 {
+		maxPayloadBytes = DefaultMaxPayloadBytes
+	}
+	packetSize, err := decodedPacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	return addIngressMemoryFactor(uint64(packetSize))
+}
+
+// ingressMemoryCrossingBytes returns ceil(maxPacketSize * 1.25) for the single
+// raw-plus-decoded crossing slot.
+func ingressMemoryCrossingBytes(maxPayloadBytes uint32) (uint64, error) {
 	if maxPayloadBytes == 0 {
 		maxPayloadBytes = DefaultMaxPayloadBytes
 	}
@@ -484,7 +515,10 @@ func ingressMemoryPacketBytes(maxPayloadBytes uint32) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	packet := uint64(packetSize)
+	return addIngressMemoryFactor(uint64(packetSize))
+}
+
+func addIngressMemoryFactor(packet uint64) (uint64, error) {
 	quarter := packet / 4
 	if packet%4 != 0 {
 		var addErr error
@@ -498,9 +532,10 @@ func ingressMemoryPacketBytes(maxPayloadBytes uint32) (uint64, error) {
 
 // IngressMemoryBound calculates the conservative per-session byte bound:
 //
-//	packet = ceil(maxPacketSize(maxPayloadBytes) * 1.25)
-//	window = receiveMaximum + dispatchCapacity + routeMaxInFlight + 1
-//	bound  = packet * window
+//	packet   = ceil(decodedPacketSize(maxPayloadBytes) * 1.25)
+//	crossing = ceil((wirePacketSize + decodedPacketSize) * 1.25)
+//	window   = receiveMaximum + dispatchCapacity + routeMaxInFlight
+//	bound    = packet * window + crossing
 //
 // Dispatch capacity equals the effective Receive Maximum. Zero payload and
 // receive values select the adapter defaults.
@@ -516,6 +551,10 @@ func IngressMemoryBound(
 	if err != nil {
 		return 0, err
 	}
+	crossing, err := ingressMemoryCrossingBytes(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
 	window, err := checkedAddUint64(uint64(receiveMaximum), uint64(receiveMaximum))
 	if err != nil {
 		return 0, err
@@ -524,11 +563,11 @@ func IngressMemoryBound(
 	if err != nil {
 		return 0, err
 	}
-	window, err = checkedAddUint64(window, 1)
+	bound, err := checkedMulUint64(packet, window)
 	if err != nil {
 		return 0, err
 	}
-	return checkedMulUint64(packet, window)
+	return checkedAddUint64(bound, crossing)
 }
 
 // LargestSafeReceiveMaximum derives the largest legal MQTT v5 Receive Maximum
@@ -544,15 +583,22 @@ func LargestSafeReceiveMaximum(
 	if err != nil {
 		return 0, err
 	}
-	if budgetBytes == 0 {
-		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory budget must be greater than zero")
-	}
-	maxWindow := budgetBytes / packet
-	baseWindow, err := checkedAddUint64(routeMaxInFlight, 1)
+	crossing, err := ingressMemoryCrossingBytes(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}
-	minWindow, err := checkedAddUint64(baseWindow, 2)
+	if budgetBytes == 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: ingress memory budget must be greater than zero")
+	}
+	if budgetBytes < crossing {
+		return 0, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: ingress memory budget %d bytes is too small for the raw/decode crossing slot (requires at least %d bytes)",
+			budgetBytes,
+			crossing,
+		))
+	}
+	maxWindow := (budgetBytes - crossing) / packet
+	minWindow, err := checkedAddUint64(routeMaxInFlight, 2)
 	if err != nil {
 		return 0, err
 	}
@@ -561,12 +607,16 @@ func LargestSafeReceiveMaximum(
 		if mulErr != nil {
 			return 0, mulErr
 		}
+		minimumBytes, addErr := checkedAddUint64(minimumBytes, crossing)
+		if addErr != nil {
+			return 0, addErr
+		}
 		return 0, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
 			"mqtt: ingress memory budget %d bytes is too small for one receive packet (requires at least %d bytes)",
 			budgetBytes, minimumBytes,
 		))
 	}
-	receive := (maxWindow - baseWindow) / 2
+	receive := (maxWindow - routeMaxInFlight) / 2
 	if receive > math.MaxUint16 {
 		receive = math.MaxUint16
 	}
@@ -600,7 +650,7 @@ func checkedMulUint64(a, b uint64) (uint64, error) {
 func (o SessionOptions) normalizedIngressMemory() SessionOptions {
 	out := o
 	if !out.ingressDefaultsApplied {
-		out.receiveMaximumExplicit = out.ReceiveMaximum != 0
+		out.receiveMaximumExplicit = out.receiveMaximumExplicit || out.ReceiveMaximum != 0
 		out.ingressMemoryBudgetExplicit = out.IngressMemoryBudgetBytes != 0
 	} else {
 		if out.ReceiveMaximum != 0 && out.ReceiveMaximum != DefaultReceiveMaximum {

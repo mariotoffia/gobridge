@@ -139,8 +139,35 @@ func (c Config) Validate() error {
 	if err := c.Session.validatePlaintextCredentials(); err != nil {
 		return err
 	}
-	if err := c.ValidateIngressMemory(0); err != nil {
+	if !c.Session.receiveMaximumExplicit && c.Session.ReceiveMaximum == 0 {
+		if err := c.validateIngressMemoryPrerequisites(); err != nil {
+			return err
+		}
+	} else {
+		if err := c.ValidateIngressMemory(0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIngressMemoryPrerequisites checks the packet ceiling and proves the
+// configured budget can fit one legal receive slot, one dispatch slot, and the
+// raw/decode crossing slot. It deliberately does not choose a Receive Maximum:
+// deployment profiles may derive a safe value after parse, while generic bridge
+// preflight later calls ValidateIngressMemory and applies the default 192.
+func (c Config) validateIngressMemoryPrerequisites() error {
+	session := c.Session.normalizedIngressMemory()
+	minimum, err := IngressMemoryBound(session.MaxPayloadBytes, 1, 0)
+	if err != nil {
 		return err
+	}
+	if minimum > session.IngressMemoryBudgetBytes {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: ingress_memory_budget_bytes %d cannot fit one legal receive/dispatch window and the raw predecode crossing (requires at least %d bytes)",
+			session.IngressMemoryBudgetBytes,
+			minimum,
+		))
 	}
 	return nil
 }

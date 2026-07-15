@@ -344,9 +344,9 @@ senders:
 | `reconnect_max_delay` | duration | `2m` (`DefaultReconnectMaxDelay`) | Caps the jittered-exponential reconnect envelope. Must be ≥ `reconnect_delay`; a smaller value is clamped up to the base at Start. `0` → `2m`. |
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
-| `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes one reservation shared by the serialized dispatch queue and startup/migration pending entries; those stores cannot each retain a full independent window. A non-zero value is accepted only when the complete ingress byte bound fits `ingress_memory_budget_bytes`; unsafe explicit values are rejected, never clamped. |
-| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. Before adapter enqueue, the callback also enforces the body limit, at most 128 User Properties, and at most 128 KiB encoded topic/properties metadata. A violation terminally recycles the session so QoS 1/2 cannot wedge acknowledgement tracking. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
-| `ingress_memory_budget_bytes` | int | `0` → **268435456** (`DefaultIngressMemoryBudgetBytes`) | Per-session conservative MQTT ingress budget (256 MiB). The bridge validates the full packet/window equation below using the route's effective `max_in_flight` before opening stores or transports. Exact boundary is accepted; one byte over budget and every arithmetic overflow are rejected as invalid config. |
+| `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes one reservation shared by the serialized dispatch queue and startup/migration pending entries; those stores cannot each retain a full independent window. An explicitly configured non-zero value receives full window validation during parse and is rejected when unsafe. An omitted value stays unmaterialized during parse so a deployment profile may derive a lower safe value; generic bridge preflight later applies 192 and performs the same full validation. |
+| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, and rejects an oversized body, a property block over 128 KiB, more than 128 structurally parsed User Properties, or topic-plus-properties metadata over 128 KiB. The decoded callback repeats the retained-representation checks as defense in depth. A violation terminally recycles the session before SDK acknowledgement tracking or adapter queues can retain the packet. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
+| `ingress_memory_budget_bytes` | int | `0` → **268435456** (`DefaultIngressMemoryBudgetBytes`) | Per-session conservative MQTT ingress budget (256 MiB). The bridge validates the full packet/window equation below using the route's effective `max_in_flight` before opening stores or transports. Validation includes ReceiverDef-backed sessions with no consuming route and referenced Persistent/Exclusive sessions that can resume stale backlog. Exact boundary is accepted; one byte over budget and every arithmetic overflow are rejected as invalid config. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. It is also the post-recycle no-replay verification window for managed-filter removal; a pinned matching replay or a shorter reconciliation deadline fails migration closed and preserves history. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
 | `username` | string | -- | Authentication username. Sent in the MQTT CONNECT packet in **cleartext** — see `allow_plaintext_credentials` and use a TLS broker scheme (`ssl://`, `mqtts://`, …). |
@@ -367,52 +367,65 @@ senders:
 
 ### Ingress byte model
 
-Every consumed MQTT session is validated independently:
+Every MQTT session that can own inbound state is validated independently:
 
 ```text
-packet = ceil(maxPacketSize(maxPayloadBytes) * 1.25)
-window = receiveMaximum + dispatchCapacity + routeMaxInFlight + 1
-bound  = packet * window
+packet   = ceil(decodedPacketSize(maxPayloadBytes) * 1.25)
+crossing = ceil((wirePacketSize(maxPayloadBytes) + decodedPacketSize(maxPayloadBytes)) * 1.25)
+window   = receiveMaximum + dispatchCapacity + routeMaxInFlight
+bound    = packet * window + crossing
 ```
 
 `dispatchCapacity` is the effective `receiveMaximum`, not a fixed queue size.
 One reservation is shared by dispatch and startup/migration pending entries, so
 their combined distinct queued packets never exceed that capacity.
-`maxPacketSize` is the retained-heap base for an accepted MQTT v5 PUBLISH. It
-starts with the separately advertised wire Maximum Packet Size: payload plus a
-128 KiB allowance covering the fixed-header byte, worst-case four-byte Remaining
-Length encoding, maximal 65,535-byte topic plus its two-byte length, QoS packet
-identifier, worst-case properties-length encoding, and bounded property bytes.
-It then includes both Paho User Property struct representations (capped at 128)
-and a 32 KiB fixed allowance for SDK structures, accepted Envelope header-map
-buckets, outbox/queue state, and allocator page/size-class rounding. The 25%
-factor covers remaining Go object and slice bookkeeping. The `+1` covers
-the packet currently crossing dispatch/handler ownership. Envelope, no-processor
-route, and outbox fan-out clones share immutable payload backing; a processor
-that calls `SetPayload` owns a new copy. Checked division and overflow guards run
-before every addition or multiplication.
+`wirePacketSize` is the separately advertised MQTT Maximum Packet Size: payload
+plus a 128 KiB allowance covering the fixed-header byte, worst-case four-byte
+Remaining Length encoding, maximal 65,535-byte topic plus its two-byte length,
+QoS packet identifier, worst-case properties-length encoding, and bounded
+property bytes. `decodedPacketSize` adds both Paho User Property struct
+representations (capped at 128) and a 32 KiB fixed allowance for SDK structures,
+accepted Envelope header-map buckets, outbox/queue state, and allocator
+page/size-class rounding. The 25% factor covers remaining Go object and slice
+bookkeeping.
 
-The typed parser intentionally keeps zero/unset `receive_maximum`,
-`max_payload_bytes`, and `ingress_memory_budget_bytes` as zero through config
-clone/parse. This preserves whether an operator supplied a value. The AWS
-profile derives omitted values before build; other composition paths normalize
-them in `NewSession`. Explicit safe values survive both paths, while explicit
-unsafe values fail rather than being reduced.
+The single `crossing` term is the formula's `+1` ownership slot. It covers one
+complete raw packet buffered by the predecode connection guard plus Paho's
+conservative decoded accepted representation while that wire packet is consumed.
+For a rejected packet only the raw half exists, so the same term is conservative.
+The guard checks the advertised Maximum Packet Size from Remaining Length before
+allocating and never buffers a second packet. Envelope, no-processor route, and
+outbox fan-out clones share immutable payload backing; a processor that calls
+`SetPayload` owns a new copy. Checked division and overflow guards run before
+every addition or multiplication.
+
+The typed parser intentionally keeps zero/unset ingress fields unmaterialized
+through config clone/parse. When `receive_maximum` is omitted, parse validates
+only receive-independent packet and minimum-budget prerequisites. The AWS
+profile then assigns a per-session budget and derives a safe Receive Maximum.
+An explicit non-zero Receive Maximum receives full validation immediately and
+is never clamped. Independently of deployment profile, `bridge.Builder`
+performs full `ValidateIngressMemory(routeMaxInFlight)` preflight before opening
+stores or transports; generic composition therefore applies default 192 and
+rejects a window that the default 256 MiB budget cannot hold.
 
 The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
-produce a 263,219,200-byte bound, below the 256 MiB default budget. Raising
+produce a 263,710,720-byte bound, below the 256 MiB default budget. Raising
 payload size, Receive Maximum, or route concurrency may require a larger budget.
 Do not tune only the message count.
 
 The AWS file-based profile reserves 25% of the effective Fargate task memory,
-divides it across unique consumed MQTT sessions, and derives the largest safe
-default Receive Maximum with this same formula. It rejects a profile that cannot
-leave 20% container headroom after `reserved_memory_bytes` plus MQTT ingress.
-Every Persistent or Exclusive MQTT session referenced by a declared sender
-consumes one deduplicated allocation even when no route references that sender,
-because the session is still built and resumed durable broker state may deliver
-stale backlog before managed-subscription cleanup; its route concurrency
-contribution is zero. Ephemeral sender-only sessions are excluded.
+divides it across unique included MQTT sessions, and derives the largest safe
+default Receive Maximum with this same formula. Every started memory-aware
+session referenced by a `ReceiverDef` is included, even when no route consumes
+the receiver, because its effective session plan can subscribe and admit
+traffic. Every referenced Persistent or Exclusive session is also included:
+resumed durable broker state may deliver stale backlog before
+managed-subscription cleanup. Session IDs are deduplicated and route-less
+sessions contribute zero route concurrency. Ephemeral sender-only sessions with
+no receiver/subscription remain excluded. The profile rejects an allocation
+that cannot leave 20% container headroom after `reserved_memory_bytes` plus
+MQTT ingress.
 
 ## Sender Options Reference (`options.sender.*`)
 

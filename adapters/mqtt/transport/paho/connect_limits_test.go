@@ -102,20 +102,46 @@ func TestMaxPacketSizeFor(t *testing.T) {
 	got, err := maxPacketSizeFor(0)
 	require.NoError(t, err)
 	require.Equal(t,
-		uint32(mqttPacketOverheadAllowance+
+		uint32(2*mqttPacketOverheadAllowance+
 			maxIngressUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got,
-		"retained packet size includes wire metadata and structural heap allowance")
+		"crossing packet size includes one raw wire buffer, one decoded representation, and structural heap allowance")
 	got, err = maxPacketSizeFor(256 << 10)
 	require.NoError(t, err)
 	require.Equal(t,
-		uint32(256<<10)+uint32(mqttPacketOverheadAllowance+
+		2*uint32(256<<10)+uint32(2*mqttPacketOverheadAllowance+
 			maxIngressUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got)
 	_, err = maxPacketSizeFor(math.MaxUint32)
 	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")
+}
+
+func TestIngressMemoryPacketBytes_CrossingFactorCoversAcceptedAndRejectedWirePackets(t *testing.T) {
+	const maxPayload = uint32(256 << 10)
+	wire, err := wirePacketSizeFor(maxPayload)
+	require.NoError(t, err)
+	decoded, err := decodedPacketSizeFor(maxPayload)
+	require.NoError(t, err)
+	crossing, err := maxPacketSizeFor(maxPayload)
+	require.NoError(t, err)
+	require.Equal(t, uint64(wire)+uint64(decoded), uint64(crossing))
+
+	crossingWithFactor, err := ingressMemoryCrossingBytes(maxPayload)
+	require.NoError(t, err)
+	acceptedMinimum := uint64(wire) + uint64(decoded)
+	rejectedMinimum := uint64(wire)
+	require.GreaterOrEqual(t, crossingWithFactor, acceptedMinimum)
+	require.GreaterOrEqual(t, crossingWithFactor, rejectedMinimum)
+	require.Equal(t, (uint64(crossing)*5+3)/4, crossingWithFactor,
+		"ceil(crossing * 1.25) must be exact")
+}
+
+func TestIngressMemoryBound_DefaultsRemainWithinDefaultBudget(t *testing.T) {
+	bound, err := IngressMemoryBound(DefaultMaxPayloadBytes, DefaultReceiveMaximum, 100)
+	require.NoError(t, err)
+	require.LessOrEqual(t, bound, DefaultIngressMemoryBudgetBytes)
 }
 
 func TestMaxPacketSizeFor_CoversPahoDecodedPropertyRepresentations(t *testing.T) {

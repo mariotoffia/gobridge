@@ -33,7 +33,6 @@ jobs:
         id: module
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           # The version is always the final path segment (vX.Y.Z). Everything
           # before it is the module path relative to the repo root; a bare
@@ -56,9 +55,12 @@ jobs:
             exit 1
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
-          echo "import=$IMPORT_PATH" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "path=$MODULE_PATH"
+            echo "import=$IMPORT_PATH"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify build (${{ steps.module.outputs.path }})
         working-directory: ${{ steps.module.outputs.path }}

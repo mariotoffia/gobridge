@@ -18,6 +18,7 @@ type mqttMemoryAllocationResult struct {
 // applyMQTTMemoryProfile reserves one quarter of container memory for all
 // memory-profile-aware ingress sessions, divides it equally by session, and
 // asks each transport config to derive or validate its receive concurrency.
+// Every ReceiverDef-backed session is included even without a consuming route.
 // Used durable sender-only sessions are included with zero route concurrency:
 // they can resume stale broker backlog before managed cleanup. Ephemeral
 // sender-only sessions consume no ingress allocation.
@@ -47,6 +48,7 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 	// before durable modes are added to the memory profile.
 	usedSessions := make(map[string]struct{}, len(cfg.Sessions))
 	receiverSession := make(map[string]string, len(cfg.Receivers))
+	includedSessions := make(map[string]struct{}, len(profiles))
 	for i := range cfg.Receivers {
 		receiver := &cfg.Receivers[i]
 		if receiver.SessionID != "" {
@@ -54,10 +56,10 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 		}
 		if _, ok := profiles[receiver.SessionID]; ok {
 			receiverSession[receiver.ID] = receiver.SessionID
+			includedSessions[receiver.SessionID] = struct{}{}
 		}
 	}
 	routeConcurrency := make(map[string]uint64, len(profiles))
-	includedSessions := make(map[string]struct{}, len(profiles))
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
 		sessionID := receiverSession[route.ReceiverID]
