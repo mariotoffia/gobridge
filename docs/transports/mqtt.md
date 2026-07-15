@@ -383,6 +383,49 @@ downstream send or outbox persist succeeds. Acks are released in receive order,
 so an in-flight message survives a crash and is redelivered by the broker when
 a Persistent/Exclusive session resumes.
 
+### Bounded recovery from an unsettled delivery
+
+A successful `Delivery.Retry` on a QoS 1/2 delivery has transport-specific
+semantics because MQTT has no per-message NACK. On a **Persistent** or
+**Exclusive** session, Retry leaves the PUBLISH protocol-unsettled and requests
+one connection recycle. Ack and Retry are mutually exclusive and idempotent: a
+Retry that wins can never be followed by a protocol Ack for that delivery.
+QoS 0 and every Ephemeral-session Retry remain `ErrNotSupported` because a
+reconnect cannot redeliver them safely.
+
+Recovery applies these fixed safety bounds; there are no operator knobs:
+
+- readiness drops below Full synchronously when Retry requests recovery;
+- concurrent requests coalesce into one recycle;
+- the router stops accepting new callbacks, lets other accepted settlements
+  drain for at most **5 seconds**, then disconnects even if that drain remains
+  incomplete;
+- completed recovery attempts are spaced by at least **30 seconds**, using the
+  session clock, to prevent a DLQ-outage reconnect storm;
+- the rebuild uses the existing serialized `Session.Reload` path shared with
+  credential/TLS rotation, preserving `client_id` and session expiry while
+  forcing `clean_start=false`;
+- CONNACK must report **Session Present**. If it does not, the broker cannot
+  prove the unsettled packet survived. The Session instance fails closed and
+  remains below Full readiness until the composition root or orchestrator replaces
+  it; it never treats a second connection to a newly-created empty session as recovery.
+
+The adapter tracks every current-connection QoS 1/2 packet from receipt until a
+successful protocol Ack or connection-epoch change. Deep health exposes
+`unsettled_count`, `oldest_unsettled_age`, `receive_window_utilization`, and
+`recovery_recycle_count`. The corresponding metrics are:
+
+| Metric | Kind/unit | Meaning |
+|---|---|---|
+| `MQTTUnsettled` | gauge, packets | Current-epoch QoS 1/2 packets awaiting protocol settlement. |
+| `MQTTOldestUnsettledAge` | gauge, seconds | Age of the oldest current-epoch unsettled packet. |
+| `MQTTReceiveWindowUtilization` | gauge, ratio | `unsettled_count / receive_maximum`; sustained values near 1 indicate ingress is close to flow-control exhaustion. |
+| `MQTTSessionRecoveryRecycle` | counter | Completed recovery recycle attempts, including failed attempts. |
+
+All four metrics use only the existing `session_id` tag. Message IDs, topics,
+and failure reasons are deliberately not dimensions, so cardinality remains
+bounded.
+
 **Ephemeral sessions have a loss window.** An Ephemeral session keeps no offline
 retention: during any disconnect the broker queues nothing for it, so messages
 it would have delivered are lost with no redelivery on reconnect, and a runtime

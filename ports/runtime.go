@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
@@ -43,16 +44,20 @@ type RouteHealth struct {
 // subscription readiness and lease ownership. Part of the read-side
 // contract surfaced through RuntimeQuery.DeepHealth.
 type SessionHealthDetail struct {
-	SessionID              string
-	Connected              bool
-	HasLease               bool
-	ConnectAfterLease      bool // source session defers Start until this instance wins the lease
-	SubscriptionsWanted    int
-	SubscriptionsActive    int
-	SubscriptionsSatisfied *bool    // exact explicit-plan convergence, including removals; nil means legacy unknown
-	ActiveTopics           []string // contract-active topic filters
-	Ready                  bool
-	ServiceLevel           ServiceLevel
+	SessionID                string
+	Connected                bool
+	HasLease                 bool
+	ConnectAfterLease        bool // source session defers Start until this instance wins the lease
+	SubscriptionsWanted      int
+	SubscriptionsActive      int
+	SubscriptionsSatisfied   *bool    // exact explicit-plan convergence, including removals; nil means legacy unknown
+	ActiveTopics             []string // contract-active topic filters
+	Ready                    bool
+	ServiceLevel             ServiceLevel
+	UnsettledCount           int
+	OldestUnsettledAge       time.Duration
+	ReceiveWindowUtilization float64
+	RecoveryRecycleCount     uint64
 }
 
 // DeepHealth is a comprehensive health snapshot of a runtime instance.

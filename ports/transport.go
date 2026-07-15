@@ -340,16 +340,20 @@ const (
 // Transports that manage subscriptions (e.g., MQTT) should populate
 // the subscription and handler fields so callers can determine readiness.
 type SessionHealth struct {
-	Connected              bool
-	LastError              error
-	SubscriptionsWanted    int          // Number of unique desired subscription filters
-	SubscriptionsActive    int          // Number of unique contract-active subscription filters
-	SubscriptionsSatisfied *bool        // Exact explicit-plan convergence, including removals; nil means legacy unknown
-	HandlersRegistered     int          // Number of receiver handlers on the message router
-	ReceiveMaximum         uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
-	Ready                  bool         // Connected to the broker (connectivity only)
-	ServiceLevel           ServiceLevel // Operational completeness (none/degraded/full)
-	ActiveTopics           []string     // contract-active subscription filters
+	Connected                bool
+	LastError                error
+	SubscriptionsWanted      int           // Number of unique desired subscription filters
+	SubscriptionsActive      int           // Number of unique contract-active subscription filters
+	SubscriptionsSatisfied   *bool         // Exact explicit-plan convergence, including removals; nil means legacy unknown
+	HandlersRegistered       int           // Number of receiver handlers on the message router
+	ReceiveMaximum           uint16        // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	UnsettledCount           int           // Current connection-epoch deliveries awaiting terminal protocol settlement
+	OldestUnsettledAge       time.Duration // Age of the oldest current-epoch unsettled delivery
+	ReceiveWindowUtilization float64       // UnsettledCount / ReceiveMaximum (0 when not applicable)
+	RecoveryRecycleCount     uint64        // Completed transport recovery recycle attempts
+	Ready                    bool          // Connected to the broker (connectivity only)
+	ServiceLevel             ServiceLevel  // Operational completeness (none/degraded/full)
+	ActiveTopics             []string      // contract-active subscription filters
 }
 
 // HasTopic reports whether the given topic is among the active subscriptions.

@@ -4,13 +4,17 @@ package paho
 // domain/shared as part of shared-kernel slimming; the string values are the
 // wire identities reported to CloudWatch/OTel and MUST NOT change.
 const (
-	MetricMQTTPublishLatency   = "MQTTPublishLatency"
-	MetricMQTTPublishFailures  = "MQTTPublishFailures"
-	MetricMQTTHandlerPanics    = "MQTTHandlerPanics"
-	MetricMQTTConnectLatency   = "MQTTConnectLatency"
-	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
-	MetricMQTTRouterDropped    = "MQTTRouterDropped"
-	MetricMQTTEventDropped     = "MQTTEventDropped"
+	MetricMQTTPublishLatency           = "MQTTPublishLatency"
+	MetricMQTTPublishFailures          = "MQTTPublishFailures"
+	MetricMQTTHandlerPanics            = "MQTTHandlerPanics"
+	MetricMQTTConnectLatency           = "MQTTConnectLatency"
+	MetricMQTTReconcileLatency         = "MQTTReconcileLatency"
+	MetricMQTTRouterDropped            = "MQTTRouterDropped"
+	MetricMQTTEventDropped             = "MQTTEventDropped"
+	MetricMQTTSessionRecoveryRecycle   = "MQTTSessionRecoveryRecycle"
+	MetricMQTTUnsettled                = "MQTTUnsettled"
+	MetricMQTTOldestUnsettledAge       = "MQTTOldestUnsettledAge"
+	MetricMQTTReceiveWindowUtilization = "MQTTReceiveWindowUtilization"
 
 	// MetricMQTTNonStringHeaderDropped counts bridge-to-bridge / application
 	// header values dropped on egress because their value is not a string

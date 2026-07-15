@@ -302,6 +302,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	allowPlaintext := s.opts.AllowPlaintextCredentials
 	brokerURLs := s.opts.BrokerURLs
 	connectionGeneration := s.connectionGeneration
+	recoveryConnect := s.recoveryNeedsSessionPresent
 	s.mu.Unlock()
 
 	// HIGH-4 defense-in-depth: Factory.NewSession validates the plaintext-
@@ -357,8 +358,9 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// signals SessionConnected; it MUST NOT reconcile inline. See
 		// handleConnectionUp for the reset-before-signal ordering that lets
 		// the manager observe an empty subscription set on reconnect.
-		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *pahov5.Connack) {
-			s.handleConnectionUpGeneration(connectionGeneration)
+		OnConnectionUp: func(_ *autopaho.ConnectionManager, connack *pahov5.Connack) {
+			sessionPresent := connack != nil && connack.SessionPresent
+			s.handleConnectionUpGenerationWithSessionPresent(connectionGeneration, sessionPresent)
 		},
 		OnConnectError: func(err error) {
 			s.handleConnectError(err)
@@ -480,7 +482,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 			}
 			cfg.CleanStartOnInitialConnection = false
 		} else {
-			cfg.CleanStartOnInitialConnection = s.opts.CleanStart
+			cfg.CleanStartOnInitialConnection = s.opts.CleanStart && !recoveryConnect
 		}
 		cfg.SessionExpiryInterval = s.opts.SessionExpiryInterval
 	}

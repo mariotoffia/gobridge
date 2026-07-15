@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -58,6 +59,9 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	}
 	connected := cm != nil && s.connected
 	latchedSubscriptionsSatisfied := s.subscriptionsSatisfied
+	recoveryPending := s.recoveryPending
+	recoveryErr := s.recoveryErr
+	recoveryRecycleCount := s.recoveryRecycleCount
 	s.mu.Unlock()
 	sort.Strings(topics)
 
@@ -83,11 +87,13 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	switch {
 	case !connected:
 		sl = ports.ServiceLevelNone
-	case wantedCount == 0 && len(expectedReceiverIDs) == 0 && (!planDeclared || subscriptionsSatisfied):
+	case recoveryPending:
+		sl = ports.ServiceLevelDegraded
+	case wantedCount == 0 && len(expectedReceiverIDs) == 0 && (!planDeclared || subscriptionsSatisfied) && !recoveryPending:
 		// Sender-only session: no subscriptions or receiver handlers expected.
 		// An explicit empty plan is Full only after stale removals converge.
 		sl = ports.ServiceLevelFull
-	case subscriptionsSatisfied && handlersSatisfied && pendingCount == 0:
+	case subscriptionsSatisfied && handlersSatisfied && pendingCount == 0 && !recoveryPending:
 		sl = ports.ServiceLevelFull
 	case activeCount == 0 && handlerCount == 0:
 		sl = ports.ServiceLevelNone
@@ -99,17 +105,27 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	if rm == 0 {
 		rm = DefaultReceiveMaximum
 	}
+	unsettled := s.router.unsettledSnapshot(rm)
+	tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: s.opts.ClientID}}
+	s.metrics.Gauge(MetricMQTTUnsettled, float64(unsettled.Count), tags...)
+	s.metrics.Gauge(MetricMQTTOldestUnsettledAge, unsettled.OldestAge.Seconds(), tags...)
+	s.metrics.Gauge(MetricMQTTReceiveWindowUtilization, unsettled.ReceiveWindowUtilization, tags...)
 
 	return ports.SessionHealth{
-		Connected:              connected,
-		SubscriptionsWanted:    wantedCount,
-		SubscriptionsActive:    activeCount,
-		SubscriptionsSatisfied: &subscriptionsSatisfied,
-		HandlersRegistered:     handlerCount,
-		ReceiveMaximum:         rm,
-		Ready:                  connected,
-		ServiceLevel:           sl,
-		ActiveTopics:           topics,
+		Connected:                connected,
+		LastError:                recoveryErr,
+		SubscriptionsWanted:      wantedCount,
+		SubscriptionsActive:      activeCount,
+		SubscriptionsSatisfied:   &subscriptionsSatisfied,
+		HandlersRegistered:       handlerCount,
+		ReceiveMaximum:           rm,
+		UnsettledCount:           unsettled.Count,
+		OldestUnsettledAge:       unsettled.OldestAge,
+		ReceiveWindowUtilization: unsettled.ReceiveWindowUtilization,
+		RecoveryRecycleCount:     recoveryRecycleCount,
+		Ready:                    connected,
+		ServiceLevel:             sl,
+		ActiveTopics:             topics,
 	}
 }
 

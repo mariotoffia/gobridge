@@ -44,9 +44,13 @@ func (s *stubSession) Start(context.Context) error                              
 func (s *stubSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
 func (s *stubSession) Health(context.Context) ports.SessionHealth {
 	return ports.SessionHealth{
-		Connected:    s.connected,
-		Ready:        s.ready,
-		ServiceLevel: s.serviceLevel,
+		Connected:                s.connected,
+		Ready:                    s.ready,
+		ServiceLevel:             s.serviceLevel,
+		UnsettledCount:           3,
+		OldestUnsettledAge:       4 * time.Second,
+		ReceiveWindowUtilization: 0.75,
+		RecoveryRecycleCount:     2,
 	}
 }
 func (s *stubSession) Events() <-chan ports.SessionEvent { return s.events }
@@ -173,6 +177,10 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 	assert.True(t, body.Sessions[0].Connected)
 	assert.True(t, body.Sessions[0].Ready)
 	assert.Equal(t, "full", body.Sessions[0].ServiceLevel)
+	assert.Equal(t, 3, body.Sessions[0].UnsettledCount)
+	assert.Equal(t, 4*time.Second, body.Sessions[0].OldestUnsettledAge)
+	assert.Equal(t, 0.75, body.Sessions[0].ReceiveWindowUtilization)
+	assert.Equal(t, uint64(2), body.Sessions[0].RecoveryRecycleCount)
 	assert.Equal(t, "full", body.ServiceLevel)
 
 	require.Len(t, body.Routes, 1)

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -202,6 +203,15 @@ type Session struct {
 	// safe publication across the builder goroutine (setter) and autopaho's
 	// OnConnectError callback goroutine (load).
 	authFailureCB atomic.Pointer[func(error)]
+
+	// recoveryPending is set synchronously by a durable QoS 1/2 Retry and
+	// keeps readiness below Full until a replacement connection resumes the
+	// broker session. Concurrent Retry requests coalesce on this state.
+	recoveryPending             bool
+	recoveryNeedsSessionPresent bool
+	recoveryErr                 error
+	lastRecoveryCompleted       time.Time
+	recoveryRecycleCount        uint64
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be

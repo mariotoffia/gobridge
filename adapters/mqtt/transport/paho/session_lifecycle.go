@@ -11,6 +11,89 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+const (
+	settlementRecoveryDrainLimit  = 5 * time.Second
+	settlementRecoveryMinInterval = 30 * time.Second
+)
+
+// requestRecovery records the Retry synchronously, then recycles the durable
+// broker session asynchronously. Retry cannot perform the recycle inline: the
+// recycle drain includes the RouteRunner settlement that is currently calling
+// Retry, so waiting here would deadlock that drain.
+func (s *Session) requestRecovery(ctx context.Context) error {
+	if s.mode == connectivity.SessionEphemeral {
+		return shared.ErrNotSupported
+	}
+	s.mu.Lock()
+	if s.closed || s.terminalErr != nil {
+		s.mu.Unlock()
+		return shared.ErrUnavailable.WithMessage("mqtt: session recovery requested after session closure")
+	}
+	if s.recoveryPending {
+		s.mu.Unlock()
+		return nil
+	}
+	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoveryErr = nil
+	s.subscriptionsSatisfied = false
+	var rateLimit <-chan time.Time
+	if !s.lastRecoveryCompleted.IsZero() {
+		elapsed := s.clock().Since(s.lastRecoveryCompleted)
+		if elapsed < settlementRecoveryMinInterval {
+			rateLimit = s.clock().After(settlementRecoveryMinInterval - elapsed)
+		}
+	}
+	s.mu.Unlock()
+
+	go s.runRecovery(context.WithoutCancel(ctx), rateLimit)
+	return nil
+}
+
+func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time) {
+	if rateLimit != nil {
+		select {
+		case <-rateLimit:
+		case <-ctx.Done():
+			return
+		}
+	}
+	// Stop new ingress immediately, but let already accepted route work settle
+	// for a bounded interval before the old socket is detached.
+	drainCtx, cancelDrain := context.WithCancel(ctx)
+	drainDone := make(chan struct{})
+	drainLimit := s.clock().NewTimer(settlementRecoveryDrainLimit)
+	go func() {
+		select {
+		case <-drainLimit.C():
+			cancelDrain()
+		case <-drainDone:
+		}
+	}()
+	_ = s.quiesceForRecycle(drainCtx)
+	close(drainDone)
+	drainLimit.Stop()
+	cancelDrain()
+
+	err := s.Reload(ctx)
+	s.mu.Lock()
+	s.lastRecoveryCompleted = s.clock().Now()
+	s.recoveryRecycleCount++
+	if err == nil {
+		// The real connection callback additionally verifies Session Present.
+		// connectOverride represents an already-verified connection in unit tests.
+		if s.connectOverride != nil {
+			s.recoveryNeedsSessionPresent = false
+			s.recoveryPending = false
+		}
+	} else {
+		s.recoveryErr = err
+	}
+	s.mu.Unlock()
+	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+}
+
 // Reload tears down the current ConnectionManager and re-runs Start
 // with the session's current options. It is intended for rotation
 // scenarios that cannot be applied to an existing CM — most notably
@@ -391,10 +474,31 @@ func (s *Session) handleConnectionUp() {
 }
 
 func (s *Session) handleConnectionUpGeneration(generation uint64) {
+	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+}
+
+func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint64, sessionPresent bool) {
 	s.mu.Lock()
 	if generation != s.connectionGeneration || s.closed {
 		s.mu.Unlock()
 		return
+	}
+	if s.recoveryNeedsSessionPresent && !sessionPresent {
+		err := shared.ErrUnavailable.WithMessage(
+			"mqtt: settlement recovery did not resume the broker session (Session Present=false)").
+			Wrap(shared.ErrTransportClosedPermanently)
+		s.connected = false
+		s.subscriptionsSatisfied = false
+		s.recoveryErr = err
+		s.terminalErr = err
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(generation, err)
+		return
+	}
+	if s.recoveryNeedsSessionPresent {
+		s.recoveryNeedsSessionPresent = false
+		s.recoveryPending = false
+		s.recoveryErr = nil
 	}
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()

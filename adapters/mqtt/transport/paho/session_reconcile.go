@@ -213,7 +213,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 	if err := s.requireReconcileEpoch(startEpoch); err != nil {
 		return err
 	}
-	if s.managedRequired && s.router != nil {
+	if s.router != nil {
 		if err := s.router.resumeManagedDispatch(ctx); err != nil {
 			return err
 		}

@@ -163,14 +163,13 @@ func TestAnaRecv_EmitError_DeliveryNotSettled(t *testing.T) {
 		t.Fatal("emit was never handed a delivery")
 	}
 
-	// MQTT settlement is a documented no-op: there is no broker-side
-	// settle/ack/abandon to (wrongly) invoke on emit error. Assert the
-	// no-op contract holds for the delivery the receiver built.
+	// Ephemeral MQTT has no broker redelivery primitive. Unsupported Retry
+	// must leave the delivery unsettled so the fallback Ack can still win.
+	if err := del.Retry(context.Background(), time.Second, emitErr); !errors.Is(err, shared.ErrNotSupported) {
+		t.Fatalf("ephemeral MQTT Delivery.Retry must return ErrNotSupported, got %v", err)
+	}
 	if err := del.Ack(context.Background()); err != nil {
 		t.Fatalf("MQTT Delivery.Ack must be a no-op returning nil, got %v", err)
-	}
-	if err := del.Retry(context.Background(), time.Second, emitErr); !errors.Is(err, shared.ErrNotSupported) {
-		t.Fatalf("MQTT Delivery.Retry must return ErrNotSupported (no broker redelivery primitive), got %v", err)
 	}
 }
 

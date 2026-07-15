@@ -113,6 +113,11 @@ type router struct {
 	// double-count against the receive_maximum count cap and ack-drop a live
 	// message as a bogus overflow (A-1). Guarded by mu.
 	connEpoch uint64
+	// unsettled records every QoS 1/2 packet accepted in connEpoch until its
+	// protocol Ack succeeds. The map is cleared on every epoch transition because
+	// old packet handles die with their connection and the broker redelivers them.
+	unsettledSeq uint64
+	unsettled    map[uint64]time.Time
 	// pendingBytes is the running sum of buffered payload sizes; capped
 	// by pendingBytesLimit so a flood of large publishes cannot buffer
 	// multiple gigabytes during a grace window. Guarded by mu.
@@ -374,6 +379,80 @@ func (r *router) sessionTag() []shared.Tag {
 	return []shared.Tag{{Key: shared.TagKeySessionID, Value: r.sessionID}}
 }
 
+type unsettledHealth struct {
+	Count                    int
+	OldestAge                time.Duration
+	ReceiveWindowUtilization float64
+}
+
+// trackUnsettledPacket registers one QoS 1/2 packet in the current connection
+// epoch and returns an idempotent successful-Ack callback.
+func (r *router) trackUnsettledPacket() func() {
+	r.mu.Lock()
+	if r.unsettled == nil {
+		r.unsettled = make(map[uint64]time.Time)
+	}
+	r.unsettledSeq++
+	id := r.unsettledSeq
+	r.unsettled[id] = r.clk.Now()
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.unsettled, id)
+			r.mu.Unlock()
+		})
+	}
+}
+
+// trackAcknowledgement registers a packet and removes it only after the
+// protocol acknowledgement succeeds. Failed ACKs remain visible and unsettled.
+func (r *router) trackAcknowledgement(ack func() error) func() error {
+	settled := r.trackUnsettledPacket()
+	return func() error {
+		if err := ack(); err != nil {
+			return err
+		}
+		settled()
+		return nil
+	}
+}
+
+func (r *router) clearUnsettledLocked() {
+	clear(r.unsettled)
+}
+
+func (r *router) unsettledSnapshot(receiveMaximum uint16) unsettledHealth {
+	r.mu.RLock()
+	count := len(r.unsettled)
+	var oldest time.Time
+	for _, receivedAt := range r.unsettled {
+		if oldest.IsZero() || receivedAt.Before(oldest) {
+			oldest = receivedAt
+		}
+	}
+	r.mu.RUnlock()
+
+	var age time.Duration
+	if !oldest.IsZero() {
+		age = r.clk.Since(oldest)
+		if age < 0 {
+			age = 0
+		}
+	}
+	var utilization float64
+	if receiveMaximum > 0 {
+		utilization = float64(count) / float64(receiveMaximum)
+	}
+	return unsettledHealth{
+		Count:                    count,
+		OldestAge:                age,
+		ReceiveWindowUtilization: utilization,
+	}
+}
+
 // beginGrace (re)starts the unmatched-publish grace window for the
 // current broker connection. It is called on every OnConnectionUp so a
 // resumed session gets a fresh window covering re-subscription and
@@ -390,6 +469,7 @@ func (r *router) beginGrace() {
 	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
 	// entries stamped with a prior epoch are purged (A-1).
 	r.connEpoch++
+	r.clearUnsettledLocked()
 	// Replacement ingress may be buffered while global quiescence remains.
 	r.discarding = false
 	if r.graceStarted {
@@ -930,7 +1010,7 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	client := pr.Client
 	var ack func() error
 	if received != nil && received.QoS > 0 && client != nil {
-		ack = func() error {
+		ack = r.trackAcknowledgement(func() error {
 			if err := client.Ack(received); err != nil {
 				if errors.Is(err, pahov5.ErrPacketNotFound) {
 					// The connection cycled between receive and settle:
@@ -942,7 +1022,7 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 				return MapError(err)
 			}
 			return nil
-		}
+		})
 	}
 	r.enqueueDispatch(pub, ack)
 	return true, nil
@@ -1139,6 +1219,7 @@ func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(cont
 	r.quiesced = true
 	r.discarding = true
 	r.connEpoch++
+	r.clearUnsettledLocked()
 	r.purgeStalePendingLocked()
 	callbacks := r.callbacksInFlight
 	idle := r.callbacksIdle

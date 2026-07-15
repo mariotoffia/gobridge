@@ -313,7 +313,7 @@ fix(mqtt): reject unsafe durable identity changes
 
 ## Task 5: Persist managed MQTT subscription history
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:messaging-expert, thiink:ddd-expert,
 thiink:contract-reviewer, thiink:test-reviewer
@@ -405,7 +405,7 @@ feat(mqtt): persist managed subscription history
 
 ## Task 6: Recover boundedly from unsettled MQTT delivery
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:runtime-expert, thiink:messaging-expert,
 thiink:resilience-auditor, thiink:test-reviewer

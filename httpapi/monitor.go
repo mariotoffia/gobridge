@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -275,14 +276,18 @@ type configWatchHealth struct {
 }
 
 type deepHealthSessionResponse struct {
-	SessionID           string   `json:"session_id"`
-	Connected           bool     `json:"connected"`
-	HasLease            bool     `json:"has_lease"`
-	SubscriptionsWanted int      `json:"subscriptions_wanted"`
-	SubscriptionsActive int      `json:"subscriptions_active"`
-	ActiveTopics        []string `json:"active_topics,omitempty"`
-	Ready               bool     `json:"ready"`
-	ServiceLevel        string   `json:"service_level"`
+	SessionID                string        `json:"session_id"`
+	Connected                bool          `json:"connected"`
+	HasLease                 bool          `json:"has_lease"`
+	SubscriptionsWanted      int           `json:"subscriptions_wanted"`
+	SubscriptionsActive      int           `json:"subscriptions_active"`
+	ActiveTopics             []string      `json:"active_topics,omitempty"`
+	Ready                    bool          `json:"ready"`
+	ServiceLevel             string        `json:"service_level"`
+	UnsettledCount           int           `json:"unsettled_count"`
+	OldestUnsettledAge       time.Duration `json:"oldest_unsettled_age"`
+	ReceiveWindowUtilization float64       `json:"receive_window_utilization"`
+	RecoveryRecycleCount     uint64        `json:"recovery_recycle_count"`
 }
 
 type deepHealthRouteResponse struct {
@@ -318,14 +323,18 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
 	for i, sh := range dh.Sessions {
 		resp.Sessions[i] = deepHealthSessionResponse{
-			SessionID:           sh.SessionID,
-			Connected:           sh.Connected,
-			HasLease:            sh.HasLease,
-			SubscriptionsWanted: sh.SubscriptionsWanted,
-			SubscriptionsActive: sh.SubscriptionsActive,
-			ActiveTopics:        sh.ActiveTopics,
-			Ready:               sh.Ready,
-			ServiceLevel:        string(sh.ServiceLevel),
+			SessionID:                sh.SessionID,
+			Connected:                sh.Connected,
+			HasLease:                 sh.HasLease,
+			SubscriptionsWanted:      sh.SubscriptionsWanted,
+			SubscriptionsActive:      sh.SubscriptionsActive,
+			ActiveTopics:             sh.ActiveTopics,
+			Ready:                    sh.Ready,
+			ServiceLevel:             string(sh.ServiceLevel),
+			UnsettledCount:           sh.UnsettledCount,
+			OldestUnsettledAge:       sh.OldestUnsettledAge,
+			ReceiveWindowUtilization: sh.ReceiveWindowUtilization,
+			RecoveryRecycleCount:     sh.RecoveryRecycleCount,
 		}
 	}
 
