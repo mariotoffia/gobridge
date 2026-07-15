@@ -34,35 +34,28 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 // an empty plan re-affirming a prior plan that had no subscriptions (a
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
-func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) (retErr error) {
-	ctx, cancelRecoveryBound, recoveryGeneration := s.recoveryReconcileContext(ctx)
-	defer cancelRecoveryBound()
+func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) error {
+	if err := s.acquireReload(ctx); err != nil {
+		return MapError(err).WithMessage("mqtt: reconcile waiting for session serialization")
+	}
+	defer s.releaseReload()
 
-	// Lock order is reloadGate -> reconcileMu whenever both are needed. Start
-	// with reconcileMu only to classify an ordinary reconcile, then release it
-	// before waiting for reloadGate. Never wait for reloadGate while holding
-	// reconcileMu: managed migration and recovery would otherwise form ABBA.
-	reloadSerialized := recoveryGeneration != 0
-	if reloadSerialized {
-		if err := s.acquireReload(ctx); err != nil {
-			return MapError(err).WithMessage("mqtt: recovery reconcile waiting for reload serialization")
-		}
-		s.reconcileMu.Lock()
-	} else {
-		s.reconcileMu.Lock()
-		if len(s.managedCleanupFilters(plan)) > 0 {
-			s.reconcileMu.Unlock()
-			if err := s.acquireReload(ctx); err != nil {
-				return MapError(err).WithMessage("mqtt: managed reconcile waiting for reload serialization")
-			}
-			reloadSerialized = true
-			s.reconcileMu.Lock()
-		}
+	s.mu.Lock()
+	recoveryGeneration := uint64(0)
+	if s.recoveryAttemptActive {
+		recoveryGeneration = s.recoveryGeneration
 	}
-	if reloadSerialized {
-		defer s.releaseReload()
-	}
-	defer s.reconcileMu.Unlock()
+	s.mu.Unlock()
+	return s.reconcileUnderGate(ctx, plan, recoveryGeneration)
+}
+
+// reconcileUnderGate converges one plan while its caller owns reloadGate. It
+// may call reloadLocked for managed cleanup and never reacquires serialization.
+func (s *Session) reconcileUnderGate(
+	ctx context.Context,
+	plan connectivity.SessionPlan,
+	recoveryGeneration uint64,
+) (retErr error) {
 	defer func() {
 		if recoveryGeneration == 0 {
 			return
@@ -223,7 +216,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 
 		// Managed cleanup removed broker state and Reload established a new
 		// connection. Reconcile that replacement generation while still holding
-		// reconcileMu (and, for exclusive sessions, while the manager still owns
+		// reloadGate (and, for exclusive sessions, while the manager still owns
 		// its lease). Calling public Reconcile recursively would deadlock.
 		s.mu.Lock()
 		cm = s.cm
@@ -326,13 +319,17 @@ func cloneSessionPlan(plan connectivity.SessionPlan) connectivity.SessionPlan {
 // It is invoked from the router's own goroutine (never the paho publish
 // callback), tracked by the router WaitGroup so Session.Close awaits it.
 func (s *Session) unsubscribeOrphan(topic string) {
-	// Use the reconciliation serialization boundary so an orphan decision and
+	ctx, cancel := context.WithTimeout(context.Background(), orphanUnsubscribeTimeout)
+	defer cancel()
+	// Use the session serialization boundary so an orphan decision and
 	// destructive broker operation cannot interleave with a route re-add.
-	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
+	if err := s.acquireReload(ctx); err != nil {
+		return
+	}
+	defer s.releaseReload()
 
-	// Recheck coverage only after owning reconcileMu, immediately before the
-	// broker operation. Reconcile holds the same lock while declaring its plan.
+	// Recheck coverage only after owning reloadGate, immediately before the
+	// broker operation. Reconcile holds the same gate while declaring its plan.
 	s.mu.Lock()
 	cm := s.cm
 	closed := s.closed
@@ -354,9 +351,6 @@ func (s *Session) unsubscribeOrphan(topic string) {
 		}
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), orphanUnsubscribeTimeout)
-	defer cancel()
 
 	reasons, err := cm.Unsubscribe(ctx, []string{topic})
 	if err == nil {

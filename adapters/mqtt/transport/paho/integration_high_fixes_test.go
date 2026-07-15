@@ -19,11 +19,11 @@ import (
 // T4 Integration: Concurrent reconcile serialization
 //
 // Verifies that concurrent Reconcile calls on a live broker are
-// serialized by reconcileMu, preventing interleaved subscribe/unsubscribe
+// serialized by reloadGate, preventing interleaved subscribe/unsubscribe
 // operations from corrupting activeSubs state.
 //
-//   Goroutine A ──▶ Reconcile(planA) ──▶ reconcileMu.Lock ──▶ sub/unsub ──▶ unlock
-//   Goroutine B ──▶ Reconcile(planB) ──▶ reconcileMu.Lock ──▶ (waits) ──▶ sub/unsub
+//   Goroutine A ──▶ Reconcile(planA) ──▶ reloadGate.Lock ──▶ sub/unsub ──▶ unlock
+//   Goroutine B ──▶ Reconcile(planB) ──▶ reloadGate.Lock ──▶ (waits) ──▶ sub/unsub
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestIntegration_ConcurrentReconcile_NoCorruption validates that

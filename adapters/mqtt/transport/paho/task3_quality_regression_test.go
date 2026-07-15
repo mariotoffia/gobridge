@@ -49,11 +49,14 @@ func TestOrphanUnsubscribe_SerializesWithReconcileAndCannotEraseReaddedSubscript
 	}()
 	<-conn.unsubEntered
 
-	// A broker-destructive orphan cleanup must own the same serialization lock
-	// as Reconcile. The old implementation leaves this lock available here.
-	serialized := !s.reconcileMu.TryLock()
-	if !serialized {
-		s.reconcileMu.Unlock()
+	// A broker-destructive orphan cleanup must own the same serialization gate
+	// as Reconcile. The old implementation leaves this gate available here.
+	serialized := true
+	select {
+	case <-s.reloadGate:
+		serialized = false
+		s.releaseReload()
+	default:
 	}
 
 	plan := connectivity.SessionPlan{

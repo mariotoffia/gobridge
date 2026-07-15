@@ -149,12 +149,19 @@ func TestCredentialReload_InvalidatesConvergenceBeforeDelayedConnectionUp(t *tes
 		go func() { reconcileDone <- s.Reconcile(context.Background(), planB) }()
 		<-oldConn.entered
 
-		require.NoError(t, s.ApplyCredentials(context.Background(),
-			connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil)))
-		require.Equal(t, 2, dialCount)
+		reloadWaiting := make(chan struct{}, 1)
+		s.reloadGateWaitHook = func() { reloadWaiting <- struct{}{} }
+		credentialDone := make(chan error, 1)
+		go func() {
+			credentialDone <- s.ApplyCredentials(context.Background(),
+				connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil))
+		}()
+		<-reloadWaiting
 		close(oldConn.release)
-		require.Error(t, <-reconcileDone,
-			"prior-generation reconcile must reject the replacement epoch")
+		require.NoError(t, <-reconcileDone,
+			"the blocked reconcile must complete before credential reload starts")
+		require.NoError(t, <-credentialDone)
+		require.Equal(t, 2, dialCount)
 
 		s.mu.Lock()
 		_, observedB := s.observedSubs["reload/b"]
@@ -221,7 +228,7 @@ func TestReconcile_EmptyPlanShortcutDoesNotRelatchAfterConnectionUp(t *testing.T
 	require.NotEqual(t, ports.ServiceLevelFull, s.Health(context.Background()).ServiceLevel)
 }
 
-func TestReconcile_UnchangedPlanReloadBetweenSnapshotsRejectsOldOperation(t *testing.T) {
+func TestReconcile_UnchangedPlanSerializesCredentialReload(t *testing.T) {
 	oldConn := &fakeReconcileConn{}
 	newConn := &fakeReconcileConn{}
 	var dialCount int
@@ -269,20 +276,27 @@ func TestReconcile_UnchangedPlanReloadBetweenSnapshotsRejectsOldOperation(t *tes
 	go func() { reconcileDone <- s.Reconcile(context.Background(), plan) }()
 	<-outerSnapshotTaken
 
-	// Reload replaces cm and advances the connection epoch after Reconcile has
-	// captured the old pair, but before the unchanged-plan helper snapshots maps.
-	require.NoError(t, s.ApplyCredentials(context.Background(),
-		connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil)))
-	require.Equal(t, 2, dialCount)
+	// Credential reload waits behind the ordinary Reconcile gate; it cannot
+	// replace cm between the outer and unchanged-plan snapshots.
+	reloadWaiting := make(chan struct{}, 1)
+	s.reloadGateWaitHook = func() { reloadWaiting <- struct{}{} }
+	credentialDone := make(chan error, 1)
+	go func() {
+		credentialDone <- s.ApplyCredentials(context.Background(),
+			connectivity.NewCredentialSet(pwCred("new-user", "new-password"), nil))
+	}()
+	<-reloadWaiting
 	close(resume)
 	err := <-reconcileDone
+	require.NoError(t, <-credentialDone)
+	require.Equal(t, 2, dialCount)
 	s.mu.Lock()
 	s.reconcileSnapshotHook = nil
 	epoch := s.connEpoch
 	satisfied := s.subscriptionsSatisfied
 	s.mu.Unlock()
 
-	require.Error(t, err, "an old-cm reconcile must reject the replacement connection epoch")
+	require.NoError(t, err, "ordinary reconcile must finish before credential reload")
 	require.Equal(t, uint64(41), epoch)
 	require.False(t, satisfied)
 	require.NotEqual(t, ports.ServiceLevelFull, s.Health(context.Background()).ServiceLevel)

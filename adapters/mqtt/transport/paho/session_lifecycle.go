@@ -78,20 +78,6 @@ func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.D
 	}
 }
 
-func (s *Session) recoveryReconcileContext(parent context.Context) (context.Context, context.CancelFunc, uint64) {
-	s.mu.Lock()
-	active := s.recoveryAttemptActive
-	generation := s.recoveryGeneration
-	deadline := s.recoveryAttemptDeadline
-	s.mu.Unlock()
-	if !active || deadline.IsZero() {
-		return parent, func() {}, 0
-	}
-	remaining := deadline.Sub(s.clock().Now())
-	ctx, cancel := s.contextWithClockTimeout(parent, remaining)
-	return ctx, cancel, generation
-}
-
 func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
 	s.mu.Lock()
 	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
@@ -99,7 +85,6 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 		return false
 	}
 	s.recoveryAttemptActive = false
-	s.recoveryAttemptDeadline = time.Time{}
 	s.lastRecoveryCompleted = s.clock().Now()
 	s.recoveryRecycleCount++
 	cancel := s.recoveryAttemptCancel
@@ -200,7 +185,6 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		return
 	}
 	s.recoveryAttemptActive = true
-	s.recoveryAttemptDeadline = s.clock().Now().Add(attemptTimeout)
 	s.recoveryAttemptCancel = cancelAttempt
 	s.mu.Unlock()
 	ctx = attemptCtx
@@ -210,12 +194,7 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 			MapError(err).WithMessage("mqtt: settlement recovery waiting for reload serialization"), false)
 		return
 	}
-	gateHeld := true
-	defer func() {
-		if gateHeld {
-			s.releaseReload()
-		}
-	}()
+	defer s.releaseReload()
 	// A credential reload may have completed while this rate-limited request was
 	// queued. Re-arm the Session Present requirement only after owning the shared
 	// reload gate so the connection this attempt creates must satisfy it.
@@ -253,16 +232,17 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		return
 	}
 
-	// Reconnect reconciliation is owned by the runtime session manager. Release
-	// the shared gate so it can converge the replacement generation, but keep the
-	// attempt pending and bounded until Reconcile records the terminal outcome.
-	s.releaseReload()
-	gateHeld = false
-	<-ctx.Done()
-	if s.completeRecoveryAttempt(generation,
-		MapError(ctx.Err()).WithMessage("mqtt: settlement recovery exceeded complete-attempt bound"), false) {
-		return
+	// Recovery owns the same gate as ordinary Reconcile, so converge the saved
+	// plan through the private under-gate helper without publishing an event that
+	// would need to reacquire serialization. The runtime manager may perform a
+	// later idempotent Reconcile after this gate is released.
+	s.mu.Lock()
+	plan := connectivity.SessionPlan{}
+	if s.plan != nil {
+		plan = cloneSessionPlan(*s.plan)
 	}
+	s.mu.Unlock()
+	_ = s.reconcileUnderGate(ctx, plan, generation)
 }
 
 // Reload tears down the current ConnectionManager and re-runs Start
@@ -629,10 +609,10 @@ func (s *Session) Close(ctx context.Context) error {
 // topic silently unsubscribed with no error surfaced (finding C7).
 //
 // Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
-// subscription-state reset and MUST NOT acquire reconcileMu. autopaho invokes
+// subscription-state reset and MUST NOT acquire reloadGate. autopaho invokes
 // OnConnectionUp synchronously on its sole connection-management goroutine and
 // documents that the callback "must not block" (autopaho.ClientConfig.
-// OnConnectionUp, auto.go). reconcileMu is held by Reconcile for the entire
+// OnConnectionUp, auto.go). reloadGate is held by Reconcile for the entire
 // duration of a network SUBSCRIBE / UNSUBSCRIBE round-trip, so blocking on it
 // here would stall that goroutine — the owner of reconnect and error handling
 // — on a network call, violating the SDK contract and coupling liveness to
@@ -645,7 +625,7 @@ func (s *Session) Close(ctx context.Context) error {
 // longer matches. That keeps activeSubs empty for the new connection, so the
 // authoritative reconnect reconcile issues a full re-subscribe rather than
 // computing an empty delta against stale state and silently dropping
-// subscriptions on an ephemeral (clean_start) session. Do NOT add reconcileMu
+// subscriptions on an ephemeral (clean_start) session. Do NOT add reloadGate
 // here — the epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()

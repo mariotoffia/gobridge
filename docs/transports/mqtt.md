@@ -403,11 +403,12 @@ config knob:
   incomplete;
 - completed recovery attempts are spaced by at least **30 seconds**, using the
   session clock, to prevent a DLQ-outage reconnect storm;
-- credential/TLS reload and settlement recovery use the same context-aware
-  reload serialization gate; a caller cancelled while queued leaves promptly.
-  When reconciliation also needs that gate, lock order is always reload gate
-  before reconcile mutex; ordinary reconciliation uses only the reconcile mutex,
-  and no path waits for the reload gate while holding it;
+- ordinary reconciliation, credential/TLS reload, managed cleanup, orphan
+  cleanup, and settlement recovery use one context-aware session serialization
+  gate. Every public entry acquires it with its own context; private reload and
+  reconcile-under-gate helpers never reacquire it, so there is no nested
+  serialization wait or ABBA lock order. A caller cancelled while queued leaves
+  promptly;
 - one hard deadline covers waiting for that gate, the settlement drain,
   disconnect, reconnect, and replacement-generation reconcile. It reuses the
   conservative post-acquire activation timing derived from `connect_timeout`,

@@ -512,70 +512,6 @@ func TestSessionRecovery_CompletionPublishesRateLimitBeforeConcurrentRequest(t *
 	assert.Equal(t, uint64(2), s.Health(t.Context()).RecoveryRecycleCount)
 }
 
-func TestSessionRecovery_ReloadGateOrderCannotDeadlockManagedReconcile(t *testing.T) {
-	clk := clocktest.New()
-	operations := []string{}
-	store := &managedHistoryFake{
-		values: map[string]map[string]struct{}{
-			"safe-session-id": {"old/#": {}},
-		},
-		operations: &operations,
-	}
-	conn := &managedConnFake{operations: &operations}
-	s := NewSession(SessionOptions{
-		ClientID:         "reload-order",
-		Clock:            clk,
-		ConnectTimeout:   time.Second,
-		ReconcileTimeout: time.Second,
-		UnmatchedGrace:   time.Second,
-	}, connectivity.SessionPersistent, nil)
-	s.managedStore = store
-	s.managedIdentity = "safe-session-id"
-	s.managedRequired = true
-	s.mu.Lock()
-	s.cm = conn
-	s.connected = true
-	s.managedLoaded = true
-	s.managedHistory = map[string]struct{}{"old/#": {}}
-	s.mu.Unlock()
-
-	quiesceEntered := make(chan struct{})
-	releaseQuiesce := make(chan struct{})
-	var quiesceOnce sync.Once
-	s.SetIngressQuiescenceWaiter(func(context.Context) error {
-		quiesceOnce.Do(func() { close(quiesceEntered) })
-		<-releaseQuiesce
-		return nil
-	})
-	gateAcquired := make(chan struct{}, 2)
-	s.reloadGateAcquiredHook = func() { gateAcquired <- struct{}{} }
-
-	managedCtx, cancelManaged := context.WithCancel(t.Context())
-	managedDone := make(chan error, 1)
-	go func() { managedDone <- s.Reconcile(managedCtx, connectivity.SessionPlan{}) }()
-	<-quiesceEntered
-
-	s.mu.Lock()
-	s.recoveryPending = true
-	s.recoverySessionPresentEpoch = s.connEpoch
-	s.recoveryTargetEpoch = s.connEpoch
-	s.recoveryAttemptActive = true
-	s.recoveryGeneration = 1
-	s.recoveryAttemptDeadline = clk.Now().Add(time.Second)
-	s.mu.Unlock()
-	recoveryDone := make(chan error, 1)
-	go func() { recoveryDone <- s.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
-	<-gateAcquired
-
-	clk.Advance(time.Second)
-	recoveryErr := wait.RequireReceive(t, recoveryDone, time.Second)
-	require.Error(t, recoveryErr)
-
-	cancelManaged()
-	close(releaseQuiesce)
-	require.Error(t, wait.RequireReceive(t, managedDone, time.Second))
-}
-
 func TestSessionRecovery_SessionPresentEvidenceRejectsStaleConnectionEpoch(t *testing.T) {
 	s := NewSession(SessionOptions{ClientID: "stale-session-present"}, connectivity.SessionPersistent, nil)
 	s.mu.Lock()
@@ -586,7 +522,6 @@ func TestSessionRecovery_SessionPresentEvidenceRejectsStaleConnectionEpoch(t *te
 	s.recoveryNeedsSessionPresent = true
 	s.recoveryAttemptActive = true
 	s.recoveryGeneration = 1
-	s.recoveryAttemptDeadline = s.clock().Now().Add(time.Minute)
 	generation := s.connectionGeneration
 	s.mu.Unlock()
 
@@ -611,7 +546,6 @@ func TestSessionRecovery_SessionPresentEvidenceAcceptsExactConnectionEpoch(t *te
 	s.recoveryNeedsSessionPresent = true
 	s.recoveryAttemptActive = true
 	s.recoveryGeneration = 2
-	s.recoveryAttemptDeadline = s.clock().Now().Add(time.Minute)
 	generation := s.connectionGeneration
 	s.mu.Unlock()
 
@@ -619,4 +553,105 @@ func TestSessionRecovery_SessionPresentEvidenceAcceptsExactConnectionEpoch(t *te
 	require.NoError(t, s.captureRecoveryTargetEpoch(2))
 	require.NoError(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}))
 	assert.False(t, s.recoveryPending)
+}
+
+type singleGateReconcileConn struct {
+	fakeLiveConn
+	calls         atomic.Int32
+	active        atomic.Int32
+	maxActive     atomic.Int32
+	firstEntered  chan struct{}
+	releaseFirst  chan struct{}
+	secondEntered chan struct{}
+}
+
+func (c *singleGateReconcileConn) Unsubscribe(context.Context, []string) ([]byte, error) {
+	return []byte{0}, nil
+}
+
+func (c *singleGateReconcileConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte, error) {
+	call := c.calls.Add(1)
+	active := c.active.Add(1)
+	defer c.active.Add(-1)
+	for {
+		current := c.maxActive.Load()
+		if active <= current || c.maxActive.CompareAndSwap(current, active) {
+			break
+		}
+	}
+	switch call {
+	case 1:
+		close(c.firstEntered)
+		select {
+		case <-c.releaseFirst:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	case 2:
+		close(c.secondEntered)
+	}
+	reasons := make([]byte, len(subs))
+	for i := range subs {
+		reasons[i] = subs[i].QoS
+	}
+	return reasons, nil
+}
+
+func TestSessionSerialization_OrdinaryReconcileOwnsOnlyGate(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	conn := &singleGateReconcileConn{
+		firstEntered:  make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+		secondEntered: make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		ClientID:         "single-session-gate",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = conn
+	s.connected = true
+	s.mu.Unlock()
+	planA := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "a/#", QoS: 1}}}
+	planB := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: "b/#", QoS: 1}}}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- s.Reconcile(t.Context(), planA) }()
+	<-conn.firstEntered
+
+	gateState := make(chan string, 4)
+	s.reloadGateWaitHook = func() { gateState <- "wait" }
+	s.reloadGateAcquiredHook = func() { gateState <- "acquired" }
+	require.NoError(t, s.requestRecovery(t.Context()))
+	require.Equal(t, "wait", <-gateState,
+		"recovery must wait behind the ordinary reconcile gate owner")
+
+	credentialCtx, cancelCredential := context.WithCancel(t.Context())
+	credentialDone := make(chan error, 1)
+	go func() { credentialDone <- s.Reload(credentialCtx) }()
+	require.Equal(t, "wait", <-gateState)
+	cancelCredential()
+	require.ErrorIs(t, <-credentialDone, context.Canceled)
+
+	clk.Advance(s.recoveryAttemptTimeout())
+	<-metrics.recycled
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- s.Reconcile(t.Context(), planB) }()
+	require.Equal(t, "wait", <-gateState)
+	close(conn.releaseFirst)
+	require.NoError(t, <-firstDone)
+	<-conn.secondEntered
+	require.NoError(t, <-secondDone)
+
+	assert.Equal(t, int32(2), conn.calls.Load())
+	assert.Equal(t, int32(1), conn.maxActive.Load())
+	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
 }

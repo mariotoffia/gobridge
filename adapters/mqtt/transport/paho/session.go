@@ -99,19 +99,9 @@ type Session struct {
 	// router's own connEpoch (different struct, different mutex). Guarded by mu.
 	connEpoch uint64
 
-	// reconcileMu serializes concurrent Reconcile calls so their
-	// subscribe/unsubscribe operations cannot interleave and corrupt
-	// activeSubs (e.g. the SessionManager-driven reconcile on
-	// SessionConnected racing a rotation- or caller-triggered Reconcile).
-	// Per finding C7 the SessionManager is the single owner of
-	// reconciliation; Reconcile holds it across plan declaration and broker
-	// convergence. OnConnectionUp (handleConnectionUp) does NOT reconcile
-	// inline — it only resets subscription state and signals the
-	// manager — so it is intentionally not a holder of this mutex (see
-	// handleConnectionUp for why it must not block on it).
-	reconcileMu sync.Mutex
 	// reloadGate is the one context-aware serialization gate shared by
-	// credential, managed-migration, and settlement-recovery reloads.
+	// ordinary reconciliation, credential/managed-migration reloads, and
+	// settlement recovery. Internal under-gate helpers never reacquire it.
 	reloadGate             chan struct{}
 	reloadGateWaitHook     func() // deterministic package-test barrier; nil in production
 	reloadGateAcquiredHook func() // deterministic package-test barrier; nil in production
@@ -218,7 +208,6 @@ type Session struct {
 	recoveryTargetEpoch         uint64
 	recoveryAttemptActive       bool
 	recoveryGeneration          uint64
-	recoveryAttemptDeadline     time.Time
 	recoveryAttemptCancel       context.CancelFunc
 	recoveryErr                 error
 	lastRecoveryCompleted       time.Time
