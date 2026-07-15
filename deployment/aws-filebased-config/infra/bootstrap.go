@@ -21,8 +21,9 @@ const (
 type Topology string
 
 const (
-	TopologySingle               Topology = "single"
-	TopologyFilesystemReplicated Topology = "filesystem_replicated"
+	TopologySingle                Topology = "single"
+	TopologyFilesystemReplicated  Topology = "filesystem_replicated"
+	TopologyDynamoDBCoordinatedHA Topology = "dynamodb_coordinated_ha"
 )
 
 const (
@@ -264,7 +265,7 @@ func (c BootstrapConfig) Validate() error {
 	}
 
 	switch c.Topology {
-	case TopologySingle, TopologyFilesystemReplicated:
+	case TopologySingle, TopologyFilesystemReplicated, TopologyDynamoDBCoordinatedHA:
 	default:
 		return fmt.Errorf("infra: unsupported topology %q (call Normalized() first)", c.Topology)
 	}

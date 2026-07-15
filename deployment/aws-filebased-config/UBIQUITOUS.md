@@ -22,9 +22,13 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **Topology** | Deployment shape. `single` = one replica owns config writes. `filesystem_replicated` = N replicas read the same EFS; cross-instance coordination features are rejected. |
+| **Topology** | Deployment shape. `single` = one replica owns config writes. `filesystem_replicated` = N independent replicas read the same EFS and cross-instance coordination features are rejected. `dynamodb_coordinated_ha` (`TopologyDynamoDBCoordinatedHA`) = coordinated active/warm-standby ECS tasks using DynamoDB lease, shared outbox, and managed-subscription history stores. |
 | **NodeRole** | Per-replica identity. `control` (default) or `worker`. Declared in bootstrap; reserved for future coordination. |
 | **Filesystem profile guard** | `validateFilesystemProfile` — rejects `shared_outbox` and `route.session` when topology is `filesystem_replicated`. |
+| **GoBridgeDynamoDBHA** | Separate coordinated active/warm-standby CDK facade for topology `dynamodb_coordinated_ha`; it reuses `internal/gobridgebase.New`, provisions one control task and at least two worker tasks, and does not change `GoBridgeCluster`. |
+| **DynamoDBHAProps** | Input contract for `GoBridgeDynamoDBHA`, including the shared bridge config, ECS/VPC placement, and registries. |
+| **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; the sole profile API exposing the lease, shared-outbox, and managed-subscription table objects, names, and ARNs. |
+| **FailureToFullDuration** | External failover-probe CloudWatch metric in the deployment metrics namespace. One sample is the milliseconds from the conservative pre-`StopTask` timestamp through exact-holder `STOPPED`, owner plus fencing-version change, and the different successor reaching `ServiceLevelFull`. It has no runtime dimensions; warm/cold percentiles are reported separately by the credentialed harness. Missing samples are non-breaching for the alarm, while release proof must query and find its exact sample. |
 
 ## Reload Mechanics
 
@@ -57,9 +61,9 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **L2 construct** | `GoBridgeSingle`, `GoBridgeCluster`, `GoBridgeAlarms`. Composable; consumers wire their own VPC / cluster / ALB. There is no L3 stack — see [ARCHITECTURE.md](ARCHITECTURE.md). |
+| **L2 construct** | `GoBridgeSingle`, `GoBridgeCluster`, `GoBridgeDynamoDBHA`, `GoBridgeAlarms`. Composable; consumers wire their own VPC / cluster / ALB. There is no L3 stack — see [ARCHITECTURE.md](ARCHITECTURE.md). |
 | **Exposure** | `infra.Exposure` flags (`Admin`, `Monitor`, `TransportHTTP`) selecting which container ports get mapped. Admin :8080 is always mapped (health check requirement) regardless of `Admin`. |
-| **BridgeConfigSource** | Sealed type representing the source of bridge YAML supplied to a `GoBridgeSingle`/`GoBridgeCluster`. Two constructors: `BridgeYamlAsset(path)` (file → S3 asset) and `BridgeYamlInline(*ports.BridgeConfig)` (in-memory builder output). Construct unwraps internally. Lives in `cdk/gobridgecdk/`. |
+| **BridgeConfigSource** | Sealed type representing the source of bridge YAML supplied to a `GoBridgeSingle`, `GoBridgeCluster`, or `GoBridgeDynamoDBHA`. Two constructors: `BridgeYamlAsset(path)` (file → S3 asset) and `BridgeYamlInline(*ports.BridgeConfig)` (in-memory builder output). Construct unwraps internally. Lives in `cdk/gobridgecdk/`. |
 
 ### Registries
 

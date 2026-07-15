@@ -16,8 +16,9 @@ const (
 type Topology = deployinfra.Topology
 
 const (
-	TopologySingle               = deployinfra.TopologySingle
-	TopologyFilesystemReplicated = deployinfra.TopologyFilesystemReplicated
+	TopologySingle                = deployinfra.TopologySingle
+	TopologyFilesystemReplicated  = deployinfra.TopologyFilesystemReplicated
+	TopologyDynamoDBCoordinatedHA = deployinfra.TopologyDynamoDBCoordinatedHA
 )
 
 const (

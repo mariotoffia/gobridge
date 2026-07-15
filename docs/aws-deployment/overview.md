@@ -1,7 +1,7 @@
 # AWS Deployment Overview
 
-GoBridge runs on AWS as an ECS Fargate service with EFS for configuration and
-SSM Parameter Store for secrets. This guide covers the architecture, design
+GoBridge runs on AWS as ECS Fargate services with EFS for configuration,
+SSM Parameter Store for secrets, and an optional DynamoDB-coordinated HA profile. This guide covers the architecture, design
 decisions, and the CDK construct library that wires everything together.
 
 For generic deployment considerations, see [Deployment Guide](../deployment-guide.md).
@@ -56,6 +56,141 @@ flowchart TD
 
 ---
 
+## Deployment Topologies
+
+The CDK library deliberately exposes two different multi-task profiles:
+
+| Facade | Coordination model | Intended use | Failover objective |
+|---|---|---|---|
+| `GoBridgeCluster` | `filesystem_replicated`; independent replicas read one EFS config | Scale independent routes horizontally | None. It has no active/standby takeover and no coordinated failover SLO. |
+| `GoBridgeDynamoDBHA` | `dynamodb_coordinated_ha`; one lease holder plus warm standbys | Exclusive MQTT continuity with shared-outbox fencing | Explicit per-route `failover_slo`, admitted by Task 9 and measured externally. |
+
+`GoBridgeCluster` remains unchanged. It rejects `route.session` and
+`shared_outbox`; it must not be described as HA. `GoBridgeDynamoDBHA` deploys one
+config-control task and at least two worker tasks across a subnet selection that
+spans at least two Availability Zones. All three tasks participate in DynamoDB
+lease acquisition, so the normal steady state has one active holder and at
+least two warm candidates. ECS Availability Zone rebalancing is enabled.
+
+### Coordinated HA data plane
+
+`GoBridgeDynamoDBHA` creates exactly three encrypted, point-in-time-recoverable,
+delete-protected, retained `PAY_PER_REQUEST` tables. The key/index shapes are
+the adapter contracts, not deployment inventions:
+
+| Table | Schema | TTL invariant |
+|---|---|---|
+| Lease (`gobridge-leases` default) | `PK` string hash key; no sort key or indexes | **Disabled.** The row carries the permanent monotonic fencing version. Deleting it can reset fencing and permit split brain. |
+| Shared outbox (`gobridge-outbox` default) | `PK`/`SK`; `ExpiryIndex` KEYS_ONLY, `RecordIDIndex` KEYS_ONLY, `ClaimIndex` ALL | Enabled on `ttl` only for terminal records and old fence metadata. Pending work is never TTL-reaped. |
+| Managed subscriptions (`gobridge-managed-subscriptions` default) | `storage_identity` string hash key | Disabled; exact MQTT filter history is durable. |
+
+The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It is the only HA
+facade surface exposing table objects, names, and ARNs.
+
+On-demand billing is appropriate for bursty takeover and outage recovery, but it
+does not eliminate hot keys. A single Exclusive MQTT session concentrates the
+outbox on one `SESSION#...` partition. Split unrelated workloads across session
+IDs before that partition approaches DynamoDB limits. Preserve `ClaimIndex` to
+avoid the adapter O(backlog) compatibility scan, and monitor the sparse
+`ExpiryIndex` guidance for expiry-heavy traffic.
+
+### Identity and endpoint rules
+
+The shared bridge YAML must use `deployment_mode: clustered`, DynamoDB lease,
+outbox, and managed-subscription stores, `delivery_mode: shared_outbox`,
+`ack_after: outbox_persist`, and explicit `failover_slo` plus
+`startup_allowance`. Every Exclusive MQTT standby uses the same broker domain,
+`client_id`, clean-start/session-expiry behavior, and managed-subscription
+storage identity. `client_id_suffix` is rejected for Exclusive sessions because
+a per-task MQTT identity strands queued broker state after holder loss.
+
+Static `bridge.cluster.endpoints` are rejected by this profile. The bootstrap
+registers the existing ECS metadata endpoint resolver and each holder writes its
+own reachable endpoint into the lease row. This endpoint also lets the
+credentialed proof map the lease to one exact ECS task without guessing.
+
+### Least-privilege task roles
+
+Either task role can become active, so control and workers receive the same
+narrow data access:
+
+- lease: `GetItem`, `PutItem`, `UpdateItem`, `DescribeTable`,
+  `DescribeTimeToLive`;
+- outbox table: `GetItem`, `PutItem`, `UpdateItem`, `Query`,
+  `TransactWriteItems`, `DescribeTable`;
+- exact outbox index ARNs: `Query` only;
+- managed-subscription history: `GetItem`, `UpdateItem`, `DescribeTable`.
+
+No task role receives DynamoDB table creation/update/deletion,
+`UpdateTimeToLive`, wildcard actions, or wildcard index resources. The external
+proof principal receives no grant from the facade; its operator policy must
+separately allow the required ECS/DynamoDB reads and
+`cloudwatch:PutMetricData`/metric query calls.
+
+### Alarms and objective honesty
+
+The HA form of `GoBridgeAlarms` covers running/desired task count, minimum warm
+standby, all-table DynamoDB throttles/system errors, lease acquisition/expiry
+and takeover flapping, shared-outbox depth/drain latency/failures, DLQ
+signals, and `FailureToFullDuration`.
+
+`FailureToFullDuration` is emitted by the credentialed external health/failover
+probe, not by the runtime. The probe conservatively starts timing before the
+verified holder `StopTask` request, waits for that exact task to be `STOPPED`,
+requires both lease owner and fencing version to change, and waits for a
+different exact successor to report `ServiceLevelFull`. It publishes one
+no-dimension millisecond sample in the configured deployment namespace. The
+alarm uses `TreatMissingData=NOT_BREACHING`; the release test immediately
+queries CloudWatch for the exact sample and fails if it is absent. Continuous
+SLO evidence therefore requires an operator-scheduled external probe.
+
+The checked example/fixture objective is **120 seconds**. Admission proves only
+that configured worst-case terms fit that ceiling. It does not prove an achieved
+production percentile. No 30–60 second claim is made. Publish a tighter target
+only after enough warm and cold samples from the actual image, VPC, broker,
+credentials, and AWS account support it. `OutboxDrainLatency` is a drain-cycle
+measurement, not direct oldest-record age; inspect the oldest pending item when
+triaging backlog age.
+
+### Credentialed failover proof
+
+The test runner needs CDK deploy/destroy credentials, a two-AZ VPC, a reachable
+TLS MQTT broker, existing SecureString admin/MQTT parameters, CloudWatch metric
+write/read permission, and VPC routing to task private addresses. The fixture
+opens monitor port 8081 only from `GOBRIDGE_INT_HA_PROBE_CIDR`; production
+security groups remain unchanged.
+
+Required variables:
+
+```text
+GOBRIDGE_INT_HA=1
+GOBRIDGE_INT_AWS_ACCOUNT
+GOBRIDGE_INT_AWS_REGION
+GOBRIDGE_INT_VPC_ID
+GOBRIDGE_INT_SUBNET_IDS
+GOBRIDGE_INT_IMAGE
+GOBRIDGE_INT_HA_MQTT_BROKER_URL
+GOBRIDGE_INT_HA_MQTT_CLIENT_ID
+GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
+GOBRIDGE_INT_HA_ADMIN_PARAM
+GOBRIDGE_INT_HA_PROBE_CIDR
+```
+
+Optional `GOBRIDGE_INT_HA_SAMPLES` controls separate warm/cold sample counts
+(1–20, default 1). Run:
+
+```bash
+cd deployment/aws-filebased-config/cdk
+GOBRIDGE_INT_HA=1 go test -count=1 -v -tags=integration_aws -run TestHA_FailoverStopsVerifiedLeaseholder ./integration
+```
+
+When `GOBRIDGE_INT_HA=1`, missing variables, credentials, outputs, network
+reachability, owner/fence changes, Full readiness, or the exact CloudWatch sample
+fail the test. Without that explicit request, the credentialed build-tag test is
+skipped and no AWS deployment occurs.
+
+---
+
 ## Why ECS Fargate
 
 Fargate is the recommended compute platform for GoBridge because it removes
@@ -86,11 +221,12 @@ before finalizing.
 For a single non-clustered task above 1 000 msg/s, size vertically to the
 Deployment Guide's `High` tier (2--4 vCPU / 4--8 GiB) instead of adding workers.
 The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
-(`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The clustered
-profile (`GoBridgeCluster`) runs one control task plus `WorkerDesiredCount`
-workers (default 2); worker CPU auto-scaling is opt-in by setting the
-`AutoScaling` prop (`AutoScalingProps{Min, Max, TargetCPU}`, where `TargetCPU`
-`0` is treated as 70). Override sizing via the `CPU` and `MemoryMiB` props.
+(`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The independent
+scale-out profile (`GoBridgeCluster`) runs one control task plus
+`WorkerDesiredCount` workers (default 2); its worker CPU auto-scaling is opt-in
+through `AutoScalingProps`. The coordinated profile (`GoBridgeDynamoDBHA`) runs
+one control plus at least two workers and rejects a lower worker count. Size every
+warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`.
 
 ---
 
@@ -182,12 +318,16 @@ add an explicit `kms:Decrypt` grant for the ECS task role on that key.
 
 ### DynamoDB Stores
 
-When the bridge config uses DynamoDB-backed stores (`lease`, `outbox`, `dlq`,
-or `managed_subscriptions`), the stack grants the ECS task role read/write access
-on each table the store names. Two operator responsibilities follow:
+For `GoBridgeSingle` and `GoBridgeCluster`, when the bridge config uses imported
+DynamoDB-backed stores (`lease`, `outbox`, `dlq`, or `managed_subscriptions`),
+the stack grants each ECS task role only the adapter-specific data operations
+on each table and required index the store names. Two operator responsibilities follow:
 
-- **Pre-provision the tables.** The stack imports each table by name and grants
-  access to it; it does **not** create the table, its key schema, or its TTL.
+- **Pre-provision imported tables.** Those two facades import each table by name
+  and grant access; they do **not** create the table, its key schema, or its TTL.
+  `GoBridgeDynamoDBHA` is the exception: it owns the three mandatory lease,
+  outbox, and managed-subscription tables described above. An optional DynamoDB
+  DLQ remains operator-provisioned.
   Provision each DynamoDB table out-of-band (matching the adapter's expected key
   schema) before deploying.
 - **Use `table_name` only to override a role default.** When omitted, runtime

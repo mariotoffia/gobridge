@@ -361,7 +361,7 @@ func TestAlarms_Validation_PanicMessages(t *testing.T) {
 				s := h.newSingle(t)
 				return &gobridgealarms.AlarmsProps{Efs: s.EfsConfig(), AlarmTopic: h.topic}
 			},
-			expect: "GoBridgeAlarms requires exactly one of Single or Cluster (found 0). Pass the facade you instantiated.",
+			expect: "GoBridgeAlarms requires exactly one of Single, Cluster, or DynamoDBHA (found 0). Pass the facade you instantiated.",
 		},
 		{
 			name: "both",
@@ -380,7 +380,7 @@ func TestAlarms_Validation_PanicMessages(t *testing.T) {
 				})
 				return &gobridgealarms.AlarmsProps{Single: s, Cluster: c, Efs: c.EfsConfig(), AlarmTopic: h.topic}
 			},
-			expect: "GoBridgeAlarms requires exactly one of Single or Cluster (found 2). Pass the facade you instantiated.",
+			expect: "GoBridgeAlarms requires exactly one of Single, Cluster, or DynamoDBHA (found 2). Pass the facade you instantiated.",
 		},
 		{
 			name: "no efs",

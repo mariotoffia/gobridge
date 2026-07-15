@@ -3,93 +3,108 @@
 package grants_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/jsii-runtime-go"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 )
 
-func TestGrantDynamoDBStore(t *testing.T) {
-	defer jsii.Close()
+const tableARN = "arn:aws:dynamodb:us-east-1:111122223333:table/bridge-store"
 
+func TestGrantDynamoDBLeaseStore_ExactRuntimeActions(t *testing.T) {
+	defer jsii.Close()
 	stack, role := newTestStack(t)
-	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("T"),
-		jsii.String("arn:aws:dynamodb:us-east-1:111122223333:table/bridge-outbox"))
-	grants.GrantDynamoDBStore(role, table)
+	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("Lease"), jsii.String(tableARN))
+	grants.GrantDynamoDBLeaseStore(role, table)
 
 	actions := collectAllowActions(t, stack)
-	mustHave(t, actions,
-		"dynamodb:GetItem",
-		"dynamodb:PutItem",
-		"dynamodb:UpdateItem",
-		"dynamodb:DeleteItem",
-		"dynamodb:Query",
-		"dynamodb:Scan",
-		"dynamodb:DescribeTable",
+	mustHave(t, actions, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive")
+	requireNoDynamoMutations(t, actions)
+	mustNotHave(t, actions, "dynamodb:Query", "dynamodb:Scan", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems")
+	requireExactTableResource(t, stack, "dynamodb:DescribeTimeToLive")
+}
+
+func TestGrantDynamoDBOutboxStore_ExactRuntimeActionsAndIndexes(t *testing.T) {
+	defer jsii.Close()
+	stack, role := newTestStack(t)
+	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("Outbox"), jsii.String(tableARN))
+	grants.GrantDynamoDBOutboxStore(role, table)
+
+	actions := collectAllowActions(t, stack)
+	mustHave(t, actions, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:DescribeTable")
+	requireNoDynamoMutations(t, actions)
+	mustNotHave(t, actions, "dynamodb:Scan", "dynamodb:DeleteItem", "dynamodb:DescribeTimeToLive")
+	rendered := renderedTemplate(t, stack)
+	for _, index := range []string{"ExpiryIndex", "RecordIDIndex", "ClaimIndex"} {
+		if !strings.Contains(rendered, "/index/"+index) {
+			t.Errorf("missing exact index ARN for %s", index)
+		}
+	}
+	if strings.Contains(rendered, "/index/*") {
+		t.Fatal("outbox grant must not wildcard index ARNs")
+	}
+}
+
+func TestGrantDynamoDBManagedSubscriptionsStore_ExactRuntimeActions(t *testing.T) {
+	defer jsii.Close()
+	stack, role := newTestStack(t)
+	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("History"), jsii.String(tableARN))
+	grants.GrantDynamoDBManagedSubscriptionsStore(role, table)
+
+	actions := collectAllowActions(t, stack)
+	mustHave(t, actions, "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DescribeTable")
+	requireNoDynamoMutations(t, actions)
+	mustNotHave(t, actions, "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:TransactWriteItems", "dynamodb:DescribeTimeToLive")
+}
+
+func TestGrantDynamoDBDLQStore_ExactRuntimeActionsAndIndexes(t *testing.T) {
+	defer jsii.Close()
+	stack, role := newTestStack(t)
+	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("DLQ"), jsii.String(tableARN))
+	grants.GrantDynamoDBDLQStore(role, table)
+
+	actions := collectAllowActions(t, stack)
+	mustHave(t, actions, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:DescribeTable")
+	requireNoDynamoMutations(t, actions)
+	mustNotHave(t, actions, "dynamodb:UpdateItem", "dynamodb:TransactWriteItems", "dynamodb:DescribeTimeToLive")
+	rendered := renderedTemplate(t, stack)
+	for _, index := range []string{"RouteIndex", "CategoryIndex"} {
+		if !strings.Contains(rendered, "/index/"+index) {
+			t.Errorf("missing exact index ARN for %s", index)
+		}
+	}
+}
+
+func requireNoDynamoMutations(t *testing.T, actions map[string]bool) {
+	t.Helper()
+	mustNotHave(t, actions,
+		"dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable",
+		"dynamodb:UpdateTimeToLive", "dynamodb:CreateBackup", "dynamodb:RestoreTableFromBackup",
+		"dynamodb:TagResource", "dynamodb:UntagResource", "dynamodb:*",
 	)
 }
 
-func TestGrantDynamoDBStore_Idempotent(t *testing.T) {
-	defer jsii.Close()
-
-	stack, role := newTestStack(t)
-	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("T"),
-		jsii.String("arn:aws:dynamodb:us-east-1:111122223333:table/bridge-outbox"))
-	grants.GrantDynamoDBStore(role, table)
-	grants.GrantDynamoDBStore(role, table)
-
-	actions := collectAllowActions(t, stack)
-	mustHave(t, actions, "dynamodb:PutItem")
-}
-
-func TestGrantDynamoDBLeasePreflight_ExactActionAndResource(t *testing.T) {
-	defer jsii.Close()
-
-	stack, role := newTestStack(t)
-	const tableARN = "arn:aws:dynamodb:us-east-1:111122223333:table/bridge-leases"
-	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("LeaseTable"), jsii.String(tableARN))
-	grants.GrantDynamoDBStore(role, table)
-	grants.GrantDynamoDBLeasePreflight(role, table)
-
-	statement := findAllowStatement(t, stack, "dynamodb:DescribeTimeToLive")
-	if statement == nil {
-		t.Fatal("missing lease-table DescribeTimeToLive grant")
-	}
-	actions := normalizeTestActions(statement["Action"])
-	if len(actions) != 1 || actions[0] != "dynamodb:DescribeTimeToLive" {
-		t.Fatalf("lease TTL preflight actions = %v, want exact [dynamodb:DescribeTimeToLive]", actions)
-	}
-	if !resourceContains(statement["Resource"], tableARN) {
-		t.Fatalf("lease TTL preflight resource = %v, want exact table ARN %q", statement["Resource"], tableARN)
+func requireExactTableResource(t *testing.T, stack awscdk.Stack, action string) {
+	t.Helper()
+	statement := findAllowStatement(t, stack, action)
+	if statement == nil || !resourceContains(statement["Resource"], tableARN) {
+		t.Fatalf("%s resource = %v, want exact table ARN %q", action, statement, tableARN)
 	}
 }
 
-func TestGrantDynamoDBStore_DoesNotGrantLeaseTTLPreflight(t *testing.T) {
-	defer jsii.Close()
-
-	stack, role := newTestStack(t)
-	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("OutboxTable"),
-		jsii.String("arn:aws:dynamodb:us-east-1:111122223333:table/bridge-outbox"))
-	grants.GrantDynamoDBStore(role, table)
-
-	mustNotHave(t, collectAllowActions(t, stack), "dynamodb:DescribeTimeToLive")
-}
-
-func normalizeTestActions(value any) []string {
-	switch actions := value.(type) {
-	case string:
-		return []string{actions}
-	case []any:
-		out := make([]string, 0, len(actions))
-		for _, action := range actions {
-			if value, ok := action.(string); ok {
-				out = append(out, value)
-			}
-		}
-		return out
-	default:
-		return nil
+func renderedTemplate(t *testing.T, stack awscdk.Stack) string {
+	t.Helper()
+	app := awscdk.App_Of(stack)
+	assembly := app.Synth(nil)
+	template := assembly.GetStackByName(stack.StackName()).Template()
+	raw, err := json.Marshal(template)
+	if err != nil {
+		t.Fatalf("marshal template: %v", err)
 	}
+	return string(raw)
 }

@@ -47,29 +47,12 @@ func lookupVpc(stack awscdk.Stack, env SandboxEnv) awsec2.IVpc {
 }
 
 func subnetSelection(env SandboxEnv) *awsec2.SubnetSelection {
-	subnets := make([]*string, 0, len(env.SubnetIDs))
-	for i, id := range env.SubnetIDs {
-		subnets = append(subnets,
-			awsec2.Subnet_FromSubnetId(nil, jsii.String("Sub"+itoa(i)), jsii.String(id)).SubnetId())
+	subnetIDs := make([]*string, 0, len(env.SubnetIDs))
+	for _, id := range env.SubnetIDs {
+		subnetIDs = append(subnetIDs, jsii.String(id))
 	}
-	_ = subnets
-	return &awsec2.SubnetSelection{
-		SubnetType: awsec2.SubnetType_PRIVATE_WITH_EGRESS,
-	}
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b [8]byte
-	pos := len(b)
-	for i > 0 {
-		pos--
-		b[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	return string(b[pos:])
+	filters := []awsec2.SubnetFilter{awsec2.SubnetFilter_ByIds(&subnetIDs)}
+	return &awsec2.SubnetSelection{SubnetFilters: &filters}
 }
 
 // newSingleFixture spins up a single-task GoBridge stack with one

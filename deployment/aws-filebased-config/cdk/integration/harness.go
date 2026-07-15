@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 )
@@ -32,10 +33,10 @@ type SandboxEnv struct {
 	Keep        bool
 }
 
-// RequireSandbox reads the GOBRIDGE_INT_* env vars and t.Skips when
-// any required one is missing. It never calls t.Fatal so the default
-// `go test` invocation under the build tag can be exercised in CI
-// without any AWS credentials and still report green.
+// RequireSandbox reads the GOBRIDGE_INT_* env vars. Ordinary tagged tests
+// retain the existing explicit skip when sandbox configuration is absent. When
+// GOBRIDGE_INT_HA=1 requests credentialed release proof, missing base variables
+// fail instead, so the requested proof cannot silently pass by skipping.
 func RequireSandbox(t *testing.T) SandboxEnv {
 	t.Helper()
 	required := map[string]string{
@@ -51,6 +52,9 @@ func RequireSandbox(t *testing.T) SandboxEnv {
 		}
 	}
 	if len(missing) > 0 {
+		if os.Getenv("GOBRIDGE_INT_HA") == "1" {
+			t.Fatalf("GOBRIDGE_INT_HA=1 requested credentialed proof but sandbox variables are missing: %s", strings.Join(missing, ", "))
+		}
 		t.Skipf("integration sandbox env not configured; missing: %s", strings.Join(missing, ", "))
 	}
 
@@ -106,6 +110,9 @@ func StackName(env SandboxEnv, scenario string) string {
 // jsii callback registration required by IAspect.
 func ApplyDestroyAspect(stack awscdk.Stack) {
 	walkConstructs(stack.Node(), func(node constructs.IConstruct) {
+		if table, ok := node.(awsdynamodb.CfnTable); ok {
+			table.SetDeletionProtectionEnabled(false)
+		}
 		if cfn, ok := node.(awscdk.CfnResource); ok {
 			cfn.ApplyRemovalPolicy(awscdk.RemovalPolicy_DESTROY, nil)
 		}

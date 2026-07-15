@@ -364,10 +364,15 @@ func Test_T20_Base_IAM_DynamoDBStoreGrant(t *testing.T) {
 		actions := t20CollectPolicyActions(tpl)
 		for _, want := range []string{
 			"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
-			"dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
+			"dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:DescribeTable",
 		} {
 			if !actions[want] {
 				t.Fatalf("missing IAM action %q for DynamoDB store (got %v)", want, keysOf(actions))
+			}
+		}
+		for _, forbidden := range []string{"dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable", "dynamodb:UpdateTimeToLive"} {
+			if actions[forbidden] {
+				t.Fatalf("unexpected IAM action %q for outbox store", forbidden)
 			}
 		}
 	})

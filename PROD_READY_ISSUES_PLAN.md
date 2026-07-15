@@ -737,7 +737,7 @@ fix(config): reject uncoordinated cluster reloads
 
 ## Task 11: Ship a DynamoDB-coordinated ECS HA profile
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:architect-aws-serverless, thiink:cost-auditor,
 thiink:security-auditor, thiink:test-reviewer
@@ -761,52 +761,52 @@ thiink:security-auditor, thiink:test-reviewer
 - Modify: `deployment/aws-filebased-config/README.md`
 - Modify: `docs/aws-deployment/overview.md`
 
-- [ ] **Step 1: Establish glossary names**
+- [x] **Step 1: Establish glossary names**
 
 Define `dynamodb_coordinated_ha`, `TopologyDynamoDBCoordinatedHA`,
 `GoBridgeDynamoDBHA`, `DynamoDBHAProps`, and `DynamoDBHAData` before code uses
 them.
 
-- [ ] **Step 2: Add CDK assertion tests**
+- [x] **Step 2: Add CDK assertion tests**
 
 Require three DynamoDB tables with exact key/index schemas, lease TTL disabled,
 on-demand billing, retained production data, two-AZ placement, explicit
 failover budget, stable exclusive MQTT identity, shared outbox, CloudWatch
 metrics, and at least one warm standby.
 
-- [ ] **Step 3: Implement the separate facade**
+- [x] **Step 3: Implement the separate facade**
 
 Reuse `gobridgebase.New` for one control task and at least two workers. Keep
 `GoBridgeCluster` unchanged and explicitly documented as independent
 filesystem scale-out.
 
-- [ ] **Step 4: Restrict IAM**
+- [x] **Step 4: Restrict IAM**
 
 Grant task roles only required data-plane actions plus `DescribeTable` and
 `DescribeTimeToLive`; exclude table creation, mutation, TTL mutation, and
 deletion. Scope resources to table and index ARNs.
 
-- [ ] **Step 5: Add alarms and endpoint identity**
+- [x] **Step 5: Add alarms and endpoint identity**
 
 Register the ECS endpoint resolver for clustered profiles. Add task-count,
 DynamoDB throttle/system-error, lease, outbox, DLQ, and measured
 failure-to-Full alarms. Missing duration samples are non-breaching; the release
 gate must prove samples exist.
 
-- [ ] **Step 6: Add credentialed integration harness**
+- [x] **Step 6: Add credentialed integration harness**
 
 Stop the exact ECS task holding the lease, wait for STOPPED, require lease
 owner/version change and successor Full readiness, and emit warm/cold
 percentiles. Fail clearly when required sandbox variables are absent.
 
-- [ ] **Step 7: Run source-safe checks**
+- [x] **Step 7: Run source-safe checks**
 
 ```bash
 (cd deployment/aws-filebased-config/lib && go test -race -count=1 ./...)
 (cd deployment/aws-filebased-config/cdk && go test -race -count=1 ./...)
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```text
 feat(aws): add DynamoDB-coordinated bridge HA

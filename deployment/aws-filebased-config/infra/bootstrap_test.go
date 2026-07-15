@@ -88,6 +88,17 @@ func TestBootstrapConfig_Validate_RequiredFields(t *testing.T) {
 	}
 }
 
+func TestBootstrapConfig_Validate_DynamoDBCoordinatedHA(t *testing.T) {
+	c := BootstrapConfig{
+		BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
+		NodeRole: NodeRoleWorker, Topology: TopologyDynamoDBCoordinatedHA,
+		ContainerMemoryBytes: DefaultContainerMemoryBytes,
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("DynamoDB coordinated HA topology rejected: %v", err)
+	}
+}
+
 func TestBootstrapConfig_Validate_OK(t *testing.T) {
 	c := BootstrapConfig{
 		BridgeID:         "b",

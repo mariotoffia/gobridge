@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"net/http"
 
+	ecscluster "github.com/mariotoffia/gobridge/adapters/aws/cluster/ecs"
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
@@ -68,6 +69,9 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// full OTel dependency tree. A future traces_exporter selection would be
 	// wired here via bridge.WithTracer.
 	builder := bridge.NewBuilder(runtimeCfg, opts...)
+	if runtimeCfg != nil && runtimeCfg.Bridge.DeploymentMode == "clustered" {
+		builder.RegisterEndpointResolver(ecscluster.NewEcsEndpointResolver(ecscluster.WithLogger(a.logger)))
+	}
 
 	// The metrics exporter is threaded into the MQTT and SQS transport
 	// factories (nil keeps each adapter's internal Noop fallback) so their

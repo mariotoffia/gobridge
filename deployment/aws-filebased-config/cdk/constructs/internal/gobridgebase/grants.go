@@ -1,7 +1,6 @@
 package gobridgebase
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -100,49 +99,30 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 		}
 	}
 
-	// DynamoDB stores (lease/outbox/DLQ/managed subscriptions). Resolve the
-	// same role-specific defaults the runtime passes into its adapters before
-	// importing tables, then preserve role information while deduplicating so a
-	// shared lease table still receives its lease-only TTL preflight grant.
-	type tableGrant struct {
-		name  string
-		lease bool
-	}
-	byName := map[string]tableGrant{}
+	// DynamoDB stores. Preserve the configured role so each adapter receives
+	// only its exact runtime calls and exact index ARNs. The same physical table
+	// may be referenced by more than one role; CDK safely aggregates statements.
 	roles := []struct {
 		name  string
 		store *ports.StoreConfig
+		grant func(awsiam.IGrantable, awsdynamodb.ITable)
 	}{
-		{name: "lease", store: cfg.Stores.Lease},
-		{name: "outbox", store: cfg.Stores.Outbox},
-		{name: "dlq", store: cfg.Stores.DLQ},
-		{name: "managed_subscriptions", store: cfg.Stores.ManagedSubscriptions},
+		{name: "lease", store: cfg.Stores.Lease, grant: grants.GrantDynamoDBLeaseStore},
+		{name: "outbox", store: cfg.Stores.Outbox, grant: grants.GrantDynamoDBOutboxStore},
+		{name: "dlq", store: cfg.Stores.DLQ, grant: grants.GrantDynamoDBDLQStore},
+		{name: "managed_subscriptions", store: cfg.Stores.ManagedSubscriptions, grant: grants.GrantDynamoDBManagedSubscriptionsStore},
 	}
-	for _, role := range roles {
-		if role.store == nil || !isKind(role.store.Type, awsstore.DynamoDBKind) {
+	for _, storeRole := range roles {
+		if storeRole.store == nil || !isKind(storeRole.store.Type, awsstore.DynamoDBKind) {
 			continue
 		}
-		name, err := awsstore.ResolveDynamoDBTableName(role.name, dynamoTableName(role.store))
+		name, err := awsstore.ResolveDynamoDBTableName(storeRole.name, dynamoTableName(storeRole.store))
 		if err != nil {
-			continue // role names above are closed and authoritative
+			continue
 		}
-		grant := byName[name]
-		grant.name = name
-		grant.lease = grant.lease || role.name == "lease"
-		byName[name] = grant
-	}
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		grant := byName[name]
-		table := awsdynamodb.Table_FromTableName(scope, jsii.String("DynamoStoreGrant"+name), jsii.String(name))
-		grants.GrantDynamoDBStore(role, table)
-		if grant.lease {
-			grants.GrantDynamoDBLeasePreflight(role, table)
-		}
+		table := awsdynamodb.Table_FromTableName(scope,
+			jsii.String("DynamoStoreGrant"+storeRole.name), jsii.String(name))
+		storeRole.grant(role, table)
 	}
 }
 

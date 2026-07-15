@@ -117,3 +117,17 @@ func TestNewFactoryRegistry_WiresHTTPFactoryMetrics(t *testing.T) {
 	require.False(t, factoryField(t, reg.http, "metrics").IsNil(),
 		"HTTP factory must receive the bootstrap metrics exporter (httptransport.WithFactoryMetrics)")
 }
+
+func TestNewFactoryRegistry_ClusteredRegistersECSEndpointResolver(t *testing.T) {
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{DeploymentMode: "clustered"}}
+	reg := app.newFactoryRegistry(cfg)
+	require.False(t, builderField(t, reg.builder, "endpointResolver").IsNil(),
+		"clustered profile must register the existing ECS endpoint resolver")
+}
+
+func TestNewFactoryRegistry_StandaloneLeavesEndpointResolverEmpty(t *testing.T) {
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	reg := app.newFactoryRegistry(&ports.BridgeConfig{Bridge: ports.BridgeSettings{DeploymentMode: "standalone"}})
+	require.True(t, builderField(t, reg.builder, "endpointResolver").IsNil())
+}
