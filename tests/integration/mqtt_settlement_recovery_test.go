@@ -30,17 +30,21 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	)
 
 	metrics := newRecoveryBarrierMetrics()
-	sess := paho.NewSession(paho.SessionOptions{
+	sessionOptions := paho.SessionOptions{
 		BrokerURLs:            []string{brokerURL},
 		ClientID:              clientID,
 		ConnectTimeout:        5 * time.Second,
 		ReconnectTimeout:      5 * time.Second,
+		ReconcileTimeout:      5 * time.Second,
+		UnmatchedGrace:        time.Second,
 		SessionExpiryInterval: 300,
 		ReceiveMaximum:        4,
-	}, connectivity.SessionPersistent, nil, metrics)
+	}
+	recoveryBound := (paho.Config{Session: sessionOptions}).
+		PostAcquireActivationTiming(connectivity.SessionPersistent).WorstCaseDuration
+	sess := paho.NewSession(sessionOptions, connectivity.SessionPersistent, nil, metrics)
 	innerReceiver := paho.NewReceiver(receiverID, sess, paho.WithTopicFilters(topic))
 	receiver := newSettlementRecoveryReceiver(innerReceiver)
-	t.Cleanup(receiver.releaseRetry)
 	sender := newSettlementRecoverySender(originalID)
 	dlq := newUnavailableRecoveryDLQ()
 
@@ -74,10 +78,15 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	// One cleanup fixes the order explicitly: unblock the first Retry before
+	// Stop waits for route quiescence. releaseRetry is idempotent.
+	t.Cleanup(func() {
+		receiver.releaseRetry()
+		_ = rt.Stop(context.Background())
+	})
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	wait.RequireReceive(t, receiver.Started(), 5*time.Second)
 	wait.RequireReceive(t, metrics.reconciled, 5*time.Second)
 
@@ -92,15 +101,26 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}
 	receiver.releaseRetry()
 
-	wait.RequireReceive(t, metrics.recycled, 10*time.Second)
-	if id := wait.RequireReceive(t, receiver.received, 10*time.Second); id != originalID {
-		t.Fatalf("redelivered producer ID = %q, want %q", id, originalID)
-	}
+	wait.RequireReceive(t, metrics.recycled, recoveryBound)
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, recoveryBound)
+	defer cancelRecovery()
+	wait.Until(t, recoveryRemaining(t, recoveryCtx), "completed MQTT settlement recovery", func() bool {
+		health := sess.Health(recoveryCtx)
+		return health.ServiceLevel == ports.ServiceLevelFull && health.RecoveryRecycleCount == 1
+	})
 	publishRecoveryMessage(t, brokerURL, topic, laterID)
+	receivedAfterRecovery := map[string]int{}
+	for len(receivedAfterRecovery) < 2 {
+		id := wait.RequireReceive(t, receiver.received, recoveryRemaining(t, recoveryCtx))
+		receivedAfterRecovery[id]++
+	}
+	if receivedAfterRecovery[originalID] != 1 || receivedAfterRecovery[laterID] != 1 {
+		t.Fatalf("post-recovery producer-ID accounting = %v, want one redelivery and one later message", receivedAfterRecovery)
+	}
 
 	succeeded := map[string]int{}
 	for len(succeeded) < 2 {
-		id := wait.RequireReceive(t, sender.succeeded, 10*time.Second)
+		id := wait.RequireReceive(t, sender.succeeded, recoveryRemaining(t, recoveryCtx))
 		succeeded[id]++
 	}
 	if succeeded[originalID] != 1 || succeeded[laterID] != 1 {
@@ -108,7 +128,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}
 	acked := map[string]int{}
 	for len(acked) < 2 {
-		id := wait.RequireReceive(t, receiver.acked, 10*time.Second)
+		id := wait.RequireReceive(t, receiver.acked, recoveryRemaining(t, recoveryCtx))
 		acked[id]++
 	}
 	if acked[originalID] != 1 || acked[laterID] != 1 {
@@ -127,6 +147,19 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	if health.RecoveryRecycleCount != 1 {
 		t.Fatalf("recovery recycle count = %d, want 1", health.RecoveryRecycleCount)
 	}
+}
+
+func recoveryRemaining(t *testing.T, ctx context.Context) time.Duration {
+	t.Helper()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("recovery context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		t.Fatal("MQTT settlement recovery bound exhausted")
+	}
+	return remaining
 }
 
 func publishRecoveryMessage(t *testing.T, brokerURL, topic, id string) {
