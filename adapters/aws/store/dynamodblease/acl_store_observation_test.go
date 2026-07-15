@@ -81,6 +81,34 @@ func (*observationMemoryClient) DescribeTimeToLive(context.Context, *dynamodb.De
 	return &dynamodb.DescribeTimeToLiveOutput{}, nil
 }
 
+type delayedObservationClient struct {
+	dynamoAPI
+	clk              *clocktest.Fake
+	getDelay         time.Duration
+	observationDelay time.Duration
+	getDelayed       bool
+	updateDelayed    bool
+}
+
+func (c *delayedObservationClient) GetItem(ctx context.Context, in *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	out, err := c.dynamoAPI.GetItem(ctx, in, opts...)
+	if err == nil && !c.getDelayed && c.getDelay > 0 {
+		c.getDelayed = true
+		c.clk.Advance(c.getDelay)
+	}
+	return out, err
+}
+
+func (c *delayedObservationClient) UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	out, err := c.dynamoAPI.UpdateItem(ctx, in, opts...)
+	observationCAS := in.UpdateExpression != nil && strings.Contains(*in.UpdateExpression, "#obs_fp = :next_obs_fp")
+	if err == nil && observationCAS && !c.updateDelayed && c.observationDelay > 0 {
+		c.updateDelayed = true
+		c.clk.Advance(c.observationDelay)
+	}
+	return out, err
+}
+
 func cloneObservationItem(in map[string]ddbtypes.AttributeValue) map[string]ddbtypes.AttributeValue {
 	if in == nil {
 		return nil
@@ -412,5 +440,79 @@ func TestAcquire_MalformedOverflowAndSkewFailClosed(t *testing.T) {
 	_, err = store.Acquire(t.Context(), "lease-1", "standby", 10*time.Second, nil)
 	if !errors.Is(err, shared.ErrAlreadyExists) {
 		t.Fatalf("early skew takeover=%v", err)
+	}
+}
+
+func TestAcquire_ObservationBaselineStartsAfterSuccessfulConsistentRead(t *testing.T) {
+	const ttl = 20 * time.Second
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(base)
+	memory := seededObservationClient(base, ttl, false)
+	delayed := &delayedObservationClient{dynamoAPI: memory, clk: clk, getDelay: 5 * time.Second}
+	store := &Store{client: delayed, tableName: "leases", clk: clk}
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initialize observation: %v", err)
+	}
+	clk.Advance(2 * time.Second)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("add observation: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != 2*time.Second {
+		t.Fatalf("Get delay counted in observation: elapsed=%s want 2s", elapsed)
+	}
+}
+
+func TestAcquire_ObservationBaselineStartsAfterSuccessfulObservationCAS(t *testing.T) {
+	const ttl = 20 * time.Second
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(base)
+	memory := seededObservationClient(base, ttl, false)
+	delayed := &delayedObservationClient{dynamoAPI: memory, clk: clk, observationDelay: 7 * time.Second}
+	store := &Store{client: delayed, tableName: "leases", clk: clk}
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initialize observation: %v", err)
+	}
+	clk.Advance(2 * time.Second)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("add observation: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != 2*time.Second {
+		t.Fatalf("CAS response delay counted in observation: elapsed=%s want 2s", elapsed)
+	}
+}
+
+func TestAcquire_CrashAfterRenewalTakesOverWithinTTLAndOnePollAllowance(t *testing.T) {
+	const (
+		ttl           = 20 * time.Second
+		acquirePoll   = 4 * time.Second
+		pollAllowance = acquirePoll + acquirePoll/4
+	)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := seededObservationClient(base, ttl, false)
+	clk := clocktest.NewAt(base)
+	store := &Store{client: client, tableName: "leases", clk: clk}
+	// Worst poll phase: renewal/crash lands immediately after a standby poll.
+	clk.Advance(pollAllowance)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initial post-crash observation: %v", err)
+	}
+	for attempt := 1; attempt <= 4; attempt++ {
+		clk.Advance(pollAllowance)
+		token, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
+		if attempt < 4 {
+			if !errors.Is(err, shared.ErrAlreadyExists) {
+				t.Fatalf("poll %d: %v", attempt, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("threshold poll takeover: %v", err)
+		}
+		if token.Owner != "standby" || token.Version != 8 {
+			t.Fatalf("token=%+v", token)
+		}
+	}
+	if elapsed := clk.Since(base); elapsed != ttl+pollAllowance {
+		t.Fatalf("takeover elapsed=%s want %s", elapsed, ttl+pollAllowance)
 	}
 }

@@ -488,6 +488,17 @@ timing, or overflow. The generic capability is one aggregate duration, so the
 builder never double-counts nested connect/reconcile phases. Paho reuses its
 complete post-acquire phase calculator: initial connect, managed cleanup/replay,
 recycle/reconnect, four reconcile-owned waits, and two grace windows.
+
+The poll term is exactly one `ceil(1.25 × acquire_poll_interval)`. After a
+renewal reset, the first successful observation response establishes the
+monotonic baseline. The acquisition attempt whose CAS raises accumulated
+evidence to the TTL immediately issues the exact-evidence conditional takeover;
+it does not wait for another poll. Normal competing observers have one CAS
+winner, and that winner proceeds to takeover in the same attempt. A losing
+observer discards its local interval and retries safely. Backend errors or
+pathological contention that prevents every winner from completing takeover are
+outside the deterministic budget and must be represented by measured SLO error
+budget/alerts rather than another hidden poll term.
 `startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
 `failover_slo` means that no objective is declared.
 
@@ -503,8 +514,9 @@ the target environment before publishing an SLO claim.
 The DynamoDB lease item stores a fingerprint of the exact liveness tuple plus an
 accumulated unchanged duration and generation. The tuple includes lease key,
 owner, fencing version, `renewed_at`, and `expires_at`. An observer measures only
-local monotonic elapsed time since a successful read, then compare-and-set adds
-that interval while conditioning on the complete tuple and current evidence.
+local monotonic elapsed time from a baseline sampled only after a successful
+consistent read or observation CAS response, then compare-and-set adds that
+interval while conditioning on the complete tuple and current evidence.
 Competing observers therefore cannot add overlapping intervals twice.
 
 A replacement process inherits already-confirmed elapsed evidence. It does not

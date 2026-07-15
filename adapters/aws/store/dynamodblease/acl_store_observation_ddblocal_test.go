@@ -268,3 +268,48 @@ func TestDynamoDBObservationRenewReleaseAndTakeoverResetEvidence(t *testing.T) {
 		t.Fatalf("released-row version=%d want 3", finalToken.Version)
 	}
 }
+
+func TestDynamoDBObservationCrashAfterRenewalMeetsTTLPlusOnePollAllowance(t *testing.T) {
+	const (
+		ttl           = 20 * time.Second
+		pollAllowance = 5 * time.Second // ceil(1.25 * acquire_poll_interval=4s)
+	)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ownerClock := clocktest.NewAt(base)
+	standbyClock := clocktest.NewAt(base)
+	owner, standby, _, _, _ := setupObservationDDBStores(t, "leases-observation-poll-bound", ownerClock, standbyClock)
+	token, err := owner.Acquire(t.Context(), "lease-1", "owner", ttl, nil)
+	if err != nil {
+		t.Fatalf("owner acquire: %v", err)
+	}
+	ownerClock.Advance(time.Second)
+	standbyClock.Advance(time.Second)
+	if _, err := owner.Renew(t.Context(), "lease-1", token, ttl, nil); err != nil {
+		t.Fatalf("owner renew: %v", err)
+	}
+	crashAt := standbyClock.Now()
+	// Crash immediately after renewal in the worst positive poll phase.
+	standbyClock.Advance(pollAllowance)
+	if _, err := standby.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initialize post-renew observation: %v", err)
+	}
+	for attempt := 1; attempt <= 4; attempt++ {
+		standbyClock.Advance(pollAllowance)
+		takeover, acquireErr := standby.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
+		if attempt < 4 {
+			if !errors.Is(acquireErr, shared.ErrAlreadyExists) {
+				t.Fatalf("poll %d: %v", attempt, acquireErr)
+			}
+			continue
+		}
+		if acquireErr != nil {
+			t.Fatalf("threshold poll takeover: %v", acquireErr)
+		}
+		if takeover.Owner != "standby" || takeover.Version != 2 {
+			t.Fatalf("token=%+v", takeover)
+		}
+	}
+	if elapsed := standbyClock.Since(crashAt); elapsed != ttl+pollAllowance {
+		t.Fatalf("takeover elapsed=%s want %s", elapsed, ttl+pollAllowance)
+	}
+}

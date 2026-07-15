@@ -127,8 +127,8 @@ func decodeObservationEvidence(item map[string]ddbtypes.AttributeValue) (observa
 	return observationEvidence{present: true, fingerprint: fp.Value, elapsed: time.Duration(elapsed), generation: generation}, nil
 }
 
-func nextObservationGeneration(current uint64) (uint64, error) {
-	if current == math.MaxUint64 {
+func nextObservationGeneration(current uint64, completesObservation bool) (uint64, error) {
+	if current >= math.MaxUint64-1 || (current == math.MaxUint64-2 && !completesObservation) {
 		return 0, shared.ErrInvalidConfig.WithMessage("dynamodblease: takeover observation generation overflow")
 	}
 	return current + 1, nil

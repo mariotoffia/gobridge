@@ -129,6 +129,13 @@ connect, cleanup/replay, recycle/reconnect, grace, and final reconcile phases ar
 not added separately. `session.HAConfig` is a lease-renewal cadence, not an
 end-to-end preset.
 
+Shared session IDs are first-wins at runtime, so preflight canonicalizes every
+route/binding manager input per session and rejects any divergence in lease
+cadence, SLO, startup, or transport activation before resources are opened. This
+makes route order irrelevant. The one poll allowance assumes a successful CAS
+winner; a losing observer retries without double-counting, while backend failure
+or unresolved contention belongs to measured error-budget evidence.
+
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
 
 | Field | Type | Required | Default | Description |

@@ -231,11 +231,17 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		}
 		return persistence.LeaseToken{}, wrapErr(err, "lease takeover read failed", "leaseID", leaseID, "ownerID", ownerID)
 	}
+	readAt := s.clk.Now()
 	if !row.present {
 		s.clearObservation(leaseID)
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease row disappeared during takeover read").
 			With("leaseID", leaseID)
+	}
+
+	if err := ensureFencingVersionIncrementable(leaseID, row.version); err != nil {
+		s.clearObservation(leaseID)
+		return persistence.LeaseToken{}, err
 	}
 
 	if row.owner == "" {
@@ -250,12 +256,14 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		return token, nil
 	}
 
-	return s.observeOrSeize(ctx, leaseID, ownerID, endpoints, now, expiresAt, row)
+	return s.observeOrSeize(ctx, leaseID, ownerID, endpoints, now, expiresAt, readAt, row)
 }
 
 // observeOrSeize advances persisted monotonic observation evidence and takes
-// over an actively-held lease only after a full unchanged-tuple duration.
-func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
+// over an actively-held lease only after a full unchanged-tuple duration. Local
+// baselines are sampled after successful consistent-read or observation-CAS
+// responses; the CAS that reaches the threshold attempts takeover immediately.
+func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt, readAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
 	row.leaseID = leaseID
 	if row.owner == ownerID {
 		condition, names, values := takeoverCondition(row, true)
@@ -277,7 +285,7 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, end
 	fingerprint := tuple.fingerprint()
 
 	if !row.observation.present || row.observation.fingerprint != fingerprint {
-		generation, generationErr := nextObservationGeneration(row.observation.generation)
+		generation, generationErr := nextObservationGeneration(row.observation.generation, false)
 		if generationErr != nil {
 			s.clearObservation(leaseID)
 			return persistence.LeaseToken{}, generationErr
@@ -286,7 +294,7 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, end
 		if err := s.writeObservationCAS(ctx, row, next); err != nil {
 			return persistence.LeaseToken{}, err
 		}
-		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: now})
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: s.clk.Now()})
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease held; persisted takeover observation started").With("leaseID", leaseID)
 	}
@@ -304,14 +312,14 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, end
 
 	local, ok := s.observationFor(leaseID)
 	if !ok || !local.tuple.equal(tuple) || local.evidence != row.observation {
-		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: now})
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: readAt})
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease held; takeover observation baseline refreshed").With("leaseID", leaseID)
 	}
 
-	delta := now.Sub(local.observedAt)
+	delta := readAt.Sub(local.observedAt)
 	if delta < 0 {
-		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: now})
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: readAt})
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease held; local observation clock regressed").With("leaseID", leaseID)
 	}
@@ -320,20 +328,20 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, end
 			WithMessage("lease held; no new takeover observation elapsed").With("leaseID", leaseID)
 	}
 
-	generation, generationErr := nextObservationGeneration(row.observation.generation)
+	nextElapsed := saturatingObservationDuration(row.observation.elapsed, delta)
+	generation, generationErr := nextObservationGeneration(row.observation.generation, nextElapsed >= required)
 	if generationErr != nil {
 		s.clearObservation(leaseID)
 		return persistence.LeaseToken{}, generationErr
 	}
 	next := observationEvidence{
 		present: true, fingerprint: fingerprint,
-		elapsed:    saturatingObservationDuration(row.observation.elapsed, delta),
-		generation: generation,
+		elapsed: nextElapsed, generation: generation,
 	}
 	if err := s.writeObservationCAS(ctx, row, next); err != nil {
 		return persistence.LeaseToken{}, err
 	}
-	s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: now})
+	s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: s.clk.Now()})
 
 	if next.elapsed < required {
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
@@ -355,6 +363,13 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, end
 // condition and any extra names/values it references; runTakeover appends the
 // standard SET clause, endpoints, and the legacy-ttl strip.
 func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt time.Time, cond string, extraNames map[string]string, extraValues map[string]ddbtypes.AttributeValue) (persistence.LeaseToken, error) {
+	versionValue, ok := extraValues[":tuple_version"].(*ddbtypes.AttributeValueMemberN)
+	if ok {
+		version, parseErr := strconv.ParseUint(versionValue.Value, 10, 64)
+		if parseErr != nil || ensureFencingVersionIncrementable(leaseID, version) != nil {
+			return persistence.LeaseToken{}, fencingVersionExhausted(leaseID)
+		}
+	}
 	pk := leaseKey(leaseID)
 
 	updateExpr := "SET #own = :owner, #ver = #ver + :one, #acq = :now_ms, #exp = :exp_ms, #ren = :now_ms"
@@ -508,6 +523,19 @@ func decodeLeaseRow(item map[string]ddbtypes.AttributeValue, leaseID string) (le
 	return row, nil
 }
 
+func ensureFencingVersionIncrementable(leaseID string, version uint64) error {
+	if version >= ^uint64(0)-1 {
+		return fencingVersionExhausted(leaseID)
+	}
+	return nil
+}
+
+func fencingVersionExhausted(leaseID string) error {
+	return shared.ErrInvalidConfig.
+		WithMessage("dynamodblease: fencing version is not safely incrementable").
+		With("leaseID", leaseID)
+}
+
 func corruptLeaseRow(leaseID, detail string) error {
 	return shared.ErrInvalidConfig.
 		WithMessage("dynamodblease: corrupt lease row: "+detail).
@@ -539,6 +567,9 @@ func (s *Store) clearObservation(leaseID string) {
 // Renew extends the lease TTL. The caller's token must match the stored
 // owner and version. The returned token keeps the same version.
 func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
+	if token.Version == ^uint64(0) {
+		return persistence.LeaseToken{}, fencingVersionExhausted(leaseID)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: renew", "lease_id", leaseID, "owner_id", token.Owner)
 	}
@@ -601,6 +632,9 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 // subsequent fresh acquire would reset the version to 1 and break
 // fencing-token monotonicity across the cluster.
 func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
+	if token.Version == ^uint64(0) {
+		return fencingVersionExhausted(leaseID)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: release", "lease_id", leaseID)
 	}

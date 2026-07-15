@@ -132,3 +132,71 @@ func TestCheckedFailoverBudgetArithmeticRejectsOverflow(t *testing.T) {
 var _ ports.PluginConfig = failoverTimingPluginConfig{}
 var _ ports.FreezableConfig = failoverTimingPluginConfig{}
 var _ ports.TransportFailoverTimingConfig = failoverTimingPluginConfig{}
+
+func TestBuilderPlan_SharedSessionRejectsDivergentManagerBudgetInputsRegardlessOfRouteOrder(t *testing.T) {
+	makeConfig := func(reverse bool) *ports.BridgeConfig {
+		cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+		tight := cfg.Routes[0]
+		tight.ID = "tight"
+		slow := tight
+		slow.ID = "slow"
+		slowSession := *tight.Session
+		slowSession.LeaseTTL = "10s"
+		slowSession.FailoverSLO = "25s"
+		slow.Session = &slowSession
+		if reverse {
+			cfg.Routes = []ports.RouteDef{slow, tight}
+		} else {
+			cfg.Routes = []ports.RouteDef{tight, slow}
+		}
+		return cfg
+	}
+	for _, reverse := range []bool{false, true} {
+		name := "tight-first"
+		if reverse {
+			name = "slow-first"
+		}
+		t.Run(name, func(t *testing.T) {
+			plan, err := NewBuilder(makeConfig(reverse)).Plan(t.Context())
+			if plan != nil {
+				plan.Close()
+				t.Fatal("divergent shared session returned plan")
+			}
+			if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "divergent session-manager configuration") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestBuilderPlan_SharedSessionRejectsDivergentSLOWithSameLeaseTiming(t *testing.T) {
+	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	second := cfg.Routes[0]
+	second.ID = "second"
+	secondSession := *second.Session
+	secondSession.FailoverSLO = "21s"
+	second.Session = &secondSession
+	cfg.Routes = append(cfg.Routes, second)
+	plan, err := NewBuilder(cfg).Plan(t.Context())
+	if plan != nil {
+		plan.Close()
+		t.Fatal("divergent SLO returned plan")
+	}
+	if !errors.Is(err, shared.ErrInvalidConfig) || !strings.Contains(err.Error(), "divergent session-manager configuration") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestBuilderPlan_SharedSessionAcceptsIdenticalManagerBudgetInputs(t *testing.T) {
+	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	second := cfg.Routes[0]
+	second.ID = "second"
+	secondSession := *second.Session
+	second.Session = &secondSession
+	cfg.Routes = append(cfg.Routes, second)
+	plan, err := NewBuilder(cfg).Plan(t.Context())
+	if err != nil {
+		t.Fatalf("identical shared manager inputs: %v", err)
+	}
+	plan.Close()
+}
