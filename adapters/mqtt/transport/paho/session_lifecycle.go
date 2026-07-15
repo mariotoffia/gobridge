@@ -78,6 +78,54 @@ func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.D
 	}
 }
 
+func (s *Session) beginRecoveryDrain(generation uint64) (<-chan struct{}, bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recoveryGeneration != generation {
+		return nil, false, false
+	}
+	if s.recoveryDrainGeneration != generation {
+		s.recoveryDrainState = recoveryDrainNotStarted
+		s.recoveryDrainGeneration = generation
+		s.recoveryDrainDone = nil
+	}
+	switch s.recoveryDrainState {
+	case recoveryDrainNotStarted:
+		done := make(chan struct{})
+		s.recoveryDrainState = recoveryDrainInProgress
+		s.recoveryDrainDone = done
+		return done, true, false
+	case recoveryDrainInProgress:
+		return s.recoveryDrainDone, false, false
+	case recoveryDrainFinished:
+		return s.recoveryDrainDone, false, true
+	default:
+		return nil, false, false
+	}
+}
+
+func (s *Session) finishRecoveryDrain(generation uint64, done <-chan struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recoveryDrainGeneration != generation ||
+		s.recoveryDrainState != recoveryDrainInProgress ||
+		s.recoveryDrainDone != done {
+		return false
+	}
+	s.recoveryDrainState = recoveryDrainFinished
+	close(s.recoveryDrainDone)
+	return true
+}
+
+func (s *Session) clearRecoveryDrainLocked(generation uint64) {
+	if s.recoveryDrainGeneration != generation {
+		return
+	}
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = 0
+	s.recoveryDrainDone = nil
+}
+
 func settlementRecoveryTerminalError(cause error) error {
 	if cause == nil {
 		cause = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery failed")
@@ -120,10 +168,31 @@ func (s *Session) transitionTerminal(
 		s.mu.Unlock()
 		return terminal, false
 	}
-	skipQuiesce := callerQuiesced
+	drainGeneration := s.recoveryGeneration
+	var drainDone <-chan struct{}
+	drainOwner := false
+	drainFinished := callerQuiesced
 	if recoveryInFlight {
-		skipQuiesce = s.recoveryQuiesced &&
-			s.recoveryQuiescedGeneration == s.recoveryGeneration
+		if s.recoveryDrainGeneration != drainGeneration {
+			s.recoveryDrainState = recoveryDrainNotStarted
+			s.recoveryDrainGeneration = drainGeneration
+			s.recoveryDrainDone = nil
+		}
+		switch s.recoveryDrainState {
+		case recoveryDrainNotStarted:
+			done := make(chan struct{})
+			s.recoveryDrainState = recoveryDrainInProgress
+			s.recoveryDrainDone = done
+			drainDone = done
+			drainOwner = true
+			drainFinished = false
+		case recoveryDrainInProgress:
+			drainDone = s.recoveryDrainDone
+			drainFinished = false
+		case recoveryDrainFinished:
+			drainDone = s.recoveryDrainDone
+			drainFinished = true
+		}
 	}
 	s.terminalErr = terminal
 	if recoveryInFlight {
@@ -133,8 +202,6 @@ func (s *Session) transitionTerminal(
 		s.recoveryNeedsSessionPresent = false
 		s.recoverySessionPresentEpoch = 0
 		s.recoveryTargetEpoch = 0
-		s.recoveryQuiesced = false
-		s.recoveryQuiescedGeneration = 0
 		s.lastRecoveryCompleted = s.clock().Now()
 	}
 	cancelAttempt := s.recoveryAttemptCancel
@@ -150,13 +217,25 @@ func (s *Session) transitionTerminal(
 
 	finish := func() {
 		terminalCtx, cancel := s.contextWithClockTimeout(context.WithoutCancel(parent), s.recoveryAttemptTimeout())
-		if !skipQuiesce {
+		switch {
+		case recoveryInFlight && drainOwner:
+			drainCtx, cancelDrain := s.contextWithClockTimeout(terminalCtx, settlementRecoveryDrainLimit)
+			_ = s.quiesceForRecycle(drainCtx)
+			cancelDrain()
+			s.finishRecoveryDrain(drainGeneration, drainDone)
+		case recoveryInFlight && !drainFinished && drainDone != nil:
+			select {
+			case <-drainDone:
+			case <-terminalCtx.Done():
+			}
+		case !recoveryInFlight && !callerQuiesced:
 			_ = s.quiesceForRecycle(terminalCtx)
 		}
 		s.disconnectGeneration(terminalCtx)
 		cancel()
 		s.pushEvent(ports.SessionError, terminal)
 		s.mu.Lock()
+		s.clearRecoveryDrainLocked(drainGeneration)
 		s.closeEventsLocked()
 		s.mu.Unlock()
 	}
@@ -199,8 +278,7 @@ func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, s
 	s.recoveryNeedsSessionPresent = false
 	s.recoverySessionPresentEpoch = 0
 	s.recoveryTargetEpoch = 0
-	s.recoveryQuiesced = false
-	s.recoveryQuiescedGeneration = 0
+	s.clearRecoveryDrainLocked(generation)
 	s.recoveryErr = nil
 	s.mu.Unlock()
 	if cancel != nil {
@@ -267,8 +345,9 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
 	s.recoverySessionPresentEpoch = 0
-	s.recoveryQuiesced = false
-	s.recoveryQuiescedGeneration = 0
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = 0
+	s.recoveryDrainDone = nil
 	s.recoveryGeneration++
 	generation := s.recoveryGeneration
 	s.recoveryErr = nil
@@ -334,41 +413,36 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		return
 	}
 	s.recoveryAttemptActive = true
-	s.recoveryQuiesced = false
-	s.recoveryQuiescedGeneration = 0
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = generation
+	s.recoveryDrainDone = nil
 	s.recoveryAttemptCancel = cancelAttempt
 	s.recoveryNeedsSessionPresent = true
 	s.recoverySessionPresentEpoch = 0
 	s.recoveryTargetEpoch = 0
 	s.mu.Unlock()
 
-	// Stop new ingress immediately, but let already accepted route work settle
-	// for a bounded interval before the old socket is detached.
-	drainCtx, cancelDrain := context.WithCancel(ctx)
-	drainDone := make(chan struct{})
-	drainLimit := s.clock().NewTimer(settlementRecoveryDrainLimit)
-	go func() {
-		select {
-		case <-drainLimit.C():
-			cancelDrain()
-		case <-drainDone:
+	// Exactly one owner drains accepted settlements for this generation. A
+	// terminal caller joins drainDone rather than starting a second waiter.
+	drainDone, drainOwner, drainFinished := s.beginRecoveryDrain(generation)
+	if !drainOwner {
+		if !drainFinished && drainDone != nil {
+			select {
+			case <-drainDone:
+			case <-ctx.Done():
+			}
 		}
-	}()
+		return
+	}
+	drainCtx, cancelDrain := s.contextWithClockTimeout(ctx, settlementRecoveryDrainLimit)
 	drainErr := s.quiesceForRecycle(drainCtx)
-	close(drainDone)
-	drainLimit.Stop()
 	cancelDrain()
+	s.finishRecoveryDrain(generation, drainDone)
 	if drainErr != nil {
 		s.completeRecoveryAttempt(generation,
 			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr), false)
 		return
 	}
-	s.mu.Lock()
-	if s.recoveryAttemptActive && s.recoveryGeneration == generation {
-		s.recoveryQuiesced = true
-		s.recoveryQuiescedGeneration = generation
-	}
-	s.mu.Unlock()
 
 	if !s.recordRecoveryRecycleStart(generation) {
 		return

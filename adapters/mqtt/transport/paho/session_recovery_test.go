@@ -205,11 +205,14 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	events := s.Events()
 
 	waiterEntered := make(chan struct{}, 2)
+	var quiesceCalls atomic.Int32
 	s.SetIngressQuiescenceWaiter(func(ctx context.Context) error {
+		quiesceCalls.Add(1)
 		waiterEntered <- struct{}{}
 		<-ctx.Done()
 		return ctx.Err()
 	})
+	t.Cleanup(func() { clk.Advance(s.recoveryAttemptTimeout()) })
 
 	require.NoError(t, s.requestRecovery(t.Context()))
 	<-waiterEntered
@@ -220,10 +223,9 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	default:
 	}
 	clk.Advance(time.Nanosecond)
-	wait.RequireReceive(t, waiterEntered, time.Second)
-	clk.Advance(s.recoveryAttemptTimeout())
-	<-disconnected
+	wait.RequireClosed(t, disconnected, time.Second)
 	wait.RequireClosed(t, events, time.Second)
+	assert.Equal(t, int32(1), quiesceCalls.Load())
 	assert.Empty(t, metrics.FindEntries(MetricMQTTSessionRecoveryRecycle))
 	health := s.Health(t.Context())
 	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
@@ -839,6 +841,11 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 	generation := s.connectionGeneration
 	s.mu.Unlock()
 	events := s.Events()
+	var quiesceCalls atomic.Int32
+	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		quiesceCalls.Add(1)
+		return nil
+	})
 
 	require.NoError(t, s.acquireReload(t.Context()))
 	require.NoError(t, s.requestRecovery(t.Context()))
@@ -863,6 +870,7 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 	}
 	assert.Equal(t, 1, terminalEvents)
 	assert.Equal(t, int32(1), disconnects.Load())
+	assert.Equal(t, int32(1), quiesceCalls.Load())
 	s.releaseReload()
 }
 
@@ -912,6 +920,7 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 	s.mu.Unlock()
 	events := s.Events()
 	barrierEntered := make(chan struct{}, 2)
+	var quiesceCalls atomic.Int32
 	releaseBarrier := make(chan struct{})
 	t.Cleanup(func() {
 		select {
@@ -921,6 +930,7 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 		}
 	})
 	s.SetIngressQuiescenceWaiter(func(context.Context) error {
+		quiesceCalls.Add(1)
 		barrierEntered <- struct{}{}
 		<-releaseBarrier
 		return nil
@@ -929,7 +939,6 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 	require.NoError(t, s.requestRecovery(t.Context()))
 	wait.RequireReceive(t, barrierEntered, time.Second)
 	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
-	wait.RequireReceive(t, barrierEntered, time.Second)
 	select {
 	case <-events:
 		t.Fatal("terminal signal became observable before settlement barrier released")
@@ -946,4 +955,5 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 	}
 	assert.Equal(t, 1, terminalEvents)
 	assert.Equal(t, int32(1), disconnects.Load())
+	assert.Equal(t, int32(1), quiesceCalls.Load())
 }

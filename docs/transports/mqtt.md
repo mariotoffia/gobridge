@@ -433,10 +433,13 @@ config knob:
   idempotent terminal transition. It clears pending attempt state, latches a
   permanent error, quiesces ingress, disconnects the generation within the
   activation bound, emits one terminal SessionError, then closes the lifecycle
-  event channel. Terminal teardown skips the settlement barrier only when the
-  current recovery generation explicitly recorded a successful bounded quiesce;
-  Session Present failure before or during drain must wait for that barrier or
-  its bounded abort before signaling the manager. The manager therefore tears
+  event channel. One generation-scoped drain state (`not-started`, `in-progress`,
+  or `finished`) gives exactly one owner the settlement barrier: terminal teardown
+  starts it only from `not-started`, joins the same completion signal while it is
+  `in-progress`, and disconnects immediately once it is `finished` (success or
+  timeout). Session Present failure before or during drain therefore cannot start
+  a second drain or signal the manager before the shared barrier/bounded abort.
+  The manager therefore tears
   down before releasing an exclusive
   lease; its supervisor retries once, and the existing single-use contract then
   escalates `ErrSessionUnrecoverable` for orchestrator replacement. Future Retry,

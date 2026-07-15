@@ -14,6 +14,14 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+type recoveryDrainState uint8
+
+const (
+	recoveryDrainNotStarted recoveryDrainState = iota
+	recoveryDrainInProgress
+	recoveryDrainFinished
+)
+
 type subscriptionGrant struct {
 	Requested byte
 	Granted   byte
@@ -208,8 +216,9 @@ type Session struct {
 	recoverySessionPresentEpoch uint64
 	recoveryTargetEpoch         uint64
 	recoveryAttemptActive       bool
-	recoveryQuiesced            bool
-	recoveryQuiescedGeneration  uint64
+	recoveryDrainState          recoveryDrainState
+	recoveryDrainGeneration     uint64
+	recoveryDrainDone           chan struct{}
 	recoveryGeneration          uint64
 	recoveryAttemptCancel       context.CancelFunc
 	recoveryErr                 error
