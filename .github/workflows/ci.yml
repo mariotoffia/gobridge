@@ -56,16 +56,18 @@ jobs:
           go_cache="$(go env GOCACHE)"
           go_mod_cache="$(go env GOMODCACHE)"
           mkdir -p "$go_cache" "$go_mod_cache"
+          # The measured binary uses the production allocator. Race
+          # instrumentation has a separate shadow heap and would not measure
+          # the configured production ingress bound.
           docker run --rm \
+            --memory 512m \
+            --memory-swap 512m \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -v "$go_cache:/root/.cache/go-build" \
             -v "$go_mod_cache:/go/pkg/mod" \
             -w "$GITHUB_WORKSPACE" \
             golang:1.25 \
-            # The measured binary uses the production allocator. Race
-            # instrumentation has a separate shadow heap and would not measure
-            # the configured production ingress bound.
-            go test -c -tags=longrunning \
+            go test -p=1 -c -tags=longrunning \
               -o "$proof_tmp/mqtt-memory.test" ./tests/longrunning
 
           broker_name="gobridge-mqtt-memory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -113,7 +115,19 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
             golang:1.25 \
-            "$proof_tmp/mqtt-memory.test" \
+            /bin/sh -ceu '
+              memory_max="$(cat /sys/fs/cgroup/memory.max)"
+              [ "$memory_max" = "536870912" ] || {
+                echo "expected memory.max=536870912, got $memory_max" >&2
+                exit 1
+              }
+              swap_max="$(cat /sys/fs/cgroup/memory.swap.max)"
+              [ "$swap_max" = "0" ] || {
+                echo "expected memory.swap.max=0, got $swap_max" >&2
+                exit 1
+              }
+              exec "$@"
+            ' sh "$proof_tmp/mqtt-memory.test" \
               -test.count=1 \
               -test.run '^TestMQTTIngressMemory$' \
               -test.timeout=180s \

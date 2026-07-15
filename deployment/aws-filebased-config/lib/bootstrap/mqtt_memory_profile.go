@@ -41,9 +41,17 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 		}
 	}
 
+	// Mirror bridge.referencedSessionIDs: every receiver/sender SessionID is
+	// built even when no route currently consumes it. Routes additionally name
+	// primary and binding-level sessions. The set is deduplicated by session ID
+	// before durable modes are added to the memory profile.
+	usedSessions := make(map[string]struct{}, len(cfg.Sessions))
 	receiverSession := make(map[string]string, len(cfg.Receivers))
 	for i := range cfg.Receivers {
 		receiver := &cfg.Receivers[i]
+		if receiver.SessionID != "" {
+			usedSessions[receiver.SessionID] = struct{}{}
+		}
 		if _, ok := profiles[receiver.SessionID]; ok {
 			receiverSession[receiver.ID] = receiver.SessionID
 		}
@@ -78,7 +86,11 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 
 	senderSessions := make(map[string]string, len(cfg.Senders))
 	for i := range cfg.Senders {
-		senderSessions[cfg.Senders[i].ID] = cfg.Senders[i].SessionID
+		sender := &cfg.Senders[i]
+		senderSessions[sender.ID] = sender.SessionID
+		if sender.SessionID != "" {
+			usedSessions[sender.SessionID] = struct{}{}
+		}
 	}
 	bindings := make(map[string]string, len(cfg.Bindings))
 	for i := range cfg.Bindings {
@@ -89,7 +101,6 @@ func applyMQTTMemoryProfile(cfg *ports.BridgeConfig, bootstrapCfg deployinfra.Bo
 		}
 		bindings[binding.ID] = sessionID
 	}
-	usedSessions := make(map[string]struct{})
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
 		if route.Session != nil && route.Session.SessionID != "" {

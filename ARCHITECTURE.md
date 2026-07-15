@@ -286,7 +286,7 @@ The normalized message unit flowing through the bridge. A pure value type define
 | `CreatedAt` | `time.Time` | Envelope creation timestamp |
 | `ExpiresAt` | `time.Time` | Optional TTL expiry timestamp |
 
-Methods: `Clone()` (deep copy including headers and payload), `IsExpired()`, `HasExpiry()`, `RemainingTTL()`.
+Methods: `Clone()` (deep-copy mutable headers and share immutable payload backing), `Payload()` (copy on exposure), `SetPayload()` (install new backing on transformation), `IsExpired()`, `HasExpiry()`, `RemainingTTL()`. `NewEnvelope` clones caller-provided payload at the trust boundary; only `NewEnvelopeFromImmutablePayload` may adopt backing from a trusted SDK that guarantees lifetime and immutability.
 
 ### Delivery
 

@@ -408,10 +408,11 @@ The AWS file-based profile reserves 25% of the effective Fargate task memory,
 divides it across unique consumed MQTT sessions, and derives the largest safe
 default Receive Maximum with this same formula. It rejects a profile that cannot
 leave 20% container headroom after `reserved_memory_bytes` plus MQTT ingress.
-Every used Persistent or Exclusive MQTT session consumes an allocation even
-when the current topology is sender-only, because resumed durable broker state
-may deliver stale backlog before managed-subscription cleanup; its route
-concurrency contribution is zero. Ephemeral sender-only sessions are excluded.
+Every Persistent or Exclusive MQTT session referenced by a declared sender
+consumes one deduplicated allocation even when no route references that sender,
+because the session is still built and resumed durable broker state may deliver
+stale backlog before managed-subscription cleanup; its route concurrency
+contribution is zero. Ephemeral sender-only sessions are excluded.
 
 ## Sender Options Reference (`options.sender.*`)
 

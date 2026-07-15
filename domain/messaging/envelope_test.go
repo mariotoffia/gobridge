@@ -63,15 +63,17 @@ func TestEnvelope_RemainingTTL(t *testing.T) {
 	}
 }
 
-// TestEnvelope_Clone verifies Clone copies scalar fields and deep-copies payload and headers so mutations do not alias the original.
+// TestEnvelope_Clone verifies Clone copies scalar fields, isolates mutable
+// headers, and preserves payload copy-on-exposure/copy-on-transformation.
 func TestEnvelope_Clone(t *testing.T) {
+	now := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	orig := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:        "msg-1",
 		Subject:   "test",
 		Payload:   []byte("hello"),
 		Headers:   map[string]any{"key": "value"},
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(time.Hour),
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
 	})
 	clone := orig.Clone()
 
@@ -87,7 +89,7 @@ func TestEnvelope_Clone(t *testing.T) {
 	clonePayload[0] = 'H'
 	clone.SetPayload(clonePayload)
 	if orig.Payload()[0] == 'H' {
-		t.Fatal("payload was not deep-copied")
+		t.Fatal("payload transformation aliased original backing")
 	}
 
 	// Mutating clone headers must not affect original.

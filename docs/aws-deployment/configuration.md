@@ -121,9 +121,10 @@ Validation fails if:
   `reserved_memory_bytes` alone leaves less than 20% headroom.
 - A consumed MQTT session cannot fit its payload, receive/dispatch window, and
   route concurrency in its equal share of the 25% MQTT ingress reservation.
-  Used Persistent/Exclusive sender-only MQTT sessions consume a share with
-  route concurrency zero because durable state may resume stale backlog;
-  Ephemeral sender-only sessions do not consume a share.
+  Every Persistent/Exclusive MQTT session referenced by a declared sender
+  consumes one deduplicated share with route concurrency zero even when no route
+  references that sender, because it is still built and durable state may resume
+  stale backlog. Ephemeral sender-only sessions do not consume a share.
 
 When `metrics_exporter` is `"cloudwatch"`, the CDK base grants
 `cloudwatch:PutMetricData` scoped by a `cloudwatch:namespace` condition to the

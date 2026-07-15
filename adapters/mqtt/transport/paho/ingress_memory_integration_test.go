@@ -16,13 +16,18 @@ import (
 )
 
 func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires a real local MQTT broker")
+	}
 	const topic = "ingress-memory/poison-redelivery"
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	t.Cleanup(cancel)
+
 	broker := mqttlocal.NewBrokerInstance(t,
 		mqttlocal.WithMaxInflightMessages(2),
 		mqttlocal.WithMessageSizeLimit(1024),
 	)
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
-	t.Cleanup(cancel)
+	t.Cleanup(broker.Stop)
 
 	clientID := mqttlocal.UniqueClientID("ingress-memory-poison")
 	sourceOptions := SessionOptions{
@@ -37,6 +42,7 @@ func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *test
 		IngressMemoryBudgetBytes: DefaultIngressMemoryBudgetBytes,
 	}
 	source := NewSession(sourceOptions, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { _ = source.Close(context.Background()) })
 	require.NoError(t, source.Start(ctx))
 	require.NoError(t, source.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},

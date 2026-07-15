@@ -139,8 +139,8 @@ func TestEnvelope_Clone_NilByteSlice(t *testing.T) {
 	}
 }
 
-// TestEnvelope_Clone_LargePayload validates Clone with a large payload
-// to ensure no truncation or corruption occurs.
+// TestEnvelope_Clone_LargePayload validates copy-on-write transformation of a
+// large shared immutable payload without truncation or corruption.
 func TestEnvelope_Clone_LargePayload(t *testing.T) {
 	payload := make([]byte, 1<<20) // 1 MiB
 	for i := range payload {
@@ -162,6 +162,6 @@ func TestEnvelope_Clone_LargePayload(t *testing.T) {
 	cloneP[0] = 0xFF
 	clone.SetPayload(cloneP)
 	if original.Payload()[0] == 0xFF {
-		t.Fatal("large payload was not deep-copied")
+		t.Fatal("large payload transformation aliased original backing")
 	}
 }

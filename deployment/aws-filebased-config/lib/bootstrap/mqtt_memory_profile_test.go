@@ -182,6 +182,84 @@ func TestMQTTMemoryProfile_DurableSenderOnlySessionConsumesIngressAllocation(t *
 	assert.Equal(t, wantReceive, sessionCfg.Session.ReceiveMaximum)
 }
 
+func TestMQTTMemoryProfile_RealParseDurableSenderOnlyWithoutRouteConsumesAllocation(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-durable-sender-only
+sessions:
+  - id: durable-publisher
+    transport: mqtt
+    session_mode: persistent
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: durable-publisher
+senders:
+  - id: publisher
+    session_id: durable-publisher
+`
+	cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+	session := mqttProfileSessionConfig(t, cfg, "durable-publisher")
+
+	assert.Equal(t, uint64(256<<20), session.Session.IngressMemoryBudgetBytes)
+	wantReceive, err := paho.LargestSafeReceiveMaximum(
+		paho.DefaultMaxPayloadBytes,
+		256<<20,
+		0,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, wantReceive, session.Session.ReceiveMaximum)
+}
+
+func TestMQTTMemoryProfile_RealParseSenderAliasesDedupeDurableAndExcludeEphemeral(t *testing.T) {
+	const configYAML = `
+bridge:
+  id: aws-mqtt-sender-aliases
+sessions:
+  - id: shared-durable
+    transport: mqtt
+    session_mode: persistent
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: shared-durable
+  - id: exclusive-publisher
+    transport: mqtt
+    session_mode: exclusive
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: exclusive-publisher
+  - id: ephemeral-publisher
+    transport: mqtt
+    session_mode: ephemeral
+    options:
+      session:
+        broker_url: tcp://broker:1883
+        client_id: ephemeral-publisher
+senders:
+  - id: publisher-primary
+    session_id: shared-durable
+  - id: publisher-alias
+    transport: mqtt
+    session_id: shared-durable
+  - id: sender-alias
+    session_id: exclusive-publisher
+  - id: ephemeral-alias
+    session_id: ephemeral-publisher
+`
+	cfg := parseCloneAndApplyMQTTMemoryProfile(t, configYAML)
+	shared := mqttProfileSessionConfig(t, cfg, "shared-durable")
+	exclusive := mqttProfileSessionConfig(t, cfg, "exclusive-publisher")
+	ephemeral := mqttProfileSessionConfig(t, cfg, "ephemeral-publisher")
+
+	assert.Equal(t, uint64(128<<20), shared.Session.IngressMemoryBudgetBytes,
+		"two sender aliases for one durable session consume one deduplicated share")
+	assert.Equal(t, uint64(128<<20), exclusive.Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, ephemeral.Session.IngressMemoryBudgetBytes)
+	assert.Zero(t, ephemeral.Session.ReceiveMaximum)
+}
+
 func TestMQTTMemoryProfile_HeadroomExactBoundaryAcceptsAndOneByteExcessRejects(t *testing.T) {
 	const container = uint64(1 << 30)
 	const ingress = container / 4
@@ -201,6 +279,38 @@ func TestMQTTMemoryProfile_HeadroomExactBoundaryAcceptsAndOneByteExcessRejects(t
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+}
+
+func parseCloneAndApplyMQTTMemoryProfile(t *testing.T, configYAML string) *ports.BridgeConfig {
+	t.Helper()
+	registry := newDefaultPluginRegistry()
+	logical, err := cfgparser.Parse(strings.NewReader(configYAML), cfgparser.FormatYAML, registry)
+	require.NoError(t, err)
+	inputs, err := resolveInputs(context.Background(), staticParameterResolver{
+		"/admin": "admin-secret-key-123456",
+	}, deployinfra.BootstrapConfig{
+		AdminAPIKeyParam:     "/admin",
+		ContainerMemoryBytes: 1 << 30,
+	}, registry, logical)
+	require.NoError(t, err)
+	require.NoError(t, applyMQTTMemoryProfile(inputs.RuntimeConfig, deployinfra.BootstrapConfig{
+		ContainerMemoryBytes: 1 << 30,
+	}))
+	return inputs.RuntimeConfig
+}
+
+func mqttProfileSessionConfig(t *testing.T, cfg *ports.BridgeConfig, sessionID string) *paho.Config {
+	t.Helper()
+	for i := range cfg.Sessions {
+		if cfg.Sessions[i].ID != sessionID {
+			continue
+		}
+		session, ok := cfg.Sessions[i].Config.(*paho.Config)
+		require.True(t, ok)
+		return session
+	}
+	t.Fatalf("session %q not found", sessionID)
+	return nil
 }
 
 func TestMQTTMemoryProfile_RejectsZeroOverflowNoIngressAndImpossibleInputs(t *testing.T) {
