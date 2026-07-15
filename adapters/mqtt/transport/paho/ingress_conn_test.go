@@ -255,6 +255,127 @@ func TestMQTTIngressConn_MalformedPacketsRejectWithTypedCause(t *testing.T) {
 	}
 }
 
+func TestMQTTIngressConn_PartialFrameTransportErrorsDoNotPoison(t *testing.T) {
+	timeoutErr := testIngressTimeoutError{}
+	tests := []struct {
+		name         string
+		conn         net.Conn
+		wantIs       error
+		wantNetError bool
+	}{
+		{
+			name: "timeout after fixed header",
+			conn: newFailAfterNetConn(
+				[]byte{0x30},
+				1,
+				timeoutErr,
+			),
+			wantNetError: true,
+		},
+		{
+			name:   "EOF during remaining length",
+			conn:   newTestNetConn([]byte{0x30}, 1),
+			wantIs: io.EOF,
+		},
+		{
+			name: "unexpected EOF during body",
+			conn: newTestNetConn(
+				[]byte{0x30, 0x05, 0x00, 0x01, 't'},
+				1,
+			),
+			wantIs: io.ErrUnexpectedEOF,
+		},
+		{
+			name: "context cancellation during remaining length",
+			conn: newFailAfterNetConn(
+				[]byte{0x30},
+				1,
+				context.Canceled,
+			),
+			wantIs: context.Canceled,
+		},
+		{
+			name: "deadline during body",
+			conn: newFailAfterNetConn(
+				[]byte{0x30, 0x05, 0x00},
+				3,
+				context.DeadlineExceeded,
+			),
+			wantIs:       context.DeadlineExceeded,
+			wantNetError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			poisonCount := 0
+			guarded := newMQTTIngressConn(
+				test.conn,
+				1<<20,
+				1<<20,
+				func(error) { poisonCount++ },
+			)
+
+			var dst [1]byte
+			_, err := guarded.Read(dst[:])
+			require.Error(t, err)
+			if test.wantIs != nil {
+				assert.ErrorIs(t, err, test.wantIs)
+			}
+			if test.wantNetError {
+				var netErr net.Error
+				require.ErrorAs(t, err, &netErr)
+			}
+			var ingressErr *mqttIngressError
+			assert.NotErrorAs(t, err, &ingressErr)
+			assert.Zero(t, poisonCount)
+			assert.NoError(t, guarded.readErr,
+				"transport interruption must not latch terminal ingress state")
+		})
+	}
+}
+
+func TestMQTTIngressConn_CompleteMalformedFramesPoisonExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		wire []byte
+	}{
+		{
+			name: "remaining length has four continuation bytes",
+			wire: []byte{0x30, 0x80, 0x80, 0x80, 0x80},
+		},
+		{
+			name: "publish fixed header has invalid qos bits",
+			wire: []byte{0x36, 0x00},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			poisonCount := 0
+			underlying := newTestNetConn(test.wire, 1)
+			guarded := newMQTTIngressConn(
+				underlying,
+				1<<20,
+				1<<20,
+				func(error) { poisonCount++ },
+			)
+
+			var dst [1]byte
+			_, firstErr := guarded.Read(dst[:])
+			require.Error(t, firstErr)
+			var ingressErr *mqttIngressError
+			require.ErrorAs(t, firstErr, &ingressErr)
+			assert.Equal(t, mqttIngressMalformed, ingressErr.kind)
+
+			_, secondErr := guarded.Read(dst[:])
+			assert.Same(t, firstErr, secondErr)
+			assert.Equal(t, 1, poisonCount)
+			assert.Equal(t, 1, underlying.CloseCount())
+		})
+	}
+}
+
 func TestMQTTIngressConn_MaximumPacketSizeRejectsBeforeBodyRead(t *testing.T) {
 	packet := testPublishPacket(0, "guard/max-packet", nil, bytes.Repeat([]byte{'p'}, 64))
 	underlying := newTestNetConn(packet, len(packet))
@@ -491,3 +612,36 @@ type testNetAddr string
 
 func (a testNetAddr) Network() string { return "test" }
 func (a testNetAddr) String() string  { return string(a) }
+
+type failAfterNetConn struct {
+	*testNetConn
+	failAfter int
+	read      int
+	err       error
+}
+
+func newFailAfterNetConn(data []byte, failAfter int, err error) *failAfterNetConn {
+	return &failAfterNetConn{
+		testNetConn: newTestNetConn(data, 1),
+		failAfter:   failAfter,
+		err:         err,
+	}
+}
+
+func (c *failAfterNetConn) Read(p []byte) (int, error) {
+	if c.read >= c.failAfter {
+		return 0, c.err
+	}
+	if remaining := c.failAfter - c.read; len(p) > remaining {
+		p = p[:remaining]
+	}
+	n, err := c.testNetConn.Read(p)
+	c.read += n
+	return n, err
+}
+
+type testIngressTimeoutError struct{}
+
+func (testIngressTimeoutError) Error() string   { return "ingress read timeout" }
+func (testIngressTimeoutError) Timeout() bool   { return true }
+func (testIngressTimeoutError) Temporary() bool { return true }

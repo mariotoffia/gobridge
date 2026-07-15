@@ -19,6 +19,11 @@ const (
 	maxIngressPropertyBytes = maxIngressMetadataBytes
 )
 
+var (
+	errMQTTVBINonCanonical = errors.New("non-canonical MQTT variable byte integer")
+	errMQTTVBITooLong      = errors.New("MQTT variable byte integer exceeds four bytes")
+)
+
 type mqttIngressErrorKind uint8
 
 const (
@@ -157,7 +162,14 @@ func (c *mqttIngressConn) readPacket() ([]byte, error) {
 	var remainingBytes [4]byte
 	remainingLength, remainingLengthBytes, err := readMQTTVBI(c.Conn, remainingBytes[:])
 	if err != nil {
-		return nil, c.rejectMalformed(err)
+		if errors.Is(err, errMQTTVBINonCanonical) ||
+			errors.Is(err, errMQTTVBITooLong) {
+			return nil, c.rejectMalformed(err)
+		}
+		// A byte fetch failed before the Remaining Length was complete. This is
+		// a transport interruption, not proof of malformed MQTT bytes; let Paho
+		// close the generation and let autopaho apply reconnect policy.
+		return nil, err
 	}
 	packetSize := uint64(1 + remainingLengthBytes + remainingLength)
 	if c.maximumPacketSize > 0 && packetSize > uint64(c.maximumPacketSize) {
@@ -180,7 +192,10 @@ func (c *mqttIngressConn) readPacket() ([]byte, error) {
 	body := packet[1+remainingLengthBytes:]
 	if _, err := io.ReadFull(c.Conn, body); err != nil {
 		if packetType == mqttPublishPacketType {
-			return nil, c.rejectMalformed(err)
+			// Remaining Length advertised more bytes than this connection
+			// generation delivered. EOF, timeout, cancellation, and any other
+			// underlying read failure remain reconnectable transport errors.
+			return nil, fmt.Errorf("read MQTT PUBLISH body: %w", err)
 		}
 		return nil, err //nolint:wrapcheck // non-PUBLISH packets preserve the transport error.
 	}
@@ -306,12 +321,12 @@ func readMQTTVBI(r io.Reader, scratch []byte) (value, width int, err error) {
 		width++
 		if digit&0x80 == 0 {
 			if width > 1 && digit == 0 {
-				return 0, 0, errors.New("non-canonical MQTT variable byte integer")
+				return 0, 0, errMQTTVBINonCanonical
 			}
 			return value, width, nil
 		}
 	}
-	return 0, 0, errors.New("MQTT variable byte integer exceeds four bytes")
+	return 0, 0, errMQTTVBITooLong
 }
 
 func readMQTTVBIFromBytes(src []byte) (value, width int, err error) {
