@@ -109,6 +109,23 @@ func (c *delayedObservationClient) UpdateItem(ctx context.Context, in *dynamodb.
 	return out, err
 }
 
+type everyObservationCASDelayedClient struct {
+	dynamoAPI
+	clk   *clocktest.Fake
+	delay time.Duration
+	calls int
+}
+
+func (c *everyObservationCASDelayedClient) UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	out, err := c.dynamoAPI.UpdateItem(ctx, in, opts...)
+	observationCAS := in.UpdateExpression != nil && strings.Contains(*in.UpdateExpression, "#obs_fp = :next_obs_fp")
+	if err == nil && observationCAS {
+		c.calls++
+		c.clk.Advance(c.delay)
+	}
+	return out, err
+}
+
 func cloneObservationItem(in map[string]ddbtypes.AttributeValue) map[string]ddbtypes.AttributeValue {
 	if in == nil {
 		return nil
@@ -554,5 +571,53 @@ func TestAcquire_WorstPollPhaseCallDelaysAddWallBudgetNotObservationElapsed(t *t
 	}
 	if wall := clk.Since(base); wall != 20*time.Second {
 		t.Fatalf("delayed takeover wall=%s want 20s", wall)
+	}
+}
+
+func TestAcquire_EveryObservationCallDelayIsExcludedAndFitsDerivedCallBudget(t *testing.T) {
+	const (
+		ttl         = 6 * time.Second
+		basePoll    = 5 * time.Second
+		minPoll     = 3750 * time.Millisecond
+		maxPoll     = 6250 * time.Millisecond
+		callTimeout = time.Second
+	)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(base)
+	memory := seededObservationClient(base, ttl, false)
+	delayed := &everyObservationCASDelayedClient{dynamoAPI: memory, clk: clk, delay: callTimeout}
+	store := &Store{client: delayed, tableName: "leases", clk: clk}
+	clk.Advance(maxPoll)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("baseline: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != 0 {
+		t.Fatalf("baseline delay counted=%s", elapsed)
+	}
+	clk.Advance(minPoll)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("intermediate: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != minPoll {
+		t.Fatalf("intermediate elapsed=%s want %s", elapsed, minPoll)
+	}
+	clk.Advance(maxPoll)
+	token, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
+	if err != nil {
+		t.Fatalf("threshold: %v", err)
+	}
+	if token.Version != 8 {
+		t.Fatalf("token=%+v", token)
+	}
+	if delayed.calls != 3 {
+		t.Fatalf("observation calls=%d want baseline + 2 rounds = 3", delayed.calls)
+	}
+	wall := clk.Since(base)
+	if wall != 19250*time.Millisecond {
+		t.Fatalf("wall=%s want 19.25s", wall)
+	}
+	conservative := ttl + 2*maxPoll + 3*callTimeout
+	if wall > conservative {
+		t.Fatalf("wall=%s exceeds conservative call budget=%s", wall, conservative)
 	}
 }

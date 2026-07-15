@@ -91,9 +91,9 @@ type Config struct {
 	PostAcquireActivationTimeout time.Duration
 
 	// FailoverSLO is the optional failure-detection to ServiceLevelFull objective.
-	// Composition preflight includes two acquire-poll and two Acquire-call
-	// boundaries because observation baseline establishment and later threshold
-	// crossing are independent. Zero means no objective is declared.
+	// Composition preflight includes two acquire-poll boundaries and the baseline
+	// plus every possible minimum-jitter observation Acquire call because call
+	// latency after CAS is excluded from persisted elapsed. Zero means no objective is declared.
 	FailoverSLO time.Duration
 
 	// StartupAllowance reserves explicit bounded process startup work not already

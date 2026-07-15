@@ -293,9 +293,11 @@ func TestDynamoDBObservationCrashAfterRenewalNeedsBothPollBoundaries(t *testing.
 	if _, err := standby.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
 		t.Fatalf("initialize post-renew observation: %v", err)
 	}
+	acquireCalls := 1
 	for attempt := 1; attempt <= 2; attempt++ {
 		standbyClock.Advance(pollAllowance)
 		takeover, acquireErr := standby.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
+		acquireCalls++
 		if attempt < 2 {
 			if !errors.Is(acquireErr, shared.ErrAlreadyExists) {
 				t.Fatalf("poll %d: %v", attempt, acquireErr)
@@ -308,6 +310,9 @@ func TestDynamoDBObservationCrashAfterRenewalNeedsBothPollBoundaries(t *testing.
 		if takeover.Owner != "standby" || takeover.Version != 2 {
 			t.Fatalf("token=%+v", takeover)
 		}
+	}
+	if acquireCalls != 3 {
+		t.Fatalf("Acquire calls=%d want baseline + intermediate + threshold = 3", acquireCalls)
 	}
 	if elapsed := standbyClock.Since(crashAt); elapsed != 15*time.Second {
 		t.Fatalf("takeover elapsed=%s want %s", elapsed, 15*time.Second)

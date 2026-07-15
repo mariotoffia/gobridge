@@ -186,27 +186,28 @@ func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, postTakeover
 	if startupAllowance < 0 {
 		return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget startup allowance must be non-negative")
 	}
-	pollMargin := acquirePoll / 4
-	if acquirePoll%4 != 0 {
-		pollMargin++
+	minPoll, maxPoll, err := checkedFailoverPollBounds(acquirePoll)
+	if err != nil {
+		return 0, err
 	}
-	if acquirePoll > time.Duration(math.MaxInt64)-pollMargin {
-		return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget acquire poll margin overflows time.Duration")
+	pollBoundaries, err := checkedDurationProduct(2, maxPoll, "two failover poll boundaries")
+	if err != nil {
+		return 0, err
 	}
-	adjustedPoll := acquirePoll + pollMargin
-	if adjustedPoll > time.Duration(math.MaxInt64)/2 {
-		return 0, shared.ErrInvalidConfig.WithMessage("bridge: two failover poll boundaries overflow time.Duration")
+	callCount, err := checkedObservationCallCount(leaseTTL, minPoll)
+	if err != nil {
+		return 0, err
 	}
-	pollBoundaries := 2 * adjustedPoll
-	// acquireLeaseWithRetry waits acquirePoll only after each LeaseStore.Acquire
-	// returns. The same RenewCallTimeout bounds the baseline-establishing call and
-	// the later threshold-crossing/takeover call, so neither call duration is
-	// contained by the poll delay and both must be budgeted.
-	if renewCallTimeout > time.Duration(math.MaxInt64)/2 {
-		return 0, shared.ErrInvalidConfig.WithMessage("bridge: two lease acquire call timeouts overflow time.Duration")
+	// Every LeaseStore.Acquire shares one RenewCallTimeout context across its
+	// internal Put/Get/observation-CAS/takeover operations. Call latency after a
+	// successful observation CAS is deliberately excluded from persisted elapsed,
+	// so budget the baseline call plus every possible minimum-jitter observation
+	// round. Internal Dynamo operations are not counted separately.
+	acquireCallBudget, err := checkedDurationProduct(callCount, renewCallTimeout, "lease observation call timeouts")
+	if err != nil {
+		return 0, err
 	}
-	acquireCallBoundaries := 2 * renewCallTimeout
-	parts := []time.Duration{leaseTTL, pollBoundaries, acquireCallBoundaries, postTakeoverActivation, startupAllowance}
+	parts := []time.Duration{leaseTTL, pollBoundaries, acquireCallBudget, postTakeoverActivation, startupAllowance}
 	var total time.Duration
 	for _, part := range parts {
 		if part > time.Duration(math.MaxInt64)-total {
@@ -215,4 +216,54 @@ func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, postTakeover
 		total += part
 	}
 	return total, nil
+}
+
+func checkedFailoverPollBounds(base time.Duration) (minPoll, maxPoll time.Duration, err error) {
+	if base <= 0 {
+		return 0, 0, shared.ErrInvalidConfig.WithMessage("bridge: acquire poll must be positive")
+	}
+	spread := base / 2
+	minPoll = base - spread/2
+	if minPoll < time.Millisecond {
+		minPoll = time.Millisecond
+	}
+	margin := base / 4
+	if base%4 != 0 {
+		margin++
+	}
+	if base > time.Duration(math.MaxInt64)-margin {
+		return 0, 0, shared.ErrInvalidConfig.WithMessage("bridge: failover acquire poll maximum overflows time.Duration")
+	}
+	maxPoll = base + margin
+	if maxPoll < time.Millisecond {
+		maxPoll = time.Millisecond
+	}
+	return minPoll, maxPoll, nil
+}
+
+func checkedObservationCallCount(ttl, minPoll time.Duration) (int64, error) {
+	if ttl <= 0 || minPoll <= 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: observation call count requires positive TTL and minimum poll")
+	}
+	rounds := int64(ttl / minPoll)
+	if ttl%minPoll != 0 {
+		if rounds == math.MaxInt64 {
+			return 0, shared.ErrInvalidConfig.WithMessage("bridge: observation round count overflows int64")
+		}
+		rounds++
+	}
+	if rounds == math.MaxInt64 {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: observation call count overflows int64")
+	}
+	return rounds + 1, nil
+}
+
+func checkedDurationProduct(count int64, duration time.Duration, name string) (time.Duration, error) {
+	if count <= 0 || duration <= 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: " + name + " requires positive factors")
+	}
+	if count > math.MaxInt64/int64(duration) {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: " + name + " overflow time.Duration")
+	}
+	return time.Duration(count) * duration, nil
 }

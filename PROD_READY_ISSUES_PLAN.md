@@ -648,8 +648,8 @@ For declared SLOs, reject:
 
 ```text
 lease TTL
-+ 2 * ceil(1.25 * acquire poll)
-+ 2 * renew call timeout
++ 2 * max(1ms, ceil(1.25 * acquire poll))
++ (1 + ceil(lease TTL / min jittered poll)) * renew call timeout
 + complete post-takeover transport activation
 + startup allowance
 > failover SLO

@@ -367,8 +367,8 @@ type RouteSessionDef struct {
 
 	// FailoverSLO is an optional failure-detection to ServiceLevelFull objective.
 	// Preflight budgets LeaseTTL plus two independently jittered acquire-poll
-	// boundaries, two lease-call bounds, complete transport activation, and
-	// StartupAllowance. It is a duration string; empty means no SLO is declared.
+	// boundaries, every possible minimum-jitter observation Acquire call,
+	// complete transport activation, and StartupAllowance. It is a duration string; empty means no SLO is declared.
 	FailoverSLO string `yaml:"failover_slo,omitempty" json:"failover_slo,omitempty"`
 
 	// StartupAllowance is explicit bounded time reserved for process-side work

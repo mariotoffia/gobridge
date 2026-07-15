@@ -162,8 +162,9 @@ routes:
       connect_after_lease: true
       # Optional declared objective: failure detection to ServiceLevelFull.
       # Paho activation = 2*30s connect + 4*30s reconcile + 2*30s grace = 240s.
-      # Budget = 300s + 2*ceil(1.25*5s) + 2*5s + 240s + 10s = 572.5s.
-      failover_slo: 580s
+      # min poll=3.75s; calls=1+ceil(300s/3.75s)=81.
+      # Budget = 300s + 2*6.25s + 81*5s + 240s + 10s = 967.5s.
+      failover_slo: 980s
       startup_allowance: 10s
       drain_batch_size: 10
       drain_strategy:
@@ -475,8 +476,8 @@ is opened, the builder validates:
 
 ```text
 lease_ttl
-+ 2 * ceil(1.25 * acquire_poll_interval)
-+ 2 * renew_call_timeout
++ 2 * max(1ms, ceil(1.25 * acquire_poll_interval))
++ (1 + ceil(lease_ttl / min_jittered_poll)) * renew_call_timeout
 + complete post-takeover transport activation
 + startup_allowance
 <= failover_slo
@@ -498,11 +499,15 @@ jittered poll `5s`, controlled fake-clock and DynamoDB Local tests reject
 takeover at `10s` and acquire at `15s`; the conservative formula allows
 `6s + 2×5s = 16s`.
 
-`renew_call_timeout` bounds the complete LeaseStore Acquire call as well as
-Renew. `acquireLeaseWithRetry` waits its poll delay only after each call returns,
-so baseline and threshold boundary calls are not contained by the poll terms and
-both call bounds are added. Delayed Get/CAS tests prove call latency increases
-wall time but never observation elapsed.
+`renew_call_timeout` bounds each complete LeaseStore Acquire call as well as
+Renew; internal Put/Get/CAS/takeover operations share that one call context and
+are not counted separately. `acquireLeaseWithRetry` waits only after a call
+returns, while post-CAS call latency is excluded from persisted observation
+elapsed. The minimum implemented jitter delay is
+`max(1ms, poll - (poll/2)/2)`, so the maximum observation rounds are
+`ceil(lease_ttl / min_jittered_poll)` and total calls are that value plus the
+baseline-establishing call. Every call receives one `renew_call_timeout` budget.
+Delayed-every-CAS tests prove this wall time is not observation evidence.
 
 Normal competing observers have one CAS winner, and that winner proceeds to
 takeover in the threshold-crossing attempt. A losing observer discards its local
@@ -512,11 +517,12 @@ budget and must be represented by measured SLO error budget/alerts.
 `startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
 `failover_slo` means that no objective is declared.
 
-The example in this scenario declares `580s`. Paho default post-takeover
-activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the full
-budget is `300s + 2×6.25s + 2×5s + 240s + 10s = 572.5s`, so preflight
-accepts it. This is an admission check, not proof that the deployment meets 580
-seconds.
+The example in this scenario declares `980s`. Paho default post-takeover
+activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the
+minimum jittered poll is `3.75s`, so call count is
+`1 + ceil(300/3.75) = 81`. The full budget is
+`300s + 2×6.25s + 81×5s + 240s + 10s = 967.5s`, so preflight accepts it.
+This is an admission check, not proof that the deployment meets 980 seconds.
 Warm and cold failure-detection-to-`ServiceLevelFull` samples must be measured in
 the target environment before publishing an SLO claim.
 

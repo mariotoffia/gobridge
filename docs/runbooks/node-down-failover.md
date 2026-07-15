@@ -39,16 +39,18 @@ may need a process restart to complete takeover.
    validates this conservative budget before stores or transports are opened:
 
    ```text
-   lease_ttl + 2 * ceil(1.25 * acquire_poll_interval)
-   + 2 * renew_call_timeout
+   lease_ttl + 2 * max(1ms, ceil(1.25 * acquire_poll_interval))
+   + (1 + ceil(lease_ttl / min_jittered_poll)) * renew_call_timeout
    + complete post-takeover transport activation + startup_allowance
    <= failover_slo
    ```
 
    Two independent poll boundaries cover baseline establishment and the later
-   threshold-crossing/takeover call. `renew_call_timeout` also bounds each whole
-   Acquire call; because the manager waits the poll interval only after a call
-   returns, both boundary call durations are added separately. The transport
+   threshold-crossing/takeover call. `renew_call_timeout` also bounds each whole Acquire call. Call latency after a
+   successful observation CAS is excluded from persisted elapsed, and the
+   manager waits only after each call returns. Therefore budget the baseline call
+   plus every possible minimum-jitter observation round:
+   `1 + ceil(lease_ttl / max(1ms, poll - (poll/2)/2))` calls. The transport
    activation term already contains connect, cleanup/replay,
    recycle/reconnect, grace windows, and final reconciliation; do not add those
    nested phases again. The endpoint is failure detection to the successor
