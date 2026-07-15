@@ -194,7 +194,19 @@ func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, postTakeover
 		return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget acquire poll margin overflows time.Duration")
 	}
 	adjustedPoll := acquirePoll + pollMargin
-	parts := []time.Duration{leaseTTL, adjustedPoll, renewCallTimeout, postTakeoverActivation, startupAllowance}
+	if adjustedPoll > time.Duration(math.MaxInt64)/2 {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: two failover poll boundaries overflow time.Duration")
+	}
+	pollBoundaries := 2 * adjustedPoll
+	// acquireLeaseWithRetry waits acquirePoll only after each LeaseStore.Acquire
+	// returns. The same RenewCallTimeout bounds the baseline-establishing call and
+	// the later threshold-crossing/takeover call, so neither call duration is
+	// contained by the poll delay and both must be budgeted.
+	if renewCallTimeout > time.Duration(math.MaxInt64)/2 {
+		return 0, shared.ErrInvalidConfig.WithMessage("bridge: two lease acquire call timeouts overflow time.Duration")
+	}
+	acquireCallBoundaries := 2 * renewCallTimeout
+	parts := []time.Duration{leaseTTL, pollBoundaries, acquireCallBoundaries, postTakeoverActivation, startupAllowance}
 	var total time.Duration
 	for _, part := range parts {
 		if part > time.Duration(math.MaxInt64)-total {

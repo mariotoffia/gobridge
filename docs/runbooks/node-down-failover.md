@@ -39,14 +39,20 @@ may need a process restart to complete takeover.
    validates this conservative budget before stores or transports are opened:
 
    ```text
-   lease_ttl + ceil(1.25 * acquire_poll_interval) + renew_call_timeout
+   lease_ttl + 2 * ceil(1.25 * acquire_poll_interval)
+   + 2 * renew_call_timeout
    + complete post-takeover transport activation + startup_allowance
    <= failover_slo
    ```
 
-   The transport activation term already contains connect, cleanup/replay,
+   Two independent poll boundaries cover baseline establishment and the later
+   threshold-crossing/takeover call. `renew_call_timeout` also bounds each whole
+   Acquire call; because the manager waits the poll interval only after a call
+   returns, both boundary call durations are added separately. The transport
+   activation term already contains connect, cleanup/replay,
    recycle/reconnect, grace windows, and final reconciliation; do not add those
-   nested phases again. The endpoint is failure detection to the successor reporting
+   nested phases again. The endpoint is failure detection to the successor
+   reporting
    `ServiceLevelFull`. Configuration validation is necessary but not sufficient:
    compare the incident with measured warm and cold p50, p95, p99, maximum, and
    sample count from the same deployment profile. Alert on the measured

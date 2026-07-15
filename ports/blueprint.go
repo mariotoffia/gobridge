@@ -366,7 +366,9 @@ type RouteSessionDef struct {
 	RenewCallTimeout string `yaml:"renew_call_timeout,omitempty" json:"renew_call_timeout,omitempty"`
 
 	// FailoverSLO is an optional failure-detection to ServiceLevelFull objective.
-	// It is a duration string; empty means no SLO is declared.
+	// Preflight budgets LeaseTTL plus two independently jittered acquire-poll
+	// boundaries, two lease-call bounds, complete transport activation, and
+	// StartupAllowance. It is a duration string; empty means no SLO is declared.
 	FailoverSLO string `yaml:"failover_slo,omitempty" json:"failover_slo,omitempty"`
 
 	// StartupAllowance is explicit bounded time reserved for process-side work

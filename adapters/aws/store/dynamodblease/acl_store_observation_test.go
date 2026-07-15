@@ -481,9 +481,9 @@ func TestAcquire_ObservationBaselineStartsAfterSuccessfulObservationCAS(t *testi
 	}
 }
 
-func TestAcquire_CrashAfterRenewalTakesOverWithinTTLAndOnePollAllowance(t *testing.T) {
+func TestAcquire_CrashAfterRenewalNeedsBothPollBoundaries(t *testing.T) {
 	const (
-		ttl           = 20 * time.Second
+		ttl           = 6 * time.Second
 		acquirePoll   = 4 * time.Second
 		pollAllowance = acquirePoll + acquirePoll/4
 	)
@@ -496,10 +496,10 @@ func TestAcquire_CrashAfterRenewalTakesOverWithinTTLAndOnePollAllowance(t *testi
 	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
 		t.Fatalf("initial post-crash observation: %v", err)
 	}
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= 2; attempt++ {
 		clk.Advance(pollAllowance)
 		token, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
-		if attempt < 4 {
+		if attempt < 2 {
 			if !errors.Is(err, shared.ErrAlreadyExists) {
 				t.Fatalf("poll %d: %v", attempt, err)
 			}
@@ -512,7 +512,47 @@ func TestAcquire_CrashAfterRenewalTakesOverWithinTTLAndOnePollAllowance(t *testi
 			t.Fatalf("token=%+v", token)
 		}
 	}
-	if elapsed := clk.Since(base); elapsed != ttl+pollAllowance {
-		t.Fatalf("takeover elapsed=%s want %s", elapsed, ttl+pollAllowance)
+	if elapsed := clk.Since(base); elapsed != 15*time.Second {
+		t.Fatalf("takeover elapsed=%s want %s", elapsed, 15*time.Second)
+	}
+}
+
+func TestAcquire_WorstPollPhaseCallDelaysAddWallBudgetNotObservationElapsed(t *testing.T) {
+	const (
+		ttl           = 6 * time.Second
+		pollAllowance = 5 * time.Second
+	)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clocktest.NewAt(base)
+	memory := seededObservationClient(base, ttl, false)
+	delayed := &delayedObservationClient{dynamoAPI: memory, clk: clk, getDelay: 2 * time.Second, observationDelay: 3 * time.Second}
+	store := &Store{client: delayed, tableName: "leases", clk: clk}
+	clk.Advance(pollAllowance)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("baseline call: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != 0 {
+		t.Fatalf("baseline call delays counted as observation=%s", elapsed)
+	}
+	if wall := clk.Since(base); wall != 10*time.Second {
+		t.Fatalf("wall after delayed baseline=%s want 10s", wall)
+	}
+	clk.Advance(pollAllowance)
+	if _, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("first threshold poll: %v", err)
+	}
+	if elapsed := persistedObservationElapsed(t, memory); elapsed != 5*time.Second {
+		t.Fatalf("observation elapsed=%s want 5s", elapsed)
+	}
+	clk.Advance(pollAllowance)
+	token, err := store.Acquire(t.Context(), "lease-1", "standby", ttl, nil)
+	if err != nil {
+		t.Fatalf("second threshold poll: %v", err)
+	}
+	if token.Version != 8 {
+		t.Fatalf("token=%+v", token)
+	}
+	if wall := clk.Since(base); wall != 20*time.Second {
+		t.Fatalf("delayed takeover wall=%s want 20s", wall)
 	}
 }

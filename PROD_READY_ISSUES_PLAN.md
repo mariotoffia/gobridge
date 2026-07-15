@@ -648,15 +648,15 @@ For declared SLOs, reject:
 
 ```text
 lease TTL
-+ 1.25 * acquire poll
-+ renew call timeout
++ 2 * ceil(1.25 * acquire poll)
++ 2 * renew call timeout
 + complete post-takeover transport activation
 + startup allowance
 > failover SLO
 ```
 
-Use an optional aggregate transport timing capability; nested connect and reconcile phases are counted exactly once. Do not advertise a 60-second
-preset until measurements prove it.
+Use an optional aggregate transport timing capability; nested connect and
+reconcile phases are counted exactly once. Do not advertise a 60-second preset until measurements prove it.
 
 - [x] **Step 4: Measure the actual holder**
 

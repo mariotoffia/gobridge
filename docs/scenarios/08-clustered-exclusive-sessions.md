@@ -162,8 +162,8 @@ routes:
       connect_after_lease: true
       # Optional declared objective: failure detection to ServiceLevelFull.
       # Paho activation = 2*30s connect + 4*30s reconcile + 2*30s grace = 240s.
-      # Budget = 300s + ceil(1.25*5s) + 5s + 240s + 10s = 561.25s.
-      failover_slo: 570s
+      # Budget = 300s + 2*ceil(1.25*5s) + 2*5s + 240s + 10s = 572.5s.
+      failover_slo: 580s
       startup_allowance: 10s
       drain_batch_size: 10
       drain_strategy:
@@ -475,8 +475,8 @@ is opened, the builder validates:
 
 ```text
 lease_ttl
-+ ceil(1.25 * acquire_poll_interval)
-+ renew_call_timeout
++ 2 * ceil(1.25 * acquire_poll_interval)
++ 2 * renew_call_timeout
 + complete post-takeover transport activation
 + startup_allowance
 <= failover_slo
@@ -489,23 +489,34 @@ builder never double-counts nested connect/reconcile phases. Paho reuses its
 complete post-acquire phase calculator: initial connect, managed cleanup/replay,
 recycle/reconnect, four reconcile-owned waits, and two grace windows.
 
-The poll term is exactly one `ceil(1.25 × acquire_poll_interval)`. After a
-renewal reset, the first successful observation response establishes the
-monotonic baseline. The acquisition attempt whose CAS raises accumulated
-evidence to the TTL immediately issues the exact-evidence conditional takeover;
-it does not wait for another poll. Normal competing observers have one CAS
-winner, and that winner proceeds to takeover in the same attempt. A losing
-observer discards its local interval and retries safely. Backend errors or
-pathological contention that prevents every winner from completing takeover are
-outside the deterministic budget and must be represented by measured SLO error
-budget/alerts rather than another hidden poll term.
+There are two independent jittered poll boundaries. If the owner crashes just
+after renewal and just after a standby poll, the first later Acquire can only
+establish a post-response monotonic baseline. Observation then needs a full TTL;
+a later quantized poll crosses the threshold and that same Acquire immediately
+issues conditional takeover, avoiding a third poll. With TTL `6s` and maximum
+jittered poll `5s`, controlled fake-clock and DynamoDB Local tests reject
+takeover at `10s` and acquire at `15s`; the conservative formula allows
+`6s + 2×5s = 16s`.
+
+`renew_call_timeout` bounds the complete LeaseStore Acquire call as well as
+Renew. `acquireLeaseWithRetry` waits its poll delay only after each call returns,
+so baseline and threshold boundary calls are not contained by the poll terms and
+both call bounds are added. Delayed Get/CAS tests prove call latency increases
+wall time but never observation elapsed.
+
+Normal competing observers have one CAS winner, and that winner proceeds to
+takeover in the threshold-crossing attempt. A losing observer discards its local
+interval and retries safely. Backend errors or pathological contention that
+prevents every winner from completing takeover remain outside the deterministic
+budget and must be represented by measured SLO error budget/alerts.
 `startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
 `failover_slo` means that no objective is declared.
 
-The example in this scenario declares `570s`. Paho default post-takeover
+The example in this scenario declares `580s`. Paho default post-takeover
 activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the full
-budget is `300s + 6.25s + 5s + 240s + 10s = 561.25s`, so preflight accepts it.
-This is an admission check, not proof that the deployment meets 570 seconds.
+budget is `300s + 2×6.25s + 2×5s + 240s + 10s = 572.5s`, so preflight
+accepts it. This is an admission check, not proof that the deployment meets 580
+seconds.
 Warm and cold failure-detection-to-`ServiceLevelFull` samples must be measured in
 the target environment before publishing an SLO claim.
 

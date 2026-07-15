@@ -43,7 +43,7 @@ func failoverBudgetBlueprint(slo string, cfg ports.PluginConfig) *ports.BridgeCo
 }
 
 func TestBuilderPlan_FailoverBudgetExactBoundaryPasses(t *testing.T) {
-	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	cfg := failoverBudgetBlueprint("26s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	plan, err := NewBuilder(cfg).Plan(t.Context())
 	if err != nil {
 		t.Fatalf("exact boundary: %v", err)
@@ -52,7 +52,7 @@ func TestBuilderPlan_FailoverBudgetExactBoundaryPasses(t *testing.T) {
 }
 
 func TestBuilderPlan_FailoverBudgetOneNanosecondExcessRejects(t *testing.T) {
-	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	cfg := failoverBudgetBlueprint("25.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	plan, err := NewBuilder(cfg).Plan(t.Context())
 	if plan != nil {
 		plan.Close()
@@ -107,7 +107,7 @@ func (f *failoverCountingStoreFactory) NewDLQStore(context.Context, ports.Plugin
 }
 
 func TestBuilderPlan_FailoverBudgetRejectsBeforeStores(t *testing.T) {
-	cfg := failoverBudgetBlueprint("19.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	cfg := failoverBudgetBlueprint("25.999999999s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	cfg.Stores.Lease = &ports.StoreConfig{Type: "count"}
 	factory := &failoverCountingStoreFactory{}
 	plan, err := NewBuilder(cfg).RegisterStoreFactory("count", factory).Plan(t.Context())
@@ -122,6 +122,26 @@ func TestBuilderPlan_FailoverBudgetRejectsBeforeStores(t *testing.T) {
 	}
 }
 
+func TestCheckedFailoverBudgetCountsBothPollBoundariesAndAcquireCallTimeouts(t *testing.T) {
+	got, err := checkedFailoverBudget(5*time.Second, 4*time.Second, time.Second, 5*time.Second, 4*time.Second)
+	if err != nil {
+		t.Fatalf("checked budget: %v", err)
+	}
+	if got != 26*time.Second {
+		t.Fatalf("budget=%s want 26s = TTL 5s + 2*poll 5s + 2*call 1s + activation 5s + startup 4s", got)
+	}
+}
+
+func TestCheckedFailoverBudgetCeilsEachNonDivisiblePollBoundary(t *testing.T) {
+	got, err := checkedFailoverBudget(time.Nanosecond, 3*time.Nanosecond, 2*time.Nanosecond, 5*time.Nanosecond, 0)
+	if err != nil {
+		t.Fatalf("checked non-divisible budget: %v", err)
+	}
+	// ceil(1.25*3ns)=4ns independently for baseline and threshold boundaries.
+	if got != 18*time.Nanosecond {
+		t.Fatalf("budget=%s want 18ns", got)
+	}
+}
 func TestCheckedFailoverBudgetArithmeticRejectsOverflow(t *testing.T) {
 	_, err := checkedFailoverBudget(time.Duration(math.MaxInt64), time.Nanosecond, time.Nanosecond, time.Nanosecond, time.Nanosecond)
 	if !errors.Is(err, shared.ErrInvalidConfig) {
@@ -135,14 +155,14 @@ var _ ports.TransportFailoverTimingConfig = failoverTimingPluginConfig{}
 
 func TestBuilderPlan_SharedSessionRejectsDivergentManagerBudgetInputsRegardlessOfRouteOrder(t *testing.T) {
 	makeConfig := func(reverse bool) *ports.BridgeConfig {
-		cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+		cfg := failoverBudgetBlueprint("26s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 		tight := cfg.Routes[0]
 		tight.ID = "tight"
 		slow := tight
 		slow.ID = "slow"
 		slowSession := *tight.Session
 		slowSession.LeaseTTL = "10s"
-		slowSession.FailoverSLO = "25s"
+		slowSession.FailoverSLO = "31s"
 		slow.Session = &slowSession
 		if reverse {
 			cfg.Routes = []ports.RouteDef{slow, tight}
@@ -170,7 +190,7 @@ func TestBuilderPlan_SharedSessionRejectsDivergentManagerBudgetInputsRegardlessO
 }
 
 func TestBuilderPlan_SharedSessionRejectsDivergentSLOWithSameLeaseTiming(t *testing.T) {
-	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	cfg := failoverBudgetBlueprint("26s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	second := cfg.Routes[0]
 	second.ID = "second"
 	secondSession := *second.Session
@@ -188,7 +208,7 @@ func TestBuilderPlan_SharedSessionRejectsDivergentSLOWithSameLeaseTiming(t *test
 }
 
 func TestBuilderPlan_SharedSessionAcceptsIdenticalManagerBudgetInputs(t *testing.T) {
-	cfg := failoverBudgetBlueprint("20s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
+	cfg := failoverBudgetBlueprint("26s", failoverTimingPluginConfig{timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second}})
 	second := cfg.Routes[0]
 	second.ID = "second"
 	secondSession := *second.Session
@@ -199,4 +219,19 @@ func TestBuilderPlan_SharedSessionAcceptsIdenticalManagerBudgetInputs(t *testing
 		t.Fatalf("identical shared manager inputs: %v", err)
 	}
 	plan.Close()
+}
+
+func TestCheckedFailoverBudgetRejectsBoundaryMultiplicationOverflow(t *testing.T) {
+	cases := map[string]struct{ poll, call time.Duration }{
+		"two-polls": {poll: time.Duration(math.MaxInt64 / 2), call: time.Nanosecond},
+		"two-calls": {poll: time.Nanosecond, call: time.Duration(math.MaxInt64/2 + 1)},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := checkedFailoverBudget(time.Nanosecond, tc.poll, tc.call, time.Nanosecond, 0)
+			if !errors.Is(err, shared.ErrInvalidConfig) {
+				t.Fatalf("overflow error=%v", err)
+			}
+		})
+	}
 }
