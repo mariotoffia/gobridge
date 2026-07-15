@@ -90,14 +90,26 @@ safe, and GoBridge does not claim portable broker redistribution.
 
 ## Rollback
 
-- A failed swap keeps the OLD runtime running on each instance — the per-process
-  refusal is itself the local rollback for an invariant change.
-- To revert a committed config, re-commit the previous config through the admin
-  transaction flow, or restore the config file at its source
+- A refused reload keeps the OLD runtime running on each instance — for a
+  clustered deployment every non-no-op live reload is refused fail-closed, so the
+  per-process refusal is itself the local rollback (no member ever adopts the
+  split-inducing config).
+- **To revert a committed config across a clustered cohort, roll back the whole
+  cohort externally — do _not_ re-commit or live-restore the previous config.** A
+  re-commit through the admin transaction flow bumps `BridgeConfig.Version`, and
+  any content difference is a non-no-op, so a per-process live reload of the
+  previous config is **refused fail-closed** just like the forward change (finding
+  H8). Follow
+  [Cluster Config Rollout — Rollback (whole-cohort)](cluster-config-rollout.md#rollback-whole-cohort):
+  keep ingress quiesced, stop **all** members, restore the previous config to the
+  live source, then restart all members behind the version/readiness barrier. The
+  `version` CAS field guards concurrent commits to a shared file; it does not gate
+  the per-instance apply and is **not** a cluster rollout or rollback barrier.
+- Only in a **standalone** (single-process) deployment may you revert by
+  re-committing the previous config through the admin transaction flow or
+  restoring the config file at its source
   ([Config rollback](config-rollback.md),
-  [HTTP API — Config transactions](../http-api.md#config-transactions)). The
-  `version` CAS field guards concurrent commits to a shared file; it does not
-  gate the per-instance apply, so it is not a cluster rollout barrier.
+  [HTTP API — Config transactions](../http-api.md#config-transactions)).
 
 ## Verify convergence
 
