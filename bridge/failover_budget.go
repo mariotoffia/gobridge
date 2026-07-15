@@ -92,7 +92,7 @@ func (b *Builder) collectFailoverManagerCandidates() ([]failoverManagerCandidate
 	var candidates []failoverManagerCandidate
 	for _, route := range b.cfg.Routes {
 		if route.Session != nil {
-			sc, err := toSessionConfigE(route.Session, deploymentClustered(b.cfg))
+			sc, err := toSessionConfigE(route.Session, IsClusteredDeployment(b.cfg))
 			if err != nil {
 				return nil, fmt.Errorf("bridge: route %q: %w", route.ID, err)
 			}

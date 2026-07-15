@@ -21,7 +21,7 @@ func (b *Builder) validatePostAcquireActivationTimings() error {
 		if route.Session != nil {
 			sessionID := route.Session.SessionID
 			if _, seen := validated[sessionID]; !seen {
-				sc, err := toSessionConfigE(route.Session, deploymentClustered(b.cfg))
+				sc, err := toSessionConfigE(route.Session, IsClusteredDeployment(b.cfg))
 				if err != nil {
 					return fmt.Errorf("bridge: route %q: %w", route.ID, err)
 				}

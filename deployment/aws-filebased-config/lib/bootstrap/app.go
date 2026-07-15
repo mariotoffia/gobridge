@@ -700,6 +700,33 @@ type runtimePlan struct {
 }
 
 func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
+	// Fail closed on an uncoordinated clustered live reload (finding H8). A
+	// per-process reload has no cluster-wide version barrier or coordinated
+	// rollback, so rolling a new config into (or out of) a clustered cohort would
+	// leave members split across versions with no all-member readiness gate.
+	// Refuse the whole class here — BEFORE any Plan/build/resource creation or
+	// stop — and require an externally coordinated whole-cohort replacement
+	// (docs/runbooks/cluster-config-rollout.md). Returning an error routes
+	// through the EXISTING reload-failure path: watchLoop keeps the last-good
+	// runtime, and applyCommittedConfig surfaces committed_not_applied.
+	//
+	// oldApplied == nil means this is the INITIAL apply (a fresh boot into a
+	// clustered config is legitimate), not a live reload, so it is exempt.
+	// bridge.IsClusteredDeployment is the SHARED predicate: guard when EITHER the
+	// applied OR the proposed config is clustered. A genuine no-op re-emit never
+	// reaches here — applyLogicalIfChanged short-circuits it on the content
+	// fingerprint before calling applyLogicalConfig, so no-op reloads stay
+	// accepted.
+	if oldApplied := a.appliedRef.Get(); oldApplied != nil &&
+		(bridge.IsClusteredDeployment(oldApplied) || bridge.IsClusteredDeployment(logical)) {
+		return fmt.Errorf("bootstrap: refusing live reload of a clustered deployment: a per-process " +
+			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload " +
+			"would split the cohort across config versions. Externally coordinate a whole-cohort " +
+			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, " +
+			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); " +
+			"see docs/runbooks/cluster-config-rollout.md")
+	}
+
 	// Apply bridge.log_level first so debug logging takes effect immediately
 	// on reload — even when the reload that raised the level is itself being
 	// diagnosed. A no-op when no LevelVar was wired (WithLogLevelVar).

@@ -296,7 +296,7 @@ built. The destructive-reload option must not bypass MQTT broker-state safety.
 Reject `nonce` for Persistent/Exclusive and require `hostname` for durable
 clustered `$share` consumers.
 
-- [ ] **Step 4: Run focused checks**
+- [x] **Step 4: Run focused checks**
 
 ```bash
 go test -race -count=1 ./bridge ./validate ./config \
@@ -305,7 +305,7 @@ go test -race -count=1 ./bridge ./validate ./config \
   go test -race -count=1 -run 'Test.*(DurableSessionIdentity|ClientIDSuffix)' ./...)
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 fix(mqtt): reject unsafe durable identity changes
@@ -517,7 +517,7 @@ factory reservation as defensive enforcement for programmatic callers.
 Use two MQTT sessions. Block one route and prove the other continues receiving
 within its declared latency and readiness bounds.
 
-- [ ] **Step 4: Run focused checks**
+- [x] **Step 4: Run focused checks**
 
 ```bash
 go test -race -count=1 ./bridge -run TestDedicatedIngressSession
@@ -527,7 +527,7 @@ go test -race -count=1 ./tests/integration \
   -run TestMQTTDedicatedSessionIsolation
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 fix(mqtt): require isolated ingress sessions
@@ -681,7 +681,7 @@ fix(ha): persist takeover observation evidence
 
 ## Task 10: Fail closed on clustered live reload
 
-**Status:** Pending
+**Status:** Done
 
 **Agents/Skills:** thiink:runtime-expert, thiink:clean-arch-reviewer,
 thiink:test-reviewer
@@ -697,26 +697,26 @@ thiink:test-reviewer
 - Modify: `docs/scenarios/10-dynamic-reconfiguration.md`
 - Create: `docs/runbooks/cluster-config-rollout.md`
 
-- [ ] **Step 1: Write failing no-swap tests**
+- [x] **Step 1: Write failing no-swap tests**
 
 For current or proposed clustered deployment, attempt a non-no-op live reload
 and prove the runtime, config, running version, and applied reference remain
 unchanged. Require failed swap event/metric. The destructive-reload option must
 not bypass the guard.
 
-- [ ] **Step 2: Add the shared guard**
+- [x] **Step 2: Add the shared guard**
 
 Expose `IsClusteredDeployment` from bridge conversion logic and apply it in both
 Supervisor and AWS composition-root reload paths after no-op detection but
 before Plan/build/stop.
 
-- [ ] **Step 3: Document external cohort rollout**
+- [x] **Step 3: Document external cohort rollout**
 
 Specify stage, validate, quiesce ingress, drain/stop all members, commit, start
 all members, verify Full/version barrier, re-enable ingress, and whole-cohort
 rollback. Do not describe local config CAS as cluster consensus.
 
-- [ ] **Step 4: Run focused checks**
+- [x] **Step 4: Run focused checks**
 
 ```bash
 go test -race -count=1 ./bridge -run TestSupervisorClusteredReload
@@ -724,7 +724,7 @@ go test -race -count=1 ./bridge -run TestSupervisorClusteredReload
   go test -race -count=1 ./... -run TestClusteredReload)
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 fix(config): reject uncoordinated cluster reloads
@@ -1026,7 +1026,7 @@ release evidence required. Do not claim zero bugs or production approval
 without the credentialed AWS, registry-scan, public-module, and measured SLO
 evidence.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 fix: close adversarial production-readiness findings

@@ -553,7 +553,7 @@ func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRunti
 		if r.Session == nil {
 			continue
 		}
-		sessCfg, err := toSessionConfigE(r.Session, deploymentClustered(b.cfg))
+		sessCfg, err := toSessionConfigE(r.Session, IsClusteredDeployment(b.cfg))
 		if err != nil {
 			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
 		}

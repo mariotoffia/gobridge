@@ -326,3 +326,98 @@ func getJSON(t *testing.T, url, apiKey string) (*http.Response, map[string]any) 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	return resp, body
 }
+
+// TestClusteredReload proves the H8 fail-closed guard on the AWS composition
+// root: a live reload of (or INTO) a CLUSTERED deployment is refused via the
+// existing reload-failure path (applyLogicalConfig returns an error, so
+// watchLoop keeps the last-good runtime and applyCommittedConfig surfaces
+// committed_not_applied), keeping the running runtime and applied config
+// untouched. A genuine no-op re-emit is detected before the guard and stays
+// accepted (skipped).
+func TestClusteredReload(t *testing.T) {
+	newStartedApp := func(t *testing.T) *App {
+		cfgPath := t.TempDir() + "/bridge.yaml"
+		app := NewApp(deployinfra.BootstrapConfig{
+			BridgeID:          "bridge-cluster",
+			ConfigFilePath:    cfgPath,
+			PollInterval:      "1h", // keep the file watcher dormant
+			AdminAddr:         ":0",
+			MonitorAddr:       ":0",
+			TransportHTTPAddr: ":0",
+			AdminAPIKeyParam:  "/admin",
+		}, WithParameterResolver(staticParameterResolver{
+			"/admin": "admin-secret-key-123456",
+		}))
+		require.NoError(t, app.Start(t.Context()))
+		t.Cleanup(func() { _ = app.Stop(context.Background()) })
+		return app
+	}
+
+	standalone := func() *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "standalone", LogLevel: "info"},
+		}
+	}
+	clustered := func() *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "clustered", LogLevel: "info"},
+		}
+	}
+
+	reload := func(t *testing.T, app *App, cfg *ports.BridgeConfig) error {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		app.logicalRef.Set(cfg)
+		return app.applyLogicalConfig(t.Context(), cfg)
+	}
+
+	t.Run("proposed clustered deployment refuses a live reload", func(t *testing.T) {
+		app := newStartedApp(t)
+		// Establish a known-good standalone applied config.
+		require.NoError(t, reload(t, app, standalone()))
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+
+		err := reload(t, app, clustered())
+		require.Error(t, err, "reloading a standalone runtime INTO a clustered config must fail closed")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		require.NotNil(t, app.CurrentAppliedConfig())
+		assert.Equal(t, "standalone", app.CurrentAppliedConfig().Bridge.DeploymentMode,
+			"the applied config/reference must remain the standalone one")
+	})
+
+	t.Run("current clustered deployment refuses a live reload", func(t *testing.T) {
+		app := newStartedApp(t)
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+		// Simulate a currently-clustered applied config (a fresh boot INTO
+		// clustered is legitimate; only a live reload is guarded).
+		app.mu.Lock()
+		app.appliedRef.Set(clustered())
+		app.mu.Unlock()
+
+		err := reload(t, app, standalone())
+		require.Error(t, err, "leaving a clustered cohort via live reload must fail closed")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Equal(t, "clustered", app.CurrentAppliedConfig().Bridge.DeploymentMode,
+			"the applied config/reference must be unchanged")
+	})
+
+	t.Run("no-op clustered reload stays accepted", func(t *testing.T) {
+		app := newStartedApp(t)
+		cc := clustered()
+		fp := app.parsedFingerprint(cc, true)
+		require.NotEmpty(t, fp)
+
+		app.mu.Lock()
+		app.appliedRef.Set(cc)
+		app.lastAppliedFingerprint = fp
+		skipped, err := app.applyLogicalIfChanged(t.Context(), cc, true)
+		app.mu.Unlock()
+
+		require.NoError(t, err, "a no-op clustered reload must not be refused")
+		assert.True(t, skipped, "an identical clustered re-emit is a no-op detected before the guard")
+	})
+}

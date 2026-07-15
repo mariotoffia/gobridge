@@ -17,12 +17,25 @@ instance has converged — indefinitely if one stays wedged on a config it canno
 load. This runbook covers which changes are safe to roll live, which must be
 drained and stopped, and how to verify convergence.
 
+> **Update (finding H8): clustered live reload is rejected fail-closed.** A
+> per-process live reload has no cluster-wide version barrier, so the runtime now
+> **refuses every non-no-op live reload of (or into) a clustered deployment** —
+> not only the invariant changes below. For any clustered config change, use the
+> whole-cohort procedure in
+> [Cluster Config Rollout](cluster-config-rollout.md) (stage → validate all →
+> quiesce → drain/stop all → commit → start all → verify version/readiness
+> barrier → re-enable ingress, with whole-cohort rollback). The classification
+> below still describes single-process (standalone) reload behaviour and the
+> *reasons* each change is unsafe in a cohort.
+
 ## Allowed vs. disallowed live changes
 
-**Safe to roll live** (eventually consistent across the fleet): routing, policy,
-and transformation changes. The same message class may be handled under the old
-or new definition during the divergence window, but no records are stranded and
-no lease is split.
+**Safe to roll live in a standalone (single-process) deployment**
+(eventually consistent across a fleet if you were ever to run one, but in a
+**clustered** deployment even these are refused live — replace the cohort per the
+runbook above): routing, policy, and transformation changes. The same message
+class may be handled under the old or new definition during a divergence window,
+but no records are stranded and no lease is split.
 
 **Disallowed live / rolling** — these are **cluster invariants**. Changing any of
 them under a rolling reload splits ownership or strands durable records:

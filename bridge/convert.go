@@ -81,11 +81,18 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	return p, nil
 }
 
-// deploymentClustered mirrors the builder's clustered predicate
-// (bridge/builder_prepare.go): a deployment is clustered when deployment_mode is
-// "clustered" OR a static cluster.endpoints override is present. It gates the
-// HA-timing baseline for lease-bearing sessions (finding HIGH-3).
-func deploymentClustered(cfg *ports.BridgeConfig) bool {
+// IsClusteredDeployment is the single shared predicate for "is this a clustered
+// deployment": deployment_mode is "clustered" OR a static cluster.endpoints
+// override is present. A nil config is never clustered.
+//
+// It is the one definition used across the bridge: the HA-timing baseline for
+// lease-bearing sessions (finding HIGH-3, builder/failover/post-acquire callers)
+// AND the fail-closed guard that refuses an uncoordinated per-process live
+// reload of (or into) a clustered cohort (finding H8, Supervisor.apply and the
+// AWS composition root). The config layer mirrors it in
+// config.deploymentIsClustered so the two agree on exactly which deployments are
+// clustered.
+func IsClusteredDeployment(cfg *ports.BridgeConfig) bool {
 	if cfg == nil {
 		return false
 	}

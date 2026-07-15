@@ -218,22 +218,29 @@ What this does and does not break:
   - **A reconfiguration that changes a session's id, or repoints its lease or outbox store, is _not_ version-skew-safe.** Two instances then drive the *same* session against *different* stores: both hold "its" lease (in different lease stores) and drain independently -- elevated duplicate *sends* -- and any records left undrained in the now-unreferenced outbox store are stranded and lost. Treat session ids and lease/outbox store targets as cluster-wide invariants: migrate them with a full drain-and-stop, never a rolling reconfiguration.
 - **Routing, policy, and transformation behaviour is eventually consistent across the cluster, not atomic.** The same message class may be handled under the old or the new definition depending on which instance processed it during the divergence window.
 
-Operators who need an atomic cluster cutover must coordinate it externally -- for example, drain and stop all instances, deploy, then restart.
+Operators who need an atomic cluster cutover must coordinate it externally -- drain and stop all instances, deploy, then restart. There is no supported *live* rollout for a clustered deployment; follow the [Cluster Config Rollout runbook](../runbooks/cluster-config-rollout.md).
 
-### Cluster invariants refused by the local live reload
+### Clustered live reload is rejected, fail-closed
 
-Because there is no cross-node barrier, the Supervisor refuses -- **per process, at swap time** -- the specific live reloads whose safety depends on cluster-wide agreement, rather than letting them apply into a split cluster. Each keeps the OLD runtime serving and fails the swap (metric `ConfigReloads{state="failure"}`), unless the operator forces it with `WithAllowDestructiveReload`:
+A per-process live reload cannot roll a clustered cohort safely: there is no cluster-wide version barrier, no all-member readiness gate, and no coordinated rollback. So the runtime **refuses every non-no-op live reload of (or into) a clustered deployment wholesale** (finding H8), rather than adopting a split-inducing config.
 
-- **Durable store identity change** -- a lease/outbox/DLQ store whose `type` or backing path/table changes (`storeIdentityChanged`). Repointing a store live strands the old store's backlog.
-- **Outbox/DLQ store removal, or an orphaned `shared_outbox` partition** -- a partition that loses its drainer in the new topology, gated fail-closed by the durable-reload preflight when backlog is present.
-- **Lease-bearing exclusive `session_id` change** -- changing a route's inline `session.session_id` changes the ownership **lease identity** (`leaseSessionIDChanged`). Under a rolling reload one instance would hold the lease for `session_id=X` while another still holds it for `session_id=Y` against the same logical source -- split ownership, elevated duplicate sends, and stranded backlog in the now-unreferenced key.
+The guard fires in both reload paths -- the `Supervisor` (`bridge.Supervisor.apply`) and the AWS file-based composition root (`bootstrap.App.applyLogicalConfig`) -- **after no-op detection but before any Plan/build/store query or stop**. It triggers when **either** the currently-applied **or** the proposed config is clustered (`deployment_mode: clustered`, or a static `cluster.endpoints` override), covering both *entering* and *leaving* a cohort via live reload. On refusal:
 
-These are the cluster invariants: **lease/outbox store identity and exclusive `session_id`**. Roll any of them with a **full stop/restart of all nodes** (drain, stop every instance, deploy, restart) -- never a live/rolling reconfiguration. The local refusal is not a cluster barrier; it only stops a single process from silently adopting a split-inducing config.
+- the **current runtime keeps serving unchanged** -- the applied config, its running `config_version`, and the runtime reference are untouched;
+- the swap **fails through the existing failure path** -- the Supervisor emits the failed `SwapEvent` and the `ConfigReloads{state="failure"}` counter; the AWS root returns the error so `watchLoop` keeps the last-good runtime and an admin commit surfaces `committed_not_applied`.
+
+`WithAllowDestructiveReload` does **not** bypass this guard. That escape hatch only discards *local* durable backlog; it cannot substitute for cluster consensus, so it is irrelevant to a whole-cohort cutover.
+
+A genuine **no-op re-emit** (byte-identical content -- e.g. the poll watcher re-emitting an unchanged file) is detected *before* the guard and stays accepted; it is not a reconfiguration.
+
+This whole-class rejection supersedes the earlier piecemeal per-invariant refusals (durable store identity, outbox/DLQ removal or orphaned `shared_outbox` partition, lease-bearing exclusive `session_id`): in a clustered deployment those are now refused as part of the broad guard, not just individually. In a **standalone** (single-process) deployment they still apply exactly as before -- see `storeIdentityChanged`, the durable-reload preflight, and `leaseSessionIDChanged`. Single-process live reload behaviour is unchanged.
+
+Roll a clustered config change with a **full stop/restart of all nodes** per the runbook -- never a live/rolling reconfiguration.
 
 To operate safely:
 
-- **Validate config before deploy.** The `version` CAS field (`BridgeConfig.Version`) guards concurrent *commits* to a shared config file (e.g. on AWS EFS); it does not gate the per-instance apply, so it is not a cluster rollout barrier.
-- **Roll instances one at a time** rather than reconfiguring the whole fleet at once.
+- **Validate config before deploy.** The `version` CAS field (`BridgeConfig.Version`) and the local applied-config reference tracking guard concurrent *commits* to a shared config file (e.g. on AWS EFS) and make per-process reloads idempotent; they are **not cluster consensus and not a version barrier**, do **not** gate the per-instance apply, and must **not** be relied on as resilient live reconfiguration across a cohort.
+- **Do not attempt a live/rolling reconfiguration of a clustered deployment.** It is rejected fail-closed; use the [Cluster Config Rollout runbook](../runbooks/cluster-config-rollout.md) for an externally coordinated whole-cohort replacement.
 - **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is exposed on the authenticated monitor endpoint `GET /api/v1/monitor/topology` as the `config_version` field when a config provider is wired (`httpapi/monitor.go:186-211`), and programmatically via `Supervisor.Config().Version`. For fleet-wide convergence monitoring, scrape `config_version` from `/topology` across every instance rather than relying on swap logs alone (the initial config load is not logged with a version). Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `config_version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
 
 ## ReconfigStrategy Comparison

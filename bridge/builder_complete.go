@@ -224,7 +224,7 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 // defaults but leaves RenewInterval unset so the session manager derives it
 // from LeaseTTL (contract C3), and applies bridge-level drain defaults.
 func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string) (session.Config, error) {
-	clustered := deploymentClustered(b.cfg)
+	clustered := IsClusteredDeployment(b.cfg)
 	if routeDef.Session != nil {
 		derived, err := toSessionConfigE(routeDef.Session, clustered)
 		if err != nil {
@@ -272,7 +272,7 @@ func (b *Builder) wireRoutes(
 		if policyErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, policyErr)
 		}
-		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session, deploymentClustered(b.cfg))
+		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session, IsClusteredDeployment(b.cfg))
 		if sessCfgErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
 		}
