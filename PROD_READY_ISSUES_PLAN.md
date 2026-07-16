@@ -951,8 +951,8 @@ docs: state MQTT production boundaries exactly
 
 ## Task 13: Prepare reproducible module and image releases
 
-**Status:** Pending (quality-review remediation implemented; awaiting review
-acceptance, and public H9 closure still requires staged tags and proxy smoke)
+**Status:** Complete (quality-review gates green; public H9 closure still
+requires staged tags and proxy smoke)
 
 **Agents/Skills:** thiink:golang-pro, git-workflow-manager,
 thiink:contract-reviewer, thiink:test-reviewer
@@ -1020,7 +1020,7 @@ make test
 build: enforce staged multi-module releases
 ```
 
-**Quality-review remediation (pending acceptance):**
+**Quality-review remediation:**
 
 - [x] Remove Make/shell tag injection and reject incompatible path majors.
 - [x] Bind public module origins to exact tag commits and contain manifest paths.
