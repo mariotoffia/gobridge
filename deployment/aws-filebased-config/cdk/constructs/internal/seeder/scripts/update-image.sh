@@ -10,9 +10,10 @@
 # rewrites the pins. It fails closed on any missing tag, digest, or platform, and
 # prints ONLY the pinned image@sha256 line on success.
 #
-# Resolver tools (reviewed versions — this script NEVER installs a tool):
-#   - crane          >= v0.21.7  (github.com/google/go-containerregistry)  [preferred]
-#   - docker buildx  >= v0.34.1  (github.com/docker/buildx)                [fallback]
+# Resolver tools (exact reviewed versions — this script NEVER installs a tool):
+#   - crane          v0.21.7  (github.com/google/go-containerregistry)  [preferred]
+#   - docker buildx  v0.34.1  (github.com/docker/buildx)                [fallback]
+# These are the tested versions, not floors; newer releases are not auto-trusted.
 # Tag discovery uses `crane ls` (crane path) or the ECR Public registry HTTP v2
 # API via curl (docker path). Force a path with UPDATE_IMAGE_TOOL=crane|docker.
 set -euo pipefail
@@ -36,11 +37,12 @@ if [ -z "$TOOL" ]; then
     TOOL="docker"
   else
     cat >&2 <<'EOF'
-update-image.sh: need a reviewed resolver to pin a multi-platform index digest:
-  - crane          >= v0.21.7  (github.com/google/go-containerregistry)
-  - docker buildx  >= v0.34.1  (github.com/docker/buildx)
-Install a reviewed release from its official distribution. This script never
-installs a tool and never pins to an unverified digest.
+update-image.sh: need a reviewed resolver to pin a multi-platform index digest.
+Tested with these exact versions:
+  - crane          v0.21.7  (github.com/google/go-containerregistry)
+  - docker buildx  v0.34.1  (github.com/docker/buildx)
+Install one of those exact reviewed versions from its official distribution. This
+script never installs a tool and never pins to an unverified digest.
 EOF
     exit 2
   fi
@@ -158,22 +160,65 @@ case "$DIGEST" in
 esac
 
 NEW_LINE="${REPO}:${CONCRETE_TAG}@${DIGEST}"
-printf '%s\n' "$NEW_LINE" > "$IMAGE_TXT"
 
-# Keep the seeder Dockerfile FROM in sync with the pin.
-if [ -f "$DOCKERFILE" ]; then
-  NEW_REF="$NEW_LINE" python3 - "$DOCKERFILE" <<'PY'
+# --- atomic two-file update --------------------------------------------------
+# Validate BOTH targets and stage BOTH complete outputs before replacing either;
+# on any validation error, neither file changes. The only residual non-atomicity
+# is a crash between the two final renames (POSIX has no multi-file rename).
+if [ ! -f "$DOCKERFILE" ]; then
+  echo "update-image.sh: Dockerfile not found: ${DOCKERFILE}" >&2
+  exit 4
+fi
+for target in "$IMAGE_TXT" "$DOCKERFILE"; do
+  target_dir=$(dirname -- "$target")
+  if [ ! -d "$target_dir" ] || [ ! -w "$target_dir" ]; then
+    echo "update-image.sh: destination directory not writable: ${target_dir}" >&2
+    exit 4
+  fi
+  if [ -e "$target" ] && [ ! -w "$target" ]; then
+    echo "update-image.sh: destination not writable: ${target}" >&2
+    exit 4
+  fi
+done
+
+# Stage both outputs in temp files in the SAME directory (atomic rename target).
+IMG_TMP=$(mktemp "${IMAGE_TXT}.XXXXXX")
+DOCKERFILE_TMP=$(mktemp "${DOCKERFILE}.XXXXXX")
+trap 'rm -f -- "$IMG_TMP" "$DOCKERFILE_TMP"' EXIT
+
+printf '%s\n' "$NEW_LINE" > "$IMG_TMP"
+
+# Rewrite EXACTLY the one `FROM <repo>` line; require exactly one such line, else
+# fail without touching either real file. Guards against zero-FROM (nothing to
+# pin) and multiple-FROM (ambiguous) Dockerfiles.
+if ! NEW_REF="$NEW_LINE" REPO="$REPO" DOCKERFILE_SRC="$DOCKERFILE" \
+     python3 - "$DOCKERFILE_TMP" <<'PY'; then
 import os, re, sys
 
-path = sys.argv[1]
+out_path = sys.argv[1]
 new_ref = os.environ["NEW_REF"]
-with open(path, "r", encoding="utf-8") as fh:
+repo = os.environ["REPO"]
+with open(os.environ["DOCKERFILE_SRC"], "r", encoding="utf-8") as fh:
     src = fh.read()
-new_src = re.sub(r"^FROM .*$", "FROM " + new_ref, src, count=1, flags=re.M)
-with open(path, "w", encoding="utf-8") as fh:
+pattern = r"^FROM " + re.escape(repo) + r"(?:[:@ ].*)?$"
+matches = re.findall(pattern, src, flags=re.M)
+if len(matches) != 1:
+    sys.stderr.write(
+        "update-image.sh: expected exactly one 'FROM %s ...' line, found %d\n"
+        % (repo, len(matches)))
+    sys.exit(1)
+new_src = re.sub(pattern, "FROM " + new_ref, src, count=1, flags=re.M)
+with open(out_path, "w", encoding="utf-8") as fh:
     fh.write(new_src)
 PY
+  echo "update-image.sh: Dockerfile FROM rewrite failed; no files changed" >&2
+  exit 4
 fi
+
+# Both outputs staged and valid → replace both.
+mv -f -- "$IMG_TMP" "$IMAGE_TXT"
+mv -f -- "$DOCKERFILE_TMP" "$DOCKERFILE"
+trap - EXIT
 
 # Output ONLY the pinned image@sha256 reference.
 printf '%s\n' "$NEW_LINE"

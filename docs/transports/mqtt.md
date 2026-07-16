@@ -599,27 +599,28 @@ ADR-level alternative and is not wired today — see
 
 The delivery guarantee is conditional on five inputs: the source QoS/session, the
 route delivery mode, whether the publish carries a producer identity, the outbox
-store's durability and whether it persisted the record, and how the outage length
-compares to source retention and store retention/capacity. "No source-side loss"
-means the bridge does not drop the message. It does **not** mean exactly-once: an
-accepted-then-unconfirmed send can still duplicate at the destination, so
-downstream idempotency is required in every row.
+store's durability and whether the record was persisted, and where the failure
+falls relative to the Persist boundary, the envelope TTL, and the replay/poison
+budget. "No source-side loss" means the bridge does not drop the message. It does
+**not** mean exactly-once: an accepted-then-unconfirmed send can still duplicate at
+the destination, so downstream idempotency is required in every row.
 
-| Source QoS / session | Delivery mode | Producer identity | Outbox store & persist state | Outage vs. retention | Guarantee |
+| Source QoS / session | Delivery mode | Producer identity | Outbox store & persist state | Persist / recovery boundary | Guarantee |
 |---|---|---|---|---|---|
-| QoS 1/2, Persistent/Exclusive | `direct_hold` | any | n/a (source-side hold) | resume within source session expiry | No source-side loss: un-acked input is redelivered on resume and the in-flight publish is re-sent. |
+| QoS 1/2, Persistent/Exclusive | `direct_hold` | any | n/a (source-side hold) | resume within source session/queue expiry | No source-side loss: un-acked input is redelivered on resume and the in-flight publish is re-sent. |
 | QoS 1/2, Persistent/Exclusive | `direct_hold` | any | n/a | resume after source session/queue expiry | Possible loss: the source broker dropped the queued input before the bridge resumed. |
 | QoS 1/2, Ephemeral (clean start) | `direct_hold` | any | n/a | any restart | Possible loss: a clean-start restart cannot redeliver the unsettled input packet. |
-| QoS 0, any session | either | any | any | any | Possible loss: QoS 0 has no source redelivery, so there is nothing to hold or to replay. |
-| QoS 1/2, Persistent/Exclusive | `shared_outbox` | unique | durable store (SQLite/DynamoDB), persisted | restart within store retention and capacity | No source-side loss: the fenced record replays after restart; dedup collapses the re-send. |
-| QoS 1/2, Persistent/Exclusive | `shared_outbox` | unique | volatile store (in-memory; unit-test only, not production), "persisted" | process restart | Possible loss: an in-memory outbox does not survive a restart, so no record remains to replay. |
-| QoS 1/2, Persistent/Exclusive | `shared_outbox` | unique | durable store, crash **before** Persist | source redelivers on resume | No source-side loss: Persist runs before the source ack, so a crash before Persist leaves the source un-acked; it redelivers and the record is built and persisted on replay. |
-| QoS 0 or Ephemeral | `shared_outbox` | any | crash **before** Persist | restart | Possible loss: the source cannot redeliver, so an unpersisted record is gone. |
+| QoS 0, any session | `direct_hold` | any | n/a | any | Possible loss: QoS 0 has no source redelivery, so `direct_hold` has nothing to hold. |
+| any source | `shared_outbox` | unique | durable store (SQLite/DynamoDB), **persisted** | envelope TTL not expired, within replay/poison budget | No source-side loss: once a uniquely-identified record is durably persisted, the outbox drainer replays it **independently of the source session** — the source QoS/session no longer matters. |
+| QoS 1/2, Persistent/Exclusive | `shared_outbox` | any | durable store, crash **before** Persist | source redelivers on resume | No source-side loss: Persist precedes the source ack, so a crash before Persist leaves the source un-acked; it redelivers and the record is built and persisted on replay. |
+| QoS 0 or Ephemeral (clean start) | `shared_outbox` | any | crash **before** Persist | no source redelivery | Possible loss: before a successful Persist there is no durable record, and a QoS 0 / clean-start source cannot redeliver. |
+| any source | `shared_outbox` | unique | **volatile** store (in-memory; unit-test only, not production), "persisted" | process restart | Possible loss: an in-memory outbox does not survive a restart, so no record remains to replay. |
 | QoS 1/2 | `shared_outbox` | **missing** (no producer ID) | durable, persisted | any | No silent collapse and no cross-redelivery dedup: each publish gets a fresh per-publish UUID, so two equal-valued events both flow and a broker redelivery of one publish duplicates it. |
-| QoS 1/2 | `shared_outbox` | **reused** (same ID for distinct events) | durable, persisted | any | Collapse of a distinct event: the second event reuses the first's dedup key (`partition` + `EnvelopeID` + `binding`); its Persist returns `ErrDuplicateRecord` and is acked-and-dropped. A supplied producer ID is preserved and trusted as identity, so a reused ID silently drops a legitimate distinct event. |
-| QoS 1/2, source broker offline | either | any | any | source queue/session expiry or capacity drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever receives the message. |
+| QoS 1/2 | `shared_outbox` | **reused** (same ID for distinct events) | durable, persisted | any | Collapse of a distinct event: the second event reuses the first's dedup key (`partition` + `EnvelopeID` + `binding`); its Persist returns `ErrDuplicateRecord` and is acked-and-dropped. A supplied producer ID is preserved and trusted as identity. |
+| QoS 1/2, source broker offline | either | any | n/a | source queue/session expiry or capacity drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever receives the message. |
 | any | configured drop policy | any | any | any | Loss by design: a drop policy acknowledges the message is discarded. |
-| any | configured DLQ / retry cap | any | any | attempts exceed the cap | Diverted, not delivered: once the retry cap is reached the message is routed to the DLQ (or dropped if none). It is recorded, not sent to the destination. |
+| any | `shared_outbox` | any | durable, persisted | `ReplayCount` > `MaxReplayAttempts` **and** `ReplayBudget` elapsed since first attempt (or envelope TTL expired) | Diverted, not delivered: the drainer poisons the record to the DLQ (or drops it if none), or expires it (`MetricOutboxExpiredBeforeSend`). Recorded, not sent. |
+| any | `direct_hold` | any | n/a | source attempts reach `MaxReplayAttempts` (count only) | Diverted, not delivered: the source delivery is poisoned to the DLQ on the attempt-count cap, with no wall-clock budget gate. Recorded, not sent. |
 | any | either | any | any | send accepted, response lost | Ambiguous: a send timeout after the destination accepted the publish is indistinguishable from a real failure, and a retry may duplicate. Downstream must dedupe. |
 
 Producer identity is a stable `mqtt.message-id` (or MQTT correlation data); a
@@ -631,12 +632,27 @@ into the first record. When no producer ID is present, GoBridge stamps a fresh
 per-publish UUID so distinct publishes stay distinct — see
 [Envelope identity and no-ID redelivery](#envelope-identity-and-no-id-redelivery).
 
-`shared_outbox` durability is only as strong as the store behind it. The
-production stores — SQLite and DynamoDB — survive a restart; the in-memory outbox
-is a unit-test fake explicitly not safe for production, and it loses every
-"persisted" record on restart. A durable store still bounds what it keeps: a
-record can be lost if it exceeds the store's retention window or the partition
-reaches its capacity before it drains.
+`shared_outbox` durability is only as strong as the store behind it, and it
+protects a record only from the moment Persist succeeds. Before that point there
+is nothing durable: an over-capacity or unavailable store makes Persist fail or
+block, so the source delivery is retried or DLQ'd — no persisted work is lost,
+because none exists yet. After a successful Persist, a pending record is **not**
+subject to a store-retention TTL. The production SQLite and DynamoDB stores and
+the in-memory fake never evict a pending or claimed record; retention only
+compacts terminal (completed/expired) records. A durably persisted record is
+instead bounded by:
+
+- **envelope expiry** — if the envelope carries a TTL, the drainer skips and
+  expires it once past due (`MetricOutboxExpiredBeforeSend`, or a bulk expiry
+  sweep) rather than sending it late;
+- **replay / poison budget** — the drainer poisons a record to the DLQ only when
+  its `ReplayCount` exceeds `MaxReplayAttempts` **and** the wall-clock
+  `ReplayBudget` (default 15 minutes, measured from the first attempt) has
+  elapsed; a legacy record with no first-attempt timestamp falls back to the
+  `CreatedAt`/`poisonMinAge` age gate. `direct_hold` instead poisons the source
+  delivery on the attempt-count cap alone;
+- **store durability loss** — a volatile (in-memory) store on restart, or
+  operator deletion / row corruption of a durable store.
 
 What the bridge **records** is the settlement and outbox state it observes:
 `unsettled_count`, outbox record status, DLQ entries, and drop counters. What it

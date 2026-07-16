@@ -170,14 +170,25 @@ cat > "${WORKDIR}/tags-none.json" <<'JSON'
 {"tags":["latest","2"]}
 JSON
 
-# run_ui tool name manifest tagset want_exit want_written [expect_tag]
+# run_ui tool name manifest tagset want_exit want_written [expect_tag] [df_shape]
+# df_shape: one-from (default) | zero-from | two-from | readonly | missing-dir
 run_ui() {
-  local tool="$1" name="$2" manifest="$3" tagset="$4" want_exit="$5" want_written="$6" expect_tag="${7:-}"
+  local tool="$1" name="$2" manifest="$3" tagset="$4" want_exit="$5" want_written="$6" expect_tag="${7:-}" df_shape="${8:-one-from}"
   local img="${WORKDIR}/ui-${tool}-${name}-image.txt"
   local dfile="${WORKDIR}/ui-${tool}-${name}-Dockerfile"
   local toollog="${WORKDIR}/ui-${tool}-${name}-tool.log"
   printf 'SENTINEL-OLD\n' > "$img"
-  printf 'FROM placeholder:old@sha256:0000\nRUN true\n' > "$dfile"
+  local df_present=yes
+  case "$df_shape" in
+    one-from)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000\nRUN true\n' > "$dfile" ;;
+    zero-from) printf 'FROM alpine:3.20\nRUN true\n' > "$dfile" ;;
+    two-from)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0\nFROM public.ecr.aws/aws-cli/aws-cli:2.0.1@sha256:1\n' > "$dfile" ;;
+    readonly)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000\nRUN true\n' > "$dfile"; chmod 0444 "$dfile" ;;
+    missing-dir) dfile="${WORKDIR}/ui-${tool}-${name}-nodir/Dockerfile"; df_present=no ;;
+  esac
+  local img_sum_before dfile_sum_before=""
+  img_sum_before=$(cksum < "$img")
+  [ "$df_present" = yes ] && dfile_sum_before=$(cksum < "$dfile")
   : > "$toollog"
   local out rc=0
   set +e
@@ -189,9 +200,10 @@ run_ui() {
         bash "$UPDATE_IMAGE" 2>/dev/null)
   rc=$?
   set -e
+  [ "$df_shape" = readonly ] && chmod 0644 "$dfile" 2>/dev/null
   local label="ui-${tool}-${name}"
   if [ "$rc" -ne "$want_exit" ]; then
-    nope "$label" "want exit $want_exit got $rc; out: $out; log: $(cat "$toollog")"; return
+    nope "$label" "want exit $want_exit got $rc; out: $out; log: $(cat "$toollog" 2>/dev/null)"; return
   fi
   if [ "$want_written" = "yes" ]; then
     case "$out" in *$'\n'*) nope "$label" "stdout must be one line, got: $out"; return ;; esac
@@ -218,18 +230,19 @@ run_ui() {
       nope "$label" "Dockerfile FROM not synced to the pinned ref"; return
     fi
   else
-    if [ "$(cat "$img")" != "SENTINEL-OLD" ]; then
-      nope "$label" "image.txt was rewritten on a fail-closed run"; return
+    # Fail closed: NEITHER file may change (unchanged checksums).
+    if [ "$(cksum < "$img")" != "$img_sum_before" ]; then
+      nope "$label" "image.txt changed on a fail-closed run"; return
     fi
-    if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM placeholder:old@sha256:0000" ]; then
-      nope "$label" "Dockerfile was rewritten on a fail-closed run"; return
+    if [ "$df_present" = yes ] && [ "$(cksum < "$dfile")" != "$dfile_sum_before" ]; then
+      nope "$label" "Dockerfile changed on a fail-closed run"; return
     fi
   fi
   ok "$label"
 }
 
 # Both resolver paths: crane (crane ls + crane manifest) and docker buildx
-# (registry API tag list + imagetools inspect --raw).
+# (registry API tag list + imagetools inspect --raw). One-FROM Dockerfile.
 for tool in crane docker; do
   run_ui "$tool" "ok"              "${WORKDIR}/idx-ok.json"     concrete 0 yes 2.35.24
   run_ui "$tool" "missing-arm64"   "${WORKDIR}/idx-noarm.json"  concrete 3 no
@@ -239,6 +252,16 @@ for tool in crane docker; do
 done
 # The docker path must also accept a Docker manifest-list mediaType.
 run_ui "docker" "docker-manifest-list" "${WORKDIR}/idx-dockerlist.json" concrete 0 yes 2.35.24
+
+# Atomicity: the digest resolves, but a bad Dockerfile target must abort BEFORE
+# either file is rewritten (exit 4, both checksums unchanged).
+run_ui "crane" "atomic-zero-from"   "${WORKDIR}/idx-ok.json" concrete 4 no "" zero-from
+run_ui "crane" "atomic-two-from"    "${WORKDIR}/idx-ok.json" concrete 4 no "" two-from
+run_ui "crane" "atomic-missing-dir" "${WORKDIR}/idx-ok.json" concrete 4 no "" missing-dir
+# The read-only-file guard only holds for a non-root user (root ignores 0444).
+if [ "$(id -u)" != "0" ]; then
+  run_ui "crane" "atomic-readonly-df" "${WORKDIR}/idx-ok.json" concrete 4 no "" readonly
+fi
 
 echo "------------"
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
