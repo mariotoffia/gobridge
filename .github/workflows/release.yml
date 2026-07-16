@@ -171,7 +171,7 @@ jobs:
       group: gobridge-image-promotion
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       packages: write
     outputs:
       digest: ${{ steps.image.outputs.digest }}
@@ -214,7 +214,28 @@ jobs:
           make verify-remote-release-tag \
             RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
 
+      - name: Fetch existing command release image association
+        id: association
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_API_URL: ${{ github.api_url }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          make --no-print-directory release-image-association \
+            RELEASE_REPOSITORY="$RELEASE_REPOSITORY" \
+            RELEASE_TAG="$RELEASE_TAG" \
+            RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Verify recorded digest still exists in GHCR
+        if: steps.association.outputs.exists == 'true'
+        env:
+          RELEASE_IMAGE_DIGEST: ${{ steps.association.outputs.digest }}
+        run: make verify-release-image-digest RELEASE_IMAGE_DIGEST="$RELEASE_IMAGE_DIGEST"
+
       - name: Build and push image content by digest
+        if: steps.association.outputs.exists != 'true'
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -232,15 +253,20 @@ jobs:
       - name: Validate content-addressed image digest
         id: image
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          RECORDED_DIGEST: ${{ steps.association.outputs.digest }}
         run: |
           set -euo pipefail
-          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::image has invalid digest '$DIGEST'"
+          digest="$RECORDED_DIGEST"
+          if [ -z "$digest" ]; then
+            digest="$BUILT_DIGEST"
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image has invalid digest '$digest'"
             exit 1
           fi
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Immutable image: ghcr.io/mariotoffia/gobridge@$DIGEST"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Immutable image: ghcr.io/mariotoffia/gobridge@$digest"
 
       - name: Inspect image platform children
         id: children
@@ -301,6 +327,73 @@ jobs:
           severity: HIGH,CRITICAL
           timeout: 10m
 
+      - name: Write immutable image digest record and workflow summary
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf 'ghcr.io/mariotoffia/gobridge@%s\n' "$DIGEST" > gobridge-image-digest.txt
+          {
+            echo "### Immutable release image"
+            echo
+            echo '```text'
+            cat gobridge-image-digest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-resolve protected remote tag before digest asset publication
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
+          make verify-remote-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
+
+      - name: Re-fetch command release image association before upload
+        id: current-association
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_API_URL: ${{ github.api_url }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          make --no-print-directory release-image-association \
+            RELEASE_REPOSITORY="$RELEASE_REPOSITORY" \
+            RELEASE_TAG="$RELEASE_TAG" \
+            RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Decide whether digest asset upload is safe
+        id: asset-decision
+        env:
+          RELEASE_CURRENT_IMAGE_DIGEST: ${{ steps.current-association.outputs.digest }}
+          RELEASE_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          RELEASE_INITIAL_IMAGE_DIGEST: ${{ steps.association.outputs.digest }}
+        run: |
+          set -euo pipefail
+          make --no-print-directory release-image-upload-decision \
+            RELEASE_IMAGE_DIGEST="$RELEASE_IMAGE_DIGEST" \
+            RELEASE_INITIAL_IMAGE_DIGEST="$RELEASE_INITIAL_IMAGE_DIGEST" \
+            RELEASE_CURRENT_IMAGE_DIGEST="$RELEASE_CURRENT_IMAGE_DIGEST" |
+            tee -a "$GITHUB_OUTPUT"
+
+      - name: Attach immutable image digest to command GitHub Release
+        if: steps.asset-decision.outputs.upload == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          files: gobridge-image-digest.txt
+          overwrite_files: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Re-check remote ordering and promote latest only for the highest stable version
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -332,68 +425,3 @@ jobs:
           else
             echo "$RELEASE_VERSION is older than $highest; latest remains unchanged."
           fi
-
-  record-image-digest:
-    needs:
-      - validate
-      - github-release
-      - image
-    if: >-
-      needs.validate.outputs.path == 'cmd/gobridge' &&
-      needs.image.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Check out validated tagged source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25'
-
-      - name: Write immutable image digest record
-        env:
-          DIGEST: ${{ needs.image.outputs.digest }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::image has invalid digest '$DIGEST'"
-            exit 1
-          fi
-          printf 'ghcr.io/mariotoffia/gobridge@%s\n' "$DIGEST" > gobridge-image-digest.txt
-          {
-            echo "### Immutable release image"
-            echo
-            echo '```text'
-            cat gobridge-image-digest.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Re-resolve protected remote tag before digest asset publication
-        env:
-          GITHUB_SHA: ${{ github.sha }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
-            echo "::error::validated commit differs from original workflow SHA"
-            exit 1
-          }
-          make verify-remote-release-tag \
-            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
-
-      - name: Attach immutable image digest to command GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          tag_name: ${{ needs.validate.outputs.tag }}
-          files: gobridge-image-digest.txt
-          overwrite_files: false
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

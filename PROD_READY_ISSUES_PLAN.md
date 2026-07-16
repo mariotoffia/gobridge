@@ -1030,6 +1030,7 @@ build: enforce staged multi-module releases
 - [x] Pin all workflow actions plus Buildx, BuildKit, and QEMU inputs.
 - [x] Scan both digest-only platform children and record the index digest.
 - [x] Re-check highest stable command tag immediately before moving `latest`.
+- [x] Resume reruns from the exact recorded release digest without rebuilding.
 
 ## Task 14: Add exact-accounting chaos and release proofs
 

@@ -315,6 +315,15 @@ It:
    highest stable
    `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
 
+Reruns first fetch `gobridge-image-digest.txt` from the exact command GitHub
+Release. A valid recorded digest is checked against GHCR, skips the
+provenance-enabled build entirely, and resumes both child scans plus guarded
+`latest` promotion from that content. Only an exact 404 or a release with no
+digest asset permits a build; authentication, network, malformed asset, wrong
+image, or missing registry digest fails closed. Before upload, the workflow
+fetches the asset again: the same digest is an idempotent resume, a different
+digest fails, and `overwrite_files: false` closes the final race.
+
 GHCR does not document immutable tag enforcement or conditional OCI tag
 creation, so a version-to-image association is **only** the digest asset on the
 command GitHub Release, never `ghcr.io/...:vX.Y.Z`. `latest` is not part of the

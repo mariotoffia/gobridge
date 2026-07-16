@@ -351,7 +351,7 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 		"Scan linux/amd64 child",
 		"Scan linux/arm64 child",
 		"release-latest-version",
-		"record-image-digest:",
+		"Write immutable image digest record",
 		"timeout-minutes:",
 		"version: v0.35.0",
 		"moby/buildkit:v0.31.1@sha256:",
