@@ -148,6 +148,22 @@ type repositoryState struct {
 	BootstrapViolations []manifestViolation
 }
 
+func validateTagPushEvent(created, deleted, forced, protected bool) error {
+	if !created {
+		return errors.New("release tag event is not a creation")
+	}
+	if deleted {
+		return errors.New("release tag event is a deletion")
+	}
+	if forced {
+		return errors.New("release tag event is forced")
+	}
+	if !protected {
+		return errors.New("release tag is not protected by a tag ruleset")
+	}
+	return nil
+}
+
 func inspectRepository(repo string, manifest releaseManifest, releaseVersion string) (repositoryState, error) {
 	if err := validatePublishedSet(repo, manifest); err != nil {
 		return repositoryState{}, err
@@ -513,6 +529,16 @@ func verifyTagAtHead(
 	repo string,
 	tag string,
 ) error {
+	_, err := tagCommitAtHead(ctx, runner, repo, tag)
+	return err
+}
+
+func tagCommitAtHead(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	tag string,
+) (string, error) {
 	output, err := runner.run(ctx, commandRequest{
 		Dir:     repo,
 		Name:    "git",
@@ -520,11 +546,11 @@ func verifyTagAtHead(
 		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("resolving release tag %s: %w", tag, err)
+		return "", fmt.Errorf("resolving release tag %s: %w", tag, err)
 	}
 	tagCommit := strings.TrimSpace(string(output))
 	if !isFullCommitHash(tagCommit) {
-		return fmt.Errorf("release tag %s resolved to invalid commit %q", tag, tagCommit)
+		return "", fmt.Errorf("release tag %s resolved to invalid commit %q", tag, tagCommit)
 	}
 	output, err = runner.run(ctx, commandRequest{
 		Dir:     repo,
@@ -533,14 +559,117 @@ func verifyTagAtHead(
 		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("resolving release HEAD: %w", err)
+		return "", fmt.Errorf("resolving release HEAD: %w", err)
 	}
 	headCommit := strings.TrimSpace(string(output))
 	if !isFullCommitHash(headCommit) {
-		return fmt.Errorf("release HEAD resolved to invalid commit %q", headCommit)
+		return "", fmt.Errorf("release HEAD resolved to invalid commit %q", headCommit)
 	}
 	if tagCommit != headCommit {
-		return fmt.Errorf("release tag %s points to %s, but checkout HEAD is %s", tag, tagCommit, headCommit)
+		return "", fmt.Errorf("release tag %s points to %s, but checkout HEAD is %s", tag, tagCommit, headCommit)
+	}
+	return tagCommit, nil
+}
+
+func parseRemoteTagCommit(tag string, output []byte) (string, error) {
+	directRef := "refs/tags/" + tag
+	peeledRef := directRef + "^{}"
+	direct := ""
+	peeled := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !isFullCommitHash(fields[0]) {
+			return "", fmt.Errorf("malformed remote tag row %q", line)
+		}
+		switch fields[1] {
+		case directRef:
+			if direct != "" {
+				return "", fmt.Errorf("remote tag %s has duplicate direct refs", tag)
+			}
+			direct = fields[0]
+		case peeledRef:
+			if peeled != "" {
+				return "", fmt.Errorf("remote tag %s has duplicate peeled refs", tag)
+			}
+			peeled = fields[0]
+		default:
+			return "", fmt.Errorf("remote tag query returned unexpected ref %q", fields[1])
+		}
+	}
+	if direct == "" {
+		return "", fmt.Errorf("remote tag %s is missing", tag)
+	}
+	if peeled != "" {
+		return peeled, nil
+	}
+	return direct, nil
+}
+
+func remoteTagCommit(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	remote string,
+	tag string,
+) (string, error) {
+	if remote == "" || strings.HasPrefix(remote, "-") {
+		return "", fmt.Errorf("git remote %q is invalid", remote)
+	}
+	for _, char := range remote {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') &&
+			char != '.' && char != '_' && char != '-' {
+			return "", fmt.Errorf("git remote %q is invalid", remote)
+		}
+	}
+	output, err := runner.run(ctx, commandRequest{
+		Dir:  repo,
+		Name: "git",
+		Args: []string{
+			"ls-remote",
+			remote,
+			"refs/tags/" + tag,
+			"refs/tags/" + tag + "^{}",
+		},
+		Timeout: gitCommandTimeout,
+	})
+	if err != nil {
+		return "", fmt.Errorf("resolving remote tag %s from %s: %w", tag, remote, err)
+	}
+	commit, err := parseRemoteTagCommit(tag, output)
+	if err != nil {
+		return "", fmt.Errorf("resolving remote tag %s from %s: %w", tag, remote, err)
+	}
+	return commit, nil
+}
+
+func verifyRemoteTagCommit(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	remote string,
+	tag string,
+	expectedCommit string,
+) error {
+	if !isFullCommitHash(expectedCommit) {
+		return fmt.Errorf("expected remote tag commit %q is invalid", expectedCommit)
+	}
+	commit, err := remoteTagCommit(ctx, runner, repo, remote, tag)
+	if err != nil {
+		return err
+	}
+	if commit != expectedCommit {
+		return fmt.Errorf(
+			"remote tag %s on %s points to %s, want validated commit %s",
+			tag,
+			remote,
+			commit,
+			expectedCommit,
+		)
 	}
 	return nil
 }
@@ -1384,22 +1513,43 @@ func latestStableCommandVersion(
 	repo string,
 	manifest releaseManifest,
 	currentVersion string,
+	remote string,
+	expectedCommit string,
 ) (bool, string, error) {
 	if err := validateStableVersion(currentVersion); err != nil {
 		return false, "", err
 	}
-	if err := verifyTagAtHead(
+	currentTag := tagFor(finalModulePath, currentVersion)
+	localCommit, err := tagCommitAtHead(
 		ctx,
 		runner,
 		repo,
-		tagFor(finalModulePath, currentVersion),
-	); err != nil {
+		currentTag,
+	)
+	if err != nil {
 		return false, "", fmt.Errorf("re-checking current final-module tag: %w", err)
+	}
+	if localCommit != expectedCommit {
+		return false, "", fmt.Errorf(
+			"current final-module tag commit %s does not match validated commit %s",
+			localCommit,
+			expectedCommit,
+		)
+	}
+	if err := verifyRemoteTagCommit(
+		ctx,
+		runner,
+		repo,
+		remote,
+		currentTag,
+		expectedCommit,
+	); err != nil {
+		return false, "", fmt.Errorf("re-checking remote final-module tag: %w", err)
 	}
 	output, err := runner.run(ctx, commandRequest{
 		Dir:     repo,
 		Name:    "git",
-		Args:    []string{"tag", "--list", finalModulePath + "/v*"},
+		Args:    []string{"ls-remote", "--tags", remote, "refs/tags/" + finalModulePath + "/v*"},
 		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
@@ -1408,11 +1558,27 @@ func latestStableCommandVersion(
 
 	highest := ""
 	currentFound := false
-	for _, tag := range strings.Fields(string(output)) {
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !isFullCommitHash(fields[0]) {
+			return false, "", fmt.Errorf("malformed remote tag listing row %q", line)
+		}
+		if strings.HasSuffix(fields[1], "^{}") {
+			continue
+		}
+		tag, found := strings.CutPrefix(fields[1], "refs/tags/")
+		if !found {
+			continue
+		}
 		entry, version, err := manifest.moduleForTag(tag)
 		if err != nil || entry.Path != finalModulePath {
 			continue
 		}
+		if _, duplicate := seen[version]; duplicate {
+			continue
+		}
+		seen[version] = struct{}{}
 		if version == currentVersion {
 			currentFound = true
 		}

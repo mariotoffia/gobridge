@@ -12,7 +12,7 @@
 .PHONY: docker-build update-seeder-image
 .PHONY: verify-release-preparation verify-published-modules verify-release-tag
 .PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
-.PHONY: smoke-released-modules release-latest-version
+.PHONY: smoke-released-modules release-latest-version verify-remote-release-tag
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -29,7 +29,10 @@ RELEASE_VERSION          ?=
 RELEASE_TAG              ?=
 RELEASE_MODULE           ?=
 RELEASE_BOOTSTRAP_COMMIT ?=
-export RELEASE_LAYER RELEASE_FORMAT RELEASE_VERSION RELEASE_TAG RELEASE_MODULE RELEASE_BOOTSTRAP_COMMIT
+RELEASE_COMMIT            ?=
+RELEASE_REMOTE            ?= origin
+export RELEASE_LAYER RELEASE_FORMAT RELEASE_VERSION RELEASE_TAG RELEASE_MODULE
+export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
 
 # Default target
 all: build test
@@ -113,7 +116,15 @@ smoke-released-modules: ## Test a stable cmd tag from a fresh external module; r
 
 release-latest-version: ## Report whether RELEASE_VERSION is the highest stable cmd/gobridge tag
 	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . latest --repo ../.. --version "$$RELEASE_VERSION"
+	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . latest --repo ../.. \
+		--version "$$RELEASE_VERSION" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
+
+verify-remote-release-tag: ## Re-resolve RELEASE_TAG on RELEASE_REMOTE and require RELEASE_COMMIT
+	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
+	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . remote-tag --repo ../.. \
+		--tag "$$RELEASE_TAG" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
 
 # ============================================================================
 # Test targets

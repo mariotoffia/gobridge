@@ -993,9 +993,10 @@ through `proxy.golang.org,direct`, list it, and install `cmd/gobridge`.
 - [x] **Step 4: Make image publication depend on the final module**
 
 Publish only from a successful stable `cmd/gobridge/v*` release. Enable BuildKit
-SBOM and maximum provenance on a commit-scoped candidate, scan both immutable
-platform-child digests, promote the stable semver tag only after both scans, and
-move `latest` only when the candidate is still the highest stable command tag.
+SBOM and maximum provenance on digest-only output, scan both immutable
+platform-child digests, attach the exact digest to the command GitHub Release,
+and move only mutable `latest` when the release is still the highest stable
+protected command tag. No semver container tag is created.
 
 - [x] **Step 5: Keep pre-release docs truthful**
 
@@ -1027,7 +1028,7 @@ build: enforce staged multi-module releases
 - [x] Add signal, command, smoke, and workflow deadlines.
 - [x] Delay GitHub Release creation until applicable smoke succeeds.
 - [x] Pin all workflow actions plus Buildx, BuildKit, and QEMU inputs.
-- [x] Scan both candidate platform digests before resumable semver promotion.
+- [x] Scan both digest-only platform children and record the index digest.
 - [x] Re-check highest stable command tag immediately before moving `latest`.
 
 ## Task 14: Add exact-accounting chaos and release proofs

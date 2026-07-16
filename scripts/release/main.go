@@ -108,7 +108,11 @@ func runCLI(
 		if err := strictModule(ctx, runner, repo, manifest, entry.Path, version, true); err != nil {
 			return err
 		}
-		return printModuleOutputs(output, manifest, entry, version, *tag)
+		commit, err := tagCommitAtHead(ctx, runner, repo, *tag)
+		if err != nil {
+			return err
+		}
+		return printModuleOutputs(output, manifest, entry, version, *tag, commit)
 
 	case "strict-module":
 		flags := flag.NewFlagSet("strict-module", flag.ContinueOnError)
@@ -253,6 +257,8 @@ func runCLI(
 		flags.SetOutput(io.Discard)
 		repoFlag := flags.String("repo", "", "repository root")
 		version := flags.String("version", "", "stable cmd/gobridge version")
+		remote := flags.String("remote", "origin", "Git remote")
+		commit := flags.String("commit", "", "validated final-module tag commit")
 		if err := parseCommandFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -260,7 +266,11 @@ func runCLI(
 		if err != nil {
 			return err
 		}
-		if err := requireFlag("version", *version); err != nil {
+		if err := requireFlags(map[string]string{
+			"commit":  *commit,
+			"remote":  *remote,
+			"version": *version,
+		}); err != nil {
 			return err
 		}
 		promote, highest, err := latestStableCommandVersion(
@@ -269,11 +279,49 @@ func runCLI(
 			repo,
 			manifest,
 			*version,
+			*remote,
+			*commit,
 		)
 		if err != nil {
 			return err
 		}
 		return writeOutput(output, "promote=%t\nhighest=%s\n", promote, highest)
+
+	case "remote-tag":
+		flags := flag.NewFlagSet("remote-tag", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		repoFlag := flags.String("repo", "", "repository root")
+		remote := flags.String("remote", "origin", "Git remote")
+		tag := flags.String("tag", "", "validated release tag")
+		commit := flags.String("commit", "", "validated release tag commit")
+		if err := parseCommandFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		repo, manifest, err := commandContext(*repoFlag)
+		if err != nil {
+			return err
+		}
+		if err := requireFlags(map[string]string{
+			"commit": *commit,
+			"remote": *remote,
+			"tag":    *tag,
+		}); err != nil {
+			return err
+		}
+		if _, _, err := manifest.moduleForTag(*tag); err != nil {
+			return err
+		}
+		if err := verifyRemoteTagCommit(
+			ctx,
+			runner,
+			repo,
+			*remote,
+			*tag,
+			*commit,
+		); err != nil {
+			return err
+		}
+		return writeOutput(output, "Remote tag %s matches %s.\n", *tag, *commit)
 
 	default:
 		return usageError()
@@ -477,16 +525,18 @@ func printModuleOutputs(
 	entry publishedModule,
 	version string,
 	tag string,
+	commit string,
 ) error {
 	// GitHub Actions consumes these key/value lines through GITHUB_OUTPUT.
 	return writeOutput(
 		output,
-		"tag=%s\nversion=%s\npath=%s\nimport=%s\nlayer=%d\n",
+		"tag=%s\nversion=%s\npath=%s\nimport=%s\nlayer=%d\ncommit=%s\n",
 		tag,
 		version,
 		entry.Path,
 		manifest.importPath(entry.Path),
 		entry.Layer,
+		commit,
 	)
 }
 
@@ -580,6 +630,6 @@ func requireFlags(values map[string]string) error {
 func usageError() error {
 	return errors.New(
 		"usage: release <source|list|strict-all|strict-tag|strict-module|" +
-			"stage-module|stage-bootstrap|derive-bootstrap|smoke|latest> [flags]",
+			"stage-module|stage-bootstrap|derive-bootstrap|smoke|latest|remote-tag> [flags]",
 	)
 }

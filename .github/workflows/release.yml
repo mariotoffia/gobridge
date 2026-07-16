@@ -12,7 +12,29 @@ permissions:
   contents: read
 
 jobs:
+  tag-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require protected creation-only tag event
+        env:
+          CREATED: ${{ github.event.created }}
+          DELETED: ${{ github.event.deleted }}
+          FORCED: ${{ github.event.forced }}
+          PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ "$CREATED" != "true" ] ||
+            [ "$DELETED" != "false" ] ||
+            [ "$FORCED" != "false" ] ||
+            [ "$PROTECTED" != "true" ]; then
+            echo "::error::release requires a protected, non-forced tag creation event"
+            exit 1
+          fi
+
   validate:
+    needs: tag-policy
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -23,6 +45,7 @@ jobs:
       path: ${{ steps.module.outputs.path }}
       import: ${{ steps.module.outputs.import }}
       layer: ${{ steps.module.outputs.layer }}
+      commit: ${{ steps.module.outputs.commit }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -89,6 +112,30 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out validated tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Re-resolve protected remote tag before GitHub Release
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
+          make verify-remote-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
+
       - name: Create module GitHub Release after all applicable gates
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -126,6 +173,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
     steps:
       - name: Check out final tagged source and all tags
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -135,14 +184,14 @@ jobs:
       - name: Set up pinned QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         with:
-          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Set up pinned Docker Buildx and BuildKit
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           version: v0.35.0
-          driver-opts: image=moby/buildkit:v0.31.1@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          driver-opts: image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -151,37 +200,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Find resumable commit-scoped candidate
-        id: candidate
+      - name: Re-resolve protected remote tag before image digest publication
         env:
-          CANDIDATE: ghcr.io/mariotoffia/gobridge:candidate-${{ github.sha }}
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          if output="$(docker buildx imagetools inspect \
-            "$CANDIDATE" --format '{{.Manifest.Digest}}' 2>&1)"; then
-            if [[ ! "$output" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::candidate returned invalid digest '$output'"
-              exit 1
-            fi
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "digest=$output" >> "$GITHUB_OUTPUT"
-            echo "Resuming existing candidate $CANDIDATE@$output"
-          elif grep -Eiq '(manifest unknown|name unknown|404 Not Found|MANIFEST_UNKNOWN|NAME_UNKNOWN)' <<<"$output"; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::candidate inspect failed (not a NOT_FOUND): $output"
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
             exit 1
-          fi
+          }
+          make verify-remote-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
 
-      - name: Build and push commit-scoped candidate
-        if: steps.candidate.outputs.exists != 'true'
+      - name: Build and push image content by digest
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/mariotoffia/gobridge:candidate-${{ github.sha }}
+          outputs: type=image,name=ghcr.io/mariotoffia/gobridge,push=true,push-by-digest=true,name-canonical=true
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
             GIT_SHA=${{ github.sha }}
@@ -190,24 +229,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Resolve and validate candidate digest
+      - name: Validate content-addressed image digest
         id: image
         env:
-          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
-          EXISTING_DIGEST: ${{ steps.candidate.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          digest="$BUILT_DIGEST"
-          if [ -z "$digest" ]; then
-            digest="$EXISTING_DIGEST"
-          fi
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::candidate has invalid digest '$digest'"
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image has invalid digest '$DIGEST'"
             exit 1
           fi
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Immutable image: ghcr.io/mariotoffia/gobridge@$DIGEST"
 
-      - name: Inspect candidate platform children
+      - name: Inspect image platform children
         id: children
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
@@ -222,7 +257,7 @@ jobs:
             select(.platform.os == "linux" and .platform.architecture == "arm64")] |
             length' <<<"$raw")"
           if [ "$amd64_count" -ne 1 ] || [ "$arm64_count" -ne 1 ]; then
-            echo "::error::candidate must contain exactly one linux/amd64 and one linux/arm64 image"
+            echo "::error::image must contain exactly one linux/amd64 and one linux/arm64 child"
             exit 1
           fi
           amd64="$(jq -r '.manifests[] |
@@ -233,7 +268,7 @@ jobs:
             .digest' <<<"$raw")"
           for digest in "$amd64" "$arm64"; do
             if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::candidate child has invalid digest '$digest'"
+              echo "::error::image child has invalid digest '$digest'"
               exit 1
             fi
           done
@@ -266,44 +301,23 @@ jobs:
           severity: HIGH,CRITICAL
           timeout: 10m
 
-      - name: Refuse or resume stable semver tag, then promote by digest
+      - name: Re-check remote ordering and promote latest only for the highest stable version
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
+          GITHUB_SHA: ${{ github.sha }}
           IMAGE: ghcr.io/mariotoffia/gobridge
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          stable="$IMAGE:$VERSION"
-          if output="$(docker buildx imagetools inspect \
-            "$stable" --format '{{.Manifest.Digest}}' 2>&1)"; then
-            if [ "$output" != "$DIGEST" ]; then
-              echo "::error::$stable already points to $output, not $DIGEST"
-              exit 1
-            fi
-            echo "$stable already points to the scanned digest; resuming."
-          elif grep -Eiq '(manifest unknown|name unknown|404 Not Found|MANIFEST_UNKNOWN|NAME_UNKNOWN)' <<<"$output"; then
-            docker buildx imagetools create --tag "$stable" "$IMAGE@$DIGEST"
-          else
-            echo "::error::stable tag inspect failed (not a NOT_FOUND): $output"
-            exit 1
-          fi
-          promoted="$(docker buildx imagetools inspect \
-            "$stable" --format '{{.Manifest.Digest}}')"
-          if [ "$promoted" != "$DIGEST" ]; then
-            echo "::error::$stable resolved to '$promoted', want '$DIGEST'"
-            exit 1
-          fi
-
-      - name: Re-check ordering and promote latest only for the highest stable version
-        env:
-          DIGEST: ${{ steps.image.outputs.digest }}
-          IMAGE: ghcr.io/mariotoffia/gobridge
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          git fetch --force --tags origin
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
           decision="$(make --no-print-directory release-latest-version \
-            RELEASE_VERSION="$RELEASE_VERSION")"
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            RELEASE_COMMIT="$RELEASE_COMMIT")"
           printf '%s\n' "$decision"
           promote="$(awk -F= '$1 == "promote" { print $2 }' <<<"$decision")"
           highest="$(awk -F= '$1 == "highest" { print $2 }' <<<"$decision")"
@@ -318,3 +332,68 @@ jobs:
           else
             echo "$RELEASE_VERSION is older than $highest; latest remains unchanged."
           fi
+
+  record-image-digest:
+    needs:
+      - validate
+      - github-release
+      - image
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out validated tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Write immutable image digest record
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image has invalid digest '$DIGEST'"
+            exit 1
+          fi
+          printf 'ghcr.io/mariotoffia/gobridge@%s\n' "$DIGEST" > gobridge-image-digest.txt
+          {
+            echo "### Immutable release image"
+            echo
+            echo '```text'
+            cat gobridge-image-digest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-resolve protected remote tag before digest asset publication
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
+          make verify-remote-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
+
+      - name: Attach immutable image digest to command GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          files: gobridge-image-digest.txt
+          overwrite_files: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

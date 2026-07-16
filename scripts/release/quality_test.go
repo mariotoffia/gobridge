@@ -305,13 +305,16 @@ func TestLatestStableCommandVersion_DelayedOldTrainCannotPromote(t *testing.T) {
 		if len(request.Args) > 0 && request.Args[0] == "rev-parse" {
 			return []byte("0123456789abcdef0123456789abcdef01234567\n"), nil
 		}
-		return []byte(strings.Join([]string{
-			"v0.9.0",
-			"cmd/gobridge/v0.3.0",
-			"cmd/gobridge/v0.4.0-rc.1",
-			"cmd/gobridge/v0.4.0",
-			"testutil/wait/v9.9.9",
-		}, "\n")), nil
+		if len(request.Args) > 1 && request.Args[1] == "--tags" {
+			return []byte(strings.Join([]string{
+				"0123456789abcdef0123456789abcdef01234567\trefs/tags/cmd/gobridge/v0.3.0",
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/cmd/gobridge/v0.4.0-rc.1",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/cmd/gobridge/v0.4.0",
+			}, "\n")), nil
+		}
+		return []byte(
+			"0123456789abcdef0123456789abcdef01234567\trefs/tags/cmd/gobridge/v0.3.0\n",
+		), nil
 	})
 
 	promote, highest, err := latestStableCommandVersion(
@@ -320,6 +323,8 @@ func TestLatestStableCommandVersion_DelayedOldTrainCannotPromote(t *testing.T) {
 		"/repo",
 		manifest,
 		"v0.3.0",
+		"origin",
+		"0123456789abcdef0123456789abcdef01234567",
 	)
 	if err != nil {
 		t.Fatalf("latestStableCommandVersion() error = %v", err)
@@ -341,11 +346,12 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 		"validate:",
 		"external-consumer-smoke:",
 		"github-release:",
-		"candidate-${{ github.sha }}",
-		"Inspect candidate platform children",
+		"Build and push image content by digest",
+		"Inspect image platform children",
 		"Scan linux/amd64 child",
 		"Scan linux/arm64 child",
 		"release-latest-version",
+		"record-image-digest:",
 		"timeout-minutes:",
 		"version: v0.35.0",
 		"moby/buildkit:v0.31.1@sha256:",
@@ -363,11 +369,11 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 	if strings.Count(text, "uses: aquasecurity/trivy-action@") != 2 {
 		t.Error("release workflow must scan both platform children with pinned Trivy actions")
 	}
-	buildCandidate := strings.Index(text, "Build and push commit-scoped candidate")
+	buildDigest := strings.Index(text, "Build and push image content by digest")
 	scanArm64 := strings.Index(text, "Scan linux/arm64 child")
-	promoteStable := strings.Index(text, "Refuse or resume stable semver tag")
-	if buildCandidate < 0 || scanArm64 < buildCandidate || promoteStable < scanArm64 {
-		t.Error("stable semver promotion must occur only after candidate build and both child scans")
+	promoteLatest := strings.Index(text, "promote latest only for the highest stable version")
+	if buildDigest < 0 || scanArm64 < buildDigest || promoteLatest < scanArm64 {
+		t.Error("latest promotion must occur only after digest-only build and both child scans")
 	}
 }
 
@@ -392,6 +398,138 @@ func TestWorkflows_AllActionsUseImmutableCommitSHAs(t *testing.T) {
 			if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(match[1]) {
 				t.Errorf("%s action ref %q is not an immutable commit SHA", name, match[1])
 			}
+		}
+	}
+}
+
+func TestValidateTagPushEvent_TruthTable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		created   bool
+		deleted   bool
+		forced    bool
+		protected bool
+		wantErr   bool
+	}{
+		{name: "protected creation", created: true, protected: true},
+		{name: "not created", protected: true, wantErr: true},
+		{name: "deleted", created: true, deleted: true, protected: true, wantErr: true},
+		{name: "forced", created: true, forced: true, protected: true, wantErr: true},
+		{name: "unprotected", created: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateTagPushEvent(tt.created, tt.deleted, tt.forced, tt.protected)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateTagPushEvent() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseRemoteTagCommit_LightweightAndAnnotated(t *testing.T) {
+	t.Parallel()
+
+	const (
+		tag       = "cmd/gobridge/v0.3.0"
+		tagObject = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		commit    = "0123456789abcdef0123456789abcdef01234567"
+	)
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "lightweight",
+			output: commit + "\trefs/tags/" + tag + "\n",
+			want:   commit,
+		},
+		{
+			name: "annotated",
+			output: tagObject + "\trefs/tags/" + tag + "\n" +
+				commit + "\trefs/tags/" + tag + "^{}\n",
+			want: commit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseRemoteTagCommit(tag, []byte(tt.output))
+			if err != nil {
+				t.Fatalf("parseRemoteTagCommit() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseRemoteTagCommit() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyRemoteTagCommit_RejectsMovedOrMissingTag(t *testing.T) {
+	t.Parallel()
+
+	const (
+		tag      = "cmd/gobridge/v0.3.0"
+		expected = "0123456789abcdef0123456789abcdef01234567"
+		moved    = "fedcba9876543210fedcba9876543210fedcba98"
+	)
+	for _, output := range []string{"", moved + "\trefs/tags/" + tag + "\n"} {
+		runner := qualityRunner(func(_ context.Context, request commandRequest) ([]byte, error) {
+			if request.Name != "git" {
+				return nil, fmt.Errorf("unexpected command %s", request.Name)
+			}
+			return []byte(output), nil
+		})
+		if err := verifyRemoteTagCommit(
+			context.Background(),
+			runner,
+			"/repo",
+			"origin",
+			tag,
+			expected,
+		); err == nil {
+			t.Fatalf("verifyRemoteTagCommit() accepted remote output %q", output)
+		}
+	}
+}
+
+func TestReleaseWorkflow_DigestOnlyAndProtectedTagPolicy(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	text := string(workflow)
+	for _, want := range []string{
+		"github.event.created",
+		"github.event.deleted",
+		"github.event.forced",
+		"github.ref_protected",
+		"push-by-digest=true",
+		"name-canonical=true",
+		"gobridge-image-digest.txt",
+		"verify-remote-release-tag",
+		"tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0",
+		"moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("release workflow missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"candidate-${{ github.sha }}",
+		"Refuse or resume stable semver tag",
+		"tags: ghcr.io/mariotoffia/gobridge:",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("release workflow retains mutable image tag behavior %q", forbidden)
 		}
 	}
 }

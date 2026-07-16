@@ -61,8 +61,28 @@ make them tagged releases.
    timestamp/hash manually. Push the bootstrap commit first, then derive every
    version with `go list -m -json <module>@<commit>`. The release tool verifies
    the returned origin commit and downloaded helper go.mod.
-7. **Never move a module or immutable image tag.** A failed public release is
-   corrected with a new patch train, not by deleting or recreating a tag.
+7. **Never move a module tag.** A failed public module release is corrected with
+   a new patch train, not by deleting or recreating a tag. Container releases
+   have no semver registry tag; their immutable identity is the recorded digest.
+
+## Required GitHub tag ruleset
+
+The release workflow rejects any tag push unless GitHub reports
+`created=true`, `deleted=false`, `forced=false`, and `ref_protected=true`.
+Configure a repository **tag ruleset** before the first train:
+
+- target patterns `v*` and `**/v*` (the verifier remains the authoritative
+  published-module allow-list);
+- restrict tag creation, updates, and deletions;
+- grant bypass/creation authority only to the approved release principals;
+- do not permit force updates or deletion after creation.
+
+The event check is the first job, before checkout. Every privileged boundary
+re-resolves both lightweight and annotated tags from `origin` with
+`git ls-remote`, peels annotated tags, and requires the remote commit to remain
+the original validated `github.sha`. A disappeared or moved tag fails GitHub
+Release creation, digest publication, digest-asset upload, and `latest`
+promotion.
 
 ## Verification modes
 
@@ -271,29 +291,33 @@ Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.
 Root, adapter, processor, deployment, internal, and prerelease tags cannot enter
 the image job.
 
-The workflow uses immutable action commit SHAs, Buildx v0.35.0, BuildKit
-v0.31.1 by image digest, and binfmt/QEMU v10.2.3 by image digest. It:
+The workflow uses immutable action commit SHAs, Buildx v0.35.0,
+`moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a`,
+and
+`tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`.
+It:
 
-1. builds or resumes only the commit-scoped
-   `ghcr.io/mariotoffia/gobridge:candidate-<git-sha>` tag, with BuildKit SBOM
-   and `provenance: mode=max`; failed-scan candidates are retained for audit and
-   safe workflow resume because this repository has no established GHCR
-   deletion API policy;
-2. validates the candidate index digest and requires exactly one runnable
+1. pushes the multi-platform image **by digest only** with BuildKit exporter
+   `push-by-digest=true,name-canonical=true`, SBOM, and
+   `provenance: mode=max`; no candidate or semver container tag is created;
+2. validates the image index digest and requires exactly one runnable
    `linux/amd64` child and one runnable `linux/arm64` child;
 3. scans **both exact child digests**, never a mutable tag, using Trivy Action
    v0.36.0 pinned to commit
    `ed142fd0673e97e23eac54620cfb913e5ce36c25`;
 4. fails on any HIGH or CRITICAL OS/library vulnerability, including unfixed
    findings;
-5. only after both scans, creates the stable semver tag from the candidate
-   digest; an absent tag is created, the same digest is resumable, and a
-   different digest or non-NOT_FOUND inspect error fails closed;
-6. immediately fetches all Git tags inside the serialized image job and moves
-   `latest` only when this candidate is the highest stable
+5. records `ghcr.io/mariotoffia/gobridge@sha256:...` in the workflow summary
+   and attaches `gobridge-image-digest.txt` to the matching command GitHub
+   Release after the image succeeds;
+6. immediately queries protected remote Git tags inside the serialized image
+   job and moves the sole mutable tag, `latest`, only when this release is the
+   highest stable
    `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
 
-Neither the stable semver tag nor `latest` is part of the initial build, and
-neither is rebuilt separately. GitHub Releases remain per-module; the final
-command release is created only after strict train validation and both external
-consumer resolution passes succeed.
+GHCR does not document immutable tag enforcement or conditional OCI tag
+creation, so a version-to-image association is **only** the digest asset on the
+command GitHub Release, never `ghcr.io/...:vX.Y.Z`. `latest` is not part of the
+build and is promoted from the exact scanned digest without rebuilding. GitHub
+Releases remain per-module; the final command release is created only after
+strict train validation and both external consumer resolution passes succeed.
