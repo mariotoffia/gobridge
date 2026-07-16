@@ -65,6 +65,7 @@ func TestTask14_DuplicateClientIDTakeoverStorm(t *testing.T) {
 
 	second := newContender(metricsB)
 	t.Cleanup(func() { _ = second.Close(context.Background()) })
+	t.Cleanup(pump.stop)
 	require.NoError(t, second.Start(ctx))
 	wait.Until(t, 30*time.Second, "real duplicate-client takeover storm", func() bool {
 		return takeoverMetricCount(metricsA)+takeoverMetricCount(metricsB) >= 2
@@ -108,6 +109,7 @@ func TestTask14_DuplicateClientIDTakeoverStorm(t *testing.T) {
 		t.Fatalf("takeover accounting failed: %s", report.String())
 	}
 
+	pump.stop()
 	stopReceiver()
 	if err := <-receiverDone; err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("takeover receiver stopped with error: %v", err)
@@ -127,8 +129,11 @@ func takeoverMetricCount(metrics *ports.RecordingExporter) int {
 }
 
 type takeoverReconcilePump struct {
-	mu  sync.Mutex
-	err error
+	mu       sync.Mutex
+	err      error
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func startTakeoverReconcilePump(
@@ -136,11 +141,13 @@ func startTakeoverReconcilePump(
 	session *paho.Session,
 	plan connectivity.SessionPlan,
 ) *takeoverReconcilePump {
-	pump := &takeoverReconcilePump{}
+	pumpCtx, cancel := context.WithCancel(ctx)
+	pump := &takeoverReconcilePump{cancel: cancel, done: make(chan struct{})}
 	go func() {
+		defer close(pump.done)
 		for {
 			select {
-			case <-ctx.Done():
+			case <-pumpCtx.Done():
 				return
 			case event, ok := <-session.Events():
 				if !ok {
@@ -149,7 +156,7 @@ func startTakeoverReconcilePump(
 				if event.Type != ports.SessionConnected {
 					continue
 				}
-				err := session.Reconcile(ctx, plan)
+				err := session.Reconcile(pumpCtx, plan)
 				pump.mu.Lock()
 				pump.err = err
 				pump.mu.Unlock()
@@ -157,6 +164,13 @@ func startTakeoverReconcilePump(
 		}
 	}()
 	return pump
+}
+
+func (p *takeoverReconcilePump) stop() {
+	p.stopOnce.Do(func() {
+		p.cancel()
+		<-p.done
+	})
 }
 
 func (p *takeoverReconcilePump) latestError() error {

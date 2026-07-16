@@ -54,6 +54,7 @@ func TestReleaseWorkflow_SeparatesPrivilegedJobs(t *testing.T) {
 	for _, name := range []string{
 		"tag-policy",
 		"validate",
+		"final-release-tests",
 		"external-consumer-smoke",
 		"github-release",
 		"image",
@@ -65,6 +66,73 @@ func TestReleaseWorkflow_SeparatesPrivilegedJobs(t *testing.T) {
 			t.Errorf("job %s combines contents:write with packages:write", name)
 		}
 	}
+}
+
+func TestReleaseWorkflow_FinalCommandTestsGatePublication(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(data)
+	gate := workflowJobBlock(t, workflow, "final-release-tests", "external-consumer-smoke")
+	requireWorkflowText(
+		t,
+		gate,
+		"needs: validate",
+		"if: needs.validate.outputs.path != 'cmd/gobridge'",
+		"if: needs.validate.outputs.path == 'cmd/gobridge'",
+		"- name: Run uncached integration release gate\n"+
+			"        if: needs.validate.outputs.path == 'cmd/gobridge'\n"+
+			"        run: make test-integration",
+		"- name: Run uncached long-running release gate\n"+
+			"        if: needs.validate.outputs.path == 'cmd/gobridge'\n"+
+			"        run: make test-long-running",
+		"- name: Run bounded MQTT ingress memory release gate\n"+
+			"        if: needs.validate.outputs.path == 'cmd/gobridge'\n"+
+			"        run: make test-mqtt-ingress-memory",
+	)
+	forbidWorkflowText(t, gate, "\n    if:",
+		"make test-integration ||", "make test-long-running ||")
+
+	for _, downstream := range []struct {
+		name string
+		next string
+	}{
+		{name: "external-consumer-smoke", next: "github-release"},
+		{name: "github-release", next: "image"},
+		{name: "image", next: "image-association"},
+	} {
+		block := workflowJobBlock(t, workflow, downstream.name, downstream.next)
+		requireWorkflowText(t, block, "needs:", "- final-release-tests")
+	}
+}
+
+func TestWorkflows_BoundedMQTTIngressMemoryUsesSharedTarget(t *testing.T) {
+	t.Parallel()
+
+	root := repositoryRootForTest(t)
+	ciData, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	releaseData, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	ciIntegration := workflowJobBlock(t, string(ciData), "integration", "long-running")
+	releaseGate := workflowJobBlock(t, string(releaseData), "final-release-tests", "external-consumer-smoke")
+	requireWorkflowText(t, ciIntegration,
+		"- name: Run bounded MQTT ingress memory proof\n"+
+			"        run: make test-mqtt-ingress-memory")
+	requireWorkflowText(t, releaseGate, "run: make test-mqtt-ingress-memory")
+	forbidWorkflowText(t, ciIntegration,
+		"GOBRIDGE_REQUIRE_MEMORY_LIMIT",
+		"memory.max",
+		"mqtt-memory.test",
+		"docker network create",
+	)
 }
 
 func workflowJobBlock(t *testing.T, workflow, name, next string) string {
@@ -109,6 +177,7 @@ func nextReleaseJob(name string) string {
 	order := []string{
 		"tag-policy",
 		"validate",
+		"final-release-tests",
 		"external-consumer-smoke",
 		"github-release",
 		"image",

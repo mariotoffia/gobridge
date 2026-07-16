@@ -1035,7 +1035,7 @@ build: enforce staged multi-module releases
 
 ## Task 14: Add exact-accounting chaos and release proofs
 
-**Status:** Completed with aggregate-suite concerns
+**Status:** Implemented; aggregate release validation remains red
 
 **Agents/Skills:** thiink:test-designer, test-automator,
 thiink:resilience-auditor, thiink:test-reviewer
@@ -1055,6 +1055,11 @@ thiink:resilience-auditor, thiink:test-reviewer
 - Modify: `tests/integration/mqtt_equal_publish_identity_test.go`
 - Modify: `tests/integration/mqtt_settlement_recovery_test.go`
 - Modify: `tests/longrunning/uc46_broker_edge_test.go`
+- Modify: `Makefile`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `.github/workflows/release.yml`
+- Create: `scripts/test-mqtt-ingress-memory.sh`
+- Modify: `scripts/release/workflow_security_test.go`
 - Modify: `tests/_test_index.md`
 - Modify: `PROD_READY_ISSUES_PLAN.md`
 
@@ -1071,8 +1076,11 @@ Use the same client ID, `clean_start=false`, persisted broker state, queued QoS
 1/2 messages, real disconnect/reconnect, and Session Present. Force reconcile
 timeout and assert bounded degradation/retry. The persisted-session proof queues
 QoS 1 and QoS 2 while offline, restarts Mosquitto, and requires exact delivery
-plus current health/reconcile evidence. A separate real Stop/Restart proof
-forces a timed-out reconcile, observes Degraded, retries, and restores Full.
+plus current health/reconcile evidence. The adapter-owned timeout, Degraded
+state, retry, and Full recovery are proved deterministically with
+`reconcileProbeCM`; the separate integration proof uses real broker Stop/Restart
+and proves reconnect, re-subscribe, and resumed delivery. A caller-owned timeout
+is not presented as adapter timeout evidence.
 
 - [x] **Step 3: Add fault matrices**
 
@@ -1093,7 +1101,7 @@ deduplication. The equal-valued gate documents that, without a producer oracle,
 an output count cannot distinguish a hypothetical duplicate+missing pair; no
 identifier is smuggled onto the source wire.
 
-- [x] **Step 5: Run release suites**
+- [ ] **Step 5: Pass release suites**
 
 ```bash
 (cd adapters/mqtt/transport/paho && go test -race -count=1 ./...)
@@ -1103,10 +1111,13 @@ make test-long-running
 
 Task 14 focused Paho, connection, accounting, identity, store-outage, takeover,
 SIGKILL, settlement, and UC46 proofs pass under race. `make test-integration`
-and `make test-long-running` were also run to completion; unrelated existing
-tests remain red (32 integration and 17 long-running top-level failures,
-recorded in `reports/test-integration.log` and
-`reports/test-long-running.log`). `make lint` and `make test` pass.
+and `make test-long-running` were run to completion but do not pass: unrelated
+existing tests remain red (32 integration and 17 long-running top-level
+failures, recorded in `reports/test-integration.log` and
+`reports/test-long-running.log`). `make lint` and `make test` pass. The final
+`cmd/gobridge` release path now requires fresh integration and long-running
+release jobs plus the shared mandatory 512 MiB MQTT ingress-memory proof; this
+checklist remains open until the aggregate gates are green.
 
 Existing proof reused rather than duplicated:
 
@@ -1125,8 +1136,12 @@ Existing proof reused rather than duplicated:
   `newPersistentCollectorWithBroker` already acknowledge every delivery and
   surface receiver errors. UC42 already checks outbox completion independently.
 - `make test-integration` already runs the full Paho race suite. The existing
-  long-running job is already restricted to schedule/workflow dispatch with a
-  finite timeout, so no duplicate CI step or unrelated cgroup claim was added.
+  long-running CI job remains restricted to schedule/workflow dispatch with a
+  finite timeout; the release workflow invokes both uncached Make gates only for
+  the final `cmd/gobridge` module and makes publication/image jobs depend on that
+  gate. CI integration and final release both invoke
+  `make test-mqtt-ingress-memory`, which runs the same non-race measured binary
+  under an asserted 512 MiB/no-swap cgroup. No unrelated cgroup claim was added.
 
 No production change or dependency/go.mod change was required.
 

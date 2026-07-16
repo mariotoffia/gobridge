@@ -78,8 +78,43 @@ jobs:
           RELEASE_VERSION: ${{ steps.module.outputs.version }}
         run: make verify-published-modules RELEASE_VERSION="$RELEASE_VERSION"
 
-  external-consumer-smoke:
+  final-release-tests:
     needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - name: No final release test gate required for this module
+        if: needs.validate.outputs.path != 'cmd/gobridge'
+        run: echo "Full release tests are gated by the final cmd/gobridge module."
+
+      - name: Check out final tagged source
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Run uncached integration release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-integration
+
+      - name: Run uncached long-running release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-long-running
+
+      - name: Run bounded MQTT ingress memory release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-mqtt-ingress-memory
+
+  external-consumer-smoke:
+    needs:
+      - validate
+      - final-release-tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -110,6 +145,7 @@ jobs:
   github-release:
     needs:
       - validate
+      - final-release-tests
       - external-consumer-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -172,6 +208,7 @@ jobs:
   image:
     needs:
       - validate
+      - final-release-tests
       - external-consumer-smoke
       - github-release
     if: >-

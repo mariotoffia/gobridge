@@ -2,20 +2,16 @@ package paho_test
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -157,108 +153,4 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 
 func topicForGoroutine(goroutine, iter int) string {
 	return "conc/" + string(rune('a'+goroutine)) + "/" + string(rune('0'+iter))
-}
-
-func TestIntegration_ReconnectReconcileTimeoutDegradesAndRecovers(t *testing.T) {
-	if testing.Short() {
-		t.Skip("broker restart integration test")
-	}
-	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	metrics := &ports.RecordingExporter{}
-	clk := clocktest.New()
-	topic := "task14/reconnect/" + mqttlocal.UniqueClientID("topic")
-	session := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:       []string{broker.URL()},
-		ClientID:         mqttlocal.UniqueClientID("task14-reconnect"),
-		KeepAlive:        2,
-		ConnectTimeout:   5 * time.Second,
-		ReconnectDelay:   50 * time.Millisecond,
-		ReconnectTimeout: 2 * time.Second,
-		ReconcileTimeout: 2 * time.Second,
-		CleanStart:       true,
-		Clock:            clk,
-	}, connectivity.SessionEphemeral, nil, metrics)
-	t.Cleanup(func() { _ = session.Close(context.Background()) })
-	if err := session.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	plan := connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
-	}
-	if err := session.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("initial Reconcile: %v", err)
-	}
-
-	accountant, err := prodid.New([]string{"recovered-message"}, false)
-	if err != nil {
-		t.Fatalf("new producer accountant: %v", err)
-	}
-	receiver := paho.NewReceiver("task14-reconnect-receiver", session)
-	receiverCtx, stopReceiver := context.WithCancel(ctx)
-	receiverDone := make(chan error, 1)
-	go func() {
-		receiverDone <- receiver.Run(receiverCtx, func(ctx context.Context, delivery ports.Delivery) error {
-			envelope := delivery.Envelope()
-			accountant.ObserveOutput(envelope.ID(), envelope.ID())
-			return delivery.Ack(ctx)
-		})
-	}()
-	wait.RequireClosed(t, receiver.Started(), 5*time.Second)
-	wait.Until(t, 5*time.Second, "initial full service", func() bool {
-		return session.Health(ctx).ServiceLevel == ports.ServiceLevelFull
-	})
-
-	broker.Stop()
-	wait.Until(t, 10*time.Second, "real broker disconnect", func() bool {
-		return !session.Health(ctx).Connected
-	})
-	broker.Restart()
-	wait.Until(t, 20*time.Second, "real broker reconnect", func() bool {
-		return session.Health(ctx).Connected
-	})
-
-	expired, expire := context.WithTimeout(ctx, time.Nanosecond)
-	<-expired.Done()
-	err = session.Reconcile(expired, plan)
-	expire()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("reconnect Reconcile error = %v, want context deadline", err)
-	}
-	degraded := session.Health(ctx)
-	if degraded.ServiceLevel != ports.ServiceLevelDegraded ||
-		degraded.SubscriptionsSatisfied == nil || *degraded.SubscriptionsSatisfied {
-		t.Fatalf("failed reconnect reconcile did not remain degraded: %+v", degraded)
-	}
-
-	if err := session.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("retry reconnect Reconcile: %v", err)
-	}
-	wait.Until(t, 5*time.Second, "reconcile retry restores full service", func() bool {
-		return session.Health(ctx).ServiceLevel == ports.ServiceLevelFull
-	})
-	sender := paho.NewSender(session, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
-	envelope := messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID:      "recovered-message",
-		Subject: topic,
-		Payload: []byte("recovered"),
-	})
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: envelope, Address: topic}); err != nil {
-		t.Fatalf("send after reconcile recovery: %v", err)
-	}
-	wait.Until(t, 5*time.Second, "delivery after reconcile recovery", func() bool {
-		return accountant.Reconcile().Exact()
-	})
-	if report := accountant.Reconcile(); !report.Exact() {
-		t.Fatalf("reconnect recovery accounting failed: %s", report.String())
-	}
-	if got := len(metrics.FindEntries(paho.MetricMQTTReconcileLatency)); got != 2 {
-		t.Fatalf("successful reconcile latency entries = %d, want 2", got)
-	}
-
-	stopReceiver()
-	if err := <-receiverDone; err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("receiver stopped with error: %v", err)
-	}
 }

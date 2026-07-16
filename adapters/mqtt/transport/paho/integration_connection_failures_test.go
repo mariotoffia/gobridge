@@ -7,15 +7,21 @@ import (
 	"log"
 	"net"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
+
+const task14DNSChildEnv = "GOBRIDGE_TASK14_DNS_CHILD"
 
 func TestConnectionFailure_BeforeCONNACK(t *testing.T) {
 	requireConnectionIntegration(t)
@@ -66,6 +72,10 @@ func TestConnectionFailure_AfterCONNACK(t *testing.T) {
 }
 
 func TestConnectionFailure_TCPAndDNS(t *testing.T) {
+	if os.Getenv(task14DNSChildEnv) == "1" {
+		testHermeticDNSFailure(t)
+		return
+	}
 	requireConnectionIntegration(t)
 	t.Run("tcp refused", func(t *testing.T) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -80,13 +90,55 @@ func TestConnectionFailure_TCPAndDNS(t *testing.T) {
 			t.Fatal("Start succeeded against a closed TCP address")
 		}
 	})
-	t.Run("reserved invalid DNS name", func(t *testing.T) {
-		// .invalid is reserved by RFC 2606. Only bounded failure is asserted;
-		// resolver-specific error text and timing are deliberately not contracts.
-		if err := startFailureSession(t, "tcp://task14-does-not-exist.invalid:1883", nil); err == nil {
-			t.Fatal("Start succeeded for a reserved invalid DNS name")
+	t.Run("hermetic DNS name error", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, os.Args[0],
+			"-test.run=^TestConnectionFailure_TCPAndDNS$",
+			"-test.count=1",
+		)
+		command.Env = dnsChildEnvironment()
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("DNS failure subprocess: %v\n%s", err, output)
 		}
 	})
+}
+
+func dnsChildEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != task14DNSChildEnv && key != "all_proxy" {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, task14DNSChildEnv+"=1", "all_proxy=")
+}
+
+func testHermeticDNSFailure(t *testing.T) {
+	const hostname = "task14-dns.test"
+	server := startLoopbackDNSServer(t)
+	originalResolver := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dialer := net.Dialer{}
+			return dialer.DialContext(ctx, network, server.address)
+		},
+	}
+	t.Cleanup(func() { net.DefaultResolver = originalResolver })
+
+	if err := startFailureSession(t, "tcp://"+hostname+":1883", nil); err == nil {
+		t.Fatal("Start succeeded after the loopback DNS server returned NXDOMAIN")
+	}
+	query := wait.RequireReceive(t, server.queries, 2*time.Second)
+	if query.name != hostname+"." {
+		t.Fatalf("DNS query name = %q, want %q", query.name, hostname+".")
+	}
+	if query.recordType != dnsmessage.TypeA && query.recordType != dnsmessage.TypeAAAA {
+		t.Fatalf("DNS query type = %v, want A or AAAA", query.recordType)
+	}
 }
 
 func TestConnectionFailure_TLSTrustAndHandshake(t *testing.T) {
@@ -264,4 +316,80 @@ func readMQTTPacket(reader io.Reader) error {
 	}
 	_, err := io.CopyN(io.Discard, reader, int64(remaining))
 	return err
+}
+
+type observedDNSQuery struct {
+	name       string
+	recordType dnsmessage.Type
+}
+
+type loopbackDNSServer struct {
+	address string
+	queries chan observedDNSQuery
+	done    chan struct{}
+}
+
+func startLoopbackDNSServer(t *testing.T) *loopbackDNSServer {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen for loopback DNS: %v", err)
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		_ = conn.Close()
+		<-done
+	})
+	server := &loopbackDNSServer{
+		address: conn.LocalAddr().String(),
+		queries: make(chan observedDNSQuery, 8),
+		done:    done,
+	}
+	go func() {
+		defer close(server.done)
+		buffer := make([]byte, 1232)
+		for {
+			count, client, readErr := conn.ReadFromUDP(buffer)
+			if readErr != nil {
+				return
+			}
+			var parser dnsmessage.Parser
+			header, parseErr := parser.Start(buffer[:count])
+			if parseErr != nil {
+				continue
+			}
+			question, questionErr := parser.Question()
+			if questionErr != nil {
+				continue
+			}
+			builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+				ID:                 header.ID,
+				Response:           true,
+				Authoritative:      true,
+				RecursionDesired:   header.RecursionDesired,
+				RecursionAvailable: true,
+				RCode:              dnsmessage.RCodeNameError,
+			})
+			if buildErr := builder.StartQuestions(); buildErr != nil {
+				continue
+			}
+			if buildErr := builder.Question(question); buildErr != nil {
+				continue
+			}
+			response, buildErr := builder.Finish()
+			if buildErr != nil {
+				continue
+			}
+			if _, writeErr := conn.WriteToUDP(response, client); writeErr != nil {
+				continue
+			}
+			select {
+			case server.queries <- observedDNSQuery{
+				name: question.Name.String(), recordType: question.Type,
+			}:
+			default:
+			}
+		}
+	}()
+	return server
 }

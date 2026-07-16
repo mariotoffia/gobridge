@@ -82,6 +82,10 @@ type Accountant struct {
 
 // New constructs an accountant. Expected producer keys must be non-empty and
 // unique. Their input order defines the requested order when ordered is true.
+//
+// ponytail: ordered accounting assumes observations are serialized by one
+// caller; mutex acquisition order is not a producer-order oracle. Add explicit
+// producer ordinals only if a later ordered proof has multiple collectors.
 func New(expected []string, ordered bool) (*Accountant, error) {
 	keys := make(map[string]struct{}, len(expected))
 	for _, key := range expected {

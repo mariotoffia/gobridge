@@ -264,8 +264,9 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 		return ok
 	})
 
-	// NEGATIVE: assert topicA does NOT arrive.
-	<-time.After(500 * time.Millisecond)
+	// Both QoS 1 publishes use one connection. MQTT preserves their packet
+	// order, so observing topicB is the barrier for the earlier topicA publish;
+	// no negative-delay window is needed.
 
 	recvCancel()
 	wg.Wait()

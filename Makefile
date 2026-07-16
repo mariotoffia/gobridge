@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-cdk-norace test-integration test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -250,6 +250,9 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 			grep -E "^FAIL\s" reports/test-long-running.log || true; \
 		fi; \
 		exit $$rc'
+
+test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 MiB cgroup
+	@scripts/test-mqtt-ingress-memory.sh
 
 # ============================================================================
 # Lint
