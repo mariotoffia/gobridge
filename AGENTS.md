@@ -47,6 +47,8 @@ Both green on your branch. Failures that pre-date your work are still your probl
 
 For the full list of checkers, the report each writes, and the failure → fix recipe table, read `LINT.md`. Read `reports/<tool>.log` first when something is red.
 
+Keep test output context-efficient: write full logs to `reports/`, report only command/status/count/duration for passing runs, and read failure sections only unless full output is required for diagnosis.
+
 Convenience wrappers (same gates, different scopes):
 
 ```bash
