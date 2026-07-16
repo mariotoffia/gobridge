@@ -1422,6 +1422,9 @@ func runConsumerSmokePass(
 	if len(parsed.Replaces) != 0 {
 		return fmt.Errorf("external consumer go.mod contains %d replace directives", len(parsed.Replaces))
 	}
+	if len(parsed.Excludes) != 0 {
+		return fmt.Errorf("external consumer go.mod contains %d exclude directives", len(parsed.Excludes))
+	}
 	return nil
 }
 
@@ -1495,14 +1498,11 @@ func resolveSmokeModule(
 	if err != nil {
 		return err
 	}
-	for _, replacement := range moduleFile.Replaces {
-		if replacement.NewVersion == "" {
-			return fmt.Errorf(
-				"smoke module %s contains local replacement for %s",
-				query,
-				replacement.OldPath,
-			)
-		}
+	if len(moduleFile.Replaces) != 0 {
+		return fmt.Errorf("smoke module %s contains replace directives", query)
+	}
+	if len(moduleFile.Excludes) != 0 {
+		return fmt.Errorf("smoke module %s contains exclude directives", query)
 	}
 	return nil
 }

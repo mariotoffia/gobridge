@@ -853,14 +853,13 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		}
 	}
 
-	// A live reload must NEVER strand already-durable backlog: an outbox
-	// partition that loses its drainer in the new topology, or an outbox/DLQ
-	// store removed while records still sit there. Prove the affected backlog is
-	// drained (F2 depth capability) or refuse the swap — unless the operator set
-	// WithAllowDestructiveReload to discard it (HIGH-2/HIGH-3). Only meaningful
-	// when a store identity change has not already refused the swap.
+	// A live reload must NEVER strand durable backlog. Pending depth cannot prove
+	// safety here: it excludes claimed records, DynamoDB's supporting GSI is
+	// eventually consistent, and ingress can persist after a point-in-time read.
+	// Refuse every outbox/DLQ removal or orphaned partition unless the operator
+	// explicitly authorizes destructive discard (HIGH-2/HIGH-3).
 	var preflightErr error
-	if oldRt != nil && identErr == nil {
+	if oldRt != nil && identErr == nil && leaseIdentErr == nil {
 		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
@@ -876,15 +875,6 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 				"draining/migrating the old store is required to avoid stranding its backlog",
 				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
-	case oldRt != nil && preflightErr != nil:
-		// Refuse the swap and keep the old runtime serving so its durable
-		// backlog is still drained; fail closed rather than abandon messages.
-		err = preflightErr
-		if s.logger != nil {
-			s.logger.Error("supervisor: refusing reload that would strand durable backlog; drain the "+
-				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
-				"error", err, "attempted_config_version", frozenCfg.Version)
-		}
 	case oldRt != nil && leaseIdentErr != nil:
 		// Refuse the swap and keep the old runtime serving under the CURRENT
 		// session_id; changing a lease-bearing exclusive session_id is a
@@ -895,6 +885,15 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			s.logger.Error("supervisor: refusing reload that changes a lease-bearing exclusive "+
 				"session_id (cluster ownership invariant); roll it with a full stop/restart of all "+
 				"nodes or force with WithAllowDestructiveReload",
+				"error", err, "attempted_config_version", frozenCfg.Version)
+		}
+	case oldRt != nil && preflightErr != nil:
+		// Refuse the swap and keep the old runtime serving so its durable
+		// backlog is still drained; fail closed rather than abandon messages.
+		err = preflightErr
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing reload that would strand durable backlog; drain the "+
+				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
 				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case mode == SwapPrepareCommit:
@@ -1585,13 +1584,10 @@ func removedStoreRoles(oldCfg, newCfg *ports.BridgeConfig) []string {
 	return removed
 }
 
-// preflightDepthBudget bounds the depth-report probes the durable-reload
-// preflight runs against the OLD runtime's stores. These are ordinary store
-// reads (a COUNT / QueryPending), but they run inline on the reconfiguration
-// path before the swap, so a wedged store must not stall the reload forever. It
-// is detached from the caller ctx so a final-shutdown-cancelled ctx still lets
-// the preflight decide.
-const preflightDepthBudget = 5 * time.Second
+// strandReportBudget bounds the best-effort pending-depth query after an
+// explicitly forced destructive reload. Correctness never depends on this
+// pending-only observation.
+const strandReportBudget = 5 * time.Second
 
 // sharedOutboxPartitionSessions returns the set of session IDs a config wires
 // shared_outbox outbox drainers for. Each such session owns the outbox
@@ -1760,56 +1756,28 @@ func destructiveReloadShape(oldCfg, newCfg *ports.BridgeConfig) bool {
 	return false
 }
 
-// durableReloadPreflight fails a live reload CLOSED when it would strand
-// already-durable backlog: an outbox partition that loses its drainer in the new
-// topology (route removed, retargeted, changed to direct_hold, or lost its
-// session), or an outbox/DLQ store removed entirely — while records still sit
-// there. It reuses the F2 depth-report capability (OutboxDepthReporter /
-// DLQDepthReporter) to PROVE emptiness; a store that cannot prove its depth is
-// treated as UNPROVEN and refused (fail closed — never assume drained). An
-// operator who truly intends to discard the backlog forces it with
-// WithAllowDestructiveReload. Returns nil when nothing durable would be
-// stranded.
+// durableReloadPreflight fails closed on every live-reload shape that can
+// orphan durable records: removing an outbox/DLQ store or removing the last
+// drainer for an outbox partition. A pending-depth query is not proof of zero
+// nonterminal records because it excludes claimed records, may be eventually
+// consistent, and races late ingress. Safe removal therefore requires an
+// externally quiesced stop/migration; the only live override is explicit
+// destructive discard via WithAllowDestructiveReload.
 //
-// ponytail: "refuse while backlog exists" is the audit's explicitly-accepted
-// fix; the heavier "shadow drainer until empty" alternative is out of scope. The
-// LEASE store is deliberately NOT gated here — it holds fencing tokens, not
-// message backlog, exposes no depth capability to prove empty, and gating it
-// would wedge legitimate exclusive->non-exclusive reloads that merely drop the
-// lease store.
-//
-// ponytail: this proof is POINT-IN-TIME and PENDING-scoped — matching the
-// audit's accepted "refuse while backlog exists" fix (the airtight alternative,
-// shadow drainers / drain-orphaned-partitions-to-idle before swap, is
-// deliberately out of scope). Two bounded residual windows remain, both
-// requiring the operator to remove a route whose SOURCE is still delivering at
-// the reload instant:
-//  1. Late ingress: a record persisted into an orphaned partition AFTER this
-//     count but BEFORE old-runtime Stop is left durable with no new drainer.
-//  2. Claimed in-flight: CountPending counts PENDING only (metric semantics;
-//     see memoryoutbox.CountPending), so a record a drainer is mid-sending is
-//     not counted and strands if its send does not complete during Stop.
-//
-// Operational close: quiesce the source before removing its shared_outbox
-// route. Surfaced observably post-swap via reportOrphanedStrand; primary guard
-// is the point-in-time refusal above.
-func (s *Supervisor) durableReloadPreflight(ctx context.Context, oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) error {
-	if oldRt == nil || oldCfg == nil || newCfg == nil {
+// The lease store is deliberately not gated here: it holds fencing tokens, not
+// message backlog. Store identity changes are rejected separately before this
+// preflight.
+func (s *Supervisor) durableReloadPreflight(_ context.Context, _ *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) error {
+	if oldCfg == nil || newCfg == nil {
 		return nil
 	}
 
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preflightDepthBudget)
-	defer cancel()
-
-	var stranded []string
-
-	// Outbox: a partition is stranded when it had a drainer in the OLD topology
-	// but has none in the NEW one. Removing the outbox store entirely leaves the
-	// new runtime with NO drainers at all, so every old partition is orphaned.
+	var hazards []string
 	if oldCfg.Stores.Outbox != nil {
 		oldSessions := sharedOutboxPartitionSessions(oldCfg)
 		newSessions := sharedOutboxPartitionSessions(newCfg)
 		if newCfg.Stores.Outbox == nil {
+			hazards = append(hazards, "outbox store removal")
 			newSessions = nil
 		}
 		for sid := range oldSessions {
@@ -1817,59 +1785,36 @@ func (s *Supervisor) durableReloadPreflight(ctx context.Context, oldRt *runtime.
 				continue
 			}
 			partition := persistence.OutboxPartitionKey(sid, "")
-			n, ok, err := oldRt.OutboxPending(pctx, partition)
-			switch {
-			case err != nil:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (depth query failed: %v)", partition, err))
-			case !ok:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (store cannot prove it is drained)", partition))
-			case n > 0:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (%d pending record(s))", partition, n))
-			}
+			hazards = append(hazards, fmt.Sprintf("outbox partition %s loses its drainer", partition))
 		}
 	}
 
-	// DLQ: only a full store removal strands backlog (a DLQ has no per-partition
-	// drainer topology to orphan). Prove it empty via the DLQ depth capability.
 	if oldCfg.Stores.DLQ != nil && newCfg.Stores.DLQ == nil {
-		n, ok, err := runtime.ReportDLQDepth(pctx, oldRt.DLQReader(), nil)
-		switch {
-		case err != nil:
-			stranded = append(stranded, fmt.Sprintf("dlq store (depth query failed: %v)", err))
-		case !ok:
-			stranded = append(stranded, "dlq store (store cannot prove it is drained)")
-		case n > 0:
-			stranded = append(stranded, fmt.Sprintf("dlq store (%d entr(y/ies))", n))
-		}
+		hazards = append(hazards, "dlq store removal")
 	}
 
-	if len(stranded) == 0 {
+	if len(hazards) == 0 {
 		return nil
 	}
 	if s.allowDestructiveReload {
 		if s.logger != nil {
 			s.logger.Warn("supervisor: destructive reload FORCED by WithAllowDestructiveReload; "+
-				"discarding durable backlog", "discarded", stranded,
+				"durable records may be discarded", "hazards", hazards,
 				"attempted_config_version", newCfg.Version)
 		}
 		return nil
 	}
-	return fmt.Errorf("bridge: refusing live reload: it would strand durable backlog with no drainer in "+
-		"the new configuration [%s]; drain it first or set WithAllowDestructiveReload to discard it",
-		strings.Join(stranded, "; "))
+	return fmt.Errorf("bridge: refusing live reload: it can strand durable records [%s]; "+
+		"a pending-depth read cannot prove safety because claimed records, eventually-consistent indexes, "+
+		"and late ingress are not excluded. Quiesce ingress and perform a stopped migration, or set "+
+		"WithAllowDestructiveReload to explicitly discard records",
+		strings.Join(hazards, "; "))
 }
 
-// reportOrphanedStrand re-queries, AFTER a successful swap, each shared_outbox
-// partition that lost its drainer in the new topology and surfaces any residual
-// pending records as an OBSERVABLE signal (MetricOutboxStranded + an Error log)
-// rather than a silent strand. It is the post-swap complement to
-// durableReloadPreflight: the preflight proves the partitions empty at CHECK
-// time and refuses otherwise, but a record can still land in the swap window
-// (late ingress) or a claimed send can fail. Because store-identity changes are
-// already refused, the NEW runtime opens the SAME durable backing and can query
-// the orphaned partition key even though it has no drainer for it. Best-effort /
-// one-shot: a record still in CLAIMED state is not counted (CountPending is
-// pending-only) and surfaces only when it reverts to pending.
+// reportOrphanedStrand adds best-effort observability after an explicitly forced
+// destructive reload that retained the same outbox store but removed a
+// partition's drainer. Correctness does not depend on this pending-only query:
+// non-forced orphaning reloads are rejected unconditionally above.
 func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) {
 	// Only meaningful when the outbox store is RETAINED but some partition lost
 	// its drainer. Full outbox removal is already refused (backlog present) or
@@ -1881,7 +1826,7 @@ func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Ru
 	oldS := sharedOutboxPartitionSessions(oldCfg)
 	newS := sharedOutboxPartitionSessions(newCfg)
 
-	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preflightDepthBudget)
+	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), strandReportBudget)
 	defer cancel()
 
 	for sid := range oldS {

@@ -1230,9 +1230,26 @@ graph TB
 
 All instances run all routes identically. The `LeaseStore` determines which instance's `OutboxDrainer` actively drains and sends. The active instance holds the lease; standby instances persist to the outbox but do not drain until they acquire the lease.
 
-### Reconfiguration Is Per-Process
+### Cluster Reconfiguration Requires Whole-Cohort Replacement
 
-Configuration reload and runtime swap are **per-process**: each instance watches its own config source and swaps its own runtime via the `Supervisor`. There is **no cluster-wide config-version barrier and no coordinated cluster rollback** -- during a rollout, instances may run different route/store/session/policy definitions until every instance has reloaded (indefinitely, if one is wedged on an invalid config). Per-instance durability and lease fencing still hold **provided every instance resolves the same session ids and the same lease and outbox store targets** (the lease CAS is keyed on the lease version, not `BridgeConfig.Version`), so a mixed-version window causes no duplicate commits and -- within an instance -- no message loss; only routing/policy/transformation behaviour is eventually consistent across the cluster, not atomic. Reconfiguring a session's identity or its lease or outbox store target is **not** version-skew-safe (two instances drive the same session against different stores -- two active drainers, and records stranded in a replaced outbox are lost); coordinate those changes with a drain-and-stop. Operators observe each instance's running `config_version` (`Supervisor.Config().Version`, logged on each reconfiguration swap) to confirm convergence. See scenario 10 (`docs/scenarios/10-dynamic-reconfiguration.md`) for operator guidance.
+Reload mechanics are per-process: there is no cluster-wide config-version
+barrier, all-member readiness gate, or coordinated rollback. Allowing each
+member to swap independently would therefore create a split-version cohort.
+
+GoBridge prevents that state by rejecting every non-no-op live reload **of or
+into** a clustered deployment, fail-closed. Both the `Supervisor` and the AWS
+file-based composition root reject before building or stopping anything; the
+current runtime and running `config_version` remain unchanged. A byte-identical
+watcher re-emit is still accepted as a no-op.
+
+Clustered changes use an externally coordinated whole-cohort replacement:
+stage and validate the exact config for every member, quiesce ingress, drain and
+stop all members, commit the config, start all members, then re-enable ingress
+only after every member reports the target `config_version` and passes the
+Full/readiness barrier. Failure rolls back the entire cohort while ingress
+remains quiesced. `WithAllowDestructiveReload` cannot bypass this rule because
+discarding local backlog is not cluster consensus. See
+`docs/runbooks/cluster-config-rollout.md` and ADR 0012.
 
 ### Instance Identity
 

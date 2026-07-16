@@ -52,8 +52,9 @@ make them tagged releases.
 3. **Dependency layers are strict.** A published sibling requirement must point
    to a lower layer. Before a layer is tagged, every lower-layer tag in that
    version train must exist and be an ancestor of the candidate commit.
-4. **No local replacements in published modules.** Local development resolution
-   belongs in `go.work`.
+4. **No replacements or excludes in published modules.** Local development
+   resolution belongs in `go.work`; release and external-consumer gates reject
+   local and versioned `replace` directives plus every `exclude` directive.
 5. **No unresolved placeholders.** Exact `v0.0.0`, all-zero or malformed
    pseudo-versions, undeclared repository siblings, and versions outside the
    selected train fail the strict gate.
@@ -281,9 +282,9 @@ go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
-It rejects local replacements in resolved module manifests and any replacement
-in the generated consumer go.mod. Do not run this proof against `v0.1.0` or
-`v0.2.0`; the required nested tags do not exist.
+It rejects every `replace` or `exclude` directive in resolved module manifests
+and in the generated consumer go.mod. Do not run this proof against `v0.1.0`
+or `v0.2.0`; the required nested tags do not exist.
 
 ## Image publication
 
@@ -316,13 +317,14 @@ It:
    `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
 
 Reruns first fetch `gobridge-image-digest.txt` from the exact command GitHub
-Release. A valid recorded digest is checked against GHCR, skips the
-provenance-enabled build entirely, and resumes both child scans plus guarded
-`latest` promotion from that content. Only an exact 404 or a release with no
-digest asset permits a build; authentication, network, malformed asset, wrong
-image, or missing registry digest fails closed. Before upload, the workflow
-fetches the asset again: the same digest is an idempotent resume, a different
-digest fails, and a duplicate-name upload failure closes the final race.
+Release, then always rebuild the tagged source with the same pinned,
+provenance-enabled inputs. If an association already exists, the rebuilt index
+digest must match it exactly before either runnable platform child is scanned or
+`latest` can move. Authentication, network, malformed asset, wrong image, a
+missing registry digest, or a rebuild mismatch fails closed. Before upload, the
+workflow fetches the asset again: the same digest is an idempotent association,
+a different digest fails, and a duplicate-name upload failure closes the final
+race.
 
 Release permissions are split by boundary. The build/resume/dual-scan job has
 `contents: read` plus `packages: write`. A minimal pinned `github-script` job

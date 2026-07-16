@@ -38,7 +38,7 @@ Docker BuildKit, GitHub Actions, Mosquitto-backed integration tests.
 
 ## Task 1: Make release-gate tests trustworthy
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:golang-pro, test-automator, thiink:test-reviewer
 
@@ -52,7 +52,7 @@ Docker BuildKit, GitHub Actions, Mosquitto-backed integration tests.
 - Modify: `.github/workflows/ci.yml`
 - Modify: `TESTS.md`
 
-- [ ] **Step 1: Add failing fixture checks**
+- [x] **Step 1: Add failing fixture checks**
 
 Make every production-style MQTT collector return `del.Ack(ctx)`. Capture the
 `Receiver.Run` result and fail on any error other than expected context
@@ -66,7 +66,7 @@ require.EventuallyWithT(t, func(collect *assert.CollectT) {
 }, timeout, poll)
 ```
 
-- [ ] **Step 2: Prove the existing fixture fails**
+- [x] **Step 2: Prove the existing fixture fails**
 
 ```bash
 go test -race -count=1 -tags=longrunning ./tests/longrunning \
@@ -75,25 +75,25 @@ go test -race -count=1 -tags=longrunning ./tests/longrunning \
 
 Expected before the ACK fix: the collector stalls at the broker receive window.
 
-- [ ] **Step 3: Stop masking test failures**
+- [x] **Step 3: Stop masking test failures**
 
 Remove `|| true` from `test` and `test-integration`, preserve pipeline exit
 status, and add `-count=1` to unit, integration, and long-running commands.
 Keep report generation, but let the Go command determine success.
 
-- [ ] **Step 4: Add mandatory CI jobs**
+- [x] **Step 4: Add mandatory CI jobs**
 
 Add Docker-backed integration, uncached module tests, and scheduled/manual
 long-running jobs. Upload reports on success and failure.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 ```bash
 make test
 make test-integration
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 test: make production release gates authoritative
@@ -101,7 +101,7 @@ test: make production release gates authoritative
 
 ## Task 2: Preserve distinct MQTT ingress events
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:messaging-expert, thiink:golang-pro,
 thiink:test-reviewer
@@ -119,13 +119,13 @@ thiink:test-reviewer
 - Modify: `UBIQUITOUS.md`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Write failing identity tests**
+- [x] **Step 1: Write failing identity tests**
 
 Prove that two separate equal-valued publishes receive different envelope IDs,
 while all handlers for one publish receive the same ID. Preserve explicit
 `mqtt.message-id` and correlation identity.
 
-- [ ] **Step 2: Run the failing tests**
+- [x] **Step 2: Run the failing tests**
 
 ```bash
 (cd adapters/mqtt/transport/paho && \
@@ -134,7 +134,7 @@ while all handlers for one publish receive the same ID. Preserve explicit
 
 Expected: equal topic/payload publishes currently receive the same ID.
 
-- [ ] **Step 3: Replace content-derived identity**
+- [x] **Step 3: Replace content-derived identity**
 
 Remove `deriveEnvelopeID`. Generate an RFC 4122 UUIDv4 only when no producer
 identity exists. Stamp it once on the received publish before router fan-out:
@@ -156,27 +156,27 @@ func ensurePublishIdentity(pub *Publish) error {
 Reuse the repository's existing UUID package and publish-property helper rather
 than adding a dependency or a second identity representation.
 
-- [ ] **Step 4: Add real-broker proof**
+- [x] **Step 4: Add real-broker proof**
 
 Publish two byte-identical QoS 1 messages without identity properties through
 `shared_outbox`; assert two outbox records, two destination deliveries, and two
 source acknowledgements. Reconnect with an explicit producer ID and assert the
 redelivery deduplicates.
 
-- [ ] **Step 5: Document the exact guarantee**
+- [x] **Step 5: Document the exact guarantee**
 
 State that no-ID redelivery may duplicate because MQTT cannot prove publish
 identity across packet-ID reuse. At-least-once duplication is accepted; silent
 collapse is not.
 
-- [ ] **Step 6: Run focused checks**
+- [x] **Step 6: Run focused checks**
 
 ```bash
 (cd adapters/mqtt/transport/paho && go test -race -count=1 ./...)
 go test -race -count=1 ./tests/integration -run TestMQTTEqualPublishIdentity
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 fix(mqtt): preserve distinct equal-valued ingress events
@@ -184,7 +184,7 @@ fix(mqtt): preserve distinct equal-valued ingress events
 
 ## Task 3: Make Full readiness enforce the requested contract
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:messaging-expert, thiink:runtime-expert,
 thiink:test-reviewer
@@ -204,13 +204,13 @@ thiink:test-reviewer
 - Modify: `UBIQUITOUS.md`
 - Modify: `docs/deployment-guide.md`
 
-- [ ] **Step 1: Write failing readiness tests**
+- [x] **Step 1: Write failing readiness tests**
 
 Add two planned receiver IDs with only one registered handler and require
 Degraded. Add a SUBACK downgrade and require reconcile failure plus non-Full
 health.
 
-- [ ] **Step 2: Run the failing tests**
+- [x] **Step 2: Run the failing tests**
 
 ```bash
 go test -race -count=1 ./bridge -run TestSessionPlan
@@ -218,27 +218,27 @@ go test -race -count=1 ./bridge -run TestSessionPlan
   go test -race -count=1 -run 'Test.*(Handler|QoSDowngrade|RequiredQoS)' ./...)
 ```
 
-- [ ] **Step 3: Carry expected receiver identity**
+- [x] **Step 3: Carry expected receiver identity**
 
 Add `ExpectedReceiverIDs []string` to `connectivity.SessionPlan`.
 `sessionPlanFor` must populate a sorted, deduplicated list of receiver IDs.
 Expose a router handler-ID snapshot under the existing lock.
 
-- [ ] **Step 4: Reject QoS downgrade**
+- [x] **Step 4: Reject QoS downgrade**
 
 Keep the downgrade warning and metric, but do not add downgraded filters to
 `activeSubs`. Return `shared.ErrQoSNotSupported` containing topic, requested
 QoS, and granted QoS. Health must compare each desired filter and required QoS,
 not aggregate counts.
 
-- [ ] **Step 5: Run focused checks**
+- [x] **Step 5: Run focused checks**
 
 ```bash
 go test -race -count=1 ./bridge
 (cd adapters/mqtt/transport/paho && go test -race -count=1 ./...)
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 fix(mqtt): enforce complete Full readiness
@@ -246,7 +246,7 @@ fix(mqtt): enforce complete Full readiness
 
 ## Task 4: Reject unsafe MQTT and replica identity
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:messaging-expert, thiink:clean-arch-reviewer,
 thiink:test-reviewer
@@ -266,14 +266,14 @@ thiink:test-reviewer
 - Modify: `config/validate_shared_sub_test.go`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Write failing preflight tests**
+- [x] **Step 1: Write failing preflight tests**
 
 Refuse live changes to broker set, effective client ID, session mode, clean
 start, and session expiry while proving the old runtime remains active. Prove
 credential, TLS, keepalive, and retry tuning do not change durable identity.
 Reject clustered `$share` receivers without a per-replica suffix.
 
-- [ ] **Step 2: Add generic optional capabilities**
+- [x] **Step 2: Add generic optional capabilities**
 
 ```go
 type DurableSessionIdentityConfig interface {
@@ -289,7 +289,7 @@ Paho returns a secret-safe SHA-256 fingerprint over the canonical broker set,
 effective client ID, mode, clean-start behavior, and expiry. Never include the
 raw descriptor in logs or errors.
 
-- [ ] **Step 3: Guard before replacement**
+- [x] **Step 3: Guard before replacement**
 
 Compare durable identity before any old runtime is stopped or replacement is
 built. The destructive-reload option must not bypass MQTT broker-state safety.
@@ -346,7 +346,7 @@ thiink:contract-reviewer, thiink:test-reviewer
 - Modify: `PLUGIN.md`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Define and test the narrow store contract**
+- [x] **Step 1: Define and test the narrow store contract**
 
 ```go
 type ManagedSubscriptionStore interface {
@@ -359,33 +359,33 @@ type ManagedSubscriptionStore interface {
 Conformance tests must prove idempotency, independent identities, restart
 persistence, and no forgotten filter after partial failure.
 
-- [ ] **Step 2: Implement SQLite and DynamoDB adapters**
+- [x] **Step 2: Implement SQLite and DynamoDB adapters**
 
 Use the existing store factory/config patterns. Remember desired filters before
 SUBSCRIBE. Forget only filters confirmed by UNSUBACK. A crash may leave a safe
 extra candidate but must never create an undiscoverable broker subscription.
 
-- [ ] **Step 3: Reconcile before traffic**
+- [x] **Step 3: Reconcile before traffic**
 
 Load history before persistent/exclusive connect activation, unsubscribe
 `history - desired`, retain failed filters for retry, and recycle before normal
 dispatch when stale filters may have buffered shared deliveries. If history is
 unavailable, fail startup below Full readiness.
 
-- [ ] **Step 4: Guard migration boundaries**
+- [x] **Step 4: Guard migration boundaries**
 
 Require a managed-subscription store for non-Ephemeral sessions with
 subscriptions. Refuse removal of an entire persistent session through ordinary
 live reload; direct operators to the documented drain/unsubscribe/cutover
 procedure.
 
-- [ ] **Step 5: Add broker-backed release proof**
+- [x] **Step 5: Add broker-backed release proof**
 
 Cover removed `sensors/#`, removed `$share/group/sensors/#`, failed UNSUBACK
 retry, runtime replacement, process restart with the same client ID, and a peer
 that receives all shared-group messages without stale acknowledgements.
 
-- [ ] **Step 6: Run focused checks**
+- [x] **Step 6: Run focused checks**
 
 ```bash
 go test -race -count=1 ./ports/storetest ./bridge
@@ -397,7 +397,7 @@ go test -race -count=1 ./tests/integration \
   -run TestMQTTPersistentSubscriptionMigration
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 feat(mqtt): persist managed subscription history
@@ -429,39 +429,39 @@ thiink:resilience-auditor, thiink:test-reviewer
 - Modify: `UBIQUITOUS.md`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Write failing disposition tests**
+- [x] **Step 1: Write failing disposition tests**
 
 Prove Ack and Retry are mutually exclusive and idempotent, unsupported Retry
 leaves the delivery unsettled, concurrent recovery requests coalesce, health
 degrades synchronously, drain is bounded, and minimum reconnect interval uses
 the injected clock.
 
-- [ ] **Step 2: Implement Paho Retry**
+- [x] **Step 2: Implement Paho Retry**
 
 Keep the existing `ports.Delivery.Retry` boundary. Persistent/Exclusive Retry
 requests a serialized reconnect that preserves client ID, expiry, and
 `clean_start=false`. Ephemeral Retry remains `ErrNotSupported`.
 
-- [ ] **Step 3: Track the protocol window**
+- [x] **Step 3: Track the protocol window**
 
 Track QoS 1/2 packets per connection epoch from receipt until Ack or epoch
 change. Expose unsettled count, oldest age, receive-window utilization, and
 recovery reload count through existing health/metrics patterns.
 
-- [ ] **Step 4: Bound recovery**
+- [x] **Step 4: Bound recovery**
 
 Drain other settlements for at most 5 seconds and limit recovery reloads to one
 per 30 seconds. Missing Session Present during recovery is an error and keeps
 readiness degraded. Credential and recovery reloads share one context-aware
 serialization gate.
 
-- [ ] **Step 5: Add real-broker outage proof**
+- [x] **Step 5: Add real-broker outage proof**
 
 With a persistent session, make processing fail and the DLQ unavailable. Assert
 bounded disconnect, broker redelivery of the original message, later-packet
 progress, exact producer-ID accounting, and non-Full readiness until recovery.
 
-- [ ] **Step 6: Run focused checks**
+- [x] **Step 6: Run focused checks**
 
 ```bash
 (cd adapters/mqtt/transport/paho && \
@@ -469,7 +469,7 @@ progress, exact producer-ID accounting, and non-Full readiness until recovery.
 go test -race -count=1 ./tests/integration -run TestMQTTSettlementRecovery
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 fix(mqtt): recycle persistent sessions on unsettled delivery
@@ -500,19 +500,19 @@ durable staging or multiple broker connections.
 - Modify: `PLUGIN.md`
 - Modify: `docs/transports/mqtt.md`
 
-- [ ] **Step 1: Write failing cardinality tests**
+- [x] **Step 1: Write failing cardinality tests**
 
 Prove Plan rejects two ingress receivers using one MQTT session before stores
 or runtime resources are created. Prove registry aliases cannot bypass the
 adapter-local reservation.
 
-- [ ] **Step 2: Add a generic capability**
+- [x] **Step 2: Add a generic capability**
 
 Add `CapDedicatedIngressSession`. Paho advertises it; the bridge validates
 receiver/session cardinality by capability, not by transport name. Keep a
 factory reservation as defensive enforcement for programmatic callers.
 
-- [ ] **Step 3: Add isolation proof**
+- [x] **Step 3: Add isolation proof**
 
 Use two MQTT sessions. Block one route and prove the other continues receiving
 within its declared latency and readiness bounds.
@@ -1030,12 +1030,13 @@ build: enforce staged multi-module releases
 - [x] Pin all workflow actions plus Buildx, BuildKit, and QEMU inputs.
 - [x] Scan both digest-only platform children and record the index digest.
 - [x] Re-check highest stable command tag immediately before moving `latest`.
-- [x] Resume reruns from the exact recorded release digest without rebuilding.
+- [x] Rebuild tagged source on reruns and require any recorded release digest to match.
 - [x] Split package publication, digest association, and `latest` privileges.
 
 ## Task 14: Add exact-accounting chaos and release proofs
 
-**Status:** Implemented; aggregate release validation remains red
+**Status:** Complete; focused gates and specialist review green, final aggregate
+deferred to Task 15
 
 **Agents/Skills:** thiink:test-designer, test-automator,
 thiink:resilience-auditor, thiink:test-reviewer
@@ -1101,7 +1102,7 @@ deduplication. The equal-valued gate documents that, without a producer oracle,
 an output count cannot distinguish a hypothetical duplicate+missing pair; no
 identifier is smuggled onto the source wire.
 
-- [ ] **Step 5: Pass release suites**
+- [x] **Step 5: Pass release suites**
 
 ```bash
 (cd adapters/mqtt/transport/paho && go test -race -count=1 ./...)
@@ -1153,7 +1154,7 @@ test: add MQTT production chaos release gates
 
 ## Task 15: Final repository and adversarial gates
 
-**Status:** Pending
+**Status:** Complete
 
 **Agents/Skills:** thiink:adversarial-reviewer, thiink:code-reviewer,
 thiink:security-auditor, thiink:resilience-auditor
@@ -1162,7 +1163,7 @@ thiink:security-auditor, thiink:resilience-auditor
 - Modify only files required to fix confirmed review findings
 - Modify: `PROD_READY_ISSUES.md`
 
-- [ ] **Step 1: Run all local gates**
+- [x] **Step 1: Run all local gates**
 
 ```bash
 make lint
@@ -1172,19 +1173,19 @@ make test-long-running
 make check-all
 ```
 
-- [ ] **Step 2: Run adversarial review**
+- [x] **Step 2: Run adversarial review**
 
 Review every finding, release gate, changed public contract, crash boundary,
 configuration migration, IAM grant, and documentation claim. Report only
 reproducible defects with exact file/symbol references.
 
-- [ ] **Step 3: Fix every confirmed issue test-first**
+- [x] **Step 3: Fix every confirmed issue test-first**
 
 Add the smallest regression test for each code defect, make the root-cause fix,
 and rerun the focused and full gates. Documentation-only findings require
 `git diff --check`.
 
-- [ ] **Step 4: Update the audit**
+- [x] **Step 4: Update the audit**
 
 For each finding, record Resolved, Narrowed by enforced contract, or External
 release evidence required. Do not claim zero bugs or production approval

@@ -51,6 +51,12 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 	require.NotNil(t, app.CurrentRuntime())
 	require.NotNil(t, app.CurrentLogicalConfig())
 	assert.Equal(t, "bridge-a", app.CurrentLogicalConfig().Bridge.ID)
+	health := app.configWatchHealth()
+	require.NotNil(t, health.DesiredVersion)
+	require.NotNil(t, health.RunningVersion)
+	assert.Equal(t, *health.DesiredVersion, *health.RunningVersion)
+	assert.False(t, health.ReconfigurePending)
+	assert.False(t, health.Degraded)
 
 	resp, body := getJSON(t, app.AdminURL()+"/api/v1/admin/config", "admin-secret-key-123456")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -61,7 +67,7 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 	assert.Equal(t, "bridge-a", bridgeBody["id"])
 }
 
-func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) {
+func TestApp_ReloadsWhenConfigFileAppears(t *testing.T) {
 	cfgPath := t.TempDir() + "/bridge.yaml"
 	app := NewApp(deployinfra.BootstrapConfig{
 		BridgeID:          "bridge-b",
@@ -93,22 +99,44 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 		applied := app.CurrentAppliedConfig()
 		return applied != nil && applied.Bridge.LogLevel == "debug"
 	}, 3*time.Second, 100*time.Millisecond)
+}
 
-	invalid := &ports.BridgeConfig{
+func TestApp_ConfigHealthReportsRejectedReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: requires active file watcher and HTTP listeners")
+	}
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	app := NewApp(deployinfra.BootstrapConfig{
+		BridgeID:          "bridge-health",
+		ConfigFilePath:    cfgPath,
+		PollInterval:      "20ms",
+		AdminAddr:         ":0",
+		MonitorAddr:       ":0",
+		TransportHTTPAddr: ":0",
+		AdminAPIKeyParam:  "/admin",
+	}, WithParameterResolver(staticParameterResolver{
+		"/admin": "admin-secret-key-123456",
+	}))
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() {
+		_ = app.Stop(context.Background())
+	})
+
+	clustered := &ports.BridgeConfig{
+		Version: 1,
 		Bridge: ports.BridgeSettings{
-			ID:             "bridge-b",
-			DeploymentMode: "standalone",
-		},
-		Routes: []ports.RouteDef{
-			{ID: "broken-route", ReceiverID: "missing", Bindings: []string{"missing"}},
+			ID:             "bridge-health",
+			DeploymentMode: "clustered",
 		},
 	}
-	require.NoError(t, parser.WriteFile(cfgPath, invalid))
+	require.NoError(t, parser.WriteFile(cfgPath, clustered))
 
-	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
-	applied := app.CurrentAppliedConfig()
-	require.NotNil(t, applied)
-	assert.Equal(t, "debug", applied.Bridge.LogLevel)
+	require.Eventually(t, func() bool {
+		health := app.configWatchHealth()
+		return health.Degraded &&
+			health.ReconfigurePending &&
+			health.LastApplyError != ""
+	}, 3*time.Second, 10*time.Millisecond)
 }
 
 // TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the B3

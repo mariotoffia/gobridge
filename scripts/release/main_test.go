@@ -151,6 +151,46 @@ func TestInspectModule_FindsReleaseBlockingManifestEntries(t *testing.T) {
 	}
 }
 
+func TestInspectModule_RejectsRemoteReplaceAndExclude(t *testing.T) {
+	t.Parallel()
+
+	moduleFile, err := parseModuleManifest("go.mod", []byte(`module github.com/mariotoffia/gobridge/adapters/example
+
+go 1.25
+
+require example.com/dependency v1.2.3
+
+replace example.com/dependency v1.2.3 => example.com/fork v1.2.4
+
+exclude example.com/dependency v1.2.2
+`))
+	if err != nil {
+		t.Fatalf("parseModuleManifest() error = %v", err)
+	}
+	moduleFile.Path = "adapters/example"
+
+	violations, err := inspectModule(releaseManifest{
+		ModulePrefix: "github.com/mariotoffia/gobridge",
+		Published: []publishedModule{
+			{Path: ".", Layer: 0},
+			{Path: "adapters/example", Layer: 1},
+		},
+	}, moduleFile, "v1.2.3")
+	if err != nil {
+		t.Fatalf("inspectModule() error = %v", err)
+	}
+
+	kinds := make([]violationKind, 0, len(violations))
+	for _, violation := range violations {
+		kinds = append(kinds, violation.Kind)
+	}
+	for _, want := range []violationKind{"replace-directive", "exclude-directive"} {
+		if !slices.Contains(kinds, want) {
+			t.Errorf("inspectModule() kinds = %v, missing %q", kinds, want)
+		}
+	}
+}
+
 func TestInspectModule_RejectsUndeclaredAndNonLowerDependencies(t *testing.T) {
 	t.Parallel()
 

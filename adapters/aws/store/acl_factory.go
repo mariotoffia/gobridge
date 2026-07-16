@@ -282,6 +282,9 @@ func (f *DynamoDBStoreFactory) NewManagedSubscriptionStore(ctx context.Context, 
 		return nil, err
 	}
 	opts := []dynamodbmanagedsubscriptions.Option{dynamodbmanagedsubscriptions.WithTableName(tableName)}
+	if dc.OperationTimeout > 0 {
+		opts = append(opts, dynamodbmanagedsubscriptions.WithOperationTimeout(dc.OperationTimeout))
+	}
 	store := dynamodbmanagedsubscriptions.NewStore(f.client, opts...)
 	if err := f.preflight(ctx, store); err != nil {
 		return nil, err

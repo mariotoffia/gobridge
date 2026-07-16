@@ -832,6 +832,47 @@ require github.com/mariotoffia/gobridge v0.3.0
 	}
 }
 
+func TestRunConsumerSmokePass_RejectsGeneratedConsumerExclude(t *testing.T) {
+	t.Parallel()
+
+	repo, manifest := smokeFixture(t)
+	runner := newSuccessfulReleaseRunner(t)
+	runner.moduleRoot = repo
+	runner.sideEffect = func(request commandRequest) error {
+		if request.Name == "go" && slices.Equal(request.Args, []string{
+			"mod",
+			"init",
+			"example.com/gobridge-release-smoke",
+		}) {
+			writeTestFile(t, filepath.Join(request.Dir, "go.mod"), `module example.com/gobridge-release-smoke
+
+go 1.25.0
+
+exclude example.com/blocked v1.0.0
+`)
+		}
+		return nil
+	}
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	err := runConsumerSmokePass(
+		context.Background(),
+		runner,
+		t.TempDir(),
+		repo,
+		manifest,
+		testReleaseVersion,
+		"direct",
+		"exclude",
+		map[string]string{
+			"adapters/mqtt/transport/paho": commit,
+			finalModulePath:                commit,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "exclude directives") {
+		t.Fatalf("runConsumerSmokePass() error = %v, want generated consumer exclude rejection", err)
+	}
+}
+
 func TestPathIsInside(t *testing.T) {
 	t.Parallel()
 

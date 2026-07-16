@@ -300,6 +300,7 @@ func (a *App) Start(ctx context.Context) error {
 	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
 		return err
 	}
+	a.manager.NotifyApplyResult(logicalCfg, nil)
 
 	// Every node starts the transport, admin, and monitor servers regardless
 	// of NodeRole (workers still expose the admin listener today — see
@@ -345,10 +346,8 @@ func (a *App) Start(ctx context.Context) error {
 		// live. appliedRef is nil only when nothing is cleanly running, and
 		// every configProvider consumer handles nil (GET /config -> 503).
 		ConfigProvider: a.appliedRef.Get,
-		// Surface live-reconfiguration health on /deephealth: the config manager
-		// goes degraded when its layer watcher cannot be re-established, so the
-		// App serves its last good config but no longer tracks config changes.
-		DegradedProvider: a.degradedConfigWatch,
+		// Surface both watcher failure and desired/running apply divergence.
+		ConfigWatchProvider: a.configWatchHealth,
 		// ConfigApplier converges the running runtime in-band when a config
 		// is committed through the admin transactions API, reusing the exact
 		// reload path the file watcher drives (applyLogicalConfig) instead of
@@ -671,6 +670,7 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			a.mu.Lock()
 			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
 			a.mu.Unlock()
+			a.manager.NotifyApplyResult(logicalCfg, err)
 			switch {
 			case err != nil:
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
@@ -923,6 +923,32 @@ func (a *App) degradedConfigWatch() (bool, string) {
 		parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
 	}
 	return true, "config watch degraded: " + strings.Join(parts, "; ")
+}
+
+func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
+	degraded, reason := a.degradedConfigWatch()
+	status := httpapi.ConfigWatchHealth{Degraded: degraded, Reason: reason}
+	if a.manager == nil {
+		return status
+	}
+	status.ReconfigurePending = a.manager.ReconfigurePending()
+	if version, ok := a.manager.AppliedVersion(); ok {
+		status.DesiredVersion = &version
+	}
+	if version, ok := a.manager.RunningVersion(); ok {
+		status.RunningVersion = &version
+	}
+	if err := a.manager.LastApplyError(); err != nil {
+		status.LastApplyError = err.Error()
+		status.Degraded = true
+	}
+	if status.ReconfigurePending {
+		status.Degraded = true
+		if status.Reason == "" {
+			status.Reason = "desired configuration is not running"
+		}
+	}
+	return status
 }
 
 // enterWedgedState records that a prepare/commit swap AND its recovery both

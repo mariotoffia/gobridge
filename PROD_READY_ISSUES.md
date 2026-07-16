@@ -1,58 +1,58 @@
 # Adversarial MQTT Production-Readiness Audit
 
-**Status:** NO-GO for a production release that promises durable delivery,
-cluster-safe reconfiguration, or 30-60 second failover.
-
-**Audited revision:** `4d8d76d7fafcd88f21954de03a5176e6406b5a86`
+**Baseline audited revision:** `4d8d76d7fafcd88f21954de03a5176e6406b5a86`
 (`main`, commit date 2026-07-13)
 
-**Scope:** MQTT Paho adapter, its runtime settlement path, outbox and DLQ
-interaction, session supervision, cluster leases, live reconfiguration, health
-and metrics, deployment artifacts, tests, and MQTT/cluster/operator
-documentation.
+**Remediation revision:** `prod-ready-remediation`; the merge commit is the
+authoritative release-candidate revision.
 
-This is an adversarial review. A documented limitation is still a production
-gap when it conflicts with the requested operating contract. A passing test
-suite is evidence for exercised behavior, not proof that the system has zero
-bugs.
+**Status:** **CONDITIONAL NO-GO** for public production release.
 
-## Executive decision
+**Scope:** MQTT Paho adapter, runtime settlement, outbox and DLQ interaction,
+session supervision, cluster leases, live reconfiguration, health and metrics,
+deployment artifacts, tests, and MQTT/cluster/operator documentation.
 
-The implementation contains substantial production-oriented work: manual MQTT
-acknowledgement, bounded broker operations, reconnect jitter, lease fencing,
-durable outbox support, fail-closed lease behavior, differentiated readiness,
-credential-transport validation, and explicit drop metrics. Those controls do
-not offset the confirmed blockers:
+Every confirmed in-repository finding from the baseline audit is now resolved
+or narrowed to an explicit fail-closed contract. Focused regression tests and
+independent adversarial, security, resilience, and test-proof re-reviews approve
+the remediation. Public module tags/proxy resolution, published image evidence,
+and credentialed AWS failover measurements remain mandatory external gates.
 
-1. Distinct byte-identical MQTT publishes can be silently collapsed by the
-   durable outbox.
-2. A live runtime replacement can retain broker-side wildcard or shared
-   subscriptions that the new runtime cannot identify or remove. A stale shared
-   subscription can steal and acknowledge messages that should have gone to
-   another group member.
-3. Live reload permits MQTT identity migrations that can strand or destroy
-   broker-side queued messages.
+## Remediation status
 
-The requested cluster failover objective is also not a hard guarantee. The
-default 45-second lease profile is approximately `57.5s + broker connect` for a
-continuously observing warm standby and approximately `102.5s + broker connect`
-for a cold standby. The warm path can exceed 60 seconds; the cold path normally
-does.
+| Finding | Status | Current contract |
+|---|---|---|
+| B1 | **Resolved** | Preserve producer identity; otherwise assign one UUID per received publish before fan-out, so equal-valued events stay distinct. |
+| B2 | **Resolved** | Durable managed-subscription history reconciles removed wildcard/shared filters before traffic. |
+| B3 | **Resolved** | Durable MQTT identity changes fail before replacement; operators use the documented migration procedure. |
+| H1 | **Narrowed** | Lease observation survives holder loss and failover budgets are validated; actual 30-60 second percentiles still require credentialed deployment evidence. |
+| H2 | **Resolved** | Unsafe clustered shared-subscription replica identity is rejected. |
+| H3 | **Resolved** | Full readiness requires every planned receiver handler. |
+| H4 | **Resolved** | SUBACK QoS downgrade fails reconciliation and keeps readiness below Full. |
+| H5 | **Resolved** | Persistent/exclusive unsettled delivery triggers bounded, serialized recovery; broker-backed proofs cover redelivery and progress. |
+| H6 | **Narrowed** | Paho requires a dedicated ingress session; isolation uses separate broker connections rather than a speculative scheduler. |
+| H7 | **Resolved** | MQTT ingress has validated byte budgets for payload, receive, dispatch, and route windows. |
+| H8 | **Narrowed** | Per-process clustered live reload is rejected; coordinated whole-cohort replacement is the supported rollout. |
+| H9 | **External** | Release DAG, manifest validation, isolated proxy/direct smoke, and image gates are implemented; public tags and proxy/registry evidence require release execution. |
+| H10 | **Narrowed** | A DynamoDB-coordinated ECS HA profile is shipped; live credentialed failover proof remains external. |
+| D1-D6 | **Resolved** | Delivery, subscription, failover, settlement, ADR provenance, and container-input documentation match the supported contract. |
+
+No review can prove “zero bugs.” The accurate statement is that no confirmed
+in-repository blocker from this audit remains open after the final specialist
+re-reviews.
 
 ## Direct answers
 
 | Question | Verdict | Reason |
 |---|---|---|
-| Is the code production ready? | **No** | Three confirmed message-integrity/reconfiguration blockers plus high-severity resilience and readiness defects. |
-| Is the documentation production ready? | **No** | It contains strong material, but also absolute no-loss claims contradicted by implementation, inconsistent failover bounds, stale settlement text, stale identity text, and future-dated ADR provenance. |
-| Do we have zero bugs? | **No** | Zero bugs is not provable, and this audit confirms defects. |
-| Can it run in a cluster? | **Conditionally** | Yes with DynamoDB-backed distributed stores and either exclusive sessions or correctly configured MQTT shared subscriptions. Safe behavior depends on identity, lease, broker, and warm-standby conditions not fully enforced by validation. |
-| Is it resilient to outages and able to recover? | **Partially** | Broker reconnect, credential reload recovery, lease fencing, and durable outbox recovery exist. DLQ failure on an MQTT retry path can stall a live session until a connection cycle, and broker/session retention limits remain external loss boundaries. |
-| Do messages go missing or get lost? | **Yes** | Confirmed silent dedup collapse; QoS 0 and Ephemeral disconnect gaps; stale shared-subscription theft; configured drop policies; broker queue/session expiry; QoS downgrade; and protocol-violation drops. Some are metered, some are only broker-observable, and the dedup collapse is not reported as loss. |
-| Is it easy to consume as one process and in Docker/ECS/Kubernetes? | **Mixed** | A reference process and AWS/ECS image exist. The stock image is AWS-bound. A non-AWS Docker/Kubernetes user must build and own a composition root and image. |
-| Can one process be reconfigured live and resiliently? | **Partially** | Ordinary changes use bounded swap/recovery logic. MQTT identity and persistent-subscription migrations are unsafe, and prepare/commit necessarily creates a service gap. |
-| Can the cluster be reconfigured live and resiliently? | **No, not atomically** | Apply is per-process with no cluster version barrier or coordinated rollback. Mixed route/policy/session versions can persist indefinitely. |
-| Does cluster failover complete in a configurable 30-60 seconds? | **Not guaranteed** | Configurable lease timing exists. Only the warm path approaches the target; the default warm upper estimate leaves almost no broker-connect budget, while cold/replacement failover is over 100 seconds before orchestrator delay. |
+| Is the implementation ready to become a release candidate? | **Yes** | The code, tests, and docs implement the narrowed contract and all final specialist reviews approved it. |
+| Is public production release approved now? | **No** | Public module, immutable image, and credentialed AWS evidence remains external. |
+| Do we have zero bugs? | **No such guarantee is possible** | No confirmed finding from this audit remains open. |
+| Can it run in a cluster? | **Yes, conditionally** | Use the DynamoDB-coordinated HA profile and satisfy its documented broker, identity, store, and failover requirements. |
+| Do messages go missing or get lost? | **At documented boundaries** | QoS 0 before durable acceptance, configured drop, broker/session retention expiry, and explicitly forced destructive operations remain loss boundaries; no unconditional no-loss claim is made. |
+| Can one process be reconfigured live and resiliently? | **For non-destructive standalone changes** | Unsafe durable MQTT identity, persistent-subscription removal, and durable-store orphaning fail closed. |
+| Can the cluster be reconfigured live and resiliently? | **Not per process** | Per-process clustered reload is rejected; use coordinated whole-cohort replacement. |
+| Does cluster failover complete in 30-60 seconds? | **Not generally guaranteed** | Validation checks declared budgets, but deployment-specific percentiles must pass the credentialed AWS gate. |
 
 ## Production contract used for this review
 
@@ -82,7 +82,11 @@ The code is judged against these requirements:
 | **MEDIUM** | Material operability, API-safety, observability, documentation, or assurance defect. |
 | **LOW** | Release-quality or diagnostic weakness that does not independently break delivery. |
 
-## Confirmed blockers
+## Baseline findings and evidence
+
+The sections below preserve evidence from the baseline revision. Their
+present-tense descriptions are historical; the remediation table above is the
+authoritative current status.
 
 ### B1. Distinct byte-identical MQTT publishes collapse in `shared_outbox`
 
@@ -859,8 +863,8 @@ deployment.
 
 ## Positive controls worth preserving
 
-This NO-GO is not a claim that the transport has no production-quality work.
-The following controls are useful and should remain:
+The baseline NO-GO was not a claim that the transport lacked
+production-quality work. These controls remain useful:
 
 - production Paho manual acknowledgement is enabled;
 - exact subscription deltas are reconciled and SUBACK failures propagate;
@@ -876,10 +880,10 @@ The following controls are useful and should remain:
 - liveness, deep health, and readiness levels exist;
 - the production image runs non-root and has graceful-stop guidance.
 
-These controls reduce risk. They do not cancel the blockers or make absolute
-no-loss/60-second claims true.
+These controls reduce risk. They still do not make absolute no-loss or
+universal 60-second claims true.
 
-## Prioritized remediation
+## Baseline remediation order
 
 ### P0: release blockers
 
@@ -937,8 +941,9 @@ Do not label MQTT production-ready until all of these are green:
   assumptions fit it.
 - **Cluster identity:** a duplicate `$share` client-ID deployment fails before
   traffic.
-- **Cluster reload:** version N either commits everywhere or rolls back
-  everywhere within a declared bound.
+- **Cluster reload:** per-process live reload is rejected; the external
+  whole-cohort runbook proves the version/readiness barrier or rolls the cohort
+  back before ingress resumes.
 - **Memory:** maximum payload at full receive/dispatch windows stays below the
   container memory limit with measured headroom.
 - **Packaging:** a clean external Go module can import the MQTT adapter; the
@@ -949,20 +954,12 @@ Do not label MQTT production-ready until all of these are green:
 
 ## Final answer
 
-The MQTT transport is **not production-ready for the stated requirements**.
-It can run useful standalone and controlled workloads, and it contains many
-sound resilience mechanisms, but it does not currently provide:
+The remediated implementation is a **release candidate for its narrowed,
+documented contract**. The baseline blockers and all confirmed in-repository
+high-risk findings are resolved or fail closed.
 
-- zero known bugs;
-- a truthful unconditional no-loss contract;
-- safe persistent-session runtime replacement;
-- safe MQTT identity changes during reload;
-- strict Full readiness;
-- bounded recovery from every store/broker outage;
-- turnkey coordinated clustering;
-- atomic resilient cluster reconfiguration;
-- a generally guaranteed 30-60 second failover.
-
-The release decision remains **NO-GO** until the three blockers and P0 gates are
-resolved and the claims are proven by persistent-broker, crash-boundary, and
-measured failover tests.
+Public production release remains **NO-GO** until the external sequence proves
+public module resolution, immutable image evidence, and credentialed AWS
+failover percentiles on the exact release revision. GoBridge does not claim
+zero bugs, unconditional no-loss delivery, atomic live cluster
+reconfiguration, or a universal 30-60 second failover.

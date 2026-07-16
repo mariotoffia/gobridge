@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -32,8 +34,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
-		Endpoint:          sqslocal.Endpoint(t),
-		Region:            "us-west-1",
+		Client:            client,
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 3,
@@ -52,6 +53,7 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc52-bridge"),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
@@ -94,8 +96,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
-		Endpoint:          sqslocal.Endpoint(t),
-		Region:            "us-west-1",
+		Client:            client,
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 5,
@@ -114,6 +115,7 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc53-bridge"),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
@@ -163,6 +165,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc54-bridge"),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
@@ -191,7 +194,12 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	lrWaitFor(t, 4*time.Minute, fmt.Sprintf("uc54: collector >= %d", dedupCount), func() bool {
 		return collector.count() >= dedupCount
 	})
-	time.Sleep(10 * time.Second) // NEGATIVE: verify dedup discards most duplicates
+	waitForSQSQueueDrained(t, ctx, client, queueURL, 30*time.Second)
+	require.NoError(t, rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		Routes:   []string{"uc54-fifo-dedup"},
+		MinQuiet: 250 * time.Millisecond,
+		Timeout:  30 * time.Second,
+	}))
 
 	total := collector.count()
 	t.Logf("uc54: total=%d (expected ~%d, tolerance 10%% for ElasticMQ dedup leaks)", total, dedupCount)
@@ -221,6 +229,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc55-bridge"),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
@@ -288,6 +297,30 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 		t.Logf("uc55: %d ordering violations (ElasticMQ lacks FIFO group locking — expected)", outOfOrder)
 	}
 	t.Logf("uc55: received %d msgs across %d groups", len(msgs), len(groups))
+}
+
+func waitForSQSQueueDrained(
+	t *testing.T,
+	ctx context.Context,
+	client *awssqs.Client,
+	queueURL string,
+	timeout time.Duration,
+) {
+	t.Helper()
+	lrWaitFor(t, timeout, "SQS queue visible and in-flight depth == 0", func() bool {
+		out, err := client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+			QueueUrl: &queueURL,
+			AttributeNames: []sqstypes.QueueAttributeName{
+				sqstypes.QueueAttributeNameApproximateNumberOfMessages,
+				sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible,
+			},
+		})
+		if err != nil {
+			return false
+		}
+		return out.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)] == "0" &&
+			out.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessagesNotVisible)] == "0"
+	})
 }
 
 func TestUC56_BatchMixedSuccessFailure(t *testing.T) {

@@ -109,6 +109,57 @@ func TestReleaseWorkflow_FinalCommandTestsGatePublication(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflow_RebuildsBeforeTrustingRecordedDigest(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	image := workflowJobBlock(t, string(data), "image", "image-association")
+	requireWorkflowText(
+		t,
+		image,
+		"- name: Build and push image content by digest\n"+
+			"        id: build",
+		`if [ -n "$RECORDED_DIGEST" ] && [ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]; then`,
+		`echo "::error::recorded release digest differs from rebuilt tagged source"`,
+	)
+	forbidWorkflowText(
+		t,
+		image,
+		"if: steps.association.outputs.exists != 'true'",
+		"Verify recorded digest still exists in GHCR",
+		`digest="$RECORDED_DIGEST"`,
+	)
+	login := strings.Index(image, "Log in to GHCR")
+	association := strings.Index(image, "Fetch existing command release image association")
+	build := strings.Index(image, "Build and push image content by digest")
+	if login < 0 || association < login || build < association {
+		t.Error("image association must be fetched after login and before the source rebuild")
+	}
+}
+
+func TestReleaseWorkflow_RejectsUnscannedRunnableChildren(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	image := workflowJobBlock(t, string(data), "image", "image-association")
+	requireWorkflowText(
+		t,
+		image,
+		`runnable_count="$(jq '[.manifests[] |`,
+		`select(.platform.os != "unknown" or .platform.architecture != "unknown")] |`,
+		`if [ "$runnable_count" -ne 2 ]`,
+	)
+	if strings.Contains(image, `select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")`) {
+		t.Fatal("release workflow trusts mutable annotations to classify non-runnable image children")
+	}
+}
+
 func TestWorkflows_BoundedMQTTIngressMemoryUsesSharedTarget(t *testing.T) {
 	t.Parallel()
 

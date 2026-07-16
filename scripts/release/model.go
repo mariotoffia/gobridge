@@ -46,6 +46,7 @@ type moduleManifest struct {
 	Module   string
 	Requires []moduleRequirement
 	Replaces []moduleReplacement
+	Excludes []moduleRequirement
 }
 
 type moduleRequirement struct {
@@ -65,6 +66,8 @@ type violationKind string
 
 const (
 	violationLocalReplace      violationKind = "local-replace"
+	violationReplaceDirective  violationKind = "replace-directive"
+	violationExcludeDirective  violationKind = "exclude-directive"
 	violationExactZero         violationKind = "exact-v0.0.0"
 	violationAllZeroPseudo     violationKind = "all-zero-pseudo-version"
 	violationMalformedPseudo   violationKind = "malformed-pseudo-version"
@@ -327,6 +330,13 @@ func parseModuleManifest(filename string, data []byte) (moduleManifest, error) {
 			NewVersion: replacement.New.Version,
 		})
 	}
+	result.Excludes = make([]moduleRequirement, 0, len(parsed.Exclude))
+	for _, exclusion := range parsed.Exclude {
+		result.Excludes = append(result.Excludes, moduleRequirement{
+			Path:    exclusion.Mod.Path,
+			Version: exclusion.Mod.Version,
+		})
+	}
 	return result, nil
 }
 
@@ -496,7 +506,23 @@ func inspectModule(
 				Dependency: replacement.OldPath,
 				Detail:     replacement.NewPath,
 			})
+		} else {
+			violations = append(violations, manifestViolation{
+				Module:     moduleFile.Path,
+				Kind:       violationReplaceDirective,
+				Dependency: replacement.OldPath,
+				Version:    replacement.OldVersion,
+				Detail:     replacement.NewPath + "@" + replacement.NewVersion,
+			})
 		}
+	}
+	for _, exclusion := range moduleFile.Excludes {
+		violations = append(violations, manifestViolation{
+			Module:     moduleFile.Path,
+			Kind:       violationExcludeDirective,
+			Dependency: exclusion.Path,
+			Version:    exclusion.Version,
+		})
 	}
 
 	return violations, errors.Join(structuralErrors...)

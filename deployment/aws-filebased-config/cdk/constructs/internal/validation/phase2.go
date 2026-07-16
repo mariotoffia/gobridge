@@ -92,39 +92,45 @@ func checkSQS(cfg *ports.BridgeConfig, reg *registry.QueueRegistry, emit func(st
 	}
 }
 
-// checkSSM extracts every pms:// credential URI referenced by the
-// config, deduplicates them, and verifies each is present in the
-// registry. When the registry is nil but pms:// URIs exist, a single
-// "SsmParamRegistry prop is required" error is emitted naming every
-// offending URI.
+// checkSSM extracts every pms:// credential URI referenced by the config,
+// normalizes it to a safe parameter path, and verifies that path is registered.
+// Raw credential references are never included in diagnostics because malformed
+// URIs may contain userinfo.
 func checkSSM(cfg *ports.BridgeConfig, reg *registry.SsmParamRegistry, emit func(string)) {
 	uris := collectSSMURIs(cfg)
 	if len(uris) == 0 {
 		return
 	}
-	if reg == nil {
-		emit(fmt.Sprintf(
-			"yaml references SSM parameter URI(s) %s via credentials_uri fields, but no SsmParamRegistry was supplied. "+
-				"Expected: a *registry.SsmParamRegistry passed via the construct's SsmParamRegistry prop. "+
-				"Fix: construct registry.NewSsmParamRegistry(), call AddParameter(path, param) for each of %s, and pass it as SsmParamRegistry on the construct props.",
-			quoteList(uris), quoteList(uris),
-		))
-		return
-	}
+	paths := make([]string, 0, len(uris))
 	for _, uri := range uris {
 		key, err := registry.NormalizeParameterPath(uri)
 		if err != nil {
-			emit(fmt.Sprintf("yaml references invalid SSM parameter URI %q: %v", uri, err))
+			emit(fmt.Sprintf("yaml references an invalid SSM credential URI: %v", err))
 			continue
 		}
+		paths = append(paths, key)
+	}
+	if len(paths) == 0 {
+		return
+	}
+	if reg == nil {
+		emit(fmt.Sprintf(
+			"yaml references SSM parameter path(s) %s via credentials_uri fields, but no SsmParamRegistry was supplied. "+
+				"Expected: a *registry.SsmParamRegistry passed via the construct's SsmParamRegistry prop. "+
+				"Fix: construct registry.NewSsmParamRegistry(), call AddParameter(path, param) for each of %s, and pass it as SsmParamRegistry on the construct props.",
+			quoteList(paths), quoteList(paths),
+		))
+		return
+	}
+	for _, key := range paths {
 		if reg.Has(key) {
 			continue
 		}
 		emit(fmt.Sprintf(
-			"yaml references SSM parameter %q (registry key %q) but no such entry in SsmParamRegistry. "+
+			"yaml references SSM parameter path %q but no such entry in SsmParamRegistry. "+
 				"Expected: an AddParameter(%q, param) call before the GoBridge construct is synthesised. "+
 				"Fix: registry.AddParameter(%q, param) on the SsmParamRegistry passed via the construct's SsmParamRegistry prop.",
-			uri, key, key, key,
+			key, key, key,
 		))
 	}
 }

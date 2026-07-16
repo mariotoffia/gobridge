@@ -112,11 +112,16 @@ schemas:
     properties:
       status:
         type: string
-        enum: [committed]
+        enum: [committed, committed_applying]
       version:
         type: integer
         description: The new config version after the commit.
         example: 4
+      error:
+        type: string
+        description: >
+          Convergence detail when status is committed_applying. The durable
+          desired config is retained and no compensating rollback is required.
 
   ConfigTxnRollbackResponse:
     type: object

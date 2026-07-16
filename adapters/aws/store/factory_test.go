@@ -98,6 +98,7 @@ func TestDynamoDBStoreFactory_TypedTuningKnobs(t *testing.T) {
 		CompactionGrace:    2 * time.Hour,
 		Retention:          14 * 24 * time.Hour,
 		MaxScanPages:       500,
+		OperationTimeout:   4 * time.Second,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
@@ -127,6 +128,7 @@ func TestDynamoDBConfig_ValidateRejectsNegativeDurations(t *testing.T) {
 		{StaleClaimDuration: -time.Second},
 		{CompactionGrace: -time.Second},
 		{Retention: -time.Second},
+		{OperationTimeout: -time.Second},
 	}
 	for i, c := range cases {
 		if err := c.Validate(); err == nil {

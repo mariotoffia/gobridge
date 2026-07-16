@@ -46,6 +46,29 @@ const (
 // gapHTTPClient is a shared HTTP client with a 10s timeout for test requests.
 var gapHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
+// purgeableDLQStore gives the HTTP management test a fixture whose destructive
+// operation has the same strictly-before cutoff semantics as production stores.
+type purgeableDLQStore struct {
+	replayableDLQStore
+}
+
+func (s *purgeableDLQStore) Purge(_ context.Context, before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	remaining := make([]routing.DLQEntry, 0, len(s.entries))
+	purged := 0
+	for _, entry := range s.entries {
+		if entry.FailedAt().Before(before) {
+			purged++
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+	s.entries = remaining
+	return purged, nil
+}
+
 // httpGet performs an authenticated GET request and returns status + body.
 func httpGet(url, apiKey string) (int, map[string]any, error) {
 	req, err := http.NewRequest("GET", url, nil)
@@ -289,8 +312,8 @@ func TestGAP_HTTPBridgeStartStop(t *testing.T) {
 // Assertions:
 //   - DLQ count matches failed messages
 //   - List endpoint returns entries with correct fields
-//   - Replay removes entries from DLQ
-//   - Purge clears remaining entries
+//   - Unconfirmed purge is rejected without deleting failure evidence
+//   - Explicitly confirmed purge clears all existing entries
 func TestGAP_HTTPDLQManagement(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
@@ -302,7 +325,7 @@ func TestGAP_HTTPDLQManagement(t *testing.T) {
 	defer cancel()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "gap-ha3-in")
-	dlq := &replayableDLQStore{}
+	dlq := &purgeableDLQStore{}
 
 	sessID := mqttlocal.UniqueClientID("gap-ha3-sess")
 	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
@@ -354,13 +377,22 @@ func TestGAP_HTTPDLQManagement(t *testing.T) {
 	assert.Equal(t, 200, status)
 	t.Logf("GAP-HA3: dlq messages (limit=5) = %v", data)
 
-	// POST /dlq/purge — purge all.
-	// NOTE: The test lrDLQStore.Purge() is a no-op (returns 0), so we can
-	// only verify the HTTP endpoint responds correctly, not the purge effect.
-	status, data, err = httpPost(adminURL+"/api/v1/admin/dlq/purge", gapAdminKey, nil)
+	// POST /dlq/purge without destructive confirmation must preserve all entries.
+	status, data, err = httpPost(adminURL+"/api/v1/admin/dlq/purge", gapAdminKey,
+		map[string]any{"confirm_purge_all": false})
 	require.NoError(t, err)
-	assert.Equal(t, 200, status, "purge should return 200")
-	t.Logf("GAP-HA3: purge status=%d data=%v", status, data)
+	require.Equal(t, http.StatusBadRequest, status, "unconfirmed purge must be rejected")
+	assert.Contains(t, data["error"], "confirm_purge_all=true")
+	assert.Equal(t, msgCount, dlq.count(), "unconfirmed purge must preserve the DLQ")
+
+	// Explicit confirmation authorizes the destructive operation.
+	status, data, err = httpPost(adminURL+"/api/v1/admin/dlq/purge", gapAdminKey,
+		map[string]any{"confirm_purge_all": true})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, "confirmed purge should return 200")
+	assert.Equal(t, float64(msgCount), data["purged"])
+	assert.Equal(t, 0, dlq.count(), "confirmed purge must clear the DLQ")
+	t.Logf("GAP-HA3: confirmed purge status=%d data=%v", status, data)
 
 	t.Log("GAP-HA3: DLQ management assertions passed")
 }

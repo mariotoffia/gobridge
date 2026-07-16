@@ -49,11 +49,11 @@ func sqsReceiverOpts(queueURL, endpoint string) sqsadapter.Config {
 
 // sqsSenderOpts creates a typed PluginConfig for an SQS sender.
 func sqsSenderOpts(queueURL, endpoint string) sqsadapter.Config {
-	return sqsadapter.Config{
-		QueueURL: queueURL,
-		Endpoint: endpoint,
-		Region:   "us-west-1",
-	}
+	cfg := sqsadapter.DefaultConfig()
+	cfg.QueueURL = queueURL
+	cfg.Endpoint = endpoint
+	cfg.Region = "us-west-1"
+	return cfg
 }
 
 // TestDDBTransport_SQS_ConfigChangeSwapsQueue validates that a DDB
@@ -86,6 +86,7 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
+		Stores: testStoresWithDLQ(),
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx-in", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
 		},
@@ -237,6 +238,7 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
+		Stores: testStoresWithDLQ(),
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "sqs", Config: sqsReceiverOpts(queueA, sqsEP)},
 		},
@@ -292,7 +294,7 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		}
 	}()
 
-	waitForSupervisorRuntime(t, s, 10*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 10*time.Second)
 
 	// DDB overlay v2: add route r2 (queue-C → queue-D).
 	overlay2 := &ports.BridgeConfig{
@@ -377,6 +379,7 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 			ID:           "test-bridge",
 			DrainTimeout: "1s",
 		},
+		Stores: testStoresWithDLQ(),
 	}
 
 	// DDB overlay v1: both routes r1 and r2.
@@ -441,7 +444,7 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		}
 	}()
 
-	waitForSupervisorRuntime(t, s, 10*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 10*time.Second)
 
 	// Verify r1 works initially.
 	sendToSQS(t, sqsClient, queueA, `{"test":"r1-init"}`, nil)

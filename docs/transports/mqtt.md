@@ -539,7 +539,7 @@ config knob:
 
 The adapter tracks every current-connection QoS 1/2 packet from receipt until a
 successful protocol Ack or connection-epoch change. Deep health exposes
-`unsettled_count`, `oldest_unsettled_age`, `receive_window_utilization`, and
+`unsettled_count`, `oldest_unsettled_age_ms`, `receive_window_utilization`, and
 `recovery_recycle_count`. The corresponding metrics are:
 
 | Metric | Kind/unit | Meaning |

@@ -564,6 +564,7 @@ entirely.
 | `compaction_grace` | duration | store default (`1h`) | Outbox only -- window terminal items are kept before the DynamoDB item TTL deletes them. |
 | `retention` | duration | none (keep forever) | DLQ only -- TTL on dead-letter entries (`failed_at + retention`). |
 | `max_scan_pages` | int | `100` | DLQ only -- bounds index-less List/Purge scans; negative disables. |
+| `operation_timeout` | duration | `5s` | Managed subscriptions only -- adapter-owned deadline for each DynamoDB call. |
 
 - Distributed and persistent. Uses conditional writes for fencing safety.
 - Required for clustered deployments with lease-based coordination.

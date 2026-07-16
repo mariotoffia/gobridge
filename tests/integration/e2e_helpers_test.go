@@ -324,6 +324,72 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 	return leaseStore, outboxStore
 }
 
+// acquireAfterPersistedTakeoverObservation follows the DynamoDB lease takeover
+// contract for an actively held lease. The first competing Acquire establishes
+// persisted observation evidence; subsequent calls accumulate only confirmed
+// local monotonic elapsed time until the unchanged tuple can be seized.
+func acquireAfterPersistedTakeoverObservation(
+	t *testing.T,
+	store ports.LeaseStore,
+	leaseID, ownerID string,
+	ttl time.Duration,
+) persistence.LeaseToken {
+	t.Helper()
+
+	if _, err := store.Acquire(t.Context(), leaseID, ownerID, ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initialize persisted takeover observation: %v", err)
+	}
+
+	var (
+		token      persistence.LeaseToken
+		unexpected error
+	)
+	wait.Until(t, 5*time.Second, "persisted lease takeover observation", func() bool {
+		var err error
+		token, err = store.Acquire(t.Context(), leaseID, ownerID, ttl, nil)
+		switch {
+		case err == nil:
+			return true
+		case errors.Is(err, shared.ErrAlreadyExists):
+			return false
+		default:
+			unexpected = err
+			return true
+		}
+	})
+	if unexpected != nil {
+		t.Fatalf("acquire after persisted takeover observation: %v", unexpected)
+	}
+	return token
+}
+
+func waitForOutboxClaim(
+	t *testing.T,
+	store ports.OutboxStore,
+	partitionKey string,
+	token persistence.LeaseToken,
+) []*persistence.OutboxRecord {
+	t.Helper()
+
+	var (
+		claimed    []*persistence.OutboxRecord
+		unexpected error
+	)
+	wait.Until(t, 5*time.Second, "outbox record becomes reclaimable", func() bool {
+		var err error
+		claimed, err = store.Claim(t.Context(), partitionKey, token, 10)
+		if err != nil {
+			unexpected = err
+			return true
+		}
+		return len(claimed) > 0
+	})
+	if unexpected != nil {
+		t.Fatalf("claim outbox record: %v", unexpected)
+	}
+	return claimed
+}
+
 // ---------------------------------------------------------------------------
 // Runtime helpers
 // ---------------------------------------------------------------------------

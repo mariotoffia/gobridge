@@ -739,21 +739,13 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 		t.Fatalf("expected 1 claimed, got %d", len(claimed))
 	}
 
-	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
-	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
-	if err != nil {
-		t.Fatalf("B acquire: %v", err)
-	}
+	tokenB := acquireAfterPersistedTakeoverObservation(t, leaseStore, leaseID, "owner-B", 5*time.Second)
 	if tokenB.Version <= tokenA.Version {
 		t.Fatalf("B's version (%d) should be higher than A's (%d)", tokenB.Version, tokenA.Version)
 	}
 
 	// B reclaims the stale-claimed record (updating claim_version to B's).
-	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
-	reclaimedB, err := outboxStore.Claim(ctx, pk, tokenB, 10)
-	if err != nil {
-		t.Fatalf("reclaim with B: %v", err)
-	}
+	reclaimedB := waitForOutboxClaim(t, outboxStore, pk, tokenB)
 	if len(reclaimedB) != 1 {
 		t.Fatalf("expected 1 reclaimed by B, got %d", len(reclaimedB))
 	}

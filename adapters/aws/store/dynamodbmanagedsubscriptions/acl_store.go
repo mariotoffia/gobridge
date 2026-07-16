@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -19,9 +20,11 @@ import (
 const (
 	// DefaultTableName is the adapter default used when no table override is configured.
 	DefaultTableName = "gobridge-managed-subscriptions"
-	attrIdentity     = "storage_identity"
-	attrBaseline     = "baseline"
-	attrFilters      = "filters"
+	// DefaultOperationTimeout bounds each DynamoDB control/data-plane call.
+	DefaultOperationTimeout = 5 * time.Second
+	attrIdentity            = "storage_identity"
+	attrBaseline            = "baseline"
+	attrFilters             = "filters"
 )
 
 type dynamoAPI interface {
@@ -33,8 +36,9 @@ type dynamoAPI interface {
 
 // Store is a DynamoDB-backed managed-subscription history.
 type Store struct {
-	client    dynamoAPI
-	tableName string
+	client           dynamoAPI
+	tableName        string
+	operationTimeout time.Duration
 }
 
 type Option func(*Store)
@@ -42,11 +46,24 @@ type Option func(*Store)
 // WithTableName overrides the default dedicated table name.
 func WithTableName(name string) Option { return func(s *Store) { s.tableName = name } }
 
+// WithOperationTimeout overrides the adapter-owned deadline for each DynamoDB call.
+func WithOperationTimeout(timeout time.Duration) Option {
+	return func(s *Store) {
+		if timeout > 0 {
+			s.operationTimeout = timeout
+		}
+	}
+}
+
 // NewStore wraps the AWS SDK client behind the adapter ACL.
 //
 //aclcheck:allow-export
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
-	store := &Store{client: client, tableName: DefaultTableName}
+	store := &Store{
+		client:           client,
+		tableName:        DefaultTableName,
+		operationTimeout: DefaultOperationTimeout,
+	}
 	for _, opt := range opts {
 		opt(store)
 	}
@@ -58,7 +75,9 @@ var _ ports.ManagedSubscriptionStore = (*Store)(nil)
 // EnsureTable provisions the minimal one-hash-key table. Production
 // composition uses Preflight; this method is for explicit provisioning/tests.
 func (s *Store) EnsureTable(ctx context.Context) error {
-	_, err := s.client.CreateTable(ctx, &dynamodb.CreateTableInput{
+	callCtx, cancel := s.callContext(ctx)
+	defer cancel()
+	_, err := s.client.CreateTable(callCtx, &dynamodb.CreateTableInput{
 		TableName:            aws.String(s.tableName),
 		AttributeDefinitions: []ddbtypes.AttributeDefinition{{AttributeName: aws.String(attrIdentity), AttributeType: ddbtypes.ScalarAttributeTypeS}},
 		KeySchema:            []ddbtypes.KeySchemaElement{{AttributeName: aws.String(attrIdentity), KeyType: ddbtypes.KeyTypeHash}},
@@ -73,7 +92,9 @@ func (s *Store) EnsureTable(ctx context.Context) error {
 
 // Preflight verifies the configured table exists with exactly the required key.
 func (s *Store) Preflight(ctx context.Context) error {
-	out, err := s.client.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(s.tableName)})
+	callCtx, cancel := s.callContext(ctx)
+	defer cancel()
+	out, err := s.client.DescribeTable(callCtx, &dynamodb.DescribeTableInput{TableName: aws.String(s.tableName)})
 	if err != nil {
 		var missing *ddbtypes.ResourceNotFoundException
 		if errors.As(err, &missing) {
@@ -97,7 +118,9 @@ func (s *Store) List(ctx context.Context, storageIdentity string) ([]string, err
 	if err := validate(storageIdentity, nil); err != nil {
 		return nil, err
 	}
-	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
+	callCtx, cancel := s.callContext(ctx)
+	defer cancel()
+	out, err := s.client.GetItem(callCtx, &dynamodb.GetItemInput{
 		TableName: aws.String(s.tableName), ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{attrIdentity: &ddbtypes.AttributeValueMemberS{Value: storageIdentity}},
 	})
@@ -141,7 +164,9 @@ func (s *Store) Remember(ctx context.Context, storageIdentity string, filters []
 		attrs[":filters"] = &ddbtypes.AttributeValueMemberSS{Value: values}
 		expression += " ADD #filters :filters"
 	}
-	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	callCtx, cancel := s.callContext(ctx)
+	defer cancel()
+	_, err = s.client.UpdateItem(callCtx, &dynamodb.UpdateItemInput{
 		TableName:                aws.String(s.tableName),
 		Key:                      map[string]ddbtypes.AttributeValue{attrIdentity: &ddbtypes.AttributeValueMemberS{Value: storageIdentity}},
 		ExpressionAttributeNames: names, ExpressionAttributeValues: attrs,
@@ -160,7 +185,9 @@ func (s *Store) Forget(ctx context.Context, storageIdentity string, filters []st
 		_, err := s.List(ctx, storageIdentity)
 		return err
 	}
-	_, err = s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	callCtx, cancel := s.callContext(ctx)
+	defer cancel()
+	_, err = s.client.UpdateItem(callCtx, &dynamodb.UpdateItemInput{
 		TableName:           aws.String(s.tableName),
 		Key:                 map[string]ddbtypes.AttributeValue{attrIdentity: &ddbtypes.AttributeValueMemberS{Value: storageIdentity}},
 		ConditionExpression: aws.String("attribute_exists(#identity) AND #baseline = :true"),
@@ -178,6 +205,14 @@ func (s *Store) Forget(ctx context.Context, storageIdentity string, filters []st
 		return shared.ErrNotFound.WithMessage("managed subscription baseline not found")
 	}
 	return mapError("forget managed subscriptions", err)
+}
+
+func (s *Store) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := s.operationTimeout
+	if timeout <= 0 {
+		timeout = DefaultOperationTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func normalized(identity string, filters []string) ([]string, error) {

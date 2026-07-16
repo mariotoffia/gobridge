@@ -32,7 +32,7 @@
 ./adapters/mqtt/transport/paho/session_pushevent_test.go:65:			time.Sleep(50 * time.Microsecond) // OTHER: microsecond pacing — race window for concurrent Close during pushEvent
 ./adapters/native/config/file/watcher_test.go:302:		time.Sleep(20 * time.Millisecond)
 ./adapters/native/config/file/watcher_test.go:420:		time.Sleep(1 * time.Millisecond)
-./bridge/keystone_lifecycle_test.go:553:		time.Sleep(30 * time.Millisecond) // OTHER: race window — widen so an unserialized concurrent-build race overlaps
+./bridge/keystone_lifecycle_test.go:552:		time.Sleep(30 * time.Millisecond) // OTHER: race window — widen so an unserialized concurrent-build race overlaps
 ./bridge/keystone_lifecycle_test.go:88:				time.Sleep(time.Millisecond) // OTHER: pace the bounded Terminal() sampling loop (exits on stopPoll)
 ./bridge/reconfig_strategy_test.go:150:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 ./bridge/reconfig_strategy_test.go:156:	time.Sleep(1 * time.Millisecond) // let goroutine reach select
@@ -83,8 +83,8 @@
 ./runtime/session/manager_clock_test.go:172:	time.Sleep(20 * time.Millisecond)
 ./tests/integration/e2e_failover_test.go:254:	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
 ./tests/integration/e2e_failover_test.go:264:	time.Sleep(600 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold so B can reclaim
-./tests/integration/e2e_failover_test.go:307:	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
-./tests/integration/e2e_failover_test.go:457:	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
+./tests/integration/e2e_failover_test.go:299:	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
+./tests/integration/e2e_failover_test.go:449:	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
 ./tests/integration/e2e_failover_test.go:82:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/e2e_helpers_test.go:115:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/integration/e2e_routing_test.go:152:	time.Sleep(2 * time.Second) // NEGATIVE: verify unmatched clients received nothing
@@ -92,21 +92,21 @@
 ./tests/integration/e2e_sqs_mqtt_test.go:347:	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
 ./tests/integration/integration_config_api_edge_test.go:68:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
 ./tests/integration/integration_config_api_edge_test.go:87:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for 100ms transaction TTL to expire
-./tests/integration/integration_config_api_helpers_test.go:306:		time.Sleep(interval) // SYNC: poll for condition
+./tests/integration/integration_config_api_helpers_test.go:308:		time.Sleep(interval) // SYNC: poll for condition
 ./tests/integration/integration_ddb_config_helpers_test.go:442:		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
 ./tests/integration/integration_ddb_config_helpers_test.go:461:		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
 ./tests/integration/integration_ddb_config_rollback_test.go:336:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
 ./tests/integration/integration_ddb_config_rollback_test.go:443:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay before saving valid one
 ./tests/integration/integration_ddb_config_rollback_test.go:82:	time.Sleep(500 * time.Millisecond) // NEGATIVE: verify Manager drops invalid config (no swap event)
 ./tests/integration/integration_ddb_config_supervisor_test.go:272:	time.Sleep(1 * time.Second) // SYNC: wait for debounce quiet period + poll interval + build time
-./tests/integration/integration_ddb_config_transport_test.go:160:			time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
-./tests/integration/integration_ddb_config_transport_test.go:328:	time.Sleep(500 * time.Millisecond) // STARTUP: let new routes initialize after config swap
-./tests/integration/integration_ddb_config_transport_test.go:484:	time.Sleep(500 * time.Millisecond) // STARTUP: let routes settle after config swap
+./tests/integration/integration_ddb_config_transport_test.go:161:			time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
+./tests/integration/integration_ddb_config_transport_test.go:330:	time.Sleep(500 * time.Millisecond) // STARTUP: let new routes initialize after config swap
+./tests/integration/integration_ddb_config_transport_test.go:487:	time.Sleep(500 * time.Millisecond) // STARTUP: let routes settle after config swap
 ./tests/integration/integration_ddb_config_watch_test.go:390:	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher poll pick up invalid version
 ./tests/integration/integration_sqs_delivery_test.go:182:			time.Sleep(4 * time.Second) // ESSENTIAL: exceed original 3s visibility timeout to prove Extend worked
 ./tests/integration/integration_sqs_delivery_test.go:316:		time.Sleep(6 * time.Second) // ESSENTIAL: exceed 4s visibility timeout to prove auto-extend prevents redelivery
 ./tests/integration/integration_sqs_delivery_test.go:344:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/integration/integration_sqs_sender_batch_test.go:264:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/integration/integration_sqs_sender_batch_test.go:269:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/integration/shared_outbox_e2e_test.go:227:		time.Sleep(10 * time.Millisecond) // SYNC: poll for condition
 ./tests/integration/shared_outbox_e2e_test.go:742:	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
 ./tests/integration/shared_outbox_e2e_test.go:752:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
@@ -123,11 +123,11 @@
 ./tests/longrunning/longrunning_helpers_test.go:643:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
 ./tests/longrunning/longrunning_helpers_test.go:694:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:452:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/longrunning_test.go:465:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/res_gap_validation_test.go:144:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
 ./tests/longrunning/res_gap_validation_test.go:265:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
-./tests/longrunning/uc27_failure_recovery_b_test.go:235:	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
+./tests/longrunning/uc27_failure_recovery_b_test.go:236:	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
 ./tests/longrunning/uc27_failure_recovery_b_test.go:79:	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT
 ./tests/longrunning/uc27_failure_recovery_test.go:307:	time.Sleep(2 * time.Second) // NEGATIVE: verify expired messages did not reach MQTT
 ./tests/longrunning/uc33_backpressure_test.go:384:			time.Sleep(time.Duration(gapSeconds) * time.Second) // OTHER: idle gap between bursts
@@ -138,13 +138,13 @@
 ./tests/longrunning/uc42_broker_resilience_test.go:104:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc42_broker_resilience_test.go:229:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:143:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc48_broker_multihop_test.go:280:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
-./tests/longrunning/uc48_broker_multihop_test.go:510:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
+./tests/longrunning/uc48_broker_multihop_test.go:302:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
+./tests/longrunning/uc48_broker_multihop_test.go:532:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
 ./tests/longrunning/uc52_sqs_resilience_test.go:194:	time.Sleep(10 * time.Second) // NEGATIVE: verify dedup discards most duplicates
 ./tests/longrunning/uc57_outbox_lease_test.go:108:	time.Sleep(5 * time.Second) // ESSENTIAL: wait for lease TTL (2s) to expire + margin
 ./tests/longrunning/uc59_outbox_edge_test.go:166:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc5_pipeline_chain_test.go:52:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/longrunning/uc63_performance_test.go:303:		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
+./tests/longrunning/uc63_performance_test.go:335:		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
 ./tests/longrunning/uc74_protocol_edge_test.go:45:	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 ./tests/longrunning/uc80_benchmark_test.go:91:		time.Sleep(500 * time.Millisecond) // SYNC: poll for message delivery progress
 ./tests/longrunning/uc92_amqp091_broker_resilience_test.go:135:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart

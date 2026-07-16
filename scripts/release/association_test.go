@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -270,34 +267,5 @@ func TestDecideImageAssociationUpload_HandlesConcurrentAsset(t *testing.T) {
 				t.Fatalf("decideImageAssociationUpload() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestReleaseWorkflow_ResumesRecordedDigestWithoutRebuild(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
-	if err != nil {
-		t.Fatalf("read release workflow: %v", err)
-	}
-	text := string(workflow)
-	for _, want := range []string{
-		"id: association",
-		"if: steps.association.outputs.exists != 'true'",
-		"verify-release-image-digest",
-		"release-image-association",
-		"actions/github-script@",
-		"image-association:",
-		"latest-promotion:",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("release workflow missing %q", want)
-		}
-	}
-	login := strings.Index(text, "Log in to GHCR")
-	association := strings.Index(text, "Fetch existing command release image association")
-	build := strings.Index(text, "Build and push image content by digest")
-	if login < 0 || association < login || build < association {
-		t.Error("image association must be fetched after login and before any build")
 	}
 }

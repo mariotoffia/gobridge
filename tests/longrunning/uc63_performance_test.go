@@ -12,7 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -43,7 +47,12 @@ func TestUC63_MemoryStability(t *testing.T) {
 	)
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc63-in")
-	leaseStore, outboxStore := setupDynamoStores(t)
+	leaseStore := memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))
+	outboxClock := clocktest.New()
+	outboxStore := memoryoutbox.NewStore(
+		memoryoutbox.WithClock(outboxClock),
+		memoryoutbox.WithRetention(time.Second),
+	)
 	dlq := &lrDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -82,6 +91,28 @@ func TestUC63_MemoryStability(t *testing.T) {
 	defer func() { _ = rt.Stop(context.Background()) }()
 	gobridgesync(t, 10*time.Second, rt)
 
+	compactOutbox := func() {
+		t.Helper()
+		require.NoError(t, rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+			MinQuiet: 500 * time.Millisecond,
+			Timeout:  10 * time.Second,
+		}))
+		lrWaitFor(t, 10*time.Second, "outbox pending depth == 0", func() bool {
+			pending, supported, err := rt.OutboxPending(
+				ctx, persistence.OutboxPartitionKey(sessID, ""),
+			)
+			return err == nil && supported && pending == 0
+		})
+		// The in-memory store retains terminal records for deduplication. Advance
+		// its test clock beyond retention and trigger compaction so this measures
+		// runtime memory after persistence has released completed payloads.
+		outboxClock.Advance(2 * time.Minute)
+		_, err := outboxStore.Expire(
+			ctx, outboxClock.Now(), persistence.OutboxPartitionKey(sessID, ""),
+		)
+		require.NoError(t, err)
+	}
+
 	// Phase 1: warmup — stabilize goroutine stacks, connection pools,
 	// DDB table caches, and GC pacing. Results are discarded.
 	t.Logf("UC63: warmup — sending %d messages", warmupCount)
@@ -89,6 +120,7 @@ func TestUC63_MemoryStability(t *testing.T) {
 	lrWaitFor(t, 60*time.Second,
 		fmt.Sprintf("warmup >= %d", warmupCount),
 		func() bool { return countUnique(collector) >= warmupCount })
+	compactOutbox()
 
 	// Phase 2: baseline — force multiple GC cycles to get a clean reading.
 	baseline := stableHeapAlloc()
@@ -103,9 +135,9 @@ func TestUC63_MemoryStability(t *testing.T) {
 		fmt.Sprintf("unique >= %d", totalExpected),
 		func() bool { return countUnique(collector) >= totalExpected })
 
-	// Phase 4: quiescence — wait briefly for outbox drainer to finish,
-	// buffers to be released, then force multiple GC cycles.
-	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 500 * time.Millisecond, Timeout: 5 * time.Second}) //nolint:errcheck
+	// Phase 4: quiescence — let persistence release terminal payloads, then
+	// force multiple GC cycles.
+	compactOutbox()
 	final := stableHeapAlloc()
 
 	t.Logf("UC63: heap — baseline=%dMB, final=%dMB, delta=%dMB",
@@ -345,7 +377,8 @@ func TestUC65_ThroughputCeiling(t *testing.T) {
 	}
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc65-in")
-	leaseStore, outboxStore := setupDynamoStores(t)
+	leaseStore := memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))
+	outboxStore := memoryoutbox.NewStore()
 	dlq := &lrDLQStore{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)

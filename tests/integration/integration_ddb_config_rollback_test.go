@@ -65,7 +65,7 @@ func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Save invalid overlay: route references nonexistent receiver.
 	invalidOverlay := &ports.BridgeConfig{
@@ -144,7 +144,7 @@ func TestDDBRollback_ValidOverlayButBuildFails_KeepsOldConfig(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Save overlay that adds a route using "broken" transport.
 	// This is structurally valid (passes config.Validate) but builder fails.
@@ -234,7 +234,7 @@ func TestDDBRollback_ValidOverlayButStartFails_RecoversOldConfig(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Overlay adds route with broken transport (receiver fails on NewReceiver).
 	brokenOverlay := &ports.BridgeConfig{
@@ -320,7 +320,7 @@ func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Step 1: Invalid overlay (dropped by Manager).
 	invalidOverlay := &ports.BridgeConfig{
@@ -427,7 +427,7 @@ func TestDDBRollback_InvalidThenValid_RecoversFully(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Invalid overlay (dropped by Manager).
 	invalidOverlay := &ports.BridgeConfig{

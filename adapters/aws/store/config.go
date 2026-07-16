@@ -91,6 +91,10 @@ type DynamoDBConfig struct {
 	// keeps the store default (100); a negative value disables the
 	// bound.
 	MaxScanPages int `mapstructure:"max_scan_pages" yaml:"max_scan_pages" json:"max_scan_pages"`
+
+	// OperationTimeout (managed-subscriptions only) bounds each DynamoDB
+	// control/data-plane call. Zero keeps the store default.
+	OperationTimeout time.Duration `mapstructure:"operation_timeout" yaml:"operation_timeout" json:"operation_timeout"`
 }
 
 // Kind reports the registry discriminator.
@@ -129,6 +133,9 @@ func (c DynamoDBConfig) Validate() error {
 	}
 	if c.Retention < 0 {
 		return errors.New("awsstore: retention must not be negative")
+	}
+	if c.OperationTimeout < 0 {
+		return errors.New("awsstore: operation_timeout must not be negative")
 	}
 	return nil
 }

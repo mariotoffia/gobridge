@@ -25,8 +25,8 @@ import (
 // Gap Test: DynamoDB Outage During Lease Renewal (Category 4)
 //
 // Validates that when the LeaseStore becomes temporarily unavailable,
-// the session manager steps down, releases ownership, and re-acquires
-// the lease once DDB recovers.
+// the session manager steps down, releases ownership, and a replacement
+// runtime acquires the lease once DDB recovers.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // faultyLeaseStore wraps a real LeaseStore and can be toggled to fail
@@ -60,7 +60,8 @@ func (f *faultyLeaseStore) Current(ctx context.Context, leaseID string) (persist
 }
 
 // TestGAP_DynamoDBOutage_LeaseRenewal validates that the session manager
-// steps down when lease renewal fails and re-acquires after recovery.
+// steps down when lease renewal fails and an orchestrator-style replacement
+// acquires the lease after recovery.
 //
 // Scenario:
 // ───────────────────────────────────────────────
@@ -70,7 +71,7 @@ func (f *faultyLeaseStore) Current(ctx context.Context, leaseID string) (persist
 //	T2   Lease expires (~2s LeaseTTL)
 //	T3   Session steps down (not ready)
 //	T4   failRenew = false (DDB recovers)
-//	T5   Lease re-acquired, traffic resumes
+//	T5   Runtime/session replaced, lease acquired, traffic resumes
 //	T6   All 2000 messages delivered
 //
 // ───────────────────────────────────────────────
@@ -104,18 +105,7 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 	collector := newMQTTCollector(t, outTopic, "gap-lr-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-lr-sess")
-	sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
-	snd := setupMQTTSender(t, sess)
-	sc := lrSessionConfig(sessID)
-
-	rt := goruntime.New(
-		goruntime.WithInstanceID("gap-lr"),
-		goruntime.WithLeaseStore(fls),
-		goruntime.WithOutboxStore(outboxStore),
-		goruntime.WithDLQStore(dlq),
-		goruntime.WithLogger(testLogger(t)),
-	)
-	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
+	routeCfg := goruntime.RouteConfig{
 		ID: "gap-lr-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
@@ -127,9 +117,27 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 		Bindings: []routing.DestinationBinding{
 			{ID: "lr-bind", SessionID: sessID},
 		},
-	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))
+	}
+	startRuntime := func(instanceID string) *goruntime.Runtime {
+		sess := newMQTTSession(t, sessID, connectivity.SessionExclusive)
+		snd := setupMQTTSender(t, sess)
+		sc := lrSessionConfig(sessID)
+		current := goruntime.New(
+			goruntime.WithInstanceID(instanceID),
+			goruntime.WithLeaseStore(fls),
+			goruntime.WithOutboxStore(outboxStore),
+			goruntime.WithDLQStore(dlq),
+			goruntime.WithLogger(testLogger(t)),
+		)
+		require.NoError(t, current.AddRoute(
+			routeCfg, newSQSReceiver(t, sqsInURL), snd, sess, &sc,
+		))
+		require.NoError(t, current.Start(ctx))
+		t.Cleanup(func() { _ = current.Stop(context.Background()) })
+		return current
+	}
 
-	require.NoError(t, rt.Start(ctx))
+	rt := startRuntime("gap-lr")
 	gobridgesync(t, 15*time.Second, rt)
 
 	t.Logf("GAP-LR: sending %d messages", msgCount)
@@ -158,11 +166,15 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 		"runtime should enter standby role when DDB is unavailable")
 	t.Logf("GAP-LR: session stepped down to standby as expected")
 
-	// Recover: Acquire and Renew succeed again.
+	// Paho sessions are intentionally single-use after lease step-down. Model
+	// the documented orchestrator boundary by replacing the runtime and session,
+	// rather than asking the closed session to Start again in-process.
+	require.NoError(t, rt.Stop(context.Background()))
 	fls.fail.Store(false)
-	t.Log("GAP-LR: DDB recovered — waiting for lease re-acquisition")
+	rt = startRuntime("gap-lr-replacement")
+	t.Log("GAP-LR: DDB recovered — waiting for replacement runtime")
 
-	// Wait for the bridge to re-acquire lease and resume.
+	// Wait for the replacement bridge to acquire the lease and resume.
 	gobridgesync(t, 30*time.Second, rt)
 	t.Log("GAP-LR: bridge ready again — waiting for remaining messages")
 
@@ -177,6 +189,4 @@ func TestGAP_DynamoDBOutage_LeaseRenewal(t *testing.T) {
 	assert.GreaterOrEqual(t, delivered, msgCount,
 		"all %d messages should be delivered after DDB recovery", msgCount)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
-
-	require.NoError(t, rt.Stop(context.Background()))
 }

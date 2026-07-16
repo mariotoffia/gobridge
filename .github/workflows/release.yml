@@ -278,14 +278,7 @@ jobs:
             RELEASE_TAG="$RELEASE_TAG" \
             RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Verify recorded digest still exists in GHCR
-        if: steps.association.outputs.exists == 'true'
-        env:
-          RELEASE_IMAGE_DIGEST: ${{ steps.association.outputs.digest }}
-        run: make verify-release-image-digest RELEASE_IMAGE_DIGEST="$RELEASE_IMAGE_DIGEST"
-
       - name: Build and push image content by digest
-        if: steps.association.outputs.exists != 'true'
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -307,18 +300,19 @@ jobs:
           RECORDED_DIGEST: ${{ steps.association.outputs.digest }}
         run: |
           set -euo pipefail
-          digest="$RECORDED_DIGEST"
-          if [ -z "$digest" ]; then
-            digest="$BUILT_DIGEST"
-          fi
+          digest="$BUILT_DIGEST"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::image has invalid digest '$digest'"
+            exit 1
+          fi
+          if [ -n "$RECORDED_DIGEST" ] && [ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]; then
+            echo "::error::recorded release digest differs from rebuilt tagged source"
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "ref=ghcr.io/mariotoffia/gobridge@$digest" >> "$GITHUB_OUTPUT"
           if [ -n "$RECORDED_DIGEST" ]; then
-            echo "mode=resumed" >> "$GITHUB_OUTPUT"
+            echo "mode=rebuilt-verified" >> "$GITHUB_OUTPUT"
           else
             echo "mode=built" >> "$GITHUB_OUTPUT"
           fi
@@ -332,12 +326,19 @@ jobs:
         run: |
           set -euo pipefail
           raw="$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw)"
+          runnable_count="$(jq '[.manifests[] |
+            select(.platform.os != "unknown" or .platform.architecture != "unknown")] |
+            length' <<<"$raw")"
           amd64_count="$(jq '[.manifests[] |
             select(.platform.os == "linux" and .platform.architecture == "amd64")] |
             length' <<<"$raw")"
           arm64_count="$(jq '[.manifests[] |
             select(.platform.os == "linux" and .platform.architecture == "arm64")] |
             length' <<<"$raw")"
+          if [ "$runnable_count" -ne 2 ]; then
+            echo "::error::image contains unscanned runnable platform children"
+            exit 1
+          fi
           if [ "$amd64_count" -ne 1 ] || [ "$arm64_count" -ne 1 ]; then
             echo "::error::image must contain exactly one linux/amd64 and one linux/arm64 child"
             exit 1

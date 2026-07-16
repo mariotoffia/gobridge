@@ -11,8 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -70,9 +73,10 @@ import (
 func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 2000
-		outTopic    = "gap-bc1/output"
-		testTimeout = 300 * time.Second
+		msgCount         = 2000
+		preCrashMessages = 500
+		outTopic         = "gap-bc1/output"
+		testTimeout      = 300 * time.Second
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -94,68 +98,66 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc1-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-bc1-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65534, 5)
-	snd := setupMQTTSender(t, sess)
-	sc := lrSessionConfig(sessID)
-
-	rt := goruntime.New(
-		goruntime.WithInstanceID("gap-bc1"),
-		goruntime.WithLeaseStore(leaseStore),
-		goruntime.WithOutboxStore(outboxStore),
-		goruntime.WithDLQStore(dlq),
-		goruntime.WithLogger(testLogger(t)),
+	rt, sess := startBrokerCrashRuntime(
+		t, ctx, brokerURL, "gap-bc1", sessID, outTopic, sqsInURL, 5,
+		leaseStore, outboxStore, dlq,
 	)
-	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
-		ID: "gap-bc1-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliverySharedOutbox,
-			AckAfter:     routing.AckAfterOutboxPersist,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "bc1-bind", Address: outTopic},
-		),
-		Bindings: []routing.DestinationBinding{
-			{ID: "bc1-bind", SessionID: sessID},
-		},
-	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))
 
-	require.NoError(t, rt.Start(ctx))
-	gobridgesync(t, 15*time.Second, rt)
+	t.Logf("GAP-BC1: sending %d messages before crash", preCrashMessages)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, preCrashMessages, nil)
 
-	t.Logf("GAP-BC1: sending %d messages", msgCount)
-	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-
-	// Wait for partial delivery.
-	lrWaitFor(t, 60*time.Second, "collector >= 500",
-		func() bool { return collector.count() >= 500 })
+	// Establish a settled pre-crash prefix. Killing while MQTT publishes are
+	// broker-accepted but not yet observed downstream would test broker data
+	// loss, which SharedOutbox cannot replay after a total broker-state loss.
+	lrWaitFor(t, 60*time.Second, "collector >= pre-crash messages",
+		func() bool { return collector.count() >= preCrashMessages })
+	require.NoError(t, rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		MinQuiet: 500 * time.Millisecond,
+		Timeout:  10 * time.Second,
+	}))
 	t.Logf("GAP-BC1: collector at %d — hard killing broker", collector.count())
 
 	// Hard kill: docker kill (no MQTT disconnect packet, total state loss).
 	broker.Stop()
-	t.Log("GAP-BC1: broker killed — waiting 5s")
-	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+	lrWaitFor(t, 15*time.Second, "bridge session disconnected after broker kill",
+		func() bool { return !sess.Health(context.Background()).Connected })
+	t.Logf("GAP-BC1: sending %d messages while broker is down", msgCount-preCrashMessages)
+	sendBulkRangeToSQS(t, sqsInClient, sqsInURL,
+		preCrashMessages, msgCount-preCrashMessages, nil)
+	waitForSQSQueueDrained(t, ctx, sqsInClient, sqsInURL, 60*time.Second)
+	lrWaitFor(t, 30*time.Second, "outage batch persisted to outbox", func() bool {
+		pending, supported, err := rt.OutboxPending(
+			ctx, persistence.OutboxPartitionKey(sessID, ""),
+		)
+		return err == nil && supported && pending > 0
+	})
+	require.NoError(t, rt.Stop(context.Background()))
 
-	// Restart: docker run (fresh container, no session state).
+	// Restart the fresh broker, establish the observer, then let a replacement
+	// runtime acquire the lease and replay. This removes subscriber/replay races.
 	broker.Restart()
-	t.Log("GAP-BC1: broker restarted — waiting for pipeline recovery")
+	recoveryCollector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc1-recovery-col")
+	recoveryRT, _ := startBrokerCrashRuntime(
+		t, ctx, brokerURL, "gap-bc1-recovery", sessID, outTopic, sqsInURL, 5,
+		leaseStore, outboxStore, dlq,
+	)
+	t.Logf("GAP-BC1: pipeline recovered — recovery collector at %d", recoveryCollector.count())
 
-	// Use sendProbe to verify end-to-end pipeline recovery.
-	sendProbe(t, sqsInClient, sqsInURL, collector, 60*time.Second)
-	t.Logf("GAP-BC1: pipeline recovered — collector at %d", collector.count())
-
-	// Wait for outbox replay to complete delivery.
+	// Wait for outbox replay to complete every workload sequence. The probe is
+	// deliberately excluded so it cannot mask a missing workload message.
 	lrWaitFor(t, 120*time.Second,
-		fmt.Sprintf("collector >= %d", msgCount),
-		func() bool { return collector.count() >= msgCount })
+		fmt.Sprintf("all %d workload sequences", msgCount),
+		func() bool {
+			return len(observedSequences(collector, recoveryCollector)) >= msgCount
+		})
 
-	delivered := collector.count()
+	delivered := len(observedSequences(collector, recoveryCollector))
 	t.Logf("GAP-BC1: delivered=%d/%d, dlq=%d", delivered, msgCount, dlq.count())
 
-	assert.GreaterOrEqual(t, delivered, msgCount,
-		"outbox must replay all %d messages after broker hard crash", msgCount)
+	requireExactSequences(t, msgCount, collector, recoveryCollector)
 	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
 
-	require.NoError(t, rt.Stop(context.Background()))
+	require.NoError(t, recoveryRT.Stop(context.Background()))
 }
 
 // TestGAP_BrokerDisconnect_KeepAliveDetection validates that the bridge
@@ -183,9 +185,10 @@ func TestGAP_BrokerHardCrash_SharedOutbox(t *testing.T) {
 func TestGAP_BrokerDisconnect_KeepAliveDetection(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 1000
-		outTopic    = "gap-bc2/output"
-		testTimeout = 300 * time.Second
+		msgCount         = 1000
+		preCrashMessages = 300
+		outTopic         = "gap-bc2/output"
+		testTimeout      = 300 * time.Second
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
@@ -205,62 +208,122 @@ func TestGAP_BrokerDisconnect_KeepAliveDetection(t *testing.T) {
 	collector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc2-col")
 
 	sessID := mqttlocal.UniqueClientID("gap-bc2-sess")
-	sess := newMQTTSessionWithBroker(t, brokerURL, sessID, connectivity.SessionExclusive, 65534, 3)
-	snd := setupMQTTSender(t, sess)
-	sc := lrSessionConfig(sessID)
+	rt, sess := startBrokerCrashRuntime(
+		t, ctx, brokerURL, "gap-bc2", sessID, outTopic, sqsInURL, 3,
+		leaseStore, outboxStore, dlq,
+	)
 
+	t.Logf("GAP-BC2: sending %d messages before crash", preCrashMessages)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, preCrashMessages, nil)
+
+	lrWaitFor(t, 30*time.Second, "collector >= pre-crash messages",
+		func() bool { return collector.count() >= preCrashMessages })
+	require.NoError(t, rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		MinQuiet: 500 * time.Millisecond,
+		Timeout:  10 * time.Second,
+	}))
+	t.Logf("GAP-BC2: collector at %d — hard killing broker (KeepAlive=3)", collector.count())
+
+	killTime := time.Now()
+	broker.Stop()
+	lrWaitFor(t, 15*time.Second, "KeepAlive detects broker disconnect",
+		func() bool { return !sess.Health(context.Background()).Connected })
+	t.Logf("GAP-BC2: sending %d messages while broker is down", msgCount-preCrashMessages)
+	sendBulkRangeToSQS(t, sqsInClient, sqsInURL,
+		preCrashMessages, msgCount-preCrashMessages, nil)
+	waitForSQSQueueDrained(t, ctx, sqsInClient, sqsInURL, 60*time.Second)
+	lrWaitFor(t, 30*time.Second, "outage batch persisted to outbox", func() bool {
+		pending, supported, err := rt.OutboxPending(
+			ctx, persistence.OutboxPartitionKey(sessID, ""),
+		)
+		return err == nil && supported && pending > 0
+	})
+	require.NoError(t, rt.Stop(context.Background()))
+
+	broker.Restart()
+	recoveryCollector := newPersistentCollectorWithBroker(t, brokerURL, outTopic, "gap-bc2-recovery-col")
+	recoveryRT, _ := startBrokerCrashRuntime(
+		t, ctx, brokerURL, "gap-bc2-recovery", sessID, outTopic, sqsInURL, 3,
+		leaseStore, outboxStore, dlq,
+	)
+	recoveryTime := time.Since(killTime)
+	t.Logf("GAP-BC2: pipeline recovered in %v", recoveryTime)
+
+	// Wait for outbox replay to complete every workload sequence. The probe is
+	// deliberately excluded so it cannot mask a missing workload message.
+	lrWaitFor(t, 120*time.Second,
+		fmt.Sprintf("all %d workload sequences", msgCount),
+		func() bool {
+			return len(observedSequences(collector, recoveryCollector)) >= msgCount
+		})
+
+	delivered := len(observedSequences(collector, recoveryCollector))
+	t.Logf("GAP-BC2: delivered=%d/%d, dlq=%d", delivered, msgCount, dlq.count())
+
+	requireExactSequences(t, msgCount, collector, recoveryCollector)
+	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
+
+	require.NoError(t, recoveryRT.Stop(context.Background()))
+}
+
+func startBrokerCrashRuntime(
+	t *testing.T,
+	ctx context.Context,
+	brokerURL, instanceID, sessionID, topic, queueURL string,
+	keepAlive uint16,
+	leaseStore ports.LeaseStore,
+	outboxStore ports.OutboxStore,
+	dlq *lrDLQStore,
+) (*goruntime.Runtime, *paho.Session) {
+	t.Helper()
+	sess := newMQTTSessionWithBroker(
+		t, brokerURL, sessionID, connectivity.SessionExclusive, 65534, keepAlive,
+	)
+	sc := lrSessionConfig(sessionID)
 	rt := goruntime.New(
-		goruntime.WithInstanceID("gap-bc2"),
+		goruntime.WithInstanceID(instanceID),
 		goruntime.WithLeaseStore(leaseStore),
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithDLQStore(dlq),
 		goruntime.WithLogger(testLogger(t)),
 	)
+	bindingID := instanceID + "-binding"
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
-		ID: "gap-bc2-route",
+		ID: instanceID + "-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
 			AckAfter:     routing.AckAfterOutboxPersist,
 		},
-		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "bc2-bind", Address: outTopic}),
-		Bindings: []routing.DestinationBinding{
-			{ID: "bc2-bind", SessionID: sessID},
-		},
-	}, newSQSReceiver(t, sqsInURL), snd, sess, &sc))
-
+		Resolver: goruntime.NewStaticResolver(
+			routing.DispatchPlan{BindingID: bindingID, Address: topic},
+		),
+		Bindings: []routing.DestinationBinding{{
+			ID: bindingID, SessionID: sessionID,
+		}},
+	}, newSQSReceiver(t, queueURL), setupMQTTSender(t, sess), sess, &sc))
 	require.NoError(t, rt.Start(ctx))
 	gobridgesync(t, 15*time.Second, rt)
+	return rt, sess
+}
 
-	t.Logf("GAP-BC2: sending %d messages", msgCount)
-	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
+func observedSequences(collectors ...*mqttCollector) map[int]int {
+	seen := make(map[int]int)
+	for _, collector := range collectors {
+		for _, envelope := range collector.getMessages() {
+			var seq int
+			if matched, _ := fmt.Sscanf(string(envelope.Payload()), `{"seq":%d}`, &seq); matched == 1 {
+				seen[seq]++
+			}
+		}
+	}
+	return seen
+}
 
-	lrWaitFor(t, 30*time.Second, "collector >= 300",
-		func() bool { return collector.count() >= 300 })
-	t.Logf("GAP-BC2: collector at %d — hard killing broker (KeepAlive=3)", collector.count())
-
-	killTime := time.Now()
-	broker.Stop()
-	t.Log("GAP-BC2: broker killed — waiting 3s")
-	time.Sleep(3 * time.Second) // OTHER: scenario timing — keep broker down before restart
-	broker.Restart()
-	t.Log("GAP-BC2: broker restarted")
-
-	// Use sendProbe to verify full pipeline recovery.
-	sendProbe(t, sqsInClient, sqsInURL, collector, 60*time.Second)
-	recoveryTime := time.Since(killTime)
-	t.Logf("GAP-BC2: pipeline recovered in %v", recoveryTime)
-
-	// Wait for outbox replay to complete all messages.
-	lrWaitFor(t, 120*time.Second,
-		fmt.Sprintf("collector >= %d", msgCount),
-		func() bool { return collector.count() >= msgCount })
-
-	delivered := collector.count()
-	t.Logf("GAP-BC2: delivered=%d/%d, dlq=%d", delivered, msgCount, dlq.count())
-
-	assert.GreaterOrEqual(t, delivered, msgCount,
-		"all %d messages should be delivered after broker restart", msgCount)
-	assert.Equal(t, 0, dlq.count(), "DLQ should be empty")
-
-	require.NoError(t, rt.Stop(context.Background()))
+func requireExactSequences(t *testing.T, count int, collectors ...*mqttCollector) {
+	t.Helper()
+	seen := observedSequences(collectors...)
+	require.Len(t, seen, count, "workload sequence cardinality")
+	for seq := range count {
+		assert.Contains(t, seen, seq, "missing workload sequence %d", seq)
+	}
 }

@@ -80,10 +80,16 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("UC69: replaying %d DLQ entries", len(entries))
 
-	realSnd := setupMQTTSender(t, sess)
+	replaySess := setupMQTTSession(
+		t,
+		mqttlocal.UniqueClientID("uc69-replay-sess"),
+		connectivity.SessionExclusive,
+	)
+	realSnd := setupMQTTSender(t, replaySess)
 
 	rt2 := goruntime.New(
 		goruntime.WithInstanceID("uc69-p2"),
+		goruntime.WithDLQStore(dlq),
 		goruntime.WithLogger(testLogger(t)),
 	)
 
@@ -97,7 +103,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 			Address:   outTopic,
 		}),
 		SourceCapabilities: []ports.Capability{ports.CapHTTPEndpoint},
-	}, &noopReceiver{}, realSnd, sess, nil))
+	}, &noopReceiver{}, realSnd, replaySess, nil))
 
 	require.NoError(t, rt2.Start(ctx))
 	defer func() { _ = rt2.Stop(context.Background()) }()
@@ -108,7 +114,7 @@ func TestUC69_DLQReplayIntegration(t *testing.T) {
 
 	for _, e := range entries {
 		env := e.Snapshot()
-		_ = rt2.Inject(ctx, "uc69-route2", env)
+		require.NoError(t, rt2.Inject(ctx, "uc69-route2", env))
 	}
 
 	lrWaitFor(t, 60*time.Second, fmt.Sprintf("collector >= %d", msgCount), func() bool {

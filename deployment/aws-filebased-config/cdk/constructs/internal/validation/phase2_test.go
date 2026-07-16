@@ -257,11 +257,26 @@ func TestRunPhase2_SSMURI_NilSsmParamRegistry_EmitsRequiredPropError(t *testing.
 	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
 
 	got := errorMessages(t, stack)
-	if !containsAll(t, got, "no SsmParamRegistry was supplied", "SsmParamRegistry prop", "\"pms://bridge/mqtt\"") {
+	if !containsAll(t, got, "no SsmParamRegistry was supplied", "SsmParamRegistry prop", "\"/bridge/mqtt\"") {
 		t.Fatalf("missing required-prop error text: %v", got)
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected exactly one aggregated error, got %d: %v", len(got), got)
+	}
+}
+
+func TestRunPhase2_SSMURI_ErrorsRedactUserinfo(t *testing.T) {
+	stack := newStack(t)
+	cfg := ssmReceiverWithCreds("pms://operator:s3cr3t@bridge/mqtt")
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	got := errorMessages(t, stack)
+	if len(got) != 1 {
+		t.Fatalf("expected one invalid-reference error, got %d: %v", len(got), got)
+	}
+	if strings.Contains(got[0], "s3cr3t") || strings.Contains(got[0], "operator:") {
+		t.Fatalf("credential URI userinfo leaked in validation error: %q", got[0])
 	}
 }
 
@@ -274,7 +289,6 @@ func TestRunPhase2_SSMURI_MissingFromRegistry_EmitsError(t *testing.T) {
 
 	got := errorMessages(t, stack)
 	if !containsAll(t, got,
-		"\"pms://bridge/missing\"",
 		"\"/bridge/missing\"",
 		"no such entry in SsmParamRegistry",
 		"AddParameter(\"/bridge/missing\"",
@@ -389,8 +403,11 @@ func TestRunPhase2_ManagedSubscriptionStoreSSMURI_IsCollected(t *testing.T) {
 	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
 
 	got := errorMessages(t, stack)
-	if !containsAll(t, got, "no SsmParamRegistry was supplied", "pms://bridge/managed-store") {
-		t.Fatalf("missing managed-subscription SSM URI error: %v", got)
+	if !containsAll(t, got, "no SsmParamRegistry was supplied", "/bridge/managed-store") {
+		t.Fatalf("missing managed-subscription SSM parameter path error: %v", got)
+	}
+	if containsAll(t, got, "pms://") {
+		t.Fatalf("managed-subscription diagnostic leaked credential URI scheme: %v", got)
 	}
 }
 

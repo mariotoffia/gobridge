@@ -343,10 +343,9 @@ func TestStopAbandoned_ReleasesBuiltRuntimeSessions(t *testing.T) {
 // the old config.
 func TestSupervisor_HungSwapCompleteBoundedByDeadline(t *testing.T) {
 	s, ef := newTestSupervisorWithExclusive(WithSwapDeadline(150 * time.Millisecond))
-	// The swap's session ("hang") blocks in NewSession until its context is
-	// cancelled; the initial and recovery sessions ("s1") build immediately.
+	var hangNext atomic.Bool
 	ef.SessionFn = func(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
-		if spec.ID == "hang" {
+		if hangNext.CompareAndSwap(true, false) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
@@ -362,8 +361,10 @@ func TestSupervisor_HungSwapCompleteBoundedByDeadline(t *testing.T) {
 	rt0 := waitForRuntime(s, 2*time.Second)
 	require.NotNil(t, rt0, "initial runtime must come up")
 
-	// Trigger the prepare-commit swap whose complete() hangs on NewSession.
-	require.True(t, sendConfig(changes, supervisorTestConfigWithSession("r2", "hang"), time.Second))
+	// Keep the durable partition identity unchanged so this test reaches the
+	// intended lifecycle failure rather than the destructive-reload preflight.
+	hangNext.Store(true)
+	require.True(t, sendConfig(changes, supervisorTestConfigWithSession("r2", "s1"), time.Second))
 
 	// The hung complete must be bounded by the swap deadline, fail the swap, and
 	// recover the old config — installing a FRESH runtime (!= rt0) that is not
@@ -464,14 +465,12 @@ func TestSupervisor_StartBridge_RuntimeSurvivesRequestCtxCancel(t *testing.T) {
 // with the liveness backstop disabled. Bounded, it wedges and reports terminal.
 func TestSupervisor_HungSwapAndHungRecovery_Wedges(t *testing.T) {
 	s, ef := newTestSupervisorWithExclusive(WithSwapDeadline(120 * time.Millisecond))
-	// "hang" (the swap target) always blocks in complete(). "s1" builds normally
-	// until failS1 is armed, after which it also blocks — so the recovery build of
-	// the old config is ALSO partitioned. failS1 is armed only after the initial
-	// runtime is up, so the initial build always succeeds regardless of how many
-	// times NewSession is invoked per build.
+	// "s1" builds normally until failS1 is armed, after which both the swap and
+	// recovery builds block. Keeping the session ID stable avoids changing the
+	// durable partition identity under test.
 	var failS1 atomic.Bool
 	ef.SessionFn = func(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
-		if spec.ID == "hang" || (spec.ID == "s1" && failS1.Load()) {
+		if spec.ID == "s1" && failS1.Load() {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
@@ -486,7 +485,7 @@ func TestSupervisor_HungSwapAndHungRecovery_Wedges(t *testing.T) {
 	require.NotNil(t, waitForRuntime(s, 2*time.Second), "initial runtime must come up")
 
 	failS1.Store(true) // any later s1 build (the recovery) now hangs too
-	require.True(t, sendConfig(changes, supervisorTestConfigWithSession("r2", "hang"), time.Second))
+	require.True(t, sendConfig(changes, supervisorTestConfigWithSession("r2", "s1"), time.Second))
 
 	require.Eventually(t, func() bool {
 		return s.Terminal() && s.Runtime() == nil

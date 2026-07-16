@@ -178,7 +178,7 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 	assert.True(t, body.Sessions[0].Ready)
 	assert.Equal(t, "full", body.Sessions[0].ServiceLevel)
 	assert.Equal(t, 3, body.Sessions[0].UnsettledCount)
-	assert.Equal(t, 4*time.Second, body.Sessions[0].OldestUnsettledAge)
+	assert.Equal(t, int64(4000), body.Sessions[0].OldestUnsettledAgeMS)
 	assert.Equal(t, 0.75, body.Sessions[0].ReceiveWindowUtilization)
 	assert.Equal(t, uint64(2), body.Sessions[0].RecoveryRecycleCount)
 	assert.Equal(t, "full", body.ServiceLevel)

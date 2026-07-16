@@ -235,7 +235,7 @@ The guard fires in both reload paths -- the `Supervisor` (`bridge.Supervisor.app
 
 A genuine **no-op re-emit** (byte-identical content -- e.g. the poll watcher re-emitting an unchanged file) is detected *before* the guard and stays accepted; it is not a reconfiguration.
 
-This whole-class rejection supersedes the earlier piecemeal per-invariant refusals (durable store identity, outbox/DLQ removal or orphaned `shared_outbox` partition, lease-bearing exclusive `session_id`): in a clustered deployment those are now refused as part of the broad guard, not just individually. In a **standalone** (single-process) deployment they still apply exactly as before -- see `storeIdentityChanged`, the durable-reload preflight, and `leaseSessionIDChanged`. Single-process live reload behaviour is unchanged.
+This whole-class rejection supersedes the earlier piecemeal per-invariant refusals (durable store identity, outbox/DLQ removal or orphaned `shared_outbox` partition, lease-bearing exclusive `session_id`): in a clustered deployment those are now refused as part of the broad guard, not just individually. In a **standalone** deployment those guards still apply independently. Store identity and lease-bearing session identity changes are refused. Outbox/DLQ removal and orphaned `shared_outbox` partitions are also refused unconditionally unless `WithAllowDestructiveReload` explicitly authorizes record loss: a pending-depth read cannot prove safety because it excludes claimed records, DynamoDB indexes are eventually consistent, and late ingress can race the read.
 
 Roll a clustered config change with a **full stop/restart of all nodes** per the runbook -- never a live/rolling reconfiguration.
 

@@ -58,11 +58,39 @@ type sqsMQTTSQSBridgeResult struct {
 	Cleanup func()
 }
 
+type mqttIngressLimits struct {
+	maxPayloadBytes          uint32
+	receiveMaximum           uint16
+	ingressMemoryBudgetBytes uint64
+}
+
+func setupMQTTSessionWithIngressLimits(
+	t *testing.T,
+	clientID string,
+	limits mqttIngressLimits,
+) *paho.Session {
+	t.Helper()
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:               []string{mqttlocal.BrokerURL(t)},
+		ClientID:                 clientID,
+		KeepAlive:                30,
+		ConnectTimeout:           15 * time.Second,
+		CleanStart:               true,
+		ReceiveMaximum:           limits.receiveMaximum,
+		MaxPayloadBytes:          limits.maxPayloadBytes,
+		IngressMemoryBudgetBytes: limits.ingressMemoryBudgetBytes,
+	}, connectivity.SessionEphemeral, testLogger(t))
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
+	require.NoError(t, sess.Start(context.Background()), "MQTT session Start %q", clientID)
+	return sess
+}
+
 // sqsMQTTSQSBridge sets up a two-hop bridge: SQS-IN -> MQTT -> SQS-OUT.
 // Returns both runtimes and a cleanup function; caller must defer Cleanup.
 func sqsMQTTSQSBridge(
 	t *testing.T, ctx context.Context, prefix, topic, inURL, outURL string,
 	dlq *lrDLQStore,
+	ingressLimits ...mqttIngressLimits,
 ) sqsMQTTSQSBridgeResult {
 	t.Helper()
 	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID(prefix+"-b1"), connectivity.SessionEphemeral)
@@ -76,7 +104,14 @@ func sqsMQTTSQSBridge(
 		SourceCapabilities: directHoldCaps,
 	}, sqsRx, mqttSnd, nil, nil))
 
-	sess2 := setupMQTTSession(t, mqttlocal.UniqueClientID(prefix+"-b2"), connectivity.SessionEphemeral)
+	sess2ID := mqttlocal.UniqueClientID(prefix + "-b2")
+	var sess2 *paho.Session
+	if len(ingressLimits) == 0 {
+		sess2 = setupMQTTSession(t, sess2ID, connectivity.SessionEphemeral)
+	} else {
+		require.Len(t, ingressLimits, 1, "at most one MQTT ingress limit set")
+		sess2 = setupMQTTSessionWithIngressLimits(t, sess2ID, ingressLimits[0])
+	}
 	require.NoError(t, sess2.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
@@ -113,49 +148,77 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 		msgCount    = 500
 		paySize     = 200 * 1024
 		pollTimeout = 180 * time.Second
+		sendWindow  = 25
 	)
+	mqttPayloadBytes := uint32(base64.StdEncoding.EncodedLen(paySize))
+	const mqttIngressMemoryCeiling = paho.DefaultIngressMemoryBudgetBytes
+	mqttReceiveMaximum, err := paho.LargestSafeReceiveMaximum(
+		mqttPayloadBytes,
+		mqttIngressMemoryCeiling,
+		routing.DefaultMaxInFlight,
+	)
+	require.NoError(t, err)
+	mqttIngressBound, err := paho.IngressMemoryBound(
+		mqttPayloadBytes,
+		mqttReceiveMaximum,
+		routing.DefaultMaxInFlight,
+	)
+	require.NoError(t, err)
+	require.LessOrEqual(t, mqttIngressBound, mqttIngressMemoryCeiling,
+		"explicit MQTT ingress window must fit its memory ceiling")
+
 	inURL, inClient := setupSQSQueue(t, "uc17-in")
 	outURL, outClient := setupSQSQueue(t, "uc17-out")
 	dlq := &lrDLQStore{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	br := sqsMQTTSQSBridge(t, ctx, "uc17", "uc17/data", inURL, outURL, dlq)
+	br := sqsMQTTSQSBridge(t, ctx, "uc17", "uc17/data", inURL, outURL, dlq,
+		mqttIngressLimits{
+			maxPayloadBytes:          mqttPayloadBytes,
+			receiveMaximum:           mqttReceiveMaximum,
+			ingressMemoryBudgetBytes: mqttIngressMemoryCeiling,
+		})
 	defer br.Cleanup()
 	gobridgesync(t, 10*time.Second, br.RT1, br.RT2)
 
 	hashes := make(map[string]bool, msgCount)
-	for i := 0; i < msgCount; i++ {
-		raw := make([]byte, paySize)
-		_, err := rand.Read(raw)
-		require.NoError(t, err)
-		encoded := base64.StdEncoding.EncodeToString(raw)
-		h := sha256.Sum256(raw)
-		hashHex := hex.EncodeToString(h[:])
-		hashes[hashHex] = false
-		sendOneSQS(t, inClient, inURL, encoded, map[string]string{
-			"sha256": hashHex, "seq": strconv.Itoa(i),
-		})
-	}
-	t.Logf("UC17: sent %d x 200KB messages", msgCount)
-
-	msgs := pollSQSWithAttrs(t, outClient, outURL, msgCount, pollTimeout)
-	require.Len(t, msgs, msgCount, "output count")
-	for idx, m := range msgs {
-		decoded, err := base64.StdEncoding.DecodeString(m.Body)
-		require.NoError(t, err, "msg %d base64", idx)
-		h := sha256.Sum256(decoded)
-		got := hex.EncodeToString(h[:])
-		_, ok := hashes[got]
-		require.True(t, ok, "msg %d unknown hash %s", idx, got)
-		hashes[got] = true
-	}
 	verified := 0
-	for _, v := range hashes {
-		if v {
+	deadline := time.Now().Add(pollTimeout)
+	for windowStart := 0; windowStart < msgCount; windowStart += sendWindow {
+		windowEnd := min(windowStart+sendWindow, msgCount)
+		for i := windowStart; i < windowEnd; i++ {
+			raw := make([]byte, paySize)
+			_, err := rand.Read(raw)
+			require.NoError(t, err)
+			encoded := base64.StdEncoding.EncodeToString(raw)
+			require.Len(t, encoded, int(mqttPayloadBytes), "actual MQTT wire payload size")
+			h := sha256.Sum256(raw)
+			hashHex := hex.EncodeToString(h[:])
+			hashes[hashHex] = false
+			sendOneSQS(t, inClient, inURL, encoded, map[string]string{
+				"sha256": hashHex, "seq": strconv.Itoa(i),
+			})
+		}
+
+		remaining := time.Until(deadline)
+		require.Positive(t, remaining, "UC17 output deadline exhausted")
+		msgs := pollSQSWithAttrs(t, outClient, outURL, windowEnd-windowStart, remaining)
+		require.Len(t, msgs, windowEnd-windowStart, "output count for send window")
+		for idx, m := range msgs {
+			decoded, err := base64.StdEncoding.DecodeString(m.Body)
+			require.NoError(t, err, "window %d msg %d base64", windowStart/sendWindow, idx)
+			h := sha256.Sum256(decoded)
+			got := hex.EncodeToString(h[:])
+			seen, ok := hashes[got]
+			require.True(t, ok, "window %d msg %d unknown hash %s", windowStart/sendWindow, idx, got)
+			require.False(t, seen, "window %d msg %d duplicate hash %s", windowStart/sendWindow, idx, got)
+			hashes[got] = true
 			verified++
 		}
 	}
+	t.Logf("UC17: sent %d x 200KB messages", msgCount)
+
 	require.Equal(t, msgCount, verified, "all hashes verified")
 	assert.Equal(t, 0, dlq.count(), "DLQ empty")
 	t.Logf("UC17: %d large payloads round-tripped with SHA256 integrity", verified)

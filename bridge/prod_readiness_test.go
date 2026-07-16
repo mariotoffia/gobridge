@@ -242,6 +242,7 @@ func TestSupervisor_WedgesWhenSwapAndRecoveryFail(t *testing.T) {
 	s := NewSupervisor(
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
+		WithAllowDestructiveReload(true),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", &exclusiveTransportFactory{})

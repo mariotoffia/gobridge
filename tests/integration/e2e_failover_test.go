@@ -251,21 +251,13 @@ func TestE2E_F4_Failover_ThreeInstances_StaleFencingToken(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed=%d, want 1", len(claimed))
 	}
-	time.Sleep(400 * time.Millisecond) // ESSENTIAL: wait for A's lease to expire so B can acquire
-	tokenB, err := leaseStore.Acquire(ctx, leaseID, "owner-B", 5*time.Second, nil)
-	if err != nil {
-		t.Fatalf("B acquire: %v", err)
-	}
+	tokenB := acquireAfterPersistedTakeoverObservation(t, leaseStore, leaseID, "owner-B", 5*time.Second)
 	if tokenB.Version <= tokenA.Version {
 		t.Fatal("B version should exceed A")
 	}
 	// B must reclaim first (updating claim_version to B's token), so that
 	// A's stale Complete is rejected by the claim_version mismatch.
-	time.Sleep(600 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold so B can reclaim
-	reclaimed, err := outboxStore.Claim(ctx, pk, tokenB, 10)
-	if err != nil {
-		t.Fatalf("B reclaim: %v", err)
-	}
+	reclaimed := waitForOutboxClaim(t, outboxStore, pk, tokenB)
 	if len(reclaimed) != 1 {
 		t.Fatalf("reclaimed=%d, want 1", len(reclaimed))
 	}
