@@ -10,6 +10,22 @@ on:
     - cron: '17 2 * * *'
 
 jobs:
+  release-preparation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      # Source-safe before the first public module train: validates the
+      # canonical DAG and tests the strict verifier while reporting (not
+      # concealing) the known go.mod migration inventory.
+      - name: Verify release manifest and preparation tooling
+        run: make verify-release-preparation
+
   test:
     runs-on: ubuntu-latest
     steps:

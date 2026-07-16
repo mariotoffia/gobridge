@@ -170,7 +170,12 @@ make update           # Upgrade deps to latest minor/patch
 make update-major     # Show available major version upgrades
 make vulncheck        # Scan for known vulnerabilities
 make check            # Build + lint + unit tests
+make verify-release-preparation # Source-safe release DAG/tooling preflight
 ```
+
+The release-strict `make verify-published-modules RELEASE_VERSION=vX.Y.Z` gate
+is intentionally expected to fail until the staged first-release migration and
+matching path-prefixed tags described in [RELEASE.md](RELEASE.md) exist.
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for full setup instructions.
 

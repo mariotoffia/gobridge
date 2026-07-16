@@ -951,7 +951,8 @@ docs: state MQTT production boundaries exactly
 
 ## Task 13: Prepare reproducible module and image releases
 
-**Status:** Pending
+**Status:** Complete (source preparation is green; public H9 closure still
+requires the documented staged tags and proxy smoke)
 
 **Agents/Skills:** thiink:golang-pro, git-workflow-manager,
 thiink:contract-reviewer, thiink:test-reviewer
@@ -967,44 +968,52 @@ thiink:contract-reviewer, thiink:test-reviewer
 - Modify: all published module `go.mod`/`go.sum` files only where versions are
   resolvable at source-review time
 
-- [ ] **Step 1: Encode the module DAG**
+- [x] **Step 1: Encode the module DAG**
 
-Release root first; then 24 direct-root modules; then `adapters/aws/store`,
+Release root first; then 26 direct-root modules; then `adapters/aws/store`,
 `adapters/native/store`, and `httpapi`; finally `cmd/gobridge`. Include internal
 test-helper pseudo-version bootstrap and the rule never to invent pseudo-version
 timestamps or hashes.
 
-- [ ] **Step 2: Add manifest verification**
+The planned count of 24 was stale: the DynamoDB and SQLite managed-subscription
+implementation modules make the repository-derived layer-1 count 26 (31
+published modules total).
+
+- [x] **Step 2: Add manifest verification**
 
 For every published module, reject local `replace`, exact `v0.0.0`, and
 all-zero pseudo-versions. Run `GOWORK=off go mod download`, `go mod verify`,
 build, and uncached tests.
 
-- [ ] **Step 3: Add external-consumer smoke gates**
+- [x] **Step 3: Add external-consumer smoke gates**
 
 After tags exist, create an empty temporary module, fetch the Paho adapter
 through `proxy.golang.org,direct`, list it, and install `cmd/gobridge`.
 
-- [ ] **Step 4: Make image publication depend on the final module**
+- [x] **Step 4: Make image publication depend on the final module**
 
 Publish only from a successful stable `cmd/gobridge/v*` release. Enable BuildKit
 SBOM and maximum provenance, capture the immutable image digest, scan that
 digest through the configured registry scanner, and move `latest` only after
 all gates pass.
 
-- [ ] **Step 5: Keep pre-release docs truthful**
+- [x] **Step 5: Keep pre-release docs truthful**
 
 Do not replace the README external-consumption warning until the public proxy
 smoke test succeeds.
 
-- [ ] **Step 6: Run source-safe checks**
+- [x] **Step 6: Run source-safe checks**
 
 ```bash
-make verify-published-modules
+make verify-release-preparation
+# Expected rejection until migration/tags exist:
+make verify-published-modules RELEASE_VERSION=v0.3.0
 git diff --check
+make lint
+make test
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 build: enforce staged multi-module releases

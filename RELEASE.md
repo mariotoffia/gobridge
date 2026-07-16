@@ -1,66 +1,286 @@
 # Releasing GoBridge
 
-How to version, tag, and publish the multi-module workspace so external consumers can `go get` / `go install` every published module. Read this before creating any tag. Development-side rules (workspace, replaces, requires) live in [DEVELOPMENT.md — Module versioning & references](DEVELOPMENT.md#module-versioning--references).
+How to version, tag, and publish the multi-module workspace so external consumers
+can use `go get` and `go install`. Development-side rules live in
+[DEVELOPMENT.md — Module versioning & references](DEVELOPMENT.md#module-versioning--references).
 
-> **Current state (2026-07-09):** this policy is not yet applied. Published go.mod files still carry `replace` directives and `v0.0.0` sibling requires, and only root tags `v0.1.0`/`v0.2.0` exist — external `go get` fails. The first release under this policy must complete the migration in [First release checklist](#first-release-checklist).
+> **Current state (2026-07-16): this policy is not yet applied publicly.**
+> Published go.mod files still contain local `replace` directives, exact
+> `v0.0.0` requirements, and all-zero pseudo-versions. Only root tags `v0.1.0`
+> and `v0.2.0` exist. There are no path-prefixed module tags, so clean external
+> consumption still fails. Do not present the installation examples as working
+> until the first release procedure and external-consumer smoke gate succeed.
+
+## Canonical release graph
+
+[`scripts/release/modules.json`](scripts/release/modules.json) is the only
+hand-maintained published-module list and release-layer definition. The release
+tool, Make targets, CI source preflight, and tag workflow all consume it. List
+the graph without copying it into another file:
+
+```bash
+make release-modules RELEASE_FORMAT=tsv
+make release-modules RELEASE_LAYER=1
+```
+
+The repository currently has **31 published modules**:
+
+| Layer | Count | Contents |
+|---|---:|---|
+| 0 | 1 | Root module |
+| 1 | 26 | Direct-root adapter/processor leaf modules |
+| 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
+| 3 | 1 | `cmd/gobridge` |
+
+The remediation plan expected 24 layer-1 modules. Repository truth is 26:
+`dynamodbmanagedsubscriptions` and `sqlitemanagedsubscriptions` are additional
+store implementation modules and therefore precede their aggregate modules.
+
+The published set is the root module, every module under `adapters/` and
+`processors/`, `httpapi`, and `cmd/gobridge`. Modules under `tests/`,
+`testutil/`, `scripts/`, and `deployment/` are internal-only and are never
+tagged. The manifest declares only the test-helper modules required to compile
+published-module tests as pseudo-version bootstrap exceptions; that does not
+make them tagged releases.
 
 ## Policy
 
-1. **Single version train.** Every published module releases the same `vX.Y.Z` on the same commit train. No per-module version drift.
-2. **One tag per module path.** A nested module is only fetchable via a path-prefixed tag: root → `vX.Y.Z`, submodule → `<module-dir>/vX.Y.Z` (e.g. `adapters/aws/store/v0.3.0`, `httpapi/v0.3.0`, `cmd/gobridge/v0.3.0`).
-3. **No `replace` directives in published modules.** `go get` ignores them and `go install pkg@version` refuses modules that contain them. Local resolution is `go.work`'s job.
-4. **Inter-module `require`s always name a resolvable published version** — during development that is the *previous* release. `go.work` overrides to HEAD locally; the proxy-facing go.mod must never point at an unpublished version.
-5. **Internal-only modules** (`tests/`, `testutil/`, `scripts/`, `deployment/`) are not published: they are never tagged, and they may keep `replace` directives. Consequence: they are not `go get`-able — that is intended.
+1. **Single stable version train.** Every published module uses the same exact
+   `vX.Y.Z`. Prerelease and build metadata tags are rejected.
+2. **One tag per module path.** Root uses `vX.Y.Z`; a nested module uses
+   `<module-dir>/vX.Y.Z`.
+3. **Dependency layers are strict.** A published sibling requirement must point
+   to a lower layer. Before a layer is tagged, every lower-layer tag in that
+   version train must exist and be an ancestor of the candidate commit.
+4. **No local replacements in published modules.** Local development resolution
+   belongs in `go.work`.
+5. **No unresolved placeholders.** Exact `v0.0.0`, all-zero or malformed
+   pseudo-versions, undeclared repository siblings, and versions outside the
+   selected train fail the strict gate.
+6. **Internal helper pseudo-versions come from Go.** Never construct a
+   timestamp/hash manually. Push the bootstrap commit first, then derive every
+   version with `go list -m -json <module>@<commit>`. The release tool verifies
+   the returned origin commit and downloaded helper go.mod.
+7. **Never move a module or immutable image tag.** A failed public release is
+   corrected with a new patch train, not by deleting or recreating a tag.
 
-## Published module set
+## Verification modes
 
-Root (`github.com/mariotoffia/gobridge`), `httpapi`, `cmd/gobridge`, and every module under `adapters/` and `processors/`. Everything else is internal-only.
-
-## Release procedure (dependency-ordered)
-
-Tag in dependency order so every module's requires resolve at the moment it is tidied and tagged. This avoids the tag/tidy chicken-and-egg and keeps `go install cmd/gobridge@vX.Y.Z` working (complete go.sum at every tag).
-
-Order: **root → leaf store/processor modules → aggregate adapters (`adapters/native/store`, `adapters/aws/store`) → transports/config/credentials/metrics adapters → `httpapi` → `cmd/gobridge`.**
-
-For each layer, in order:
-
-```bash
-# 1. Bump sibling requires in this layer's go.mod files to the version just tagged below it
-go mod edit -require=github.com/mariotoffia/gobridge@v0.3.0 <module>/go.mod  # per sibling require
-
-# 2. Tidy — resolves against the proxy; works because the lower layers are already tagged and pushed
-(cd <module> && GOWORK=off go mod tidy)
-
-# 3. Commit, tag, push the tag before starting the next layer
-git commit -am "release: <module> v0.3.0"
-git tag <module-dir>/v0.3.0
-git push origin <module-dir>/v0.3.0
-```
-
-Root goes first with a plain `git tag v0.3.0`. Script the loop; do not hand-run 30 modules.
-
-Notes:
-
-- The proxy caches; give `proxy.golang.org` a moment (or `GOPROXY=direct` in the release script) between layers.
-- Never retag or delete a published tag — module hashes are immutable in the checksum database. A broken release is fixed by releasing `vX.Y.Z+1`.
-- Update `docs/release-notes.md` in the same train.
-
-## Consumability gate (CI)
-
-The workspace hides missing require-bumps: code can use a new sibling API at HEAD while go.mod still names the old version — it compiles locally and breaks only for consumers. Guard:
+The source-safe gate is green before migration while explicitly reporting the
+known debt:
 
 ```bash
-# per published module — must pass with the workspace disabled
-GOWORK=off go build ./...
+make verify-release-preparation
 ```
 
-Run it in CI on every PR (resolves the *declared* requires from the proxy) and as a post-release verification of the tagged commits.
+At this revision it reports 31 modules and the following **published-manifest**
+inventory:
 
-## First release checklist
+- 71 local replacement entries;
+- 56 exact `v0.0.0` requirements;
+- 10 all-zero pseudo-versions;
+- 0 malformed pseudo-versions.
 
-Migration from the current state, once, before the next tag:
+It also reports five internal helper root requirements that must be changed
+during bootstrap. Their five local replacements may remain because those
+modules are internal-only; dependency-module replacements are ignored by Go.
 
-1. Remove all `replace` directives from published modules' go.mod files (keep `tests/`, `testutil/`, `scripts/`, `deployment/`).
-2. Set every inter-module require to the last resolvable release once it exists — bootstrap by releasing bottom-up per the procedure above (root first, `cmd/gobridge` last).
-3. Add the `GOWORK=off` consumability gate to CI.
-4. Verify from a clean machine outside the repo: `go install github.com/mariotoffia/gobridge/cmd/gobridge@v0.3.0` and `go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs@v0.3.0`.
+The release-strict gate intentionally fails now:
+
+```bash
+make verify-published-modules RELEASE_VERSION=v0.3.0
+```
+
+After migration and all matching tags exist, that command verifies every
+declared module with the workspace disabled:
+
+```text
+go mod download
+go mod verify
+go build ./...
+go test -count=1 ./...
+```
+
+Each pushed module tag runs the same static checks and commands for that module.
+The final `cmd/gobridge` tag additionally repeats the strict gate for all
+modules. CI runs only `make verify-release-preparation` before the first release;
+it does not carry a permanently red public-resolution job.
+
+## First release procedure
+
+This is a one-time bottom-up migration. Run it on a dedicated release branch
+from a clean checkout with `git`, `gh`, Go 1.25+, and registry access. Replace
+the example version only with the approved stable train.
+
+### 1. Define proxy and workflow waits
+
+The proxy-only wait prevents the next layer from racing a stale cache. The
+release workflow itself uses `https://proxy.golang.org,direct`, so direct VCS is
+an allowed fallback during its strict gate.
+
+```bash
+set -euo pipefail
+VERSION=v0.3.0
+RELEASE_BRANCH="release/${VERSION}"
+
+wait_for_proxy() {
+  module="$1"
+  until GOWORK=off GOPROXY=https://proxy.golang.org \
+    go list -m "${module}@${VERSION}"; do
+    echo "waiting for proxy.golang.org: ${module}@${VERSION}" >&2
+    sleep 15
+  done
+}
+
+wait_for_release_workflow() {
+  tag="$1"
+  run_id=""
+  for _ in $(seq 1 30); do
+    run_id="$(gh run list --workflow release.yml --event push --branch "$tag" \
+      --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+    if [ -n "$run_id" ]; then
+      gh run watch "$run_id" --exit-status
+      return
+    fi
+    sleep 5
+  done
+  echo "release workflow did not appear for $tag" >&2
+  return 1
+}
+```
+
+### 2. Release the root
+
+The staging target rewrites only declared repository dependencies, removes local
+replacements, runs `GOWORK=off go mod tidy`, and runs the strict pre-tag checks.
+The root currently has no forbidden manifest entry, so it may produce no diff.
+
+```bash
+make stage-published-module RELEASE_MODULE=. RELEASE_VERSION="$VERSION"
+
+if ! git diff --quiet -- go.mod go.sum; then
+  git add go.mod go.sum
+  git commit -m "release: root ${VERSION}"
+fi
+
+git tag "$VERSION"
+git push origin "$VERSION"
+wait_for_release_workflow "$VERSION"
+wait_for_proxy github.com/mariotoffia/gobridge
+```
+
+### 3. Bootstrap internal test helpers from a reachable commit
+
+The helpers that import root-owned test support must require the root version
+just published. Their local replacements remain for workspace development.
+Push the commit before deriving pseudo-versions; an unpushed commit is rejected.
+
+```bash
+make stage-release-bootstrap RELEASE_VERSION="$VERSION"
+git add testutil/*/go.mod
+git commit -m "release: bootstrap test helpers for ${VERSION}"
+git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
+make derive-release-bootstrap \
+  RELEASE_VERSION="$VERSION" \
+  RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
+```
+
+`derive-release-bootstrap` executes the authoritative Go query for every helper
+and prints the exact returned pseudo-version. `stage-published-module` repeats
+those queries before writing a helper requirement; no timestamp or abbreviated
+hash is accepted from operator input.
+
+### 4. Stage, tag, and push each dependency layer
+
+This function obtains module order from the canonical manifest. It verifies each
+module before tagging, pushes one immutable tag, waits for that tag's strict
+workflow, and then waits for the public proxy. Do not batch-push tags.
+
+```bash
+release_module() {
+  module="$1"
+  module_dir="$module"
+  if [ "$module" = "." ]; then
+    module_dir="."
+    tag="$VERSION"
+    import_path="github.com/mariotoffia/gobridge"
+  else
+    tag="${module}/${VERSION}"
+    import_path="github.com/mariotoffia/gobridge/${module}"
+  fi
+
+  make stage-published-module \
+    RELEASE_MODULE="$module" \
+    RELEASE_VERSION="$VERSION" \
+    RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
+
+  git add "${module_dir}/go.mod"
+  if [ -f "${module_dir}/go.sum" ]; then
+    git add "${module_dir}/go.sum"
+  fi
+  git commit -m "release: ${module} ${VERSION}"
+  git tag "$tag"
+  git push origin "$tag"
+  wait_for_release_workflow "$tag"
+  wait_for_proxy "$import_path"
+}
+
+for layer in 1 2 3; do
+  while IFS= read -r module; do
+    release_module "$module"
+  done < <(make --no-print-directory release-modules RELEASE_LAYER="$layer")
+done
+```
+
+Layer 2 cannot start until all layer-1 tags are green and visible. The final
+module cannot start until all three layer-2 tags are green and visible. If a
+tagged workflow fails, stop. Do not retag; diagnose and start a new patch train.
+
+### 5. Final public proof
+
+The stable `cmd/gobridge/vX.Y.Z` workflow runs this only after the complete
+strict train succeeds:
+
+```bash
+make smoke-released-modules RELEASE_TAG="cmd/gobridge/${VERSION}"
+```
+
+The tool creates a fresh directory outside this repository and workspace, uses a
+fresh module/build cache, sets `GOWORK=off` and
+`GOPROXY=https://proxy.golang.org,direct`, and runs:
+
+```text
+go mod init example.com/gobridge-release-smoke
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
+go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
+go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
+```
+
+It rejects a generated consumer go.mod containing any replacement. Do not run
+this proof against `v0.1.0` or `v0.2.0`; the required nested tags do not exist.
+
+## Image publication
+
+Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.
+Root, adapter, processor, deployment, internal, and prerelease tags cannot enter
+the image job.
+
+The workflow:
+
+1. refuses to overwrite an existing semver image tag;
+2. builds and pushes only `ghcr.io/mariotoffia/gobridge:vX.Y.Z`, with BuildKit
+   SBOM and `provenance: mode=max`;
+3. validates the build output as a nonempty `sha256:<64 hex>` digest;
+4. scans `ghcr.io/mariotoffia/gobridge@sha256:...`, never a mutable tag, using
+   Trivy Action v0.36.0 pinned to commit
+   `ed142fd0673e97e23eac54620cfb913e5ce36c25`;
+5. fails on any HIGH or CRITICAL OS/library vulnerability, including unfixed
+   findings;
+6. only after a clean scan, moves `latest` to the scanned digest with
+   `docker buildx imagetools create` and verifies the promoted digest.
+
+`latest` is not part of the initial build and is never rebuilt separately.
+GitHub Releases remain per-module and are created only after that module's
+strict tag gate succeeds.

@@ -10,6 +10,9 @@
 .PHONY: arch-graph dupl-report goconst-report
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
 .PHONY: docker-build update-seeder-image
+.PHONY: verify-release-preparation verify-published-modules verify-release-tag
+.PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
+.PHONY: smoke-released-modules
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -19,6 +22,13 @@ export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 IMAGE      ?= ghcr.io/mariotoffia/gobridge
 IMAGE_TAG  ?= dev
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+RELEASE_LAYER            ?= -1
+RELEASE_FORMAT           ?= path
+RELEASE_VERSION          ?=
+RELEASE_TAG              ?=
+RELEASE_MODULE           ?=
+RELEASE_BOOTSTRAP_COMMIT ?=
 
 # Default target
 all: build test
@@ -44,6 +54,53 @@ docker-build: ## Build the production runtime image (gobridge-filebased, no push
 
 update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-ready image.txt
 	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
+
+# ============================================================================
+# Multi-module release preparation
+#
+# scripts/release/modules.json is the sole published-module list and layer DAG.
+# Source preflight is intentionally safe before the first release migration.
+# verify-published-modules is strict and remains red until every published
+# manifest and matching stable tag is publicly resolvable.
+# ============================================================================
+
+verify-release-preparation: ## Test the release tooling and validate the canonical DAG; report current migration inventory
+	@cd scripts/release && GOWORK=off go test -race -count=1 ./...
+	@cd scripts/release && GOWORK=off go run . source --repo ../..
+
+verify-published-modules: ## Strictly verify every published module (requires RELEASE_VERSION=vX.Y.Z and completed tags)
+	@test -n "$(RELEASE_VERSION)" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . strict-all --repo ../.. --version "$(RELEASE_VERSION)"
+
+verify-release-tag: ## Strictly verify one pushed tag (requires RELEASE_TAG=<module-dir>/vX.Y.Z)
+	@test -n "$(RELEASE_TAG)" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . strict-tag --repo ../.. --tag "$(RELEASE_TAG)"
+
+release-modules: ## List canonical release modules (RELEASE_LAYER=-1, RELEASE_FORMAT=path|import|tag|tsv)
+	@cd scripts/release && GOWORK=off go run . list --repo ../.. \
+		--layer "$(RELEASE_LAYER)" --format "$(RELEASE_FORMAT)" \
+		$(if $(RELEASE_VERSION),--version "$(RELEASE_VERSION)",)
+
+stage-published-module: ## Rewrite/tidy/check one module for release; requires RELEASE_MODULE and RELEASE_VERSION
+	@test -n "$(RELEASE_MODULE)" || { echo "ERROR: RELEASE_MODULE is required"; exit 2; }
+	@test -n "$(RELEASE_VERSION)" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . stage-module --repo ../.. \
+		--module "$(RELEASE_MODULE)" --version "$(RELEASE_VERSION)" \
+		$(if $(RELEASE_BOOTSTRAP_COMMIT),--bootstrap-commit "$(RELEASE_BOOTSTRAP_COMMIT)",)
+
+stage-release-bootstrap: ## Point internal test helpers at released root; requires RELEASE_VERSION
+	@test -n "$(RELEASE_VERSION)" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . stage-bootstrap --repo ../.. --version "$(RELEASE_VERSION)"
+
+derive-release-bootstrap: ## Derive helper pseudo-versions via Go; requires RELEASE_VERSION and RELEASE_BOOTSTRAP_COMMIT
+	@test -n "$(RELEASE_VERSION)" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@test -n "$(RELEASE_BOOTSTRAP_COMMIT)" || { echo "ERROR: RELEASE_BOOTSTRAP_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . derive-bootstrap --repo ../.. \
+		--version "$(RELEASE_VERSION)" --commit "$(RELEASE_BOOTSTRAP_COMMIT)"
+
+smoke-released-modules: ## Test a stable cmd tag from a fresh external module; requires RELEASE_TAG
+	@test -n "$(RELEASE_TAG)" || { echo "ERROR: RELEASE_TAG=cmd/gobridge/vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . smoke --repo ../.. --tag "$(RELEASE_TAG)"
 
 # ============================================================================
 # Test targets

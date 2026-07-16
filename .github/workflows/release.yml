@@ -3,22 +3,26 @@ name: Release
 on:
   push:
     tags:
-      # Core module:            v1.2.3
+      # The verifier, not this broad trigger, is the canonical allow-list.
+      # Internal, unknown, and non-stable tags enter the workflow and fail
+      # before a GitHub Release can be created.
       - 'v*'
-      # Any adapter module:     adapters/aws/transport/sqs/v1.2.3
-      - 'adapters/**'
-      # Any processor module:   processors/filter/v1.2.3
-      - 'processors/**'
-      # Deployment modules:      deployment/aws-filebased-config/cdk/v1.2.3
-      - 'deployment/**'
+      - '**/v*'
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   module-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.module.outputs.tag }}
+      version: ${{ steps.module.outputs.version }}
+      path: ${{ steps.module.outputs.path }}
+      import: ${{ steps.module.outputs.import }}
+      layer: ${{ steps.module.outputs.layer }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,49 +33,24 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Determine module
+      - name: Validate tag, release order, manifest, and module
         id: module
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-
-          # The version is always the final path segment (vX.Y.Z). Everything
-          # before it is the module path relative to the repo root; a bare
-          # vX.Y.Z tag releases the core (root) module.
-          VERSION="${TAG##*/}"
-          if [[ "$TAG" == "$VERSION" ]]; then
-            MODULE_PATH="."
-            IMPORT_PATH="github.com/mariotoffia/gobridge"
-          else
-            MODULE_PATH="${TAG%/*}"
-            IMPORT_PATH="github.com/mariotoffia/gobridge/${MODULE_PATH}"
-          fi
-
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]]; then
-            echo "::error::tag '$TAG' does not end in a semantic version (vX.Y.Z)"
-            exit 1
-          fi
-          if [[ "$MODULE_PATH" != "." && ! -f "$MODULE_PATH/go.mod" ]]; then
-            echo "::error::no go.mod at '$MODULE_PATH' — tag does not match a module"
-            exit 1
-          fi
-
-          {
-            echo "tag=$TAG"
-            echo "version=$VERSION"
-            echo "path=$MODULE_PATH"
-            echo "import=$IMPORT_PATH"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify build (${{ steps.module.outputs.path }})
-        working-directory: ${{ steps.module.outputs.path }}
         env:
-          GOWORK: off
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          go mod download
-          go build ./...
-          go test ./...
+          set -euo pipefail
+          make --no-print-directory verify-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Create Release
+      # The final module repeats the strict gate over all 31 modules. Earlier
+      # module tags are still gated independently when each tag is pushed.
+      - name: Verify the complete published module train
+        if: steps.module.outputs.path == 'cmd/gobridge'
+        env:
+          RELEASE_VERSION: ${{ steps.module.outputs.version }}
+        run: make verify-published-modules RELEASE_VERSION="$RELEASE_VERSION"
+
+      - name: Create module GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.module.outputs.import }} ${{ steps.module.outputs.version }}
@@ -91,22 +70,43 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish the production runtime container image on core (root-module) tags.
-  # The seeder is the upstream public.ecr.aws/aws-cli image (pinned by digest in
-  # cdk/constructs/internal/seeder/image.txt via `make update-seeder-image`), so
-  # no seeder image is built here.
-  image:
-    if: startsWith(github.ref, 'refs/tags/v')
+  external-consumer-smoke:
+    needs: module-release
+    if: needs.module-release.outputs.path == 'cmd/gobridge'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Resolve Paho and install gobridge outside the workspace
+        env:
+          RELEASE_TAG: ${{ needs.module-release.outputs.tag }}
+        run: make smoke-released-modules RELEASE_TAG="$RELEASE_TAG"
+
+  image:
+    needs:
+      - module-release
+      - external-consumer-smoke
+    if: >-
+      needs.module-release.outputs.path == 'cmd/gobridge' &&
+      needs.external-consumer-smoke.result == 'success'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gobridge-image-promotion
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set version
-        id: ver
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -121,17 +121,68 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push runtime image
+      - name: Refuse an existing immutable image tag
+        env:
+          IMAGE: ghcr.io/mariotoffia/gobridge
+          VERSION: ${{ needs.module-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "::error::$IMAGE:$VERSION already exists; immutable release tags are never overwritten"
+            exit 1
+          fi
+
+      - name: Build and push immutable runtime image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/mariotoffia/gobridge:${{ steps.ver.outputs.version }}
-            ghcr.io/mariotoffia/gobridge:latest
+          tags: ghcr.io/mariotoffia/gobridge:${{ needs.module-release.outputs.version }}
           build-args: |
-            VERSION=${{ steps.ver.outputs.version }}
+            VERSION=${{ needs.module-release.outputs.version }}
             GIT_SHA=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Validate immutable image digest
+        id: image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::build returned invalid image digest '$DIGEST'"
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Scan immutable image digest
+        # trivy-action v0.36.0, pinned to its verified release commit.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ghcr.io/mariotoffia/gobridge@${{ steps.image.outputs.digest }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+      - name: Promote scanned digest to latest without rebuilding
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE: ghcr.io/mariotoffia/gobridge
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
+          promoted="$(docker buildx imagetools inspect \
+            "$IMAGE:latest" --format '{{.Manifest.Digest}}')"
+          if [[ "$promoted" != "$DIGEST" ]]; then
+            echo "::error::latest resolved to '$promoted', want '$DIGEST'"
+            exit 1
+          fi
