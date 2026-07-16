@@ -814,7 +814,7 @@ feat(aws): add DynamoDB-coordinated bridge HA
 
 ## Task 12: Correct production claims and pin container inputs
 
-**Status:** Complete (spec-review round 4 resolved; make lint + make test + 24 seeder shell tests + focused MQTT/route/outbox race green)
+**Status:** Complete (spec-review round 5 resolved; make lint + make test + focused route/outbox race green)
 
 **Agents/Skills:** thiink:doc-markdown-writer, thiink:doc-markdown-reviewer,
 thiink:security-auditor
@@ -864,12 +864,16 @@ poison requires `ReplayCount > MaxReplayAttempts` AND `ReplayBudget` elapsed
 (15m default) while `direct_hold` poisons on the count cap alone. The prohibited
 vague qualifier was removed from mqtt.md (spec-review finding).
 `docs/aws-deployment/overview.md` EFS-reload "without dropping in-flight messages"
-qualified by source redelivery and bounded/aborted drain. Round-4 review fixed the
-terminal-failure rows: `configured drop policy` was not a delivery mode, so the
-matrix now uses `either` and states the terminal action per `OnPermanentFailure` /
-`OnExpired` (default `dlq` writes then ACKs; a DLQ **write failure** retries rather
-than drops; `drop` or no DLQ store records a metric and ACKs) — verified in
-`runtime/route/dispatch.go` (`poisonReplayCapExceeded`) and `runtime/outbox/retry.go`.
+qualified by source redelivery and bounded/aborted drain. The terminal-failure
+rows were corrected: `configured drop policy` was not a delivery mode, and the two
+wired modes settle differently. `direct_hold`: on a successful DLQ write (or a
+recorded `drop`) the **source delivery** is settled/ACKed; a DLQ **write failure**
+leaves the source unsettled so it redelivers. `shared_outbox`: the source was
+already ACKed right after Persist, so terminal handling **completes the outbox
+record** (`OutboxStore.Complete`) only after a successful DLQ write or `drop`; a
+DLQ write failure leaves the record pending/claimed so the drainer retries.
+Verified in `runtime/route/dispatch.go` (`settleTerminal`→`ackDelivery`) and
+`runtime/outbox/retry.go` (`completeTerminal`→`OutboxStore.Complete`).
 
 - [x] **Step 2: Correct subscription, failover, and ACK text**
 
