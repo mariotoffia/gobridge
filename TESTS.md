@@ -423,12 +423,13 @@ They cover two scripts:
   prints only the pinned `image@sha256` reference, and **fails closed** (rewrites
   nothing) on a missing platform, a single-arch manifest, malformed JSON, or a
   registry that advertises no concrete `2.x.y` tag (so the mutable `2` tag is
-  never pinned). Atomicity cases prove that when the digest resolves but the
-  Dockerfile target is bad — zero matching `FROM`, multiple matching `FROM`, a
+  never pinned). Staged fail-closed cases prove that when the digest resolves but
+  the Dockerfile target is bad — zero matching `FROM`, multiple matching `FROM`, a
   missing target directory, or a read-only Dockerfile — the script exits non-zero
-  and **leaves both `image.txt` and the Dockerfile checksums unchanged**. The
-  script never installs a tool (tested with crane v0.21.7 / docker buildx
-  v0.34.1).
+  and **leaves both `image.txt` and the Dockerfile checksums unchanged**. A forced
+  `UPDATE_IMAGE_TOOL` other than `crane`/`docker` is rejected (exit 2). The script
+  never installs a tool (versions tested for this workflow: crane v0.21.7 / docker
+  buildx v0.34.1).
 
 These are the verification gates for the container-input pins. The resolve/verify
 workflow the root `Dockerfile` follows is in [DEVELOPMENT.md](DEVELOPMENT.md)

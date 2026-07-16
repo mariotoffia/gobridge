@@ -10,10 +10,11 @@
 # rewrites the pins. It fails closed on any missing tag, digest, or platform, and
 # prints ONLY the pinned image@sha256 line on success.
 #
-# Resolver tools (exact reviewed versions — this script NEVER installs a tool):
-#   - crane          v0.21.7  (github.com/google/go-containerregistry)  [preferred]
-#   - docker buildx  v0.34.1  (github.com/docker/buildx)                [fallback]
-# These are the tested versions, not floors; newer releases are not auto-trusted.
+# Resolver tools: `crane` (preferred) or `docker buildx` (fallback). The script
+# does NOT check tool versions; it validates the resolver OUTPUT (a top-level
+# multi-platform index covering linux/amd64 and linux/arm64) and fails closed
+# otherwise, so any compatible version is accepted. Versions tested for this
+# workflow: crane v0.21.7, docker buildx v0.34.1. It NEVER installs a tool.
 # Tag discovery uses `crane ls` (crane path) or the ECR Public registry HTTP v2
 # API via curl (docker path). Force a path with UPDATE_IMAGE_TOOL=crane|docker.
 set -euo pipefail
@@ -28,8 +29,12 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 IMAGE_TXT="${IMAGE_TXT:-${HERE}/../image.txt}"
 DOCKERFILE="${SEEDER_DOCKERFILE:-${HERE}/../Dockerfile}"
 
-# Pick the resolver. UPDATE_IMAGE_TOOL forces one (also used by the tests).
+# Pick the resolver. UPDATE_IMAGE_TOOL forces one and accepts only crane|docker.
 TOOL="${UPDATE_IMAGE_TOOL:-}"
+if [ -n "$TOOL" ] && [ "$TOOL" != "crane" ] && [ "$TOOL" != "docker" ]; then
+  echo "update-image.sh: UPDATE_IMAGE_TOOL must be 'crane' or 'docker', got '${TOOL}'" >&2
+  exit 2
+fi
 if [ -z "$TOOL" ]; then
   if command -v crane >/dev/null 2>&1; then
     TOOL="crane"
@@ -37,12 +42,10 @@ if [ -z "$TOOL" ]; then
     TOOL="docker"
   else
     cat >&2 <<'EOF'
-update-image.sh: need a reviewed resolver to pin a multi-platform index digest.
-Tested with these exact versions:
-  - crane          v0.21.7  (github.com/google/go-containerregistry)
-  - docker buildx  v0.34.1  (github.com/docker/buildx)
-Install one of those exact reviewed versions from its official distribution. This
-script never installs a tool and never pins to an unverified digest.
+update-image.sh: no resolver on PATH. This script needs `crane` or `docker buildx`
+to resolve and verify a multi-platform index digest, and it never installs a tool.
+Versions tested for this workflow: crane v0.21.7, docker buildx v0.34.1 (any
+compatible version whose output validates is accepted).
 EOF
     exit 2
   fi
@@ -161,10 +164,12 @@ esac
 
 NEW_LINE="${REPO}:${CONCRETE_TAG}@${DIGEST}"
 
-# --- atomic two-file update --------------------------------------------------
+# --- staged, fail-closed two-file update -------------------------------------
 # Validate BOTH targets and stage BOTH complete outputs before replacing either;
-# on any validation error, neither file changes. The only residual non-atomicity
-# is a crash between the two final renames (POSIX has no multi-file rename).
+# on any validation error, neither file changes. This is staged fail-closed
+# validation/replacement, NOT a multi-file atomic operation: the two replacements
+# below are two sequential same-filesystem renames, so a crash strictly between
+# them can leave image.txt updated and the Dockerfile not.
 if [ ! -f "$DOCKERFILE" ]; then
   echo "update-image.sh: Dockerfile not found: ${DOCKERFILE}" >&2
   exit 4
@@ -181,7 +186,7 @@ for target in "$IMAGE_TXT" "$DOCKERFILE"; do
   fi
 done
 
-# Stage both outputs in temp files in the SAME directory (atomic rename target).
+# Stage both outputs in temp files in the SAME directory (same-filesystem rename).
 IMG_TMP=$(mktemp "${IMAGE_TXT}.XXXXXX")
 DOCKERFILE_TMP=$(mktemp "${DOCKERFILE}.XXXXXX")
 trap 'rm -f -- "$IMG_TMP" "$DOCKERFILE_TMP"' EXIT

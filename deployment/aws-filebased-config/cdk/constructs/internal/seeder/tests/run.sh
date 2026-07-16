@@ -253,14 +253,18 @@ done
 # The docker path must also accept a Docker manifest-list mediaType.
 run_ui "docker" "docker-manifest-list" "${WORKDIR}/idx-dockerlist.json" concrete 0 yes 2.35.24
 
-# Atomicity: the digest resolves, but a bad Dockerfile target must abort BEFORE
-# either file is rewritten (exit 4, both checksums unchanged).
-run_ui "crane" "atomic-zero-from"   "${WORKDIR}/idx-ok.json" concrete 4 no "" zero-from
-run_ui "crane" "atomic-two-from"    "${WORKDIR}/idx-ok.json" concrete 4 no "" two-from
-run_ui "crane" "atomic-missing-dir" "${WORKDIR}/idx-ok.json" concrete 4 no "" missing-dir
+# A forced UPDATE_IMAGE_TOOL must be exactly crane|docker; anything else exits 2
+# before any tool call or file write.
+run_ui "bogus" "invalid-tool" "${WORKDIR}/idx-ok.json" concrete 2 no
+
+# Staged fail-closed replacement: the digest resolves, but a bad Dockerfile target
+# must abort BEFORE either file is rewritten (exit 4, both checksums unchanged).
+run_ui "crane" "staged-zero-from"   "${WORKDIR}/idx-ok.json" concrete 4 no "" zero-from
+run_ui "crane" "staged-two-from"    "${WORKDIR}/idx-ok.json" concrete 4 no "" two-from
+run_ui "crane" "staged-missing-dir" "${WORKDIR}/idx-ok.json" concrete 4 no "" missing-dir
 # The read-only-file guard only holds for a non-root user (root ignores 0444).
 if [ "$(id -u)" != "0" ]; then
-  run_ui "crane" "atomic-readonly-df" "${WORKDIR}/idx-ok.json" concrete 4 no "" readonly
+  run_ui "crane" "staged-readonly-df" "${WORKDIR}/idx-ok.json" concrete 4 no "" readonly
 fi
 
 echo "------------"

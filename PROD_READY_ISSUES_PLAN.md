@@ -814,7 +814,7 @@ feat(aws): add DynamoDB-coordinated bridge HA
 
 ## Task 12: Correct production claims and pin container inputs
 
-**Status:** Complete (spec-review round 3 resolved; make lint + make test + 23 seeder shell tests + focused MQTT race green)
+**Status:** Complete (spec-review round 4 resolved; make lint + make test + 24 seeder shell tests + focused MQTT/route/outbox race green)
 
 **Agents/Skills:** thiink:doc-markdown-writer, thiink:doc-markdown-reviewer,
 thiink:security-auditor
@@ -864,7 +864,12 @@ poison requires `ReplayCount > MaxReplayAttempts` AND `ReplayBudget` elapsed
 (15m default) while `direct_hold` poisons on the count cap alone. The prohibited
 vague qualifier was removed from mqtt.md (spec-review finding).
 `docs/aws-deployment/overview.md` EFS-reload "without dropping in-flight messages"
-qualified by source redelivery and bounded/aborted drain.
+qualified by source redelivery and bounded/aborted drain. Round-4 review fixed the
+terminal-failure rows: `configured drop policy` was not a delivery mode, so the
+matrix now uses `either` and states the terminal action per `OnPermanentFailure` /
+`OnExpired` (default `dlq` writes then ACKs; a DLQ **write failure** retries rather
+than drops; `drop` or no DLQ store records a metric and ACKs) — verified in
+`runtime/route/dispatch.go` (`poisonReplayCapExceeded`) and `runtime/outbox/retry.go`.
 
 - [x] **Step 2: Correct subscription, failover, and ACK text**
 
@@ -913,16 +918,19 @@ pinned (GO_VERSION ARG removed; stale "until then mutable" comments removed).
 `2` tag (registry-verified), so the script discovers the highest concrete `2.x.y`
 tag (`crane ls` or ECR Public v2 API via curl), resolves that tag's top-level
 index via crane or docker buildx, verifies amd64+arm64, computes the digest from
-verified bytes, and fails closed (never pins the mutable `2`). Round-3 review
-made the two-file update **atomic**: it validates exactly one `FROM <repo>` line
-and both destinations' writability, stages both outputs in same-directory temp
-files, and only then renames both — a zero-FROM, multiple-FROM, missing target
-directory, or read-only Dockerfile aborts (exit 4) with both `image.txt` and the
-Dockerfile checksums unchanged. Exact tested tool versions (crane v0.21.7,
-docker buildx v0.34.1) are named, not floors; no unpinned/`latest` install is
-suggested. Seeder tests (23) cover BOTH resolver paths and the atomicity cases
-with fake crane/docker/curl. Real docker path validated live: resolved
-`aws-cli:2.35.24@sha256:f7e6c7fb…` and rewrote both files atomically. Workflow
+verified bytes, and fails closed (never pins the mutable `2`). The two-file update
+uses **staged fail-closed validation/replacement**: it validates exactly one
+`FROM <repo>` line and both destinations' writability, stages both outputs in
+same-directory temp files, and only then renames both — a zero-FROM,
+multiple-FROM, missing target directory, or read-only Dockerfile aborts (exit 4)
+with both `image.txt` and the Dockerfile checksums unchanged. (The two renames are
+sequential, not multi-file atomic.) The script does not check tool versions — it
+validates resolver output — and rejects a forced `UPDATE_IMAGE_TOOL` other than
+`crane`/`docker` (exit 2); versions tested for this workflow are crane v0.21.7 /
+docker buildx v0.34.1, and no unpinned/`latest` install is suggested. Seeder tests
+(24) cover BOTH resolver paths, the forced-tool rejection, and the staged
+fail-closed cases with fake crane/docker/curl. Real docker path validated live:
+resolved `aws-cli:2.35.24@sha256:f7e6c7fb…` and rewrote both files. Workflow
 recorded in DEVELOPMENT.md, TESTS.md, MANIFEST.md, overview.md, deployment README.
 
 - [x] **Step 5: Review docs**
