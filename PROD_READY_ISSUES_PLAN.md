@@ -1035,48 +1035,65 @@ build: enforce staged multi-module releases
 
 ## Task 14: Add exact-accounting chaos and release proofs
 
-**Status:** Pending
+**Status:** Completed with aggregate-suite concerns
 
 **Agents/Skills:** thiink:test-designer, test-automator,
 thiink:resilience-auditor, thiink:test-reviewer
 
 **Files:**
-- Create: shared producer-ID accounting helper under `tests/testutil/`
+- Create: `tests/testutil/prodid/accountant.go`
+- Create: `tests/testutil/prodid/accountant_test.go`
 - Modify: `adapters/mqtt/transport/paho/integration_bugfix_test.go`
 - Modify: `adapters/mqtt/transport/paho/integration_high_fixes_test.go`
+- Modify: `adapters/mqtt/transport/paho/bug_reconcile_timeout_test.go`
 - Create: `adapters/mqtt/transport/paho/integration_connection_failures_test.go`
 - Create: `tests/longrunning/chaos_store_outages_test.go`
 - Create: `tests/longrunning/chaos_client_takeover_test.go`
 - Create: `tests/longrunning/chaos_process_kill_test.go`
-- Create: `tests/longrunning/mqtt_settlement_chaos_test.go`
+- Create: `tests/longrunning/chaos_process_kill_child_test.go`
+- Create: `tests/longrunning/mqtt_identity_gate_test.go`
+- Modify: `tests/integration/mqtt_equal_publish_identity_test.go`
+- Modify: `tests/integration/mqtt_settlement_recovery_test.go`
 - Modify: `tests/longrunning/uc46_broker_edge_test.go`
-- Modify: `.github/workflows/ci.yml`
+- Modify: `tests/_test_index.md`
+- Modify: `PROD_READY_ISSUES_PLAN.md`
 
-- [ ] **Step 1: Add one accounting helper**
+- [x] **Step 1: Add one accounting helper**
 
 Compare producer IDs end to end and report separate missing, duplicate,
-reordered, DLQ, and intentionally dropped sets. Reuse it in every loss test.
+reordered, DLQ, intentionally dropped, unexpected, and envelope-identity
+collision sets. The helper is concurrency-safe, deterministic, stdlib-only, and
+keeps producer reconciliation keys separate from bridge envelope identities.
 
-- [ ] **Step 2: Replace weak reconnect tests**
+- [x] **Step 2: Replace weak reconnect tests**
 
 Use the same client ID, `clean_start=false`, persisted broker state, queued QoS
 1/2 messages, real disconnect/reconnect, and Session Present. Force reconcile
-timeout and assert bounded degradation/retry.
+timeout and assert bounded degradation/retry. The persisted-session proof queues
+QoS 1 and QoS 2 while offline, restarts Mosquitto, and requires exact delivery
+plus current health/reconcile evidence. A separate real Stop/Restart proof
+forces a timed-out reconcile, observes Degraded, retries, and restores Full.
 
-- [ ] **Step 3: Add fault matrices**
+- [x] **Step 3: Add fault matrices**
 
 Cover broker failure before/after CONNACK, DNS/TLS/credential failure, DLQ,
 outbox, and lease outages independently and together, duplicate client-ID
 storms, SIGKILL at source-ACK/outbox/send boundaries, and maximum payload at
-full windows.
+full windows. Connection fakes use hermetic loopback sockets and therefore live
+in an integration-named file. Process crashes use child re-exec, port wrappers,
+controlled checkpoints, and real SIGKILL without production test hooks.
 
-- [ ] **Step 4: Add the 100,000-message identity gate**
+- [x] **Step 4: Add the 100,000-message identity gate**
 
-Publish 100,000 distinct equal-valued messages without producer IDs and require
-100,000 outputs with no missing events. Separately prove producer-ID
-redelivery deduplication.
+Publish 100,000 equal-valued messages without producer IDs and require one
+stable publisher connection, 100,000 PUBACKs, 100,000 outputs, and 100,000
+distinct generated envelope IDs. `TestMQTTEqualPublishIdentity` is reused and
+strengthened with the shared accountant for explicit producer-ID redelivery
+deduplication. The equal-valued gate documents that, without a producer oracle,
+an output count cannot distinguish a hypothetical duplicate+missing pair; no
+identifier is smuggled onto the source wire.
 
-- [ ] **Step 5: Run release suites**
+- [x] **Step 5: Run release suites**
 
 ```bash
 (cd adapters/mqtt/transport/paho && go test -race -count=1 ./...)
@@ -1084,7 +1101,36 @@ make test-integration
 make test-long-running
 ```
 
-- [ ] **Step 6: Commit**
+Task 14 focused Paho, connection, accounting, identity, store-outage, takeover,
+SIGKILL, settlement, and UC46 proofs pass under race. `make test-integration`
+and `make test-long-running` were also run to completion; unrelated existing
+tests remain red (32 integration and 17 long-running top-level failures,
+recorded in `reports/test-integration.log` and
+`reports/test-long-running.log`). `make lint` and `make test` pass.
+
+Existing proof reused rather than duplicated:
+
+- `TestMQTTSettlementRecovery` already exercises the current durable QoS 1
+  production path: persistent Paho Retry requests one bounded session recycle
+  while the DLQ is unavailable. It now uses the accountant. The literal
+  ErrNotSupported branch remains covered by
+  `TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError`; persistent QoS
+  1/2 no longer returns ErrNotSupported, while ephemeral/QoS 0 has no resumable
+  broker state. No artificial hook was added to manufacture an impossible
+  redelivery.
+- `TestMQTTIngressMemory` already fills Receive Maximum with maximum-size QoS 1
+  payloads and proves the configured byte bound under the CI cgroup. It is
+  skipped on local Darwin where cgroup accounting is unavailable.
+- `newMQTTCollector`, `newMQTTCollectorWithBroker`, and
+  `newPersistentCollectorWithBroker` already acknowledge every delivery and
+  surface receiver errors. UC42 already checks outbox completion independently.
+- `make test-integration` already runs the full Paho race suite. The existing
+  long-running job is already restricted to schedule/workflow dispatch with a
+  finite timeout, so no duplicate CI step or unrelated cgroup claim was added.
+
+No production change or dependency/go.mod change was required.
+
+- [x] **Step 6: Commit**
 
 ```text
 test: add MQTT production chaos release gates

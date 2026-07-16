@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -89,6 +90,10 @@ func TestMQTTEqualPublishIdentity(t *testing.T) {
 	}
 
 	producerID := "producer-event-42"
+	accountant, err := prodid.New([]string{producerID}, false)
+	if err != nil {
+		t.Fatalf("new producer accountant: %v", err)
+	}
 	explicit := func() *pahov5.Publish {
 		return &pahov5.Publish{
 			Topic:   topic,
@@ -108,6 +113,10 @@ func TestMQTTEqualPublishIdentity(t *testing.T) {
 	sent := destination.getSent()
 	if sent[2].ID() != producerID {
 		t.Fatalf("explicit producer identity = %q, want %q", sent[2].ID(), producerID)
+	}
+	accountant.ObserveOutput(producerID, sent[2].ID())
+	if report := accountant.Reconcile(); !report.Exact() {
+		t.Fatalf("explicit producer-ID redelivery accounting failed: %s", report.String())
 	}
 }
 

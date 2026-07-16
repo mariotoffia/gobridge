@@ -2,17 +2,20 @@ package paho_test
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -156,109 +159,106 @@ func topicForGoroutine(goroutine, iter int) string {
 	return "conc/" + string(rune('a'+goroutine)) + "/" + string(rune('0'+iter))
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// T6 Integration: Reconnect reconcile timeout
-//
-// Verifies that the ReconnectTimeout option is honoured by ensuring
-// that reconnect reconcile with a very short timeout against a real
-// broker either completes in time or fails gracefully.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// TestIntegration_ReconnectTimeout_Configurable validates that
-// the ReconnectTimeout field from SessionOptions is used for the
-// OnConnectionUp reconcile context. Uses a real broker to verify
-// the timeout doesn't interfere with normal reconnect flow.
-//
-// Scenario:
-// ───────────────────────────────────────────────
-//
-//	Start session with ReconnectTimeout = 5s and a plan
-//	Verify session connects and events flow
-//	Verify Health reports connected
-//
-// ───────────────────────────────────────────────
-//
-// Assertions:
-//   - Session starts successfully with configured ReconnectTimeout
-//   - SessionConnected event is received
-//   - Health reports connected
-func TestIntegration_ReconnectTimeout_Configurable(t *testing.T) {
-	url := mqttlocal.BrokerURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func TestIntegration_ReconnectReconcileTimeoutDegradesAndRecovers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("broker restart integration test")
+	}
+	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-
-	logger := slog.Default()
-
-	sess := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:       []string{url},
-		ClientID:         mqttlocal.UniqueClientID("recon-timeout"),
-		KeepAlive:        10,
+	metrics := &ports.RecordingExporter{}
+	clk := clocktest.New()
+	topic := "task14/reconnect/" + mqttlocal.UniqueClientID("topic")
+	session := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:       []string{broker.URL()},
+		ClientID:         mqttlocal.UniqueClientID("task14-reconnect"),
+		KeepAlive:        2,
 		ConnectTimeout:   5 * time.Second,
-		ReconnectTimeout: 5 * time.Second,
+		ReconnectDelay:   50 * time.Millisecond,
+		ReconnectTimeout: 2 * time.Second,
+		ReconcileTimeout: 2 * time.Second,
 		CleanStart:       true,
-	}, connectivity.SessionEphemeral, logger)
-
-	if err := sess.Start(ctx); err != nil {
+		Clock:            clk,
+	}, connectivity.SessionEphemeral, nil, metrics)
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	if err := session.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer func() { _ = sess.Close(ctx) }()
-
-	select {
-	case ev := <-sess.Events():
-		if ev.Type != 0 { // SessionConnected = 0
-			t.Logf("received event type %d", ev.Type)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for SessionConnected event")
-	}
-
 	plan := connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: "recon/test/a", QoS: 1},
-		},
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}
-	if err := sess.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if err := session.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("initial Reconcile: %v", err)
 	}
 
-	h := sess.Health(ctx)
-	if !h.Connected {
-		t.Error("session should be connected after start with ReconnectTimeout")
+	accountant, err := prodid.New([]string{"recovered-message"}, false)
+	if err != nil {
+		t.Fatalf("new producer accountant: %v", err)
 	}
-}
+	receiver := paho.NewReceiver("task14-reconnect-receiver", session)
+	receiverCtx, stopReceiver := context.WithCancel(ctx)
+	receiverDone := make(chan error, 1)
+	go func() {
+		receiverDone <- receiver.Run(receiverCtx, func(ctx context.Context, delivery ports.Delivery) error {
+			envelope := delivery.Envelope()
+			accountant.ObserveOutput(envelope.ID(), envelope.ID())
+			return delivery.Ack(ctx)
+		})
+	}()
+	wait.RequireClosed(t, receiver.Started(), 5*time.Second)
+	wait.Until(t, 5*time.Second, "initial full service", func() bool {
+		return session.Health(ctx).ServiceLevel == ports.ServiceLevelFull
+	})
 
-// TestIntegration_ReconnectTimeout_ZeroUsesDefault validates that
-// a zero ReconnectTimeout falls back to 30s and works normally.
-func TestIntegration_ReconnectTimeout_ZeroUsesDefault(t *testing.T) {
-	url := mqttlocal.BrokerURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	broker.Stop()
+	wait.Until(t, 10*time.Second, "real broker disconnect", func() bool {
+		return !session.Health(ctx).Connected
+	})
+	broker.Restart()
+	wait.Until(t, 20*time.Second, "real broker reconnect", func() bool {
+		return session.Health(ctx).Connected
+	})
 
-	sess := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:       []string{url},
-		ClientID:         mqttlocal.UniqueClientID("recon-zero"),
-		KeepAlive:        10,
-		ConnectTimeout:   5 * time.Second,
-		ReconnectTimeout: 0, // Should default to 30s
-		CleanStart:       true,
-	}, connectivity.SessionEphemeral, nil)
-
-	if err := sess.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
+	expired, expire := context.WithTimeout(ctx, time.Nanosecond)
+	<-expired.Done()
+	err = session.Reconcile(expired, plan)
+	expire()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("reconnect Reconcile error = %v, want context deadline", err)
 	}
-	defer func() { _ = sess.Close(ctx) }()
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for event")
+	degraded := session.Health(ctx)
+	if degraded.ServiceLevel != ports.ServiceLevelDegraded ||
+		degraded.SubscriptionsSatisfied == nil || *degraded.SubscriptionsSatisfied {
+		t.Fatalf("failed reconnect reconcile did not remain degraded: %+v", degraded)
 	}
 
-	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: "recon/zero/a", QoS: 0},
-		},
-	}); err != nil {
-		t.Fatalf("Reconcile with zero ReconnectTimeout: %v", err)
+	if err := session.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("retry reconnect Reconcile: %v", err)
+	}
+	wait.Until(t, 5*time.Second, "reconcile retry restores full service", func() bool {
+		return session.Health(ctx).ServiceLevel == ports.ServiceLevelFull
+	})
+	sender := paho.NewSender(session, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
+	envelope := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "recovered-message",
+		Subject: topic,
+		Payload: []byte("recovered"),
+	})
+	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: envelope, Address: topic}); err != nil {
+		t.Fatalf("send after reconcile recovery: %v", err)
+	}
+	wait.Until(t, 5*time.Second, "delivery after reconcile recovery", func() bool {
+		return accountant.Reconcile().Exact()
+	})
+	if report := accountant.Reconcile(); !report.Exact() {
+		t.Fatalf("reconnect recovery accounting failed: %s", report.String())
+	}
+	if got := len(metrics.FindEntries(paho.MetricMQTTReconcileLatency)); got != 2 {
+		t.Fatalf("successful reconcile latency entries = %d, want 2", got)
+	}
+
+	stopReceiver()
+	if err := <-receiverDone; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("receiver stopped with error: %v", err)
 	}
 }

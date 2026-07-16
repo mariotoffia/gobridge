@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	runtimesession "github.com/mariotoffia/gobridge/runtime/session"
+	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -30,6 +31,10 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	)
 
 	metrics := newRecoveryBarrierMetrics()
+	accountant, err := prodid.New([]string{originalID, laterID}, false)
+	if err != nil {
+		t.Fatalf("new producer accountant: %v", err)
+	}
 	sessionOptions := paho.SessionOptions{
 		BrokerURLs:            []string{brokerURL},
 		ClientID:              clientID,
@@ -45,7 +50,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	sess := paho.NewSession(sessionOptions, connectivity.SessionPersistent, nil, metrics)
 	innerReceiver := paho.NewReceiver(receiverID, sess, paho.WithTopicFilters(topic))
 	receiver := newSettlementRecoveryReceiver(innerReceiver)
-	sender := newSettlementRecoverySender(originalID)
+	sender := newSettlementRecoverySender(originalID, accountant)
 	dlq := newUnavailableRecoveryDLQ()
 
 	rt := goruntime.New(
@@ -128,6 +133,9 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}
 	if health.RecoveryRecycleCount != 1 {
 		t.Fatalf("recovery recycle count = %d, want 1", health.RecoveryRecycleCount)
+	}
+	if report := accountant.Reconcile(); !report.Exact() {
+		t.Fatalf("settlement recovery producer accounting failed: %s", report.String())
 	}
 }
 
@@ -254,17 +262,19 @@ func (d *settlementRecoveryDelivery) Retry(ctx context.Context, after time.Durat
 }
 
 type settlementRecoverySender struct {
-	failID    string
-	mu        sync.Mutex
-	attempts  map[string]int
-	succeeded chan string
+	failID     string
+	accountant *prodid.Accountant
+	mu         sync.Mutex
+	attempts   map[string]int
+	succeeded  chan string
 }
 
-func newSettlementRecoverySender(failID string) *settlementRecoverySender {
+func newSettlementRecoverySender(failID string, accountant *prodid.Accountant) *settlementRecoverySender {
 	return &settlementRecoverySender{
-		failID:    failID,
-		attempts:  make(map[string]int),
-		succeeded: make(chan string, 4),
+		failID:     failID,
+		accountant: accountant,
+		attempts:   make(map[string]int),
+		succeeded:  make(chan string, 4),
 	}
 }
 
@@ -277,6 +287,7 @@ func (s *settlementRecoverySender) Send(_ context.Context, msg ports.OutboundMes
 	if id == s.failID && attempt == 1 {
 		return shared.ErrInvalidPayload.WithMessage("forced permanent processing failure")
 	}
+	s.accountant.ObserveOutput(id, msg.Envelope.ID())
 	s.succeeded <- id
 	return nil
 }

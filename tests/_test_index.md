@@ -1295,3 +1295,25 @@ Catalog of all test functions in the gobridge repository.
 | TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne | validates Attempt field is ReplayCount+1 in drainer hooks | unit | delivery_hook | pass |
 | TestDeliveryHook_SharedOutbox_MultipleBatchRecords | validates each record in a drain batch fires independent hook calls | unit | delivery_hook | pass |
 | TestDeliveryHook_Builder_RegisterPropagates | validates RegisterDeliveryHook on builder propagates to runtime | unit | delivery_hook | pass |
+<!-- Task 14: exact-accounting chaos and release proofs -->
+| TestAccountant_ReconcileClassifiesObservations | validates exact producer reconciliation categories and identity collisions | unit | task14_accounting | pass |
+| TestAccountant_ReconcileOrdered | validates deterministic reorder reporting | unit | task14_accounting | pass |
+| TestAccountant_ConcurrentObservations | validates concurrency-safe producer observations | unit | task14_accounting | pass |
+| TestAccountant_NewRejectsInvalidExpectedKeys | validates producer accountant expected-key invariants | unit | task14_accounting | pass |
+| TestIntegration_PersistentSessionQueuedQoS1AndQoS2 | validates same-client persistent-session queued delivery and exact accounting | integration | task14_mqtt | pass |
+| TestReconnect_ReconcileTimeoutDegradesAndRecovers | validates bounded reconnect reconcile failure and recovery | unit | task14_mqtt | pass |
+| TestIntegration_ReconnectReconcileTimeoutDegradesAndRecovers | validates real broker reconnect degradation, retry, and recovery | integration | task14_mqtt | pass |
+| TestConnectionFailure_BeforeCONNACK | validates bounded failure before MQTT CONNACK | integration | task14_mqtt | pass |
+| TestConnectionFailure_AfterCONNACK | validates bounded failure after MQTT CONNACK | integration | task14_mqtt | pass |
+| TestConnectionFailure_TCPAndDNS | validates bounded TCP and DNS connection failures | integration | task14_mqtt | pass |
+| TestConnectionFailure_TLSTrustAndHandshake | validates bounded TLS trust and handshake failures | integration | task14_mqtt | pass |
+| TestConnectionFailure_CredentialsNotAuthorized | validates MQTT not-authorized CONNACK handling | integration | task14_mqtt | pass |
+| TestMQTTSettlementRecovery | validates bounded persistent-MQTT settlement recycle during DLQ outage with exact accounting | integration | task14_mqtt | pass |
+| TestTask14_StoreOutageMatrix | validates independent and combined DLQ, outbox, and lease outage recovery | longrunning | task14_chaos | pass |
+| TestTask14_DuplicateClientIDTakeoverStorm | validates bounded duplicate-client takeover recovery | longrunning | task14_chaos | pass |
+| TestTask14_ProcessKillChild | provides controlled source-ack, persisted-outbox, and ambiguous-send crash checkpoints | longrunning | task14_chaos | pass |
+| TestTask14_ProcessKillBoundaries | validates SIGKILL recovery at source-ack, persisted-outbox, and ambiguous-send boundaries | longrunning | task14_chaos | pass |
+| TestMQTTIngressMemory | validates maximum payload retention at a full Receive Maximum/window under a cgroup limit | longrunning | task14_chaos | pass |
+| TestTask14_EqualValuedMQTTIdentityGate | validates 100,000 equal-valued MQTT publishes remain distinct bridge events | longrunning | task14_identity | pass |
+| TestMQTTEqualPublishIdentity | validates explicit producer-ID redelivery deduplication and preserved envelope identity | integration | task14_identity | pass |
+| TestUC46_BrokerMessageSizeLimit | validates exact delivered and DLQ sets at the broker message-size limit | longrunning | task14_accounting | pass |
