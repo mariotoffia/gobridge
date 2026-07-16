@@ -218,6 +218,9 @@ func TestRunModuleChecks_DisablesWorkspaceAndUsesUncachedTests(t *testing.T) {
 		if request.Env["GOWORK"] != "off" {
 			t.Errorf("command %d GOWORK = %q, want off", i, request.Env["GOWORK"])
 		}
+		if request.Timeout <= 0 {
+			t.Errorf("command %d timeout = %s, want bounded deadline", i, request.Timeout)
+		}
 	}
 }
 

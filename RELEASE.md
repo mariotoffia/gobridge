@@ -247,9 +247,12 @@ strict train succeeds:
 make smoke-released-modules RELEASE_TAG="cmd/gobridge/${VERSION}"
 ```
 
-The tool creates a fresh directory outside this repository and workspace, uses a
-fresh module/build cache, sets `GOWORK=off` and
-`GOPROXY=https://proxy.golang.org,direct`, and runs:
+The tool first retries a **proxy-only** pass with
+`GOPROXY=https://proxy.golang.org` for bounded tag propagation, then repeats a
+separate **direct-only** pass with `GOPROXY=direct`. Every attempt has a fresh
+`HOME`, `GOPATH`, module/build cache, and `GOBIN`; system/global Git config is
+disabled. Both passes retain checksum-database verification, bind Paho and
+`cmd/gobridge` `Origin.Hash` to their exact local tag commits, and run:
 
 ```text
 go mod init example.com/gobridge-release-smoke
@@ -258,8 +261,9 @@ go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
-It rejects a generated consumer go.mod containing any replacement. Do not run
-this proof against `v0.1.0` or `v0.2.0`; the required nested tags do not exist.
+It rejects local replacements in resolved module manifests and any replacement
+in the generated consumer go.mod. Do not run this proof against `v0.1.0` or
+`v0.2.0`; the required nested tags do not exist.
 
 ## Image publication
 
@@ -267,20 +271,29 @@ Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.
 Root, adapter, processor, deployment, internal, and prerelease tags cannot enter
 the image job.
 
-The workflow:
+The workflow uses immutable action commit SHAs, Buildx v0.35.0, BuildKit
+v0.31.1 by image digest, and binfmt/QEMU v10.2.3 by image digest. It:
 
-1. refuses to overwrite an existing semver image tag;
-2. builds and pushes only `ghcr.io/mariotoffia/gobridge:vX.Y.Z`, with BuildKit
-   SBOM and `provenance: mode=max`;
-3. validates the build output as a nonempty `sha256:<64 hex>` digest;
-4. scans `ghcr.io/mariotoffia/gobridge@sha256:...`, never a mutable tag, using
-   Trivy Action v0.36.0 pinned to commit
+1. builds or resumes only the commit-scoped
+   `ghcr.io/mariotoffia/gobridge:candidate-<git-sha>` tag, with BuildKit SBOM
+   and `provenance: mode=max`; failed-scan candidates are retained for audit and
+   safe workflow resume because this repository has no established GHCR
+   deletion API policy;
+2. validates the candidate index digest and requires exactly one runnable
+   `linux/amd64` child and one runnable `linux/arm64` child;
+3. scans **both exact child digests**, never a mutable tag, using Trivy Action
+   v0.36.0 pinned to commit
    `ed142fd0673e97e23eac54620cfb913e5ce36c25`;
-5. fails on any HIGH or CRITICAL OS/library vulnerability, including unfixed
+4. fails on any HIGH or CRITICAL OS/library vulnerability, including unfixed
    findings;
-6. only after a clean scan, moves `latest` to the scanned digest with
-   `docker buildx imagetools create` and verifies the promoted digest.
+5. only after both scans, creates the stable semver tag from the candidate
+   digest; an absent tag is created, the same digest is resumable, and a
+   different digest or non-NOT_FOUND inspect error fails closed;
+6. immediately fetches all Git tags inside the serialized image job and moves
+   `latest` only when this candidate is the highest stable
+   `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
 
-`latest` is not part of the initial build and is never rebuilt separately.
-GitHub Releases remain per-module and are created only after that module's
-strict tag gate succeeds.
+Neither the stable semver tag nor `latest` is part of the initial build, and
+neither is rebuilt separately. GitHub Releases remain per-module; the final
+command release is created only after strict train validation and both external
+consumer resolution passes succeed.

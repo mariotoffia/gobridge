@@ -951,8 +951,8 @@ docs: state MQTT production boundaries exactly
 
 ## Task 13: Prepare reproducible module and image releases
 
-**Status:** Complete (source preparation is green; public H9 closure still
-requires the documented staged tags and proxy smoke)
+**Status:** Pending (quality-review remediation implemented; awaiting review
+acceptance, and public H9 closure still requires staged tags and proxy smoke)
 
 **Agents/Skills:** thiink:golang-pro, git-workflow-manager,
 thiink:contract-reviewer, thiink:test-reviewer
@@ -993,9 +993,9 @@ through `proxy.golang.org,direct`, list it, and install `cmd/gobridge`.
 - [x] **Step 4: Make image publication depend on the final module**
 
 Publish only from a successful stable `cmd/gobridge/v*` release. Enable BuildKit
-SBOM and maximum provenance, capture the immutable image digest, scan that
-digest through the configured registry scanner, and move `latest` only after
-all gates pass.
+SBOM and maximum provenance on a commit-scoped candidate, scan both immutable
+platform-child digests, promote the stable semver tag only after both scans, and
+move `latest` only when the candidate is still the highest stable command tag.
 
 - [x] **Step 5: Keep pre-release docs truthful**
 
@@ -1018,6 +1018,17 @@ make test
 ```text
 build: enforce staged multi-module releases
 ```
+
+**Quality-review remediation (pending acceptance):**
+
+- [x] Remove Make/shell tag injection and reject incompatible path majors.
+- [x] Bind public module origins to exact tag commits and contain manifest paths.
+- [x] Isolate/retry proxy-only smoke, then prove direct-only resolution.
+- [x] Add signal, command, smoke, and workflow deadlines.
+- [x] Delay GitHub Release creation until applicable smoke succeeds.
+- [x] Pin all workflow actions plus Buildx, BuildKit, and QEMU inputs.
+- [x] Scan both candidate platform digests before resumable semver promotion.
+- [x] Re-check highest stable command tag immediately before moving `latest`.
 
 ## Task 14: Add exact-accounting chaos and release proofs
 

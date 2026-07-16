@@ -10,9 +10,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -95,7 +97,10 @@ func (v manifestViolation) Error() string {
 }
 
 func loadManifest(repo string) (releaseManifest, error) {
-	filename := filepath.Join(repo, filepath.FromSlash(manifestRelativePath))
+	filename, err := secureJoin(repo, manifestRelativePath)
+	if err != nil {
+		return releaseManifest{}, fmt.Errorf("resolving release manifest: %w", err)
+	}
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return releaseManifest{}, fmt.Errorf("reading release manifest %s: %w", filename, err)
@@ -201,10 +206,24 @@ func validateRelativeModulePath(modulePath string) error {
 	if modulePath == "" {
 		return errors.New("module path is empty")
 	}
-	if path.Clean(modulePath) != modulePath || path.IsAbs(modulePath) || strings.HasPrefix(modulePath, "../") {
+	if strings.Contains(modulePath, `\`) ||
+		strings.IndexFunc(modulePath, func(char rune) bool {
+			return unicode.IsControl(char) || unicode.IsSpace(char)
+		}) >= 0 ||
+		strings.HasPrefix(modulePath, "//") ||
+		hasWindowsDrivePrefix(modulePath) ||
+		!filepath.IsLocal(filepath.FromSlash(modulePath)) ||
+		path.Clean(modulePath) != modulePath ||
+		path.IsAbs(modulePath) {
 		return fmt.Errorf("module path %q is not a clean repository-relative path", modulePath)
 	}
 	return nil
+}
+
+func hasWindowsDrivePrefix(value string) bool {
+	return len(value) >= 2 &&
+		((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) &&
+		value[1] == ':'
 }
 
 func isInternalOnlyPath(modulePath string) bool {
@@ -219,6 +238,14 @@ func isInternalOnlyPath(modulePath string) bool {
 func validateStableVersion(version string) error {
 	if !stableVersionPattern.MatchString(version) {
 		return fmt.Errorf("version %q is not stable semantic version vX.Y.Z", version)
+	}
+	major := semver.Major(version)
+	if major != "v0" && major != "v1" {
+		return fmt.Errorf(
+			"version %q requires a /%s module-path suffix; declared modules support only v0/v1",
+			version,
+			major,
+		)
 	}
 	return nil
 }
@@ -304,14 +331,15 @@ func parseModuleManifest(filename string, data []byte) (moduleManifest, error) {
 }
 
 func readModuleManifest(repo string, manifest releaseManifest, modulePath string) (moduleManifest, error) {
-	filename := filepath.Join(repo, filepath.FromSlash(modulePath), "go.mod")
-	if modulePath == rootModulePath {
-		filename = filepath.Join(repo, "go.mod")
+	filename, err := secureJoin(repo, modulePath, "go.mod")
+	if err != nil {
+		return moduleManifest{}, fmt.Errorf("resolving module manifest %s: %w", modulePath, err)
 	}
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return moduleManifest{}, fmt.Errorf("reading %s: %w", filename, err)
 	}
+
 	parsed, err := parseModuleManifest(filename, data)
 	if err != nil {
 		return moduleManifest{}, err
@@ -322,6 +350,71 @@ func readModuleManifest(repo string, manifest releaseManifest, modulePath string
 		return moduleManifest{}, fmt.Errorf("%s declares module %q, want %q", filename, parsed.Module, expected)
 	}
 	return parsed, nil
+}
+
+func secureJoin(repo, relativePath string, elements ...string) (string, error) {
+	if err := validateRelativeModulePath(relativePath); err != nil {
+		return "", err
+	}
+	for _, element := range elements {
+		if element == "" || strings.ContainsAny(element, `/\`) || element == "." || element == ".." {
+			return "", fmt.Errorf("unsafe path element %q", element)
+		}
+	}
+
+	rootAbsolute, err := filepath.Abs(repo)
+	if err != nil {
+		return "", fmt.Errorf("resolving repository root %s: %w", repo, err)
+	}
+	rootResolved, err := filepath.EvalSymlinks(rootAbsolute)
+	if err != nil {
+		return "", fmt.Errorf("resolving repository root symlinks %s: %w", rootAbsolute, err)
+	}
+	parts := []string{rootResolved}
+	if relativePath != rootModulePath {
+		parts = append(parts, filepath.FromSlash(relativePath))
+	}
+	parts = append(parts, elements...)
+	candidate := filepath.Join(parts...)
+	if err := requirePathWithin(rootResolved, candidate); err != nil {
+		return "", err
+	}
+
+	probe := candidate
+	var missing []string
+	for {
+		if _, statErr := os.Lstat(probe); statErr == nil {
+			break
+		} else if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("inspecting path %s: %w", probe, statErr)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", fmt.Errorf("no existing parent for %s", candidate)
+		}
+		missing = append([]string{filepath.Base(probe)}, missing...)
+		probe = parent
+	}
+	resolvedParent, err := filepath.EvalSymlinks(probe)
+	if err != nil {
+		return "", fmt.Errorf("resolving path symlinks %s: %w", probe, err)
+	}
+	resolved := filepath.Join(append([]string{resolvedParent}, missing...)...)
+	if err := requirePathWithin(rootResolved, resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+func requirePathWithin(root, candidate string) error {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return fmt.Errorf("comparing repository path %s with %s: %w", root, candidate, err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %s escapes repository root %s", candidate, root)
+	}
+	return nil
 }
 
 func inspectModule(

@@ -315,6 +315,7 @@ require github.com/mariotoffia/gobridge v0.3.0
 	writeManifestFile(t, repo, manifest)
 
 	runner := newSuccessfulReleaseRunner(t)
+	runner.moduleRoot = repo
 	runner.sideEffect = func(request commandRequest) error {
 		if request.Name == "go" && slices.Equal(request.Args, []string{
 			"mod",
@@ -511,6 +512,9 @@ func TestResolveSiblingRequirements_ValidatesBootstrapOriginAndGoMod(t *testing.
 	rootResult, err := json.Marshal(listedModule{
 		Path:    manifest.ModulePrefix,
 		Version: testReleaseVersion,
+		Origin: struct {
+			Hash string
+		}{Hash: commit},
 	})
 	if err != nil {
 		t.Fatalf("Marshal(root result) error = %v", err)
@@ -525,7 +529,12 @@ func TestResolveSiblingRequirements_ValidatesBootstrapOriginAndGoMod(t *testing.
 	if err != nil {
 		t.Fatalf("Marshal(helper result) error = %v", err)
 	}
-	runner := &recordingRunner{outputs: [][]byte{rootResult, helperJSON}}
+	runner := &recordingRunner{outputs: [][]byte{
+		rootResult,
+		[]byte(commit + "\n"),
+		nil,
+		helperJSON,
+	}}
 	moduleFile := moduleManifest{
 		Path: "adapters/example",
 		Requires: []moduleRequirement{
@@ -745,6 +754,7 @@ func TestRunConsumerSmoke_UsesFreshPublicModuleEnvironment(t *testing.T) {
 
 	repo, manifest := writeFixtureRepository(t, false)
 	runner := newSuccessfulReleaseRunner(t)
+	runner.moduleRoot = repo
 	runner.sideEffect = func(request commandRequest) error {
 		if request.Name == "go" && slices.Equal(request.Args, []string{
 			"mod",
@@ -795,8 +805,19 @@ require github.com/mariotoffia/gobridge v0.3.0
 	if !ok {
 		t.Fatal("consumer smoke did not run exact Paho go get")
 	}
-	if getRequest.Env["GOWORK"] != "off" || getRequest.Env["GOPROXY"] != publicGoProxy {
+	if getRequest.Env["GOWORK"] != "off" ||
+		getRequest.Env["GOPROXY"] != "https://proxy.golang.org" {
 		t.Errorf("consumer environment = %#v", getRequest.Env)
+	}
+	directGet := false
+	for _, request := range runner.requests {
+		if request.Name == "go" && len(request.Args) > 0 && request.Args[0] == "get" &&
+			request.Env["GOPROXY"] == "direct" {
+			directGet = true
+		}
+	}
+	if !directGet {
+		t.Error("consumer smoke did not run an independent direct-only go get")
 	}
 	if inside, err := pathIsInside(repo, getRequest.Dir); err != nil {
 		t.Fatalf("pathIsInside() error = %v", err)
@@ -920,6 +941,7 @@ type successfulReleaseRunner struct {
 	t          *testing.T
 	requests   []commandRequest
 	sideEffect func(commandRequest) error
+	moduleRoot string
 }
 
 func newSuccessfulReleaseRunner(t *testing.T) *successfulReleaseRunner {
@@ -951,7 +973,10 @@ func (r *successfulReleaseRunner) run(_ context.Context, request commandRequest)
 			if !found {
 				return nil, fmt.Errorf("invalid module query %q", request.Args[3])
 			}
-			repo := filepath.Clean(filepath.Join(request.Dir, "..", ".."))
+			repo := r.moduleRoot
+			if repo == "" {
+				repo = filepath.Clean(filepath.Join(request.Dir, "..", ".."))
+			}
 			modulePath, sibling := siblingPath("github.com/mariotoffia/gobridge", importPath)
 			goMod := ""
 			if sibling {

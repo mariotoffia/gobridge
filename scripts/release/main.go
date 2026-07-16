@@ -8,13 +8,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 )
 
 func main() {
-	if err := runCLI(context.Background(), os.Args[1:], os.Stdout, execRunner{}); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runCLI(ctx, os.Args[1:], os.Stdout, execRunner{}); err != nil {
 		if _, writeErr := fmt.Fprintf(os.Stderr, "release: %v\n", err); writeErr != nil {
 			os.Exit(1)
 		}
@@ -244,6 +248,33 @@ func runCLI(
 		}
 		return writeOutput(output, "External consumer smoke PASS for %s.\n", *tag)
 
+	case "latest":
+		flags := flag.NewFlagSet("latest", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		repoFlag := flags.String("repo", "", "repository root")
+		version := flags.String("version", "", "stable cmd/gobridge version")
+		if err := parseCommandFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		repo, manifest, err := commandContext(*repoFlag)
+		if err != nil {
+			return err
+		}
+		if err := requireFlag("version", *version); err != nil {
+			return err
+		}
+		promote, highest, err := latestStableCommandVersion(
+			ctx,
+			runner,
+			repo,
+			manifest,
+			*version,
+		)
+		if err != nil {
+			return err
+		}
+		return writeOutput(output, "promote=%t\nhighest=%s\n", promote, highest)
+
 	default:
 		return usageError()
 	}
@@ -267,7 +298,15 @@ func findRepository(repoFlag string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolving repository path %s: %w", repoFlag, err)
 		}
-		if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(manifestRelativePath))); err != nil {
+		repo, err = filepath.EvalSymlinks(repo)
+		if err != nil {
+			return "", fmt.Errorf("resolving repository symlinks %s: %w", repoFlag, err)
+		}
+		manifestPath, err := secureJoin(repo, manifestRelativePath)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", manifestRelativePath, err)
+		}
+		if _, err := os.Stat(manifestPath); err != nil {
 			return "", fmt.Errorf("repository %s has no %s: %w", repo, manifestRelativePath, err)
 		}
 		return repo, nil
@@ -278,8 +317,14 @@ func findRepository(repoFlag string) (string, error) {
 		return "", fmt.Errorf("getting current directory: %w", err)
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(current, filepath.FromSlash(manifestRelativePath))); err == nil {
-			return current, nil
+		if manifestPath, pathErr := secureJoin(current, manifestRelativePath); pathErr == nil {
+			if _, statErr := os.Stat(manifestPath); statErr == nil {
+				resolved, err := filepath.EvalSymlinks(current)
+				if err != nil {
+					return "", fmt.Errorf("resolving repository symlinks %s: %w", current, err)
+				}
+				return resolved, nil
+			}
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -453,11 +498,20 @@ func resolveModuleQuery(
 	version string,
 ) error {
 	query := importPath + "@" + version
+	expectedCommit, err := resolveTagCommit(ctx, runner, repo, version)
+	if err != nil {
+		return err
+	}
+	toolDir, err := secureJoin(repo, "scripts/release")
+	if err != nil {
+		return fmt.Errorf("resolving release tool directory: %w", err)
+	}
 	output, err := runner.run(ctx, commandRequest{
-		Dir:  filepath.Join(repo, filepath.FromSlash("scripts/release")),
-		Env:  publicModuleEnvironment(),
-		Name: "go",
-		Args: []string{"list", "-m", "-json", query},
+		Dir:     toolDir,
+		Env:     publicModuleEnvironment(),
+		Name:    "go",
+		Args:    []string{"list", "-m", "-json", query},
+		Timeout: moduleQueryTimeout,
 	})
 	if err != nil {
 		return err
@@ -468,6 +522,14 @@ func resolveModuleQuery(
 	}
 	if listed.Path != importPath || listed.Version != version {
 		return fmt.Errorf("resolved %s as %s@%s", query, listed.Path, listed.Version)
+	}
+	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
+		return fmt.Errorf(
+			"resolved %s from origin %q, want tag commit %s",
+			query,
+			listed.Origin.Hash,
+			expectedCommit,
+		)
 	}
 	return nil
 }
@@ -518,6 +580,6 @@ func requireFlags(values map[string]string) error {
 func usageError() error {
 	return errors.New(
 		"usage: release <source|list|strict-all|strict-tag|strict-module|" +
-			"stage-module|stage-bootstrap|derive-bootstrap|smoke> [flags]",
+			"stage-module|stage-bootstrap|derive-bootstrap|smoke|latest> [flags]",
 	)
 }

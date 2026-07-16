@@ -12,17 +12,33 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
-const publicGoProxy = "https://proxy.golang.org,direct"
+const (
+	publicGoProxy       = "https://proxy.golang.org,direct"
+	gitCommandTimeout   = 2 * time.Minute
+	moduleQueryTimeout  = 3 * time.Minute
+	moduleDownloadLimit = 10 * time.Minute
+	moduleVerifyLimit   = 2 * time.Minute
+	moduleBuildLimit    = 15 * time.Minute
+	moduleTestLimit     = 30 * time.Minute
+	moduleTidyLimit     = 10 * time.Minute
+	smokeCommandLimit   = 10 * time.Minute
+	smokeOverallLimit   = 25 * time.Minute
+)
 
 type commandRequest struct {
 	Dir  string
 	Env  map[string]string
 	Name string
 	Args []string
+	// Timeout is mandatory for release network/build commands. Zero is reserved
+	// for deterministic local helpers and tests.
+	Timeout time.Duration
 }
 
 type commandRunner interface {
@@ -32,11 +48,27 @@ type commandRunner interface {
 type execRunner struct{}
 
 func (execRunner) run(ctx context.Context, request commandRequest) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, request.Name, request.Args...)
+	runCtx := ctx
+	cancel := func() {}
+	if request.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, request.Timeout)
+	}
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, request.Name, request.Args...)
 	cmd.Dir = request.Dir
 	cmd.Env = mergeEnvironment(os.Environ(), request.Env)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if runCtx.Err() != nil {
+			return output, fmt.Errorf(
+				"running %s %s in %s: %w",
+				request.Name,
+				strings.Join(request.Args, " "),
+				request.Dir,
+				runCtx.Err(),
+			)
+		}
 		return output, fmt.Errorf(
 			"running %s %s in %s: %w\n%s",
 			request.Name,
@@ -87,20 +119,24 @@ func publicModuleEnvironment() map[string]string {
 }
 
 func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string) error {
-	commands := [][]string{
-		{"mod", "download"},
-		{"mod", "verify"},
-		{"build", "./..."},
-		{"test", "-count=1", "./..."},
+	commands := []struct {
+		args    []string
+		timeout time.Duration
+	}{
+		{args: []string{"mod", "download"}, timeout: moduleDownloadLimit},
+		{args: []string{"mod", "verify"}, timeout: moduleVerifyLimit},
+		{args: []string{"build", "./..."}, timeout: moduleBuildLimit},
+		{args: []string{"test", "-count=1", "./..."}, timeout: moduleTestLimit},
 	}
-	for _, args := range commands {
+	for _, command := range commands {
 		if _, err := runner.run(ctx, commandRequest{
-			Dir:  moduleDir,
-			Env:  publicModuleEnvironment(),
-			Name: "go",
-			Args: args,
+			Dir:     moduleDir,
+			Env:     publicModuleEnvironment(),
+			Name:    "go",
+			Args:    command.args,
+			Timeout: command.timeout,
 		}); err != nil {
-			return fmt.Errorf("release check %q: %w", strings.Join(args, " "), err)
+			return fmt.Errorf("release check %q: %w", strings.Join(command.args, " "), err)
 		}
 	}
 	return nil
@@ -189,7 +225,10 @@ func inspectBootstrapModule(
 	modulePath string,
 	releaseVersion string,
 ) ([]manifestViolation, error) {
-	filename := filepath.Join(repo, filepath.FromSlash(modulePath), "go.mod")
+	filename, err := secureJoin(repo, modulePath, "go.mod")
+	if err != nil {
+		return nil, fmt.Errorf("resolving bootstrap manifest %s: %w", modulePath, err)
+	}
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("reading bootstrap manifest %s: %w", filename, err)
@@ -274,23 +313,34 @@ func validatePublishedSet(repo string, manifest releaseManifest) error {
 }
 
 func discoverPublishedModules(repo string) ([]string, error) {
+	repoRoot, err := secureJoin(repo, rootModulePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving repository root: %w", err)
+	}
 	result := []string{rootModulePath}
 	for _, fixed := range []string{"httpapi", finalModulePath} {
-		if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(fixed), "go.mod")); err != nil {
+		filename, err := secureJoin(repoRoot, fixed, "go.mod")
+		if err != nil {
+			return nil, fmt.Errorf("published module %s: %w", fixed, err)
+		}
+		if _, err := os.Stat(filename); err != nil {
 			return nil, fmt.Errorf("published module %s: %w", fixed, err)
 		}
 		result = append(result, fixed)
 	}
 	for _, tree := range []string{"adapters", "processors"} {
-		treeRoot := filepath.Join(repo, tree)
-		err := filepath.WalkDir(treeRoot, func(filename string, entry fs.DirEntry, walkErr error) error {
+		treeRoot, err := secureJoin(repoRoot, tree)
+		if err != nil {
+			return nil, fmt.Errorf("published module tree %s: %w", tree, err)
+		}
+		err = filepath.WalkDir(treeRoot, func(filename string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
 			if entry.IsDir() || entry.Name() != "go.mod" {
 				return nil
 			}
-			dir, err := filepath.Rel(repo, filepath.Dir(filename))
+			dir, err := filepath.Rel(repoRoot, filepath.Dir(filename))
 			if err != nil {
 				return fmt.Errorf("finding module path for %s: %w", filename, err)
 			}
@@ -333,11 +383,16 @@ func deriveBootstrapVersions(
 	for _, modulePath := range manifest.Bootstrap {
 		importPath := manifest.importPath(modulePath)
 		query := importPath + "@" + commit
+		toolDir, err := secureJoin(repo, "scripts/release")
+		if err != nil {
+			return nil, fmt.Errorf("resolving release tool directory: %w", err)
+		}
 		output, err := runner.run(ctx, commandRequest{
-			Dir:  filepath.Join(repo, filepath.FromSlash("scripts/release")),
-			Env:  publicModuleEnvironment(),
-			Name: "go",
-			Args: []string{"list", "-m", "-json", query},
+			Dir:     toolDir,
+			Env:     publicModuleEnvironment(),
+			Name:    "go",
+			Args:    []string{"list", "-m", "-json", query},
+			Timeout: moduleQueryTimeout,
 		})
 		if err != nil {
 			return nil, fmt.Errorf(
@@ -459,23 +514,31 @@ func verifyTagAtHead(
 	tag string,
 ) error {
 	output, err := runner.run(ctx, commandRequest{
-		Dir:  repo,
-		Name: "git",
-		Args: []string{"rev-parse", "--verify", "refs/tags/" + tag + "^{commit}"},
+		Dir:     repo,
+		Name:    "git",
+		Args:    []string{"rev-parse", "--verify", "refs/tags/" + tag + "^{commit}"},
+		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("resolving release tag %s: %w", tag, err)
 	}
 	tagCommit := strings.TrimSpace(string(output))
+	if !isFullCommitHash(tagCommit) {
+		return fmt.Errorf("release tag %s resolved to invalid commit %q", tag, tagCommit)
+	}
 	output, err = runner.run(ctx, commandRequest{
-		Dir:  repo,
-		Name: "git",
-		Args: []string{"rev-parse", "HEAD"},
+		Dir:     repo,
+		Name:    "git",
+		Args:    []string{"rev-parse", "HEAD"},
+		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("resolving release HEAD: %w", err)
 	}
 	headCommit := strings.TrimSpace(string(output))
+	if !isFullCommitHash(headCommit) {
+		return fmt.Errorf("release HEAD resolved to invalid commit %q", headCommit)
+	}
 	if tagCommit != headCommit {
 		return fmt.Errorf("release tag %s points to %s, but checkout HEAD is %s", tag, tagCommit, headCommit)
 	}
@@ -508,12 +571,26 @@ func verifyAllTrainTags(
 	manifest releaseManifest,
 	version string,
 ) error {
+	_, err := releaseTrainCommits(ctx, runner, repo, manifest, version)
+	return err
+}
+
+func releaseTrainCommits(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	manifest releaseManifest,
+	version string,
+) (map[string]string, error) {
+	commits := make(map[string]string, len(manifest.Published))
 	for _, entry := range manifest.Published {
-		if err := verifyDependencyTag(ctx, runner, repo, tagFor(entry.Path, version)); err != nil {
-			return fmt.Errorf("release train %s: %w", version, err)
+		commit, err := resolveTagCommit(ctx, runner, repo, tagFor(entry.Path, version))
+		if err != nil {
+			return nil, fmt.Errorf("release train %s: %w", version, err)
 		}
+		commits[entry.Path] = commit
 	}
-	return nil
+	return commits, nil
 }
 
 func verifyDependencyTag(
@@ -522,23 +599,38 @@ func verifyDependencyTag(
 	repo string,
 	tag string,
 ) error {
+	_, err := resolveTagCommit(ctx, runner, repo, tag)
+	return err
+}
+
+func resolveTagCommit(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	tag string,
+) (string, error) {
 	output, err := runner.run(ctx, commandRequest{
-		Dir:  repo,
-		Name: "git",
-		Args: []string{"rev-parse", "--verify", "refs/tags/" + tag + "^{commit}"},
+		Dir:     repo,
+		Name:    "git",
+		Args:    []string{"rev-parse", "--verify", "refs/tags/" + tag + "^{commit}"},
+		Timeout: gitCommandTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("required earlier tag %s is missing: %w", tag, err)
+		return "", fmt.Errorf("required tag %s is missing: %w", tag, err)
 	}
 	commit := strings.TrimSpace(string(output))
-	if _, err := runner.run(ctx, commandRequest{
-		Dir:  repo,
-		Name: "git",
-		Args: []string{"merge-base", "--is-ancestor", commit, "HEAD"},
-	}); err != nil {
-		return fmt.Errorf("required earlier tag %s (%s) is not an ancestor of HEAD: %w", tag, commit, err)
+	if !isFullCommitHash(commit) {
+		return "", fmt.Errorf("required tag %s resolved to invalid commit %q", tag, commit)
 	}
-	return nil
+	if _, err := runner.run(ctx, commandRequest{
+		Dir:     repo,
+		Name:    "git",
+		Args:    []string{"merge-base", "--is-ancestor", commit, "HEAD"},
+		Timeout: gitCommandTimeout,
+	}); err != nil {
+		return "", fmt.Errorf("required tag %s (%s) is not an ancestor of HEAD: %w", tag, commit, err)
+	}
+	return commit, nil
 }
 
 func resolveSiblingRequirements(
@@ -564,11 +656,16 @@ func resolveSiblingRequirements(
 	for _, importPath := range paths {
 		version := queries[importPath]
 		query := importPath + "@" + version
+		toolDir, err := secureJoin(repo, "scripts/release")
+		if err != nil {
+			return fmt.Errorf("resolving release tool directory: %w", err)
+		}
 		output, err := runner.run(ctx, commandRequest{
-			Dir:  filepath.Join(repo, filepath.FromSlash("scripts/release")),
-			Env:  publicModuleEnvironment(),
-			Name: "go",
-			Args: []string{"list", "-m", "-json", query},
+			Dir:     toolDir,
+			Env:     publicModuleEnvironment(),
+			Name:    "go",
+			Args:    []string{"list", "-m", "-json", query},
+			Timeout: moduleQueryTimeout,
 		})
 		if err != nil {
 			return fmt.Errorf("repository sibling %s is not publicly resolvable: %w", query, err)
@@ -586,7 +683,25 @@ func resolveSiblingRequirements(
 			)
 		}
 		modulePath, _ := siblingPath(manifest.ModulePrefix, importPath)
-		if hasKey(manifest.bootstrapSet(), modulePath) {
+		if _, published := manifest.publishedByPath()[modulePath]; published {
+			expectedCommit, err := resolveTagCommit(
+				ctx,
+				runner,
+				repo,
+				tagFor(modulePath, version),
+			)
+			if err != nil {
+				return err
+			}
+			if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
+				return fmt.Errorf(
+					"published dependency %s resolved from origin %q, want tag commit %s",
+					query,
+					listed.Origin.Hash,
+					expectedCommit,
+				)
+			}
+		} else if hasKey(manifest.bootstrapSet(), modulePath) {
 			if !isUsablePseudoVersion(version) {
 				return fmt.Errorf("bootstrap dependency %s does not use a valid pseudo-version", query)
 			}
@@ -618,11 +733,20 @@ func resolvePublishedModule(
 ) error {
 	importPath := manifest.importPath(entry.Path)
 	query := importPath + "@" + version
+	expectedCommit, err := resolveTagCommit(ctx, runner, repo, tagFor(entry.Path, version))
+	if err != nil {
+		return err
+	}
+	toolDir, err := secureJoin(repo, "scripts/release")
+	if err != nil {
+		return fmt.Errorf("resolving release tool directory: %w", err)
+	}
 	output, err := runner.run(ctx, commandRequest{
-		Dir:  filepath.Join(repo, filepath.FromSlash("scripts/release")),
-		Env:  publicModuleEnvironment(),
-		Name: "go",
-		Args: []string{"list", "-m", "-json", query},
+		Dir:     toolDir,
+		Env:     publicModuleEnvironment(),
+		Name:    "go",
+		Args:    []string{"list", "-m", "-json", query},
+		Timeout: moduleQueryTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("published module %s is not publicly resolvable: %w", query, err)
@@ -633,6 +757,14 @@ func resolvePublishedModule(
 	}
 	if listed.Path != importPath || listed.Version != version {
 		return fmt.Errorf("resolved %s as %s@%s", query, listed.Path, listed.Version)
+	}
+	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
+		return fmt.Errorf(
+			"published module %s resolved from origin %q, want tag commit %s",
+			query,
+			listed.Origin.Hash,
+			expectedCommit,
+		)
 	}
 	if listed.GoMod == "" {
 		return fmt.Errorf("published module %s did not report its downloaded go.mod", query)
@@ -705,9 +837,9 @@ func strictModule(
 	if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile, version); err != nil {
 		return err
 	}
-	moduleDir := filepath.Join(repo, filepath.FromSlash(modulePath))
-	if modulePath == rootModulePath {
-		moduleDir = repo
+	moduleDir, err := secureJoin(repo, modulePath)
+	if err != nil {
+		return fmt.Errorf("resolving module directory %s: %w", modulePath, err)
 	}
 	return runModuleChecks(ctx, runner, moduleDir)
 }
@@ -751,9 +883,9 @@ func strictAll(
 		if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile, version); err != nil {
 			return fmt.Errorf("%s: %w", entry.Path, err)
 		}
-		moduleDir := filepath.Join(repo, filepath.FromSlash(entry.Path))
-		if entry.Path == rootModulePath {
-			moduleDir = repo
+		moduleDir, err := secureJoin(repo, entry.Path)
+		if err != nil {
+			return fmt.Errorf("resolving module directory %s: %w", entry.Path, err)
 		}
 		if err := runModuleChecks(ctx, runner, moduleDir); err != nil {
 			return fmt.Errorf("%s: %w", entry.Path, err)
@@ -790,12 +922,11 @@ func stagePublishedModule(
 		return err
 	}
 
-	filename := filepath.Join(repo, filepath.FromSlash(modulePath), "go.mod")
-	moduleDir := filepath.Dir(filename)
-	if modulePath == rootModulePath {
-		filename = filepath.Join(repo, "go.mod")
-		moduleDir = repo
+	filename, err := secureJoin(repo, modulePath, "go.mod")
+	if err != nil {
+		return fmt.Errorf("resolving module manifest %s: %w", modulePath, err)
 	}
+	moduleDir := filepath.Dir(filename)
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", filename, err)
@@ -827,10 +958,11 @@ func stagePublishedModule(
 		return err
 	}
 	if _, err := runner.run(ctx, commandRequest{
-		Dir:  moduleDir,
-		Env:  publicModuleEnvironment(),
-		Name: "go",
-		Args: []string{"mod", "tidy"},
+		Dir:     moduleDir,
+		Env:     publicModuleEnvironment(),
+		Name:    "go",
+		Args:    []string{"mod", "tidy"},
+		Timeout: moduleTidyLimit,
 	}); err != nil {
 		return fmt.Errorf("tidying staged module %s: %w", modulePath, err)
 	}
@@ -863,7 +995,10 @@ func stageBootstrapModules(repo string, manifest releaseManifest, version string
 	var staged []stagedFile
 	var changed []string
 	for _, modulePath := range manifest.Bootstrap {
-		filename := filepath.Join(repo, filepath.FromSlash(modulePath), "go.mod")
+		filename, err := secureJoin(repo, modulePath, "go.mod")
+		if err != nil {
+			return nil, fmt.Errorf("resolving bootstrap manifest %s: %w", modulePath, err)
+		}
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", filename, err)
@@ -920,12 +1055,68 @@ func writeFileAtomically(filename string, data []byte) error {
 	return nil
 }
 
+type smokeOptions struct {
+	proxyAttempts int
+	retryDelay    time.Duration
+	wait          func(context.Context, time.Duration) error
+}
+
+type smokeCommandError struct {
+	err error
+}
+
+func (e *smokeCommandError) Error() string {
+	return e.err.Error()
+}
+
+func (e *smokeCommandError) Unwrap() error {
+	return e.err
+}
+
+func defaultSmokeOptions() smokeOptions {
+	return smokeOptions{
+		proxyAttempts: 20,
+		retryDelay:    15 * time.Second,
+		wait:          waitForRetry,
+	}
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, delay)
+	defer cancel()
+	<-waitCtx.Done()
+	if ctx.Err() != nil {
+		return fmt.Errorf("waiting for module proxy propagation: %w", ctx.Err())
+	}
+	return nil
+}
+
 func runConsumerSmoke(
 	ctx context.Context,
 	runner commandRunner,
 	repo string,
 	manifest releaseManifest,
 	tag string,
+) error {
+	smokeCtx, cancel := context.WithTimeout(ctx, smokeOverallLimit)
+	defer cancel()
+	return runConsumerSmokeWithOptions(
+		smokeCtx,
+		runner,
+		repo,
+		manifest,
+		tag,
+		defaultSmokeOptions(),
+	)
+}
+
+func runConsumerSmokeWithOptions(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	manifest releaseManifest,
+	tag string,
+	options smokeOptions,
 ) error {
 	version, err := validateSmokeTag(manifest, tag)
 	if err != nil {
@@ -934,8 +1125,15 @@ func runConsumerSmoke(
 	if err := verifyTagAtHead(ctx, runner, repo, tag); err != nil {
 		return err
 	}
-	if err := verifyAllTrainTags(ctx, runner, repo, manifest, version); err != nil {
+	trainCommits, err := releaseTrainCommits(ctx, runner, repo, manifest, version)
+	if err != nil {
 		return err
+	}
+	if options.proxyAttempts < 1 {
+		return errors.New("proxy smoke attempts must be positive")
+	}
+	if options.wait == nil {
+		return errors.New("proxy smoke wait function is nil")
 	}
 
 	temporary, err := os.MkdirTemp("", "gobridge-external-consumer-*")
@@ -951,34 +1149,123 @@ func runConsumerSmoke(
 		return fmt.Errorf("consumer smoke directory %s is inside repository %s", temporary, repo)
 	}
 
-	environment := publicModuleEnvironment()
-	environment["GOBIN"] = filepath.Join(temporary, "bin")
-	environment["GOCACHE"] = filepath.Join(temporary, "build-cache")
-	environment["GOMODCACHE"] = filepath.Join(temporary, "module-cache")
+	var proxyErr error
+	for attempt := 1; attempt <= options.proxyAttempts; attempt++ {
+		proxyErr = runConsumerSmokePass(
+			ctx,
+			runner,
+			temporary,
+			repo,
+			manifest,
+			version,
+			"https://proxy.golang.org",
+			fmt.Sprintf("proxy-%02d", attempt),
+			trainCommits,
+		)
+		if proxyErr == nil {
+			break
+		}
+		if attempt == options.proxyAttempts {
+			return fmt.Errorf(
+				"proxy-only external consumer smoke failed after %d attempts: %w",
+				attempt,
+				proxyErr,
+			)
+		}
+		var commandErr *smokeCommandError
+		if !errors.As(proxyErr, &commandErr) {
+			return proxyErr
+		}
+		if err := options.wait(ctx, options.retryDelay); err != nil {
+			return err
+		}
+	}
+
+	if err := runConsumerSmokePass(
+		ctx,
+		runner,
+		temporary,
+		repo,
+		manifest,
+		version,
+		"direct",
+		"direct",
+		trainCommits,
+	); err != nil {
+		return fmt.Errorf("direct-only external consumer smoke failed: %w", err)
+	}
+	return nil
+}
+
+func runConsumerSmokePass(
+	ctx context.Context,
+	runner commandRunner,
+	temporaryRoot string,
+	repo string,
+	manifest releaseManifest,
+	version string,
+	proxy string,
+	passName string,
+	trainCommits map[string]string,
+) error {
+	consumerDir := filepath.Join(temporaryRoot, passName, "consumer")
+	environment := isolatedSmokeEnvironment(filepath.Join(temporaryRoot, passName), proxy)
 	for _, directory := range []string{
+		consumerDir,
+		environment["HOME"],
 		environment["GOBIN"],
 		environment["GOCACHE"],
 		environment["GOMODCACHE"],
+		environment["GOPATH"],
+		environment["XDG_CONFIG_HOME"],
 	} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return fmt.Errorf("creating isolated Go directory %s: %w", directory, err)
 		}
 	}
+	if inside, err := pathIsInside(repo, consumerDir); err != nil {
+		return err
+	} else if inside {
+		return fmt.Errorf("consumer smoke directory %s is inside repository %s", consumerDir, repo)
+	}
 
 	paho := manifest.importPath("adapters/mqtt/transport/paho")
 	command := manifest.importPath(finalModulePath)
+	if _, err := runner.run(ctx, commandRequest{
+		Dir:     consumerDir,
+		Env:     environment,
+		Name:    "go",
+		Args:    []string{"mod", "init", "example.com/gobridge-release-smoke"},
+		Timeout: moduleQueryTimeout,
+	}); err != nil {
+		return fmt.Errorf("external consumer command go mod init: %w", err)
+	}
+	for _, modulePath := range []string{"adapters/mqtt/transport/paho", finalModulePath} {
+		if err := resolveSmokeModule(
+			ctx,
+			runner,
+			consumerDir,
+			environment,
+			manifest,
+			modulePath,
+			version,
+			trainCommits[modulePath],
+		); err != nil {
+			return err
+		}
+	}
 	commands := [][]string{
-		{"mod", "init", "example.com/gobridge-release-smoke"},
 		{"get", paho + "@" + version},
 		{"list", paho},
 		{"install", command + "@" + version},
 	}
 	for _, args := range commands {
 		output, err := runner.run(ctx, commandRequest{
-			Dir:  temporary,
-			Env:  environment,
-			Name: "go",
-			Args: args,
+			Dir:     consumerDir,
+			Env:     environment,
+			Name:    "go",
+			Args:    args,
+			Timeout: smokeCommandLimit,
 		})
 		if len(output) != 0 {
 			if _, err := os.Stdout.Write(output); err != nil {
@@ -986,11 +1273,15 @@ func runConsumerSmoke(
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("external consumer command go %s: %w", strings.Join(args, " "), err)
+			return &smokeCommandError{err: fmt.Errorf(
+				"external consumer command go %s: %w",
+				strings.Join(args, " "),
+				err,
+			)}
 		}
 	}
 
-	consumerMod := filepath.Join(temporary, "go.mod")
+	consumerMod := filepath.Join(consumerDir, "go.mod")
 	data, err := os.ReadFile(consumerMod)
 	if err != nil {
 		return fmt.Errorf("reading consumer go.mod: %w", err)
@@ -1003,6 +1294,143 @@ func runConsumerSmoke(
 		return fmt.Errorf("external consumer go.mod contains %d replace directives", len(parsed.Replaces))
 	}
 	return nil
+}
+
+func isolatedSmokeEnvironment(root, proxy string) map[string]string {
+	environment := publicModuleEnvironment()
+	environment["GIT_CEILING_DIRECTORIES"] = root
+	environment["GIT_CONFIG_COUNT"] = "0"
+	environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+	environment["GIT_CONFIG_NOSYSTEM"] = "1"
+	environment["GIT_CONFIG_PARAMETERS"] = ""
+	environment["GIT_CONFIG_SYSTEM"] = "/dev/null"
+	environment["GIT_TERMINAL_PROMPT"] = "0"
+	environment["GOBIN"] = filepath.Join(root, "bin")
+	environment["GOCACHE"] = filepath.Join(root, "build-cache")
+	environment["GOMODCACHE"] = filepath.Join(root, "module-cache")
+	environment["GOPATH"] = filepath.Join(root, "gopath")
+	environment["GOPROXY"] = proxy
+	environment["HOME"] = filepath.Join(root, "home")
+	environment["XDG_CONFIG_HOME"] = filepath.Join(root, "xdg")
+	return environment
+}
+
+func resolveSmokeModule(
+	ctx context.Context,
+	runner commandRunner,
+	dir string,
+	environment map[string]string,
+	manifest releaseManifest,
+	modulePath string,
+	version string,
+	expectedCommit string,
+) error {
+	if !isFullCommitHash(expectedCommit) {
+		return fmt.Errorf("smoke module %s has invalid expected tag commit %q", modulePath, expectedCommit)
+	}
+	importPath := manifest.importPath(modulePath)
+	query := importPath + "@" + version
+	output, err := runner.run(ctx, commandRequest{
+		Dir:     dir,
+		Env:     environment,
+		Name:    "go",
+		Args:    []string{"list", "-m", "-json", query},
+		Timeout: moduleQueryTimeout,
+	})
+	if err != nil {
+		return &smokeCommandError{err: fmt.Errorf("resolving smoke module %s: %w", query, err)}
+	}
+	var listed listedModule
+	if err := json.Unmarshal(output, &listed); err != nil {
+		return fmt.Errorf("decoding smoke resolution for %s: %w", query, err)
+	}
+	if listed.Path != importPath || listed.Version != version {
+		return fmt.Errorf("resolved smoke module %s as %s@%s", query, listed.Path, listed.Version)
+	}
+	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
+		return fmt.Errorf(
+			"smoke module %s resolved from origin %q, want tag commit %s",
+			query,
+			listed.Origin.Hash,
+			expectedCommit,
+		)
+	}
+	if listed.GoMod == "" {
+		return fmt.Errorf("smoke module %s did not report its downloaded go.mod", query)
+	}
+	data, err := os.ReadFile(listed.GoMod)
+	if err != nil {
+		return fmt.Errorf("reading smoke module go.mod for %s: %w", query, err)
+	}
+	moduleFile, err := parseModuleManifest(listed.GoMod, data)
+	if err != nil {
+		return err
+	}
+	for _, replacement := range moduleFile.Replaces {
+		if replacement.NewVersion == "" {
+			return fmt.Errorf(
+				"smoke module %s contains local replacement for %s",
+				query,
+				replacement.OldPath,
+			)
+		}
+	}
+	return nil
+}
+
+func latestStableCommandVersion(
+	ctx context.Context,
+	runner commandRunner,
+	repo string,
+	manifest releaseManifest,
+	currentVersion string,
+) (bool, string, error) {
+	if err := validateStableVersion(currentVersion); err != nil {
+		return false, "", err
+	}
+	if err := verifyTagAtHead(
+		ctx,
+		runner,
+		repo,
+		tagFor(finalModulePath, currentVersion),
+	); err != nil {
+		return false, "", fmt.Errorf("re-checking current final-module tag: %w", err)
+	}
+	output, err := runner.run(ctx, commandRequest{
+		Dir:     repo,
+		Name:    "git",
+		Args:    []string{"tag", "--list", finalModulePath + "/v*"},
+		Timeout: gitCommandTimeout,
+	})
+	if err != nil {
+		return false, "", fmt.Errorf("listing final-module release tags: %w", err)
+	}
+
+	highest := ""
+	currentFound := false
+	for _, tag := range strings.Fields(string(output)) {
+		entry, version, err := manifest.moduleForTag(tag)
+		if err != nil || entry.Path != finalModulePath {
+			continue
+		}
+		if version == currentVersion {
+			currentFound = true
+		}
+		if highest == "" || semver.Compare(version, highest) > 0 {
+			highest = version
+		}
+	}
+	if highest == "" {
+		return false, "", errors.New("no stable cmd/gobridge release tag exists")
+	}
+	if !currentFound {
+		return false, highest, fmt.Errorf(
+			"current version %s has no stable %s tag",
+			currentVersion,
+			finalModulePath,
+		)
+	}
+	return currentVersion == highest, highest, nil
 }
 
 func pathIsInside(parent, child string) (bool, error) {
