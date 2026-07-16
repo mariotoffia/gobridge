@@ -322,7 +322,15 @@ provenance-enabled build entirely, and resumes both child scans plus guarded
 digest asset permits a build; authentication, network, malformed asset, wrong
 image, or missing registry digest fails closed. Before upload, the workflow
 fetches the asset again: the same digest is an idempotent resume, a different
-digest fails, and `overwrite_files: false` closes the final race.
+digest fails, and a duplicate-name upload failure closes the final race.
+
+Release permissions are split by boundary. The build/resume/dual-scan job has
+`contents: read` plus `packages: write`. A minimal pinned `github-script` job
+has only `contents: write`, performs no checkout, Docker, BuildKit, QEMU, Trivy,
+or repository command, and persists/revalidates the exact digest asset. A final
+serialized `latest` job has `contents: read` plus `packages: write`, revalidates
+the associated registry digest and protected highest tag, and performs no build
+or scan. No job combines `contents: write` with `packages: write`.
 
 GHCR does not document immutable tag enforcement or conditional OCI tag
 creation, so a version-to-image association is **only** the digest asset on the

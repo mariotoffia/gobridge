@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   tag-policy:
     runs-on: ubuntu-latest
@@ -112,29 +116,38 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out validated tagged source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25'
-
       - name: Re-resolve protected remote tag before GitHub Release
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
-          GITHUB_SHA: ${{ github.sha }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          ORIGINAL_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
-            echo "::error::validated commit differs from original workflow SHA"
-            exit 1
-          }
-          make verify-remote-release-tag \
-            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const expected = process.env.EXPECTED_COMMIT;
+            const original = process.env.ORIGINAL_SHA;
+            const tag = process.env.RELEASE_TAG;
+            const {owner, repo} = context.repo;
+            if (expected !== original) {
+              throw new Error(`validated commit ${expected} differs from ${original}`);
+            }
+            const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+            let object = ref.data.object;
+            for (let depth = 0; depth < 8 && object.type === 'tag'; depth++) {
+              const annotated = await github.rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: object.sha,
+              });
+              object = annotated.data.object;
+            }
+            if (object.type !== 'commit' || object.sha !== expected) {
+              throw new Error(
+                `remote tag ${tag} resolves to ${object.type}:${object.sha}, ` +
+                `want commit:${expected}`,
+              );
+            }
 
       - name: Create module GitHub Release after all applicable gates
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -167,19 +180,19 @@ jobs:
       needs.github-release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    concurrency:
-      group: gobridge-image-promotion
-      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       packages: write
     outputs:
       digest: ${{ steps.image.outputs.digest }}
+      ref: ${{ steps.image.outputs.ref }}
+      mode: ${{ steps.image.outputs.mode }}
     steps:
       - name: Check out final tagged source and all tags
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up pinned QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
@@ -266,6 +279,12 @@ jobs:
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/mariotoffia/gobridge@$digest" >> "$GITHUB_OUTPUT"
+          if [ -n "$RECORDED_DIGEST" ]; then
+            echo "mode=resumed" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=built" >> "$GITHUB_OUTPUT"
+          fi
           echo "Immutable image: ghcr.io/mariotoffia/gobridge@$digest"
 
       - name: Inspect image platform children
@@ -327,80 +346,211 @@ jobs:
           severity: HIGH,CRITICAL
           timeout: 10m
 
-      - name: Write immutable image digest record and workflow summary
+      - name: Report validated immutable image digest
         env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          MODE: ${{ steps.image.outputs.mode }}
         run: |
           set -euo pipefail
-          printf 'ghcr.io/mariotoffia/gobridge@%s\n' "$DIGEST" > gobridge-image-digest.txt
           {
-            echo "### Immutable release image"
+            echo "### Validated immutable release image ($MODE)"
             echo
             echo '```text'
-            cat gobridge-image-digest.txt
+            echo "$IMAGE_REF"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Re-resolve protected remote tag before digest asset publication
+  image-association:
+    needs:
+      - validate
+      - github-release
+      - image
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      digest: ${{ steps.associate.outputs.digest }}
+      ref: ${{ steps.associate.outputs.ref }}
+      mode: ${{ steps.associate.outputs.mode }}
+    steps:
+      - name: Validate or create exact digest association
+        id: associate
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
-          GITHUB_SHA: ${{ github.sha }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          ASSET_NAME: gobridge-image-digest.txt
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_DIGEST: ${{ needs.image.outputs.digest }}
+          EXPECTED_REF: ${{ needs.image.outputs.ref }}
+          ORIGINAL_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
-            echo "::error::validated commit differs from original workflow SHA"
-            exit 1
-          }
-          make verify-remote-release-tag \
-            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
-
-      - name: Re-fetch command release image association before upload
-        id: current-association
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_API_URL: ${{ github.api_url }}
-          RELEASE_REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          make --no-print-directory release-image-association \
-            RELEASE_REPOSITORY="$RELEASE_REPOSITORY" \
-            RELEASE_TAG="$RELEASE_TAG" \
-            RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Decide whether digest asset upload is safe
-        id: asset-decision
-        env:
-          RELEASE_CURRENT_IMAGE_DIGEST: ${{ steps.current-association.outputs.digest }}
-          RELEASE_IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-          RELEASE_INITIAL_IMAGE_DIGEST: ${{ steps.association.outputs.digest }}
-        run: |
-          set -euo pipefail
-          make --no-print-directory release-image-upload-decision \
-            RELEASE_IMAGE_DIGEST="$RELEASE_IMAGE_DIGEST" \
-            RELEASE_INITIAL_IMAGE_DIGEST="$RELEASE_INITIAL_IMAGE_DIGEST" \
-            RELEASE_CURRENT_IMAGE_DIGEST="$RELEASE_CURRENT_IMAGE_DIGEST" |
-            tee -a "$GITHUB_OUTPUT"
-
-      - name: Attach immutable image digest to command GitHub Release
-        if: steps.asset-decision.outputs.upload == 'true'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: ${{ needs.validate.outputs.tag }}
-          files: gobridge-image-digest.txt
-          overwrite_files: false
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const assetName = process.env.ASSET_NAME;
+            const expectedCommit = process.env.EXPECTED_COMMIT;
+            const expectedDigest = process.env.EXPECTED_DIGEST;
+            const expectedRef = process.env.EXPECTED_REF;
+            const originalSHA = process.env.ORIGINAL_SHA;
+            const tag = process.env.RELEASE_TAG;
+            const {owner, repo} = context.repo;
 
-      - name: Re-check remote ordering and promote latest only for the highest stable version
+            if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest)) {
+              throw new Error(`invalid expected digest ${expectedDigest}`);
+            }
+            if (expectedRef !== `ghcr.io/mariotoffia/gobridge@${expectedDigest}`) {
+              throw new Error(`invalid expected image ref ${expectedRef}`);
+            }
+            if (expectedCommit !== originalSHA) {
+              throw new Error(`validated commit ${expectedCommit} differs from ${originalSHA}`);
+            }
+            const expectedBody = `${expectedRef}\n`;
+
+            async function requireRemoteTag() {
+              const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+              let object = ref.data.object;
+              for (let depth = 0; depth < 8 && object.type === 'tag'; depth++) {
+                const annotated = await github.rest.git.getTag({
+                  owner,
+                  repo,
+                  tag_sha: object.sha,
+                });
+                object = annotated.data.object;
+              }
+              if (object.type !== 'commit' || object.sha !== expectedCommit) {
+                throw new Error(
+                  `remote tag ${tag} resolves to ${object.type}:${object.sha}, ` +
+                  `want commit:${expectedCommit}`,
+                );
+              }
+            }
+
+            async function getRelease() {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              return response.data;
+            }
+
+            function oneAsset(release) {
+              const matches = release.assets.filter(asset => asset.name === assetName);
+              if (matches.length > 1) {
+                throw new Error(`release has ${matches.length} ${assetName} assets`);
+              }
+              return matches[0] || null;
+            }
+
+            async function download(asset) {
+              if (!asset) return null;
+              try {
+                const response = await github.request(`GET ${asset.url}`, {
+                  headers: {accept: 'application/octet-stream'},
+                });
+                if (typeof response.data === 'string') return response.data;
+                return Buffer.from(response.data).toString('utf8');
+              } catch (error) {
+                if (error.status === 404) return null;
+                throw error;
+              }
+            }
+
+            async function association() {
+              const release = await getRelease();
+              const value = await download(oneAsset(release));
+              if (value !== null && value !== expectedBody) {
+                throw new Error(`release digest asset mismatch: ${JSON.stringify(value)}`);
+              }
+              return {release, value};
+            }
+
+            await requireRemoteTag();
+            let state = await association();
+            let mode = 'resumed';
+            if (state.value === null) {
+              state = await association();
+              if (state.value === null) {
+                await requireRemoteTag();
+                const data = Buffer.from(expectedBody, 'utf8');
+                await github.rest.repos.uploadReleaseAsset({
+                  owner,
+                  repo,
+                  release_id: state.release.id,
+                  name: assetName,
+                  data,
+                  headers: {
+                    'content-type': 'text/plain; charset=utf-8',
+                    'content-length': data.length,
+                  },
+                });
+                mode = 'uploaded';
+              }
+            }
+            const finalState = await association();
+            if (finalState.value !== expectedBody) {
+              throw new Error('release digest association was not persisted exactly');
+            }
+            await requireRemoteTag();
+
+            core.setOutput('digest', expectedDigest);
+            core.setOutput('ref', expectedRef);
+            core.setOutput('mode', mode);
+            await core.summary
+              .addHeading(`Immutable release image (${mode})`)
+              .addCodeBlock(expectedRef, 'text')
+              .write();
+
+  latest-promotion:
+    needs:
+      - validate
+      - image-association
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.image-association.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: gobridge-latest-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out validated tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: v0.35.0
+          driver: docker
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Revalidate associated digest and promote guarded latest
         env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+          DIGEST: ${{ needs.image-association.outputs.digest }}
           GITHUB_SHA: ${{ github.sha }}
           IMAGE: ghcr.io/mariotoffia/gobridge
+          IMAGE_REF: ${{ needs.image-association.outputs.ref }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
@@ -408,6 +558,11 @@ jobs:
             echo "::error::validated commit differs from original workflow SHA"
             exit 1
           }
+          [ "$IMAGE_REF" = "$IMAGE@$DIGEST" ] || {
+            echo "::error::associated image ref does not match associated digest"
+            exit 1
+          }
+          make verify-release-image-digest RELEASE_IMAGE_DIGEST="$DIGEST"
           decision="$(make --no-print-directory release-latest-version \
             RELEASE_VERSION="$RELEASE_VERSION" \
             RELEASE_COMMIT="$RELEASE_COMMIT")"

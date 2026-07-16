@@ -1031,6 +1031,7 @@ build: enforce staged multi-module releases
 - [x] Scan both digest-only platform children and record the index digest.
 - [x] Re-check highest stable command tag immediately before moving `latest`.
 - [x] Resume reruns from the exact recorded release digest without rebuilding.
+- [x] Split package publication, digest association, and `latest` privileges.
 
 ## Task 14: Add exact-accounting chaos and release proofs
 

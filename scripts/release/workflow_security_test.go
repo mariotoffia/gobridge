@@ -1,0 +1,124 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestReleaseWorkflow_SeparatesPrivilegedJobs(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(data)
+	release := workflowJobBlock(t, workflow, "github-release", "image")
+	image := workflowJobBlock(t, workflow, "image", "image-association")
+	association := workflowJobBlock(t, workflow, "image-association", "latest-promotion")
+	latest := workflowJobBlock(t, workflow, "latest-promotion", "")
+
+	requireWorkflowText(t, release, "contents: write", "actions/github-script@", "softprops/action-gh-release@")
+	forbidWorkflowText(t, release, "actions/checkout", "make ", "docker", "trivy")
+
+	requireWorkflowText(t, image, "contents: read", "packages: write", "persist-credentials: false")
+	forbidWorkflowText(t, image, "contents: write")
+
+	requireWorkflowText(t, association, "contents: write", "needs:", "- image", "actions/github-script@")
+	forbidWorkflowText(
+		t,
+		association,
+		"packages: write",
+		"docker",
+		"trivy",
+		"setup-qemu",
+		"setup-buildx",
+		"build-push",
+		"actions/checkout",
+		"go run",
+		"make ",
+	)
+
+	requireWorkflowText(
+		t,
+		latest,
+		"contents: read",
+		"packages: write",
+		"- image-association",
+		"persist-credentials: false",
+	)
+	forbidWorkflowText(t, latest, "contents: write", "build-push", "trivy", "setup-qemu")
+
+	for _, name := range []string{
+		"tag-policy",
+		"validate",
+		"external-consumer-smoke",
+		"github-release",
+		"image",
+		"image-association",
+		"latest-promotion",
+	} {
+		block := workflowJobBlock(t, workflow, name, nextReleaseJob(name))
+		if strings.Contains(block, "contents: write") && strings.Contains(block, "packages: write") {
+			t.Errorf("job %s combines contents:write with packages:write", name)
+		}
+	}
+}
+
+func workflowJobBlock(t *testing.T, workflow, name, next string) string {
+	t.Helper()
+
+	startMarker := "\n  " + name + ":"
+	start := strings.Index(workflow, startMarker)
+	if start < 0 {
+		t.Fatalf("workflow job %s is missing", name)
+	}
+	end := len(workflow)
+	if next != "" {
+		endMarker := "\n  " + next + ":"
+		if found := strings.Index(workflow[start+len(startMarker):], endMarker); found >= 0 {
+			end = start + len(startMarker) + found
+		} else {
+			t.Fatalf("workflow job %s does not precede %s", name, next)
+		}
+	}
+	return workflow[start:end]
+}
+
+func requireWorkflowText(t *testing.T, block string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(block, value) {
+			t.Errorf("workflow block missing %q", value)
+		}
+	}
+}
+
+func forbidWorkflowText(t *testing.T, block string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if strings.Contains(block, value) {
+			t.Errorf("workflow block contains forbidden %q", value)
+		}
+	}
+}
+
+func nextReleaseJob(name string) string {
+	order := []string{
+		"tag-policy",
+		"validate",
+		"external-consumer-smoke",
+		"github-release",
+		"image",
+		"image-association",
+		"latest-promotion",
+	}
+	for index, candidate := range order {
+		if candidate == name && index+1 < len(order) {
+			return order[index+1]
+		}
+	}
+	return ""
+}

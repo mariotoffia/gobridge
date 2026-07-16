@@ -351,7 +351,7 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 		"Scan linux/amd64 child",
 		"Scan linux/arm64 child",
 		"release-latest-version",
-		"Write immutable image digest record",
+		"Validate or create exact digest association",
 		"timeout-minutes:",
 		"version: v0.35.0",
 		"moby/buildkit:v0.31.1@sha256:",
@@ -371,7 +371,7 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 	}
 	buildDigest := strings.Index(text, "Build and push image content by digest")
 	scanArm64 := strings.Index(text, "Scan linux/arm64 child")
-	promoteLatest := strings.Index(text, "promote latest only for the highest stable version")
+	promoteLatest := strings.Index(text, "Revalidate associated digest and promote guarded latest")
 	if buildDigest < 0 || scanArm64 < buildDigest || promoteLatest < scanArm64 {
 		t.Error("latest promotion must occur only after digest-only build and both child scans")
 	}

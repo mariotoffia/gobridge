@@ -286,15 +286,13 @@ func TestReleaseWorkflow_ResumesRecordedDigestWithoutRebuild(t *testing.T) {
 		"if: steps.association.outputs.exists != 'true'",
 		"verify-release-image-digest",
 		"release-image-association",
-		"release-image-upload-decision",
-		"overwrite_files: false",
+		"actions/github-script@",
+		"image-association:",
+		"latest-promotion:",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("release workflow missing %q", want)
 		}
-	}
-	if strings.Contains(text, "\n  record-image-digest:") {
-		t.Error("digest asset publication must stay inside serialized image job")
 	}
 	login := strings.Index(text, "Log in to GHCR")
 	association := strings.Index(text, "Fetch existing command release image association")
