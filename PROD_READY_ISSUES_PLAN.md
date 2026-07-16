@@ -814,7 +814,7 @@ feat(aws): add DynamoDB-coordinated bridge HA
 
 ## Task 12: Correct production claims and pin container inputs
 
-**Status:** Complete (spec-review round 5 resolved; make lint + make test + focused route/outbox race green)
+**Status:** Complete (spec-review round 6 resolved; make lint + make test green)
 
 **Agents/Skills:** thiink:doc-markdown-writer, thiink:doc-markdown-reviewer,
 thiink:security-auditor

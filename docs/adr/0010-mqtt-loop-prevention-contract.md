@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-07-13
 Deciders: GoBridge core
-Decision recorded and implemented: commit 4d8d76d (2026-07-13; the opt-in `no_local`/`NoLocal` subscribe path). The reserved `x-bridge.forwarded-*` headers this ADR references predate it (commit f74b4ec, 2026-06-29) and remain reserved-but-unenforced.
+Decision recorded and implemented: commit 4d8d76d (2026-07-13; the opt-in `no_local`/`NoLocal` subscribe path). The reserved `x-bridge.forwarded-*` headers this ADR references predate it: `HeaderForwardedFrom`/`HeaderForwardedHop` were introduced in commit cffe7fa (2026-03-27) and relocated into `domain/messaging/headers.go` by the bounded-context split c5bae72 (2026-05-06); they remain reserved-but-unenforced.
 
 ## Context
 
