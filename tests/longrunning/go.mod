@@ -27,6 +27,7 @@ replace (
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
+	github.com/eclipse/paho.golang v0.23.0
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 v0.0.0-00010101000000-000000000000
@@ -34,6 +35,8 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
 	github.com/mariotoffia/gobridge/processors/transform v0.0.0-20260405055210-02d996a46256
@@ -63,7 +66,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/eclipse/paho.golang v0.23.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/ohler55/ojg v1.28.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect

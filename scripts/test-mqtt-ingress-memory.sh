@@ -34,10 +34,11 @@ docker run --rm \
   -v "$workspace:$workspace" \
   -v "$go_cache:/root/.cache/go-build" \
   -v "$go_mod_cache:/go/pkg/mod" \
-  -w "$workspace" \
+  -e GOWORK=off \
+  -w "$workspace/tests/longrunning" \
   golang:1.25 \
   go test -p=1 -c -tags=longrunning \
-    -o "$proof_tmp/mqtt-memory.test" ./tests/longrunning
+    -o "$proof_tmp/mqtt-memory.test" .
 
 docker network create "$network_name"
 docker run -d \
