@@ -99,6 +99,107 @@ func TestSupervisor_ConvergenceWatch_MarksAppliedNotConvergedThenClearsOnConverg
 	}
 }
 
+// Review finding (pause interaction): a deliberate StopBridge must clear a
+// convergence-owned degraded mark — a paused bridge is not "applied but not
+// converged", and the stale mark would otherwise scream "revert the config"
+// until an unrelated future reload. A foreign degraded cause must survive
+// the pause untouched.
+func TestSupervisor_StopBridgeClearsConvergenceOwnedDegradedOnly(t *testing.T) {
+	t.Run("convergence-owned mark cleared on pause", func(t *testing.T) {
+		s := NewSupervisor()
+		rt := runtime.New(runtime.WithInstanceID("pause-clear"))
+		s.mu.Lock()
+		s.rt = rt
+		s.mu.Unlock()
+		require.True(t, s.markConvergenceDegraded(rt, "applied but not converged"))
+
+		require.NoError(t, s.StopBridge(t.Context()))
+
+		degraded, reason := s.Degraded()
+		assert.False(t, degraded, "a deliberate pause invalidates the convergence observation")
+		assert.Empty(t, reason)
+		s.mu.RLock()
+		paused := s.paused
+		s.mu.RUnlock()
+		assert.True(t, paused)
+	})
+
+	t.Run("foreign degraded cause survives pause", func(t *testing.T) {
+		s := NewSupervisor()
+		rt := runtime.New(runtime.WithInstanceID("pause-foreign"))
+		s.mu.Lock()
+		s.rt = rt
+		s.mu.Unlock()
+		s.markDegraded("config change stream closed; live reconfiguration unavailable")
+
+		require.NoError(t, s.StopBridge(t.Context()))
+
+		degraded, reason := s.Degraded()
+		assert.True(t, degraded, "StopBridge must never clear a degraded cause it does not own")
+		assert.Contains(t, reason, "config change stream closed")
+	})
+}
+
+// Review finding (pause interaction): a watcher must treat a paused bridge as
+// not-current — a stopped runtime reports LevelLive forever, so continuing to
+// observe it would convert an admin pause into a false alarm — and marking
+// through a paused supervisor must be refused.
+func TestSupervisor_ConvergenceWatch_AbandonsWhenPaused(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	s := NewSupervisor(WithSupervisorClock(clk))
+	rt := runtime.New(runtime.WithInstanceID("pause-abandon"))
+	s.mu.Lock()
+	s.rt = rt
+	s.paused = true
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runConvergenceWatch(t.Context(), rt, 9, time.Second)
+	}()
+	select {
+	case <-done:
+	case <-t.Context().Done():
+		t.Fatal("watcher did not abandon a paused bridge")
+	}
+	degraded, _ := s.Degraded()
+	assert.False(t, degraded)
+	assert.False(t, s.markConvergenceDegraded(rt, "mark through pause"),
+		"marking through a paused supervisor must be refused")
+}
+
+// Review finding (pause interaction): a successor watcher observing
+// convergence clears a convergence-owned mark left by a PREDECESSOR watcher
+// (e.g. marked before a pause/resume) — the alarm is factually resolved even
+// though this watcher instance never marked it.
+func TestSupervisor_ConvergenceWatch_ClearsPredecessorMarkOnConvergence(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	s := NewSupervisor(WithSupervisorClock(clk))
+	rt := runtime.New(runtime.WithInstanceID("predecessor-clear"))
+	require.NoError(t, rt.Start(t.Context())) // empty runtime: LevelFull immediately
+	t.Cleanup(func() { _ = rt.Stop(t.Context()) })
+	s.mu.Lock()
+	s.rt = rt
+	s.degraded = true
+	s.degradedReason = "config version 3 applied but transport sessions have not converged"
+	s.degradedByConvergence = true
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runConvergenceWatch(t.Context(), rt, 4, time.Minute)
+	}()
+	select {
+	case <-done:
+	case <-t.Context().Done():
+		t.Fatal("watcher did not terminate on convergence")
+	}
+	degraded, _ := s.Degraded()
+	assert.False(t, degraded, "convergence resolves a predecessor watcher's convergence-owned mark")
+}
+
 // MQTT-R1: a watcher whose runtime was replaced by a later swap must abandon
 // silently — the successor swap owns the convergence signal — and must never
 // clobber a degraded state it does not own.

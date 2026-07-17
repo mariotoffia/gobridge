@@ -152,7 +152,8 @@ where the MQTT **post-takeover activation** term alone is
 = **240s with the shipped defaults** (30s each). With the auto-selected
 clustered HA profile (lease TTL 45s, 5s acquire poll, 3s renew-call timeout)
 the default worst case is therefore **≈336s**, and with standalone lease
-defaults (360s TTL) it approaches **10 minutes**. A ~50s worst case is
+defaults (360s TTL, whose longer TTL also inflates the lease-store
+observation call budget) the computed worst case is **≈1097s (~18 minutes)**. A ~50s worst case is
 reachable with explicit tuning — e.g. `lease_ttl: 15s`, `connect_timeout: 3s`,
 `reconcile_timeout: 2s`, `unmatched_grace: 2s` — the controlling keys are
 `lease_ttl`, `acquire_poll_interval`, `renew_call_timeout`, `max_renew_fails`,

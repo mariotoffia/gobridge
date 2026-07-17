@@ -120,9 +120,14 @@ type Supervisor struct {
 	// or a committed reload never converged on the broker within its
 	// activation budget (applied-but-not-converged, MQTT-R1 — set and
 	// cleared by the post-swap convergence watch). degradedReason
-	// distinguishes the two in deep health.
-	degraded       bool
-	degradedReason string
+	// distinguishes the two in deep health. degradedByConvergence marks the
+	// convergence watch as the owner of the current degraded state, so a
+	// LATER watcher (a new swap or an admin resume) or a deliberate
+	// StopBridge can clear a stale applied-but-not-converged alarm it did
+	// not set itself — while never touching a foreign degraded cause.
+	degraded              bool
+	degradedReason        string
+	degradedByConvergence bool
 
 	// lifecycleMu serializes control-plane mutations: apply() (config-driven
 	// swaps, run from the Run goroutine) and StartBridge/StopBridge (admin,
@@ -457,10 +462,14 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 
 // markDegraded records that the supervisor can no longer apply config
 // changes even though the current runtime keeps serving. Not terminal.
+// It takes ownership of the degraded state away from any convergence
+// watcher (degradedByConvergence=false) so a watcher can never clear a
+// foreign cause recorded here.
 func (s *Supervisor) markDegraded(reason string) {
 	s.mu.Lock()
 	s.degraded = true
 	s.degradedReason = reason
+	s.degradedByConvergence = false
 	s.mu.Unlock()
 
 	// Export the degraded state so operators can alert on a bridge running
@@ -558,9 +567,23 @@ func (s *Supervisor) StopBridge(ctx context.Context) error {
 	// Latch the deliberate pause regardless of drain outcome: rt.Stop has already
 	// marked the runtime stopped/single-use, so a subsequent config reload must
 	// not silently resume the bridge while an operator intends it paused.
+	// A deliberate pause also invalidates any applied-but-not-converged
+	// observation (MQTT-R1): the convergence watcher abandons on pause (it is
+	// pause-aware), and a mark it already set would otherwise scream "revert
+	// the config" about a bridge that is merely paused — clear the
+	// convergence-owned state (never a foreign degraded cause).
 	s.mu.Lock()
 	s.paused = true
+	clearedConvergence := s.degradedByConvergence
+	if clearedConvergence {
+		s.degraded = false
+		s.degradedReason = ""
+		s.degradedByConvergence = false
+	}
 	s.mu.Unlock()
+	if clearedConvergence {
+		s.emitConfigDegradedGauge(false)
+	}
 	return stopErr
 }
 
@@ -617,6 +640,14 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	s.wedged = false
 	s.paused = false
 	s.mu.Unlock()
+	// An admin resume is a fresh Start with the same false-success shape as a
+	// reload commit: Start returns before the transport ever reaches the
+	// broker, and broker-side state may have changed during the very
+	// maintenance window StopBridge exists for (rotated credentials, ACL
+	// edits). Watch the resumed runtime exactly like a committed swap
+	// (MQTT-R1), under the long-lived Run context — the admin-request ctx
+	// dies with the handler.
+	s.watchPostSwapConvergence(baseCtx, newRt, cfg)
 	return nil
 }
 
@@ -963,6 +994,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		s.wedged = false
 		s.degraded = false
 		s.degradedReason = ""
+		s.degradedByConvergence = false
 		s.mu.Unlock()
 
 		if s.logger != nil {

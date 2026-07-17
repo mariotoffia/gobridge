@@ -22,8 +22,11 @@ indefinitely.
 
 - `ReconcileFailures` climbs steadily; `MQTTQoSDowngraded` counts when
   the cause is a QoS grant below the request.
-- Logs repeat `mqtt: broker granted subscription QoS below requested` or a
-  SUBACK rejection error naming the `topic`.
+- Logs repeat the downgrade WARN
+  `mqtt: broker downgraded subscription QoS below requested; delivery
+  guarantee is weaker than the route assumes` (the propagated error carries
+  `mqtt: broker granted subscription QoS below requested`), or a SUBACK
+  rejection error naming the `topic`.
 - Readiness (`/api/v1/monitor/ready?level=full`) stays 503; for an exclusive
   session the lease changes hands or churns.
 - The cycle repeats every ~30s and never converges.

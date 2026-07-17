@@ -113,13 +113,14 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 	defer timer.Stop()
 
 	marked := false
-	markedReason := ""
 	for {
-		if !s.runtimeCurrent(rt) {
-			// A later swap replaced this runtime (or the bridge stopped): its
-			// convergence state belongs to that swap's watcher now. Leave any
-			// degraded mark for the successor path (a successful later swap
-			// clears degraded; a failed one keeps the operator signal).
+		if !s.watcherCurrent(rt) {
+			// A later swap replaced this runtime, or the bridge was
+			// deliberately paused (StopBridge clears any convergence-owned
+			// mark itself): this watcher's observation is obsolete either
+			// way. Leave any remaining degraded mark for the successor path
+			// (a successful later swap clears degraded; a failed one keeps
+			// the operator signal).
 			return
 		}
 		level := rt.ReadinessLevel(ctx)
@@ -129,15 +130,15 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 			// log here would race test/operator log capture that treats
 			// apply() returning as "the swap is done logging". Only the
 			// failure (Warn at budget expiry) and the recovery from it
-			// (clearConvergenceDegraded's Info) write logs.
-			if marked {
-				s.clearConvergenceDegraded(rt, markedReason, configVersion)
-			}
+			// (clearConvergenceDegraded's Info) write logs. The clear runs
+			// even when THIS watcher never marked: convergence factually
+			// resolves any convergence-owned mark a predecessor watcher
+			// (an earlier swap or resume) left behind.
+			s.clearConvergenceDegraded(rt, configVersion)
 			return
 		}
 		if !marked && !s.clk.Now().Before(deadline) {
-			markedReason = convergenceDegradedReason(configVersion, level, budget)
-			if s.markConvergenceDegraded(rt, markedReason) {
+			if s.markConvergenceDegraded(rt, convergenceDegradedReason(configVersion, level, budget)) {
 				marked = true
 				if s.logger != nil {
 					s.logger.Warn("supervisor: reload applied but NOT converged — reload success signals are "+
@@ -164,40 +165,52 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 	}
 }
 
-// runtimeCurrent reports whether rt is still the supervisor's active runtime.
-func (s *Supervisor) runtimeCurrent(rt *runtime.Runtime) bool {
+// watcherCurrent reports whether rt is still the supervisor's active runtime
+// AND the bridge is not deliberately paused. A paused bridge's readiness is
+// LevelLive by definition (the runtime is stopped), so continuing to observe
+// it would convert an admin pause into a false applied-but-not-converged
+// alarm; StopBridge owns clearing any existing convergence mark on pause.
+func (s *Supervisor) watcherCurrent(rt *runtime.Runtime) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.rt == rt
+	return s.rt == rt && !s.paused
 }
 
 // markConvergenceDegraded sets the applied-but-not-converged degraded state
-// iff rt is still the active runtime, so a watcher for a superseded swap can
-// never clobber the state owned by its successor. Returns whether the mark
-// was applied.
+// iff rt is still the active runtime and the bridge is not paused, so a
+// watcher for a superseded swap (or a runtime an operator just paused) can
+// never clobber the state owned by its successor. Takes convergence
+// ownership of the degraded state (degradedByConvergence) so later watchers,
+// StopBridge, and apply() can distinguish it from foreign causes. Returns
+// whether the mark was applied.
 func (s *Supervisor) markConvergenceDegraded(rt *runtime.Runtime, reason string) bool {
 	s.mu.Lock()
-	if s.rt != rt {
+	if s.rt != rt || s.paused {
 		s.mu.Unlock()
 		return false
 	}
 	s.degraded = true
 	s.degradedReason = reason
+	s.degradedByConvergence = true
 	s.mu.Unlock()
 	s.emitConfigDegradedGauge(true)
 	return true
 }
 
-// clearConvergenceDegraded clears the degraded state iff it is still the
-// exact convergence reason this watcher set and rt is still active — never
-// someone else's degraded cause (a config-stream failure, a half-stopped
-// runtime).
-func (s *Supervisor) clearConvergenceDegraded(rt *runtime.Runtime, reason string, configVersion int) {
+// clearConvergenceDegraded clears the degraded state iff it is
+// CONVERGENCE-OWNED (set by this or a predecessor watcher) and rt is still
+// active — never someone else's degraded cause (a config-stream failure, a
+// half-stopped runtime). Clearing predecessor marks matters: after a
+// pause/resume the resumed runtime's watcher is a different instance from
+// the one that marked, yet its observed convergence factually resolves the
+// alarm.
+func (s *Supervisor) clearConvergenceDegraded(rt *runtime.Runtime, configVersion int) {
 	s.mu.Lock()
-	owned := s.rt == rt && s.degraded && s.degradedReason == reason
+	owned := s.rt == rt && s.degraded && s.degradedByConvergence
 	if owned {
 		s.degraded = false
 		s.degradedReason = ""
+		s.degradedByConvergence = false
 	}
 	s.mu.Unlock()
 	if !owned {
