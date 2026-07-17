@@ -3,7 +3,9 @@ package paho
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -86,12 +89,36 @@ type router struct {
 	mu       sync.RWMutex
 	wg       sync.WaitGroup
 	handlers map[string]routerHandler
+	// callbacksInFlight counts callbacks accepted under mu but not yet returned.
+	// callbacksIdle closes on the transition to zero, allowing recycle quiescence
+	// to wait with a context instead of an unbounded WaitGroup.Wait goroutine.
+	callbacksInFlight int
+	callbacksIdle     chan struct{}
 
 	// pending buffers publishes that matched no registered handler,
 	// bounded by pendingLimit (entries) AND pendingBytesLimit (payload
 	// bytes). Guarded by mu.
 	pending      []pendingPublish
 	pendingLimit int
+	// pendingChanged is rotated whenever a publish is buffered so managed
+	// migration verification can wait event-wise for broker replay. Guarded by mu.
+	pendingChanged chan struct{}
+	// awaitManagedReplayHook is a deterministic test seam invoked when replay
+	// verification starts. Production leaves it nil. Guarded by mu.
+	awaitManagedReplayHook func()
+	// connEpoch identifies the CURRENT broker connection generation. It is
+	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
+	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
+	// purges every entry whose epoch predates connEpoch: those carry dead acks
+	// and the broker redelivers their QoS 1/2 fresh, so keeping them would
+	// double-count against the receive_maximum count cap and ack-drop a live
+	// message as a bogus overflow (A-1). Guarded by mu.
+	connEpoch uint64
+	// unsettled records every QoS 1/2 packet accepted in connEpoch until its
+	// protocol Ack succeeds. The map is cleared on every epoch transition because
+	// old packet handles die with their connection and the broker redelivers them.
+	unsettledSeq uint64
+	unsettled    map[uint64]time.Time
 	// pendingBytes is the running sum of buffered payload sizes; capped
 	// by pendingBytesLimit so a flood of large publishes cannot buffer
 	// multiple gigabytes during a grace window. Guarded by mu.
@@ -109,6 +136,21 @@ type router struct {
 	// and run inline). Guarded by mu.
 	dispatchCh   chan dispatchItem
 	dispatchSize int
+	// queueReserved is the single ownership budget shared by dispatchCh and
+	// pending. queueChanged is rotated on release so blocked QoS 1/2 callbacks
+	// can wait without polling. Reservations are keyed by immutable Publish
+	// identity and released idempotently exactly once.
+	queueReserved     int
+	queueChanged      chan struct{}
+	queueReservations map[*pahov5.Publish]struct{}
+	// maxPayloadBytes is the effective application-body ceiling. The CONNECT
+	// packet advertises the corresponding whole-packet limit, while this local
+	// guard rejects a non-compliant broker's oversize body before cloning it.
+	maxPayloadBytes uint32
+	// ingressPoison latches a packet that violates the accepted payload/metadata
+	// representation contract into the owning Session's existing terminal
+	// teardown lifecycle. Immutable after construction.
+	ingressPoison func(error)
 	// dispatchDone is closed by dispatchLoop when it exits, so Close can
 	// JOIN the worker (awaitDispatchLoop) before r.wg.Wait(). Without the
 	// join, a dispatchLoop draining a buffered item after r.stop is closed
@@ -121,6 +163,15 @@ type router struct {
 	// once Close has begun. The mutex orders that skip against Close's
 	// subsequent Wait, so no flush Add can race the Wait. Guarded by mu.
 	closing bool
+	// quiesced prevents all handler matching while a managed-subscription
+	// recycle is in progress. discarding drops old-connection ingress without
+	// invoking its ACK while the socket is being disconnected.
+	quiesced   bool
+	discarding bool
+	// managedCleanupFilters are exact durable filters in history - desired.
+	// They are matched before handlers so overlapping desired handlers cannot
+	// ACK traffic delivered through a stale wildcard/shared subscription.
+	managedCleanupFilters []string
 
 	// clk sources time for the startup grace window. Defaults to
 	// clock.System; the Session injects its (possibly fake) clock.
@@ -167,8 +218,13 @@ type router struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 
-	logger           *slog.Logger
-	metrics          ports.MetricsExporter
+	logger  *slog.Logger
+	metrics ports.MetricsExporter
+	// sessionID tags every router loss/drop metric so a multi-session
+	// deployment can attribute an orphan/overflow/stale-purge drop to the
+	// session that produced it (A-11). Empty when the router is built without
+	// a session (legacy/test construction); the tag is then omitted.
+	sessionID        string
 	routeCount       atomic.Int64 // total messages received by dispatch
 	dropCount        atomic.Int64 // messages dropped (pending-buffer overflow)
 	bufferedCount    atomic.Int64 // messages held for a not-yet-registered handler
@@ -176,6 +232,7 @@ type router struct {
 	coveredDropped   atomic.Int64 // covered-topic QoS 0 dropped past grace when the buffer could not hold it
 	coveredRetained  atomic.Int64 // covered-topic messages RETAINED un-acked past grace (HIGH-1; NOT lost)
 	overflowDropped  atomic.Int64 // QoS 1/2 acked-and-dropped because a broker exceeded receive_maximum (protocol violation; unreachable with a compliant broker)
+	stalePurged      atomic.Int64 // pre-registration entries discarded on reconnect (A-1); QoS 1/2 redelivered, QoS 0 best-effort loss
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -196,8 +253,9 @@ type routerHandler struct {
 
 // dispatchItem is one publish queued for the serialized dispatch worker.
 type dispatchItem struct {
-	pub *pahov5.Publish
-	ack func() error
+	pub   *pahov5.Publish
+	ack   func() error
+	epoch uint64
 }
 
 // pendingPublish is one buffered pre-registration publish together
@@ -205,6 +263,11 @@ type dispatchItem struct {
 type pendingPublish struct {
 	pub *pahov5.Publish
 	ack func() error
+	// epoch is the router.connEpoch under which this entry was buffered. A
+	// reconnect (beginGrace) purges every entry whose epoch predates the new
+	// connEpoch: its ack is dead and the broker redelivers the QoS 1/2 fresh
+	// (A-1). Set under r.mu at buffer time.
+	epoch uint64
 	// retainCounted latches once this entry has been counted on
 	// MetricMQTTRouterCoveredRetained (blocking-#4 dedup). Both the grace-end
 	// sweep (settlePending) and the post-grace dispatch retention
@@ -231,11 +294,9 @@ const defaultPendingLimit = 65535
 // at-least-once.
 const defaultPendingBytesLimit int64 = 64 << 20
 
-// defaultDispatchSize bounds the serialized dispatch queue that decouples
-// the paho publish-callback goroutine from the synchronous dispatch path.
-// It absorbs a burst without unbounded growth; on overflow QoS 0 is
-// dropped and QoS 1/2 applies backpressure (see dispatchCh).
-const defaultDispatchSize = 1024
+// defaultDispatchSize is used only by routers constructed without a Session.
+// Session construction overrides it with the effective Receive Maximum.
+const defaultDispatchSize = int(DefaultReceiveMaximum)
 
 // routerOption customises a router at construction (functional options
 // so new knobs do not churn the newRouter signature).
@@ -277,12 +338,37 @@ func withCovered(fn func(topic string) bool) routerOption {
 	return func(r *router) { r.covered = fn }
 }
 
+// withSessionTag records the session's client_id so router loss/drop metrics
+// carry a session_id tag (A-11). Empty values are ignored (the tag is omitted).
+func withSessionTag(id string) routerOption {
+	return func(r *router) { r.sessionID = id }
+}
+
+func withDispatchCapacity(capacity int) routerOption {
+	return func(r *router) {
+		if capacity > 0 {
+			r.dispatchSize = capacity
+		}
+	}
+}
+
+func withMaxPayloadBytes(maxPayloadBytes uint32) routerOption {
+	return func(r *router) { r.maxPayloadBytes = maxPayloadBytes }
+}
+
+func withIngressPoison(fn func(error)) routerOption {
+	return func(r *router) { r.ingressPoison = fn }
+}
+
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}
 	}
 	r := &router{
 		handlers:          make(map[string]routerHandler),
+		pendingChanged:    make(chan struct{}),
+		queueChanged:      make(chan struct{}),
+		queueReservations: make(map[*pahov5.Publish]struct{}),
 		pendingLimit:      defaultPendingLimit,
 		pendingBytesLimit: defaultPendingBytesLimit,
 		dispatchSize:      defaultDispatchSize,
@@ -310,9 +396,147 @@ func (r *router) setPendingLimit(n int) {
 	if n < 1 {
 		return
 	}
+
 	r.mu.Lock()
 	r.pendingLimit = n
 	r.mu.Unlock()
+}
+
+func (r *router) ingressMemoryStats() (depth, capacity int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.dispatchCh != nil {
+		depth = len(r.dispatchCh)
+	}
+	return depth, r.dispatchSize
+}
+
+func (r *router) reserveQueueSlot(pub *pahov5.Publish, qos byte) bool {
+	for {
+		r.mu.Lock()
+		if r.closing {
+			r.mu.Unlock()
+			return false
+		}
+		if r.queueReserved < r.dispatchSize {
+			r.queueReserved++
+			r.queueReservations[pub] = struct{}{}
+			r.mu.Unlock()
+			return true
+		}
+		changed := r.queueChanged
+		r.mu.Unlock()
+		if qos == 0 {
+			return false
+		}
+		select {
+		case <-changed:
+		case <-r.stop:
+			return false
+		}
+	}
+}
+
+func (r *router) releaseQueueReservation(pub *pahov5.Publish) {
+	r.mu.Lock()
+	r.releaseQueueReservationLocked(pub)
+	r.mu.Unlock()
+}
+
+func (r *router) releaseQueueReservationLocked(pub *pahov5.Publish) {
+	if _, reserved := r.queueReservations[pub]; !reserved {
+		return
+	}
+	delete(r.queueReservations, pub)
+	if r.queueReserved > 0 {
+		r.queueReserved--
+	}
+	close(r.queueChanged)
+	r.queueChanged = make(chan struct{})
+}
+
+// sessionTag returns the session_id metric tag for this router's drops, or
+// nil when the router was built without a session (legacy/test). Spread it
+// into a metrics Counter call: r.metrics.Counter(name, n, r.sessionTag()...).
+func (r *router) sessionTag() []shared.Tag {
+	if r.sessionID == "" {
+		return nil
+	}
+	return []shared.Tag{{Key: shared.TagKeySessionID, Value: r.sessionID}}
+}
+
+type unsettledHealth struct {
+	Count                    int
+	OldestAge                time.Duration
+	ReceiveWindowUtilization float64
+}
+
+// trackUnsettledPacket registers one QoS 1/2 packet in the current connection
+// epoch and returns an idempotent successful-Ack callback.
+func (r *router) trackUnsettledPacket() func() {
+	r.mu.Lock()
+	if r.unsettled == nil {
+		r.unsettled = make(map[uint64]time.Time)
+	}
+	r.unsettledSeq++
+	id := r.unsettledSeq
+	r.unsettled[id] = r.clk.Now()
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.unsettled, id)
+			r.mu.Unlock()
+		})
+	}
+}
+
+// trackAcknowledgement registers a packet and removes it only after the
+// protocol acknowledgement succeeds. Failed ACKs remain visible and unsettled.
+func (r *router) trackAcknowledgement(ack func() error) func() error {
+	settled := r.trackUnsettledPacket()
+	return func() error {
+		if err := ack(); err != nil {
+			return err
+		}
+		settled()
+		return nil
+	}
+}
+
+func (r *router) clearUnsettledLocked() {
+	clear(r.unsettled)
+}
+
+func (r *router) unsettledSnapshot(receiveMaximum uint16) unsettledHealth {
+	r.mu.RLock()
+	count := len(r.unsettled)
+	var oldest time.Time
+	for _, receivedAt := range r.unsettled {
+		if oldest.IsZero() || receivedAt.Before(oldest) {
+			oldest = receivedAt
+		}
+	}
+	r.mu.RUnlock()
+
+	var age time.Duration
+	if !oldest.IsZero() {
+		age = r.clk.Since(oldest)
+		if age < 0 {
+			age = 0
+		}
+	}
+	var utilization float64
+	if receiveMaximum > 0 {
+		utilization = float64(count) / float64(receiveMaximum)
+	}
+	return unsettledHealth{
+		Count:                    count,
+		OldestAge:                age,
+		ReceiveWindowUtilization: utilization,
+	}
 }
 
 // beginGrace (re)starts the unmatched-publish grace window for the
@@ -327,7 +551,21 @@ func (r *router) setPendingLimit(n int) {
 func (r *router) beginGrace() {
 	r.mu.Lock()
 	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
+	// Advance the connection generation. Entries buffered from here on are
+	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
+	// entries stamped with a prior epoch are purged (A-1).
+	r.connEpoch++
+	r.clearUnsettledLocked()
+	// Replacement ingress may be buffered while global quiescence remains.
+	r.discarding = false
 	if r.graceStarted {
+		// Reconnect. A clean_start=false broker replays every un-acked QoS 1/2
+		// from the prior connection with FRESH packet IDs, so any entry still
+		// buffered under a previous epoch is a stale twin whose ack died with
+		// the old connection. Purge them: keeping them lets a redelivered copy
+		// accumulate beside its ghost until the count cap (== receive_maximum)
+		// ack-drops a LIVE message as a bogus overflow, breaking at-least-once.
+		r.purgeStalePendingLocked()
 		if r.graceTimer != nil {
 			r.graceTimer.Reset(r.graceWindow)
 		}
@@ -385,7 +623,7 @@ func (r *router) dispatchLoop(ch <-chan dispatchItem, done chan struct{}) {
 		case <-r.stop:
 			return
 		case item := <-ch:
-			r.dispatch(item.pub, item.ack)
+			r.dispatchAtEpoch(item.pub, item.ack, item.epoch, true)
 		}
 	}
 }
@@ -423,13 +661,38 @@ func (r *router) graceLoop(timerC <-chan time.Time, unsubCh <-chan string) {
 		case <-r.stop:
 			return
 		case <-timerC:
-			r.sweepUnmatched()
+			r.sweepIfExpired()
 		case topic := <-unsubCh:
 			if r.unsubscribe != nil {
 				r.unsubscribe(topic)
 			}
 		}
 	}
+}
+
+// sweepIfExpired runs the grace-end settle, but ONLY when the grace window has
+// truly elapsed. beginGrace and rearmGrace re-arm the shared grace timer with
+// Timer.Reset from another goroutine; if that timer had ALREADY fired, a stale
+// tick is left sitting in the timer channel and the worker would act on it
+// immediately after the re-arm — sweeping BEFORE the new deadline, ack-dropping
+// orphans and firing retention metrics ahead of the configured grace (A-12).
+// graceDeadline is advanced under r.mu on every arm, so comparing it against
+// now distinguishes a genuine expiry from a stale tick: a premature tick re-arms
+// the timer for the remaining window and skips the sweep. Runs on the grace
+// worker; the check and the re-arm are done under r.mu so they never interleave
+// with a concurrent beginGrace/rearmGrace Reset.
+func (r *router) sweepIfExpired() {
+	r.mu.Lock()
+	remaining := r.graceDeadline.Sub(r.clk.Now())
+	if remaining > 0 {
+		if r.graceTimer != nil {
+			r.graceTimer.Reset(remaining)
+		}
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	r.sweepUnmatched()
 }
 
 // sweepUnmatched runs when the startup grace window ends: it settles every
@@ -483,6 +746,8 @@ func (r *router) settlePending(countRetained bool) {
 	for i := range r.pending {
 		snapshot[i] = r.pending[i].pub
 	}
+	managedGateAll := r.quiesced
+	managedFilters := append([]string(nil), r.managedCleanupFilters...)
 	r.mu.Unlock()
 
 	orphan := make(map[*pahov5.Publish]struct{}, len(snapshot))
@@ -491,6 +756,12 @@ func (r *router) settlePending(countRetained bool) {
 		coveredSnap = make(map[*pahov5.Publish]struct{}, len(snapshot))
 	}
 	for _, pub := range snapshot {
+		if managedGateAll || (len(managedFilters) > 0 && matchesAnyFilter(managedFilters, pub.Topic)) {
+			if countRetained {
+				coveredSnap[pub] = struct{}{}
+			}
+			continue
+		}
 		if r.covered != nil && r.covered(pub.Topic) {
 			if countRetained {
 				coveredSnap[pub] = struct{}{}
@@ -585,8 +856,9 @@ func (r *router) enqueueUnsub(topic string) {
 // at-least-once. Orphan classification is done by the caller with r.mu
 // released (covered() takes the session mutex).
 func (r *router) dropOrphan(pub *pahov5.Publish, ack func() error) {
+	r.releaseQueueReservation(pub)
 	r.unmatchedDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterUnmatchedDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of dropped orphan publish failed",
@@ -638,7 +910,9 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 		}
 	}
 	if len(matching) > 0 {
+		r.addCallbacksLocked(len(matching))
 		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
 		r.fanout(pub, ack, matching)
 		return
 	}
@@ -668,7 +942,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 	// Covered QoS 0 the buffer cannot hold: best-effort drop (no redelivery
 	// contract). Counted on the covered-drop metric for visibility.
 	r.coveredDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of covered QoS 0 overflow-dropped publish failed",
@@ -692,7 +966,7 @@ func (r *router) noteCoveredRetained(topic string, n int) {
 		return
 	}
 	r.coveredRetained.Add(int64(n))
-	r.metrics.Counter(MetricMQTTRouterCoveredRetained, int64(n))
+	r.metrics.Counter(MetricMQTTRouterCoveredRetained, int64(n), r.sessionTag()...)
 	r.mu.Lock()
 	_, warned := r.coveredWarned[topic]
 	if !warned {
@@ -719,9 +993,10 @@ func (r *router) noteCoveredRetained(topic string, n int) {
 // on handler registration. Bumps the aggregate drop counter and the dedicated
 // protocol-violation metric. Caller must hold NEITHER r.mu.
 func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
+	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
 	r.overflowDropped.Add(1)
-	r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterOverflowDropped, 1, r.sessionTag()...)
 	if ack != nil {
 		if err := ack(); err != nil {
 			logging.Debug(r.logger, "mqtt: ack of overflow-dropped QoS 1/2 publish failed",
@@ -746,8 +1021,9 @@ func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 // drop is best-effort and counted only on the generic drop metric. Caller must
 // hold NEITHER r.mu.
 func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
+	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
-	r.metrics.Counter(MetricMQTTRouterDropped, 1)
+	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
 		r.logger.Warn("mqtt: dropped QoS 0 publish (pending buffer full during startup grace)",
 			"topic", pub.Topic,
@@ -763,8 +1039,56 @@ func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
 func (r *router) shutdown() {
 	r.mu.Lock()
 	r.closing = true
+	clear(r.queueReservations)
+	r.queueReserved = 0
+	close(r.queueChanged)
+	r.queueChanged = make(chan struct{})
 	r.mu.Unlock()
 	r.stopOnce.Do(func() { close(r.stop) })
+}
+
+// clonePublish makes an isolated deep copy for the legacy Router and
+// multi-handler compatibility boundaries, whose public callers historically
+// may mutate payload/properties. Production OnPublishReceived instead retains
+// immutable Paho callback backing: Paho allocates a Publish wrapper per packet
+// and its acknowledgement tracker retains the underlying wire packet until
+// settlement, so callback return does not invalidate payload/property strings.
+func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
+	if pub == nil {
+		return nil
+	}
+	cloned := *pub
+	if pub.Payload != nil {
+		cloned.Payload = make([]byte, len(pub.Payload))
+		copy(cloned.Payload, pub.Payload)
+	}
+	if pub.Properties == nil {
+		return &cloned
+	}
+	properties := *pub.Properties
+	properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
+	if pub.Properties.CorrelationData != nil {
+		properties.CorrelationData = make([]byte, len(pub.Properties.CorrelationData))
+		copy(properties.CorrelationData, pub.Properties.CorrelationData)
+	}
+	if pub.Properties.SubscriptionIdentifier != nil {
+		v := *pub.Properties.SubscriptionIdentifier
+		properties.SubscriptionIdentifier = &v
+	}
+	if pub.Properties.PayloadFormat != nil {
+		v := *pub.Properties.PayloadFormat
+		properties.PayloadFormat = &v
+	}
+	if pub.Properties.MessageExpiry != nil {
+		v := *pub.Properties.MessageExpiry
+		properties.MessageExpiry = &v
+	}
+	if pub.Properties.TopicAlias != nil {
+		v := *pub.Properties.TopicAlias
+		properties.TopicAlias = &v
+	}
+	cloned.Properties = &properties
+	return &cloned
 }
 
 // onPublishReceived is the Paho client's publish callback (installed
@@ -774,12 +1098,16 @@ func (r *router) shutdown() {
 // never returned because failure handling is the runtime's job via the
 // Delivery contract.
 func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
-	pub := pr.Packet
+	received := pr.Packet
+	if r.rejectIngressPacket(received) {
+		return true, nil
+	}
+	pub := publishWithIdentity(received)
 	client := pr.Client
 	var ack func() error
-	if pub != nil && pub.QoS > 0 && client != nil {
-		ack = func() error {
-			if err := client.Ack(pub); err != nil {
+	if received != nil && received.QoS > 0 && client != nil {
+		ack = r.trackAcknowledgement(func() error {
+			if err := client.Ack(received); err != nil {
 				if errors.Is(err, pahov5.ErrPacketNotFound) {
 					// The connection cycled between receive and settle:
 					// the client's ack tracker was reset, the broker will
@@ -787,13 +1115,99 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 					// duplicate. Not a settlement failure.
 					return nil
 				}
+
 				return MapError(err)
 			}
 			return nil
-		}
+		})
 	}
 	r.enqueueDispatch(pub, ack)
 	return true, nil
+}
+
+func (r *router) rejectIngressPacket(pub *pahov5.Publish) bool {
+	if pub == nil {
+		return false
+	}
+	userProperties := 0
+	if pub.Properties != nil {
+		userProperties = len(pub.Properties.User)
+	}
+	var violation error
+	switch {
+	case r.maxPayloadBytes > 0 && uint64(len(pub.Payload)) > uint64(r.maxPayloadBytes):
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound payload %d exceeds max_payload_bytes %d",
+			len(pub.Payload), r.maxPayloadBytes,
+		))
+	case userProperties > maxIngressUserProperties:
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound User Properties count %d exceeds retained-memory cap %d",
+			userProperties, maxIngressUserProperties,
+		))
+	case ingressMetadataBytes(pub) > maxIngressMetadataBytes:
+		violation = shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
+			"mqtt: inbound metadata exceeds retained-memory cap %d bytes",
+			maxIngressMetadataBytes,
+		))
+	}
+	if violation == nil {
+		return false
+	}
+	r.dropCount.Add(1)
+	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+	if r.logger != nil {
+		r.logger.Error("mqtt: rejected inbound packet before adapter enqueue; terminating session",
+			"topic", pub.Topic,
+			"qos", pub.QoS,
+			"payload_bytes", len(pub.Payload),
+			"max_payload_bytes", r.maxPayloadBytes,
+			"user_properties", userProperties,
+			"error", violation,
+		)
+	}
+	if r.ingressPoison != nil {
+		r.ingressPoison(violation)
+	}
+	return true
+}
+
+func ingressMetadataBytes(pub *pahov5.Publish) uint64 {
+	if pub == nil {
+		return 0
+	}
+	// Fixed header + worst-case Remaining Length + topic length prefix +
+	// packet identifier + worst-case property-length VBI.
+	total := uint64(1 + 4 + 2 + len(pub.Topic) + 2 + 4)
+	if pub.Properties == nil {
+		return total
+	}
+	props := pub.Properties
+	if props.PayloadFormat != nil {
+		total += 2
+	}
+	if props.MessageExpiry != nil {
+		total += 5
+	}
+	if props.ContentType != "" {
+		total += uint64(3 + len(props.ContentType))
+	}
+	if props.ResponseTopic != "" {
+		total += uint64(3 + len(props.ResponseTopic))
+	}
+	if props.CorrelationData != nil {
+		total += uint64(3 + len(props.CorrelationData))
+	}
+	if props.SubscriptionIdentifier != nil {
+		total += 5
+	}
+	if props.TopicAlias != nil {
+		total += 3
+	}
+	for _, property := range props.User {
+		total += uint64(5 + len(property.Key) + len(property.Value))
+	}
+	return total
 }
 
 // enqueueDispatch hands a publish to the serialized dispatch worker
@@ -808,22 +1222,35 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	if pub == nil {
 		return
 	}
-	r.mu.Lock()
-	ch := r.dispatchCh
-	r.mu.Unlock()
-	if ch == nil {
-		r.dispatch(pub, ack)
+	if !r.reserveQueueSlot(pub, pub.QoS) {
+		if pub.QoS == 0 {
+			r.dropQoS0Overflow(pub)
+		}
 		return
 	}
-	item := dispatchItem{pub: pub, ack: ack}
+	r.mu.Lock()
+	ch := r.dispatchCh
+	epoch := r.connEpoch
+	discarding := r.discarding
+	r.mu.Unlock()
+	if discarding {
+		r.releaseQueueReservation(pub)
+		return
+	}
+	if ch == nil {
+		r.dispatchAtEpoch(pub, ack, epoch, true)
+		return
+	}
+	item := dispatchItem{pub: pub, ack: ack, epoch: epoch}
 	select {
 	case ch <- item:
 		return
 	default:
 	}
 	if pub.QoS == 0 {
+		r.releaseQueueReservation(pub)
 		r.dropCount.Add(1)
-		r.metrics.Counter(MetricMQTTRouterDropped, 1)
+		r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 		if r.logger != nil {
 			r.logger.Warn("mqtt: dropped QoS 0 publish (dispatch queue full under flood)",
 				"topic", pub.Topic)
@@ -835,6 +1262,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 	select {
 	case ch <- item:
 	case <-r.stop:
+		r.releaseQueueReservation(pub)
 	}
 }
 
@@ -843,7 +1271,14 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 // protocol-ack callback (the Paho client auto-acks when it drives a
 // Router); production traffic enters through onPublishReceived.
 func (r *router) Route(pb *packets.Publish) {
-	r.dispatch(pahov5.PublishFromPacketPublish(pb), nil)
+	// PublishFromPacketPublish retains the packet payload backing array. Clone
+	// at this compatibility boundary so fanout can transfer its router-owned
+	// publish to one handler without allowing that handler to mutate pb.
+	pub := pahov5.PublishFromPacketPublish(pb)
+	if r.rejectIngressPacket(pub) {
+		return
+	}
+	r.dispatch(clonePublish(publishWithIdentity(pub)), nil)
 }
 
 // dispatch fans a publish out to every registered handler whose topic
@@ -858,27 +1293,57 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 	if pub == nil {
 		return
 	}
-	r.routeCount.Add(1)
+	r.mu.RLock()
+	epoch := r.connEpoch
+	r.mu.RUnlock()
+	r.dispatchAtEpoch(pub, ack, epoch, true)
+}
 
+func (r *router) dispatchAtEpoch(pub *pahov5.Publish, ack func() error, epoch uint64, count bool) {
+	r.dispatchCore(pub, ack, epoch, count, false)
+}
+
+// dispatchCore applies managed cleanup/quiesce gates before inspecting handlers.
+// bypassQuiesce is reserved for resumeManagedDispatch while it drains buffered
+// replacement-generation publishes before reopening live ingress.
+func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint64, count, bypassQuiesce bool) {
+	if pub == nil {
+		return
+	}
+	if count {
+		r.routeCount.Add(1)
+	}
 	r.mu.Lock()
+	if epoch != r.connEpoch {
+		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
+		r.stalePurged.Add(1)
+		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
+		return
+	}
+	if r.discarding {
+		r.mu.Unlock()
+		r.releaseQueueReservation(pub)
+		return
+	}
+	if (!bypassQuiesce && r.quiesced) || (len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pub.Topic)) {
+		buffered := r.bufferLocked(pub, ack)
+		r.mu.Unlock()
+		r.finishHeldPublish(pub, ack, buffered)
+		return
+	}
+
 	matching := make([]routerHandler, 0, len(r.handlers))
 	for _, h := range r.handlers {
 		if matchesAnyFilter(h.filters, pub.Topic) {
-			// Mark in-flight UNDER r.mu so it pairs with Unregister's
-			// delete-then-Wait: once Unregister has removed a handler, no
-			// new dispatch can add to its inflight WaitGroup, so Wait
-			// drains only the already-started emits.
 			h.inflight.Add(1)
 			matching = append(matching, h)
 		}
 	}
+	if len(matching) > 0 {
+		r.addCallbacksLocked(len(matching))
+	}
 	if len(matching) == 0 {
-		// Within the startup grace window an unmatched publish is the
-		// legitimate CONNACK backlog racing receiver registration: buffer
-		// it (un-acked) for a handler that is about to register. Past the
-		// window it is an orphan broker subscription: ack + drop it so its
-		// un-acked slot stops pinning the broker's in-flight window and
-		// head-of-line-blocking in-order acks, then unsubscribe its topic.
 		if r.clk.Now().Before(r.graceDeadline) {
 			buffered := r.bufferLocked(pub, ack)
 			r.mu.Unlock()
@@ -886,26 +1351,11 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 				r.bufferedCount.Add(1)
 				r.metrics.Counter(MetricMQTTRouterBuffered, 1)
 				logging.Debug(r.logger, "mqtt: buffered message (no matching handler registered yet)",
-					"topic", pub.Topic,
-					"qos", pub.QoS,
-				)
+					"topic", pub.Topic, "qos", pub.QoS)
+			} else if pub.QoS > 0 {
+				r.overflowAckDrop(pub, ack)
 			} else {
-				// bufferLocked refused the publish. For QoS 0 this is a routine
-				// best-effort overflow drop (no delivery contract). For QoS 1/2
-				// it is UNREACHABLE under a spec-compliant broker (see
-				// bufferLocked): the only refusal is the count cap (==
-				// receive_maximum) being hit with no evictable QoS 0 — i.e. the
-				// broker delivered more un-acked QoS 1/2 than the Receive Maximum
-				// it was granted. Each helper keeps the overflow AGGREGATE
-				// (dropCount) so Stats' `dropped` total is unchanged, while the
-				// WIRE metric lands on the QoS-appropriate counter so a
-				// protocol-violation QoS 1/2 loss is never masked by best-effort
-				// QoS 0 drops.
-				if pub.QoS > 0 {
-					r.overflowAckDrop(pub, ack)
-				} else {
-					r.dropQoS0Overflow(pub)
-				}
+				r.dropQoS0Overflow(pub)
 			}
 			return
 		}
@@ -914,17 +1364,159 @@ func (r *router) dispatch(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	r.mu.Unlock()
+	r.releaseQueueReservation(pub)
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(context.Background(), logging.LevelTrace,
-			"mqtt: routing message",
-			"topic", pub.Topic,
-			"payload_len", len(pub.Payload),
-			"handler_count", len(matching),
-		)
+			"mqtt: routing message", "topic", pub.Topic,
+			"payload_len", len(pub.Payload), "handler_count", len(matching))
 	}
-
 	r.fanout(pub, ack, matching)
+}
+
+func (r *router) finishHeldPublish(pub *pahov5.Publish, ack func() error, buffered bool) {
+	if buffered {
+		r.bufferedCount.Add(1)
+		r.metrics.Counter(MetricMQTTRouterBuffered, 1)
+		logging.Debug(r.logger, "mqtt: retained publish while managed subscription cleanup is pending",
+			"topic", pub.Topic, "qos", pub.QoS)
+		return
+	}
+	if pub.QoS > 0 {
+		r.overflowAckDrop(pub, ack)
+		return
+	}
+	r.dropQoS0Overflow(pub)
+}
+
+// setManagedCleanupFilters atomically replaces the exact history-minus-desired
+// gate. No handler match can race past a newly installed stale-filter gate.
+func (r *router) setManagedCleanupFilters(filters []string) {
+	if r == nil {
+		return
+	}
+	copyFilters := append([]string(nil), filters...)
+	sort.Strings(copyFilters)
+	r.mu.Lock()
+	r.managedCleanupFilters = copyFilters
+	r.mu.Unlock()
+}
+
+// quiesceForRecycle waits for active handler dispatch, purges old-epoch pending
+// deliveries without ACK, and makes subsequent old-socket ingress discard-only.
+func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(context.Context) error) error {
+	if r == nil {
+		return nil
+	}
+	// The state transition is under the same mutex dispatchCore uses before
+	// handler matching. It therefore stops acceptance immediately without
+	// waiting behind a stuck callback.
+	r.mu.Lock()
+	r.quiesced = true
+	r.discarding = true
+	r.connEpoch++
+	r.clearUnsettledLocked()
+	r.purgeStalePendingLocked()
+	callbacks := r.callbacksInFlight
+	idle := r.callbacksIdle
+	r.mu.Unlock()
+
+	if callbacks > 0 {
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	// Callback return only means the RouteRunner accepted a Delivery. Its
+	// authoritative in-flight counter remains non-zero through processing and
+	// settlement, so wait on the runtime-installed barrier as the second phase.
+	if waitSettlement != nil {
+		if err := waitSettlement(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addCallbacksLocked records callbacks before dispatch releases mu, closing the
+// match-to-quiesce race where a callback had been selected but not yet added to
+// a WaitGroup. Caller must hold r.mu.
+func (r *router) addCallbacksLocked(n int) {
+	if n <= 0 {
+		return
+	}
+	if r.callbacksInFlight == 0 {
+		r.callbacksIdle = make(chan struct{})
+	}
+	r.callbacksInFlight += n
+}
+
+func (r *router) callbackDone() {
+	r.mu.Lock()
+	// fanout is an internal legacy test seam that can be invoked directly,
+	// outside dispatch selection. Such calls are still covered by r.wg for Close
+	// but were never accepted into the recycle counter.
+	if r.callbacksInFlight > 0 {
+		r.callbacksInFlight--
+		if r.callbacksInFlight == 0 && r.callbacksIdle != nil {
+			close(r.callbacksIdle)
+		}
+	}
+	r.mu.Unlock()
+}
+
+// resumeManagedDispatch releases the recycle gate only after replacement
+// convergence and routes buffered replacement deliveries before live traffic.
+func (r *router) resumeManagedDispatch(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	// Keep quiesced true while draining entries that have a handler NOW. An
+	// unmatched current-epoch entry stays pending for RegisterFiltered instead of
+	// being extracted, rebuffered by dispatchCore, and selected again in a busy
+	// loop. Process one entry at a time so cancellation is checked between
+	// callbacks without losing an extracted batch.
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		r.discarding = false
+		idx := -1
+		for i := range r.pending {
+			pending := r.pending[i]
+			if pending.epoch != r.connEpoch ||
+				(len(r.managedCleanupFilters) > 0 && matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic)) {
+				continue
+			}
+			for _, handler := range r.handlers {
+				if matchesAnyFilter(handler.filters, pending.pub.Topic) {
+					idx = i
+					break
+				}
+			}
+			if idx >= 0 {
+				break
+			}
+		}
+		if idx < 0 {
+			r.quiesced = false
+			r.mu.Unlock()
+			return nil
+		}
+		pending := r.pending[idx]
+		copy(r.pending[idx:], r.pending[idx+1:])
+		r.pending = r.pending[:len(r.pending)-1]
+		r.pendingBytes -= pubBytes(pending.pub)
+		epoch := r.connEpoch
+		r.mu.Unlock()
+		r.dispatchCore(pending.pub, pending.ack, epoch, false, true)
+	}
 }
 
 // bufferLocked appends the publish to the pre-registration pending buffer,
@@ -965,8 +1557,9 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 			// redelivery contract, no ack to strand).
 			return false
 		}
-		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 		r.pendingBytes += size
+		r.signalPendingChangedLocked()
 		return true
 	}
 
@@ -982,9 +1575,47 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 		// exceeded its granted Receive Maximum (protocol violation).
 		return false
 	}
-	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack})
+	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
 	r.pendingBytes += size
+	r.signalPendingChangedLocked()
 	return true
+}
+
+func (r *router) signalPendingChangedLocked() {
+	if r.pendingChanged != nil {
+		close(r.pendingChanged)
+	}
+	r.pendingChanged = make(chan struct{})
+}
+
+// purgeStalePendingLocked drops every pending entry stamped with an epoch
+// older than the current connEpoch — i.e. buffered under a PREVIOUS broker
+// connection (A-1). Their protocol acks are dead (paho returns
+// ErrPacketNotFound for a packet ID from a closed connection), so they are
+// deliberately NOT invoked; a clean_start=false broker redelivers the QoS 1/2
+// fresh on the new connection. QoS 0 stale entries are a best-effort loss (no
+// redelivery across a disconnect, by protocol). Every purged entry is metered
+// on MetricMQTTRouterStalePurged. Caller holds r.mu.
+func (r *router) purgeStalePendingLocked() {
+	if len(r.pending) == 0 {
+		return
+	}
+	kept := r.pending[:0]
+	var purged int64
+	for i := range r.pending {
+		if r.pending[i].epoch < r.connEpoch {
+			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			r.releaseQueueReservationLocked(r.pending[i].pub)
+			purged++
+			continue
+		}
+		kept = append(kept, r.pending[i])
+	}
+	r.pending = kept
+	if purged > 0 {
+		r.stalePurged.Add(purged)
+		r.metrics.Counter(MetricMQTTRouterStalePurged, purged, r.sessionTag()...)
+	}
 }
 
 // evictOldestQoS0Locked removes the OLDEST QoS 0 entry from the pending buffer
@@ -995,9 +1626,10 @@ func (r *router) evictOldestQoS0Locked() bool {
 	for i := range r.pending {
 		if r.pending[i].pub.QoS == 0 {
 			r.pendingBytes -= pubBytes(r.pending[i].pub)
+			r.releaseQueueReservationLocked(r.pending[i].pub)
 			r.pending = append(r.pending[:i], r.pending[i+1:]...)
 			r.dropCount.Add(1)
-			r.metrics.Counter(MetricMQTTRouterDropped, 1)
+			r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 			return true
 		}
 	}
@@ -1028,43 +1660,24 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 	var local sync.WaitGroup
 	r.wg.Add(len(handlers))
 	local.Add(len(handlers))
+
+	// The callback/Route boundary already gave the router ownership of pub.
+	// Pre-clone all but one dispatch before starting any handler, then transfer
+	// pub itself to the remaining handler. Pre-cloning preserves isolation even
+	// when the transferred handler mutates immediately, while avoiding one full
+	// payload allocation per received publish.
+	dispatches := make([]*pahov5.Publish, len(handlers))
+	for i := 1; i < len(dispatches); i++ {
+		dispatches[i] = clonePublish(pub)
+	}
+	if len(dispatches) > 0 {
+		dispatches[0] = pub
+	}
 	for i, h := range handlers {
-		p := *pub
-		if pub.Payload != nil {
-			p.Payload = make([]byte, len(pub.Payload))
-			copy(p.Payload, pub.Payload)
-		}
-		if len(handlers) > 1 && pub.Properties != nil && i > 0 {
-			orig := pub.Properties
-			cp := *orig
-			if orig.User != nil {
-				cp.User = make(pahov5.UserProperties, len(orig.User))
-				copy(cp.User, orig.User)
-			}
-			if orig.CorrelationData != nil {
-				cp.CorrelationData = make([]byte, len(orig.CorrelationData))
-				copy(cp.CorrelationData, orig.CorrelationData)
-			}
-			if orig.SubscriptionIdentifier != nil {
-				si := *orig.SubscriptionIdentifier
-				cp.SubscriptionIdentifier = &si
-			}
-			if orig.PayloadFormat != nil {
-				pf := *orig.PayloadFormat
-				cp.PayloadFormat = &pf
-			}
-			if orig.MessageExpiry != nil {
-				me := *orig.MessageExpiry
-				cp.MessageExpiry = &me
-			}
-			if orig.TopicAlias != nil {
-				ta := *orig.TopicAlias
-				cp.TopicAlias = &ta
-			}
-			p.Properties = &cp
-		}
+		p := dispatches[i]
 		go func(handler routerHandler, ackPart func() error) {
 			defer r.wg.Done()
+			defer r.callbackDone()
 			defer local.Done()
 			// inflight was incremented under r.mu in dispatch (or in
 			// RegisterFiltered for the flush path); release it here so
@@ -1094,7 +1707,7 @@ func (r *router) fanout(pub *pahov5.Publish, ack func() error, handlers []router
 				handler.emitMu.Lock()
 				defer handler.emitMu.Unlock()
 			}
-			handler.fn(&p, ackPart)
+			handler.fn(p, ackPart)
 		}(h, acks[i])
 	}
 	// Block until all handlers for THIS publish have returned. This is
@@ -1197,16 +1810,42 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 		entry.emitMu.Lock()
 		entry.inflight.Add(1)
 		r.wg.Add(1)
+		r.addCallbacksLocked(1)
 	}
 	r.mu.Unlock()
 
 	if doFlush {
 		go func() {
 			defer r.wg.Done()
+			defer r.callbackDone()
 			defer entry.inflight.Done()
 			defer entry.emitMu.Unlock()
-			for _, p := range flush {
-				r.emitOne(entry, p.pub, p.ack)
+			r.mu.Lock()
+			ready := flush
+			if r.discarding {
+				for _, pending := range flush {
+					r.releaseQueueReservationLocked(pending.pub)
+				}
+				ready = nil // old socket ACKs die with the recycled generation
+			} else if r.quiesced || len(r.managedCleanupFilters) > 0 {
+				ready = make([]pendingPublish, 0, len(flush))
+				blocked := make([]pendingPublish, 0, len(flush))
+				for _, pending := range flush {
+					if r.quiesced || matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic) {
+						blocked = append(blocked, pending)
+						r.pendingBytes += pubBytes(pending.pub)
+					} else {
+						ready = append(ready, pending)
+					}
+				}
+				if len(blocked) > 0 {
+					r.pending = append(blocked, r.pending...)
+				}
+			}
+			r.mu.Unlock()
+			for _, pending := range ready {
+				r.releaseQueueReservation(pending.pub)
+				r.emitOne(entry, pending.pub, pending.ack)
 			}
 		}()
 	}
@@ -1225,18 +1864,14 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 	}
 }
 
-// emitOne invokes handler.fn with an independent copy of pub (payload
-// copied so the handler cannot race the shared backing array), recovering
-// panics into the handler-panic metric. It does NOT touch emitMu,
+// emitOne invokes handler.fn with an immutable shallow Publish copy, recovering
+// panics into the handler-panic metric. Payload/properties backing is shared and
+// must remain read-only. It does NOT touch emitMu,
 // inflight or the shared WaitGroup — the caller owns that bookkeeping.
 // Used by the pending-flush path, where a single handler consumes the
 // publish so its Properties pointer may be shared safely.
 func (r *router) emitOne(handler routerHandler, pub *pahov5.Publish, ack func() error) {
 	p := *pub
-	if pub.Payload != nil {
-		p.Payload = make([]byte, len(pub.Payload))
-		copy(p.Payload, pub.Payload)
-	}
 	defer func() {
 		if rv := recover(); rv != nil {
 			r.metrics.Counter(MetricMQTTHandlerPanics, 1)
@@ -1254,13 +1889,13 @@ func (r *router) emitOne(handler routerHandler, pub *pahov5.Publish, ack func() 
 // takePendingLocked removes and returns — preserving arrival order —
 // every pending publish whose topic matches filters. Caller holds r.mu.
 func (r *router) takePendingLocked(filters []string) []pendingPublish {
-	if len(r.pending) == 0 {
+	if len(r.pending) == 0 || r.quiesced || r.discarding {
 		return nil
 	}
 	var flush []pendingPublish
 	keep := r.pending[:0]
 	for _, p := range r.pending {
-		if matchesAnyFilter(filters, p.pub.Topic) {
+		if matchesAnyFilter(filters, p.pub.Topic) && (len(r.managedCleanupFilters) == 0 || !matchesAnyFilter(r.managedCleanupFilters, p.pub.Topic)) {
 			flush = append(flush, p)
 			r.pendingBytes -= pubBytes(p.pub)
 		} else {
@@ -1301,6 +1936,18 @@ func (r *router) Unregister(id string) {
 	}
 }
 
+// HandlerIDs returns a sorted snapshot of the registered handler IDs.
+func (r *router) HandlerIDs() []string {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.handlers))
+	for id := range r.handlers {
+		ids = append(ids, id)
+	}
+	r.mu.RUnlock()
+	sort.Strings(ids)
+	return ids
+}
+
 // HandlerCount returns the number of registered handlers.
 func (r *router) HandlerCount() int {
 	r.mu.RLock()
@@ -1314,6 +1961,70 @@ func (r *router) PendingCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.pending)
+}
+
+// pendingMatching reports how many buffered publishes match exact managed
+// filters. It never settles or removes entries; migration uses it after a
+// cleanup recycle to detect broker-pinned QoS1 deliveries and fail closed.
+func (r *router) pendingMatching(filters []string) int {
+	if r == nil || len(filters) == 0 {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, pending := range r.pending {
+		if matchesAnyFilter(filters, pending.pub.Topic) {
+			count++
+		}
+	}
+	return count
+}
+
+// awaitManagedReplay waits through the current connection startup-grace window
+// for a broker-pinned replay matching filters. The managed gate remains active,
+// so any match stays buffered and unacknowledged. Routers without a live grace
+// generation (unit fakes/direct dispatch) return their immediate snapshot.
+func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool, error) {
+	if r == nil || len(filters) == 0 {
+		return false, nil
+	}
+	r.mu.RLock()
+	hook := r.awaitManagedReplayHook
+	r.mu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+	for {
+		r.mu.RLock()
+		for _, pending := range r.pending {
+			if matchesAnyFilter(filters, pending.pub.Topic) {
+				r.mu.RUnlock()
+				return true, nil
+			}
+		}
+		if !r.graceStarted {
+			r.mu.RUnlock()
+			return false, nil
+		}
+		deadline := r.graceDeadline
+		changed := r.pendingChanged
+		remaining := deadline.Sub(r.clk.Now())
+		r.mu.RUnlock()
+		if remaining <= 0 {
+			return false, nil
+		}
+		timer := r.clk.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, ctx.Err()
+		case <-changed:
+			timer.Stop()
+		case <-timer.C():
+			return false, nil
+		}
+	}
 }
 
 // Stats returns diagnostic counters for the message router.
@@ -1355,6 +2066,16 @@ func (r *router) CoveredRetainedCount() int64 {
 // (CoveredDroppedCount / UnmatchedDroppedCount).
 func (r *router) OverflowDroppedCount() int64 {
 	return r.overflowDropped.Load()
+}
+
+// StalePurgedCount returns the number of pre-registration pending publishes
+// DISCARDED across reconnects because they were buffered under a prior broker
+// connection (A-1). QoS 1/2 entries counted here are redelivered fresh by a
+// clean_start=false broker (not lost); QoS 0 entries are a best-effort loss.
+// A steadily rising value indicates frequent reconnects while receivers
+// register slowly, not data loss for QoS 1/2.
+func (r *router) StalePurgedCount() int64 {
+	return r.stalePurged.Load()
 }
 
 // RegisterEnvelope adapts a domain-shaped handler so port-side files

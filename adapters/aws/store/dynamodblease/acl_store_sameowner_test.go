@@ -43,22 +43,19 @@ func (c *seizeClient) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ..
 }
 
 func (c *seizeClient) UpdateItem(_ context.Context, in *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-	c.updateCalls++
-	if in.UpdateExpression != nil {
-		c.lastUpdateExp = ""
+	if in.UpdateExpression != nil && strings.Contains(*in.UpdateExpression, "#obs_fp = :next_obs_fp") {
+		applyObservationUpdate(c.item, in)
+		return &dynamodb.UpdateItemOutput{Attributes: cloneObservationItem(c.item)}, nil
 	}
+	c.updateCalls++
 	if in.ConditionExpression != nil {
 		c.lastUpdateExp = *in.ConditionExpression
 	}
-	// Echo the row with the version incremented, as a version-bumping takeover
-	// would leave it, so runTakeover parses a fresh token.
-	next := map[string]ddbtypes.AttributeValue{}
-	for k, v := range c.item {
-		next[k] = v
-	}
 	cur, _ := numAttr(c.item, attrVersion)
+	next := cloneObservationItem(c.item)
 	next[attrVersion] = &ddbtypes.AttributeValueMemberN{Value: strconv.FormatUint(cur+1, 10)}
-	return &dynamodb.UpdateItemOutput{Attributes: next}, nil
+	c.item = next
+	return &dynamodb.UpdateItemOutput{Attributes: cloneObservationItem(next)}, nil
 }
 
 func (c *seizeClient) GetItem(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -119,7 +116,7 @@ func TestAcquire_SameOwnerFastPath_SeizesWithoutObservationWindow(t *testing.T) 
 		t.Fatalf("token version must increment (5 -> 6), got %d", tok.Version)
 	}
 	// The seize is fenced on the exact (owner, version) just read.
-	if !strings.Contains(c.lastUpdateExp, ":cur_own") || !strings.Contains(c.lastUpdateExp, ":cur_ver") {
+	if !strings.Contains(c.lastUpdateExp, ":tuple_owner") || !strings.Contains(c.lastUpdateExp, ":tuple_version") {
 		t.Fatalf("same-owner seize must fence on (owner, version), condition was %q", c.lastUpdateExp)
 	}
 }

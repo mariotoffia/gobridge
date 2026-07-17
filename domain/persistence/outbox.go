@@ -49,7 +49,9 @@ type OutboxSpec struct {
 // attributes are immutable after construction and exposed only through
 // read-only value accessors (ID, RouteID, EnvelopeID, BindingID,
 // SessionID, Address, CreatedAt, ExpiresAt, DispatchHeaders as a deep
-// copy, and the embedded envelope via Snapshot); lifecycle state is
+// copy, and the embedded envelope via Snapshot); immutable payload backing may
+// be shared between those defensive envelope clones while mutable headers are
+// isolated. Lifecycle state is
 // transitioned solely through the aggregate's state-machine methods
 // (Claim, Complete, Expire). Storage adapters cross the persistence
 // boundary via PersistenceSnapshot / RehydrateFromSnapshot and never
@@ -103,6 +105,32 @@ type OutboxRecord struct {
 // fields are missing so the runtime can classify the failure without
 // re-parsing string messages.
 func NewOutboxRecord(spec OutboxSpec) (*OutboxRecord, *shared.BridgeError) {
+	return newOutboxRecord(spec, *spec.Envelope.Clone())
+}
+
+// NewOutboxRecords constructs a fan-out batch for one Envelope while cloning
+// that immutable snapshot once. All records share private envelope/header
+// backing; no aggregate method mutates it, and Snapshot still returns an
+// isolated clone. This prevents egress fan-out from multiplying retained
+// ingress payload or metadata before serialization.
+func NewOutboxRecords(
+	envelope messaging.Envelope,
+	specs []OutboxSpec,
+) ([]*OutboxRecord, *shared.BridgeError) {
+	records := make([]*OutboxRecord, 0, len(specs))
+	sharedEnvelope := *envelope.Clone()
+	for i := range specs {
+		spec := specs[i]
+		record, err := newOutboxRecord(spec, sharedEnvelope)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func newOutboxRecord(spec OutboxSpec, envelope messaging.Envelope) (*OutboxRecord, *shared.BridgeError) {
 	if spec.ID == "" {
 		return nil, shared.ErrInvalidOutboxRecord.WithMessage("outbox record ID is required")
 	}
@@ -124,7 +152,7 @@ func NewOutboxRecord(spec OutboxSpec) (*OutboxRecord, *shared.BridgeError) {
 		bindingID:       spec.BindingID,
 		sessionID:       spec.SessionID,
 		address:         spec.Address,
-		envelope:        *spec.Envelope.Clone(),
+		envelope:        envelope,
 		dispatchHeaders: messaging.Headers(spec.DispatchHeaders).Snapshot(),
 		createdAt:       spec.CreatedAt,
 		expiresAt:       spec.ExpiresAt,
@@ -428,8 +456,8 @@ func (r *OutboxRecord) Snapshot() *messaging.Envelope {
 // PersistenceSnapshot returns a value copy of the aggregate's full state for
 // persistence. Callers must not assume the returned snapshot reflects
 // concurrent in-memory mutations. The embedded Envelope is deep-cloned so
-// the snapshot can be serialized or rehydrated without aliasing the
-// aggregate's internal state.
+// the snapshot can be serialized or rehydrated without mutable aliasing of the
+// aggregate's internal state. Immutable payload backing may remain shared.
 func (r *OutboxRecord) PersistenceSnapshot() OutboxSnapshot {
 	return OutboxSnapshot{
 		ID:               r.id,

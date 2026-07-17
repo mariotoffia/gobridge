@@ -71,6 +71,12 @@ func DefaultRollupMetrics() []string {
 		shared.MetricLeaseExpiries,
 		shared.MetricDLQEntries,
 		shared.MetricLeaseAcquireFailures,
+		shared.MetricLeaseTransfers,
+		shared.MetricOutboxDrainLatency,
+		shared.MetricOutboxDepthFailures,
+		shared.MetricOutboxRecordFailures,
+		shared.MetricOutboxDrainStalled,
+		shared.MetricDLQWriteFailures,
 		shared.MetricCredentialRefreshFailures,
 		metricSQSVisibilityExtensions,
 		// Silent-loss + backlog counters (H-OBS). These are emitted with a

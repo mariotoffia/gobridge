@@ -3,6 +3,7 @@ package paho
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -29,10 +30,18 @@ func NewAddressValidator() ports.AddressValidator {
 	return topicValidator{}
 }
 
-// ValidateMQTTTopic rejects MQTT wildcard characters, empty segments,
-// null bytes, reserved $-prefixed topics, and topics exceeding the spec
-// maximum length in a rendered topic string. Call this on resolved
-// addresses before publishing to MQTT.
+// ValidateMQTTTopic rejects MQTT wildcard characters, null bytes,
+// reserved $-prefixed topics, and topics exceeding the spec maximum
+// length in a rendered topic string. Call this on resolved addresses
+// before publishing to MQTT.
+//
+// Empty topic levels are permitted: "a//b", "/leading", "trailing/" and
+// even "/" are all legal MQTT publish topics (MQTT 5.0 §4.7.1.1 — only the
+// WHOLE Topic Name must be at least one character; individual levels may be
+// zero-length). Real devices produce such topics, and a dynamic-destination
+// mirror route re-publishing a source topic must not reject them (A-13). The
+// wildcard, $-prefix, null and length rules below are the only structural
+// constraints on a publish Topic Name.
 //
 // It is exported so callers (and tests) outside the runtime dispatch
 // can perform the same MQTT-spec checks; the canonical wire-up is via
@@ -57,9 +66,48 @@ func ValidateMQTTTopic(topic string) error {
 	if strings.ContainsRune(topic, 0) {
 		return fmt.Errorf("MQTT topic must not contain null character")
 	}
-	for _, seg := range strings.Split(topic, "/") {
-		if seg == "" {
-			return fmt.Errorf("MQTT topic must not contain empty segments")
+	return nil
+}
+
+// ValidateMQTTTopicFilter validates MQTT v5 topic-filter and shared-
+// subscription wildcard placement.
+func ValidateMQTTTopicFilter(filter string) error {
+	if filter == "" {
+		return fmt.Errorf("MQTT topic filter must not be empty")
+	}
+	if len(filter) > maxMQTTTopicLen {
+		return fmt.Errorf("MQTT topic filter exceeds maximum length of %d bytes", maxMQTTTopicLen)
+	}
+	if !utf8.ValidString(filter) {
+		return fmt.Errorf("MQTT topic filter must be valid UTF-8")
+	}
+	if strings.ContainsRune(filter, 0) {
+		return fmt.Errorf("MQTT topic filter must not contain null character")
+	}
+
+	if strings.HasPrefix(filter, "$share/") {
+		shared := strings.TrimPrefix(filter, "$share/")
+		separator := strings.IndexByte(shared, '/')
+		if separator <= 0 || separator == len(shared)-1 {
+			return fmt.Errorf("MQTT shared topic filter requires a group and filter")
+		}
+		group, nested := shared[:separator], shared[separator+1:]
+		if strings.ContainsAny(group, "+#") {
+			return fmt.Errorf("MQTT shared subscription group must not contain wildcards")
+		}
+		if strings.HasPrefix(nested, "$share/") {
+			return fmt.Errorf("MQTT shared topic filter must not be nested")
+		}
+		filter = nested
+	}
+
+	levels := strings.Split(filter, "/")
+	for i, level := range levels {
+		if strings.ContainsRune(level, '#') && (level != "#" || i != len(levels)-1) {
+			return fmt.Errorf("MQTT multi-level wildcard '#' must occupy the final level")
+		}
+		if strings.ContainsRune(level, '+') && level != "+" {
+			return fmt.Errorf("MQTT single-level wildcard '+' must occupy an entire level")
 		}
 	}
 	return nil

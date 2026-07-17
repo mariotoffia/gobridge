@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -125,6 +126,9 @@ func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.Sessio
 	if err != nil && !completed {
 		return fmt.Errorf("%w: reconnect reconcile ignored ctx and did not complete within the ceiling: %w",
 			ErrSessionUnrecoverable, err)
+	}
+	if errors.Is(err, shared.ErrTransportClosedPermanently) {
+		return fmt.Errorf("%w: source ingress could not be quiesced safely: %w", ErrSessionUnrecoverable, err)
 	}
 	return err
 }

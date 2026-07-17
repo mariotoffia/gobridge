@@ -184,6 +184,7 @@ func validateStorePaths(cfg *ports.BridgeConfig, mount string) ([]storePathHit, 
 		{"stores.lease", cfg.Stores.Lease},
 		{"stores.outbox", cfg.Stores.Outbox},
 		{"stores.dlq", cfg.Stores.DLQ},
+		{"stores.managed_subscriptions", cfg.Stores.ManagedSubscriptions},
 	}
 	for _, s := range stores {
 		paths := extractStorePaths(s.sc)

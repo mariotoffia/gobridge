@@ -11,7 +11,7 @@ a wrong purge loses messages.
 - `OutboxDeferred` rises — claimed records miss their batch deadline.
 - `OutboxDrainStalled` is non-zero — a sender is wedged.
 - `DrainSkippedNoLease` climbs on a route that is supposed to drain.
-- `OutboxStranded` is non-zero after a config reload.
+- `OutboxStranded` is non-zero after an explicitly forced destructive reload.
 
 ## Diagnosis
 
@@ -41,9 +41,10 @@ Each metric names a distinct cause; read them before acting
    batch size (`domain/shared/metrics.go:77-82`) — records are claimed but the
    batch deadline expires before the sends complete.
 
-5. `OutboxStranded` (non-zero) means durable records were left with no drainer
-   after a live reload (`domain/shared/metrics.go:106-118`) — a route/session
-   was removed or repointed. Cross-check [Cluster reconfiguration](cluster-reconfiguration.md).
+5. `OutboxStranded` (non-zero) means a reload explicitly authorized with
+   `WithAllowDestructiveReload` left observable pending records with no drainer
+   (`domain/shared/metrics.go:106-118`). Non-forced orphaning reloads are refused
+   before swap. Cross-check [Cluster reconfiguration](cluster-reconfiguration.md).
 
 6. Confirm the drainer is actually running: `GET /api/v1/monitor/topology`
    (authenticated) shows `running` and the route list

@@ -28,7 +28,10 @@ type PublisherPlan struct {
 }
 
 // SessionPlan describes the desired state of a session for reconciliation.
+// ExpectedReceiverIDs names the receiver handlers that must be registered before
+// a receiver session can report full service. Empty preserves legacy plans.
 type SessionPlan struct {
-	Subscriptions []SubscriptionPlan
-	Publishers    []PublisherPlan
+	Subscriptions       []SubscriptionPlan
+	Publishers          []PublisherPlan
+	ExpectedReceiverIDs []string
 }

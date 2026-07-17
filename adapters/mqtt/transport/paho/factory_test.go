@@ -3,6 +3,8 @@ package paho
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -79,6 +81,26 @@ func TestFactory_NewSession_ValidOptions(t *testing.T) {
 	}
 	if mqttSession == nil {
 		t.Fatal("mqtt session should not be nil")
+	}
+}
+
+func TestFactory_NewSession_DurableModeRejectsIndependentBrokerURLs(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		ClientID:   "durable-client",
+		BrokerURLs: []string{"ssl://broker-a.example:8883", "ssl://broker-b.example:8883"},
+	}}
+	factory := NewFactory(nil)
+
+	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
+		_, err := factory.NewSession(t.Context(), ports.SessionSpec{ID: "durable", SessionMode: mode, Config: cfg})
+		if !errors.Is(err, shared.ErrInvalidPayload) {
+			t.Fatalf("mode %s error = %v, want ErrInvalidPayload", mode, err)
+		}
+	}
+	if _, err := factory.NewSession(t.Context(), ports.SessionSpec{
+		ID: "ephemeral", SessionMode: connectivity.SessionEphemeral, Config: cfg,
+	}); err != nil {
+		t.Fatalf("ephemeral multi-broker failover must remain valid: %v", err)
 	}
 }
 
@@ -232,5 +254,102 @@ func TestFactory_NewSender_TypedNilSession(t *testing.T) {
 	}
 	if !errors.Is(err, shared.ErrInvalidPayload) {
 		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	}
+}
+
+func TestFactoryDedicatedReceiver_AdvertisesCapability(t *testing.T) {
+	caps := NewFactory(nil).Capabilities()
+	for _, cap := range caps {
+		if cap == ports.CapDedicatedIngressSession {
+			return
+		}
+	}
+	t.Fatalf("Capabilities() = %v, want %q", caps, ports.CapDedicatedIngressSession)
+}
+
+func TestFactoryDedicatedReceiver_AliasesCannotReserveTwice(t *testing.T) {
+	sess := NewSession(SessionOptions{}, connectivity.SessionEphemeral, nil)
+	firstAlias := NewFactory(nil)
+	secondAlias := NewFactory(nil)
+	spec := func(id, topic string) ports.ReceiverSpec {
+		return ports.ReceiverSpec{
+			ID:            id,
+			Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
+		}
+	}
+
+	first, err := firstAlias.NewReceiver(t.Context(), spec("receiver-a", "isolated/a"), sess)
+	if err != nil {
+		t.Fatalf("first alias NewReceiver: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first alias returned nil receiver")
+	}
+	_, err = secondAlias.NewReceiver(t.Context(), spec("receiver-b", "isolated/b"), sess)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("second alias error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestFactoryDedicatedReceiver_ConcurrentReservation(t *testing.T) {
+	const callers = 16
+	sess := NewSession(SessionOptions{}, connectivity.SessionEphemeral, nil)
+	factory := NewFactory(nil)
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := factory.NewReceiver(t.Context(), ports.ReceiverSpec{
+				ID: fmt.Sprintf("receiver-%02d", i),
+				Subscriptions: []connectivity.SubscriptionPlan{{
+					Topic: fmt.Sprintf("isolated/%02d", i),
+					QoS:   1,
+				}},
+			}, sess)
+			results <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	succeeded := 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		if !errors.Is(err, shared.ErrInvalidConfig) {
+			t.Fatalf("reservation error = %v, want ErrInvalidConfig", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("successful receiver reservations = %d, want 1", succeeded)
+	}
+}
+
+func TestFactoryDedicatedReceiver_PreservesSenderSharing(t *testing.T) {
+	sess := NewSession(SessionOptions{}, connectivity.SessionEphemeral, nil)
+	factory := NewFactory(nil)
+	_, err := factory.NewReceiver(t.Context(), ports.ReceiverSpec{
+		ID:            "receiver",
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "isolated/receiver", QoS: 1}},
+	}, sess)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	cfg := Config{Sender: SenderOptions{QoS: 1}}
+	for _, id := range []string{"sender-a", "sender-b"} {
+		sender, err := factory.NewSender(t.Context(), ports.SenderSpec{ID: id, Config: cfg}, sess)
+		if err != nil {
+			t.Fatalf("NewSender %q: %v", id, err)
+		}
+		if sender == nil {
+			t.Fatalf("NewSender %q returned nil", id)
+		}
 	}
 }

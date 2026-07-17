@@ -28,6 +28,10 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-outbox
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
 
 sessions:
   - id: mqtt-sess
@@ -84,6 +88,9 @@ routes:
 
 	require.NotNil(t, cfg.Stores.Outbox)
 	assert.Equal(t, "dynamodb", cfg.Stores.Outbox.Type)
+
+	require.NotNil(t, cfg.Stores.ManagedSubscriptions)
+	assert.Equal(t, "dynamodb", cfg.Stores.ManagedSubscriptions.Type)
 
 	require.Len(t, cfg.Sessions, 1)
 	assert.Equal(t, "mqtt-sess", cfg.Sessions[0].ID)

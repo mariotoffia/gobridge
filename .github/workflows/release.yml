@@ -3,133 +3,624 @@ name: Release
 on:
   push:
     tags:
-      # Core module:            v1.2.3
+      # The verifier, not this broad trigger, is the canonical allow-list.
+      # Internal, unknown, moved, and non-stable tags fail before publication.
       - 'v*'
-      # Any adapter module:     adapters/aws/transport/sqs/v1.2.3
-      - 'adapters/**'
-      # Any processor module:   processors/filter/v1.2.3
-      - 'processors/**'
-      # Deployment modules:      deployment/aws-filebased-config/cdk/v1.2.3
-      - 'deployment/**'
+      - '**/v*'
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  module-release:
+  tag-policy:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - uses: actions/checkout@v4
+      - name: Require protected creation-only tag event
+        env:
+          CREATED: ${{ github.event.created }}
+          DELETED: ${{ github.event.deleted }}
+          FORCED: ${{ github.event.forced }}
+          PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          if [ "$CREATED" != "true" ] ||
+            [ "$DELETED" != "false" ] ||
+            [ "$FORCED" != "false" ] ||
+            [ "$PROTECTED" != "true" ]; then
+            echo "::error::release requires a protected, non-forced tag creation event"
+            exit 1
+          fi
+
+  validate:
+    needs: tag-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.module.outputs.tag }}
+      version: ${{ steps.module.outputs.version }}
+      path: ${{ steps.module.outputs.path }}
+      import: ${{ steps.module.outputs.import }}
+      layer: ${{ steps.module.outputs.layer }}
+      commit: ${{ steps.module.outputs.commit }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25'
 
-      - name: Determine module
+      - name: Validate tag, origins, release order, manifest, and module
         id: module
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-          # The version is always the final path segment (vX.Y.Z). Everything
-          # before it is the module path relative to the repo root; a bare
-          # vX.Y.Z tag releases the core (root) module.
-          VERSION="${TAG##*/}"
-          if [[ "$TAG" == "$VERSION" ]]; then
-            MODULE_PATH="."
-            IMPORT_PATH="github.com/mariotoffia/gobridge"
-          else
-            MODULE_PATH="${TAG%/*}"
-            IMPORT_PATH="github.com/mariotoffia/gobridge/${MODULE_PATH}"
-          fi
-
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]]; then
-            echo "::error::tag '$TAG' does not end in a semantic version (vX.Y.Z)"
-            exit 1
-          fi
-          if [[ "$MODULE_PATH" != "." && ! -f "$MODULE_PATH/go.mod" ]]; then
-            echo "::error::no go.mod at '$MODULE_PATH' — tag does not match a module"
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
-          echo "import=$IMPORT_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Verify build (${{ steps.module.outputs.path }})
-        working-directory: ${{ steps.module.outputs.path }}
         env:
-          GOWORK: off
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          go mod download
-          go build ./...
-          go test ./...
+          set -euo pipefail
+          make --no-print-directory verify-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      # The final module repeats the strict gate over all declared modules and
+      # binds every public module Origin.Hash to its exact local tag commit.
+      - name: Verify the complete published module train
+        if: steps.module.outputs.path == 'cmd/gobridge'
+        env:
+          RELEASE_VERSION: ${{ steps.module.outputs.version }}
+        run: make verify-published-modules RELEASE_VERSION="$RELEASE_VERSION"
+
+  final-release-tests:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - name: No final release test gate required for this module
+        if: needs.validate.outputs.path != 'cmd/gobridge'
+        run: echo "Full release tests are gated by the final cmd/gobridge module."
+
+      - name: Check out final tagged source
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          name: ${{ steps.module.outputs.import }} ${{ steps.module.outputs.version }}
+          go-version: '1.25'
+
+      - name: Run uncached integration release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-integration
+
+      - name: Run uncached long-running release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-long-running
+
+      - name: Run bounded MQTT ingress memory release gate
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        run: make test-mqtt-ingress-memory
+
+  external-consumer-smoke:
+    needs:
+      - validate
+      - final-release-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out final tagged source
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Resolve Paho and install gobridge outside the workspace
+        if: needs.validate.outputs.path == 'cmd/gobridge'
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: make smoke-released-modules RELEASE_TAG="$RELEASE_TAG"
+
+      - name: No external smoke required for this module
+        if: needs.validate.outputs.path != 'cmd/gobridge'
+        run: echo "External consumer smoke is gated by the final cmd/gobridge module."
+
+  github-release:
+    needs:
+      - validate
+      - final-release-tests
+      - external-consumer-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Re-resolve protected remote tag before GitHub Release
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          ORIGINAL_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const expected = process.env.EXPECTED_COMMIT;
+            const original = process.env.ORIGINAL_SHA;
+            const tag = process.env.RELEASE_TAG;
+            const {owner, repo} = context.repo;
+            if (expected !== original) {
+              throw new Error(`validated commit ${expected} differs from ${original}`);
+            }
+            const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+            let object = ref.data.object;
+            for (let depth = 0; depth < 8 && object.type === 'tag'; depth++) {
+              const annotated = await github.rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: object.sha,
+              });
+              object = annotated.data.object;
+            }
+            if (object.type !== 'commit' || object.sha !== expected) {
+              throw new Error(
+                `remote tag ${tag} resolves to ${object.type}:${object.sha}, ` +
+                `want commit:${expected}`,
+              );
+            }
+
+      - name: Create module GitHub Release after all applicable gates
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: ${{ needs.validate.outputs.import }} ${{ needs.validate.outputs.version }}
           body: |
             ## Module Release
 
-            **Module:** `${{ steps.module.outputs.import }}`
-            **Version:** ${{ steps.module.outputs.version }}
-            **Tag:** ${{ steps.module.outputs.tag }}
+            **Module:** `${{ needs.validate.outputs.import }}`
+            **Version:** ${{ needs.validate.outputs.version }}
+            **Tag:** ${{ needs.validate.outputs.tag }}
 
             ### Installation
 
             ```bash
-            go get ${{ steps.module.outputs.import }}@${{ steps.module.outputs.version }}
+            go get ${{ needs.validate.outputs.import }}@${{ needs.validate.outputs.version }}
             ```
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish the production runtime container image on core (root-module) tags.
-  # The seeder is the upstream public.ecr.aws/aws-cli image (pinned by digest in
-  # cdk/constructs/internal/seeder/image.txt via `make update-seeder-image`), so
-  # no seeder image is built here.
   image:
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - validate
+      - final-release-tests
+      - external-consumer-smoke
+      - github-release
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.external-consumer-smoke.result == 'success' &&
+      needs.github-release.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      ref: ${{ steps.image.outputs.ref }}
+      mode: ${{ steps.image.outputs.mode }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out final tagged source and all tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Set version
-        id: ver
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - name: Set up pinned QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up pinned Docker Buildx and BuildKit
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: v0.35.0
+          driver-opts: image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push runtime image
-        uses: docker/build-push-action@v6
+      - name: Re-resolve protected remote tag before image digest publication
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
+          make verify-remote-release-tag \
+            RELEASE_TAG="$RELEASE_TAG" RELEASE_COMMIT="$RELEASE_COMMIT"
+
+      - name: Fetch existing command release image association
+        id: association
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_API_URL: ${{ github.api_url }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          make --no-print-directory release-image-association \
+            RELEASE_REPOSITORY="$RELEASE_REPOSITORY" \
+            RELEASE_TAG="$RELEASE_TAG" \
+            RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Build and push image content by digest
+        if: steps.association.outputs.exists != 'true'
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/mariotoffia/gobridge:${{ steps.ver.outputs.version }}
-            ghcr.io/mariotoffia/gobridge:latest
+          outputs: type=image,name=ghcr.io/mariotoffia/gobridge,push=true,push-by-digest=true,name-canonical=true
           build-args: |
-            VERSION=${{ steps.ver.outputs.version }}
+            VERSION=${{ needs.validate.outputs.version }}
             GIT_SHA=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Select immutable image digest
+        id: image
+        env:
+          ASSOCIATION_EXISTS: ${{ steps.association.outputs.exists }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          RECORDED_DIGEST: ${{ steps.association.outputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$ASSOCIATION_EXISTS" in
+            true)
+              digest="$RECORDED_DIGEST"
+              echo "mode=resumed" >> "$GITHUB_OUTPUT"
+              ;;
+            false)
+              digest="$BUILT_DIGEST"
+              echo "mode=built" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::invalid image association state '$ASSOCIATION_EXISTS'"
+              exit 1
+              ;;
+          esac
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image has invalid digest '$digest'"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/mariotoffia/gobridge@$digest" >> "$GITHUB_OUTPUT"
+          echo "Immutable image: ghcr.io/mariotoffia/gobridge@$digest"
+
+      - name: Inspect image platform children
+        id: children
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE: ghcr.io/mariotoffia/gobridge
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw)"
+          runnable_count="$(jq '[.manifests[] |
+            select(.platform.os != "unknown" or .platform.architecture != "unknown")] |
+            length' <<<"$raw")"
+          amd64_count="$(jq '[.manifests[] |
+            select(.platform.os == "linux" and .platform.architecture == "amd64")] |
+            length' <<<"$raw")"
+          arm64_count="$(jq '[.manifests[] |
+            select(.platform.os == "linux" and .platform.architecture == "arm64")] |
+            length' <<<"$raw")"
+          if [ "$runnable_count" -ne 2 ]; then
+            echo "::error::image contains unscanned runnable platform children"
+            exit 1
+          fi
+          if [ "$amd64_count" -ne 1 ] || [ "$arm64_count" -ne 1 ]; then
+            echo "::error::image must contain exactly one linux/amd64 and one linux/arm64 child"
+            exit 1
+          fi
+          amd64="$(jq -r '.manifests[] |
+            select(.platform.os == "linux" and .platform.architecture == "amd64") |
+            .digest' <<<"$raw")"
+          arm64="$(jq -r '.manifests[] |
+            select(.platform.os == "linux" and .platform.architecture == "arm64") |
+            .digest' <<<"$raw")"
+          for digest in "$amd64" "$arm64"; do
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::image child has invalid digest '$digest'"
+              exit 1
+            fi
+          done
+          echo "amd64=$amd64" >> "$GITHUB_OUTPUT"
+          echo "arm64=$arm64" >> "$GITHUB_OUTPUT"
+
+      - name: Scan linux/amd64 child
+        # trivy-action v0.36.0, pinned to its verified release commit.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ghcr.io/mariotoffia/gobridge@${{ steps.children.outputs.amd64 }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          timeout: 10m
+
+      - name: Scan linux/arm64 child
+        # trivy-action v0.36.0, pinned to its verified release commit.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ghcr.io/mariotoffia/gobridge@${{ steps.children.outputs.arm64 }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          timeout: 10m
+
+      - name: Report validated immutable image digest
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          MODE: ${{ steps.image.outputs.mode }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Validated immutable release image ($MODE)"
+            echo
+            echo '```text'
+            echo "$IMAGE_REF"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  image-association:
+    needs:
+      - validate
+      - github-release
+      - image
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.image.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      digest: ${{ steps.associate.outputs.digest }}
+      ref: ${{ steps.associate.outputs.ref }}
+      mode: ${{ steps.associate.outputs.mode }}
+    steps:
+      - name: Validate or create exact digest association
+        id: associate
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          ASSET_NAME: gobridge-image-digest.txt
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_DIGEST: ${{ needs.image.outputs.digest }}
+          EXPECTED_REF: ${{ needs.image.outputs.ref }}
+          ORIGINAL_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const assetName = process.env.ASSET_NAME;
+            const expectedCommit = process.env.EXPECTED_COMMIT;
+            const expectedDigest = process.env.EXPECTED_DIGEST;
+            const expectedRef = process.env.EXPECTED_REF;
+            const originalSHA = process.env.ORIGINAL_SHA;
+            const tag = process.env.RELEASE_TAG;
+            const {owner, repo} = context.repo;
+
+            if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest)) {
+              throw new Error(`invalid expected digest ${expectedDigest}`);
+            }
+            if (expectedRef !== `ghcr.io/mariotoffia/gobridge@${expectedDigest}`) {
+              throw new Error(`invalid expected image ref ${expectedRef}`);
+            }
+            if (expectedCommit !== originalSHA) {
+              throw new Error(`validated commit ${expectedCommit} differs from ${originalSHA}`);
+            }
+            const expectedBody = `${expectedRef}\n`;
+
+            async function requireRemoteTag() {
+              const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+              let object = ref.data.object;
+              for (let depth = 0; depth < 8 && object.type === 'tag'; depth++) {
+                const annotated = await github.rest.git.getTag({
+                  owner,
+                  repo,
+                  tag_sha: object.sha,
+                });
+                object = annotated.data.object;
+              }
+              if (object.type !== 'commit' || object.sha !== expectedCommit) {
+                throw new Error(
+                  `remote tag ${tag} resolves to ${object.type}:${object.sha}, ` +
+                  `want commit:${expectedCommit}`,
+                );
+              }
+            }
+
+            async function getRelease() {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              return response.data;
+            }
+
+            function oneAsset(release) {
+              const matches = release.assets.filter(asset => asset.name === assetName);
+              if (matches.length > 1) {
+                throw new Error(`release has ${matches.length} ${assetName} assets`);
+              }
+              return matches[0] || null;
+            }
+
+            async function download(asset) {
+              if (!asset) return null;
+              try {
+                const response = await github.request(`GET ${asset.url}`, {
+                  headers: {accept: 'application/octet-stream'},
+                });
+                if (typeof response.data === 'string') return response.data;
+                return Buffer.from(response.data).toString('utf8');
+              } catch (error) {
+                if (error.status === 404) return null;
+                throw error;
+              }
+            }
+
+            async function association() {
+              const release = await getRelease();
+              const value = await download(oneAsset(release));
+              if (value !== null && value !== expectedBody) {
+                throw new Error(`release digest asset mismatch: ${JSON.stringify(value)}`);
+              }
+              return {release, value};
+            }
+
+            await requireRemoteTag();
+            let state = await association();
+            let mode = 'resumed';
+            if (state.value === null) {
+              state = await association();
+              if (state.value === null) {
+                await requireRemoteTag();
+                const data = Buffer.from(expectedBody, 'utf8');
+                await github.rest.repos.uploadReleaseAsset({
+                  owner,
+                  repo,
+                  release_id: state.release.id,
+                  name: assetName,
+                  data,
+                  headers: {
+                    'content-type': 'text/plain; charset=utf-8',
+                    'content-length': data.length,
+                  },
+                });
+                mode = 'uploaded';
+              }
+            }
+            const finalState = await association();
+            if (finalState.value !== expectedBody) {
+              throw new Error('release digest association was not persisted exactly');
+            }
+            await requireRemoteTag();
+
+            core.setOutput('digest', expectedDigest);
+            core.setOutput('ref', expectedRef);
+            core.setOutput('mode', mode);
+            await core.summary
+              .addHeading(`Immutable release image (${mode})`)
+              .addCodeBlock(expectedRef, 'text')
+              .write();
+
+  latest-promotion:
+    needs:
+      - validate
+      - image-association
+    if: >-
+      needs.validate.outputs.path == 'cmd/gobridge' &&
+      needs.image-association.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: gobridge-latest-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out validated tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: v0.35.0
+          driver: docker
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Revalidate associated digest and promote guarded latest
+        env:
+          DIGEST: ${{ needs.image-association.outputs.digest }}
+          GITHUB_SHA: ${{ github.sha }}
+          IMAGE: ghcr.io/mariotoffia/gobridge
+          IMAGE_REF: ${{ needs.image-association.outputs.ref }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$RELEASE_COMMIT" = "$GITHUB_SHA" ] || {
+            echo "::error::validated commit differs from original workflow SHA"
+            exit 1
+          }
+          [ "$IMAGE_REF" = "$IMAGE@$DIGEST" ] || {
+            echo "::error::associated image ref does not match associated digest"
+            exit 1
+          }
+          make verify-release-image-digest RELEASE_IMAGE_DIGEST="$DIGEST"
+          decision="$(make --no-print-directory release-latest-version \
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            RELEASE_COMMIT="$RELEASE_COMMIT")"
+          printf '%s\n' "$decision"
+          promote="$(awk -F= '$1 == "promote" { print $2 }' <<<"$decision")"
+          highest="$(awk -F= '$1 == "highest" { print $2 }' <<<"$decision")"
+          if [ "$promote" = "true" ]; then
+            docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
+            promoted="$(docker buildx imagetools inspect \
+              "$IMAGE:latest" --format '{{.Manifest.Digest}}')"
+            if [ "$promoted" != "$DIGEST" ]; then
+              echo "::error::latest resolved to '$promoted', want '$DIGEST'"
+              exit 1
+            fi
+          else
+            echo "$RELEASE_VERSION is older than $highest; latest remains unchanged."
+          fi

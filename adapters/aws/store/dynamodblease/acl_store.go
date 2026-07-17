@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	defaultTableName = "gobridge-leases"
+	// DefaultTableName is the adapter default used when no table override is configured.
+	DefaultTableName = "gobridge-leases"
 
 	attrPK         = "PK"
 	attrOwner      = "owner"
@@ -56,15 +57,11 @@ type Store struct {
 	clk       clock.Clock
 	logger    *slog.Logger
 
-	// obsMu guards observations. Takeover of an ACTIVELY-HELD lease uses a
-	// local-clock observation window instead of comparing the owner's written
-	// expires_at to the taker's clock, which removes the cross-clock skew hazard
-	// where a taker whose clock runs fast could seize an unexpired lease
-	// (finding M5). observations records, per lease, the liveness tuple
-	// (owner, version, renewed_at, expires_at) this process last saw and WHEN (on
-	// this process's own clock) it first saw that exact tuple. expires_at is in
-	// the tuple so a live legacy (renewed_at-absent) owner's advancing expiry
-	// resets the window rather than looking crashed (split-brain-on-foreign-rows).
+	// obsMu guards process-local monotonic baselines. Confirmed elapsed time is
+	// persisted on the existing lease row and compare-and-set against the exact
+	// liveness tuple plus evidence generation. The local map contains no
+	// cross-process timestamps and is discarded after every failed read/write.
+
 	obsMu        sync.Mutex
 	observations map[string]leaseObservation
 
@@ -76,25 +73,13 @@ type Store struct {
 	ttlPreflightAdvisory bool
 }
 
-// leaseObservation is one process's local record that a lease appeared held by
-// a particular liveness tuple, and the local-clock instant that tuple was first
-// observed. The liveness tuple is (owner, version, renewedAt, expiresAt): a
-// takeover is permitted only once the SAME tuple has persisted for at least the
-// lease's own declared TTL, measured entirely on this process's clock.
-//
-// expiresAt is part of the tuple for the LEGACY (renewed_at-ABSENT) case: such a
-// row exposes NO renewed_at liveness signal, so a live owner is distinguished
-// from a crashed one ONLY by whether it keeps advancing expires_at. Including
-// expires_at means a live legacy owner's advancing expiry RESETS the observation
-// window, so it is never seized as if crashed (see observeOrSeize). For modern
-// rows renewed_at and expires_at always move together, so this term is redundant
-// but harmless there.
+// leaseObservation is one process-local monotonic baseline for evidence read
+// successfully from DynamoDB. Only elapsed time since observedAt may be added,
+// and only when the next exact-tuple/evidence compare-and-set succeeds.
 type leaseObservation struct {
-	owner     string
-	version   uint64
-	renewedAt int64 // epoch millis, as written by the owner (0 == legacy/absent)
-	expiresAt int64 // epoch millis; the SOLE liveness signal for legacy rows
-	firstSeen time.Time
+	tuple      leaseTuple
+	evidence   observationEvidence
+	observedAt time.Time
 }
 
 // Option configures a Store.
@@ -159,7 +144,7 @@ func WithTTLPreflightAdvisory() Option {
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:    client,
-		tableName: defaultTableName,
+		tableName: DefaultTableName,
 		clk:       clock.System,
 	}
 	for _, o := range opts {
@@ -177,45 +162,29 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 //
 //   - An ACTIVELY-HELD lease whose owner is THIS ownerID (a crashed-and-
 //     restarted node whose row still names it) is seized immediately, fenced on
-//     the current (owner, version). A node cannot race itself — duplicate
-//     ownerIDs across nodes are a fatal misconfiguration, not a supported
-//     topology — so the observation window is skipped, sparing the restarted
-//     owner from watching its OWN stale tuple for a full TTL (which would leave
-//     the partition ownerless for up to ~2×TTL).
+//     the current exact tuple and observation evidence. A node cannot race
+//     itself; duplicate ownerIDs across nodes are a fatal misconfiguration.
+//     The observation window is therefore skipped.
 //
-//   - An ACTIVELY-HELD lease held by a DIFFERENT owner is taken over through a
-//     local-clock OBSERVATION window (finding M5): the taker seizes only after
-//     it has seen the owner's liveness tuple (owner, version, renewed_at)
-//     unchanged for at least the lease's own declared TTL, measured on the
-//     TAKER's clock. The seize is fenced on that exact tuple, so a renewal that
-//     lands after observation began aborts the takeover. The previous
-//     implementation compared the owner-written expires_at to the taker's
-//     clock, so a taker with a fast clock could seize an unexpired lease; the
-//     observation window removes that cross-clock comparison entirely.
+//   - An ACTIVELY-HELD lease held by a DIFFERENT owner is observed through
+//     persisted unchanged-tuple evidence on this same lease row. Each observer
+//     may CAS-add only local monotonic elapsed time since its successful read.
+//     The CAS includes PK, owner, version, renewed_at, expires_at, fingerprint,
+//     elapsed value, and generation, so competing observers cannot double-count
+//     overlapping intervals. A replacement process inherits confirmed elapsed
+//     evidence without subtracting timestamps written by another host.
 //
-// Residual assumption: a standby that starts observing only AFTER the owner has
-// already died needs up to ~2×TTL to seize (it must observe the now-final tuple
-// for a full TTL first). A standby that polls continuously — the normal HA case
-// — begins its observation window at roughly the owner's last successful
-// renewal, so it seizes ~TTL after that renewal. The correctness of the window
-// relies only on this process's own clock being monotonic within a takeover,
-// not on agreement with the owner's clock.
-//
-// Operational bound (finding F4): because a COLD standby — one that starts AFTER
-// the owner died, e.g. the replacement pod brought up by a rolling deploy — can
-// take up to ~2×TTL to seize, any strict "fail over within N seconds" objective
-// requires lease_ttl ≤ N/2. For the common ≤60s target, configure lease_ttl
-// ≤ 30s. The ~2×TTL bound assumes the standby BEGINS observing within ~TTL of
-// the owner's death; one brought up even later seizes ~TTL after it first
-// observes the final tuple, so a badly delayed rollout can exceed 2×TTL from
-// death — budget standby-start latency into the objective. Shrinking the
-// cold-standby case to ~TTL would require persisting the first-seen observation
-// (kept in per-process memory today — see observationFor/recordObservation).
-// That need not touch the safety-critical fencing row — a separate observation
-// record would do — but the added write path and its failure modes are out of
-// scope, so the 2×TTL cold-standby bound is left as a documented operational
-// constraint.
+// Renewal, release, takeover, and fresh ownership atomically clear evidence.
+// Foreign or legacy tuple mutation makes the fingerprint differ and resets the
+// evidence to zero through an exact-row CAS. Malformed evidence fails closed.
+// DynamoDB TTL remains disabled because this row is also the fencing counter.
 func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
+	if ttl <= 0 {
+		return persistence.LeaseToken{}, shared.ErrInvalidConfig.WithMessage("dynamodblease: lease TTL must be positive")
+	}
+	if ownerID == "" {
+		return persistence.LeaseToken{}, shared.ErrInvalidConfig.WithMessage("dynamodblease: lease owner must be non-empty")
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: acquire", "lease_id", leaseID, "owner_id", ownerID)
 	}
@@ -250,203 +219,143 @@ func (s *Store) Acquire(ctx context.Context, leaseID, ownerID string, ttl time.D
 		return persistence.LeaseToken{Version: 1, Owner: ownerID}, nil
 	}
 	if !isConditionFailed(err) {
+		s.clearObservation(leaseID)
 		return persistence.LeaseToken{}, wrapErr(err, "", "leaseID", leaseID, "ownerID", ownerID)
 	}
 
 	// Item exists. Read it (strongly consistent) to choose the takeover path.
 	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return persistence.LeaseToken{}, err
+		}
 		return persistence.LeaseToken{}, wrapErr(err, "lease takeover read failed", "leaseID", leaseID, "ownerID", ownerID)
 	}
+	readAt := s.clk.Now()
 	if !row.present {
-		// The row vanished between PutItem and GetItem (concurrent release +
-		// delete is not possible — rows are never deleted — but be defensive).
-		// Signal contention so the caller's poll retries with a fresh acquire.
+		s.clearObservation(leaseID)
 		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
 			WithMessage("lease row disappeared during takeover read").
 			With("leaseID", leaseID)
 	}
 
-	if row.owner == "" || row.expiresAt <= 0 {
-		// Released (or explicitly zero-expiry) lease: no live owner. A
-		// version-fenced takeover is safe without any clock comparison.
+	if err := ensureFencingVersionIncrementable(leaseID, row.version); err != nil {
 		s.clearObservation(leaseID)
-		return s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
-			"#own = :cur_own AND #ver = :cur_ver",
-			nil,
-			map[string]ddbtypes.AttributeValue{
-				":cur_own": &ddbtypes.AttributeValueMemberS{Value: row.owner},
-				":cur_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(row.version)},
-			})
-	}
-
-	return s.observeOrSeize(ctx, leaseID, ownerID, ttl, endpoints, now, expiresAt, row)
-}
-
-// observeOrSeize implements the local-clock observation-based takeover of an
-// actively-held lease (finding M5).
-func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl time.Duration, endpoints map[string]string, now, expiresAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
-	// Same-owner fast path: the lease row still names THIS ownerID as owner.
-	// The only writer that ever stamps owner=ownerID is this node — duplicate
-	// ownerIDs across distinct nodes are a fatal misconfiguration, not a
-	// supported topology (a fencing token cannot protect against two live
-	// processes claiming one identity). The store itself cannot defend against
-	// this, so the runtime that DERIVES ownerID guards it upstream: it suffixes
-	// the human-facing instance_id with a per-process boot nonce
-	// (Runtime.leaseOwnerID), so two replicas that share an instance_id still
-	// present DISTINCT ownerIDs here and take the observation path against each
-	// other instead of instantly counter-seizing via this fast path — the
-	// permanent lease ping-pong of finding C3-HIGH. Given distinct-owner
-	// invariant, a node cannot race itself, so seize immediately, fenced on the
-	// exact (owner, version) just read: a concurrent takeover by a DIFFERENT
-	// owner (which increments version) still aborts this claim via the
-	// ConditionExpression and falls back to ErrAlreadyExists. This spares a
-	// crashed-and-restarted owner (fresh process, empty observation map) from
-	// observing its OWN stale tuple for a full TTL before reclaiming — otherwise
-	// the partition stays ownerless for up to ~2×TTL.
-	//
-	// NOTE (finding C3-CRITICAL): the runtime no longer hammers this fast path in
-	// a zombie retry loop. A single-use session that cannot re-Start after a
-	// step-down Close now RELEASES the lease and escalates to a process restart
-	// instead of re-Acquiring here on every supervised retry (which bumped the
-	// version and reset every standby's observation window perpetually).
-	if row.owner == ownerID {
-		s.clearObservation(leaseID)
-		return s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
-			"#own = :cur_own AND #ver = :cur_ver",
-			nil,
-			map[string]ddbtypes.AttributeValue{
-				":cur_own": &ddbtypes.AttributeValueMemberS{Value: row.owner},
-				":cur_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(row.version)},
-			})
-	}
-
-	obs, ok := s.observationFor(leaseID)
-	tupleChanged := !ok || obs.owner != row.owner || obs.version != row.version ||
-		obs.renewedAt != row.renewedAt || obs.expiresAt != row.expiresAt
-	if tupleChanged {
-		// First sighting of this liveness tuple, or the owner advanced it since we
-		// last looked (renewed_at OR expires_at moved, or the version bumped):
-		// (re)start the observation window. We cannot seize yet. Tracking
-		// expires_at is what stops a LIVE legacy owner (renewed_at absent, expiry
-		// still advancing) from ever presenting a frozen tuple and looking crashed.
-		s.recordObservation(leaseID, leaseObservation{
-			owner:     row.owner,
-			version:   row.version,
-			renewedAt: row.renewedAt,
-			expiresAt: row.expiresAt,
-			firstSeen: now,
-		})
-		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
-			WithMessage("lease held; observing for takeover").
-			With("leaseID", leaseID).
-			With("owner", row.owner)
-	}
-
-	// The lease's own declared TTL is expires_at - renewed_at: a difference of
-	// two timestamps BOTH written by the owner on the same clock, so it is
-	// skew-immune. We measure elapsed time against our OWN clock only.
-	//
-	// Legacy rows written before the renewed_at attribute existed carry
-	// renewed_at=0 (finding c13-legacy-renewedat). Treating that epoch-1970 zero
-	// as a real renewal instant makes observedTTL = expires_at - 0 ≈ the current
-	// epoch in millis (~decades), so a standby would wait DECADES to take over an
-	// orphaned legacy lease and failover would never happen. Treat a
-	// missing/legacy renewed_at (<= 0) as an unknown-but-bounded renewal time and
-	// fall back to the caller-provided TTL window so normal expiry math applies:
-	// takeover then becomes possible within one TTL of first observing the final
-	// tuple instead of never.
-	observedTTL := ttl
-	if row.renewedAt > 0 {
-		if d := time.Duration(row.expiresAt-row.renewedAt) * time.Millisecond; d > 0 {
-			observedTTL = d
-		}
-	}
-	if now.Sub(obs.firstSeen) < observedTTL {
-		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
-			WithMessage("lease held; observation window not yet elapsed").
-			With("leaseID", leaseID)
-	}
-
-	// The owner has not renewed for a full TTL of our local time. Seize, fencing
-	// on the exact observed tuple so a renewal that landed after observation
-	// began (owner recovered) aborts the takeover.
-	//
-	// Legacy rows (finding c13-legacy-renewedat) carry NO renewed_at attribute,
-	// so obs.renewedAt is 0 (optionalNumAttr decodes ABSENT→0). In DynamoDB a
-	// `#ren = :obs_ren` equality is FALSE against an ABSENT attribute (only
-	// attribute_not_exists observes absence), so an equality fence would ALWAYS
-	// fail the conditional write and a crashed legacy owner would never fail over
-	// — the seize would bounce to ErrAlreadyExists forever. Fence on the ABSENCE
-	// of renewed_at instead, while STILL fencing on the observed owner AND version
-	// so two standbys observing the same legacy row cannot both seize (only one
-	// version fence wins). The SET clause then writes a positive renewed_at, so
-	// this legacy branch is a one-shot upgrade that heals the row.
-	//
-	// SAFETY INVARIANT (now ENFORCED, not assumed): a renewed_at-absent row is
-	// seized ONLY when its ENTIRE liveness tuple — owner, version AND expires_at —
-	// stayed FROZEN for a full TTL of local time. The observation tuple includes
-	// expires_at (see leaseObservation), so a LIVE legacy owner that keeps
-	// advancing expires_at (a restore, a migration, a pre-repo binary, a
-	// hand-seeded row — cases where "no live writer omits renewed_at" cannot be
-	// assumed) continually RESETS the window and is never seized. Absence of
-	// renewed_at is treated as a healed-vs-legacy marker only, NOT as liveness
-	// evidence; crashed-vs-live rests on the frozen expires_at. This is what makes
-	// the attribute_not_exists takeover safe against FOREIGN concurrent writers.
-	//
-	// The seize CONDITION also fences on expires_at STABILITY (#exp), closing the
-	// TOCTOU between our final getRow and this UpdateItem: a dead foreign owner
-	// that REVIVES in that gap and advances ONLY expires_at (owner+version
-	// unchanged, renewed_at still absent — the most common minimal-lease writer)
-	// would otherwise satisfy owner+version+attribute_not_exists(#ren) and be
-	// wrongly seized. A genuinely crashed owner has a STATIC expires_at, so the
-	// #exp fence holds and the legitimate seize still succeeds. So the seize is
-	// gated on owner + version + renewed_at-absence + expires_at-stability, and a
-	// live reviver can never be seized.
-	//
-	// A MODERN row can never present renewedAt==0: Acquire's PutItem, Renew, and
-	// every runTakeover SET clause write renewed_at = now-millis (> 0), so the
-	// attribute_not_exists(#ren) branch is legacy-exclusive. (A row with renewed_at
-	// literally present as "0" is unreachable by any write path; were one
-	// hand-crafted, attribute_not_exists would be FALSE and this seize would fail
-	// CLOSED — safe: no incorrect takeover.)
-	renCond := "#ren = :obs_ren"
-	extraValues := map[string]ddbtypes.AttributeValue{
-		":obs_own": &ddbtypes.AttributeValueMemberS{Value: obs.owner},
-		":obs_ver": &ddbtypes.AttributeValueMemberN{Value: uintStr(obs.version)},
-		":obs_ren": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(obs.renewedAt, 10)},
-	}
-	if obs.renewedAt == 0 {
-		renCond = "attribute_not_exists(#ren)"
-		delete(extraValues, ":obs_ren")
-	}
-	// Fence on the observed expires_at, built the same dynamic way as #ren so
-	// absence and presence are handled SYMMETRICALLY: comparing #exp = 0 against a
-	// MISSING attribute is FALSE in DynamoDB and would wrongly BLOCK a legitimate
-	// seize of a row that simply has no expires_at. (observeOrSeize is only reached
-	// with a positive expires_at today — Acquire routes expires_at<=0 to the
-	// released fast path — so obs.expiresAt==0 is defensive, kept for correctness
-	// if that guard ever changes or a row is hand-seeded.)
-	expCond := "#exp = :obs_expires"
-	if obs.expiresAt == 0 {
-		expCond = "attribute_not_exists(#exp)"
-	} else {
-		extraValues[":obs_expires"] = &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(obs.expiresAt, 10)}
-	}
-	tok, err := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
-		"#own = :obs_own AND #ver = :obs_ver AND "+renCond+" AND "+expCond,
-		map[string]string{"#ren": attrRenewedAt, "#exp": attrExpiresAt},
-		extraValues)
-	if err != nil {
-		if errors.Is(err, shared.ErrAlreadyExists) {
-			// Owner renewed under us; drop the stale window so the next poll
-			// starts observing the new tuple rather than hot-retrying a seize.
-			s.clearObservation(leaseID)
-		}
 		return persistence.LeaseToken{}, err
 	}
+
+	if row.owner == "" {
+		condition, names, values := takeoverCondition(row, true)
+		token, takeoverErr := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt,
+			condition, names, values)
+		if takeoverErr != nil {
+			s.clearObservation(leaseID)
+			return persistence.LeaseToken{}, takeoverErr
+		}
+		s.clearObservation(leaseID)
+		return token, nil
+	}
+
+	return s.observeOrSeize(ctx, leaseID, ownerID, endpoints, now, expiresAt, readAt, row)
+}
+
+// observeOrSeize advances persisted monotonic observation evidence and takes
+// over an actively-held lease only after a full unchanged-tuple duration. Local
+// baselines are sampled after successful consistent-read or observation-CAS
+// responses; the CAS that reaches the threshold attempts takeover immediately.
+func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt, readAt time.Time, row leaseRow) (persistence.LeaseToken, error) {
+	row.leaseID = leaseID
+	if row.owner == ownerID {
+		condition, names, values := takeoverCondition(row, true)
+		token, err := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt, condition, names, values)
+		if err != nil {
+			s.clearObservation(leaseID)
+			return persistence.LeaseToken{}, err
+		}
+		s.clearObservation(leaseID)
+		return token, nil
+	}
+
+	required, err := requiredObservationDuration(row)
+	if err != nil {
+		s.clearObservation(leaseID)
+		return persistence.LeaseToken{}, err
+	}
+	tuple := row.tuple()
+	fingerprint := tuple.fingerprint()
+
+	if !row.observation.present || row.observation.fingerprint != fingerprint {
+		generation, generationErr := nextObservationGeneration(row.observation.generation, false)
+		if generationErr != nil {
+			s.clearObservation(leaseID)
+			return persistence.LeaseToken{}, generationErr
+		}
+		next := observationEvidence{present: true, fingerprint: fingerprint, generation: generation}
+		if err := s.writeObservationCAS(ctx, row, next); err != nil {
+			return persistence.LeaseToken{}, err
+		}
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: s.clk.Now()})
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
+			WithMessage("lease held; persisted takeover observation started").With("leaseID", leaseID)
+	}
+
+	if row.observation.elapsed >= required {
+		condition, names, values := takeoverCondition(row, true)
+		token, takeoverErr := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt, condition, names, values)
+		if takeoverErr != nil {
+			s.clearObservation(leaseID)
+			return persistence.LeaseToken{}, takeoverErr
+		}
+		s.clearObservation(leaseID)
+		return token, nil
+	}
+
+	local, ok := s.observationFor(leaseID)
+	if !ok || !local.tuple.equal(tuple) || local.evidence != row.observation {
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: readAt})
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
+			WithMessage("lease held; takeover observation baseline refreshed").With("leaseID", leaseID)
+	}
+
+	delta := readAt.Sub(local.observedAt)
+	if delta < 0 {
+		s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: row.observation, observedAt: readAt})
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
+			WithMessage("lease held; local observation clock regressed").With("leaseID", leaseID)
+	}
+	if delta == 0 {
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
+			WithMessage("lease held; no new takeover observation elapsed").With("leaseID", leaseID)
+	}
+
+	nextElapsed := saturatingObservationDuration(row.observation.elapsed, delta)
+	generation, generationErr := nextObservationGeneration(row.observation.generation, nextElapsed >= required)
+	if generationErr != nil {
+		s.clearObservation(leaseID)
+		return persistence.LeaseToken{}, generationErr
+	}
+	next := observationEvidence{
+		present: true, fingerprint: fingerprint,
+		elapsed: nextElapsed, generation: generation,
+	}
+	if err := s.writeObservationCAS(ctx, row, next); err != nil {
+		return persistence.LeaseToken{}, err
+	}
+	s.recordObservation(leaseID, leaseObservation{tuple: tuple, evidence: next, observedAt: s.clk.Now()})
+
+	if next.elapsed < required {
+		return persistence.LeaseToken{}, shared.ErrAlreadyExists.
+			WithMessage("lease held; persisted takeover observation incomplete").With("leaseID", leaseID)
+	}
+	row.observation = next
+	condition, names, values := takeoverCondition(row, true)
+	token, takeoverErr := s.runTakeover(ctx, leaseID, ownerID, endpoints, now, expiresAt, condition, names, values)
+	if takeoverErr != nil {
+		s.clearObservation(leaseID)
+		return persistence.LeaseToken{}, takeoverErr
+	}
 	s.clearObservation(leaseID)
-	return tok, nil
+	return token, nil
 }
 
 // runTakeover issues the version-incrementing takeover UpdateItem shared by the
@@ -454,6 +363,13 @@ func (s *Store) observeOrSeize(ctx context.Context, leaseID, ownerID string, ttl
 // condition and any extra names/values it references; runTakeover appends the
 // standard SET clause, endpoints, and the legacy-ttl strip.
 func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoints map[string]string, now, expiresAt time.Time, cond string, extraNames map[string]string, extraValues map[string]ddbtypes.AttributeValue) (persistence.LeaseToken, error) {
+	versionValue, ok := extraValues[":tuple_version"].(*ddbtypes.AttributeValueMemberN)
+	if ok {
+		version, parseErr := strconv.ParseUint(versionValue.Value, 10, 64)
+		if parseErr != nil || ensureFencingVersionIncrementable(leaseID, version) != nil {
+			return persistence.LeaseToken{}, fencingVersionExhausted(leaseID)
+		}
+	}
 	pk := leaseKey(leaseID)
 
 	updateExpr := "SET #own = :owner, #ver = #ver + :one, #acq = :now_ms, #exp = :exp_ms, #ren = :now_ms"
@@ -481,9 +397,12 @@ func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoi
 		exprNames["#ep"] = attrEndpoints
 		exprValues[":ep"] = marshalEndpoints(endpoints)
 	}
-	// Strip any legacy ttl a pre-fix build may have stamped (MF-1/J1).
-	updateExpr += " REMOVE #ttl"
+	// Takeover starts a new ownership tuple and clears all observation evidence.
+	updateExpr += " REMOVE #ttl, #obs_fp, #obs_elapsed, #obs_gen"
 	exprNames["#ttl"] = attrTTL
+	exprNames["#obs_fp"] = attrObservationFingerprint
+	exprNames["#obs_elapsed"] = attrObservationElapsed
+	exprNames["#obs_gen"] = attrObservationGeneration
 
 	result, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
@@ -515,15 +434,23 @@ func (s *Store) runTakeover(ctx context.Context, leaseID, ownerID string, endpoi
 // leaseRow is a decoded snapshot of the stored lease item used by the takeover
 // decision. expiresAt/renewedAt are epoch millis.
 type leaseRow struct {
-	present   bool
-	owner     string
-	version   uint64
-	expiresAt int64
-	renewedAt int64
+	leaseID          string
+	present          bool
+	owner            string
+	ownerPresent     bool
+	version          uint64
+	versionPresent   bool
+	expiresAt        int64
+	expiresAtPresent bool
+	renewedAt        int64
+	renewedAtPresent bool
+	observation      observationEvidence
+	endpoints        map[string]string
 }
 
-// getRow reads the lease item with a strongly consistent read and decodes the
-// fields the takeover logic needs.
+// getRow reads and validates the complete persisted lease-row contract. Rows
+// predating observation evidence are accepted with zero evidence; no base tuple
+// field is optional.
 func (s *Store) getRow(ctx context.Context, leaseID string) (leaseRow, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: &s.tableName,
@@ -533,34 +460,86 @@ func (s *Store) getRow(ctx context.Context, leaseID string) (leaseRow, error) {
 		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
+		s.clearObservation(leaseID)
 		return leaseRow{}, err
 	}
 	if len(result.Item) == 0 {
-		return leaseRow{present: false}, nil
+		return leaseRow{leaseID: leaseID, present: false}, nil
 	}
-	// A lease row that exists MUST carry a parseable fencing version; a
-	// present-but-corrupt version is surfaced rather than silently read as 0
-	// (which would reset the fence). A genuinely absent attribute (legacy row)
-	// is tolerated as 0.
-	version, err := optionalNumAttr(result.Item, attrVersion)
+	row, decodeErr := decodeLeaseRow(result.Item, leaseID)
+	if decodeErr != nil {
+		s.clearObservation(leaseID)
+		return leaseRow{}, decodeErr
+	}
+	return row, nil
+}
+
+func decodeLeaseRow(item map[string]ddbtypes.AttributeValue, leaseID string) (leaseRow, error) {
+	pk, pkPresent, err := optionalStringAttr(item, attrPK)
+	if err != nil || !pkPresent || pk != leaseKey(leaseID) {
+		return leaseRow{}, corruptLeaseRow(leaseID, "missing, non-string, or mismatched lease key")
+	}
+	owner, ownerPresent, err := optionalStringAttr(item, attrOwner)
+	if err != nil || !ownerPresent {
+		return leaseRow{}, corruptLeaseRow(leaseID, "owner must be present and string-typed")
+	}
+	version, versionPresent, err := optionalUintAttr(item, attrVersion)
+	if err != nil || !versionPresent || version == 0 || version == ^uint64(0) {
+		return leaseRow{}, corruptLeaseRow(leaseID, "version must be present, positive, fit uint64, and remain incrementable")
+	}
+	renewedAt, renewedAtPresent, err := optionalInt64Attr(item, attrRenewedAt)
+	if err != nil || !renewedAtPresent || renewedAt <= 0 {
+		return leaseRow{}, corruptLeaseRow(leaseID, "renewed_at must be present, positive, and fit int64 epoch milliseconds")
+	}
+	expiresAt, expiresAtPresent, err := optionalInt64Attr(item, attrExpiresAt)
+	if err != nil || !expiresAtPresent {
+		return leaseRow{}, corruptLeaseRow(leaseID, "expires_at must be present, non-negative, and fit int64 epoch milliseconds")
+	}
+	row := leaseRow{
+		leaseID: leaseID, present: true,
+		owner: owner, ownerPresent: true,
+		version: version, versionPresent: true,
+		expiresAt: expiresAt, expiresAtPresent: true,
+		renewedAt: renewedAt, renewedAtPresent: true,
+	}
+	if owner == "" {
+		if expiresAt != 0 {
+			return leaseRow{}, corruptLeaseRow(leaseID, "empty owner is valid only for an explicitly released row with expires_at zero")
+		}
+	} else {
+		if expiresAt <= renewedAt {
+			return leaseRow{}, corruptLeaseRow(leaseID, "active lease expires_at must be greater than renewed_at")
+		}
+		if _, durationErr := requiredObservationDuration(row); durationErr != nil {
+			return leaseRow{}, corruptLeaseRow(leaseID, "active lease duration is negative or overflows time.Duration")
+		}
+	}
+	observation, err := decodeObservationEvidence(item)
 	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+		return leaseRow{}, corruptLeaseRow(leaseID, "observation evidence is partial, negative, or overflows")
 	}
-	expiresAt, err := optionalNumAttr(result.Item, attrExpiresAt)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
+	row.observation = observation
+	row.endpoints = unmarshalEndpoints(item)
+	return row, nil
+}
+
+func ensureFencingVersionIncrementable(leaseID string, version uint64) error {
+	if version >= ^uint64(0)-1 {
+		return fencingVersionExhausted(leaseID)
 	}
-	renewedAt, err := optionalNumAttr(result.Item, attrRenewedAt)
-	if err != nil {
-		return leaseRow{}, wrapErr(err, "lease row read failed", "leaseID", leaseID)
-	}
-	return leaseRow{
-		present:   true,
-		owner:     strAttr(result.Item, attrOwner),
-		version:   version,
-		expiresAt: int64(expiresAt),
-		renewedAt: int64(renewedAt),
-	}, nil
+	return nil
+}
+
+func fencingVersionExhausted(leaseID string) error {
+	return shared.ErrInvalidConfig.
+		WithMessage("dynamodblease: fencing version is not safely incrementable").
+		With("leaseID", leaseID)
+}
+
+func corruptLeaseRow(leaseID, detail string) error {
+	return shared.ErrInvalidConfig.
+		WithMessage("dynamodblease: corrupt lease row: "+detail).
+		With("leaseID", leaseID)
 }
 
 func (s *Store) observationFor(leaseID string) (leaseObservation, bool) {
@@ -588,6 +567,9 @@ func (s *Store) clearObservation(leaseID string) {
 // Renew extends the lease TTL. The caller's token must match the stored
 // owner and version. The returned token keeps the same version.
 func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error) {
+	if token.Version == ^uint64(0) {
+		return persistence.LeaseToken{}, fencingVersionExhausted(leaseID)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: renew", "lease_id", leaseID, "owner_id", token.Owner)
 	}
@@ -614,10 +596,12 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 		exprNames["#ep"] = attrEndpoints
 		exprValues[":ep"] = marshalEndpoints(endpoints)
 	}
-	// Strip any legacy ttl so a renewed (actively-held) row is never reaped
-	// (MF-1/J1). This sheds a stale ttl within one renew interval of upgrade.
-	updateExpr += " REMOVE #ttl"
+	// Renewal advances the liveness tuple and atomically resets takeover evidence.
+	updateExpr += " REMOVE #ttl, #obs_fp, #obs_elapsed, #obs_gen"
 	exprNames["#ttl"] = attrTTL
+	exprNames["#obs_fp"] = attrObservationFingerprint
+	exprNames["#obs_elapsed"] = attrObservationElapsed
+	exprNames["#obs_gen"] = attrObservationGeneration
 
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.tableName,
@@ -635,6 +619,7 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 		}
 		return persistence.LeaseToken{}, wrapErr(err, "lease renew update failed", "leaseID", leaseID, "ownerID", token.Owner)
 	}
+	s.clearObservation(leaseID)
 	return token, nil
 }
 
@@ -647,6 +632,9 @@ func (s *Store) Renew(ctx context.Context, leaseID string, token persistence.Lea
 // subsequent fresh acquire would reset the version to 1 and break
 // fencing-token monotonicity across the cluster.
 func (s *Store) Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error {
+	if token.Version == ^uint64(0) {
+		return fencingVersionExhausted(leaseID)
+	}
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "dynamodblease: release", "lease_id", leaseID)
 	}
@@ -660,12 +648,15 @@ func (s *Store) Release(ctx context.Context, leaseID string, token persistence.L
 		},
 		ConditionExpression: aws.String("#own = :owner AND #ver = :ver"),
 		UpdateExpression: aws.String(
-			"SET #own = :empty, #exp = :zero REMOVE #ttl"),
+			"SET #own = :empty, #exp = :zero REMOVE #ttl, #obs_fp, #obs_elapsed, #obs_gen"),
 		ExpressionAttributeNames: map[string]string{
-			"#own": attrOwner,
-			"#ver": attrVersion,
-			"#exp": attrExpiresAt,
-			"#ttl": attrTTL,
+			"#own":         attrOwner,
+			"#ver":         attrVersion,
+			"#exp":         attrExpiresAt,
+			"#ttl":         attrTTL,
+			"#obs_fp":      attrObservationFingerprint,
+			"#obs_elapsed": attrObservationElapsed,
+			"#obs_gen":     attrObservationGeneration,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":owner": &ddbtypes.AttributeValueMemberS{Value: token.Owner},
@@ -680,47 +671,27 @@ func (s *Store) Release(ctx context.Context, leaseID string, token persistence.L
 		}
 		return wrapErr(err, "lease release update failed", "leaseID", leaseID, "ownerID", token.Owner)
 	}
+	s.clearObservation(leaseID)
 	return nil
 }
 
-// Current reads the lease state with a strongly consistent read.
+// Current reads and validates the lease state with a strongly consistent read.
 func (s *Store) Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error) {
-	pk := leaseKey(leaseID)
-
-	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
-		},
-		ConsistentRead: aws.Bool(true),
-	})
+	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return persistence.LeaseInfo{}, err
+		}
 		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
 	}
-	owner := strAttr(result.Item, attrOwner)
-	if len(result.Item) == 0 || owner == "" {
+	if !row.present || row.owner == "" {
 		return persistence.LeaseInfo{}, shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
 	}
-
-	// Surface a corrupt (present-but-unparseable) fencing version instead of
-	// silently coercing it to 0 — see optionalNumAttr / getRow.
-	version, err := optionalNumAttr(result.Item, attrVersion)
-	if err != nil {
-		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
-	}
-	expiresAtMillis, err := optionalNumAttr(result.Item, attrExpiresAt)
-	if err != nil {
-		return persistence.LeaseInfo{}, wrapErr(err, "lease get failed", "leaseID", leaseID)
-	}
-
 	return persistence.LeaseInfo{
-		LeaseID:   leaseID,
-		Owner:     owner,
-		Version:   version,
-		ExpiresAt: time.UnixMilli(int64(expiresAtMillis)),
-		Endpoints: unmarshalEndpoints(result.Item),
+		LeaseID: leaseID, Owner: row.owner, Version: row.version,
+		ExpiresAt: time.UnixMilli(row.expiresAt), Endpoints: row.endpoints,
 	}, nil
 }
 
@@ -796,22 +767,17 @@ func (s *Store) warnIfTTLEnabled(ctx context.Context) {
 // classifyConditionFailure distinguishes between "item not found" and
 // "item exists but token doesn't match" after a ConditionalCheckFailedException.
 func (s *Store) classifyConditionFailure(ctx context.Context, leaseID string) error {
-	pk := leaseKey(leaseID)
-	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.tableName,
-		Key: map[string]ddbtypes.AttributeValue{
-			attrPK: &ddbtypes.AttributeValueMemberS{Value: pk},
-		},
-		ConsistentRead: aws.Bool(true),
-	})
+	row, err := s.getRow(ctx, leaseID)
 	if err != nil {
+		if errors.Is(err, shared.ErrInvalidConfig) {
+			return err
+		}
 		return shared.ErrStaleFencingToken.
 			WithMessage("lease token mismatch (follow-up read failed)").
 			With("leaseID", leaseID).
 			Wrap(err)
 	}
-	// Treat missing items and released items (empty owner) as not found.
-	if len(result.Item) == 0 || strAttr(result.Item, attrOwner) == "" {
+	if !row.present || row.owner == "" {
 		return shared.ErrNotFound.
 			WithMessage("lease not found").
 			With("leaseID", leaseID)
@@ -865,6 +831,45 @@ func numAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, erro
 // reset the fence below the outbox high-water mark and make every subsequent
 // claim fail with ErrStaleFencingToken — a partition-wide stall. A corrupt
 // fence must fail loudly at the read, not masquerade as a fresh lease.
+func optionalUintAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, bool, error) {
+	if _, ok := attrs[key]; !ok {
+		return 0, false, nil
+	}
+	value, err := numAttr(attrs, key)
+	return value, true, err
+}
+
+func optionalInt64Attr(attrs map[string]ddbtypes.AttributeValue, key string) (int64, bool, error) {
+	value, ok := attrs[key]
+	if !ok {
+		return 0, false, nil
+	}
+	number, ok := value.(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return 0, true, fmt.Errorf("attribute %q is not a number", key)
+	}
+	parsed, err := strconv.ParseInt(number.Value, 10, 64)
+	if err != nil {
+		return 0, true, fmt.Errorf("dynamodblease: parse non-negative number attribute %q: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, true, fmt.Errorf("dynamodblease: number attribute %q must be non-negative", key)
+	}
+	return parsed, true, nil
+}
+
+func optionalStringAttr(attrs map[string]ddbtypes.AttributeValue, key string) (string, bool, error) {
+	value, ok := attrs[key]
+	if !ok {
+		return "", false, nil
+	}
+	text, ok := value.(*ddbtypes.AttributeValueMemberS)
+	if !ok {
+		return "", true, fmt.Errorf("attribute %q is not a string", key)
+	}
+	return text.Value, true, nil
+}
+
 func optionalNumAttr(attrs map[string]ddbtypes.AttributeValue, key string) (uint64, error) {
 	if _, ok := attrs[key]; !ok {
 		return 0, nil

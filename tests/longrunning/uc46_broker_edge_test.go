@@ -5,6 +5,7 @@ package longrunning_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -17,14 +18,15 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
 // TestUC46_BrokerMessageSizeLimit validates that a broker configured with a
-// message-size limit correctly rejects oversized payloads while delivering
-// smaller ones. 500 small envelopes (<100 bytes) and 500 oversized envelopes
-// (>1024 bytes) are injected. The small messages must arrive at the collector;
-// oversized ones are expected to be DLQ'd or dropped by the broker.
+// message-size limit rejects oversized payloads while delivering smaller ones.
+// Producer keys are reconciled independently across output, DLQ, and intentional
+// drop outcomes; approximate totals cannot conceal a duplicate plus a missing
+// message.
 func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
@@ -70,46 +72,77 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 		return rt.DeepHealth(context.Background()).Running
 	})
 
-	// Inject small messages.
+	expected := make([]string, 0, smallCount+bigCount)
+	expectedOutput := make([]string, 0, smallCount)
+	expectedDLQ := make([]string, 0, bigCount)
 	for i := 0; i < smallCount; i++ {
+		producerKey := fmt.Sprintf("uc46-small-%03d", i)
+		expected = append(expected, producerKey)
+		expectedOutput = append(expectedOutput, producerKey)
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{
-			ID:      fmt.Sprintf("uc46-small-%d", i),
+			ID:      fmt.Sprintf("uc46-envelope-small-%03d", i),
 			Subject: outTopic,
 			Payload: []byte(fmt.Sprintf(`{"seq":%d,"size":"small"}`, i)),
+			Headers: map[string]any{"producer-id": producerKey},
 		})
-		_ = rt.Inject(ctx, "uc46-route", env)
+		require.NoError(t, rt.Inject(ctx, "uc46-route", env))
 	}
 
-	// Inject oversized messages.
 	bigPayload := []byte(strings.Repeat("x", 2000))
 	for i := 0; i < bigCount; i++ {
+		producerKey := fmt.Sprintf("uc46-big-%03d", i)
+		expected = append(expected, producerKey)
+		expectedDLQ = append(expectedDLQ, producerKey)
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{
-			ID:      fmt.Sprintf("uc46-big-%d", i),
+			ID:      fmt.Sprintf("uc46-envelope-big-%03d", i),
 			Subject: outTopic,
 			Payload: bigPayload,
+			Headers: map[string]any{"producer-id": producerKey},
 		})
-		_ = rt.Inject(ctx, "uc46-route", env)
+		require.NoError(t, rt.Inject(ctx, "uc46-route", env))
 	}
 
-	// Wait for small messages to arrive.
 	lrWaitFor(t, 60*time.Second,
-		fmt.Sprintf("collector >= %d", smallCount),
-		func() bool { return collector.count() >= smallCount })
+		"all UC46 producer keys reach a terminal set",
+		func() bool { return len(reconcileUC46(expected, collector, dlq).Missing) == 0 })
+	require.NoError(t, rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		MinQuiet: time.Second,
+		Timeout:  15 * time.Second,
+	}))
 
-	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 1 * time.Second, Timeout: 15 * time.Second}) //nolint:errcheck
+	report := reconcileUC46(expected, collector, dlq)
+	sort.Strings(expectedOutput)
+	sort.Strings(expectedDLQ)
+	require.True(t, report.Exact(), "UC46 accounting: %s", report.String())
+	require.Equal(t, expectedDLQ, report.DLQ, "oversized producer keys must be DLQ outcomes")
+	require.Empty(t, report.IntentionallyDropped)
+	require.Equal(t, smallCount, collector.count())
+	require.Equal(t, bigCount, dlq.count())
 
-	delivered := collector.count()
-	dlqCount := dlq.count()
-	total := delivered + dlqCount
+	actualOutput := make([]string, 0, smallCount)
+	for _, envelope := range collector.getMessages() {
+		key, _ := messaging.GetHeaderString(envelope.Headers(), "producer-id")
+		actualOutput = append(actualOutput, key)
+	}
+	sort.Strings(actualOutput)
+	require.Equal(t, expectedOutput, actualOutput, "only small producer keys must be delivered")
+}
 
-	t.Logf("UC46: delivered=%d, dlq=%d, total=%d", delivered, dlqCount, total)
-	t.Logf("UC46: Expected ~%d delivered (small) + ~%d rejected (oversized)",
-		smallCount, bigCount)
-
-	require.GreaterOrEqual(t, delivered, smallCount,
-		"At least %d small messages must be delivered", smallCount)
-	assert.GreaterOrEqual(t, total, smallCount+bigCount-50,
-		"Total (delivered+DLQ) should account for all messages")
+func reconcileUC46(expected []string, collector *mqttCollector, dlq *lrDLQStore) prodid.Report {
+	accountant, err := prodid.New(expected, false)
+	if err != nil {
+		panic(err)
+	}
+	for _, envelope := range collector.getMessages() {
+		key, _ := messaging.GetHeaderString(envelope.Headers(), "producer-id")
+		accountant.ObserveOutput(key, envelope.ID())
+	}
+	for _, entry := range dlq.getEntries() {
+		envelope := entry.Snapshot()
+		key, _ := messaging.GetHeaderString(envelope.Headers(), "producer-id")
+		accountant.ObserveDLQ(key, envelope.ID())
+	}
+	return accountant.Reconcile()
 }
 
 // TestUC47_BrokerMaxQueuedMessages verifies broker behaviour when the internal

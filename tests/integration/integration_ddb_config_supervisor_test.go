@@ -43,7 +43,7 @@ func TestDDBSupervisor_InitialLoadAndRun(t *testing.T) {
 	_, errCh := runSupervisorInBackground(runCtx, s, initialCfg, nil)
 	defer func() { cancel(); <-errCh }()
 
-	rt := waitForSupervisorRuntime(t, s, 5*time.Second)
+	rt := waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 	routes := rt.Routes()
 	if len(routes) == 0 {
 		t.Fatal("expected at least one route")
@@ -88,7 +88,7 @@ func TestDDBSupervisor_OverlayChangeSwapsRuntime(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Save overlay that adds route r2.
 	overlay2 := overlayWithRoute("test-bridge", "r2")
@@ -135,7 +135,7 @@ func TestDDBSupervisor_SwapEvent_ReportsCorrectConfigs(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	overlay2 := overlayWithRoute("test-bridge", "r2")
 	if err := loader.Save(ctx, overlay2); err != nil {
@@ -203,7 +203,7 @@ func TestDDBSupervisor_SwapEvent_ReportsMode(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	overlay2 := minimalOverlay("test-bridge")
 	overlay2.Bridge.LogLevel = "debug"
@@ -258,7 +258,7 @@ func TestDDBSupervisor_DebouncedStrategy_CoalescesChanges(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Rapid saves.
 	for _, lvl := range []string{"debug", "warn", "error"} {
@@ -313,7 +313,7 @@ func TestDDBSupervisor_SequentialChanges_EachApplied(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Sequential changes with pause between each to allow poll detection.
 	for _, lvl := range []string{"debug", "warn"} {
@@ -373,7 +373,7 @@ func TestDDBSupervisor_PrepareCommitMode_WithExclusiveSession(t *testing.T) {
 	cancel, errCh := runSupervisorInBackground(watchCtx, s, initialCfg, watchCh)
 	defer func() { cancel(); watchCancel(); <-errCh }()
 
-	waitForSupervisorRuntime(t, s, 5*time.Second)
+	waitForSupervisorRuntime(t, s, errCh, 5*time.Second)
 
 	// Trigger a swap with log level change.
 	overlay2 := minimalOverlay("test-bridge")

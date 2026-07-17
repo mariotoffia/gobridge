@@ -64,7 +64,7 @@ func TestUC94_AMQP091_HighThroughput(t *testing.T) {
 
 	sender := newRabbitMQSender(t, sess, exchange, routingKey)
 	rx := newSQSReceiver(t, sqsInURL)
-	sc := lrSessionConfig(sessID)
+	sc := lrThroughputSessionConfig(sessID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc94-bridge"),

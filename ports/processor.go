@@ -59,10 +59,9 @@ type ProcessorFunc func(ctx context.Context, env *messaging.Envelope) error
 //     drives what happens to the message:
 //     return nil to accept (the chain, and ultimately the delivery, succeeds);
 //     return shared.ErrMessageFiltered to FILTER — a deliberate drop, not a
-//     failure. The delivery is acked; by default no DLQ record is written, but
-//     a route whose OnPermanentFailure is FailureDLQ AND that has a DLQ store
-//     still records the filtered message to the DLQ (an audit trail) before
-//     acking;
+//     failure. The delivery is acked; by default no DLQ record is written. A
+//     route records it to the DLQ only when OnFiltered is FilteredDLQ and a DLQ
+//     store exists;
 //     return any other error to short-circuit — its ErrorClass selects the
 //     disposition (ErrorTransient → retry, ErrorPermanent → DLQ, ErrorRejected
 //     → drop without DLQ, ErrorExpired → expired-action). Prefer returning a

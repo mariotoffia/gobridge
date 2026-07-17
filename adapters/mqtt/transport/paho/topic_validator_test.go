@@ -52,21 +52,61 @@ func TestValidateMQTTTopic_NullCharacter(t *testing.T) {
 	}
 }
 
+func TestValidateMQTTTopicFilter(t *testing.T) {
+	tests := []struct {
+		filter string
+		valid  bool
+	}{
+		{filter: "#", valid: true},
+		{filter: "orders/+/created", valid: true},
+		{filter: "$SYS/broker/+", valid: true},
+		{filter: "$share/workers/orders/#", valid: true},
+		{filter: "", valid: false},
+		{filter: "orders/#/dead", valid: false},
+		{filter: "orders/new+", valid: false},
+		{filter: "$share//orders/#", valid: false},
+		{filter: "$share/workers/", valid: false},
+		{filter: "$share/work+ers/orders/#", valid: false},
+		{filter: "orders/\x00", valid: false},
+		{filter: string([]byte{0xff}), valid: false},
+	}
+	for _, tc := range tests {
+		err := ValidateMQTTTopicFilter(tc.filter)
+		if tc.valid && err != nil {
+			t.Errorf("ValidateMQTTTopicFilter(%q) = %v, want valid", tc.filter, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("ValidateMQTTTopicFilter(%q) = nil, want invalid", tc.filter)
+		}
+	}
+}
+
+// TestValidateMQTTTopic_EmptySegment pins A-13: empty topic levels are
+// spec-legal for a publish Topic Name (MQTT 5.0 §4.7.1.1 — only the whole
+// name must be non-empty) and must be accepted. Real devices emit "a//b" and
+// a mirror route re-publishing such a source topic must not DLQ it.
 func TestValidateMQTTTopic_EmptySegment(t *testing.T) {
-	if err := ValidateMQTTTopic("devices//data"); err == nil {
-		t.Fatal("empty segment should be rejected")
+	if err := ValidateMQTTTopic("devices//data"); err != nil {
+		t.Fatalf("empty middle segment is spec-legal and must be accepted: %v", err)
+	}
+	if err := ValidateMQTTTopic("/"); err != nil {
+		t.Fatalf("a lone %q is an explicitly valid MQTT topic: %v", "/", err)
 	}
 }
 
+// TestValidateMQTTTopic_LeadingSlash pins A-13: a leading empty level
+// ("/devices/data") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
-	if err := ValidateMQTTTopic("/devices/data"); err == nil {
-		t.Fatal("leading slash (empty first segment) should be rejected")
+	if err := ValidateMQTTTopic("/devices/data"); err != nil {
+		t.Fatalf("leading slash (empty first level) is spec-legal: %v", err)
 	}
 }
 
+// TestValidateMQTTTopic_TrailingSlash pins A-13: a trailing empty level
+// ("devices/data/") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
-	if err := ValidateMQTTTopic("devices/data/"); err == nil {
-		t.Fatal("trailing slash (empty last segment) should be rejected")
+	if err := ValidateMQTTTopic("devices/data/"); err != nil {
+		t.Fatalf("trailing slash (empty last level) is spec-legal: %v", err)
 	}
 }
 
@@ -129,7 +169,7 @@ func TestValidateMQTTTopic_ExistingValidation(t *testing.T) {
 		{"wildcard +", "devices/+/temp", true},
 		{"wildcard #", "devices/#", true},
 		{"null byte", "devices/\x00/temp", true},
-		{"empty segment", "devices//temp", true},
+		{"empty segment (A-13: spec-legal)", "devices//temp", false},
 		{"valid", "devices/sensor/temp", false},
 		{"single segment", "topic", false},
 	}

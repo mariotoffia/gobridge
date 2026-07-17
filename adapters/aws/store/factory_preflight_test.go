@@ -46,6 +46,10 @@ func TestFactoryPreflightSchemaValidation(t *testing.T) {
 		_, err := factory.NewLeaseStore(ctx, &awsstore.DynamoDBConfig{TableName: table})
 		return err
 	}
+	buildManaged := func(table string) error {
+		_, err := factory.NewManagedSubscriptionStore(ctx, &awsstore.DynamoDBConfig{TableName: table})
+		return err
+	}
 
 	pkOnly := func(table string) {
 		createRawTable(t, client, table,
@@ -82,6 +86,22 @@ func TestFactoryPreflightSchemaValidation(t *testing.T) {
 		table := ddblocal.UniqueTable("preflight-lease-wrong")
 		compositePKSK(table) // outbox-shaped: unexpected SK range key on the fencing table
 		assertSchemaMismatch(t, buildLease(table), table)
+	})
+
+	t.Run("managed_subscriptions_wrong_schema_fails", func(t *testing.T) {
+		table := ddblocal.UniqueTable("preflight-managed-wrong")
+		pkOnly(table)
+		assertSchemaMismatch(t, buildManaged(table), table)
+	})
+
+	t.Run("managed_subscriptions_correct_schema_succeeds", func(t *testing.T) {
+		table := ddblocal.UniqueTable("preflight-managed-ok")
+		provisionThenRebuild(t, ctx, factory, table, buildManaged, func(store any) error {
+			return store.(interface{ EnsureTable(context.Context) error }).EnsureTable(ctx)
+		}, func() (any, error) {
+			return factory.NewManagedSubscriptionStore(ctx, &awsstore.DynamoDBConfig{TableName: table})
+		})
+		ddblocal.CleanupTable(t, client, table)
 	})
 
 	t.Run("outbox_correct_schema_succeeds", func(t *testing.T) {

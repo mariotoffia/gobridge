@@ -8,11 +8,15 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
+	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // reconcileProbeCM is a pahoConnection test double that records whether the
@@ -65,7 +69,7 @@ func (c *reconcileProbeCM) Subscribe(ctx context.Context, subs []subscribeSpec) 
 	return reasons, nil
 }
 
-func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) error {
+func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
 	_, hasDDL := ctx.Deadline()
 	c.mu.Lock()
 	c.unsubscribeCalled = true
@@ -73,9 +77,9 @@ func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) err
 	c.mu.Unlock()
 	if c.block {
 		<-ctx.Done()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 var _ pahoConnection = (*reconcileProbeCM)(nil)
@@ -104,7 +108,7 @@ func TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline(t *testing.T) {
 	// context.Background() has NO deadline: the bound must come from the adapter.
 	require.Nil(t, deadlineOf(context.Background()), "test precondition: caller ctx must be deadline-less")
 
-	err := s.reconcile(context.Background(), probe, plan, []string{"stale/route"})
+	err := s.reconcile(context.Background(), probe, plan, []string{"stale/route"}, s.connEpoch)
 	require.NoError(t, err)
 
 	probe.mu.Lock()
@@ -136,7 +140,7 @@ func TestBug_Reconcile_WedgedSubscribe_FailsBoundedNotHang(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.reconcile(context.Background(), probe, plan, nil)
+		done <- s.reconcile(context.Background(), probe, plan, nil, s.connEpoch)
 	}()
 
 	select {
@@ -163,7 +167,7 @@ func TestBug_Reconcile_WedgedUnsubscribe_FailsBoundedNotHang(t *testing.T) {
 	// Empty desired plan + a prior topic ⇒ an UNSUBSCRIBE with no SUBSCRIBE.
 	done := make(chan error, 1)
 	go func() {
-		done <- s.reconcile(context.Background(), probe, connectivity.SessionPlan{}, []string{"stale/route"})
+		done <- s.reconcile(context.Background(), probe, connectivity.SessionPlan{}, []string{"stale/route"}, s.connEpoch)
 	}()
 
 	select {
@@ -174,6 +178,56 @@ func TestBug_Reconcile_WedgedUnsubscribe_FailsBoundedNotHang(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("HIGH-2 regression: reconcile hung on a wedged UNSUBSCRIBE past the adapter-owned timeout")
 	}
+}
+
+func TestReconnect_ReconcileTimeoutDegradesAndRecovers(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &ports.RecordingExporter{}
+	probe := &reconcileProbeCM{}
+	session := NewSession(SessionOptions{
+		ClientID:         "task14-reconnect-timeout",
+		ReconcileTimeout: 20 * time.Millisecond,
+		Clock:            clk,
+	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() {
+		session.router.shutdown()
+		session.router.awaitDispatchLoop()
+	})
+	session.router.Register("task14-receiver", func(_ *pahov5.Publish) {})
+	session.mu.Lock()
+	session.cm = probe
+	session.connected = true
+	session.mu.Unlock()
+
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "task14/reconcile", QoS: 1}},
+	}
+	require.NoError(t, session.Reconcile(t.Context(), plan))
+	require.Equal(t, ports.ServiceLevelFull, session.Health(t.Context()).ServiceLevel)
+
+	session.handleConnectionUp()
+	reconnecting := session.Health(t.Context())
+	require.NotNil(t, reconnecting.SubscriptionsSatisfied)
+	require.False(t, *reconnecting.SubscriptionsSatisfied)
+	require.Equal(t, ports.ServiceLevelDegraded, reconnecting.ServiceLevel)
+
+	probe.block = true
+	done := make(chan error, 1)
+	go func() { done <- session.Reconcile(t.Context(), plan) }()
+	require.ErrorIs(t, wait.RequireReceive(t, done, 2*time.Second), context.DeadlineExceeded)
+	failed := session.Health(t.Context())
+	require.NotNil(t, failed.SubscriptionsSatisfied)
+	require.False(t, *failed.SubscriptionsSatisfied)
+	require.Equal(t, ports.ServiceLevelDegraded, failed.ServiceLevel)
+
+	probe.block = false
+	require.NoError(t, session.Reconcile(t.Context(), plan))
+	recovered := session.Health(t.Context())
+	require.NotNil(t, recovered.SubscriptionsSatisfied)
+	require.True(t, *recovered.SubscriptionsSatisfied)
+	require.Equal(t, ports.ServiceLevelFull, recovered.ServiceLevel)
+	require.Len(t, metrics.FindEntries(MetricMQTTReconcileLatency), 2,
+		"only the initial and recovery reconciles complete successfully")
 }
 
 func deadlineOf(ctx context.Context) *time.Time {

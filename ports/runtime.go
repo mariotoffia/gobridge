@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
@@ -43,15 +44,20 @@ type RouteHealth struct {
 // subscription readiness and lease ownership. Part of the read-side
 // contract surfaced through RuntimeQuery.DeepHealth.
 type SessionHealthDetail struct {
-	SessionID           string
-	Connected           bool
-	HasLease            bool
-	ConnectAfterLease   bool // source session defers Start until this instance wins the lease
-	SubscriptionsWanted int
-	SubscriptionsActive int
-	ActiveTopics        []string // topics the broker has ACK'd subscriptions for
-	Ready               bool
-	ServiceLevel        ServiceLevel
+	SessionID                string
+	Connected                bool
+	HasLease                 bool
+	ConnectAfterLease        bool // source session defers Start until this instance wins the lease
+	SubscriptionsWanted      int
+	SubscriptionsActive      int
+	SubscriptionsSatisfied   *bool    // exact explicit-plan convergence, including removals; nil means legacy unknown
+	ActiveTopics             []string // contract-active topic filters
+	Ready                    bool
+	ServiceLevel             ServiceLevel
+	UnsettledCount           int
+	OldestUnsettledAge       time.Duration
+	ReceiveWindowUtilization float64
+	RecoveryRecycleCount     uint64
 }
 
 // DeepHealth is a comprehensive health snapshot of a runtime instance.
@@ -91,14 +97,14 @@ const (
 	// has SessionHealth.Connected == true. Per-session reconnect storms
 	// drop us below this until the session reconnects.
 	LevelConnected
-	// LevelSubscribed means LevelConnected plus every session has
-	// SubscriptionsActive == SubscriptionsWanted (broker has ACKed
-	// every SUBSCRIBE). Routes can safely register handlers at this
-	// point without missing messages from subsequent publishes.
+	// LevelSubscribed means LevelConnected plus every session explicitly
+	// converged exactly to its desired filters and requested QoS, including stale
+	// removals (legacy snapshots fall back to active/wanted counts). Routes can
+	// safely register handlers at this point without missing subsequent publishes.
 	LevelSubscribed
 	// LevelFull means LevelSubscribed plus every route has Ready == true
-	// (route runner started AND receiver started AND, for MQTT,
-	// HandlersRegistered > 0) AND every non-deferred session is at
+	// (route runner started AND receiver started AND, for MQTT, every expected
+	// receiver handler is registered) AND every non-deferred session is at
 	// ServiceLevelFull (a flow-control-blocked / degraded session caps below
 	// Full). Equivalent to ReadyForTraffic + ServiceLevelFull.
 	LevelFull
@@ -197,7 +203,13 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 			allSubscribed = false
 			break
 		}
-		if sh.SubscriptionsActive != sh.SubscriptionsWanted {
+		if sh.SubscriptionsSatisfied != nil {
+			if !*sh.SubscriptionsSatisfied {
+				allSubscribed = false
+			}
+		} else if sh.SubscriptionsActive != sh.SubscriptionsWanted {
+			// Compatibility for health snapshots produced before explicit
+			// filter/QoS satisfaction was available.
 			allSubscribed = false
 		}
 		// A session that is connected + subscribed can still be unable to serve:

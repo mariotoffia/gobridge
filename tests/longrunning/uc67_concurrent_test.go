@@ -48,6 +48,7 @@ func TestUC68_FiveMinuteSoak(t *testing.T) {
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc68-bridge"),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{

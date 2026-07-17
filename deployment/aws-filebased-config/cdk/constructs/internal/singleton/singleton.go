@@ -1,10 +1,10 @@
 // Package singleton enforces the design rule that at most one
-// GoBridgeSingle or GoBridgeCluster facade construct may exist
+// GoBridgeSingle, GoBridgeCluster, or GoBridgeDynamoDBHA facade construct may exist
 // inside a single CDK Stack tree. The check runs at construction
 // time (synth-time, before the App is rendered) and panics with a
 // fixed, operator-friendly message if violated.
 //
-// The package is internal: only the GoBridge{Single,Cluster}
+// The package is internal: only the GoBridge{Single,Cluster,DynamoDBHA}
 // facades may import it. It uses a process-wide registry keyed by
 // the enclosing Stack's node path so that two facades created in
 // the same App but in different Stacks do not collide.
@@ -23,8 +23,7 @@ import (
 	"github.com/aws/constructs-go/constructs/v10"
 )
 
-// marker records one facade registration: which kind ("single" or
-// "cluster") and the construct itself so we can recover its path
+// marker records one facade registration: which facade kind and the construct itself so we can recover its path
 // when reporting a violation.
 type marker struct {
 	construct constructs.Construct
@@ -55,9 +54,8 @@ func stackKey(self constructs.Construct) string {
 	return fmt.Sprintf("%p|%s", stack, path)
 }
 
-// Register records that `self` (a GoBridgeSingle or GoBridgeCluster
-// facade construct) has been created. `kind` must be "single" or
-// "cluster". Calls outside of a Stack are silently ignored.
+// Register records that `self` (a GoBridgeSingle, GoBridgeCluster, or GoBridgeDynamoDBHA
+// facade construct) has been created. `kind` is the diagnostic facade name. Calls outside of a Stack are silently ignored.
 //
 // Stale-marker purge: the registry is process-wide and survives
 // `jsii.Close()` between tests, so when a new test allocates a
@@ -117,7 +115,7 @@ func Enforce(self constructs.Construct) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Only one GoBridgeSingle or GoBridgeCluster instance is supported per stack/account; found %d.\n", len(markers))
+	fmt.Fprintf(&b, "Only one GoBridgeSingle, GoBridgeCluster, or GoBridgeDynamoDBHA instance is supported per stack/account; found %d.\n", len(markers))
 	b.WriteString("Found:\n")
 	for _, m := range markers {
 		path := ""

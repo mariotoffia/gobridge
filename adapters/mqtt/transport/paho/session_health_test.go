@@ -8,6 +8,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -126,6 +127,7 @@ func TestHealth_ServiceLevel(t *testing.T) {
 				for i := range tc.activeSubs {
 					s.activeSubs["test/topic/"+string(rune('a'+i))] = 1
 				}
+				s.subscriptionsSatisfied = tc.wantedSubs == tc.activeSubs
 				s.mu.Unlock()
 			}
 
@@ -143,4 +145,104 @@ func TestHealth_ServiceLevel(t *testing.T) {
 			assert.Equal(t, tc.handlers, h.HandlersRegistered)
 		})
 	}
+}
+
+func TestHealth_ServiceLevelFull_RequiresEveryExpectedReceiverHandler(t *testing.T) {
+	s := fullHealthSession(t, connectivity.SessionPlan{
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "orders", QoS: 1}},
+		ExpectedReceiverIDs: []string{"rx-orders", "rx-audit"},
+	}, map[string]byte{"orders": 1}, "rx-orders")
+
+	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(context.Background()).ServiceLevel)
+}
+
+func TestHealth_ServiceLevelFull_UnrelatedHandlerDoesNotSatisfyExpectedReceiver(t *testing.T) {
+	s := fullHealthSession(t, connectivity.SessionPlan{
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "orders", QoS: 1}},
+		ExpectedReceiverIDs: []string{"rx-orders"},
+	}, map[string]byte{"orders": 1}, "diagnostic-tap")
+
+	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(context.Background()).ServiceLevel)
+}
+
+func TestHealth_ServiceLevelFull_DeduplicatesDesiredTopicFilters(t *testing.T) {
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{
+			{Topic: "orders", QoS: 0},
+			{Topic: "orders", QoS: 1},
+		},
+		ExpectedReceiverIDs: []string{"rx-orders"},
+	}
+
+	below := fullHealthSession(t, plan, map[string]byte{"orders": 0}, "rx-orders")
+	assert.Equal(t, ports.ServiceLevelDegraded, below.Health(context.Background()).ServiceLevel,
+		"a duplicate filter retains its strongest requested QoS")
+
+	atRequired := fullHealthSession(t, plan, map[string]byte{"orders": 1}, "rx-orders")
+	h := atRequired.Health(context.Background())
+	assert.Equal(t, ports.ServiceLevelFull, h.ServiceLevel)
+	assert.Equal(t, 1, h.SubscriptionsWanted)
+	assert.Equal(t, 1, h.SubscriptionsActive)
+}
+
+func TestHealth_ServiceLevelFull_RequiresActualFilterAndQoSAtBoundary(t *testing.T) {
+	tests := []struct {
+		name   string
+		active map[string]byte
+		want   ports.ServiceLevel
+	}{
+		{name: "different filter at same aggregate count", active: map[string]byte{"other": 1}, want: ports.ServiceLevelDegraded},
+		{name: "granted below requested", active: map[string]byte{"orders": 0}, want: ports.ServiceLevelDegraded},
+		{name: "granted equals requested", active: map[string]byte{"orders": 1}, want: ports.ServiceLevelFull},
+		{name: "granted exceeds requested", active: map[string]byte{"orders": 2}, want: ports.ServiceLevelFull},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fullHealthSession(t, connectivity.SessionPlan{
+				Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "orders", QoS: 1}},
+				ExpectedReceiverIDs: []string{"rx-orders"},
+			}, tc.active, "rx-orders")
+
+			h := s.Health(context.Background())
+			assert.Equal(t, tc.want, h.ServiceLevel)
+			require.NotNil(t, h.SubscriptionsSatisfied)
+			assert.Equal(t, tc.want == ports.ServiceLevelFull, *h.SubscriptionsSatisfied)
+		})
+	}
+}
+
+func TestRouter_HandlerIDsReturnsSortedSnapshot(t *testing.T) {
+	r := newRouter(nil, nil)
+	r.Register("rx-z", func(*pahov5.Publish) {})
+	r.Register("rx-a", func(*pahov5.Publish) {})
+
+	ids := r.HandlerIDs()
+	assert.Equal(t, []string{"rx-a", "rx-z"}, ids)
+
+	ids[0] = "mutated"
+	assert.Equal(t, []string{"rx-a", "rx-z"}, r.HandlerIDs())
+}
+
+func fullHealthSession(t *testing.T, plan connectivity.SessionPlan, active map[string]byte, handlerIDs ...string) *Session {
+	t.Helper()
+	s := NewSession(SessionOptions{}, connectivity.SessionEphemeral, slog.Default())
+	s.mu.Lock()
+	s.cm = &pahoConn{cm: &autopaho.ConnectionManager{}}
+	s.connected = true
+	s.plan = &plan
+	s.activeSubs = active
+	desired := make(map[string]byte, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		qos := byte(sub.QoS)
+		if current, ok := desired[sub.Topic]; !ok || qos > current {
+			desired[sub.Topic] = qos
+		}
+	}
+	s.subscriptionsSatisfied = desiredSubscriptionsActive(desired, active)
+	s.mu.Unlock()
+	for _, id := range handlerIDs {
+		s.router.Register(id, func(*pahov5.Publish) {})
+	}
+	return s
 }

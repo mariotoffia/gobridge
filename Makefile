@@ -3,13 +3,17 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
 .PHONY: docker-build update-seeder-image
+.PHONY: verify-release-preparation verify-published-modules verify-release-tag
+.PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
+.PHONY: smoke-released-modules release-latest-version verify-remote-release-tag
+.PHONY: release-image-association verify-release-image-digest release-image-upload-decision
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
@@ -19,6 +23,25 @@ export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 IMAGE      ?= ghcr.io/mariotoffia/gobridge
 IMAGE_TAG  ?= dev
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+RELEASE_LAYER            ?= -1
+RELEASE_FORMAT           ?= path
+RELEASE_VERSION          ?=
+RELEASE_TAG              ?=
+RELEASE_MODULE           ?=
+RELEASE_BOOTSTRAP_COMMIT ?=
+RELEASE_COMMIT            ?=
+RELEASE_REMOTE            ?= origin
+RELEASE_API_URL           ?= https://api.github.com
+RELEASE_REPOSITORY        ?=
+RELEASE_IMAGE             ?= ghcr.io/mariotoffia/gobridge
+RELEASE_IMAGE_DIGEST      ?=
+RELEASE_INITIAL_IMAGE_DIGEST ?=
+RELEASE_CURRENT_IMAGE_DIGEST ?=
+export RELEASE_LAYER RELEASE_FORMAT RELEASE_VERSION RELEASE_TAG RELEASE_MODULE
+export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
+export RELEASE_API_URL RELEASE_REPOSITORY RELEASE_IMAGE RELEASE_IMAGE_DIGEST
+export RELEASE_INITIAL_IMAGE_DIGEST RELEASE_CURRENT_IMAGE_DIGEST
 
 # Default target
 all: build test
@@ -46,6 +69,92 @@ update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-re
 	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
 
 # ============================================================================
+# Multi-module release preparation
+#
+# scripts/release/modules.json is the sole published-module list and layer DAG.
+# Source preflight is intentionally safe before the first release migration.
+# verify-published-modules is strict and remains red until every published
+# manifest and matching stable tag is publicly resolvable.
+# ============================================================================
+
+verify-release-preparation: ## Test the release tooling and validate the canonical DAG; report current migration inventory
+	@cd scripts/release && GOWORK=off go test -race -count=1 ./...
+	@cd scripts/release && GOWORK=off go run . source --repo ../..
+
+verify-published-modules: ## Strictly verify every published module (requires RELEASE_VERSION=vX.Y.Z and completed tags)
+	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . strict-all --repo ../.. --version "$$RELEASE_VERSION"
+
+verify-release-tag: ## Strictly verify one pushed tag (requires RELEASE_TAG=<module-dir>/vX.Y.Z)
+	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . strict-tag --repo ../.. --tag "$$RELEASE_TAG"
+
+release-modules: ## List canonical release modules (RELEASE_LAYER=-1, RELEASE_FORMAT=path|import|tag|tsv)
+	@cd scripts/release && if [ -n "$$RELEASE_VERSION" ]; then \
+		GOWORK=off go run . list --repo ../.. --layer "$$RELEASE_LAYER" \
+			--format "$$RELEASE_FORMAT" --version "$$RELEASE_VERSION"; \
+	else \
+		GOWORK=off go run . list --repo ../.. --layer "$$RELEASE_LAYER" \
+			--format "$$RELEASE_FORMAT"; \
+	fi
+
+stage-published-module: ## Rewrite/tidy/check one module for release; requires RELEASE_MODULE and RELEASE_VERSION
+	@test -n "$$RELEASE_MODULE" || { echo "ERROR: RELEASE_MODULE is required"; exit 2; }
+	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && if [ -n "$$RELEASE_BOOTSTRAP_COMMIT" ]; then \
+		GOWORK=off go run . stage-module --repo ../.. --module "$$RELEASE_MODULE" \
+			--version "$$RELEASE_VERSION" --bootstrap-commit "$$RELEASE_BOOTSTRAP_COMMIT"; \
+	else \
+		GOWORK=off go run . stage-module --repo ../.. --module "$$RELEASE_MODULE" \
+			--version "$$RELEASE_VERSION"; \
+	fi
+
+stage-release-bootstrap: ## Point internal test helpers at released root; requires RELEASE_VERSION
+	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . stage-bootstrap --repo ../.. --version "$$RELEASE_VERSION"
+
+derive-release-bootstrap: ## Derive helper pseudo-versions via Go; requires RELEASE_VERSION and RELEASE_BOOTSTRAP_COMMIT
+	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@test -n "$$RELEASE_BOOTSTRAP_COMMIT" || { echo "ERROR: RELEASE_BOOTSTRAP_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . derive-bootstrap --repo ../.. \
+		--version "$$RELEASE_VERSION" --commit "$$RELEASE_BOOTSTRAP_COMMIT"
+
+smoke-released-modules: ## Test a stable cmd tag from a fresh external module; requires RELEASE_TAG
+	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG=cmd/gobridge/vX.Y.Z is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . smoke --repo ../.. --tag "$$RELEASE_TAG"
+
+release-latest-version: ## Report whether RELEASE_VERSION is the highest stable cmd/gobridge tag
+	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
+	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . latest --repo ../.. \
+		--version "$$RELEASE_VERSION" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
+
+verify-remote-release-tag: ## Re-resolve RELEASE_TAG on RELEASE_REMOTE and require RELEASE_COMMIT
+	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
+	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . remote-tag --repo ../.. \
+		--tag "$$RELEASE_TAG" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
+
+release-image-association: ## Fetch and validate the command release image-digest asset
+	@test -n "$$RELEASE_REPOSITORY" || { echo "ERROR: RELEASE_REPOSITORY is required"; exit 2; }
+	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . image-association \
+		--api-url "$$RELEASE_API_URL" --repository "$$RELEASE_REPOSITORY" \
+		--tag "$$RELEASE_TAG" --image "$$RELEASE_IMAGE"
+
+verify-release-image-digest: ## Require RELEASE_IMAGE_DIGEST to exist under RELEASE_IMAGE
+	@test -n "$$RELEASE_IMAGE_DIGEST" || { echo "ERROR: RELEASE_IMAGE_DIGEST is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . registry-digest \
+		--image "$$RELEASE_IMAGE" --digest "$$RELEASE_IMAGE_DIGEST"
+
+release-image-upload-decision: ## Decide whether the exact digest asset may be uploaded
+	@test -n "$$RELEASE_IMAGE_DIGEST" || { echo "ERROR: RELEASE_IMAGE_DIGEST is required"; exit 2; }
+	@cd scripts/release && GOWORK=off go run . image-decision \
+		--digest "$$RELEASE_IMAGE_DIGEST" \
+		--initial-digest "$$RELEASE_INITIAL_IMAGE_DIGEST" \
+		--current-digest "$$RELEASE_CURRENT_IMAGE_DIGEST"
+
+# ============================================================================
 # Test targets
 # ============================================================================
 
@@ -53,11 +162,13 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 	@mkdir -p reports
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
-	@bash -c 'for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
+		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
-		(cd "$$dir" && go test -short -race -timeout 120s ./...) || true; \
-	done 2>&1 | tee reports/test-unit.log; \
+		(cd "$$dir" && GOWORK="$$gowork" go test -count=1 -short -race -timeout 120s ./...) || rc=$$?; \
+	done; exit $$rc; } 2>&1 | tee reports/test-unit.log; \
+	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
 	echo "  Test Report: reports/test-unit.log"; \
@@ -70,19 +181,37 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 		echo ""; \
 		echo "FAILED packages ($$failed):"; \
 		grep -E "^FAIL\s" reports/test-unit.log || true; \
-		exit 1; \
-	fi'
+	fi; \
+	exit $$rc'
+
+test-cdk-norace: ## Run CDK assertions excluded from race builds
+	@echo "Running non-race CDK assertion suites..."
+	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
+		./constructs/internal/grants ./constructs/internal/gobridgebase \
+		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
+		./constructs/gobridgealbattachment ./constructs/internal/singleton \
+		./constructs/internal/validation ./registry
+	@echo "Running race-enabled source-safe AWS integration harness validation..."
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -race -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestSandboxEnvFrom_' ./integration
+	@echo "Running non-race source-safe JSII VPC fixture synthesis..."
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"
-	@bash -c 'for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
+		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-			go test -p 1 -race -timeout 600s -v ./...) || true; \
-	done 2>&1 | tee reports/test-integration.log; \
+			GOWORK="$$gowork" go test -count=1 -p 1 -race -timeout 600s -v ./...) || rc=$$?; \
+	done; exit $$rc; } 2>&1 | tee reports/test-integration.log; \
+	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
 	echo "  Test Report: reports/test-integration.log"; \
@@ -95,8 +224,8 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 		echo ""; \
 		echo "FAILED packages ($$failed):"; \
 		grep -E "^FAIL\s" reports/test-integration.log || true; \
-		exit 1; \
-	fi'
+	fi; \
+	exit $$rc'
 
 test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
@@ -106,7 +235,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
 	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
 	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
-		go test -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/... 2>&1 | tee reports/test-long-running.log; \
+		go test -count=1 -race -timeout 10800s -v -tags=longrunning ./tests/longrunning/... 2>&1 | tee reports/test-long-running.log; \
 		rc=$$?; \
 		echo ""; \
 		echo "========================================"; \
@@ -121,6 +250,9 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 			grep -E "^FAIL\s" reports/test-long-running.log || true; \
 		fi; \
 		exit $$rc'
+
+test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 MiB cgroup
+	@scripts/test-mqtt-ingress-memory.sh
 
 # ============================================================================
 # Lint
@@ -155,12 +287,13 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/go-vet.log; \
 	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
-		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
+		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
 			echo "--- Skipping $$dir (no default-tag packages) ---" | tee -a reports/go-vet.log; \
 			continue; \
 		fi; \
 		echo "--- Vetting $$dir ---" | tee -a reports/go-vet.log; \
-		(cd "$$dir" && go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
+		(cd "$$dir" && GOWORK="$$gowork" go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
 	done'
 	@echo "=== golangci-lint ==="
 	@bash -c 'major=$$(golangci-lint version 2>/dev/null | sed -nE "s/.*version v?([0-9]+).*/\1/p" | head -1); \
@@ -172,12 +305,13 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/golangci.log; \
 	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
-		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then \
+		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
+		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
 			echo "--- Skipping $$dir (no default-tag packages) ---" | tee -a reports/golangci.log; \
 			continue; \
 		fi; \
 		echo "--- golangci-lint $$dir ---" | tee -a reports/golangci.log; \
-		(cd "$$dir" && golangci-lint run --timeout=5m ./... 2>&1) | tee -a $(PWD)/reports/golangci.log; \
+		(cd "$$dir" && GOWORK="$$gowork" golangci-lint run --timeout=5m ./... 2>&1) | tee -a $(PWD)/reports/golangci.log; \
 	done'
 	@echo "=== aggcheck (domain aggregate convention) ==="
 	@bash -c 'set -o pipefail; go vet -vettool=$(PWD)/bin/aggcheck ./domain/... 2>&1 | tee reports/aggcheck.log'
@@ -257,27 +391,27 @@ tidy: ## Sync workspace and tidy all module dependencies
 	@echo "Syncing workspace..."
 	go work sync
 	@echo "Tidying all modules..."
-	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && go mod tidy' \;
+	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && GOWORK=off go mod tidy' \;
 
 sync: tidy ## Alias for tidy (workspace sync is included)
 
 update: ## Update all dependencies to latest minor/patch versions
 	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
-		-execdir sh -c 'echo "Updating $$(pwd)..." && go get -u ./... && go mod tidy' \;
+		-execdir sh -c 'echo "Updating $$(pwd)..." && GOWORK=off go get -u ./... && GOWORK=off go mod tidy' \;
 	@$(MAKE) tidy
 
 update-major: ## Show available major version upgrades (requires gomajor)
 	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
-		-execdir sh -c 'echo "=== Major versions in $$(pwd) ===" && gomajor list' \;
+		-execdir sh -c 'echo "=== Major versions in $$(pwd) ===" && GOWORK=off gomajor list' \;
 
 outdated: ## Show outdated direct dependencies (requires go-mod-outdated)
 	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
-		-execdir sh -c 'echo "=== Outdated in $$(pwd) ===" && go list -m -u -json all | go-mod-outdated -direct -update' \;
+		-execdir sh -c 'echo "=== Outdated in $$(pwd) ===" && GOWORK=off go list -m -u -json all | go-mod-outdated -direct -update' \;
 
 vulncheck: ## Check all modules for known vulnerabilities (requires govulncheck)
 	@echo "Running vulnerability check..."
 	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
-		-execdir sh -c 'echo "=== Checking $$(pwd) ===" && govulncheck ./...' \;
+		-execdir sh -c 'echo "=== Checking $$(pwd) ===" && GOWORK=off govulncheck ./...' \;
 
 clean: ## Clean build cache and test cache
 	@echo "Cleaning build cache..."

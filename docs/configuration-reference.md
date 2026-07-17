@@ -146,7 +146,7 @@ config_watch:
 
 ## `stores` -- Backing Store Configuration
 
-Configures the backing stores for lease coordination, outbox persistence, and dead-letter queue.
+Configures the backing stores for lease coordination, outbox persistence, dead-letter queue, and exact managed MQTT subscription history.
 
 ### Store Roles
 
@@ -155,6 +155,7 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 | `lease` | Distributed lease ownership | Exclusive sessions in clustered mode |
 | `outbox` | Durable message outbox | `delivery_mode: shared_outbox` |
 | `dlq` | Dead-letter queue | `on_expired: dlq`, `on_permanent_failure: dlq`, or `on_filtered: dlq` |
+| `managed_subscriptions` | Exact durable MQTT topic-filter history | Persistent/exclusive MQTT session with desired subscriptions |
 
 ### Store Config Fields
 
@@ -163,21 +164,28 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 | `type` | string | **yes** | Store backend: `memory`, `sqlite`, `dynamodb` |
 | `options` | map | no | Backend-specific options |
 
-**Memory**: no options required.
+**Memory**: no options required. Memory does **not** implement `managed_subscriptions`, because process-local history cannot survive restart.
 
 **SQLite** (`type: sqlite`):
 
 | Option | Type | Applies to | Default | Description |
 |--------|------|------------|---------|-------------|
-| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` for an in-process DB) |
+| `path` | string | all roles | -- (**required**) | Database file path (`:memory:` remains available to non-durable test roles). For `managed_subscriptions`, this must be a plain absolute, already-clean filesystem path: `:memory:`, relative paths, `file:` URIs, queries, and fragments are rejected. The final parent must be owner-controlled `0700` (missing adapter-owned parents are created as `0700`); the database, WAL, SHM, and journal are descriptor-validated non-symlink regular files at `0600`. Insecure existing paths are rejected, never silently chmodded. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | How long a same-owner stranded claim waits before another claim attempt may take it. Failover reclaim via a higher fencing version is always immediate and independent of this. |
+
+> **Windows limitation:** `sqlite` managed-subscription history currently fails
+> construction explicitly on Windows. The adapter requires descriptor-relative
+> no-follow creation and validation for the database and WAL/SHM/journal
+> sidecars; equivalent secure Windows handle semantics are not implemented.
+> Use DynamoDB for this role on Windows. Other SQLite store roles are unaffected.
+
 | `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
 
 **DynamoDB** (`type: dynamodb`):
 
 | Option | Type | Applies to | Default | Description |
 |--------|------|------------|---------|-------------|
-| `table_name` | string | all roles | store built-in | Overrides the DynamoDB table name. |
+| `table_name` | string | all roles | `gobridge-leases` / `gobridge-outbox` / `gobridge-dlq` / `gobridge-managed-subscriptions` | Overrides the role-specific DynamoDB table name. Runtime preflight and the AWS CDK grant path resolve the same default when omitted. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | Same semantics as the SQLite outbox key above. |
 | `compaction_grace` | duration | outbox | store default | Window completed/expired outbox items are kept before the DynamoDB item TTL deletes them. Keep above any upstream redelivery window. |
 | `retention` | duration | DLQ | none (kept until deleted) | TTL on dead-letter entries (`ttl = failed_at + retention`). Use a days-scale value so investigators have time to inspect dead-lettered messages. |
@@ -186,6 +194,15 @@ Configures the backing stores for lease coordination, outbox persistence, and de
 > The AWS region and endpoint are NOT store options: they come from the standard
 > AWS SDK configuration chain (environment, shared config, IAM role). Supplying
 > `options.region` or `options.endpoint` is rejected by the strict decoder.
+
+**Managed-subscription data models and startup contract.** SQLite keeps a baseline
+identity row plus exact `(storage_identity, filter)` rows. DynamoDB uses a
+`storage_identity` string HASH key, a `baseline` BOOL, and an optional `filters`
+String Set; grant `GetItem`, `UpdateItem`, and `DescribeTable` (the standard
+read/write-data grant is a permitted superset). The identity is an opaque,
+secret-safe durable-session fingerprint. A missing baseline or any store outage
+fails startup before the MQTT broker connection is opened; seed an explicit
+empty baseline for a genuinely new durable session.
 
 **DLQ read ordering** is oldest-first (`failed_at ASC`) across all backends, so
 operators triage the earliest failures first.
@@ -225,6 +242,10 @@ stores:
       stale_claim_duration: 30s
   dlq:
     type: memory
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
 ```
 
 ## `sessions` -- Transport Sessions
@@ -346,6 +367,7 @@ ID reference graph, delivery hooks, programmatic builder/lifecycle notes, and
 the validation-rules summary -- is documented in
 [Routes, Runtime & Validation Reference](routes-and-runtime-reference.md). That
 reference also covers the per-route lease-timing knobs under `routes[].session`,
-including `renew_call_timeout` and `acquire_poll_interval` and their role in the
-failover-latency budget.
+including `renew_call_timeout`, `acquire_poll_interval`, `failover_slo`, and
+`startup_allowance`. A declared SLO is validated from failure detection through
+`ServiceLevelFull`; measured warm and cold evidence is still required.
 

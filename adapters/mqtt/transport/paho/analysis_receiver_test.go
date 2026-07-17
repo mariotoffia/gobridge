@@ -24,7 +24,13 @@ import (
 // incoming MQTT publishes to a Delivery, and propagates emit errors
 // via a buffered errCh while cancelling the runCtx so the handler
 // unblocks. These tests drive the handler directly via the router to
-// exercise behaviour without needing autopaho.
+// exercise behaviour without needing autopaho. They therefore exercise
+// the LEGACY router seam (Session.Router().Route), which dispatches with
+// a nil ack callback — so Delivery.Ack is a no-op in these tests ONLY.
+// Production Paho enables manual acknowledgement and the Receiver wires
+// WithAckFunc, so a production Delivery.Ack invokes the Paho ack (see
+// delivery.go and acl_session.go). Nothing here is a production
+// settlement-conformance statement.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestAnaRecv_RunReturnsCtxErrOnParentCancel verifies that Run returns
@@ -104,16 +110,17 @@ func TestAnaRecv_EmitError_PropagatedAndCancelsRun(t *testing.T) {
 	}
 }
 
-// TestAnaRecv_EmitError_DeliveryNotSettled is the MQTT conformance test for
-// the ports.Receiver emit-error contract. MQTT settlement is a documented
-// no-op (Delivery.Ack returns nil; Retry/Extend return ErrNotSupported —
-// see delivery.go), because PUBACK/PUBREC are sent by the paho client before
-// the inbound handler runs and there is no application-layer settlement
-// handle. So the conformance guarantee for MQTT is: the emit error is
-// propagated out of Run (cancelling the run), and the delivery handed to
-// emit exposes only the documented no-op settlement (there is no broker
-// settle/ack/abandon operation to suppress).
-func TestAnaRecv_EmitError_DeliveryNotSettled(t *testing.T) {
+// TestAnaRecv_EmitError_LegacyRouteSeamAckNoop drives the LEGACY router seam
+// (Session.Router().Route), NOT the production Paho ingress path. The seam
+// dispatches with a nil ack callback, so the Delivery it hands to emit has no
+// wired acknowledgement and Delivery.Ack is a no-op HERE ONLY. Production Paho
+// enables manual acknowledgement (acl_session.go) and the Receiver wires
+// WithAckFunc, so a production Delivery.Ack invokes the Paho ack — this test is
+// not a production settlement-conformance statement. What it verifies is the
+// ports.Receiver emit-error contract on the seam: the emit error is propagated
+// out of Run (cancelling the run), and an un-wired Retry leaves the delivery
+// unsettled so a fallback Ack can still win.
+func TestAnaRecv_EmitError_LegacyRouteSeamAckNoop(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "ana-recv-emit-err-nosettle",
@@ -163,14 +170,18 @@ func TestAnaRecv_EmitError_DeliveryNotSettled(t *testing.T) {
 		t.Fatal("emit was never handed a delivery")
 	}
 
-	// MQTT settlement is a documented no-op: there is no broker-side
-	// settle/ack/abandon to (wrongly) invoke on emit error. Assert the
-	// no-op contract holds for the delivery the receiver built.
-	if err := del.Ack(context.Background()); err != nil {
-		t.Fatalf("MQTT Delivery.Ack must be a no-op returning nil, got %v", err)
-	}
+	// This legacy seam wired no ack/retry callback, so Retry is unsupported and
+	// must leave the delivery unsettled so a fallback Ack can still win. (In
+	// production the Receiver wires both callbacks; Ephemeral/QoS 0 Retry is
+	// unsupported there because a reconnect cannot redeliver, not because the
+	// callback is absent.)
 	if err := del.Retry(context.Background(), time.Second, emitErr); !errors.Is(err, shared.ErrNotSupported) {
-		t.Fatalf("MQTT Delivery.Retry must return ErrNotSupported (no broker redelivery primitive), got %v", err)
+		t.Fatalf("legacy-seam Delivery.Retry must return ErrNotSupported, got %v", err)
+	}
+	// No ack callback is wired on the seam, so Ack is a no-op returning nil here.
+	// Production Paho wires WithAckFunc and Delivery.Ack invokes the Paho manual ack.
+	if err := del.Ack(context.Background()); err != nil {
+		t.Fatalf("legacy-seam Delivery.Ack (no wired callback) must return nil, got %v", err)
 	}
 }
 
@@ -269,9 +280,12 @@ func TestAnaRecv_MessagesArriveAsDeliveries(t *testing.T) {
 	}
 }
 
-// TestAnaRecv_DeliveryAck_IsNoop verifies that Delivery.Ack returns nil
-// (MQTT acks are handled by paho internally, no caller action needed).
-func TestAnaRecv_DeliveryAck_IsNoop(t *testing.T) {
+// TestAnaRecv_DeliveryAck_NoCallbackIsNoop verifies that a Delivery constructed
+// WITHOUT an ack callback (the legacy Route path / QoS 0 / tests) acks as a
+// no-op returning nil. This is NOT the production contract: production Paho
+// enables manual acknowledgement and the Receiver wires WithAckFunc, so a
+// production Delivery.Ack invokes the Paho ack. See delivery.go.
+func TestAnaRecv_DeliveryAck_NoCallbackIsNoop(t *testing.T) {
 	d := NewDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x"}))
 	if err := d.Ack(context.Background()); err != nil {
 		t.Fatalf("Ack returned %v, want nil", err)
@@ -401,11 +415,9 @@ func TestAnaRecv_RouterRoutingWithoutAnyReceiver_BuffersUntilRegistration(t *tes
 	}
 }
 
-// TestAnaRecv_HandlerSeesIndependentEnvelope verifies the EnvelopeFromPublish
-// path produces an independent Envelope per delivery: distinct
-// publishes get distinct IDs, while a redelivered (byte-identical)
-// publish derives the SAME fallback ID so downstream dedup can catch
-// broker redeliveries (deterministic topic+payload hash).
+// TestAnaRecv_HandlerSeesIndependentEnvelope verifies every no-ID publish
+// receives an independent fallback identity, including byte-identical broker
+// redelivery that MQTT cannot prove is the same application event.
 func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
@@ -439,8 +451,8 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 		// Distinct payloads → distinct application messages.
 		sess.Router().Route(newTestPacketPublish("t/x", []byte{byte(i)}))
 	}
-	// One byte-identical redelivery of the first publish: must NOT get a
-	// fresh ID (QoS 1 redelivery dedup contract).
+	// A byte-identical no-ID redelivery receives a fresh ID. MQTT packet IDs
+	// are reusable and cannot safely prove application identity.
 	sess.Router().Route(newTestPacketPublish("t/x", []byte{0}))
 
 	deadline := time.After(2 * time.Second)
@@ -464,17 +476,8 @@ func TestAnaRecv_HandlerSeesIndependentEnvelope(t *testing.T) {
 	for _, id := range ids {
 		seen[id]++
 	}
-	if len(seen) != n {
-		t.Fatalf("got %d distinct envelope IDs for %d distinct messages (+1 redelivery), want %d", len(seen), n, n)
-	}
-	dups := 0
-	for _, c := range seen {
-		if c == 2 {
-			dups++
-		}
-	}
-	if dups != 1 {
-		t.Fatalf("redelivered publish should share its original ID exactly once, got %d duplicated IDs", dups)
+	if len(seen) != n+1 {
+		t.Fatalf("got %d distinct envelope IDs for %d no-ID publishes, want %d", len(seen), n+1, n+1)
 	}
 }
 
@@ -522,4 +525,63 @@ func TestAnaRecv_HandlerCount_TracksRunLifecycle(t *testing.T) {
 	// Suppress unused warning of helper.
 	var c atomic.Int32
 	_ = staticHandler(&c)
+}
+
+// TestAnaRecv_FanoutIdentity_StablePerPublish verifies the router stamps one
+// fallback identity before fan-out, so every receiver conversion of one
+// publish observes the same Envelope ID while the next equal-valued publish
+// receives a new ID.
+func TestAnaRecv_FanoutIdentity_StablePerPublish(t *testing.T) {
+	r := newRouter(nil, nil)
+	var (
+		mu  sync.Mutex
+		ids = map[string][]string{"a": nil, "b": nil}
+	)
+	for _, name := range []string{"a", "b"} {
+		name := name
+		r.RegisterEnvelope(name, nil, nil, func(env *messaging.Envelope, _ func() error) {
+			mu.Lock()
+			ids[name] = append(ids[name], env.ID())
+			mu.Unlock()
+		})
+	}
+
+	for range 2 {
+		r.Route(newTestPacketPublish("identity/fanout", []byte("same")))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids["a"]) != 2 || len(ids["b"]) != 2 {
+		t.Fatalf("fan-out counts = a:%d b:%d, want 2 each", len(ids["a"]), len(ids["b"]))
+	}
+	if ids["a"][0] != ids["b"][0] || ids["a"][1] != ids["b"][1] {
+		t.Fatalf("one publish must have one fan-out identity: a=%v b=%v", ids["a"], ids["b"])
+	}
+	if ids["a"][0] == ids["a"][1] {
+		t.Fatalf("separate equal-valued publishes must differ: %v", ids["a"])
+	}
+}
+
+// TestAnaRecv_IngressIdentity_DoesNotMutateBrokerPublish verifies identity is
+// stamped on the router-owned clone, not on the Paho callback object that may
+// be observed by later SDK callbacks.
+func TestAnaRecv_IngressIdentity_DoesNotMutateBrokerPublish(t *testing.T) {
+	r := newRouter(nil, nil)
+	var id string
+	r.RegisterEnvelope("identity-owner", nil, nil, func(env *messaging.Envelope, _ func() error) {
+		id = env.ID()
+	})
+	original := &pahov5.Publish{Topic: "identity/ownership", QoS: 1, Payload: []byte("same")}
+
+	handled, err := r.onPublishReceived(pahov5.PublishReceived{Packet: original})
+	if err != nil || !handled {
+		t.Fatalf("onPublishReceived = handled:%v err:%v", handled, err)
+	}
+	if id == "" {
+		t.Fatal("handler did not receive a generated identity")
+	}
+	if original.Properties != nil {
+		t.Fatalf("broker-owned publish was mutated: %+v", original.Properties)
+	}
 }

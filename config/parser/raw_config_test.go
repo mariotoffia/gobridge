@@ -1,6 +1,7 @@
 package parser_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,72 @@ type sqsLikeConfig struct {
 	Region            string        `json:"region,omitempty"`
 	VisibilityTimeout time.Duration `json:"visibility,omitempty"`
 	MaxMessages       int           `json:"maxMessages,omitempty"`
+}
+
+func TestRawConfig_Decode_MQTTIntegerRanges(t *testing.T) {
+	type mqttNumericConfig struct {
+		Session struct {
+			MaxPayloadBytes          uint32 `json:"max_payload_bytes"`
+			ReceiveMaximum           uint16 `json:"receive_maximum"`
+			IngressMemoryBudgetBytes uint64 `json:"ingress_memory_budget_bytes"`
+			RouteMaxInFlight         int    `json:"route_max_in_flight"`
+		} `json:"session"`
+	}
+	type testCase struct {
+		name      string
+		field     string
+		value     any
+		wantErr   bool
+		wantValue uint64
+	}
+	tests := []testCase{
+		{name: "payload exact max", field: "max_payload_bytes", value: uint64(math.MaxUint32), wantValue: math.MaxUint32},
+		{name: "payload max plus one", field: "max_payload_bytes", value: uint64(math.MaxUint32) + 1, wantErr: true},
+		{name: "payload negative", field: "max_payload_bytes", value: int64(-1), wantErr: true},
+		{name: "payload huge uint64", field: "max_payload_bytes", value: uint64(math.MaxUint64), wantErr: true},
+		{name: "payload huge int64", field: "max_payload_bytes", value: int64(math.MaxInt64), wantErr: true},
+		{name: "receive exact max", field: "receive_maximum", value: uint64(math.MaxUint16), wantValue: math.MaxUint16},
+		{name: "receive max plus one", field: "receive_maximum", value: uint64(math.MaxUint16) + 1, wantErr: true},
+		{name: "receive negative", field: "receive_maximum", value: int64(-1), wantErr: true},
+		{name: "receive huge uint64", field: "receive_maximum", value: uint64(math.MaxUint64), wantErr: true},
+		{name: "receive huge int64", field: "receive_maximum", value: int64(math.MaxInt64), wantErr: true},
+		{name: "budget exact max", field: "ingress_memory_budget_bytes", value: uint64(math.MaxUint64), wantValue: math.MaxUint64},
+		{name: "budget negative", field: "ingress_memory_budget_bytes", value: int64(-1), wantErr: true},
+		{name: "budget float beyond max", field: "ingress_memory_budget_bytes", value: float64(math.MaxUint64), wantErr: true},
+		{name: "budget huge int64 accepted", field: "ingress_memory_budget_bytes", value: int64(math.MaxInt64), wantValue: math.MaxInt64},
+		{name: "concurrency exact platform max", field: "route_max_in_flight", value: uint64(math.MaxInt), wantValue: uint64(math.MaxInt)},
+		{name: "concurrency platform overflow", field: "route_max_in_flight", value: uint64(math.MaxInt) + 1, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := parser.NewRawConfig(map[string]any{
+				"session": map[string]any{test.field: test.value},
+			})
+			var got mqttNumericConfig
+			err := raw.Decode(&got)
+			if test.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+				assert.Contains(t, err.Error(), "session."+test.field)
+				assert.Equal(t, mqttNumericConfig{}, got)
+				return
+			}
+			require.NoError(t, err)
+			var value uint64
+			switch test.field {
+			case "max_payload_bytes":
+				value = uint64(got.Session.MaxPayloadBytes)
+			case "receive_maximum":
+				value = uint64(got.Session.ReceiveMaximum)
+			case "ingress_memory_budget_bytes":
+				value = got.Session.IngressMemoryBudgetBytes
+			case "route_max_in_flight":
+				value = uint64(got.Session.RouteMaxInFlight)
+			}
+			assert.Equal(t, test.wantValue, value)
+		})
+	}
 }
 
 // Verifies a representative map[string]any round-trips into a typed Go struct via RawConfig.Decode.

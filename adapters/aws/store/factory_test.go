@@ -33,6 +33,18 @@ func TestDynamoDBStoreFactory_NewOutboxStore(t *testing.T) {
 	}
 }
 
+// Verifies NewManagedSubscriptionStore returns the dedicated optional role.
+func TestDynamoDBStoreFactory_NewManagedSubscriptionStore(t *testing.T) {
+	f := awsstore.NewDynamoDBStoreFactory(nil)
+	store, err := f.NewManagedSubscriptionStore(t.Context(), &awsstore.DynamoDBConfig{TableName: "managed-table"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store == nil {
+		t.Fatal("expected non-nil ManagedSubscriptionStore")
+	}
+}
+
 // Verifies NewDLQStore returns a non-nil DLQ store for nil config.
 func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
@@ -45,7 +57,7 @@ func TestDynamoDBStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies optional table_name in the typed config is accepted for lease, outbox, and DLQ stores.
+// Verifies optional table_name in the typed config is accepted for lease, outbox, DLQ, and managed-subscription stores.
 func TestDynamoDBStoreFactory_WithTableName(t *testing.T) {
 	f := awsstore.NewDynamoDBStoreFactory(nil)
 	cfg := &awsstore.DynamoDBConfig{TableName: "custom-table"}
@@ -86,6 +98,7 @@ func TestDynamoDBStoreFactory_TypedTuningKnobs(t *testing.T) {
 		CompactionGrace:    2 * time.Hour,
 		Retention:          14 * 24 * time.Hour,
 		MaxScanPages:       500,
+		OperationTimeout:   4 * time.Second,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
@@ -115,6 +128,7 @@ func TestDynamoDBConfig_ValidateRejectsNegativeDurations(t *testing.T) {
 		{StaleClaimDuration: -time.Second},
 		{CompactionGrace: -time.Second},
 		{Retention: -time.Second},
+		{OperationTimeout: -time.Second},
 	}
 	for i, c := range cases {
 		if err := c.Validate(); err == nil {
@@ -126,5 +140,43 @@ func TestDynamoDBConfig_ValidateRejectsNegativeDurations(t *testing.T) {
 	ok := awsstore.DynamoDBConfig{MaxScanPages: -1}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("negative max_scan_pages should validate (disables bound): %v", err)
+	}
+}
+
+func TestResolveDynamoDBTableNameUsesRoleDefaults(t *testing.T) {
+	for role, want := range map[string]string{
+		"lease":                 "gobridge-leases",
+		"outbox":                "gobridge-outbox",
+		"dlq":                   "gobridge-dlq",
+		"managed_subscriptions": "gobridge-managed-subscriptions",
+	} {
+		got, err := awsstore.ResolveDynamoDBTableName(role, "")
+		if err != nil {
+			t.Fatalf("ResolveDynamoDBTableName(%q): %v", role, err)
+		}
+		if got != want {
+			t.Fatalf("ResolveDynamoDBTableName(%q) = %q, want %q", role, got, want)
+		}
+	}
+	if got, err := awsstore.ResolveDynamoDBTableName("lease", "custom"); err != nil || got != "custom" {
+		t.Fatalf("explicit table resolution = %q, %v; want custom, nil", got, err)
+	}
+	if _, err := awsstore.ResolveDynamoDBTableName("unknown", ""); err == nil {
+		t.Fatal("unknown role without an explicit table must fail")
+	}
+}
+
+func TestDynamoDBStorageIdentityCanonicalizesOmittedRoleDefaults(t *testing.T) {
+	omitted := awsstore.DynamoDBConfig{}
+	for role, explicit := range map[string]string{
+		"lease":                 awsstore.DefaultDynamoDBLeaseTableName,
+		"outbox":                awsstore.DefaultDynamoDBOutboxTableName,
+		"dlq":                   awsstore.DefaultDynamoDBDLQTableName,
+		"managed_subscriptions": awsstore.DefaultDynamoDBManagedSubscriptionsTableName,
+	} {
+		want := (awsstore.DynamoDBConfig{TableName: explicit}).StorageIdentityForRole(role)
+		if got := omitted.StorageIdentityForRole(role); got != want {
+			t.Fatalf("role %q omitted identity = %q, explicit identity = %q", role, got, want)
+		}
 	}
 }

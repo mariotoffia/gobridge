@@ -327,13 +327,9 @@ Usage of %s:
 			},
 			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider: sup.Config,
-			// Surface live-reconfiguration health on /deephealth: the supervisor
-			// goes degraded when its config-change stream closes, and the config
-			// manager goes degraded when a layer watcher cannot re-establish.
-			// Either means the bridge serves its last good config but no longer
-			// tracks config changes.
-			DegradedProvider: func() (bool, string) {
-				return degradedConfigWatch(sup, mgr)
+			// Surface both watcher failure and desired/running apply divergence.
+			ConfigWatchProvider: func() httpapi.ConfigWatchHealth {
+				return configWatchHealth(sup, mgr)
 			},
 			// Route admin start/stop through the supervisor so POST /bridge/stop
 			// is a clean deliberate pause (not process-suicide) and POST
@@ -457,6 +453,32 @@ func degradedConfigWatch(sup *bridge.Supervisor, mgr *config.Manager) (bool, str
 		return true, "config watch degraded: " + strings.Join(parts, "; ")
 	}
 	return false, ""
+}
+
+func configWatchHealth(sup *bridge.Supervisor, mgr *config.Manager) httpapi.ConfigWatchHealth {
+	degraded, reason := degradedConfigWatch(sup, mgr)
+	status := httpapi.ConfigWatchHealth{
+		Degraded:           degraded,
+		Reason:             reason,
+		ReconfigurePending: mgr.ReconfigurePending(),
+	}
+	if version, ok := mgr.AppliedVersion(); ok {
+		status.DesiredVersion = &version
+	}
+	if version, ok := mgr.RunningVersion(); ok {
+		status.RunningVersion = &version
+	}
+	if err := mgr.LastApplyError(); err != nil {
+		status.LastApplyError = err.Error()
+		status.Degraded = true
+	}
+	if status.ReconfigurePending {
+		status.Degraded = true
+		if status.Reason == "" {
+			status.Reason = "desired configuration is not running"
+		}
+	}
+	return status
 }
 
 // terminalPollInterval is how often the liveness backstop checks whether the

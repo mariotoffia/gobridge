@@ -228,6 +228,11 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 
 func newBatchSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
+	// NewSender builds its own AWS SDK client. ElasticMQ ignores credentials,
+	// but the SDK still requires a provider and must not fall through to host
+	// profile/metadata discovery.
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ep := sqslocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,

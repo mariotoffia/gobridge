@@ -212,8 +212,13 @@ func (r *Repository) checkVersion(ctx context.Context, paramPath string, version
 	return nil
 }
 
-// parseURI extracts the SSM parameter path from a pms:// URI.
-func parseURI(uri string) (string, error) {
+// ParameterPath extracts the absolute SSM parameter path from the canonical
+// pms://name/path or pms:///name/path URI. Both supported forms normalize
+// to the same absolute /name/path; pathToURI emits the authority form.
+func ParameterPath(uri string) (string, error) {
+	if strings.TrimSpace(uri) != uri || !strings.HasPrefix(uri, scheme+"://") {
+		return "", fmt.Errorf("ssm: invalid pms URI syntax")
+	}
 	u, err := url.Parse(uri)
 	if err != nil {
 		// Redact: url.Parse wraps the raw URI (which may embed userinfo) in a
@@ -221,18 +226,45 @@ func parseURI(uri string) (string, error) {
 		// URI into an error string.
 		return "", fmt.Errorf("ssm: invalid URI: %w", shared.RedactURIError(err))
 	}
-
 	if u.Scheme != scheme {
 		return "", fmt.Errorf("ssm: expected scheme %s, got %s", scheme, u.Scheme)
 	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(uri, "#") || u.Fragment != "" ||
+		u.RawFragment != "" || u.Opaque != "" || u.RawPath != "" {
+		return "", fmt.Errorf("ssm: pms URI must not contain userinfo, query, fragment, opaque, or encoded path data")
+	}
 
-	path := "/" + u.Host
-	if u.Path != "" && u.Path != "/" {
-		path = path + u.Path
+	var path string
+	switch {
+	case u.Host != "":
+		path = "/" + u.Host + u.Path
+	case strings.HasPrefix(uri, scheme+":///"):
+		path = u.Path
+	default:
+		return "", fmt.Errorf("ssm: pms URI requires authority or absolute-path form")
 	}
 	path = strings.TrimSuffix(path, "/")
-
+	if path == "" || path == "/" || !strings.HasPrefix(path, "/") || strings.Contains(path, "//") {
+		return "", fmt.Errorf("ssm: pms URI contains an empty or malformed parameter path")
+	}
+	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("ssm: pms URI contains an invalid parameter path segment")
+		}
+		for _, r := range segment {
+			// AWS SSM parameter names permit ASCII letters, digits, _, -, and . per segment.
+			if (r >= 97 && r <= 122) || (r >= 65 && r <= 90) ||
+				(r >= 48 && r <= 57) || r == 95 || r == 45 || r == 46 {
+				continue
+			}
+			return "", fmt.Errorf("ssm: pms URI parameter path contains unsupported characters")
+		}
+	}
 	return path, nil
+}
+
+func parseURI(uri string) (string, error) {
+	return ParameterPath(uri)
 }
 
 // pathToURI converts a parameter path back to a pms:// URI.

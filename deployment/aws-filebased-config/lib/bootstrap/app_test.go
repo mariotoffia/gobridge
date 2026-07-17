@@ -51,6 +51,12 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 	require.NotNil(t, app.CurrentRuntime())
 	require.NotNil(t, app.CurrentLogicalConfig())
 	assert.Equal(t, "bridge-a", app.CurrentLogicalConfig().Bridge.ID)
+	health := app.configWatchHealth()
+	require.NotNil(t, health.DesiredVersion)
+	require.NotNil(t, health.RunningVersion)
+	assert.Equal(t, *health.DesiredVersion, *health.RunningVersion)
+	assert.False(t, health.ReconfigurePending)
+	assert.False(t, health.Degraded)
 
 	resp, body := getJSON(t, app.AdminURL()+"/api/v1/admin/config", "admin-secret-key-123456")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -61,7 +67,7 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 	assert.Equal(t, "bridge-a", bridgeBody["id"])
 }
 
-func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) {
+func TestApp_ReloadsWhenConfigFileAppears(t *testing.T) {
 	cfgPath := t.TempDir() + "/bridge.yaml"
 	app := NewApp(deployinfra.BootstrapConfig{
 		BridgeID:          "bridge-b",
@@ -93,22 +99,44 @@ func TestApp_ReloadsWhenConfigFileAppearsAndRejectsInvalidChanges(t *testing.T) 
 		applied := app.CurrentAppliedConfig()
 		return applied != nil && applied.Bridge.LogLevel == "debug"
 	}, 3*time.Second, 100*time.Millisecond)
+}
 
-	invalid := &ports.BridgeConfig{
+func TestApp_ConfigHealthReportsRejectedReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: requires active file watcher and HTTP listeners")
+	}
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	app := NewApp(deployinfra.BootstrapConfig{
+		BridgeID:          "bridge-health",
+		ConfigFilePath:    cfgPath,
+		PollInterval:      "20ms",
+		AdminAddr:         ":0",
+		MonitorAddr:       ":0",
+		TransportHTTPAddr: ":0",
+		AdminAPIKeyParam:  "/admin",
+	}, WithParameterResolver(staticParameterResolver{
+		"/admin": "admin-secret-key-123456",
+	}))
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() {
+		_ = app.Stop(context.Background())
+	})
+
+	clustered := &ports.BridgeConfig{
+		Version: 1,
 		Bridge: ports.BridgeSettings{
-			ID:             "bridge-b",
-			DeploymentMode: "standalone",
-		},
-		Routes: []ports.RouteDef{
-			{ID: "broken-route", ReceiverID: "missing", Bindings: []string{"missing"}},
+			ID:             "bridge-health",
+			DeploymentMode: "clustered",
 		},
 	}
-	require.NoError(t, parser.WriteFile(cfgPath, invalid))
+	require.NoError(t, parser.WriteFile(cfgPath, clustered))
 
-	time.Sleep(2 * time.Second) // SYNC: wait for file watcher to detect and reject invalid config
-	applied := app.CurrentAppliedConfig()
-	require.NotNil(t, applied)
-	assert.Equal(t, "debug", applied.Bridge.LogLevel)
+	require.Eventually(t, func() bool {
+		health := app.configWatchHealth()
+		return health.Degraded &&
+			health.ReconfigurePending &&
+			health.LastApplyError != ""
+	}, 3*time.Second, 10*time.Millisecond)
 }
 
 // TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the B3
@@ -325,4 +353,147 @@ func getJSON(t *testing.T, url, apiKey string) (*http.Response, map[string]any) 
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	return resp, body
+}
+
+// TestClusteredReload proves the H8 fail-closed guard on the AWS composition
+// root: a live reload of (or INTO) a CLUSTERED deployment is refused via the
+// existing reload-failure path (applyLogicalConfig returns an error, so
+// watchLoop keeps the last-good runtime and applyCommittedConfig surfaces
+// committed_not_applied), keeping the running runtime and applied config
+// untouched. A genuine no-op re-emit is detected before the guard and stays
+// accepted (skipped).
+func TestClusteredReload(t *testing.T) {
+	newStartedApp := func(t *testing.T) *App {
+		cfgPath := t.TempDir() + "/bridge.yaml"
+		app := NewApp(deployinfra.BootstrapConfig{
+			BridgeID:          "bridge-cluster",
+			ConfigFilePath:    cfgPath,
+			PollInterval:      "1h", // keep the file watcher dormant
+			AdminAddr:         ":0",
+			MonitorAddr:       ":0",
+			TransportHTTPAddr: ":0",
+			AdminAPIKeyParam:  "/admin",
+		}, WithParameterResolver(staticParameterResolver{
+			"/admin": "admin-secret-key-123456",
+		}))
+		require.NoError(t, app.Start(t.Context()))
+		t.Cleanup(func() { _ = app.Stop(context.Background()) })
+		return app
+	}
+
+	standalone := func() *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Version: 3,
+			Bridge:  ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "standalone", LogLevel: "info"},
+		}
+	}
+	clustered := func() *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Version: 5,
+			Bridge:  ports.BridgeSettings{ID: "bridge-cluster", DeploymentMode: "clustered", LogLevel: "info"},
+		}
+	}
+
+	reload := func(t *testing.T, app *App, cfg *ports.BridgeConfig) error {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		app.logicalRef.Set(cfg)
+		return app.applyLogicalConfig(t.Context(), cfg)
+	}
+
+	t.Run("proposed clustered deployment refuses a live reload", func(t *testing.T) {
+		app := newStartedApp(t)
+		// Establish a known-good standalone applied config.
+		require.NoError(t, reload(t, app, standalone()))
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+		// Capture the EXACT applied reference and version before the rejected
+		// reload so we can prove neither is mutated (finding 2).
+		beforeApplied := app.CurrentAppliedConfig()
+		require.NotNil(t, beforeApplied)
+
+		err := reload(t, app, clustered())
+		require.Error(t, err, "reloading a standalone runtime INTO a clustered config must fail closed")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Same(t, beforeApplied, app.CurrentAppliedConfig(),
+			"the applied reference pointer must be unchanged by a refused reload")
+		assert.Equal(t, "standalone", app.CurrentAppliedConfig().Bridge.DeploymentMode,
+			"the applied config must remain the standalone one")
+		assert.Equal(t, 3, app.CurrentAppliedConfig().Version,
+			"the applied version must not advance to the rejected clustered version")
+	})
+
+	t.Run("current clustered deployment refuses a live reload", func(t *testing.T) {
+		app := newStartedApp(t)
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+		// Simulate a currently-clustered applied config (a fresh boot INTO
+		// clustered is legitimate; only a live reload is guarded).
+		appliedClustered := clustered()
+		app.mu.Lock()
+		app.appliedRef.Set(appliedClustered)
+		app.mu.Unlock()
+
+		err := reload(t, app, standalone())
+		require.Error(t, err, "leaving a clustered cohort via live reload must fail closed")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Same(t, appliedClustered, app.CurrentAppliedConfig(),
+			"the applied reference pointer must be unchanged by a refused reload")
+		assert.Equal(t, "clustered", app.CurrentAppliedConfig().Bridge.DeploymentMode,
+			"the applied config must be unchanged")
+		assert.Equal(t, 5, app.CurrentAppliedConfig().Version,
+			"the applied version must not change on a refused reload")
+	})
+
+	t.Run("committed clustered reload surfaces committed_not_applied", func(t *testing.T) {
+		// Finding 2: exercise the EXISTING committed failure path. An admin commit
+		// that carries a clustered reload must be rejected through
+		// applyCommittedConfig (which wraps the guard error as
+		// committed_not_applied), leaving runtime, applied reference/version, and
+		// the recorded fingerprint untouched — disk and runtime diverge until an
+		// externally coordinated cohort rollout, never a silent per-process swap.
+		app := newStartedApp(t)
+		require.NoError(t, reload(t, app, standalone()))
+		oldRt := app.CurrentRuntime()
+		require.NotNil(t, oldRt)
+		beforeApplied := app.CurrentAppliedConfig()
+		require.NotNil(t, beforeApplied)
+		app.mu.Lock()
+		beforeFingerprint := app.lastAppliedFingerprint
+		app.mu.Unlock()
+
+		err := app.applyCommittedConfig(t.Context(), clustered())
+		require.Error(t, err, "a committed clustered reload must be rejected")
+		assert.Contains(t, err.Error(), "apply committed config",
+			"the failure must surface through the committed-not-applied path")
+		assert.Contains(t, err.Error(), "clustered")
+		assert.Same(t, oldRt, app.CurrentRuntime(), "the running runtime must be untouched")
+		assert.Same(t, beforeApplied, app.CurrentAppliedConfig(),
+			"the applied reference must be unchanged by a rejected committed reload")
+		assert.Equal(t, 3, app.CurrentAppliedConfig().Version,
+			"the applied version must not advance to the rejected clustered version")
+		app.mu.Lock()
+		afterFingerprint := app.lastAppliedFingerprint
+		app.mu.Unlock()
+		assert.Equal(t, beforeFingerprint, afterFingerprint,
+			"a rejected reload must not record the clustered config's fingerprint")
+	})
+
+	t.Run("no-op clustered reload stays accepted", func(t *testing.T) {
+		app := newStartedApp(t)
+		cc := clustered()
+		fp := app.parsedFingerprint(cc, true)
+		require.NotEmpty(t, fp)
+
+		app.mu.Lock()
+		app.appliedRef.Set(cc)
+		app.lastAppliedFingerprint = fp
+		skipped, err := app.applyLogicalIfChanged(t.Context(), cc, true)
+		app.mu.Unlock()
+
+		require.NoError(t, err, "a no-op clustered reload must not be refused")
+		assert.True(t, skipped, "an identical clustered re-emit is a no-op detected before the guard")
+	})
 }

@@ -202,10 +202,16 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	var slowSendCancelled atomic.Int32
+	firstSendEntered := make(chan struct{})
+	slowSendEntered := make(chan struct{})
 
 	ctxSender := &ContextAwareSender{
 		sendFn: func(ctx context.Context, env *messaging.Envelope) error {
-			if env.ID() == "env-slow" {
+			switch env.ID() {
+			case "env-first":
+				close(firstSendEntered)
+			case "env-slow":
+				close(slowSendEntered)
 				<-ctx.Done()
 				slowSendCancelled.Add(1)
 				return ctx.Err()
@@ -224,16 +230,18 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 	outbox.CompleteFn = func(ids []string, _ persistence.LeaseToken) error {
 		for _, id := range ids {
 			if id == "rec-first" {
+				<-firstSendEntered
+				<-slowSendEntered
 				return shared.ErrStaleFencingToken
 			}
 		}
 		return nil
 	}
 
-	// Only allow one drain batch; after the first call + per-record
-	// pre-send checks, revoke the token so the drainer does not
-	// re-process records on subsequent poll cycles.
-	// Threshold: 1 (Run loop) + 2 (pre-send checks for 2 records) = 3.
+	// Only allow one drain batch; after the run-loop check, both pre-send
+	// checks, and rec-first's post-send completion fence, revoke the token so
+	// the drainer does not re-process records on subsequent poll cycles.
+	// Threshold: 1 + 2 + 1 = 4.
 	var tokenCalls atomic.Int32
 	cfg := outboxpkg.Config{
 		OutboxStore:         outbox,
@@ -247,7 +255,7 @@ func TestOutboxDrainer_StaleFencingToken_CancelsSiblings(t *testing.T) {
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainMaxConcurrency: 2,
 		TokenFn: func() (persistence.LeaseToken, bool) {
-			if tokenCalls.Add(1) <= 3 {
+			if tokenCalls.Add(1) <= 4 {
 				return token, true
 			}
 			return persistence.LeaseToken{}, false

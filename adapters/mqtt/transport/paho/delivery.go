@@ -35,9 +35,10 @@
 //     reset); it reports success because the broker will redeliver and
 //     downstream idempotency/dedup absorbs the duplicate.
 //
-//   - Retry returns shared.ErrNotSupported: MQTT has no broker-side
-//     visibility timeout or per-message redelivery primitive akin to
-//     SQS. The route runner falls back to DLQ routing.
+//   - MQTT has no per-message NACK. Persistent/Exclusive QoS 1/2 Retry
+//     leaves the packet un-acked and requests a bounded session recycle so the
+//     broker redelivers it. Ephemeral and QoS 0 Retry return
+//     shared.ErrNotSupported without latching settlement.
 //
 //   - Extend returns shared.ErrNotSupported for the same reason — there
 //     is nothing to extend.
@@ -59,6 +60,7 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -69,16 +71,27 @@ import (
 
 var _ ports.Delivery = (*Delivery)(nil)
 
-// Delivery implements ports.Delivery for an incoming MQTT message.
-// Ack triggers the MQTT protocol acknowledgement (PUBACK / PUBREC-
-// PUBCOMP via the Paho manual-acknowledgment API); Retry and Extend
-// are not supported by MQTT.
-type Delivery struct {
-	env *messaging.Envelope
-	ack func() error
+type deliveryDisposition uint8
 
-	ackOnce sync.Once
-	ackErr  error
+const (
+	deliveryUnsettled deliveryDisposition = iota
+	deliveryAcked
+	deliveryRetried
+	deliverySettleFailed
+)
+
+// Delivery implements ports.Delivery for an incoming MQTT message.
+// Ack triggers the MQTT protocol acknowledgement (PUBACK / PUBREC-PUBCOMP via
+// the Paho manual-acknowledgment API). Durable QoS 1/2 Retry requests session
+// recovery without acknowledging the packet; Extend is unsupported.
+type Delivery struct {
+	env   *messaging.Envelope
+	ack   func() error
+	retry func(context.Context) error
+
+	mu          sync.Mutex
+	disposition deliveryDisposition
+	settleErr   error
 }
 
 // DeliveryOption customises a Delivery.
@@ -89,6 +102,12 @@ type DeliveryOption func(*Delivery)
 // Ack for the originating publish.
 func WithAckFunc(fn func() error) DeliveryOption {
 	return func(d *Delivery) { d.ack = fn }
+}
+
+// WithRetryFunc installs the session-recovery callback used by durable QoS 1/2
+// deliveries. A nil callback leaves Retry unsupported.
+func WithRetryFunc(fn func(context.Context) error) DeliveryOption {
+	return func(d *Delivery) { d.retry = fn }
 }
 
 // NewDelivery wraps an Envelope as a ports.Delivery.
@@ -109,15 +128,47 @@ func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 // constructed without an ack callback (QoS 0, tests, legacy Route path)
 // acks as a no-op.
 func (d *Delivery) Ack(_ context.Context) error {
-	if d.ack == nil {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disposition != deliveryUnsettled {
+		if d.disposition == deliverySettleFailed {
+			return d.settleErr
+		}
 		return nil
 	}
-	d.ackOnce.Do(func() { d.ackErr = d.ack() })
-	return d.ackErr
+	if d.ack != nil {
+		if err := d.ack(); err != nil {
+			d.disposition = deliverySettleFailed
+			d.settleErr = err
+			return err
+		}
+	}
+	d.disposition = deliveryAcked
+	return nil
 }
 
-func (d *Delivery) Retry(_ context.Context, _ time.Duration, _ error) error {
-	return shared.ErrNotSupported
+func (d *Delivery) Retry(ctx context.Context, _ time.Duration, _ error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disposition != deliveryUnsettled {
+		if d.disposition == deliverySettleFailed {
+			return d.settleErr
+		}
+		return nil
+	}
+	if d.retry == nil {
+		return shared.ErrNotSupported
+	}
+	if err := d.retry(ctx); err != nil {
+		if errors.Is(err, shared.ErrNotSupported) {
+			return err
+		}
+		d.disposition = deliverySettleFailed
+		d.settleErr = err
+		return err
+	}
+	d.disposition = deliveryRetried
+	return nil
 }
 
 func (d *Delivery) Extend(_ context.Context, _ time.Time) error {

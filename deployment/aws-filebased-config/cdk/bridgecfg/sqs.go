@@ -105,7 +105,7 @@ func WithSQSSenderRegion(region string) SQSSenderOption {
 // sqsTransport is the discriminator the adapter registers under the
 // short form. Kept as a package constant so the builder, the secret
 // scanner, and round-trip tests share a single source of truth.
-const sqsTransport = "sqs"
+const sqsTransport = sqs.ShortKind
 
 // newSQSConfig builds a *sqs.Config seeded from a queue ref, choosing
 // QueueURL when the ref is resolved (CDK handle available at synth

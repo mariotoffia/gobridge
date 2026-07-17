@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -277,6 +278,14 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	if props.MemoryMiB != nil {
 		mem = props.MemoryMiB
 	}
+	containerMemoryBytes, err := memoryBytesFromMiB(*mem)
+	if err != nil {
+		panic(fmt.Sprintf("gobridgebase: invalid MemoryMiB: %v", err))
+	}
+	bootstrap := props.Bootstrap.Normalized()
+	// The task definition is authoritative. Never trust a separately supplied
+	// bootstrap byte limit that could drift from the actual Fargate hard limit.
+	bootstrap.ContainerMemoryBytes = containerMemoryBytes
 
 	mountPath := defaultMountPath
 	if props.MountPath != nil && *props.MountPath != "" {
@@ -384,7 +393,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	})
 
 	// Main container.
-	bootstrapJSON, err := json.Marshal(props.Bootstrap)
+	bootstrapJSON, err := json.Marshal(bootstrap)
 	if err != nil {
 		panic(fmt.Sprintf("gobridgebase: marshal bootstrap: %v", err))
 	}
@@ -450,7 +459,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	})
 
 	// Port mappings derived from yaml + bootstrap.
-	portMappings := DerivePortMappings(mat.Config, props.Bootstrap)
+	portMappings := DerivePortMappings(mat.Config, bootstrap)
 	for _, pm := range portMappings {
 		port := pm.Port
 		main.AddPortMappings(&awsecs.PortMapping{
@@ -548,6 +557,20 @@ func joinPath(dir, name string) string {
 		return dir + name
 	}
 	return dir + "/" + name
+}
+
+func memoryBytesFromMiB(memoryMiB float64) (uint64, error) {
+	if math.IsNaN(memoryMiB) || math.IsInf(memoryMiB, 0) || memoryMiB <= 0 {
+		return 0, fmt.Errorf("must be a finite positive value, got %v", memoryMiB)
+	}
+	if math.Trunc(memoryMiB) != memoryMiB {
+		return 0, fmt.Errorf("must be a whole MiB value, got %v", memoryMiB)
+	}
+	const bytesPerMiB = uint64(1 << 20)
+	if memoryMiB > float64(math.MaxUint64/bytesPerMiB) {
+		return 0, fmt.Errorf("%v MiB overflows bytes", memoryMiB)
+	}
+	return uint64(memoryMiB) * bytesPerMiB, nil
 }
 
 func jsiiDeref(s *string) string {

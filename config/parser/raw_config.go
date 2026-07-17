@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -63,7 +64,7 @@ func (r *rawMapConfig) Decode(target any) error {
 		WeaklyTypedInput: false,
 		Result:           target,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			floatToIntegerOrDurationHook,
+			numericToIntegerOrDurationHook,
 			mapstructure.StringToTimeDurationHookFunc(),
 			mapstructure.StringToSliceHookFunc(","),
 			// Decodes a scalar string into any value-object that
@@ -91,7 +92,9 @@ func (r *rawMapConfig) Decode(target any) error {
 				elem.Set(reflect.Zero(elem.Type()))
 			}
 		}
-		return fmt.Errorf("config: decode plugin options: %w", err)
+		return shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			"config: decode plugin options: " + err.Error(),
+		)
 	}
 	return nil
 }
@@ -109,7 +112,7 @@ func (r *rawMapConfig) AsMap() map[string]any {
 	return r.data
 }
 
-// floatToIntegerOrDurationHook rejects numeric inputs that would silently
+// numericToIntegerOrDurationHook rejects numeric inputs that would silently
 // lose information or be misread when coerced into an integer or a
 // time.Duration.
 //
@@ -121,11 +124,11 @@ func (r *rawMapConfig) AsMap() map[string]any {
 //
 //   - number -> time.Duration: always error (both float and integer sources).
 //     Durations must be given as a string literal with a unit (e.g. "30s").
-//   - float -> int*/uint*: error if the value has a fractional part;
-//     otherwise pass through and let mapstructure's built-in coercion narrow
-//     it to the integer target.
+//   - number -> int*/uint*: error if the value is fractional, negative for an
+//     unsigned target, or outside the exact target width. Validation happens
+//     before mapstructure narrows the value, preventing wraparound.
 //   - any other (from, to) pair: pass through unchanged.
-func floatToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) (any, error) {
+func numericToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) (any, error) {
 	if from == nil || to == nil {
 		return data, nil
 	}
@@ -148,30 +151,87 @@ func floatToIntegerOrDurationHook(from reflect.Type, to reflect.Type, data any) 
 		}
 	}
 
+	if !isIntegerKind(to.Kind()) {
+		return data, nil
+	}
+	targetBits := to.Bits()
 	switch from.Kind() {
-	case reflect.Float32, reflect.Float64:
-	default:
-		return data, nil
-	}
-
-	var f float64
-	switch v := data.(type) {
-	case float32:
-		f = float64(v)
-	case float64:
-		f = v
-	default:
-		return data, nil
-	}
-
-	switch to.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if math.Trunc(f) != f {
-			return nil, fmt.Errorf("cannot decode fractional float %v into %s field", data, to.Kind())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value := reflect.ValueOf(data).Int()
+		if isUnsignedIntegerKind(to.Kind()) {
+			if value < 0 {
+				return nil, fmt.Errorf("cannot decode negative integer %d into %s", value, to)
+			}
+			if targetBits < 64 && uint64(value) >= uint64(1)<<targetBits {
+				return nil, fmt.Errorf("integer %d is out of range for %s", value, to)
+			}
+			return data, nil
+		}
+		if targetBits < 64 {
+			minimum := -int64(1 << (targetBits - 1))
+			maximum := int64(1<<(targetBits-1)) - 1
+			if value < minimum || value > maximum {
+				return nil, fmt.Errorf("integer %d is out of range for %s", value, to)
+			}
 		}
 		return data, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value := reflect.ValueOf(data).Uint()
+		if isUnsignedIntegerKind(to.Kind()) {
+			if targetBits < 64 && value >= uint64(1)<<targetBits {
+				return nil, fmt.Errorf("integer %d is out of range for %s", value, to)
+			}
+			return data, nil
+		}
+		var maximum uint64 = math.MaxInt64
+		if targetBits < 64 {
+			maximum = uint64(1<<(targetBits-1)) - 1
+		}
+		if value > maximum {
+			return nil, fmt.Errorf("integer %d is out of range for %s", value, to)
+		}
+		return data, nil
+	case reflect.Float32, reflect.Float64:
+		value := reflect.ValueOf(data).Float()
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, fmt.Errorf("cannot decode non-finite float %v into %s", data, to)
+		}
+		if math.Trunc(value) != value {
+			return nil, fmt.Errorf("cannot decode fractional float %v into %s field", data, to.Kind())
+		}
+		if isUnsignedIntegerKind(to.Kind()) {
+			upperExclusive := math.Ldexp(1, targetBits)
+			if value < 0 || value >= upperExclusive {
+				return nil, fmt.Errorf("float %v is out of range for %s", data, to)
+			}
+			return data, nil
+		}
+		lowerInclusive := -math.Ldexp(1, targetBits-1)
+		upperExclusive := math.Ldexp(1, targetBits-1)
+		if value < lowerInclusive || value >= upperExclusive {
+			return nil, fmt.Errorf("float %v is out of range for %s", data, to)
+		}
+		return data, nil
+	default:
+		return data, nil
 	}
+}
 
-	return data, nil
+func isIntegerKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func isUnsignedIntegerKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	default:
+		return false
+	}
 }

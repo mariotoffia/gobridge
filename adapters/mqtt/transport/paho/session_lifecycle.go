@@ -2,6 +2,8 @@ package paho
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -9,6 +11,506 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+const (
+	settlementRecoveryDrainLimit  = 5 * time.Second
+	settlementRecoveryMinInterval = 30 * time.Second
+)
+
+func (s *Session) acquireReload(ctx context.Context) error {
+	select {
+	case <-s.reloadGate:
+		if s.reloadGateAcquiredHook != nil {
+			s.reloadGateAcquiredHook()
+		}
+		return nil
+	default:
+	}
+	if s.reloadGateWaitHook != nil {
+		s.reloadGateWaitHook()
+	}
+	select {
+	case <-s.reloadGate:
+		if s.reloadGateAcquiredHook != nil {
+			s.reloadGateAcquiredHook()
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Session) releaseReload() { s.reloadGate <- struct{}{} }
+
+func (s *Session) recoveryAttemptTimeout() time.Duration {
+	s.mu.Lock()
+	opts := s.opts
+	mode := s.mode
+	s.mu.Unlock()
+	return (Config{Session: opts}).PostAcquireActivationTiming(mode).WorstCaseDuration
+}
+
+// contextWithClockTimeout applies a cancellable hard bound using the injected
+// session clock, so recovery I/O observes deterministic cancellation in tests
+// and no phase can outlive the adapter activation budget.
+func (s *Session) contextWithClockTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	if timeout <= 0 {
+		cancel()
+		return ctx, func() {}
+	}
+	timer := s.clock().NewTimer(timeout)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-timer.C():
+			cancel()
+		case <-done:
+		}
+	}()
+	var cancelOnce sync.Once
+	return ctx, func() {
+		cancelOnce.Do(func() {
+			timer.Stop()
+			close(done)
+			cancel()
+		})
+	}
+}
+
+func (s *Session) beginRecoveryDrain(generation uint64) (<-chan struct{}, bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recoveryGeneration != generation {
+		return nil, false, false
+	}
+	if s.recoveryDrainGeneration != generation {
+		s.recoveryDrainState = recoveryDrainNotStarted
+		s.recoveryDrainGeneration = generation
+		s.recoveryDrainDone = nil
+	}
+	switch s.recoveryDrainState {
+	case recoveryDrainNotStarted:
+		done := make(chan struct{})
+		s.recoveryDrainState = recoveryDrainInProgress
+		s.recoveryDrainDone = done
+		return done, true, false
+	case recoveryDrainInProgress:
+		return s.recoveryDrainDone, false, false
+	case recoveryDrainFinished:
+		return s.recoveryDrainDone, false, true
+	default:
+		return nil, false, false
+	}
+}
+
+func (s *Session) finishRecoveryDrain(generation uint64, done <-chan struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recoveryDrainGeneration != generation ||
+		s.recoveryDrainState != recoveryDrainInProgress ||
+		s.recoveryDrainDone != done {
+		return false
+	}
+	s.recoveryDrainState = recoveryDrainFinished
+	close(s.recoveryDrainDone)
+	return true
+}
+
+func (s *Session) clearRecoveryDrainLocked(generation uint64) {
+	if s.recoveryDrainGeneration != generation {
+		return
+	}
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = 0
+	s.recoveryDrainDone = nil
+}
+
+func (s *Session) awaitStartCleanup(ctx context.Context) {
+	s.mu.Lock()
+	starting := s.starting
+	done := s.startDone
+	hook := s.terminalAwaitStartHook
+	s.mu.Unlock()
+	if !starting || done == nil {
+		return
+	}
+	if hook != nil {
+		hook()
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+func settlementRecoveryTerminalError(cause error) error {
+	if cause == nil {
+		cause = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery failed")
+	}
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: settlement recovery failed; session is terminal").
+		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
+}
+
+// transitionTerminal is the only terminal state writer. The first caller
+// latches the cause and owns one bounded teardown; later causes coalesce. When a
+// recovery is queued/active, every recovery field is cleared coherently even if
+// a Task-5 failClosed path wins the race with the recovery finalizer.
+func (s *Session) transitionTerminal(
+	parent context.Context,
+	cause error,
+	recoveryGeneration uint64,
+	async bool,
+	callerQuiesced bool,
+) (error, bool) {
+	terminal := cause
+	if terminal == nil {
+		terminal = shared.ErrUnavailable.WithMessage("mqtt: session is terminal")
+	}
+
+	if !errors.Is(terminal, shared.ErrTransportClosedPermanently) {
+		terminal = shared.ErrUnavailable.
+			WithMessage("mqtt: session is terminal").
+			Wrap(errors.Join(terminal, shared.ErrTransportClosedPermanently))
+	}
+
+	s.mu.Lock()
+	if s.terminalErr != nil {
+		latched := s.terminalErr
+		s.mu.Unlock()
+		return latched, false
+	}
+	recoveryInFlight := s.recoveryPending || s.recoveryAttemptActive
+	if recoveryGeneration != 0 &&
+		(s.recoveryGeneration != recoveryGeneration || !recoveryInFlight) {
+		s.mu.Unlock()
+		return terminal, false
+	}
+	drainGeneration := s.recoveryGeneration
+	var drainDone <-chan struct{}
+	drainOwner := false
+	drainFinished := callerQuiesced
+	if recoveryInFlight {
+		if s.recoveryDrainGeneration != drainGeneration {
+			s.recoveryDrainState = recoveryDrainNotStarted
+			s.recoveryDrainGeneration = drainGeneration
+			s.recoveryDrainDone = nil
+		}
+		switch s.recoveryDrainState {
+		case recoveryDrainNotStarted:
+			done := make(chan struct{})
+			s.recoveryDrainState = recoveryDrainInProgress
+			s.recoveryDrainDone = done
+			drainDone = done
+			drainOwner = true
+			drainFinished = false
+		case recoveryDrainInProgress:
+			drainDone = s.recoveryDrainDone
+			drainFinished = false
+		case recoveryDrainFinished:
+			drainDone = s.recoveryDrainDone
+			drainFinished = true
+		}
+	}
+	s.terminalErr = terminal
+	if recoveryInFlight {
+		s.recoveryErr = terminal
+		s.recoveryPending = false
+		s.recoveryAttemptActive = false
+		s.recoveryNeedsSessionPresent = false
+		s.recoverySessionPresentEpoch = 0
+		s.recoveryTargetEpoch = 0
+		s.lastRecoveryCompleted = s.clock().Now()
+	}
+	cancelAttempt := s.recoveryAttemptCancel
+	s.recoveryAttemptCancel = nil
+	hook := s.recoveryQueuedFailureHook
+	s.mu.Unlock()
+	if cancelAttempt != nil {
+		cancelAttempt()
+	}
+	if hook != nil && recoveryInFlight {
+		hook()
+	}
+
+	finish := func() {
+		terminalCtx, cancel := s.contextWithClockTimeout(context.WithoutCancel(parent), s.recoveryAttemptTimeout())
+		switch {
+		case recoveryInFlight && drainOwner:
+			drainCtx, cancelDrain := s.contextWithClockTimeout(terminalCtx, settlementRecoveryDrainLimit)
+			_ = s.quiesceForRecycle(drainCtx)
+			cancelDrain()
+			s.finishRecoveryDrain(drainGeneration, drainDone)
+		case recoveryInFlight && !drainFinished && drainDone != nil:
+			select {
+			case <-drainDone:
+			case <-terminalCtx.Done():
+			}
+		case !recoveryInFlight && !callerQuiesced:
+			_ = s.quiesceForRecycle(terminalCtx)
+		}
+		s.awaitStartCleanup(terminalCtx)
+		s.disconnectGeneration(terminalCtx)
+		cancel()
+		s.pushEvent(ports.SessionError, terminal)
+		s.mu.Lock()
+		s.clearRecoveryDrainLocked(drainGeneration)
+		s.closeEventsLocked()
+		s.mu.Unlock()
+	}
+	if async {
+		go finish()
+	} else {
+		finish()
+	}
+	return terminal, true
+}
+
+// rejectIngressPoison synchronously latches terminal readiness and delegates
+// bounded disconnect/cleanup to the existing Task 6 terminal lifecycle. It must
+// return promptly because it runs on Paho's publish callback goroutine.
+func (s *Session) rejectIngressPoison(cause error) {
+	_, _ = s.transitionTerminal(context.Background(), cause, 0, true, false)
+}
+
+// rejectPredecodeIngress preserves the exact secret-safe guard cause in the
+// terminal lifecycle before the guarded connection returns it to Paho. The
+// connection closes synchronously after this callback, so OnConnectionDown
+// observes terminalErr and existing reconnect policy stops the generation.
+func (s *Session) rejectPredecodeIngress(cause error) {
+	s.metrics.Counter(MetricMQTTRouterDropped, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	if s.logger != nil {
+		s.logger.Error("mqtt: rejected inbound packet before Paho decoding; terminating session",
+			"client_id", s.opts.ClientID,
+			"error", cause,
+		)
+	}
+	s.rejectIngressPoison(cause)
+}
+
+func (s *Session) terminateFailedRecovery(generation uint64, cause error, async bool) bool {
+	terminal := settlementRecoveryTerminalError(cause)
+	_, started := s.transitionTerminal(context.Background(), terminal, generation, async, false)
+	return started
+}
+
+func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
+	return s.terminateFailedRecovery(generation, attemptErr, false)
+}
+
+func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
+	if !success {
+		if attemptErr == nil {
+			attemptErr = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery did not complete")
+		}
+		return s.terminateFailedRecovery(generation, attemptErr, false)
+	}
+
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	s.recoveryAttemptActive = false
+	s.lastRecoveryCompleted = s.clock().Now()
+	cancel := s.recoveryAttemptCancel
+	s.recoveryAttemptCancel = nil
+	s.recoveryPending = false
+	s.recoveryNeedsSessionPresent = false
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
+	s.clearRecoveryDrainLocked(generation)
+	s.recoveryErr = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return true
+}
+
+func (s *Session) recordRecoveryRecycleStart(generation uint64) bool {
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	s.recoveryRecycleCount++
+	s.mu.Unlock()
+	s.metrics.Counter(MetricMQTTSessionRecoveryRecycle, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	return true
+}
+
+func (s *Session) captureRecoveryTargetEpoch(generation uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		return shared.ErrUnavailable.WithMessage("mqtt: settlement recovery attempt is no longer active")
+	}
+	targetEpoch := s.connEpoch
+	s.recoveryTargetEpoch = targetEpoch
+	if s.recoveryErr != nil {
+		return s.recoveryErr
+	}
+	if targetEpoch == 0 || s.recoverySessionPresentEpoch != targetEpoch {
+		return shared.ErrUnavailable.
+			WithMessage("mqtt: Session Present evidence does not match recovery connection epoch").
+			With("target_epoch", targetEpoch).
+			With("session_present_epoch", s.recoverySessionPresentEpoch)
+	}
+	return nil
+}
+
+// requestRecovery records the Retry synchronously, then recycles the durable
+// broker session asynchronously. Retry cannot perform the recycle inline: the
+// recycle drain includes the RouteRunner settlement that is currently calling
+// Retry, so waiting here would deadlock that drain.
+func (s *Session) requestRecovery(ctx context.Context) error {
+	if s.mode == connectivity.SessionEphemeral {
+		return shared.ErrNotSupported
+	}
+	s.mu.Lock()
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
+	if s.closed {
+		s.mu.Unlock()
+		return shared.ErrUnavailable.WithMessage("mqtt: session recovery requested after session closure")
+	}
+	if s.recoveryPending {
+		s.mu.Unlock()
+		return nil
+	}
+	s.recoveryPending = true
+	s.recoveryNeedsSessionPresent = true
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = 0
+	s.recoveryDrainDone = nil
+	s.recoveryGeneration++
+	generation := s.recoveryGeneration
+	s.recoveryErr = nil
+	s.subscriptionsSatisfied = false
+	var rateLimit <-chan time.Time
+	if !s.lastRecoveryCompleted.IsZero() {
+		elapsed := s.clock().Since(s.lastRecoveryCompleted)
+		if elapsed < settlementRecoveryMinInterval {
+			rateLimit = s.clock().After(settlementRecoveryMinInterval - elapsed)
+		}
+	}
+	s.mu.Unlock()
+
+	go s.runRecovery(context.WithoutCancel(ctx), rateLimit, generation)
+	return nil
+}
+
+func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, generation uint64) {
+	if rateLimit != nil {
+		select {
+		case <-rateLimit:
+		case <-ctx.Done():
+			return
+		}
+	}
+	attemptTimeout := s.recoveryAttemptTimeout()
+	attemptCtx, cancelAttempt := s.contextWithClockTimeout(ctx, attemptTimeout)
+	ctx = attemptCtx
+	if err := s.acquireReload(ctx); err != nil {
+		mapped := MapError(err).WithMessage("mqtt: settlement recovery waiting for session serialization")
+		cancelAttempt()
+		s.failQueuedRecovery(generation, mapped)
+		return
+	}
+	defer s.releaseReload()
+	if err := ctx.Err(); err != nil {
+		cancelAttempt()
+		s.failQueuedRecovery(generation,
+			MapError(err).WithMessage("mqtt: settlement recovery cancelled after serialization"))
+		return
+	}
+
+	// Request state becomes attempt state only after owning the single session
+	// gate. An ordinary Reconcile that ran before this point saw only degraded,
+	// coalescing request state and could not validate or complete this recovery.
+	s.mu.Lock()
+	if !s.recoveryPending || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		cancelAttempt()
+		return
+	}
+	if s.closed || s.terminalErr != nil || s.recoveryErr != nil {
+		queuedErr := s.recoveryErr
+		if queuedErr == nil {
+			queuedErr = s.terminalErr
+		}
+		if queuedErr == nil {
+			queuedErr = shared.ErrUnavailable.WithMessage("mqtt: session closed before queued recovery began")
+		}
+		s.mu.Unlock()
+		cancelAttempt()
+		s.failQueuedRecovery(generation, queuedErr)
+		return
+	}
+	s.recoveryAttemptActive = true
+	s.recoveryDrainState = recoveryDrainNotStarted
+	s.recoveryDrainGeneration = generation
+	s.recoveryDrainDone = nil
+	s.recoveryAttemptCancel = cancelAttempt
+	s.recoveryNeedsSessionPresent = true
+	s.recoverySessionPresentEpoch = 0
+	s.recoveryTargetEpoch = 0
+	s.mu.Unlock()
+
+	// Exactly one owner drains accepted settlements for this generation. A
+	// terminal caller joins drainDone rather than starting a second waiter.
+	drainDone, drainOwner, drainFinished := s.beginRecoveryDrain(generation)
+	if !drainOwner {
+		if !drainFinished && drainDone != nil {
+			select {
+			case <-drainDone:
+			case <-ctx.Done():
+			}
+		}
+		return
+	}
+	drainCtx, cancelDrain := s.contextWithClockTimeout(ctx, settlementRecoveryDrainLimit)
+	drainErr := s.quiesceForRecycle(drainCtx)
+	cancelDrain()
+	s.finishRecoveryDrain(generation, drainDone)
+	if drainErr != nil {
+		s.completeRecoveryAttempt(generation,
+			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr), false)
+		return
+	}
+
+	if !s.recordRecoveryRecycleStart(generation) {
+		return
+	}
+	if err := s.reloadLocked(ctx); err != nil {
+		s.completeRecoveryAttempt(generation, err, false)
+		return
+	}
+	if err := s.captureRecoveryTargetEpoch(generation); err != nil {
+		s.completeRecoveryAttempt(generation, err, false)
+		return
+	}
+
+	// Recovery owns the same gate as ordinary Reconcile, so converge the saved
+	// plan through the private under-gate helper without publishing an event that
+	// would need to reacquire serialization. The runtime manager may perform a
+	// later idempotent Reconcile after this gate is released.
+	s.mu.Lock()
+	plan := connectivity.SessionPlan{}
+	if s.plan != nil {
+		plan = cloneSessionPlan(*s.plan)
+	}
+	s.mu.Unlock()
+	_ = s.reconcileUnderGate(ctx, plan, generation)
+}
 
 // Reload tears down the current ConnectionManager and re-runs Start
 // with the session's current options. It is intended for rotation
@@ -30,7 +532,22 @@ import (
 // options. Reload is narrower — the options are not re-read, only the
 // TLS handshake + transport layer are rebuilt.
 func (s *Session) Reload(ctx context.Context) error {
+	if err := s.acquireReload(ctx); err != nil {
+		return MapError(err).WithMessage("mqtt reload: waiting for serialization gate")
+	}
+	defer s.releaseReload()
+	return s.reloadLocked(ctx)
+}
+
+// reloadLocked performs one ConnectionManager replacement while the caller owns
+// reloadGate, the shared ConnectionManager-reload serialization gate.
+func (s *Session) reloadLocked(ctx context.Context) error {
 	s.mu.Lock()
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
 	if s.closed {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
@@ -76,13 +593,32 @@ func (s *Session) Reload(ctx context.Context) error {
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
 	s.connected = false
+	// Invalidate readiness and the old connection generation before Start can
+	// return with a replacement CM whose OnConnectionUp callback is still queued.
+	// A prior-generation reconcile then cannot write into replacement state.
+	s.subscriptionsSatisfied = false
+	s.observedSubs = make(map[string]subscriptionGrant)
+	s.activeSubs = make(map[string]byte)
+	s.connEpoch++
 	s.mu.Unlock()
 
+	var disconnectErr error
 	if cm != nil {
-		_ = cm.Disconnect(ctx)
+		disconnectErr = cm.Disconnect(ctx)
 	}
 	if cmCancel != nil {
 		cmCancel()
+	}
+	if disconnectErr != nil {
+		mapped := MapError(disconnectErr).WithMessage("mqtt reload: disconnect current generation")
+		s.mu.Lock()
+		recoveryOwnsTerminalSignal := s.recoveryPending ||
+			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
+		if !recoveryOwnsTerminalSignal {
+			s.closeEventsLocked()
+		}
+		s.mu.Unlock()
+		return mapped
 	}
 
 	if err := s.Start(ctx); err != nil {
@@ -103,11 +639,105 @@ func (s *Session) Reload(ctx context.Context) error {
 		// spin on a closed channel. The close is guarded (closeEventsLocked)
 		// so a concurrent/subsequent Close cannot double-close it.
 		s.mu.Lock()
-		s.closeEventsLocked()
+		recoveryOwnsTerminalSignal := s.recoveryPending ||
+			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
+		if !recoveryOwnsTerminalSignal {
+			s.closeEventsLocked()
+		}
 		s.mu.Unlock()
 		return err
 	}
 	return nil
+}
+
+// quiesceForRecycle atomically stops new router callback acceptance, waits for
+// accepted callbacks to return, then waits for the runtime RouteRunner settlement
+// counters. The reconcile/session context is always honored; ReconcileTimeout is
+// an additional ceiling for direct callers that supplied no shorter deadline.
+func (s *Session) quiesceForRecycle(ctx context.Context) error {
+	s.mu.Lock()
+	waiter := s.ingressQuiescenceWaiter
+	s.mu.Unlock()
+	if s.router == nil {
+		if waiter != nil {
+			return waiter(ctx)
+		}
+		return nil
+	}
+	quiesceCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.router.quiesceForRecycle(quiesceCtx, waiter)
+}
+
+func terminalIngressQuiescenceError(cause error) error {
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: source ingress did not quiesce before connection recycle; session is fail-closed").
+		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
+}
+
+// failClosedAfterQuiescence disconnects the broker generation immediately and
+// permanently latches this Session instance. Runtime/session translates the
+// permanent marker to ErrSessionUnrecoverable; exclusive owners then retain the
+// lease until natural TTL instead of releasing while old route work can mutate.
+func (s *Session) failClosedAfterQuiescence(ctx context.Context, cause error) error {
+	return s.failClosed(ctx, terminalIngressQuiescenceError(cause))
+}
+
+func managedMigrationRequiredError() error {
+	return shared.ErrUnavailable.
+		WithMessage("mqtt: managed subscription migration cannot safely settle a broker-pinned delivery; restore the old configuration and exact handler, drain it, then retry the cutover").
+		Wrap(shared.ErrTransportClosedPermanently)
+}
+
+func (s *Session) failClosedForManagedMigration(ctx context.Context) error {
+	return s.failClosed(ctx, managedMigrationRequiredError())
+}
+
+func (s *Session) failClosed(ctx context.Context, cause error) error {
+	terminal, _ := s.transitionTerminal(ctx, cause, 0, false, true)
+	return terminal
+}
+
+// disconnectFailedReconcile detaches the current generation and tears down its
+// connection without terminally closing the Session when ingress drains safely.
+// A failed drain is unrecoverable in-process and is returned to the manager.
+func (s *Session) disconnectFailedReconcile(ctx context.Context) error {
+	s.mu.Lock()
+	terminal := s.terminalErr
+	s.mu.Unlock()
+	if terminal != nil {
+		// transitionTerminal already owns quiesce, disconnect and manager signal.
+		// A deferred exclusive-error cleanup must not increment the epoch again.
+		return terminal
+	}
+	if err := s.quiesceForRecycle(ctx); err != nil {
+		return s.failClosedAfterQuiescence(ctx, err)
+	}
+	s.disconnectGeneration(ctx)
+	return nil
+}
+
+func (s *Session) disconnectGeneration(ctx context.Context) {
+	s.mu.Lock()
+	cm := s.cm
+	s.cm = nil
+	cmCancel := s.cmCancel
+	s.cmCancel = nil
+	s.connected = false
+	s.subscriptionsSatisfied = false
+	s.observedSubs = make(map[string]subscriptionGrant)
+	s.activeSubs = make(map[string]byte)
+	s.connEpoch++
+	s.mu.Unlock()
+
+	disconnectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.reconcileTimeout())
+	defer cancel()
+	if cm != nil {
+		_ = cm.Disconnect(disconnectCtx)
+	}
+	if cmCancel != nil {
+		cmCancel()
+	}
 }
 
 // closeEventsLocked closes the session's lifecycle-event channel exactly
@@ -157,6 +787,15 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.connected = false
+	if s.starting && !s.connectionUpCompleted {
+		s.connectionUpErr = shared.ErrUnavailable.WithMessage("mqtt: session closed before connection-up callback completed")
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+		// Any callback queued by the discarded construction is stale.
+		s.connectionGeneration++
+	}
 	cm := s.cm
 	s.cm = nil
 	cmCancel := s.cmCancel
@@ -253,43 +892,146 @@ func (s *Session) Close(ctx context.Context) error {
 // with an inline reconcile that swallowed its own failure, could leave a
 // topic silently unsubscribed with no error surfaced (finding C7).
 //
-// Lock discipline (finding C7-N4 — analysed, deliberately deferred): this
-// callback takes ONLY s.mu for the activeSubs reset and MUST NOT acquire
-// reconcileMu. autopaho invokes OnConnectionUp synchronously on its sole
-// connection-management goroutine and documents that the callback "must
-// not block" (autopaho.ClientConfig.OnConnectionUp, auto.go). reconcileMu
-// is held by reconcile() for the entire duration of a network SUBSCRIBE /
-// UNSUBSCRIBE round-trip, so blocking on it here would stall that
-// goroutine — the owner of reconnect and error handling — on a network
-// call, violating the SDK contract and coupling liveness to paho's
-// in-flight-request teardown behaviour. The TOCTOU this guard would close
-// (a prior-connect reconcile writing stale subscriptions into activeSubs
-// after this reset) is a sub-microsecond, ephemeral-only window whose
-// worst case is a redundant re-subscribe or a Subscribe error that goes
-// terminal — never silent subscription loss (persistent/exclusive
-// sessions resume server-side, so a non-empty activeSubs is correct there
-// anyway). The deadlock/contract hazard therefore outweighs the benefit;
-// do NOT add reconcileMu here without revisiting the autopaho contract.
+// Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
+// subscription-state reset and MUST NOT acquire reloadGate. autopaho invokes
+// OnConnectionUp synchronously on its sole connection-management goroutine and
+// documents that the callback "must not block" (autopaho.ClientConfig.
+// OnConnectionUp, auto.go). reloadGate is held by Reconcile for the entire
+// duration of a network SUBSCRIBE / UNSUBSCRIBE round-trip, so blocking on it
+// here would stall that goroutine — the owner of reconnect and error handling
+// — on a network call, violating the SDK contract and coupling liveness to
+// paho's in-flight-request teardown behaviour.
+//
+// The TOCTOU a lock here would close — a prior-connection reconcile writing
+// stale subscription state AFTER this reset — is instead closed
+// WITHOUT any new lock by the connEpoch generation counter (A-3): this reset
+// bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
+// longer matches. That keeps activeSubs empty for the new connection, so the
+// authoritative reconnect reconcile issues a full re-subscribe rather than
+// computing an empty delta against stale state and silently dropping
+// subscriptions on an ephemeral (clean_start) session. Do NOT add reloadGate
+// here — the epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
+	generation := s.connectionGeneration
+	s.mu.Unlock()
+	s.handleConnectionUpGeneration(generation)
+}
+
+func (s *Session) handleConnectionUpGeneration(generation uint64) {
+	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+}
+
+func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint64, sessionPresent bool) {
+	s.mu.Lock()
+	if generation != s.connectionGeneration || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	if s.terminalErr != nil {
+		err := s.terminalErr
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(generation, err)
+		return
+	}
+	if s.recoveryNeedsSessionPresent && !sessionPresent {
+		err := shared.ErrUnavailable.WithMessage(
+			"mqtt: settlement recovery did not resume the broker session (Session Present=false)")
+		recoveryGeneration := s.recoveryGeneration
+		s.connected = false
+		s.subscriptionsSatisfied = false
+		s.mu.Unlock()
+		s.terminateFailedRecovery(recoveryGeneration, err, true)
+		s.mu.Lock()
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(generation, terminal)
+		return
+	}
+	nextEpoch := s.connEpoch + 1
+	if s.recoveryNeedsSessionPresent {
+		s.recoverySessionPresentEpoch = nextEpoch
+		s.recoveryErr = nil
+	}
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
+	s.observedSubs = make(map[string]subscriptionGrant)
 	s.activeSubs = make(map[string]byte)
+	s.subscriptionsSatisfied = false
+	s.connEpoch = nextEpoch
 	s.mu.Unlock()
 
-	// Restart the router's unmatched-publish grace window for this
-	// connection: a resumed clean_start=false session begins delivering
-	// its queued backlog on CONNACK before the receivers re-register their
-	// filters, so unmatched publishes must be buffered (not judged orphan)
-	// for one fresh window per connection.
+	// This reset is part of connection-up completion: Start/Reload must not
+	// return until the replacement router epoch is active.
 	s.router.beginGrace()
 
+	s.completeConnectionUpBarrier(generation, nil)
+	s.mu.Lock()
+	current := generation == s.connectionGeneration && s.connectionUpErr == nil && s.connected && !s.closed
+	s.mu.Unlock()
+	if !current {
+		return
+	}
 	s.pushEvent(ports.SessionConnected, nil)
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
 			"client_id", s.opts.ClientID)
 	}
+}
+
+func (s *Session) completeConnectionUpBarrier(generation uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration || s.connectionUpCompleted {
+		return
+	}
+	s.connectionUpErr = err
+	s.connectionUpCompleted = true
+	if s.connectionUpDone != nil {
+		close(s.connectionUpDone)
+	}
+}
+
+func (s *Session) invalidateConnectionGeneration(generation uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration {
+		return
+	}
+	if !s.connectionUpCompleted {
+		s.connectionUpErr = err
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+	}
+	// Ignore callbacks still queued by the discarded ConnectionManager.
+	s.connectionGeneration++
+}
+
+func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
+	s.mu.Lock()
+	if generation != s.connectionGeneration || s.closed {
+		s.mu.Unlock()
+		return false
+	}
+	s.connected = false
+	s.subscriptionsSatisfied = false
+	if !s.connectionUpCompleted {
+		s.connectionUpErr = shared.ErrUnavailable.WithMessage("mqtt: connection closed before connection-up callback completed")
+		s.connectionUpCompleted = true
+		if s.connectionUpDone != nil {
+			close(s.connectionUpDone)
+		}
+	}
+	s.mu.Unlock()
+	s.pushEvent(ports.SessionDisconnected, nil)
+	if logging.DebugEnabled(s.logger) {
+		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
+			"client_id", s.opts.ClientID)
+	}
+	return true
 }
 
 // disconnectSessionTakenOver is the MQTT v5 DISCONNECT reason code the
@@ -348,6 +1090,7 @@ func (s *Session) noteSessionTakeover() {
 		s.takeoverStreak = 0
 	}
 	s.takeoverStreak++
+	s.lastTakeoverAt = now
 	streak := s.takeoverStreak
 	// A takeover while shared subscriptions ($share) are active is the
 	// smoking gun of the HIGH-3 self-DOS: another instance connected with the
@@ -397,14 +1140,25 @@ func (s *Session) noteSessionTakeover() {
 }
 
 // takeoverPenalty returns the extra reconnect delay applied on top of
-// the configured backoff while a takeover storm is in progress:
+// the configured backoff while a takeover storm is IN PROGRESS:
 // 0 for streak <= 1 (single takeover = legitimate failover; the standby
 // must not be slowed down), then 1s << (streak-2) capped at 64s.
+//
+// The penalty is gated on recency (A-4): it only applies while takeovers are
+// still actively arriving (the last one within takeoverStabilityWindow). Once
+// the collision resolves and no takeover has occurred for that window, the
+// penalty decays to 0 even though takeoverStreak is still high — an ordinary
+// reconnect (a network blip long after the storm) must not be stuck paying a
+// stale storm's backoff. The streak itself is only reset when a NEW takeover
+// arrives after a stable connection (noteSessionTakeover), so a takeover
+// recurring within the window resumes damping at the accumulated level.
 func (s *Session) takeoverPenalty() time.Duration {
+	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
 	streak := s.takeoverStreak
+	last := s.lastTakeoverAt
 	s.mu.Unlock()
-	if streak <= 1 {
+	if streak <= 1 || last == 0 || now-last >= int64(takeoverStabilityWindow) {
 		return 0
 	}
 	shift := streak - 2

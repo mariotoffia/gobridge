@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fake `docker` for update-image.sh docker-buildx path tests. Deterministic, no
+# network. Models only the two buildx calls the script uses and logs every
+# invocation so a test can assert the EXACT reference the resolver received.
+#
+#   docker buildx version                          → print a version, exit 0
+#   docker buildx imagetools inspect <ref> --raw   → cat ${FAKE_DOCKER_MANIFEST}
+set -euo pipefail
+printf 'docker %s\n' "$*" >> "${FAKE_TOOL_LOG:-/dev/null}"
+if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "version" ]; then
+  echo "github.com/docker/buildx v0.34.1"
+  exit 0
+fi
+if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspect" ]; then
+  : "${FAKE_DOCKER_MANIFEST:?FAKE_DOCKER_MANIFEST not set}"
+  cat -- "$FAKE_DOCKER_MANIFEST"
+  exit 0
+fi
+echo "fake-docker: unsupported invocation: $*" >&2
+exit 2

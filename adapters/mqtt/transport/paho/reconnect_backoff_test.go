@@ -149,8 +149,12 @@ func TestNewReconnectBackoff_ComposesTakeoverPenalty(t *testing.T) {
 	require.Equal(t, 5*time.Second, fn(1), "attempt-1 floor delay with no takeover penalty")
 
 	// Simulate an escalating takeover storm (streak 3 → penalty 1s<<1 = 2s).
+	// The penalty is recency-gated (A-4), so an active storm must also carry a
+	// RECENT takeover timestamp — a storm is precisely a run of takeovers still
+	// arriving. Without it the penalty correctly decays to 0.
 	s.mu.Lock()
 	s.takeoverStreak = 3
+	s.lastTakeoverAt = s.clock().Now().UnixNano()
 	s.mu.Unlock()
 	require.Equal(t, 5*time.Second+2*time.Second, fn(1),
 		"the takeover penalty is added on top of the jittered base delay")

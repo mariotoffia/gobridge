@@ -30,6 +30,25 @@ func TestWithSQLiteOutbox_Populated(t *testing.T) {
 	}
 }
 
+func TestWithSQLiteManagedSubscriptions(t *testing.T) {
+	cfg, err := bridgecfg.New("b").
+		WithSQLiteManagedSubscriptions("/mnt/state/managed-subscriptions.db").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cfg.Stores.ManagedSubscriptions == nil {
+		t.Fatal("Stores.ManagedSubscriptions is nil")
+	}
+	storeCfg, ok := cfg.Stores.ManagedSubscriptions.Config.(*nativestore.SQLiteConfig)
+	if !ok {
+		t.Fatalf("ManagedSubscriptions.Config = %T, want *nativestore.SQLiteConfig", cfg.Stores.ManagedSubscriptions.Config)
+	}
+	if storeCfg.Path != "/mnt/state/managed-subscriptions.db" {
+		t.Errorf("Path = %q, want /mnt/state/managed-subscriptions.db", storeCfg.Path)
+	}
+}
+
 func TestWithSQLiteLeaseAndDLQ(t *testing.T) {
 	cfg, err := bridgecfg.New("b").
 		WithSQLiteLease("/mnt/state/lease.db").

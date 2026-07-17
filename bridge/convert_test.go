@@ -415,3 +415,55 @@ func TestToDrainStrategy_AdaptiveBackoff(t *testing.T) {
 		t.Fatalf("expected interval between 1s and 30s, got %v", interval)
 	}
 }
+
+// TestIsClusteredDeployment covers the shared clustered predicate (finding H8):
+// deployment_mode == "clustered" OR a static cluster.endpoints override; a nil
+// config is never clustered. This is the one definition the store-distribution
+// guard and the fail-closed reload guard both key on, so its boundary cases are
+// asserted directly.
+func TestIsClusteredDeployment(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ports.BridgeConfig
+		want bool
+	}{
+		{name: "nil config is never clustered", cfg: nil, want: false},
+		{name: "empty standalone config is not clustered", cfg: &ports.BridgeConfig{}, want: false},
+		{
+			name: "deployment_mode clustered is clustered",
+			cfg:  &ports.BridgeConfig{Bridge: ports.BridgeSettings{DeploymentMode: "clustered"}},
+			want: true,
+		},
+		{
+			name: "deployment_mode standalone is not clustered",
+			cfg:  &ports.BridgeConfig{Bridge: ports.BridgeSettings{DeploymentMode: "standalone"}},
+			want: false,
+		},
+		{
+			name: "static cluster.endpoints override is clustered even without deployment_mode",
+			cfg: &ports.BridgeConfig{Bridge: ports.BridgeSettings{
+				Cluster: &ports.ClusterConfig{Endpoints: map[string]string{"a": "host-a:1"}},
+			}},
+			want: true,
+		},
+		{
+			name: "cluster block present but endpoints empty is not clustered",
+			cfg: &ports.BridgeConfig{Bridge: ports.BridgeSettings{
+				Cluster: &ports.ClusterConfig{Endpoints: map[string]string{}},
+			}},
+			want: false,
+		},
+		{
+			name: "nil cluster block is not clustered",
+			cfg:  &ports.BridgeConfig{Bridge: ports.BridgeSettings{Cluster: nil}},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsClusteredDeployment(tt.cfg); got != tt.want {
+				t.Fatalf("IsClusteredDeployment() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

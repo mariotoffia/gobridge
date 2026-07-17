@@ -57,13 +57,14 @@ func newConfigAPITestServer(t *testing.T, baseCfg *ports.BridgeConfig) configAPI
 	currentCfg := baseCfg
 	rt := goruntime.New(goruntime.WithInstanceID("config-api-test"))
 	apiCfg := httpapi.Config{
-		AdminAddr:       ":0",
-		MonitorAddr:     ":0",
-		AdminAPIKey:     shared.NewSecret(testAdminAPIKey),
-		MonitorAPIKey:   shared.NewSecret(testMonitorAPIKey),
-		RuntimeProvider: func() ports.Runtime { return rt },
-		ConfigStore:     &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
-		ConfigProvider:  func() *ports.BridgeConfig { return currentCfg },
+		AdminAddr:          ":0",
+		MonitorAddr:        ":0",
+		AdminAPIKey:        shared.NewSecret(testAdminAPIKey),
+		MonitorAPIKey:      shared.NewSecret(testMonitorAPIKey),
+		RuntimeProvider:    func() ports.Runtime { return rt },
+		ConfigStore:        &cfgparser.FileStore{Path: cfgPath, Registry: newTestRegistry()},
+		ConfigProvider:     func() *ports.BridgeConfig { return currentCfg },
+		ConfigSingleWriter: true,
 	}
 
 	srv := httpapi.New(rt, apiCfg, httpapi.WithServerLogger(nil))
@@ -140,13 +141,14 @@ func newConfigAPITestServerWithPipeline(t *testing.T, baseCfg *ports.BridgeConfi
 	errCh := make(chan error, 1)
 	go func() { errCh <- sup.Run(ctx, cfg, watchCh) }()
 
-	rt := waitForSupervisorRuntime(t, sup, 5*time.Second)
+	rt := waitForSupervisorRuntime(t, sup, errCh, 5*time.Second)
 
 	apiCfg := httpapi.Config{
-		AdminAddr:     ":0",
-		MonitorAddr:   ":0",
-		AdminAPIKey:   shared.NewSecret(testAdminAPIKey),
-		MonitorAPIKey: shared.NewSecret(testMonitorAPIKey),
+		AdminAddr:          ":0",
+		MonitorAddr:        ":0",
+		AdminAPIKey:        shared.NewSecret(testAdminAPIKey),
+		MonitorAPIKey:      shared.NewSecret(testMonitorAPIKey),
+		ConfigSingleWriter: true,
 		RuntimeProvider: func() ports.Runtime {
 			rt := sup.Runtime()
 			if rt == nil {
@@ -357,6 +359,7 @@ func baseConfigForAPI() *ports.BridgeConfig {
 			DrainTimeout:    "1s",
 			LogLevel:        "info",
 		},
+		Stores: testStoresWithDLQ(),
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx-1", Transport: "fake"},
 		},

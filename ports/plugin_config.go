@@ -15,9 +15,12 @@ package ports
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
+	"time"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
@@ -43,6 +46,103 @@ var ErrNilDecoder = shared.NewBridgeError(
 	shared.ErrorPermanent,
 	"ports: nil ConfigDecoder",
 )
+
+// DurableSessionIdentityConfig is an OPTIONAL interface for typed transport
+// configs whose broker-side session state can outlive a process. The returned
+// value is an opaque, secret-safe fingerprint of every field that selects that
+// durable state. It must remain stable for the same effective config within a
+// process. Callers compare it for equality only and must not log identity input.
+type DurableSessionIdentityConfig interface {
+	// DurableSessionIdentity fingerprints all effective broker-state fields and
+	// is used to reject state-stranding reload changes.
+	DurableSessionIdentity(mode connectivity.SessionMode) (string, error)
+	// DurableSessionIdentityDomains returns one opaque ownership key per
+	// canonical broker endpoint combined with the effective client identity.
+	// Any shared key means two sessions can connect as the same broker client.
+	DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error)
+}
+
+// SessionActivationTiming reports one conservative effective bound for the
+// complete sequential activation path after an exclusive lease is acquired but
+// before the session can converge. The composition root installs that bound on
+// the runtime manager, which renews the lease throughout activation.
+type SessionActivationTiming struct {
+	// WorstCaseDuration is the conservative hard bound for every sequential
+	// phase that may run between exclusive lease acquisition and convergence.
+	// Nested per-attempt limits must not be double-counted.
+	WorstCaseDuration time.Duration
+}
+
+// PostAcquireActivationTimingConfig is an OPTIONAL typed-config capability for
+// stateful transports whose initial/replacement reconciliation can include a
+// mandatory replay-verification wait. The returned duration must be conservative,
+// effective (defaults already resolved), and non-secret. It is zero when the
+// selected session mode has no post-acquire durable activation sequence.
+type PostAcquireActivationTimingConfig interface {
+	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
+}
+
+// TransportFailoverTiming reports one conservative effective bound for the
+// complete post-takeover transport activation through ServiceLevelFull. The
+// bound includes broker connect, subscription cleanup/replay, any required
+// recycle/reconnect, and final reconciliation exactly once.
+type TransportFailoverTiming struct {
+	PostTakeoverActivation time.Duration
+}
+
+// TransportFailoverTimingConfig is an OPTIONAL generic typed-config capability.
+// A declared failover SLO requires the aggregate activation bound to be known
+// and positive. Callers must not add nested connect/reconcile phases again.
+type TransportFailoverTimingConfig interface {
+	TransportFailoverTiming(mode connectivity.SessionMode) TransportFailoverTiming
+}
+
+// FreezableConfig is an OPTIONAL adapter-owned capability for typed plugin
+// configs that need an isolated snapshot across asynchronous validation/build
+// boundaries. FreezePluginConfig must return a deep-owned copy of every mutable
+// configuration value while intentionally sharing only opaque immutable or
+// runtime dependencies that must retain identity (for example a client handle,
+// clock, mutex-bearing state, or process-stable suffix resolver). The result must
+// be non-nil, retain the source Kind and this freeze capability, and preserve
+// any durable-identity, post-acquire timing, failover timing, and credential capabilities
+// exposed by the source.
+type FreezableConfig interface {
+	FreezePluginConfig() PluginConfig
+}
+
+// IsNilPluginConfig detects a nil interface and an interface holding a typed nil
+// pointer/map/slice/function/channel. Capability callers must check this before
+// invoking methods whose value-receiver method set can otherwise panic.
+func IsNilPluginConfig(config PluginConfig) bool {
+	if config == nil {
+		return true
+	}
+	value := reflect.ValueOf(config)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+// Replica identity strategy values understood by transport-neutral validation.
+const (
+	// ReplicaIdentityHostname is a stable per-replica identity derived from the
+	// process hostname (for example, a Kubernetes pod name).
+	ReplicaIdentityHostname = "hostname"
+	// ReplicaIdentityNonce is a process-unique identity suitable only when
+	// broker-side session state is intentionally ephemeral.
+	ReplicaIdentityNonce = "nonce"
+)
+
+// ReplicaIdentityConfig is an OPTIONAL interface for typed transport configs
+// that support per-replica connection identities. The strategy is declarative:
+// validation uses it to prove clustered shared consumers cannot collide before
+// any transport is built. Empty means no per-replica identity strategy.
+type ReplicaIdentityConfig interface {
+	ReplicaIdentityStrategy() string
+}
 
 // PluginConfig is the marker interface every plugin implements with
 // its own concrete config struct. Implementations are typically a

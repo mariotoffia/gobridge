@@ -9,8 +9,9 @@ import (
 
 // Compile-time interface contracts.
 var (
-	_ ports.PluginConfig = (*MemoryConfig)(nil)
-	_ ports.PluginConfig = (*SQLiteConfig)(nil)
+	_ ports.PluginConfig    = (*MemoryConfig)(nil)
+	_ ports.PluginConfig    = (*SQLiteConfig)(nil)
+	_ ports.FreezableConfig = (*SQLiteConfig)(nil)
 )
 
 // MemoryKind is the registry discriminator for the in-memory store.
@@ -44,10 +45,11 @@ func (MemoryConfig) Kind() string { return MemoryKind }
 func (MemoryConfig) Validate() error { return nil }
 
 // SQLiteConfig is the typed PluginConfig for the SQLite-backed
-// outbox/DLQ stores.
+// outbox/DLQ/managed-subscription stores.
 type SQLiteConfig struct {
 	// Path is the SQLite database file path. ":memory:" selects an
-	// in-process database (used by tests).
+	// in-process database for roles that permit it. Managed subscriptions are
+	// durable and require a plain absolute, clean filesystem path.
 	Path string `mapstructure:"path" yaml:"path" json:"path"`
 
 	// StaleClaimDuration (outbox only) overrides the runtime-derived
@@ -71,6 +73,9 @@ type SQLiteConfig struct {
 
 // Kind reports the registry discriminator.
 func (SQLiteConfig) Kind() string { return SQLiteKind }
+
+// FreezePluginConfig returns an isolated scalar snapshot for asynchronous build.
+func (c SQLiteConfig) FreezePluginConfig() ports.PluginConfig { frozen := c; return &frozen }
 
 // StorageIdentity reports the SQLite database file path — the stable descriptor
 // of this store's durable backing, and nothing tunable. The supervisor's

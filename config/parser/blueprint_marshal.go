@@ -131,6 +131,7 @@ func bridgeConfigToWireMap(cfg *ports.BridgeConfig, c codec) (map[string]any, er
 			injectStoreOptions(storesMap, "lease", cfg.Stores.Lease, c)
 			injectStoreOptions(storesMap, "outbox", cfg.Stores.Outbox, c)
 			injectStoreOptions(storesMap, "dlq", cfg.Stores.DLQ, c)
+			injectStoreOptions(storesMap, "managed_subscriptions", cfg.Stores.ManagedSubscriptions, c)
 		}
 	}
 

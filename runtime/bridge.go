@@ -27,20 +27,21 @@ import (
 // Stop cancels the context, waits for all goroutines to finish, then
 // closes sessions.
 type Runtime struct {
-	instanceID        string
-	leaseOwnerID      string
-	clk               clock.Clock
-	leaseStore        ports.LeaseStore
-	outboxStore       ports.OutboxStore
-	dlqStore          ports.DLQStore
-	metrics           ports.MetricsExporter
-	audit             ports.AuditLogger
-	tracer            ports.Tracer
-	hook              ports.DeliveryHook
-	logger            *slog.Logger
-	globalMaxInFlight int
-	clusterEndpoints  map[string]string
-	locator           *cluster.Locator
+	instanceID               string
+	leaseOwnerID             string
+	clk                      clock.Clock
+	leaseStore               ports.LeaseStore
+	outboxStore              ports.OutboxStore
+	dlqStore                 ports.DLQStore
+	managedSubscriptionStore ports.ManagedSubscriptionStore
+	metrics                  ports.MetricsExporter
+	audit                    ports.AuditLogger
+	tracer                   ports.Tracer
+	hook                     ports.DeliveryHook
+	logger                   *slog.Logger
+	globalMaxInFlight        int
+	clusterEndpoints         map[string]string
+	locator                  *cluster.Locator
 
 	// outboxPoisonMinAge is the minimum record age required, in ADDITION to
 	// replay-count exhaustion, before an outbox drainer poisons a record to the
@@ -166,6 +167,12 @@ func WithOutboxStore(store ports.OutboxStore) Option {
 // WithDLQStore sets the dead-letter queue store.
 func WithDLQStore(store ports.DLQStore) Option {
 	return func(rt *Runtime) { rt.dlqStore = store }
+}
+
+// WithManagedSubscriptionStore gives the runtime lifecycle ownership of the
+// connectivity history store; sessions use the same handle through SessionSpec.
+func WithManagedSubscriptionStore(store ports.ManagedSubscriptionStore) Option {
+	return func(rt *Runtime) { rt.managedSubscriptionStore = store }
 }
 
 // WithMetrics sets the metrics exporter for the runtime. When set,
@@ -516,7 +523,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		sessRefs = append(sessRefs, sessRef{sid: sid, sess: sse.session})
 	}
 	metrics := rt.metrics
-	stores := []any{rt.outboxStore, rt.dlqStore, rt.leaseStore}
+	stores := []any{rt.managedSubscriptionStore, rt.outboxStore, rt.dlqStore, rt.leaseStore}
 	rt.mu.Unlock()
 
 	for _, mgr := range mgrs {

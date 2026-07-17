@@ -34,11 +34,13 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -59,6 +61,8 @@ replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../
 
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../adapters/aws/store/dynamodblease
 
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ../../adapters/aws/store/dynamodbmanagedsubscriptions
+
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../adapters/aws/store/dynamodboutbox
 
 replace github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
@@ -74,6 +78,8 @@ replace github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../
 replace github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../adapters/native/store/sqlitedlq
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 

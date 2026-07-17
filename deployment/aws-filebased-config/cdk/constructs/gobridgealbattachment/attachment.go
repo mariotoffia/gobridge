@@ -79,6 +79,7 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
@@ -171,7 +172,7 @@ type HealthCheckProps struct {
 }
 
 // AttachmentProps configures a [GoBridgeALBAttachment]. Exactly one
-// of Single or Cluster must be set; the other must be nil. Listener
+// of Single, Cluster, or DynamoDBHA must be set; the others must be nil. Listener
 // is required — this construct never auto-creates an ALB or
 // listener.
 type AttachmentProps struct {
@@ -182,6 +183,10 @@ type AttachmentProps struct {
 	// Cluster is the GoBridgeCluster facade to attach. Mutually
 	// exclusive with Single.
 	Cluster *gobridgecluster.GoBridgeCluster
+
+	// DynamoDBHA is the coordinated active/warm-standby facade to attach.
+	// Mutually exclusive with Single and Cluster.
+	DynamoDBHA *gobridgedynamodbha.GoBridgeDynamoDBHA
 
 	// Listener is the consumer-managed ALB listener to attach the
 	// derived rules to. Required.
@@ -409,7 +414,10 @@ func resolveImplARNs(p *AttachmentProps) (clusterArn, efsID *string) {
 	if p.Single != nil {
 		return p.Single.Cluster().ClusterArn(), p.Single.EfsConfig().FileSystem().FileSystemId()
 	}
-	return p.Cluster.Cluster().ClusterArn(), p.Cluster.EfsConfig().FileSystem().FileSystemId()
+	if p.Cluster != nil {
+		return p.Cluster.Cluster().ClusterArn(), p.Cluster.EfsConfig().FileSystem().FileSystemId()
+	}
+	return p.DynamoDBHA.Cluster().ClusterArn(), p.DynamoDBHA.EfsConfig().FileSystem().FileSystemId()
 }
 
 // ControlTargetGroup returns the target group that admin API + status
@@ -661,16 +669,26 @@ func resolveTargets(p *AttachmentProps) resolved {
 			monitorTargets: []awsecs.BaseService{svc},
 		}
 	}
-	ctrl := mustBaseService(p.Cluster.ControlService())
-	wrk := mustBaseService(p.Cluster.WorkerService())
-	tp, ok := lookupPort(p.Cluster.WorkerPortMappings(), gobridgebase.PortKindTransport)
+	if p.Cluster != nil {
+		ctrl := mustBaseService(p.Cluster.ControlService())
+		wrk := mustBaseService(p.Cluster.WorkerService())
+		tp, ok := lookupPort(p.Cluster.WorkerPortMappings(), gobridgebase.PortKindTransport)
+		return resolved{
+			control: ctrl, worker: wrk,
+			controlPort:   adminPort(p.Cluster.ControlPortMappings()),
+			monitorPort:   monitorPortOf(p.Cluster.ControlPortMappings()),
+			transportPort: tp, hasTransport: ok,
+			monitorTargets: []awsecs.BaseService{ctrl, wrk},
+		}
+	}
+	ctrl := mustBaseService(p.DynamoDBHA.ControlService())
+	wrk := mustBaseService(p.DynamoDBHA.WorkerService())
+	tp, ok := lookupPort(p.DynamoDBHA.WorkerPortMappings(), gobridgebase.PortKindTransport)
 	return resolved{
-		control:        ctrl,
-		worker:         wrk,
-		controlPort:    adminPort(p.Cluster.ControlPortMappings()),
-		monitorPort:    monitorPortOf(p.Cluster.ControlPortMappings()),
-		transportPort:  tp,
-		hasTransport:   ok,
+		control: ctrl, worker: wrk,
+		controlPort:   adminPort(p.DynamoDBHA.ControlPortMappings()),
+		monitorPort:   monitorPortOf(p.DynamoDBHA.ControlPortMappings()),
+		transportPort: tp, hasTransport: ok,
 		monitorTargets: []awsecs.BaseService{ctrl, wrk},
 	}
 }
@@ -820,8 +838,18 @@ func validateProps(p *AttachmentProps) {
 	if p.BridgeConfig == nil {
 		panic("GoBridgeALBAttachment: BridgeConfig is required")
 	}
-	if (p.Single == nil) == (p.Cluster == nil) {
-		panic("GoBridgeALBAttachment: exactly one of Single or Cluster must be set")
+	count := 0
+	if p.Single != nil {
+		count++
+	}
+	if p.Cluster != nil {
+		count++
+	}
+	if p.DynamoDBHA != nil {
+		count++
+	}
+	if count != 1 {
+		panic("GoBridgeALBAttachment: exactly one of Single, Cluster, or DynamoDBHA must be set")
 	}
 	if p.BasePriority < 0 {
 		panic("GoBridgeALBAttachment: BasePriority must be >= 1")

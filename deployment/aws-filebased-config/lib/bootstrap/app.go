@@ -300,6 +300,7 @@ func (a *App) Start(ctx context.Context) error {
 	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
 		return err
 	}
+	a.manager.NotifyApplyResult(logicalCfg, nil)
 
 	// Every node starts the transport, admin, and monitor servers regardless
 	// of NodeRole (workers still expose the admin listener today — see
@@ -345,10 +346,8 @@ func (a *App) Start(ctx context.Context) error {
 		// live. appliedRef is nil only when nothing is cleanly running, and
 		// every configProvider consumer handles nil (GET /config -> 503).
 		ConfigProvider: a.appliedRef.Get,
-		// Surface live-reconfiguration health on /deephealth: the config manager
-		// goes degraded when its layer watcher cannot be re-established, so the
-		// App serves its last good config but no longer tracks config changes.
-		DegradedProvider: a.degradedConfigWatch,
+		// Surface both watcher failure and desired/running apply divergence.
+		ConfigWatchProvider: a.configWatchHealth,
 		// ConfigApplier converges the running runtime in-band when a config
 		// is committed through the admin transactions API, reusing the exact
 		// reload path the file watcher drives (applyLogicalConfig) instead of
@@ -671,6 +670,7 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			a.mu.Lock()
 			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
 			a.mu.Unlock()
+			a.manager.NotifyApplyResult(logicalCfg, err)
 			switch {
 			case err != nil:
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
@@ -700,12 +700,39 @@ type runtimePlan struct {
 }
 
 func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
+	// Fail closed on an uncoordinated clustered live reload (finding H8). A
+	// per-process reload has no cluster-wide version barrier or coordinated
+	// rollback, so rolling a new config into (or out of) a clustered cohort would
+	// leave members split across versions with no all-member readiness gate.
+	// Refuse the whole class here — BEFORE any Plan/build/resource creation or
+	// stop — and require an externally coordinated whole-cohort replacement
+	// (docs/runbooks/cluster-config-rollout.md). Returning an error routes
+	// through the EXISTING reload-failure path: watchLoop keeps the last-good
+	// runtime, and applyCommittedConfig surfaces committed_not_applied.
+	//
+	// oldApplied == nil means this is the INITIAL apply (a fresh boot into a
+	// clustered config is legitimate), not a live reload, so it is exempt.
+	// bridge.IsClusteredDeployment is the SHARED predicate: guard when EITHER the
+	// applied OR the proposed config is clustered. A genuine no-op re-emit never
+	// reaches here — applyLogicalIfChanged short-circuits it on the content
+	// fingerprint before calling applyLogicalConfig, so no-op reloads stay
+	// accepted.
+	if oldApplied := a.appliedRef.Get(); oldApplied != nil &&
+		(bridge.IsClusteredDeployment(oldApplied) || bridge.IsClusteredDeployment(logical)) {
+		return fmt.Errorf("bootstrap: refusing live reload of a clustered deployment: a per-process " +
+			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload " +
+			"would split the cohort across config versions. Externally coordinate a whole-cohort " +
+			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, " +
+			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); " +
+			"see docs/runbooks/cluster-config-rollout.md")
+	}
+
 	// Apply bridge.log_level first so debug logging takes effect immediately
 	// on reload — even when the reload that raised the level is itself being
 	// diagnosed. A no-op when no LevelVar was wired (WithLogLevelVar).
 	a.applyLogLevel(logical)
 
-	if err := validateFilesystemProfile(a.cfg, logical); err != nil {
+	if err := validateDeploymentProfile(a.cfg, logical); err != nil {
 		return err
 	}
 
@@ -729,6 +756,9 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig) (*runtimePlan, error) {
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
+		return nil, err
+	}
+	if err := applyMQTTMemoryProfile(inputs.RuntimeConfig, a.cfg); err != nil {
 		return nil, err
 	}
 
@@ -893,6 +923,32 @@ func (a *App) degradedConfigWatch() (bool, string) {
 		parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
 	}
 	return true, "config watch degraded: " + strings.Join(parts, "; ")
+}
+
+func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
+	degraded, reason := a.degradedConfigWatch()
+	status := httpapi.ConfigWatchHealth{Degraded: degraded, Reason: reason}
+	if a.manager == nil {
+		return status
+	}
+	status.ReconfigurePending = a.manager.ReconfigurePending()
+	if version, ok := a.manager.AppliedVersion(); ok {
+		status.DesiredVersion = &version
+	}
+	if version, ok := a.manager.RunningVersion(); ok {
+		status.RunningVersion = &version
+	}
+	if err := a.manager.LastApplyError(); err != nil {
+		status.LastApplyError = err.Error()
+		status.Degraded = true
+	}
+	if status.ReconfigurePending {
+		status.Degraded = true
+		if status.Reason == "" {
+			status.Reason = "desired configuration is not running"
+		}
+	}
+	return status
 }
 
 // enterWedgedState records that a prepare/commit swap AND its recovery both

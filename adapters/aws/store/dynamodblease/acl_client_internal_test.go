@@ -207,6 +207,7 @@ func staleLeaseRow(owner string, version int, ttlEpoch int64) map[string]ddbtype
 		attrOwner:     &ddbtypes.AttributeValueMemberS{Value: owner},
 		attrVersion:   &ddbtypes.AttributeValueMemberN{Value: strconv.Itoa(version)},
 		attrExpiresAt: &ddbtypes.AttributeValueMemberN{Value: "0"},
+		attrRenewedAt: &ddbtypes.AttributeValueMemberN{Value: "1700000000000"},
 		// The hazard: a near-future ttl frozen by a pre-fix build.
 		attrTTLName: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(ttlEpoch, 10)},
 	}
@@ -249,7 +250,7 @@ func TestLeaseWrites_StripLegacyTTL(t *testing.T) {
 	t.Run("Acquire_takeover_strips_stale_ttl", func(t *testing.T) {
 		// Expired row (expires_at=0) owned by a former holder, carrying a
 		// stale ttl. A new owner takes over via UpdateItem.
-		m := &mutatingClient{item: staleLeaseRow("owner-old", 3, staleTTL)}
+		m := &mutatingClient{item: staleLeaseRow("", 3, staleTTL)}
 		s := &Store{client: m, tableName: "leases-test", clk: clock.System}
 
 		if _, err := s.Acquire(ctx, "l1", "owner-new", time.Minute, nil); err != nil {

@@ -511,8 +511,10 @@ check instead. Supported levels, least to most strict:
 - `subscribed` -- every subscription has been acknowledged by the broker,
   so the bridge will not miss messages. **Recommended for readiness
   gating** and used in the example above.
-- `full` -- every route handler is registered and ready to dispatch; the
-  strictest gate, suitable as a pre-traffic check on initial rollout.
+- `full` -- every planned receiver handler is registered, every unique desired
+  subscription filter is active at or above its requested QoS, no MQTT publish
+  remains buffered waiting for a handler, and every route is ready to dispatch.
+  This is the strictest gate, suitable as a pre-traffic check on initial rollout.
 
 The probe returns `200` once the runtime has reached the requested level and
 `503` otherwise, so Kubernetes holds the pod out of rotation until it is

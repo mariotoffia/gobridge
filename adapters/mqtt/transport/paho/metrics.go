@@ -4,13 +4,17 @@ package paho
 // domain/shared as part of shared-kernel slimming; the string values are the
 // wire identities reported to CloudWatch/OTel and MUST NOT change.
 const (
-	MetricMQTTPublishLatency   = "MQTTPublishLatency"
-	MetricMQTTPublishFailures  = "MQTTPublishFailures"
-	MetricMQTTHandlerPanics    = "MQTTHandlerPanics"
-	MetricMQTTConnectLatency   = "MQTTConnectLatency"
-	MetricMQTTReconcileLatency = "MQTTReconcileLatency"
-	MetricMQTTRouterDropped    = "MQTTRouterDropped"
-	MetricMQTTEventDropped     = "MQTTEventDropped"
+	MetricMQTTPublishLatency           = "MQTTPublishLatency"
+	MetricMQTTPublishFailures          = "MQTTPublishFailures"
+	MetricMQTTHandlerPanics            = "MQTTHandlerPanics"
+	MetricMQTTConnectLatency           = "MQTTConnectLatency"
+	MetricMQTTReconcileLatency         = "MQTTReconcileLatency"
+	MetricMQTTRouterDropped            = "MQTTRouterDropped"
+	MetricMQTTEventDropped             = "MQTTEventDropped"
+	MetricMQTTSessionRecoveryRecycle   = "MQTTSessionRecoveryRecycle"
+	MetricMQTTUnsettled                = "MQTTUnsettled"
+	MetricMQTTOldestUnsettledAge       = "MQTTOldestUnsettledAge"
+	MetricMQTTReceiveWindowUtilization = "MQTTReceiveWindowUtilization"
 
 	// MetricMQTTNonStringHeaderDropped counts bridge-to-bridge / application
 	// header values dropped on egress because their value is not a string
@@ -101,6 +105,22 @@ const (
 	// masked (c4-qos12-overflow / F-2 / M-1).
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
+	// MetricMQTTRouterStalePurged counts pre-registration pending publishes
+	// DISCARDED from the router buffer on a reconnect because they were
+	// buffered under a PRIOR broker connection (A-1). Their protocol acks died
+	// with the old connection (paho ErrPacketNotFound), and a clean_start=false
+	// broker REDELIVERS every un-acked QoS 1/2 from the prior connection with
+	// FRESH packet IDs — so keeping the stale twins would let a redelivered copy
+	// pile up beside its ghost until the count cap (== receive_maximum)
+	// ack-drops a LIVE message as a bogus MetricMQTTRouterOverflowDropped,
+	// breaking at-least-once. Purging the stale entries lets only the fresh
+	// redelivered copies remain. QoS 1/2 entries counted here are NOT lost (the
+	// broker redelivers them); QoS 0 entries are a best-effort loss (no
+	// redelivery contract, as always across a disconnect). A steadily rising
+	// count means frequent reconnects while receivers register slowly — expected
+	// churn, not data loss for QoS 1/2.
+	MetricMQTTRouterStalePurged = "MQTTRouterStalePurged"
+
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
 	// 0x8E (session taken over): another client connected with the same
 	// ClientID. A steadily increasing count signals two instances sharing a
@@ -108,16 +128,13 @@ const (
 	// Invalid — a different condition — and is NOT counted here.)
 	MetricMQTTSessionTakeover = "MQTTSessionTakeover"
 
-	// MetricMQTTQoSDowngraded counts subscriptions the broker accepted at a
-	// LOWER QoS than requested (a granted-QoS downgrade: e.g. requested QoS 2,
-	// SUBACK reason 0x00 = granted QoS 0). The route assumes the requested
-	// delivery guarantee, so a silent downgrade quietly removes offline /
-	// redelivery guarantees and opens a disconnect-gap loss window. The
-	// reconcile loop stores the REQUESTED QoS in activeSubs (its delta baseline,
-	// so a stable downgraded sub is not re-subscribed every cycle) and
-	// increments this counter with a loud warning ONCE per subscription
-	// transition — initial subscribe, reconnect, or a plan that changes the
-	// requested QoS — rather than on every reconcile (c4-qos-downgrade). ANY
-	// non-zero value warrants investigating a broker QoS-cap policy.
+	// MetricMQTTQoSDowngraded counts subscriptions the broker granted at a
+	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason
+	// 0x00 granting QoS 0). Reconcile emits a loud warning, leaves the filter
+	// inactive, and returns ErrQoSNotSupported with topic, requested QoS, and
+	// granted QoS context, so readiness remains non-Full. The broker-observed
+	// grant suppresses an unchanged immediate re-subscribe; this counter advances
+	// only when a broker SUBACK newly reports the downgrade. Any non-zero value
+	// warrants investigating a broker QoS-cap policy.
 	MetricMQTTQoSDowngraded = "MQTTQoSDowngraded"
 )

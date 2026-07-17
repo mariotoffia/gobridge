@@ -204,13 +204,14 @@ func genericAddressSanity(address string) error {
 
 func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Envelope, plans []routing.DispatchPlan) ([]*persistence.OutboxRecord, error) {
 	now := r.clk.Now()
-	records := make([]*persistence.OutboxRecord, len(plans))
+	specs := make([]persistence.OutboxSpec, len(plans))
 
 	// Persist the envelope without the source transport's redelivery-count
 	// headers so a drained record forwarded to the next hop does not carry a
 	// stale count the downstream bridge would misread as its own (E5-FU1).
 	// Clone so the source envelope (re-read by receiveCount on retry paths) is
-	// untouched; NewOutboxRecord deep-clones again per record.
+	// untouched; NewOutboxRecords shares this finalized immutable snapshot
+	// across fan-out records.
 	persisted := env.Clone()
 	stripInboundReceiveCounts(persisted)
 
@@ -246,7 +247,7 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 			// a plan to a binding with no effective session.
 			return nil, fmt.Errorf("runtime: route-runner: route %q: dispatch plan binding %q resolves to no session; outbox record would orphan under BINDING#%s and never drain", r.routeID, plan.BindingID, plan.BindingID)
 		}
-		rec, err := persistence.NewOutboxRecord(persistence.OutboxSpec{
+		specs[i] = persistence.OutboxSpec{
 			ID:              generateID(),
 			RouteID:         r.routeID,
 			EnvelopeID:      env.ID(),
@@ -257,11 +258,11 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 			DispatchHeaders: plan.Headers,
 			CreatedAt:       now,
 			ExpiresAt:       env.ExpiresAt(),
-		})
-		if err != nil {
-			return nil, err
 		}
-		records[i] = rec
+	}
+	records, err := persistence.NewOutboxRecords(*persisted, specs)
+	if err != nil {
+		return nil, err
 	}
 	return records, nil
 }
@@ -279,7 +280,7 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 // HeaderRouteOverride survives the merge.
 func mergeProcessedEnvelope(dst, src *messaging.Envelope) {
 	dst.SetSubject(src.Subject())
-	dst.SetPayload(src.Payload())
+	dst.SharePayloadFrom(src)
 	dst.StampHeaders(src.HeadersSnapshot())
 }
 

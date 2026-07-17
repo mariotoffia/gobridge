@@ -31,7 +31,7 @@ func Test_TierB_Validation_MultipleGoBridgeInStack(t *testing.T) {
 			t.Fatal("expected panic on second facade in same Stack")
 		}
 		msg := fmt.Sprintf("%v", r)
-		const wantPrefix = "Only one GoBridgeSingle or GoBridgeCluster instance is supported per stack/account; found 2."
+		const wantPrefix = "Only one GoBridgeSingle, GoBridgeCluster, or GoBridgeDynamoDBHA instance is supported per stack/account; found 2."
 		if !strings.HasPrefix(msg, wantPrefix) {
 			t.Fatalf("matrix row 10 prefix mismatch:\n got: %q\nwant: %q", msg, wantPrefix)
 		}

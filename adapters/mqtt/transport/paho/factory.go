@@ -35,6 +35,10 @@ func (f *Factory) Capabilities() []ports.Capability {
 	return []ports.Capability{
 		ports.CapStatefulSession,
 		ports.CapExclusiveIdentity,
+		// MQTT has one serialized ingress dispatch and protocol-ACK domain per
+		// session. One receiver per session confines route backpressure and
+		// settlement failure to that receiver's broker connection.
+		ports.CapDedicatedIngressSession,
 		// MQTT supports shared subscriptions ($share/<group>/<filter>): the
 		// broker load-balances a topic's deliveries across the group members,
 		// so multiple bridge instances can scale-out consumption of one
@@ -63,54 +67,58 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
 	}
-	opts := cfg.Session
-	if opts.ClientID == "" {
-		return nil, shared.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt session %q: client_id is required", spec.ID))
+	if err := cfg.Validate(); err != nil {
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid configuration", spec.ID))
 	}
-	// M-3: expand client_id_suffix into a per-replica-unique client_id so a
-	// single shared config file can drive $share scale-out. Rejected for
-	// exclusive mode, whose identity contract requires a stable SHARED
-	// client_id across instances (a unique-per-instance id strands queued
-	// QoS messages on failover — see acl_session.go / H-1).
+	// Config.Validate deliberately defers receive-dependent validation when the
+	// parser saw an omitted Receive Maximum so deployment profiles can derive a
+	// safe value. Session construction is the final adapter build boundary:
+	// require the complete effective window here as defense in depth even when a
+	// caller bypasses bridge.Builder's resource-free preflight.
+	if err := cfg.ValidateIngressMemory(0); err != nil {
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid ingress memory configuration", spec.ID))
+	}
+	mode := spec.SessionMode
+	if mode == "" {
+		mode = connectivity.SessionEphemeral
+	}
+	cfg.Session.normalizeBrokerURLs()
+	if err := cfg.ValidateEffectiveSession(mode); err != nil {
+		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt session %q: invalid effective session configuration", spec.ID))
+	}
+	opts := cfg.Session
+	// Expand a validated per-replica suffix only at construction. The
+	// resource-free preflight above validates the token without resolving a
+	// hostname or consuming randomness.
 	if opts.ClientIDSuffix != "" {
-		if spec.SessionMode == connectivity.SessionExclusive {
-			return nil, shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
-				"mqtt session %q: client_id_suffix must not be set for session_mode: exclusive "+
-					"(exclusive requires a stable client_id shared across instances; the lease "+
-					"serialises connections and the standby resumes the broker session on takeover)",
-				spec.ID))
-		}
-		resolved, err := resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
+		resolved, err := cfg.resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
 		if err != nil {
 			return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
 		}
 		opts.ClientID = resolved
 	}
-	if len(opts.BrokerURLs) == 0 {
-		return nil, shared.ErrInvalidPayload.WithMessage(
-			fmt.Sprintf("mqtt session %q: at least one broker URL is required", spec.ID))
+	if spec.ManagedSubscriptionsRequired {
+		if mode == connectivity.SessionEphemeral {
+			return nil, shared.ErrInvalidConfig.WithMessage("mqtt: ephemeral session cannot require managed subscription history")
+		}
+		if spec.ManagedSubscriptionStore == nil || spec.ManagedSubscriptionIdentity == "" {
+			return nil, shared.ErrInvalidConfig.WithMessage("mqtt: durable managed subscription store and secret-safe identity are required")
+		}
 	}
-	// HIGH-4: refuse to build a session that would ship username/password in
-	// cleartext over a non-TLS broker unless allow_plaintext_credentials is
-	// set. This is the build-time enforcement boundary — broker_urls are
-	// populated here, so the gate is always active for a real session.
-	if err := opts.validatePlaintextCredentials(); err != nil {
-		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
-			fmt.Sprintf("mqtt session %q: insecure credential transport", spec.ID))
-	}
-	if err := opts.Will.Validate(); err != nil {
-		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
-			fmt.Sprintf("mqtt session %q: invalid will configuration", spec.ID))
-	}
-	return NewSession(opts, spec.SessionMode, f.Logger, f.Metrics), nil
+	session := NewSession(opts, mode, f.Logger, f.Metrics)
+	session.managedStore = spec.ManagedSubscriptionStore
+	session.managedIdentity = spec.ManagedSubscriptionIdentity
+	session.managedRequired = spec.ManagedSubscriptionsRequired
+	return session, nil
 }
 
-// NewReceiver creates an MQTT Receiver bound to the given Session. The
-// receiver's subscription topics become its router topic filters, so a
-// shared session dispatches each publish only to the receivers whose
-// filters cover it.
+// NewReceiver creates the sole MQTT Receiver bound to the given Session. Its
+// subscription topics become router filters; a second factory-created receiver
+// is rejected because dispatch and protocol settlement are session-wide.
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
@@ -135,6 +143,12 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		return nil, shared.ErrInvalidPayload.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: at least one subscription topic is required "+
 				"(a receiver with no topics would subscribe to everything)", spec.ID))
+	}
+	// Reserve only after every fallible spec check. The reservation is stored on
+	// the Session and protected by its mutex, so aliases and concurrent factory
+	// callers cannot bypass the one-ingress-receiver contract.
+	if err := mqttSession.reserveDedicatedIngressReceiver(spec.ID); err != nil {
+		return nil, err
 	}
 	return NewReceiver(spec.ID, mqttSession, WithTopicFilters(filters...)), nil
 }
@@ -166,6 +180,21 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	}
 	if opts.ThrottleRetryAfter == 0 {
 		opts.ThrottleRetryAfter = DefaultSenderOptions().ThrottleRetryAfter
+	}
+	// Validate a configured default_topic as an MQTT PUBLISH topic (A-6). It is
+	// used verbatim as the publish topic when an outbound message carries no
+	// Address (sender.go), bypassing the runtime AddressValidator that guards
+	// resolved addresses. A wildcard, $-reserved, or otherwise malformed
+	// default_topic would therefore only fail at first publish — as a broker
+	// DISCONNECT (publishing to a wildcard is an MQTT protocol error) that tears
+	// down the shared session for every sender on it. Fail closed at build time
+	// instead. Empty means "no fallback" and is validated at Send.
+	if opts.DefaultTopic != "" {
+		if err := ValidateMQTTTopic(opts.DefaultTopic); err != nil {
+			return nil, shared.ErrInvalidPayload.WithMessage(
+				fmt.Sprintf("mqtt sender %q: default_topic %q is not a valid MQTT publish topic: %s",
+					spec.ID, opts.DefaultTopic, err))
+		}
 	}
 	return NewSender(mqttSession, opts), nil
 }

@@ -163,60 +163,46 @@ func TestWatcher_Notify_ResyncCatchesMissedEvents(t *testing.T) {
 	}
 }
 
-// TestWatcher_Notify_DedupIdenticalRewrite verifies content dedup: a
-// byte-identical rewrite (ArgoCD/Ansible re-sync) fires fsnotify events
-// but must NOT deliver a config — a stop-the-world runtime swap for an
-// unchanged file is pure cost. A subsequent real change must still be
-// delivered.
-func TestWatcher_Notify_DedupIdenticalRewrite(t *testing.T) {
+// TestReloadIfChanged_DedupIdenticalRewrite verifies content dedup: a
+// byte-identical rewrite (ArgoCD/Ansible re-sync) must not deliver a config,
+// while a subsequent real change must still pass the stability gate.
+func TestReloadIfChanged_DedupIdenticalRewrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bridge.yaml")
 	writeYAML(t, path, "same")
 
-	fc := clocktest.New()
-	w := NewWatcher(path, newTestRegistry(t), WithClock(fc))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	ch, err := w.Watch(ctx)
+	w := NewWatcher(path, newTestRegistry(t))
+	var err error
+	w.lastHash, err = fileHash(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Stop()
+	ch := make(chan *ports.BridgeConfig, 1)
 
-	waitForTicker(t, fc) // loop running, baseline hash taken
-
-	// Identical rewrite: event fires, debounce arms, hash gate suppresses.
+	// The hash gate suppresses the byte-identical rewrite immediately.
 	writeYAML(t, path, "same")
-	waitForTimer(t, fc)
-	fc.Advance(defaultDebounce)
-
-	select {
-	case cfg := <-ch:
-		t.Fatalf("identical rewrite must not deliver a config, got %q", cfg.Bridge.ID)
-	case <-time.After(200 * time.Millisecond):
-		// expected: deduped
+	if pending := w.reloadIfChanged(ch); pending {
+		t.Fatal("identical rewrite must not enter the stability gate")
 	}
+	assertNoEmit(t, ch, "identical rewrite")
 
-	// Real change still delivered.
+	// A real change is held on first sight and delivered on the confirming read.
 	writeYAML(t, path, "changed")
-	waitForTimer(t, fc)
-	fc.Advance(defaultDebounce) // debounce fires: change detected, held for stability
-
-	// Stability gate (HIGH-2): the confirming re-read happens one settle window
-	// later (the debounce path re-arms itself when a change is pending). Advance
-	// through it so the settled change is delivered.
-	waitForTimer(t, fc)
-	fc.Advance(defaultDebounce)
+	if pending := w.reloadIfChanged(ch); !pending {
+		t.Fatal("first sighting of changed content must enter the stability gate")
+	}
+	assertNoEmit(t, ch, "unconfirmed real change")
+	if pending := w.reloadIfChanged(ch); pending {
+		t.Fatal("confirmed changed content must be delivered")
+	}
 
 	select {
 	case cfg := <-ch:
 		if cfg.Bridge.ID != "changed" {
 			t.Fatalf("expected bridge id %q, got %q", "changed", cfg.Bridge.ID)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for changed content after dedup")
+	default:
+		t.Fatal("expected changed content after dedup")
 	}
 }
 

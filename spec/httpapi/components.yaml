@@ -539,7 +539,7 @@ schemas:
 
   DeepHealthResponse:
     type: object
-    required: [running, healthy, instance_id, role, ready_for_traffic, service_level, sessions, routes]
+    required: [running, healthy, instance_id, role, ready_for_traffic, service_level, level, sessions, routes]
     description: >
       Comprehensive health report covering runtime state, session connectivity,
       and route status. Returned with 200 when ready or 503 when not ready.
@@ -572,6 +572,11 @@ schemas:
           `none` when no sessions are functional.
         enum: [full, degraded, none]
         example: full
+      level:
+        type: string
+        description: Stable machine-readable readiness level derived from this health snapshot.
+        enum: [down, live, running, connected, subscribed, full]
+        example: full
       sessions:
         type: array
         description: Per-session health details.
@@ -582,10 +587,23 @@ schemas:
         description: Configured routes with delivery mode.
         items:
           $ref: "#/schemas/DeepHealthRoute"
+      config_watch:
+        $ref: "#/schemas/ConfigWatchHealth"
 
   DeepHealthSession:
     type: object
-    required: [session_id, connected, has_lease, subscriptions_wanted, subscriptions_active, ready, service_level]
+    required:
+      - session_id
+      - connected
+      - has_lease
+      - subscriptions_wanted
+      - subscriptions_active
+      - ready
+      - service_level
+      - unsettled_count
+      - oldest_unsettled_age_ms
+      - receive_window_utilization
+      - recovery_recycle_count
     description: Health status of a single transport session.
     properties:
       session_id:
@@ -619,10 +637,30 @@ schemas:
           active, `degraded` when partially converged, `none` when disconnected.
         enum: [full, degraded, none]
         example: full
+      unsettled_count:
+        type: integer
+        minimum: 0
+        description: Current-connection QoS 1/2 packets awaiting protocol settlement.
+      oldest_unsettled_age_ms:
+        type: integer
+        format: int64
+        minimum: 0
+        description: Age in milliseconds of the oldest current-connection unsettled packet.
+      receive_window_utilization:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 1
+        description: Fraction of the receive window occupied by unsettled packets.
+      recovery_recycle_count:
+        type: integer
+        format: int64
+        minimum: 0
+        description: Recovery recycle attempts started after acquiring the session gate.
 
   DeepHealthRoute:
     type: object
-    required: [id, delivery_mode]
+    required: [id, delivery_mode, ready, in_flight, route_dead]
     description: Minimal route info included in deep health checks.
     properties:
       id:
@@ -634,3 +672,37 @@ schemas:
         description: Delivery strategy for this route.
         enum: [direct_hold, shared_outbox]
         example: direct_hold
+      ready:
+        type: boolean
+        description: Whether the route can currently accept traffic.
+      in_flight:
+        type: integer
+        minimum: 0
+        description: Messages currently being processed by the route.
+      route_dead:
+        type: boolean
+        description: Whether an unrecoverable route failure has stopped processing.
+
+  ConfigWatchHealth:
+    type: object
+    required: [degraded, reconfigure_pending]
+    description: Live configuration watcher and desired/running convergence health.
+    properties:
+      degraded:
+        type: boolean
+        description: Whether the watcher or live apply path requires operator attention.
+      reason:
+        type: string
+        description: Human-readable degradation reason.
+      reconfigure_pending:
+        type: boolean
+        description: Whether the durable desired version differs from the running version.
+      desired_version:
+        type: integer
+        description: Latest durable configuration version accepted by the manager.
+      running_version:
+        type: integer
+        description: Configuration version confirmed by the running bridge.
+      last_apply_error:
+        type: string
+        description: Definitive live-apply error for the current desired config; cleared when that desired config succeeds or is superseded.

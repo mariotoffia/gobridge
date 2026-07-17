@@ -3,6 +3,7 @@
 package gobridgebase_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
 	"github.com/aws/jsii-runtime-go"
 
 	// Register the http transport plugin so yaml parsing of
@@ -21,6 +24,7 @@ import (
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
@@ -303,6 +307,125 @@ stores:
       table_name: bridge-outbox-tbl
 `
 
+const t20BaseDefaultDynamoStoreYAML = `
+bridge:
+  id: test-bridge
+stores:
+  outbox:
+    type: dynamodb
+`
+
+func Test_T20_Base_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultDynamoStoreYAML)
+	assembly := awscdk.App_Of(stack).Synth(nil)
+	rendered := assembly.GetStackByName(stack.StackName()).Template()
+	renderedJSON, err := json.Marshal(rendered)
+	if err != nil {
+		t.Fatalf("marshal synthesized template: %v", err)
+	}
+	if !strings.Contains(string(renderedJSON), "gobridge-outbox") {
+		t.Fatalf("synthesized grants do not reference runtime default table: %s", renderedJSON)
+	}
+}
+
+const t20BaseAWSSQSAliasYAML = `
+bridge:
+  id: test-bridge
+receivers:
+  - id: input
+    transport: aws.sqs
+    options:
+      queue_name: alias-queue
+      max_messages: 10
+      wait_time_seconds: 20
+`
+
+func Test_T20_Base_IAM_AWSSQSAliasGetsExactQueueGrant(t *testing.T) {
+	defer jsii.Close()
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("S"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
+	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{Vpc: vpc})
+	queueARN := "arn:aws:sqs:us-east-1:111122223333:alias-queue"
+	queue := awssqs.Queue_FromQueueArn(stack, jsii.String("Queue"), jsii.String(queueARN))
+	queues := registry.NewQueueRegistry()
+	queues.AddQueue("alias-queue", queue)
+	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
+		Mode: gobridgebase.ModeControl, Vpc: vpc, EfsConfig: efs,
+		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap: t20BaseBootstrap(), Source: source.NewAsset(t20BaseWriteYAML(t, t20BaseAWSSQSAliasYAML)),
+		QueueRegistry: queues,
+	})
+	rendered, err := json.Marshal(app.Synth(nil).GetStackByName(stack.StackName()).Template())
+	if err != nil {
+		t.Fatalf("marshal template: %v", err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "sqs:ReceiveMessage") || !strings.Contains(text, queueARN) {
+		t.Fatalf("aws.sqs alias missing exact queue IAM grant: %s", text)
+	}
+}
+
+const t20BasePMSHostPathYAML = `
+bridge:
+  id: test-bridge
+sessions:
+  - id: mqtt-session
+    transport: mqtt
+    options:
+      credentials_uri: pms://name/path
+`
+
+func Test_T20_Base_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
+	defer jsii.Close()
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("S"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
+	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{Vpc: vpc})
+	parameter := awsssm.StringParameter_FromStringParameterName(stack, jsii.String("Credential"), jsii.String("/name/path"))
+	params := registry.NewSsmParamRegistry()
+	params.AddParameter("/name/path", parameter)
+	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
+		Mode: gobridgebase.ModeControl, Vpc: vpc, EfsConfig: efs,
+		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap: t20BaseBootstrap(), Source: source.NewAsset(t20BaseWriteYAML(t, t20BasePMSHostPathYAML)),
+		SsmRegistry: params,
+	})
+	rendered, err := json.Marshal(app.Synth(nil).GetStackByName(stack.StackName()).Template())
+	if err != nil {
+		t.Fatalf("marshal template: %v", err)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "ssm:GetParameter") || !strings.Contains(text, "parameter/name/path") {
+		t.Fatalf("canonical pms://name/path IAM grant missing exact /name/path ARN: %s", text)
+	}
+}
+
+const t20BaseDefaultLeaseStoreYAML = `
+bridge:
+  id: test-bridge
+stores:
+  lease:
+    type: dynamodb
+`
+
+func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
+	defer jsii.Close()
+	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultLeaseStoreYAML)
+	assembly := awscdk.App_Of(stack).Synth(nil)
+	rendered, err := json.Marshal(assembly.GetStackByName(stack.StackName()).Template())
+	if err != nil {
+		t.Fatalf("marshal synthesized template: %v", err)
+	}
+	if !strings.Contains(string(rendered), "gobridge-leases") {
+		t.Fatalf("lease grant does not reference the runtime default table: %s", rendered)
+	}
+	if !t20CollectPolicyActions(assertions.Template_FromStack(stack, nil))["dynamodb:DescribeTimeToLive"] {
+		t.Fatal("default lease table is missing dynamodb:DescribeTimeToLive")
+	}
+}
+
 // Test_T20_Base_IAM_DynamoDBStoreGrant asserts that a bridge config
 // referencing a DynamoDB-backed store with an explicit table_name emits
 // DynamoDB read/write IAM actions on the task role, and that a config
@@ -317,10 +440,15 @@ func Test_T20_Base_IAM_DynamoDBStoreGrant(t *testing.T) {
 		actions := t20CollectPolicyActions(tpl)
 		for _, want := range []string{
 			"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
-			"dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
+			"dynamodb:Query", "dynamodb:TransactWriteItems", "dynamodb:DescribeTable",
 		} {
 			if !actions[want] {
 				t.Fatalf("missing IAM action %q for DynamoDB store (got %v)", want, keysOf(actions))
+			}
+		}
+		for _, forbidden := range []string{"dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable", "dynamodb:UpdateTimeToLive"} {
+			if actions[forbidden] {
+				t.Fatalf("unexpected IAM action %q for outbox store", forbidden)
 			}
 		}
 	})

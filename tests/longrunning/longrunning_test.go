@@ -4,6 +4,7 @@ package longrunning_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -258,7 +259,7 @@ func newMQTTCollector(
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			c.mu.Lock()
 			c.messages = append(c.messages, del.Envelope())
 			n := len(c.messages)
@@ -266,8 +267,11 @@ func newMQTTCollector(
 			if n <= 5 || n%500 == 0 {
 				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID())
 			}
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("collector Receiver.Run: %v", err)
+		}
 	}()
 
 	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
@@ -358,12 +362,20 @@ func setupDynamoStoresForRestart(t *testing.T) (ports.LeaseStore, ports.OutboxSt
 
 func lrSessionConfig(sessionID string) session.Config {
 	cfg := session.DefaultConfig(sessionID, true)
-	cfg.LeaseTTL = 2 * time.Second
+	cfg.LeaseTTL = 5 * time.Second
 	cfg.RenewInterval = 400 * time.Millisecond
 	cfg.RenewJitter = 50 * time.Millisecond
+	cfg.RenewCallTimeout = time.Second
 	cfg.StepDownGrace = 500 * time.Millisecond
 	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	cfg.DrainBatchSize = 100
+	return cfg
+}
+
+func lrThroughputSessionConfig(sessionID string) session.Config {
+	// Throughput tests isolate sustained delivery from compressed failover timing.
+	cfg := session.DefaultConfig(sessionID, true)
+	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	return cfg
 }
 
@@ -390,6 +402,17 @@ func sendBulkToSQS(
 	headersFn func(i int) map[string]string,
 ) {
 	t.Helper()
+	sendBulkRangeToSQS(t, client, queueURL, 0, count, headersFn)
+}
+
+func sendBulkRangeToSQS(
+	t *testing.T,
+	client *awssqs.Client,
+	queueURL string,
+	start, count int,
+	headersFn func(i int) map[string]string,
+) {
+	t.Helper()
 	const batchSize = 10
 	for i := 0; i < count; i += batchSize {
 		end := i + batchSize
@@ -398,14 +421,15 @@ func sendBulkToSQS(
 		}
 		entries := make([]sqstypes.SendMessageBatchRequestEntry, 0, end-i)
 		for j := i; j < end; j++ {
-			id := fmt.Sprintf("msg-%d", j)
-			body := fmt.Sprintf(`{"seq":%d}`, j)
+			seq := start + j
+			id := fmt.Sprintf("msg-%d", seq)
+			body := fmt.Sprintf(`{"seq":%d}`, seq)
 			entry := sqstypes.SendMessageBatchRequestEntry{
 				Id:          &id,
 				MessageBody: &body,
 			}
 			if headersFn != nil {
-				hdrs := headersFn(j)
+				hdrs := headersFn(seq)
 				attrs := make(map[string]sqstypes.MessageAttributeValue, len(hdrs))
 				for k, v := range hdrs {
 					attrs[k] = sqstypes.MessageAttributeValue{
@@ -422,7 +446,7 @@ func sendBulkToSQS(
 				QueueUrl: &queueURL,
 				Entries:  entries,
 			})
-		require.NoError(t, err, "SendMessageBatch offset=%d", i)
+		require.NoError(t, err, "SendMessageBatch offset=%d", start+i)
 	}
 }
 

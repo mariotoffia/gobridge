@@ -151,8 +151,8 @@ throughout this document.
    │                                                                                        │
    │  Driven (stores — leaves):                                                             │
    │     adapter_store_native_{memorylease, memoryoutbox, memorydlq,                        │
-   │                            sqliteoutbox, sqlitedlq}                                    │
-   │     adapter_store_aws_{dynamodblease, dynamodboutbox, dynamodbdlq}                     │
+   │                            sqliteoutbox, sqlitedlq, sqlitemanagedsubscriptions}                                    │
+   │     adapter_store_aws_{dynamodblease, dynamodboutbox, dynamodbdlq, dynamodbmanagedsubscriptions}                     │
    │  Driven (store factories — only place that may import its own leaves):                 │
    │     adapter_store_native_factory ──▶ adapter_store_native_*                            │
    │     adapter_store_aws_factory    ──▶ adapter_store_aws_*                               │
@@ -286,7 +286,7 @@ The normalized message unit flowing through the bridge. A pure value type define
 | `CreatedAt` | `time.Time` | Envelope creation timestamp |
 | `ExpiresAt` | `time.Time` | Optional TTL expiry timestamp |
 
-Methods: `Clone()` (deep copy including headers and payload), `IsExpired()`, `HasExpiry()`, `RemainingTTL()`.
+Methods: `Clone()` (deep-copy mutable headers and share immutable payload backing), `Payload()` (copy on exposure), `SetPayload()` (install new backing on transformation), `IsExpired()`, `HasExpiry()`, `RemainingTTL()`. `NewEnvelope` clones caller-provided payload at the trust boundary; only `NewEnvelopeFromImmutablePayload` may adopt backing from a trusted SDK that guarantees lifetime and immutability.
 
 ### Delivery
 
@@ -349,6 +349,17 @@ Stateful transport connection lifecycle management for protocols that maintain l
 | `Health(ctx)` | Report current connection health |
 | `Events()` | Channel of lifecycle events (connected, disconnected, reconnecting, error) |
 | `Close(ctx)` | Graceful shutdown |
+
+The MQTT adapter composes an adapter-owned predecode ingress guard at the final
+`net.Conn` boundary after TLS/WebSocket decryption and before
+`paho.NewClient`. The guard buffers at most one advertised-maximum wire packet,
+validates Remaining Length before allocation, and checks raw PUBLISH variable
+header, properties, metadata, and payload limits before the SDK can materialize
+decoded objects. Writes, deadlines, close operations, addresses, partial reads,
+and non-PUBLISH bytes retain `net.Conn` behavior. A typed secret-safe violation
+is latched by the existing terminal session transition before the connection
+fails, so autopaho's `OnConnectionDown` observes terminal state and does not
+start a reconnect storm.
 
 ### Route
 
@@ -690,8 +701,8 @@ type DLQStore interface {
 | Store | Backend | Use Case |
 |---|---|---|
 | `memorylease`, `memoryoutbox`, `memorydlq` | In-memory | Testing and development |
-| `sqliteoutbox`, `sqlitedlq` | SQLite | Single-process production |
-| `dynamodblease`, `dynamodboutbox`, `dynamodbdlq` | DynamoDB | Distributed production |
+| `sqliteoutbox`, `sqlitedlq`, `sqlitemanagedsubscriptions` | SQLite | Single-process production |
+| `dynamodblease`, `dynamodboutbox`, `dynamodbdlq`, `dynamodbmanagedsubscriptions` | DynamoDB | Distributed production |
 
 ---
 
@@ -846,7 +857,8 @@ flowchart TD
     Plan --> Prepare["builder_prepare.go: prepare()"]
     Prepare --> CheckRand["runtime.CheckRandSource()"]
     Prepare --> Validate["validator(cfg)<br/>config.Validate / blueprint validator"]
-    Prepare --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
+    Validate --> Ingress["capability preflight<br/>dedicated ingress + full ingress-memory validation"]
+    Ingress --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
     Stores --> StoreFact["StoreFactory(.NewLeaseStore /<br/>NewOutboxStore / NewDLQStore)"]
     StoreFact --> Prep[(preparedBuild<br/>cfg + stores + rtOpts)]
 
@@ -869,6 +881,18 @@ state; `Commit` is single-use (a second call returns an error) so
 the supervisor's hot-reload state machine cannot accidentally
 double-commit. `Build` is the same `prepare → complete` collapsed
 into a single call.
+
+Plugin `Config.Validate` runs while parsing. For MQTT, an omitted Receive
+Maximum defers only the receive-dependent window decision so a deployment
+profile can derive safe concurrency; explicit values still receive full
+validation. Before any store or transport resource is opened, the Builder
+always invokes `IngressMemoryConfig.ValidateIngressMemory` for every
+ReceiverDef-backed session and every referenced Persistent/Exclusive session.
+This second stage applies generic defaults or verifies the deployment-derived
+profile with effective route concurrency. An unconsumed receiver is still
+possible ingress because `sessionPlanFor` includes every ReceiverDef
+subscription, while a durable session can resume stale broker backlog before
+managed cleanup.
 
 ---
 
@@ -1040,7 +1064,8 @@ gobridge/
 │   │   ├── store/                       # DynamoDB store factory
 │   │   │   ├── dynamodblease/
 │   │   │   ├── dynamodboutbox/
-│   │   │   └── dynamodbdlq/
+│   │   │   ├── dynamodbdlq/
+│   │   │   └── dynamodbmanagedsubscriptions/
 │   │   ├── credentials/ssm/            # AWS SSM credentials
 │   │   ├── metrics/cloudwatch/          # CloudWatch metrics
 │   │   ├── config/dynamodb/             # DynamoDB config loader
@@ -1055,7 +1080,8 @@ gobridge/
 │   │   │   ├── memoryoutbox/
 │   │   │   ├── memorydlq/
 │   │   │   ├── sqliteoutbox/
-│   │   │   └── sqlitedlq/
+│   │   │   ├── sqlitedlq/
+│   │   │   └── sqlitemanagedsubscriptions/
 │   │   ├── credentials/file/           # File-based credentials
 │   │   ├── config/file/                # File config loader/watcher
 │   │   └── cluster/                    # Native cluster resolver
@@ -1204,9 +1230,26 @@ graph TB
 
 All instances run all routes identically. The `LeaseStore` determines which instance's `OutboxDrainer` actively drains and sends. The active instance holds the lease; standby instances persist to the outbox but do not drain until they acquire the lease.
 
-### Reconfiguration Is Per-Process
+### Cluster Reconfiguration Requires Whole-Cohort Replacement
 
-Configuration reload and runtime swap are **per-process**: each instance watches its own config source and swaps its own runtime via the `Supervisor`. There is **no cluster-wide config-version barrier and no coordinated cluster rollback** -- during a rollout, instances may run different route/store/session/policy definitions until every instance has reloaded (indefinitely, if one is wedged on an invalid config). Per-instance durability and lease fencing still hold **provided every instance resolves the same session ids and the same lease and outbox store targets** (the lease CAS is keyed on the lease version, not `BridgeConfig.Version`), so a mixed-version window causes no duplicate commits and -- within an instance -- no message loss; only routing/policy/transformation behaviour is eventually consistent across the cluster, not atomic. Reconfiguring a session's identity or its lease or outbox store target is **not** version-skew-safe (two instances drive the same session against different stores -- two active drainers, and records stranded in a replaced outbox are lost); coordinate those changes with a drain-and-stop. Operators observe each instance's running `config_version` (`Supervisor.Config().Version`, logged on each reconfiguration swap) to confirm convergence. See scenario 10 (`docs/scenarios/10-dynamic-reconfiguration.md`) for operator guidance.
+Reload mechanics are per-process: there is no cluster-wide config-version
+barrier, all-member readiness gate, or coordinated rollback. Allowing each
+member to swap independently would therefore create a split-version cohort.
+
+GoBridge prevents that state by rejecting every non-no-op live reload **of or
+into** a clustered deployment, fail-closed. Both the `Supervisor` and the AWS
+file-based composition root reject before building or stopping anything; the
+current runtime and running `config_version` remain unchanged. A byte-identical
+watcher re-emit is still accepted as a no-op.
+
+Clustered changes use an externally coordinated whole-cohort replacement:
+stage and validate the exact config for every member, quiesce ingress, drain and
+stop all members, commit the config, start all members, then re-enable ingress
+only after every member reports the target `config_version` and passes the
+Full/readiness barrier. Failure rolls back the entire cohort while ingress
+remains quiesced. `WithAllowDestructiveReload` cannot bypass this rule because
+discarding local backlog is not cluster consensus. See
+`docs/runbooks/cluster-config-rollout.md` and ADR 0012.
 
 ### Instance Identity
 

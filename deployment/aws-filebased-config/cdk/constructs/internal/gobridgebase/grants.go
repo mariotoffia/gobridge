@@ -1,7 +1,6 @@
 package gobridgebase
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -10,8 +9,10 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -67,10 +68,10 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	// SQS receivers (consumers) and senders (producers).
 	for i := range cfg.Receivers {
 		r := &cfg.Receivers[i]
-		if !isKind(r.Transport, "sqs", "aws.sqs") {
+		if !sqsadapter.IsKind(r.Transport) {
 			continue
 		}
-		name := sqsQueueName(r.Raw())
+		name := sqsQueueName(r.Config, r.Raw())
 		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
 			continue
 		}
@@ -78,10 +79,10 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	}
 	for i := range cfg.Senders {
 		s := &cfg.Senders[i]
-		if !isKind(s.Transport, "sqs", "aws.sqs") {
+		if !sqsadapter.IsKind(s.Transport) {
 			continue
 		}
-		name := sqsQueueName(s.Raw())
+		name := sqsQueueName(s.Config, s.Raw())
 		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
 			continue
 		}
@@ -100,39 +101,30 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 		}
 	}
 
-	// DynamoDB stores (lease/outbox/DLQ). Grant read/write data on each
-	// table the config names. Stores that omit table_name would fall back
-	// to the adapter's built-in default table name, which this profile
-	// cannot resolve to an ARN -- those FAIL AT SYNTH (see below) rather
-	// than silently deploying a task that AccessDenies at runtime. Dedupe
-	// by name so a table shared across store roles yields a single import +
-	// grant.
-	granted := map[string]struct{}{}
-	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ} {
-		if sc == nil || !isKind(sc.Type, awsstore.DynamoDBKind) {
+	// DynamoDB stores. Preserve the configured role so each adapter receives
+	// only its exact runtime calls and exact index ARNs. The same physical table
+	// may be referenced by more than one role; CDK safely aggregates statements.
+	roles := []struct {
+		name  string
+		store *ports.StoreConfig
+		grant func(awsiam.IGrantable, awsdynamodb.ITable)
+	}{
+		{name: "lease", store: cfg.Stores.Lease, grant: grants.GrantDynamoDBLeaseStore},
+		{name: "outbox", store: cfg.Stores.Outbox, grant: grants.GrantDynamoDBOutboxStore},
+		{name: "dlq", store: cfg.Stores.DLQ, grant: grants.GrantDynamoDBDLQStore},
+		{name: "managed_subscriptions", store: cfg.Stores.ManagedSubscriptions, grant: grants.GrantDynamoDBManagedSubscriptionsStore},
+	}
+	for _, storeRole := range roles {
+		if storeRole.store == nil || !isKind(storeRole.store.Type, awsstore.DynamoDBKind) {
 			continue
 		}
-		name := dynamoTableName(sc)
-		if name == "" {
-			// A DynamoDB store with no explicit table_name would fall back to
-			// the adapter's built-in default table name, which this profile
-			// cannot resolve to an ARN — so no IAM grant is emitted and the
-			// runtime dies with AccessDenied on first use. Fail fast at synth
-			// with an actionable message instead of shipping a task that
-			// cannot reach its own store.
-			panic(fmt.Sprintf(
-				"gobridgebase: DynamoDB store %q omits table_name; the deployment cannot resolve a "+
-					"table ARN to grant and the runtime would fail with AccessDenied. Set an explicit "+
-					"table_name on the store config (or grant the table externally and remove the store "+
-					"from the parsed config).",
-				sc.Type))
-		}
-		if _, done := granted[name]; done {
+		name, err := awsstore.ResolveDynamoDBTableName(storeRole.name, dynamoTableName(storeRole.store))
+		if err != nil {
 			continue
 		}
-		granted[name] = struct{}{}
-		table := awsdynamodb.Table_FromTableName(scope, jsii.String("DynamoStoreGrant"+name), jsii.String(name))
-		grants.GrantDynamoDBStore(role, table)
+		table := awsdynamodb.Table_FromTableName(scope,
+			jsii.String("DynamoStoreGrant"+storeRole.name), jsii.String(name))
+		storeRole.grant(role, table)
 	}
 }
 
@@ -145,18 +137,21 @@ func isKind(have string, want ...string) bool {
 	return false
 }
 
-// sqsQueueName extracts the logical "name" field from an SQS
-// receiver/sender raw plugin config. Returns "" when the field is
+// sqsQueueName extracts the logical queue_name from the typed SQS config,
+// with a raw-config fallback for defensive compatibility. Returns "" when the field is
 // missing or unparseable; the caller treats that as "skip".
-func sqsQueueName(raw ports.RawConfig) string {
+func sqsQueueName(config ports.PluginConfig, raw ports.RawConfig) string {
+	if typed, ok := config.(*sqsadapter.Config); ok && typed != nil {
+		return typed.QueueName
+	}
 	if raw == nil {
 		return ""
 	}
 	var probe struct {
-		Name string `yaml:"name" json:"name"`
+		QueueName string `yaml:"queue_name" json:"queue_name" mapstructure:"queue_name"`
 	}
 	_ = raw.Decode(&probe)
-	return probe.Name
+	return probe.QueueName
 }
 
 // dynamoTableName extracts the DynamoDB table name from a store
@@ -164,7 +159,7 @@ func sqsQueueName(raw ports.RawConfig) string {
 // bridgecfg builder and by the two-stage parser, since Materialize's
 // registry registers the awsstore decoder) and falls back to a raw
 // probe. Returns "" when unset -- the adapter then uses its built-in
-// default table name, which this profile cannot resolve to an ARN.
+// default table name; callers resolve that default by store role.
 func dynamoTableName(sc *ports.StoreConfig) string {
 	if sc == nil {
 		return ""
@@ -186,12 +181,12 @@ func dynamoTableName(sc *ports.StoreConfig) string {
 // URIs/paths the task role needs read access to.
 func collectSSMRefs(p *Props, cfg *ports.BridgeConfig) []string {
 	seen := map[string]struct{}{}
-	add := func(s string) {
-		s = stripPMS(s)
-		if s == "" {
+	add := func(ref string) {
+		path, err := registry.NormalizeParameterPath(ref)
+		if err != nil {
 			return
 		}
-		seen[s] = struct{}{}
+		seen[path] = struct{}{}
 	}
 
 	add(p.Bootstrap.AdminAPIKeyParam)
@@ -224,20 +219,6 @@ func collectSSMRefs(p *Props, cfg *ports.BridgeConfig) []string {
 	return out
 }
 
-// stripPMS strips a leading "pms://" or "pms:" scheme so callers
-// can compare against the raw parameter path the SsmParamRegistry
-// is keyed on.
-func stripPMS(s string) string {
-	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasPrefix(s, "pms://"):
-		return strings.TrimPrefix(s, "pms://")
-	case strings.HasPrefix(s, "pms:"):
-		return strings.TrimPrefix(s, "pms:")
-	}
-	return s
-}
-
 // scanRawForPMS walks a RawConfig looking for string values that
 // start with "pms://" and reports each via emit. Silently no-ops on
 // nil or undecodable raw payloads.
@@ -255,7 +236,7 @@ func scanRawForPMS(raw ports.RawConfig, emit func(string)) {
 func walkPMS(v any, emit func(string)) {
 	switch t := v.(type) {
 	case string:
-		if strings.HasPrefix(t, "pms://") || strings.HasPrefix(t, "pms:") {
+		if strings.HasPrefix(t, "pms://") {
 			emit(t)
 		}
 	case map[string]any:

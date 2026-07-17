@@ -1,8 +1,9 @@
 package paho
 
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -19,7 +20,7 @@ const headerMQTTResponseTopic = "mqtt.response-topic"
 // HeaderMessageID is the user-property key used to round-trip the
 // domain Envelope.ID through MQTT. On receive, this header takes
 // precedence for setting Envelope.ID; the correlation-id header is
-// the second choice, and a deterministic hash is the fallback.
+// the second choice, and a per-publish UUID is the fallback.
 const HeaderMessageID = "mqtt.message-id"
 
 // HeaderGobridgeSubject is the user-property key used to round-trip
@@ -91,7 +92,7 @@ func isSafeHeaderValue(s string) bool {
 // Envelope.ID is resolved in priority order:
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
 //  2. x-bridge.correlation-id from CorrelationData
-//  3. Deterministic derivation from topic + payload hash
+//  3. A random UUIDv4 generated for this received publish
 //
 // The *pahov5.Publish parameter is the SDK boundary input this ACL
 // helper exists to translate; its only callers are ACL files
@@ -117,28 +118,37 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 		HeaderMQTTRetained: pub.Retain,
 		HeaderMQTTQoS:      int(pub.QoS),
 	}
-	var mqttMsgID string
 	var subject string
 	var expiresAt time.Time
-	droppedUserProps := 0
+	// droppedHeaders counts every inbound header that fails the length/safety
+	// filter — both MQTT v5 properties (correlation data, content type, response
+	// topic) and arbitrary user properties. It feeds MetricMQTTIngressHeaderDropped
+	// so a correlation-id loss is observable rather than silent (A-14).
+	droppedHeaders := 0
 
 	if pub.Properties != nil {
 		if pub.Properties.CorrelationData != nil {
 			corr := string(pub.Properties.CorrelationData)
 			if len(corr) <= maxHeaderValueLen && isSafeHeaderValue(corr) {
 				headers[messaging.HeaderCorrelationID] = corr
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.ContentType != "" {
 			ct := pub.Properties.ContentType
 			if len(ct) <= maxHeaderValueLen && isSafeHeaderValue(ct) {
 				headers[messaging.HeaderContentType] = ct
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.ResponseTopic != "" {
 			rt := pub.Properties.ResponseTopic
 			if len(rt) <= maxHeaderValueLen && isSafeHeaderValue(rt) {
 				headers[headerMQTTResponseTopic] = rt
+			} else {
+				droppedHeaders++
 			}
 		}
 		if pub.Properties.MessageExpiry != nil {
@@ -160,7 +170,6 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 			}
 			if u.Key == HeaderMessageID {
 				if len(u.Value) <= maxHeaderValueLen && isSafeHeaderValue(u.Value) {
-					mqttMsgID = u.Value
 					headers[HeaderMessageID] = u.Value
 				}
 				continue
@@ -169,36 +178,35 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 				continue
 			}
 			if len(u.Key) > maxHeaderValueLen || len(u.Value) > maxHeaderValueLen {
-				droppedUserProps++
+				droppedHeaders++
 				continue
 			}
 			if !isSafeHeaderValue(u.Key) || !isSafeHeaderValue(u.Value) {
-				droppedUserProps++
+				droppedHeaders++
 				continue
 			}
 			headers[u.Key] = u.Value
 		}
 	}
 
-	if droppedUserProps > 0 && len(metrics) > 0 && metrics[0] != nil {
-		metrics[0].Counter(MetricMQTTIngressHeaderDropped, int64(droppedUserProps))
+	if droppedHeaders > 0 && len(metrics) > 0 && metrics[0] != nil {
+		metrics[0].Counter(MetricMQTTIngressHeaderDropped, int64(droppedHeaders))
 	}
 
 	// Determine ID before construction — MustEnvelope requires a non-empty ID.
-	var id string
-	switch {
-	case mqttMsgID != "":
-		id = mqttMsgID
-	case headers[messaging.HeaderCorrelationID] != nil:
-		id, _ = headers[messaging.HeaderCorrelationID].(string)
-	}
+	// The router stamps a generated mqtt.message-id once before fan-out. Direct
+	// ACL callers still receive a unique fallback without mutating their SDK
+	// input.
+	id := publishIdentity(pub)
 	if id == "" {
-		id = deriveEnvelopeID(pub.Topic, pub.Payload)
+		id = newIngressEnvelopeID()
 	}
 
 	// id is always non-empty (generate fallback above); now is non-zero.
-	// NewEnvelope cannot fail here; the panic guards an impossible branch.
-	env, err := messaging.NewEnvelope(messaging.EnvelopeInput{
+	// Paho's acknowledgement tracker retains the immutable wire-packet backing
+	// until settlement, so the Envelope can share payload without a route copy.
+	// Construction cannot fail here; the panic guards an impossible branch.
+	env, err := messaging.NewEnvelopeFromImmutablePayload(messaging.EnvelopeInput{
 		ID:        id,
 		Subject:   subject,
 		Payload:   pub.Payload,
@@ -352,26 +360,70 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 	return pub
 }
 
-// deriveEnvelopeID deterministically derives an Envelope.ID from the
-// publish topic and payload (SHA-256, 128-bit hex) when no header
-// provides one. Determinism is the point: a QoS 1 redelivery of the
-// same publish from a NON-bridge producer (no mqtt.message-id user
-// property, no correlation data) yields the SAME ID, so downstream
-// idempotency/dedup can detect exactly the duplicates that broker
-// redelivery creates. The MQTT packet identifier is deliberately NOT
-// included — packet IDs are a 16-bit per-connection resource that the
-// broker reuses, so mixing one in would make redeliveries look distinct
-// (DUP redeliveries keep the ID, but re-sends after session resume may
-// not) while adding no entropy across connections.
-//
-// Distinct application messages that share topic AND payload bytes
-// collapse to the same ID by design — without a producer-supplied
-// message ID they are indistinguishable on the wire anyway.
-func deriveEnvelopeID(topic string, payload []byte) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(topic))
-	_, _ = h.Write([]byte{0}) // domain separator: topic vs payload bytes
-	_, _ = h.Write(payload)
-	sum := h.Sum(nil)
-	return hex.EncodeToString(sum[:16])
+// publishIdentity returns the producer identity carried by pub, preserving
+// the ingress precedence used by EnvelopeFromPublish. Invalid or unsafe values
+// are ignored exactly as they are during header extraction.
+func publishIdentity(pub *pahov5.Publish) string {
+	if pub == nil || pub.Properties == nil {
+		return ""
+	}
+	var messageID string
+	for _, property := range pub.Properties.User {
+		if property.Key == HeaderMessageID && len(property.Value) <= maxHeaderValueLen && isSafeHeaderValue(property.Value) {
+			messageID = property.Value
+		}
+	}
+	if messageID != "" {
+		return messageID
+	}
+	correlationID := string(pub.Properties.CorrelationData)
+	if len(correlationID) <= maxHeaderValueLen && isSafeHeaderValue(correlationID) {
+		return correlationID
+	}
+	return ""
+}
+
+// publishWithIdentity returns pub unchanged when it already carries an
+// identity. Otherwise it creates a shallow immutable wrapper and copies only
+// the bounded UserProperty slice needed to append one generated identity;
+// payload/string backing remains shared with Paho's callback packet.
+func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
+	if pub == nil || publishIdentity(pub) != "" {
+		return pub
+	}
+	owned := *pub
+	var properties pahov5.PublishProperties
+	if pub.Properties != nil {
+		properties = *pub.Properties
+		properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
+	}
+	properties.User = append(properties.User, pahov5.UserProperty{
+		Key: HeaderMessageID, Value: newIngressEnvelopeID(),
+	})
+	owned.Properties = &properties
+	return &owned
+}
+
+// newIngressEnvelopeID returns an RFC 4122 UUIDv4 using the standard-library
+// cryptographic random source. Entropy failure is unrecoverable: continuing
+// without a unique identity can silently collapse a distinct outbox event.
+func newIngressEnvelopeID() string {
+	var raw [16]byte
+	if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
+		panic("paho: crypto/rand unavailable generating MQTT ingress identity: " + err.Error())
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+
+	var id [36]byte
+	hex.Encode(id[0:8], raw[0:4])
+	id[8] = '-'
+	hex.Encode(id[9:13], raw[4:6])
+	id[13] = '-'
+	hex.Encode(id[14:18], raw[6:8])
+	id[18] = '-'
+	hex.Encode(id[19:23], raw[8:10])
+	id[23] = '-'
+	hex.Encode(id[24:36], raw[10:16])
+	return string(id[:])
 }

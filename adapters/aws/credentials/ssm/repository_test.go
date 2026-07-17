@@ -396,6 +396,17 @@ func TestParseURI(t *testing.T) {
 			expected: "/single",
 		},
 		{
+			name:     "absolute path form",
+			uri:      "pms:///secret/path",
+			expected: "/secret/path",
+		},
+		{name: "query rejected", uri: "pms://secret/path?version=1", wantErr: true},
+		{name: "fragment rejected", uri: "pms://secret/path#fragment", wantErr: true},
+		{name: "empty fragment rejected", uri: "pms://secret/path#", wantErr: true},
+		{name: "userinfo rejected", uri: "pms://user@secret/path", wantErr: true},
+		{name: "encoded path rejected", uri: "pms://secret/%70ath", wantErr: true},
+		{name: "double-slash path rejected", uri: "pms:////secret/path", wantErr: true},
+		{
 			name:    "wrong scheme",
 			uri:     "vault://secret/path",
 			wantErr: true,

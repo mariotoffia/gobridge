@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -260,12 +261,15 @@ func newMQTTCollector(t *testing.T, topic string, clientIDPrefix string) *mqttCo
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		_ = recv.Run(recvCtx, func(_ context.Context, del ports.Delivery) error {
+		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
 			c.mu.Lock()
 			c.messages = append(c.messages, del.Envelope())
 			c.mu.Unlock()
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("collector Receiver.Run: %v", err)
+		}
 	}()
 
 	t.Cleanup(func() {
@@ -320,15 +324,82 @@ func setupDynamoStores(t *testing.T) (ports.LeaseStore, ports.OutboxStore) {
 	return leaseStore, outboxStore
 }
 
+// acquireAfterPersistedTakeoverObservation follows the DynamoDB lease takeover
+// contract for an actively held lease. The first competing Acquire establishes
+// persisted observation evidence; subsequent calls accumulate only confirmed
+// local monotonic elapsed time until the unchanged tuple can be seized.
+func acquireAfterPersistedTakeoverObservation(
+	t *testing.T,
+	store ports.LeaseStore,
+	leaseID, ownerID string,
+	ttl time.Duration,
+) persistence.LeaseToken {
+	t.Helper()
+
+	if _, err := store.Acquire(t.Context(), leaseID, ownerID, ttl, nil); !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("initialize persisted takeover observation: %v", err)
+	}
+
+	var (
+		token      persistence.LeaseToken
+		unexpected error
+	)
+	wait.Until(t, 5*time.Second, "persisted lease takeover observation", func() bool {
+		var err error
+		token, err = store.Acquire(t.Context(), leaseID, ownerID, ttl, nil)
+		switch {
+		case err == nil:
+			return true
+		case errors.Is(err, shared.ErrAlreadyExists):
+			return false
+		default:
+			unexpected = err
+			return true
+		}
+	})
+	if unexpected != nil {
+		t.Fatalf("acquire after persisted takeover observation: %v", unexpected)
+	}
+	return token
+}
+
+func waitForOutboxClaim(
+	t *testing.T,
+	store ports.OutboxStore,
+	partitionKey string,
+	token persistence.LeaseToken,
+) []*persistence.OutboxRecord {
+	t.Helper()
+
+	var (
+		claimed    []*persistence.OutboxRecord
+		unexpected error
+	)
+	wait.Until(t, 5*time.Second, "outbox record becomes reclaimable", func() bool {
+		var err error
+		claimed, err = store.Claim(t.Context(), partitionKey, token, 10)
+		if err != nil {
+			unexpected = err
+			return true
+		}
+		return len(claimed) > 0
+	})
+	if unexpected != nil {
+		t.Fatalf("claim outbox record: %v", unexpected)
+	}
+	return claimed
+}
+
 // ---------------------------------------------------------------------------
 // Runtime helpers
 // ---------------------------------------------------------------------------
 
 func e2eFastSessionConfig(sessionID string) session.Config {
 	cfg := session.DefaultConfig(sessionID, true)
-	cfg.LeaseTTL = 800 * time.Millisecond
-	cfg.RenewInterval = 150 * time.Millisecond
-	cfg.RenewJitter = 20 * time.Millisecond
+	cfg.LeaseTTL = 5 * time.Second
+	cfg.RenewInterval = 400 * time.Millisecond
+	cfg.RenewJitter = 50 * time.Millisecond
+	cfg.RenewCallTimeout = time.Second
 	cfg.StepDownGrace = 200 * time.Millisecond
 	cfg.DrainStrategy = persistence.NewFixedPoll(100 * time.Millisecond)
 	cfg.DrainBatchSize = 50

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -296,38 +297,67 @@ func validateSameSessionRouteLoop(ve *ports.BlueprintValidationError, cfg *ports
 	}
 }
 
-// validateClusteredMQTTSubscriptions checks that MQTT receivers in clustered
-// mode use either an exclusive session (lease-based single subscriber) or
-// $share/ topic prefixes (MQTT v5 shared subscriptions) to prevent N-fold
-// message duplication across instances.
+// validateClusteredMQTTSubscriptions validates clustered shared-consumer
+// configs through optional typed plugin capabilities. It deliberately has no
+// transport-name switch: adapters declare whether they can prove a per-replica
+// identity, while the transport-neutral validator recognizes shared-subscription
+// syntax and fails closed when the capability is unavailable.
 func validateClusteredMQTTSubscriptions(ve *ports.BlueprintValidationError, cfg *ports.BridgeConfig) {
 	sessionsByID := make(map[string]ports.SessionDef, len(cfg.Sessions))
-	for _, s := range cfg.Sessions {
-		sessionsByID[s.ID] = s
+	for _, session := range cfg.Sessions {
+		sessionsByID[session.ID] = session
 	}
 
-	for i, r := range cfg.Receivers {
-		transport := r.Transport
-		var sessionMode string
+	for i, receiver := range cfg.Receivers {
+		var (
+			sessionMode  string
+			pluginConfig ports.PluginConfig
+		)
+		if receiver.SessionID != "" {
+			if session, ok := sessionsByID[receiver.SessionID]; ok {
+				sessionMode = session.SessionMode
+				pluginConfig = session.Config
+			}
+		}
+		if pluginConfig == nil {
+			pluginConfig = receiver.Config
+		}
 
-		if r.SessionID != "" {
-			if s, ok := sessionsByID[r.SessionID]; ok {
-				if transport == "" {
-					transport = s.Transport
-				}
-				sessionMode = s.SessionMode
+		prefix := fmt.Sprintf("receivers[%d] (%s)", i, receiver.ID)
+		replicaConfig, capabilityAvailable := pluginConfig.(ports.ReplicaIdentityConfig)
+		hasSharedTopic := false
+		for _, topic := range receiver.Topics {
+			if isSharedTopic(topic.Topic) {
+				hasSharedTopic = true
+				break
 			}
 		}
 
-		if !strings.EqualFold(transport, "mqtt") {
-			continue
-		}
-		if sessionMode == "exclusive" {
+		// A plugin advertising replica identity is a shared-consumer transport,
+		// so retain the existing requirement that every clustered non-exclusive
+		// subscription use shared syntax. A literal $share topic also enters this
+		// path and fails closed if its plugin capability is absent.
+		if !capabilityAvailable && !hasSharedTopic {
 			continue
 		}
 
-		prefix := fmt.Sprintf("receivers[%d] (%s)", i, r.ID)
-		for j, topic := range r.Topics {
+		strategy := ""
+		if capabilityAvailable {
+			if ports.IsNilPluginConfig(pluginConfig) {
+				ve.Addf("%s: replica identity config is nil", prefix)
+				continue
+			}
+			strategy = replicaConfig.ReplicaIdentityStrategy()
+		}
+		if sessionMode == string(connectivity.SessionExclusive) {
+			if strategy != "" {
+				ve.Addf("%s: exclusive session must not configure a replica identity strategy; "+
+					"exclusive ownership requires one stable client identity", prefix)
+			}
+			continue
+		}
+
+		for j, topic := range receiver.Topics {
 			if !isSharedTopic(topic.Topic) {
 				ve.Addf("%s: topics[%d]: clustered MQTT receiver requires $share/ topic prefix "+
 					"or exclusive session to prevent N-fold message duplication; got %q",
@@ -337,6 +367,23 @@ func validateClusteredMQTTSubscriptions(ve *ports.BlueprintValidationError, cfg 
 					"must be $share/<group>/<topic> with non-empty group and topic",
 					prefix, j, topic.Topic)
 			}
+		}
+
+		switch strategy {
+		case ports.ReplicaIdentityHostname:
+			// Stable and deployment-verifiable; preferred for all shared modes.
+		case ports.ReplicaIdentityNonce:
+			if sessionMode != string(connectivity.SessionEphemeral) && sessionMode != "" {
+				ve.Addf("%s: replica identity strategy %q is valid only for ephemeral shared sessions; "+
+					"use %q for durable sessions", prefix, strategy, ports.ReplicaIdentityHostname)
+			}
+		case "":
+			ve.Addf("%s: clustered shared subscription requires a verifiable replica identity strategy; "+
+				"configure %q (preferred), or %q only for ephemeral sessions",
+				prefix, ports.ReplicaIdentityHostname, ports.ReplicaIdentityNonce)
+		default:
+			ve.Addf("%s: replica identity strategy %q is not verifiable; use %q, or %q only for ephemeral sessions",
+				prefix, strategy, ports.ReplicaIdentityHostname, ports.ReplicaIdentityNonce)
 		}
 	}
 }

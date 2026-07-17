@@ -20,12 +20,13 @@ flowchart LR
 
 **Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
 
-`cdk/` ships five public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
+`cdk/` ships six public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
 
 | Path | Role |
 |------|------|
 | `cdk/constructs/gobridgesingle/` | `GoBridgeSingle` facade. |
-| `cdk/constructs/gobridgecluster/` | `GoBridgeCluster` facade. |
+| `cdk/constructs/gobridgecluster/` | `GoBridgeCluster` independent filesystem scale-out facade. |
+| `cdk/constructs/gobridgedynamodbha/` | `GoBridgeDynamoDBHA` coordinated active/warm-standby facade and `DynamoDBHAData`. |
 | `cdk/constructs/` (`efs_config.go`) | `GoBridgeEfsConfig` shared EFS + access points. |
 | `cdk/constructs/gobridgealbattachment/` | `GoBridgeALBAttachment` listener-rule wiring. |
 | `cdk/constructs/gobridgealarms/` | `GoBridgeAlarms` opinionated CloudWatch bundle. |
@@ -37,7 +38,7 @@ flowchart LR
 
 ## Construct Composition
 
-Both facades route through the same private base; the diagram is the same shape for Single and Cluster — only the service set differs.
+All three facades route through the same private base; the diagram is the same task-definition shape for Single, Cluster, and DynamoDB HA — only topology resources and service invariants differ.
 
 ```mermaid
 flowchart TB
@@ -45,6 +46,7 @@ flowchart TB
     REG["QueueRegistry / SsmParamRegistry"]
     SINGLE["GoBridgeSingle"]
     CLUSTER["GoBridgeCluster"]
+    HA["GoBridgeDynamoDBHA"]
     EFS["GoBridgeEfsConfig<br/>(internal use; opt-in BYO)"]
     BASE["internal/gobridgebase<br/>(task def, mounts, IAM grants,<br/>seeder init container)"]
     ECS["awsecs.FargateService(s)"]
@@ -54,18 +56,24 @@ flowchart TB
 
     YAML --> SINGLE
     YAML --> CLUSTER
+    YAML --> HA
     REG --> SINGLE
     REG --> CLUSTER
+    REG --> HA
     SINGLE --> BASE
     CLUSTER --> BASE
+    HA --> BASE
     BASE --> EFS
     BASE --> ECS
     SINGLE -. WithSSMExports .-> LOOKUP
     CLUSTER -. WithSSMExports .-> LOOKUP
+    HA -. WithSSMExports .-> LOOKUP
     ALB --- SINGLE
     ALB --- CLUSTER
+    ALB --- HA
     ALM --- SINGLE
     ALM --- CLUSTER
+    ALM --- HA
 ```
 
 `GoBridgeEfsConfig` is normally created and owned by the facade; consumers may pass an instance in to override KMS / throughput / removal policy / backup. `GoBridgeALBAttachment` and `GoBridgeAlarms` are independent opt-ins. Cross-stack consumption is via `gobridgecdk.LookupBridge` (returns a `*BridgeRef` exposing the same accessor surface as the producing constructs).
@@ -122,6 +130,35 @@ flowchart LR
 Both access points share the same root path and the same posix user (uid/gid `1000:1000`); the **RW/RO split is enforced at IAM and at the ECS volume level (`readOnly: true`)**, not by POSIX ownership. The control role and worker role are split for EFS grants only — `ClientMount`+`ClientWrite` for control, `ClientMount` only for workers; SQS, SSM and Logs grants are identical between roles since both task families process messages.
 
 `DesiredCount=1` for the control service is a runtime invariant (single LeaseStore writer semantics) and is **not** exposed as a prop. Workers default to two and may opt in to CPU target-tracking autoscaling via `AutoScalingProps{Min, Max, TargetCPU}`. The seeder init container runs only in the control task; workers boot from EFS and their readiness blocks until the yaml is present.
+
+### `GoBridgeDynamoDBHA`
+
+`GoBridgeDynamoDBHA` is a separate `dynamodb_coordinated_ha` topology, not a
+mode switch inside `GoBridgeCluster`. It reuses two `gobridgebase.New` calls for
+one config-control task definition and one worker task definition. The control
+service desired count is one and the worker service minimum is two. Every task
+runs the clustered runtime and can own a lease; node role controls only EFS
+config-write authority. Selected private subnets span at least two Availability
+Zones. Worker AZ rebalancing is enabled; the single RW control service uses a
+0/100 replacement policy with rebalancing disabled, preventing overlapping
+config writers.
+
+The facade owns exactly three on-demand, PITR-enabled, retained tables through
+`DynamoDBHAData`: `PK`-only lease with TTL omitted, `PK`/`SK` outbox with
+`ExpiryIndex`, `RecordIDIndex`, and `ClaimIndex`, and `storage_identity`-keyed
+managed-subscription history. It validates names from the parsed store configs,
+then runs the Task 9 builder admission path source-safely before creating
+resources. The facade stamps the canonical admitted-config fingerprint and exact
+table identities into bootstrap; every process checks its EFS config against
+those expectations before planning stores or transports. Static endpoints and per-replica Exclusive MQTT client-ID suffixes
+are rejected; the bootstrap composition root registers `EcsEndpointResolver`
+for clustered configs.
+
+`GoBridgeAlarms` reads this facade to add warm-standby, DynamoDB, existing
+runtime lease/outbox/DLQ, and external `FailureToFullDuration` alarms. The
+failure duration is emitted by the credentialed external probe, not runtime.
+Missing samples are non-breaching, while the release probe immediately queries
+CloudWatch for its exact sample.
 
 ## Tier B: parse, validate, derive
 
@@ -183,7 +220,7 @@ Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and
 
 ## Singleton constraint
 
-**One `GoBridgeSingle` OR one `GoBridgeCluster` per AWS account.** Multiple instances in the same account are forbidden.
+**One `GoBridgeSingle`, `GoBridgeCluster`, OR `GoBridgeDynamoDBHA` per AWS account.** Multiple instances in the same account are forbidden.
 
 | Layer | Enforcement |
 |-------|-------------|
@@ -245,7 +282,7 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 
 - **Custom credential store**: `WithCredentialStore` on `App`.
 - **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
-- **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
+- **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
 - **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile.
 
 ## Related Docs

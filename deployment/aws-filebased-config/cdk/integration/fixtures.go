@@ -37,39 +37,34 @@ type integrationFixture struct {
 	Attachment *gobridgealbattachment.GoBridgeALBAttachment
 }
 
-// lookupVpc builds an IVpc from the sandbox env. FromLookup requires
-// the stack to be env-bound (account+region), which we do at stack
-// construction time.
+// lookupVpc imports concrete VPC/subnet/AZ attributes. Unlike Vpc.FromLookup,
+// this emits a complete immutable cloud assembly in one source-safe synth pass.
 func lookupVpc(stack awscdk.Stack, env SandboxEnv) awsec2.IVpc {
-	return awsec2.Vpc_FromLookup(stack, jsii.String("Vpc"), &awsec2.VpcLookupOptions{
-		VpcId: jsii.String(env.VpcID),
+	zones := stringPointers(env.AvailabilityZones)
+	privateSubnets := stringPointers(env.SubnetIDs)
+	publicSubnets := stringPointers(env.PublicSubnetIDs)
+	return awsec2.Vpc_FromVpcAttributes(stack, jsii.String("Vpc"), &awsec2.VpcAttributes{
+		VpcId: jsii.String(env.VpcID), AvailabilityZones: &zones,
+		PrivateSubnetIds: &privateSubnets, PublicSubnetIds: &publicSubnets,
+		Region: jsii.String(env.Region),
 	})
 }
 
-func subnetSelection(env SandboxEnv) *awsec2.SubnetSelection {
-	subnets := make([]*string, 0, len(env.SubnetIDs))
-	for i, id := range env.SubnetIDs {
-		subnets = append(subnets,
-			awsec2.Subnet_FromSubnetId(nil, jsii.String("Sub"+itoa(i)), jsii.String(id)).SubnetId())
+func stringPointers(values []string) []*string {
+	out := make([]*string, 0, len(values))
+	for _, value := range values {
+		out = append(out, jsii.String(value))
 	}
-	_ = subnets
-	return &awsec2.SubnetSelection{
-		SubnetType: awsec2.SubnetType_PRIVATE_WITH_EGRESS,
-	}
+	return out
 }
 
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
+func subnetSelection(env SandboxEnv) *awsec2.SubnetSelection {
+	subnetIDs := make([]*string, 0, len(env.SubnetIDs))
+	for _, id := range env.SubnetIDs {
+		subnetIDs = append(subnetIDs, jsii.String(id))
 	}
-	var b [8]byte
-	pos := len(b)
-	for i > 0 {
-		pos--
-		b[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	return string(b[pos:])
+	filters := []awsec2.SubnetFilter{awsec2.SubnetFilter_ByIds(&subnetIDs)}
+	return &awsec2.SubnetSelection{SubnetFilters: &filters}
 }
 
 // newSingleFixture spins up a single-task GoBridge stack with one
@@ -91,7 +86,7 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	qr.AddQueue("outbound", outbound)
 
 	adminOpts := bridgecfg.AdminAPIDefaults()
-	adminOpts.AdminAPIKey = "pms:///gobridge/it/admin-key"
+	adminOpts.AdminAPIKey = "pms://gobridge/it/admin-key"
 
 	cfg, err := bridgecfg.New("it-bridge").
 		WithHTTPAdminAPI(adminOpts).
@@ -166,7 +161,7 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	qr.AddQueue("outbound", outbound)
 
 	adminOpts := bridgecfg.AdminAPIDefaults()
-	adminOpts.AdminAPIKey = "pms:///gobridge/it/admin-key"
+	adminOpts.AdminAPIKey = "pms://gobridge/it/admin-key"
 
 	cfg, err := bridgecfg.New("it-bridge-cluster").
 		WithHTTPAdminAPI(adminOpts).

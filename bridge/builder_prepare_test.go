@@ -2,11 +2,14 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/stretchr/testify/assert"
@@ -316,4 +319,132 @@ func TestBuilder_CompleteNilPrepared(t *testing.T) {
 	_, err := builder.complete(context.Background(), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil preparedBuild")
+}
+
+// dedicatedIngressTransportFactory models a transport whose session-level
+// ingress dispatch permits at most one logical receiver. The counting base
+// proves a rejected preflight creates no transport resources.
+type dedicatedIngressTransportFactory struct {
+	countingTransportFactory
+}
+
+func (*dedicatedIngressTransportFactory) Capabilities() []ports.Capability {
+	return []ports.Capability{
+		ports.CapStatefulSession,
+		ports.CapDedicatedIngressSession,
+	}
+}
+
+type dedicatedIngressCountingStoreFactory struct {
+	fakeStoreFactory
+	calls atomic.Int32
+}
+
+func (f *dedicatedIngressCountingStoreFactory) NewLeaseStore(
+	ctx context.Context,
+	cfg ports.PluginConfig,
+) (ports.LeaseStore, error) {
+	f.calls.Add(1)
+	return f.fakeStoreFactory.NewLeaseStore(ctx, cfg)
+}
+
+func dedicatedIngressConfig(receiverTransports ...string) *ports.BridgeConfig {
+	cfg := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "dedicated-ingress-bridge"},
+		Stores: ports.StoresConfig{
+			Lease: &ports.StoreConfig{Type: "memory"},
+		},
+		Sessions: []ports.SessionDef{
+			{ID: "ingress-session", Transport: "dedicated"},
+		},
+	}
+	for i, transport := range receiverTransports {
+		cfg.Receivers = append(cfg.Receivers, ports.ReceiverDef{
+			ID:        fmt.Sprintf("receiver-%d", i+1),
+			Transport: transport,
+			SessionID: "ingress-session",
+		})
+	}
+	return cfg
+}
+
+func TestDedicatedIngressSession_PreflightRejectsAliasBeforeResources(t *testing.T) {
+	cfg := dedicatedIngressConfig("dedicated", "dedicated.alias")
+	transportFactory := &dedicatedIngressTransportFactory{}
+	storeFactory := &dedicatedIngressCountingStoreFactory{}
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("dedicated", transportFactory).
+		RegisterTransportFactory("dedicated.alias", transportFactory).
+		RegisterStoreFactory("memory", storeFactory).
+		Plan(t.Context())
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrInvalidConfig))
+	assert.Contains(t, err.Error(), "ingress-session")
+	assert.Contains(t, err.Error(), "receiver-1")
+	assert.Contains(t, err.Error(), "receiver-2")
+	assert.Equal(t, int32(0), storeFactory.calls.Load(), "preflight must run before stores are created")
+	sessions, receivers, senders := transportFactory.Counts()
+	assert.Zero(t, sessions, "preflight must not create sessions")
+	assert.Zero(t, receivers, "preflight must not create receivers")
+	assert.Zero(t, senders, "preflight must not create senders")
+}
+
+func TestDedicatedIngressSession_PreflightRejectsReceiverReusedByRoutesBeforeResources(t *testing.T) {
+	cfg := dedicatedIngressConfig("dedicated.alias")
+	cfg.Routes = []ports.RouteDef{
+		{ID: "route-a", ReceiverID: "receiver-1"},
+		{ID: "route-b", ReceiverID: "receiver-1"},
+	}
+	transportFactory := &dedicatedIngressTransportFactory{}
+	storeFactory := &dedicatedIngressCountingStoreFactory{}
+
+	plan, err := NewBuilder(cfg).
+		RegisterTransportFactory("dedicated", transportFactory).
+		RegisterTransportFactory("dedicated.alias", transportFactory).
+		RegisterStoreFactory("memory", storeFactory).
+		Plan(t.Context())
+	if plan != nil {
+		t.Cleanup(plan.Close)
+	}
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, shared.ErrInvalidConfig))
+	assert.Contains(t, err.Error(), "ingress-session")
+	assert.Contains(t, err.Error(), "receiver-1")
+	assert.Contains(t, err.Error(), "route-a")
+	assert.Contains(t, err.Error(), "route-b")
+	assert.Equal(t, int32(0), storeFactory.calls.Load(), "route-binding preflight must run before stores are created")
+	sessions, receivers, senders := transportFactory.Counts()
+	assert.Zero(t, sessions, "route-binding preflight must not create sessions")
+	assert.Zero(t, receivers, "route-binding preflight must not create receivers")
+	assert.Zero(t, senders, "route-binding preflight must not create senders")
+}
+
+func TestDedicatedIngressSession_AllowsOneReceiverPerSessionAndSharedSenders(t *testing.T) {
+	cfg := dedicatedIngressConfig("dedicated", "dedicated.alias")
+	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{ID: "ingress-session-2", Transport: "dedicated.alias"})
+	cfg.Receivers[1].SessionID = "ingress-session-2"
+	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{ID: "sender-only-session", Transport: "dedicated"})
+	cfg.Routes = []ports.RouteDef{
+		{ID: "route-1", ReceiverID: "receiver-1"},
+		{ID: "route-2", ReceiverID: "receiver-2"},
+	}
+	cfg.Senders = []ports.SenderDef{
+		{ID: "sender-1", Transport: "dedicated", SessionID: "ingress-session"},
+		{ID: "sender-2", Transport: "dedicated.alias", SessionID: "ingress-session"},
+		{ID: "sender-only", Transport: "dedicated", SessionID: "sender-only-session"},
+	}
+	transportFactory := &dedicatedIngressTransportFactory{}
+	storeFactory := &dedicatedIngressCountingStoreFactory{}
+
+	plan, err := NewBuilder(cfg).
+		RegisterTransportFactory("dedicated", transportFactory).
+		RegisterTransportFactory("dedicated.alias", transportFactory).
+		RegisterStoreFactory("memory", storeFactory).
+		Plan(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(plan.Close)
+	assert.Equal(t, int32(1), storeFactory.calls.Load())
 }

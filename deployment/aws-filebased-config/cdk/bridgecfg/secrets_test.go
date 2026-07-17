@@ -108,7 +108,7 @@ func TestIsCredentialURI(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"pms:///bridge/admin", true},
+		{"pms://bridge/admin", true},
 		{"pms://x/y", true},
 		{"file:///etc/creds.yaml", true},
 		{"vault://kv/data/foo", true},
@@ -144,8 +144,8 @@ func TestScan_HTTPAdminAPIKey_Plaintext(t *testing.T) {
 func TestScan_HTTPAdminAPIKey_PmsURI_OK(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		HTTP: &ports.HTTPConfig{
-			AdminAPIKey:   shared.NewSecret("pms:///bridge/admin-key"),
-			MonitorAPIKey: shared.NewSecret("pms:///bridge/monitor-key"),
+			AdminAPIKey:   shared.NewSecret("pms://bridge/admin-key"),
+			MonitorAPIKey: shared.NewSecret("pms://bridge/monitor-key"),
 		},
 	}
 	if err := bridgecfg.ScanForPlaintextSecrets(cfg); err != nil {
@@ -252,6 +252,22 @@ func TestRegisterSensitiveField_PanicOnEmpty(t *testing.T) {
 		}
 	}()
 	bridgecfg.RegisterSensitiveField("")
+}
+
+func TestScan_ManagedSubscriptionStore(t *testing.T) {
+	var fc fakeBrokerConfig
+	fc.Broker.Password = "managed-store-leak"
+	sc := &ports.StoreConfig{Type: "fake"}
+	sc.SetDecoded(fc, nil)
+	cfg := &ports.BridgeConfig{Stores: ports.StoresConfig{ManagedSubscriptions: sc}}
+
+	err := bridgecfg.ScanForPlaintextSecrets(cfg)
+	if err == nil {
+		t.Fatal("expected violation in stores.managed_subscriptions")
+	}
+	if !strings.Contains(err.Error(), "stores.managed_subscriptions.config.broker.password") {
+		t.Errorf("expected managed-subscription secret path; got %s", err.Error())
+	}
 }
 
 func TestScan_StoresAndOtherComponents(t *testing.T) {

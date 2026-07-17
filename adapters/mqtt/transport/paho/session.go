@@ -7,11 +7,26 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+type recoveryDrainState uint8
+
+const (
+	recoveryDrainNotStarted recoveryDrainState = iota
+	recoveryDrainInProgress
+	recoveryDrainFinished
+)
+
+type subscriptionGrant struct {
+	Requested byte
+	Granted   byte
+}
 
 // Session implements ports.Session for MQTT, owning the broker connection,
 // ClientID identity, and subscription reconciliation.
@@ -40,20 +55,39 @@ type Session struct {
 	// s.events) when the supervisor re-Starts a Reload-failed session.
 	eventsClosed bool
 	closed       bool
-	connected    bool // true when autopaho reports connection is up
-	starting     bool // true while a Start() attempt is in flight
+	// terminalErr latches a fail-closed generation whose ingress could not be
+	// quiesced safely. This Session instance must never reconnect in-process.
+	terminalErr error
+	connected   bool // true when autopaho reports connection is up
+	starting    bool // true while a Start() attempt is in flight
 	// startDone is closed when the in-flight Start attempt finishes
 	// (success or failure) so concurrent Start callers can wait for the
 	// outcome instead of returning a false success (finding: concurrent
 	// Start returned nil while the winner was still connecting).
 	// Replaced with a fresh channel each time a Start attempt begins.
 	startDone chan struct{}
+	// connectionGeneration identifies one ConnectionManager construction. Start
+	// waits for connectionUpDone so AwaitConnection cannot return before the
+	// matching OnConnectionUp callback has reset epochs/router state.
+	connectionGeneration  uint64
+	connectionUpDone      chan struct{}
+	connectionUpCompleted bool
+	connectionUpErr       error
 
 	// takeoverStreak counts consecutive session-takeover disconnects
 	// (0x8E) without an intervening stable connection; connUpAt is when
 	// the current connection came up. Both guarded by mu; used to damp
 	// ClientID-collision takeover storms.
 	takeoverStreak int
+	// lastTakeoverAt is the unix-nanos time of the most recent session-takeover
+	// (0x8E) disconnect, or 0 if none. takeoverPenalty gates on it: the penalty
+	// only spaces out reconnects DURING an active storm, so once no takeover has
+	// occurred for takeoverStabilityWindow the penalty decays to 0 even though
+	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
+	// (only reset when a NEW takeover arrives post-stability) would make every
+	// later ordinary reconnect pay the stale penalty forever, busting the
+	// failover window (A-4). Guarded by mu.
+	lastTakeoverAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
 	// is set on every connect edge and never reset to 0 on disconnect: the
 	// takeover-damping math only asks "was the connection stable for
@@ -61,20 +95,39 @@ type Session struct {
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64
+	// connEpoch is the broker-connection generation, bumped under mu on Reload
+	// teardown and every handleConnectionUp. Reconcile captures it once with cm,
+	// carries that operation epoch through all helper snapshots and broker calls,
+	// and rejects a mismatch before state commits: a reconnect landing
+	// MID-reconcile (after a SUBACK succeeded on
+	// the prior connection but before the write-back) would otherwise let the
+	// stale reconcile write its subscriptions into the FRESH, just-reset
+	// activeSubs, so the next connect-edge reconcile computes an empty delta and
+	// silently skips re-subscribing on an ephemeral (clean_start) session — a
+	// real, if narrow, subscription-loss window (A-3). Distinct from the
+	// router's own connEpoch (different struct, different mutex). Guarded by mu.
+	connEpoch uint64
 
-	// reconcileMu serializes concurrent Reconcile calls so their
-	// subscribe/unsubscribe operations cannot interleave and corrupt
-	// activeSubs (e.g. the SessionManager-driven reconcile on
-	// SessionConnected racing a rotation- or caller-triggered Reconcile).
-	// Per finding C7 the SessionManager is the single owner of
-	// reconciliation; OnConnectionUp (handleConnectionUp) does NOT
-	// reconcile inline — it only resets activeSubs and signals the
-	// manager — so it is intentionally not a holder of this mutex (see
-	// handleConnectionUp for why it must not block on it).
-	reconcileMu sync.Mutex
+	// reloadGate is the one context-aware serialization gate shared by
+	// ordinary reconciliation, credential/managed-migration reloads, and
+	// settlement recovery. Internal under-gate helpers never reacquire it.
+	reloadGate                chan struct{}
+	reloadGateWaitHook        func() // deterministic package-test barrier; nil in production
+	reloadGateAcquiredHook    func() // deterministic package-test barrier; nil in production
+	recoveryQueuedFailureHook func() // deterministic package-test barrier; nil in production
+	terminalAwaitStartHook    func() // deterministic package-test barrier; nil in production
 
 	// router receives all incoming publishes; Receivers register handlers.
 	router *router
+
+	// ingressReceiverID is latched by Factory.NewReceiver. The factory-level
+	// reservation is session-local (rather than factory-local), so registering
+	// one Paho Factory under multiple aliases cannot create a second logical
+	// ingress receiver on the same serialized MQTT dispatch/ACK domain. Guarded
+	// by mu. Direct low-level NewReceiver construction remains an explicit
+	// diagnostic/test seam outside config-driven factory composition.
+	ingressReceiverID       string
+	ingressReceiverReserved bool
 
 	// plan is the last DESIRED session plan (the target the most recent
 	// Reconcile was asked to reach). It is stashed BEFORE the broker ops run
@@ -93,6 +146,24 @@ type Session struct {
 	// nil until the first reconcile succeeds. Guarded by mu.
 	appliedPlan *connectivity.SessionPlan
 
+	// managedStore/history are the durable exact-filter ledger for persistent
+	// and exclusive sessions. History is loaded before the first broker dial;
+	// managedRequired makes missing/outage fail closed rather than falling back
+	// to process-local appliedPlan. Guarded by mu except store calls.
+	managedStore    ports.ManagedSubscriptionStore
+	managedIdentity string
+	managedRequired bool
+	managedLoaded   bool
+	managedHistory  map[string]struct{}
+	// managedCleanupVerification retains filters confirmed removed until the
+	// replacement generation proves no broker-pinned replay is buffered. Durable
+	// history is not forgotten before this set clears. Guarded by mu.
+	managedCleanupVerification map[string]struct{}
+	// ingressQuiescenceWaiter is installed by the runtime and is backed by
+	// source RouteRunner settlement accounting. Managed cleanup invokes it only
+	// after the router has stopped accepting callbacks. Guarded by mu.
+	ingressQuiescenceWaiter func(context.Context) error
+
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
 	// mode — the client_id-collision footgun for scale-out (HIGH-3). Guarded
@@ -100,8 +171,20 @@ type Session struct {
 	// on every reconcile.
 	sharedSubWarned bool
 
-	// activeSubs tracks topics for which SUBSCRIBE has been issued.
-	activeSubs map[string]byte // topic -> qos
+	// observedSubs tracks every successful SUBACK grant, including grants below
+	// the requested QoS. Reconcile uses it for cleanup and to avoid repeatedly
+	// subscribing an unchanged downgraded filter. Guarded by mu.
+	observedSubs map[string]subscriptionGrant
+
+	// activeSubs is the contract-active subset of observedSubs: filters whose
+	// granted QoS meets or exceeds the requested QoS. Health reads only this map.
+	activeSubs map[string]byte // topic filter -> granted qos
+
+	// subscriptionsSatisfied is latched false when an explicit plan starts
+	// reconciling or the connection generation changes. Only an exact successful
+	// convergence of broker-observed and contract-active state sets it true.
+	// Guarded by mu.
+	subscriptionsSatisfied bool
 
 	// liveCreds is the most recently applied credential material. It is
 	// consulted by the ConnectPacketBuilder on every (re)connect so that
@@ -117,6 +200,14 @@ type Session struct {
 	// file need not import the vendor SDK. Production leaves it nil; the
 	// real dial lives in acl_session.go.
 	connectOverride func(ctx context.Context) (pahoConnection, context.CancelFunc, error)
+	// Test-only: require connectOverride to signal handleConnectionUp instead of
+	// treating the returned fake connection as callback-complete.
+	connectOverrideAwaitConnectionUp bool
+
+	// reconcileSnapshotHook is a deterministic test seam invoked after
+	// Reconcile captures the connection epoch and releases mu. Production leaves
+	// it nil. Guarded by mu when read or written.
+	reconcileSnapshotHook func()
 
 	// authFailureCB is the reactive-recovery hook (HIGH-3). The
 	// CredentialRefresher injects a URI-bound callback via
@@ -127,6 +218,23 @@ type Session struct {
 	// safe publication across the builder goroutine (setter) and autopaho's
 	// OnConnectError callback goroutine (load).
 	authFailureCB atomic.Pointer[func(error)]
+
+	// recoveryPending is set synchronously by a durable QoS 1/2 Retry and
+	// keeps readiness below Full until a replacement connection resumes the
+	// broker session. Concurrent Retry requests coalesce on this state.
+	recoveryPending             bool
+	recoveryNeedsSessionPresent bool
+	recoverySessionPresentEpoch uint64
+	recoveryTargetEpoch         uint64
+	recoveryAttemptActive       bool
+	recoveryDrainState          recoveryDrainState
+	recoveryDrainGeneration     uint64
+	recoveryDrainDone           chan struct{}
+	recoveryGeneration          uint64
+	recoveryAttemptCancel       context.CancelFunc
+	recoveryErr                 error
+	lastRecoveryCompleted       time.Time
+	recoveryRecycleCount        uint64
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be
@@ -138,7 +246,19 @@ type mqttCredentials struct {
 	Password string
 }
 
-var _ ports.Session = (*Session)(nil)
+var (
+	_ ports.Session                     = (*Session)(nil)
+	_ ports.IngressQuiescenceConfigurer = (*Session)(nil)
+)
+
+// SetIngressQuiescenceWaiter installs the runtime-owned source-settlement
+// barrier used before a managed-subscription recycle disconnects the broker
+// generation. Runtime.Start calls this before background work begins.
+func (s *Session) SetIngressQuiescenceWaiter(waiter func(context.Context) error) {
+	s.mu.Lock()
+	s.ingressQuiescenceWaiter = waiter
+	s.mu.Unlock()
+}
 
 // sessionEventsBuffer is the capacity of the session lifecycle-event
 // channel. It is a named constant so the Reload-failure re-Start
@@ -167,6 +287,15 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	if opts.Clock == nil {
 		opts.Clock = clock.System
 	}
+	receiveMaximumUnset := opts.ReceiveMaximum == 0
+	opts = opts.normalizedIngressMemory()
+	if receiveMaximumUnset && logger != nil {
+		logger.Warn("mqtt: receive_maximum unset; applying byte-bounded ingress default",
+			"receive_maximum", opts.ReceiveMaximum,
+			"max_payload_bytes", opts.MaxPayloadBytes,
+			"ingress_memory_budget_bytes", opts.IngressMemoryBudgetBytes,
+		)
+	}
 	if mode != connectivity.SessionEphemeral && opts.SessionExpiryInterval == 0 {
 		opts.SessionExpiryInterval = DefaultPersistentSessionExpiry
 		if logger != nil {
@@ -176,33 +305,18 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			)
 		}
 	}
-	if opts.ReceiveMaximum == 0 {
-		// ponytail: BEHAVIOR CHANGE — the effective Receive Maximum default
-		// was lowered from the MQTT protocol maximum (65535) to
-		// DefaultReceiveMaximum (1024) to bound worst-case buffered memory
-		// (receive_maximum × max_payload; paho buffers up to Receive Maximum
-		// full publishes, and the startup pending buffer is sized to it too).
-		// 0 is not a legal MQTT v5 Receive Maximum, so coercing it is
-		// correct. Operators who want the old ceiling set receive_maximum
-		// explicitly.
-		opts.ReceiveMaximum = DefaultReceiveMaximum
-		if logger != nil {
-			logger.Warn("mqtt: receive_maximum unset; defaulting to bound worst-case buffered "+
-				"memory (receive_maximum × max_payload) at the cost of QoS 1/2 in-flight "+
-				"parallelism — set receive_maximum explicitly (e.g. 65535) to restore the prior ceiling",
-				"receive_maximum", opts.ReceiveMaximum,
-			)
-		}
-	}
 	s := &Session{
-		opts:       opts,
-		mode:       mode,
-		logger:     logger,
-		metrics:    m,
-		clk:        opts.Clock,
-		events:     make(chan ports.SessionEvent, sessionEventsBuffer),
-		activeSubs: make(map[string]byte),
+		opts:         opts,
+		mode:         mode,
+		logger:       logger,
+		metrics:      m,
+		clk:          opts.Clock,
+		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
+		reloadGate:   make(chan struct{}, 1),
+		observedSubs: make(map[string]subscriptionGrant),
+		activeSubs:   make(map[string]byte),
 	}
+	s.reloadGate <- struct{}{}
 	// The router shares the session's (possibly fake) clock so the startup
 	// grace window is deterministic under test, and calls back through
 	// s.unsubscribeOrphan to converge broker state for orphan topics. The
@@ -214,6 +328,10 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withUnmatchedGrace(opts.UnmatchedGrace),
 		withUnsubscribe(s.unsubscribeOrphan),
 		withCovered(s.topicCovered),
+		withSessionTag(opts.ClientID),
+		withDispatchCapacity(int(opts.ReceiveMaximum)),
+		withMaxPayloadBytes(opts.MaxPayloadBytes),
+		withIngressPoison(s.rejectIngressPoison),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window
@@ -248,6 +366,34 @@ func (s *Session) connection() pahoConnection {
 // Router returns the message router for registering Receiver handlers.
 func (s *Session) Router() *router {
 	return s.router
+}
+
+// IngressMemoryStats returns the current serialized dispatch depth and its
+// validated capacity. It is an observable barrier for memory/load proofs and
+// does not expose queued messages.
+func (s *Session) IngressMemoryStats() (dispatchDepth, dispatchCapacity int) {
+	if s == nil || s.router == nil {
+		return 0, 0
+	}
+	return s.router.ingressMemoryStats()
+}
+
+// reserveDedicatedIngressReceiver atomically assigns the session's sole
+// factory-created ingress receiver. The reservation lasts for the Session
+// lifetime because its router, dispatch worker, and MQTT acknowledgment domain
+// are session-scoped resources.
+func (s *Session) reserveDedicatedIngressReceiver(receiverID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ingressReceiverReserved {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt receiver %q: session already reserves dedicated ingress for receiver %q; configure a separate MQTT session",
+			receiverID, s.ingressReceiverID,
+		))
+	}
+	s.ingressReceiverID = receiverID
+	s.ingressReceiverReserved = true
+	return nil
 }
 
 // ---------------------------------------------------------------------------

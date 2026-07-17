@@ -15,6 +15,14 @@ type SessionSpec struct {
 	Transport   string
 	SessionMode connectivity.SessionMode
 	Config      PluginConfig
+
+	// ManagedSubscriptionStore carries exact durable topic-filter history for
+	// persistent/exclusive sessions. Identity is an opaque secret-safe durable
+	// fingerprint. Required is true only when the session must fail closed if
+	// history cannot be loaded before broker activation.
+	ManagedSubscriptionStore     ManagedSubscriptionStore
+	ManagedSubscriptionIdentity  string
+	ManagedSubscriptionsRequired bool
 }
 
 // ReceiverSpec holds ingress behavior configuration.
@@ -160,4 +168,21 @@ type VisibilityTimeoutConfig interface {
 // being blinded by the transport-wide constant.
 type CapabilityConfig interface {
 	Capabilities() []Capability
+}
+
+// IngressMemoryConfig is an optional typed PluginConfig capability for a
+// stateful ingress transport whose byte bound depends on route concurrency.
+// The bridge invokes it once per ingress session during pure preflight, after
+// topology cardinality validation and before opening stores or transports.
+type IngressMemoryConfig interface {
+	ValidateIngressMemory(routeMaxInFlight uint64) error
+}
+
+// IngressMemoryProfileConfig extends IngressMemoryConfig for deployment
+// profiles that assign a per-session ingress budget and derive transport
+// concurrency from it. Implementations must reject unsafe explicit values
+// rather than silently reducing them.
+type IngressMemoryProfileConfig interface {
+	IngressMemoryConfig
+	ConfigureIngressMemory(budgetBytes, routeMaxInFlight uint64) error
 }

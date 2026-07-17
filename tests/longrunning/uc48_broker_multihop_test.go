@@ -4,6 +4,7 @@ package longrunning_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
@@ -25,22 +27,18 @@ import (
 // SQS-IN --> [Bridge-A (SharedOutbox)] --> MQTT "uc48/hop" -->
 //            [Bridge-B (DirectHold)] --> SQS-OUT
 //
-// Kill the broker at ~500 messages in the hop topic. Wait 5s. Restart.
+// Settle 500 messages end to end, stop the broker, enqueue the remaining
+// messages during the outage, and restart after both sessions detect loss.
 // Assert: SQS-OUT >= 2,000 unique after recovery.
-//
-// PRODUCTION FIX NEEDED:
-//   - RES-001: autopaho ConnectionManager doesn't reconnect to restarted
-//     broker on same port. Both bridges may stay disconnected after restart.
-//   - Until fixed, this test is expected to FAIL.
 // =========================================================================
 
 func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 2000
-		killAt      = 500
-		hopTopic    = "uc48/hop"
-		testTimeout = 300 * time.Second
+		msgCount         = 2000
+		preCrashMessages = 500
+		hopTopic         = "uc48/hop"
+		testTimeout      = 300 * time.Second
 	)
 
 	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
@@ -49,6 +47,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc48-in")
 	sqsOutURL, sqsOutClient := setupSQSQueue(t, "uc48-out")
 	leaseStore, outboxStore := setupDynamoStores(t)
+	leaseStoreB, outboxStoreB := setupDynamoStores(t)
 	dlqA := &lrDLQStore{}
 	dlqB := &lrDLQStore{}
 
@@ -59,98 +58,119 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	// Persistent session ensures broker queues messages during restart gap.
 	hopCollector := newPersistentCollectorWithBroker(t, brokerURL, hopTopic, "uc48-col")
 
-	// --- Bridge-A: SQS-IN → SharedOutbox → MQTT ---
 	sessIDA := mqttlocal.UniqueClientID("uc48-sess-a")
-	sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
-		connectivity.SessionExclusive, 65535, 5)
-	mqttSndA := setupMQTTSender(t, sessA)
-	sqsRxA := newSQSReceiver(t, sqsInURL)
-	scA := lrSessionConfig(sessIDA)
-
-	rtA := goruntime.New(
-		goruntime.WithInstanceID("uc48-bridge-a"),
-		goruntime.WithLeaseStore(leaseStore),
-		goruntime.WithOutboxStore(outboxStore),
-		goruntime.WithDLQStore(dlqA),
-		goruntime.WithLogger(testLogger(t)),
-	)
-	require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
-		ID: "uc48-route-a",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliverySharedOutbox,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc48-bind-a", Address: hopTopic},
-		),
-		Bindings: []routing.DestinationBinding{
-			{ID: "uc48-bind-a", SessionID: sessIDA},
-		},
-	}, sqsRxA, mqttSndA, sessA, &scA))
-	require.NoError(t, rtA.Start(ctx))
-	defer func() { _ = rtA.Stop(context.Background()) }()
-
-	// --- Bridge-B: MQTT → SharedOutbox → SQS-OUT ---
-	// MQTT sources do not support visibility extension, so SharedOutbox is
-	// the correct delivery mode (DirectHold would fail validation).
-	leaseStoreB, outboxStoreB := setupDynamoStores(t)
 	rxSessIDB := mqttlocal.UniqueClientID("uc48-rxb")
-	rxSessB := setupMQTTSessionWithBroker(t, brokerURL, rxSessIDB,
-		connectivity.SessionExclusive, 65535, 5)
-	require.NoError(t, rxSessB.Reconcile(ctx, connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
-	}))
-	waitSubReady(t, rxSessB, 5*time.Second)
 
-	mqttRxB := paho.NewReceiver("uc48-rxb", rxSessB)
-	sqsSndB := newSQSSender(t, sqsOutURL)
-	scB := lrSessionConfig(rxSessIDB)
+	startBridges := func(instanceSuffix string) (*goruntime.Runtime, *paho.Session, *goruntime.Runtime, *paho.Session) {
+		t.Helper()
 
-	rtB := goruntime.New(
-		goruntime.WithInstanceID("uc48-bridge-b"),
-		goruntime.WithLeaseStore(leaseStoreB),
-		goruntime.WithOutboxStore(outboxStoreB),
-		goruntime.WithDLQStore(dlqB),
-		goruntime.WithLogger(testLogger(t)),
-	)
-	require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
-		ID: "uc48-route-b",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliverySharedOutbox,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "uc48-bind-b", Address: sqsOutURL},
-		),
-		Bindings: []routing.DestinationBinding{
-			{ID: "uc48-bind-b", SessionID: rxSessIDB},
-		},
-	}, mqttRxB, sqsSndB, rxSessB, &scB))
-	require.NoError(t, rtB.Start(ctx))
-	defer func() { _ = rtB.Stop(context.Background()) }()
+		// Start Bridge-B first so its MQTT subscription is active before
+		// Bridge-A can replay anything into the hop.
+		rxSessB := newMQTTSessionWithBroker(t, brokerURL, rxSessIDB,
+			connectivity.SessionExclusive, 65535, 5)
+		scB := lrSessionConfig(rxSessIDB)
+		scB.Plan = connectivity.SessionPlan{
+			Subscriptions: []connectivity.SubscriptionPlan{{Topic: hopTopic, QoS: 1}},
+		}
+		rtB := goruntime.New(
+			goruntime.WithInstanceID("uc48-bridge-b"+instanceSuffix),
+			goruntime.WithLeaseStore(leaseStoreB),
+			goruntime.WithOutboxStore(outboxStoreB),
+			goruntime.WithDLQStore(dlqB),
+			goruntime.WithLogger(testLogger(t)),
+		)
+		require.NoError(t, rtB.AddRoute(goruntime.RouteConfig{
+			ID: "uc48-route-b",
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
+			},
+			Resolver: goruntime.NewStaticResolver(
+				routing.DispatchPlan{BindingID: "uc48-bind-b", Address: sqsOutURL},
+			),
+			Bindings: []routing.DestinationBinding{
+				{ID: "uc48-bind-b", SessionID: rxSessIDB},
+			},
+		}, paho.NewReceiver("uc48-rxb", rxSessB), newSQSSender(t, sqsOutURL), rxSessB, &scB))
+		require.NoError(t, rtB.Start(ctx))
+		t.Cleanup(func() { _ = rtB.Stop(context.Background()) })
 
-	gobridgesync(t, 10*time.Second, rtA, rtB)
+		sessA := setupMQTTSessionWithBroker(t, brokerURL, sessIDA,
+			connectivity.SessionExclusive, 65535, 5)
+		scA := lrSessionConfig(sessIDA)
+		rtA := goruntime.New(
+			goruntime.WithInstanceID("uc48-bridge-a"+instanceSuffix),
+			goruntime.WithLeaseStore(leaseStore),
+			goruntime.WithOutboxStore(outboxStore),
+			goruntime.WithDLQStore(dlqA),
+			goruntime.WithLogger(testLogger(t)),
+		)
+		require.NoError(t, rtA.AddRoute(goruntime.RouteConfig{
+			ID: "uc48-route-a",
+			Policy: routing.RoutePolicy{
+				DeliveryMode: routing.DeliverySharedOutbox,
+			},
+			Resolver: goruntime.NewStaticResolver(
+				routing.DispatchPlan{BindingID: "uc48-bind-a", Address: hopTopic},
+			),
+			Bindings: []routing.DestinationBinding{
+				{ID: "uc48-bind-a", SessionID: sessIDA},
+			},
+		}, newSQSReceiver(t, sqsInURL), setupMQTTSender(t, sessA), sessA, &scA))
+		require.NoError(t, rtA.Start(ctx))
+		t.Cleanup(func() { _ = rtA.Stop(context.Background()) })
 
-	t.Logf("UC48: sending %d messages to SQS-IN", msgCount)
-	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
+		gobridgesync(t, 20*time.Second, rtA, rtB)
+		return rtA, sessA, rtB, rxSessB
+	}
 
-	// Wait until hop topic has ~killAt messages, then kill broker.
+	rtA, sessA, rtB, rxSessB := startBridges("")
+
+	t.Logf("UC48: sending %d messages before broker outage", preCrashMessages)
+	sendBulkToSQS(t, sqsInClient, sqsInURL, preCrashMessages, nil)
+
+	// Settle an end-to-end prefix before stopping the broker. This prevents
+	// broker-accepted, downstream-unsettled messages from straddling the outage.
 	lrWaitFor(t, 120*time.Second,
-		fmt.Sprintf("hop collector >= %d before kill", killAt),
-		func() bool { return hopCollector.count() >= killAt })
+		fmt.Sprintf("hop collector >= %d before kill", preCrashMessages),
+		func() bool { return hopCollector.count() >= preCrashMessages })
+	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, preCrashMessages, 120*time.Second)
+	require.Len(t, bodies, preCrashMessages, "pre-outage multi-hop prefix must settle")
+	require.NoError(t, rtA.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		MinQuiet: 500 * time.Millisecond,
+		Timeout:  10 * time.Second,
+	}))
+	require.NoError(t, rtB.WaitQuiescent(ctx, goruntime.QuiescenceOptions{
+		MinQuiet: 500 * time.Millisecond,
+		Timeout:  10 * time.Second,
+	}))
 
 	t.Logf("UC48: killing broker at hop-collector=%d", hopCollector.count())
 	broker.StopGraceful()
-	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+	lrWaitFor(t, 15*time.Second, "both bridge sessions disconnected", func() bool {
+		return !sessA.Health(context.Background()).Connected &&
+			!rxSessB.Health(context.Background()).Connected
+	})
+	t.Logf("UC48: sending %d messages while broker is down", msgCount-preCrashMessages)
+	sendBulkRangeToSQS(t, sqsInClient, sqsInURL,
+		preCrashMessages, msgCount-preCrashMessages, nil)
+	waitForSQSQueueDrained(t, ctx, sqsInClient, sqsInURL, 60*time.Second)
+	lrWaitFor(t, 30*time.Second, "outage batch persisted to Bridge-A outbox", func() bool {
+		pending, supported, err := rtA.OutboxPending(
+			ctx, persistence.OutboxPartitionKey(sessIDA, ""),
+		)
+		return err == nil && supported && pending > 0
+	})
+	require.NoError(t, rtA.Stop(context.Background()))
+	require.NoError(t, rtB.Stop(context.Background()))
 
 	t.Log("UC48: restarting broker")
 	broker.RestartGraceful()
-
-	// Black-box readiness: probe the Bridge-A pipeline (SQS-IN → MQTT hop).
-	// When the probe arrives at hopCollector, both Bridge-A's session and
-	// the hop collector's subscription are proven operational.
-	sendProbe(t, sqsInClient, sqsInURL, hopCollector, 30*time.Second)
+	startBridges("-recovery")
 
 	// Poll SQS-OUT for delivered messages.
-	bodies := pollAllSQS(t, sqsOutClient, sqsOutURL, msgCount, 240*time.Second)
+	bodies = append(bodies, pollAllSQS(
+		t, sqsOutClient, sqsOutURL, msgCount-len(bodies), 240*time.Second,
+	)...)
 	unique := make(map[string]struct{}, len(bodies))
 	for _, b := range bodies {
 		unique[b] = struct{}{}
@@ -159,8 +179,11 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 	t.Logf("UC48: SQS-OUT unique=%d, total=%d, dlqA=%d, dlqB=%d",
 		len(unique), len(bodies), dlqA.count(), dlqB.count())
 
-	require.GreaterOrEqual(t, len(unique), msgCount,
-		"Multi-hop must deliver >= %d unique messages after broker restart", msgCount)
+	require.Len(t, unique, msgCount, "multi-hop workload payload cardinality")
+	for seq := range msgCount {
+		require.Contains(t, unique, fmt.Sprintf(`{"seq":%d}`, seq),
+			"missing multi-hop workload sequence %d", seq)
+	}
 	assert.Equal(t, 0, dlqA.count(), "Bridge-A DLQ should be empty")
 }
 
@@ -446,12 +469,15 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	collector.wg.Add(1)
 	go func() {
 		defer collector.wg.Done()
-		_ = colRecv.Run(colCtx, func(_ context.Context, del ports.Delivery) error {
+		err := colRecv.Run(colCtx, func(ctx context.Context, del ports.Delivery) error {
 			collector.mu.Lock()
 			collector.messages = append(collector.messages, del.Envelope())
 			collector.mu.Unlock()
-			return nil
+			return del.Ack(ctx)
 		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("persistent collector Receiver.Run: %v", err)
+		}
 	}()
 	t.Cleanup(func() {
 		colCancel()

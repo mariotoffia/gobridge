@@ -66,6 +66,21 @@ func TestSessionPlanFor_UnionAcrossReceiversOnSharedSession(t *testing.T) {
 // typed PluginConfig is forwarded verbatim — identical to what
 // receiverSpecFrom puts on the ReceiverSpec — so adapters (e.g. amqp091) read
 // the same Subscription config on the spec and on the reconcile plan.
+func TestSessionPlanFor_ExpectedReceiverIDsSortedAndDeduplicated(t *testing.T) {
+	cfg := &ports.BridgeConfig{
+		Receivers: []ports.ReceiverDef{
+			{ID: "rx-z", SessionID: "s1", Topics: []ports.SubscriptionDef{{Topic: "z"}}},
+			{ID: "rx-a", SessionID: "s1"},
+			{ID: "rx-z", SessionID: "s1", Topics: []ports.SubscriptionDef{{Topic: "z/duplicate"}}},
+			{ID: "rx-other", SessionID: "s2", Topics: []ports.SubscriptionDef{{Topic: "other"}}},
+		},
+	}
+
+	plan := sessionPlanFor(cfg, "s1", nil)
+
+	assert.Equal(t, []string{"rx-a", "rx-z"}, plan.ExpectedReceiverIDs)
+}
+
 func TestSessionPlanFor_PassesTypedSubscriptionConfigThrough(t *testing.T) {
 	subCfg := &testCredConfig{URI: "marker"}
 	cfg := &ports.BridgeConfig{
@@ -170,7 +185,7 @@ func TestBuilder_AssemblesAndThreadsSessionPlan_SharedSessionUnion(t *testing.T)
 			Outbox: &ports.StoreConfig{Type: "memory"},
 		},
 		Sessions: []ports.SessionDef{
-			{ID: "s1", Transport: "mqtt", SessionMode: "exclusive"},
+			{ID: "s1", Transport: "mqtt", SessionMode: "ephemeral"},
 		},
 		Receivers: []ports.ReceiverDef{
 			{ID: "rx1", Transport: "mqtt", SessionID: "s1", Topics: []ports.SubscriptionDef{

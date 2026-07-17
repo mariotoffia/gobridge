@@ -93,6 +93,7 @@ type failReconcileSession struct {
 	seq            *atomic.Int64
 	closeSeq       int64
 	closeCalls     int32
+	reconcileErr   error
 }
 
 func newFailReconcileSession(seq *atomic.Int64) *failReconcileSession {
@@ -121,6 +122,9 @@ func (s *failReconcileSession) Start(context.Context) error {
 func (s *failReconcileSession) Reconcile(context.Context, connectivity.SessionPlan) error {
 	if s.reconcileCalls.Add(1) == 1 {
 		return nil // initial reconcile succeeds
+	}
+	if s.reconcileErr != nil {
+		return s.reconcileErr
 	}
 	return errors.New("reconcile failed: source topic ACL revoked")
 }
@@ -173,7 +177,42 @@ func (s *failReconcileSession) closeOrder() int64 {
 // The assertion is ordering-based: Close's global-ordering sequence must be
 // strictly less than the lease Release's sequence, i.e. consuming stops before
 // the lease becomes releasable by a standby.
-//
+func TestSessionManager_TerminalIngressQuiescenceFailureDoesNotReleaseLease(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	var seq atomic.Int64
+	store := newSeqLeaseStore(&seq)
+	sess := newFailReconcileSession(&seq)
+	sess.reconcileErr = shared.ErrUnavailable.
+		WithMessage("source ingress did not quiesce before recycle").
+		Wrap(shared.ErrTransportClosedPermanently)
+
+	mgr := NewWithMetrics(Config{
+		SessionID:        "sess-terminal-quiescence",
+		Exclusive:        true,
+		LeaseTTL:         5 * time.Second,
+		RenewInterval:    10 * time.Second,
+		RenewCallTimeout: 100 * time.Millisecond,
+		MaxRenewFails:    3,
+		StepDownGrace:    20 * time.Millisecond,
+	}, sess, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- mgr.Run(context.Background()) }()
+	err := wait.RequireReceive(t, runErr, 2*time.Second)
+	if !errors.Is(err, ErrSessionUnrecoverable) {
+		t.Fatalf("Run error = %v, want ErrSessionUnrecoverable", err)
+	}
+	if sess.closeOrder() == 0 {
+		t.Fatal("terminal quiescence failure did not disconnect the source")
+	}
+	if got := store.releaseOrder(); got != 0 {
+		t.Fatalf("unsafe terminal quiescence failure released lease at sequence %d", got)
+	}
+	if _, held := mgr.Token(); held {
+		t.Fatal("terminal manager still authorizes fenced work after failure")
+	}
+}
+
 // Mutation: delete the m.closeSourceBounded call in afterRenewLoopExit's
 // session-failure branch and Close is never invoked on this path, so closeOrder
 // stays 0 and this test fails.
@@ -321,7 +360,8 @@ func (s *ctxIgnoringReconcileSession) closeCount() int32 { return atomic.LoadInt
 // renewal starvation). After the fix the call is raced against the same
 // eventReconcileTimeout ceiling on the injected clock, so the renew loop unblocks
 // at the ceiling even though the adapter ignores ctx; the session is then closed
-// (CRITICAL-1) and the lease released.
+// (CRITICAL-1) and the lease is retained until natural expiry because the parked
+// Reconcile goroutine may still mutate/send.
 //
 // Mutation: revert boundedReconcile to a synchronous m.session.Reconcile and the
 // renew loop never unblocks (the ceiling timer is never consulted), so Run never
@@ -362,7 +402,7 @@ func TestSessionManager_ReconnectReconcile_CtxIgnoringUnblocksAtCeiling(t *testi
 
 	// Advance past the ceiling (2s) but not the renew timer (30s): ONLY the
 	// reconcile ceiling fires, the renew loop unblocks, and the session is
-	// closed + the lease released on the session-failure path.
+	// closed without transferring its lease under the still-parked work.
 	fake.Advance(2 * time.Second)
 
 	select {
@@ -382,9 +422,9 @@ func TestSessionManager_ReconnectReconcile_CtxIgnoringUnblocksAtCeiling(t *testi
 	wait.Until(t, 2*time.Second, "source session closed on session-failure restart", func() bool {
 		return sess.closeCount() >= 1
 	})
-	wait.Until(t, 2*time.Second, "lease released on session-failure restart", func() bool {
-		return store.releaseCount() >= 1
-	})
+	if got := store.releaseCount(); got != 0 {
+		t.Fatalf("ctx-ignoring reconcile released lease while parked work remained: %d", got)
+	}
 }
 
 // TestB5_ReconnectReconcile_CtxIgnoring_EscalatesTerminal is the regression test

@@ -152,6 +152,17 @@ func TestRunPhase2_SQSReceiver_MissingFromRegistry_EmitsError(t *testing.T) {
 	}
 }
 
+func TestRunPhase2_AWSSQSAlias_MissingFromRegistry_EmitsError(t *testing.T) {
+	stack := newStack(t)
+	cfg := sqsReceiverNamed("alias-queue")
+	cfg.Receivers[0].Transport = "aws.sqs"
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg, QueueRegistry: registry.NewQueueRegistry()})
+	got := errorMessages(t, stack)
+	if !containsAll(t, got, "SQS queue \"alias-queue\"", "no such entry in QueueRegistry") {
+		t.Fatalf("aws.sqs alias bypassed QueueRegistry validation: %v", got)
+	}
+}
+
 func TestRunPhase2_SQSSender_MissingFromRegistry_EmitsError(t *testing.T) {
 	stack := newStack(t)
 	cfg := sqsSenderNamed("orders-out")
@@ -246,11 +257,26 @@ func TestRunPhase2_SSMURI_NilSsmParamRegistry_EmitsRequiredPropError(t *testing.
 	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
 
 	got := errorMessages(t, stack)
-	if !containsAll(t, got, "no SsmParamRegistry was supplied", "SsmParamRegistry prop", "\"pms://bridge/mqtt\"") {
+	if !containsAll(t, got, "no SsmParamRegistry was supplied", "SsmParamRegistry prop", "\"/bridge/mqtt\"") {
 		t.Fatalf("missing required-prop error text: %v", got)
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected exactly one aggregated error, got %d: %v", len(got), got)
+	}
+}
+
+func TestRunPhase2_SSMURI_ErrorsRedactUserinfo(t *testing.T) {
+	stack := newStack(t)
+	cfg := ssmReceiverWithCreds("pms://operator:s3cr3t@bridge/mqtt")
+
+	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
+
+	got := errorMessages(t, stack)
+	if len(got) != 1 {
+		t.Fatalf("expected one invalid-reference error, got %d: %v", len(got), got)
+	}
+	if strings.Contains(got[0], "s3cr3t") || strings.Contains(got[0], "operator:") {
+		t.Fatalf("credential URI userinfo leaked in validation error: %q", got[0])
 	}
 }
 
@@ -263,7 +289,6 @@ func TestRunPhase2_SSMURI_MissingFromRegistry_EmitsError(t *testing.T) {
 
 	got := errorMessages(t, stack)
 	if !containsAll(t, got,
-		"\"pms://bridge/missing\"",
 		"\"/bridge/missing\"",
 		"no such entry in SsmParamRegistry",
 		"AddParameter(\"/bridge/missing\"",
@@ -334,8 +359,8 @@ func TestRunPhase2_NilScopeOrCfg_NoOp(t *testing.T) {
 }
 
 // dynamoStore builds a config with one DynamoDB-backed store in the
-// given role ("lease"/"outbox"/"dlq") carrying tableName (empty to
-// omit it).
+// given role ("lease"/"outbox"/"dlq"/"managed_subscriptions") carrying
+// tableName (empty to omit it).
 func dynamoStore(role, tableName string) *ports.BridgeConfig {
 	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
 	sc := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
@@ -347,24 +372,42 @@ func dynamoStore(role, tableName string) *ports.BridgeConfig {
 		cfg.Stores.Outbox = sc
 	case "dlq":
 		cfg.Stores.DLQ = sc
+	case "managed_subscriptions":
+		cfg.Stores.ManagedSubscriptions = sc
 	}
 	return cfg
 }
 
-func TestRunPhase2_DynamoStoreNoTableName_EmitsWarningNotError(t *testing.T) {
+func TestRunPhase2_DynamoStoreNoTableName_UsesRuntimeDefaultWithoutWarning(t *testing.T) {
+	for _, role := range []string{"lease", "outbox", "dlq", "managed_subscriptions"} {
+		t.Run(role, func(t *testing.T) {
+			stack := newStack(t)
+			validation.RunPhase2(stack, validation.Phase2Input{Cfg: dynamoStore(role, "")})
+			if got := errorMessages(t, stack); len(got) != 0 {
+				t.Fatalf("default table name emitted errors: %v", got)
+			}
+			if got := warningMessages(t, stack); len(got) != 0 {
+				t.Fatalf("default table name emitted warnings: %v", got)
+			}
+		})
+	}
+}
+
+func TestRunPhase2_ManagedSubscriptionStoreSSMURI_IsCollected(t *testing.T) {
 	stack := newStack(t)
-	cfg := dynamoStore("lease", "")
+	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "bridge-1"}}
+	sc := &ports.StoreConfig{Type: "credentialed-test-store"}
+	sc.SetDecoded(&sqs.Config{CredentialsURIRef: "pms://bridge/managed-store"}, nil)
+	cfg.Stores.ManagedSubscriptions = sc
 
 	validation.RunPhase2(stack, validation.Phase2Input{Cfg: cfg})
 
-	// Omitting table_name is a valid (if risky) choice: warn, never
-	// fail synth.
-	if got := errorMessages(t, stack); len(got) != 0 {
-		t.Fatalf("expected zero errors (missing table_name is a warning), got %d: %v", len(got), got)
+	got := errorMessages(t, stack)
+	if !containsAll(t, got, "no SsmParamRegistry was supplied", "/bridge/managed-store") {
+		t.Fatalf("missing managed-subscription SSM parameter path error: %v", got)
 	}
-	got := warningMessages(t, stack)
-	if !containsAll(t, got, "dynamodb lease store", "table_name", "AccessDenied") {
-		t.Fatalf("missing dynamodb table_name warning: %v", got)
+	if containsAll(t, got, "pms://") {
+		t.Fatalf("managed-subscription diagnostic leaked credential URI scheme: %v", got)
 	}
 }
 

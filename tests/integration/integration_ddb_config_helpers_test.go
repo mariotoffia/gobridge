@@ -19,6 +19,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,9 @@ func writeBaseYAML(t *testing.T, bridgeID string) string {
   shutdown_timeout: "5s"
   drain_timeout: "1s"
   log_level: "info"
+stores:
+  dlq:
+    type: memory
 receivers:
   - id: rx-base
     transport: fake
@@ -91,6 +95,9 @@ func writeBaseYAMLWithSession(t *testing.T, bridgeID, sessionID, transport strin
   shutdown_timeout: "5s"
   drain_timeout: "1s"
   log_level: "info"
+stores:
+  dlq:
+    type: memory
 sessions:
   - id: %s
     transport: %s
@@ -220,6 +227,10 @@ func minimalOverlay(bridgeID string) *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: bridgeID},
 	}
+}
+
+func testStoresWithDLQ() ports.StoresConfig {
+	return ports.StoresConfig{DLQ: &ports.StoreConfig{Type: "memory"}}
 }
 
 // overlayWithRoute creates a config overlay that adds a complete route
@@ -398,7 +409,7 @@ func (f *cfgFakeStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginCo
 	return &cfgFakeOutboxStore{}, nil
 }
 func (f *cfgFakeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
-	return nil, nil
+	return &fakeDLQStore{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +432,7 @@ func runSupervisorInBackground(
 	s *bridge.Supervisor,
 	cfg *ports.BridgeConfig,
 	changes <-chan *ports.BridgeConfig,
-) (context.CancelFunc, <-chan error) {
+) (context.CancelFunc, chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
@@ -430,16 +441,40 @@ func runSupervisorInBackground(
 	return cancel, errCh
 }
 
-// waitForSupervisorRuntime polls until the supervisor's Runtime() is
-// non-nil or the timeout is reached.
-func waitForSupervisorRuntime(t *testing.T, s *bridge.Supervisor, timeout time.Duration) *goruntime.Runtime {
+// waitForSupervisorRuntime waits until Runtime() is non-nil and reports an
+// initial build/start failure immediately instead of masking it as a timeout.
+func waitForSupervisorRuntime(
+	t *testing.T,
+	s *bridge.Supervisor,
+	errCh chan error,
+	timeout time.Duration,
+) *goruntime.Runtime {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if rt := s.Runtime(); rt != nil {
-			return rt
+
+	var (
+		runDone bool
+		runErr  error
+	)
+	wait.Until(t, timeout, "supervisor runtime", func() bool {
+		if s.Runtime() != nil {
+			return true
 		}
-		time.Sleep(10 * time.Millisecond) // SYNC: poll for supervisor runtime readiness
+		select {
+		case runErr = <-errCh:
+			runDone = true
+			return true
+		default:
+			return false
+		}
+	})
+	if runDone {
+		// Preserve the terminal result for the caller's cleanup, which also
+		// waits on errCh after cancelling the supervisor.
+		errCh <- runErr
+		t.Fatalf("supervisor exited before publishing initial runtime: %v", runErr)
+	}
+	if rt := s.Runtime(); rt != nil {
+		return rt
 	}
 	t.Fatal("timed out waiting for supervisor runtime")
 	return nil
@@ -449,18 +484,16 @@ func waitForSupervisorRuntime(t *testing.T, s *bridge.Supervisor, timeout time.D
 // route matching the given ID.
 func waitForSupervisorRouteID(t *testing.T, s *bridge.Supervisor, routeID string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	wait.Until(t, timeout, "supervisor route "+routeID, func() bool {
 		if rt := s.Runtime(); rt != nil {
 			for _, r := range rt.Routes() {
 				if r.ID == routeID {
-					return
+					return true
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond) // SYNC: poll for route availability
-	}
-	t.Fatalf("timed out waiting for route %q", routeID)
+		return false
+	})
 }
 
 // Interface compliance checks.

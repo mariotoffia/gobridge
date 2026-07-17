@@ -81,11 +81,18 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 	return p, nil
 }
 
-// deploymentClustered mirrors the builder's clustered predicate
-// (bridge/builder_prepare.go): a deployment is clustered when deployment_mode is
-// "clustered" OR a static cluster.endpoints override is present. It gates the
-// HA-timing baseline for lease-bearing sessions (finding HIGH-3).
-func deploymentClustered(cfg *ports.BridgeConfig) bool {
+// IsClusteredDeployment is the single shared predicate for "is this a clustered
+// deployment": deployment_mode is "clustered" OR a static cluster.endpoints
+// override is present. A nil config is never clustered.
+//
+// It is the one definition used across the bridge: the HA-timing baseline for
+// lease-bearing sessions (finding HIGH-3, builder/failover/post-acquire callers)
+// AND the fail-closed guard that refuses an uncoordinated per-process live
+// reload of (or into) a clustered cohort (finding H8, Supervisor.apply and the
+// AWS composition root). The config layer mirrors it in
+// config.deploymentIsClustered so the two agree on exactly which deployments are
+// clustered.
+func IsClusteredDeployment(cfg *ports.BridgeConfig) bool {
 	if cfg == nil {
 		return false
 	}
@@ -103,9 +110,10 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 	// A RouteSessionDef source is ALWAYS an exclusive, lease-bearing single-owner
 	// session (see the ConnectAfterLease note below). In a CLUSTERED deployment
 	// where the operator did NOT pin lease timing (lease_ttl AND renew_interval
-	// both empty), start from the HA profile (LeaseTTL=45s, ~45s failover) rather
-	// than DefaultConfig's ~6-minute baseline, so clustered failover lands in the
-	// documented 30-60s band by default (finding HIGH-3). Explicit operator
+	// both empty), start from the lower-latency HA lease cadence (LeaseTTL=45s)
+	// rather than the DefaultConfig baseline. This selects lease renewal timing;
+	// it is not an end-to-end failure-detection to ServiceLevelFull claim.
+	// Explicit operator
 	// timing always wins and keeps the DefaultConfig baseline + overrides below
 	// (backward-safe). This is also the only live wiring of session.HAConfig.
 	useHA := clustered && rs.LeaseTTL == "" && rs.RenewInterval == ""
@@ -189,6 +197,20 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 			return nil, fmt.Errorf("invalid renew_call_timeout %q: %w", rs.RenewCallTimeout, err)
 		}
 		sc.RenewCallTimeout = d
+	}
+	if rs.FailoverSLO != "" {
+		d, err := time.ParseDuration(rs.FailoverSLO)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid failover_slo %q: must be a positive duration", rs.FailoverSLO)
+		}
+		sc.FailoverSLO = d
+	}
+	if rs.StartupAllowance != "" {
+		d, err := time.ParseDuration(rs.StartupAllowance)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("invalid startup_allowance %q: must be a non-negative duration", rs.StartupAllowance)
+		}
+		sc.StartupAllowance = d
 	}
 
 	ds, err := toDrainStrategyE(rs)

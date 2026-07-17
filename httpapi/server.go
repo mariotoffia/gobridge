@@ -93,6 +93,11 @@ type Config struct {
 	// projection is omitted (it is purely additive).
 	DegradedProvider func() (degraded bool, reason string) `json:"-"`
 
+	// ConfigWatchProvider reports structured live-reconfiguration health,
+	// including desired/running divergence and the last apply error. When set it
+	// supersedes DegradedProvider for the config_watch deep-health projection.
+	ConfigWatchProvider func() ConfigWatchHealth `json:"-"`
+
 	// AdminOperationTimeout is the context timeout applied to admin
 	// start/stop operations. Defaults to 30s when zero.
 	AdminOperationTimeout time.Duration `json:"admin_operation_timeout,omitempty"`

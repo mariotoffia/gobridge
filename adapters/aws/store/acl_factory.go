@@ -10,17 +10,19 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 var (
-	_ ports.StoreFactory            = (*DynamoDBStoreFactory)(nil)
-	_ ports.DistributedStoreFactory = (*DynamoDBStoreFactory)(nil)
+	_ ports.StoreFactory                    = (*DynamoDBStoreFactory)(nil)
+	_ ports.ManagedSubscriptionStoreFactory = (*DynamoDBStoreFactory)(nil)
+	_ ports.DistributedStoreFactory         = (*DynamoDBStoreFactory)(nil)
 )
 
-// DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, and DLQ stores.
+// DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, DLQ, and managed-subscription stores.
 type DynamoDBStoreFactory struct {
 	client *dynamodb.Client
 	logger *slog.Logger
@@ -206,10 +208,11 @@ func (f *DynamoDBStoreFactory) NewLeaseStore(ctx context.Context, cfg ports.Plug
 	if err != nil {
 		return nil, err
 	}
-	var opts []dynamodblease.Option
-	if dc.TableName != "" {
-		opts = append(opts, dynamodblease.WithTableName(dc.TableName))
+	tableName, err := ResolveDynamoDBTableName("lease", dc.TableName)
+	if err != nil {
+		return nil, err
 	}
+	opts := []dynamodblease.Option{dynamodblease.WithTableName(tableName)}
 	if f.logger != nil {
 		opts = append(opts, dynamodblease.WithLogger(f.logger))
 	}
@@ -234,10 +237,11 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(ctx context.Context, cfg ports.Plu
 	if err != nil {
 		return nil, err
 	}
-	var opts []dynamodboutbox.Option
-	if dc.TableName != "" {
-		opts = append(opts, dynamodboutbox.WithTableName(dc.TableName))
+	tableName, err := ResolveDynamoDBTableName("outbox", dc.TableName)
+	if err != nil {
+		return nil, err
 	}
+	opts := []dynamodboutbox.Option{dynamodboutbox.WithTableName(tableName)}
 	if f.logger != nil {
 		opts = append(opts, dynamodboutbox.WithLogger(f.logger))
 	}
@@ -266,6 +270,28 @@ func (f *DynamoDBStoreFactory) NewOutboxStore(ctx context.Context, cfg ports.Plu
 	return store, nil
 }
 
+// NewManagedSubscriptionStore creates a dedicated exact-filter history and
+// verifies its one-hash-key schema before exposing it to the runtime.
+func (f *DynamoDBStoreFactory) NewManagedSubscriptionStore(ctx context.Context, cfg ports.PluginConfig) (ports.ManagedSubscriptionStore, error) { //nolint:ireturn // Factory port intentionally returns the narrow role interface.
+	dc, err := dynamoDBConfigFromOrZero(cfg)
+	if err != nil {
+		return nil, err
+	}
+	tableName, err := ResolveDynamoDBTableName("managed_subscriptions", dc.TableName)
+	if err != nil {
+		return nil, err
+	}
+	opts := []dynamodbmanagedsubscriptions.Option{dynamodbmanagedsubscriptions.WithTableName(tableName)}
+	if dc.OperationTimeout > 0 {
+		opts = append(opts, dynamodbmanagedsubscriptions.WithOperationTimeout(dc.OperationTimeout))
+	}
+	store := dynamodbmanagedsubscriptions.NewStore(f.client, opts...)
+	if err := f.preflight(ctx, store); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
 // NewDLQStore creates a DynamoDB-backed DLQ store from the typed config.
 // A positive retention enables item TTL on dead-letter entries; a
 // non-zero max_scan_pages overrides the default scan bound (negative
@@ -275,10 +301,11 @@ func (f *DynamoDBStoreFactory) NewDLQStore(ctx context.Context, cfg ports.Plugin
 	if err != nil {
 		return nil, err
 	}
-	var opts []dynamodbdlq.Option
-	if dc.TableName != "" {
-		opts = append(opts, dynamodbdlq.WithTableName(dc.TableName))
+	tableName, err := ResolveDynamoDBTableName("dlq", dc.TableName)
+	if err != nil {
+		return nil, err
 	}
+	opts := []dynamodbdlq.Option{dynamodbdlq.WithTableName(tableName)}
 	if f.logger != nil {
 		opts = append(opts, dynamodbdlq.WithLogger(f.logger))
 	}

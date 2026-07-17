@@ -20,7 +20,7 @@ import (
 
 // metricsBuild synthesizes a base construct with the given bootstrap so the
 // metrics tests can toggle MetricsExporter independently of t20BaseBootstrap.
-func metricsBuild(t *testing.T, boot infra.BootstrapConfig) awscdk.Stack {
+func metricsBuild(t *testing.T, boot infra.BootstrapConfig, memoryMiB ...float64) awscdk.Stack {
 	t.Helper()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -28,14 +28,18 @@ func metricsBuild(t *testing.T, boot infra.BootstrapConfig) awscdk.Stack {
 	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
 		&cdkconstructs.GoBridgeEfsConfigProps{Vpc: vpc})
 	src := source.NewAsset(t20BaseWriteYAML(t, t20BaseSampleYAML))
-	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
+	props := &gobridgebase.Props{
 		Mode:      gobridgebase.ModeControl,
 		Vpc:       vpc,
 		EfsConfig: efs,
 		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
 		Bootstrap: boot,
 		Source:    src,
-	})
+	}
+	if len(memoryMiB) > 0 {
+		props.MemoryMiB = &memoryMiB[0]
+	}
+	gobridgebase.New(stack, jsii.String("Bridge"), props)
 	return stack
 }
 
@@ -103,7 +107,7 @@ func TestBase_Metrics_EnvPlumbing(t *testing.T) {
 	boot.MetricsExporter = infra.MetricsExporterCloudWatch
 	boot.MetricsNamespace = "Acme/Bridge"
 	boot.InstanceID = "control-0"
-	stack := metricsBuild(t, boot)
+	stack := metricsBuild(t, boot, 2048)
 	tpl := assertions.Template_FromStack(stack, nil)
 
 	main := t20BaseMainContainer(t, t20BaseFindTaskDef(t, tpl))
@@ -113,6 +117,7 @@ func TestBase_Metrics_EnvPlumbing(t *testing.T) {
 		`"metrics_exporter":"cloudwatch"`,
 		`"metrics_namespace":"Acme/Bridge"`,
 		`"instance_id":"control-0"`,
+		`"container_memory_bytes":2147483648`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("bootstrap JSON env missing %s; got %s", want, got)

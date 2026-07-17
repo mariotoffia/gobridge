@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -17,6 +19,68 @@ func sessionSpecFrom(def ports.SessionDef) ports.SessionSpec {
 		SessionMode: connectivity.SessionMode(def.SessionMode),
 		Config:      def.Config,
 	}
+}
+
+func sessionSpecWithManagedSubscriptions(def ports.SessionDef, cfg *ports.BridgeConfig, store ports.ManagedSubscriptionStore) (ports.SessionSpec, error) {
+	spec := sessionSpecFrom(def)
+	mode := connectivity.SessionMode(def.SessionMode)
+	if !isMQTTPahoTransport(def.Transport) || (mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+		return spec, nil
+	}
+	// A configured store is also injected for an EMPTY desired plan: this is
+	// how a replacement removes filters remembered by the prior runtime. With
+	// no desired subscriptions and no store there is no managed ownership.
+	if !sessionHasDesiredSubscriptions(cfg, def.ID) && store == nil {
+		return spec, nil
+	}
+	if store == nil {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session with desired subscriptions requires stores.managed_subscriptions")
+	}
+	identityConfig, ok := def.Config.(ports.DurableSessionIdentityConfig)
+	if !ok || ports.IsNilPluginConfig(def.Config) {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session config does not expose a durable storage identity")
+	}
+	identity, err := identityConfig.DurableSessionIdentity(mode)
+	if err != nil {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: derive managed subscription storage identity: %w", err)
+	}
+	if identity == "" {
+		return ports.SessionSpec{}, fmt.Errorf("bridge: managed subscription storage identity is empty")
+	}
+	spec.ManagedSubscriptionStore = store
+	spec.ManagedSubscriptionIdentity = identity
+	spec.ManagedSubscriptionsRequired = true
+	return spec, nil
+}
+
+func isMQTTPahoTransport(kind string) bool {
+	return kind == "mqtt" || kind == "mqtt.paho"
+}
+
+func sessionHasDesiredSubscriptions(cfg *ports.BridgeConfig, sessionID string) bool {
+	if cfg == nil {
+		return false
+	}
+	for i := range cfg.Receivers {
+		if cfg.Receivers[i].SessionID == sessionID && len(cfg.Receivers[i].Topics) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func requiresManagedSubscriptionStore(cfg *ports.BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	for i := range cfg.Sessions {
+		def := &cfg.Sessions[i]
+		mode := connectivity.SessionMode(def.SessionMode)
+		if isMQTTPahoTransport(def.Transport) && (mode == connectivity.SessionPersistent || mode == connectivity.SessionExclusive) && sessionHasDesiredSubscriptions(cfg, def.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 // receiverSpecFrom converts a ports.ReceiverDef to a ports.ReceiverSpec.
@@ -59,7 +123,8 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // per-subscription Config on both the spec and the reconcile plan.
 //
 // It is computed deterministically from the config (receiver declaration
-// order) and independent of which route triggers it, so every route
+// order for subscriptions; sorted, deduplicated receiver IDs) and independent
+// of which route triggers it, so every route
 // sharing the session derives an identical plan. That keeps the runtime's
 // first-wins session-manager dedup (runtime/bridge_start.go) safe:
 // whichever route's sessCfg the manager is built from carries the same
@@ -92,15 +157,22 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 		return connectivity.SessionPlan{}
 	}
 	var subs []connectivity.SubscriptionPlan
+	receiverIDs := make(map[string]struct{})
 	for i := range cfg.Receivers {
 		rd := cfg.Receivers[i]
 		if rd.SessionID != sessionID {
 			continue
 		}
+		receiverIDs[rd.ID] = struct{}{}
 		// Reuse the exact receiverSpecFrom mapping so the spec and the
 		// reconcile plan never drift.
 		subs = append(subs, receiverSpecFrom(rd).Subscriptions...)
 	}
+	expectedReceiverIDs := make([]string, 0, len(receiverIDs))
+	for id := range receiverIDs {
+		expectedReceiverIDs = append(expectedReceiverIDs, id)
+	}
+	sort.Strings(expectedReceiverIDs)
 	var pubs []connectivity.PublisherPlan
 	// kept records, per exchange name, the FIRST sender that declared it so a
 	// later sibling naming the same exchange can be compared against it.
@@ -146,7 +218,11 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 		kept[topic] = keptPublisher{senderID: sd.ID, decl: decl}
 		pubs = append(pubs, connectivity.PublisherPlan{Topic: topic, Config: sd.Config})
 	}
-	return connectivity.SessionPlan{Subscriptions: subs, Publishers: pubs}
+	return connectivity.SessionPlan{
+		Subscriptions:       subs,
+		Publishers:          pubs,
+		ExpectedReceiverIDs: expectedReceiverIDs,
+	}
 }
 
 // Package bridge specs.go intentionally omits a StoreSpec converter:

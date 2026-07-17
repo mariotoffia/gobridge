@@ -58,6 +58,7 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 
 	validateStaleClaimDuration(ve, cfg)
 	validateSessionRenewTiming(ve, cfg)
+	validateFailoverFields(ve, cfg)
 	validateConnectLeaseBudget(ve, cfg)
 	validateClusterEndpoints(ve, cfg)
 	validateClusteredExclusiveHTTPDirectHold(ve, cfg)
@@ -70,6 +71,29 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 // "clustered" OR a static cluster.endpoints override is present. The config-layer
 // cluster rules use it so they reject exactly the set the runtime treats as
 // clustered.
+func validateFailoverFields(ve *ValidationError, cfg *ports.BridgeConfig) {
+	const maxStartupAllowance = 10 * time.Minute
+	for _, route := range cfg.Routes {
+		if route.Session == nil {
+			continue
+		}
+		if raw := route.Session.FailoverSLO; raw != "" {
+			duration, err := time.ParseDuration(raw)
+			if err != nil || duration <= 0 {
+				ve.Addf("routes[%s].session.failover_slo: must be a positive duration, got %q", route.ID, raw)
+			}
+		}
+		if raw := route.Session.StartupAllowance; raw != "" {
+			duration, err := time.ParseDuration(raw)
+			if err != nil || duration < 0 {
+				ve.Addf("routes[%s].session.startup_allowance: must be a non-negative duration, got %q", route.ID, raw)
+			} else if duration > maxStartupAllowance {
+				ve.Addf("routes[%s].session.startup_allowance: %s exceeds maximum %s", route.ID, duration, maxStartupAllowance)
+			}
+		}
+	}
+}
+
 func deploymentIsClustered(cfg *ports.BridgeConfig) bool {
 	if cfg.Bridge.DeploymentMode == "clustered" {
 		return true

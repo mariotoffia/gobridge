@@ -83,12 +83,12 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 	return granted, nil
 }
 
-func (f *fakeReconcileConn) Unsubscribe(_ context.Context, topics []string) error {
+func (f *fakeReconcileConn) Unsubscribe(_ context.Context, topics []string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unsubCalls++
 	f.unsubTopics = append(f.unsubTopics, append([]string(nil), topics...))
-	return nil
+	return make([]byte, len(topics)), nil
 }
 
 func (f *fakeReconcileConn) PublishEnvelope(

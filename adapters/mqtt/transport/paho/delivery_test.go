@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -104,4 +107,21 @@ func TestDelivery_ExtendNotSupported(t *testing.T) {
 	if !errors.Is(err, shared.ErrNotSupported) {
 		t.Errorf("Extend() = %v, want ErrNotSupported", err)
 	}
+}
+
+func TestDeliveryDisposition_RetryAndAckAreMutuallyExclusive(t *testing.T) {
+	var ackCalls atomic.Int32
+	var retryCalls atomic.Int32
+	del := NewDelivery(
+		messaging.MustEnvelope(messaging.EnvelopeInput{ID: "delivery-1"}),
+		WithAckFunc(func() error { ackCalls.Add(1); return nil }),
+		WithRetryFunc(func(context.Context) error { retryCalls.Add(1); return nil }),
+	)
+
+	require.NoError(t, del.Retry(t.Context(), time.Second, errors.New("transient")))
+	require.NoError(t, del.Retry(t.Context(), time.Second, errors.New("duplicate")))
+	require.NoError(t, del.Ack(t.Context()))
+
+	assert.Equal(t, int32(1), retryCalls.Load())
+	assert.Zero(t, ackCalls.Load())
 }

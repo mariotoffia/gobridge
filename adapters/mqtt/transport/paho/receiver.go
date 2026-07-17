@@ -118,7 +118,11 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			)
 		}
 
-		del := NewDelivery(env, WithAckFunc(ack))
+		deliveryOpts := []DeliveryOption{WithAckFunc(ack)}
+		if ack != nil {
+			deliveryOpts = append(deliveryOpts, WithRetryFunc(r.session.requestRecovery))
+		}
+		del := NewDelivery(env, deliveryOpts...)
 		if err := emit(runCtx, del); err != nil {
 			if logging.DebugEnabled(r.logger) {
 				r.logger.Log(runCtx, logging.LevelDebug, "mqtt: emit error",

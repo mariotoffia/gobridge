@@ -129,6 +129,7 @@ func TestUC31_OutboxReplay_Exhaustion(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:       routing.DeliverySharedOutbox,
 			MaxReplayAttempts:  3,
+			ReplayBudget:       time.Millisecond,
 			OnPermanentFailure: routing.FailureDLQ,
 		},
 		Resolver: goruntime.NewStaticResolver(

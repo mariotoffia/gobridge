@@ -2,7 +2,9 @@ package paho
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -109,63 +111,91 @@ func TestC4_ShortSuback_ReconcileFails(t *testing.T) {
 	}
 }
 
-// TestC4_QoSDowngrade_EmittedOncePerTransition_NotReSubscribed pins
-// c4-qos-downgrade (session_reconcile.go / acl_session.go): when the broker
-// grants a LOWER QoS than requested, reconcile must (a) surface the downgrade
-// on MetricMQTTQoSDowngraded, and (b) store the REQUESTED QoS in activeSubs (its
-// delta baseline) so a STABLE downgraded subscription is NOT re-subscribed and
-// the downgrade signal fires ONCE per transition — not on every reconcile.
-//
-// Mutation A (the reviewer's MEDIUM, proven by storing the GRANTED QoS in
-// activeSubs instead of the requested QoS): the second reconcile sees
-// granted(0) != requested(1), re-subscribes (subCalls == 2) and re-fires the
-// metric (count == 2) → this test fails on both the subscribe-once and
-// metric-once assertions.
-// Mutation B (delete the downgrade-detection loop): the metric count is 0 on
-// the first reconcile → this test fails.
-func TestC4_QoSDowngrade_EmittedOncePerTransition_NotReSubscribed(t *testing.T) {
+// TestC4_QoSDowngrade_ReconcileFailsAndRemainsNonFull proves that a broker
+// grant below the requested QoS is not accepted as active session state.
+func TestC4_QoSDowngrade_ReconcileFailsAndRemainsNonFull(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	// Request QoS 1 but the broker grants QoS 0 (reason 0x00) — a downgrade.
+	logs := &recordingLogHandler{}
 	fake := &fakeReconcileConn{reasons: []byte{0x00}}
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "c4-downgrade",
-	}, connectivity.SessionEphemeral, nil, rec)
+	}, connectivity.SessionEphemeral, slog.New(logs), rec)
 	s.mu.Lock()
 	s.cm = fake
+	s.connected = true
+	emptyApplied := connectivity.SessionPlan{}
+	s.appliedPlan = &emptyApplied
 	s.mu.Unlock()
+	s.router.Register("rx-sensors", func(*pahov5.Publish) {})
 
 	plan := connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/x", QoS: 1}},
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: "sensors/x", QoS: 1}},
+		ExpectedReceiverIDs: []string{"rx-sensors"},
 	}
 
-	// First reconcile: subscribe, detect the downgrade, emit once.
-	if err := s.Reconcile(context.Background(), plan); err != nil {
-		t.Fatalf("first Reconcile: %v", err)
+	err := s.Reconcile(context.Background(), plan)
+	if err == nil {
+		t.Fatal("a SUBACK QoS grant below the requested QoS must fail reconcile")
 	}
-	// Second reconcile with the SAME plan on the SAME connection (no activeSubs
-	// reset between): the delta must be empty — no re-subscribe, no re-emit.
-	if err := s.Reconcile(context.Background(), plan); err != nil {
-		t.Fatalf("second Reconcile: %v", err)
+	if !errors.Is(err, shared.ErrQoSNotSupported) {
+		t.Fatalf("expected ErrQoSNotSupported, got %T: %v", err, err)
 	}
-
-	if got := fake.subscribeCallCount(); got != 1 {
-		t.Fatalf("c4-qos-downgrade: a stable downgraded sub must be subscribed ONCE (delta keyed off "+
-			"requested QoS), got %d Subscribe calls", got)
+	be, ok := shared.AsBridgeError(err)
+	if !ok {
+		t.Fatalf("expected classified *shared.BridgeError, got %T: %v", err, err)
+	}
+	if be.Context["topic"] != "sensors/x" || be.Context["requested_qos"] != 1 || be.Context["granted_qos"] != 0 {
+		t.Fatalf("downgrade error context = %v, want topic/requested/granted", be.Context)
 	}
 	if got := len(rec.FindEntries(MetricMQTTQoSDowngraded)); got != 1 {
-		t.Fatalf("c4-qos-downgrade: the downgrade must fire ONCE per transition, got %d %s metrics",
-			got, MetricMQTTQoSDowngraded)
+		t.Fatalf("downgrade metric count = %d, want 1", got)
 	}
-	// activeSubs stores the REQUESTED QoS (intent), keeping the delta stable.
 	s.mu.Lock()
-	req, ok := s.activeSubs["sensors/x"]
+	grant, observed := s.observedSubs["sensors/x"]
+	_, active := s.activeSubs["sensors/x"]
 	s.mu.Unlock()
-	if !ok {
-		t.Fatal("subscription must still be recorded active after a downgrade")
+	if !observed || grant.Requested != 1 || grant.Granted != 0 {
+		t.Fatalf("broker-observed grant = %+v, present=%v; want requested=1 granted=0", grant, observed)
 	}
-	if req != 1 {
-		t.Fatalf("activeSubs must store the REQUESTED QoS 1 (delta baseline), got %d", req)
+	if active {
+		t.Fatal("downgraded subscription must not be marked contract-active")
+	}
+	h := s.Health(context.Background())
+	if got := h.ServiceLevel; got == ports.ServiceLevelFull {
+		t.Fatalf("downgraded subscription health = %s, must remain non-Full", got)
+	}
+	if h.SubscriptionsSatisfied == nil || *h.SubscriptionsSatisfied {
+		t.Fatalf("downgraded subscription satisfaction = %v, want explicit false", h.SubscriptionsSatisfied)
+	}
+
+	// The broker-observed downgrade remains deficient, but a repeated reconcile
+	// must not issue another SUBSCRIBE or repeat the warning metric in a tight loop.
+	err = s.Reconcile(context.Background(), plan)
+	if !errors.Is(err, shared.ErrQoSNotSupported) {
+		t.Fatalf("repeated reconcile error = %v, want ErrQoSNotSupported", err)
+	}
+	if got := fake.subscribeCallCount(); got != 1 {
+		t.Fatalf("subscribe calls after unchanged retry = %d, want 1", got)
+	}
+	if got := len(rec.FindEntries(MetricMQTTQoSDowngraded)); got != 1 {
+		t.Fatalf("downgrade metric count after unchanged retry = %d, want 1", got)
+	}
+	if got := logs.warnCountContaining("downgraded subscription QoS"); got != 1 {
+		t.Fatalf("downgrade warning count after unchanged retry = %d, want 1", got)
+	}
+
+	// Removing the route must unsubscribe the broker-observed downgraded filter,
+	// even though it was never contract-active.
+	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
+		t.Fatalf("empty-plan cleanup reconcile: %v", err)
+	}
+	if got := fake.unsubscribeCallCount(); got != 1 {
+		t.Fatalf("cleanup unsubscribe calls = %d, want 1", got)
+	}
+	unsubscribed := fake.unsubscribedTopics()
+	if len(unsubscribed) != 1 || len(unsubscribed[0]) != 1 || unsubscribed[0][0] != "sensors/x" {
+		t.Fatalf("cleanup unsubscribed topics = %v, want [[sensors/x]]", unsubscribed)
 	}
 }
 

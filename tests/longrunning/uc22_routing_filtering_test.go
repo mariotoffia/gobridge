@@ -355,6 +355,7 @@ func TestUC25_FilterProcessor_90Percent_Drop(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:       routing.DeliveryDirectHold,
 			OnPermanentFailure: routing.FailureDLQ,
+			OnFiltered:         routing.FilteredDLQ,
 		},
 		Processors: []ports.Processor{filter},
 		Resolver: goruntime.NewStaticResolver(
@@ -408,6 +409,7 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 
 	// SQS-IN -> MQTT uc26/data (bridge 1 with 5 processors).
 	topic := "uc26/data"
+	chainCollector := newMQTTCollector(t, topic, "uc26-chain")
 	sess1 := setupMQTTSession(t, mqttlocal.UniqueClientID("uc26-b1"), connectivity.SessionEphemeral)
 	mqttSnd := setupMQTTSender(t, sess1)
 	sqsRx := newSQSReceiver(t, inURL)
@@ -451,12 +453,23 @@ func TestUC26_FiveStage_ProcessorChain(t *testing.T) {
 
 	expectedOrder := "p1,p2,p3,p4,p5"
 	for idx, m := range msgs {
+		order, ok := m.Attrs["chain_order"]
+		require.True(t, ok, "msg %d missing chain_order", idx)
+		require.Equal(t, expectedOrder, order, "msg %d chain_order", idx)
+	}
+
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("chain collector >= %d", msgCount), func() bool {
+		return chainCollector.count() >= msgCount
+	})
+	chainMessages := chainCollector.getMessages()
+	require.GreaterOrEqual(t, len(chainMessages), msgCount, "MQTT chain proof count")
+	for idx, m := range chainMessages[:msgCount] {
 		for _, s := range stages {
-			val, ok := m.Attrs["stage_"+s]
+			val, ok := m.Headers().GetString("stage_" + s)
 			require.True(t, ok, "msg %d missing stage_%s", idx, s)
 			require.Equal(t, "true", val, "msg %d stage_%s", idx, s)
 		}
-		order, ok := m.Attrs["chain_order"]
+		order, ok := m.Headers().GetString("chain_order")
 		require.True(t, ok, "msg %d missing chain_order", idx)
 		require.Equal(t, expectedOrder, order, "msg %d chain_order", idx)
 	}

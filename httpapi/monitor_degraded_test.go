@@ -76,3 +76,35 @@ func TestHandleDeepHealth_ConfigWatchProjection(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleDeepHealth_ConfigApplyProjection(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("dh-config-apply"))
+	cfg := testConfig()
+	desired, running := 7, 6
+	cfg.ConfigWatchProvider = func() ConfigWatchHealth {
+		return ConfigWatchHealth{
+			Degraded:           true,
+			Reason:             "config apply failed",
+			ReconfigurePending: true,
+			DesiredVersion:     &desired,
+			RunningVersion:     &running,
+			LastApplyError:     "runtime swap failed",
+		}
+	}
+	s := New(rt, cfg)
+
+	mux := http.NewServeMux()
+	s.registerMonitorRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/deephealth", nil)
+	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var body deepHealthResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.NotNil(t, body.ConfigWatch)
+	assert.True(t, body.ConfigWatch.ReconfigurePending)
+	assert.Equal(t, 7, *body.ConfigWatch.DesiredVersion)
+	assert.Equal(t, 6, *body.ConfigWatch.RunningVersion)
+	assert.Equal(t, "runtime swap failed", body.ConfigWatch.LastApplyError)
+}

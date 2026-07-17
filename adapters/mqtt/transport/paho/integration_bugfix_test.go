@@ -2,146 +2,178 @@ package paho_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/eclipse/paho.golang/autopaho"
+	pahov5 "github.com/eclipse/paho.golang/paho"
+
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/tests/testutil/prodid"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// ═══════════════════════════════════════════════════════════════════════════
-// BUG-3 Integration: Reconnect preserves subscriptions
-//
-// Verifies that after a session is established with subscriptions, a
-// reconnect (via Close + new session with same plan) delivers messages
-// on the previously subscribed topics.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// TestIntegration_ReconnectPreservesSubscriptions establishes a session
-// with subscriptions, publishes a message, verifies receipt, then creates
-// a new session (simulating reconnect) and verifies messages still arrive.
-func TestIntegration_ReconnectPreservesSubscriptions(t *testing.T) {
-	url := mqttlocal.BrokerURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// TestIntegration_PersistentSessionQueuedQoS1AndQoS2 proves broker-side
+// Session Present functionally. A persistent subscription is established,
+// its client goes offline, QoS 1 and QoS 2 messages are accepted and queued,
+// Mosquitto persists them across a restart, and a new Session using the same
+// effective ClientID receives both without creating a different broker session.
+func TestIntegration_PersistentSessionQueuedQoS1AndQoS2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("persistent broker restart integration test")
+	}
+	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
+	brokerURL := broker.URL()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	topic := fmt.Sprintf("bug3/integ/%d", time.Now().UnixNano())
-	clientID := mqttlocal.UniqueClientID("bug3-recon")
-
-	// --- Phase 1: Establish session, subscribe, verify pub/sub ---
-	sess1 := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:     []string{url},
-		ClientID:       clientID,
-		KeepAlive:      10,
-		ConnectTimeout: 5 * time.Second,
-		CleanStart:     true,
-	}, connectivity.SessionEphemeral, nil)
-
-	if err := sess1.Start(ctx); err != nil {
-		t.Fatalf("Start sess1: %v", err)
-	}
-
-	drainEvent(t, sess1)
-
+	clientID := mqttlocal.UniqueClientID("task14-persistent")
+	topicPrefix := "task14/session-present/" + mqttlocal.UniqueClientID("topic")
+	topicQoS1 := topicPrefix + "/qos1"
+	topicQoS2 := topicPrefix + "/qos2"
 	plan := connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: topic, QoS: 1},
+			{Topic: topicQoS1, QoS: 1},
+			{Topic: topicQoS2, QoS: 2},
 		},
 	}
-	if err := sess1.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("Reconcile sess1: %v", err)
+	expected := []string{"producer-qos1", "producer-qos2"}
+	accountant, err := prodid.New(expected, false)
+	if err != nil {
+		t.Fatalf("new producer accountant: %v", err)
 	}
-	waitSubActive(t, sess1, 5*time.Second)
 
-	recv1 := paho.NewReceiver("rx-bug3-1", sess1)
-	sender1 := paho.NewSender(sess1, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
+	first := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:            []string{brokerURL},
+		ClientID:              clientID,
+		KeepAlive:             5,
+		ConnectTimeout:        10 * time.Second,
+		CleanStart:            false,
+		SessionExpiryInterval: 300,
+	}, connectivity.SessionPersistent, nil)
+	if err := first.Start(ctx); err != nil {
+		t.Fatalf("start first persistent session: %v", err)
+	}
+	if err := first.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("reconcile first persistent session: %v", err)
+	}
+	waitSubActive(t, first, 10*time.Second)
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("take first persistent session offline: %v", err)
+	}
 
-	var received1 atomic.Int32
-	recvCtx1, recvCancel1 := context.WithCancel(ctx)
-	var wg1 sync.WaitGroup
-	wg1.Add(1)
+	publishQueuedQoS(t, ctx, brokerURL, topicQoS1, topicQoS2, expected)
+	broker.StopGraceful()
+	broker.RestartGraceful()
+
+	second := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:            []string{brokerURL},
+		ClientID:              clientID,
+		KeepAlive:             5,
+		ConnectTimeout:        10 * time.Second,
+		CleanStart:            false,
+		SessionExpiryInterval: 300,
+	}, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { _ = second.Close(context.Background()) })
+	if err := second.Start(ctx); err != nil {
+		t.Fatalf("resume persistent session: %v", err)
+	}
+	if err := second.Reconcile(ctx, plan); err != nil {
+		t.Fatalf("reconcile resumed persistent session: %v", err)
+	}
+
+	receiver := paho.NewReceiver("task14-resumed-receiver", second)
+	runCtx, stopReceiver := context.WithCancel(ctx)
+	runDone := make(chan error, 1)
 	go func() {
-		defer wg1.Done()
-		_ = recv1.Run(recvCtx1, func(ctx context.Context, del ports.Delivery) error {
-			received1.Add(1)
-			return del.Ack(ctx) // settle like the runtime does
+		runDone <- receiver.Run(runCtx, func(ctx context.Context, delivery ports.Delivery) error {
+			envelope := delivery.Envelope()
+			key, _ := messaging.GetHeaderString(envelope.Headers(), paho.HeaderMessageID)
+			accountant.ObserveOutput(key, envelope.ID())
+			return delivery.Ack(ctx)
 		})
 	}()
-
-	if err := sender1.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
-		Subject: topic,
-		Payload: []byte("phase1-msg"),
-	}), Address: topic}); err != nil {
-		t.Fatalf("Send phase1: %v", err)
-	}
-
-	waitForCondition(t, 5*time.Second, "phase1 message", func() bool {
-		return received1.Load() >= 1
+	wait.RequireClosed(t, receiver.Started(), 5*time.Second)
+	wait.Until(t, 15*time.Second, "queued QoS 1/2 delivery from resumed broker session", func() bool {
+		return len(accountant.Reconcile().Missing) == 0
 	})
 
-	recvCancel1()
-	wg1.Wait()
-
-	if err := sess1.Close(ctx); err != nil {
-		t.Fatalf("Close sess1: %v", err)
+	health := second.Health(ctx)
+	if !health.Connected || health.SubscriptionsSatisfied == nil || !*health.SubscriptionsSatisfied {
+		t.Fatalf("resumed session health does not show current reconcile evidence: %+v", health)
+	}
+	if health.ServiceLevel != ports.ServiceLevelFull {
+		t.Fatalf("resumed session service level = %s, want %s", health.ServiceLevel, ports.ServiceLevelFull)
+	}
+	report := accountant.Reconcile()
+	if !report.Exact() || len(report.DLQ) != 0 || len(report.IntentionallyDropped) != 0 {
+		t.Fatalf("queued persistent-session accounting failed: %s", report.String())
 	}
 
-	// --- Phase 2: New session (simulating reconnect), reapply plan ---
-	sess2 := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:     []string{url},
-		ClientID:       mqttlocal.UniqueClientID("bug3-recon2"),
-		KeepAlive:      10,
-		ConnectTimeout: 5 * time.Second,
-		CleanStart:     true,
-	}, connectivity.SessionEphemeral, nil)
-
-	if err := sess2.Start(ctx); err != nil {
-		t.Fatalf("Start sess2: %v", err)
+	stopReceiver()
+	if err := <-runDone; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("resumed receiver stopped with error: %v", err)
 	}
-	defer func() { _ = sess2.Close(ctx) }()
+}
 
-	drainEvent(t, sess2)
-
-	if err := sess2.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("Reconcile sess2: %v", err)
+func publishQueuedQoS(
+	t *testing.T,
+	ctx context.Context,
+	brokerURL, topicQoS1, topicQoS2 string,
+	producerKeys []string,
+) {
+	t.Helper()
+	endpoint, err := url.Parse(brokerURL)
+	if err != nil {
+		t.Fatalf("parse broker URL: %v", err)
 	}
-	waitSubActive(t, sess2, 5*time.Second)
-
-	recv2 := paho.NewReceiver("rx-bug3-2", sess2)
-	sender2 := paho.NewSender(sess2, paho.SenderOptions{QoS: 1, Timeout: 5 * time.Second})
-
-	var received2 atomic.Int32
-	recvCtx2, recvCancel2 := context.WithCancel(ctx)
-	var wg2 sync.WaitGroup
-	wg2.Add(1)
-	go func() {
-		defer wg2.Done()
-		_ = recv2.Run(recvCtx2, func(ctx context.Context, del ports.Delivery) error {
-			received2.Add(1)
-			return del.Ack(ctx) // settle like the runtime does
+	publisher, err := autopaho.NewConnection(ctx, autopaho.ClientConfig{
+		ServerUrls:                    []*url.URL{endpoint},
+		KeepAlive:                     10,
+		CleanStartOnInitialConnection: true,
+		ClientConfig: pahov5.ClientConfig{
+			ClientID: mqttlocal.UniqueClientID("task14-offline-publisher"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create offline-queue publisher: %v", err)
+	}
+	defer func() { _ = publisher.Disconnect(context.Background()) }()
+	if err := publisher.AwaitConnection(ctx); err != nil {
+		t.Fatalf("connect offline-queue publisher: %v", err)
+	}
+	for i, spec := range []struct {
+		topic string
+		qos   byte
+		key   string
+	}{
+		{topic: topicQoS1, qos: 1, key: producerKeys[0]},
+		{topic: topicQoS2, qos: 2, key: producerKeys[1]},
+	} {
+		response, err := publisher.Publish(ctx, &pahov5.Publish{
+			Topic:   spec.topic,
+			QoS:     spec.qos,
+			Payload: []byte("queued-" + spec.key),
+			Properties: &pahov5.PublishProperties{User: pahov5.UserProperties{
+				{Key: paho.HeaderMessageID, Value: spec.key},
+			}},
 		})
-	}()
-
-	if err := sender2.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
-		Subject: topic,
-		Payload: []byte("phase2-msg"),
-	}), Address: topic}); err != nil {
-		t.Fatalf("Send phase2: %v", err)
+		if err != nil {
+			t.Fatalf("publish queued message %d at QoS %d: %v", i, spec.qos, err)
+		}
+		if response == nil || response.ReasonCode >= 0x80 {
+			t.Fatalf("publish queued message %d PUBACK/PUBREC = %#v", i, response)
+		}
 	}
-
-	waitForCondition(t, 5*time.Second, "phase2 message", func() bool {
-		return received2.Load() >= 1
-	})
-
-	recvCancel2()
-	wg2.Wait()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -232,8 +264,9 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 		return ok
 	})
 
-	// NEGATIVE: assert topicA does NOT arrive.
-	<-time.After(500 * time.Millisecond)
+	// Both QoS 1 publishes use one connection. MQTT preserves their packet
+	// order, so observing topicB is the barrier for the earlier topicA publish;
+	// no negative-delay window is needed.
 
 	recvCancel()
 	wg.Wait()

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 )
@@ -24,57 +25,88 @@ import (
 // SandboxEnv captures the resolved environment used to build a CDK
 // app that targets a real AWS sandbox account.
 type SandboxEnv struct {
-	Account     string
-	Region      string
-	VpcID       string
-	SubnetIDs   []string
-	StackPrefix string
-	Keep        bool
+	Account           string
+	Region            string
+	VpcID             string
+	AvailabilityZones []string
+	SubnetIDs         []string
+	PublicSubnetIDs   []string
+	StackPrefix       string
+	Keep              bool
 }
 
-// RequireSandbox reads the GOBRIDGE_INT_* env vars and t.Skips when
-// any required one is missing. It never calls t.Fatal so the default
-// `go test` invocation under the build tag can be exercised in CI
-// without any AWS credentials and still report green.
+// RequireSandbox reads the GOBRIDGE_INT_* env vars. Ordinary tagged tests
+// retain the existing explicit skip when sandbox configuration is absent. When
+// GOBRIDGE_INT_HA=1 requests credentialed release proof, missing base variables
+// fail instead, so the requested proof cannot silently pass by skipping.
 func RequireSandbox(t *testing.T) SandboxEnv {
 	t.Helper()
-	required := map[string]string{
-		"GOBRIDGE_INT_AWS_ACCOUNT": os.Getenv("GOBRIDGE_INT_AWS_ACCOUNT"),
-		"GOBRIDGE_INT_AWS_REGION":  os.Getenv("GOBRIDGE_INT_AWS_REGION"),
-		"GOBRIDGE_INT_VPC_ID":      os.Getenv("GOBRIDGE_INT_VPC_ID"),
-		"GOBRIDGE_INT_SUBNET_IDS":  os.Getenv("GOBRIDGE_INT_SUBNET_IDS"),
+	env, err := sandboxEnvFrom(os.Getenv)
+	if err != nil {
+		if os.Getenv("GOBRIDGE_INT_HA") == "1" {
+			t.Fatalf("GOBRIDGE_INT_HA=1 requested credentialed proof but sandbox configuration is invalid: %v", err)
+		}
+		t.Skipf("integration sandbox env not configured: %v", err)
 	}
-	var missing []string
-	for k, v := range required {
-		if strings.TrimSpace(v) == "" {
-			missing = append(missing, k)
+	return env
+}
+
+func sandboxEnvFrom(getenv func(string) string) (SandboxEnv, error) {
+	requiredNames := []string{
+		"GOBRIDGE_INT_AWS_ACCOUNT", "GOBRIDGE_INT_AWS_REGION", "GOBRIDGE_INT_VPC_ID",
+		"GOBRIDGE_INT_AVAILABILITY_ZONES", "GOBRIDGE_INT_SUBNET_IDS", "GOBRIDGE_INT_PUBLIC_SUBNET_IDS",
+	}
+	values := make(map[string]string, len(requiredNames))
+	missing := make([]string, 0)
+	for _, name := range requiredNames {
+		values[name] = strings.TrimSpace(getenv(name))
+		if values[name] == "" {
+			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
-		t.Skipf("integration sandbox env not configured; missing: %s", strings.Join(missing, ", "))
+		return SandboxEnv{}, fmt.Errorf("missing: %s", strings.Join(missing, ", "))
 	}
-
-	prefix := os.Getenv("GOBRIDGE_INT_STACK_PREFIX")
+	parseList := func(name string) ([]string, error) {
+		parts := strings.Split(values[name], ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+			if parts[i] == "" {
+				return nil, fmt.Errorf("%s contains an empty item", name)
+			}
+		}
+		return parts, nil
+	}
+	zones, err := parseList("GOBRIDGE_INT_AVAILABILITY_ZONES")
+	if err != nil {
+		return SandboxEnv{}, err
+	}
+	privateSubnets, err := parseList("GOBRIDGE_INT_SUBNET_IDS")
+	if err != nil {
+		return SandboxEnv{}, err
+	}
+	publicSubnets, err := parseList("GOBRIDGE_INT_PUBLIC_SUBNET_IDS")
+	if err != nil {
+		return SandboxEnv{}, err
+	}
+	if len(zones) != len(privateSubnets) || len(zones) != len(publicSubnets) {
+		return SandboxEnv{}, fmt.Errorf("GOBRIDGE_INT_AVAILABILITY_ZONES, GOBRIDGE_INT_SUBNET_IDS, and GOBRIDGE_INT_PUBLIC_SUBNET_IDS must contain the same number of ordered items")
+	}
+	prefix := strings.TrimSpace(getenv("GOBRIDGE_INT_STACK_PREFIX"))
 	if prefix == "" {
 		prefix = "gobridge-it"
 	}
-	subnets := strings.Split(required["GOBRIDGE_INT_SUBNET_IDS"], ",")
-	for i := range subnets {
-		subnets[i] = strings.TrimSpace(subnets[i])
-	}
 	return SandboxEnv{
-		Account:     required["GOBRIDGE_INT_AWS_ACCOUNT"],
-		Region:      required["GOBRIDGE_INT_AWS_REGION"],
-		VpcID:       required["GOBRIDGE_INT_VPC_ID"],
-		SubnetIDs:   subnets,
-		StackPrefix: prefix,
-		Keep:        os.Getenv("GOBRIDGE_INT_KEEP") == "1",
-	}
+		Account: values["GOBRIDGE_INT_AWS_ACCOUNT"], Region: values["GOBRIDGE_INT_AWS_REGION"],
+		VpcID: values["GOBRIDGE_INT_VPC_ID"], AvailabilityZones: zones,
+		SubnetIDs: privateSubnets, PublicSubnetIDs: publicSubnets,
+		StackPrefix: prefix, Keep: strings.TrimSpace(getenv("GOBRIDGE_INT_KEEP")) == "1",
+	}, nil
 }
 
 // NewApp returns a CDK App configured with the sandbox env so
-// stacks created under it inherit Account/Region without further
-// wiring.
+// stacks created under it inherit Account/Region without further wiring.
+// VPC placement uses explicit attributes and needs no context provider.
 func NewApp(t *testing.T, env SandboxEnv) awscdk.App {
 	t.Helper()
 	return awscdk.NewApp(&awscdk.AppProps{
@@ -85,7 +117,7 @@ func NewApp(t *testing.T, env SandboxEnv) awscdk.App {
 }
 
 // StackEnv builds the CDK env struct used on every stack so
-// FromLookup helpers (VPC, etc.) resolve at synth time.
+// Explicit imported VPC attributes are bound to this same environment.
 func StackEnv(env SandboxEnv) *awscdk.Environment {
 	return &awscdk.Environment{
 		Account: jsii.String(env.Account),
@@ -106,6 +138,9 @@ func StackName(env SandboxEnv, scenario string) string {
 // jsii callback registration required by IAspect.
 func ApplyDestroyAspect(stack awscdk.Stack) {
 	walkConstructs(stack.Node(), func(node constructs.IConstruct) {
+		if table, ok := node.(awsdynamodb.CfnTable); ok {
+			table.SetDeletionProtectionEnabled(false)
+		}
 		if cfn, ok := node.(awscdk.CfnResource); ok {
 			cfn.ApplyRemovalPolicy(awscdk.RemovalPolicy_DESTROY, nil)
 		}

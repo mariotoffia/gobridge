@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [
+    {"path": ".", "layer": 0},
+
+    {"path": "adapters/amqp/transport/amqp091", "layer": 1},
+    {"path": "adapters/amqp/transport/amqp10", "layer": 1},
+    {"path": "adapters/aws/config/dynamodb", "layer": 1},
+    {"path": "adapters/aws/credentials/ssm", "layer": 1},
+    {"path": "adapters/aws/metrics/cloudwatch", "layer": 1},
+    {"path": "adapters/aws/store/dynamodbdlq", "layer": 1},
+    {"path": "adapters/aws/store/dynamodblease", "layer": 1},
+    {"path": "adapters/aws/store/dynamodbmanagedsubscriptions", "layer": 1},
+    {"path": "adapters/aws/store/dynamodboutbox", "layer": 1},
+    {"path": "adapters/aws/transport/sqs", "layer": 1},
+    {"path": "adapters/azure/transport/servicebus", "layer": 1},
+    {"path": "adapters/mqtt/transport/paho", "layer": 1},
+    {"path": "adapters/native/config/file", "layer": 1},
+    {"path": "adapters/native/credentials/file", "layer": 1},
+    {"path": "adapters/native/store/memorydlq", "layer": 1},
+    {"path": "adapters/native/store/memorylease", "layer": 1},
+    {"path": "adapters/native/store/memoryoutbox", "layer": 1},
+    {"path": "adapters/native/store/sqlitedlq", "layer": 1},
+    {"path": "adapters/native/store/sqlitemanagedsubscriptions", "layer": 1},
+    {"path": "adapters/native/store/sqliteoutbox", "layer": 1},
+    {"path": "adapters/otel/metrics", "layer": 1},
+    {"path": "adapters/otel/tracing", "layer": 1},
+    {"path": "processors/circuitbreaker", "layer": 1},
+    {"path": "processors/filter", "layer": 1},
+    {"path": "processors/tenant", "layer": 1},
+    {"path": "processors/transform", "layer": 1},
+
+    {"path": "adapters/aws/store", "layer": 2},
+    {"path": "adapters/native/store", "layer": 2},
+    {"path": "httpapi", "layer": 2},
+
+    {"path": "cmd/gobridge", "layer": 3}
+  ],
+  "bootstrap_modules": [
+    "testutil/artemislocal",
+    "testutil/asblocal",
+    "testutil/ddblocal",
+    "testutil/localstack",
+    "testutil/rabbitmqlocal",
+    "testutil/wait"
+  ]
+}

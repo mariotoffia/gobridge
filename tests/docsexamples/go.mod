@@ -9,6 +9,7 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/aws/store => ../../adapters/aws/store
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../adapters/aws/store/dynamodbdlq
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../adapters/aws/store/dynamodblease
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ../../adapters/aws/store/dynamodbmanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../adapters/aws/store/dynamodboutbox
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
 	github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus => ../../adapters/azure/transport/servicebus
@@ -18,6 +19,7 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../adapters/native/store/sqlitedlq
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 	github.com/mariotoffia/gobridge/testutil/artemislocal => ../../testutil/artemislocal
 	github.com/mariotoffia/gobridge/testutil/asblocal => ../../testutil/asblocal
@@ -74,11 +76,13 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

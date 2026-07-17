@@ -168,7 +168,9 @@ func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	t.Log("UC60: restarting broker")
 	broker.RestartGraceful()
 
-	// Black-box readiness: probe proves the pipeline is operational.
+	// Wait for reconnect before giving the black-box data-path probe its own
+	// deadline; loaded suites can spend most of that deadline reconnecting.
+	gobridgesync(t, 60*time.Second, rt)
 	sendProbe(t, sqsInClient, sqsInURL, collector, 30*time.Second)
 
 	lrWaitFor(t, 180*time.Second, fmt.Sprintf("unique >= %d after restart", msgCount), func() bool {

@@ -443,15 +443,20 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	for i, snap := range sessSnaps {
 		sh := sessHealth[i]
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
-			SessionID:           snap.sid,
-			Connected:           sh.Connected,
-			HasLease:            snap.hasLease,
-			ConnectAfterLease:   snap.connectAfterLease,
-			SubscriptionsWanted: sh.SubscriptionsWanted,
-			SubscriptionsActive: sh.SubscriptionsActive,
-			ActiveTopics:        sh.ActiveTopics,
-			Ready:               sh.Ready,
-			ServiceLevel:        sh.ServiceLevel,
+			SessionID:                snap.sid,
+			Connected:                sh.Connected,
+			HasLease:                 snap.hasLease,
+			ConnectAfterLease:        snap.connectAfterLease,
+			SubscriptionsWanted:      sh.SubscriptionsWanted,
+			SubscriptionsActive:      sh.SubscriptionsActive,
+			SubscriptionsSatisfied:   sh.SubscriptionsSatisfied,
+			ActiveTopics:             sh.ActiveTopics,
+			Ready:                    sh.Ready,
+			ServiceLevel:             sh.ServiceLevel,
+			UnsettledCount:           sh.UnsettledCount,
+			OldestUnsettledAge:       sh.OldestUnsettledAge,
+			ReceiveWindowUtilization: sh.ReceiveWindowUtilization,
+			RecoveryRecycleCount:     sh.RecoveryRecycleCount,
 		})
 		// A deferred-connect standby's source session intentionally stays
 		// disconnected until this instance wins the lease; excluding it from the
@@ -579,7 +584,7 @@ func isClosed(ch <-chan struct{}) bool {
 // QuiescenceOptions controls WaitQuiescent behaviour.
 type QuiescenceOptions struct {
 	Routes   []string      // only watch these routes (empty = all)
-	MinQuiet time.Duration // how long all routes must stay at zero in-flight
+	MinQuiet time.Duration // zero defaults to 50ms; negative returns on the first all-zero snapshot
 	Timeout  time.Duration // overall deadline (0 = rely on ctx)
 }
 
@@ -594,6 +599,7 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 	}
+	noQuietWindow := opts.MinQuiet < 0
 	if opts.MinQuiet == 0 {
 		opts.MinQuiet = 50 * time.Millisecond
 	}
@@ -621,6 +627,9 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		rt.mu.Unlock()
 
 		if allZero {
+			if noQuietWindow {
+				return nil
+			}
 			if quietSince.IsZero() {
 				quietSince = rt.clk.Now()
 			}
@@ -635,6 +644,9 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		// the remaining window; otherwise fall back to MinQuiet so we
 		// re-check on routes that never fire an idle transition.
 		sanity := opts.MinQuiet
+		if noQuietWindow {
+			sanity = 50 * time.Millisecond
+		}
 		if !quietSince.IsZero() {
 			sanity = opts.MinQuiet - rt.clk.Since(quietSince)
 			if sanity <= 0 {

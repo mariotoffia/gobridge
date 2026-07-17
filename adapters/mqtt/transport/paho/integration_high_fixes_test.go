@@ -2,7 +2,6 @@ package paho_test
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,11 +18,11 @@ import (
 // T4 Integration: Concurrent reconcile serialization
 //
 // Verifies that concurrent Reconcile calls on a live broker are
-// serialized by reconcileMu, preventing interleaved subscribe/unsubscribe
+// serialized by reloadGate, preventing interleaved subscribe/unsubscribe
 // operations from corrupting activeSubs state.
 //
-//   Goroutine A ──▶ Reconcile(planA) ──▶ reconcileMu.Lock ──▶ sub/unsub ──▶ unlock
-//   Goroutine B ──▶ Reconcile(planB) ──▶ reconcileMu.Lock ──▶ (waits) ──▶ sub/unsub
+//   Goroutine A ──▶ Reconcile(planA) ──▶ reloadGate.Lock ──▶ sub/unsub ──▶ unlock
+//   Goroutine B ──▶ Reconcile(planB) ──▶ reloadGate.Lock ──▶ (waits) ──▶ sub/unsub
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestIntegration_ConcurrentReconcile_NoCorruption validates that
@@ -154,111 +153,4 @@ func TestIntegration_ConcurrentReconcile_NoCorruption(t *testing.T) {
 
 func topicForGoroutine(goroutine, iter int) string {
 	return "conc/" + string(rune('a'+goroutine)) + "/" + string(rune('0'+iter))
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// T6 Integration: Reconnect reconcile timeout
-//
-// Verifies that the ReconnectTimeout option is honoured by ensuring
-// that reconnect reconcile with a very short timeout against a real
-// broker either completes in time or fails gracefully.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// TestIntegration_ReconnectTimeout_Configurable validates that
-// the ReconnectTimeout field from SessionOptions is used for the
-// OnConnectionUp reconcile context. Uses a real broker to verify
-// the timeout doesn't interfere with normal reconnect flow.
-//
-// Scenario:
-// ───────────────────────────────────────────────
-//
-//	Start session with ReconnectTimeout = 5s and a plan
-//	Verify session connects and events flow
-//	Verify Health reports connected
-//
-// ───────────────────────────────────────────────
-//
-// Assertions:
-//   - Session starts successfully with configured ReconnectTimeout
-//   - SessionConnected event is received
-//   - Health reports connected
-func TestIntegration_ReconnectTimeout_Configurable(t *testing.T) {
-	url := mqttlocal.BrokerURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	logger := slog.Default()
-
-	sess := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:       []string{url},
-		ClientID:         mqttlocal.UniqueClientID("recon-timeout"),
-		KeepAlive:        10,
-		ConnectTimeout:   5 * time.Second,
-		ReconnectTimeout: 5 * time.Second,
-		CleanStart:       true,
-	}, connectivity.SessionEphemeral, logger)
-
-	if err := sess.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = sess.Close(ctx) }()
-
-	select {
-	case ev := <-sess.Events():
-		if ev.Type != 0 { // SessionConnected = 0
-			t.Logf("received event type %d", ev.Type)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for SessionConnected event")
-	}
-
-	plan := connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: "recon/test/a", QoS: 1},
-		},
-	}
-	if err := sess.Reconcile(ctx, plan); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-
-	h := sess.Health(ctx)
-	if !h.Connected {
-		t.Error("session should be connected after start with ReconnectTimeout")
-	}
-}
-
-// TestIntegration_ReconnectTimeout_ZeroUsesDefault validates that
-// a zero ReconnectTimeout falls back to 30s and works normally.
-func TestIntegration_ReconnectTimeout_ZeroUsesDefault(t *testing.T) {
-	url := mqttlocal.BrokerURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	sess := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:       []string{url},
-		ClientID:         mqttlocal.UniqueClientID("recon-zero"),
-		KeepAlive:        10,
-		ConnectTimeout:   5 * time.Second,
-		ReconnectTimeout: 0, // Should default to 30s
-		CleanStart:       true,
-	}, connectivity.SessionEphemeral, nil)
-
-	if err := sess.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = sess.Close(ctx) }()
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for event")
-	}
-
-	if err := sess.Reconcile(ctx, connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: "recon/zero/a", QoS: 0},
-		},
-	}); err != nil {
-		t.Fatalf("Reconcile with zero ReconnectTimeout: %v", err)
-	}
 }

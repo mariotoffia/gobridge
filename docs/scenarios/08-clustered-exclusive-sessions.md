@@ -95,6 +95,7 @@ sessions:
         client_id: telemetry-bridge  # SAME on every instance (see the client_id walkthrough)
         keep_alive: 30
         connect_timeout: 30s
+        reconcile_timeout: 30s
         clean_start: false
         session_expiry_interval: 3600
         tls:
@@ -159,6 +160,12 @@ routes:
       step_down_grace: 20s
       max_renew_fails: 3
       connect_after_lease: true
+      # Optional declared objective: failure detection to ServiceLevelFull.
+      # Paho activation = 2*30s connect + 4*30s reconcile + 2*30s grace = 240s.
+      # min poll=3.75s; calls=1+ceil(300s/3.75s)=81.
+      # Budget = 300s + 2*6.25s + 81*5s + 240s + 10s = 967.5s.
+      failover_slo: 980s
+      startup_allowance: 10s
       drain_batch_size: 10
       drain_strategy:
         type: adaptive_backoff
@@ -460,100 +467,120 @@ routes:
 
 The `sqs-to-sqs` route runs on both instances simultaneously (SQS handles competing consumers natively via visibility timeouts). The `mqtt-to-sqs` route runs on only the lease-holding instance.
 
-### High-Availability Profile
+### Failover SLO Validation
 
-The default lease timing trades fast failover for low renewal traffic: a dead owner is not detected until its `lease_ttl` (360s) lapses, so worst-case failover approaches 6 minutes. High-availability deployments usually want failover inside the 30--60s band. GoBridge ships a named preset that encodes the *correct interrelationship* between the lease-timing knobs. Getting that relationship wrong cannot break single-owner safety -- the lease store admits one non-expired lease at a time and the outbox fences every send by fencing-token version -- but it does cause spurious failovers, slower recovery, or a wider at-least-once duplicate-*send* window, so prefer the preset (or the recipe below) over hand-tuning.
+`session.HAConfig` remains a lower-latency **lease cadence**, not a failover
+promise. The endpoint of a declared `failover_slo` is failure detection to the
+successor reporting `ServiceLevelFull`. Before any store or transport resource
+is opened, the builder validates:
 
-> **Clustered deployments default to the HA profile.** When `deployment_mode: clustered` (or a static `cluster.endpoints` override is present) and a lease-bearing exclusive session leaves `lease_ttl` AND `renew_interval` unset, the builder derives that session's baseline from the HA profile (`lease_ttl=45s`, ~45s warm failover) instead of the 6-minute default. Any explicit `lease_ttl`/`renew_interval` you set always wins. So in a clustered deployment you get 30--60s-band timing without opting in, and can still hand-tune per session.
->
-> **The 30--60s band requires a WARM standby.** The failover math below assumes a standby that is *continuously polling* the lease store (or a surge replacement that has observed a full TTL before the active owner steps down). A **cold** standby that only begins observing *after* the active dies -- including any rolling/replacement deploy -- must first watch the lease tuple unchanged for a full TTL before it can even attempt the seizing `Acquire`, adding up to **one more `lease_ttl`** (~2×TTL total on DynamoDB) before takeover. Pinning `lease_ttl` low does not buy a strict ≤60s bound through a deploy; keep a warm standby across the rollout instead.
-
-**Code preset.** When you build the runtime programmatically, start from `session.HAConfig` instead of `session.DefaultConfig`:
-
-```go
-// ~45s worst-case failover. Tightens only the lease-timing knobs;
-// inherits DefaultConfig's drain strategy and batch sizes.
-cfg := session.HAConfig("mqtt-exclusive", true)
-mgr := session.NewFromConfig(cfg, sess, leaseStore, ownerID, logger)
+```text
+lease_ttl
++ 2 * max(1ms, ceil(1.25 * acquire_poll_interval))
++ (1 + ceil(lease_ttl / min_jittered_poll)) * renew_call_timeout
++ complete post-takeover transport activation
++ startup_allowance
+<= failover_slo
 ```
 
-It sets `LeaseTTL=45s`, `RenewInterval=10s`, `RenewJitter=1s`, `RenewCallTimeout=3s`, `MaxRenewFails=3`, and `StepDownGrace=5s` (all pinned explicitly, not derived). The worst-case renew span folds in the per-call timeout: `MaxRenewFails × (RenewInterval + RenewJitter/2 + RenewCallTimeout) = 3 × (10 + 0.5 + 3) = 40.5s < 45s`, a ~10% margin under the TTL. (An earlier 14s/2s preset with no call-timeout summed to 58.5s -- past the TTL.)
+The exact boundary passes; one nanosecond over fails. Checked duration arithmetic
+fails closed on non-positive required terms, negative values, unknown transport
+timing, or overflow. The generic capability is one aggregate duration, so the
+builder never double-counts nested connect/reconcile phases. Paho reuses its
+complete post-acquire phase calculator: initial connect, managed cleanup/replay,
+recycle/reconnect, four reconcile-owned waits, and two grace windows.
 
-**Blueprint recipe.** YAML deployments express the same profile with the existing session knobs:
+There are two independent jittered poll boundaries. If the owner crashes just
+after renewal and just after a standby poll, the first later Acquire can only
+establish a post-response monotonic baseline. Observation then needs a full TTL;
+a later quantized poll crosses the threshold and that same Acquire immediately
+issues conditional takeover, avoiding a third poll. With TTL `6s` and maximum
+jittered poll `5s`, controlled fake-clock and DynamoDB Local tests reject
+takeover at `10s` and acquire at `15s`; the conservative formula allows
+`6s + 2×5s = 16s`.
 
-```yaml
-routes:
-  - id: ingest
-    session:
-      lease_ttl: 45s
-      renew_interval: 10s
-      lease_renew_jitter: 1s
-      renew_call_timeout: 3s      # folded into the failover-safety invariant
-      max_renew_fails: 3
-      step_down_grace: 5s
-      # acquire_poll_interval left unset -> derived min(renew_interval, lease_ttl/4, 5s)
+`renew_call_timeout` bounds each complete LeaseStore Acquire call as well as
+Renew; internal Put/Get/CAS/takeover operations share that one call context and
+are not counted separately. `acquireLeaseWithRetry` waits only after a call
+returns, while post-CAS call latency is excluded from persisted observation
+elapsed. The minimum implemented jitter delay is
+`max(1ms, poll - (poll/2)/2)`, so the maximum observation rounds are
+`ceil(lease_ttl / min_jittered_poll)` and total calls are that value plus the
+baseline-establishing call. Every call receives one `renew_call_timeout` budget.
+Delayed-every-CAS tests prove this wall time is not observation evidence.
 
-stores:
-  outbox:
-    type: dynamodb
-    options:
-      table_name: gobridge-outbox
-      stale_claim_duration: 20s   # step_down_grace (5s) + 15s
-```
+Normal competing observers have one CAS winner, and that winner proceeds to
+takeover in the threshold-crossing attempt. A losing observer discards its local
+interval and retries safely. Backend errors or pathological contention that
+prevents every winner from completing takeover remain outside the deterministic
+budget and must be represented by measured SLO error budget/alerts.
+`startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
+`failover_slo` means that no objective is declared.
 
-> The blueprint exposes jitter as `lease_renew_jitter` and the per-call bound as
-> `renew_call_timeout`. Leaving `renew_interval`, `lease_renew_jitter`, and
-> `renew_call_timeout` unset lets the session manager derive them from
-> `lease_ttl`; the derivation now **reserves** the per-call timeout so the full
-> worst-case span (interval + jitter/2 + call-timeout) still lands inside the
-> TTL. To reproduce the code preset's exact 10s interval / 1s jitter / 3s
-> call-timeout in YAML, pin all three fields explicitly as shown above.
+The example in this scenario declares `980s`. Paho default post-takeover
+activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the
+minimum jittered poll is `3.75s`, so call count is
+`1 + ceil(300/3.75) = 81`. The full budget is
+`300s + 2×6.25s + 81×5s + 240s + 10s = 967.5s`, so preflight accepts it.
+This is an admission check, not proof that the deployment meets 980 seconds.
+Warm and cold failure-detection-to-`ServiceLevelFull` samples must be measured in
+the target environment before publishing an SLO claim.
 
-**Failover math.** Worst-case failover for a warm (continuously polling) standby
-is approximately `lease_ttl` plus takeover, where takeover folds in the acquire
-poll AND the broker connect: the DynamoDB store seizes only after it has observed
-the owner's liveness tuple unchanged for a full TTL, and the standby retries
-`Acquire` on its own cadence (derived, capped at 5s, with ±25% jitter). For the
-45s preset that is `lease_ttl + ~2×6.25s + connect ≈ 57.5s + broker-connect` end to
-end. A **cold** standby that only begins observing *after* the owner died must
-first watch the tuple unchanged for a full TTL before it can even attempt the
-seizing `Acquire`, so it needs one MORE TTL: `2×lease_ttl + ~2×acquire-poll +
-connect ≈ 102.5s + broker-connect` for the 45s preset -- not ~90s, because the
-acquire poll and connect are on top of the two TTLs. During the window the broker
-retains messages (QoS 1, `clean_start: false`) and replays them to the new owner
-once it connects -- as in the failover sequence above, with 45s in place of 300s.
+#### Persisted takeover observation
 
-> **Rolling deploys are the cold-standby case.** A replacement pod starts
-> observing the lease only *after* it boots, so a failover objective that must
-> hold **through a deploy** is bounded by the cold figure -- ~2×`lease_ttl` plus
-> the acquire poll and broker connect -- not `lease_ttl`. Pinning `lease_ttl` low
-> does NOT buy a strict ≤60s bound here: the Aggressive `lease_ttl=30s` row still
-> costs `2×30 + ~2×4.2 + connect ≈ 68s + broker-connect` cold, already past 60s
-> before the pod connects. To hold a 30--60s objective *through* a deploy, keep a
-> WARM standby observing across the rollout -- surge the replacement up and let it
-> observe a full TTL before the active owner steps down -- so takeover stays on the
-> warm path. The cold/rolling worst case is ~2×`lease_ttl` + takeover regardless of
-> how low you pin the TTL.
+The DynamoDB lease item stores a fingerprint of the exact liveness tuple plus an
+accumulated unchanged duration and generation. The tuple includes lease key,
+owner, fencing version, `renewed_at`, and `expires_at`. An observer measures only
+local monotonic elapsed time from a baseline sampled only after a successful
+consistent read or observation CAS response, then compare-and-set adds that
+interval while conditioning on the complete tuple and current evidence.
+Competing observers therefore cannot add overlapping intervals twice.
 
-**Invariants the preset preserves** (and any hand-tuned profile must too):
+A replacement process inherits already-confirmed elapsed evidence. It does not
+subtract timestamps written on another host, so wall-clock skew cannot cause an
+early takeover. Renewal, release, acquisition, takeover, and any tuple mutation
+reset evidence atomically. Legacy rows without evidence start at zero. The lease
+table still has DynamoDB TTL disabled because the row is the permanent fencing
+counter.
 
-- `step_down_grace < lease_ttl` (5s vs 45s) -- the only step-down trigger is involuntary (`max_renew_fails` consecutive renew failures, detected at roughly `lease_ttl`); the owner then stops claiming and drains in-flight work for `step_down_grace` before releasing. Keeping it well under `lease_ttl` bounds that drain -- it does *not* order the old owner's last send ahead of the new owner's first. Single-owner safety comes from lease-store mutual exclusion plus version fencing on every outbox `Complete`/`Claim`, independent of these timings; a brief duplicate *send* (never a duplicate commit) during the overlap is the inherent at-least-once window, so downstream must be idempotent.
-- `(renew_interval + jitter/2 + renew_call_timeout) × max_renew_fails < lease_ttl` -- the owner gets `max_renew_fails` renewal attempts inside one TTL, so it tolerates two consecutive transient renewal failures before stepping down. The worst-case span folds in the per-call timeout, because the renew loop resets its timer only *after* each call returns: `max_renew_fails × (renew_interval + jitter/2 + renew_call_timeout) = 3 × (10 + 0.5 + 3) = 40.5s`, under the 45s TTL with a ~10% margin. Omitting `renew_call_timeout` under-counts the span and, in the 30--60s band, would push real detection past the TTL.
-- `stale_claim_duration` above the worst-case drain-batch timeout (≈20s) -- this bounds recovery of a *same-owner* stranded claim; it does not gate failover (a new owner reclaims immediately via its higher fencing version). Both the DynamoDB and native SQLite outboxes honour it; only the in-memory outbox is version-only. `step_down_grace + 15s` (20s) is a convenient rule of thumb that clears the drain ceiling (see [tuning relationships](#tuning-relationships) above).
+**Upgrade policy.** A pre-observation row may omit all three observation fields;
+it starts at zero. The base tuple is never optional. Active rows require exact
+key, non-empty owner, positive version/`renewed_at`, and `expires_at > renewed_at`;
+released rows retain positive version/`renewed_at` with empty owner and
+`expires_at: 0`. Partial evidence, missing base fields, negative/overflow values,
+or impossible ordering fails closed as `shared.ErrInvalidConfig`. Rows from
+builds that predate `renewed_at` require an offline migration: quiesce every
+lease user, preserve each fencing version, write a valid active or released
+tuple, verify it, then restart. GoBridge does not auto-heal an ambiguous owner.
 
-**Tradeoff.** Failover drops from ~360s to ~45s, but the ~10s renewal interval raises the lease-store write rate roughly 11× over the default (~10s vs ~110s renewals). For most workloads this is negligible DynamoDB traffic; factor it into capacity planning anyway. The tighter timing also tolerates fewer transient renewal failures, so blip-prone networks will see more spurious step-downs -- relax `lease_ttl` toward 60s if renewals are unreliable.
+Persisted evidence removes the former mandatory second-TTL penalty for a process
+replacement. It does not manufacture observation time: if no observer had
+confirmed the tuple before replacement, the new process starts from zero and
+must confirm a full TTL. Startup delay remains part of the cold path and belongs
+in `startup_allowance` or the measured deployment evidence.
 
-**Pick a point in the band.** The preset's 45s is a defensible midpoint; the relationships above hold across the whole 30--60s band. The `renew_interval` column shows the value derived when unset (which reserves the per-call timeout, so it lands below `0.75 × lease_ttl / max_renew_fails`); the HA code preset instead pins 10s:
+#### Warm-standby deployment invariant
 
-| Profile | `lease_ttl` | `renew_interval` | `step_down_grace` | `stale_claim_duration` | Worst-case failover |
-|---|---|---|---|---|---|
-| Aggressive | 30s | ~3.3s (derived) | 5s | 20s | ~30s + takeover |
-| **HA (`session.HAConfig`)** | **45s** | **10s (pinned)** | **5s** | **20s** | **~45s + takeover** |
-| Conservative | 60s | ~8.9s (derived) | 10s | 25s | ~60s + takeover |
+The blueprint contains no replica count or peer-health inventory at preflight,
+so GoBridge cannot honestly prove that a healthy warm standby exists. For every
+declared objective at or below 60 seconds, the deployment must enforce at least
+one healthy, continuously polling standby. The repository task that owns adding
+that enforcement to the shipped AWS deployment model is
+`PROD_READY_ISSUES_PLAN.md` **Task 11: Ship a DynamoDB-coordinated ECS HA
+profile**. Until Task 11 supplies replica and health information, operators must
+enforce and verify the invariant in their orchestrator; configuration validation
+must not be presented as proof.
 
-Faster rows fail over sooner but renew more often and tolerate fewer network blips. Start at the HA row and move up or down only with evidence from your lease-store latency and renewal-failure metrics.
+#### Measurement and alerting
 
-> Via the blueprint (YAML), leaving both `renew_interval` and `lease_renew_jitter` unset derives jitter as `renew_interval / 4`. The Aggressive row's derived interval therefore pairs with a proportional jitter, comfortably inside a 30s TTL. There is no fixed 5s jitter default on the derive path; that value belongs to the `session.DefaultConfig` code preset. Pin `renew_interval: 10s`, `lease_renew_jitter: 1s`, and `renew_call_timeout: 3s`, or call `session.HAConfig`, to reproduce the HA preset's exact cadence.
+`TestUC3ClusterFailover` reads the real lease row, stops the verified holder,
+requires both owner and fencing version to change, waits for the successor to
+reach `ServiceLevelFull`, and reports warm and cold p50, p95, p99, maximum, and
+sample count separately. Production currently has no single in-process metric
+choke point spanning external failure detection and readiness on another host.
+Use orchestrator and health-probe telemetry to record that same interval and
+alert when it exceeds the declared objective; do not substitute
+`LeaseTransfers` latency for failure-to-Full latency.
 
 ### Ownership Under Lease-Store Failure
 

@@ -5,6 +5,7 @@
 package infra
 
 import (
+	"encoding/hex"
 	"fmt"
 	"time"
 )
@@ -21,15 +22,17 @@ const (
 type Topology string
 
 const (
-	TopologySingle               Topology = "single"
-	TopologyFilesystemReplicated Topology = "filesystem_replicated"
+	TopologySingle                Topology = "single"
+	TopologyFilesystemReplicated  Topology = "filesystem_replicated"
+	TopologyDynamoDBCoordinatedHA Topology = "dynamodb_coordinated_ha"
 )
 
 const (
-	DefaultAdminAddr         = ":8080"
-	DefaultMonitorAddr       = ":8081"
-	DefaultTransportHTTPAddr = ":8082"
-	DefaultPollInterval      = time.Second
+	DefaultAdminAddr                   = ":8080"
+	DefaultMonitorAddr                 = ":8081"
+	DefaultTransportHTTPAddr           = ":8082"
+	DefaultPollInterval                = time.Second
+	DefaultContainerMemoryBytes uint64 = 1 << 30
 )
 
 // DefaultCredentialPollInterval is the fallback poll cadence for the
@@ -91,8 +94,26 @@ type BootstrapConfig struct {
 	NodeRole NodeRole `json:"node_role,omitempty"`
 	Topology Topology `json:"topology,omitempty"`
 
+	// DynamoDBHA* fields are deployment-owned expectations stamped only by
+	// GoBridgeDynamoDBHA. The runtime checks the EFS-loaded logical config
+	// against these identities before planning stores or transports, preventing
+	// a tampered/stale file from bypassing synth-time HA admission.
+	DynamoDBHALeaseTableName                string `json:"dynamodb_ha_lease_table_name,omitempty"`
+	DynamoDBHAOutboxTableName               string `json:"dynamodb_ha_outbox_table_name,omitempty"`
+	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
+	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
+
 	ConfigFilePath string `json:"config_file_path"`
 	PollInterval   string `json:"poll_interval,omitempty"`
+
+	// ContainerMemoryBytes is the hard memory limit of the runtime container.
+	// CDK always overwrites it from the effective Fargate task memory; the
+	// default mirrors the 1024 MiB task default for non-CDK bootstrap users.
+	ContainerMemoryBytes uint64 `json:"container_memory_bytes,omitempty"`
+	// ReservedMemoryBytes is non-MQTT memory the operator has committed to
+	// other runtime components. MQTT ingress allocation plus this reservation
+	// must leave at least 20 percent of ContainerMemoryBytes as headroom.
+	ReservedMemoryBytes uint64 `json:"reserved_memory_bytes,omitempty"`
 
 	// Credential poll-based wrapper knobs (Finding 2). These control how the
 	// runtime lifts a pull-style credential store (SSM, file) into the
@@ -177,6 +198,9 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	if out.TransportHTTPAddr == "" {
 		out.TransportHTTPAddr = DefaultTransportHTTPAddr
 	}
+	if out.ContainerMemoryBytes == 0 {
+		out.ContainerMemoryBytes = DefaultContainerMemoryBytes
+	}
 	if out.HTTPReceiverAPIKeyParams == nil {
 		out.HTTPReceiverAPIKeyParams = map[string]string{}
 	}
@@ -251,9 +275,25 @@ func (c BootstrapConfig) Validate() error {
 	}
 
 	switch c.Topology {
-	case TopologySingle, TopologyFilesystemReplicated:
+	case TopologySingle, TopologyFilesystemReplicated, TopologyDynamoDBCoordinatedHA:
 	default:
 		return fmt.Errorf("infra: unsupported topology %q (call Normalized() first)", c.Topology)
+	}
+
+	if c.Topology == TopologyDynamoDBCoordinatedHA {
+		if c.DynamoDBHALeaseTableName == "" || c.DynamoDBHAOutboxTableName == "" ||
+			c.DynamoDBHAManagedSubscriptionsTableName == "" {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha requires deployment-owned lease, outbox, and managed-subscription table names")
+		}
+		if c.DynamoDBHALeaseTableName == c.DynamoDBHAOutboxTableName ||
+			c.DynamoDBHALeaseTableName == c.DynamoDBHAManagedSubscriptionsTableName ||
+			c.DynamoDBHAOutboxTableName == c.DynamoDBHAManagedSubscriptionsTableName {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha expected table names must be distinct")
+		}
+		fingerprint, err := hex.DecodeString(c.DynamoDBHAConfigFingerprint)
+		if err != nil || len(fingerprint) != 32 {
+			return fmt.Errorf("infra: dynamodb_coordinated_ha config fingerprint must be a 64-character SHA-256 hex value")
+		}
 	}
 
 	if c.BridgeID == "" {
@@ -267,6 +307,19 @@ func (c BootstrapConfig) Validate() error {
 	}
 	if c.SSMEndpoint != "" && !c.DevMode {
 		return fmt.Errorf("infra: ssm_endpoint requires dev_mode to be true; refusing to use a custom SSM endpoint without explicit dev_mode flag")
+	}
+	if c.ContainerMemoryBytes == 0 {
+		return fmt.Errorf("infra: container_memory_bytes must be greater than zero (call Normalized() first)")
+	}
+	minimumHeadroom := c.ContainerMemoryBytes / 5
+	if c.ContainerMemoryBytes%5 != 0 {
+		minimumHeadroom++
+	}
+	if c.ReservedMemoryBytes > c.ContainerMemoryBytes-minimumHeadroom {
+		return fmt.Errorf(
+			"infra: reserved_memory_bytes %d leaves less than 20%% container headroom",
+			c.ReservedMemoryBytes,
+		)
 	}
 
 	switch c.MetricsExporter {

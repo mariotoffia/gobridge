@@ -1,6 +1,7 @@
 package servicebus
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 // Compile-time interface contract.
 var _ ports.CredentialedConfig = (*Config)(nil)
+var _ ports.FreezableConfig = Config{}
 var _ ports.VisibilityTimeoutConfig = (*Config)(nil)
 var _ ports.CapabilityConfig = (*Config)(nil)
 
@@ -63,6 +65,77 @@ type SenderParams struct {
 	DefaultSessionID string        `mapstructure:"default_session_id" yaml:"default_session_id" json:"default_session_id"`
 	BatchSize        int           `mapstructure:"batch_size" yaml:"batch_size" json:"batch_size"`
 	Timeout          time.Duration `mapstructure:"timeout" yaml:"timeout" json:"timeout"`
+}
+
+// FreezePluginConfig returns a deep-owned build snapshot. tls.Config.Clone
+// copies mutable TLS settings while safely preserving its internal runtime state.
+func (c Config) FreezePluginConfig() ports.PluginConfig {
+	frozen := c
+	if c.Receiver.AutoExtend != nil {
+		autoExtend := *c.Receiver.AutoExtend
+		frozen.Receiver.AutoExtend = &autoExtend
+	}
+	if c.Connection.TLSConfig != nil {
+		frozen.Connection.TLSConfig = freezeTLSConfig(c.Connection.TLSConfig)
+	}
+	return &frozen
+}
+
+//nolint:staticcheck // Preserve deprecated NameToCertificate when an injected TLS config still uses it.
+func freezeTLSConfig(source *tls.Config) *tls.Config {
+	frozen := source.Clone()
+	frozen.Certificates = make([]tls.Certificate, len(source.Certificates))
+	for i := range source.Certificates {
+		frozen.Certificates[i] = freezeTLSCertificate(source.Certificates[i])
+	}
+	if source.NameToCertificate != nil {
+		frozen.NameToCertificate = make(map[string]*tls.Certificate, len(source.NameToCertificate))
+		for name, certificate := range source.NameToCertificate {
+			if certificate == nil {
+				frozen.NameToCertificate[name] = nil
+				continue
+			}
+			copy := freezeTLSCertificate(*certificate)
+			frozen.NameToCertificate[name] = &copy
+		}
+	}
+	if source.RootCAs != nil {
+		frozen.RootCAs = source.RootCAs.Clone()
+	}
+	if source.ClientCAs != nil {
+		frozen.ClientCAs = source.ClientCAs.Clone()
+	}
+	frozen.NextProtos = append([]string(nil), source.NextProtos...)
+	frozen.CipherSuites = append([]uint16(nil), source.CipherSuites...)
+	frozen.CurvePreferences = append([]tls.CurveID(nil), source.CurvePreferences...)
+	frozen.EncryptedClientHelloConfigList = append([]byte(nil), source.EncryptedClientHelloConfigList...)
+	frozen.EncryptedClientHelloKeys = make([]tls.EncryptedClientHelloKey, len(source.EncryptedClientHelloKeys))
+	for i, key := range source.EncryptedClientHelloKeys {
+		frozen.EncryptedClientHelloKeys[i] = key
+		frozen.EncryptedClientHelloKeys[i].Config = append([]byte(nil), key.Config...)
+		frozen.EncryptedClientHelloKeys[i].PrivateKey = append([]byte(nil), key.PrivateKey...)
+	}
+	return frozen
+}
+
+func freezeTLSCertificate(source tls.Certificate) tls.Certificate {
+	frozen := source
+	frozen.Certificate = cloneByteSlices(source.Certificate)
+	frozen.SupportedSignatureAlgorithms = append([]tls.SignatureScheme(nil), source.SupportedSignatureAlgorithms...)
+	frozen.OCSPStaple = append([]byte(nil), source.OCSPStaple...)
+	frozen.SignedCertificateTimestamps = cloneByteSlices(source.SignedCertificateTimestamps)
+	return frozen
+}
+
+func cloneByteSlices(source [][]byte) [][]byte {
+	if source == nil {
+		return nil
+	}
+	frozen := make([][]byte, len(source))
+	for i := range source {
+		frozen[i] = append([]byte(nil), source[i]...)
+	}
+	return frozen
 }
 
 // Kind reports the registry discriminator.

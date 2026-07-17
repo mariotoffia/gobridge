@@ -47,7 +47,37 @@ func TestNormalizeParameterRef(t *testing.T) {
 		{
 			name:    "pms URL with empty host returns error",
 			input:   "pms://",
-			wantErr: "invalid empty parameter path",
+			wantErr: "requires authority or absolute-path form",
+		},
+		{
+			name:    "authority URI trailing whitespace is rejected",
+			input:   "pms://gobridge/admin ",
+			wantErr: "invalid parameter reference",
+		},
+		{
+			name:    "authority URI leading whitespace is rejected",
+			input:   " pms://gobridge/admin",
+			wantErr: "invalid parameter reference",
+		},
+		{
+			name:    "absolute URI trailing whitespace is rejected",
+			input:   "pms:///gobridge/admin\t",
+			wantErr: "invalid parameter reference",
+		},
+		{
+			name:    "absolute URI leading whitespace is rejected",
+			input:   "\npms:///gobridge/admin",
+			wantErr: "invalid parameter reference",
+		},
+		{
+			name:  "absolute plain path trims boundary whitespace",
+			input: " /gobridge/admin ",
+			want:  "/gobridge/admin",
+		},
+		{
+			name:  "relative plain path trims boundary whitespace",
+			input: "\tgobridge/admin\n",
+			want:  "/gobridge/admin",
 		},
 	}
 

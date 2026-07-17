@@ -36,7 +36,7 @@ func (f *fakeLiveConn) Disconnect(context.Context) error {
 func (f *fakeLiveConn) Subscribe(context.Context, []subscribeSpec) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeLiveConn) Unsubscribe(context.Context, []string) error { return nil }
+func (f *fakeLiveConn) Unsubscribe(context.Context, []string) ([]byte, error) { return nil, nil }
 func (f *fakeLiveConn) PublishEnvelope(
 	context.Context, *messaging.Envelope, string, SenderOptions, clock.Clock,
 ) (publishResult, error) {

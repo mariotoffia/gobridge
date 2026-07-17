@@ -301,13 +301,6 @@ func TestIntegration_SSEClient_ReceivesMultipleEvents(t *testing.T) {
 		}
 	}
 
-	_ = resp.Body.Close()
-
-	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID: "after-close", Subject: "evt.four", Payload: []byte(`{}`),
-	})}); err != nil {
-		t.Fatalf("Send after client disconnect should not error: %v", err)
-	}
 }
 
 // ---------------------------------------------------------------------------

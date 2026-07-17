@@ -19,6 +19,18 @@ func (b *Builder) WithSQLiteOutbox(path string) *Builder {
 	return b
 }
 
+// WithSQLiteManagedSubscriptions installs a SQLite-backed exact-filter
+// history store at path. Subsequent calls replace the previous managed-
+// subscription store.
+func (b *Builder) WithSQLiteManagedSubscriptions(path string) *Builder {
+	sc, ok := b.sqliteStore("managed_subscriptions", path)
+	if !ok {
+		return b
+	}
+	b.cfg.Stores.ManagedSubscriptions = sc
+	return b
+}
+
 // WithSQLiteLease installs a SQLite-backed lease store at path.
 func (b *Builder) WithSQLiteLease(path string) *Builder {
 	sc, ok := b.sqliteStore("lease", path)
@@ -79,7 +91,7 @@ func memoryStore() *ports.StoreConfig {
 	return sc
 }
 
-// sqliteStore is the shared assembly path for the three SQLite store
+// sqliteStore is the shared assembly path for the four SQLite store
 // methods. It validates the path through the adapter's own Validate
 // so the builder rejects empty paths with the same wording the
 // runtime would emit at startup.

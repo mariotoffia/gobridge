@@ -535,33 +535,32 @@ func TestEnvelopeFromPublish_IDFromCorrelation(t *testing.T) {
 	}
 }
 
-// verifies that a deterministic ID is derived from topic+payload when no
-// header provides an ID: the same publish (e.g. a QoS 1 redelivery from
-// a non-bridge producer) derives the SAME ID so downstream dedup works,
-// while different topic or payload derives a different ID.
-func TestEnvelopeFromPublish_IDFallbackDeterministic(t *testing.T) {
-	pub := &pahov5.Publish{
-		Topic:   "test/topic",
-		Payload: []byte("some-payload"),
-	}
+// verifies that separate equal-valued MQTT publishes without producer
+// identity receive distinct fallback IDs. MQTT packet fields and content do
+// not prove application identity, so collapsing them would lose an event in a
+// deduplicating outbox.
+func TestEnvelopeFromPublish_IDFallbackDistinctPerPublish(t *testing.T) {
+	first := &pahov5.Publish{Topic: "test/topic", QoS: 1, Payload: []byte("some-payload")}
+	second := &pahov5.Publish{Topic: "test/topic", QoS: 1, Payload: []byte("some-payload")}
 
-	env1 := EnvelopeFromPublish(pub, nil)
-	env2 := EnvelopeFromPublish(pub, nil)
+	env1 := EnvelopeFromPublish(first, nil)
+	env2 := EnvelopeFromPublish(second, nil)
 
-	if env1.ID() == "" {
-		t.Fatal("fallback ID should not be empty")
+	if env1.ID() == "" || env2.ID() == "" {
+		t.Fatal("fallback IDs must not be empty")
 	}
-	if env1.ID() != env2.ID() {
-		t.Errorf("redelivery of the same publish must derive the same ID, got %q vs %q", env1.ID(), env2.ID())
+	if env1.ID() == env2.ID() {
+		t.Fatalf("separate equal-valued publishes must receive distinct IDs, both got %q", env1.ID())
 	}
-
-	otherPayload := EnvelopeFromPublish(&pahov5.Publish{Topic: "test/topic", Payload: []byte("other")}, nil)
-	if otherPayload.ID() == env1.ID() {
-		t.Error("different payload must derive a different ID")
-	}
-	otherTopic := EnvelopeFromPublish(&pahov5.Publish{Topic: "test/other", Payload: []byte("some-payload")}, nil)
-	if otherTopic.ID() == env1.ID() {
-		t.Error("different topic must derive a different ID")
+	for _, id := range []string{env1.ID(), env2.ID()} {
+		if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' || id[14] != '4' {
+			t.Fatalf("fallback ID %q is not an RFC 4122 UUIDv4", id)
+		}
+		switch id[19] {
+		case '8', '9', 'a', 'b':
+		default:
+			t.Fatalf("fallback ID %q does not have the RFC 4122 variant", id)
+		}
 	}
 }
 

@@ -1,7 +1,7 @@
 # AWS Deployment Overview
 
-GoBridge runs on AWS as an ECS Fargate service with EFS for configuration and
-SSM Parameter Store for secrets. This guide covers the architecture, design
+GoBridge runs on AWS as ECS Fargate services with EFS for configuration,
+SSM Parameter Store for secrets, and an optional DynamoDB-coordinated HA profile. This guide covers the architecture, design
 decisions, and the CDK construct library that wires everything together.
 
 For generic deployment considerations, see [Deployment Guide](../deployment-guide.md).
@@ -56,6 +56,156 @@ flowchart TD
 
 ---
 
+## Deployment Topologies
+
+The CDK library deliberately exposes two different multi-task profiles:
+
+| Facade | Coordination model | Intended use | Failover objective |
+|---|---|---|---|
+| `GoBridgeCluster` | `filesystem_replicated`; independent replicas read one EFS config | Scale independent routes horizontally | None. It has no active/standby takeover and no coordinated failover SLO. |
+| `GoBridgeDynamoDBHA` | `dynamodb_coordinated_ha`; one lease holder plus warm standbys | Exclusive MQTT continuity with shared-outbox fencing | Explicit per-route `failover_slo`, admitted by Task 9 and measured externally. |
+
+`GoBridgeCluster` remains unchanged. It rejects `route.session` and
+`shared_outbox`; it must not be described as HA. `GoBridgeDynamoDBHA` deploys one
+config-control task and at least two worker tasks across a subnet selection that
+spans at least two Availability Zones. All three tasks participate in DynamoDB
+lease acquisition, so the normal steady state has one active holder and at
+least two warm candidates. Worker Availability Zone rebalancing is enabled;
+the RW control service uses a 0/100 non-overlapping replacement with rebalancing
+disabled.
+
+### Coordinated HA data plane
+
+`GoBridgeDynamoDBHA` creates exactly three encrypted, point-in-time-recoverable,
+delete-protected, retained `PAY_PER_REQUEST` tables. The key/index shapes are
+the adapter contracts, not deployment inventions:
+
+| Table | Schema | TTL invariant |
+|---|---|---|
+| Lease (`gobridge-leases` default) | `PK` string hash key; no sort key or indexes | **Disabled.** The row carries the permanent monotonic fencing version. Deleting it can reset fencing and permit split brain. |
+| Shared outbox (`gobridge-outbox` default) | `PK`/`SK`; `ExpiryIndex` KEYS_ONLY, `RecordIDIndex` KEYS_ONLY, `ClaimIndex` ALL | Enabled on `ttl` only for terminal records and old fence metadata. Pending work is never TTL-reaped. |
+| Managed subscriptions (`gobridge-managed-subscriptions` default) | `storage_identity` string hash key | Disabled; exact MQTT filter history is durable. |
+
+The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It is the only HA
+facade surface exposing table objects, names, and ARNs.
+
+On-demand billing is appropriate for bursty takeover and outage recovery, but it
+does not eliminate hot keys. A single Exclusive MQTT session concentrates the
+outbox on one `SESSION#...` partition. Split unrelated workloads across session
+IDs before that partition approaches DynamoDB limits. Preserve `ClaimIndex` to
+avoid the adapter O(backlog) compatibility scan, and monitor the sparse
+`ExpiryIndex` guidance for expiry-heavy traffic.
+
+### Identity and endpoint rules
+
+The shared bridge YAML must use `deployment_mode: clustered`, DynamoDB lease,
+outbox, and managed-subscription stores, `delivery_mode: shared_outbox`,
+`ack_after: outbox_persist`, and explicit `failover_slo` plus
+`startup_allowance`. Every Exclusive MQTT standby uses the same broker domain,
+`client_id`, clean-start/session-expiry behavior, and managed-subscription
+storage identity. `client_id_suffix` is rejected for Exclusive sessions because
+a per-task MQTT identity strands queued broker state after holder loss.
+
+The facade also stamps the admitted canonical config fingerprint and exact table
+identities into deployment-owned bootstrap. Every process validates the EFS
+logical config against them before store or transport planning, so a stale or
+tampered SeedOnce/AdoptValid file cannot bypass synth-time identity/route/table
+admission.
+
+Static `bridge.cluster.endpoints` are rejected by this profile. The bootstrap
+registers the existing ECS metadata endpoint resolver and each holder writes its
+own reachable endpoint into the lease row. This endpoint also lets the
+credentialed proof map the lease to one exact ECS task without guessing.
+
+### Least-privilege task roles
+
+Either task role can become active, so control and workers receive the same
+narrow data access:
+
+- lease: `GetItem`, `PutItem`, `UpdateItem`, `DescribeTable`,
+  `DescribeTimeToLive`;
+- outbox table: `GetItem`, `PutItem`, `UpdateItem`, `Query`,
+  `TransactWriteItems`, `DescribeTable`;
+- exact outbox index ARNs: `Query` only;
+- managed-subscription history: `GetItem`, `UpdateItem`, `DescribeTable`.
+
+No task role receives DynamoDB table creation/update/deletion,
+`UpdateTimeToLive`, wildcard actions, or wildcard index resources. The external
+proof principal receives no grant from the facade; its operator policy must
+separately allow the required ECS/DynamoDB reads and
+`cloudwatch:PutMetricData`/metric query calls.
+
+### Alarms and objective honesty
+
+The HA form of `GoBridgeAlarms` covers running/desired task count, minimum warm
+standby, all-table DynamoDB throttles/system errors, lease expiry and takeover flapping, shared-outbox depth/drain latency/failures, DLQ
+signals, and `FailureToFullDuration`.
+
+`FailureToFullDuration` is emitted by the credentialed external health/failover
+probe, not by the runtime. The probe conservatively starts timing before the
+verified holder `StopTask` request, waits for that exact task to be `STOPPED`,
+requires both lease owner and fencing version to change, and waits for a
+different exact successor to report `ServiceLevelFull`. A sample is classified
+`warm` only when that successor task ARN was already running in the pre-failure
+standby snapshot; a replacement winner is classified `cold`. It publishes one
+no-dimension millisecond sample in the configured deployment namespace. The
+alarm uses `TreatMissingData=NOT_BREACHING`; the release test immediately
+queries CloudWatch for the exact sample and fails if it is absent. Continuous
+SLO evidence therefore requires an operator-scheduled external probe.
+
+The checked example/fixture objective is **120 seconds**. Admission proves only
+that configured worst-case terms fit that ceiling. It does not prove an achieved
+production percentile. No 30–60 second claim is made. Publish a tighter target
+only after enough warm and cold samples from the actual image, VPC, broker,
+credentials, and AWS account support it. `OutboxDrainLatency` is a drain-cycle
+measurement, not direct oldest-record age; inspect the oldest pending item when
+triaging backlog age.
+
+### Credentialed failover proof
+
+The test runner needs CDK deploy/destroy credentials, a two-AZ VPC, a reachable
+TLS MQTT broker, existing SecureString admin/MQTT parameters, CloudWatch metric
+write/read permission, and VPC routing to task private addresses. The fixture
+opens monitor port 8081 only from `GOBRIDGE_INT_HA_PROBE_CIDR`; production
+security groups remain unchanged.
+
+Required variables:
+
+```text
+GOBRIDGE_INT_HA=1
+GOBRIDGE_INT_AWS_ACCOUNT
+GOBRIDGE_INT_AWS_REGION
+GOBRIDGE_INT_VPC_ID
+GOBRIDGE_INT_AVAILABILITY_ZONES
+GOBRIDGE_INT_SUBNET_IDS
+GOBRIDGE_INT_PUBLIC_SUBNET_IDS
+GOBRIDGE_INT_IMAGE
+GOBRIDGE_INT_HA_MQTT_BROKER_URL
+GOBRIDGE_INT_HA_MQTT_CLIENT_ID
+GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
+GOBRIDGE_INT_HA_ADMIN_PARAM
+GOBRIDGE_INT_HA_PROBE_CIDR
+```
+
+The availability-zone, private-subnet, and public-subnet lists must have the
+same order and cardinality. The harness imports these concrete attributes and
+produces an assembly with no VPC lookup context.
+
+Optional `GOBRIDGE_INT_HA_SAMPLES` controls separate warm/cold sample counts
+(1–20, default 1). Run:
+
+```bash
+cd deployment/aws-filebased-config/cdk
+GOBRIDGE_INT_HA=1 go test -count=1 -v -tags=integration_aws -run TestHA_FailoverStopsVerifiedLeaseholder ./integration
+```
+
+When `GOBRIDGE_INT_HA=1`, missing variables, credentials, outputs, network
+reachability, owner/fence changes, Full readiness, or the exact CloudWatch sample
+fail the test. Without that explicit request, the credentialed build-tag test is
+skipped and no AWS deployment occurs.
+
+---
+
 ## Why ECS Fargate
 
 Fargate is the recommended compute platform for GoBridge because it removes
@@ -86,11 +236,14 @@ before finalizing.
 For a single non-clustered task above 1 000 msg/s, size vertically to the
 Deployment Guide's `High` tier (2--4 vCPU / 4--8 GiB) instead of adding workers.
 The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
-(`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The clustered
-profile (`GoBridgeCluster`) runs one control task plus `WorkerDesiredCount`
-workers (default 2); worker CPU auto-scaling is opt-in by setting the
-`AutoScaling` prop (`AutoScalingProps{Min, Max, TargetCPU}`, where `TargetCPU`
-`0` is treated as 70). Override sizing via the `CPU` and `MemoryMiB` props.
+(`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The independent
+scale-out profile (`GoBridgeCluster`) runs one control task plus
+`WorkerDesiredCount` workers (default 2); its worker CPU auto-scaling is opt-in
+through `AutoScalingProps`. The coordinated profile (`GoBridgeDynamoDBHA`) runs
+one control plus at least two workers and requires a resolved finite integral
+worker count of at least two. Unresolved CDK numeric tokens are rejected because
+they cannot prove warm capacity. Size every
+warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`.
 
 ---
 
@@ -106,7 +259,13 @@ workers (default 2); worker CPU auto-scaling is opt-in by setting the
 
 GoBridge uses a **poll watcher** (default interval: 1 second) to detect config
 file changes on the mounted EFS volume. When the file changes, the runtime
-reloads routes, processors, and transports without dropping in-flight messages.
+reloads routes, processors, and transports, draining in-flight messages within a
+bounded window. What survives the reload is conditional: a Persistent/Exclusive
+QoS 1/2 source redelivers anything not settled before the drain completes, so
+those messages are not lost. An Ephemeral session, a QoS 0 source, or a drain
+that aborts on timeout can drop in-flight messages. See
+[MQTT — settlement semantics](../transports/mqtt.md#settlement-semantics) for the
+drain bound and loss windows.
 
 ### Access Point Design
 
@@ -182,23 +341,28 @@ add an explicit `kms:Decrypt` grant for the ECS task role on that key.
 
 ### DynamoDB Stores
 
-When the bridge config uses DynamoDB-backed stores (`lease`, `outbox`, or
-`dlq`), the stack grants the ECS task role read/write access on each table the
-store names. Two operator responsibilities follow:
+For `GoBridgeSingle` and `GoBridgeCluster`, when the bridge config uses imported
+DynamoDB-backed stores (`lease`, `outbox`, `dlq`, or `managed_subscriptions`),
+the stack grants each ECS task role only the adapter-specific data operations
+on each table and required index the store names. Two operator responsibilities follow:
 
-- **Pre-provision the tables.** The stack imports each table by name and grants
-  access to it; it does **not** create the table, its key schema, or its TTL.
-  Provision each DynamoDB table out-of-band (matching the adapter's expected key
-  schema) before deploying.
-- **Set `table_name` on every store.** A store that omits `table_name` falls
-  back to the adapter's built-in default table, which the stack cannot name and
-  therefore cannot grant — the task role would hit `AccessDenied` at runtime.
-  Synth emits a warning for this case; set `table_name`, or grant the default
-  table to the task role externally.
+- **Pre-provision only imported tables.** `GoBridgeSingle` and
+  `GoBridgeCluster` import every configured DynamoDB store, so provision those
+  tables out-of-band with the adapter schema before deploying. Do **not**
+  pre-provision the three names owned by `GoBridgeDynamoDBHA`: that facade creates
+  its mandatory lease, outbox, and managed-subscription tables and a same-name
+  resource would collide. Only an optional HA DynamoDB DLQ remains
+  operator-provisioned/imported.
+- **Use a resolved physical `table_name` only to override a role default.** HA
+  rejects unresolved CDK tokens because token strings cannot be substituted in
+  the immutable config asset. When omitted, runtime
+  preflight and the stack resolve and grant the same exact default:
+  `gobridge-leases`, `gobridge-outbox`, `gobridge-dlq`, or
+  `gobridge-managed-subscriptions`.
 
 The adapter's expected key schemas -- what an out-of-band table must match, and
 what the store's own `EnsureTable`/`CreateTable` helper provisions -- are below.
-All three tables are created `PAY_PER_REQUEST` (on-demand).
+All four tables are created `PAY_PER_REQUEST` (on-demand).
 
 **Lease table** (default `gobridge-leases`)
 
@@ -244,6 +408,15 @@ degrades to the scan path if the index becomes unusable.
 
 DLQ entries carry no TTL by default. Setting a `retention` window enables
 DynamoDB TTL on the `ttl` attribute through the store's `EnsureTable` helper.
+
+**Managed-subscriptions table** (default `gobridge-managed-subscriptions`)
+
+| Attribute | Type | Role |
+|---|---|---|
+| `storage_identity` | `S` | Partition key |
+
+No sort key and no GSIs. It stores one baseline and an exact filter String Set
+per secret-safe durable MQTT identity.
 
 ### DevMode Guard
 
@@ -302,7 +475,7 @@ store uses `modernc.org/sqlite`, which is pure Go, so there is no cgo and no
 `CGO_ENABLED=1` — and ships it on `distroless/static-debian12:nonroot`:
 
 ```dockerfile
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
 WORKDIR /src
 COPY . .
 ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
@@ -310,7 +483,7 @@ RUN cd deployment/aws-filebased-config/lib && \
     go build -trimpath -ldflags="-s -w" \
       -o /out/gobridge-filebased ./cmd/gobridge-filebased
 
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b AS runtime
 COPY --from=build /out/gobridge-filebased /usr/local/bin/gobridge-filebased
 USER 65532:65532
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
@@ -330,6 +503,14 @@ Key points:
 - The image has **no shell, curl, or wget**, so the health check reuses the
   binary's `-healthcheck` flag (which probes the local monitor `/live`
   endpoint) instead of an HTTP client.
+- **Base images are pinned by digest.** Both `FROM` lines carry a top-level
+  multi-platform OCI index digest (verified to include `linux/amd64` and
+  `linux/arm64`), so a rebuild pulls the exact reviewed bytes rather than
+  whatever the mutable tag points at. Refresh a digest only through a reviewed
+  change — see [DEVELOPMENT.md](../../DEVELOPMENT.md) (Base image digests) for the
+  resolve/verify commands. A source rebuild is reproducible only to the extent
+  the pinned bases, the locked per-module `go.sum`, and the Go toolchain are
+  fixed; nothing here claims bit-for-bit reproducibility beyond those facts.
 
 ### ECR Lifecycle Policy
 
@@ -384,17 +565,19 @@ github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
 
 ### Construct Overview
 
-The library provides an EFS config construct plus two façade constructs, each
+The library provides an EFS config construct plus three façade constructs, each
 deploying a complete profile:
 
 | Construct | Package | Purpose |
 |-----------|---------|---------|
 | `GoBridgeEfsConfig` | `cdk/constructs` | EFS filesystem + access point for config mounting. |
 | `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, RW EFS mount, no worker, no clustering. |
-| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | One control task (RW EFS) plus `WorkerDesiredCount` worker tasks (RO EFS). |
+| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Independent filesystem scale-out: one control task plus workers. |
+| `GoBridgeDynamoDBHA` | `cdk/constructs/gobridgedynamodbha` | DynamoDB-coordinated active/warm-standby: one control plus at least two workers and three owned tables. |
 
-The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)` and
-`NewGoBridgeCluster(scope, id, *ClusterProps)`. There is no `GoBridgeService` or
+The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
+`NewGoBridgeCluster(scope, id, *ClusterProps)`, and
+`NewGoBridgeDynamoDBHA(scope, id, *DynamoDBHAProps)`. There is no `GoBridgeService` or
 `GoBridgeStack` construct and no `GoBridgeServiceProps` type.
 
 ### GoBridgeEfsConfigProps
@@ -442,6 +625,15 @@ both services), plus:
 The control task always runs a single copy (`DesiredCount` is hard-coded to 1).
 Auto-scaling applies to the worker service only and is off unless `AutoScaling`
 is set.
+
+### DynamoDBHAProps (selected)
+
+`DynamoDBHAProps` shares the common VPC, image, bootstrap, config, registry,
+sizing, and EFS fields. Its `WorkerDesiredCount` defaults to `2` and must be a
+resolved finite integer greater than or equal to `2`; unresolved numeric tokens
+are rejected. It has no worker auto-scaling surface. Table names and the
+canonical config fingerprint are derived from the admitted bridge config and
+injected into bootstrap by the facade, not supplied independently by callers.
 
 #### Worker seeder: AdoptValid vs AbortDeploy
 
@@ -600,7 +792,7 @@ per table for tighter least privilege:
 Each store also runs a boot-time schema **preflight** that adds control-plane
 actions on top of the data-plane set above:
 
-- Outbox and DLQ additionally call `dynamodb:DescribeTable`.
+- Outbox, DLQ, and managed-subscriptions additionally call `dynamodb:DescribeTable`.
 - Lease additionally calls `dynamodb:DescribeTable` **and**
   `dynamodb:DescribeTimeToLive` -- it enforces that DynamoDB TTL is **disabled**
   on the fencing table, which a reaper would otherwise use to delete lease rows
@@ -624,8 +816,10 @@ Preflight posture is **fail-closed** and matters for how you grant these actions
   verify** the TTL state (missing `dynamodb:DescribeTimeToLive`, a throttle, or a
   backend that does not implement it) is **fatal for the same reason**: it proves
   nothing about the TTL state, and a TTL-reaped fence row is a split-brain hazard.
-- Both `dynamodb:DescribeTable` (every store role) and `dynamodb:DescribeTimeToLive`
-  (the lease role) are therefore **required** for boot under the default posture,
+- The generated CDK task-role policy grants `dynamodb:DescribeTable` on every
+  configured/default store table and additionally grants
+  `dynamodb:DescribeTimeToLive` on the exact lease table. Both are therefore
+  **required** for boot under the default posture,
   and TTL must stay disabled on the lease table.
 
 The advisory opt-outs are **Go-code-level factory options, not config keys.**

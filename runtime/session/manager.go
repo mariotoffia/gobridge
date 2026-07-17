@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -60,6 +61,7 @@ type Manager struct {
 	renewCallTimeout  time.Duration
 	maxRenewFails     int
 	stepDownGrace     time.Duration
+	activationTimeout time.Duration
 	endpoints         map[string]string
 	drainIdle         func() bool
 	metrics           ports.MetricsExporter
@@ -104,9 +106,7 @@ func NewWithMetrics(cfg Config, session ports.Session, leaseStore ports.LeaseSto
 
 func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, ownerID string, logger *slog.Logger) *Manager {
 	defaults := DefaultConfig(cfg.SessionID, cfg.Exclusive)
-	if cfg.LeaseTTL <= 0 {
-		cfg.LeaseTTL = defaults.LeaseTTL
-	}
+	cfg.LeaseTTL = cfg.EffectiveLeaseTTL()
 	if cfg.MaxRenewFails <= 0 {
 		cfg.MaxRenewFails = defaults.MaxRenewFails
 	}
@@ -215,6 +215,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 		renewCallTimeout:  cfg.RenewCallTimeout,
 		maxRenewFails:     cfg.MaxRenewFails,
 		stepDownGrace:     cfg.StepDownGrace,
+		activationTimeout: cfg.PostAcquireActivationTimeout,
 		metrics:           &ports.NoopExporter{},
 		audit:             ports.NoopAuditLogger{},
 		logger:            logger,
@@ -230,7 +231,12 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 // When ConnectAfterLease is set, the session is not started until the
 // lease has been acquired, preventing premature broker connections that
 // would displace the current owner.
-func (m *Manager) Run(ctx context.Context) error {
+func (m *Manager) Run(ctx context.Context) (retErr error) {
+	defer func() {
+		if retErr != nil && errors.Is(retErr, shared.ErrTransportClosedPermanently) && !errors.Is(retErr, ErrSessionUnrecoverable) {
+			retErr = fmt.Errorf("%w: %w", ErrSessionUnrecoverable, retErr)
+		}
+	}()
 	if m.exclusive && m.leaseStore != nil && m.connectAfterLease {
 		return m.runExclusiveDeferred(ctx)
 	}

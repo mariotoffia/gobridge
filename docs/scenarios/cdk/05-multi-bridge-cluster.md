@@ -142,7 +142,7 @@ func main() {
 
     // Logical name → CDK handle for SSM SecureString parameters referenced by yaml.
     params := registry.NewSsmParamRegistry()
-    params.AddParameter("pms:///gobridge/cluster/admin-api-key",
+    params.AddParameter("/gobridge/cluster/admin-api-key",
         awsssm.StringParameter_FromSecureStringParameterAttributes(stack,
             jsii.String("AdminKey"), &awsssm.SecureStringParameterAttributes{
                 ParameterName: jsii.String("/gobridge/cluster/admin-api-key"),

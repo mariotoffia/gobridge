@@ -96,6 +96,14 @@ Optional companion interfaces (also in `ports`):
 
 - `ports.VisibilityTimeoutProvider` — declares the source visibility
   timeout used by the runtime validator (e.g. SQS).
+- `ports.IngressMemoryConfig` — lets a typed session config validate a
+  transport-owned ingress byte bound against the route's effective concurrency.
+  The bridge calls it after dedicated-session cardinality checks and before
+  opening stores or transports.
+- `ports.IngressMemoryProfileConfig` — extends that contract for deployment
+  profiles that assign a per-session byte budget and derive safe transport
+  concurrency. Implementations must preserve safe explicit values and reject
+  unsafe explicit values rather than silently clamping them.
 
 Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
 sink) deliberately do not have a port-level abstraction: HTTP handlers
@@ -162,6 +170,19 @@ adapters/mycloud/transport/myqueue/
    - `CapDelayedSend` -- supports delayed delivery
    - `CapSharedConsumer` -- broker load-balances one subscription across a consumer group (e.g. MQTT `$share`)
    - `CapExclusiveIdentity` -- session owns a unique client identity (lease-based single holder); **must be single-use** -- see the lifecycle note below
+   - `CapDedicatedIngressSession` -- the session is one ingress dispatch/settlement failure domain and permits at most one logical receiver consumed by at most one route runner; senders may still share it
+
+**Dedicated-ingress sessions fail during preflight.** When a factory declares
+`CapDedicatedIngressSession`, `bridge.Builder.Plan` counts receivers by session
+and route-runner consumers by receiver. It rejects either a second logical
+receiver or reuse of the sole receiver by multiple routes before opening stores,
+sessions, receivers, senders, or runtime resources. This validation is
+capability-based: it does not switch on a transport name, and registering the
+same adapter under aliases does not change the session cardinality. Stateful
+adapters should also enforce the contract defensively in `NewReceiver` with a concurrency-safe reservation stored
+on the `Session`, not on the `Factory`; a factory-local reservation can be
+bypassed by aliases or multiple factory values. Do not count `Sender`s in that
+reservation.
 
 **Exclusive sessions are single-use.** A transport that declares
 `CapExclusiveIdentity` must treat `Start`-after-`Close` as a permanent error:
@@ -195,7 +216,7 @@ var _ ports.TransportFactory = (*Factory)(nil)
 
 ## Store Adapters
 
-Store adapters provide persistence for leases, outbox records, and DLQ entries.
+Store adapters provide persistence for leases, outbox records, DLQ entries, and exact managed-subscription history.
 
 ### Port Interfaces
 
@@ -223,6 +244,12 @@ type DLQStore interface {
     Replay(ctx context.Context, entryIDs []string) error
     Purge(ctx context.Context, before time.Time) (int, error)
 }
+
+type ManagedSubscriptionStore interface {
+    List(ctx context.Context, storageIdentity string) ([]string, error)
+    Remember(ctx context.Context, storageIdentity string, filters []string) error
+    Forget(ctx context.Context, storageIdentity string, filters []string) error
+}
 ```
 
 ### Store Factory (ports-first)
@@ -243,8 +270,9 @@ registered on `*ports.Registry` (see
 its own type assertion on the concrete config type — it never sees
 `map[string]any`.
 
-Optional companion interface:
+Optional companion interfaces:
 
+- `ports.ManagedSubscriptionStoreFactory.NewManagedSubscriptionStore(...)` — exact durable MQTT filter history; separate from `StoreFactory` so unrelated plugins are not widened.
 - `ports.DistributedStoreFactory.IsDistributed() bool` — returns true
   when the store provides cross-process coordination. Required for
   clustered deployments.
@@ -286,7 +314,7 @@ These suites verify all required behaviors (idempotency, filtering, fencing, etc
 
 - **Memory**: `adapters/native/store/memory*/` -- sync.Mutex + maps, good for tests
 - **SQLite**: `adapters/native/store/sqlite*/` -- WAL mode, modernc.org/sqlite, JSON marshaling
-- **DynamoDB**: `adapters/aws/store/dynamodb*/` -- conditional writes, GSIs, TTL compaction
+- **DynamoDB**: `adapters/aws/store/dynamodb*/` -- conditional writes, GSIs, TTL compaction, and atomic managed-filter sets
 
 ## Credential Adapters
 
@@ -431,6 +459,12 @@ type Processor interface {
     Process(ctx context.Context, env *messaging.Envelope, next ProcessorFunc) error
 }
 ```
+
+Envelope payload bytes are immutable at plugin boundaries. `Payload()` returns
+a defensive copy and `SetPayload` installs a new owned backing. Runtime and
+outbox clones may therefore share unchanged payload backing; processors must
+use `SetPayload` for transformations and must not retain or mutate bytes
+obtained through transport-specific internals.
 
 A processor can:
 - **Pass through**: call `next(ctx, env)` to continue the chain
@@ -627,6 +661,30 @@ type PluginConfig interface {
 
 Both methods are mandatory and both must do real work — an empty
 `Validate()` is rejected by `make lint`.
+
+Typed transport configs may also implement narrowly scoped optional capabilities
+from `ports/plugin_config.go`:
+
+- `DurableSessionIdentityConfig` returns opaque, secret-safe fingerprints for
+  transport-owned durable broker state and one broker/client ownership domain per
+  canonical endpoint. Include effective storage identity only; exclude credentials
+  and runtime tuning. Never return or log raw descriptors. A durable identity config
+  must also implement `FreezableConfig`.
+- `FreezableConfig` lets the adapter produce a deep-owned immutable configuration
+  snapshot while intentionally preserving opaque runtime dependencies whose identity
+  must remain stable. Core code never reflect-clones adapter configs.
+- `ReplicaIdentityConfig` declares the effective per-replica identity strategy
+  used by clustered shared consumers. Validation fails closed when a shared
+  subscription cannot prove a strategy.
+- `TransportFailoverTimingConfig` exposes one conservative complete post-takeover
+  activation bound through `ServiceLevelFull`, including connect, cleanup/replay,
+  recycle/reconnect, and final reconciliation exactly once. A declared
+  `failover_slo` fails closed when the aggregate bound is unavailable; core code
+  must not add nested phases again and remains transport-neutral.
+
+These capabilities keep `bridge/` and `validate/` transport-neutral: core code
+asserts the generic interface and never switches on a transport name or imports
+an adapter config type.
 
 ### Registering the decoder
 

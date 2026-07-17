@@ -34,20 +34,6 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")
 	}
 
-	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if retErr != nil {
-			for id, s := range sessions {
-				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
-				}
-			}
-		}
-	}()
-
 	// If the build fails after the runtime takes ownership of the prep-opened
 	// stores, the discarded runtime is never Started and therefore never
 	// Stopped, so its lease/outbox/DLQ handles (e.g. SQLite files) would leak on
@@ -60,6 +46,20 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	defer func() {
 		if retErr != nil {
 			b.closeStoreHandles(prep.stores)
+		}
+	}()
+
+	sessions, sessionURIs, err := b.buildSessionsWithURIs(ctx, prep.stores.managedSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			for id, s := range sessions {
+				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
+					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
+				}
+			}
 		}
 	}()
 
@@ -205,7 +205,7 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 	if stores == nil {
 		return
 	}
-	for _, s := range []any{stores.outbox, stores.dlq, stores.lease} {
+	for _, s := range []any{stores.managedSubscriptions, stores.outbox, stores.dlq, stores.lease} {
 		c, ok := s.(io.Closer)
 		if !ok {
 			continue
@@ -224,7 +224,7 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 // defaults but leaves RenewInterval unset so the session manager derives it
 // from LeaseTTL (contract C3), and applies bridge-level drain defaults.
 func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string) (session.Config, error) {
-	clustered := deploymentClustered(b.cfg)
+	clustered := IsClusteredDeployment(b.cfg)
 	if routeDef.Session != nil {
 		derived, err := toSessionConfigE(routeDef.Session, clustered)
 		if err != nil {
@@ -236,8 +236,8 @@ func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string
 		return sc, nil
 	}
 	// No inline session block: this binding-only exclusive sender inherits the
-	// same clustered HA-timing default as the rest of the deployment (HIGH-3),
-	// so a clustered failover for it also lands in the 30-60s band. Non-clustered
+	// same clustered lease-timing default as the rest of the deployment. This is
+	// a renewal-cadence choice, not an end-to-end failover SLO. Non-clustered
 	// keeps DefaultConfig with RenewInterval reset so the manager derives it.
 	if clustered {
 		sc := session.HAConfig(sessionID, true)
@@ -261,10 +261,6 @@ func (b *Builder) wireRoutes(
 	}
 
 	registeredSessions := make(map[string]bool)
-	// slowFailoverWarned dedupes the F-1 advisory per session so a session
-	// shared by several routes is flagged at most once.
-	slowFailoverWarned := make(map[string]bool)
-
 	for _, routeDef := range b.cfg.Routes {
 		recv, ok := receivers[routeDef.ReceiverID]
 		if !ok {
@@ -276,12 +272,17 @@ func (b *Builder) wireRoutes(
 		if policyErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, policyErr)
 		}
-		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session, deploymentClustered(b.cfg))
+		sessCfg, sessCfgErr := toSessionConfigE(routeDef.Session, IsClusteredDeployment(b.cfg))
 		if sessCfgErr != nil {
 			return fmt.Errorf("bridge: route %q: %w", routeDef.ID, sessCfgErr)
 		}
+		if sessCfg != nil && routeDef.Session != nil {
+			if timingErr := configureSessionActivationTiming(routeDef.ID, routeDef.Session.SessionID, sessCfg,
+				findSession(b.cfg, routeDef.Session.SessionID)); timingErr != nil {
+				return timingErr
+			}
+		}
 		applyBridgeDrainDefaults(sessCfg, b.cfg.Bridge)
-		b.warnSlowClusterFailover(routeDef, sessCfg, slowFailoverWarned)
 
 		// Assemble the session's desired topology from the blueprint so the
 		// session manager reconciles a non-empty plan. sessionPlanFor is the
@@ -518,6 +519,10 @@ func (b *Builder) wireRoutes(
 				return fmt.Errorf("bridge: route %q: binding %q session config: %w", routeDef.ID, bd.ID, scErr)
 			}
 			sc.ConnectAfterLease = true
+			if timingErr := configureSessionActivationTiming(routeDef.ID, bd.SessionID, &sc,
+				findSession(b.cfg, bd.SessionID)); timingErr != nil {
+				return timingErr
+			}
 			// Thread the session's desired topology so a session registered only
 			// via a binding (Path-2) still reconciles its receivers' subscriptions
 			// and sender exchanges instead of an empty plan (F1-P4). Mirrors the
@@ -539,51 +544,6 @@ func (b *Builder) wireRoutes(
 	}
 
 	return nil
-}
-
-// failoverBandMaxTTL is the upper bound of the documented clustered-failover
-// band (30-60s). A clustered exclusive session whose lease TTL exceeds it will
-// not have a dead owner's partition reclaimed by a peer for that whole TTL, so
-// it misses the stated failover requirement (F-1).
-const failoverBandMaxTTL = 60 * time.Second
-
-// warnSlowClusterFailover emits the F-1 advisory once per session when a
-// CLUSTERED deployment runs an exclusive (lease-bearing) session whose effective
-// lease TTL is slower than the documented 30-60s failover band.
-//
-// Clustered sessions that do not pin lease timing already default to the 45s HA
-// profile (toSessionConfigE), which is in band and does NOT warn. This fires
-// only when the operator EXPLICITLY pinned a loose lease_ttl on a cluster,
-// making a slow failover a deliberate, visible choice rather than a silent
-// surprise. It is scoped to clustered deployments because failover — a peer
-// reclaiming a dead owner's partition — is only meaningful with a peer; a
-// single-node deployment has none, so a loose TTL there is not warned.
-func (b *Builder) warnSlowClusterFailover(
-	routeDef ports.RouteDef,
-	sessCfg *session.Config,
-	warned map[string]bool,
-) {
-	// sessCfg is non-nil only for a RouteSessionDef source, which is always an
-	// exclusive single-owner lease session — so a non-nil sessCfg already
-	// implies "exclusive".
-	if b.logger == nil || sessCfg == nil || routeDef.Session == nil {
-		return
-	}
-	if !deploymentClustered(b.cfg) || sessCfg.LeaseTTL <= failoverBandMaxTTL {
-		return
-	}
-	sid := routeDef.Session.SessionID
-	if warned[sid] {
-		return
-	}
-	warned[sid] = true
-	b.logger.Warn("bridge: clustered exclusive session has a lease TTL slower than the documented "+
-		"30-60s failover band — if the owning node dies, its partition is not reclaimed by a peer for "+
-		"the whole TTL; pin a lease_ttl within the band or omit lease timing to use the 45s HA default",
-		"session", sid,
-		"lease_ttl", sessCfg.LeaseTTL,
-		"failover_band_max", failoverBandMaxTTL,
-	)
 }
 
 // egressDurabilityAdvisory reports whether a route wiring warrants an
@@ -816,7 +776,7 @@ func validateSharedOutboxBindingSessions(cfg *ports.BridgeConfig) error {
 	}
 	return nil
 }
-func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.Session, map[string]string, error) {
+func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.ManagedSubscriptionStore) (map[string]ports.Session, map[string]string, error) {
 	sessions := make(map[string]ports.Session, len(b.cfg.Sessions))
 	uris := make(map[string]string, len(b.cfg.Sessions))
 
@@ -860,7 +820,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context) (map[string]ports.S
 		if uri != "" {
 			uris[sd.ID] = uri
 		}
-		sess, err := tf.NewSession(ctx, sessionSpecFrom(sd))
+		spec, err := sessionSpecWithManagedSubscriptions(sd, b.cfg, managedStore)
+		if err != nil {
+			cleanup("")
+			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
+		}
+		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
 			cleanup("")
 			return nil, nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)

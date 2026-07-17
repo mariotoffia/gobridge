@@ -54,7 +54,7 @@ examples is illustrative, not a published release.
 ### The hard requirement
 
 **A containerized SQLite store must live on a durable volume.** The SQLite
-outbox, lease, and DLQ stores keep undelivered records on disk. If that disk is
+outbox, lease, DLQ, and managed-subscription stores keep delivery-critical records on disk. If that disk is
 the container's ephemeral filesystem, stopping or replacing the task destroys any
 records it still holds — silent message loss with no error.
 
@@ -103,3 +103,4 @@ undelivered records on first drain.
 
 - [Config rollback](config-rollback.md)
 - [Poison message / DLQ growth](poison-message-dlq-growth.md)
+- [Persistent MQTT managed-filter migration](mqtt-managed-subscription-migration.md)

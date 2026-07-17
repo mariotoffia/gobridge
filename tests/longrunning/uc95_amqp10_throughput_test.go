@@ -54,7 +54,7 @@ func TestUC95_AMQP10_HighThroughput(t *testing.T) {
 
 	sender := newArtemisSender(t, sess, address)
 	rx := newSQSReceiver(t, sqsInURL)
-	sc := lrSessionConfig(sessID)
+	sc := lrThroughputSessionConfig(sessID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc95-bridge"),

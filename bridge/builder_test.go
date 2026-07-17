@@ -170,6 +170,10 @@ type testCredConfig struct {
 func (c *testCredConfig) Kind() string           { return "test.cred" }
 func (c *testCredConfig) Validate() error        { return nil }
 func (c *testCredConfig) CredentialsURI() string { return c.URI }
+func (c *testCredConfig) FreezePluginConfig() ports.PluginConfig {
+	frozen := *c
+	return &frozen
+}
 func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) error {
 	if creds != nil && creds.Password() != nil {
 		if c.Username == "" {
@@ -182,6 +186,11 @@ func (c *testCredConfig) ApplyCredentials(creds *connectivity.CredentialSet) err
 	c.URI = ""
 	return nil
 }
+
+type typedNilBuildConfig struct{}
+
+func (*typedNilBuildConfig) Kind() string    { panic("typed nil Kind invoked") }
+func (*typedNilBuildConfig) Validate() error { panic("typed nil Validate invoked") }
 
 // --- tests ---
 
@@ -1203,4 +1212,21 @@ func TestBuilder_ValidatesStaticAddressAtBuildTime(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuilder_TypedNilReceiverConfigReturnsValidationError(t *testing.T) {
+	cfg := testConfig()
+	var typedNil *typedNilBuildConfig
+	cfg.Receivers[0].Config = typedNil
+
+	var err error
+	require.NotPanics(t, func() {
+		_, err = NewBuilder(cfg).
+			RegisterTransportFactory("mqtt", &fakeTransportFactory{}).
+			RegisterTransportFactory("sqs", &fakeTransportFactory{}).
+			RegisterStoreFactory("memory", &fakeStoreFactory{}).
+			Build(t.Context())
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }

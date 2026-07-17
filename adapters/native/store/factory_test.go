@@ -2,6 +2,9 @@ package nativestore_test
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -107,6 +110,25 @@ func TestSQLiteStoreFactory_NewOutboxStore_WithStaleClaimDuration(t *testing.T) 
 	}
 }
 
+// Verifies the SQLite factory exposes the optional managed-subscription role.
+func TestSQLiteStoreFactory_NewManagedSubscriptionStore(t *testing.T) {
+	f := nativestore.NewSQLiteStoreFactory()
+	store, err := f.NewManagedSubscriptionStore(t.Context(), &nativestore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "adapter-owned", "managed.db")})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store == nil {
+		t.Fatal("expected non-nil ManagedSubscriptionStore")
+	}
+	if err := store.Remember(t.Context(), "identity", []string{"sensors/#"}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	filters, err := store.List(t.Context(), "identity")
+	if err != nil || len(filters) != 1 || filters[0] != "sensors/#" {
+		t.Fatalf("List = %v, %v", filters, err)
+	}
+}
+
 // Verifies the SQLite factory builds a DLQ store from a typed config.
 func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
@@ -121,7 +143,7 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies SQLite outbox and DLQ construction fail when the typed config is missing.
+// Verifies SQLite outbox, DLQ, and managed-subscription construction fail when the typed config is missing.
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 
@@ -172,5 +194,45 @@ func TestSQLiteConfig_ValidateDurations(t *testing.T) {
 	bad := nativestore.SQLiteConfig{Path: ":memory:", StaleClaimDuration: -time.Second}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected validation error for negative stale_claim_duration")
+	}
+}
+
+func TestSQLiteStoreFactory_NewManagedSubscriptionStoreRejectsSQLiteURI(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "escaped.db")
+	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(
+		t.Context(), &nativestore.SQLiteConfig{Path: "file:" + target + "?mode=rwc"},
+	)
+	if store != nil {
+		t.Fatal("SQLite URI returned a managed subscription store")
+	}
+	if err == nil {
+		t.Fatal("SQLite URI must fail managed subscription store validation")
+	}
+	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("URI bypass created target database: %v", statErr)
+	}
+}
+
+func TestSQLiteStoreFactory_NewManagedSubscriptionStoreHonorsCanceledBuildContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-created", "managed.db")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(
+		ctx, &nativestore.SQLiteConfig{Path: path},
+	)
+	if store != nil {
+		t.Fatal("canceled build returned a store")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if _, statErr := os.Lstat(candidate); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("canceled build created %q: %v", candidate, statErr)
+		}
+	}
+	if _, statErr := os.Lstat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("canceled build created parent directory: %v", statErr)
 	}
 }

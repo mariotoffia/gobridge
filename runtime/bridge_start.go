@@ -171,6 +171,10 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// (send timeouts, replay budget, drain strategy, metrics route tag).
 	// warnDrainerConfigBleed surfaces it.
 	drainerOwner := make(map[string]string)
+	// Source route settlement barriers are installed on sessions after every
+	// RouteRunner exists and before any background goroutine starts.
+	ingressSessions := make(map[string]ports.Session)
+	ingressRoutes := make(map[string][]string)
 	warnDrainerConfigBleed := func(sid, owner, routeID string) {
 		if owner == routeID || rt.logger == nil {
 			return
@@ -231,6 +235,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
+			ingressSessions[sid] = entry.session
+			ingressRoutes[sid] = append(ingressRoutes[sid], entry.config.ID)
 			if _, exists := rt.sessionMgrs[sid]; !exists {
 				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
@@ -344,6 +350,22 @@ func (rt *Runtime) Start(ctx context.Context) error {
 				mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 			}
 		}
+	}
+
+	for sid, sess := range ingressSessions {
+		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
+		if !ok {
+			continue
+		}
+		routes := append([]string(nil), ingressRoutes[sid]...)
+		configurer.SetIngressQuiescenceWaiter(func(waitCtx context.Context) error {
+			return rt.WaitQuiescent(waitCtx, QuiescenceOptions{
+				Routes: routes,
+				// Router ingress is already closed, so no additional quiet window
+				// is required; only accepted RouteRunner settlements matter.
+				MinQuiet: -1,
+			})
+		})
 	}
 
 	// Finding 12: DLQ writes are fenced PER OWNING SESSION, not by an

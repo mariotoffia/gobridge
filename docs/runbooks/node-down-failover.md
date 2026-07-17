@@ -34,14 +34,37 @@ may need a process restart to complete takeover.
    ([monitoring.md#key-metrics](../aws-deployment/monitoring.md#key-metrics)):
    `LeaseTransfers` and `LeaseExpiries` should have advanced once, then settle.
 
-3. Apply the expected failover timeline for your lease preset
-   (`runtime/session/config.go`):
-   - **Default:** `LeaseTTL = 360s`. Worst-case takeover is bounded by roughly
-     the TTL plus the new owner's acquire — expect up to ~6 minutes.
-   - **HA preset (`HAConfig`):** `LeaseTTL = 45s`. Worst-case takeover is roughly
-     the TTL plus acquire — expect ~45–60s.
-   If more time than that has passed with no `LeaseTransfers` advance and
-   `LeaseAcquireFailures` is rising, takeover is stuck — go to Action.
+3. Use the declared and measured failure-to-Full objective. A lease preset alone
+   is not a failover SLO. When `routes[].session.failover_slo` is set, startup
+   validates this conservative budget before stores or transports are opened:
+
+   ```text
+   lease_ttl + 2 * max(1ms, ceil(1.25 * acquire_poll_interval))
+   + (1 + ceil(lease_ttl / min_jittered_poll)) * renew_call_timeout
+   + complete post-takeover transport activation + startup_allowance
+   <= failover_slo
+   ```
+
+   Two independent poll boundaries cover baseline establishment and the later
+   threshold-crossing/takeover call. `renew_call_timeout` also bounds each whole Acquire call. Call latency after a
+   successful observation CAS is excluded from persisted elapsed, and the
+   manager waits only after each call returns. Therefore budget the baseline call
+   plus every possible minimum-jitter observation round:
+   `1 + ceil(lease_ttl / max(1ms, poll - (poll/2)/2))` calls. The transport
+   activation term already contains connect, cleanup/replay,
+   recycle/reconnect, grace windows, and final reconciliation; do not add those
+   nested phases again. The endpoint is failure detection to the successor
+   reporting
+   `ServiceLevelFull`. Configuration validation is necessary but not sufficient:
+   compare the incident with measured warm and cold p50, p95, p99, maximum, and
+   sample count from the same deployment profile. Alert on the measured
+   failure-detection-to-Full interval. `LeaseTransfers` confirms ownership moved;
+   it does not prove that the successor was fully serving.
+
+   DynamoDB persists confirmed unchanged-tuple observation evidence on the lease
+   row, so a replacement process can inherit elapsed confirmation without using
+   cross-host wall-clock subtraction. A cold process still pays its real startup
+   delay and starts observation at zero when no prior observer confirmed time.
 
 4. Distinguish a clean takeover from a stuck single-active session. The MQTT
    (Paho) session is **single-use**: once closed it cannot be re-`Start`ed, so
@@ -53,8 +76,11 @@ may need a process restart to complete takeover.
 
 - **Takeover completed (`LeaseTransfers` advanced, standby `running`, `ready`):**
   no action. The dead node's un-acked source messages are redelivered to the new
-  owner; outbox fencing prevents duplicate destination sends. Duplicates at the
-  destination are still possible — downstream must stay idempotent.
+  owner. Outbox fencing prevents a stale owner from committing or continuing
+  outbox work on a fenced record — it does **not** undo a destination send the
+  old owner already had accepted before it lost the response or died. Duplicates
+  at the destination are therefore still possible; downstream must stay
+  idempotent.
 - **New owner terminal / not restarting:** a single-active session that went
   terminal needs a process restart. On Kubernetes `restartPolicy: Always` (plus
   a `livenessProbe` on `/api/v1/monitor/live`) covers it; under systemd use
@@ -66,13 +92,21 @@ may need a process restart to complete takeover.
 - **Leadership bouncing (`LeaseTransfers` climbing repeatedly):** this is
   flapping, not a clean failover — see
   [Lease flapping / split-brain](lease-flapping-split-brain.md).
+- **`corrupt lease row` / `INVALID_CONFIG`:** stop the rollout and quiesce all
+  lease users. Preserve the positive fencing version and repair the complete
+  base tuple offline. Rows may omit all observation fields together, but may not
+  omit `owner`, `version`, `renewed_at`, or `expires_at`; never delete/recreate a
+  row because that resets fencing to version 1.
 
 ### Decision: restart vs. scale
 
 - Restart the affected process when the runtime is terminal or the single-active
   session cannot re-establish in place.
-- Scale out only if the surviving instance is healthy but saturated; adding a
-  standby does not speed up a takeover already bounded by `LeaseTTL`.
+- Scale out when no healthy standby remains or the survivor is saturated. A
+  declared objective at or below 60 seconds requires a healthy continuously
+  polling warm standby. The current blueprint cannot verify replica count or
+  peer health; `PROD_READY_ISSUES_PLAN.md` Task 11 owns enforcement in the AWS
+  deployment model.
 
 ## Related runbooks
 

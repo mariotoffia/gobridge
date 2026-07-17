@@ -89,6 +89,10 @@ func TestApp_CommitAppliesExactlyOnceWithActiveWatcher(t *testing.T) {
 	// it recognised as already-applied (skipped). This deterministically proves
 	// the watcher observed the post-commit file without triggering a rebuild.
 	require.Eventually(t, func() bool { return skips.Load() >= 1 }, 3*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		health := app.configWatchHealth()
+		return !health.Degraded && !health.ReconfigurePending && health.LastApplyError == ""
+	}, 3*time.Second, 10*time.Millisecond)
 
 	// The commit must have caused EXACTLY ONE runtime rebuild (the in-band
 	// apply); the watcher's re-emit must not have rebuilt again.

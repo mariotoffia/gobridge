@@ -265,24 +265,32 @@ type deepHealthResponse struct {
 	// bridge running blind on its last good config (degraded config-watch was
 	// previously invisible outside the logs). Omitted when no DegradedProvider
 	// is wired; additive to the existing fields.
-	ConfigWatch *configWatchHealth `json:"config_watch,omitempty"`
+	ConfigWatch *ConfigWatchHealth `json:"config_watch,omitempty"`
 }
 
-// configWatchHealth is the deep-health projection of live-reconfiguration state.
-type configWatchHealth struct {
-	Degraded bool   `json:"degraded"`
-	Reason   string `json:"reason,omitempty"`
+// ConfigWatchHealth is the deep-health projection of live-reconfiguration state.
+type ConfigWatchHealth struct {
+	Degraded           bool   `json:"degraded"`
+	Reason             string `json:"reason,omitempty"`
+	ReconfigurePending bool   `json:"reconfigure_pending"`
+	DesiredVersion     *int   `json:"desired_version,omitempty"`
+	RunningVersion     *int   `json:"running_version,omitempty"`
+	LastApplyError     string `json:"last_apply_error,omitempty"`
 }
 
 type deepHealthSessionResponse struct {
-	SessionID           string   `json:"session_id"`
-	Connected           bool     `json:"connected"`
-	HasLease            bool     `json:"has_lease"`
-	SubscriptionsWanted int      `json:"subscriptions_wanted"`
-	SubscriptionsActive int      `json:"subscriptions_active"`
-	ActiveTopics        []string `json:"active_topics,omitempty"`
-	Ready               bool     `json:"ready"`
-	ServiceLevel        string   `json:"service_level"`
+	SessionID                string   `json:"session_id"`
+	Connected                bool     `json:"connected"`
+	HasLease                 bool     `json:"has_lease"`
+	SubscriptionsWanted      int      `json:"subscriptions_wanted"`
+	SubscriptionsActive      int      `json:"subscriptions_active"`
+	ActiveTopics             []string `json:"active_topics,omitempty"`
+	Ready                    bool     `json:"ready"`
+	ServiceLevel             string   `json:"service_level"`
+	UnsettledCount           int      `json:"unsettled_count"`
+	OldestUnsettledAgeMS     int64    `json:"oldest_unsettled_age_ms"`
+	ReceiveWindowUtilization float64  `json:"receive_window_utilization"`
+	RecoveryRecycleCount     uint64   `json:"recovery_recycle_count"`
 }
 
 type deepHealthRouteResponse struct {
@@ -318,14 +326,18 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Sessions = make([]deepHealthSessionResponse, len(dh.Sessions))
 	for i, sh := range dh.Sessions {
 		resp.Sessions[i] = deepHealthSessionResponse{
-			SessionID:           sh.SessionID,
-			Connected:           sh.Connected,
-			HasLease:            sh.HasLease,
-			SubscriptionsWanted: sh.SubscriptionsWanted,
-			SubscriptionsActive: sh.SubscriptionsActive,
-			ActiveTopics:        sh.ActiveTopics,
-			Ready:               sh.Ready,
-			ServiceLevel:        string(sh.ServiceLevel),
+			SessionID:                sh.SessionID,
+			Connected:                sh.Connected,
+			HasLease:                 sh.HasLease,
+			SubscriptionsWanted:      sh.SubscriptionsWanted,
+			SubscriptionsActive:      sh.SubscriptionsActive,
+			ActiveTopics:             sh.ActiveTopics,
+			Ready:                    sh.Ready,
+			ServiceLevel:             string(sh.ServiceLevel),
+			UnsettledCount:           sh.UnsettledCount,
+			OldestUnsettledAgeMS:     sh.OldestUnsettledAge.Milliseconds(),
+			ReceiveWindowUtilization: sh.ReceiveWindowUtilization,
+			RecoveryRecycleCount:     sh.RecoveryRecycleCount,
 		}
 	}
 
@@ -349,9 +361,12 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	// A degraded config-watch does NOT flip the traffic status: the runtime
 	// keeps serving its last good config, so failing readiness here would pull a
 	// healthy bridge out of rotation over a config-observation problem.
-	if s.cfg.DegradedProvider != nil {
+	if s.cfg.ConfigWatchProvider != nil {
+		status := s.cfg.ConfigWatchProvider()
+		resp.ConfigWatch = &status
+	} else if s.cfg.DegradedProvider != nil {
 		degraded, reason := s.cfg.DegradedProvider()
-		resp.ConfigWatch = &configWatchHealth{Degraded: degraded, Reason: reason}
+		resp.ConfigWatch = &ConfigWatchHealth{Degraded: degraded, Reason: reason}
 	}
 
 	writeJSON(w, status, resp)

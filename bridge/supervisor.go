@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,7 @@ type Supervisor struct {
 	mu                  sync.RWMutex
 	rt                  *runtime.Runtime
 	cfg                 *ports.BridgeConfig
+	durableIdentities   durableSessionIdentitySnapshot
 	transports          map[string]ports.TransportFactory
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
@@ -273,7 +275,9 @@ func WithSupervisorBlueprintValidator(v ports.BlueprintValidator) SupervisorOpti
 // Default (false) fails CLOSED — GoBridge never silently discards durable
 // messages. Set true ONLY when the operator truly intends to DISCARD that
 // backlog; the supervisor then WARN-logs the discarded partitions/stores and
-// proceeds with the swap.
+// proceeds with the swap. This option never bypasses durable broker-session
+// identity protection; those migrations require an external drain/unsubscribe/
+// backlog/cutover procedure.
 func WithAllowDestructiveReload(allow bool) SupervisorOption {
 	return func(s *Supervisor) { s.allowDestructiveReload = allow }
 }
@@ -355,7 +359,17 @@ func (s *Supervisor) Runtime() *runtime.Runtime {
 func (s *Supervisor) Config() *ports.BridgeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg
+	return cloneConfigSnapshot(s.cfg)
+}
+
+// cloneConfigSnapshot is used only for already-accepted Supervisor state. Its
+// freeze contract was validated before publication, so failure here is defensive.
+func cloneConfigSnapshot(cfg *ports.BridgeConfig) *ports.BridgeConfig {
+	cloned, err := cloneConfigForBuild(cfg)
+	if err != nil {
+		return nil
+	}
+	return cloned
 }
 
 // Run builds and starts the initial runtime, then watches the
@@ -370,7 +384,15 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	s.baseCtx = ctx
 	s.mu.Unlock()
 
-	rt, err := s.buildRuntime(ctx, initial)
+	appliedInitial, err := cloneConfigForBuild(initial)
+	if err != nil {
+		return fmt.Errorf("supervisor: initial config freeze: %w", err)
+	}
+	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
+	if err != nil {
+		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
+	}
+	rt, err := s.buildRuntime(ctx, appliedInitial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial build: %w", err)
 	}
@@ -380,13 +402,14 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 		// started; returning here without releasing them leaks every connection
 		// set (HIGH: initial Start failure leaks the built runtime). Mirror the
 		// swap paths' careful stopAbandoned before returning.
-		s.stopAbandoned(ctx, rt, initial)
+		s.stopAbandoned(ctx, rt, appliedInitial)
 		return fmt.Errorf("supervisor: initial start: %w", err)
 	}
 
 	s.mu.Lock()
 	s.rt = rt
-	s.cfg = initial
+	s.cfg = appliedInitial
+	s.durableIdentities = initialIdentities
 	s.mu.Unlock()
 
 	if changes == nil {
@@ -553,6 +576,7 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	rt := s.rt
 	cfg := s.cfg
 	baseCtx := s.baseCtx
+	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
 	if rt != nil && rt.IsRunning() {
 		return nil
@@ -564,6 +588,13 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 		// Run has not been entered, so there is no process-scoped context to own
 		// the runtime's lifetime. Refuse rather than bind it to the request ctx.
 		return fmt.Errorf("supervisor: not running; cannot start bridge")
+	}
+	proposedIdentities, err := snapshotDurableSessionIdentities(cfg)
+	if err == nil {
+		err = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
+	}
+	if err != nil {
+		return fmt.Errorf("supervisor: start bridge durable session identity preflight: %w", err)
 	}
 	// Bound the BUILD by the admin-request ctx (so the handler stays responsive to
 	// its operation timeout), but START the runtime under the long-lived Run ctx:
@@ -592,17 +623,124 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
+	// Freeze the proposal exactly once at the Supervisor boundary. Every
+	// preflight, build, stored snapshot, and recovery decision below uses this
+	// same immutable content; SwapEvent keeps the original pointer solely for
+	// config-manager acknowledgement correlation.
+	frozenCfg, freezeErr := cloneConfigForBuild(newCfg)
+	if freezeErr != nil {
+		s.mu.RLock()
+		oldCfg := s.cfg
+		s.mu.RUnlock()
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing config whose plugin snapshot cannot be frozen", "error", freezeErr)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigSnapshot(oldCfg), NewConfig: newCfg, Error: freezeErr})
+		}
+		return
+	}
+
+	// No-op detection and the clustered-reload guard run FIRST — before the
+	// durable-identity preflight, the paused handling, and any Plan/build/store
+	// query or Stop — so no clustered reload can slip through a paused or
+	// destructive path (finding H8) and a genuine no-op never needlessly rebuilds
+	// a runtime.
+	s.mu.RLock()
+	oldCfgForGuard := s.cfg
+	pausedForGuard := s.paused
+	s.mu.RUnlock()
+
+	// (1) No-op: a re-emit whose CANONICAL content matches the applied config is
+	// not a reconfiguration. Acknowledge it WITHOUT a swap so the running runtime,
+	// applied config, version, and reference are all preserved. onSwap MUST still
+	// fire (an in-band applier blocks on the result for this exact config pointer);
+	// mirror the paused/live distinction with Deferred so a no-op re-emit received
+	// while paused resolves as recorded-not-applied, not applied.
+	if oldCfgForGuard != nil && configContentEqual(oldCfgForGuard, frozenCfg) {
+		if s.logger != nil {
+			s.logger.Debug("supervisor: reload matches the running config; no swap performed",
+				"config_version", frozenCfg.Version)
+		}
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig: newCfg,
+				Deferred:  pausedForGuard,
+			})
+		}
+		return
+	}
+
+	// (2) Cluster guard: refuse the reload fail-closed when EITHER the applied OR
+	// the proposed config is clustered (entering and leaving a cohort are equally
+	// unsafe). A per-process reload has no cluster-wide version barrier or
+	// coordinated rollback, so a rolling live reload would split the cohort across
+	// config versions — require an externally coordinated whole-cohort
+	// stop/deploy/start (docs/runbooks/cluster-config-rollout.md). Deliberately NOT
+	// bypassable by WithAllowDestructiveReload: that escape hatch discards LOCAL
+	// durable backlog and cannot substitute for cluster consensus. Uses the SHARED
+	// IsClusteredDeployment predicate (bridge/convert.go) and reports through the
+	// EXISTING reload-failure paths (failure-tagged metric + failed SwapEvent), so
+	// the current runtime keeps serving unchanged. Not a no-op (checked above).
+	if IsClusteredDeployment(oldCfgForGuard) || IsClusteredDeployment(frozenCfg) {
+		err := fmt.Errorf("bridge: refusing live reload of a clustered deployment: a per-process "+
+			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload "+
+			"would split the cohort across config versions. Externally coordinate a whole-cohort "+
+			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, "+
+			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); "+
+			"see docs/runbooks/cluster-config-rollout.md. WithAllowDestructiveReload does not apply "+
+			"(attempted_config_version=%d)", frozenCfg.Version)
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing live reload of a clustered deployment; a per-process "+
+				"reload has no cluster-wide version barrier — coordinate an external whole-cohort "+
+				"stop/deploy/start (docs/runbooks/cluster-config-rollout.md)",
+				"error", err, "attempted_config_version", frozenCfg.Version)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig: newCfg,
+				Error:     err,
+			})
+		}
+		return
+	}
+
+	// MQTT and similar durable broker sessions are external stores. Changing or
+	// removing their identity can strand subscriptions and queued QoS messages,
+	// so compare the typed plugin fingerprints before stopping the old runtime,
+	// building a replacement, or honoring any destructive-reload override.
+	s.mu.RLock()
+	paused := s.paused
+	oldCfgAtPreflight := s.cfg
+	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
+	s.mu.RUnlock()
+	proposedIdentities, identityErr := snapshotDurableSessionIdentities(frozenCfg)
+	if identityErr == nil {
+		identityErr = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
+	}
+	if identityErr != nil {
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing reload that changes or duplicates durable broker session identity; "+
+				"externally drain, unsubscribe, and cut over the old session first",
+				"error", identityErr, "attempted_config_version", frozenCfg.Version)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{OldConfig: cloneConfigSnapshot(oldCfgAtPreflight), NewConfig: newCfg, Error: identityErr})
+		}
+		return
+	}
+
 	// While an operator has deliberately paused the bridge (StopBridge), a config
 	// reload must NOT silently resume it. Record the new config so a later
 	// StartBridge resumes on the latest desired state, but do not build or start
 	// a runtime now.
-	s.mu.RLock()
-	paused := s.paused
-	s.mu.RUnlock()
 	if paused {
-		s.mu.Lock()
-		oldCfg := s.cfg
-		s.mu.Unlock()
+		oldCfg := oldCfgAtPreflight
 		// A paused reload cannot prove-drained: StopBridge already Stopped the
 		// old runtime and CLOSED its outbox/DLQ stores, so there is no live store
 		// to query. Refuse a DESTRUCTIVE topology change (removed/retargeted
@@ -617,19 +755,19 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// out of scope. Fire a FAILED swap event (Error set, Deferred false) so an
 		// in-band applier waiting on this exact config resolves as a failure
 		// instead of hanging to its deadline; keep oldCfg as the resume target.
-		if destructiveReloadShape(oldCfg, newCfg) && !s.allowDestructiveReload {
+		if destructiveReloadShape(oldCfg, frozenCfg) && !s.allowDestructiveReload {
 			err := fmt.Errorf("bridge: refusing paused destructive reload: it would strand durable " +
 				"backlog on resume (removed/retargeted outbox|dlq store, changed store identity, or " +
 				"orphaned shared_outbox partition); drain before pausing or set WithAllowDestructiveReload")
 			if s.logger != nil {
 				s.logger.Error("supervisor: refusing paused config change that would strand durable "+
 					"backlog on resume; drain before pausing or force with WithAllowDestructiveReload",
-					"error", err, "attempted_config_version", newCfg.Version)
+					"error", err, "attempted_config_version", frozenCfg.Version)
 			}
 			s.emitConfigReload(false)
 			if s.onSwap != nil {
 				s.safeOnSwap(SwapEvent{
-					OldConfig: oldCfg,
+					OldConfig: cloneConfigSnapshot(oldCfg),
 					NewConfig: newCfg,
 					Error:     err,
 				})
@@ -637,11 +775,12 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			return
 		}
 		s.mu.Lock()
-		s.cfg = newCfg
+		s.cfg = frozenCfg
+		s.durableIdentities = proposedIdentities
 		s.mu.Unlock()
 		if s.logger != nil {
 			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
-				"config_version", newCfg.Version)
+				"config_version", frozenCfg.Version)
 		}
 		// onSwap MUST be total: an in-band applier blocks on the swap result for
 		// this exact config, so a paused apply that returned without firing
@@ -650,7 +789,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// with a committed-not-applied (no-rollback) outcome.
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: oldCfg,
+				OldConfig: cloneConfigSnapshot(oldCfg),
 				NewConfig: newCfg,
 				Deferred:  true,
 			})
@@ -671,7 +810,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	}()
 
 	start := s.clk.Now()
-	mode := s.detectSwapMode(newCfg)
+	mode := s.detectSwapMode(frozenCfg)
 
 	s.mu.RLock()
 	oldRt := s.rt
@@ -687,7 +826,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// while unprocessed durable rows sit in the old one, silently missed until
 	// manual recovery (supervisor.go:681, Chunk 10). Detect it before touching
 	// either runtime.
-	identErr := storeIdentityChanged(oldCfg, newCfg)
+	identErr := storeIdentityChanged(oldCfg, frozenCfg)
 
 	// A live reload that changes a lease-bearing exclusive route's session_id
 	// changes the lease IDENTITY, splitting cluster ownership domains: with no
@@ -698,7 +837,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// operator forces it with the same WithAllowDestructiveReload escape hatch.
 	var leaseIdentErr error
 	if oldRt != nil && !s.allowDestructiveReload {
-		leaseIdentErr = leaseSessionIDChanged(oldCfg, newCfg)
+		leaseIdentErr = leaseSessionIDChanged(oldCfg, frozenCfg)
 	}
 
 	// Dropping a durable store entirely (non-nil -> nil) is a deliberate
@@ -708,21 +847,20 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// orphaning) DOES strand durable backlog; that is gated fail-closed by the
 	// durable-reload preflight below, not merely warned (HIGH-2/HIGH-3).
 	if s.logger != nil {
-		if removed := removedStoreRoles(oldCfg, newCfg); slices.Contains(removed, "lease") {
+		if removed := removedStoreRoles(oldCfg, frozenCfg); slices.Contains(removed, "lease") {
 			s.logger.Warn("supervisor: reload removes the lease store; its fencing state is discarded "+
-				"(holds no message backlog)", "attempted_config_version", newCfg.Version)
+				"(holds no message backlog)", "attempted_config_version", frozenCfg.Version)
 		}
 	}
 
-	// A live reload must NEVER strand already-durable backlog: an outbox
-	// partition that loses its drainer in the new topology, or an outbox/DLQ
-	// store removed while records still sit there. Prove the affected backlog is
-	// drained (F2 depth capability) or refuse the swap — unless the operator set
-	// WithAllowDestructiveReload to discard it (HIGH-2/HIGH-3). Only meaningful
-	// when a store identity change has not already refused the swap.
+	// A live reload must NEVER strand durable backlog. Pending depth cannot prove
+	// safety here: it excludes claimed records, DynamoDB's supporting GSI is
+	// eventually consistent, and ingress can persist after a point-in-time read.
+	// Refuse every outbox/DLQ removal or orphaned partition unless the operator
+	// explicitly authorizes destructive discard (HIGH-2/HIGH-3).
 	var preflightErr error
-	if oldRt != nil && identErr == nil {
-		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg)
+	if oldRt != nil && identErr == nil && leaseIdentErr == nil {
+		preflightErr = s.durableReloadPreflight(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
 	switch {
@@ -735,16 +873,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: refusing reload that changes a durable store identity; "+
 				"draining/migrating the old store is required to avoid stranding its backlog",
-				"error", err, "attempted_config_version", newCfg.Version)
-		}
-	case oldRt != nil && preflightErr != nil:
-		// Refuse the swap and keep the old runtime serving so its durable
-		// backlog is still drained; fail closed rather than abandon messages.
-		err = preflightErr
-		if s.logger != nil {
-			s.logger.Error("supervisor: refusing reload that would strand durable backlog; drain the "+
-				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
-				"error", err, "attempted_config_version", newCfg.Version)
+				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case oldRt != nil && leaseIdentErr != nil:
 		// Refuse the swap and keep the old runtime serving under the CURRENT
@@ -756,12 +885,21 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			s.logger.Error("supervisor: refusing reload that changes a lease-bearing exclusive "+
 				"session_id (cluster ownership invariant); roll it with a full stop/restart of all "+
 				"nodes or force with WithAllowDestructiveReload",
-				"error", err, "attempted_config_version", newCfg.Version)
+				"error", err, "attempted_config_version", frozenCfg.Version)
+		}
+	case oldRt != nil && preflightErr != nil:
+		// Refuse the swap and keep the old runtime serving so its durable
+		// backlog is still drained; fail closed rather than abandon messages.
+		err = preflightErr
+		if s.logger != nil {
+			s.logger.Error("supervisor: refusing reload that would strand durable backlog; drain the "+
+				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
+				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case mode == SwapPrepareCommit:
-		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, newCfg)
+		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, frozenCfg)
 	default:
-		newRt, err = s.applyOverlap(ctx, oldRt, oldCfg, newCfg)
+		newRt, err = s.applyOverlap(ctx, oldRt, oldCfg, frozenCfg)
 	}
 
 	// Observable residual (HIGH-2/3): the preflight proved the orphaned
@@ -777,11 +915,11 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	// surfaces only when it reverts to pending; the point-in-time refusal above
 	// remains the primary guard.
 	if err == nil && newRt != nil && oldRt != nil {
-		s.reportOrphanedStrand(ctx, newRt, oldCfg, newCfg)
+		s.reportOrphanedStrand(ctx, newRt, oldCfg, frozenCfg)
 	}
 
 	ev := SwapEvent{
-		OldConfig: oldCfg,
+		OldConfig: cloneConfigSnapshot(oldCfg),
 		NewConfig: newCfg,
 		SwapMode:  mode,
 		Error:     err,
@@ -810,13 +948,14 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Error("supervisor: reconfiguration failed",
 				"swap_mode", mode, "error", err, "duration", ev.Duration,
-				"config_version", oldVersion, "attempted_config_version", newCfg.Version)
+				"config_version", oldVersion, "attempted_config_version", frozenCfg.Version)
 		}
 		s.emitConfigReload(false)
 	} else {
 		s.mu.Lock()
 		s.rt = newRt
-		s.cfg = newCfg
+		s.cfg = frozenCfg
+		s.durableIdentities = proposedIdentities
 		s.wedged = false
 		s.degraded = false
 		s.degradedReason = ""
@@ -825,7 +964,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		if s.logger != nil {
 			s.logger.Info("supervisor: reconfiguration complete",
 				"swap_mode", mode, "duration", ev.Duration,
-				"config_version", newCfg.Version, "old_config_version", oldVersion)
+				"config_version", frozenCfg.Version, "old_config_version", oldVersion)
 		}
 		// A successful reload clears any prior degraded state; export both the
 		// gauge reset and the success counter so operators see recovery.
@@ -1157,6 +1296,114 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 	return SwapOverlap
 }
 
+// durableSessionIdentitySnapshot is immutable after publication on Supervisor.
+// Both keys and fingerprints are opaque comparison material and must not be
+// logged. The plugin kind scopes fingerprints from unrelated transports.
+type durableSessionIdentitySnapshot map[string]durableSessionIdentity
+
+type durableSessionIdentity struct {
+	kind        string
+	fingerprint string
+}
+
+// durableSessionIdentityChanged remains the config-to-config seam used by unit
+// tests. Supervisor reloads compare the proposed snapshot with the immutable
+// snapshot captured when the current config was accepted.
+func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
+	frozenOld, err := cloneConfigForBuild(oldCfg)
+	if err != nil {
+		return err
+	}
+	oldIdentities, err := snapshotDurableSessionIdentities(frozenOld)
+	if err != nil {
+		return err
+	}
+	frozenNew, err := cloneConfigForBuild(newCfg)
+	if err != nil {
+		return err
+	}
+	newIdentities, err := snapshotDurableSessionIdentities(frozenNew)
+	if err != nil {
+		return err
+	}
+	return compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities)
+}
+
+func snapshotDurableSessionIdentities(cfg *ports.BridgeConfig) (durableSessionIdentitySnapshot, error) {
+	snapshot := make(durableSessionIdentitySnapshot)
+	if cfg == nil {
+		return snapshot, nil
+	}
+	referenced := referencedSessionIDs(cfg)
+	owners := make(map[string]string)
+	for _, session := range cfg.Sessions {
+		mode := normalizedSessionMode(session.SessionMode)
+		if _, ok := referenced[session.ID]; !ok ||
+			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+			continue
+		}
+		identityConfig, ok := session.Config.(ports.DurableSessionIdentityConfig)
+		if !ok {
+			continue
+		}
+		if ports.IsNilPluginConfig(session.Config) {
+			return nil, fmt.Errorf("bridge: durable session %q identity config is nil", session.ID)
+		}
+		if _, ok := session.Config.(ports.FreezableConfig); !ok {
+			return nil, fmt.Errorf("bridge: durable session %q identity config lacks adapter-owned freeze capability", session.ID)
+		}
+		fingerprint, err := identityConfig.DurableSessionIdentity(mode)
+		if err != nil || fingerprint == "" {
+			return nil, fmt.Errorf("bridge: durable session %q identity cannot be verified", session.ID)
+		}
+		domains, err := identityConfig.DurableSessionIdentityDomains(mode)
+		if err != nil || len(domains) == 0 {
+			return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
+		}
+		identity := durableSessionIdentity{kind: session.Config.Kind(), fingerprint: fingerprint}
+		for _, domain := range domains {
+			if domain == "" {
+				return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
+			}
+			collisionKey := identity.kind + "\x00" + domain
+			if owner, duplicate := owners[collisionKey]; duplicate && owner != session.ID {
+				return nil, fmt.Errorf("bridge: durable sessions %q and %q have duplicate effective broker identities", owner, session.ID)
+			}
+			owners[collisionKey] = session.ID
+		}
+		snapshot[session.ID] = identity
+	}
+	return snapshot, nil
+}
+
+func compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities durableSessionIdentitySnapshot) error {
+	for sessionID, oldIdentity := range oldIdentities {
+		newIdentity, ok := newIdentities[sessionID]
+		if !ok {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed, renamed, or lost its identity capability; its broker state and managed filter history could be stranded; externally drain and exact-unsubscribe every managed filter before cutover", sessionID)
+		}
+		if oldIdentity != newIdentity {
+			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; externally drain queued messages, unsubscribe the old session, and perform a cutover", sessionID)
+		}
+	}
+	return nil
+}
+
+func cloneDurableSessionIdentitySnapshot(in durableSessionIdentitySnapshot) durableSessionIdentitySnapshot {
+	out := make(durableSessionIdentitySnapshot, len(in))
+	for id, identity := range in {
+		out[id] = identity
+	}
+	return out
+}
+
+func normalizedSessionMode(mode string) connectivity.SessionMode {
+	if mode == "" {
+		return connectivity.SessionEphemeral
+	}
+	return connectivity.SessionMode(mode)
+}
+
 // storageIdentifiedConfig is an OPTIONAL store PluginConfig capability that
 // reports a stable descriptor of the DURABLE backing location (e.g. a SQLite
 // file path or a DynamoDB table name) — and nothing tunable. When a store
@@ -1165,6 +1412,12 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 // backing-store change. The descriptor MUST NOT contain secrets.
 type storageIdentifiedConfig interface {
 	StorageIdentity() string
+}
+
+// roleStorageIdentifiedConfig resolves role-dependent defaults before durable
+// identity comparison (for example one DynamoDB config shared by four roles).
+type roleStorageIdentifiedConfig interface {
+	StorageIdentityForRole(role string) string
 }
 
 // storeIdentityChanged reports an error when a hot reload would repoint an
@@ -1189,12 +1442,16 @@ func storeIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
 		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
 		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
 		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+		{"managed_subscriptions", oldCfg.Stores.ManagedSubscriptions, newCfg.Stores.ManagedSubscriptions},
 	}
 	for _, r := range roles {
+		if r.name == "managed_subscriptions" && r.old != nil && r.new == nil {
+			return fmt.Errorf("bridge: refusing live reload: managed subscription store was removed while persistent/exclusive MQTT subscriptions remain; exact broker-filter history would be unavailable")
+		}
 		if r.old == nil || r.new == nil {
 			continue
 		}
-		if storeIdentity(r.old) != storeIdentity(r.new) {
+		if storeIdentity(r.name, r.old) != storeIdentity(r.name, r.new) {
 			// The identity fingerprint (path/table, or a raw options blob that
 			// could carry credentials) is NEVER put in the error. Surface only
 			// the role and the non-secret type discriminators, and adapt the
@@ -1317,6 +1574,7 @@ func removedStoreRoles(oldCfg, newCfg *ports.BridgeConfig) []string {
 		{"lease", oldCfg.Stores.Lease, newCfg.Stores.Lease},
 		{"outbox", oldCfg.Stores.Outbox, newCfg.Stores.Outbox},
 		{"dlq", oldCfg.Stores.DLQ, newCfg.Stores.DLQ},
+		{"managed_subscriptions", oldCfg.Stores.ManagedSubscriptions, newCfg.Stores.ManagedSubscriptions},
 	}
 	for _, r := range roles {
 		if r.old != nil && r.new == nil {
@@ -1326,13 +1584,10 @@ func removedStoreRoles(oldCfg, newCfg *ports.BridgeConfig) []string {
 	return removed
 }
 
-// preflightDepthBudget bounds the depth-report probes the durable-reload
-// preflight runs against the OLD runtime's stores. These are ordinary store
-// reads (a COUNT / QueryPending), but they run inline on the reconfiguration
-// path before the swap, so a wedged store must not stall the reload forever. It
-// is detached from the caller ctx so a final-shutdown-cancelled ctx still lets
-// the preflight decide.
-const preflightDepthBudget = 5 * time.Second
+// strandReportBudget bounds the best-effort pending-depth query after an
+// explicitly forced destructive reload. Correctness never depends on this
+// pending-only observation.
+const strandReportBudget = 5 * time.Second
 
 // sharedOutboxPartitionSessions returns the set of session IDs a config wires
 // shared_outbox outbox drainers for. Each such session owns the outbox
@@ -1371,6 +1626,95 @@ func sharedOutboxPartitionSessions(cfg *ports.BridgeConfig) map[string]struct{} 
 		}
 	}
 	return out
+}
+
+// configContentEqual reports whether two configs are the SAME deployment for the
+// purpose of the no-op / clustered-reload decision. It mirrors the project's
+// authoritative content identity — config.configFingerprint — rather than a
+// structural reflect.DeepEqual:
+//
+//   - It canonicalises each config to the JSON projection of its EXPORTED fields
+//     with secrets revealed (via shared.RevealSecrets, so a secret-only edit is
+//     still a change), then appends the JSON of every decoded PluginConfig in the
+//     same fixed order the fingerprint uses (the blueprint tags the Config fields
+//     json:"-", so a plugin-only change would otherwise be invisible).
+//   - It therefore INCLUDES BridgeConfig.Version: the project treats a version
+//     bump as a content change (the fingerprint json-encodes version), so a
+//     version-only reload is NOT a no-op and, when clustered, is still refused.
+//   - It IGNORES opaque unexported plugin internals (mutexes, clients, sync.Once):
+//     json marshals only exported fields, so an equivalent RE-EMIT of the same
+//     decoded config compares equal instead of being falsely rejected.
+//
+// On any marshal error it FAILS CLOSED (reports not-equal), so an
+// un-canonicalisable config is treated as a change rather than a spurious no-op.
+func configContentEqual(a, b *ports.BridgeConfig) bool {
+	ab, aok := configCanonicalBytes(a)
+	bb, bok := configCanonicalBytes(b)
+	if !aok || !bok {
+		return false
+	}
+	return bytes.Equal(ab, bb)
+}
+
+// configCanonicalBytes returns the canonical content projection of cfg used by
+// configContentEqual (see there). ok is false on a marshal error so the caller
+// can fail closed. Both callers pass already-frozen configs, so the projection is
+// stable across repeated calls.
+func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
+	if cfg == nil {
+		return nil, true
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	if err := enc.Encode(shared.RevealSecrets(cfg)); err != nil {
+		return nil, false
+	}
+	ok := true
+	visitPluginConfigs(cfg, func(pc ports.PluginConfig) {
+		if !ok {
+			return
+		}
+		// enc.Encode writes each value followed by a newline, so the ordered
+		// stream of plugin payloads is self-delimiting; a nil PluginConfig encodes
+		// as "null", preserving its structural position.
+		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+			ok = false
+		}
+	})
+	if !ok {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// visitPluginConfigs visits every decoded PluginConfig on the blueprint in the
+// same fixed, deterministic order as config.forEachPluginConfig (stores, then
+// sessions, receivers + their topics, senders, bindings). The order is part of
+// the content contract: two configs differing only in the position of an
+// otherwise-identical plugin option must canonicalise differently. Bridge cannot
+// import the config package (arch-lint), so this mirrors that traversal locally.
+func visitPluginConfigs(cfg *ports.BridgeConfig, fn func(ports.PluginConfig)) {
+	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
+		if sc == nil {
+			continue
+		}
+		fn(sc.Config)
+	}
+	for i := range cfg.Sessions {
+		fn(cfg.Sessions[i].Config)
+	}
+	for i := range cfg.Receivers {
+		fn(cfg.Receivers[i].Config)
+		for j := range cfg.Receivers[i].Topics {
+			fn(cfg.Receivers[i].Topics[j].Config)
+		}
+	}
+	for i := range cfg.Senders {
+		fn(cfg.Senders[i].Config)
+	}
+	for i := range cfg.Bindings {
+		fn(cfg.Bindings[i].Config)
+	}
 }
 
 // destructiveReloadShape reports whether newCfg would strand durable backlog
@@ -1412,56 +1756,28 @@ func destructiveReloadShape(oldCfg, newCfg *ports.BridgeConfig) bool {
 	return false
 }
 
-// durableReloadPreflight fails a live reload CLOSED when it would strand
-// already-durable backlog: an outbox partition that loses its drainer in the new
-// topology (route removed, retargeted, changed to direct_hold, or lost its
-// session), or an outbox/DLQ store removed entirely — while records still sit
-// there. It reuses the F2 depth-report capability (OutboxDepthReporter /
-// DLQDepthReporter) to PROVE emptiness; a store that cannot prove its depth is
-// treated as UNPROVEN and refused (fail closed — never assume drained). An
-// operator who truly intends to discard the backlog forces it with
-// WithAllowDestructiveReload. Returns nil when nothing durable would be
-// stranded.
+// durableReloadPreflight fails closed on every live-reload shape that can
+// orphan durable records: removing an outbox/DLQ store or removing the last
+// drainer for an outbox partition. A pending-depth query is not proof of zero
+// nonterminal records because it excludes claimed records, may be eventually
+// consistent, and races late ingress. Safe removal therefore requires an
+// externally quiesced stop/migration; the only live override is explicit
+// destructive discard via WithAllowDestructiveReload.
 //
-// ponytail: "refuse while backlog exists" is the audit's explicitly-accepted
-// fix; the heavier "shadow drainer until empty" alternative is out of scope. The
-// LEASE store is deliberately NOT gated here — it holds fencing tokens, not
-// message backlog, exposes no depth capability to prove empty, and gating it
-// would wedge legitimate exclusive->non-exclusive reloads that merely drop the
-// lease store.
-//
-// ponytail: this proof is POINT-IN-TIME and PENDING-scoped — matching the
-// audit's accepted "refuse while backlog exists" fix (the airtight alternative,
-// shadow drainers / drain-orphaned-partitions-to-idle before swap, is
-// deliberately out of scope). Two bounded residual windows remain, both
-// requiring the operator to remove a route whose SOURCE is still delivering at
-// the reload instant:
-//  1. Late ingress: a record persisted into an orphaned partition AFTER this
-//     count but BEFORE old-runtime Stop is left durable with no new drainer.
-//  2. Claimed in-flight: CountPending counts PENDING only (metric semantics;
-//     see memoryoutbox.CountPending), so a record a drainer is mid-sending is
-//     not counted and strands if its send does not complete during Stop.
-//
-// Operational close: quiesce the source before removing its shared_outbox
-// route. Surfaced observably post-swap via reportOrphanedStrand; primary guard
-// is the point-in-time refusal above.
-func (s *Supervisor) durableReloadPreflight(ctx context.Context, oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) error {
-	if oldRt == nil || oldCfg == nil || newCfg == nil {
+// The lease store is deliberately not gated here: it holds fencing tokens, not
+// message backlog. Store identity changes are rejected separately before this
+// preflight.
+func (s *Supervisor) durableReloadPreflight(_ context.Context, _ *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) error {
+	if oldCfg == nil || newCfg == nil {
 		return nil
 	}
 
-	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preflightDepthBudget)
-	defer cancel()
-
-	var stranded []string
-
-	// Outbox: a partition is stranded when it had a drainer in the OLD topology
-	// but has none in the NEW one. Removing the outbox store entirely leaves the
-	// new runtime with NO drainers at all, so every old partition is orphaned.
+	var hazards []string
 	if oldCfg.Stores.Outbox != nil {
 		oldSessions := sharedOutboxPartitionSessions(oldCfg)
 		newSessions := sharedOutboxPartitionSessions(newCfg)
 		if newCfg.Stores.Outbox == nil {
+			hazards = append(hazards, "outbox store removal")
 			newSessions = nil
 		}
 		for sid := range oldSessions {
@@ -1469,59 +1785,36 @@ func (s *Supervisor) durableReloadPreflight(ctx context.Context, oldRt *runtime.
 				continue
 			}
 			partition := persistence.OutboxPartitionKey(sid, "")
-			n, ok, err := oldRt.OutboxPending(pctx, partition)
-			switch {
-			case err != nil:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (depth query failed: %v)", partition, err))
-			case !ok:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (store cannot prove it is drained)", partition))
-			case n > 0:
-				stranded = append(stranded, fmt.Sprintf("outbox partition %s (%d pending record(s))", partition, n))
-			}
+			hazards = append(hazards, fmt.Sprintf("outbox partition %s loses its drainer", partition))
 		}
 	}
 
-	// DLQ: only a full store removal strands backlog (a DLQ has no per-partition
-	// drainer topology to orphan). Prove it empty via the DLQ depth capability.
 	if oldCfg.Stores.DLQ != nil && newCfg.Stores.DLQ == nil {
-		n, ok, err := runtime.ReportDLQDepth(pctx, oldRt.DLQReader(), nil)
-		switch {
-		case err != nil:
-			stranded = append(stranded, fmt.Sprintf("dlq store (depth query failed: %v)", err))
-		case !ok:
-			stranded = append(stranded, "dlq store (store cannot prove it is drained)")
-		case n > 0:
-			stranded = append(stranded, fmt.Sprintf("dlq store (%d entr(y/ies))", n))
-		}
+		hazards = append(hazards, "dlq store removal")
 	}
 
-	if len(stranded) == 0 {
+	if len(hazards) == 0 {
 		return nil
 	}
 	if s.allowDestructiveReload {
 		if s.logger != nil {
 			s.logger.Warn("supervisor: destructive reload FORCED by WithAllowDestructiveReload; "+
-				"discarding durable backlog", "discarded", stranded,
+				"durable records may be discarded", "hazards", hazards,
 				"attempted_config_version", newCfg.Version)
 		}
 		return nil
 	}
-	return fmt.Errorf("bridge: refusing live reload: it would strand durable backlog with no drainer in "+
-		"the new configuration [%s]; drain it first or set WithAllowDestructiveReload to discard it",
-		strings.Join(stranded, "; "))
+	return fmt.Errorf("bridge: refusing live reload: it can strand durable records [%s]; "+
+		"a pending-depth read cannot prove safety because claimed records, eventually-consistent indexes, "+
+		"and late ingress are not excluded. Quiesce ingress and perform a stopped migration, or set "+
+		"WithAllowDestructiveReload to explicitly discard records",
+		strings.Join(hazards, "; "))
 }
 
-// reportOrphanedStrand re-queries, AFTER a successful swap, each shared_outbox
-// partition that lost its drainer in the new topology and surfaces any residual
-// pending records as an OBSERVABLE signal (MetricOutboxStranded + an Error log)
-// rather than a silent strand. It is the post-swap complement to
-// durableReloadPreflight: the preflight proves the partitions empty at CHECK
-// time and refuses otherwise, but a record can still land in the swap window
-// (late ingress) or a claimed send can fail. Because store-identity changes are
-// already refused, the NEW runtime opens the SAME durable backing and can query
-// the orphaned partition key even though it has no drainer for it. Best-effort /
-// one-shot: a record still in CLAIMED state is not counted (CountPending is
-// pending-only) and surfaces only when it reverts to pending.
+// reportOrphanedStrand adds best-effort observability after an explicitly forced
+// destructive reload that retained the same outbox store but removed a
+// partition's drainer. Correctness does not depend on this pending-only query:
+// non-forced orphaning reloads are rejected unconditionally above.
 func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) {
 	// Only meaningful when the outbox store is RETAINED but some partition lost
 	// its drainer. Full outbox removal is already refused (backlog present) or
@@ -1533,7 +1826,7 @@ func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Ru
 	oldS := sharedOutboxPartitionSessions(oldCfg)
 	newS := sharedOutboxPartitionSessions(newCfg)
 
-	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preflightDepthBudget)
+	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), strandReportBudget)
 	defer cancel()
 
 	for sid := range oldS {
@@ -1577,9 +1870,12 @@ func (s *Supervisor) reportOrphanedStrand(ctx context.Context, newRt *runtime.Ru
 // two same-type configs pointing at DIFFERENT backings are still distinguished
 // (fail-safe: any field difference trips the guard) rather than collapsing to
 // the Type discriminator alone and silently stranding a backlog.
-func storeIdentity(sc *ports.StoreConfig) string {
+func storeIdentity(role string, sc *ports.StoreConfig) string {
 	if sc == nil {
 		return ""
+	}
+	if si, ok := sc.Config.(roleStorageIdentifiedConfig); ok {
+		return sc.Type + "|id=" + si.StorageIdentityForRole(role)
 	}
 	if si, ok := sc.Config.(storageIdentifiedConfig); ok {
 		return sc.Type + "|id=" + si.StorageIdentity()

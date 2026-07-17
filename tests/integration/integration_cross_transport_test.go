@@ -65,7 +65,10 @@ func TestIntegration_MQTT_To_SSE_CrossTransport(t *testing.T) {
 	}
 
 	// --- Runtime ---
-	rt := goruntime.New(goruntime.WithInstanceID("cross-bridge-sse"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("cross-bridge-sse"),
+		goruntime.WithDLQStore(&e2eDLQStore{}),
+	)
 	if err := rt.AddRoute(crossRouteConfig("mqtt-to-sse"), mqttRecv, sseSender, nil, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -198,7 +201,10 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 	// Wire a static resolver so the bridge dispatches to the configured MQTT
 	// topic via OutboundMessage.Address. The envelope's logical Subject must
 	// remain untouched (it is later asserted independently of the topic).
-	rt := goruntime.New(goruntime.WithInstanceID("cross-bridge-http"))
+	rt := goruntime.New(
+		goruntime.WithInstanceID("cross-bridge-http"),
+		goruntime.WithDLQStore(&e2eDLQStore{}),
+	)
 	routeCfg := crossRouteConfig("http-to-mqtt")
 	routeCfg.Resolver = goruntime.NewStaticResolver(
 		routing.DispatchPlan{BindingID: "mqtt-out", Address: mqttTopic},

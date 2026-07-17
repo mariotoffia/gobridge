@@ -17,9 +17,9 @@ import (
 // same value. A slow pipeline with large payloads at the 65535 protocol
 // maximum could buffer multiple GiB → OOM.
 //
-// Fix: NewSession coerces an unset (0) receive_maximum to the lowered
-// DefaultReceiveMaximum (1024). 0 is not a legal MQTT v5 Receive Maximum, so
-// coercing it is correct. Operators wanting the old ceiling set it explicitly.
+// Fix: NewSession coerces an unset (0) receive_maximum to the byte-budgeted
+// DefaultReceiveMaximum (192). 0 is not a legal MQTT v5 Receive Maximum, so
+// coercing it is correct.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer asserts an unset
@@ -30,8 +30,8 @@ import (
 // unset receive_maximum stays 0 and the pending buffer keeps the 65535-entry
 // default — the multi-GiB memory ceiling M-5 removes.
 func TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer(t *testing.T) {
-	require.Equal(t, uint16(1024), DefaultReceiveMaximum,
-		"the default is the lowered 1024 ceiling, not the 65535 protocol maximum")
+	require.Equal(t, uint16(192), DefaultReceiveMaximum,
+		"the default is the byte-budgeted 192 ceiling, not the 65535 protocol maximum")
 
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},

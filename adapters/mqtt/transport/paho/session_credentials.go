@@ -50,6 +50,7 @@ func (s *Session) reportAuthFailure(err error) {
 func (s *Session) handleConnectError(err error) {
 	s.mu.Lock()
 	s.connected = false
+	s.subscriptionsSatisfied = false
 	s.mu.Unlock()
 	mapped := mapConnectError(err)
 	s.reportAuthFailure(mapped)
@@ -117,6 +118,11 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 	}
 
 	s.mu.Lock()
+	if s.terminalErr != nil {
+		terminal := s.terminalErr
+		s.mu.Unlock()
+		return terminal
+	}
 	if s.closed {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("session is closed")

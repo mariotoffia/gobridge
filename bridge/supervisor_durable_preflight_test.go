@@ -27,11 +27,13 @@ import (
 // OutboxStore methods and overrides CountPending.
 type pendingOutboxStore struct {
 	fakeOutboxStore
-	pending int
-	err     error
+	pending    int
+	err        error
+	depthCalls int
 }
 
 func (s *pendingOutboxStore) CountPending(context.Context, string) (int, error) {
+	s.depthCalls++
 	return s.pending, s.err
 }
 
@@ -116,13 +118,14 @@ func TestDurableReloadPreflight_OutboxPartitionOrphaned(t *testing.T) {
 
 	t.Run("orphaned by store removal, backlog present -> refuse", func(t *testing.T) {
 		s := NewSupervisor()
-		oldRt := goruntime.New(goruntime.WithOutboxStore(&pendingOutboxStore{pending: 7}))
+		store := &pendingOutboxStore{pending: 7}
+		oldRt := goruntime.New(goruntime.WithOutboxStore(store))
 		newCfg := quickCfg("r2") // direct_hold, no outbox store, no session
 
 		err := s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "SESSION#s1")
-		assert.Contains(t, err.Error(), "7 pending")
+		assert.Zero(t, store.depthCalls, "pending depth cannot prove a destructive reload safe")
 	})
 
 	t.Run("orphaned by topology change, outbox store kept -> refuse", func(t *testing.T) {
@@ -139,12 +142,12 @@ func TestDurableReloadPreflight_OutboxPartitionOrphaned(t *testing.T) {
 		assert.Contains(t, err.Error(), "SESSION#s1")
 	})
 
-	t.Run("orphaned but backlog empty -> allow", func(t *testing.T) {
+	t.Run("orphaned with empty pending view -> refuse", func(t *testing.T) {
 		s := NewSupervisor()
 		oldRt := goruntime.New(goruntime.WithOutboxStore(&pendingOutboxStore{pending: 0}))
 		newCfg := quickCfg("r2")
 
-		require.NoError(t, s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg))
+		require.Error(t, s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg))
 	})
 
 	t.Run("partition retained in new config -> allow even with backlog", func(t *testing.T) {
@@ -165,7 +168,7 @@ func TestDurableReloadPreflight_OutboxPartitionOrphaned(t *testing.T) {
 		require.NoError(t, s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg))
 	})
 
-	t.Run("depth capability absent -> refuse (fail closed)", func(t *testing.T) {
+	t.Run("depth capability absent -> refuse", func(t *testing.T) {
 		s := NewSupervisor()
 		// bareOutboxStore does not implement OutboxDepthReporter, so the store
 		// cannot prove the orphaned partition is drained.
@@ -177,14 +180,15 @@ func TestDurableReloadPreflight_OutboxPartitionOrphaned(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot prove")
 	})
 
-	t.Run("depth query errors -> refuse (fail closed)", func(t *testing.T) {
+	t.Run("depth query is not used as safety proof", func(t *testing.T) {
 		s := NewSupervisor()
-		oldRt := goruntime.New(goruntime.WithOutboxStore(&pendingOutboxStore{err: errors.New("boom")}))
+		store := &pendingOutboxStore{err: errors.New("boom")}
+		oldRt := goruntime.New(goruntime.WithOutboxStore(store))
 		newCfg := quickCfg("r2")
 
 		err := s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "depth query failed")
+		assert.Zero(t, store.depthCalls)
 	})
 }
 
@@ -205,11 +209,11 @@ func TestDurableReloadPreflight_DLQStoreRemoval(t *testing.T) {
 		assert.Contains(t, err.Error(), "dlq store")
 	})
 
-	t.Run("dlq removed but empty -> allow", func(t *testing.T) {
+	t.Run("dlq removed but empty -> refuse without discard authorization", func(t *testing.T) {
 		s := NewSupervisor()
 		oldRt := goruntime.New(goruntime.WithDLQStore(depthDLQStore{depth: 0}))
 
-		require.NoError(t, s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg))
+		require.Error(t, s.durableReloadPreflight(ctx, oldRt, oldCfg, newCfg))
 	})
 
 	t.Run("dlq removed but store cannot prove depth -> refuse (fail closed)", func(t *testing.T) {
@@ -275,7 +279,7 @@ func TestSupervisor_ReloadOrphansOutboxPartition_RefusedWhileBacklog(t *testing.
 
 	ev := awaitSwap(t, swaps)
 	require.Error(t, ev.Error)
-	assert.Contains(t, ev.Error.Error(), "strand durable backlog")
+	assert.Contains(t, ev.Error.Error(), "strand durable records")
 	assert.Same(t, oldRt, s.Runtime(), "old runtime must keep serving so its backlog is still drained")
 }
 
@@ -381,7 +385,7 @@ func TestSupervisor_PausedDestructiveReload_Refused(t *testing.T) {
 	require.Error(t, ev.Error, "a paused destructive reload must resolve as a FAILURE, not a deferred success")
 	assert.False(t, ev.Deferred, "a refusal is a definitive failure, not a deferred (committed-not-applied) event")
 	assert.Contains(t, ev.Error.Error(), "paused destructive reload")
-	assert.Same(t, oldCfg, s.Config(),
+	assert.Equal(t, oldCfg, s.Config(),
 		"the destructive config must NOT be recorded; oldCfg stays the resume target")
 }
 
@@ -404,25 +408,21 @@ func TestSupervisor_PausedDestructiveReload_AllowedWithDiscardFlag(t *testing.T)
 	ev := awaitSwap(t, swaps)
 	require.NoError(t, ev.Error, "the discard flag forces the paused reload to be recorded")
 	assert.True(t, ev.Deferred, "a forced paused reload is deferred (committed-not-applied), not applied now")
-	assert.Same(t, newCfg, s.Config(), "the forced config becomes the resume target")
+	assert.Equal(t, newCfg, s.Config(), "the forced config becomes the resume target")
 }
 
 // ---------------------------------------------------------------------------
-// FIX 4: observable post-swap strand signal.
+// Observable post-swap strand signal for an explicitly destructive reload.
 //
-// The preflight proves an orphaned shared_outbox partition empty at CHECK time
-// (so the swap is NOT refused), but a record can still land in the swap window
-// (late ingress) or a claimed send can fail. The supervisor re-queries the
-// orphaned partition on the NEW runtime's store AFTER a successful swap and
-// surfaces a non-empty result as an observable signal (MetricOutboxStranded +
-// an Error log) instead of a silent strand.
+// Non-forced orphaning reloads are always refused because pending depth cannot
+// prove safety. When an operator explicitly authorizes destructive discard, the
+// supervisor still re-queries a retained outbox store after the swap and emits
+// MetricOutboxStranded for any pending records it can observe.
 // ---------------------------------------------------------------------------
 
 // lateIngressStoreFactory hands out outbox stores whose pending count is chosen
-// per creation call. The OLD runtime (created first, at boot) reports 0 pending
-// so the preflight passes; the NEW runtime (created at swap) reports a non-zero
-// pending for the orphaned partition, simulating a record that landed in the
-// swap window.
+// per creation call. The NEW runtime (created at swap) reports a non-zero
+// pending count for the orphaned partition.
 type lateIngressStoreFactory struct {
 	mu            sync.Mutex
 	calls         int
@@ -460,10 +460,11 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
 		WithSupervisorMetrics(rec),
+		WithAllowDestructiveReload(true),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", &exclusiveTransportFactory{})
-	// Old outbox store empty at preflight; new store holds 1 late-ingress record.
+	// The new store exposes one pending record after the forced swap.
 	s.RegisterStoreFactory("memory", &lateIngressStoreFactory{pendingByCall: []int{0, 1}})
 
 	ch := make(chan *ports.BridgeConfig, 1)
@@ -475,8 +476,8 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 
 	// Reload orphans route r1's shared_outbox partition SESSION#s1 by flipping the
 	// route to direct_hold and dropping its inline session (outbox store
-	// RETAINED). SESSION#s1 loses its drainer while its partition is empty at
-	// check time, so the swap SUCCEEDS. NOTE: this deliberately does NOT change a
+	// RETAINED). SESSION#s1 loses its drainer and the explicit destructive option
+	// authorizes the swap. NOTE: this deliberately does NOT change a
 	// lease-bearing session_id (s1 -> s2) — that is refused as a cluster
 	// ownership invariant (HIGH-2); dropping the session orphans the same
 	// partition without tripping that refusal.
@@ -486,8 +487,8 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 	require.True(t, sendConfig(ch, newCfg, time.Second))
 
 	ev := awaitSwap(t, swaps)
-	require.NoError(t, ev.Error, "swap must succeed: the orphaned partition was empty at preflight check time")
-	assert.NotSame(t, oldRt, s.Runtime(), "a successful reload installs the new runtime")
+	require.NoError(t, ev.Error, "explicit destructive authorization must permit the swap")
+	assert.NotSame(t, oldRt, s.Runtime(), "the forced reload installs the new runtime")
 
 	// The post-swap re-check on the NEW store observes the late-ingress record
 	// and emits the strand counter, tagged with the orphaned partition.
@@ -507,9 +508,8 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 	require.True(t, found, "strand metric must be tagged with the orphaned partition %s", partition)
 }
 
-// A reload that orphans a partition whose backlog is genuinely drained (0
-// pending on the new store too) must NOT emit a strand signal — the observable
-// residual is only for a real late-ingress/claim-failure strand.
+// A forced reload whose retained store reports no pending residual must not emit
+// a strand signal.
 func TestSupervisor_ReloadOrphanDrainedAfterSwap_NoStrandSignal(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	onSwap, swaps := swapChan(1)
@@ -517,6 +517,7 @@ func TestSupervisor_ReloadOrphanDrainedAfterSwap_NoStrandSignal(t *testing.T) {
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
 		WithSupervisorMetrics(rec),
+		WithAllowDestructiveReload(true),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", &exclusiveTransportFactory{})

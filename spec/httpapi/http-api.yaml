@@ -1108,9 +1108,11 @@ paths:
         re-apply patches, and retry.
 
 
-        Returns 422 if validation fails or the commit would erase plugin
-        options (`config_options_loss`). Returns 500 if the disk write fails,
-        or -- when the durable write succeeded but the in-band apply did not --
+        Returns 202 when the durable write succeeded and the runtime accepted
+        the config but has not yet confirmed the running version. Returns 422
+        if validation fails or the commit would erase plugin options
+        (`config_options_loss`). Returns 500 if the disk write fails, or --
+        when the durable write succeeded but the in-band apply failed --
         `committed_not_applied` (disk and runtime diverged; reconcile required).
 
 
@@ -1128,6 +1130,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ConfigTxnCommitResponse"
               example: { "status": "committed", "version": 4 }
+        "202":
+          description: >
+            Config committed to disk and accepted by the runtime, but the
+            running version has not yet been confirmed. The runtime is
+            converging; do not issue a compensating rollback.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigTxnCommitResponse"
+              example:
+                status: committed_applying
+                version: 4
+                error: config written to disk and accepted by the runtime; apply is in-flight and not yet confirmed (converging, no action required)
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":

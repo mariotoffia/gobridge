@@ -3,8 +3,8 @@ package bridge
 import (
 	"context"
 	"fmt"
-	"reflect"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -50,87 +50,233 @@ func (b *Builder) resolveConfigCredentials(ctx context.Context, cfg ports.Plugin
 	return uri, nil
 }
 
-// cloneConfigForBuild returns a copy of cfg whose per-attachment credentialed
-// PluginConfig values (sessions, receivers, senders) are shallow-cloned so the
-// in-place mutation performed by resolveConfigCredentials -> ApplyCredentials
-// during a build does NOT pollute the caller's canonical config.
-//
-// Why this matters (Chunk 3, builder_resolve.go:42): ApplyCredentials mutates
-// the config in place — it inlines the resolved secret material AND clears
-// credentials_uri (see ports.CredentialedConfig). The Supervisor keeps the
-// exact *ports.BridgeConfig it built from as its rollback/restart snapshot
-// (s.cfg / oldCfg). Because a SessionDef.Config is an interface holding a
-// pointer, mutating it reaches back into that retained snapshot: after a
-// successful build the rollback config has credentials_uri erased and stale
-// credentials inlined, so a later recoverOldOrWedge rebuild registers NO
-// rotation watcher and starts with stale credentials -> auth failure after
-// rollback. Cloning the credentialed configs before the build keeps the
-// canonical config pristine and re-resolvable.
-//
-// The clone is intentionally SHALLOW per PluginConfig: reflect copies the whole
-// pointed-to struct (including nested value structs and unexported secret
-// fields), which covers every credential field ApplyCredentials writes today
-// (top-level or nested value structs). Maps/slices inside a config remain
-// shared with the original.
-// ponytail: adapters whose ApplyCredentials mutates through a map/slice/pointer
-// field (none do today) would need a deeper clone or a Clone() capability; the
-// shallow copy is the smallest change that makes every current adapter's
-// canonical config pristine.
-func cloneConfigForBuild(cfg *ports.BridgeConfig) *ports.BridgeConfig {
+// cloneConfigForBuild copies the bridge-owned blueprint graph and asks each
+// adapter to freeze its own opaque PluginConfig when it advertises
+// ports.FreezableConfig. Unknown plugin configs remain intentionally opaque and
+// shared: bridge never copies mutexes, clients, map keys, or private state it
+// cannot understand. Configs that the bridge mutates or uses for durable identity
+// must be adapter-freezable so rollback and preflight state cannot be corrupted.
+func cloneConfigForBuild(cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 	out := *cfg
-	if n := len(cfg.Sessions); n > 0 {
-		out.Sessions = make([]ports.SessionDef, n)
-		copy(out.Sessions, cfg.Sessions)
-		for i := range out.Sessions {
-			out.Sessions[i].Config = clonePluginConfig(out.Sessions[i].Config)
+	if cfg.ConfigWatch != nil {
+		copy := *cfg.ConfigWatch
+		out.ConfigWatch = &copy
+	}
+	if cfg.Bridge.Cluster != nil {
+		cluster := *cfg.Bridge.Cluster
+		cluster.Endpoints = cloneStringMap(cfg.Bridge.Cluster.Endpoints)
+		out.Bridge.Cluster = &cluster
+	}
+	var err error
+	if out.Stores.Lease, err = cloneStoreConfig(cfg.Stores.Lease); err != nil {
+		return nil, fmt.Errorf("bridge: freeze lease store config: %w", err)
+	}
+	if out.Stores.Outbox, err = cloneStoreConfig(cfg.Stores.Outbox); err != nil {
+		return nil, fmt.Errorf("bridge: freeze outbox store config: %w", err)
+	}
+	if out.Stores.DLQ, err = cloneStoreConfig(cfg.Stores.DLQ); err != nil {
+		return nil, fmt.Errorf("bridge: freeze dlq store config: %w", err)
+	}
+	if out.Stores.ManagedSubscriptions, err = cloneStoreConfig(cfg.Stores.ManagedSubscriptions); err != nil {
+		return nil, fmt.Errorf("bridge: freeze managed subscription store config: %w", err)
+	}
+
+	out.Sessions = append([]ports.SessionDef(nil), cfg.Sessions...)
+	for i := range out.Sessions {
+		out.Sessions[i].Config, err = freezePluginConfig(out.Sessions[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze session %q config: %w", out.Sessions[i].ID, err)
 		}
 	}
-	if n := len(cfg.Receivers); n > 0 {
-		out.Receivers = make([]ports.ReceiverDef, n)
-		copy(out.Receivers, cfg.Receivers)
-		for i := range out.Receivers {
-			out.Receivers[i].Config = clonePluginConfig(out.Receivers[i].Config)
+	out.Receivers = append([]ports.ReceiverDef(nil), cfg.Receivers...)
+	for i := range out.Receivers {
+		out.Receivers[i].Config, err = freezePluginConfig(out.Receivers[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze receiver %q config: %w", out.Receivers[i].ID, err)
+		}
+		out.Receivers[i].Topics = append([]ports.SubscriptionDef(nil), cfg.Receivers[i].Topics...)
+		for j := range out.Receivers[i].Topics {
+			out.Receivers[i].Topics[j].Config, err = freezePluginConfig(out.Receivers[i].Topics[j].Config)
+			if err != nil {
+				return nil, fmt.Errorf("bridge: freeze receiver %q topic config: %w", out.Receivers[i].ID, err)
+			}
 		}
 	}
-	if n := len(cfg.Senders); n > 0 {
-		out.Senders = make([]ports.SenderDef, n)
-		copy(out.Senders, cfg.Senders)
-		for i := range out.Senders {
-			out.Senders[i].Config = clonePluginConfig(out.Senders[i].Config)
+	out.Senders = append([]ports.SenderDef(nil), cfg.Senders...)
+	for i := range out.Senders {
+		out.Senders[i].Config, err = freezePluginConfig(out.Senders[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze sender %q config: %w", out.Senders[i].ID, err)
 		}
 	}
-	return &out
+	out.Bindings = append([]ports.BindingDef(nil), cfg.Bindings...)
+	for i := range out.Bindings {
+		out.Bindings[i].Config, err = freezePluginConfig(out.Bindings[i].Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: freeze binding %q config: %w", out.Bindings[i].ID, err)
+		}
+	}
+	out.Routes = append([]ports.RouteDef(nil), cfg.Routes...)
+	for i := range out.Routes {
+		cloneRouteDef(&out.Routes[i], &cfg.Routes[i])
+	}
+	if cfg.HTTP != nil {
+		copy := *cfg.HTTP
+		out.HTTP = &copy
+	}
+	return &out, nil
 }
 
-// clonePluginConfig returns a shallow copy of a pointer-backed PluginConfig so
-// ApplyCredentials can mutate the copy without touching the original. It copies
-// the whole struct value (unexported fields included, which reflect field-level
-// Set cannot do) via reflect.New + Set. Non-pointer or non-struct configs are
-// returned unchanged: they are either already passed by value or carry no
-// mutable identity worth cloning here.
-func clonePluginConfig(pc ports.PluginConfig) ports.PluginConfig {
-	if pc == nil {
+func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+	if ports.IsNilPluginConfig(config) {
+		return nil, shared.ErrInvalidConfig.WithMessage("bridge: typed-nil plugin config")
+	}
+
+	sourceKind := config.Kind()
+	freezable, canFreeze := config.(ports.FreezableConfig)
+	_, credentialed := config.(ports.CredentialedConfig)
+	_, durable := config.(ports.DurableSessionIdentityConfig)
+	_, activationTimed := config.(ports.PostAcquireActivationTimingConfig)
+	_, failoverTimed := config.(ports.TransportFailoverTimingConfig)
+	_, ingressMemoryAware := config.(ports.IngressMemoryConfig)
+	if !canFreeze {
+		if credentialed {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: credentialed plugin config kind %q does not support freezing", sourceKind))
+		}
+		if durable {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: durable plugin config kind %q does not support freezing", sourceKind))
+		}
+		return config, nil
+	}
+
+	frozen := freezable.FreezePluginConfig()
+	if frozen == nil || ports.IsNilPluginConfig(frozen) {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q froze to nil", sourceKind))
+	}
+	if frozen.Kind() != sourceKind {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q froze to a different kind", sourceKind))
+	}
+	if durable {
+		if _, ok := frozen.(ports.DurableSessionIdentityConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: durable plugin config kind %q lost its identity capability when frozen", sourceKind))
+		}
+	}
+	if activationTimed {
+		if _, ok := frozen.(ports.PostAcquireActivationTimingConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: plugin config kind %q lost its post-acquire activation timing capability when frozen", sourceKind))
+		}
+	}
+	if failoverTimed {
+		if _, ok := frozen.(ports.TransportFailoverTimingConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: plugin config kind %q lost its failover timing capability when frozen", sourceKind))
+		}
+	}
+	if ingressMemoryAware {
+		if _, ok := frozen.(ports.IngressMemoryConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: plugin config kind %q lost its ingress memory capability when frozen", sourceKind))
+		}
+	}
+	if credentialed {
+		if _, ok := frozen.(ports.CredentialedConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: credentialed plugin config kind %q lost its credential capability when frozen", sourceKind))
+		}
+	}
+	if _, ok := frozen.(ports.FreezableConfig); !ok {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("bridge: plugin config kind %q lost its freeze capability when frozen", sourceKind))
+	}
+	return frozen, nil
+}
+
+func cloneStoreConfig(config *ports.StoreConfig) (*ports.StoreConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+	copy := *config
+	var err error
+	copy.Config, err = freezePluginConfig(config.Config)
+	if err != nil {
+		return nil, err
+	}
+	return &copy, nil
+}
+
+func cloneRouteDef(dst, src *ports.RouteDef) {
+	dst.Bindings = append([]string(nil), src.Bindings...)
+	dst.Processors = append([]string(nil), src.Processors...)
+	if src.Resolver != nil {
+		resolver := *src.Resolver
+		resolver.HeaderMap = cloneStringMap(src.Resolver.HeaderMap)
+		resolver.Rules = append([]ports.RuleDef(nil), src.Resolver.Rules...)
+		for i := range resolver.Rules {
+			resolver.Rules[i].Match = append([]ports.ConditionDef(nil), src.Resolver.Rules[i].Match...)
+			for j := range resolver.Rules[i].Match {
+				resolver.Rules[i].Match[j].Value = cloneBlueprintValue(resolver.Rules[i].Match[j].Value)
+			}
+		}
+		dst.Resolver = &resolver
+	}
+	if src.Session != nil {
+		session := *src.Session
+		if src.Session.DrainStrategy != nil {
+			strategy := *src.Session.DrainStrategy
+			session.DrainStrategy = &strategy
+		}
+		if src.Session.ConnectAfterLease != nil {
+			connectAfterLease := *src.Session.ConnectAfterLease
+			session.ConnectAfterLease = &connectAfterLease
+		}
+		dst.Session = &session
+	}
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
 		return nil
 	}
-	v := reflect.ValueOf(pc)
-	if v.Kind() != reflect.Pointer || v.IsNil() {
-		return pc
+	out := make(map[string]string, len(src))
+	for key, value := range src {
+		out[key] = value
 	}
-	elem := v.Elem()
-	if elem.Kind() != reflect.Struct {
-		return pc
+	return out
+}
+
+func cloneBlueprintValue(value any) any {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = cloneBlueprintValue(typed[i])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = cloneBlueprintValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case []byte:
+		return append([]byte(nil), typed...)
+	case map[string]string:
+		return cloneStringMap(typed)
+	default:
+		return value
 	}
-	dup := reflect.New(elem.Type())
-	dup.Elem().Set(elem)
-	if cloned, ok := dup.Interface().(ports.PluginConfig); ok {
-		return cloned
-	}
-	// The concrete type implemented PluginConfig on a value receiver rather
-	// than a pointer receiver; the fresh pointer does not satisfy the
-	// interface, so fall back to the original (it is not credential-mutated
-	// through a pointer receiver anyway).
-	return pc
 }

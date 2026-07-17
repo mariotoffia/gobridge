@@ -190,6 +190,7 @@ func ScanForPlaintextSecrets(cfg *ports.BridgeConfig) error {
 	violations = scanStore(violations, "stores.lease", cfg.Stores.Lease)
 	violations = scanStore(violations, "stores.outbox", cfg.Stores.Outbox)
 	violations = scanStore(violations, "stores.dlq", cfg.Stores.DLQ)
+	violations = scanStore(violations, "stores.managed_subscriptions", cfg.Stores.ManagedSubscriptions)
 
 	if len(violations) == 0 {
 		return nil

@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"net/http"
 
+	ecscluster "github.com/mariotoffia/gobridge/adapters/aws/cluster/ecs"
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
@@ -68,6 +69,9 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// full OTel dependency tree. A future traces_exporter selection would be
 	// wired here via bridge.WithTracer.
 	builder := bridge.NewBuilder(runtimeCfg, opts...)
+	if runtimeCfg != nil && runtimeCfg.Bridge.DeploymentMode == "clustered" {
+		builder.RegisterEndpointResolver(ecscluster.NewEcsEndpointResolver(ecscluster.WithLogger(a.logger)))
+	}
 
 	// The metrics exporter is threaded into the MQTT and SQS transport
 	// factories (nil keeps each adapter's internal Noop fallback) so their
@@ -76,9 +80,14 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// SQS and MQTT adapter metric dead (Finding 8; the paho factory carried
 	// the same dead-metrics wiring bug). Mirrors the HTTP factory wiring
 	// below.
+	mqttFactory := paho.NewFactory(a.logger, a.metricsExporter)
+	sqsFactory := sqsadapter.NewFactory(a.logger, a.metricsExporter)
+	// Keep factory keys symmetric with the canonical decoder aliases registered
+	// by paho.Register and sqsadapter.Register. Both names resolve to the same
+	// factory instance; no duplicate transport/session state is created.
 	transports := map[string]ports.TransportFactory{
-		"mqtt": paho.NewFactory(a.logger, a.metricsExporter),
-		"sqs":  sqsadapter.NewFactory(a.logger, a.metricsExporter),
+		paho.ShortKind: mqttFactory, paho.QualifiedKind: mqttFactory,
+		sqsadapter.ShortKind: sqsFactory, sqsadapter.QualifiedKind: sqsFactory,
 	}
 
 	// The metrics exporter reaches HTTP receivers/SSE senders through the

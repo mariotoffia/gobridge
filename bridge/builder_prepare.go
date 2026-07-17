@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -168,14 +171,16 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		return nil, errors.Join(b.regErrs...)
 	}
 
-	// Build against a copy whose credentialed configs are cloned so the
-	// in-place ApplyCredentials mutation during complete() cannot pollute the
-	// caller's canonical config — which the Supervisor retains as its
-	// rollback/restart snapshot (builder_resolve.go:42, Chunk 3). Reassigning
-	// b.cfg here means both prepare() and the later complete() (Build or
-	// Plan/Commit) operate on the private copy while the original stays
-	// pristine and re-resolvable on recovery.
-	b.cfg = cloneConfigForBuild(b.cfg)
+	// Build against a bridge-owned structural copy. Plugin configs advertising
+	// ports.FreezableConfig provide their adapter-owned isolated snapshot, so
+	// credential application and construction cannot mutate the Supervisor's
+	// rollback/restart config. Unknown opaque plugin configs are never reflect-
+	// copied or falsely treated as deep-frozen.
+	var err error
+	b.cfg, err = cloneConfigForBuild(b.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: freeze config for build: %w", err)
+	}
 
 	if err := runtime.CheckRandSource(); err != nil {
 		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
@@ -185,6 +190,21 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		if err := b.validator(b.cfg); err != nil {
 			return nil, fmt.Errorf("bridge: config validation: %w", err)
 		}
+	}
+	if err := b.validatePostAcquireActivationTimings(); err != nil {
+		return nil, err
+	}
+	if err := b.validateFailoverBudgets(); err != nil {
+		return nil, err
+	}
+	// Cardinality is a pure capability-based preflight. It must run before
+	// buildStores or complete creates any store, session, receiver, sender, or
+	// runtime resource: a rejected topology must leave the live system untouched.
+	if err := b.validateDedicatedIngressSessions(); err != nil {
+		return nil, err
+	}
+	if err := b.validateIngressMemory(); err != nil {
+		return nil, err
 	}
 
 	stores, err := b.buildStores(ctx)
@@ -196,6 +216,7 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		runtime.WithLeaseStore(stores.lease),
 		runtime.WithOutboxStore(stores.outbox),
 		runtime.WithDLQStore(stores.dlq),
+		runtime.WithManagedSubscriptionStore(stores.managedSubscriptions),
 	}
 	if b.cfg.Bridge.InstanceID != "" {
 		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
@@ -259,12 +280,14 @@ func (b *Builder) Build(ctx context.Context) (*runtime.Runtime, error) {
 }
 
 type storeResult struct {
-	lease      ports.LeaseStore
-	outbox     ports.OutboxStore
-	dlq        ports.DLQStore
-	leaseDist  bool
-	outboxDist bool
-	dlqDist    bool
+	lease                    ports.LeaseStore
+	outbox                   ports.OutboxStore
+	dlq                      ports.DLQStore
+	leaseDist                bool
+	outboxDist               bool
+	dlqDist                  bool
+	managedSubscriptions     ports.ManagedSubscriptionStore
+	managedSubscriptionsDist bool
 }
 
 func isDistributedFactory(sf ports.StoreFactory) bool {
@@ -346,6 +369,28 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		res.outbox = s
 		res.outboxDist = isDistributedFactory(sf)
 	}
+	if sc := b.cfg.Stores.ManagedSubscriptions; sc != nil {
+		sf, ok := b.storeFactories[sc.Type]
+		if !ok {
+			return nil, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
+		}
+		mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
+		if !ok {
+			return nil, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
+		}
+		store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
+		if err != nil {
+			return nil, fmt.Errorf("bridge: create managed subscription store: %w", err)
+		}
+		if store == nil {
+			return nil, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
+		}
+		res.managedSubscriptions = store
+		res.managedSubscriptionsDist = isDistributedFactory(sf)
+	}
+	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
+		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
+	}
 	if sc := b.cfg.Stores.DLQ; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
@@ -367,9 +412,11 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	// instances with a process-local lease/outbox/DLQ store silently breaks
 	// exclusivity and durability, so the store-distribution guard keys on
 	// either signal.
-	clustered := b.cfg.Bridge.DeploymentMode == "clustered" ||
-		(b.cfg.Bridge.Cluster != nil && len(b.cfg.Bridge.Cluster.Endpoints) > 0)
-	if clustered {
+	// IsClusteredDeployment is the SHARED predicate (bridge/convert.go): the same
+	// deployment_mode-or-static-endpoints definition used by the reload guard, so
+	// the store-distribution guard and the fail-closed reload guard never disagree
+	// on which deployments are clustered.
+	if IsClusteredDeployment(b.cfg) {
 		if res.lease != nil && !res.leaseDist {
 			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed LeaseStore; the configured store is process-local")
 		}
@@ -378,6 +425,9 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		if res.dlq != nil && !res.dlqDist {
 			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
+		}
+		if res.managedSubscriptions != nil && !res.managedSubscriptionsDist {
+			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed ManagedSubscriptionStore; the configured store is process-local")
 		}
 	}
 
@@ -505,7 +555,7 @@ func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRunti
 		if r.Session == nil {
 			continue
 		}
-		sessCfg, err := toSessionConfigE(r.Session, deploymentClustered(b.cfg))
+		sessCfg, err := toSessionConfigE(r.Session, IsClusteredDeployment(b.cfg))
 		if err != nil {
 			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
 		}
@@ -553,4 +603,145 @@ func explicitStaleClaimDuration(sc *ports.StoreConfig) (time.Duration, bool, err
 	default:
 		return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: must be a duration string or time.Duration, got %T", v)
 	}
+}
+
+// validateDedicatedIngressSessions enforces transport-declared session
+// cardinality without naming a transport or importing an adapter. The
+// capability belongs to the factory that creates the session, so every logical
+// receiver bound to that session counts even when receiver factories are
+// registered under different aliases. Sender definitions deliberately do not
+// participate: egress may continue sharing the connection.
+func (b *Builder) validateDedicatedIngressSessions() error {
+	if b.cfg == nil {
+		return nil
+	}
+
+	receiversBySession := make(map[string][]string, len(b.cfg.Sessions))
+	for i := range b.cfg.Receivers {
+		receiver := &b.cfg.Receivers[i]
+		if receiver.SessionID != "" {
+			receiversBySession[receiver.SessionID] = append(receiversBySession[receiver.SessionID], receiver.ID)
+		}
+	}
+	routesByReceiver := make(map[string][]string, len(b.cfg.Receivers))
+	for i := range b.cfg.Routes {
+		route := &b.cfg.Routes[i]
+		routesByReceiver[route.ReceiverID] = append(routesByReceiver[route.ReceiverID], route.ID)
+	}
+
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		factory, ok := b.transports[sessionDef.Transport]
+		if !ok || !hasTransportCapability(factory, ports.CapDedicatedIngressSession) {
+			continue
+		}
+		receiverIDs := receiversBySession[sessionDef.ID]
+		if len(receiverIDs) > 1 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q (transport %q) requires dedicated ingress but has %d logical receivers %q; configure one session per ingress receiver (senders may still share a session)",
+				sessionDef.ID, sessionDef.Transport, len(receiverIDs), receiverIDs,
+			))
+		}
+		if len(receiverIDs) == 0 {
+			// Sender-only sessions do not create an ingress failure domain.
+			continue
+		}
+		receiverID := receiverIDs[0]
+		routeIDs := routesByReceiver[receiverID]
+		if len(routeIDs) > 1 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q (transport %q) requires dedicated ingress but receiver/source %q is consumed by conflicting route runners %q; configure a distinct session and receiver for each ingress route",
+				sessionDef.ID, sessionDef.Transport, receiverID, routeIDs,
+			))
+		}
+	}
+	return nil
+}
+
+func hasTransportCapability(factory ports.TransportFactory, want ports.Capability) bool {
+	if factory == nil {
+		return false
+	}
+	for _, capability := range factory.Capabilities() {
+		if capability == want {
+			return true
+		}
+	}
+	return false
+}
+
+// validateIngressMemory invokes the optional config capability once for every
+// started session that can own inbound state. A ReceiverDef creates possible
+// ingress even when no route currently consumes it. Referenced Persistent and
+// Exclusive sessions are also included because resumed stale broker backlog can
+// arrive before durable subscription cleanup. Ephemeral sender-only and wholly
+// unreferenced sessions are excluded.
+func (b *Builder) validateIngressMemory() error {
+	if b.cfg == nil {
+		return nil
+	}
+
+	receiverSession := make(map[string]string, len(b.cfg.Receivers))
+	includedSessions := make(map[string]struct{}, len(b.cfg.Sessions))
+	for i := range b.cfg.Receivers {
+		receiver := &b.cfg.Receivers[i]
+		if receiver.SessionID != "" {
+			receiverSession[receiver.ID] = receiver.SessionID
+			includedSessions[receiver.SessionID] = struct{}{}
+		}
+	}
+	routeConcurrency := make(map[string]uint64, len(b.cfg.Sessions))
+	for i := range b.cfg.Routes {
+		route := &b.cfg.Routes[i]
+		sessionID := receiverSession[route.ReceiverID]
+		if sessionID == "" {
+			continue
+		}
+		if route.Policy.MaxInFlight < 0 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: route %q: policy.max_in_flight must not be negative", route.ID,
+			))
+		}
+		maxInFlight := route.Policy.MaxInFlight
+		if maxInFlight == 0 {
+			maxInFlight = routing.DefaultMaxInFlight
+		}
+		current := routeConcurrency[sessionID]
+		add := uint64(maxInFlight)
+		if add > math.MaxUint64-current {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"bridge: session %q route concurrency overflows ingress memory calculation", sessionID,
+			))
+		}
+		routeConcurrency[sessionID] = current + add
+	}
+
+	referenced := referencedSessionIDs(b.cfg)
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		mode := normalizedSessionMode(sessionDef.SessionMode)
+		if !referenced[sessionDef.ID] ||
+			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
+			continue
+		}
+		includedSessions[sessionDef.ID] = struct{}{}
+	}
+
+	for i := range b.cfg.Sessions {
+		sessionDef := &b.cfg.Sessions[i]
+		if _, included := includedSessions[sessionDef.ID]; !included {
+			continue
+		}
+		maxInFlight := routeConcurrency[sessionDef.ID]
+		memoryConfig, ok := sessionDef.Config.(ports.IngressMemoryConfig)
+		if !ok {
+			continue
+		}
+		if err := memoryConfig.ValidateIngressMemory(maxInFlight); err != nil {
+			return shared.ErrInvalidConfig.Wrap(err).WithMessage(fmt.Sprintf(
+				"bridge: session %q ingress memory validation failed", sessionDef.ID,
+			))
+		}
+	}
+	return nil
 }

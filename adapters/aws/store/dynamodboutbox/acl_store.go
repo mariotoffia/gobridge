@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	defaultTableName          = "gobridge-outbox"
+	// DefaultTableName is the adapter default used when no table override is configured.
+	DefaultTableName          = "gobridge-outbox"
 	defaultCompactionGrace    = 1 * time.Hour
 	defaultStaleClaimDuration = 30 * time.Second
 
@@ -305,7 +306,7 @@ func WithCompleteResolveRetry(attempts int, backoff time.Duration) Option {
 func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 	s := &Store{
 		client:       client,
-		table:        defaultTableName,
+		table:        DefaultTableName,
 		compactGrace: defaultCompactionGrace,
 		staleClaim:   defaultStaleClaimDuration,
 		clk:          clock.System,

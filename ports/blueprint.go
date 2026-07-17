@@ -136,9 +136,10 @@ func (b BridgeSettings) MaxDrainTimeoutDuration() time.Duration {
 
 // StoresConfig configures the backing stores for lease, outbox, and DLQ.
 type StoresConfig struct {
-	Lease  *StoreConfig `yaml:"lease,omitempty" json:"lease,omitempty"`
-	Outbox *StoreConfig `yaml:"outbox,omitempty" json:"outbox,omitempty"`
-	DLQ    *StoreConfig `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	Lease                *StoreConfig `yaml:"lease,omitempty" json:"lease,omitempty"`
+	Outbox               *StoreConfig `yaml:"outbox,omitempty" json:"outbox,omitempty"`
+	DLQ                  *StoreConfig `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	ManagedSubscriptions *StoreConfig `yaml:"managed_subscriptions,omitempty" json:"managed_subscriptions,omitempty"`
 }
 
 // StoreConfig describes a single store backend.
@@ -363,6 +364,16 @@ type RouteSessionDef struct {
 	// span folds this in and must stay below lease_ttl (finding C3-HIGH). Empty
 	// means the session manager derives it from RenewInterval.
 	RenewCallTimeout string `yaml:"renew_call_timeout,omitempty" json:"renew_call_timeout,omitempty"`
+
+	// FailoverSLO is an optional failure-detection to ServiceLevelFull objective.
+	// Preflight budgets LeaseTTL plus two independently jittered acquire-poll
+	// boundaries, every possible minimum-jitter observation Acquire call,
+	// complete transport activation, and StartupAllowance. It is a duration string; empty means no SLO is declared.
+	FailoverSLO string `yaml:"failover_slo,omitempty" json:"failover_slo,omitempty"`
+
+	// StartupAllowance is explicit bounded time reserved for process-side work
+	// outside lease, broker-connect, and reconcile calls. Empty means zero.
+	StartupAllowance string `yaml:"startup_allowance,omitempty" json:"startup_allowance,omitempty"`
 
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`

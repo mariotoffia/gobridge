@@ -123,6 +123,20 @@ func checkEnvelopeID(id string) error {
 //     a time.Time rather than a clock interface so domain/messaging
 //     stays stdlib-only (no edge to domain/clock — see .go-arch-lint.yml).
 func NewEnvelope(in EnvelopeInput, now time.Time) (*Envelope, error) {
+	return newEnvelope(in, now, true)
+}
+
+// NewEnvelopeFromImmutablePayload constructs and validates an Envelope while
+// sharing the input payload backing. It is reserved for trusted transport
+// ingress whose SDK guarantees that payload bytes remain immutable for the
+// Envelope's lifetime. General callers must use NewEnvelope, which defensively
+// copies its input. Payload() still returns a copy and SetPayload remains
+// copy-on-write, so this operation does not expose mutable aggregate state.
+func NewEnvelopeFromImmutablePayload(in EnvelopeInput, now time.Time) (*Envelope, error) {
+	return newEnvelope(in, now, false)
+}
+
+func newEnvelope(in EnvelopeInput, now time.Time, copyPayload bool) (*Envelope, error) {
 	if err := checkEnvelopeID(in.ID); err != nil {
 		return nil, err
 	}
@@ -133,10 +147,14 @@ func NewEnvelope(in EnvelopeInput, now time.Time) (*Envelope, error) {
 		}
 		created = now
 	}
+	payload := in.Payload
+	if copyPayload {
+		payload = clonePayload(payload)
+	}
 	e := &Envelope{
 		id:        in.ID,
 		subject:   in.Subject,
-		payload:   clonePayload(in.Payload),
+		payload:   payload,
 		headers:   NewHeadersFromMap(in.Headers),
 		createdAt: created,
 		expiresAt: in.ExpiresAt,
@@ -308,16 +326,30 @@ func (e *Envelope) RemainingTTL(clk interface{ Now() time.Time }) time.Duration 
 	return e.expiresAt.Sub(now)
 }
 
-// Clone returns a deep copy of the envelope, including a recursively
-// cloned headers map so reference-type values (slices, maps) are not
-// shared between original and clone.
+// Clone returns an isolated envelope copy. Headers are recursively copied.
+// Payload backing is shared because Envelope never exposes it mutably:
+// Payload returns a copy and SetPayload installs a new owned backing instead of
+// modifying the existing bytes. This copy-on-write contract keeps clones
+// mutation-safe without multiplying large immutable message bodies.
 func (e *Envelope) Clone() *Envelope {
 	c := *e
-	c.payload = clonePayload(e.payload)
 	if e.headers != nil {
 		c.headers = Headers(deepCopyHeaders(e.headers))
 	}
 	return &c
+}
+
+// SharePayloadFrom replaces the receiver's payload with src's immutable
+// backing. It never exposes the bytes and remains copy-on-write safe because
+// SetPayload replaces rather than mutates backing storage.
+//
+//aggcheck:allow-unguarded
+func (e *Envelope) SharePayloadFrom(src *Envelope) {
+	if src == nil {
+		e.payload = nil
+		return
+	}
+	e.payload = src.payload
 }
 
 // MustEnvelope is a TEST-ONLY construction helper that panics on

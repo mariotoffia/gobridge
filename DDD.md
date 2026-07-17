@@ -14,7 +14,7 @@ For term definitions see [UBIQUITOUS.md](UBIQUITOUS.md).
 | Messaging | `domain/messaging` | **Core** | The canonical `Envelope`, reserved header vocabulary (`x-bridge.*`), W3C Trace Context. |
 | Persistence | `domain/persistence` | **Core** | `OutboxRecord` state machine (reliable egress), `LeaseInfo`+`LeaseToken` (cluster fencing), `DrainStrategy` polling policy. |
 | Routing | `domain/routing` | **Core** | `RoutePolicy`, `DestinationBinding`, `DispatchPlan`, `DLQEntry` — route decisions and dead-letter records. |
-| Connectivity | `domain/connectivity` | Supporting | `CredentialSet` (Password + TLS), `SessionPlan` (desired Subscriptions/Publishers). |
+| Connectivity | `domain/connectivity` | Supporting | `CredentialSet` (Password + TLS), `SessionPlan` (desired Subscriptions/Publishers), and the Layer-2 `ManagedSubscriptionStore` port for exact durable filter history. |
 | Events | `domain/events` | Generic | Past-tense observability **facts** about the persistence, routing, connectivity, and configuration contexts (outbox lifecycle, lease fencing, DLQ ingress/redrive, credential rotation, blueprint commit). Constructed by application/runtime services via public constructors (e.g. `NewOutboxRecordClaimed`) **after** a transition succeeds and published through `ports.EventPublisher` — **not** raised by aggregates. Carry primitive payload fields only, so consumers deserialise without importing a producer context. |
 | Clock | `domain/clock` | Generic | Time abstraction (`Clock`, `Timer`, `Ticker`). Stdlib-only, no `Sleep` by design — every wait must be cancellable. |
 
@@ -137,7 +137,7 @@ classDiagram
 ```
 
 - **`Envelope`** — aggregate root for the messaging context. Invariants:
-  - `Clone()` deep-copies `Headers` and `Payload` so reference values are never shared between original and clone.
+  - `Clone()` recursively copies mutable `Headers` but shares immutable `Payload` backing. `Payload()` copies on exposure, and `SetPayload` installs a new backing for transformations. `NewEnvelope` still clones caller input at the trust boundary; only the explicitly trusted `NewEnvelopeFromImmutablePayload` SDK path may adopt backing whose lifetime and immutability are guaranteed.
   - Expiry checks must take a `Clock` (no implicit `time.Now()`).
   - `Subject` is the **logical event subject**. It is producer-supplied (or ingress-mapped from a transport-native subject field, e.g. `Message.Properties.Subject`, the `gobridge.subject` carrier on MQTT/AMQP 0-9-1, or the HTTP JSON `subject`). The runtime never assigns a transport destination to `Subject`; per-message destinations travel on `ports.OutboundMessage.Address` (see § 3.4).
 - **Reserved header invariant** — keys with prefix `x-bridge.` are bridge-internal. `IsReservedHeader` is case-insensitive; transport adapters must `StripReservedHeaders` at ingress to prevent injection. `MergeHeaders(..., protectReserved=true)` denies overlay overrides of reserved keys already in base.
@@ -488,7 +488,7 @@ flowchart LR
 | Invariant | Owner | Enforced by |
 |---|---|---|
 | Reserved-prefix headers (`x-bridge.*`) cannot be set by external sources at ingress | messaging | `StripReservedHeaders`, `MergeHeaders(protectReserved=true)` |
-| `Envelope.Clone()` deep-copies headers and payload | messaging | `Clone` + `audit_deep_copy_test.go` |
+| `Envelope.Clone()` isolates mutable headers while sharing immutable payload backing; payload exposure copies and transformation replaces backing | messaging | `Clone`, `Payload`, `SetPayload` + `audit_deep_copy_test.go`, `envelope_shared_payload_test.go` |
 | `traceparent` rejects non-`00`, all-zero IDs, non-low-hex | messaging | `ParseTraceparent` + `audit_tracecontext_test.go` |
 | Outbox state machine: `pending → claimed → completed \| expired` | persistence | `OutboxStatus` constants + adapter contract tests |
 | Lease fencing: only holder of current `LeaseToken{Owner,Version}` may write | persistence | `ClaimVersion` optimistic check, `ErrCodeStaleFencingToken` |

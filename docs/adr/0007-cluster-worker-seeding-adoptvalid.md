@@ -1,8 +1,14 @@
 # 0007 — Cluster worker seeding: AdoptValid default
 
-Status: accepted
+Status: superseded
+Superseded by: 0012
 Date: 2026-07-03
 Deciders: GoBridge core
+
+> ADR 0012 supersedes this record as the cluster reconfiguration decision.
+> `AdoptValid` remains the worker **startup** seeding policy, but it is not a
+> live rollout mechanism. Non-no-op live reloads of or into clustered
+> deployments are rejected; config changes require whole-cohort replacement.
 
 ## Context
 

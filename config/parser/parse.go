@@ -172,9 +172,10 @@ type stage1Bridge struct {
 }
 
 type stage1Stores struct {
-	Lease  *stage1Store `yaml:"lease,omitempty" json:"lease,omitempty"`
-	Outbox *stage1Store `yaml:"outbox,omitempty" json:"outbox,omitempty"`
-	DLQ    *stage1Store `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	Lease                *stage1Store `yaml:"lease,omitempty" json:"lease,omitempty"`
+	Outbox               *stage1Store `yaml:"outbox,omitempty" json:"outbox,omitempty"`
+	DLQ                  *stage1Store `yaml:"dlq,omitempty" json:"dlq,omitempty"`
+	ManagedSubscriptions *stage1Store `yaml:"managed_subscriptions,omitempty" json:"managed_subscriptions,omitempty"`
 }
 
 type stage1Store struct {
@@ -250,6 +251,13 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 			return nil, err
 		}
 		out.Stores.DLQ = sc
+	}
+	if s.Stores.ManagedSubscriptions != nil {
+		sc, err := decodeStore(registry, "managed_subscriptions", s.Stores.ManagedSubscriptions)
+		if err != nil {
+			return nil, err
+		}
+		out.Stores.ManagedSubscriptions = sc
 	}
 
 	// sessionKindByID resolves the transport a receiver/sender inherits when

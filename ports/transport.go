@@ -327,11 +327,12 @@ const (
 	// ServiceLevelNone indicates no subscriptions are active and no
 	// handlers are registered, or the session is not connected.
 	ServiceLevelNone ServiceLevel = "none"
-	// ServiceLevelDegraded indicates the session is connected but not
-	// all desired subscriptions are active on the broker.
+	// ServiceLevelDegraded indicates the session is connected but its desired
+	// subscription, requested QoS, expected-handler, or backlog contract is incomplete.
 	ServiceLevelDegraded ServiceLevel = "degraded"
-	// ServiceLevelFull indicates all desired subscriptions are active
-	// and handlers are registered (when subscriptions are expected).
+	// ServiceLevelFull indicates subscription state exactly matches the desired
+	// filters at or above requested QoS, every expected receiver handler is
+	// registered, and no pre-registration backlog remains.
 	ServiceLevelFull ServiceLevel = "full"
 )
 
@@ -339,15 +340,20 @@ const (
 // Transports that manage subscriptions (e.g., MQTT) should populate
 // the subscription and handler fields so callers can determine readiness.
 type SessionHealth struct {
-	Connected           bool
-	LastError           error
-	SubscriptionsWanted int          // Number of subscriptions in the reconciled plan
-	SubscriptionsActive int          // Number of subscriptions confirmed by broker
-	HandlersRegistered  int          // Number of receiver handlers on the message router
-	ReceiveMaximum      uint16       // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
-	Ready               bool         // Connected to the broker (connectivity only)
-	ServiceLevel        ServiceLevel // Operational completeness (none/degraded/full)
-	ActiveTopics        []string     // topics with active broker subscription
+	Connected                bool
+	LastError                error
+	SubscriptionsWanted      int           // Number of unique desired subscription filters
+	SubscriptionsActive      int           // Number of unique contract-active subscription filters
+	SubscriptionsSatisfied   *bool         // Exact explicit-plan convergence, including removals; nil means legacy unknown
+	HandlersRegistered       int           // Number of receiver handlers on the message router
+	ReceiveMaximum           uint16        // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	UnsettledCount           int           // Current connection-epoch deliveries awaiting terminal protocol settlement
+	OldestUnsettledAge       time.Duration // Age of the oldest current-epoch unsettled delivery
+	ReceiveWindowUtilization float64       // UnsettledCount / ReceiveMaximum (0 when not applicable)
+	RecoveryRecycleCount     uint64        // Recovery recycle attempts started after transport serialization
+	Ready                    bool          // Connected to the broker (connectivity only)
+	ServiceLevel             ServiceLevel  // Operational completeness (none/degraded/full)
+	ActiveTopics             []string      // contract-active subscription filters
 }
 
 // HasTopic reports whether the given topic is among the active subscriptions.
@@ -370,6 +376,20 @@ type Session interface {
 	Close(ctx context.Context) error
 }
 
+// IngressQuiescenceConfigurer is an optional session capability used by a
+// stateful source transport before recycling a broker generation. The runtime
+// installs a waiter backed by the source RouteRunner in-flight counters. Once
+// the transport has stopped accepting new callbacks, invoking the waiter blocks
+// until every delivery already accepted by those routes has finished runtime
+// processing and settlement, or ctx is cancelled.
+//
+// The setter is called during Runtime.Start before session and route goroutines
+// begin. Implementations must replace the waiter atomically and must treat a nil
+// waiter as no additional runtime settlement barrier.
+type IngressQuiescenceConfigurer interface {
+	SetIngressQuiescenceWaiter(waiter func(context.Context) error)
+}
+
 // Capability describes a routing-relevant transport feature.
 type Capability string
 
@@ -381,6 +401,14 @@ const (
 	CapSharedConsumer      Capability = "shared_consumer"
 	CapExclusiveIdentity   Capability = "exclusive_identity"
 	CapHTTPEndpoint        Capability = "http_endpoint"
+
+	// CapDedicatedIngressSession marks a stateful transport whose session-level
+	// ingress dispatch and protocol settlement are shared by every receiver on
+	// that session. The bridge must bind at most one logical ingress Receiver to
+	// each such session, and that receiver may feed at most one route runner, so
+	// a blocked route cannot stall an unrelated route. Sender sharing is
+	// unaffected.
+	CapDedicatedIngressSession Capability = "dedicated_ingress_session"
 
 	// CapPlanDrivenSubscriptions marks a transport whose receivers establish
 	// their subscriptions ONLY by the session manager reconciling the

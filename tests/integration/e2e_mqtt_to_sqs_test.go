@@ -266,6 +266,10 @@ func TestE2E_MQTTToSQS_RoundTripWithFailover(t *testing.T) {
 
 	mqttTxB := setupMQTTSender(t, sessB)
 	sessCfgB := e2eFastSessionConfig(sessionID)
+	sessCfgB.Plan = connectivity.SessionPlan{
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
+		ExpectedReceiverIDs: []string{"m4-rx"},
+	}
 
 	rtB := goruntime.New(
 		goruntime.WithInstanceID("m4-bridge-B"),

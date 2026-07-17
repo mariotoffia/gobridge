@@ -15,16 +15,17 @@ import (
 // MetricMQTTEventDropped so operators can detect event loss.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBugRES011_PushEvent_DropEmitsMetric verifies that when the event
-// buffer is full AND the drain+re-insert also fails (simulated by
-// saturating the channel from another goroutine), a dropped-event
-// metric is emitted.
+// TestBugRES011_PushEvent_DropOldest_EmitsMetric verifies the drop-oldest
+// eviction — the COMMON back-pressure path when the event buffer is full —
+// increments MetricMQTTEventDropped for the evicted event, while preserving the
+// newest event and the buffer depth.
 //
-// In normal operation the "drop oldest, insert new" path succeeds, so
-// the metric is only hit under extreme contention where both default
-// branches fire. We verify the normal drop-oldest path emits no metric,
-// and the forced-full path emits one.
-func TestBugRES011_PushEvent_NormalDropOldest_NoMetric(t *testing.T) {
+// NOTE (B-2 / D-2): the original RES-011 test asserted this path emitted NO
+// metric ("normal drop-oldest"), which was precisely the doc/code disagreement
+// B-2 identified — the F-6 comment and operator guidance promise an alertable
+// MetricMQTTEventDropped that the common eviction never incremented. Evicting
+// the oldest undelivered event IS event loss, so it now meters exactly one drop.
+func TestBugRES011_PushEvent_DropOldest_EmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
@@ -33,19 +34,18 @@ func TestBugRES011_PushEvent_NormalDropOldest_NoMetric(t *testing.T) {
 		rec,
 	)
 
-	// Fill the buffer (capacity 16).
-	for i := 0; i < 16; i++ {
+	// Fill the buffer to capacity.
+	for i := 0; i < sessionEventsBuffer; i++ {
 		s.pushEvent(ports.SessionConnected, nil)
 	}
 
-	// One more: this triggers drop-oldest, then re-insert (should succeed).
+	// One more: this evicts the oldest event and re-inserts the new one.
 	s.pushEvent(ports.SessionError, nil)
 
-	// The normal drop-oldest path should NOT emit a dropped metric
-	// because the re-insert succeeds.
+	// The evicted oldest event is a real loss and must be metered exactly once.
 	entries := rec.FindEntries(MetricMQTTEventDropped)
-	if len(entries) != 0 {
-		t.Fatalf("expected 0 dropped-event metrics in normal path, got %d", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 dropped-event metric for the evicted oldest, got %d", len(entries))
 	}
 
 	// Verify the newest event is present.
@@ -62,8 +62,8 @@ func TestBugRES011_PushEvent_NormalDropOldest_NoMetric(t *testing.T) {
 		}
 	}
 done:
-	if len(events) != 16 {
-		t.Fatalf("expected 16 events, got %d", len(events))
+	if len(events) != sessionEventsBuffer {
+		t.Fatalf("expected %d events, got %d", sessionEventsBuffer, len(events))
 	}
 	last := events[len(events)-1]
 	if last.Type != ports.SessionError {

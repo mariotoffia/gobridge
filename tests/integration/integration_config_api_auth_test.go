@@ -21,8 +21,6 @@ func TestConfigAPI_Auth_NoKey_Returns401(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newConfigAPITestServer(t, baseConfigForAPI())
-
 	endpoints := []struct {
 		method string
 		path   string
@@ -37,6 +35,10 @@ func TestConfigAPI_Auth_NoKey_Returns401(t *testing.T) {
 
 	for _, ep := range endpoints {
 		t.Run(fmt.Sprintf("%s_%s", ep.method, ep.path), func(t *testing.T) {
+			// Each endpoint assertion gets an independent security context. A
+			// single client making six failures correctly exceeds the production
+			// five-attempt throttle and is covered by rate-limit tests.
+			srv := newConfigAPITestServer(t, baseConfigForAPI())
 			req, _ := http.NewRequest(ep.method, srv.URL+ep.path, nil)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

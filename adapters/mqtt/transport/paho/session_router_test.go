@@ -327,6 +327,58 @@ func TestRouter_Route_PayloadDeepCopy(t *testing.T) {
 	}
 }
 
+// TestRouter_Fanout_TransfersOwnedPublishOnce verifies fan-out transfers the
+// router-owned publish to exactly one handler and clones only the remaining
+// handlers. Every handler must still receive isolated mutable payload and
+// properties.
+func TestRouter_Fanout_TransfersOwnedPublishOnce(t *testing.T) {
+	r := newRouter(nil, nil)
+	owned := &pahov5.Publish{
+		Topic:   "test/owned-fanout",
+		Payload: []byte("payload"),
+		Properties: &pahov5.PublishProperties{
+			User: pahov5.UserProperties{{Key: "key", Value: "value"}},
+		},
+	}
+	var (
+		mu            sync.Mutex
+		payloadStarts []*byte
+		properties    []*pahov5.PublishProperties
+	)
+	handlers := make([]routerHandler, 3)
+	for i := range handlers {
+		handlers[i].fn = func(pub *pahov5.Publish, _ func() error) {
+			mu.Lock()
+			payloadStarts = append(payloadStarts, &pub.Payload[0])
+			properties = append(properties, pub.Properties)
+			mu.Unlock()
+		}
+	}
+
+	r.fanout(owned, nil, handlers)
+
+	mu.Lock()
+	defer mu.Unlock()
+	ownedPayloadUses := 0
+	ownedPropertyUses := 0
+	for i := range payloadStarts {
+		if payloadStarts[i] == &owned.Payload[0] {
+			ownedPayloadUses++
+		}
+		if properties[i] == owned.Properties {
+			ownedPropertyUses++
+		}
+		for j := i + 1; j < len(payloadStarts); j++ {
+			if payloadStarts[i] == payloadStarts[j] || properties[i] == properties[j] {
+				t.Fatalf("handlers %d and %d share mutable publish state", i, j)
+			}
+		}
+	}
+	if ownedPayloadUses != 1 || ownedPropertyUses != 1 {
+		t.Fatalf("router-owned publish uses = payload:%d properties:%d, want exactly one each", ownedPayloadUses, ownedPropertyUses)
+	}
+}
+
 // TestRouter_Route_NilPayload validates that routing a message with
 // nil Payload does not panic and handlers receive nil.
 func TestRouter_Route_NilPayload(t *testing.T) {

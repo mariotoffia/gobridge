@@ -4,7 +4,6 @@ import (
 	"context"
 	"math/rand/v2"
 	"net/url"
-	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -60,10 +59,9 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 //     never established and silently never delivers.
 //   - Granted QoS (c4-qos-downgrade): a success reason code (0x00/0x01/
 //     0x02) IS the QoS the broker granted, which may be LOWER than the
-//     requested QoS. The succeeded spec carries the GRANTED QoS purely so
-//     the CALLER can DETECT a downgrade (granted < requested); the caller
-//     then persists the REQUESTED QoS into activeSubs (its reconcile delta
-//     baseline) so a stable downgraded sub is not re-subscribed every cycle.
+//     requested QoS. The succeeded spec carries the GRANTED QoS so the caller
+//     can retain broker-observed state for cleanup while keeping that topic out
+//     of the contract-active activeSubs map.
 func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 	succeeded []subscribeSpec, firstErr *shared.BridgeError, errTopic string,
 ) {
@@ -88,8 +86,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 			continue
 		}
 		// Success: carry the GRANTED QoS (the reason-code value) so the caller
-		// can detect a downgrade. The caller stores the REQUESTED QoS in
-		// activeSubs (see reconcile), keeping the delta stable (c4-qos-downgrade).
+		// can distinguish broker-observed from contract-active state.
 		granted := opt
 		granted.QoS = reasons[i]
 		succeeded = append(succeeded, granted)
@@ -122,6 +119,11 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 func (s *Session) Start(ctx context.Context) error {
 	s.mu.Lock()
 	for {
+		if s.terminalErr != nil {
+			err := s.terminalErr
+			s.mu.Unlock()
+			return err
+		}
 		if s.closed {
 			s.mu.Unlock()
 			return shared.ErrUnavailable.
@@ -151,6 +153,12 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	s.starting = true
 	s.startDone = make(chan struct{})
+	s.connectionGeneration++
+	connectionGeneration := s.connectionGeneration
+	s.connectionUpDone = make(chan struct{})
+	s.connectionUpCompleted = false
+	s.connectionUpErr = nil
+	connectionUpDone := s.connectionUpDone
 	if s.eventsClosed {
 		// F-1: a prior Reload-failure closed s.events to signal terminal
 		// death and trigger this supervisor re-Start. Re-materialise a
@@ -175,6 +183,11 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Unlock()
 	}
 
+	if err := s.loadManagedSubscriptionHistory(ctx); err != nil {
+		finishStart()
+		return err
+	}
+
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connecting",
 			"client_id", s.opts.ClientID,
@@ -194,12 +207,47 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 	conn, cmCancel, err := dial(ctx)
 	if err != nil {
+		s.invalidateConnectionGeneration(connectionGeneration, err)
 		finishStart()
 		if logging.DebugEnabled(s.logger) {
 			s.logger.Log(ctx, logging.LevelDebug, "mqtt: connect failed",
 				"client_id", s.opts.ClientID, "error", err)
 		}
 		return err
+	}
+
+	// Test fakes historically model AwaitConnection and callback completion as
+	// one operation. Production and explicit delayed-callback tests must signal
+	// the barrier from handleConnectionUpGeneration.
+	if s.connectOverride != nil && !s.connectOverrideAwaitConnectionUp {
+		s.mu.Lock()
+		if s.recoveryNeedsSessionPresent {
+			s.recoverySessionPresentEpoch = s.connEpoch
+		}
+		s.mu.Unlock()
+		s.completeConnectionUpBarrier(connectionGeneration, nil)
+	}
+	select {
+	case <-connectionUpDone:
+		s.mu.Lock()
+		upErr := s.connectionUpErr
+		currentGeneration := s.connectionGeneration
+		s.mu.Unlock()
+		if currentGeneration != connectionGeneration || upErr != nil {
+			cmCancel()
+			_ = conn.Disconnect(context.Background())
+			finishStart()
+			if upErr != nil {
+				return upErr
+			}
+			return shared.ErrUnavailable.WithMessage("mqtt: connection generation changed before callback completion")
+		}
+	case <-ctx.Done():
+		s.invalidateConnectionGeneration(connectionGeneration, ctx.Err())
+		cmCancel()
+		_ = conn.Disconnect(context.Background())
+		finishStart()
+		return MapError(ctx.Err()).WithMessage("mqtt: await connection-up callback completion")
 	}
 
 	// Close/Start race guard: dial released s.mu and may have blocked for
@@ -258,6 +306,8 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	credsPresent := s.liveCreds.Username != "" || s.liveCreds.Password != ""
 	allowPlaintext := s.opts.AllowPlaintextCredentials
 	brokerURLs := s.opts.BrokerURLs
+	connectionGeneration := s.connectionGeneration
+	recoveryConnect := s.recoveryNeedsSessionPresent
 	s.mu.Unlock()
 
 	// HIGH-4 defense-in-depth: Factory.NewSession validates the plaintext-
@@ -313,22 +363,15 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// signals SessionConnected; it MUST NOT reconcile inline. See
 		// handleConnectionUp for the reset-before-signal ordering that lets
 		// the manager observe an empty subscription set on reconnect.
-		OnConnectionUp: func(_ *autopaho.ConnectionManager, _ *pahov5.Connack) {
-			s.handleConnectionUp()
+		OnConnectionUp: func(_ *autopaho.ConnectionManager, connack *pahov5.Connack) {
+			sessionPresent := connack != nil && connack.SessionPresent
+			s.handleConnectionUpGenerationWithSessionPresent(connectionGeneration, sessionPresent)
 		},
 		OnConnectError: func(err error) {
 			s.handleConnectError(err)
 		},
 		OnConnectionDown: func() bool {
-			s.mu.Lock()
-			s.connected = false
-			s.mu.Unlock()
-			s.pushEvent(ports.SessionDisconnected, nil)
-			if logging.DebugEnabled(s.logger) {
-				s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
-					"client_id", s.opts.ClientID)
-			}
-			return true
+			return s.handleConnectionDownGeneration(connectionGeneration)
 		},
 
 		ClientConfig: pahov5.ClientConfig{
@@ -444,7 +487,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 			}
 			cfg.CleanStartOnInitialConnection = false
 		} else {
-			cfg.CleanStartOnInitialConnection = s.opts.CleanStart
+			cfg.CleanStartOnInitialConnection = s.opts.CleanStart && !recoveryConnect
 		}
 		cfg.SessionExpiryInterval = s.opts.SessionExpiryInterval
 	}
@@ -462,7 +505,9 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// Receive Maximum (in-flight QoS 1/2 count) and — when MaxPayloadBytes
 		// is set — Maximum Packet Size, which makes the pending-memory bound
 		// receive_maximum × max_payload_bytes broker-ENFORCED (c-mempkt).
-		applyConnectLimits(cp, rm, maxPayload)
+		if err := applyConnectLimits(cp, rm, maxPayload); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		user := s.liveCreds.Username
 		pass := s.liveCreds.Password
@@ -487,6 +532,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		}
 		cfg.TlsCfg = tlsCfg
 	}
+	// Own the final connection composition seam so every decrypted inbound byte
+	// crosses the bounded raw MQTT guard before Paho's packets.ReadPacket can
+	// materialize topic/property/payload representations. AttemptConnection is
+	// called for initial connect and every autopaho reconnect generation.
+	cfg.AttemptConnection = s.attemptGuardedConnection
 
 	// The CM's reconnection loop must outlive the caller's context.
 	// We derive a background context that is only cancelled by Close().
@@ -500,7 +550,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 
 	connectTimeout := s.opts.ConnectTimeout
 	if connectTimeout == 0 {
-		connectTimeout = 30 * time.Second
+		connectTimeout = DefaultConnectTimeout
 	}
 	awaitCtx, awaitCancel := context.WithTimeout(ctx, connectTimeout)
 	defer awaitCancel()
@@ -536,49 +586,19 @@ func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
 	}
 }
 
-// mqttPacketOverheadAllowance is the byte headroom ADDED to the configured
-// max payload when advertising the MQTT v5 Maximum Packet Size. MaximumPacketSize
-// bounds the WHOLE packet (fixed header + variable header + properties +
-// payload), so advertising exactly max_payload_bytes would make the broker
-// reject a legitimate payload of exactly that size. 128 KiB comfortably covers
-// the MQTT PUBLISH fixed header (≤5 B), a maximal topic name (≤65 535 B, a
-// 2-byte length field), the packet identifier and a bounded set of properties —
-// so an application payload up to max_payload_bytes is always admitted while the
-// broker still refuses anything materially larger.
-const mqttPacketOverheadAllowance uint64 = 128 << 10
-
-// mqttMaxPacketSize is the MQTT v5 Maximum Packet Size ceiling: the largest
-// value a Four Byte Integer may carry per the spec (§2.2.2.2), 256 MiB − 1.
-// The derived packet-size limit is clamped to this so a huge max_payload_bytes
-// cannot advertise an out-of-range (protocol-violating) value.
-const mqttMaxPacketSize uint64 = 268_435_455
-
-// maxPacketSizeFor derives the MQTT v5 Maximum Packet Size to advertise from the
-// configured maximum application PAYLOAD size, adding mqttPacketOverheadAllowance
-// so a payload of exactly maxPayloadBytes is still admitted (the limit covers
-// the whole packet, not just the payload). The result is clamped to
-// mqttMaxPacketSize. Callers guard maxPayloadBytes > 0 before advertising.
-func maxPacketSizeFor(maxPayloadBytes uint32) uint32 {
-	sz := uint64(maxPayloadBytes) + mqttPacketOverheadAllowance
-	if sz > mqttMaxPacketSize {
-		return uint32(mqttMaxPacketSize)
-	}
-	return uint32(sz)
-}
-
 // applyConnectLimits populates the MQTT v5 CONNECT properties advertising the
 // self-imposed limits the broker must honour: Receive Maximum (in-flight QoS 1/2
 // count) and, when a per-message payload ceiling is configured, Maximum Packet
-// Size (derived via maxPacketSizeFor). Both are broker-enforced, together
-// bounding worst-case pending memory to receive_maximum × max_payload_bytes.
+// Size (derived via wirePacketSizeFor). Together they make the validated ingress
+// byte model broker-enforced.
 //
 // A zero receiveMaximum or a zero maxPayloadBytes leaves its respective property
 // UNSET (0 is not a legal MQTT v5 value for either, and an unset Maximum Packet
 // Size means "no limit" — the prior behaviour). Like applyConnectCredentials it
 // takes the SDK *paho.Connect and therefore lives in the ACL.
-func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadBytes uint32) {
+func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadBytes uint32) error {
 	if receiveMaximum == 0 && maxPayloadBytes == 0 {
-		return
+		return nil
 	}
 	if cp.Properties == nil {
 		cp.Properties = &pahov5.ConnectProperties{}
@@ -588,7 +608,11 @@ func applyConnectLimits(cp *pahov5.Connect, receiveMaximum uint16, maxPayloadByt
 		cp.Properties.ReceiveMaximum = &rm
 	}
 	if maxPayloadBytes > 0 {
-		mps := maxPacketSizeFor(maxPayloadBytes)
+		mps, err := wirePacketSizeFor(maxPayloadBytes)
+		if err != nil {
+			return err
+		}
 		cp.Properties.MaximumPacketSize = &mps
 	}
+	return nil
 }

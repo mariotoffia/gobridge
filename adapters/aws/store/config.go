@@ -2,22 +2,62 @@ package awsstore
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions"
+	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Compile-time interface contract.
-var _ ports.PluginConfig = (*DynamoDBConfig)(nil)
+var (
+	_ ports.PluginConfig    = (*DynamoDBConfig)(nil)
+	_ ports.FreezableConfig = (*DynamoDBConfig)(nil)
+)
 
 // DynamoDBKind is the registry discriminator for DynamoDB-backed
-// lease, outbox, and DLQ stores.
+// lease, outbox, DLQ, and managed-subscription stores.
 const DynamoDBKind = "dynamodb"
 
+const (
+	// DefaultDynamoDBLeaseTableName is the authoritative lease-table default.
+	DefaultDynamoDBLeaseTableName = dynamodblease.DefaultTableName
+	// DefaultDynamoDBOutboxTableName is the authoritative outbox-table default.
+	DefaultDynamoDBOutboxTableName = dynamodboutbox.DefaultTableName
+	// DefaultDynamoDBDLQTableName is the authoritative DLQ-table default.
+	DefaultDynamoDBDLQTableName = dynamodbdlq.DefaultTableName
+	// DefaultDynamoDBManagedSubscriptionsTableName is the authoritative exact-filter history-table default.
+	DefaultDynamoDBManagedSubscriptionsTableName = dynamodbmanagedsubscriptions.DefaultTableName
+)
+
+// ResolveDynamoDBTableName resolves the exact table used by a store role before
+// runtime preflight or deployment IAM grants. Explicit names always win.
+func ResolveDynamoDBTableName(role, configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	switch strings.ToLower(role) {
+	case "lease":
+		return DefaultDynamoDBLeaseTableName, nil
+	case "outbox":
+		return DefaultDynamoDBOutboxTableName, nil
+	case "dlq":
+		return DefaultDynamoDBDLQTableName, nil
+	case "managed_subscriptions":
+		return DefaultDynamoDBManagedSubscriptionsTableName, nil
+	default:
+		return "", fmt.Errorf("awsstore: unknown DynamoDB store role %q", role)
+	}
+}
+
 // DynamoDBConfig is the typed PluginConfig for DynamoDB-backed
-// stores. It is shared across lease/outbox/DLQ since the same
-// table-name knob applies to all three roles; role-specific knobs
-// are ignored by the other roles.
+// stores. It is shared across lease, outbox, DLQ, and managed-subscription
+// roles. The same table-name knob applies to all four roles; role-specific
+// knobs are ignored by the other roles.
 type DynamoDBConfig struct {
 	// TableName overrides the default DynamoDB table name. When
 	// empty, the underlying store uses its built-in default.
@@ -51,10 +91,17 @@ type DynamoDBConfig struct {
 	// keeps the store default (100); a negative value disables the
 	// bound.
 	MaxScanPages int `mapstructure:"max_scan_pages" yaml:"max_scan_pages" json:"max_scan_pages"`
+
+	// OperationTimeout (managed-subscriptions only) bounds each DynamoDB
+	// control/data-plane call. Zero keeps the store default.
+	OperationTimeout time.Duration `mapstructure:"operation_timeout" yaml:"operation_timeout" json:"operation_timeout"`
 }
 
 // Kind reports the registry discriminator.
 func (DynamoDBConfig) Kind() string { return DynamoDBKind }
+
+// FreezePluginConfig returns an isolated scalar snapshot for asynchronous build.
+func (c DynamoDBConfig) FreezePluginConfig() ports.PluginConfig { frozen := c; return &frozen }
 
 // StorageIdentity reports the DynamoDB table name — the stable descriptor of
 // this store's durable backing, and nothing tunable. The supervisor's
@@ -66,6 +113,16 @@ func (DynamoDBConfig) Kind() string { return DynamoDBKind }
 // same table. The table name is not a secret.
 func (c DynamoDBConfig) StorageIdentity() string { return c.TableName }
 
+// StorageIdentityForRole canonicalizes an omitted table to the exact runtime
+// default for that store role before live-reload identity comparison.
+func (c DynamoDBConfig) StorageIdentityForRole(role string) string {
+	resolved, err := ResolveDynamoDBTableName(role, c.TableName)
+	if err != nil {
+		return c.TableName
+	}
+	return resolved
+}
+
 // Validate rejects nonsensical duration values. TableName is optional.
 func (c DynamoDBConfig) Validate() error {
 	if c.StaleClaimDuration < 0 {
@@ -76,6 +133,9 @@ func (c DynamoDBConfig) Validate() error {
 	}
 	if c.Retention < 0 {
 		return errors.New("awsstore: retention must not be negative")
+	}
+	if c.OperationTimeout < 0 {
+		return errors.New("awsstore: operation_timeout must not be negative")
 	}
 	return nil
 }
