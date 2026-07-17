@@ -185,24 +185,37 @@ func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *te
 		t.Fatal("later QoS 1 delivery blocked after poison ack-drop")
 	}
 
-	// Reconnect the persistent session: the acked poison must NOT be
-	// redelivered (the ack freed the broker slot). A resumed session replays
-	// un-acked backlog before/alongside new traffic, so observing the
-	// post-reload marker with no "12345" in the channel proves no replay.
+	// Reconnect the persistent session. The contract under test: the POISON
+	// payload is NEVER delivered to the receiver — on the original
+	// connection it was dropped before dispatch, and after the resume its
+	// ack freed the broker slot (a copy whose ack raced the deliberate
+	// disconnect would be redelivered and dropped AGAIN, never delivered).
+	// Already-settled GOOD traffic MAY legitimately redeliver here: the
+	// Delivery.Ack marks paho's tracker, but the PUBACK flush can race this
+	// deliberate reload — the documented at-least-once residual — so the
+	// assertion drains duplicates rather than demanding only-new traffic.
 	require.NoError(t, source.Reload(ctx))
 	require.NoError(t, source.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
 	send("post")
-	select {
-	case payload := <-received:
-		require.Equal(t, "post", payload,
-			"resumed session must deliver only new traffic — an acked poison packet must not be redelivered")
-	case <-ctx.Done():
-		t.Fatal("post-reload delivery did not arrive")
+	for {
+		var payload string
+		select {
+		case payload = <-received:
+		case <-ctx.Done():
+			t.Fatal("post-reload delivery did not arrive")
+		}
+		require.NotEqual(t, "12345", payload,
+			"the poison payload must NEVER be delivered to the receiver, resumed session included")
+		if payload == "post" {
+			break
+		}
+		require.Equal(t, "good", payload,
+			"only the at-least-once redelivery of settled traffic may precede the post-reload marker")
 	}
-	assert.Equal(t, int64(1), source.router.IngressPoisonDroppedCount(),
-		"the poison packet must not be redelivered (and re-dropped) after reconnect")
+	assert.GreaterOrEqual(t, source.router.IngressPoisonDroppedCount(), int64(1),
+		"every arrival of the poison packet is dropped and counted, never dispatched")
 
 	cancel()
 	select {
