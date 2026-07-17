@@ -4,7 +4,7 @@ Starts a RabbitMQ container in Docker for integration tests.
 
 ## Docker image
 
-`rabbitmq:management-alpine`
+`rabbitmq:4.2.5-management-alpine@sha256:43553fb6af12bfcf0ed95fbb1c4c658d2b96eed021daf5153749a35ffb87d13d`
 
 **Exposed ports** (mapped to random free ports on 127.0.0.1):
 
@@ -60,5 +60,5 @@ Pass options to `Configure()` before the first `Endpoint()` call.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `WithCleanOrphans(bool)` | `false` | Remove leftover `gobridge-rabbitmq-*` containers on startup. |
-| `WithImage(string)` | `rabbitmq:management-alpine` | Override the Docker image. |
+| `WithImage(string)` | pinned RabbitMQ 4.2.5 management Alpine image | Override the Docker image. |
 | `WithCredentials(user, pass)` | `guest` / `guest` | Override broker credentials. |
