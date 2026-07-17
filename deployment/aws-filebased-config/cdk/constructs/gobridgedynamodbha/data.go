@@ -4,6 +4,7 @@ package gobridgedynamodbha
 import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
+	"github.com/aws/aws-cdk-go/awscdk/v2/customresources"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 )
@@ -23,9 +24,16 @@ type dataTableNames struct {
 // DynamoDBHAData is the sole public data output for GoBridgeDynamoDBHA.
 // It exposes the three owned tables and their deploy-time names and ARNs.
 type DynamoDBHAData struct {
-	lease                awsdynamodb.Table
-	outbox               awsdynamodb.Table
-	managedSubscriptions awsdynamodb.Table
+	lease                           awsdynamodb.Table
+	outbox                          awsdynamodb.Table
+	managedSubscriptions            awsdynamodb.Table
+	managedSubscriptionInitializers []constructs.Construct
+}
+
+type managedSubscriptionBaseline struct {
+	sessionID       string
+	storageIdentity string
+	filters         []string
 }
 
 func newDynamoDBHAData(scope constructs.Construct, names dataTableNames) *DynamoDBHAData {
@@ -76,6 +84,71 @@ func newDynamoDBHAData(scope constructs.Construct, names dataTableNames) *Dynamo
 	history := awsdynamodb.NewTable(scope, jsii.String("ManagedSubscriptionsTable"), historyProps)
 
 	return &DynamoDBHAData{lease: lease, outbox: outbox, managedSubscriptions: history}
+}
+
+func newManagedSubscriptionInitializers(
+	scope constructs.Construct,
+	table awsdynamodb.Table,
+	baselines []managedSubscriptionBaseline,
+) []constructs.Construct {
+	initializers := make([]constructs.Construct, 0, len(baselines))
+	for i := range baselines {
+		baseline := baselines[i]
+		expressionAttributeNames := map[string]interface{}{
+			"#baseline": jsii.String("baseline"),
+		}
+		expressionAttributeValues := map[string]interface{}{
+			":true": map[string]interface{}{"BOOL": jsii.Bool(true)},
+		}
+		updateExpression := "SET #baseline = :true"
+		if len(baseline.filters) > 0 {
+			expressionAttributeNames["#filters"] = jsii.String("filters")
+			expressionAttributeValues[":filters"] = map[string]interface{}{
+				"SS": jsii.Strings(baseline.filters...),
+			}
+			updateExpression += " ADD #filters :filters"
+		}
+
+		initializer := customresources.NewAwsCustomResource(
+			scope,
+			jsii.String(
+				"ManagedSubscriptionBaseline-"+
+					baseline.sessionID+
+					"-"+
+					baseline.storageIdentity,
+			),
+			&customresources.AwsCustomResourceProps{
+				OnCreate: &customresources.AwsSdkCall{
+					Service: jsii.String("DynamoDB"),
+					Action:  jsii.String("updateItem"),
+					Parameters: map[string]interface{}{
+						"TableName": table.TableName(),
+						"Key": map[string]interface{}{
+							"storage_identity": map[string]interface{}{
+								"S": jsii.String(baseline.storageIdentity),
+							},
+						},
+						"UpdateExpression":          jsii.String(updateExpression),
+						"ExpressionAttributeNames":  expressionAttributeNames,
+						"ExpressionAttributeValues": expressionAttributeValues,
+					},
+					PhysicalResourceId: customresources.PhysicalResourceId_Of(
+						jsii.String("managed-subscription-baseline-" + baseline.storageIdentity),
+					),
+					Logging: customresources.Logging_WithDataHidden(),
+				},
+				Policy: customresources.AwsCustomResourcePolicy_FromSdkCalls(
+					&customresources.SdkCallsPolicyOptions{
+						Resources: &[]*string{table.TableArn()},
+					},
+				),
+				InstallLatestAwsSdk: jsii.Bool(false),
+			},
+		)
+		initializer.Node().AddDependency(table)
+		initializers = append(initializers, initializer)
+	}
+	return initializers
 }
 
 // LeaseTable returns the monotonic-fencing lease table.

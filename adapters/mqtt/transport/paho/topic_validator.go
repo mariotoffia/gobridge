@@ -3,6 +3,7 @@ package paho
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -64,6 +65,50 @@ func ValidateMQTTTopic(topic string) error {
 	}
 	if strings.ContainsRune(topic, 0) {
 		return fmt.Errorf("MQTT topic must not contain null character")
+	}
+	return nil
+}
+
+// ValidateMQTTTopicFilter validates MQTT v5 topic-filter and shared-
+// subscription wildcard placement.
+func ValidateMQTTTopicFilter(filter string) error {
+	if filter == "" {
+		return fmt.Errorf("MQTT topic filter must not be empty")
+	}
+	if len(filter) > maxMQTTTopicLen {
+		return fmt.Errorf("MQTT topic filter exceeds maximum length of %d bytes", maxMQTTTopicLen)
+	}
+	if !utf8.ValidString(filter) {
+		return fmt.Errorf("MQTT topic filter must be valid UTF-8")
+	}
+	if strings.ContainsRune(filter, 0) {
+		return fmt.Errorf("MQTT topic filter must not contain null character")
+	}
+
+	if strings.HasPrefix(filter, "$share/") {
+		shared := strings.TrimPrefix(filter, "$share/")
+		separator := strings.IndexByte(shared, '/')
+		if separator <= 0 || separator == len(shared)-1 {
+			return fmt.Errorf("MQTT shared topic filter requires a group and filter")
+		}
+		group, nested := shared[:separator], shared[separator+1:]
+		if strings.ContainsAny(group, "+#") {
+			return fmt.Errorf("MQTT shared subscription group must not contain wildcards")
+		}
+		if strings.HasPrefix(nested, "$share/") {
+			return fmt.Errorf("MQTT shared topic filter must not be nested")
+		}
+		filter = nested
+	}
+
+	levels := strings.Split(filter, "/")
+	for i, level := range levels {
+		if strings.ContainsRune(level, '#') && (level != "#" || i != len(levels)-1) {
+			return fmt.Errorf("MQTT multi-level wildcard '#' must occupy the final level")
+		}
+		if strings.ContainsRune(level, '+') && level != "+" {
+			return fmt.Errorf("MQTT single-level wildcard '+' must occupy an entire level")
+		}
 	}
 	return nil
 }

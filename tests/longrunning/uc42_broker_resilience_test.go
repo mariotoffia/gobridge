@@ -38,8 +38,12 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 		testTimeout = 240 * time.Second
 	)
 
-	// Per-test broker with persistence so queued messages survive restart.
-	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
+	// High queue limits isolate restart recovery; UC44 covers low-quota behavior.
+	broker := mqttlocal.NewBrokerInstance(t,
+		mqttlocal.WithPersistence(true),
+		mqttlocal.WithMaxInflightMessages(65534),
+		mqttlocal.WithMaxQueuedMessages(65534),
+	)
 	brokerURL := broker.URL()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "uc42-in")
@@ -159,7 +163,12 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 		testTimeout = 240 * time.Second
 	)
 
-	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
+	// High queue limits isolate restart recovery; UC44 covers low-quota behavior.
+	broker := mqttlocal.NewBrokerInstance(t,
+		mqttlocal.WithPersistence(true),
+		mqttlocal.WithMaxInflightMessages(65534),
+		mqttlocal.WithMaxQueuedMessages(65534),
+	)
 	brokerURL := broker.URL()
 
 	// SQS queue with short visibility timeout for faster redelivery.

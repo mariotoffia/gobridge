@@ -97,8 +97,8 @@ make verify-release-preparation
 At this revision it reports 31 modules and the following **published-manifest**
 inventory:
 
-- 71 local replacement entries;
-- 56 exact `v0.0.0` requirements;
+- 72 local replacement entries;
+- 57 exact `v0.0.0` requirements;
 - 10 all-zero pseudo-versions;
 - 0 malformed pseudo-versions.
 
@@ -290,7 +290,8 @@ or `v0.2.0`; the required nested tags do not exist.
 
 Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.
 Root, adapter, processor, deployment, internal, and prerelease tags cannot enter
-the image job.
+the image job. Image publication creates a **release candidate**, not production
+approval.
 
 The workflow uses immutable action commit SHAs, Buildx v0.35.0,
 `moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a`,
@@ -317,14 +318,17 @@ It:
    `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
 
 Reruns first fetch `gobridge-image-digest.txt` from the exact command GitHub
-Release, then always rebuild the tagged source with the same pinned,
-provenance-enabled inputs. If an association already exists, the rebuilt index
-digest must match it exactly before either runnable platform child is scanned or
-`latest` can move. Authentication, network, malformed asset, wrong image, a
-missing registry digest, or a rebuild mismatch fails closed. Before upload, the
-workflow fetches the asset again: the same digest is an idempotent association,
-a different digest fails, and a duplicate-name upload failure closes the final
-race.
+Release. If no association exists, the workflow builds and publishes by digest.
+If one exists, the workflow resumes from that immutable recorded digest without
+rebuilding. It re-inspects the recorded index in GHCR, requires the exact two
+runnable platform children, and rescans both exact child digests before
+`latest` can move. This is deliberate: maximum BuildKit provenance contains
+build-specific attestation metadata, so two valid builds need not have the same
+top-level OCI index digest. Authentication, network, malformed asset, wrong
+image, a missing registry digest, or a failed child scan fails closed. Before
+upload, the workflow fetches the asset again: the same digest is an idempotent
+association, a different digest fails, and a duplicate-name upload failure
+closes the final race.
 
 Release permissions are split by boundary. The build/resume/dual-scan job has
 `contents: read` plus `packages: write`. A minimal pinned `github-script` job
@@ -340,3 +344,13 @@ command GitHub Release, never `ghcr.io/...:vX.Y.Z`. `latest` is not part of the
 build and is promoted from the exact scanned digest without rebuilding. GitHub
 Releases remain per-module; the final command release is created only after
 strict train validation and both external consumer resolution passes succeed.
+
+Production approval is a separate post-merge, credentialed gate. Deploy the AWS
+DynamoDB HA fixture in the protected target environment, stop the verified
+leaseholder, collect the required warm/cold failure-to-Full samples, and retain
+the CloudWatch evidence described in
+`deployment/aws-filebased-config/README.md`. The source-tag workflow cannot
+supply that repository-specific AWS account, VPC, broker, secrets, or release
+role. Do not describe or promote the published image as production-approved
+until this external proof and the remaining controls in the production-readiness
+release sequence are complete.

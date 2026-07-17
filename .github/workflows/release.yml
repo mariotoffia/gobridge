@@ -279,6 +279,7 @@ jobs:
             RELEASE_API_URL="$RELEASE_API_URL" | tee -a "$GITHUB_OUTPUT"
 
       - name: Build and push image content by digest
+        if: steps.association.outputs.exists != 'true'
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -293,29 +294,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Validate content-addressed image digest
+      - name: Select immutable image digest
         id: image
         env:
+          ASSOCIATION_EXISTS: ${{ steps.association.outputs.exists }}
           BUILT_DIGEST: ${{ steps.build.outputs.digest }}
           RECORDED_DIGEST: ${{ steps.association.outputs.digest }}
         run: |
           set -euo pipefail
-          digest="$BUILT_DIGEST"
+          case "$ASSOCIATION_EXISTS" in
+            true)
+              digest="$RECORDED_DIGEST"
+              echo "mode=resumed" >> "$GITHUB_OUTPUT"
+              ;;
+            false)
+              digest="$BUILT_DIGEST"
+              echo "mode=built" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::invalid image association state '$ASSOCIATION_EXISTS'"
+              exit 1
+              ;;
+          esac
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::image has invalid digest '$digest'"
             exit 1
           fi
-          if [ -n "$RECORDED_DIGEST" ] && [ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]; then
-            echo "::error::recorded release digest differs from rebuilt tagged source"
-            exit 1
-          fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "ref=ghcr.io/mariotoffia/gobridge@$digest" >> "$GITHUB_OUTPUT"
-          if [ -n "$RECORDED_DIGEST" ]; then
-            echo "mode=rebuilt-verified" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=built" >> "$GITHUB_OUTPUT"
-          fi
           echo "Immutable image: ghcr.io/mariotoffia/gobridge@$digest"
 
       - name: Inspect image platform children

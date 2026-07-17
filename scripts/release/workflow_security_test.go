@@ -109,7 +109,7 @@ func TestReleaseWorkflow_FinalCommandTestsGatePublication(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflow_RebuildsBeforeTrustingRecordedDigest(t *testing.T) {
+func TestReleaseWorkflow_ResumesAndRescansRecordedDigest(t *testing.T) {
 	t.Parallel()
 
 	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
@@ -121,22 +121,27 @@ func TestReleaseWorkflow_RebuildsBeforeTrustingRecordedDigest(t *testing.T) {
 		t,
 		image,
 		"- name: Build and push image content by digest\n"+
+			"        if: steps.association.outputs.exists != 'true'\n"+
 			"        id: build",
-		`if [ -n "$RECORDED_DIGEST" ] && [ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]; then`,
-		`echo "::error::recorded release digest differs from rebuilt tagged source"`,
+		`digest="$RECORDED_DIGEST"`,
+		`echo "mode=resumed" >> "$GITHUB_OUTPUT"`,
+		`docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw`,
 	)
 	forbidWorkflowText(
 		t,
 		image,
-		"if: steps.association.outputs.exists != 'true'",
-		"Verify recorded digest still exists in GHCR",
-		`digest="$RECORDED_DIGEST"`,
+		`[ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]`,
+		"recorded release digest differs from rebuilt tagged source",
+		"mode=rebuilt-verified",
 	)
 	login := strings.Index(image, "Log in to GHCR")
 	association := strings.Index(image, "Fetch existing command release image association")
 	build := strings.Index(image, "Build and push image content by digest")
-	if login < 0 || association < login || build < association {
-		t.Error("image association must be fetched after login and before the source rebuild")
+	selectDigest := strings.Index(image, "Select immutable image digest")
+	inspect := strings.Index(image, "Inspect image platform children")
+	if login < 0 || association < login || build < association ||
+		selectDigest < build || inspect < selectDigest {
+		t.Error("image association must control the optional build before digest selection and inspection")
 	}
 }
 

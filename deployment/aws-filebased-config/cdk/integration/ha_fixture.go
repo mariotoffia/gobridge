@@ -196,13 +196,14 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 		MetricsExporter:  infra.MetricsExporterCloudWatch,
 	}
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("DynamoDBHA"), &ha.DynamoDBHAProps{
-		Vpc:              vpc,
-		VpcSubnets:       subnetSelection(env.SandboxEnv),
-		Image:            awsecs.ContainerImage_FromRegistry(jsii.String(env.Image), nil),
-		Bootstrap:        bootstrap,
-		BridgeConfig:     src,
-		QueueRegistry:    queues,
-		SsmParamRegistry: params,
+		Vpc:                          vpc,
+		VpcSubnets:                   subnetSelection(env.SandboxEnv),
+		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String(env.Image), nil),
+		Bootstrap:                    bootstrap,
+		BridgeConfig:                 src,
+		ManagedSubscriptionBaselines: map[string][]string{haLeaseID: {}},
+		QueueRegistry:                queues,
+		SsmParamRegistry:             params,
 	})
 
 	// Credentialed proof runs from an operator-controlled address with VPC

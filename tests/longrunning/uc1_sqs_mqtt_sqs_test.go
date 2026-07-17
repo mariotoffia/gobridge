@@ -149,7 +149,8 @@ func buildEgressBridge(
 	t.Helper()
 
 	sessID := mqttlocal.UniqueClientID(fmt.Sprintf("uc1-egress-%s", label))
-	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
+	// The lossless fan-out contract requires broker-side state across incidental reconnects.
+	sess := setupMQTTSession(t, sessID, connectivity.SessionPersistent)
 
 	// Subscribe to the topic.
 	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{

@@ -52,6 +52,35 @@ func TestValidateMQTTTopic_NullCharacter(t *testing.T) {
 	}
 }
 
+func TestValidateMQTTTopicFilter(t *testing.T) {
+	tests := []struct {
+		filter string
+		valid  bool
+	}{
+		{filter: "#", valid: true},
+		{filter: "orders/+/created", valid: true},
+		{filter: "$SYS/broker/+", valid: true},
+		{filter: "$share/workers/orders/#", valid: true},
+		{filter: "", valid: false},
+		{filter: "orders/#/dead", valid: false},
+		{filter: "orders/new+", valid: false},
+		{filter: "$share//orders/#", valid: false},
+		{filter: "$share/workers/", valid: false},
+		{filter: "$share/work+ers/orders/#", valid: false},
+		{filter: "orders/\x00", valid: false},
+		{filter: string([]byte{0xff}), valid: false},
+	}
+	for _, tc := range tests {
+		err := ValidateMQTTTopicFilter(tc.filter)
+		if tc.valid && err != nil {
+			t.Errorf("ValidateMQTTTopicFilter(%q) = %v, want valid", tc.filter, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("ValidateMQTTTopicFilter(%q) = nil, want invalid", tc.filter)
+		}
+	}
+}
+
 // TestValidateMQTTTopic_EmptySegment pins A-13: empty topic levels are
 // spec-legal for a publish Topic Name (MQTT 5.0 §4.7.1.1 — only the whole
 // name must be non-empty) and must be accepted. Real devices emit "a//b" and

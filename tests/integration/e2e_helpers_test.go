@@ -396,9 +396,10 @@ func waitForOutboxClaim(
 
 func e2eFastSessionConfig(sessionID string) session.Config {
 	cfg := session.DefaultConfig(sessionID, true)
-	cfg.LeaseTTL = 800 * time.Millisecond
-	cfg.RenewInterval = 150 * time.Millisecond
-	cfg.RenewJitter = 20 * time.Millisecond
+	cfg.LeaseTTL = 5 * time.Second
+	cfg.RenewInterval = 400 * time.Millisecond
+	cfg.RenewJitter = 50 * time.Millisecond
+	cfg.RenewCallTimeout = time.Second
 	cfg.StepDownGrace = 200 * time.Millisecond
 	cfg.DrainStrategy = persistence.NewFixedPoll(100 * time.Millisecond)
 	cfg.DrainBatchSize = 50

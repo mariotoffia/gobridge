@@ -60,6 +60,7 @@ The shared config must pass these synth-time checks:
   `stores.managed_subscriptions` entries;
 - at least one MQTT `session_mode: exclusive` session with one stable non-empty
   `client_id` and no `client_id_suffix`;
+- one `ManagedSubscriptionBaselines` entry for every Exclusive MQTT session;
 - a lease-managed route using `delivery_mode: shared_outbox` and
   `policy.ack_after: outbox_persist`;
 - explicit `failover_slo` and `startup_allowance` on every coordinated route;
@@ -107,6 +108,34 @@ All three tables use `PAY_PER_REQUEST`, DynamoDB-managed encryption, point-in-ti
 recovery, deletion protection, and CloudFormation `RETAIN`. The facade exposes
 table objects, names, and ARNs only through `bridge.Data()`
 (`DynamoDBHAData`).
+
+Before either ECS service can start, the facade initializes one managed-
+subscription baseline row for each Exclusive MQTT session. Declare the
+broker's complete known historical filter set by session ID:
+
+```go
+ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
+    // ...
+    ManagedSubscriptionBaselines: map[string][]string{
+        "mqtt-ha": {"orders/legacy/#"},
+    },
+})
+```
+
+An explicit empty slice is an attestation that the stable broker identity is
+new and has no historical subscriptions. Never use it for an existing broker
+session merely because its history is unknown; reset to a genuinely new stable
+client identity first. Missing entries and entries for unknown or unmanaged
+sessions fail synthesis.
+
+The facade derives the same opaque `storage_identity` as the Paho adapter and
+uses a create-only custom resource to set `baseline=true` and union any declared
+filters after validating MQTT wildcard and shared-subscription syntax. A durable
+identity change creates a new initializer; changing only the declared filters
+does not. Updates and deletes intentionally perform no write, so a later stack
+update cannot resurrect a filter that the runtime removed. Each initializer
+hides request data in logs, has only `dynamodb:UpdateItem` on the exact managed-
+subscriptions table, and is a dependency of both ECS services.
 
 On-demand mode removes capacity-unit forecasting, not capacity engineering.
 Watch throttles and system errors. A single hot Exclusive session concentrates
@@ -233,6 +262,13 @@ Setting `GOBRIDGE_INT_HA=1` makes missing variables, credentials, stack outputs,
 metric permissions, exact-task network reachability, and missing CloudWatch
 samples hard failures. Without that explicit request, the credentialed scenario
 uses the existing build-tag skip convention and performs no deployment.
+
+This credentialed proof is a mandatory **post-merge external production-
+approval gate**. The source-tag workflow does not own a repository-specific AWS
+account, protected environment, VPC, broker, or release role and therefore does
+not run it. Image publication produces a release candidate, not production
+approval. Record the failover samples and CloudWatch evidence before promoting
+that candidate for production use.
 
 ## Authoring Bridge Configuration
 

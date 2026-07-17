@@ -248,8 +248,12 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	// Per-test broker with persistence so sessions survive restart.
-	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithPersistence(true))
+	// High queue limits isolate QoS 2 restart recovery from broker backpressure.
+	broker := mqttlocal.NewBrokerInstance(t,
+		mqttlocal.WithPersistence(true),
+		mqttlocal.WithMaxInflightMessages(65534),
+		mqttlocal.WithMaxQueuedMessages(65534),
+	)
 	brokerURL := broker.URL()
 
 	// Persistent collector — broker queues messages during restart gap.
@@ -317,11 +321,11 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	// Persistent collector ensures broker queues messages during the gap.
 	gobridgesync(t, 30*time.Second, rt)
 
-	// Wait for all messages to arrive after reconnect.
+	// Wait for all unique messages; restart-boundary duplicates must not mask loss.
 	lrWaitFor(t, 120*time.Second,
-		fmt.Sprintf("collector >= %d after restart", msgCount),
+		fmt.Sprintf("collector unique >= %d after restart", msgCount),
 		func() bool {
-			return collector.count() >= msgCount
+			return countUnique(collector) >= msgCount
 		})
 
 	received := collector.count()

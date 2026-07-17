@@ -362,13 +362,20 @@ func setupDynamoStoresForRestart(t *testing.T) (ports.LeaseStore, ports.OutboxSt
 
 func lrSessionConfig(sessionID string) session.Config {
 	cfg := session.DefaultConfig(sessionID, true)
-	cfg.LeaseTTL = 2 * time.Second
+	cfg.LeaseTTL = 5 * time.Second
 	cfg.RenewInterval = 400 * time.Millisecond
 	cfg.RenewJitter = 50 * time.Millisecond
-	cfg.RenewCallTimeout = 200 * time.Millisecond
+	cfg.RenewCallTimeout = time.Second
 	cfg.StepDownGrace = 500 * time.Millisecond
 	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	cfg.DrainBatchSize = 100
+	return cfg
+}
+
+func lrThroughputSessionConfig(sessionID string) session.Config {
+	// Throughput tests isolate sustained delivery from compressed failover timing.
+	cfg := session.DefaultConfig(sessionID, true)
+	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
 	return cfg
 }
 

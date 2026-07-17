@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,6 +56,10 @@ type DynamoDBHAProps struct {
 	Image        awsecs.ContainerImage
 	Bootstrap    infra.BootstrapConfig
 	BridgeConfig source.Source
+	// ManagedSubscriptionBaselines attests the known broker-side filters for
+	// every Exclusive receiver session. An explicit empty slice means the
+	// broker identity is new and has no historical subscriptions.
+	ManagedSubscriptionBaselines map[string][]string
 
 	QueueRegistry    *registry.QueueRegistry
 	SsmParamRegistry *registry.SsmParamRegistry
@@ -105,8 +110,9 @@ type GoBridgeDynamoDBHA struct {
 }
 
 type inspectedHAConfig struct {
-	tables            dataTableNames
-	failoverObjective time.Duration
+	tables                       dataTableNames
+	failoverObjective            time.Duration
+	managedSubscriptionBaselines []managedSubscriptionBaseline
 }
 
 // NewGoBridgeDynamoDBHA creates the DynamoDB-coordinated HA facade.
@@ -144,7 +150,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: Phase 1 validation failed: %v", err))
 	}
-	inspected, err := inspectHAConfig(mat.Config)
+	inspected, err := inspectHAConfig(mat.Config, props.ManagedSubscriptionBaselines)
 	if err != nil {
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: invalid coordinated HA config: %v", err))
@@ -185,6 +191,11 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	}
 
 	data := newDynamoDBHAData(c, inspected.tables)
+	data.managedSubscriptionInitializers = newManagedSubscriptionInitializers(
+		c,
+		data.managedSubscriptions,
+		inspected.managedSubscriptionBaselines,
+	)
 
 	controlBuilt := gobridgebase.New(c, jsii.String("ControlBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeControl,
@@ -280,6 +291,9 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		service.Node().AddDependency(data.lease)
 		service.Node().AddDependency(data.outbox)
 		service.Node().AddDependency(data.managedSubscriptions)
+		for _, initializer := range data.managedSubscriptionInitializers {
+			service.Node().AddDependency(initializer)
+		}
 	}
 
 	mat2, err := props.BridgeConfig.Materialize()
@@ -315,7 +329,10 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	return facade
 }
 
-func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
+func inspectHAConfig(
+	cfg *ports.BridgeConfig,
+	declaredBaselines map[string][]string,
+) (inspectedHAConfig, error) {
 	if cfg == nil {
 		return inspectedHAConfig{}, fmt.Errorf("bridge config is nil")
 	}
@@ -346,7 +363,7 @@ func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
 		return inspectedHAConfig{}, fmt.Errorf("lease, outbox, and managed_subscriptions must use three distinct tables")
 	}
 
-	exclusive := map[string]struct{}{}
+	exclusive := map[string]string{}
 	for i := range cfg.Sessions {
 		session := &cfg.Sessions[i]
 		if session.SessionMode != string(connectivity.SessionExclusive) {
@@ -359,10 +376,25 @@ func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
 		if err := mqtt.ValidateEffectiveSession(connectivity.SessionExclusive); err != nil {
 			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q is not an effective stable MQTT session: %w", session.ID, err)
 		}
-		exclusive[session.ID] = struct{}{}
+		storageIdentity, err := mqtt.DurableSessionIdentity(connectivity.SessionExclusive)
+		if err != nil {
+			return inspectedHAConfig{}, fmt.Errorf(
+				"exclusive session %q durable identity: %w",
+				session.ID,
+				err,
+			)
+		}
+		exclusive[session.ID] = storageIdentity
 	}
 	if len(exclusive) == 0 {
 		return inspectedHAConfig{}, fmt.Errorf("at least one Exclusive MQTT session is required")
+	}
+	managedSubscriptionBaselines, err := validateManagedSubscriptionBaselines(
+		exclusive,
+		declaredBaselines,
+	)
+	if err != nil {
+		return inspectedHAConfig{}, err
 	}
 
 	var objective time.Duration
@@ -439,7 +471,72 @@ func inspectHAConfig(cfg *ports.BridgeConfig) (inspectedHAConfig, error) {
 	if err := validateTask9Admission(cfg); err != nil {
 		return inspectedHAConfig{}, err
 	}
-	return inspectedHAConfig{tables: names, failoverObjective: objective}, nil
+	return inspectedHAConfig{
+		tables:                       names,
+		failoverObjective:            objective,
+		managedSubscriptionBaselines: managedSubscriptionBaselines,
+	}, nil
+}
+
+func validateManagedSubscriptionBaselines(
+	required map[string]string,
+	declared map[string][]string,
+) ([]managedSubscriptionBaseline, error) {
+	for sessionID := range declared {
+		if _, ok := required[sessionID]; !ok {
+			return nil, fmt.Errorf(
+				"managed subscription baseline references unknown or unmanaged session %q",
+				sessionID,
+			)
+		}
+	}
+
+	sessionIDs := make([]string, 0, len(required))
+	for sessionID := range required {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+
+	baselines := make([]managedSubscriptionBaseline, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		filters, ok := declared[sessionID]
+		if !ok {
+			return nil, fmt.Errorf(
+				"managed subscription baseline for Exclusive MQTT session %q is required",
+				sessionID,
+			)
+		}
+		seen := make(map[string]struct{}, len(filters))
+		validatedFilters := make([]string, 0, len(filters))
+		for _, filter := range filters {
+			if filter == "" {
+				return nil, fmt.Errorf(
+					"managed subscription baseline for session %q contains an empty filter",
+					sessionID,
+				)
+			}
+			if err := paho.ValidateMQTTTopicFilter(filter); err != nil {
+				return nil, fmt.Errorf(
+					"managed subscription baseline for session %q contains invalid filter %q: %w",
+					sessionID,
+					filter,
+					err,
+				)
+			}
+			if _, duplicate := seen[filter]; duplicate {
+				continue
+			}
+			seen[filter] = struct{}{}
+			validatedFilters = append(validatedFilters, filter)
+		}
+		sort.Strings(validatedFilters)
+		baselines = append(baselines, managedSubscriptionBaseline{
+			sessionID:       sessionID,
+			storageIdentity: required[sessionID],
+			filters:         validatedFilters,
+		})
+	}
+	return baselines, nil
 }
 
 func requiredDynamoDBStore(role string, store *ports.StoreConfig) (string, error) {

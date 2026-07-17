@@ -141,23 +141,45 @@ func haBootstrap() infra.BootstrapConfig {
 }
 
 func newHAHarness(t *testing.T, mutate func(*ha.DynamoDBHAProps)) *haHarness {
+	return newHAHarnessWithYAML(t, validHAYAML, mutate)
+}
+
+func newHAHarnessWithYAML(
+	t *testing.T,
+	yaml string,
+	mutate func(*ha.DynamoDBHAProps),
+) *haHarness {
 	t.Helper()
 	t.Cleanup(singleton.ResetForTest)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("HAStack"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
-	src := source.NewAsset(writeHAYAML(t, validHAYAML))
+	src := source.NewAsset(writeHAYAML(t, yaml))
 	props := &ha.DynamoDBHAProps{
-		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
-		Bootstrap:    haBootstrap(),
-		BridgeConfig: src,
+		Vpc:                          vpc,
+		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:                    haBootstrap(),
+		BridgeConfig:                 src,
+		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {"legacy/#"}},
 	}
 	if mutate != nil {
 		mutate(props)
 	}
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), props)
 	return &haHarness{app: app, stack: stack, vpc: vpc, bridge: bridge, source: src}
+}
+
+func managedSubscriptionInitializerID(t *testing.T, stack awscdk.Stack) string {
+	t.Helper()
+	resources := assertions.Template_FromStack(stack, nil).
+		FindResources(jsii.String("Custom::AWS"), nil)
+	if len(*resources) != 1 {
+		t.Fatalf("managed-subscription initializer count = %d, want 1", len(*resources))
+	}
+	for logicalID := range *resources {
+		return logicalID
+	}
+	return ""
 }
 
 func mainContainerFromTask(t *testing.T, raw map[string]any) map[string]any {
@@ -296,6 +318,118 @@ func TestGoBridgeDynamoDBHA_ConfigAndAccessors(t *testing.T) {
 	}
 }
 
+func TestGoBridgeDynamoDBHA_InitializesManagedSubscriptionBaselineBeforeServices(t *testing.T) {
+	defer jsii.Close()
+	h := newHAHarness(t, nil)
+	template := assertions.Template_FromStack(h.stack, nil)
+
+	initializers := template.FindResources(jsii.String("Custom::AWS"), nil)
+	if len(*initializers) != 1 {
+		t.Fatalf("managed-subscription baseline initializers = %d, want 1", len(*initializers))
+	}
+	var initializerID string
+	for logicalID, raw := range *initializers {
+		initializerID = logicalID
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("marshal baseline initializer: %v", err)
+		}
+		text := string(encoded)
+		for _, want := range []string{"DynamoDB", "updateItem", "storage_identity", "baseline", "legacy/#"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("baseline initializer missing %q: %s", want, text)
+			}
+		}
+	}
+
+	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
+	for logicalID, raw := range *services {
+		dependencies, _ := (*raw)["DependsOn"].([]any)
+		found := false
+		for _, dependency := range dependencies {
+			if dependency == initializerID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s does not depend on baseline initializer %s: %v", logicalID, initializerID, dependencies)
+		}
+	}
+}
+
+func TestGoBridgeDynamoDBHA_ReplacesBaselineInitializerWhenDurableIdentityChanges(t *testing.T) {
+	defer jsii.Close()
+	first := newHAHarness(t, nil)
+	firstID := managedSubscriptionInitializerID(t, first.stack)
+
+	singleton.ResetForTest()
+	changedYAML := strings.Replace(
+		validHAYAML,
+		"client_id: test-ha-stable",
+		"client_id: test-ha-migrated",
+		1,
+	)
+	second := newHAHarnessWithYAML(t, changedYAML, nil)
+	secondID := managedSubscriptionInitializerID(t, second.stack)
+	if firstID == secondID {
+		t.Fatalf("initializer logical ID did not change with durable identity: %s", firstID)
+	}
+}
+
+func TestGoBridgeDynamoDBHA_RejectsMissingManagedSubscriptionBaseline(t *testing.T) {
+	defer jsii.Close()
+	defer func() {
+		recovered := recover()
+		if recovered == nil || !strings.Contains(fmt.Sprint(recovered), `managed subscription baseline for Exclusive MQTT session "mqtt-ha" is required`) {
+			t.Fatalf("panic = %v, want explicit managed-subscription baseline invariant", recovered)
+		}
+	}()
+	newHAHarness(t, func(props *ha.DynamoDBHAProps) {
+		props.ManagedSubscriptionBaselines = nil
+	})
+}
+
+func TestGoBridgeDynamoDBHA_RejectsInvalidManagedSubscriptionBaseline(t *testing.T) {
+	tests := []struct {
+		name      string
+		baselines map[string][]string
+		want      string
+	}{
+		{
+			name: "unknown session",
+			baselines: map[string][]string{
+				"mqtt-ha": {},
+				"other":   {},
+			},
+			want: `baseline references unknown or unmanaged session "other"`,
+		},
+		{
+			name:      "empty filter",
+			baselines: map[string][]string{"mqtt-ha": {""}},
+			want:      `baseline for session "mqtt-ha" contains an empty filter`,
+		},
+		{
+			name:      "malformed filter",
+			baselines: map[string][]string{"mqtt-ha": {"orders/#/dead"}},
+			want:      `baseline for session "mqtt-ha" contains invalid filter "orders/#/dead"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer jsii.Close()
+			defer func() {
+				recovered := recover()
+				if recovered == nil || !strings.Contains(fmt.Sprint(recovered), tc.want) {
+					t.Fatalf("panic = %v, want %q", recovered, tc.want)
+				}
+			}()
+			newHAHarness(t, func(props *ha.DynamoDBHAProps) {
+				props.ManagedSubscriptionBaselines = tc.baselines
+			})
+		})
+	}
+}
+
 func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
 	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
@@ -304,10 +438,11 @@ func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
 	aliased := strings.ReplaceAll(validHAYAML, "transport: mqtt", "transport: mqtt.paho")
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
-		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
-		Bootstrap:    haBootstrap(),
-		BridgeConfig: source.NewAsset(writeHAYAML(t, aliased)),
+		Vpc:                          vpc,
+		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:                    haBootstrap(),
+		BridgeConfig:                 source.NewAsset(writeHAYAML(t, aliased)),
+		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
 	})
 	if bridge == nil {
 		t.Fatal("mqtt.paho alias returned nil HA facade")
@@ -435,10 +570,11 @@ func TestGoBridgeDynamoDBHA_PendingVpcLookupDefersAZValidation(t *testing.T) {
 		}
 	}()
 	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
-		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
-		Bootstrap:    haBootstrap(),
-		BridgeConfig: source.NewAsset(writeHAYAML(t, validHAYAML)),
+		Vpc:                          vpc,
+		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:                    haBootstrap(),
+		BridgeConfig:                 source.NewAsset(writeHAYAML(t, validHAYAML)),
+		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
 	})
 }
 
@@ -455,10 +591,11 @@ func TestGoBridgeDynamoDBHA_ResolvedSingleAZIsRejected(t *testing.T) {
 		}
 	}()
 	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
-		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
-		Bootstrap:    haBootstrap(),
-		BridgeConfig: source.NewAsset(writeHAYAML(t, validHAYAML)),
+		Vpc:                          vpc,
+		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Bootstrap:                    haBootstrap(),
+		BridgeConfig:                 source.NewAsset(writeHAYAML(t, validHAYAML)),
+		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
 	})
 }
 
