@@ -324,6 +324,10 @@ func TestOrphan_SessionWiring_UnsubscribesExactTopic(t *testing.T) {
 	fake := &recordingUnsubConn{}
 	sess.mu.Lock()
 	sess.cm = fake
+	// An empty plan models "first Reconcile ran, wants nothing": before any
+	// plan is stashed every topic is covered and orphan handling is
+	// deliberately deferred (MQTT-L2).
+	sess.plan = &connectivity.SessionPlan{}
 	sess.mu.Unlock()
 
 	// Simulate a (re)connect: this arms the router grace window.
@@ -360,8 +364,16 @@ func TestSession_TopicCoveredLocked(t *testing.T) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
-	// Nothing configured yet: every unmatched topic is a genuine orphan.
-	require.False(t, sess.topicCoveredLocked("a/b"))
+	// No plan stashed yet (no Reconcile has ever run): EVERY topic is covered
+	// so the pre-first-Reconcile broker backlog can never be orphan-dropped
+	// or its live topic unsubscribed (MQTT-L2).
+	require.True(t, sess.topicCoveredLocked("a/b"),
+		"before the first Reconcile every topic is covered")
+
+	// An EMPTY stashed plan (reconciled, wants nothing): nothing is covered.
+	sess.plan = &connectivity.SessionPlan{}
+	require.False(t, sess.topicCoveredLocked("a/b"),
+		"after a reconciled empty plan an unmatched topic is a genuine orphan")
 
 	// Active broker subscription (wildcard) covers a concrete topic.
 	sess.activeSubs["sensors/+/temp"] = 1

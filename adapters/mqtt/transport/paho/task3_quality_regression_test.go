@@ -40,6 +40,11 @@ func TestOrphanUnsubscribe_SerializesWithReconcileAndCannotEraseReaddedSubscript
 	s.cm = conn
 	s.connected = true
 	s.connEpoch = 7
+	// An empty APPLIED plan models "first Reconcile ran, wants nothing", so
+	// readded/topic is a genuine orphan at check time. A nil plan would mean
+	// no Reconcile ever ran, where every topic is covered and the orphan
+	// unsubscribe is deliberately skipped (MQTT-L2).
+	s.plan = &connectivity.SessionPlan{}
 	s.mu.Unlock()
 
 	orphanDone := make(chan struct{})
@@ -188,6 +193,9 @@ func TestOrphanUnsubscribe_ClearsObservedAndActiveStateOnlyForCapturedEpoch(t *t
 		s.cm = conn
 		s.connEpoch = 3
 		s.observedSubs["orphan/topic"] = subscriptionGrant{Requested: 1, Granted: 0}
+		// Reconciled empty plan: orphan handling is deferred entirely while no
+		// plan has ever been stashed (MQTT-L2).
+		s.plan = &connectivity.SessionPlan{}
 		s.mu.Unlock()
 
 		s.unsubscribeOrphan("orphan/topic")
@@ -211,6 +219,8 @@ func TestOrphanUnsubscribe_ClearsObservedAndActiveStateOnlyForCapturedEpoch(t *t
 		s.mu.Lock()
 		s.cm = conn
 		s.connEpoch = 4
+		// Reconciled empty plan: see MQTT-L2 note above.
+		s.plan = &connectivity.SessionPlan{}
 		s.mu.Unlock()
 
 		s.unsubscribeOrphan("orphan/topic")

@@ -67,6 +67,16 @@ func (b *Builder) validateFailoverBudgets() error {
 			}
 		}
 		if canonical.inputs.failoverSLO == 0 {
+			// No SLO declared: nothing to enforce, but the worst case must not
+			// stay silent (MQTT-F2). The auto-selected HA profile's 45s lease
+			// TTL invites an operator to assume ~45s failover while the real
+			// worst case — lease TTL + poll boundaries + acquire-call budget +
+			// transport post-takeover activation — is several minutes with
+			// default transport timeouts. Disclose the computed budget at
+			// every build so the number is on record before an incident, and
+			// point at failover_slo, which turns this disclosure into a
+			// build-failing contract.
+			b.logFailoverBudgetDisclosure(canonical, sessionID)
 			continue
 		}
 		if !canonical.inputs.transportTimingKnown || canonical.inputs.postTakeoverActivation <= 0 {
@@ -161,6 +171,51 @@ func (b *Builder) failoverManagerCandidate(source, sessionID string, sc session.
 			transportKind: transportKind, mode: mode,
 		},
 	}, nil
+}
+
+// logFailoverBudgetDisclosure computes and logs the worst-case failover
+// budget for one exclusive session whose config declares NO failover_slo
+// (MQTT-F2). Best-effort by design: a budget that cannot be computed
+// (unknown transport timing, degenerate lease values) logs what is known
+// and never fails the build — enforcement is exactly what declaring
+// failover_slo buys.
+func (b *Builder) logFailoverBudgetDisclosure(canonical failoverManagerCandidate, sessionID string) {
+	if b.logger == nil {
+		return
+	}
+	if !canonical.inputs.transportTimingKnown || canonical.inputs.postTakeoverActivation <= 0 {
+		b.logger.Info("bridge: failover budget for exclusive session is UNKNOWN — the transport "+
+			"declares no post-takeover activation timing; declare failover_slo to require a computable, "+
+			"enforced bound",
+			"session_id", sessionID,
+			"source", canonical.source,
+		)
+		return
+	}
+	ttl, acquirePoll, renewCallTimeout := canonical.config.EffectiveFailoverLeaseTiming()
+	budget, err := checkedFailoverBudget(ttl, acquirePoll, renewCallTimeout,
+		canonical.inputs.postTakeoverActivation, canonical.config.StartupAllowance)
+	if err != nil {
+		b.logger.Info("bridge: failover budget for exclusive session could not be computed",
+			"session_id", sessionID,
+			"source", canonical.source,
+			"error", err,
+		)
+		return
+	}
+	b.logger.Info("bridge: worst-case failover budget for exclusive session (no failover_slo declared — "+
+		"NOT enforced). This is how long a standby may need to fully take over after the active owner "+
+		"dies: lease TTL + acquire-poll boundaries + lease-store call budget + transport post-takeover "+
+		"activation + startup allowance. Tune lease_ttl/acquire_poll_interval and the transport "+
+		"connect/reconcile/grace timeouts to shrink it, and declare failover_slo to make the build FAIL "+
+		"when the configuration cannot meet the target",
+		"session_id", sessionID,
+		"source", canonical.source,
+		"failover_budget", budget.String(),
+		"lease_ttl", ttl.String(),
+		"post_takeover_activation", canonical.inputs.postTakeoverActivation.String(),
+		"startup_allowance", canonical.config.StartupAllowance.String(),
+	)
 }
 
 func failoverBudgetError(source, sessionID, detail string) error {

@@ -100,6 +100,28 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
 		}
 		opts.ClientID = resolved
+		// Persistent mode keys the broker's durable session (subscriptions +
+		// queued offline QoS 1/2) to the effective client_id. A hostname
+		// suffix is stable only where the hostname is (StatefulSet pods, VMs);
+		// on a Kubernetes Deployment or ECS task every rollout mints a NEW
+		// pod/task name → new client_id → new broker session, ORPHANING the
+		// old session's queued messages until session_expiry_interval
+		// (default 24h) silently expires them — loss by timeout, invisible to
+		// the bridge (MQTT-F3). The bridge cannot detect its orchestrator, so
+		// warn at build time; docs/transports/mqtt.md#deployment-identity
+		// covers the safe shapes (StatefulSet, Exclusive mode, or
+		// Ephemeral+$share).
+		if mode == connectivity.SessionPersistent && opts.ClientIDSuffix == ClientIDSuffixHostname && f.Logger != nil {
+			f.Logger.Warn("mqtt: session_mode=persistent with client_id_suffix=hostname is safe ONLY "+
+				"where the hostname is stable across restarts (StatefulSet, VM). On a Kubernetes "+
+				"Deployment or ECS service every rollout mints a new hostname → new client_id → new "+
+				"broker session, stranding the previous session's queued QoS 1/2 messages until "+
+				"session_expiry_interval expires them (silent loss by timeout). Use a StatefulSet, "+
+				"session_mode: exclusive, or ephemeral + $share instead",
+				"session_id", spec.ID,
+				"client_id", opts.ClientID,
+			)
+		}
 	}
 	if spec.ManagedSubscriptionsRequired {
 		if mode == connectivity.SessionEphemeral {

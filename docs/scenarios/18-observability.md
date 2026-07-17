@@ -94,7 +94,8 @@ absolute value:
 
 **Transport-adapter metrics.** Some adapters self-instrument under names
 declared in their own package rather than in `domain/shared/metrics.go`. The
-MQTT (paho) router emits two backpressure counters (both untagged):
+MQTT (paho) router emits two backpressure counters (`MQTTRouterDropped` is
+tagged `session_id`; `MQTTRouterBuffered` is untagged):
 
 | Metric | Kind | Description |
 |---|---|---|

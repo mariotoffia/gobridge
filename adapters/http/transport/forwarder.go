@@ -248,8 +248,16 @@ func (f *HTTPForwarder) Forward(
 		return shared.ErrForwardFailed.WithMessage("target has no HTTP endpoint")
 	}
 
+	// Admission via ports.AdmitCircuitBreaker: forwards for independent
+	// envelopes run concurrently through this one breaker, and the token-less
+	// BeforeRequest/AfterRequest pair would account an outcome arriving after
+	// a breaker state transition against the current generation (a stale
+	// half-open probe release or spurious re-open — same defect class as
+	// MQTT-O3). The settle callback pins the admission generation instead.
+	settle := func(error) {}
 	if f.cfg.Breaker != nil {
-		if err := f.cfg.Breaker.BeforeRequest(); err != nil {
+		admitted, err := ports.AdmitCircuitBreaker(f.cfg.Breaker)
+		if err != nil {
 			f.cfg.Metrics.Counter(MetricHTTPForwardBreakerOpen, 1)
 			if logging.DebugEnabled(f.logger) {
 				f.logger.Log(ctx, logging.LevelDebug, "http: forward rejected by open circuit breaker",
@@ -259,11 +267,10 @@ func (f *HTTPForwarder) Forward(
 			}
 			return err
 		}
+		settle = admitted
 	}
 	err := f.forward(ctx, target, httpEndpoint, receiverID, env)
-	if f.cfg.Breaker != nil {
-		f.cfg.Breaker.AfterRequest(err)
-	}
+	settle(err)
 	return err
 }
 

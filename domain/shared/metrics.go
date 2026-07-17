@@ -278,11 +278,23 @@ const (
 // outcome (TagKeyState = "success" | "failure"); a rising failure rate flags a
 // config that keeps being rejected by the running runtime.
 //
-// MetricConfigDegraded is a 0/1 gauge that flips to 1 when live reconfiguration
-// is no longer available (the config-change stream closed and the bridge is
-// running blind on its last good config) and back to 0 when a reload next
-// succeeds. It is the single series an operator alerts on to learn a bridge can
-// no longer observe config changes without a restart.
+// MetricConfigDegraded is a 0/1 gauge that flips to 1 while the bridge's
+// configuration machinery is in a degraded state and back to 0 when a reload
+// next succeeds (or the degraded condition itself resolves). Two conditions
+// raise it, distinguished by the reason surfaced in deep health
+// (ConfigWatchHealth.Reason):
+//
+//   - live reconfiguration is no longer available (the config-change stream
+//     closed and the bridge is running blind on its last good config);
+//   - a reload was APPLIED but its transport sessions never CONVERGED within
+//     the transport's declared activation budget (MQTT-R1: reload success
+//     signals are green while the transport cannot reach its broker state —
+//     e.g. an ACL-denied topic or rotated-away credentials committed as a
+//     successful swap). This clears on its own when the sessions later
+//     converge.
+//
+// It is the single series an operator alerts on to learn a bridge's config
+// state needs attention; read /deephealth for which condition and why.
 const (
 	MetricConfigReloads  = "ConfigReloads"
 	MetricConfigDegraded = "ConfigDegraded"

@@ -81,6 +81,46 @@ by active and standby replicas.
 Validation fails closed when a clustered `$share` subscription has no typed
 replica-identity capability, an empty strategy, or a durable mode using `nonce`.
 
+### Deployment identity
+
+Persistent mode keys the broker's durable session — its subscriptions **and
+queued offline QoS 1/2 messages** — to the effective `client_id`. A
+`client_id_suffix: hostname` is therefore safe **only where the hostname is
+stable across restarts of the same replica**:
+
+| Orchestrator shape | Hostname across a restart/rollout | Persistent + `hostname` suffix |
+|---|---|---|
+| Kubernetes **StatefulSet**, VM, bare metal | stable (`pod-0` stays `pod-0`) | **Safe** — the replica resumes its own broker session. |
+| Kubernetes **Deployment**, ECS service | new pod/task name every rollout | **Unsafe** — every rollout mints a new `client_id`, so the previous broker session (with its queued QoS 1/2) is ORPHANED. No instance can drain it; it expires silently after `session_expiry_interval` (default 24h) — **loss by timeout, invisible to the bridge**. |
+
+The bridge cannot detect its orchestrator, so `Factory.NewSession` logs a
+warning whenever `session_mode: persistent` is combined with
+`client_id_suffix: hostname`. On a Deployment/ECS service use one of the safe
+shapes instead:
+
+- **StatefulSet** (stable hostnames) when persistent per-replica sessions are
+  genuinely wanted;
+- **`session_mode: exclusive`** (one stable shared `client_id` + lease): the
+  surviving/next instance resumes the queue on takeover;
+- **Ephemeral + `$share`** when per-replica offline retention is not needed —
+  the broker load-balances and nothing is queued per dead replica.
+
+**Broker-side HA is single-endpoint for durable modes.** Persistent and
+exclusive sessions reject more than one canonical `broker_urls` entry: the
+durable managed-filter history is keyed to a single broker-session domain, so
+broker-level HA for durable MQTT sessions must come from a broker cluster
+behind one stable endpoint (DNS name / load balancer), never from client-side
+URL lists. Multi-URL client-side failover is available to ephemeral sessions
+only.
+
+**`deployment_mode: standalone` is a per-process assertion.** Two replicas
+each declaring `standalone` with process-local lease stores each believe they
+own every exclusive session — real split-brain consumption. The bridge logs a
+prominent `SPLIT-BRAIN RISK` warning for any exclusive session on a local
+lease store; alert on that log line, and enforce `replicas: 1` at the
+orchestrator for standalone deployments. `deployment_mode: clustered`
+hard-fails on non-distributed stores instead.
+
 ### Exclusive mode: lease store and failover timing
 
 **Lease store (platform requirement).** Exclusive mode elects a single holder
@@ -97,13 +137,40 @@ exclusive sessions have no such coupling. See
 
 **Failover timing.** A clustered exclusive route that leaves lease timing
 unset uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO.
-Declare `routes[].session.failover_slo` to validate lease TTL, jittered acquire
-polling, renew-call timeout, the complete conservative Paho post-takeover
-activation bound, and startup allowance before resources are opened. Validation is necessary but warm
+The worst-case failover budget is:
+
+```
+budget = lease TTL
+       + acquire-poll boundaries
+       + lease-store observation call budget
+       + transport post-takeover activation
+       + startup_allowance
+```
+
+where the MQTT **post-takeover activation** term alone is
+`2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace`
+= **240s with the shipped defaults** (30s each). With the auto-selected
+clustered HA profile (lease TTL 45s, 5s acquire poll, 3s renew-call timeout)
+the default worst case is therefore **≈336s**, and with standalone lease
+defaults (360s TTL) it approaches **10 minutes**. A ~50s worst case is
+reachable with explicit tuning — e.g. `lease_ttl: 15s`, `connect_timeout: 3s`,
+`reconcile_timeout: 2s`, `unmatched_grace: 2s` — the controlling keys are
+`lease_ttl`, `acquire_poll_interval`, `renew_call_timeout`, `max_renew_fails`,
+`startup_allowance`, plus the MQTT `connect_timeout`, `reconcile_timeout`, and
+`unmatched_grace`.
+
+Every build **logs this computed budget** for each exclusive session that
+declares no `failover_slo` (look for `worst-case failover budget` at startup).
+Declare `routes[].session.failover_slo` to turn the disclosure into a
+contract: the build then **fails** when lease TTL, jittered acquire polling,
+renew-call timeout, the complete conservative Paho post-takeover activation
+bound, and startup allowance cannot meet the target. Validation is necessary but warm
 and cold failure-detection-to-`ServiceLevelFull` measurements are required before
 publishing any latency claim. The activation bound includes initial connect,
 managed cleanup/replay, recycle/reconnect, final reconciliation, and grace
-windows exactly once. See
+windows exactly once. The practical bound additionally includes pod-restart
+latency when the lease-losing instance must recycle (the single-use session
+restart policy below); budget it via `startup_allowance`. See
 [Scenario 8 — Failover SLO Validation](../scenarios/08-clustered-exclusive-sessions.md#failover-slo-validation).
 
 **Restart policy is a deployment requirement.** The Paho session is
@@ -264,6 +331,47 @@ apply the new identity, then resume traffic and verify consumption. In a cluster
 perform this as a coordinated versioned rollout; independent per-process reloads
 are unsafe.
 
+### Reload semantics: a controlled restart, not a hitless reload
+
+Every MQTT-containing configuration change takes the serialized
+prepare-commit swap: **all MQTT sessions disconnect** (drain ≤ the configured
+`drain_timeout`, default 30s), the new runtime is built, dialed, and
+reconciled. During that window:
+
+- **QoS 1/2 on `clean_start=false` (persistent/exclusive) sessions**: queued
+  broker-side and replayed after reconnect — **no loss**, possible duplicates
+  (at-least-once);
+- **QoS 0 on any session**: lost for the duration of the window (no delivery
+  contract);
+- **ephemeral sessions**: everything published in the window is lost (the
+  broker discards the session at disconnect).
+
+Plan reloads accordingly: batch config changes (or enable a
+debounced/windowed reconfig strategy — the default applies each change
+directly, so N rapid writes are N windows), and schedule reloads for
+ephemeral/QoS 0 traffic like any other restart.
+
+**Reload success means "applied", not "converged".** The swap reports success
+once the new runtime is built and started; MQTT dials and reconciles in
+background goroutines, so a syntactically-valid-but-broker-invalid config
+(ACL-denied topic, rotated-away credentials) commits as a successful reload
+while the transport is down. The supervisor's post-swap convergence watch
+closes the gap: it observes the new runtime until sessions reach
+`LevelSubscribed`, and past the transport's declared activation budget it
+flips `ConfigDegraded` to 1 with an `applied but ... not converged` reason in
+deep health (`/api/v1/monitor/deephealth` → `config_watch.reason`), clearing
+automatically if the sessions later converge. Operator rule: after every
+reload, verify session health (or watch `ConfigDegraded`) — the reload
+success signal alone is insufficient. Remediation for a non-converging
+config is a revert (see `docs/runbooks/config-rollback.md`).
+
+Note also: one permanently rejected subscription (broker denies a filter, or
+grants a lower QoS) fails the whole reconcile; on an exclusive session the
+lease is released and supervision retries forever at the 30s backoff cap —
+connect → subscribe → reject → disconnect, indefinitely, with readiness below
+Full. There is deliberately no per-topic quarantine (a partial route set is
+never silently served). See `docs/runbooks/mqtt-suback-rejection-flap.md`.
+
 ## YAML Example
 
 ```yaml
@@ -333,15 +441,15 @@ senders:
 |-----|------|---------|-------------|
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
 | `broker_urls` | []string | -- | Broker URLs for failover. Ephemeral sessions may use multiple independent URLs. Persistent/exclusive sessions reject more than one distinct canonical URL because one managed-filter history cannot safely span independent broker-session domains. |
-| `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`factory.go:59-66`, `NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
-| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname and is preferred for Ephemeral/Persistent sessions. `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
+| `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`Config.ValidateEffectiveSession` in `config_plugin.go`, enforced by `Factory.NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
+| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname; for **Persistent** sessions it is safe **only where hostnames are stable across restarts** (StatefulSet/VM — NOT Deployments/ECS, where every rollout orphans the previous broker session and its queued QoS 1/2; the factory warns — see [Deployment identity](#deployment-identity)). `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |
 | `reconcile_timeout` | duration | `30s` (`DefaultReconcileTimeout`) | Bounds **each** broker SUBSCRIBE / UNSUBSCRIBE issued while reconciling the session plan. The reconcile runs on a possibly deadline-less runtime context, so without this an unresponsive broker (SUBACK/UNSUBACK never arrives on a half-open connection) would hang the reconcile — and any startup / hot-reload step awaiting it — indefinitely. This is a **liveness safety bound**: a non-positive value is coerced **up** to `30s` and cannot be disabled. |
 | `reconnect_delay` | duration | `10s` (`DefaultReconnectDelay`) | **Base** delay of a jittered exponential reconnect backoff. Starts at `reconnect_delay`, grows 2× (`reconnectBackoffFactor`) per failed attempt, caps at `reconnect_max_delay`, then equal-jitters to `[d/2, d)` to desynchronise a reconnecting fleet (anti thundering-herd). `0` → `10s`. |
 | `reconnect_max_delay` | duration | `2m` (`DefaultReconnectMaxDelay`) | Caps the jittered-exponential reconnect envelope. Must be ≥ `reconnect_delay`; a smaller value is clamped up to the base at Start. `0` → `2m`. |
-| `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions |
+| `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions. **`clean_start: true` on a Persistent session wipes the broker-side session (subscriptions AND queued offline QoS 1/2) on every process restart** — the backlog the mode exists to retain is discarded each time. Honoured as configured, with a construction-time warning; on Exclusive it is overridden to `false` (takeover loop). |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes one reservation shared by the serialized dispatch queue and startup/migration pending entries; those stores cannot each retain a full independent window. An explicitly configured non-zero value receives full window validation during parse and is rejected when unsafe. An omitted value stays unmaterialized during parse so a deployment profile may derive a lower safe value; generic bridge preflight later applies 192 and performs the same full validation. |
 | `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, and rejects an oversized body, a property block over 128 KiB, more than 128 structurally parsed User Properties, or topic-plus-properties metadata over 128 KiB. The decoded callback repeats the retained-representation checks as defense in depth. A violation terminally recycles the session before SDK acknowledgement tracking or adapter queues can retain the packet. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
@@ -474,6 +582,25 @@ downstream send or outbox persist succeeds. Acks are released in receive order,
 so an in-flight message survives a crash and is redelivered by the broker when
 a Persistent/Exclusive session resumes.
 
+### Ingress cap violations are acked-and-dropped (poison escape)
+
+The one deliberate exception to ack-after-settlement: an inbound publish that
+violates a **local representational cap** — `max_payload_bytes`, the ingress
+metadata byte cap (128 KiB), or the User Property count cap (128) — while
+fitting the CONNECT-advertised Maximum Packet Size. The broker enforces only
+the whole-packet limit (`max_payload_bytes` + the 128 KiB metadata allowance),
+so a compliant broker forwards such a packet from any authorized publisher.
+The adapter **acks and drops it** (`MQTTIngressPoisonDropped`, Error log once
+per violation class) instead of failing the session: an un-acked rejection
+would be redelivered on every `clean_start=false` resume and latch the session
+terminal forever — a publisher-triggerable permanent kill switch. The ack is
+an acknowledged, counted loss of a message the bridge was configured to
+refuse; alert on any non-zero `MQTTIngressPoisonDropped` and follow
+[the ingress-poison runbook](../runbooks/mqtt-ingress-poison.md). Malformed
+packets and totals above the advertised Maximum Packet Size — producible only
+by a broken broker — still fail the session closed at the raw pre-decode
+guard.
+
 ### Bounded recovery from an unsettled delivery
 
 A successful `Delivery.Retry` on a QoS 1/2 delivery has transport-specific
@@ -483,6 +610,16 @@ one connection recycle. Ack and Retry are mutually exclusive and idempotent: a
 Retry that wins can never be followed by a protocol Ack for that delivery.
 QoS 0 and every Ephemeral-session Retry remain `ErrNotSupported` because a
 reconnect cannot redeliver them safely.
+
+A receiver **emit error** (the route runner refuses the delivery outright)
+takes the same path: the un-acked delivery would otherwise be stranded — MQTT
+brokers do not redeliver on a live connection — pinning a Receive-Maximum
+slot until an unrelated teardown, and wedging ingress as strands accumulate.
+On a durable session the receiver requests the identical bounded, rate-limited
+recovery recycle (Warn-logged), so the broker redelivers the stranded
+delivery; each recycle redelivers **every** unsettled delivery on the session
+(duplicates for innocent in-flight messages — absorbed by `shared_outbox`
+dedup, unmeasured on `direct_hold`).
 
 Recovery applies these safety bounds without introducing a recovery-specific
 config knob:
@@ -755,6 +892,38 @@ returns:
   (dropping-with-ack keeps paho's in-order ack stream draining) and counted on
   `MQTTRouterOverflowDropped`, so any non-zero value points at a broker bug, not
   operator mis-sizing. Publishes held in the buffer count on `MQTTRouterBuffered`.
+
+### Capacity sizing
+
+Sustained QoS 1/2 ingress throughput is bounded by the un-acked in-flight
+window and how fast the bridge settles:
+
+```
+max sustained msg/s ≈ receive_maximum / avg settlement latency (s)
+```
+
+where settlement latency is the route's end-to-end accept time — outbox
+persist for `shared_outbox`, target accept for `direct_hold`. With the default
+`receive_maximum: 192` and a 20 ms settlement, that is ~9,600 msg/s per
+session; a 200 ms downstream caps the same session at ~960 msg/s. Levers, in
+order:
+
+1. **`receive_maximum`** — widens the in-flight window; memory cost is
+   `receive_maximum × max_payload_bytes`-shaped and validated against
+   `ingress_memory_budget_bytes` (see the [ingress byte
+   model](#ingress-byte-model)); the broker must also allow the window.
+2. **Route `max_in_flight`** — concurrency downstream of dispatch; raising it
+   reduces settlement latency until the target saturates. It participates in
+   the same validated memory budget.
+3. **`max_payload_bytes`** — smaller payloads let the same memory budget hold
+   a larger window (`ConfigureIngressMemory` derives the largest safe
+   `receive_maximum` automatically when it is left unset).
+
+QoS 0 is not flow-controlled by `receive_maximum`: a QoS 0 flood sheds at the
+dispatch queue (`MQTTRouterDropped`) rather than backpressuring the broker.
+Watch `MQTTReceiveWindowUtilization` (sustained → 1.0 means the window, not
+the network, is the ceiling) and `MQTTOldestUnsettledAge` (rising means the
+downstream, not MQTT, is the bottleneck).
 
 The dispatch queue, broker receive window, route concurrency, current packet,
 whole-packet ceiling, and runtime bookkeeping are all included in the validated

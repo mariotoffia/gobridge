@@ -305,6 +305,21 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			)
 		}
 	}
+	// Persistent + clean_start=true is honored as configured, but it silently
+	// voids the mode's purpose on every restart: CleanStart discards the
+	// broker-side session (subscriptions AND queued offline QoS 1/2), so each
+	// process restart wipes the backlog the persistent mode exists to retain.
+	// The analogous SessionExpiryInterval=0 misconfiguration warns above;
+	// warn here too (MQTT-L6). Exclusive + clean_start=true is separately
+	// OVERRIDDEN to false at dial time (it would cause a takeover loop).
+	if mode == connectivity.SessionPersistent && opts.CleanStart && logger != nil {
+		logger.Warn("mqtt: clean_start=true on a persistent session DISCARDS the broker-side "+
+			"session state (subscriptions and queued offline QoS 1/2 messages) on every process "+
+			"restart — the offline backlog this mode exists to retain is wiped each time. Set "+
+			"clean_start: false (the default) unless discarding the backlog is intended",
+			"client_id", opts.ClientID,
+		)
+	}
 	s := &Session{
 		opts:         opts,
 		mode:         mode,
@@ -331,7 +346,6 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withSessionTag(opts.ClientID),
 		withDispatchCapacity(int(opts.ReceiveMaximum)),
 		withMaxPayloadBytes(opts.MaxPayloadBytes),
-		withIngressPoison(s.rejectIngressPoison),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window

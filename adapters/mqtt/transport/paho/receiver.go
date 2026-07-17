@@ -124,7 +124,29 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		}
 		del := NewDelivery(env, deliveryOpts...)
 		if err := emit(runCtx, del); err != nil {
-			if logging.DebugEnabled(r.logger) {
+			// The delivery whose emit failed is left UN-ACKED, and MQTT
+			// brokers do not redeliver on a live connection — without
+			// intervention it (and any sibling un-acked deliveries) would
+			// pin broker Receive-Maximum slots until an unrelated
+			// connection teardown, wedging ingress as slots accumulate
+			// (MQTT-L3). For durable QoS 1/2 (ack != nil), request the same
+			// bounded, rate-limited session recycle a Delivery.Retry uses:
+			// the resumed session redelivers every unsettled delivery
+			// (duplicates absorbed downstream, the documented at-least-once
+			// residual). Ephemeral sessions and QoS 0 have no redelivery
+			// contract to recover — requestRecovery is not applicable and
+			// the un-acked state dies with the connection.
+			if ack != nil {
+				if r.logger != nil {
+					r.logger.Warn("mqtt: emit error stranded an un-acked delivery; "+
+						"requesting bounded session recovery so the broker redelivers it",
+						"receiver_id", r.id, "error", err)
+				}
+				if recErr := r.session.requestRecovery(runCtx); recErr != nil {
+					logging.Debug(r.logger, "mqtt: session recovery request after emit error failed",
+						"receiver_id", r.id, "error", recErr)
+				}
+			} else if logging.DebugEnabled(r.logger) {
 				r.logger.Log(runCtx, logging.LevelDebug, "mqtt: emit error",
 					"receiver_id", r.id, "error", err)
 			}

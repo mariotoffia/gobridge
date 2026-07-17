@@ -114,9 +114,13 @@ type Supervisor struct {
 	// Terminal() returns false while swapping so the liveness backstop never
 	// kills the process mid-swap (CRITICAL 3).
 	swapping bool
-	// degraded records that live reconfiguration is no longer available
-	// (the config change stream closed unexpectedly) while the current
-	// runtime keeps serving. Not terminal (Finding 1).
+	// degraded records a non-terminal config-machinery problem while the
+	// current runtime keeps serving: live reconfiguration is no longer
+	// available (the config change stream closed unexpectedly — Finding 1),
+	// or a committed reload never converged on the broker within its
+	// activation budget (applied-but-not-converged, MQTT-R1 — set and
+	// cleared by the post-swap convergence watch). degradedReason
+	// distinguishes the two in deep health.
 	degraded       bool
 	degradedReason string
 
@@ -970,6 +974,13 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// gauge reset and the success counter so operators see recovery.
 		s.emitConfigDegradedGauge(false)
 		s.emitConfigReload(true)
+
+		// Success above means built + Start returned — NOT that the transport
+		// ever reached the broker (MQTT dials/reconciles in background
+		// goroutines). Watch the committed runtime until its sessions
+		// genuinely converge and surface applied-but-not-converged as a
+		// distinct degraded state otherwise (MQTT-R1).
+		s.watchPostSwapConvergence(ctx, newRt, frozenCfg)
 	}
 
 	if s.onSwap != nil {

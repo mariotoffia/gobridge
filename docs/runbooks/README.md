@@ -18,6 +18,8 @@ metric names ([monitoring](../aws-deployment/monitoring.md)), error codes
 | [Outbox backlog / stuck drain](outbox-backlog-stuck-drain.md) | `OutboxDepth` / `OutboxDeferred` rising, `OutboxDrainStalled` non-zero, `DrainSkippedNoLease` climbing. |
 | [Node down / failover](node-down-failover.md) | An instance/task died — confirm the standby took over. `LeaseTransfers` / `LeaseExpiries` advanced. |
 | [Config rollback](config-rollback.md) | A committed config change caused errors and must be reverted. |
+| [MQTT ingress poison](mqtt-ingress-poison.md) | `MQTTIngressPoisonDropped` non-zero — an authorized publisher sends packets the bridge is configured to refuse; each drop is acknowledged loss. |
+| [MQTT SUBACK rejection / QoS downgrade flap](mqtt-suback-rejection-flap.md) | `ReconcileFailures` climbs every ~30s and never converges; readiness stuck below Full; exclusive session churns its lease. |
 
 ## Procedures
 

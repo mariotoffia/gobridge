@@ -538,7 +538,9 @@ func (a *App) Stop(ctx context.Context) error {
 		}
 	}
 	if currentRuntime != nil {
-		if err := stopRuntime(currentRuntime, currentApplied); err != nil && firstErr == nil {
+		// Derive the drain from the shutdown ctx: one budget for the whole
+		// SIGTERM path, not shutdown_timeout + drain_timeout stacked (MQTT-C4).
+		if err := stopRuntime(ctx, currentRuntime, currentApplied); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -803,10 +805,11 @@ func (a *App) applyOverlap(
 	}
 
 	// If anything below panics, ensure the started runtime is cleaned up.
+	// Reload-path drain: NOT bounded by process shutdown (context.Background).
 	installed := false
 	defer func() {
 		if !installed {
-			_ = stopRuntime(plan.runtime, plan.logical)
+			_ = stopRuntime(context.Background(), plan.runtime, plan.logical)
 		}
 	}()
 
@@ -814,7 +817,7 @@ func (a *App) applyOverlap(
 	installed = true
 
 	if oldRuntime != nil {
-		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
+		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
 			a.logger.Warn("bootstrap: stop old runtime after overlap swap", "error", err)
 		}
 	}
@@ -847,7 +850,7 @@ func (a *App) applyPrepareCommit(
 	defer a.closeSupersededHTTP(ctx, oldRegistry)
 
 	if oldRuntime != nil {
-		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
+		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
 			a.logger.Warn("bootstrap: stop old runtime before prepare/commit swap", "error", err)
 		}
 	}

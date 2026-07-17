@@ -151,11 +151,12 @@ func TestConfigIngressMemory_MaxIntegerOverflowRejects(t *testing.T) {
 	}
 }
 
-func TestRouterIngressMemory_OversizePayloadRejectsBeforeCopyOrEnqueue(t *testing.T) {
+func TestRouterIngressMemory_OversizePayloadAckDroppedWithoutTerminal(t *testing.T) {
+	rec := &ports.RecordingExporter{}
 	session := NewSession(SessionOptions{
 		MaxPayloadBytes: 4,
 		ReceiveMaximum:  2,
-	}, connectivity.SessionEphemeral, nil)
+	}, connectivity.SessionEphemeral, nil, rec)
 	session.router.beginGrace()
 
 	handled, err := session.router.onPublishReceived(pahov5.PublishReceived{
@@ -169,18 +170,22 @@ func TestRouterIngressMemory_OversizePayloadRejectsBeforeCopyOrEnqueue(t *testin
 	assert.Equal(t, 2, dispatchCapacity)
 	assert.Zero(t, session.router.PendingCount())
 	assert.Zero(t, session.Health(t.Context()).UnsettledCount,
-		"poison rejection must not create an unfinishable unsettled tracker entry")
+		"a poison drop must not create an unfinishable unsettled tracker entry")
+	assert.Equal(t, int64(1), session.router.IngressPoisonDroppedCount())
+	assert.Len(t, rec.FindEntries(MetricMQTTIngressPoisonDropped), 1)
 	session.mu.Lock()
 	terminalErr := session.terminalErr
 	session.mu.Unlock()
-	require.Error(t, terminalErr, "poison rejection must synchronously latch terminal state")
+	require.NoError(t, terminalErr,
+		"a broker-forwardable cap violation must be acked-and-dropped, never terminal (MQTT-L1)")
 }
 
-func TestRouterIngressMemory_MetadataCapRejectsOnceBeforeEnqueue(t *testing.T) {
+func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *testing.T) {
+	rec := &ports.RecordingExporter{}
 	session := NewSession(SessionOptions{
 		MaxPayloadBytes: 16,
 		ReceiveMaximum:  2,
-	}, connectivity.SessionPersistent, nil)
+	}, connectivity.SessionPersistent, nil, rec)
 	session.router.beginGrace()
 	properties := make(pahov5.UserProperties, maxIngressUserProperties+1)
 	for i := range properties {
@@ -203,13 +208,16 @@ func TestRouterIngressMemory_MetadataCapRejectsOnceBeforeEnqueue(t *testing.T) {
 	depth, _ := session.IngressMemoryStats()
 	assert.Zero(t, depth)
 	assert.Zero(t, session.Health(t.Context()).UnsettledCount)
+	assert.Equal(t, int64(2), session.router.IngressPoisonDroppedCount(),
+		"EVERY poison drop is counted; only the Error log is deduped per class")
+	assert.Len(t, rec.FindEntries(MetricMQTTIngressPoisonDropped), 2)
 	session.mu.Lock()
 	terminalErr := session.terminalErr
 	session.mu.Unlock()
-	require.Error(t, terminalErr)
+	require.NoError(t, terminalErr, "poison must never latch terminal (MQTT-L1)")
 }
 
-func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessTerminates(t *testing.T) {
+func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrops(t *testing.T) {
 	const topicBytes = 65535
 	valueBytes := int(maxIngressMetadataBytes) - (1 + 4 + 2 + topicBytes + 2 + 4) - (5 + 1)
 	require.Positive(t, valueBytes)
@@ -232,6 +240,7 @@ func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessTermina
 	require.NoError(t, err)
 	assert.True(t, handled)
 	assert.Equal(t, 1, accepted.router.PendingCount())
+	assert.Zero(t, accepted.router.IngressPoisonDroppedCount())
 	accepted.mu.Lock()
 	acceptedTerminal := accepted.terminalErr
 	accepted.mu.Unlock()
@@ -247,10 +256,12 @@ func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessTermina
 	require.NoError(t, err)
 	assert.True(t, handled)
 	assert.Zero(t, rejected.router.PendingCount())
+	assert.Equal(t, int64(1), rejected.router.IngressPoisonDroppedCount())
 	rejected.mu.Lock()
 	rejectedTerminal := rejected.terminalErr
 	rejected.mu.Unlock()
-	require.Error(t, rejectedTerminal)
+	require.NoError(t, rejectedTerminal,
+		"one byte over the metadata cap is broker-forwardable and must ack-drop, not terminate (MQTT-L1)")
 }
 
 func TestRouterIngressMemory_AcceptedPacketRetainsImmutableCallbackBacking(t *testing.T) {

@@ -333,6 +333,19 @@ func (b *Breaker) AfterRequest(err error) {
 	b.AfterRequestToken(tok, err)
 }
 
+// AdmitRequest implements ports.CircuitBreakerAdmitter: the generation-safe
+// admission surface for callers with multiple requests in flight on one
+// breaker. It is BeforeRequestToken/AfterRequestToken with the Token carried
+// inside the settle closure, so port-side adapters get stale-outcome
+// discarding without the concrete Token type crossing the port boundary.
+func (b *Breaker) AdmitRequest() (func(error), error) {
+	tok, err := b.BeforeRequestToken()
+	if err != nil {
+		return nil, err
+	}
+	return func(outcome error) { b.AfterRequestToken(tok, outcome) }, nil
+}
+
 // AfterRequestToken records the outcome of a request admitted by
 // BeforeRequestToken. An outcome whose Token predates the current
 // circuit generation is stale evidence about a previous epoch — it is

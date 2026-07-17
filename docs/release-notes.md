@@ -82,10 +82,12 @@ several are breaking at the wire or observable in operations.
 
 - **MQTT `unmatched_grace` defaults to 30s.** A persistent session
   (`clean_start=false`) buffers a publish that matches no binding for a 30s
-  startup grace, then acks and drops it and best-effort unsubscribes the orphan
-  topic (`adapters/mqtt/transport/paho/config.go:190`). Shorten it for
-  latency-sensitive startup at the cost of a higher chance of dropping an early
-  publish for a still-reconciling subscription. See
+  startup grace; past the window a publish on a topic no still-desired
+  subscription covers is acked, dropped, and best-effort unsubscribed as an
+  orphan (covered topics are retained un-acked instead — see
+  `MQTTRouterCoveredRetained`). Shorten it for
+  latency-sensitive startup at the cost of retaining an early backlog longer
+  for a still-reconciling subscription. See
   [ADR 0003](adr/0003-mqtt-persistent-session-hygiene.md).
 
 - **SQS receiver no longer signals `Started()` on an init failure.** A receiver
@@ -94,6 +96,60 @@ several are breaking at the wire or observable in operations.
   ready route for a receiver that failed to start
   (`adapters/aws/transport/sqs/receiver.go:105-108`, `:162`). A supervisor must
   watch `Run`'s error, not select solely on `Started()`.
+
+### MQTT adversarial-review remediation (PROD_READY_ISSUES)
+
+- **Ingress cap violations no longer kill the session (MQTT-L1).** A publish
+  violating a local representational cap (`max_payload_bytes`, metadata
+  bytes, User Property count) while fitting the advertised Maximum Packet
+  Size — which a compliant broker forwards from any authorized publisher —
+  previously latched the session TERMINAL, and broker redelivery on every
+  resume made that a permanent, publisher-triggerable restart loop. It is now
+  **acked-and-dropped**: an acknowledged, counted loss
+  (`MQTTIngressPoisonDropped`, Error log per violation class). Alert on the
+  new metric; see [the runbook](runbooks/mqtt-ingress-poison.md). Malformed
+  packets and totals above the advertised maximum (broker bugs) remain
+  session-terminal.
+- **Pre-first-reconcile backlog is retained, never orphan-dropped
+  (MQTT-L2).** Before the first `Reconcile` of a process lifetime every topic
+  counts as covered, so a CONNACK backlog replayed ahead of the first plan
+  can no longer be PUBACK-dropped and its live topic unsubscribed under a
+  delayed startup. Genuine orphans converge one reconcile later.
+- **An emit error now requests bounded session recovery (MQTT-L3).** A
+  stranded un-acked delivery (route runner refused it; MQTT does not
+  redeliver on a live connection) previously pinned Receive-Maximum slots
+  until an unrelated teardown. Durable sessions now recycle via the same
+  rate-limited recovery a `Delivery.Retry` uses (Warn-logged,
+  `MQTTSessionRecoveryRecycle`); expect redelivery-duplicates for in-flight
+  siblings on `direct_hold` routes.
+- **Two silent windows are now metered.** Recycle-window discards count on
+  `MQTTRouterStalePurged` (previously the router's only silent drop,
+  MQTT-L4); settlements whose connection cycled count on the new
+  `MQTTAckAfterReconnect` (each is a guaranteed broker redelivery, MQTT-L5).
+- **Reload success now has a convergence watchdog (MQTT-R1).** A committed
+  reload whose sessions never reach the broker (ACL-denied topic, rotated
+  credentials) flips `ConfigDegraded` to 1 with an `applied but ... not
+  converged` deep-health reason after the transport's activation budget,
+  clearing when sessions converge. Alert on `ConfigDegraded`; reload success
+  alone no longer implies a working transport.
+- **Worst-case failover budget is disclosed at every build (MQTT-F2).**
+  Exclusive sessions without `failover_slo` log their computed budget
+  (`≈336s` with HA-profile + MQTT defaults). See
+  [failover timing](transports/mqtt.md#exclusive-mode-lease-store-and-failover-timing).
+- **New construction-time warnings.** `session_mode: persistent` +
+  `clean_start: true` (wipes the offline backlog every restart, MQTT-L6) and
+  persistent + `client_id_suffix: hostname` (strands broker queues on every
+  Deployment/ECS rollout, MQTT-F3 — see
+  [Deployment identity](transports/mqtt.md#deployment-identity)).
+- **Circuit-breaker outcomes are generation-safe under concurrency
+  (MQTT-O3).** The MQTT sender and HTTP forwarder admit requests through the
+  new `ports.CircuitBreakerAdmitter` surface, so an outcome landing after a
+  breaker state transition is discarded as stale instead of releasing a
+  half-open probe it never held.
+- **The SIGTERM drain shares the shutdown budget (MQTT-C4, AWS file-based
+  deployment).** The runtime drain now derives from the app shutdown context
+  instead of stacking a second fresh budget after it, so worst-case shutdown
+  fits the documented 60s termination grace.
 
 ## Upgrade checklist
 
