@@ -219,7 +219,7 @@ This dependency-ordered stage/tag/push/wait loop is mechanized by
 [`scripts/release/run.sh`](scripts/release/run.sh), invoked as `make release
 VERSION=vX.Y.Z CONFIRM=1`. See [MODULES.md §3](MODULES.md#3-cut-a-release-make-it-go-get-able).
 Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan. The
-sections below (§1 waits, §2 root, §3 bootstrap, §5 smoke) document what each step does;
+surrounding sections (§1 waits, §2 root, §3 bootstrap above; §5 smoke below) document what each step does;
 `run.sh` performs them in order and must not be bypassed to retag.
 
 Layer 2 cannot start until all layer-1 tags are green and visible. The final
