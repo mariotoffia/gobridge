@@ -51,8 +51,18 @@ all: build test
 # ============================================================================
 
 build: ## Build all modules
+	@test -f go.work || $(MAKE) dev
 	@echo "Building all modules..."
 	go build ./...
+
+.PHONY: dev
+dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
+	@echo "Regenerating go.work from on-disk modules..."
+	@rm -f go.work go.work.sum
+	@go work init
+	@go work use -r .
+	@go work edit -dropuse ./scripts/release
+	@echo "Workspace ready. (scripts/release is excluded by design — it builds with GOWORK=off.)"
 
 # ============================================================================
 # Container image
