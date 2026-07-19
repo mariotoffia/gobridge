@@ -91,6 +91,12 @@ verify-release-preparation: ## Test the release tooling and validate the canonic
 	@cd scripts/release && GOWORK=off go test -race -count=1 ./...
 	@cd scripts/release && GOWORK=off go run . source --repo ../..
 
+.PHONY: modules-check
+modules-check: ## Fail if the on-disk published-module set drifts from scripts/release/modules.json
+	@mkdir -p reports
+	@echo "=== published-module registration ==="
+	@bash -c 'set -o pipefail; cd scripts/release && GOWORK=off go run . source --repo ../.. 2>&1 | tee $(PWD)/reports/modules-check.log'
+
 verify-published-modules: ## Strictly verify every published module (requires RELEASE_VERSION=vX.Y.Z and completed tags)
 	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
 	@cd scripts/release && GOWORK=off go run . strict-all --repo ../.. --version "$$RELEASE_VERSION"
@@ -278,6 +284,7 @@ test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 M
 
 lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym ## Run every static check (arch, gofmt, go vet, golangci-lint, aggcheck, aclcheck, cfgshape, registrychk, pluginsym); writes reports/*
 	@mkdir -p reports
+	@$(MAKE) --no-print-directory modules-check
 	@echo "=== Architecture lint ==="
 	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log'
 	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
