@@ -398,8 +398,7 @@ make build   # runs `make dev` automatically if go.work is missing
 
 - Fresh clone: `make dev && make build`.
 - `make dev` discovers modules from disk, so it is never stale — re-run it any time.
-- To test a module exactly as an external consumer receives it (no workspace), use
-  `GOWORK=off` — this is how `make test`, `make lint`, and the release gates already run.
+- Plain `make test`/`make lint` run **inside** the workspace, so they can't catch a module that uses an unreleased sibling API without bumping its `require` ("the workspace can lie" — see [DEVELOPMENT.md](DEVELOPMENT.md)). To check a module as an external consumer sees it, run `GOWORK=off go build ./...` in that module's directory; the release process re-verifies every published module with the workspace disabled before tagging (see [RELEASE.md](RELEASE.md)).
 
 ## 2. Add a new module
 

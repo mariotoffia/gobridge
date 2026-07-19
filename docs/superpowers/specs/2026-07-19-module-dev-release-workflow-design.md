@@ -76,9 +76,13 @@ go work sync
 - `go work use -r .` + the single documented `dropuse` reproduces the exact curated
   51-entry set of the current `go.work` **by discovery, not by a list**.
 - Fresh clone: `make dev && make build`. Add a module: `make dev` (auto-discovered).
-- `go.work` stays gitignored (unchanged convention). Standalone/external correctness
-  keeps being verified by the repo's existing `GOWORK=off` usage in test/lint/release —
-  that env var is the whole safety story and is already pervasive.
+- `go.work` stays gitignored (unchanged convention). Standalone/external correctness is
+  enforced by `GOWORK=off` in the release gates (the `scripts/release` strict verification
+  builds and tests each published module with the workspace disabled) and is available
+  manually as `GOWORK=off go build ./...` per module. Note that plain `make test`/`make
+  lint` run *inside* the workspace for published modules (only `scripts/release` is forced
+  `GOWORK=off`), so the release gate — not test/lint — is the standalone-consumption safety
+  net.
 - `make build` ensures the workspace first: if `go.work` is absent it runs `make dev`,
   so a newcomer cannot forget.
 
