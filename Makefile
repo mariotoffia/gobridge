@@ -43,6 +43,10 @@ export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
 export RELEASE_API_URL RELEASE_REPOSITORY RELEASE_IMAGE RELEASE_IMAGE_DIGEST
 export RELEASE_INITIAL_IMAGE_DIGEST RELEASE_CURRENT_IMAGE_DIGEST
 
+VERSION ?=
+CONFIRM ?= 0
+DRY_RUN ?=
+
 # Default target
 all: build test
 
@@ -96,6 +100,10 @@ modules-check: ## Fail if the on-disk published-module set drifts from scripts/r
 	@mkdir -p reports
 	@echo "=== published-module registration ==="
 	@bash -c 'set -o pipefail; cd scripts/release && GOWORK=off go run . source --repo ../.. 2>&1 | tee $(PWD)/reports/modules-check.log'
+
+.PHONY: release
+release: ## Run the dependency-ordered release train. Dry-run by default; CONFIRM=1 publishes. Requires VERSION=vX.Y.Z
+	@VERSION="$(VERSION)" CONFIRM="$(CONFIRM)" DRY_RUN="$(DRY_RUN)" REMOTE="$(RELEASE_REMOTE)" bash scripts/release/run.sh
 
 verify-published-modules: ## Strictly verify every published module (requires RELEASE_VERSION=vX.Y.Z and completed tags)
 	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
