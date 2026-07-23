@@ -233,8 +233,14 @@ func TestUC32_GracefulShutdown_UnderLoad(t *testing.T) {
 		"collector should have >= %d messages after stop, got %d",
 		minReceived, afterStop)
 
-	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
+	// Gate on the observable: wait for the goroutine count to descend to the
+	// assertion threshold (descend-to-target, see gap_goroutine_leak_test.go).
+	// A genuine leak keeps the floor above it and fails via the timeout.
 	goroutinesAfter := runtime.NumGoroutine()
+	lrWaitFor(t, 30*time.Second, "goroutines drain after shutdown", func() bool {
+		goroutinesAfter = runtime.NumGoroutine()
+		return goroutinesAfter <= goroutinesBefore+5
+	})
 
 	// goroutinesBefore was taken while bridge was running, so after should
 	// be lower or similar. Allow modest tolerance for test infrastructure.

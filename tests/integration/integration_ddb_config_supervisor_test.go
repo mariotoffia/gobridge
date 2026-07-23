@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ===============================================================
@@ -269,9 +270,11 @@ func TestDDBSupervisor_DebouncedStrategy_CoalescesChanges(t *testing.T) {
 		}
 	}
 
-	time.Sleep(1 * time.Second) // SYNC: wait for debounce quiet period + poll interval + build time
-
-	count := swapCount.Load()
+	// The 300ms debounce is upstream of the observable swap — wait for the
+	// coalesced swap to fire, then hold a window longer than debounce + poll
+	// interval to prove no straggler emission fires a second swap.
+	wait.Until(t, 5*time.Second, "debounced swap fired", func() bool { return swapCount.Load() >= 1 })
+	count := wait.StableFor(t, swapCount.Load, 600*time.Millisecond, 5*time.Second)
 	if count != 1 {
 		t.Errorf("swap count: got %d, want 1 (debounced)", count)
 	}

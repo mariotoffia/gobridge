@@ -141,20 +141,20 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 // TestF3_DrainOnShutdown_NoLease validates that the final drain sweep
 // is skipped when the drainer does not hold a lease.
 func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
+	polled := make(chan struct{}, 256)
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
-		cfg.Strategy = persistence.NewFixedPoll(10 * time.Second)
+		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
 		cfg.TokenFn = func() (persistence.LeaseToken, bool) {
+			polled <- struct{}{}
 			return persistence.LeaseToken{}, false
 		}
 	})
-
 	drainCtx, cancel := context.WithCancel(context.Background())
-
 	errCh := make(chan error, 1)
 	go func() { errCh <- drainer.Run(drainCtx) }()
 
-	time.Sleep(50 * time.Millisecond) // SYNC: let drainer start and reach poll loop
+	waitFor(t, 2*time.Second, "drainer polled and skipped (no lease)", func() bool { return len(polled) >= 1 })
 	cancel()
 
 	select {

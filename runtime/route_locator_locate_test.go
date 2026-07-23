@@ -184,7 +184,7 @@ func TestRouteLocator_Locate_Exclusive_RemoteOwner(t *testing.T) {
 		_ = rt.Stop(stopCtx)
 	}()
 
-	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
+	waitFor(t, 2*time.Second, "runtime started", func() bool { return rt.IsRunning() })
 
 	locator := rt.RouteLocator()
 	if locator == nil {
@@ -249,7 +249,7 @@ func TestRouteLocator_Locate_LeaseStoreError(t *testing.T) {
 		_ = rt.Stop(stopCtx)
 	}()
 
-	time.Sleep(50 * time.Millisecond) // STARTUP: let runtime start before calling Locate
+	waitFor(t, 2*time.Second, "runtime started", func() bool { return rt.IsRunning() })
 
 	locator := rt.RouteLocator()
 	if locator == nil {

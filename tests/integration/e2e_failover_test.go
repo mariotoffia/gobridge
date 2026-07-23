@@ -44,13 +44,6 @@ func (s *limitedSender) Send(ctx context.Context, msg ports.OutboundMessage) err
 	return err
 }
 
-type stallSender struct{}
-
-func (s *stallSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
 func outboxRoute(id, sessionID, addr string) goruntime.RouteConfig {
 	return goruntime.RouteConfig{
 		ID:       id,
@@ -79,7 +72,14 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 	_ = rtA.Start(ctxA)
 	sendToSQS(t, sqsClient, queueURL, `{"f1":"crash"}`, nil)
-	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
+	// Deterministic crash point: wait until the message has entered the durable
+	// pipeline (persisted as a pending shared-outbox record). A's drain poll is
+	// 30s, so the record cannot drain before the crash below.
+	pk := persistence.OutboxPartitionKey(sessionID, "b1")
+	e2eWaitFor(t, 10*time.Second, "outbox record pending before crash", func() bool {
+		recs, err := outboxStore.QueryPending(ctxA, pk, 1)
+		return err == nil && len(recs) >= 1
+	})
 	cancelA()
 	_ = rtA.Stop(context.Background())
 	sessB := setupMQTTSession(t, sessionID+"-b", connectivity.SessionEphemeral)
@@ -430,6 +430,22 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 	e2eWaitFor(t, 20*time.Second, "collector-1 via D", func() bool { return collectors[1].count() >= 1 })
 }
 
+// stallSender blocks in Send until ctx is cancelled. entered is closed when
+// the first delivery reaches Send — the observable "message held in pipeline"
+// crash point for F8.
+type stallSender struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newStallSender() *stallSender { return &stallSender{entered: make(chan struct{})} }
+
+func (s *stallSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 // verifies SQS redelivery after ingress stall: a second bridge delivers to MQTT using direct_hold.
 func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "f8")
@@ -443,10 +459,17 @@ func TestE2E_F8_Failover_IngressCrashSQSRedelivery(t *testing.T) {
 	}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	rtA := goruntime.New(goruntime.WithInstanceID("f8-A"), goruntime.WithDLQStore(dlq))
-	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), &stallSender{}, nil, nil)
+	stall := newStallSender()
+	_ = rtA.AddRoute(cfg, newSQSReceiver(t, queueURL), stall, nil, nil)
 	_ = rtA.Start(ctxA)
 	sendToSQS(t, sqsClient, queueURL, `{"f8":"redelivery"}`, nil)
-	time.Sleep(2 * time.Second) // OTHER: simulated crash delay — let stall sender hold message before killing A
+	// Deterministic crash point: the delivery is held inside the stalled Send
+	// (received from SQS, unacked) before we kill A.
+	select {
+	case <-stall.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stall sender never entered Send")
+	}
 	cancelA()
 	_ = rtA.Stop(context.Background())
 

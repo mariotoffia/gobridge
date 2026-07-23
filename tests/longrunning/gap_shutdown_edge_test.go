@@ -15,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -119,9 +120,10 @@ func TestGAP_ShutdownWithOutboxInFlight(t *testing.T) {
 	err := rt.Stop(stopCtx)
 	assert.NoError(t, err, "Stop() should complete without error")
 
-	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
-
-	delivered := collector.count()
+	// Deterministic settle: Stop returned, so finalDrain is done and the
+	// remaining MQTT deliveries are in flight; the collector count is final
+	// once it holds stable for a full second.
+	delivered := wait.StableFor(t, collector.count, time.Second, 30*time.Second)
 	t.Logf("GAP-SD1: delivered=%d/%d (preStop=%d, delta=%d), dlq=%d",
 		delivered, msgCount, preStopCount, delivered-preStopCount, dlq.count())
 

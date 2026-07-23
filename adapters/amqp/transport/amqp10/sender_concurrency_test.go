@@ -17,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // mockSenderLink is an amqpSenderLink test double whose Send blocks on
@@ -165,9 +166,10 @@ func TestSender_ConcurrentSendFailure_OnlyClosesLinkOnce(t *testing.T) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	// OTHER: settle delay for async close propagation.
-	time.Sleep(50 * time.Millisecond)
-	if calls := link.closeCalls.Load(); calls != 1 {
+	// All Sends returned (wg.Wait), so every close goroutine that will ever
+	// be spawned has been spawned; the count is final once it is quiescent.
+	calls := wait.StableFor(t, link.closeCalls.Load, 100*time.Millisecond, 2*time.Second)
+	if calls != 1 {
 		t.Fatalf("link.Close was called %d times, want exactly 1 "+
 			"(losers of the failure race must not also close the link)", calls)
 	}

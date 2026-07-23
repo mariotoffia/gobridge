@@ -77,9 +77,9 @@ func TestSender_StaleLinkFailure_DoesNotKillReconnectedConn(t *testing.T) {
 		}
 	}
 
-	// OTHER: settle delay for async closeLinkAsync goroutine + session bookkeeping.
-	time.Sleep(50 * time.Millisecond)
-
+	// No settle needed: session bookkeeping (notifySessionIfConnectionLost →
+	// notifyDisconnect) ran synchronously inside Send, and the only async work
+	// (closeLinkAsync) was gated on failing.closed above.
 	conn2.mu.Lock()
 	conn2Closed := conn2.closed
 	conn2.mu.Unlock()

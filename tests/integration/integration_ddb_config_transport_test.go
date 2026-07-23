@@ -327,7 +327,20 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 		t.Fatal("timed out waiting for swap")
 	}
 
-	time.Sleep(500 * time.Millisecond) // STARTUP: let new routes initialize after config swap
+	// Swap success has published and started the new runtime (the supervisor
+	// stops the old one first); gate on both routes being ready (runner +
+	// receiver started) before sending traffic.
+	rt := s.Runtime()
+	if rt == nil {
+		t.Fatal("runtime nil after swap")
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer readyCancel()
+	for _, routeID := range []string{"r1", "r2"} {
+		if err := rt.WaitRouteReady(readyCtx, routeID); err != nil {
+			t.Fatalf("route %s not ready after swap: %v", routeID, err)
+		}
+	}
 
 	// Both routes should work.
 	sendToSQS(t, sqsClient, queueA, `{"test":"r1"}`, nil)
@@ -484,7 +497,19 @@ func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 		t.Fatal("timed out waiting for swap")
 	}
 
-	time.Sleep(500 * time.Millisecond) // STARTUP: let routes settle after config swap
+	// Swap success has published the new runtime with only r1 (the old runtime,
+	// including rx-2, is fully stopped before the swap event fires). Gate on r1
+	// being ready before sending; the bounded queue-D poll below remains the
+	// negative proof that r2 no longer forwards.
+	rt := s.Runtime()
+	if rt == nil {
+		t.Fatal("runtime nil after swap")
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer readyCancel()
+	if err := rt.WaitRouteReady(readyCtx, "r1"); err != nil {
+		t.Fatalf("route r1 not ready after swap: %v", err)
+	}
 
 	// r1 should still work.
 	sendToSQS(t, sqsClient, queueA, `{"test":"r1-after"}`, nil)
