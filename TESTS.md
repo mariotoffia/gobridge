@@ -50,10 +50,18 @@ Banned in production (`make audit-timings`) and tests
 | You think you need… | Use instead |
 |---|---|
 | "wait until a goroutine has started" | `chan struct{}` started signal, or `ports.ReceiverStartedSignaler` |
-| "wait until a metric was emitted" | poll `ports.RecordingExporter.FindEntries` with `require.Eventually` |
-| "wait for a state change" | `require.Eventually(t, cond, timeout, interval)` |
+| "wait until a metric was emitted" | poll `ports.RecordingExporter.FindEntries` with `wait.Until` |
+| "wait for a state change" | `testutil/wait.Until(t, timeout, desc, cond)` (backoff + `t.Deadline()` clamp; `require.Eventually` acceptable) |
+| "dump diagnostics before failing a wait" | `testutil/wait.Poll(timeout, cond)` — non-failing; then log and `t.Fatalf` yourself |
+| "wait for a container to be up / stopped / gone / log a line" | `testutil/dockerexec.WaitHealthy / WaitStopped / WaitGone / WaitLogLine / WaitTCP / WaitProbe` |
 | "advance time" | inject `domain/clock`, drive ticks via `domain/clock/clocktest` |
 | "let the scheduler run" | redesign — you have a real ordering bug `runtime.Gosched()` is hiding |
+
+Do NOT hand-roll a sleep-interval poller (`for { if cond() ...; time.Sleep(x) }`)
+— that is `wait.Until` re-implemented without the deadline clamp. The two
+sanctioned homes for poll pacing are `testutil/wait` and `testutil/dockerexec`;
+`make audit-test-timings` scans every other test file AND every non-test file
+under `testutil/`, `ports/storetest`, and `tests/testutil` for `time.Sleep`.
 
 If the wait cannot be expressed without `time.Sleep`, the production
 code is not testable. Add a `Clock` dependency or a started-signal
@@ -332,7 +340,20 @@ long-running.
 ## 7. Fixtures and shared helpers
 
 - `testutil/*local` — Docker container helpers (DynamoDB, SQS, ASB,
-  S3). Each exposes `Configure`, `Shutdown`, typed `Client(t)`.
+  S3, MQTT, RabbitMQ, Artemis, LocalStack). Each exposes `Configure`,
+  `Shutdown`, typed `Client(t)`. Readiness is a three-stage deterministic
+  gate (container running → protocol-truth probe → stabilize); teardown is
+  observable state (`docker` reports stopped/gone), never a sleep.
+- `testutil/dockerexec` — bounded docker CLI wrapper plus the shared
+  container gates (`WaitHealthy`, `WaitStopped`, `WaitGone`, `WaitLogLine`,
+  `WaitTCP`, `WaitProbe`, `Stabilize`, `RemoveOrphans`, `FreePort`).
+  Container chaos (kill/restart) goes through these or
+  `mqttlocal.BrokerInstance` — never raw `exec.Command("docker", ...)`.
+- `testutil/wait` — the canonical condition-wait (`Until`, `Poll`,
+  `RequireReceive`, `RequireClosed`, `Silent`, `StableFor`).
+- `tests/longrunning/nodeprocess_harness_test.go` — `nodeProcess`, the one
+  separate-OS-process bridge launcher (re-exec + stdout token barriers +
+  real SIGKILL). Any new multi-process scenario uses it.
 - `testutil/tlsgen` — pure-crypto TLS material generator. No Docker.
 - `domain/clock/clocktest` — fake clock. Only blessed way to drive
   time forward.

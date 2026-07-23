@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -298,21 +299,9 @@ func rollbackTransaction(t *testing.T, serverURL, apiKey, txnID string) {
 // Poll helpers
 // ---------------------------------------------------------------------------
 
-func pollForCondition(t *testing.T, timeout, interval time.Duration, fn func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(interval) // SYNC: poll for condition
-	}
-	t.Fatal("timed out waiting for condition")
-}
-
 func pollForSupervisorRoute(t *testing.T, sup *bridge.Supervisor, routeID string, timeout time.Duration) {
 	t.Helper()
-	pollForCondition(t, timeout, 20*time.Millisecond, func() bool {
+	wait.Until(t, timeout, "supervisor route "+routeID, func() bool {
 		rt := sup.Runtime()
 		if rt == nil {
 			return false

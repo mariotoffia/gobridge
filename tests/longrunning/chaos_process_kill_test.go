@@ -3,14 +3,8 @@
 package longrunning_test
 
 import (
-	"bufio"
 	"context"
-	"errors"
-	"os"
-	"os/exec"
 	"strconv"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -60,23 +54,26 @@ func runProcessKillBoundary(t *testing.T, infra *testInfra, boundary string, out
 	collector := newPersistentCollectorWithBroker(t, infra.MQTTBroker, topic, prefix+"-collector")
 	producerKey := prefix + "-producer"
 
-	child := startCrashChild(t, map[string]string{
-		task14CrashChildEnv:       "1",
-		task14CrashBoundaryEnv:    boundary,
-		task14CrashBrokerEnv:      infra.MQTTBroker,
-		task14CrashQueueEnv:       queueURL,
-		task14CrashLeaseTableEnv:  leaseTable,
-		task14CrashOutboxTableEnv: outboxTable,
-		task14CrashSessionEnv:     sessionID,
-		task14CrashTopicEnv:       topic,
-		task14CrashInstanceEnv:    instanceID,
-		"DYNAMODB_ENDPOINT":       infra.DDBEndpoint,
-		"SQS_ENDPOINT":            infra.SQSEndpoint,
-	})
-	child.requireSignal(t, "TASK14_READY")
+	child := startNodeProcess(t, "task14-"+boundary, "TestTask14_ProcessKillChild",
+		map[string]string{
+			task14CrashChildEnv:       "1",
+			task14CrashBoundaryEnv:    boundary,
+			task14CrashBrokerEnv:      infra.MQTTBroker,
+			task14CrashQueueEnv:       queueURL,
+			task14CrashLeaseTableEnv:  leaseTable,
+			task14CrashOutboxTableEnv: outboxTable,
+			task14CrashSessionEnv:     sessionID,
+			task14CrashTopicEnv:       topic,
+			task14CrashInstanceEnv:    instanceID,
+			"DYNAMODB_ENDPOINT":       infra.DDBEndpoint,
+			"SQS_ENDPOINT":            infra.SQSEndpoint,
+		},
+		"TASK14_READY", "TASK14_CHECKPOINT:",
+	)
+	child.awaitToken(t, "TASK14_READY", 60*time.Second)
 	sendOneSQS(t, queueClient, queueURL, producerKey, nil)
-	child.requireSignal(t, "TASK14_CHECKPOINT:"+boundary)
-	child.killAtCheckpoint(t)
+	child.awaitToken(t, "TASK14_CHECKPOINT:"+boundary, 60*time.Second)
+	child.kill(t)
 
 	rt := startCrashRecoveryRuntime(
 		t, ctx, infra.MQTTBroker, instanceID, sessionID, topic, queueURL, lease, outbox,
@@ -192,99 +189,5 @@ func crashQueueEmpty(
 	return visible == 0 && inflight == 0, nil
 }
 
-type crashChildProcess struct {
-	cmd     *exec.Cmd
-	signals chan string
-	done    chan struct{}
-	mu      sync.Mutex
-	output  strings.Builder
-}
-
-func startCrashChild(t *testing.T, environment map[string]string) *crashChildProcess {
-	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	cmd := exec.Command(executable,
-		"-test.run=^TestTask14_ProcessKillChild$",
-		"-test.v",
-		"-test.timeout=240s",
-	)
-	cmd.Env = crashChildEnvironment(environment)
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-	cmd.Stderr = os.Stderr
-	child := &crashChildProcess{
-		cmd:     cmd,
-		signals: make(chan string, 4),
-		done:    make(chan struct{}),
-	}
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}
-	})
-	go func() {
-		defer close(child.done)
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			child.mu.Lock()
-			child.output.WriteString(line)
-			child.output.WriteByte('\n')
-			child.mu.Unlock()
-			switch {
-			case strings.Contains(line, "TASK14_READY"):
-				child.signals <- "TASK14_READY"
-			case strings.Contains(line, "TASK14_CHECKPOINT:"):
-				index := strings.Index(line, "TASK14_CHECKPOINT:")
-				child.signals <- line[index:]
-			}
-		}
-	}()
-	return child
-}
-
-func crashChildEnvironment(overrides map[string]string) []string {
-	removed := make(map[string]struct{}, len(overrides))
-	for key := range overrides {
-		removed[key] = struct{}{}
-	}
-	environment := make([]string, 0, len(os.Environ())+len(overrides))
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if _, replace := removed[key]; !replace {
-			environment = append(environment, entry)
-		}
-	}
-	for key, value := range overrides {
-		environment = append(environment, key+"="+value)
-	}
-	return environment
-}
-
-func (c *crashChildProcess) requireSignal(t *testing.T, want string) {
-	t.Helper()
-	got := wait.RequireReceive(t, c.signals, 60*time.Second)
-	if got != want {
-		t.Fatalf("child signal = %q, want %q\n%s", got, want, c.capturedOutput())
-	}
-}
-
-func (c *crashChildProcess) killAtCheckpoint(t *testing.T) {
-	t.Helper()
-	require.NoError(t, c.cmd.Process.Kill())
-	err := c.cmd.Wait()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("SIGKILL child Wait error = %v, want *exec.ExitError\n%s", err, c.capturedOutput())
-	}
-	<-c.done
-}
-
-func (c *crashChildProcess) capturedOutput() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.output.String()
-}
+// The child process is launched and killed through the shared nodeProcess
+// harness (nodeprocess_harness_test.go) — see startNodeProcess/awaitToken/kill.

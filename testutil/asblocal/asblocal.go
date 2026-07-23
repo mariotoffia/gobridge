@@ -27,7 +27,6 @@ package asblocal
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -131,7 +130,7 @@ func ConnectionString(t testing.TB) string {
 			connStr, cleanupFn, initErr = startContainers()
 		}
 	} else if !fromEnv && emuContainer != "" {
-		if !isContainerRunning(emuContainer) {
+		if !dockerexec.IsRunning(emuContainer) {
 			t.Logf("asblocal: emulator container %s died, restarting...", emuContainer)
 			if cleanupFn != nil {
 				cleanupFn()
@@ -188,15 +187,15 @@ func startContainers() (string, func(), error) {
 	}
 
 	if opts.cleanOrphans {
-		removeOrphans(containerPrefix)
+		dockerexec.RemoveOrphans(containerPrefix)
 		removeNetworks(networkPrefix)
 	}
 
-	amqpPort, err := freePort()
+	amqpPort, err := dockerexec.FreePort()
 	if err != nil {
 		return "", nil, fmt.Errorf("find free AMQP port: %w", err)
 	}
-	httpPort, err := freePort()
+	httpPort, err := dockerexec.FreePort()
 	if err != nil {
 		return "", nil, fmt.Errorf("find free HTTP port: %w", err)
 	}
@@ -253,14 +252,21 @@ func startContainers() (string, func(), error) {
 		return "", nil, fmt.Errorf("docker run sql: %w\n%s", err, out)
 	}
 
-	if err := waitForContainerHealthy(sqlName, 30*time.Second); err != nil {
-		logContainerFailure(sqlName)
+	if err := dockerexec.WaitHealthy(sqlName, 30*time.Second); err != nil {
+		dockerexec.LogFailure(sqlName)
 		cleanup()
 		return "", nil, fmt.Errorf("sql container: %w", err)
 	}
 
-	// Give SQL a moment to finish initialization.
-	time.Sleep(5 * time.Second)
+	// Deterministic SQL readiness gate: SQL Server prints "Recovery is
+	// complete" exactly when it starts accepting logins. The SQL port is not
+	// published to the host (emulator reaches it over the docker network), so
+	// the container's own log line is the observable state — no fixed sleep.
+	if err := dockerexec.WaitLogLine(sqlName, "Recovery is complete", 90*time.Second); err != nil {
+		dockerexec.LogFailure(sqlName)
+		cleanup()
+		return "", nil, fmt.Errorf("sql server: %w", err)
+	}
 
 	// Start Service Bus Emulator.
 	out, err = dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
@@ -275,28 +281,31 @@ func startContainers() (string, func(), error) {
 		emulatorImageName(),
 	)
 	if err != nil {
-		logContainerFailure(sqlName)
+		dockerexec.LogFailure(sqlName)
 		cleanup()
 		return "", nil, fmt.Errorf("docker run emulator: %w\n%s", err, out)
 	}
 
 	emuContainer = emuName
 
-	if err := waitForContainerHealthy(emuName, 30*time.Second); err != nil {
-		logContainerFailure(emuName)
-		logContainerFailure(sqlName)
+	if err := dockerexec.WaitHealthy(emuName, 30*time.Second); err != nil {
+		dockerexec.LogFailure(emuName)
+		dockerexec.LogFailure(sqlName)
 		cleanup()
 		return "", nil, fmt.Errorf("emulator container: %w", err)
 	}
 
-	if err := waitForTCP(amqpPort, 120*time.Second); err != nil {
-		logContainerFailure(emuName)
+	if err := dockerexec.WaitTCP(amqpPort, 120*time.Second); err != nil {
+		dockerexec.LogFailure(emuName)
 		cleanup()
 		return "", nil, fmt.Errorf("emulator AMQP: %w", err)
 	}
 
-	if err := stabilize(amqpPort); err != nil {
-		logContainerFailure(emuName)
+	// TCP-level stabilize only: the emulator has no probeable readiness
+	// endpoint here; AMQP protocol truth is gated by the consumer's real
+	// send/receive warmup roundtrip (see servicebus integration TestMain).
+	if err := dockerexec.StabilizeTCP(amqpPort); err != nil {
+		dockerexec.LogFailure(emuName)
 		cleanup()
 		return "", nil, fmt.Errorf("emulator stabilization: %w", err)
 	}
@@ -389,19 +398,6 @@ func configJSON() string {
 }`
 }
 
-func removeOrphans(prefix string) {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
-		"--filter", "name="+prefix)
-	if err != nil || len(out) == 0 {
-		return
-	}
-	ids := strings.Fields(strings.TrimSpace(string(out)))
-	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
-	}
-}
-
 func removeNetworks(prefix string) {
 	out, err := dockerexec.Run(dockerexec.InspectTimeout, "network", "ls", "-q",
 		"--filter", "name="+prefix)
@@ -412,75 +408,4 @@ func removeNetworks(prefix string) {
 	for _, id := range ids {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", id)
 	}
-}
-
-func isContainerRunning(name string) bool {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-		"--format", "{{.State.Running}}", name)
-	return err == nil && len(out) > 0 && out[0] == 't'
-}
-
-func waitForContainerHealthy(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if strings.HasPrefix(s, "true") {
-				return nil
-			}
-			if strings.Contains(s, "false") {
-				return fmt.Errorf("container %s exited (inspect: %s)", name, s)
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("container %s did not reach running state within %v", name, timeout)
-}
-
-func waitForTCP(port int, timeout time.Duration) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("TCP connect to %s failed within %v: %v", addr, timeout, lastErr)
-}
-
-func stabilize(port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	for i := 0; i < 3; i++ {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err != nil {
-			return err
-		}
-		_ = conn.Close()
-		time.Sleep(500 * time.Millisecond)
-	}
-	return nil
-}
-
-func logContainerFailure(name string) {
-	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "50", name)
-	if len(out) > 0 {
-		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
-	}
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
 }

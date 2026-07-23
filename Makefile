@@ -544,10 +544,12 @@ audit-timings: ## Check for unauthorized timing calls in production code
 		echo "All timing calls are authorized."; \
 	fi
 
-audit-test-timings: ## Check for new time.Sleep calls in test code
+audit-test-timings: ## Check for new time.Sleep calls in test code and test infrastructure
 	@echo "Checking for new time.Sleep calls in tests..."
-	@VIOLATIONS=$$(rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
-		'time\.Sleep\(' . \
+	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
+		'time\.Sleep\(' . ; \
+		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
+		'time\.Sleep\(' testutil ports/storetest tests/testutil ; } \
 		| sort \
 		| grep -v -F -f audit/test-timing-allowlist.txt); \
 	if [ -n "$$VIOLATIONS" ]; then \

@@ -65,9 +65,9 @@ func (convDLQStore) List(context.Context, routing.DLQFilter) ([]routing.DLQEntry
 func (convDLQStore) Get(context.Context, string) (routing.DLQEntry, error) {
 	return routing.DLQEntry{}, shared.ErrNotFound
 }
-func (convDLQStore) Delete(context.Context, []string) (int, error)            { return 0, nil }
+func (convDLQStore) Delete(context.Context, []string) (int, error)                  { return 0, nil }
 func (convDLQStore) DeleteByFilter(context.Context, routing.DLQFilter) (int, error) { return 0, nil }
-func (convDLQStore) Purge(context.Context, time.Time) (int, error)            { return 0, nil }
+func (convDLQStore) Purge(context.Context, time.Time) (int, error)                  { return 0, nil }
 
 func convDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))

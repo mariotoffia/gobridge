@@ -58,7 +58,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		o(&c)
 	}
 
-	port, err := freePort()
+	port, err := dockerexec.FreePort()
 	if err != nil {
 		t.Fatalf("mqttlocal.NewBrokerInstance: free port: %v", err)
 	}
@@ -142,16 +142,16 @@ func (b *BrokerInstance) start() {
 		b.t.Fatalf("mqttlocal.BrokerInstance: docker run: %v\n%s", err, out)
 	}
 
-	if err := waitForContainerHealthy(b.name, 15*time.Second); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.WaitHealthy(b.name, 15*time.Second); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: container unhealthy: %v", err)
 	}
-	if err := waitForTCP(b.port, 30*time.Second); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: TCP not ready: %v", err)
 	}
-	if err := stabilize(b.port); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.StabilizeTCP(b.port); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: stabilize failed: %v", err)
 	}
 
@@ -173,6 +173,11 @@ func (b *BrokerInstance) Stop() {
 	out, err := dockerexec.Run(dockerexec.ExecTimeout, "kill", b.name)
 	if err != nil {
 		b.t.Logf("mqttlocal.BrokerInstance.Stop: docker kill: %v\n%s", err, out)
+	}
+	// Deterministic post-condition: "stopped" means docker reports the
+	// container not running, not merely "the kill signal was sent".
+	if err := dockerexec.WaitStopped(b.name, 10*time.Second); err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance.Stop: %v", err)
 	}
 	b.stopped = true
 }
@@ -202,6 +207,9 @@ func (b *BrokerInstance) StopGraceful() {
 	if err != nil {
 		b.t.Logf("mqttlocal.BrokerInstance.StopGraceful: docker stop: %v\n%s", err, out)
 	}
+	if err := dockerexec.WaitStopped(b.name, 15*time.Second); err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance.StopGraceful: %v", err)
+	}
 	b.stopped = true
 }
 
@@ -216,19 +224,19 @@ func (b *BrokerInstance) RestartGraceful() {
 	}
 	out, err := dockerexec.Run(dockerexec.ExecTimeout, "start", b.name)
 	if err != nil {
-		logContainerFailure(b.name)
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: docker start: %v\n%s", err, out)
 	}
-	if err := waitForContainerHealthy(b.name, 15*time.Second); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.WaitHealthy(b.name, 15*time.Second); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: unhealthy: %v", err)
 	}
-	if err := waitForTCP(b.port, 30*time.Second); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: TCP not ready: %v", err)
 	}
-	if err := stabilize(b.port); err != nil {
-		logContainerFailure(b.name)
+	if err := dockerexec.StabilizeTCP(b.port); err != nil {
+		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: stabilize failed: %v", err)
 	}
 	b.stopped = false
@@ -236,5 +244,5 @@ func (b *BrokerInstance) RestartGraceful() {
 
 // IsRunning returns true if the broker container is currently running.
 func (b *BrokerInstance) IsRunning() bool {
-	return !b.stopped && isContainerRunning(b.name)
+	return !b.stopped && dockerexec.IsRunning(b.name)
 }

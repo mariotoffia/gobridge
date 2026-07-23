@@ -90,39 +90,48 @@ func StableFor[T comparable](t TestingT, sample func() T, stableFor, deadline ti
 	}
 }
 
-// Until polls cond with exponential backoff (starting 1ms, capping at 50ms)
-// until it returns true or deadline elapses.
-func Until(t TestingT, deadline time.Duration, desc string, cond func() bool) {
-	t.Helper()
-
+// Poll reports whether cond became true within deadline, polling with
+// exponential backoff (starting 1ms, capping at 50ms). Non-failing variant of
+// [Until]: use it when the caller must run diagnostics (dump state) before
+// failing; otherwise prefer Until.
+func Poll(deadline time.Duration, cond func() bool) bool {
 	effectiveDeadline := time.Now().Add(deadline)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Before(effectiveDeadline) {
-		effectiveDeadline = testDeadline
-	}
 
 	backoff := time.Millisecond
 	const maxBackoff = 50 * time.Millisecond
 
 	for {
 		if cond() {
-			return
+			return true
 		}
 
 		if time.Now().After(effectiveDeadline) {
-			t.Fatalf("Until: condition %q not met within %s", desc, deadline)
-			return
+			return false
 		}
 
-		remaining := time.Until(effectiveDeadline)
-		sleep := backoff
-		if sleep > remaining {
-			sleep = remaining
-		}
-		time.Sleep(sleep)
+		time.Sleep(min(backoff, time.Until(effectiveDeadline)))
 
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}
+	}
+}
+
+// Until polls cond with exponential backoff (starting 1ms, capping at 50ms)
+// until it returns true, failing the test when deadline (clamped to the
+// test's own deadline) elapses first.
+func Until(t TestingT, deadline time.Duration, desc string, cond func() bool) {
+	t.Helper()
+
+	effective := deadline
+	if testDeadline, ok := t.Deadline(); ok {
+		if remaining := time.Until(testDeadline); remaining < effective {
+			effective = remaining
+		}
+	}
+
+	if !Poll(effective, cond) {
+		t.Fatalf("Until: condition %q not met within %s", desc, deadline)
 	}
 }

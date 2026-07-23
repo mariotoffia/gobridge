@@ -14,18 +14,12 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond) // SYNC: poll interval in waitFor helper
-	}
-	t.Fatalf("timeout waiting for %s", desc)
+	wait.Until(t, timeout, desc, fn)
 }
 
 // metricHasTag reports whether a recorded metric entry carries the given

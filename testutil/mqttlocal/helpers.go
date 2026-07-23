@@ -1,53 +1,12 @@
 package mqttlocal
 
-import (
-	"fmt"
-	"net"
-	"os"
-	"strings"
-	"time"
+import "fmt"
 
-	"github.com/mariotoffia/gobridge/testutil/dockerexec"
-)
-
-func removeOrphans(prefix string) {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
-		"--filter", "name="+prefix)
-	if err != nil || len(out) == 0 {
-		return
-	}
-	ids := strings.Fields(strings.TrimSpace(string(out)))
-	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
-	}
-}
-
-func isContainerRunning(name string) bool {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-		"--format", "{{.State.Running}}", name)
-	return err == nil && len(out) > 0 && out[0] == 't'
-}
-
-func waitForContainerHealthy(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if strings.HasPrefix(s, "true") {
-				return nil
-			}
-			if strings.Contains(s, "false") {
-				return fmt.Errorf("container %s exited (inspect: %s)", name, s)
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("container %s did not reach running state within %v", name, timeout)
-}
-
+// buildConfig renders the mosquitto.conf for the given options.
+//
+// Container lifecycle plumbing (orphan sweep, healthy/TCP/stabilize gates,
+// log capture, free ports) lives in testutil/dockerexec — shared by every
+// testutil/*local launcher.
 func buildConfig(c config, hasWS bool) string {
 	s := "listener 1883 0.0.0.0\nprotocol mqtt\n\n"
 	if hasWS {
@@ -76,50 +35,4 @@ func buildConfig(c config, hasWS bool) string {
 	}
 	s += "\nlog_dest stdout\n"
 	return s
-}
-
-func waitForTCP(port int, timeout time.Duration) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("TCP connect to %s failed within %v: %v", addr, timeout, lastErr)
-}
-
-func stabilize(port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	for range 3 {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err != nil {
-			return err
-		}
-		_ = conn.Close()
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
-}
-
-func logContainerFailure(name string) {
-	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "30", name)
-	if len(out) > 0 {
-		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
-	}
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
 }

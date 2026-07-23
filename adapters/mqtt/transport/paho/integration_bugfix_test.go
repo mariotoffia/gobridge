@@ -494,15 +494,5 @@ func waitSubActive(t *testing.T, sess *paho.Session, timeout time.Duration) {
 
 func waitForCondition(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		if fn() {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for: %s", desc)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+	wait.Until(t, timeout, desc, fn)
 }

@@ -371,10 +371,7 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 		ReceiveMaximum:        65535,
 	}, connectivity.SessionExclusive, nil)
 	require.NoError(t, sess.Start(ctx))
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
 	snd := setupMQTTSender(t, sess)
@@ -454,10 +451,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 		SessionExpiryInterval: 300,
 	}, connectivity.SessionPersistent, testLogger(t))
 	require.NoError(t, colSess.Start(ctx))
-	select {
-	case <-colSess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, colSess, 15*time.Second)
 	require.NoError(t, colSess.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: outTopic, QoS: 1}},
 	}))

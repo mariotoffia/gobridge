@@ -26,11 +26,10 @@ import (
 // syscall SIGKILL (cmd.Process.Kill), so no in-process cleanup runs and the
 // only recovery signal is external shared state (a DynamoDB lease table).
 //
-// This generalises the single-purpose startCrashChild launcher (see
-// chaos_process_kill_test.go) so any separate-process scenario — failover
-// with N concurrent nodes, split-brain, orchestrator-timing — can launch,
-// barrier on, and kill real bridge processes without re-implementing the
-// exec/scan/kill plumbing.
+// This is the ONLY separate-process launcher in the suite — any scenario —
+// failover with N concurrent nodes, process-kill boundaries, split-brain,
+// orchestrator-timing — launches, barriers on, and kills real bridge
+// processes through it instead of re-implementing exec/scan/kill plumbing.
 //
 //	Parent (this process)                Child (separate OS process)
 //	──────────────────────               ───────────────────────────
@@ -74,7 +73,7 @@ func startNodeProcess(
 		"-test.v",
 		"-test.timeout=300s",
 	)
-	cmd.Env = crashChildEnvironment(env) // reused from chaos_process_kill_test.go
+	cmd.Env = childEnvironment(env)
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	cmd.Stderr = os.Stderr
@@ -106,6 +105,26 @@ func startNodeProcess(
 		}
 	}()
 	return n
+}
+
+// childEnvironment overlays overrides on the parent environment, shadowing
+// any parent variable with the same key.
+func childEnvironment(overrides map[string]string) []string {
+	removed := make(map[string]struct{}, len(overrides))
+	for key := range overrides {
+		removed[key] = struct{}{}
+	}
+	environment := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, replace := removed[key]; !replace {
+			environment = append(environment, entry)
+		}
+	}
+	for key, value := range overrides {
+		environment = append(environment, key+"="+value)
+	}
+	return environment
 }
 
 // token returns the first recorded token line beginning with prefix, or

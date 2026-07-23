@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════
@@ -340,19 +341,11 @@ func newPublisherSession(t *testing.T, ctx context.Context, brokerURL, prefix st
 
 func waitForTotal(t *testing.T, timeout time.Duration, want int64, counters ...*atomic.Int64) {
 	t.Helper()
-	deadline := time.After(timeout)
-	for {
+	wait.Until(t, timeout, fmt.Sprintf("%d messages across counters", want), func() bool {
 		var total int64
 		for _, c := range counters {
 			total += c.Load()
 		}
-		if total >= want {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for %d messages (got %d)", want, total)
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+		return total >= want
+	})
 }

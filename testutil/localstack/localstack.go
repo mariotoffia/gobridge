@@ -42,7 +42,6 @@ package localstack
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -138,7 +137,7 @@ func Endpoint(t testing.TB) string {
 			endpoint, containerName, cleanupFn, initErr = startContainer()
 		}
 	} else if !fromEnv && containerName != "" {
-		if !isContainerRunning(containerName) {
+		if !dockerexec.IsRunning(containerName) {
 			t.Logf("localstack: container %s died, restarting...", containerName)
 			if cleanupFn != nil {
 				cleanupFn()
@@ -193,7 +192,7 @@ func Shutdown() {
 		cleanupFn()
 		cleanupFn = nil
 	}
-	removeOrphans(containerPrefix)
+	dockerexec.RemoveOrphans(containerPrefix)
 }
 
 // WaitUntilReady verifies that the LocalStack endpoint is responding.
@@ -224,10 +223,10 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	if opts.cleanOrphans {
-		removeOrphans(containerPrefix)
+		dockerexec.RemoveOrphans(containerPrefix)
 	}
 
-	port, err := freePort()
+	port, err := dockerexec.FreePort()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("find free port: %w", err)
 	}
@@ -259,30 +258,20 @@ func startContainer() (string, string, func(), error) {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 	}
 
-	if err := waitForContainerHealthy(name, 30*time.Second); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.WaitHealthy(name, 30*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, err
 	}
 
 	if err := waitForServiceReady(ep, 60*time.Second); err != nil {
-		logContainerFailure(name)
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, err
 	}
 
-	if err := stabilize(func() error {
-		resp, e := http.Get(ep + "/_localstack/health")
-		if e != nil {
-			return e
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("health status %d", resp.StatusCode)
-		}
-		return nil
-	}); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.Stabilize(healthOK(ep)); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("LocalStack stabilization failed: %w", err)
 	}
@@ -290,88 +279,24 @@ func startContainer() (string, string, func(), error) {
 	return ep, name, cleanup, nil
 }
 
-func removeOrphans(prefix string) {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
-		"--filter", "name="+prefix)
-	if err != nil || len(out) == 0 {
-		return
-	}
-	ids := strings.Fields(strings.TrimSpace(string(out)))
-	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
-	}
-}
-
-func isContainerRunning(name string) bool {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-		"--format", "{{.State.Running}}", name)
-	return err == nil && len(out) > 0 && out[0] == 't'
-}
-
-func waitForContainerHealthy(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if strings.HasPrefix(s, "true") {
-				return nil
-			}
-			if strings.Contains(s, "false") {
-				return fmt.Errorf("container %s exited (inspect: %s)", name, s)
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("container %s did not reach running state within %v", name, timeout)
-}
-
-// waitForServiceReady polls the LocalStack /_localstack/health endpoint
-// until all requested services report "available" or "running".
-func waitForServiceReady(ep string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
+// healthOK probes the LocalStack /_localstack/health endpoint for HTTP 200 —
+// the gateway answers only once its service manager is up. (Per-service
+// "available" states are not parsed; the stabilize pass plus each test's own
+// first API call cover that.)
+func healthOK(ep string) func() error {
+	return func() error {
 		resp, err := http.Get(ep + "/_localstack/health")
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-			lastErr = fmt.Errorf("health status %d", resp.StatusCode)
-		} else {
-			lastErr = err
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("LocalStack at %s did not become ready within %v: %v", ep, timeout, lastErr)
-}
-
-func stabilize(probe func() error) error {
-	for i := 0; i < 3; i++ {
-		if err := probe(); err != nil {
+		if err != nil {
 			return err
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
-}
-
-func logContainerFailure(name string) {
-	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "30", name)
-	if len(out) > 0 {
-		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("health status %d", resp.StatusCode)
+		}
+		return nil
 	}
 }
 
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
+func waitForServiceReady(ep string, timeout time.Duration) error {
+	return dockerexec.WaitProbe("LocalStack at "+ep, timeout, 500*time.Millisecond, healthOK(ep))
 }
