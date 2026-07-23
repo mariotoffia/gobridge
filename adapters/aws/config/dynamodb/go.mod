@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.32.14
+	github.com/aws/smithy-go v1.25.1
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 )
@@ -24,7 +25,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
-	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
