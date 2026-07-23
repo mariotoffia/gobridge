@@ -105,6 +105,20 @@ type Config struct {
 	// ClientID) before ownership is confirmed, which would disconnect
 	// the current owner prematurely.
 	ConnectAfterLease bool
+
+	// BrokerHealthStepDown, when > 0, is how long an ACTIVE exclusive owner may
+	// stay NON-CONVERGED on its broker path (disconnected, or connected but not
+	// re-subscribed) before it voluntarily steps down so a healthy standby can take
+	// over (CLUSTER-2). The default lease/renew machinery only fails over on
+	// lease/owner/process loss, NOT on a node-local broker outage where the lease
+	// store stays reachable and renewals keep succeeding while MQTT reconnects
+	// forever — leaving cluster availability down indefinitely. This threshold
+	// closes that gap. Zero DISABLES it (the historical behaviour): broker-path
+	// failover is opt-in because a globally-unreachable broker would otherwise churn
+	// the lease between nodes that all fail to connect. It extends the worst-case
+	// failover budget by up to this value, so keep it comfortably above the normal
+	// reconnect+reconcile time and validate it against the failover SLO.
+	BrokerHealthStepDown time.Duration
 }
 
 // DefaultConfig returns a Config with recommended defaults.

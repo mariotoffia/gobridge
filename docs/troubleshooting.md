@@ -208,6 +208,22 @@ the source of the failure.
   has `DescribeTable` permission. For MQTT, check that the broker creates
   topics on demand vs. requiring pre-provisioning.
 
+### `INVALID_CONFIG`
+
+* **When you see it.** A config was rejected — at startup (the bootstrap
+  refuses to build) or on an admin transaction commit (`422`, the merged
+  config fails validation and the running runtime is left untouched).
+* **Likely cause.** A structurally-invalid or semantically-inconsistent
+  config: a missing required field, a bad enum, a store path outside the EFS
+  mount, a route referencing an undeclared transport, or a plugin option that
+  would be erased.
+* **Recovery.** The error wraps a `BlueprintValidationError` /
+  `config.ValidationError` whose `Errors` list names the offending field paths
+  (the commit response surfaces them as `validation_errors`). Read that list,
+  fix the named field(s), re-validate, and re-apply — at startup, correct the
+  bootstrap/config and restart; on a commit, PATCH the fixed values into the
+  transaction and re-commit (see [Config Rollback](runbooks/config-rollback.md)).
+
 ### `INVALID_PAYLOAD`
 
 * **When you see it.** A processor or sender rejected the envelope's

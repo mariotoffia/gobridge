@@ -104,9 +104,13 @@ may need a process restart to complete takeover.
   session cannot re-establish in place.
 - Scale out when no healthy standby remains or the survivor is saturated. A
   declared objective at or below 60 seconds requires a healthy continuously
-  polling warm standby. The current blueprint cannot verify replica count or
-  peer health; `PROD_READY_ISSUES_PLAN.md` Task 11 owns enforcement in the AWS
-  deployment model.
+  polling warm standby. In the shipped AWS deployment model the
+  [`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha)
+  now enforces this — at least two workers (`WorkerDesiredCount` may never be
+  below two) spread across a required two AZs — so any single task loss leaves a
+  continuously polling standby. Only a standalone (non-CDK) deployment still
+  cannot verify replica count or peer health; there the operator must enforce
+  and verify the invariant in their own orchestrator.
 
 ## Related runbooks
 

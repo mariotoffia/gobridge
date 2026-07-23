@@ -10,6 +10,24 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// discardDisconnectContext returns a BOUNDED context for tearing down a freshly
+// built ConnectionManager on a failed/abandoned Start path. These teardowns
+// previously used context.Background(), so a disconnect could block forever if
+// the SDK ignored cancellation of its already-cancelled connection-manager root
+// (MQTT-RES-3). The bound is ReconnectTimeout (a single network op), falling back
+// to ConnectTimeout and then the default. The caller MUST invoke the returned
+// cancel.
+func (s *Session) discardDisconnectContext() (context.Context, context.CancelFunc) {
+	d := s.opts.ReconnectTimeout
+	if d <= 0 {
+		d = s.opts.ConnectTimeout
+	}
+	if d <= 0 {
+		d = DefaultConnectTimeout
+	}
+	return context.WithTimeout(context.Background(), d)
+}
+
 // ConnectionManager returns the underlying autopaho.ConnectionManager.
 //
 // This accessor lives in the ACL because its return type is an SDK
@@ -231,7 +249,9 @@ func (s *Session) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		if currentGeneration != connectionGeneration || upErr != nil {
 			cmCancel()
-			_ = conn.Disconnect(context.Background())
+			disCtx, disCancel := s.discardDisconnectContext()
+			_ = conn.Disconnect(disCtx)
+			disCancel()
 			finishStart()
 			if upErr != nil {
 				return upErr
@@ -241,7 +261,9 @@ func (s *Session) Start(ctx context.Context) error {
 	case <-ctx.Done():
 		s.invalidateConnectionGeneration(connectionGeneration, ctx.Err())
 		cmCancel()
-		_ = conn.Disconnect(context.Background())
+		disCtx, disCancel := s.discardDisconnectContext()
+		_ = conn.Disconnect(disCtx)
+		disCancel()
 		finishStart()
 		return MapError(ctx.Err()).WithMessage("mqtt: await connection-up callback completion")
 	}
@@ -257,7 +279,9 @@ func (s *Session) Start(ctx context.Context) error {
 	if s.closed {
 		s.mu.Unlock()
 		cmCancel()
-		_ = conn.Disconnect(context.Background())
+		disCtx, disCancel := s.discardDisconnectContext()
+		_ = conn.Disconnect(disCtx)
+		disCancel()
 		finishStart()
 		return shared.ErrUnavailable.WithMessage(
 			"mqtt session closed during Start; discarded the freshly connected ConnectionManager")

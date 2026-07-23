@@ -422,13 +422,15 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
 	}
 
-	// Drainers run under startBackground (terminal-on-error) — correct AS-IS:
-	// Drainer.Run only ever returns ctx.Err() (every drain fault — stale token,
-	// transient egress, claim failure — is absorbed and retried inside its own
-	// poll loop, see runtime/outbox/loop.go). A non-ctx return is therefore
-	// impossible, so a transient drain fault can never trip terminal, and the
-	// ctx.Err() shutdown return is filtered by startBackground's ctx.Err()==nil
-	// guard. No supervisor wrapper is warranted (REV-3-routeiso).
+	// Drainers run under startBackground (terminal-on-error). Every RECOVERABLE
+	// drain fault — stale token, transient egress, claim failure — is absorbed and
+	// retried inside the poll loop (runtime/outbox/loop.go), so the normal return
+	// is ctx.Err() (filtered by startBackground's ctx.Err()==nil guard). The one
+	// deliberate non-ctx return is outbox.ErrDrainStalled (CORE-RES-1): a Sender
+	// that ignores context cancellation leaks a goroutine the batch watchdog can
+	// only abandon, so Run stops draining and returns terminal to trigger a restart
+	// that reclaims it — the escalation the terminal-on-error path exists for. No
+	// per-drainer supervisor wrapper is warranted (REV-3-routeiso).
 	for i, drainer := range rt.drainers {
 		name := "drainer:" + drainer.PartitionKey()
 		if name == "drainer:" {

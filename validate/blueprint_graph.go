@@ -220,7 +220,10 @@ func ValidateBlueprintGraph(cfg *ports.BridgeConfig) *ports.BlueprintValidationE
 		return r.ID, fmt.Sprintf("routes[%d]", i)
 	})
 
-	if cfg.Bridge.DeploymentMode == "clustered" {
+	// CLUSTER-1: use the single canonical clustered predicate (mode OR static
+	// endpoints) so a static-endpoints deployment cannot activate clustered
+	// runtime behavior while bypassing these replica-safety checks.
+	if ports.IsClusteredDeployment(cfg) {
 		validateClusteredMQTTSubscriptions(ve, cfg)
 	}
 

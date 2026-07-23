@@ -55,7 +55,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -69,6 +69,13 @@ jobs:
 
       - name: Run bounded MQTT ingress memory proof
         run: make test-mqtt-ingress-memory
+
+      # TEST-1: a bounded, separate-OS-process, real-broker + DynamoDB Local
+      # failover proof on every PR (the full failover/chaos suite still runs
+      # only nightly). Catches outage-recovery regressions that default and
+      # integration CI would otherwise stay green through.
+      - name: Run bounded separate-process failover gate
+        run: make test-failover-gate
 
       - name: Upload integration-test reports
         if: always()

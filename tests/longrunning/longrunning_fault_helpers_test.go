@@ -77,10 +77,24 @@ type degradedSender struct {
 	failPercent int
 	latency     time.Duration
 	calls       atomic.Int64
+	rngMu       sync.Mutex
+	rng         *rand.Rand
 }
 
+// newDegradedSender seeds the PRNG with a fixed constant (not the global
+// unseeded source), removing run-to-run RANDOMNESS as a variable. It does not
+// make outcomes fully reproducible under concurrency: both which message gets
+// which draw AND how many draws are consumed (redelivery counts) depend on
+// scheduling. That is fine here — the RES001 assertions are order-independent
+// safety/liveness properties (recoverable failures are never DLQ'd; the pipeline
+// keeps making progress), so they hold regardless of draw assignment. The fixed
+// seed just makes a given environment consistently pass or fail rather than
+// flaking intermittently on RNG luck.
 func newDegradedSender(inner ports.Sender, failPct int, latency time.Duration) *degradedSender {
-	return &degradedSender{inner: inner, failPercent: failPct, latency: latency}
+	return &degradedSender{
+		inner: inner, failPercent: failPct, latency: latency,
+		rng: rand.New(rand.NewPCG(0x9e3779b97f4a7c15, 0x243f6a8885a308d3)),
+	}
 }
 
 func (s *degradedSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
@@ -92,7 +106,10 @@ func (s *degradedSender) Send(ctx context.Context, msg ports.OutboundMessage) er
 		}
 	}
 	s.calls.Add(1)
-	if rand.IntN(100) < s.failPercent {
+	s.rngMu.Lock()
+	fail := s.rng.IntN(100) < s.failPercent
+	s.rngMu.Unlock()
+	if fail {
 		return shared.ErrUnavailable.WithMessage("degraded sender: injected failure")
 	}
 	return s.inner.Send(ctx, msg)

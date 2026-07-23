@@ -677,6 +677,52 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 	if got := metrics.sum(shared.MetricOutboxDrainStalled, nil); got != 1 {
 		t.Errorf("OutboxDrainStalled = %d, want 1 (emitted once for the wedged batch)", got)
 	}
+	// CORE-RES-1: the watchdog must LATCH the partition stalled so Run stops
+	// scheduling further batches (each could leak another parked sender).
+	if !d.drainStalled.Load() {
+		t.Errorf("drainStalled not latched after watchdog abandoned a hung sender (CORE-RES-1)")
+	}
+}
+
+// TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal proves the CORE-RES-1
+// bound: once the partition is latched stalled, Run stops scheduling batches and
+// returns ErrDrainStalled — a terminal (non-ctx) error so startBackground
+// escalates to a runtime restart that reclaims the leaked goroutine, instead of
+// draining forever and leaking one parked sender per batch.
+//
+// Mutation check: remove the drainStalled check in Run's loop and this hangs
+// (Run keeps polling and never returns the terminal error).
+func TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal(t *testing.T) {
+	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 4)}
+	store := &deferredFakeStore{} // empty: drainBatch returns fast, exercising only the latch gate
+	d := New(Config{
+		OutboxStore:  store,
+		Sender:       &fnSender{send: func(context.Context, ports.OutboundMessage) error { return nil }},
+		RouteID:      "route-core1",
+		PartitionKey: "SESSION#sess-core1",
+		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		DrainTimeout: time.Hour,
+		Clock:        clk,
+		Metrics:      newRecordingExporter(),
+		TokenFn:      func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
+	})
+	// Pre-latch the stall (as the watchdog would after abandoning a hung sender).
+	d.drainStalled.Store(true)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(context.Background()) }()
+
+	<-clk.timerCreated         // Run registered its poll timer
+	clk.Advance(1 * time.Hour) // fire the poll timer -> one drain cycle -> latch gate
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrDrainStalled) {
+			t.Fatalf("Run returned %v, want ErrDrainStalled (terminal escalation)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the stall latch; it kept scheduling batches (CORE-RES-1)")
+	}
 }
 
 // ---------------------------------------------------------------------------

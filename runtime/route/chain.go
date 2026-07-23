@@ -44,6 +44,14 @@ type chainOptions struct {
 	// onProcessorTimeout, when set, is called once per genuine per-processor
 	// timeout abandon (HIGH-4). Route shutdown-grace abandons do NOT call it.
 	onProcessorTimeout func()
+	// onProcessorReturned, when set, is called exactly once when a goroutine that
+	// was ABANDONED on a genuine timeout finally returns (its done channel closes)
+	// — the paired decrement to onProcessorTimeout's increment (CORE-RES-2). It
+	// lets the route breaker track OUTSTANDING abandoned goroutines rather than
+	// consecutive-since-settle abandons: a truly hung processor never fires it, so
+	// its leak stays counted until a restart clears it. Never fired for
+	// shutdown-grace abandons (they do not call onProcessorTimeout either).
+	onProcessorReturned func()
 }
 
 // ChainOption configures RunChain.
@@ -95,6 +103,16 @@ func WithChainRouteID(id string) ChainOption {
 // amplifying forever. A nil callback is a no-op.
 func WithChainOnProcessorTimeout(fn func()) ChainOption {
 	return func(o *chainOptions) { o.onProcessorTimeout = fn }
+}
+
+// WithChainOnProcessorReturned registers a callback invoked exactly once when a
+// goroutine ABANDONED on a genuine per-processor timeout finally returns — the
+// paired decrement to WithChainOnProcessorTimeout's increment (CORE-RES-2). It
+// lets the RouteRunner's breaker measure the count of OUTSTANDING abandoned
+// goroutines instead of consecutive-since-settle abandons, so interleaved
+// successful traffic no longer masks a real leak. A nil callback is a no-op.
+func WithChainOnProcessorReturned(fn func()) ChainOption {
+	return func(o *chainOptions) { o.onProcessorReturned = fn }
 }
 
 // RunChain executes processors in order, each wrapping the next.
@@ -303,6 +321,19 @@ func invokeProcessor(
 		// abandons (the root-cancelled branch above) are excluded.
 		if cfg.onProcessorTimeout != nil {
 			cfg.onProcessorTimeout()
+		}
+		// CORE-RES-2: pair the abandon-increment with a decrement when THIS
+		// goroutine finally returns, so the breaker counts OUTSTANDING abandoned
+		// goroutines. done is closed exactly once by runProcessor's LIFO defers, so
+		// the waiter fires onProcessorReturned exactly once. A truly hung processor
+		// never closes done, so its leak stays counted (the waiter parks too — one
+		// per abandon, the accepted cost the deferred upgrade named). Guarded by the
+		// same non-shutdown branch, so shutdown-grace abandons are never counted.
+		if cfg.onProcessorReturned != nil {
+			go func() {
+				<-done
+				cfg.onProcessorReturned()
+			}()
 		}
 		return shared.ErrProcessorTimeout.
 			With("processor", name).

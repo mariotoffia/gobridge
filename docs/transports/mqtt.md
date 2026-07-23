@@ -93,13 +93,17 @@ stable across restarts of the same replica**:
 | Kubernetes **StatefulSet**, VM, bare metal | stable (`pod-0` stays `pod-0`) | **Safe** — the replica resumes its own broker session. |
 | Kubernetes **Deployment**, ECS service | new pod/task name every rollout | **Unsafe** — every rollout mints a new `client_id`, so the previous broker session (with its queued QoS 1/2) is ORPHANED. No instance can drain it; it expires silently after `session_expiry_interval` (default 24h) — **loss by timeout, invisible to the bridge**. |
 
-The bridge cannot detect its orchestrator, so `Factory.NewSession` logs a
-warning whenever `session_mode: persistent` is combined with
-`client_id_suffix: hostname`. On a Deployment/ECS service use one of the safe
-shapes instead:
+The bridge cannot detect its orchestrator, so a startup warning is not an
+admission boundary. `Factory.NewSession` therefore **rejects**
+`session_mode: persistent` combined with `client_id_suffix: hostname` (returns
+`INVALID_CONFIG`) unless the operator explicitly asserts a stable-host profile
+with `assert_stable_client_identity: true` (IDENTITY-1). The assertion is the
+operator vouching for StatefulSet/VM identity — it does **not** make a
+Deployment/ECS service safe; an admitted session still warns it is unsafe there.
+On a Deployment/ECS service use one of the safe shapes instead:
 
 - **StatefulSet** (stable hostnames) when persistent per-replica sessions are
-  genuinely wanted;
+  genuinely wanted — set `assert_stable_client_identity: true` to admit it;
 - **`session_mode: exclusive`** (one stable shared `client_id` + lease): the
   surviving/next instance resumes the queue on takeover;
 - **Ephemeral + `$share`** when per-replica offline retention is not needed —
@@ -173,6 +177,25 @@ windows exactly once. The practical bound additionally includes pod-restart
 latency when the lease-losing instance must recycle (the single-use session
 restart policy below); budget it via `startup_allowance`. See
 [Scenario 8 — Failover SLO Validation](../scenarios/08-clustered-exclusive-sessions.md#failover-slo-validation).
+
+**Broker-path failover (node-local outage).** The failover budget above covers
+lease/owner/process loss. It does **not** cover the case where the active
+exclusive owner **alone** loses its network path or authorization to the broker
+while the lease store stays reachable: renewals keep succeeding, so the owner
+holds the lease and Paho reconnects forever, and a healthy standby (blocked in
+acquire-before-connect) can never take over — cluster availability stays down
+indefinitely (finding CLUSTER-2). Broker-path failover is therefore **opt-in**:
+set `routes[].session.broker_health_step_down` to a positive duration and an
+active owner whose broker path stays **non-converged** (disconnected, or
+connected but not re-subscribed) that long voluntarily steps down — releasing the
+lease so a standby seizes it — and emits `BrokerHealthStepDown`. Leave it unset
+(the default) when the broker is fronted by a single HA endpoint reachable from
+every node, because a *globally* unreachable broker would otherwise churn the
+lease between nodes that all fail to connect. When set, it **extends the
+worst-case failover budget by up to `broker_health_step_down`**, so keep it
+comfortably above normal reconnect+reconcile time and account for it against any
+declared `failover_slo`. Alert on `BrokerHealthStepDown` — a non-zero rate means
+a node is losing its broker path.
 
 **Restart policy is a deployment requirement.** The Paho session is
 single-use: once `Close` runs (on lease loss / step-down) it does not reconnect
@@ -443,7 +466,7 @@ senders:
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
 | `broker_urls` | []string | -- | Broker URLs for failover. Ephemeral sessions may use multiple independent URLs. Persistent/exclusive sessions reject more than one distinct canonical URL because one managed-filter history cannot safely span independent broker-session domains. |
 | `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`Config.ValidateEffectiveSession` in `config_plugin.go`, enforced by `Factory.NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
-| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname; for **Persistent** sessions it is safe **only where hostnames are stable across restarts** (StatefulSet/VM — NOT Deployments/ECS, where every rollout orphans the previous broker session and its queued QoS 1/2; the factory warns — see [Deployment identity](#deployment-identity)). `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
+| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname; for **Persistent** sessions it is safe **only where hostnames are stable across restarts** (StatefulSet/VM — NOT Deployments/ECS, where every rollout orphans the previous broker session and its queued QoS 1/2; the factory **rejects** this combination unless `assert_stable_client_identity: true` — see [Deployment identity](#deployment-identity)). `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |
@@ -757,7 +780,8 @@ the destination, so downstream idempotency is required in every row.
 | QoS 1/2 | `shared_outbox` | **reused** (same ID for distinct events) | durable, persisted | any | Collapse of a distinct event: the second event reuses the first's dedup key (`partition` + `EnvelopeID` + `binding`); its Persist returns `ErrDuplicateRecord` and is acked-and-dropped. A supplied producer ID is preserved and trusted as identity. |
 | QoS 1/2, source broker offline | either | any | n/a | source queue/session expiry or capacity drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever receives the message. |
 | any | `shared_outbox` | any | durable, persisted | `ReplayCount` > `MaxReplayAttempts` **and** `ReplayBudget` elapsed since first attempt | Permanent failure: the record reaches the terminal action below. A record whose envelope TTL passes is expired first, per `OnExpired`. |
-| any | `direct_hold` | any | n/a | source attempts reach `MaxReplayAttempts` (count only, no wall-clock gate) | Permanent failure: the source delivery reaches the terminal action below. |
+| any (stable identity) | `direct_hold` | present, or bridge dedup/idempotency key | n/a | source attempts reach `MaxReplayAttempts` (count only, no wall-clock gate) | Permanent failure: the source delivery reaches the terminal action below. Count-less sources are counted by the bridge-owned replay ledger keyed on the stable identity. |
+| QoS 1/2 (no stable identity) | `direct_hold` | **missing** (no producer ID) | n/a | first transient failure | Permanent failure on the first failure: a count-less source with an adapter-generated id cannot be counted (each broker redelivery mints a fresh id), so it is terminally DLQ'd/dropped with reason `unstable_identity` rather than recycling the source session forever (MQTT-CORE-1). Supply `mqtt.message-id`/correlation data to get the full `MaxReplayAttempts` budget. |
 | any | `direct_hold` | any | n/a | terminal action after permanent failure/expiry | Per `OnPermanentFailure`/`OnExpired` (default `dlq`): on a successful DLQ write (counts `MetricDLQEntries`) the **source delivery** is settled/ACKed; `drop` (or no DLQ store) records a drop metric and ACKs the source — loss by design. A DLQ **write failure** leaves the source **unsettled**, so it redelivers — never a silent drop. |
 | any | `shared_outbox` | any | durable, persisted | terminal action after permanent failure/expiry | The source was already ACKed right after Persist. Per `OnPermanentFailure`/`OnExpired`, the drainer **completes the outbox record** (`OutboxStore.Complete`) only after a successful DLQ write (`MetricDLQEntries`) or a recorded `drop` (loss by design). A DLQ **write failure** leaves the record **pending/claimed**, so the drainer retries it — never a silent drop. |
 | any | either | any | any | send accepted, response lost | Ambiguous: a send timeout after the destination accepted the publish is indistinguishable from a real failure, and a retry may duplicate. Downstream must dedupe. |
@@ -789,7 +813,12 @@ instead bounded by:
   `ReplayBudget` (default 15 minutes, measured from the first attempt) has
   elapsed; a legacy record with no first-attempt timestamp falls back to the
   `CreatedAt`/`poisonMinAge` age gate. `direct_hold` instead poisons the source
-  delivery on the attempt-count cap alone;
+  delivery on the attempt-count cap alone — counting count-less sources through
+  the bridge-owned replay ledger keyed on a stable identity. A count-less source
+  that supplies **no** stable identity (adapter-generated envelope id) cannot be
+  counted, so instead of looping forever it is terminally sinked on the first
+  transient failure (`unstable_identity`); see
+  [Envelope identity and no-ID redelivery](#envelope-identity-and-no-id-redelivery);
 - **store durability loss** — a volatile (in-memory) store on restart, or
   operator deletion / row corruption of a durable store.
 
@@ -1080,6 +1109,19 @@ possible duplicate is safer than silently collapsing two legitimate equal-valued
 publishes in `shared_outbox`. Producers that require stable deduplication across
 redelivery must provide a stable `mqtt.message-id` (preferred) or correlation
 identity and reuse it for every delivery attempt.
+
+**Replay-cap consequence (MQTT-CORE-1).** Because a no-ID publish is re-minted a
+fresh envelope id on every broker redelivery, the runtime's replay ledger — which
+keys count-less sources on that id — cannot accumulate attempts for it. The
+adapter marks such an envelope as adapter-generated (`x-bridge.generated-id`,
+an internal-only header that never leaves the process). On a transient delivery
+failure the runtime therefore refuses to retry it: rather than recycling the
+whole source session forever (a single poison message could head-of-line-block
+all ingress), it terminally routes the message to the DLQ (or drops it, per
+`OnPermanentFailure`) with reason `unstable_identity`. A producer that supplies
+a stable `mqtt.message-id`/correlation data — or a trusted bridge-to-bridge
+`x-bridge.dedup-id`/`x-bridge.idempotency-key` — restores countability and gets
+the full `MaxReplayAttempts` retry budget.
 
 ## Receiver Options
 

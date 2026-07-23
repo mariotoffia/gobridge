@@ -42,6 +42,26 @@ type BridgeConfig struct {
 	HTTP        *HTTPConfig     `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
+// IsClusteredDeployment is the SINGLE canonical predicate for "is this a
+// clustered deployment": either deployment_mode is "clustered" OR a static
+// cluster.endpoints override is present. A nil config is never clustered.
+//
+// It lives in ports (which every layer imports) so runtime composition,
+// config validation, and blueprint validation cannot drift onto different
+// spellings — a mismatch previously let a static-endpoints deployment activate
+// clustered runtime behavior while bypassing the clustered replica-safety
+// validation (finding CLUSTER-1). bridge.IsClusteredDeployment and
+// config.deploymentIsClustered delegate here.
+func IsClusteredDeployment(cfg *BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Bridge.DeploymentMode == "clustered" {
+		return true
+	}
+	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+}
+
 // ConfigWatchDef configures how the configuration source is watched
 // for changes. Mode selects the detection mechanism:
 //   - "notify" (default): filesystem event notifications, debounced by Debounce
@@ -374,6 +394,14 @@ type RouteSessionDef struct {
 	// StartupAllowance is explicit bounded time reserved for process-side work
 	// outside lease, broker-connect, and reconcile calls. Empty means zero.
 	StartupAllowance string `yaml:"startup_allowance,omitempty" json:"startup_allowance,omitempty"`
+
+	// BrokerHealthStepDown, when set (a positive duration string, e.g. "90s"),
+	// makes an ACTIVE exclusive owner step down after its broker path stays
+	// non-converged (disconnected / not re-subscribed) that long, so a healthy
+	// standby can take over a node-local broker outage the lease machinery alone
+	// cannot detect (CLUSTER-2). Empty/zero disables it (broker-path failover is
+	// opt-in). It extends the worst-case failover budget by up to this value.
+	BrokerHealthStepDown string `yaml:"broker_health_step_down,omitempty" json:"broker_health_step_down,omitempty"`
 
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`

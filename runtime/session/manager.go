@@ -62,12 +62,16 @@ type Manager struct {
 	maxRenewFails     int
 	stepDownGrace     time.Duration
 	activationTimeout time.Duration
-	endpoints         map[string]string
-	drainIdle         func() bool
-	metrics           ports.MetricsExporter
-	audit             ports.AuditLogger
-	logger            *slog.Logger
-	clk               clock.Clock
+	// brokerHealthStepDown, when > 0, bounds how long this active owner may stay
+	// non-converged on its broker path before it steps down so a standby can take
+	// over a node-local broker outage (CLUSTER-2). Zero disables the check.
+	brokerHealthStepDown time.Duration
+	endpoints            map[string]string
+	drainIdle            func() bool
+	metrics              ports.MetricsExporter
+	audit                ports.AuditLogger
+	logger               *slog.Logger
+	clk                  clock.Clock
 
 	mu            sync.Mutex
 	token         persistence.LeaseToken
@@ -80,6 +84,22 @@ type Manager struct {
 	// this owner can never consume past the instant a standby can seize the
 	// expired lease (split-brain renew-fail/read-succeed fix). Guarded by mu.
 	leaseDeadline time.Time
+	// notConvergedSince is the time this owner's broker path first became
+	// non-converged (disconnected / not re-subscribed) AFTER having been converged.
+	// Zero means converged (healthy) or never-yet-converged. The renew loop steps
+	// down once now-notConvergedSince exceeds brokerHealthStepDown (CLUSTER-2).
+	// Guarded by mu.
+	//
+	// It is cleared ONLY by markConverged (a SessionConnected + successful reconcile
+	// event), NOT on lease renew/acquire — renewals deliberately keep succeeding
+	// during a broker outage, so clearing on renew would defeat the whole feature.
+	// This relies on a fresh Manager per lease term: every shipped exclusive
+	// transport is single-use, so a lease loss/step-down escalates to a pod restart
+	// (new Manager, zero timestamp) rather than an in-loop re-acquire. A future
+	// MULTI-use exclusive transport that re-acquires without a new process MUST
+	// reset notConvergedSince at the start of the new term (before the first renew
+	// tick) or it could step down spuriously on a stale timestamp.
+	notConvergedSince time.Time
 
 	leaseEvents     chan LeaseStateEvent
 	leaseEventDrops atomic.Uint64
@@ -201,26 +221,27 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 	}
 
 	return &Manager{
-		sessionID:         cfg.SessionID,
-		session:           session,
-		leaseStore:        leaseStore,
-		ownerID:           ownerID,
-		exclusive:         cfg.Exclusive,
-		connectAfterLease: cfg.ConnectAfterLease,
-		plan:              cfg.Plan,
-		leaseTTL:          cfg.LeaseTTL,
-		renewInterval:     cfg.RenewInterval,
-		renewJitter:       cfg.RenewJitter,
-		acquirePoll:       cfg.AcquirePollInterval,
-		renewCallTimeout:  cfg.RenewCallTimeout,
-		maxRenewFails:     cfg.MaxRenewFails,
-		stepDownGrace:     cfg.StepDownGrace,
-		activationTimeout: cfg.PostAcquireActivationTimeout,
-		metrics:           &ports.NoopExporter{},
-		audit:             ports.NoopAuditLogger{},
-		logger:            logger,
-		clk:               clock.System,
-		leaseEvents:       make(chan LeaseStateEvent, leaseEventBuffer),
+		sessionID:            cfg.SessionID,
+		session:              session,
+		leaseStore:           leaseStore,
+		ownerID:              ownerID,
+		exclusive:            cfg.Exclusive,
+		connectAfterLease:    cfg.ConnectAfterLease,
+		plan:                 cfg.Plan,
+		leaseTTL:             cfg.LeaseTTL,
+		brokerHealthStepDown: cfg.BrokerHealthStepDown,
+		renewInterval:        cfg.RenewInterval,
+		renewJitter:          cfg.RenewJitter,
+		acquirePoll:          cfg.AcquirePollInterval,
+		renewCallTimeout:     cfg.RenewCallTimeout,
+		maxRenewFails:        cfg.MaxRenewFails,
+		stepDownGrace:        cfg.StepDownGrace,
+		activationTimeout:    cfg.PostAcquireActivationTimeout,
+		metrics:              &ports.NoopExporter{},
+		audit:                ports.NoopAuditLogger{},
+		logger:               logger,
+		clk:                  clock.System,
+		leaseEvents:          make(chan LeaseStateEvent, leaseEventBuffer),
 	}
 }
 
@@ -409,19 +430,63 @@ func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent)
 		if err := m.boundedReconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
 			m.metrics.Counter(shared.MetricReconcileFailures, 1, sessionTag)
+			// Still non-converged: leave the broker-health clock running.
 			return fmt.Errorf("runtime: session-manager: reconcile on reconnect: %w", err)
 		}
+		// Connected AND re-subscribed: the broker path is converged again.
+		m.markConverged()
 
 	case ports.SessionDisconnected:
 		m.log(ctx, slog.LevelWarn, "session disconnected", "error", ev.Err)
+		m.markNonConverged()
 
 	case ports.SessionReconnecting:
 		m.log(ctx, slog.LevelInfo, "session reconnecting")
+		m.markNonConverged()
 
 	case ports.SessionError:
 		m.log(ctx, slog.LevelError, "session error", "error", ev.Err)
+		m.markNonConverged()
 	}
 	return nil
+}
+
+// markConverged records that the broker path is healthy (connected and
+// re-subscribed), clearing the CLUSTER-2 broker-health step-down clock.
+func (m *Manager) markConverged() {
+	m.mu.Lock()
+	m.notConvergedSince = time.Time{}
+	m.mu.Unlock()
+}
+
+// markNonConverged starts the CLUSTER-2 broker-health step-down clock on the
+// FIRST non-converged event after convergence, but only once this owner has been
+// converged at least once (connectedOnce) — pre-first-connect activation is not a
+// broker-path OUTAGE and is bounded separately by the activation timeout. It is
+// idempotent: a run of disconnect/reconnecting/error events keeps the earliest
+// timestamp so the elapsed non-converged time is measured from the outage start.
+func (m *Manager) markNonConverged() {
+	if m.brokerHealthStepDown <= 0 || !m.connectedOnce.Load() {
+		return
+	}
+	m.mu.Lock()
+	if m.notConvergedSince.IsZero() {
+		m.notConvergedSince = m.clk.Now()
+	}
+	m.mu.Unlock()
+}
+
+// brokerHealthStepDownDue reports whether the broker path has stayed
+// non-converged past the configured threshold, so the active owner should step
+// down to let a standby take over a node-local broker outage (CLUSTER-2).
+func (m *Manager) brokerHealthStepDownDue() bool {
+	if m.brokerHealthStepDown <= 0 {
+		return false
+	}
+	m.mu.Lock()
+	since := m.notConvergedSince
+	m.mu.Unlock()
+	return !since.IsZero() && m.clk.Now().Sub(since) >= m.brokerHealthStepDown
 }
 
 func (m *Manager) setToken(token persistence.LeaseToken) {

@@ -46,8 +46,12 @@ docker buildx imagetools inspect ghcr.io/mariotoffia/gobridge:v0.2.0 \
   --format '{{json .Manifest.Digest}}'
 ```
 
-Released image tags are `v0.1.0` and `v0.2.0`; a tag such as `v1.2.3` in older
-examples is illustrative, not a published release.
+No image tags are published yet: the release workflow pushes the image **by
+digest only** (never `ghcr.io/...:vX.Y.Z`) after the first `cmd/gobridge/vX.Y.Z`
+command release is cut, recording the verified digest in
+`gobridge-image-digest.txt`. The `v0.1.0` / `v0.2.0` tags above are illustrative
+placeholders — until the first release, take the authoritative digest straight
+from that release asset rather than resolving a tag ([RELEASE.md](../../RELEASE.md)).
 
 ## SQLite store durability
 

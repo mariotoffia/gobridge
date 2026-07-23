@@ -30,6 +30,11 @@ import (
 const (
 	uc3MsgCount = 2000
 	uc3Topic    = "uc3/output/data"
+	// uc3FailoverSLO is the asserted failure-detection-to-ServiceLevelFull ceiling
+	// for this test's compressed lease profile (LeaseTTL=5s). Observed ~5.1s warm /
+	// ~5.2s cold; the ~3x headroom keeps the gate non-flaky while still failing hard
+	// on a regression toward the unbounded default profile (~336s). See TEST-4.
+	uc3FailoverSLO = 15 * time.Second
 )
 
 type uc3CrashableLeaseStore struct {
@@ -215,6 +220,22 @@ func TestUC3ClusterFailover(t *testing.T) {
 
 	reportUC3FailoverSamples(t, "warm", []time.Duration{warmDuration})
 	reportUC3FailoverSamples(t, "cold", []time.Duration{coldDuration})
+
+	// TEST-4: ASSERT the failover objective, not just report it. Under this test's
+	// compressed lease profile (LeaseTTL=5s, RenewInterval=400ms) failure-detection
+	// to ServiceLevelFull is observed at ~5.1s (warm) / ~5.2s (cold), bounded by the
+	// TTL. uc3FailoverSLO is a calibrated ceiling (~3x observed headroom) that a
+	// healthy failover always meets but that a regression toward the UNBOUNDED
+	// default profile (~336s worst case — the very gap this suite exists to guard)
+	// would blow, converting the historical "reported, never gated" duration into a
+	// hard pass/fail. It asserts against the MEASURED time to a VERIFIED successor
+	// owner + fencing-version change at ServiceLevelFull (waitForSuccessor), not a
+	// sleep.
+	require.LessOrEqualf(t, warmDuration, uc3FailoverSLO,
+		"warm failover to ServiceLevelFull took %s, exceeding the %s objective (regression toward the unbounded default profile?)",
+		warmDuration, uc3FailoverSLO)
+	require.LessOrEqualf(t, coldDuration, uc3FailoverSLO,
+		"cold failover to ServiceLevelFull took %s, exceeding the %s objective", coldDuration, uc3FailoverSLO)
 
 	lrWaitFor(t, 90*time.Second, "2000 messages received", func() bool { return collector.count() >= uc3MsgCount })
 	msgs := collector.getMessages()

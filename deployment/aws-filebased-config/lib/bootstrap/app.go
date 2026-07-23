@@ -165,6 +165,24 @@ type App struct {
 	// nil-runtime case the concrete *runtime.Runtime check alone misses.
 	wedged atomic.Bool
 
+	// rootCtx is the App-lifetime context (== watchCtx) set in Start and cancelled
+	// by Stop. The post-swap convergence watch (RECONFIG-1) derives from it so it
+	// lives across reloads and stops with the App. nil before Start completes.
+	rootCtx context.Context
+
+	// Post-swap convergence state (RECONFIG-1). A committed swap only proves the
+	// new runtime BUILT and Start returned; MQTT dials/reconciles in the
+	// background, so a valid-but-broker-rejected config can be acknowledged as
+	// applied while the transport never reaches broker truth. The convergence watch
+	// polls the installed runtime's readiness and, if it does not reach
+	// LevelSubscribed within the activation budget, latches an applied-but-not-
+	// converged degraded state (surfaced in deep health + MetricConfigDegraded).
+	convergenceMu          sync.Mutex
+	convergenceDegraded    bool
+	convergenceReason      string
+	convergenceRt          *goruntime.Runtime
+	convergenceWatchCancel context.CancelFunc
+
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
 	started bool
@@ -396,7 +414,13 @@ func (a *App) Start(ctx context.Context) error {
 
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	a.watchCancel = watchCancel
+	a.rootCtx = watchCtx
 	a.started = true
+
+	// RECONFIG-1: watch the INITIALLY-applied runtime for convergence too (initial
+	// startup has the same truthfulness gap as a reload). installPlan skipped
+	// starting it during the pre-rootCtx initial apply, so start it here.
+	a.startConvergenceWatch(watchCtx, a.runtimeRef.Get(), a.appliedRef.Get())
 
 	a.watchWg.Go(func() {
 		a.watchLoop(watchCtx, watchCh)
@@ -801,6 +825,11 @@ func (a *App) applyOverlap(
 	oldRegistry *factoryRegistry,
 ) error {
 	if err := plan.runtime.Start(ctx); err != nil {
+		// RECONFIG-2: a candidate whose late Start fails still opened stores,
+		// sessions, and adapter resources during Build. Stop it before returning so
+		// repeated failing applies do not leak store handles and background state.
+		// Bounded teardown (context.Background) like every other reload-path stop.
+		_ = stopRuntime(context.Background(), plan.runtime, plan.logical)
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
 
@@ -851,17 +880,32 @@ func (a *App) applyPrepareCommit(
 
 	if oldRuntime != nil {
 		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
-			a.logger.Warn("bootstrap: stop old runtime before prepare/commit swap", "error", err)
+			// RECONFIG-2: prepare/commit stops the old runtime BEFORE committing the
+			// new one, so a failed stop leaves the old runtime in an uncertain state
+			// (its exclusive broker session / lease may still be held). Proceeding to
+			// commit a new runtime onto the same identity would risk two owners.
+			// Abort instead: keep the old runtime installed (runtimeRef unchanged) and
+			// surface the error as committed_not_applied so an operator reconciles.
+			return fmt.Errorf("bootstrap: abort prepare/commit swap; old runtime did not stop cleanly "+
+				"(uncertain ownership, refusing to commit a replacement): %w", err)
 		}
 	}
 	a.runtimeRef.Set(nil)
 
 	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
+		// RECONFIG-2: a partially-built candidate from a failed Commit still holds
+		// resources; stop it (nil-safe) before rebuilding the previous runtime.
+		if newRuntime != nil {
+			_ = stopRuntime(context.Background(), newRuntime, plan.logical)
+		}
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
 	}
 	if err := newRuntime.Start(ctx); err != nil {
+		// RECONFIG-2: stop the committed-but-unstarted candidate before recovering,
+		// so its opened stores/sessions are released rather than leaked.
+		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
@@ -893,6 +937,12 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 		err = plan.runtime.Start(ctx)
 	}
 	if err != nil {
+		// RECONFIG-2: the recovery candidate itself failed to commit/start. Stop it
+		// (nil-safe) so it does not leak resources on top of the failed swap before
+		// entering the wedged state that the orchestrator restarts out of.
+		if plan.runtime != nil {
+			_ = stopRuntime(context.Background(), plan.runtime, logical)
+		}
 		a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
 		a.enterWedgedState()
 		return
@@ -909,12 +959,18 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 // all) is a separate, harder failure already surfaced via /live and the
 // terminal backstop, so it is intentionally not folded in here.
 func (a *App) degradedConfigWatch() (bool, string) {
+	// RECONFIG-1: an applied-but-not-converged swap is a degraded state even when
+	// the config-watch layer itself is healthy. Report it alongside (or instead of)
+	// a watcher error so operators see the same ConfigDegraded signal the generic
+	// Supervisor emits.
+	convDegraded, convReason := a.convergenceDegradedState()
+
 	if a.manager == nil {
-		return false, ""
+		return convDegraded, convReason
 	}
 	errs := a.manager.WatchErrors()
 	if len(errs) == 0 {
-		return false, ""
+		return convDegraded, convReason
 	}
 	layers := make([]string, 0, len(errs))
 	for layer := range errs {
@@ -925,7 +981,11 @@ func (a *App) degradedConfigWatch() (bool, string) {
 	for i, layer := range layers {
 		parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
 	}
-	return true, "config watch degraded: " + strings.Join(parts, "; ")
+	reason := "config watch degraded: " + strings.Join(parts, "; ")
+	if convDegraded {
+		reason += "; " + convReason
+	}
+	return true, reason
 }
 
 func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
@@ -981,6 +1041,12 @@ func (a *App) installPlan(plan *runtimePlan) {
 	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
 	// points at this registry's mux.
 	a.registryRef.Store(plan.registry)
+	// RECONFIG-1: begin (or supersede) the post-swap convergence watch for the
+	// freshly installed runtime. Skipped during the pre-rootCtx initial apply
+	// (Start begins the initial watch explicitly once rootCtx exists).
+	if a.rootCtx != nil {
+		a.startConvergenceWatch(a.rootCtx, plan.runtime, plan.logical)
+	}
 	if a.onRuntimeInstalled != nil {
 		a.onRuntimeInstalled()
 	}

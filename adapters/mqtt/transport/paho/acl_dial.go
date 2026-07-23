@@ -285,7 +285,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		cmCancel()
-		_ = cm.Disconnect(context.Background())
+		// Bounded teardown so a discard-path disconnect cannot block forever if the
+		// SDK ignores cancellation of its already-cancelled root (MQTT-RES-3).
+		disCtx, disCancel := s.discardDisconnectContext()
+		_ = cm.Disconnect(disCtx)
+		disCancel()
 		return nil, nil, MapError(err)
 	}
 

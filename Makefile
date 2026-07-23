@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory test-failover-gate lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -277,6 +277,36 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 
 test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 MiB cgroup
 	@scripts/test-mqtt-ingress-memory.sh
+
+# TEST-1: promote a bounded, separate-OS-process, real-broker + real-DynamoDB
+# failover proof into the PR gate. Like test-mqtt-ingress-memory, this compiles
+# and runs a SINGLE longrunning-tagged test (not the whole hours-long suite) so
+# an outage-recovery regression is caught on every PR instead of only nightly.
+# TestUC3SeparateProcessFailover launches two real gobridge node processes that
+# compete for one DynamoDB exclusive lease, SIGKILLs the verified owner, and
+# asserts the standby reaches ServiceLevelFull with an advanced fencing version
+# within uc3FailoverSLO (~5s observed, 15s ceiling). Bounded to a few minutes.
+test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate-process MQTT failover proof (PR gate; requires Docker, -tags=longrunning)
+	@mkdir -p reports
+	@echo "Running bounded separate-process failover gate (TEST-1)..."
+	@echo "Report will be saved to: reports/test-failover-gate.log"
+	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=1.0 \
+	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=1.0 \
+	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=1.0 \
+		go test -count=1 -race -timeout 420s -v -tags=longrunning \
+			-run "^TestUC3SeparateProcessFailover$$" ./tests/longrunning/ 2>&1 | tee reports/test-failover-gate.log; \
+		rc=$${PIPESTATUS[0]}; \
+		echo ""; \
+		echo "========================================"; \
+		echo "  Test Report: reports/test-failover-gate.log"; \
+		echo "========================================"; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "FAILED tests:"; \
+			grep -E "^--- FAIL:" reports/test-failover-gate.log || true; \
+		fi; \
+		exit $$rc'
 
 # ============================================================================
 # Lint

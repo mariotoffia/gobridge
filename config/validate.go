@@ -95,10 +95,7 @@ func validateFailoverFields(ve *ValidationError, cfg *ports.BridgeConfig) {
 }
 
 func deploymentIsClustered(cfg *ports.BridgeConfig) bool {
-	if cfg.Bridge.DeploymentMode == "clustered" {
-		return true
-	}
-	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+	return ports.IsClusteredDeployment(cfg)
 }
 
 // validateClusterEndpoints rejects the copied-from-docs peer-membership shape of

@@ -41,6 +41,20 @@ type SessionOptions struct {
 	// QoS messages (see acl_session.go and scenario 08 / H-1). Empty means
 	// ClientID is used verbatim (the default).
 	ClientIDSuffix string `mapstructure:"client_id_suffix" yaml:"client_id_suffix,omitempty" json:"client_id_suffix,omitempty"`
+	// AssertStableClientIdentity is the operator's explicit assertion that the
+	// deployment identity backing client_id_suffix=hostname is STABLE across
+	// restarts (a StatefulSet pod or a VM), so a resumed Persistent session keeps
+	// its durable broker session and does not orphan queued QoS 1/2 messages.
+	//
+	// IDENTITY-1: session_mode=persistent + client_id_suffix=hostname is REJECTED
+	// at build time UNLESS this is true, because on a Kubernetes Deployment or ECS
+	// service every rollout mints a new hostname → new client_id → new broker
+	// session, stranding the previous session's queued messages until
+	// session_expiry_interval silently expires them (loss by timeout, invisible to
+	// the bridge). Setting this to true is the operator vouching for a stable-host
+	// profile; it does not make Deployment/ECS safe. Ignored for non-persistent
+	// modes and when the suffix is not "hostname".
+	AssertStableClientIdentity bool `mapstructure:"assert_stable_client_identity" yaml:"assert_stable_client_identity,omitempty" json:"assert_stable_client_identity,omitempty"`
 	// KeepAlive is the MQTT keep-alive interval in seconds. The registry
 	// decode path pre-fills the documented default (30) before decoding,
 	// so an omitted key gets 30 while an EXPLICIT `keep_alive: 0`

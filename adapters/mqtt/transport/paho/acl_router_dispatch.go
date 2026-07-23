@@ -23,9 +23,34 @@ func (r *router) dispatchLoop(ch <-chan dispatchItem, done chan struct{}) {
 	for {
 		select {
 		case <-r.stop:
+			r.drainDispatchOnStop(ch)
 			return
 		case item := <-ch:
 			r.dispatchAtEpoch(item.pub, item.ack, item.epoch, true)
+		}
+	}
+}
+
+// drainDispatchOnStop empties any publishes still queued in dispatchCh when the
+// worker stops, so a QoS 0 entry left buffered at close is metered rather than
+// vanishing silently (MQTT-OBS-1). Each entry's queue reservation is released;
+// a QoS 1/2 entry is deliberately left UNACKED so the broker redelivers it on
+// session resume (at-least-once), while a QoS 0 entry — which has no redelivery
+// — is counted on MetricMQTTRouterDropped so the close-time loss is observable.
+func (r *router) drainDispatchOnStop(ch <-chan dispatchItem) {
+	for {
+		select {
+		case item := <-ch:
+			if item.pub == nil {
+				continue
+			}
+			r.releaseQueueReservation(item.pub)
+			if item.pub.QoS == 0 {
+				r.dropCount.Add(1)
+				r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+			}
+		default:
+			return
 		}
 	}
 }

@@ -16,6 +16,12 @@ const (
 	MetricLeaseAcquireFailures = "LeaseAcquireFailures"
 	MetricLeaseExpiries        = "LeaseExpiries"
 	MetricLeaseTransfers       = "LeaseTransfers"
+	// MetricBrokerHealthStepDown counts step-downs an active exclusive owner
+	// initiated because its broker path stayed non-converged (disconnected / not
+	// re-subscribed) beyond the configured broker-health threshold, so a healthy
+	// standby can take over a node-local broker outage (CLUSTER-2). Only emitted
+	// when broker_health_step_down is configured (opt-in).
+	MetricBrokerHealthStepDown = "BrokerHealthStepDown"
 )
 
 // Outbox metric names.

@@ -112,10 +112,6 @@
 ./tests/integration/shared_outbox_e2e_test.go:752:	time.Sleep(300 * time.Millisecond) // ESSENTIAL: wait for stale claim threshold
 ./tests/longrunning/gap_broker_crash_test.go:136:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/gap_broker_crash_test.go:244:	time.Sleep(3 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/gap_goroutine_leak_test.go:105:		time.Sleep(3 * time.Second) // SYNC: let goroutines from cycle clean up
-./tests/longrunning/gap_goroutine_leak_test.go:107:		time.Sleep(500 * time.Millisecond) // OTHER: let finalizers run after GC
-./tests/longrunning/gap_goroutine_leak_test.go:96:	time.Sleep(3 * time.Second) // SYNC: let goroutines from warmup cycles clean up
-./tests/longrunning/gap_goroutine_leak_test.go:98:	time.Sleep(500 * time.Millisecond) // OTHER: let finalizers run after GC
 ./tests/longrunning/gap_processor_lifecycle_test.go:172:	time.Sleep(4 * time.Second) // ESSENTIAL: wait for circuit breaker ResetTimeout expiry
 ./tests/longrunning/gap_processor_lifecycle_test.go:183:		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
 ./tests/longrunning/gap_shutdown_edge_test.go:122:	time.Sleep(2 * time.Second) // SYNC: let final deliveries reach collector via MQTT
@@ -124,8 +120,6 @@
 ./tests/longrunning/longrunning_helpers_test.go:694:		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
 ./tests/longrunning/longrunning_test.go:472:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/longrunning/res_gap_validation_test.go:144:	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
-./tests/longrunning/res_gap_validation_test.go:265:	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
 ./tests/longrunning/uc27_failure_recovery_b_test.go:236:	time.Sleep(1 * time.Second) // SYNC: let goroutines clean up after shutdown
 ./tests/longrunning/uc27_failure_recovery_b_test.go:79:	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT

@@ -173,29 +173,34 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 
-		if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+		// HIGH-1 / MQTT-CORE-1: route the terminal decision through the single gate
+		// so a count-less source is capped by the bridge-owned ledger AND an
+		// uncountable adapter-generated identity (which the ledger cannot count) is
+		// sinked terminally on its first failure instead of recycling the source
+		// session forever.
+		if _, over := r.replayCapReached(env); over {
+			poisonErr, category := r.replayCapPoison(env, rc, sendErr, "max_retries")
 			if logging.DebugEnabled(r.logger) {
-				r.logger.Log(ctx, logging.LevelDebug, "max replay attempts exceeded in direct_hold",
+				r.logger.Log(ctx, logging.LevelDebug, "replay cap reached in direct_hold",
 					"route", r.routeID,
 					"envelope_id", env.ID(),
 					"receive_count", rc,
+					"category", category,
 					"max_replay_attempts", r.policy.MaxReplayAttempts,
 				)
 			}
-			poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
-				fmt.Sprintf("direct_hold: receive count %d >= max replay attempts %d", rc, r.policy.MaxReplayAttempts))
 			if r.dropOnPermanentFailure() {
 				// on_permanent_failure=drop, or no DLQ store: dropping is the
 				// only terminal option that honours the policy (retrying forever
 				// is the very poison loop the cap prevents). Count it so the loss
 				// is observable, never silent.
-				r.emitDrop("max_retries")
+				r.emitDrop(category)
 			} else {
 				if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
 					r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
 					return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 				}
-				r.emitDLQ("max_retries")
+				r.emitDLQ(category)
 			}
 			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 				Direction:   ports.DirectionEgress,
@@ -457,20 +462,38 @@ func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error
 		// outcome (success, poison/DLQ, drop) — a retried delivery uses del.Retry,
 		// not this path. Evicting the message from the bridge-owned replay ledger
 		// here keeps the ledger holding only keys for count-less messages still in
-		// their retry window. HIGH-4: a terminal settle also resets the
-		// consecutive-abandon circuit breaker, so it measures abandons WITHOUT an
-		// intervening resolution rather than a whole-lifetime total.
+		// their retry window.
 		//
-		// B3: both evictions happen ONLY after del.Ack SUCCEEDS. If the terminal
-		// Ack fails (a broker hiccup at settle) the source redelivers a message we
-		// already DLQ'd; forgetting it first would let the redelivery re-enter at
-		// count 0, earn a fresh MaxReplayAttempts budget, and write a SECOND DLQ
-		// entry (repeating while Ack keeps failing). Keeping the entry until the
-		// settle actually lands means the redelivery is immediately re-capped.
+		// CORE-RES-2: the abandoned-processor breaker is NO LONGER reset here. It now
+		// counts OUTSTANDING abandoned goroutines (decremented when each finally
+		// returns via the chain's done hook), so a terminal settle must not zero it —
+		// a genuine leak that persists across settles must stay counted.
+		//
+		// B3: eviction happens ONLY after del.Ack SUCCEEDS. If the terminal Ack fails
+		// (a broker hiccup at settle) the source redelivers a message we already
+		// DLQ'd; forgetting it first would let the redelivery re-enter at count 0,
+		// earn a fresh MaxReplayAttempts budget, and write a SECOND DLQ entry
+		// (repeating while Ack keeps failing). Keeping the entry until the settle
+		// actually lands means the redelivery is immediately re-capped.
 		r.forgetReplayAttempts(del.Envelope())
-		r.resetAbandonedProcessors()
 	}
 	return err
+}
+
+// storeOpContext bounds a single outbox-store operation (QueryPending, Persist)
+// so a black-holed store call — an endpoint that accepts the connection then
+// never responds after a mid-exchange black-hole — cannot pin route in-flight
+// capacity indefinitely (STORE-1). The bound reuses SendTimeout: an outbox
+// Query/Persist is a dependency call of the same class as a send, and a resulting
+// context.DeadlineExceeded flows through the existing transient retryOrFallback
+// path so it is retried/supervised rather than hanging forever. The caller MUST
+// invoke the returned cancel.
+func (r *RouteRunner) storeOpContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := r.policy.SendTimeout
+	if d <= 0 {
+		d = routing.DefaultSendTimeout
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 // retryDelivery wraps del.Retry so OnAck observes the result.
@@ -599,10 +622,27 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 // the DLQ write itself failed, in which case the delivery is left unsettled and
 // routed through retryOrFallback so the source redelivers rather than silently
 // dropping a poison message that could not be persisted.
+// replayCapPoison builds the poison BridgeError and the drop/DLQ metric category
+// for a message reaching a terminal replay decision. A numeric cap hit keeps the
+// caller's category and a "receive count N >= max" reason. An UNCOUNTABLE
+// redelivery (MQTT-CORE-1) — reached below the numeric cap because its
+// adapter-generated identity cannot be counted — is retagged "unstable_identity"
+// with an honest reason, so the DLQ record and metric never claim a receive-count
+// comparison that never held. Shared by every replay-cap sink so the two message
+// shapes stay consistent.
+func (r *RouteRunner) replayCapPoison(env *messaging.Envelope, rc int, cause error, numericCategory string) (*shared.BridgeError, string) {
+	if rc < r.policy.MaxReplayAttempts && r.uncountableRedelivery(env) {
+		return shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
+			fmt.Sprintf("unstable_identity: count-less source supplies no stable redelivery identity; refusing to retry a failing message under max_replay_attempts=%d: %v",
+				r.policy.MaxReplayAttempts, cause)), "unstable_identity"
+	}
+	return shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
+		fmt.Sprintf("%s: receive count %d >= max replay attempts %d: %v", numericCategory, rc, r.policy.MaxReplayAttempts, cause)), numericCategory
+}
+
 func (r *RouteRunner) poisonReplayCapExceeded(ctx context.Context, del ports.Delivery, env *messaging.Envelope, rc int, cause error, category string) error {
 	attempts := rc + 1
-	poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
-		fmt.Sprintf("%s: receive count %d >= max replay attempts %d: %v", category, rc, r.policy.MaxReplayAttempts, cause))
+	poisonErr, category := r.replayCapPoison(env, rc, cause, category)
 
 	if r.dropOnPermanentFailure() {
 		r.emitDrop(category)
@@ -1032,7 +1072,9 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 			if r.depthCache.IsUnderCapacity(partitionKey) {
 				continue
 			}
-			pending, qErr := r.outboxStore.QueryPending(ctx, partitionKey, r.policy.MaxOutboxDepth+1)
+			qctx, qcancel := r.storeOpContext(ctx)
+			pending, qErr := r.outboxStore.QueryPending(qctx, partitionKey, r.policy.MaxOutboxDepth+1)
+			qcancel()
 			if qErr != nil {
 				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
 			}
@@ -1061,10 +1103,22 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, buildErr), buildErr)
 	}
 
-	persistErr := r.outboxStore.Persist(ctx, records)
+	pctx, pcancel := r.storeOpContext(ctx)
+	persistErr := r.outboxStore.Persist(pctx, records)
+	pcancel()
 	if persistErr != nil {
 		if errors.Is(persistErr, shared.ErrDuplicateRecord) {
 			return r.ackDelivery(ctx, del)
+		}
+		// STORE-1 × MQTT-CORE-1: a DeadlineExceeded from the bounded store-op
+		// context is an INFRASTRUCTURE timeout (a slow-but-healthy store), not a
+		// message-poison signal. It must NOT reach the replay-cap gate below, which
+		// would terminally DLQ/drop an UNCOUNTABLE (adapter-generated-identity) source
+		// on the first slow write — losing the message under OnPermanentFailure=drop
+		// even though the write is retryable. Route it to the transient path so the
+		// record is persisted when the store recovers (the source redelivers).
+		if errors.Is(persistErr, context.DeadlineExceeded) {
+			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, persistErr), persistErr)
 		}
 		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
 		// outbox persist would otherwise retry indefinitely. HIGH-1: the cap reads

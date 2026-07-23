@@ -55,8 +55,8 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

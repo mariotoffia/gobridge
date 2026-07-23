@@ -100,53 +100,40 @@ func (r *RouteRunner) markSendHung(binding string) {
 
 // --- route-level abandoned-processor circuit breaker (HIGH-4) ---------------
 
-// maxAbandonedProcessors is the number of processor-timeout abandons WITHOUT an
-// intervening terminal settle that trips the route circuit breaker. It is set
-// well above the default MaxReplayAttempts (5) so a SINGLE timeout-poison message
-// — which abandons one goroutine per retry then reaches the cap and is DLQ'd
-// (terminal ack resets the counter) — never trips it; only sustained
-// amplification with NO terminal resolution does. That is exactly the residual
-// HIGH-4 hazard when HIGH-1's ledger is defeated (an adapter minting an unstable
-// per-message identity so the cap never fires) or when MaxReplayAttempts is
-// configured to 0 (cap disabled): abandons then accumulate without a settle and
-// the breaker paves the route to a supervised restart that clears the leaked
-// goroutines.
+// maxAbandonedProcessors is the number of concurrently-OUTSTANDING processor
+// goroutines abandoned on a genuine timeout that trips the route circuit breaker.
+// It is set well above the default MaxReplayAttempts (5) so a SINGLE timeout-
+// poison message — which abandons one goroutine per retry then reaches the replay
+// cap and is DLQ'd — never trips it on its own IF those goroutines drain (honour
+// cancellation, even late); only genuinely-hung goroutines that never return
+// accumulate toward the ceiling.
 //
-// N4 — honest guarantee (this breaker is a SECONDARY defense, not the primary
-// one). Because resetAbandonedProcessors fires on EVERY terminal settle, the
-// counter measures abandons in a run of deliveries that all abandoned; interleaved
-// UNRELATED successful traffic resets it. So the breaker reliably bounds only:
-// (a) a single poison message's per-retry abandons, and (b) a back-to-back run of
-// abandoning deliveries with no successful settle between them. It does NOT bound
-// abandoned goroutines that accumulate WHILE unrelated messages keep succeeding
-// (each success zeroes the counter) — in that interleaved case the leaked
-// goroutines are still memory-safe (each writes only its own per-frame clone,
-// never merged) and the PRIMARY bound is HIGH-1's replay ledger, which caps the
-// count-less poison stream that produces the abandons in the first place; the pod
-// restart on a genuine breaker trip is the last-resort backstop. Upgrade path to a
-// breaker immune to interleaved success: track OUTSTANDING abandoned goroutines
-// (increment on abandon, decrement when the abandoned goroutine finally returns —
-// a chain hook that waits on the processor's done channel) and trip on the
-// concurrent count rather than the consecutive-since-settle count. That is a
-// larger change to the chain's abandon lifecycle (a new goroutine per abandon and
-// a paired inc/dec) and is deferred as the documented follow-up.
+// CORE-RES-2 — outstanding, not consecutive. The counter is now a true count of
+// LIVE abandoned goroutines: onProcessorAbandoned increments when a processor is
+// abandoned on timeout, and onProcessorReturnedFromAbandon decrements when that
+// goroutine finally returns (via the chain's done-channel hook). It is NO LONGER
+// reset on terminal settle, so interleaved successful traffic can no longer mask
+// an accumulating leak — a custom processor that ignores cancellation and never
+// returns keeps its slot counted until the breaker trips and a supervised restart
+// clears the leaked goroutines. A processor that merely runs slow but eventually
+// returns decrements itself, so it never trips the breaker.
 const maxAbandonedProcessors = 64
 
-// onProcessorAbandoned is the WithChainOnProcessorTimeout callback. It counts a
-// genuine processor-timeout abandon and wedges the route once the count of
-// abandons-since-the-last-terminal-settle crosses the ceiling. See
-// maxAbandonedProcessors for the honest scope of the guarantee (N4).
+// onProcessorAbandoned is the WithChainOnProcessorTimeout callback. It increments
+// the count of OUTSTANDING abandoned processor goroutines and wedges the route
+// once that live count crosses the ceiling (CORE-RES-2).
 func (r *RouteRunner) onProcessorAbandoned() {
 	if r.abandonedProc.Add(1) >= int64(maxAbandonedProcessors) {
-		_ = r.wedge(fmt.Errorf("%w (%d abandons without a terminal settle)", errProcessorWedged, maxAbandonedProcessors))
+		_ = r.wedge(fmt.Errorf("%w (%d abandoned processor goroutines outstanding)", errProcessorWedged, maxAbandonedProcessors))
 	}
 }
 
-// resetAbandonedProcessors clears the consecutive-abandon counter on a terminal
-// settle (ackDelivery), so the breaker measures abandons WITHOUT an intervening
-// terminal resolution rather than a route's whole-lifetime total.
-func (r *RouteRunner) resetAbandonedProcessors() {
-	r.abandonedProc.Store(0)
+// onProcessorReturnedFromAbandon is the WithChainOnProcessorReturned callback: an
+// abandoned processor goroutine finally returned, so decrement the outstanding
+// count (CORE-RES-2). Paired one-to-one with onProcessorAbandoned via the chain's
+// per-abandon done-channel waiter, so the counter cannot drift negative.
+func (r *RouteRunner) onProcessorReturnedFromAbandon() {
+	r.abandonedProc.Add(-1)
 }
 
 // --- bridge-owned replay ledger for count-less sources (HIGH-1) -------------
@@ -319,9 +306,46 @@ func (r *RouteRunner) effectiveAttempt(env *messaging.Envelope) int {
 // route policy's MaxReplayAttempts cap has been reached, so a count-less source
 // is capped by the bridge-owned ledger exactly as a count-bearing source is
 // capped by its native header.
+//
+// MQTT-CORE-1: a count-less source whose identity is ADAPTER-GENERATED (marked
+// messaging.HeaderGeneratedID) mints a fresh envelope id on every broker
+// redelivery, so the ledger count resets each time and the cap can never fire —
+// a deterministically-failing message would recycle the source session forever.
+// Such a message is uncountable, so any retry decision for it is treated as
+// already at the cap and it is sinked terminally instead of looping.
 func (r *RouteRunner) replayCapReached(env *messaging.Envelope) (int, bool) {
 	rc := r.effectiveAttempt(env)
-	return rc, r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts
+	if r.policy.MaxReplayAttempts > 0 && rc >= r.policy.MaxReplayAttempts {
+		return rc, true
+	}
+	return rc, r.uncountableRedelivery(env)
+}
+
+// uncountableRedelivery reports whether env is a count-less source that the
+// replay ledger cannot bound: it carries an ADAPTER-GENERATED identity
+// (messaging.HeaderGeneratedID) but no stable per-message key (dedup id /
+// idempotency key) and no native receive count. For such a message every broker
+// redelivery arrives with a fresh envelope id, so the ledger cannot accumulate
+// attempts and MaxReplayAttempts never fires (MQTT-CORE-1). Only enforced when a
+// finite cap is configured: MaxReplayAttempts<=0 means the operator explicitly
+// opted into unbounded retry, so it is honoured. A count-bearing source, or one
+// carrying a stable dedup/idempotency key, is countable and never matches.
+func (r *RouteRunner) uncountableRedelivery(env *messaging.Envelope) bool {
+	if r.policy.MaxReplayAttempts <= 0 {
+		return false
+	}
+	if env == nil || receiveCount(env) > 0 {
+		return false
+	}
+	h := env.Headers()
+	if v, ok := messaging.GetHeaderString(h, messaging.HeaderDeduplicationID); ok && v != "" {
+		return false
+	}
+	if v, ok := messaging.GetHeaderString(h, messaging.HeaderIdempotencyKey); ok && v != "" {
+		return false
+	}
+	_, generated := messaging.GetHeaderString(h, messaging.HeaderGeneratedID)
+	return generated
 }
 
 // recordReplayAttempt records one more attempt for a COUNT-LESS source so the cap

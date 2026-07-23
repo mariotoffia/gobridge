@@ -20,6 +20,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -155,15 +156,18 @@ func TestNewSession_WarnsOnPersistentCleanStart(t *testing.T) {
 	assert.NotContains(t, buf.String(), "clean_start=true on a persistent session")
 }
 
-// MQTT-F3: persistent mode + client_id_suffix=hostname strands broker-side
-// queues on every Deployment/ECS rollout (new hostname → new client_id →
-// orphaned session). The factory must warn at build time.
-func TestFactory_WarnsOnPersistentHostnameSuffix(t *testing.T) {
+// IDENTITY-1 (supersedes MQTT-F3): persistent mode + client_id_suffix=hostname
+// strands broker-side queues on every Deployment/ECS rollout (new hostname → new
+// client_id → orphaned session). A startup warning is not an admission boundary,
+// so the factory now REJECTS the combination unless the operator explicitly
+// asserts a stable-host profile via assert_stable_client_identity.
+func TestFactory_RejectsPersistentHostnameSuffixWithoutAssertion(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	factory := NewFactory(logger)
 
-	session, err := factory.NewSession(t.Context(), ports.SessionSpec{
+	// Rejected without the assertion.
+	_, err := factory.NewSession(t.Context(), ports.SessionSpec{
 		ID:          "f3-session",
 		SessionMode: connectivity.SessionPersistent,
 		Config: &Config{Session: SessionOptions{
@@ -172,13 +176,27 @@ func TestFactory_WarnsOnPersistentHostnameSuffix(t *testing.T) {
 			ClientIDSuffix: ClientIDSuffixHostname,
 		}},
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	require.Error(t, err, "persistent + hostname must be rejected without an explicit stable-identity assertion (IDENTITY-1)")
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 
-	assert.Contains(t, buf.String(), "client_id_suffix=hostname",
-		"persistent + hostname suffix must warn about Deployment/ECS identity churn (MQTT-F3)")
-
+	// Admitted (with a warning) once the operator asserts a stable-host profile.
 	buf.Reset()
+	session, err := factory.NewSession(t.Context(), ports.SessionSpec{
+		ID:          "f3-asserted",
+		SessionMode: connectivity.SessionPersistent,
+		Config: &Config{Session: SessionOptions{
+			BrokerURLs:                 []string{"tcp://192.0.2.1:1883"},
+			ClientID:                   "f3a",
+			ClientIDSuffix:             ClientIDSuffixHostname,
+			AssertStableClientIdentity: true,
+		}},
+	})
+	require.NoError(t, err, "the explicit assertion must admit the combination")
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	assert.Contains(t, buf.String(), "assert_stable_client_identity=true",
+		"an admitted persistent+hostname session must still warn it is unsafe on Deployment/ECS")
+
+	// Ephemeral never resumes broker state, so it is unaffected (no rejection).
 	ephemeral, err := factory.NewSession(t.Context(), ports.SessionSpec{
 		ID:          "f3-ephemeral",
 		SessionMode: connectivity.SessionEphemeral,
@@ -190,8 +208,6 @@ func TestFactory_WarnsOnPersistentHostnameSuffix(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ephemeral.Close(context.Background()) })
-	assert.NotContains(t, buf.String(), "client_id_suffix=hostname",
-		"ephemeral sessions do not resume broker state; no warning")
 }
 
 // admitRecordingBreaker provides BOTH the legacy pair and the
