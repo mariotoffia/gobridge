@@ -105,6 +105,7 @@ const (
 	ErrCodeRolloutNotCommittable  ErrorCode = "ROLLOUT_NOT_COMMITTABLE"
 	ErrCodeRolloutTerminal        ErrorCode = "ROLLOUT_TERMINAL"
 	ErrCodeRolloutAckRejected     ErrorCode = "ROLLOUT_ACK_REJECTED"
+	ErrCodeRolloutDigestMismatch  ErrorCode = "ROLLOUT_DIGEST_MISMATCH"
 )
 
 // BridgeError is the structured error type for the bridge.
@@ -412,6 +413,14 @@ var (
 	ErrRolloutAckRejected = &BridgeError{
 		Code: ErrCodeRolloutAckRejected, Class: ErrorPermanent,
 		Message: "rollout ack/nack rejected",
+	}
+	// ErrRolloutDigestMismatch indicates that candidate config bytes fetched by
+	// a member do not match the digest recorded in the rollout row, or that the
+	// row carries no digest to verify against (F10). Permanent: the member
+	// Nacks rather than build unverified or substituted bytes.
+	ErrRolloutDigestMismatch = &BridgeError{
+		Code: ErrCodeRolloutDigestMismatch, Class: ErrorPermanent,
+		Message: "rollout candidate digest mismatch",
 	}
 )
 

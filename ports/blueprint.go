@@ -115,6 +115,14 @@ type BridgeSettings struct {
 // mode (config/validate.go: validateClusterEndpoints).
 type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	// Rollout selects the live-config-change strategy for this clustered
+	// deployment. Empty (default) keeps the legacy refuse-live-reconfig
+	// behavior (ADR 0012): a clustered node rejects any live config delta and
+	// requires whole-cohort replacement. "coordinated" opts into the
+	// coordinated rollout barrier (design cluster-config-rollout-protocol.md),
+	// which admits live-safe deltas across the cohort under a lease-elected
+	// coordinator. Full value validation lands with the admin/proposer API.
+	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 }
 
 // ShutdownTimeoutDuration parses the shutdown timeout string, falling back to

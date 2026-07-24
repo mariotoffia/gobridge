@@ -319,7 +319,7 @@ func isConditionFailed(err error) bool {
 
 func retryExhausted(op string) error {
 	return shared.ErrUnavailable.
-		WithMessage("dynamodbrollout: " + op + " exhausted optimistic-concurrency retries").
+		WithMessage("dynamodbrollout: "+op+" exhausted optimistic-concurrency retries").
 		With("retries", maxCASRetries)
 }
 

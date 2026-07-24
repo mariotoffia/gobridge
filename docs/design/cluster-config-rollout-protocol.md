@@ -355,19 +355,78 @@ this design it implements.
   including the concurrency races), race-clean, plus unit round-trip/decode and
   corruption fail-closed (unit + ddblocal) coverage.
 
-### Phase 3 — Orchestration (§6, §7, §8 classes)
+### Phase 3 — Orchestration logic + guard-lift (§6, §7, §8 classes) — ✅ CORE IMPLEMENTED
 
-- Supervisor applier: preflight → build-without-swap → Ack/Nack → swap on
-  `Committed`; node-side `(epoch, generation)` token check.
-- Coordinator: lease-elected, lock-delay, commit/abort. Guard lift behind
-  `cluster.rollout: coordinated`, live-safe deltas only.
-- Done: unit coverage for every failure row F1–F10 on fakes + `clocktest`.
+Delivered (all in `bridge/`, unit-tested on fakes + `clocktest`):
+
+- **Rollout classes (§8):** `classifyRolloutDelta` (live-safe vs
+  replacement-required) reuses the exact per-node reload preflights
+  (`durableSessionIdentityChanged`, `storeIdentityChanged`,
+  `leaseSessionIDChanged`, deployment-mode change, `destructiveReloadShape`),
+  so the coordinated path can never admit a delta the single-node path rejects.
+- **Config surface + opt-in:** `ports.ClusterConfig.Rollout` field;
+  `coordinatedRollout(cfg)` predicate (clustered ∧ `rollout: coordinated`).
+- **Guard lift (§6):** `classifyClusterReload` (proceed / refuse / coordinated)
+  wired into `Supervisor.apply`. Default stays fail-closed. A coordinated +
+  live-safe delta is recognized as coordinated-eligible (a distinct branch and
+  error message from the generic clustered refusal) but, because the barrier
+  drive is unwired (below), Phase 3 **fails it closed** — a visible
+  coordinated-specific error, running config kept, NOT a success-shaped deferral
+  that would silently drop the change. A replacement-required delta is refused
+  with its class reason. WithAllowDestructiveReload still never applies. When the
+  barrier lands (Phase 4), this branch drives it instead of erroring.
+- **Coordinator decision core:** `decideRollout` (F1 deadline, F2 nack, F6
+  membership-change; commit-before-deadline, membership-before-commit ordering)
+  + `coordinatorStep` (fenced observe→act: F3 resume, F5 stale-token handling,
+  F9 store-outage handling) + `firstSideEffectAllowed` lock-delay gate +
+  `rolloutCoordinator.elect/observe` (lease-elected, caller-driven like the
+  cluster `Locator`, so lock-delay is a pure predicate, no goroutine in tests).
+- **Applier units:** `candidateConfigDigest`/`verifyCandidateDigest` (F10,
+  `shared.ErrRolloutDigestMismatch`), `nodeRolloutGate` high-water (F7 +
+  late-push rejection), `evaluateProposal` (digest-first, then class → Ack/Nack).
+- **Failure matrix:** F1,F2,F3,F5(coordinator),F6,F7,F9,F10 covered by new
+  units; F4 + F5(store fencing) by the Phase-1 conformance suite
+  (`DoubleProposeConflicts`, `CommitStaleTokenRejected`); F8 by the reused
+  single-node post-swap convergence watch (`watchPostSwapConvergence` →
+  `ConfigDegraded`, §2 N5).
+
+Deferred to Phase 4 (**barrier-drive wiring** — needs the proposer and running
+goroutines, so its natural proof is integration, not unit):
+
+- **Coordinator `Run` loop:** the ticker goroutine that calls `elect` →
+  lock-delay → `observe` on a cadence, renewing the lease and releasing on
+  terminal; started when `coordinatedRollout(cfg)`. The logic it composes is
+  tested; the goroutine lifecycle (renew, ctx-cancel, release) is Phase-4
+  integration.
+- **Applier goroutine:** observe the rollout store (`ConsistentRead`), run
+  `evaluateProposal`, build-without-swap via `Builder.Plan`, `Ack`/`Nack`,
+  swap on `Committed` via `BuildPlan.Commit` (arming `watchPostSwapConvergence`
+  — F8), discard on `Aborted` via `BuildPlan.Close`. `nodeRolloutGate` guards
+  re-application.
+- **`nodeRolloutGate` persistence:** the high-water is in-memory today; make it
+  durable node state so a late push is rejected across a restart (F7's
+  re-adopt already works via the joiner rule / `AdoptValid`).
+- **Membership source (Q1):** `rolloutCoordinator` takes membership as an
+  injected `func() []string` (faked in units). Wire the real source (leaning
+  heartbeat rows); it MUST return **distinct** member IDs — `decideRollout`
+  compares live membership against the frozen epoch by set-equality.
 
 ### Phase 4 — Operator surface (§6 proposer, §8 config key, §9)
 
-- Admin config-txn API propose path; `config/validate.go` rules
-  (`coordinated` requires DDB source + rollout store); metrics + deep-health
-  `rollout` section.
+- Admin config-txn API propose path (writes candidate **inactive** to the
+  config source, stamps `candidateConfigDigest`, calls `Propose`).
+- `config/validate.go` rules (`coordinated` requires DDB source + rollout
+  store; reject `coordinated` + file/EFS).
+- Metrics (`ClusterRolloutState`/`Acks`/`Resolved`) + deep-health `rollout`
+  section.
+- **`reload.go` `onSwap` deferral messaging:** when the barrier drive lands and
+  once more produces a non-error "pending" outcome, distinguish it from the
+  admin-pause deferral — `reload.go` currently hardcodes "bridge paused by
+  admin" for every `Deferred` event, so add a deferral reason (e.g. a
+  `SwapEvent` field) so a coordinated-pending state is not misreported as a
+  pause. (Phase 3 sidesteps this by failing closed rather than deferring.)
+- Barrier-drive wiring listed under Phase 3 "deferred" above (coordinator
+  `Run`, applier goroutine, membership source, gate persistence).
 - Done: single-process integration tests (§10) — happy path + Nack abort.
 
 ### Phase 5 — Cluster proof (§10 long-running)

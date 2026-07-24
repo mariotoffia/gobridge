@@ -708,18 +708,48 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		return
 	}
 
-	// (2) Cluster guard: refuse the reload fail-closed when EITHER the applied OR
-	// the proposed config is clustered (entering and leaving a cohort are equally
-	// unsafe). A per-process reload has no cluster-wide version barrier or
-	// coordinated rollback, so a rolling live reload would split the cohort across
-	// config versions — require an externally coordinated whole-cohort
-	// stop/deploy/start (docs/runbooks/cluster-config-rollout.md). Deliberately NOT
-	// bypassable by WithAllowDestructiveReload: that escape hatch discards LOCAL
-	// durable backlog and cannot substitute for cluster consensus. Uses the SHARED
-	// IsClusteredDeployment predicate (bridge/convert.go) and reports through the
-	// EXISTING reload-failure paths (failure-tagged metric + failed SwapEvent), so
-	// the current runtime keeps serving unchanged. Not a no-op (checked above).
-	if IsClusteredDeployment(oldCfgForGuard) || IsClusteredDeployment(frozenCfg) {
+	// (2) Cluster guard (lifted for coordinated rollout — design
+	// cluster-config-rollout-protocol.md §6). The ADR 0012 refusal stays the
+	// DEFAULT: a clustered deployment refuses live reloads fail-closed, because a
+	// per-process reload has no cluster-wide version barrier or coordinated
+	// rollback. It is lifted ONLY when BOTH the applied and proposed configs opt
+	// into cluster.rollout: coordinated AND the delta is live-safe (§8); a
+	// replacement-required delta is still refused, now with its class reason.
+	// WithAllowDestructiveReload never applies (it discards LOCAL durable backlog
+	// and cannot substitute for cluster consensus). Not a no-op (checked above).
+	switch disp, reason := classifyClusterReload(oldCfgForGuard, frozenCfg); disp {
+	case clusterReloadCoordinated:
+		// A live-safe delta within a coordinated cluster is eligible for the
+		// coordinated rollout barrier, which will drive the all-member commit.
+		// That barrier drive (proposer + applier/coordinator goroutines) is a
+		// later phase and is NOT wired yet, so this build fails CLOSED rather than
+		// (a) swapping uncoordinated here — which would split the cohort — or
+		// (b) emitting a success-shaped Deferred event, which in-band appliers
+		// resolve as committed and which, unlike the paused path, records no
+		// desired config, silently DROPPING the change. Failing closed keeps the
+		// running config serving and surfaces a visible, coordinated-specific
+		// error. When the barrier lands, this branch drives it instead of erroring.
+		err := fmt.Errorf("bridge: coordinated cluster rollout is configured "+
+			"(cluster.rollout: coordinated) and this delta is live-safe, but the coordinated "+
+			"rollout barrier is not yet active in this build, so the live reload is refused and "+
+			"the current config keeps serving. Apply the change through the coordinated rollout "+
+			"operator surface when available, or perform a whole-cohort replacement "+
+			"(docs/runbooks/cluster-config-rollout.md) (attempted_config_version=%d)", frozenCfg.Version)
+		if s.logger != nil {
+			s.logger.Error("supervisor: coordinated cluster rollout configured but its barrier is not "+
+				"yet active; refusing the live-safe delta fail-closed (the running config keeps serving)",
+				"error", err, "attempted_config_version", frozenCfg.Version)
+		}
+		s.emitConfigReload(false)
+		if s.onSwap != nil {
+			s.safeOnSwap(SwapEvent{
+				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig: newCfg,
+				Error:     err,
+			})
+		}
+		return
+	case clusterReloadRefuse:
 		err := fmt.Errorf("bridge: refusing live reload of a clustered deployment: a per-process "+
 			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload "+
 			"would split the cohort across config versions. Externally coordinate a whole-cohort "+
@@ -727,6 +757,12 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); "+
 			"see docs/runbooks/cluster-config-rollout.md. WithAllowDestructiveReload does not apply "+
 			"(attempted_config_version=%d)", frozenCfg.Version)
+		if reason != "" {
+			// Coordinated cluster, but the delta is replacement-required: name the
+			// specific reason it cannot roll live even under coordinated rollout.
+			err = fmt.Errorf("%w; this delta is replacement-required and keeps the whole-cohort "+
+				"replacement procedure: %s", err, reason)
+		}
 		if s.logger != nil {
 			s.logger.Error("supervisor: refusing live reload of a clustered deployment; a per-process "+
 				"reload has no cluster-wide version barrier — coordinate an external whole-cohort "+
@@ -743,6 +779,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		}
 		return
 	}
+	// clusterReloadProceed: neither side clustered — continue to normal apply.
 
 	// MQTT and similar durable broker sessions are external stores. Changing or
 	// removing their identity can strand subscriptions and queued QoS messages,
