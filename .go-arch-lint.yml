@@ -199,6 +199,7 @@ components:
   adapter_store_native_sqlitedlq: { in: [adapters/native/store/sqlitedlq] }
   adapter_store_native_sqlitemanagedsubscriptions: { in: [adapters/native/store/sqlitemanagedsubscriptions] }
   adapter_store_aws_dynamodblease: { in: [adapters/aws/store/dynamodblease] }
+  adapter_store_aws_dynamodbrollout: { in: [adapters/aws/store/dynamodbrollout] }
   adapter_store_aws_dynamodboutbox: { in: [adapters/aws/store/dynamodboutbox] }
   adapter_store_aws_dynamodbdlq: { in: [adapters/aws/store/dynamodbdlq] }
   adapter_store_aws_dynamodbmanagedsubscriptions: { in: [adapters/aws/store/dynamodbmanagedsubscriptions] }
@@ -815,6 +816,9 @@ deps:
     mayDependOn: [domain_shared, ports]
     canUse: [sqlite, xsys_unix]
   adapter_store_aws_dynamodblease:
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
+    canUse: [aws]
+  adapter_store_aws_dynamodbrollout:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [aws]
   adapter_store_aws_dynamodboutbox:

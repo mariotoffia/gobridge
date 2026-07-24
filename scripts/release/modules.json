@@ -13,6 +13,7 @@
     {"path": "adapters/aws/store/dynamodblease", "layer": 1},
     {"path": "adapters/aws/store/dynamodbmanagedsubscriptions", "layer": 1},
     {"path": "adapters/aws/store/dynamodboutbox", "layer": 1},
+    {"path": "adapters/aws/store/dynamodbrollout", "layer": 1},
     {"path": "adapters/aws/transport/sqs", "layer": 1},
     {"path": "adapters/azure/transport/servicebus", "layer": 1},
     {"path": "adapters/mqtt/transport/paho", "layer": 1},

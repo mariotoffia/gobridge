@@ -340,12 +340,20 @@ this design it implements.
 - Done: `ports/storetest.RunClusterRolloutStoreTests` (CAS races, stale
   token, ack-after-abort) green on the memory adapter.
 
-### Phase 2 — Durable store (§5 store invariants)
+### Phase 2 — Durable store (§5 store invariants) — ✅ IMPLEMENTED
 
 - `adapter_store_dynamodb_rollout` — conditional writes + `ConsistentRead`,
   idioms from `dynamodblease`; single-Region invariant stated in code docs.
+  Delivered as `adapters/aws/store/dynamodbrollout` (single-row + monotonic
+  `rev` optimistic-lock CAS; `attribute_not_exists(#pk)` for the fresh-propose
+  single-winner). Domain gained a reconstitution factory
+  (`persistence.RolloutSnapshot` / `Snapshot` / `RehydrateRollout`) so the
+  aggregate—not a parallel state machine—owns every invariant across a
+  serialize/reload round trip.
 - `.go-arch-lint.yml` component + `lint-arch-mapping-test.sh` sentinel.
-- Done: the same conformance suite green against DynamoDB Local.
+- Done: the same conformance suite green against DynamoDB Local (25/25,
+  including the concurrency races), race-clean, plus unit round-trip/decode and
+  corruption fail-closed (unit + ddblocal) coverage.
 
 ### Phase 3 — Orchestration (§6, §7, §8 classes)
 
