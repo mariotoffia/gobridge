@@ -21,6 +21,7 @@
     {"path": "adapters/native/store/memorydlq", "layer": 1},
     {"path": "adapters/native/store/memorylease", "layer": 1},
     {"path": "adapters/native/store/memoryoutbox", "layer": 1},
+    {"path": "adapters/native/store/memoryrollout", "layer": 1},
     {"path": "adapters/native/store/sqlitedlq", "layer": 1},
     {"path": "adapters/native/store/sqlitemanagedsubscriptions", "layer": 1},
     {"path": "adapters/native/store/sqliteoutbox", "layer": 1},

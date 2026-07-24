@@ -69,6 +69,11 @@ func TestErrorCodeToClass_IsAFunction(t *testing.T) {
 		shared.ErrOutboxNotInClaimedState,
 		shared.ErrOutboxAlreadyTerminal,
 		shared.ErrOutboxNotPending,
+		// cluster rollout aggregate state-machine
+		shared.ErrInvalidRolloutProposal,
+		shared.ErrRolloutNotCommittable,
+		shared.ErrRolloutTerminal,
+		shared.ErrRolloutAckRejected,
 	}
 
 	// The routing policy validators are the ONLY non-sentinel BridgeError

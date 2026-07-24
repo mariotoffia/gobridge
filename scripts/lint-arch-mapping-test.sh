@@ -60,6 +60,7 @@ expect adapter_transport_http          /adapters/http/transport
 expect adapter_store_native_memorylease   /adapters/native/store/memorylease
 expect adapter_store_native_memoryoutbox  /adapters/native/store/memoryoutbox
 expect adapter_store_native_memorydlq     /adapters/native/store/memorydlq
+expect adapter_store_native_memoryrollout /adapters/native/store/memoryrollout
 expect adapter_store_native_sqliteoutbox  /adapters/native/store/sqliteoutbox
 expect adapter_store_native_sqlitedlq     /adapters/native/store/sqlitedlq
 expect adapter_store_native_sqlitemanagedsubscriptions /adapters/native/store/sqlitemanagedsubscriptions

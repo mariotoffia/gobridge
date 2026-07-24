@@ -192,6 +192,8 @@ components:
   adapter_store_native_memoryoutbox:
     { in: [adapters/native/store/memoryoutbox] }
   adapter_store_native_memorydlq: { in: [adapters/native/store/memorydlq] }
+  adapter_store_native_memoryrollout:
+    { in: [adapters/native/store/memoryrollout] }
   adapter_store_native_sqliteoutbox:
     { in: [adapters/native/store/sqliteoutbox] }
   adapter_store_native_sqlitedlq: { in: [adapters/native/store/sqlitedlq] }
@@ -796,6 +798,8 @@ deps:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
   adapter_store_native_memorydlq:
     mayDependOn: [domain_routing, domain_shared, logging, ports]
+  adapter_store_native_memoryrollout:
+    mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
   adapter_store_native_sqliteoutbox:
     mayDependOn: [domain_clock, domain_persistence, domain_shared, logging]
     canUse: [sqlite]
