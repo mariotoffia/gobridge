@@ -61,9 +61,91 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 	validateFailoverFields(ve, cfg)
 	validateConnectLeaseBudget(ve, cfg)
 	validateClusterEndpoints(ve, cfg)
+	validateClusterRollout(ve, cfg)
 	validateClusteredExclusiveHTTPDirectHold(ve, cfg)
 
 	return ve
+}
+
+// rolloutModeCoordinated opts a clustered deployment into the coordinated
+// rollout barrier (docs/design/cluster-config-rollout-protocol.md §8). Any other
+// value keeps ADR 0012's refuse-live-reconfig behavior.
+const rolloutModeCoordinated = "coordinated"
+
+// rolloutModeRefuse is the explicit spelling of the default.
+const rolloutModeRefuse = "refuse"
+
+// validateClusterRollout admits a coordinated-rollout deployment only when its
+// barrier can actually function. Each rule below rejects a shape that would fail
+// LATER — at the first live reload, or worse, silently:
+//
+//   - An unknown bridge.cluster.rollout value must not silently mean "refuse".
+//     A typo ("cordinated") would leave an operator believing coordinated
+//     rollout is on while every change is refused.
+//   - coordinated on a NON-clustered deployment is meaningless: there is no
+//     cohort to coordinate, and the guard never consults the barrier.
+//   - coordinated REQUIRES a non-empty bridge.cluster.members roster. The roster
+//     is the membership epoch the barrier freezes at Propose and counts acks
+//     against (I2); with an empty epoch every ack set vacuously covers it, so the
+//     first coordinator observation would commit a config no member validated.
+//   - A duplicate member id is rejected rather than deduped: it means the roster
+//     was written by hand against a real cohort and one id is wrong, and the
+//     resulting epoch would be smaller than the operator believes — a barrier
+//     that commits without one node's ack.
+//
+// NOT checked here, deliberately: §2 N3's "coordinated requires the versioned,
+// CAS-capable config source (not file/EFS)" and "this node's member id appears
+// in the roster". Neither the source implementation nor this process's member id
+// is part of the blueprint — both are composition-root wiring — so the blueprint
+// validator cannot see them. They are enforced where they ARE visible: a root
+// that wires no rollout store makes coordinated mode fail closed on every reload
+// (bridge.proposeCoordinatedRollout), and the member-id membership check runs at
+// startup in the Supervisor's coordinated preflight.
+func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
+	c := cfg.Bridge.Cluster
+	if c == nil {
+		return
+	}
+	switch c.Rollout {
+	case "", rolloutModeRefuse:
+		return // today's behavior; the roster is unused
+	case rolloutModeCoordinated:
+	default:
+		ve.Addf("bridge.cluster.rollout: %q is not a valid value; use %q (the default: refuse every "+
+			"live reload of a clustered deployment, ADR 0012) or %q (coordinated rollout barrier). An "+
+			"unrecognised value must not be silently treated as %q",
+			c.Rollout, rolloutModeRefuse, rolloutModeCoordinated, rolloutModeRefuse)
+		return
+	}
+	if !deploymentIsClustered(cfg) {
+		ve.Addf("bridge.cluster.rollout: %q requires a clustered deployment (bridge.deployment_mode: "+
+			"clustered), because it coordinates a config change across a cohort; a standalone bridge "+
+			"reloads directly and has no cohort to coordinate", rolloutModeCoordinated)
+	}
+	if len(c.Members) == 0 {
+		ve.Addf("bridge.cluster.members: required and non-empty when bridge.cluster.rollout is %q. It "+
+			"is the cohort roster the rollout barrier freezes as its membership epoch and counts "+
+			"acknowledgements against; with an empty roster the barrier would be satisfied by ZERO "+
+			"acknowledgements and could commit a config no member validated. List every member id, "+
+			"e.g. members: [node-a, node-b, node-c]. NOTE: this is NOT bridge.cluster.endpoints, which "+
+			"advertises THIS instance's capability endpoints", rolloutModeCoordinated)
+		return
+	}
+	seen := make(map[string]struct{}, len(c.Members))
+	for i, id := range c.Members {
+		if id == "" {
+			ve.Addf("bridge.cluster.members[%d]: empty member id; every cohort member needs a stable, "+
+				"distinct id matching the id its process announces to the rollout barrier", i)
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			ve.Addf("bridge.cluster.members[%d]: duplicate member id %q. The roster is the membership "+
+				"epoch the barrier counts acknowledgements against, so a duplicate makes the cohort "+
+				"look smaller than it is and the barrier could commit without one member's "+
+				"acknowledgement", i, id)
+		}
+		seen[id] = struct{}{}
+	}
 }
 
 // deploymentIsClustered mirrors the bridge builder's clustered predicate

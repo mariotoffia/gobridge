@@ -1,12 +1,13 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
-Status: **partially implemented** — Phases 1–3 done (protocol state, durable
-store, orchestration logic + guard-lift); Phase 4 (operator surface) in progress;
-Phases 5–7 not started (§11). The barrier is NOT wired into any composition root,
-so shipped behavior is unchanged: a clustered deployment still refuses live
-reloads per ADR 0012. At ship time §12 is promoted to `docs/adr/0013-…` (ADRs
-here document shipped behavior only) and 0012 gains `Superseded by 0013`.
-Date: 2026-07-23 · Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
+Status: **partially implemented** — Phases 1–4 done (protocol state, durable
+store, orchestration logic + guard-lift, and the full barrier drive + operator
+surface); Phases 5–7 not started (§11). The barrier is NOT wired into any
+composition root, so shipped behavior is unchanged: a clustered deployment still
+refuses live reloads per ADR 0012. At ship time §12 is promoted to
+`docs/adr/0013-…` (ADRs here document shipped behavior only) and 0012 gains
+`Superseded by 0013`.
+Date: 2026-07-25 · Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
 `docs/runbooks/cluster-config-rollout.md` · Prior art & split-brain analysis:
 `cluster-config-rollout-research.md` (xDS, ZooKeeper reconfig, Raft, KRaft, K8s,
 NETCONF confirmed-commit, NSO, Paxos Commit, fencing theory — cited below)
@@ -148,14 +149,12 @@ Reused, unchanged:
 - **Coordinator election** — existing `ports.LeaseStore` on a well-known
   lease ID (`cluster/rollout-coordinator`); its `LeaseToken` is the fencing
   token passed to `Commit`/`Abort` (I3). No new election code.
-- **Membership** — the epoch snapshot at Propose comes from the validated
-  `cluster.endpoints` map (static) or, when endpoint auto-discovery is in
-  use, the same registry the lease `endpoints` maps already publish. The
-  design deliberately freezes membership at Propose (§7 F6).
-- **Config transport** — the DDB config source rows (existing CAS loader)
-  carry the candidate payload; the rollout row stores only digest+version.
-  Members fetch the candidate bytes from the config source and verify the
-  digest.
+- **Membership** — the epoch snapshot at Propose comes from the static
+  `cluster.members` roster (§8), frozen at Propose (§7 F6).
+- **Config transport** — the rollout row stores only digest+version; each
+  member's own config source delivers the candidate bytes and the digest is the
+  cross-member agreement check (§11 Phase 4 records why, and the joiner rule
+  that makes it safe).
 
 Adapters (Layer 3): `adapter_store_dynamodb_rollout` (DynamoDB, conditional
 writes — same idioms as `dynamodblease`), `adapter_store_memory_rollout`
@@ -235,7 +234,7 @@ Per-node preflight classifies the delta before Ack:
   a message pointing at the whole-cohort runbook. ADR 0012 continues to
   govern these.
 
-New config key (validated in `config/validate.go`):
+New config keys (validated in `config/validate.go`):
 
 <!-- docs-example: skip -->
 ```yaml
@@ -243,10 +242,14 @@ bridge:
   deployment_mode: clustered
   cluster:
     rollout: refuse | coordinated   # default: refuse (today's behavior)
+    members: [node-a, node-b]       # required when coordinated: the cohort roster
 ```
 
-`coordinated` additionally requires the DDB config source and a configured
-rollout store; the validator rejects `coordinated` + file/EFS source.
+`members` is the membership epoch the barrier freezes (F6) — NOT
+`cluster.endpoints`, which is this instance's capability map. `coordinated` also
+requires a versioned, CAS-capable config source and a wired rollout store; those
+are composition-root wiring, invisible to the blueprint validator, so a root that
+wires no rollout store makes every coordinated reload fail closed.
 
 ### 8.1 Confirm-window extension (Model B — opt-in, later phase)
 
@@ -373,132 +376,139 @@ Delivered (all in `bridge/`, unit-tested on fakes + `clocktest`):
 - **Config surface + opt-in:** `ports.ClusterConfig.Rollout` field;
   `coordinatedRollout(cfg)` predicate (clustered ∧ `rollout: coordinated`).
 - **Guard lift (§6):** `classifyClusterReload` (proceed / refuse / coordinated)
-  wired into `Supervisor.apply`. Default stays fail-closed. A coordinated +
-  live-safe delta is recognized as coordinated-eligible (a distinct branch and
-  error message from the generic clustered refusal) but, because the barrier
-  drive is unwired (below), Phase 3 **fails it closed** — a visible
-  coordinated-specific error, running config kept, NOT a success-shaped deferral
-  that would silently drop the change. A replacement-required delta is refused
-  with its class reason. WithAllowDestructiveReload still never applies. When the
-  barrier lands (Phase 4), this branch drives it instead of erroring.
+  wired into `Supervisor.apply`, default fail-closed. Phase 3 recognised a
+  coordinated + live-safe delta as eligible but, with the drive unwired, failed
+  it closed with a coordinated-specific error rather than a success-shaped
+  deferral that would silently drop the change. Phase 4 drives it instead.
 - **Coordinator decision core:** `decideRollout` (F1 deadline, F2 nack, F6
   membership-change; commit-before-deadline, membership-before-commit ordering)
-  + `coordinatorStep` (fenced observe→act: F3 resume, F5 stale-token handling,
-  F9 store-outage handling) + `firstSideEffectAllowed` lock-delay gate +
-  `rolloutCoordinator.elect/observe` (lease-elected, caller-driven like the
-  cluster `Locator`, so lock-delay is a pure predicate, no goroutine in tests).
-- **Applier units:** `candidateConfigDigest`/`verifyCandidateDigest` (F10,
-  `shared.ErrRolloutDigestMismatch`), `nodeRolloutGate` high-water (F7 +
-  late-push rejection), `evaluateProposal` (digest-first, then class → Ack/Nack).
-- **Failure matrix:** F1,F2,F3,F6,F7,F9,F10 covered by new units; F4 + F5
-  (post-decision store fencing) by the Phase-1 conformance suite
-  (`DoubleProposeConflicts`, `CommitStaleTokenRejected`); F5b is an accepted
-  residual pending the Phase-4 decision; F8 by the reused single-node post-swap
-  convergence watch (`watchPostSwapConvergence` → `ConfigDegraded`, §2 N5).
+  + `coordinatorStep` (fenced observe→act: F3 resume, F5 stale-token, F9 outage)
+  + `firstSideEffectAllowed` lock-delay gate + `rolloutCoordinator.elect/observe`
+  (caller-driven, so lock-delay is a pure predicate with no goroutine in tests).
+- **Applier units:** `candidateConfigDigest`/`verifyCandidateDigest` (F10),
+  `nodeRolloutGate` high-water (F7), `evaluateProposal` (digest-first → class).
+- **Failure matrix:** F1,F2,F3,F6,F7,F9,F10 covered by units; F4 + F5 by the
+  Phase-1 conformance suite; F8 by the reused single-node post-swap convergence
+  watch (`watchPostSwapConvergence` → `ConfigDegraded`, §2 N5).
 
-Deferred to Phase 4 (**barrier-drive wiring** — needs the proposer and running
-goroutines, so its natural proof is integration, not unit): the coordinator
-`Run` loop, the applier goroutine, `nodeRolloutGate` persistence, and the real
-membership source. All four are tracked in Phase 4's remaining list below;
-`decideRollout` compares live membership against the frozen epoch by
-set-equality, so whatever source lands MUST return **distinct** member IDs.
+Deferred to Phase 4: the coordinator `Run` loop, the applier goroutine, gate
+persistence, and the real membership source.
 
-### Phase 4 — Operator surface (§6 proposer, §8 config key, §9) — 🚧 IN PROGRESS
+### Phase 4 — Operator surface (§6 proposer, §8 config key, §9) — ✅ IMPLEMENTED
 
-Delivered so far:
+The barrier now drives end to end: a live-safe delta in a coordinated cohort is
+proposed, every member votes, a fenced coordinator decides, and members swap only
+on `Committed`. Delivered:
 
-- **Proposer half of the barrier (§6).** `bridge/rollout_barrier.go`:
-  `ClusterRolloutConfig` + `bridge.WithClusterRollout` (opt-in Supervisor
-  option), `rolloutBarrier.propose` (digest via `configCanonicalBytes` +
-  `candidateConfigDigest`), `joinActive` (disambiguates `ErrAlreadyExists`), and
-  membership resolution.
-- **Guard lift now drives the barrier (§6).** The `clusterReloadCoordinated`
-  branch in `Supervisor.apply` proposes the delta and DEFERS locally instead of
-  Phase 3's fail-closed error. It still fails closed on every path where the
-  delta could not be proposed (no barrier wired, unknown membership epoch, this
-  node outside its own epoch, a collision with a *different* in-flight rollout,
-  store error) — an unproposed delta is never reported as deferred, because an
-  in-band applier resolves a deferral as committed. `ErrAlreadyExists` is
-  success **only** after `Current` confirms the active rollout carries this
-  node's exact candidate digest (a peer won the create for the same delta).
-- **Cohort-shape deltas are replacement-required (§8).** `clusterShapeChanged`
-  adds `bridge.cluster.endpoints` and `bridge.cluster.rollout` to the
-  replacement-required class: both are self-referential — the roster IS the
-  membership epoch the barrier freezes (F6), and the mode selects whether a
-  member drives the barrier at all — so neither can be carried by the barrier.
-- **Deferral reason (§11 `reload.go` item).** `SwapEvent.DeferReason`
-  (`paused` | `rollout_pending`); `cmd/gobridge/reload.go` branches on it, so a
-  rollout hand-off is no longer reported as "bridge paused by admin".
-- **Q1 decided (membership authority):** the epoch comes from an injected
-  membership function, defaulting to the **static `bridge.cluster.endpoints`**
-  keys. Heartbeat rows are NOT introduced — they are a new subsystem with their
-  own TTL and failure modes, and nothing in this phase needs them. When endpoint
-  auto-discovery becomes a supported clustered shape, revisit with heartbeat
-  rows; until then a coordinated deployment must declare static endpoints (the
-  validator rule below must enforce this).
+- **Proposer (§6)** — `rollout_barrier.go`: `ClusterRolloutConfig` +
+  `WithClusterRollout`, `propose`, candidate staging, and `joinActive` (an
+  `ErrAlreadyExists` is success ONLY when `Current` confirms the active rollout
+  carries this node's exact digest and an epoch containing it). **Guard lift**,
+  extracted to `rollout_guard.go` (the housekeeping item): propose-and-defer,
+  failing CLOSED wherever the delta could not be proposed — an unproposed delta
+  is never reported as deferred, since an in-band applier resolves a deferral as
+  committed.
+- **Applier (§6)** — `rollout_applier.go`: observe → `evaluateProposal` →
+  build-without-swap via `Builder.Plan` → `Ack`/`Nack`; on `Committed` the local
+  swap runs through the normal apply path (`applyBarrierCommitted`), keeping the
+  hardened recover/converge behaviour (F8) instead of a parallel one. **Drive**
+  (`rollout_loop.go`): one goroutine per node ticking the applier and, for the
+  lease holder, the coordinator (`elect` → lock-delay → renew → fenced
+  `observe`), releasing the lease on orderly stop. `Run` stops the drive BEFORE
+  draining, so a committed swap cannot publish a runtime after shutdown.
+- **Startup gate** (`rollout_joiner.go`) — this node must be in its own roster
+  and must not boot onto a config the barrier has not committed. **Admission**:
+  `config/validate.go` rejects an unknown `rollout` value, `coordinated` without
+  a cohort, an empty roster, and duplicate/blank member ids.
+- **Observability (§9)** — `ClusterRolloutState` (one-hot gauge per state),
+  `ClusterRolloutAcks`/`Epoch`, `ClusterRolloutResolved` (counted once per
+  generation), and a `/deephealth` `rollout` section naming the epoch, who voted,
+  whether THIS member staged the candidate, and whether it actually applied it.
+- **Tests** — unit coverage of both halves, whole-barrier tests where one process
+  runs both, resilience tests for the transient-failure classifications, and an
+  integration suite driving happy path, nack→abort, and replacement-required
+  refusal against real DynamoDB.
 
-Remaining in this phase:
+#### Decisions this phase had to make
 
-- **Applier loop:** observe the rollout store (`ConsistentRead`), run
-  `evaluateProposal`, build-without-swap via `Builder.Plan`, `Ack`/`Nack`, swap
-  on `Committed` via `BuildPlan.Commit` (arming `watchPostSwapConvergence` — F8),
-  discard on `Aborted` via `BuildPlan.Close`, guarded by `nodeRolloutGate`.
-- **Coordinator `Run` loop:** ticker goroutine composing `elect` → lock-delay →
-  `observe`, plus lease renewal (`Renew` MUST NOT bump the fencing version),
-  `Release` on terminal/ctx-cancel, step-down on `shared.ErrStaleFencingToken`
-  (F5), and wiring `rolloutCoordinatorConfig.Membership` to the same static
-  `cluster.endpoints` source the proposer uses (Q1) — the two MUST agree or
-  `decideRollout` reads a membership change (F6) on every rollout.
-- **`nodeRolloutGate` persistence** — the high-water is in-memory, so a late
-  push is not rejected across a restart.
-- **First-decision fencing (F5b) — decide whether to close it.** Options: a
-  coordinator-claim write that stamps the live epoch on the rollout row before
-  any decision (closes F5b, costs one write per election), or accept the
-  residual and rely on the lock-delay. Accepting is defensible — every zombie
-  outcome is fail-safe — but the choice must be explicit, not inherited from an
-  overclaimed invariant.
-- **Candidate transport (§5) — OPEN DESIGN ITEM.** §5 has the proposer write the
-  candidate *inactive* to the config source, but the DynamoDB config source is
-  hardcoded to a single `current` slot
-  (`adapters/aws/config/dynamodb/loader.go`: `skCurrent`), so no inactive row
-  exists. Two options: (a) add a staged sort key + a small port so members fetch
-  candidate bytes by digest, or (b) let each member's own config watcher deliver
-  the candidate and rely on the rollout row's digest as the cross-member
-  agreement check. **(b) is cheaper but currently unsafe**: it writes `current`
-  before the barrier commits, so a member restarting after an *aborted* rollout
-  boots the aborted config while the cohort stays on the old one — the
-  mixed-version cohort G2 forbids, and a safety regression against today's
-  refusal. Choose (a), or (b) plus a joiner rule that pins boot to the last
-  committed generation, before the applier loop lands.
-- **Digest determinism across members — UNPROVEN.** Every member computes the
-  candidate digest itself, so the barrier only works if `configCanonicalBytes`
-  is byte-identical cohort-wide. It hashes `shared.RevealSecrets(cfg)`, so any
-  per-node difference in secret resolution or env interpolation yields a
-  different digest: the first proposer wins and every peer then Nacks (F10), so
-  every rollout aborts. Decide what is in the digest (revealed vs referenced
-  secrets) and prove it in Phase 5 before the applier ships.
-- **Applier must verify the digest BEFORE decoding** the candidate bytes
-  (`evaluateProposal`'s doc comment): its own check is a backstop, not the guard
-  against decoding tampered input.
-- **`config/validate.go` rules** — `coordinated` requires the versioned DDB
-  config source (reject file/EFS, §2 N3), a configured rollout store, and
-  non-empty static `bridge.cluster.endpoints` (the Q1 decision). Admission is
-  also where this node's member id must be required to appear in
-  `bridge.cluster.endpoints`; today that is only a runtime refusal in
-  `proposeCoordinatedRollout`, i.e. found at reload time, not at admission.
-- **Admin config-txn API propose path**; metrics (`ClusterRolloutState`/`Acks`/
-  `Resolved`) + deep-health `rollout` section; single-process integration tests
-  (§10 — happy path + Nack abort). Q3 (retain the last N aborted rollouts as an
-  audit trail vs overwrite) is decided here, with the admin read surface.
-- **Housekeeping:** `bridge/supervisor.go` is >2000 lines against the 500-line
-  project rule and this phase added ~110 to it; extract the cluster guard-lift
-  block when the barrier drive lands.
+- **Q1 RE-DECIDED — membership authority.** The original answer (keys of static
+  `bridge.cluster.endpoints`) was **wrong**: that key is THIS instance's
+  CAPABILITY map (`{http: …}`, validated to carry an `http` key), not a peer
+  roster, so every cohort would have frozen the epoch `["http"]` — a one-member
+  barrier committing on a single ack, i.e. no barrier at all. The roster is now
+  its own key, **`bridge.cluster.members`**; the member id is injected via
+  `WithClusterRollout.MemberID` because a cohort shares one config document
+  (`bridge.instance_id` is empty there so each task derives a unique runtime
+  identity). "This node is in its own roster" is therefore admitted at startup,
+  not by the blueprint validator.
+- **Candidate transport (§5) — option (b) for Phase 4, with a NAMED residual.**
+  Each member's OWN config watcher delivers the candidate; the rollout row's
+  digest is the cross-member agreement check; the proposer stages what it
+  proposed, and a booting member stages the document it booted so it can vote on
+  a rollout that later carries it. Option (a) was rejected as unnecessary
+  machinery given every member already receives the change. There are no
+  *fetched* candidate bytes, so "verify the digest before decoding hostile input"
+  is satisfied by construction. **But (b) is not fully closed** — see the
+  residual below. It is why the barrier stays unwired.
+- **Digest determinism — RESOLVED (was "UNPROVEN").** The digest covers
+  **revealed** secrets, which is safe because GoBridge performs NO per-node
+  interpolation on the config load path (a `shared.Secret` is a literal carried
+  in the document), so two members loading the same document canonicalise
+  identically. Pinned by a unit test; UC-CR7 is the multi-process proof.
+- **`nodeRolloutGate` persistence — NOT NEEDED.** The store admits one active
+  rollout and `Current` returns only the newest generation, so a stale generation
+  has no channel to a restarted node; re-adoption is caught by CONTENT, not by a
+  counter. A per-node durable write path would add failure modes and remove none.
+- **F5b — residual ACCEPTED, explicitly.** No coordinator-claim write: every
+  zombie outcome is fail-safe (a zombie Commit still needs the full ack barrier;
+  a zombie Abort keeps the old config serving), and `tick` renews the lease
+  BEFORE every observation, so a deposed coordinator steps down without deciding.
+- **Q3 — audit trail: overwrite, retaining the last.** One rollout row (active or
+  last-decided), readable via `Current`, `/deephealth`, and metrics. A ledger of
+  N past rollouts is a store-schema change with no consumer yet.
+- **Transient failures must not become permanent cohort outcomes.** A vote is
+  unretryable (I5) and one Nack aborts (F2), so a build failing on shutdown, a
+  throttled store, or an unavailable dependency ABSTAINS. Likewise a coordinator
+  does not step down on a transient renewal error (that costs a fresh lock
+  delay), and a failed post-commit swap retries boundedly before reporting.
 
-Until the applier and coordinator land, `WithClusterRollout` must not be wired
-in any composition root: a proposed rollout reaches no decision and expires at
-its TTL. Every outcome is fail-safe (no member swaps, the running config keeps
-serving), but the delta does not take effect. No composition root wires it
-today, so shipped behavior is unchanged — clustered live reload still refuses.
+#### BLOCKING residual — no last-committed artifact in the config source
+
+An adversarial review traced three reachable sequences that reduce to one missing
+fact. Under (b) the operator's change is durably in the config source **before**
+the barrier decides, and the source keeps only a `current` slot — so a member has
+no durable answer to "what should I be running?" independent of the rollout row:
+
+1. **Restart into the write→propose window.** The source holds the new document
+   and no rollout carries it yet, so the joiner rule (which refuses only what the
+   barrier explicitly did not commit) lets the member boot on it — alone.
+2. **A commit overwritten before every member observed it.** `Propose` replaces
+   the terminal row, so a member that had not yet ticked never sees the
+   generation it should have applied.
+3. **Restart after an abort.** The source still holds the rejected document, so
+   the joiner rule refuses the boot — correct and fail-closed, but it means the
+   cohort cannot replace an instance until an operator rolls the source back.
+   F1's "member rejoins on the old (still-committed) gen" is therefore **not
+   achievable** under (b) as written.
+
+Boot-staging removes the *permanent* deadlock in (1) and (2) — the member can now
+vote on the next rollout and converge — but a bounded mixed-version window
+remains, and (3) is a real availability cost. **Phase 5 must close this before
+the barrier is wired anywhere**, by giving the cohort a durable last-committed
+configuration artifact (option (a)'s staged/committed pair, or an equivalent).
+
+Second, smaller limitation: an Ack proves the candidate passes the wired
+`BlueprintValidator` and that this member can build its stores and runtime
+options; it does NOT cover the runtime's route-graph validation, which runs in
+the COMMIT phase. A coordinated deployment **must** therefore wire
+`config.Validate` — without one `Builder.Plan` trusts the input, so a dangling
+reference is acked by every member, committed, and then fails every member's swap
+(G2 still holds, since all members fail identically and recover the old config,
+but the change costs a cohort-wide failed swap rather than an abort).
+
+`WithClusterRollout` is wired by no composition root, so shipped behavior is
+unchanged — the file-based AWS root refuses clustered live reload per ADR 0012.
+Wiring it is Phase 6's ship step, gated on Phase 5.
 
 ### Phase 5 — Cluster proof (§10 long-running)
 
@@ -583,8 +593,8 @@ today, so shipped behavior is unchanged — clustered live reload still refuses.
 
 | Q | Question | Owned by | State |
 |---|---|---|---|
-| Q1 | Membership authority when `cluster.endpoints` is absent (heartbeat rows vs lease endpoints) | Phase 4 | **Decided:** static `cluster.endpoints` only; no heartbeat subsystem. Revisit when endpoint auto-discovery becomes a supported shape. Gossip views would stay advisory either way — the frozen list in the rollout row is the safety input |
+| Q1 | Membership authority | Phase 4 | **Decided (revised):** a dedicated static roster key `bridge.cluster.members`, plus an injected `MemberID`. The earlier answer — the keys of `cluster.endpoints` — was wrong: that key is this instance's CAPABILITY map, so the epoch would have been `["http"]`, a one-member barrier. No heartbeat subsystem. Revisit when endpoint auto-discovery becomes a supported shape; gossip views would stay advisory either way — the frozen list in the rollout row is the safety input |
 | Q2 | Rollout deadline default (`2 × convergence budget floor + member build budget` ≈ 5 min; NETCONF's confirmed-commit default is 600 s) | Phase 5 | Open — needs sizing against a real fleet, so it is measured on the UC-CR1 run |
-| Q3 | Retain `Aborted` rollouts as an audit trail, or overwrite on the next Propose? | Phase 4 | Open — leaning retain last N (IOS-XR keeps 100 commit IDs: a generation ledger, not a boolean), exposed via the admin API |
+| Q3 | Retain `Aborted` rollouts as an audit trail, or overwrite on the next Propose? | Phase 4 | **Decided:** overwrite, retaining the last. One row holds the active-or-last-decided rollout; its state, reason, and vote sets are exposed via `Current`, `/deephealth`, and the resolution counter. A ledger of N past rollouts is a store-schema change with no consumer yet |
 | Q4 | Strict all-ack (this design) vs Kafka-style "commit centrally, fence non-converged members out of serving" — our lease failover already *is* a fencing mechanism | Phase 7 | Deferred — strict-abort is simpler and matches the operator contract; the confirm window is the first thing that makes converged-vs-acked distinguishable. Revisit if cohorts grow beyond ~10 |
-| F5b | Fence the *first* coordinator decision (claim write), or accept the residual? | Phase 4 | Open — see §7 F5b |
+| F5b | Fence the *first* coordinator decision (claim write), or accept the residual? | Phase 4 | **Decided:** accept the residual. Every zombie outcome is fail-safe, and the coordinator renews its lease BEFORE each observation, so a deposed one steps down without deciding. Revisit with the confirm window (§8.1) |

@@ -1,373 +1,711 @@
-# PROD_READY_ISSUES — MQTT Transport Adversarial Review
+# PROD_READY_ISSUES — MQTT and Core Production Re-Audit
 
-**Date:** 2026-07-17
-**Scope:** `adapters/mqtt/transport/paho` (10,591 production LOC, 26 files) plus its consumption surface: `ports/` contracts, `bridge/`/`runtime/` supervision, lease/managed-subscription stores, `cmd/gobridge`, `Dockerfile`, `deployment/`, and all MQTT-related documentation (`docs/transports/mqtt.md`, ADRs 0003/0009/0010, runbooks, scenarios).
-**Method:** Adversarial multi-track review — six independent review tracks (message-loss/delivery guarantees, outage resilience, cluster/failover, runtime reconfiguration, documentation accuracy, container consumability), each required to construct concrete failure sequences with `file:line` evidence and to mark findings CONFIRMED (traced code path) vs PLAUSIBLE (suspicion without a complete trace). Findings were cross-verified against a direct read of the ingress/egress/session/reconcile core before inclusion. Evidence runs: full package unit-test suite under the race detector.
+**Date:** 2026-07-19
+**Target:** `3b5c78a8b97d` on `fix/mqtt-prod-ready-remediation`
+**Supersedes:** the 2026-07-17 contents of this file. That review drove substantial remediation; this report audits the remediated current HEAD rather than repeating the old verdict.
 
-Severity scale: `BLOCKER | HIGH | MEDIUM | LOW | NIT`. Categories follow `LANGUAGE.md`: correctness, security, architecture, resilience, observability, test-gap, maintainability, clarity.
+**Scope:** all production source under `adapters/mqtt/transport/paho`; the MQTT-facing paths through `bridge`, `config`, `validate`, `runtime`, `runtime/session`, `runtime/route`, `runtime/outbox`, `circuitbreaker`, and `ports`; the shipped AWS file-based composition root; module/release/container artifacts; MQTT documentation, ADRs, scenarios, runbooks, integration tests, and long-running tests.
+
+**Method:** four independent adversarial tracks covered MQTT source, runtime/cluster behavior, documentation/deployment, and test evidence. Cross-cutting findings were challenged by a second reviewer. Retained findings were then checked directly against current source. `CONFIRMED` means a complete reachable failure sequence was traced. `PLAUSIBLE` means the code permits the sequence but a required dependency behavior was not reproduced.
+
+Severity follows `LANGUAGE.md`: `BLOCKER | HIGH | MEDIUM | LOW`.
+
+**Assessment boundary:** production readiness is scored from runtime correctness,
+delivery guarantees, resilience, operability, cluster behavior, and documentation
+accuracy. Expected pre-release work such as cutting module tags and publishing the
+image is **not** evidence for or against production readiness. Release state is
+recorded separately only because consumability was part of the requested review.
 
 ---
 
 ## 0. Executive verdict
 
-**The MQTT transport core is among the most carefully engineered adapter code this reviewer has audited — and the product around it is not ready to ship.** Those are two different statements and both matter.
+**No: GoBridge MQTT does not yet meet the requested production runtime and HA requirements at this revision.**
 
-**What is genuinely production grade (verified, not taken on faith):** ack-after-durable-handoff with manual acknowledgment; covered-topic retention instead of ack-drop; epoch-guarded reconcile with applied-plan retry history; jittered forever-reconnect with takeover damping; fenced leases with local-deadline fail-closed step-down; every network operation bounded; race-detector suite green; 20+ regression pins showing prior findings were fixed at the root. The at-least-once claim **holds** for QoS 1/2 on persistent/exclusive sessions against a compliant broker — including across crashes, reconnects, and reloads.
+The MQTT adapter itself is strong: manual acknowledgement, bounded broker calls, authoritative subscription reconciliation, broker-session recovery, poison escape, ingress memory admission, and explicit loss/duplicate metrics are unusually well engineered. Most adapter defects from the previous review are fixed and regression-pinned.
 
-**What blocks production, ranked:**
+The production-readiness verdict remains negative for concrete reasons:
 
-1. **Packaging (BLOCKER — MQTT-C1/C2/C3):** `go get` fails (replace directives, no module tags), the production binary is unpublished/AWS-only, and shipped artifacts have no metrics on non-AWS platforms. The release procedure exists in `RELEASE.md`; it has never been executed.
-2. **Reload false-success (HIGH — MQTT-R1):** a syntactically-valid-but-broker-invalid config takes down a working transport and reports green. Requires a post-swap health barrier or at minimum an applied-but-not-converged signal.
-3. **Poison loop (HIGH — MQTT-L1):** any authorized publisher can permanently kill a session (and head-of-line-block its broker queue) with one spec-compliant publish exceeding a local cap. Needs ack-and-DLQ or a documented escape.
-4. **Failover defaults (HIGH — MQTT-F1/F2):** the 30–60 s requirement is met only with explicit tuning + `failover_slo`; defaults deliver ~336 s (HA profile) and nothing warns unless the SLO is declared.
-5. **Identity/topology traps (HIGH — MQTT-F3, MEDIUM — F4/C5):** Persistent mode + hostname suffix silently strands broker queues on every Deployment rollout; standalone split-brain is warn-only; plain-K8s HA has no store backend.
-6. **Observability edges (MEDIUM — MQTT-L2/L4/L5):** one loss path mislabeled as benign, one fully silent drop branch, one silent duplicate window that falsely clears the unsettled gauge.
-7. **Documentation (HIGH — DOC1/DOC2, MEDIUM — DOC3/DOC6):** reference docs are excellent and accurate; the troubleshooting page contains two factual errors in its most important entry, and the three "stuck until operator acts" states have no runbooks.
+1. **A count-less MQTT poison message can evade `max_replay_attempts` forever.** Fresh envelope IDs on each broker redelivery reset the runtime replay ledger.
+2. **The shipped AWS bootstrap does not provide truthful reload convergence.** A valid-but-broker-rejected config can replace a healthy runtime and be acknowledged as applied without the generic Supervisor's `ConfigDegraded` convergence watch.
+3. **One clustered configuration spelling bypasses MQTT replica-safety validation.** Static `cluster.endpoints` activates clustered runtime behavior without activating the validator's shared-subscription and identity checks.
+4. **The shipped bootstrap leaks a newly built runtime when late `Start` fails.**
+5. **Exclusive failover does not react to an active node's broker-only outage.** The node keeps renewing its lease while MQTT reconnects forever; a healthy standby cannot take over.
+6. **The default exclusive failover budget is about 336.5 seconds, not 30–60 seconds.** A 49-second computed lease-loss profile is possible only with explicit tuning and does not cover broker-path failure.
+7. **Cluster-wide live reconfiguration is deliberately unsupported.** Per-process clustered reload is refused; safe replacement is an external whole-cohort procedure, not a runtime guarantee.
 
-**Answers in one line each:** Production ready — conditional (adapter yes, product no). Docs production ready — conditional (reference yes, troubleshooting/runbooks no). Zero bugs — no (8 confirmed code defects, all edge-path). Cluster — yes for exclusive-lease active/standby (AWS only) and ephemeral+$share scale-out. Resilient to outages — yes, confirmed. Message loss — none for durable QoS 1/2 with shipped delivery modes; QoS 0 by contract; three observability gaps. Easy container consumption — process yes, packaging no. Live reconfigure — controlled restart, not hitless; one false-success gap. Cluster reconfigure — deliberately refused; whole-cohort runbook instead. 30–60 s failover — configurable yes, default no.
+`make lint` and `make test` are green. That establishes build, static-check, unit, race, and timing-audit health; it does not prove production readiness or zero bugs. The strongest process-failover, chaos, and leak tests are scheduled/manual, use compressed timings, or only log observations.
 
-**Suggested order of attack:** (1) run the release train (unblocks everything downstream); (2) MQTT-R1 post-swap barrier; (3) MQTT-L1 poison escape + runbook; (4) always-on failover-budget disclosure; (5) the three metric one-liners (L4/L5 + L2 reclassification); (6) troubleshooting.md corrections + missing runbooks; (7) `doc.go` rewrite + file splits (D1/D2).
+### Direct answers
 
----
-
-## 1. Evidence collected
-
-| Evidence | Result |
+| Question | Answer |
 |---|---|
-| `go test -race -count=1 ./...` in `adapters/mqtt/transport/paho` | **PASS**, 0 failures, 34.8 s (`reports/mqtt-paho-race-test.log`) |
-| Regression-pin inventory | 20+ `bug_*_test.go` files pin previously found lifecycle/reconcile/overflow bugs; inline code comments carry finding IDs (A-1…A-12, F-1…F-6, HIGH-1/3, M-1…M-4, blocking-#1/2/4, C4/C7), indicating multiple prior review rounds have been folded into code and tests |
-| Delivery-guarantee design | Manual acknowledgment (`EnableManualAcknowledgment`): PUBACK/PUBCOMP fires only on `Delivery.Ack` after durable handoff (`delivery.go`, `doc.go`) — true ack-after-durable-handoff for QoS 1/2 on persistent/exclusive sessions |
-| Loss observability | Every identified drop path is metered: `MQTTRouterUnmatchedDropped` (orphan cleanup), `MQTTRouterCoveredDropped` (covered QoS 0 overflow), `MQTTRouterCoveredRetained` (retained, NOT lost), `MQTTRouterOverflowDropped` (broker protocol violation), `MQTTRouterStalePurged` (reconnect purge; QoS 1/2 redelivered), `MQTTRouterDropped` (QoS 0 best-effort), `MQTTEventDropped` (lifecycle event eviction) — `metrics.go:1-140` |
+| Is the code production ready? | **No overall.** The MQTT adapter is conditionally production-grade, but the cross-scope replay defect, bootstrap apply defects, cluster validation mismatch, and unresolved deployment constraints block an unconditional claim. |
+| Is the documentation production ready? | **No.** The MQTT reference is strong, but it overstates the count-less `direct_hold` retry cap, several operator states lack matching runbook/alarm coverage, and pre-release image instructions are incorrectly written as already published. |
+| Do we have zero bugs? | **No.** Zero bugs cannot be proven, and this audit confirms reachable defects. |
+| Can this run in a cluster? | **Conditionally.** Ephemeral `$share` scale-out works with unique replica identities. Exclusive active/standby works with a distributed lease/store backend; DynamoDB is the only shipped production backend. Static-endpoint clustering currently has a validation hole. |
+| Is it resilient to outages and can it recover? | **Partially.** Broker reconnect, subscription reconciliation, config-source retry, and lease fail-closed behavior are strong. Broker-only failure on the active owner does not trigger standby takeover; non-converging AWS applies do not roll back; hostile context-ignoring plugins can leak goroutines. |
+| Do messages get lost, and is loss reported? | **QoS 1/2 durable ingress is at-least-once, not exactly-once.** Most deliberate loss is documented and metered. QoS 0, ephemeral reload windows, broker queue expiry, poison rejection, volatile raw egress, and unstable deployment identity remain loss cases. One close-time QoS 0 drop path is unmetered. |
+| Is it easy to consume as a standard process in Docker/Kubernetes/ECS? | **Conditional from source.** The image builds and runs locally as non-root and the ECS composition is concrete. The shipped process is AWS-bound; non-AWS users need a custom composition root. Publishing tags/image at release is expected release work and is not scored as a production-readiness defect. |
+| Can a single instance be reconfigured safely while running? | **Generic Supervisor: conditional. Shipped AWS process: no production claim.** Reload is a stop/rebuild/start window, not hitless. The generic path later reports non-convergence; the AWS bootstrap can report false success and leak failed candidates. |
+| Can the cluster be reconfigured safely while running? | **No in-process cluster transaction exists.** Clustered live reload is refused. The documented safe path is an externally coordinated whole-cohort replacement. |
+| Does cluster failover complete in configurable 30–60 seconds? | **Only for a tuned lease/owner-loss case, not generally.** The computed tuned example is 49 seconds. Defaults are about 336.5 seconds. Broker-only active-node failure does not fail over, and no production-like test asserts a 30–60 second objective. |
+
+### Production decision
+
+**Decision: NO-GO for production deployment based only on the runtime, HA, and operability findings below.**
+
+Minimum production-readiness gates:
+
+1. Fix MQTT replay identity/capping for count-less producer traffic.
+2. Make the shipped bootstrap use the Supervisor's preflight, cleanup, and convergence semantics, or remove live-reload claims from that process.
+3. Unify clustered detection in validation and runtime composition.
+4. Define and implement broker-health-driven lease step-down if broker-path failover is part of the product SLO.
+5. Reject unsafe Persistent+hostname deployment identity or require an explicit stable-host assertion.
+6. Add a PR-gated, separate-process, real-broker failover proof with an asserted configured SLO.
+7. Close the known goroutine-growth baseline before claiming lifecycle stability.
 
 ---
 
-## 2. Directly verified findings (reviewer's own read)
-
-### MQTT-D1 — `doc.go` contradicts the router on covered-topic handling past grace
-`adapters/mqtt/transport/paho/doc.go:52-59` MEDIUM clarity CONFIRMED: the package doc says a still-desired (covered) topic whose handler registers late past the grace window is subject to "(ack-and-drop still applies)". The code does the opposite — and the opposite is correct: `acl_router.go:881-888` (`settleUnmatched`) RETAINS covered publishes un-acked (`retainCovered`, HIGH-1 semantics), and `metrics.go:68-75` states covered QoS 1/2 is "NEVER" ack-dropped. Only true orphans are acked-and-dropped.
-**Impact:** an operator reading `doc.go` concludes slow-starting routes lose QoS 1/2 messages after 30 s; they do not. Doc drift in the safety-critical direction (claims worse behavior than reality) — still a trust defect in the primary package contract.
-**Fix:** rewrite `doc.go` startup-buffering bullet to match `settleUnmatched`/`retainCovered` semantics: covered ⇒ retained un-acked; orphan ⇒ ack-drop + unsubscribe; covered QoS 0 overflow ⇒ best-effort drop.
-
-### MQTT-D2 — Five files violate the repo's own 500-line hard limit
-MEDIUM maintainability CONFIRMED: the project rulebook (user-level CLAUDE.md: "Length of a code file must never exceed 500 lines") is exceeded by: `acl_router.go` (2096), `config.go` (1298), `session_lifecycle.go` (1169), `session_reconcile.go` (1118), `acl_session.go` (618).
-**Impact:** the two largest files are also the highest-risk concurrency cores (router dispatch/settlement; reconcile state machine). Size makes the documented lock-order rules (`r.mu` vs `s.mu` vs `reloadGate`) harder to hold in one head; the bug-pin history shows this is exactly where regressions cluster.
-**Fix:** mechanical split along existing seams (router: dispatch / pending-buffer / settlement / stats; config: options / validation / defaults). No behavior change.
-
-### MQTT-D3 — Ack issued after a reconnect silently reports success
-`adapters/mqtt/transport/paho/acl_router.go:1109-1122` + `delivery.go:33-36` LOW correctness (documented residual) CONFIRMED: when a delivery settles after the underlying connection cycled, `client.Ack` returns `ErrPacketNotFound` and the adapter maps it to **success** — the broker will redeliver, and the duplicate must be absorbed downstream.
-**Impact:** correct at-least-once behavior, but it means `Delivery.Ack == nil` does NOT mean "broker slot freed", and duplicate volume after reconnect storms is invisible at this layer (no dedicated metric for `ErrPacketNotFound`-mapped acks).
-**Fix (optional hardening):** count these as `MQTTAckAfterReconnect` (or a tag on an existing counter) so operators can correlate duplicate floods with reconnects.
-
-### MQTT-D4 — QoS 0 loss vectors are inherent, deliberate, and all metered
-LOW resilience (accepted design) CONFIRMED: QoS 0 can be dropped at four points — dispatch-queue full under flood (`acl_router.go:1250-1258`), pending-buffer overflow during grace (`bufferLocked`), eviction to make room for QoS 1/2 (`evictOldestQoS0Locked`), stale purge on reconnect (`purgeStalePendingLocked`). All are counted; `doc.go:77-85` documents the QoS 0 flood ceiling as a deliberate trade-off ("prefer QoS 1 for traffic that matters").
-**Impact:** none for correctly configured routes; operational requirement is alerting on `MQTTRouterDropped`/`MQTTRouterCoveredDropped`.
-
-### MQTT-D5 — Durable modes forbid multi-broker failover URLs (by design; must be understood for HA)
-`adapters/mqtt/transport/paho/config_identity.go:15-42` MEDIUM architecture CONFIRMED: `ValidateSessionMode` rejects Persistent/Exclusive sessions configured with more than one canonical broker endpoint — durable managed-subscription history is keyed to a single broker-session domain. Multi-URL failover is only available to Ephemeral sessions.
-**Impact:** broker-level HA for durable MQTT sessions must come from a broker cluster behind one stable endpoint (DNS/LB), not from client-side URL lists. Not a bug — but a hard deployment constraint that must be prominent in the docs' HA guidance.
-
-### MQTT-D6 — Ingress poison / oversize packet fail-closes the whole session
-`adapters/mqtt/transport/paho/ingress_conn.go:295-305`, `session_lifecycle.go:273-291` LOW resilience PLAUSIBLE (loop bounded by broker compliance): an inbound packet exceeding `max_payload_bytes`/metadata caps latches the session terminal (`transitionTerminal`), the supervisor restarts it, and with `clean_start=false` a broker could redeliver the same oversize QoS 1/2 publish → repeated terminal/restart cycle. The CONNECT packet advertises Maximum Packet Size, so a spec-compliant broker never delivers the oversize packet — the loop is reachable only with a non-compliant broker.
-**Impact:** correct fail-closed posture; residual risk is a restart loop against a broken broker, which is observable (`MQTTRouterDropped` + terminal error events) but has no dedicated runbook entry.
-
----
-
-## 3. Consumability in container platforms (Docker / Kubernetes / ECS)
-
-All findings below were independently re-verified against the repo (tags, go.mod files, Dockerfile, bootstrap sources) before inclusion.
-
-### MQTT-C1 — Library/binary consumption via `go get` is broken at this revision
-`RELEASE.md:7-12`, `adapters/mqtt/transport/paho/go.mod:21-23`, `cmd/gobridge/go.mod` (13 `replace` entries) **BLOCKER architecture CONFIRMED**: every published module carries relative `replace` directives and `v0.0.0` requires; only root tags `v0.1.0`/`v0.2.0` exist, no path-prefixed module tags. `RELEASE.md` itself admits: "clean external consumption still fails. Do not present the installation examples as working." The complete release machinery (per-module tag train, replace-stripping stage, external-consumer smoke gate) is documented in `RELEASE.md:130-287` but has never been executed.
-**Impact:** GoBridge is currently clone-and-`go.work` only. "Easy to consume as a library" — **no**, until the first compliant release train runs.
-
-### MQTT-C2 — The production binary is image-only and AWS-flavored
-`cmd/gobridge/main.go:1-16` **HIGH clarity CONFIRMED**: the only tag-eligible binary module is a self-declared "DEMONSTRATION / REFERENCE binary … NOT the production binary" that rejects non-MQTT/non-native-store configs at startup. The production composition root (`deployment/aws-filebased-config/lib/cmd/gobridge-filebased` — what the `Dockerfile` ships) lives in a module `RELEASE.md` declares internal-only/never-tagged.
-**Impact:** non-AWS consumers must write their own composition root to get a production-shaped process. The demo binary is fine for a single MQTT bridge, but it says so loudly in a WARN banner on every boot.
-
-### MQTT-C3 — No metrics path for non-AWS platforms
-`deployment/aws-filebased-config/lib/bootstrap/metrics.go:29ff` **HIGH observability CONFIRMED**: shipped exporter options are exactly `noop` and `cloudwatch`. Zero Prometheus hits in any non-test Go file; the OTel adapter modules exist but are not linked into either shipped binary. All the careful loss-accounting metrics of §1 are invisible on plain Kubernetes unless the consumer builds a custom composition root wiring `adapters/otel/metrics`.
-**Impact:** the observability story that makes the loss model operable (alert on `MQTTRouterCoveredDropped` etc.) cannot be turned on from the shipped artifacts outside AWS.
-
-### MQTT-C4 — Worst-case shutdown exceeds the default 30 s Kubernetes grace period
-`deployment/aws-filebased-config/lib/bootstrap/refs.go:96` (`stopCtx` from fresh `context.Background()`, default 30 s drain) stacked after the app's own 30 s `Stop` budget (`app.go:576`, `app.go:204-205`) **MEDIUM resilience CONFIRMED**: SIGTERM → exit can exceed 60 s worst case. `docs/deployment-guide.md` mandates `terminationGracePeriodSeconds: 60`; a pod left at the K8s default 30 s can be SIGKILLed mid-drain. Delivery guarantees survive (unsettled deliveries fall back to broker redelivery — at-least-once holds), but drained-shutdown intent is defeated.
-**Fix:** derive the drain context from the app shutdown context (single budget), or validate/assert the two budgets sum below a configured grace period.
-
-### MQTT-C5 — HA coordination stores are AWS-only
-`deployment/aws-filebased-config/lib/bootstrap/config.go:252-269` **MEDIUM architecture CONFIRMED**: exclusive-session leases and `shared_outbox` require a distributed store; the only distributed implementations are DynamoDB-backed. SQLite-over-shared-volume is explicitly rejected in code ("cannot serialize cross-instance writers safely" — correct). On plain K8s the only multi-replica shape is stateless shared-subscription scale-out; active-standby failover is AWS-only today.
-
-### MQTT-C6 — Legacy readiness path breaks HA standbys
-`httpapi/monitor.go:99-108,127` **LOW resilience CONFIRMED**: bare `/api/v1/monitor/ready` requires `ServiceLevel Full` and returns 503 for a healthy standby by design. An operator wiring the bare path as a readinessProbe in an active-standby pair keeps the standby permanently unready; the correct `?level=connected` form is documented in the handler comment and the deployment guide, not surfaced as a validation warning.
-
-### MQTT-C7 — Deployment artifacts: none for K8s; image build needs the whole repo
-`Dockerfile:41` (`COPY . .`, forced by C1's replace directives), `docs/deployment-guide.md:526-558` **LOW clarity CONFIRMED**: no Helm chart, Kustomize, K8s manifests, or docker-compose exist; the guide provides honest inline snippets labeled "requires your own image". CDK provisioning exists for ECS/EFS/DynamoDB only.
-
-### Positives verified on this dimension
-- Image: multi-stage, digest-pinned, distroless static nonroot (`USER 65532`), CGO-free static build, CA certs/tzdata present (TLS MQTT works), self-contained `HEALTHCHECK` via the binary's `-healthcheck` flag — no shell/curl in image.
-- Probes: `/live` keyed on runtime terminal state; readiness is genuinely wired to MQTT session health (traced `handleReady → ReadinessLevel → readinessLevelFromSessions`; a disconnected non-standby session caps readiness below `connected` → 503 during broker outage — correct K8s behavior).
-- SIGTERM: `signal.NotifyContext` → ordered teardown (watch loop → config manager → HTTP/SSE → transports → runtime) with settle-before-cancel drain; exit 0 clean / 1 error; demo binary exits 2 on second signal.
-- Logs: structured JSON to stdout, hot-reloadable level. Config file watching is ConfigMap-symlink-safe (dir-level fsnotify + 30 s hash resync).
-- MQTT scale-out identity: `client_id_suffix: hostname|nonce` (`config.go:1209-1213`) gives per-replica-unique client IDs for `$share` groups.
-
----
-
-## 4. Cluster operation and failover
-
-Key claims re-verified against `bridge/failover_budget.go`, `adapters/mqtt/transport/paho/config_plugin.go:84-105`, `config.go:33-52`, `bridge/builder_prepare.go:436-455`, `bridge/supervisor.go:687-712`.
-
-### MQTT-F1 — Default worst-case exclusive failover is ~336 s (HA profile) to ~10 min (standalone defaults), not 30–60 s
-`bridge/failover_budget.go:210` **HIGH resilience CONFIRMED**: failover budget = `leaseTTL + pollBoundaries + acquireCallBudget + postTakeoverActivation + startupAllowance`. With the auto-selected clustered HA profile (lease TTL 45 s, poll 5 s, call timeout 3 s): 45 + 12.5 + 39 + **240** ≈ 336.5 s. The 240 s term is MQTT post-takeover activation — `config_plugin.go:84-105`: 2×`connect_timeout`(30 s) + 4×`reconcile_timeout`(30 s) + 2×`unmatched_grace`(30 s).
-**The 30–60 s requirement is achievable but only by explicit tuning** (e.g. `lease_ttl: 15s`, `connect_timeout: 3s`, `reconcile_timeout: 2s`, `unmatched_grace: 2s` ⇒ ~50 s worst case), and declaring `failover_slo: 60s` makes the build fail when the configuration cannot meet it — the correct operator workflow. **Controlling keys:** `lease_ttl`, `acquire_poll_interval`, `renew_call_timeout`, `max_renew_fails`, `startup_allowance`, plus MQTT `connect_timeout`, `reconcile_timeout`, `unmatched_grace`.
-
-### MQTT-F2 — The failover budget is only checked when `failover_slo` is declared
-`bridge/failover_budget.go:69-71` **MEDIUM observability CONFIRMED**: `if failoverSLO == 0 { continue }`. An operator who selects `deployment_mode: clustered` gets the 45 s lease TTL and may reasonably assume ~45 s failover; the real ~336 s worst case is stated nowhere at build or runtime unless an SLO was declared. The corrective warning lives in a Go comment (`runtime/session/config.go:141-143`).
-**Fix:** always compute and log/expose the worst-case failover budget at startup (info line + deep-health field), independent of `failover_slo`.
-
-### MQTT-F3 — `client_id_suffix: hostname` strands Persistent-mode broker queues on Deployment/ECS reschedules
-`adapters/mqtt/transport/paho/config.go:38-45` **HIGH correctness CONFIRMED**: the comment claims hostname is "STABLE across restarts of the same replica". True for StatefulSets; false for K8s Deployments and ECS tasks, where every rollout mints a new pod/task name → new client_id → new broker session. The old session (subscriptions + queued QoS 1/2) is orphaned until `session_expiry_interval` (default 86 400 s) and no other instance can drain it. Only Exclusive mode (stable shared client_id + lease) hands the queue to a survivor.
-**Impact:** for Persistent mode on Deployments, every rollout can strand up to 24 h of broker-queued messages per replaced pod — they eventually expire undelivered (loss by timeout, invisible to the bridge).
-**Fix:** document Persistent+hostname as StatefulSet-only; recommend Exclusive mode or Ephemeral+`$share` for Deployments; consider a startup warning when `client_id_suffix: hostname` is combined with `session_mode: persistent`.
-
-### MQTT-F4 — Standalone split-brain is warn-only
-`bridge/builder_prepare.go:436-455` **MEDIUM architecture CONFIRMED**: two replicas each configured `deployment_mode: standalone` with a process-local lease store each own every exclusive session — real dual consumption. Clustered mode hard-fails on non-distributed stores, but `deployment_mode` is a self-declared assertion decoupled from actual replica count; the defense is a prominent `SPLIT-BRAIN RISK` Warn log (fires for any exclusive-session-on-local-lease config, which is correct). Cannot be closed from inside one process — but the log level makes it easy to miss.
-**Fix (docs/ops):** alert on the log message; document that `standalone` + exclusive sessions requires `replicas=1` enforced at the orchestrator.
-
-### MQTT-F5 — Lease loss ⇒ pod restart (single-use paho session)
-`runtime/session/manager_lease.go:47-60,905-918` **MEDIUM resilience CONFIRMED**: paho sessions are single-use; a lease step-down closes the session, and re-acquire hits Start-after-Close → `ErrSessionUnrecoverable` → terminal → orchestrator restart. Fail-closed migration paths deliberately retain the lease to natural TTL. Correct for safety; the practical failover bound therefore includes pod-restart latency (budgeted only when `startup_allowance` is set).
-
-### MQTT-F6 — ManagedSubscriptionStore has no fencing of its own
-`ports/stores.go:299-303` **MEDIUM correctness PLAUSIBLE**: `List/Remember/Forget` carry no lease token; write-safety rests on the exclusive lease serializing writers plus durable-identity keying. Two Persistent-mode replicas misconfigured with the same effective client_id (same durable identity, no lease) can interleave Remember/Forget and tear down a live filter. Guarded by validation and the takeover-storm symptom, not store-level fencing.
-
-### Verified positives (cluster dimension)
-- Lease fencing is genuinely strong: monotonic token versions (Renew never bumps), local-deadline fail-closed step-down before any Current-read mitigation, close-source-before-release ordering, takeover requiring a full TTL of CAS-persisted observation evidence (skew-immune), outbox commits fenced by token version + per-partition high-water-mark. Split-brain **commit** is prevented; duplicate **delivery** during handoff is the documented at-least-once residual.
-- Lease-store (DynamoDB) outage ⇒ fail-closed halt of all exclusive consumption cluster-wide until the store returns — no duplicate consumption.
-- Scale-out identity: `client_id_suffix: hostname|nonce`; nonce is crypto-random and ephemeral-only; exclusive mode rejects any suffix (stable shared identity is its contract). Takeover storms are damped (first takeover free, then 1 s→64 s exponential penalty, 30 s-stability decay) and `$share`+collision escalates to an Error log on first occurrence.
-- Shared subscriptions: supported, `$share` stripped for dispatch, No-Local forced off per spec, broker rejection surfaces as an observable reconcile failure (not silent).
-- Durable modes are locked to one broker-session domain (`config_identity.go:20-42`) — client-side multi-URL failover is ephemeral-only, by design (see MQTT-D5).
-- Observability: lease transfer/renew/expiry metrics + audit events, `MQTTSessionTakeover`, connect/reconcile latency metrics exist. **Gap:** no end-to-end failover-duration metric and no MQTT ingress duplicate-detection metric (duplicates delegated to downstream idempotency by contract).
-
----
-
-## 5. Runtime reconfiguration
-
-Architectural headline (verified): GoBridge does **not** hot-patch a running MQTT transport. `Session.Reconcile` runs only within a runtime's lifetime; a config change is a supervisor-driven **full runtime stop → rebuild → start**, and because the MQTT factory declares `CapExclusiveIdentity` (`factory.go:37`), every MQTT-containing config change takes the prepare-commit path: the old runtime is fully stopped **before** the new one is built.
-
-### MQTT-R1 — Reload success is declared before the new session ever reaches the broker; no rollback for broker-invalid configs
-`bridge/supervisor.go:1156-1165` + `runtime/bridge_start.go:44-46` **HIGH correctness CONFIRMED**: `applyPrepareCommit` stops the working runtime, builds the new one (paho `NewSession` does not dial), calls `newRt.Start(ctx)` — which "returns immediately" and dials/reconciles in background goroutines — and returns success. The config manager advances the running fingerprint and emits `MetricConfigReloads{success}`. If the new config is syntactically valid but broker-invalid (ACL-denied topic, wrong rotated credentials), the transport is now down, `recoverOldOrWedge` never fires (it covers only synchronous build/complete/Start errors), and every convergence signal reports green. Recovery: per-session supervision retries, the `Terminal()` liveness backstop, or operator revert.
-**Failure sequence:** commit config with broker-denied topic → old runtime drained+disconnected → new runtime starts (async) → SUBACK rejection loops in the background → reload reported successful.
-**Fix directions:** post-swap health barrier (hold the success ack until sessions reach `connected`/`subscribed` within a budget, else auto-revert), or at minimum surface "applied-but-not-converged" as a distinct state in `MetricConfigDegraded`/deep-health (today the divergence is visible only in session-level health, not as running≠desired).
-
-### MQTT-R2 — Every MQTT config change is a full-transport outage window
-`bridge/supervisor.go:899-903,1263-1271` **HIGH correctness CONFIRMED (by design)**: any reload → SwapPrepareCommit → all MQTT sessions disconnect for drain(≤30 s default) + build + dial + CONNACK + SUBACK. During the window: persistent/exclusive QoS 1/2 is broker-queued and replayed (no loss); **QoS 0 on any topic is lost; ephemeral sessions lose everything published in the window** (broker discards the session at disconnect).
-**Impact:** "reconfigure while running without dropping messages" holds **only** for QoS 1/2 on clean_start=false sessions. Docs must state this as a controlled-restart semantic, not a hitless reload.
-
-### MQTT-R3 — One permanently rejected subscription downs the whole exclusive session forever
-`session_reconcile.go:99-106,755-774` + `acl_session.go:65-95` **MEDIUM resilience CONFIRMED**: partial SUBACK failure (or QoS downgrade) fails the reconcile; for exclusive sessions the deferred handler disconnects the generation and releases the lease; supervision retries forever at the 30 s backoff cap. A permanent broker-side denial of one topic ⇒ indefinite connect→subscribe→reject→disconnect churn; the healthy sibling routes on that session never stay up. Fail-closed, observable (`MetricReconcileFailures`, readiness below Full), never a silent partial — but no per-topic quarantine and no self-heal. (Same finding surfaced independently by the resilience track — see MQTT-O2.)
-
-### MQTT-R4 — No reload debounce by default
-`bridge/supervisor.go:293` **MEDIUM resilience CONFIRMED**: default `ReconfigStrategy` is `NewDirectStrategy()`; N rapid config writes = up to N full swap outage windows (MQTT-R2 each time). `DebouncedStrategy`/`WindowedStrategy` exist but are opt-in. Storms do converge to the last config (latest-wins watch loop, content-equal no-op, `lifecycleMu` serialization).
-
-### MQTT-R5 — Unmanaged wildcard-route removal leaks the broker subscription forever
-`session_reconcile.go:298-313` **MEDIUM correctness CONFIRMED (documented residual)**: across a restart/swap, a removed **wildcard** subscription on an unmanaged persistent session survives on the broker; orphan cleanup unsubscribes only exact concrete topics, so the wildcard's traffic is delivered, acked, and dropped forever (`MQTTRouterUnmatchedDropped` rises). The managed-subscription store exists precisely to close this — **when configured**.
-**Fix (docs/ops):** make the managed store effectively mandatory for persistent sessions with wildcard filters; alert on steadily rising `MQTTRouterUnmatchedDropped`.
-
-### MQTT-R6 — Managed route-removal can deliberately brick the session until config revert
-`session_lifecycle.go:686-694` **MEDIUM resilience CONFIRMED (by design)**: a broker-pinned QoS 1 delivery matching a removed filter detected during managed cleanup latches the session terminal with an error instructing: restore the old configuration, drain, retry the cutover. Fail-closed against loss — correct — but a reload can end in a state only a revert fixes; the runbook must be prominent.
-
-### Verified positives (reconfiguration dimension)
-- Two-phase validation of everything knowable pre-broker: invalid configs dropped keeping last-good; durable-identity changes (client_id/broker URL/mode/expiry) **refused** on live reload before touching the old runtime (`supervisor.go:716-736`); lease session_id renames refused; clustered deployments refuse per-process live reload entirely with a documented whole-cohort runbook (`supervisor.go:687-710`).
-- Credential rotation: validated against the plaintext gate before mutation, applied via full Reload (one reconnect; QoS 1/2 continuity via clean_start=false); reactive re-resolve on CONNACK 0x86/0x87; the Reload-fails-while-broker-down zombie (F-1) self-heals via events-close → supervised re-Start (pinned by `bug_reload_events_test.go`).
-- Old-runtime stop settles accepted in-flight deliveries before cancelling; anything unsettled is left un-acked for broker redelivery — never silently acked.
-- Session-scope convergence machinery is genuinely sound: single `reloadGate`, `connEpoch` guards against reconnect-interleaved reconciles, applied-plan history retries failed unsubscribes, reclassify-pending prevents wedged retained publishes (all pinned by regression tests).
-- Failed-reload observability is strong for synchronous failures: reload metrics, degraded gauge, running/applied version fingerprints, `GET /api/v1/admin/config` (effective redacted config), distinct commit outcomes. The blind spot is exactly MQTT-R1's async class.
-
----
-
-## 6. Outage resilience (broker outages, partitions, credential expiry, slow brokers)
-
-### MQTT-O1 — In-flight egress QoS 1/2 is lost on process crash; QoS 2 is not exactly-once across restart
-`adapters/mqtt/transport/paho/acl_session.go:329-351` **HIGH resilience CONFIRMED (documented ceiling)**: the session leaves autopaho's `cfg.Session` nil ⇒ default **in-memory** packet store; un-acked outbound PUBLISH/PUBREL state dies with the process (`client_id`/`clean_start=false` resume broker-side state only). The code documents this as deferred finding M-6/HIGH-5, and the production contract routes durable egress through the bridge outbox (`shared_outbox`/idempotent replay); `Sender.NonDurableEgress()` reports the boundary and both wired delivery modes are loss-safe today.
-**Residual:** a hand-wired direct QoS≥1 route without an outbox (library consumers) silently loses in-flight egress on crash. The deferred alternative (file-backed `session.SessionManager`) remains unimplemented.
-
-### MQTT-O2 — Permanent SUBACK rejection / QoS downgrade never converges
-`session_reconcile.go:755-774` **MEDIUM resilience CONFIRMED**: same defect class as MQTT-R3 seen from the outage lens — a broker granting QoS 0 for a requested QoS 1, or rejecting one filter, produces an indefinite 30 s-capped restart flap; `ServiceLevel` never reaches Full; operator intervention required. Observable but not self-healing.
-
-### MQTT-O3 — Circuit-breaker sender uses the concurrency-unsafe token-less API
-`cb_sender.go:60-70` vs `circuitbreaker/breaker.go:169,194` **MEDIUM resilience PLAUSIBLE→CONFIRMED usage mismatch**: the breaker's own doc says concurrent callers "should use BeforeRequestToken / AfterRequestToken"; `CircuitBreakerSender` uses `BeforeRequest`/`AfterRequest` while route `max_in_flight` drives concurrent sends. A late outcome from a pre-transition request is accounted against the current generation (stale probe release / spurious re-open). Breaker fidelity only — no data loss; the breaker is also optional (not wired by default for MQTT egress).
-**Fix:** switch `cb_sender.go` to the token API (mechanical).
-
-### MQTT-O4 — Event-channel eviction can defer a reconnect reconcile one connect cycle
-`session_health.go:190-219` **LOW resilience CONFIRMED (by design)**: under a disconnect/reconnect storm the 16-slot event channel's drop-oldest eviction can discard an unconsumed `SessionConnected`; subscriptions re-establish on the following connect edge. Bounded, metered (`MQTTEventDropped` — alert if non-zero in steady state).
-
-### MQTT-O5 — Error classification by substring match on paho error strings
-`errors.go:34-52` **LOW resilience CONFIRMED**: typed checks first, then case-insensitive substring matching with a documented upgrade checklist (F-10). A paho version bump can silently reclassify errors into the `ErrUnavailable` fallback and change retry behavior. Keep the checklist in the release procedure.
-
-### MQTT-O6 — Unbounded `Disconnect(context.Background())` on cleanup paths
-`acl_session.go:247-248,264,560` **LOW resilience CONFIRMED (mitigated)**: preceded by `cmCancel()` (cancels the CM root context) so Disconnect should return promptly; residual only if the SDK ignores the cancelled context.
-
-### Verified positives (outage dimension)
-- Reconnect: equal-jitter exponential (base 10 s, cap 2 m, factor 2, jitter [d/2, d)), **retries forever**, jittered at both the MQTT layer and the supervision restart layer — thundering herd addressed; backoff resets naturally on success.
-- Every network op bounded: keepalive 30 s, per-attempt reconnect 30 s, connect 30 s, each SUBSCRIBE/UNSUBSCRIBE 30 s (floor-coerced, cannot be disabled), publish ≤ configured sender timeout (30 s via factory; 60 s safety net only with no deadline). A publish cannot block forever. A ctx-ignoring wedged reconcile is escalated by an independent goroutine-raced ceiling to `ErrSessionUnrecoverable` → pod restart (caps parked goroutines at one).
-- Reconnect correctness: `activeSubs` reset to empty before `SessionConnected`; full authoritative re-subscribe every connect edge; `connEpoch` invalidates stale write-backs; partial SUBACKs and short SUBACKs are failures, never silently accepted.
-- Ingress across outage: un-acked QoS 1/2 redelivered by broker (at-least-once); stale pending purged per epoch and metered; covered topics retained un-acked.
-- Credentials: MQTT authenticates only at CONNECT (expiry-while-connected is benign); revocation → CONNACK 0x86/0x87 → rate-limited reactive re-resolve; repeated refresh failure degrades observably and retries forever — no stall.
-- Health: outage ⇒ `Connected=false`, `ServiceLevel None`, readiness red; **`/live` never trips on a transient outage** (only `ErrSessionUnrecoverable` escalates to terminal → restart). Correct K8s semantics.
-- Hygiene: no per-reconnect goroutine leaks (grace/dispatch workers started once, timer-reset re-arm); pending buffer bounded by count (receive_maximum) + 64 MiB QoS 0 byte ceiling; recovery goroutines coalesced and rate-limited (30 s min interval); lock-order rules (`r.mu` never → `s.mu`; OnConnectionUp never takes `reloadGate`; `s.mu` never held across broker round-trips) verified honored; race-detector suite green.
-
----
-
-## 7. Documentation
-
-The reference material is unusually accurate: **every config key and every default in `docs/transports/mqtt.md` matches the code exactly** (verified against `config.go:383-728`), the ingress-memory worked example is arithmetically exact, and the delivery-guarantee section is honest to the point of bluntness (QoS 2 not exactly-once across restart, ephemeral loss windows, per-route guarantee matrix). Scenario docs 01/03 are copy-paste runnable. The Docker/K8s/ECS section of `deployment-guide.md` (probes with `?level=` semantics, shutdown sequence, exit codes, ConfigMap-safe mounting) is production-ready. The defects are concentrated in `troubleshooting.md` — the operator's first stop:
-
-### MQTT-DOC1 — `troubleshooting.md:465` documents the wrong takeover reason code
-**HIGH correctness CONFIRMED**: claims `MQTTSessionTakeover` fires on `0x8E/0x8F` ("session taken over"). `0x8F` is Topic Filter Invalid, explicitly NOT counted (`session_lifecycle.go:1040,1053-1057`, `metrics.go:127-128`). Wrong reason code in the exact failure mode the entry exists to diagnose. Also cites `session_lifecycle.go:189,223` — emission is at `:1107`.
-
-### MQTT-DOC2 — `troubleshooting.md:463` documents a dispatch queue size that doesn't exist
-**HIGH correctness CONFIRMED**: claims `defaultDispatchSize=1024`; code is `int(DefaultReceiveMaximum)` = **192**, overridden by effective `receive_maximum` per session (`acl_router.go:299`, `config.go:411`). Contradicts `mqtt.md:735` (which is correct). Operators sizing backpressure against 1024 mis-tune by 5×.
-
-### MQTT-DOC3 — Six emitted metrics have no operator documentation
-**MEDIUM completeness CONFIRMED**: `MQTTPublishFailures` (the primary egress-error counter!), `MQTTPublishLatency`, `MQTTHandlerPanics`, `MQTTReconcileLatency`, `MQTTEventDropped`, `MQTTRouterStalePurged` appear in no doc with meaning/alert guidance. 21 metrics emitted; ~15 documented.
-
-### MQTT-DOC4 — `doc.go` stale covered-topic claim (= MQTT-D1)
-**MEDIUM correctness CONFIRMED** independently by the docs track: `mqtt.md:141` links to `paho/doc.go` as the authoritative mechanism description, and that file's "(ack-and-drop still applies)" contradicts both the code and `mqtt.md`'s own (correct) description.
-
-### MQTT-DOC5 — Wrong code cross-references
-**LOW correctness CONFIRMED**: `mqtt.md:336` cites `factory.go:59-66` for client_id/broker-URL requirements (actual: `config_plugin.go:177-193`); `scenarios/18-observability.md:97` says `MQTTRouterDropped` is untagged (it carries `session_id`). Plus: `MQTTConnectLatency` is declared (`metrics.go:10`) but never emitted — a latent trap for future alerting.
-
-### MQTT-DOC6 — Missing operator content
-**MEDIUM completeness CONFIRMED**: no troubleshooting entry for the fail-closed plaintext-credentials startup error (a likely first-run failure); no MQTT-specific capacity/throughput runbook (receive_maximum/max_in_flight/payload → msg/s); no consolidated MQTT log-event catalogue; no runbook for the ingress-poison terminal loop (MQTT-D6) or the managed-migration brick-until-revert state (MQTT-R6); failover-budget arithmetic (MQTT-F1) not surfaced in the HA docs (the honest "measurements required" caveat exists in `mqtt.md:84-119`, but the ~336 s default worst case is stated nowhere).
-
----
-
-## 8. Message loss and delivery guarantees
-
-Highest-severity claims re-verified: `runtime/session/manager.go:244-252` (Start before first Reconcile), `config.go:431-434` (`maxIngressUserProperties = 128`), `acl_session.go:474-492` (clean_start warning asymmetry).
-
-### MQTT-L1 — Publisher-triggerable poison loop: a spec-compliant publish can permanently kill the session
-`acl_router.go:1128-1173` + `session_lifecycle.go:273-275` **HIGH resilience CONFIRMED**: a QoS 1 publish with >128 user properties (`maxIngressUserProperties`, `config.go:434`) is small, within the CONNECT-advertised Maximum Packet Size, and forwarded by any compliant broker — user-property *count* is a purely local cap the broker cannot enforce. The router's `rejectIngressPacket` fires `ingressPoison` → `transitionTerminal`: the session latches terminal, `Start` refuses forever in-process. The packet is never acked and never DLQ'd; after supervisor/process restart the broker **redelivers the same packet** on session resume → terminal again, indefinitely. All routes sharing the session are head-of-line blocked at the broker. Observable (Error log, `MQTTRouterDropped`, `SessionError`) but there is **no automated escape** — no ack-and-DLQ path for a poison ingress packet.
-This supersedes MQTT-D6's assessment: the trigger does **not** require a non-compliant broker; any authorized publisher can induce it (accidentally or deliberately — a DoS vector against the bridge).
-**Fix:** for cap violations that are *representational* (user-property count, metadata size) rather than memory-unsafe (packet/payload size already rejected pre-decode), prefer ack-and-DLQ (or ack-drop + dedicated poison metric) over session-terminal; at minimum, add a runbook for breaking the loop (publish removal / session purge on broker, or temporary cap raise).
-
-### MQTT-L2 — Live backlog can be acked-dropped and its topic unsubscribed before the first Reconcile of a process lifetime
-`session_reconcile.go:423-447` (`topicCoveredLocked`) + `runtime/session/manager.go:244-252` **HIGH correctness PLAUSIBLE (narrow trigger, verified structure)**: `Manager.Run` calls `Start` first, `Reconcile` second; `s.plan` is stashed only inside Reconcile. Between CONNACK (where a persistent broker replays the offline QoS 1/2 backlog) and the plan stash, `topicCoveredLocked` covers nothing (activeSubs reset on connect-up, plan nil, managed history empty when no managed store is configured). If the first Reconcile is delayed past `unmatched_grace` (30 s) — reloadGate held by a concurrent operation, or the `SessionConnected` event evicted under an event storm — the grace sweep classifies live backlog as ORPHAN: **PUBACKed, dropped, and the live topic UNSUBSCRIBED** until a later reconcile re-subscribes.
-Worse, the loss is **miscategorized**: counted on `MQTTRouterUnmatchedDropped`, which `metrics.go:43-58` documents as "BENIGN cleanup" — an operator alerting per the metric docs will not treat it as loss.
-**Fix:** treat "no plan has ever been stashed this process lifetime" as covered-everything (retain, don't orphan-drop) until the first Reconcile stashes a plan; the managed-subscription store already closes this for managed sessions.
-
-### MQTT-L3 — Emit-error strands un-acked deliveries with no in-process recovery
-`receiver.go:126-137` **HIGH resilience CONFIRMED**: when `emit` returns an error, `Receiver.Run` cancels and returns without settling the triggering delivery. The session stays connected; MQTT brokers do not redeliver on a live connection; nothing on this path calls `requestRecovery`. The un-acked packet head-of-line-blocks paho's contiguous-prefix ack stream; as un-acked slots accumulate toward `receive_maximum`, ingress wedges. Only a connection teardown (from any other cause, or supervisor escalation → restart) releases it.
-Observable indirectly — `MQTTUnsettled`, `MQTTOldestUnsettledAge`, `MQTTReceiveWindowUtilization` rise — but no explicit "stranded delivery" event, and no automated recycle.
-**Fix:** on emit-error exit, either settle-with-Retry (request a bounded session recycle, as durable `Delivery.Retry` already does) or emit a dedicated stranded-delivery warning tying the wedge to its cause.
-
-### MQTT-L4 — Discard-mode ingress drop is the router's only fully silent drop branch
-`acl_router.go:1236-1239` (and the `dispatchCore` twin at `:1324-1328`) **MEDIUM observability CONFIRMED**: during a recovery recycle (`discarding=true`), publishes still arriving on the old socket are released with **no metric, no log, no ack** — in contrast to the adjacent epoch-mismatch branch which counts `MQTTRouterStalePurged`. QoS 1/2 is redelivered by the resumed session (safe); **QoS 0 is silently lost**.
-**Fix:** count the discard branch on `MQTTRouterStalePurged` (or a `reason=discarding` tag).
-
-### MQTT-L5 — Ack-after-reconnect: silent duplicate window that also falsely clears the unsettled gauge
-`acl_router.go:1109-1122` **MEDIUM correctness CONFIRMED** (upgrades MQTT-D3): `ErrPacketNotFound` → mapped to success → `trackAcknowledgement` removes the entry from the unsettled map, the RouteRunner records a successful ack, outbox/ledger evict — while the broker is guaranteed to redeliver. On a `direct_hold` route with no downstream dedup this is a duplicate egress with zero signal; neither metric nor log records the event.
-**Fix:** count these (`reason=ack_after_reconnect`) — the information is available at exactly that branch.
-
-### MQTT-L6 — `session_mode: persistent` + `clean_start: true` silently wipes the offline backlog every restart
-`acl_session.go:474-492` **MEDIUM correctness CONFIRMED**: Exclusive+CleanStart is overridden to false with a warning; Persistent+CleanStart=true is honored silently — every process restart discards broker-queued QoS 1/2. Config-as-requested, but the analogous `SessionExpiryInterval=0` misconfiguration *does* warn (`session.go:299-307`); this one should too.
-
-### MQTT-L7 — Retry = whole-session recycle; duplicates unmeasured; Session-Present=false goes terminal
-`session_lifecycle.go:370-408,937-949` **MEDIUM resilience CONFIRMED (by design)**: a durable QoS 1/2 `Delivery.Retry` triggers an async, rate-limited (30 s min interval) session recycle that redelivers **every** unsettled delivery on the shared session (duplicates for innocent in-flight messages; dedup only on `shared_outbox` routes). If the broker answers Session Present=false (state lost/expired during the outage) the recovery correctly refuses to fake continuity and goes terminal. Recycles are counted (`MQTTSessionRecoveryRecycle`); the induced duplicates are not.
-
-### MQTT-L8 — Shutdown abandons queued work silently
-`acl_router.go:619-629` (dispatchLoop exit), `:1826-1829` (flush under discarding), `:1794-1801` (takePendingLocked under closing) **LOW observability CONFIRMED**: at Close, buffered `dispatchCh` items and flush-taken pending entries are released without emit or counter. QoS 1/2 redelivered to the next session owner (safe); QoS 0 lost, uncounted. Close-time only.
-
-### MQTT-L9 — QoS 0 egress loss is invisible by construction and unflagged by the durability reporter
-`sender.go:163-165` **LOW observability CONFIRMED**: `NonDurableEgress()` returns false for QoS 0 ("makes no delivery claim"), so the bridge's egress-durability advisory machinery raises nothing, and a socket-death loss after a successful write has no signal. Protocol-inherent; the gap is only that no startup advisory says "this route's egress is fire-and-forget".
-
-### Verified positives (delivery-guarantee dimension)
-- The core at-least-once claim **holds** for QoS 1/2 on persistent/exclusive sessions against a compliant broker: `EnableManualAcknowledgment` + ack-only-from-`Delivery.Ack` after outbox persist/broker accept (every terminal path in `runtime/route/dispatch.go` converges on ack-after-durable-handoff); crash windows resolve to broker redelivery + outbox version-fence dedup (ADR 0009); covered topics are retained un-acked, never ack-dropped; epoch stamping purges stale twins; a crash between bridge-settle and PUBACK **cannot lose** (settle happens only after `Send` returned, and `Send` blocks until PUBACK/PUBCOMP) — the reverse window yields a fenced duplicate.
-- Backpressure is deadlock-free and bounded end-to-end: QoS 1/2 blocks (bounded by broker Receive-Maximum flow control), QoS 0 sheds (metered), blocked callbacks wake on `queueChanged`/`stop`.
-- The historical bug fixes (pending-overflow QoS asymmetry, epoch purge, covered-retention) are structurally complete in current code; the surviving siblings the fixes missed are exactly MQTT-L2 (covered() nil-plan blind spot) and MQTT-L4 (unmetered discard twin of the metered stale-purge).
-- Timeout coverage: no timeout path acks without processing — every expiry resolves to un-acked→redelivery or terminal→`SessionError`.
-
----
-
-## 9. Consolidated answers to the review questions
-
-**1. Is the code production ready?**
-**Conditional yes — the MQTT adapter itself is unusually hardened; the packaging around it is not.** The adapter core (ack-after-durable-handoff, epoch-guarded reconcile, jittered forever-reconnect, bounded everything, fenced leases) shows evidence of multiple absorbed review cycles and passes its race suite. What blocks "production ready" as a product: the release train has never run (MQTT-C1, `go get` fails), the production binary is image-only/AWS-flavored (MQTT-C2), non-AWS metrics don't exist in shipped artifacts (MQTT-C3), and the reload-success-before-broker-truth gap (MQTT-R1).
-
-**2. Is the documentation production ready?**
-**Conditional yes.** Reference material is exceptional — every config key and default verified accurate, delivery guarantees honest, container ops section complete. Blockers to "operator with docs alone": two factual errors in `troubleshooting.md`'s takeover/backpressure entries (MQTT-DOC1/2), six undocumented metrics including the primary egress-error counter (MQTT-DOC3), the stale `doc.go` contract text (MQTT-D1), and missing runbooks for the three "stuck until operator acts" states (poison loop, managed-migration brick, permanent SUBACK rejection).
-
-**3. Do we have zero bugs?**
-**No.** Confirmed defects: MQTT-L1 (publisher-triggerable terminal loop), MQTT-L3 (stranded un-acked deliveries), MQTT-L4 (silent discard drop), MQTT-L5 (unsettled gauge falsely cleared + silent duplicate), MQTT-R1 (reload false-success), MQTT-F3 (hostname-suffix stranding on Deployments), MQTT-O3 (breaker token API misuse), MQTT-L6 (missing clean_start warning), plus the doc bugs. One high-impact PLAUSIBLE: MQTT-L2 (pre-reconcile orphan sweep). None of these is in the steady-state hot path — the race suite and 20+ regression pins have scrubbed that — they live at the edges: first-connect, poison input, reload-commit, operator misconfiguration.
-
-**4. Can this run in a cluster?**
-**Yes, in exactly two shapes; no in others.** (a) Exclusive-lease single-active (active/standby) on a distributed lease store — DynamoDB only today (MQTT-C5); fencing is genuinely sound (split-brain *commit* prevented; duplicate *delivery* during handoff is documented at-least-once). (b) Ephemeral + `$share` scale-out with per-replica `client_id_suffix`. **Not**: naive N-replica Persistent consumption (per-replica broker sessions strand queues on reschedule — MQTT-F3), and `standalone`-declared replicas on a local lease store are real split-brain with only a Warn log (MQTT-F4).
-
-**5. Is the code resilient — outages and coming back on track?**
-**Yes — confirmed.** Jittered exponential forever-reconnect (both MQTT and supervision layers), every network op bounded, full authoritative re-subscribe from empty state per connect edge, epoch guards against stale write-backs, credential revocation handled reactively, liveness never trips on transient outages, no goroutine/memory leaks across reconnect cycles, F-1 zombie self-heals. The two non-self-healing states are not outages: permanent broker subscription disagreement (MQTT-O2 flap-forever) and the poison loop (MQTT-L1).
-
-**6. Do we miss/lose messages — and how is it recorded/reported/handled?**
-**QoS 1/2 on persistent/exclusive sessions: no loss** in steady state, crash, reconnect, or reload — resolved by broker redelivery + outbox fencing; the deliberate exceptions are metered and loud (orphan cleanup `MQTTRouterUnmatchedDropped`, broker-protocol-violation `MQTTRouterOverflowDropped` with "MESSAGE LOST" warn). Timeouts everywhere resolve to redelivery-or-terminal, never ack-without-processing.
-**QoS 0: droppable on ~8 paths**, mostly metered (`MQTTRouterDropped`, `MQTTRouterCoveredDropped`), by protocol contract.
-**The gaps:** two silent drop paths (recycle-window discard MQTT-L4, shutdown abandonment MQTT-L8 — QoS 0 only), one mislabeled loss (MQTT-L2 counted as benign cleanup), one silent duplicate window (MQTT-L5), duplicates from session-recycle unmeasured (MQTT-L7), in-flight egress dies with the process absent the outbox (MQTT-O1 — both shipped delivery modes are covered; hand-wired library routes are not), and Persistent-mode broker-side queues stranded by identity churn expire invisibly (MQTT-F3).
-
-**7. Easy to consume as a single standard process on Docker/K8s/ECS?**
-**The process: yes** — distroless nonroot static image, self-contained healthcheck, JSON stdout logs, correct MQTT-aware probes, drain-then-exit SIGTERM. **The consumption: not yet** — `go get` broken (MQTT-C1), production composition root unpublished (MQTT-C2), no non-AWS metrics (MQTT-C3), shutdown can exceed default K8s 30 s grace unless the documented 60 s is applied (MQTT-C4), no Helm/manifests (MQTT-C7), ~6–7 manual steps from zero.
-
-**8. Can we reconfigure it while running, resiliently?**
-**As a controlled restart, yes; as a hitless reload, no.** Every MQTT config change is a full stop→rebuild→start (outage window; QoS 1/2 clean_start=false traffic bridged by broker queuing — zero loss, possible duplicates; QoS 0 and ephemeral traffic in-window lost — MQTT-R2). Everything knowable pre-broker is validated two-phase with fail-closed refusals (identity changes, backlog stranding). The genuine resilience gap is MQTT-R1: a broker-invalid config commits as success after the working runtime is already gone, with green convergence telemetry. Secondary: no debounce by default (MQTT-R4), one rejected topic downs its whole exclusive session indefinitely (MQTT-R3), managed route-removal can brick-until-revert by design (MQTT-R6). Operator rule: verify session health after every reload; the reload success signal alone is insufficient.
-
-**9. Can we reconfigure the cluster while running, resiliently?**
-**Deliberately no — and that is the resilient answer.** Per-process live reload of a clustered deployment is refused fail-closed (`supervisor.go:687-710`) because a rolling reload would split the cohort across config versions with no version barrier; the supported procedure is an externally coordinated whole-cohort stop/drain/deploy/start (`docs/runbooks/cluster-config-rollout.md`). Rolling restarts with an *unchanged* config are supported (lease transfer + connect-after-lease standbys). Durable-identity and lease-name changes are refused on any live reload.
-
-**10. Does it fail over in a cluster within a configurable 30–60 s?**
-**Configurable: yes. Default: no — ~336 s worst case with the clustered HA profile, ~10 min with standalone defaults** (MQTT-F1). The budget is lease TTL + poll boundaries + acquire-call budget + MQTT post-takeover activation (240 s of the default total: 2×connect + 4×reconcile + 2×grace). A ~50 s worst case is reachable with explicit tuning, and declaring `failover_slo: 60s` makes the build **fail** if the config cannot meet it — the right workflow, but it is opt-in and the default silence is a trap (MQTT-F2). Practical bound also includes pod-restart latency when a lease-losing instance must recycle (MQTT-F5).
-
----
-
-## 10. Consolidated issue register
-
-| ID | Severity | Status | One-line |
+## 0.5 Remediation status (branch `fix/mqtt-prod-ready-remediation`)
+
+All **confirmed production-code findings** below are now **✅ FIXED** with regression
+tests; `make lint` and `make test` are green. Fixes were adversarially re-reviewed
+by three independent reviewers; two regressions surfaced by that review
+(STORE-1×MQTT-CORE-1 poison-on-store-timeout, and a RECONFIG-1 shutdown WaitGroup
+race) were fixed and pinned.
+
+| Finding | Status | Resolution |
+|---|---|---|
+| MQTT-CORE-1 | ✅ FIXED | Adapter marks adapter-generated identities (`x-bridge.generated-id`, internal-only); runtime terminally DLQ/drops an uncountable redelivery (`unstable_identity`) instead of recycling the session forever. Doc + tests. |
+| RECONFIG-1 | ✅ FIXED | Post-swap convergence watch in the AWS bootstrap: polls `ReadinessLevel`, latches applied-but-not-converged (`ConfigDegraded`=1 + deep-health reason) if it does not reach `LevelSubscribed` within budget. |
+| RECONFIG-2 | ✅ FIXED | Every failed/uninstalled candidate runtime is stopped on all paths; prepare/commit aborts if the old runtime does not stop cleanly (no commit under uncertain ownership). |
+| CLUSTER-1 | ✅ FIXED | One canonical `ports.IsClusteredDeployment` predicate; static-endpoints now triggers the same clustered replica-safety validation. Test pins both spellings. |
+| CLUSTER-2 | ✅ FIXED | Opt-in `broker_health_step_down`: an active exclusive owner whose broker path stays non-converged past the threshold steps down so a standby takes over (`BrokerHealthStepDown` metric); documented as extending the failover budget. |
+| IDENTITY-1 | ✅ FIXED | Persistent+`client_id_suffix: hostname` is now **rejected** unless `assert_stable_client_identity: true`. |
+| CLUSTER-3 | ✅ ACCEPTED (documented) | Live cluster reconfiguration remains refused by design; whole-cohort replacement is the explicit contract (ADR 0012 + runbook). No false live-reconfig claim. |
+| CB-1 | ✅ FIXED | Per-probe slot IDs in `Token`; a reclaimed probe's late outcome releases/counts only its own live slot — cannot free a newer probe's slot or vote. |
+| STORE-1 | ✅ FIXED | Bounded store-op contexts on `QueryPending`/`Persist`/`Claim`; a store `DeadlineExceeded` is classified transient-retry (never poison) so a slow-but-healthy store cannot drop uncountable traffic. |
+| CORE-RES-1 | ✅ FIXED | Watchdog latches the partition stalled; the drainer stops scheduling batches and escalates terminal (restart reclaims the leaked goroutine). |
+| CORE-RES-2 | ✅ FIXED | Processor breaker now counts **outstanding** abandoned goroutines (paired inc/dec via the chain's done hook), not consecutive-since-settle. |
+| MQTT-RES-1 | ✅ ACCEPTED (runbook + alarms) | Fail-closed whole-session reconcile retained; sustained `ReconcileFailures`/`MQTTQoSDowngraded` now have CDK alarms + the subscription-flap runbook. |
+| MQTT-OBS-1 | ✅ FIXED | Close-time QoS 0 dispatch-queue entries drained and counted on `MQTTRouterDropped`; reservations released. |
+| MQTT-OBS-2 | ✅ FIXED | A reserved ingress receiver with no declared plan is capped below `Full` until its first Reconcile. |
+| MQTT-RES-2 | ✅ ADDRESSED | Accepted design; the SDK-substring upgrade checklist is retained in both code (`errors.go`) and operator docs. |
+| MQTT-RES-3 | ✅ FIXED | All discard-path `Disconnect` calls use a bounded context. |
+| DOC-REL-1 | ✅ FIXED | Pre-release image/tag wording corrected across README, deployment-guide, and the upgrade-rollback runbook. |
+| §8 docs | ✅ FIXED | INVALID_CONFIG section, OTLP shipped-limitation note, config-rollback ConfigDegraded path, node-down-failover/scenario-08 CDK links, standalone split-brain runbook, new shutdown-timeout runbook, and 4 missing MQTT CDK alarms. |
+| TEST-4 | ✅ FIXED | `TestUC3ClusterFailover` (real MQTT broker + real DynamoDB) now **asserts** failure-detection-to-`ServiceLevelFull` against a calibrated `uc3FailoverSLO` (15s; observed ~5.1s warm / ~5.2s cold), converting the historical "reported, never gated" duration into a hard pass/fail that a regression toward the unbounded ~336s default profile would trip. |
+| TEST-1,2,3,5,6 | ✅ FIXED | **TEST-2**: `TestUC3SeparateProcessFailover` runs two real gobridge node OS processes (reusable `nodeProcess` re-exec launcher) competing for one real DynamoDB exclusive lease on a real broker; a real `SIGKILL` of the verified owner is followed by an asserted standby takeover — advanced fencing `Version` + `ServiceLevelFull` within `uc3FailoverSLO`. **TEST-1**: that proof is PR-gated via `make test-failover-gate` + a `ci.yml` integration-job step (mirroring the `test-mqtt-ingress-memory` exception). **TEST-5**: strict eventual-plateau — goroutines must return to baseline within a bounded drain budget (the historical ~33/cycle was async autopaho cleanup that empirically drains to baseline in ~60 s, not a leak). **TEST-6**: every RES probe is now a deterministic fault with one strict assertion (admission-reject / exactly-once / all-DLQ'd / panic-DLQ'd / no-misclassification). **TEST-3**: the shipped App's convergence watch is proven broker-backed (real unreachable broker → `ConfigDegraded`=1 + "not converged"; reachable → stays converged), closing the shipped-divergence gap; the generic Supervisor keeps its unit coverage of the same mechanism. Six `time.Sleep` allowlist entries retired. |
+
+## 0.6 What is actually left
+
+Every confirmed production-code, doc, and test-confidence finding above is closed
+(✅ in §0.5). What remains falls into exactly three buckets — none is open
+remediation work on this branch:
+
+| # | Remaining item | Kind | Details |
 |---|---|---|---|
-| MQTT-C1 | BLOCKER | CONFIRMED | `go get` consumption broken: replace directives + no module tags; release train never run |
-| MQTT-R1 | HIGH | CONFIRMED | Reload success committed before new session reaches broker; no rollback for broker-invalid configs |
-| MQTT-L1 | HIGH | CONFIRMED | Spec-compliant publish (>128 user props) → permanent terminal-session poison loop; publisher-triggerable |
-| MQTT-L3 | HIGH | CONFIRMED | Emit-error strands un-acked deliveries; no in-process recovery; ingress can wedge |
-| MQTT-F1 | HIGH | CONFIRMED | Default worst-case failover ~336 s (HA) / ~10 min (standalone); 30–60 s only via explicit tuning + `failover_slo` |
-| MQTT-F3 | HIGH | CONFIRMED | Persistent + `client_id_suffix: hostname` strands broker queues on every Deployment/ECS rollout |
-| MQTT-O1 | HIGH | CONFIRMED (documented) | In-flight egress QoS 1/2 lost on crash (in-memory autopaho store); safe only via bridge outbox modes |
-| MQTT-C2 | HIGH | CONFIRMED | Production binary image-only + AWS-flavored; published binary is demo-only |
-| MQTT-C3 | HIGH | CONFIRMED | No metrics exporter for non-AWS platforms in shipped artifacts |
-| MQTT-L2 | HIGH | PLAUSIBLE | Pre-first-Reconcile orphan sweep can ack-drop live backlog + unsubscribe live topic; counted as benign |
-| MQTT-DOC1 | HIGH | CONFIRMED | troubleshooting.md: wrong takeover reason code (0x8F) in the takeover diagnosis entry |
-| MQTT-DOC2 | HIGH | CONFIRMED | troubleshooting.md: nonexistent `defaultDispatchSize=1024` (actual 192) |
-| MQTT-R2 | HIGH | BY DESIGN | Every MQTT config change = full-transport outage window; hitless only for QoS 1/2 durable traffic |
-| MQTT-F2 | MEDIUM | CONFIRMED | Failover budget validated only when `failover_slo` declared; default silence misleads |
-| MQTT-F4 | MEDIUM | CONFIRMED | Standalone split-brain (2 replicas, local lease) defended by Warn log only |
-| MQTT-F5 | MEDIUM | CONFIRMED | Lease loss ⇒ pod restart (single-use session); extends practical failover bound |
-| MQTT-F6 | MEDIUM | PLAUSIBLE | ManagedSubscriptionStore has no fencing; safety rests on lease + identity keying |
-| MQTT-R3/O2 | MEDIUM | CONFIRMED | One permanently rejected subscription → indefinite whole-session churn; no per-topic quarantine |
-| MQTT-R4 | MEDIUM | CONFIRMED | No reload debounce by default; N config writes = N outage windows |
-| MQTT-R5 | MEDIUM | CONFIRMED | Unmanaged wildcard-route removal leaks broker subscription forever |
-| MQTT-R6 | MEDIUM | BY DESIGN | Managed route-removal can brick session until config revert (fail-closed; needs runbook) |
-| MQTT-O3 | MEDIUM | CONFIRMED | CircuitBreakerSender uses concurrency-unsafe token-less breaker API |
-| MQTT-L4 | MEDIUM | CONFIRMED | Recycle-window discard drop: only fully silent drop branch in router (QoS 0 lost, uncounted) |
-| MQTT-L5 | MEDIUM | CONFIRMED | Ack-after-reconnect mapped to success: silent duplicate + falsely cleared unsettled gauge |
-| MQTT-L6 | MEDIUM | CONFIRMED | Persistent+clean_start=true silently wipes offline backlog each restart (no warning) |
-| MQTT-L7 | MEDIUM | BY DESIGN | Retry recycles whole session; induced duplicates unmeasured; Session-Present=false → terminal |
-| MQTT-C4 | MEDIUM | CONFIRMED | Worst-case shutdown exceeds default K8s 30 s grace (stacked budgets) |
-| MQTT-C5 | MEDIUM | CONFIRMED | HA lease/outbox stores are DynamoDB-only; plain-K8s active/standby impossible |
-| MQTT-D1/DOC4 | MEDIUM | CONFIRMED | doc.go covered-topic text contradicts code (claims ack-drop; code retains) |
-| MQTT-D2 | MEDIUM | CONFIRMED | 5 files exceed repo's 500-line limit incl. both concurrency cores |
-| MQTT-D5 | MEDIUM | BY DESIGN | Durable modes locked to one broker-session domain; HA must be broker-side |
-| MQTT-DOC3 | MEDIUM | CONFIRMED | 6 emitted metrics undocumented incl. `MQTTPublishFailures` |
-| MQTT-DOC6 | MEDIUM | CONFIRMED | Missing runbooks: poison loop, migration brick, SUBACK flap, plaintext-cred error, capacity |
-| MQTT-D3 | LOW | CONFIRMED | (folded into MQTT-L5) |
-| MQTT-D4 | LOW | BY DESIGN | QoS 0 loss vectors inherent + metered |
-| MQTT-D6 | LOW | superseded | (superseded by MQTT-L1) |
-| MQTT-O4 | LOW | BY DESIGN | Event eviction defers reconcile one connect edge (metered) |
-| MQTT-O5 | LOW | CONFIRMED | Error classification by substring match on paho strings (pinned + checklisted) |
-| MQTT-O6 | LOW | MITIGATED | Unbounded Disconnect on cleanup (preceded by ctx cancel) |
-| MQTT-L8 | LOW | CONFIRMED | Shutdown abandons queued QoS 0 silently (Close-time only) |
-| MQTT-L9 | LOW | CONFIRMED | QoS 0 egress loss invisible; no advisory flags fire-and-forget routes |
-| MQTT-C6 | LOW | CONFIRMED | Legacy bare `/ready` path keeps HA standbys permanently unready |
-| MQTT-C7 | LOW | CONFIRMED | No K8s deployment artifacts; image build needs whole repo |
-| MQTT-DOC5 | LOW | CONFIRMED | Wrong code cross-refs in docs; `MQTTConnectLatency` declared but never emitted |
+| 1 | **REL-1** — run the module release train (dependency-ordered tags, strip workspace `replace` directives, external-consumer smoke gate) | Release execution | §2 → [REL-1](#rel-1--module-publication-is-pending-the-release-train) |
+| 2 | **REL-2** — cut the `cmd/gobridge` release; workflow publishes the verified image digest | Release execution | §2 → [REL-2](#rel-2--image-publication-is-pending-a-command-release) |
+| 3 | At release: swap pre-release doc wording for the verified digest/tag references (`README`, deployment-guide, upgrade-rollback runbook) | Release execution | [DOC-REL-1](#doc-rel-1--pre-release-docs-use-incorrect-present-tense---fixed) "Required fix" + §12 → [Release-only follow-up](#release-only-follow-up--not-a-production-finding) |
+| 4 | Accepted-by-design residuals — disclosed limitations, **no work scheduled**: CLUSTER-3 (no live cluster reconfig; whole-cohort replacement — a coordinated-rollout design is implemented through Phase 4 but wired by no composition root, so the refusal is unchanged; see the §3 CLUSTER-3 "Design" note → `docs/design/cluster-config-rollout-protocol.md` §11), MQTT-RES-1 (whole-session reconcile flap; runbook+alarms), MQTT-RES-2 (SDK error-substring classification; upgrade checklist), MQTT-R1-OBS (deferred-connect `connect_after_lease` sessions can evade the post-swap convergence watch — readiness excludes them while no lease is held; found while adding the generic-Supervisor reload test, details in §9 TEST-3), plus the §10 rows marked "still present by design/contract" (AWS-bound shipped root, no OTLP in shipped image, DynamoDB-only distributed lease backend, bare `/ready` requires Full, no official Helm/manifests, ~336.5 s default failover profile unless tuned) | Accepted limitation | §3, §5, §10 |
+| 5 | Refresh the §0 executive verdict — it is the **original audit snapshot** (pre-remediation) and still says NO-GO; its seven minimum gates are all closed per §0.5. A re-audit/verdict decision is a human call, not remediation work | Doc refresh | §0, §0.5 |
 
+---
+
+## 1. Evidence
+
+| Evidence | Result | Limit |
+|---|---|---|
+| `make lint` | **PASS**, 72 s | Static evidence only. Advisory stages do not fail the build. |
+| `make test` | **PASS**, 226 s | Runs unit tests with `-short -race`; Docker-backed behavior is skipped. |
+| MQTT package `go test -race -count=1 ./...` | **PASS**, 34.8 s | Strong concurrency evidence inside the adapter, not a cluster proof. |
+| Targeted broker-backed MQTT tests | **PASS**: settlement recovery, equal-publish identity, dedicated-session isolation, persistent-subscription migration, broker outage/reconnect, ingress poison | Focused cases, not the full long-running suite. |
+| Root Dockerfile | Independently built and run; distroless, static, non-root `65532:65532`, structured stdout logs, bounded healthcheck failure | The resulting process is the AWS file-based composition root, not a portable general binary. |
+| Documentation link scan | 524 operator-facing relative links checked, zero broken links | Correct links do not prove correct operational claims. |
+
+### Test-gate reality
+
+| Gate | Runs when | What it proves |
+|---|---|---|
+| `make test` | Local/default | Unit, race, timing audits. |
+| `make test-integration` | PR integration job | Docker-backed integration; no long-running chaos/failover suite. |
+| `make test-mqtt-ingress-memory` | PR integration job | One bounded MQTT ingress-memory proof. |
+| `make test-long-running` | Schedule/manual only | Most failover, process-kill, store-outage, soak, and goroutine evidence. |
+
+---
+
+## 2. Release-stage status — excluded from production verdict
+
+This section records what must happen when releasing. It is not a defect register
+and does not contribute to the NO-GO production verdict.
+
+| Release-state evidence | Result |
+|---|---|
+| Module metadata | Only root tags `v0.1.0`, `v0.2.0`; 45 module files contain local `replace` directives. |
+| Workflow history | Two root-tag runs; the image job requires a stable `cmd/gobridge/vX.Y.Z` release. |
+| Public package lookup | `GET /users/mariotoffia/packages/container/gobridge` returned 404 at audit time. |
+
+### REL-1 — Module publication is pending the release train
+
+`adapters/mqtt/transport/paho/go.mod:21-23`, `cmd/gobridge/go.mod:39`,
+`RELEASE.md:256-285` **EXPECTED PRE-RELEASE:** external `go get` consumption is
+not available until the dependency-ordered path-prefixed tag train is cut and
+the release workflow strips/replaces workspace-local references.
+
+**Release action:** run the existing release process and external-consumer smoke
+gate. This is release execution, not production-code remediation.
+
+### REL-2 — Image publication is pending a command release
+
+`.github/workflows/release.yml:208-217`, `RELEASE.md:256-285`
+**EXPECTED PRE-RELEASE:** the image job runs only for a stable
+`cmd/gobridge/vX.Y.Z` release and publishes a verified digest. No such release
+has been cut yet.
+
+**Release action:** cut the command release and publish the digest after the
+production-readiness findings are closed.
+
+### DOC-REL-1 — Pre-release docs use incorrect present tense  — ✅ FIXED
+
+`README.md:18-25`, `docs/deployment-guide.md:437-446`,
+`docs/runbooks/upgrade-rollback-and-sqlite-durability.md:35-50`
+**MEDIUM correctness [CONFIRMED]:** these files say the image and `v0.1.0` /
+`v0.2.0` image tags are already published. `RELEASE.md` correctly says the
+workflow publishes by digest only after a command release.
+
+**Required fix:** use future/pre-release wording now. At release, replace it with
+the verified `gobridge-image-digest.txt` reference. This is a documentation
+accuracy finding, not a code-readiness blocker.
+
+---
+
+## 3. Confirmed production code findings
+
+### MQTT-CORE-1 — Count-less MQTT redelivery evades the replay cap forever  — ✅ FIXED
+
+`adapters/mqtt/transport/paho/acl_headers.go:196-203,363-428`, `runtime/route/leakguard.go:259-350`, `runtime/route/dispatch.go:658-729` **HIGH resilience [CONFIRMED]:** MQTT publishes without `mqtt.message-id` or correlation data receive a fresh UUID on every callback. The runtime replay ledger keys count-less sources by envelope ID. A durable MQTT `Delivery.Retry` recycles the connection without settling the publish, so the broker redelivery receives a new UUID and a new attempt counter.
+
+**Failure sequence:**
+
+1. A QoS 1/2 external producer sends a message without stable identity.
+2. A `direct_hold` target fails transiently, or `shared_outbox` fails before Persist.
+3. The runtime records attempt 1 under envelope `A` and calls `Delivery.Retry`.
+4. MQTT recycles the durable session; the broker redelivers the same publish.
+5. The adapter creates envelope `B`; the ledger reads attempt 0.
+6. The sequence repeats indefinitely. `max_replay_attempts` never reaches its terminal action.
+
+**Impact:** the message is not silently lost, but one deterministic poison message can recycle the whole session every 30 seconds, head-of-line-block ingress, and duplicate every innocent unsettled QoS 1/2 delivery. `docs/transports/mqtt.md:760,791-792` currently overstates that all `direct_hold` source attempts reach the configured cap.
+
+**Affected:** durable Persistent/Exclusive QoS 1/2, `direct_hold`, and pre-Persist `shared_outbox` failures from producers without stable identity.
+
+**Not affected:** producers supplying `mqtt.message-id`/correlation data; bridge-to-bridge MQTT, which stamps envelope ID; post-Persist outbox drain; QoS 0/Ephemeral, where Retry is unsupported and falls back terminally.
+
+**Required fix:** mark generated identities explicitly and apply a finite policy that does not depend on envelope-ID stability: require producer identity, terminally DLQ the no-identity retry case, or add durable broker-redelivery state. Do not use a topic/payload content hash; it would collapse distinct equal-valued events.
+
+### RECONFIG-1 — The shipped AWS process reports apply success before MQTT converges  — ✅ FIXED
+
+`deployment/aws-filebased-config/lib/bootstrap/app.go:654-675,704-870,904-954`, `runtime/bridge_start.go:43-123,410-494`, `bridge/supervisor_convergence.go:13-165` **HIGH correctness [CONFIRMED]:** the AWS bootstrap duplicates runtime swapping instead of using `bridge.Supervisor`. It calls `Runtime.Start`, installs the runtime, and notifies the config manager with `nil` before MQTT background connection/subscription reaches broker truth. Its degraded provider only covers config-watch/apply errors, not post-apply transport convergence.
+
+**Failure sequence:** a syntactically valid config contains denied MQTT credentials or an ACL-rejected topic; the healthy old runtime is stopped; the replacement `Start` returns after launching background managers; apply is acknowledged; the new transport retries indefinitely without reaching `LevelSubscribed`.
+
+**Impact:** the shipped process can replace working delivery with a broken config while the apply result is green. Session readiness eventually shows failure, but the generic Supervisor's `ConfigDegraded` convergence signal and reason are absent. Initial AWS startup has the same truthfulness gap.
+
+**Required fix:** route bootstrap lifecycle through `bridge.Supervisor`, reusing its preflights and convergence watch. If that is impossible, implement the same bounded `LevelSubscribed` barrier and applied-but-not-converged health state before claiming successful convergence.
+
+### CLUSTER-1 — Static-endpoint clustering bypasses MQTT replica-safety validation  — ✅ FIXED
+
+`validate/blueprint_graph.go:223-225,300-388`, `bridge/convert.go:84-103` **HIGH correctness [CONFIRMED]:** runtime composition defines clustered deployment as either `deployment_mode: clustered` or non-empty `bridge.cluster.endpoints`. Blueprint validation runs clustered MQTT shared-subscription and replica-identity checks only for the first spelling.
+
+**Failure sequence:** multiple replicas configure static endpoints without `deployment_mode: clustered`; validation permits non-exclusive non-`$share` subscriptions or missing replica identity; runtime treats the same config as clustered.
+
+**Impact:** replicas can N-fold consume the same logical traffic or collide on MQTT ClientID despite passing validation.
+
+**Required fix:** expose one shared clustered predicate outside `bridge` or mirror it exactly in validation and pin both spellings with the same validation tests.
+
+### RECONFIG-2 — Failed bootstrap candidates are not stopped  — ✅ FIXED
+
+`deployment/aws-filebased-config/lib/bootstrap/app.go:796-902` **HIGH resilience [CONFIRMED]:** both overlap and prepare/commit paths return immediately when a newly built runtime's late `Start` fails. Cleanup defers are installed only after a successful Start, and `recoverPrevious` also enters wedged state without stopping a failed recovery candidate.
+
+**Failure sequence:** Builder opens stores/sessions; `Runtime.Start` later rejects a configuration-dependent conflict or another component fails; bootstrap returns/rebuilds the old runtime but never calls bounded `Runtime.Stop` on the failed candidate.
+
+**Impact:** repeated failed applies can leak store handles, adapter resources, and background state in the shipped process.
+
+**Required fix:** install candidate cleanup before Start and stop every uninstalled runtime on all failure paths. Abort prepare/commit when stopping the old runtime fails instead of proceeding under uncertain ownership.
+
+### CLUSTER-2 — Broker-only failure on the active owner does not fail over  — ✅ FIXED
+
+`runtime/session/manager.go:389-424`, `runtime/session/manager_lease.go:608-765`, `adapters/mqtt/transport/paho/session_connection.go:152-174` **HIGH resilience [CONFIRMED requirement gap]:** a disconnected MQTT session logs/reconnects, but the session manager keeps renewing its exclusive lease while the lease store remains reachable.
+
+**Failure sequence:** the active node alone loses its network path or authorization to the broker; DynamoDB remains reachable; lease renewal succeeds; standbys remain blocked in acquire-before-connect; Paho retries forever on the isolated node.
+
+**Impact:** cluster availability can remain down indefinitely. The configured lease failover budget applies to owner/lease/process loss, not to this common node-local broker-path failure.
+
+**Required fix:** if broker-path failover is part of the availability contract, add a configurable disconnected/non-converged threshold that quiesces ingress, closes the source, and releases or stops renewing the lease. Include the threshold in failover-budget validation and metrics.
+
+### IDENTITY-1 — Persistent+hostname rollout can silently strand broker queues  — ✅ FIXED
+
+`adapters/mqtt/transport/paho/factory.go:103-123`, `docs/transports/mqtt.md:84-107` **HIGH correctness [CONFIRMED]:** Persistent mode with `client_id_suffix: hostname` remains valid. The adapter warns, but Kubernetes Deployments and ECS tasks mint new hostnames on replacement.
+
+**Failure sequence:** a rollout changes hostname; the effective MQTT ClientID changes; the new pod opens a different durable broker session; the old session's queued QoS 1/2 messages have no consumer and expire after `session_expiry_interval`.
+
+**Impact:** loss by broker-session timeout is invisible to GoBridge. A startup warning is not an admission boundary.
+
+**Required fix:** reject this combination unless configuration explicitly asserts stable replica identity, or restrict it to documented StatefulSet/VM profiles. Use Exclusive mode or Ephemeral+`$share` for Deployment/ECS replicas.
+
+### CLUSTER-3 — Cluster-wide live reconfiguration is not implemented  — ✅ ACCEPTED
+
+`deployment/aws-filebased-config/lib/bootstrap/app.go:704-730`, `docs/adr/0012-cluster-config-whole-cohort-replacement.md`, `docs/runbooks/cluster-config-rollout.md` **HIGH architecture [CONFIRMED capability gap]:** the process correctly refuses non-no-op clustered reload because it has no distributed version barrier, all-member readiness barrier, or coordinated rollback.
+
+**Impact:** the safe behavior is refusal, not resilient live cluster reconfiguration. Operators must externally stage, quiesce, drain, replace the whole cohort, verify version/readiness, and re-enable ingress.
+
+**Required fix:** do not claim live cluster reconfiguration. If required, implement a distributed generation/barrier protocol; otherwise keep refusal and make orchestrator-managed whole-cohort replacement the explicit product contract.
+
+**Design (Phases 1–4 implemented; protocol not yet wired):** a store-backed all-member barrier protocol (propose → stage/ack → fenced commit/abort) with test plan and draft ADR 0013 is specified in `docs/design/cluster-config-rollout-protocol.md`, implemented against its **§11 phasing plan**. Prior-art/split-brain research backing the design: `docs/design/cluster-config-rollout-research.md`.
+
+- **Phase 1 ✅ (landed):** `domain/persistence` `Rollout` aggregate + state machine (invariants I1–I5), `ports.ClusterRolloutStore`, `adapters/native/store/memoryrollout` in-memory adapter, and the `ports/storetest.RunClusterRolloutStoreTests` conformance suite (CAS races, stale-token fencing, ack-after-abort, commit/abort atomicity) — green on `make lint` + `make test`.
+- **Phase 2 ✅ (landed):** `adapters/aws/store/dynamodbrollout` — single-row, `ConsistentRead`, monotonic-`rev` optimistic-lock CAS; `persistence.RolloutSnapshot`/`RehydrateRollout` so the aggregate owns every invariant across a store round trip; the same conformance suite green (25/25, race-clean) against DynamoDB Local.
+- **Phase 3 ✅ (landed):** rollout-class preflight (`classifyRolloutDelta`), the `cluster.rollout: coordinated` guard lift in `Supervisor.apply`, the coordinator decision core (`decideRollout`/`coordinatorStep`/lock-delay), and the applier units (digest verify, `nodeRolloutGate`, `evaluateProposal`).
+- **Phase 4 ✅ (landed):** the barrier now drives end to end — applier (observe → digest-verify → class preflight → build-without-swap → `Ack`/`Nack`; swap only on `Committed`, through the normal apply path), coordinator `Run` loop (elect → lock-delay → renew → fenced decide → resign), boot-time joiner gate, `bridge.cluster.members` + `config/validate.go` admission rules, `ClusterRollout*` metrics, a `/deephealth` `rollout` section, and integration coverage against real DynamoDB. A prior audit had closed four proposer defects; **this phase found and fixed a fifth, more serious one**: the membership epoch was read from `bridge.cluster.endpoints`, which is this instance's CAPABILITY map (`{http: …}`), not a peer roster — every cohort would have frozen a one-"member" epoch named `http` and committed on a single ack, i.e. no barrier at all. Five design questions the phase owned are now decided rather than deferred (membership authority, candidate transport + joiner rule, digest determinism, `nodeRolloutGate` persistence, F5b first-decision fencing) — see §11 Phase 4.
+- **Phase 4 residual — BLOCKING for wiring:** an adversarial review of this phase traced three reachable sequences (restart into the write→propose window; a commit overwritten before every member observed it; restart after an abort) that all reduce to one missing fact — under the chosen candidate transport the config source keeps only a `current` slot, so a member has no durable "last committed configuration" to fall back on. Mitigations landed (boot-staging, the joiner gate, bounded adopt retries) remove the permanent splits and deadlocks, but a bounded mixed-version window remains and an aborted rollout blocks member restarts until an operator rolls the config source back. **Phase 5 must give the cohort a durable last-committed artifact before the barrier is wired anywhere** — design §11 Phase 4 "BLOCKING residual".
+- **Phases 5–6 (pending):** close the transport residual, multi-process long-running proof (UC-CR1…UC-CR8), ship. **Refusal remains the shipped behavior** — no composition root wires `bridge.WithClusterRollout`, so the barrier is inert and the accepted-by-design status above is unchanged.
+
+**Interaction note (not a dependency):** MQTT-RES-1 (one broker-rejected subscription flaps its whole session) is an independent, per-node session behaviour — it triggers on any broker SUBACK rejection (e.g. a server-side ACL change) with no config change and no cluster involved, and a distributed rollout protocol would not remove it. The interaction is one-directional: a config that *introduces* a broker-rejected subscription, applied across a cohort, would reproduce the MQTT-RES-1 flap on every member and latch the MQTT-R1 `ConfigDegraded` watch — one more reason clustered live reload stays refused fail-closed.
+
+---
+
+## 4. Failover budget
+
+The implemented worst-case formula in `bridge/failover_budget.go:228-313` is:
+
+```text
+budget =
+  lease_ttl
++ 2 × max_jittered_acquire_poll
++ (ceil(lease_ttl / min_jittered_acquire_poll) + 1) × renew_call_timeout
++ post_takeover_activation
++ startup_allowance
+```
+
+MQTT post-takeover activation is:
+
+```text
+2 × connect_timeout + 4 × reconcile_timeout + 2 × unmatched_grace
+```
+
+| Profile | Calculation | Computed bound |
+|---|---:|---:|
+| Shipped clustered HA defaults | `45s + 12.5s + 13×3s + 240s + 0` | **336.5 s** |
+| Standalone-derived defaults | `360s + 12.5s + 97×5s + 240s + 0` | **1097.5 s** |
+| Tuned warm-standby example | `15s + 5s + 11×1s + 18s + 0` | **49 s** |
+
+A valid tuned timing shape uses these exact config paths:
+
+| Config path | Value |
+|---|---:|
+| `routes[].session.lease_ttl` | `15s` |
+| `routes[].session.renew_interval` | `2s` |
+| `routes[].session.lease_renew_jitter` | `0s` |
+| `routes[].session.renew_call_timeout` | `1s` |
+| `routes[].session.max_renew_fails` | `3` |
+| `routes[].session.acquire_poll_interval` | `2s` |
+| `routes[].session.step_down_grace` | `5s` |
+| `routes[].session.connect_after_lease` | `true` |
+| `routes[].session.failover_slo` | `60s` |
+| `sessions[].options.session.connect_timeout` | `3s` |
+| `sessions[].options.session.reconcile_timeout` | `2s` |
+| `sessions[].options.session.unmatched_grace` | `2s` |
+
+The Builder rejects an exceeded declared SLO and logs an undeclared computed budget. This is configuration admission, not measured failover evidence. The 49-second value excludes broker-only failure detection unless CLUSTER-2 is fixed and excludes platform replacement latency unless covered by `startup_allowance`.
+
+---
+
+## 5. Additional resilience and correctness findings
+
+### CB-1 — A late half-open result can release another probe's slot  — ✅ FIXED
+
+`circuitbreaker/breaker.go:245-303,349-380` **MEDIUM correctness [CONFIRMED]:** a `Token` identifies only breaker generation and whether it was a probe. It does not identify the probe slot.
+
+**Failure sequence:** probe A times out and its slot is reclaimed; probe B is admitted in the same half-open generation; A later reports; `AfterRequestToken(A)` releases the oldest current slot, which now belongs to B.
+
+**Impact:** the breaker can exceed `HalfOpenMaxProbes`, and a late result can influence the current half-open epoch. MQTT uses this breaker through the generation-safe admission surface, so the defect is reachable when a probe returns after `probe_timeout`.
+
+**Required fix:** assign each probe slot an ID and carry it in `Token`; release and count only the matching live slot. A reclaimed probe's late outcome must not release a newer slot.
+
+### STORE-1 — Core outbox operations may inherit deadline-less contexts  — ✅ FIXED
+
+`runtime/route/dispatch.go:1030-1083`, `runtime/outbox/loop.go`, `adapters/aws/store/dynamodboutbox/acl_store.go:452-525,654-740` **MEDIUM resilience [PLAUSIBLE]:** route-level Query/Persist and drainer Claim pass caller contexts directly to store methods. The DynamoDB adapter forwards those contexts to SDK calls. No core-owned per-operation deadline was found on these paths.
+
+**Failure sequence:** an AWS endpoint or HTTP exchange black-holes after connection establishment while the route context has no deadline; Persist pins route in-flight capacity, or Claim pins a drainer partition.
+
+**Impact:** settlement remains fail-safe, but delivery can stall without a bounded supervision transition.
+
+**Missing proof:** no shipped AWS SDK call was reproduced hanging indefinitely; lower network layers may terminate a subset of failures.
+
+**Required fix:** apply bounded store-operation contexts at the runtime port boundary and classify timeout for retry/supervision.
+
+### CORE-RES-1 — A context-ignoring outbox sender can leak one batch repeatedly  — ✅ FIXED
+
+`runtime/outbox/loop.go:529-568` **MEDIUM resilience [CONFIRMED defense-in-depth]:** the watchdog deliberately abandons a hung sender goroutine and continues draining later batches.
+
+**Impact:** a Sender that ignores cancellation can accumulate one parked sender plus waiter goroutine per later batch, eventually exhausting memory. No violation was proven in the shipped MQTT or SQS senders; this is reachable through a hostile plugin or an SDK call that never returns.
+
+**Required fix:** after the first watchdog expiry, latch the partition stalled/terminal and supervise or restart it instead of scheduling unlimited later batches.
+
+### CORE-RES-2 — Processor leak protection is consecutive, not outstanding  — ✅ FIXED
+
+`runtime/route/leakguard.go:101-150` **MEDIUM resilience [CONFIRMED defense-in-depth]:** the abandoned-processor counter resets on every terminal settlement. Interleaved healthy messages can therefore reset the counter while timed-out processor goroutines remain alive.
+
+**Impact:** a custom processor that ignores cancellation can leak unbounded goroutines without tripping the 64-abandon breaker.
+
+**Required fix:** count live abandoned processor calls and decrement when each exits; trip on outstanding count, not consecutive abandons.
+
+### MQTT-RES-1 — One rejected subscription can flap the whole session  — ✅ ACCEPTED
+
+`adapters/mqtt/transport/paho/session_reconcile.go:90`, `adapters/mqtt/transport/paho/session_reconcile_apply.go:230-278` **MEDIUM resilience [CONFIRMED accepted design]:** one permanent SUBACK rejection or QoS downgrade fails the whole authoritative reconcile. Exclusive mode releases ownership and supervision retries connect→subscribe→reject→disconnect forever at the capped backoff.
+
+**Impact:** healthy sibling topics on the same session remain unavailable. This is fail-closed and observable, not partial silent service.
+
+**Required action:** keep the operator runbook and alert on sustained `ReconcileFailures`/`MQTTQoSDowngraded`. Add per-topic quarantine only if partial service is an explicit product decision.
+
+### MQTT-OBS-1 — Close abandons queued QoS 0 without a metric  — ✅ FIXED
+
+`adapters/mqtt/transport/paho/acl_router_dispatch.go:15-30` **LOW observability [CONFIRMED]:** `dispatchLoop` returns immediately when `r.stop` closes, leaving buffered `dispatchCh` items undispatched.
+
+**Impact:** QoS 1/2 remains unacknowledged and is redelivered. QoS 0 is lost at close without incrementing a drop counter.
+
+**Required fix:** drain/count abandoned queue entries during shutdown or explicitly count remaining QoS 0 as `MQTTRouterDropped`.
+
+### MQTT-OBS-2 — A receiver can briefly report Full before first Reconcile  — ✅ FIXED
+
+`adapters/mqtt/transport/paho/session_health.go:70-104` **LOW correctness [PLAUSIBLE]:** a connected session with no declared plan is treated as a sender-only Full session. Health does not consult the reserved-ingress-receiver state.
+
+**Failure sequence:** Start connects; first Reconcile is delayed behind a concurrent reload; readiness samples the session before the plan is stored.
+
+**Impact:** a short false-ready window is possible without message loss. Runtime reachability and duration were not reproduced.
+
+**Required fix:** cap a reserved receiver below Full until its first plan is declared.
+
+### MQTT-RES-2 — SDK error-string classification is upgrade-fragile  — ✅ ACCEPTED
+
+`adapters/mqtt/transport/paho/errors.go:34-52` **LOW resilience [CONFIRMED]:** connection errors are partly classified by case-insensitive SDK error substrings.
+
+**Impact:** a Paho version bump can silently change retry classification. The fallback is retryable `ErrUnavailable`, so the failure is conservative rather than lossy.
+
+**Required action:** retain the upgrade checklist and replace substring cases with typed errors/reason codes when the SDK exposes them.
+
+### MQTT-RES-3 — Discard-path Disconnect uses an unbounded context  — ✅ FIXED
+
+`adapters/mqtt/transport/paho/acl_session.go:226-261` **LOW resilience [CONFIRMED mitigated]:** failed/abandoned Start paths call `Disconnect(context.Background())`.
+
+**Impact:** teardown can block if the SDK ignores cancellation of its already-cancelled connection-manager root. No shipped hang was reproduced.
+
+**Required fix:** use a bounded disconnect context for defense in depth.
+
+---
+
+## 6. Message delivery, loss, duplication, and timeout model
+
+### Guarantees that hold
+
+- **Ingress QoS 1/2, Persistent/Exclusive:** manual acknowledgement delays PUBACK/PUBCOMP until runtime settlement. A crash, reconnect, emit failure, or unsettled close leaves the broker message available for redelivery, subject to broker session/queue expiry.
+- **`direct_hold`:** destination Send succeeds before source Ack. An ambiguous destination success followed by source-ack failure duplicates on source redelivery; it does not silently lose the source message.
+- **`shared_outbox`:** durable Persist succeeds before source Ack. Drainers use claim/fencing checks and replay persisted records. Send-success/Complete-failure remains an intentional duplicate window.
+- **DLQ:** a failed DLQ write leaves the source delivery or outbox record unsettled. Successful DLQ/drop is terminal and observable.
+- **Representational poison:** messages exceeding local payload/metadata/property caps are deliberately acked and dropped on `MQTTIngressPoisonDropped`, preventing a permanent redelivery kill loop.
+- **Broker outage:** Paho reconnects forever with jittered bounded attempts; reconnect resets subscription state and drives authoritative reconcile.
+
+### Loss and duplicate register
+
+| Condition | Outcome | Recorded/reportable |
+|---|---|---|
+| QoS 0 dispatch queue full | Loss | `MQTTRouterDropped` |
+| Covered QoS 0 pending overflow | Loss | `MQTTRouterCoveredDropped` |
+| Recycle/epoch stale queue | QoS 0 loss; QoS 1/2 redelivery | `MQTTRouterStalePurged` |
+| Local ingress cap violation | Acknowledged configured rejection | `MQTTIngressPoisonDropped` |
+| Broker violates granted Receive Maximum | QoS 1/2 acknowledged loss to preserve liveness | `MQTTRouterOverflowDropped` |
+| Stale broker-only orphan subscription | Acknowledged cleanup drop | `MQTTRouterUnmatchedDropped` |
+| Router close with queued dispatch | QoS 0 loss; QoS 1/2 redelivery | **QoS 0 currently unmetered** |
+| QoS 0/Ephemeral reload window | Loss by transport/session contract | Documented; the bridge cannot count messages it never receives |
+| Broker offline queue/session expiry | Loss before bridge receipt | Invisible to bridge; broker metric required |
+| Persistent+hostname Deployment/ECS rollout | Old broker queue stranded until expiry | Warning only; loss invisible to bridge |
+| Raw MQTT QoS 1/2 Sender at process death | In-flight client packet state lost | `NonDurableEgress()` advertises the limit; route-layer modes compensate |
+| Ack after reconnect | Guaranteed broker redelivery/duplicate | `MQTTAckAfterReconnect` |
+| Settlement recovery recycle | All unsettled session deliveries may duplicate | `MQTTSessionRecoveryRecycle` plus unsettled gauges |
+| Outbox send accepted, Complete/fence fails | Replay/duplicate risk | `OutboxDuplicateRisk` |
+| Count-less replay-cap defect | No immediate loss; indefinite recycle and duplicate amplification | Recovery metrics reveal symptoms, but no terminal poison signal |
+
+### Timeout and capacity controls
+
+| Control | Purpose |
+|---|---|
+| `connect_timeout` | Bounds initial Start connection await. |
+| `reconnect_timeout` | Bounds each TCP/TLS/MQTT reconnect attempt. |
+| `reconcile_timeout` | Bounds each SUBSCRIBE/UNSUBSCRIBE and cannot be disabled. |
+| Sender `options.timeout` / route `send_timeout` | Bounds publish settlement; direct library use receives a 60-second safety net when no deadline exists. |
+| `unmatched_grace` | Bounds startup/reconnect handler-registration and managed-removal verification windows. |
+| `drain_timeout` / process `shutdown_timeout` | Bounds controlled stop and settlement drain. |
+| `receive_maximum` | Broker flow-control window and shared ingress reservation ceiling. |
+| `max_payload_bytes` / ingress memory budget | Bounds retained payload and validates worst-case ingress memory. |
+| `lease_ttl`, `renew_call_timeout`, `acquire_poll_interval`, `failover_slo` | Bound and optionally reject lease-failover timing. |
+
+These bounds prevent most normal dependency outages from becoming infinite waits. STORE-1, hostile context-ignoring plugins, and the count-less replay defect remain exceptions.
+
+---
+
+## 7. Outage, cluster, and reconfiguration behavior
+
+| Event | Current behavior | Verdict |
+|---|---|---|
+| MQTT broker outage affecting all nodes | Each session retries forever with bounded jittered attempts; readiness falls; authoritative reconcile runs after reconnect. | **Resilient, at-least-once limits apply.** |
+| MQTT broker path fails only on active exclusive owner | Active keeps lease while reconnecting; standby cannot connect/take over. | **Not resilient for node-local broker-path failure.** |
+| Lease store is transiently unavailable | Renew calls are bounded; active fails closed at its local lease deadline; standbys cannot acquire until store recovers. | **Safety over availability.** |
+| Process/pod dies | Lease expires/transfers; stable Exclusive ClientID resumes broker session; outbox fencing prevents stale completion. | **Conditional HA.** Default timing is minutes. |
+| Config source watcher fails after startup | Last-good runtime remains active; watcher retries with backoff and degraded health. | **Resilient.** |
+| Parsed config is structurally invalid | Validation rejects it before live replacement. | **Resilient.** |
+| Config is syntactically valid but broker-invalid | Generic Supervisor commits then reports non-convergence after budget; no automatic rollback. AWS bootstrap lacks that convergence state. | **Generic conditional; shipped process unsafe to claim converged.** |
+| Single-instance MQTT config reload | Serialized stop/rebuild/start. Durable QoS 1/2 can redeliver; QoS 0/Ephemeral traffic can be lost. | **Controlled restart, not hitless.** |
+| Clustered config reload | Non-no-op reload is refused. | **Safe refusal; no live cluster reconfiguration.** |
+| Graceful shutdown | Quiesce/drain/stop is bounded; unsettled QoS 1/2 redelivers. | **Conditional on orchestrator grace period.** |
+| SIGKILL before shutdown budget | QoS 1/2/outbox recovery usually preserves at-least-once; QoS 0 and pre-Persist Ephemeral traffic can be lost. | **Expected crash semantics; no dedicated incident runbook.** |
+
+### Supported cluster shapes
+
+| Shape | Supported | Requirements and limits |
+|---|---|---|
+| Ephemeral shared-consumer scale-out | **Yes** | `$share/<group>/<topic>`, unique per-replica ClientID, no durable broker-session continuity. |
+| Exclusive active/standby | **Yes, conditional** | Stable shared ClientID, distributed LeaseStore, durable shared outbox/managed-subscription stores, warm polling standby, declared/measured failover objective. DynamoDB is the only shipped production lease backend. |
+| Persistent per-replica sessions | **Only with stable replica identity** | StatefulSet/VM identity. Deployment/ECS hostname suffix is unsafe. |
+| Multi-broker URL failover for durable sessions | **No by design** | Persistent/Exclusive sessions require one stable broker-session domain; broker HA must sit behind one stable endpoint. |
+| Plain Kubernetes exclusive HA without AWS services | **No shipped backend** | A custom distributed lease/store adapter is required. |
+
+---
+
+## 8. Documentation and operator-readiness findings
+
+The MQTT reference document is substantially improved and unusually explicit about delivery boundaries, memory sizing, failover math, persistent identity, poison handling, and controlled-restart reload semantics. The documentation is still not production-ready because one delivery claim is wrong, pre-release image instructions use false present tense, and several operational signals do not lead to complete procedures.
+
+> **Status:** this table is the audit-time snapshot. Every row has since been
+> fixed — see the `§8 docs` and `DOC-REL-1` rows in §0.5. Only the at-release
+> wording swap (§0.6 item 3) remains.
+
+| Finding | Severity | Problem | Required fix |
+|---|---|---|---|
+| `docs/transports/mqtt.md:760,791-792` | **HIGH correctness [CONFIRMED]** | Claims `direct_hold` count-less MQTT reaches `MaxReplayAttempts`; MQTT-CORE-1 disproves this for producers without stable identity. | Document the vulnerable shape immediately; update after the runtime policy is fixed. |
+| `README.md:18-25`, `docs/deployment-guide.md:437-446`, `docs/runbooks/upgrade-rollback-and-sqlite-durability.md:35-50` | **MEDIUM correctness [CONFIRMED]** | Pre-release docs claim an image and semver image tags are already published, while the release process publishes a digest only after a command release. | Use pre-release wording now; inject/link the verified digest when releasing. |
+| `docs/troubleshooting.md:532-542` | **MEDIUM clarity [CONFIRMED]** | `INVALID_CONFIG` appears in the summary table but has no error-code section despite being a common startup/admin response. | Add symptom, validation-error extraction, and recovery guidance. |
+| `docs/deployment-guide.md:694-707` | **MEDIUM clarity [CONFIRMED]** | Lists OTLP beside CloudWatch without stating that the shipped image accepts only `noop`/`cloudwatch`. | Repeat the shipped-process limitation at the metrics section; OTLP requires a custom composition root. |
+| `docs/runbooks/config-rollback.md` | **MEDIUM clarity [CONFIRMED]** | MQTT docs send `ConfigDegraded` incidents here, but the runbook never names `ConfigDegraded`, `config_watch.reason`, or applied-but-not-converged. | Add a matching symptom/diagnosis path and distinguish slow convergence from broker-invalid config. |
+| `docs/runbooks/lease-flapping-split-brain.md:1-63` | **MEDIUM completeness [CONFIRMED]** | Covers distributed clustered lease flapping, not standalone multi-replica split brain or the `SPLIT-BRAIN RISK` warning. | Add standalone diagnosis and enforce `replicas: 1`. |
+| `docs/runbooks/node-down-failover.md:108`, `docs/scenarios/08-clustered-exclusive-sessions.md:564-572` | **MEDIUM correctness [CONFIRMED]** | Point to deleted `PROD_READY_ISSUES_PLAN.md` Task 11 and say AWS warm-standby enforcement is future work, although `GoBridgeDynamoDBHA` now enforces replica/AZ invariants. | Link the shipped CDK construct; preserve only the non-CDK caveat. |
+| `deployment/aws-filebased-config/cdk/constructs/gobridgealarms/alarms.go` | **MEDIUM observability [CONFIRMED]** | Shipped alarm bundle has no `MQTTIngressPoisonDropped`, sustained `ReconcileFailures`, `MQTTSessionTakeover`, or `MQTTQoSDowngraded` alarm despite docs instructing operators to alert on them. | Add alarms or state next to the alarm table that MQTT alarms must be wired separately. |
+| No shutdown-timeout runbook | **LOW completeness [CONFIRMED]** | Preventive grace-period guidance exists, but no incident procedure explains blast radius after orchestrator SIGKILL. | Add a short runbook keyed on orchestrator kill/exit evidence and outbox/QoS checks. |
+
+### Platform consumption matrix
+
+| Consumption path | Status | Reason |
+|---|---|---|
+| `go get` library modules | **PENDING RELEASE — NOT SCORED** | The release train is designed to produce the external module graph when releasing. |
+| `cmd/gobridge` reference binary | **CONDITIONAL** | Demo-only: MQTT plus native stores, limited composition, explicit startup warning. |
+| Public GHCR production image | **PENDING RELEASE — NOT SCORED** | The workflow publishes the verified digest when the command release is cut. |
+| Root Dockerfile built locally | **CONDITIONAL** | Secure small image, but AWS file-based composition root with SSM/DynamoDB assumptions. |
+| Plain Docker with custom composition root | **CONDITIONAL** | Supported framework path, but consumer must write and own `main`. |
+| Non-AWS Kubernetes | **CONDITIONAL** | Good probe/shutdown/config guidance; no official chart/manifests; no shipped non-AWS exclusive-HA store. |
+| ECS through shipped CDK | **CONDITIONAL** | Mature DynamoDB HA construct and alarms, but credentialed production failover proof is absent. |
+
+### Runbook coverage
+
+| Incident | Coverage |
+|---|---|
+| Broker outage/reconnect storm | **Covered** |
+| DynamoDB/store outage | **Covered** |
+| MQTT ingress poison | **Covered** |
+| SUBACK/QoS rejection flap | **Covered** |
+| Persistent managed-subscription migration | **Covered** |
+| Failover SLO breach | **Covered, but measurement evidence is weak** |
+| Reload non-convergence | **Partial; target rollback runbook misses the signal vocabulary** |
+| Standalone split brain | **Gap** |
+| Shutdown grace-period breach | **Gap** |
+| Suspected message loss/duplicates | **Distributed across reference tables; no single triage runbook** |
+
+---
+
+## 9. Test-confidence findings
+
+### TEST-1 — Critical resilience evidence is not PR-gated  — ✅ FIXED
+
+`.github/workflows/ci.yml:81-94` **HIGH test-gap [CONFIRMED]:** cluster failover, store-outage, process-kill, and goroutine tests run only on schedule/manual dispatch.
+
+**Risk:** outage-recovery regressions can merge while default and integration CI stay green.
+
+**Minimum test:** promote a bounded real-broker, real-store, separate-process failover subset into PR integration.
+
+**Resolution:** `make test-failover-gate` compiles the `longrunning`-tagged suite and runs only `TestUC3SeparateProcessFailover` (TEST-2 — separate-process, real broker + real DynamoDB lease/outbox, ~14 s under `-race`) with a bounded 420 s timeout; a new `integration`-job step in `ci.yml` runs it on every PR. This mirrors the existing `test-mqtt-ingress-memory` PR exception rather than adding a new classification. The full failover/chaos/soak suite still runs only nightly.
+
+### TEST-2 — Most failover integration is same-process or sleep-driven  — ✅ FIXED
+
+`tests/integration/e2e_failover_test.go:70-120,285-308,435-460` **HIGH test-gap [CONFIRMED]:** several named failover scenarios use fake sessions/senders/receivers in one process, and crash timing depends on fixed sleeps.
+
+**Risk:** these tests do not prove broker-session takeover, process isolation, orchestrator timing, or deterministic crash boundaries.
+
+**Minimum test:** use separate processes and explicit barriers such as persisted outbox depth, verified lease owner/fencing version, sender-entry latch, and `ServiceLevelFull`.
+
+**Resolution:** `tests/longrunning/uc3sp_separate_process_failover_test.go` — `TestUC3SeparateProcessFailover` launches **two real OS-process gobridge nodes** (a reusable `nodeProcess` re-exec launcher in `nodeprocess_harness_test.go`, generalising the `chaos_process_kill` pattern) that compete for **one real DynamoDB exclusive lease** on a **real broker**. The parent identifies the elected owner from its `NODE_FULL` stdout barrier AND the authoritative DynamoDB lease row (owner + fencing `Version`), then issues a **real `SIGKILL`** — so no graceful `Release` runs and the successor must win by conditional-update fencing after the genuine TTL, not a simulated hand-off. It asserts the standby reaches `ServiceLevelFull` with a **strictly greater fencing version** within `uc3FailoverSLO` (~5.2 s observed) and at-least-once delivery of every message across the failover. No fakes, no sleep-driven crash timing; barriers are the lease row + per-node health tokens + collector delivery.
+
+### TEST-3 — Broker-invalid reload is unit-only  — ✅ FIXED (shipped root broker-backed)
+
+`bridge/supervisor_convergence_test.go:47-80` **HIGH test-gap [CONFIRMED]:** convergence behavior is pinned with an unstarted in-memory runtime, not a broker-backed config-manager→supervisor→MQTT failure.
+
+**Risk:** the operator path for bad credentials/ACL-denied subscriptions remains unproved, and the shipped AWS divergence is untested.
+
+**Minimum test:** apply a valid-but-broker-rejected MQTT config through both generic and shipped composition roots; assert apply status, degraded reason, readiness, recovery, and no leaked candidate runtime.
+
+**Resolution:** `deployment/aws-filebased-config/lib/bootstrap/integration_broker_convergence_test.go` drives the **shipped App's real `runConvergenceWatch`** against a runtime whose Exclusive MQTT session is broker-backed for real (memory lease/outbox + a real paho session):
+- `TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded` — the session cannot reach the broker → readiness pins below `LevelSubscribed` → the watch latches `ConfigDegraded=1` with the `"not converged"` reason and config version (the false-success guard the shipped process previously lacked). This directly closes "the shipped AWS divergence is untested."
+- `TestReconfig1_ConvergenceWatch_BrokerReachable_StaysConverged` — a reachable broker reaches `LevelSubscribed` → the watch clears/returns without ever marking (recovery / no false positive).
+
+This upgrades the shipped convergence coverage from the old sentinel-runtime state-machine test to a **real broker-driven readiness** proof. The **generic Supervisor's** identical readiness-driven mark-at-budget mechanism (which the App's `convergence.go` explicitly mirrors) remains covered by `bridge/supervisor_convergence_test.go`; "no leaked candidate runtime" is covered by the RECONFIG-2 candidate-cleanup tests.
+
+The config-driven generic-Supervisor reload test — originally cut because the MQTT-loopback harness proved brittle — was **subsequently added** once the deterministic test primitives (shared container gates, `wait.Until`, `WaitRouteReady`, per-test brokers) made it stable: `tests/integration/integration_supervisor_mqtt_reload_test.go` (`TestSupervisorMQTTReload_ConfigDrivenBrokerTruth`) drives ONE config file through file-source → `config.Manager` → real `bridge.Supervisor` swaps against a real Mosquitto broker: v1 converges (`LevelSubscribed` + end-to-end traffic), v2 (config-valid but broker-unreachable) **commits** and the real MQTT-R1 watch marks `Degraded()` with the "not converged" reason and config version after the genuine 60 s `convergenceBudgetFloor`, v3 recovers (degraded cleared, route ready, traffic flows again). Zero sleeps, zero fake clocks; ~61 s per run, passed twice under `-race`.
+
+One residual discovered by that work — **MQTT-R1-OBS**: a `connect_after_lease` (deferred-connect) session that can never reach its broker does **not** trip the convergence watch, because `ports.ReadinessLevelFromDeepHealth` excludes a deferred-connect session holding no lease, and against an unreachable broker the manager cycles acquire → connect-fail → release, so readiness reads `LevelSubscribed` and the watch believes it converged. The reload test therefore pins the eager-connect path (`connect_after_lease: false`); deferred-connect convergence blindness is disclosed in §0.6 (item 4), no fix scheduled.
+
+### TEST-4 — The failover test does not assert the advertised SLO  — ✅ FIXED (real broker+store test now asserts failover ≤ uc3FailoverSLO)
+
+`tests/longrunning/uc3_cluster_failover_test.go:200-227` **HIGH test-gap [CONFIRMED]:** warm/cold failover durations are reported, not asserted, under compressed test lease timings.
+
+**Risk:** a passing suite does not establish 30–60 second production failover.
+
+**Minimum test:** declare a production-like `failover_slo`, stop the verified leaseholder, and assert successor owner/version plus `ServiceLevelFull` within the objective. Add a negative default-profile proof.
+
+### TEST-5 — Goroutine stability test accepts known growth  — ✅ FIXED
+
+`tests/longrunning/gap_goroutine_leak_test.go:100-130` **HIGH test-gap [CONFIRMED]:** the test documents about 35–40 MQTT cleanup goroutines per cycle and passes while the last-cycle increase stays below 50.
+
+**Risk:** the suite proves only "not worse than the accepted leak," not lifecycle stability.
+
+**Minimum test:** require eventual zero growth or a stable plateau after bounded cleanup, then run the proof regularly.
+
+**Resolution:** the test now measures a pre-bridge baseline, runs N start/stop cycles, and — via `wait.Until` (hard fail on timeout) — asserts `runtime.NumGoroutine()` **descends back to baseline + tolerance** within a bounded drain budget. This is the finding's "eventual zero growth / stable plateau." A measured decay curve settled the accepted-baseline question: the historical ~33/cycle was **asynchronous autopaho connection-manager cleanup that drains in ~60 s** (measured `126→58→8→2` post-`Close`), not a leak — the old fixed 3.5 s settle simply sampled mid-unwind. Because the unwind is multi-stage (intermediate plateaus up to ~15 s), the gate waits for the count to *descend to a target* rather than trying to identify a settled floor (which passes through every plateau above it); the tolerance is set to comfortably cover the ~12-goroutine residue the AWS SDK HTTP pools leave, so a healthy run is never flaky while a genuine per-cycle leak keeps the count above the target and fails hard via the wait timeout. The four now-unnecessary `time.Sleep` allowlist entries were removed.
+
+### TEST-6 — Some resilience probes tolerate either outcome  — ✅ FIXED
+
+`tests/longrunning/res_gap_validation_test.go:180-215` **MEDIUM test-gap [CONFIRMED]:** safety-critical probes describe expected and broken outcomes but are primarily observational.
+
+**Risk:** a green run can be cited as evidence without enforcing the desired behavior.
+
+**Minimum test:** deterministic fault injection with one strict expected result per regression.
+
+**Resolution:** every RES probe now injects a deterministic fault and asserts exactly one expected result (the fixed behavior), replacing the "log which outcome occurred" branches:
+- **RES-003** — admission **rejects** the silent-drop config (DirectHold + no DLQ + non-retryable MQTT source): the drop is now impossible, not improbable.
+- **RES-005** — auto-extend keeps pace, asserted as **exactly-once** (`unique == msgCount`, zero duplicates).
+- **RES-006** — every permanently-failed message reaches the DLQ (`dlq == msgCount`) and **none** reaches the output.
+- **RES-011** — a panicked processor is recovered and DLQ'd: `delivered + dlq == msgCount` with exactly the panicked subset DLQ'd (no silent swallow).
+- **RES-001** — the degraded sender's PRNG is **fixed-seeded** (was the global unseeded source); the transient failures are never misclassified into the DLQ and the pipeline keeps making progress under the circuit breaker.
+
+The two `NEGATIVE` `time.Sleep` waits were replaced with `wait.StableFor` (deterministic settle) and admission-time return, and their allowlist entries removed.
+
+### Confidence by requirement
+
+| Requirement | Confidence | Reason |
+|---|---|---|
+| Manual ack / durable handoff | **Strong** | Unit, race, broker-backed settlement recovery, outbox persistence. |
+| Broker reconnect/redelivery | **Strong** | Real-broker outage and persistent QoS tests. |
+| Poison/oversize handling | **Strong** | Unit and real-broker property-amplification tests. |
+| Reconcile retry | **Strong** | Unit plus broker reconnect coverage. |
+| Duplicate/idempotency boundary | **Partial** | Real broker and real store are not combined through final sink/takeover in a PR gate. |
+| Live reload failure | **Partial** | Generic unit evidence; shipped bootstrap path lacks the guarantee and integration proof. |
+| Lease fencing/step-down | **Partial** | Strong unit/store evidence; limited separate-process broker-backed proof. |
+| 30–60 second failover | **Absent as a production claim** | Computed tuned profile only; no production-like assertion. |
+| Goroutine/memory stability | **Partial** | Ingress memory proof is strong; lifecycle leak test accepts growth. |
+
+---
+
+## 10. Previous-review disposition
+
+The previous report was not wasted: it triggered substantial root fixes. This table prevents closed findings from being mistaken for current defects and prevents warning-only mitigations from being mistaken for fixes.
+
+| Prior IDs | Current status | Evidence |
+|---|---|---|
+| MQTT-C1 | **Release-stage only; excluded from readiness** | External module tags are intentionally produced by the release train. |
+| MQTT-C2 | **Still present** | Generic binary remains demo-only; production composition root remains AWS-specific. |
+| MQTT-C3 | **Still present** | Shipped bootstrap accepts `noop`/`cloudwatch`, not OTLP. |
+| MQTT-C4 | **Resolved** | Runtime drain now derives from the process shutdown context instead of stacking a fresh budget. |
+| MQTT-C5 | **Still present by design** | DynamoDB is the only shipped distributed lease/HA backend. |
+| MQTT-C6 | **Still a compatibility trap** | Bare `/ready` requires Full and returns 503 for healthy standby; explicit `?level=connected/subscribed` is required. |
+| MQTT-C7 | **Still present** | No official Helm/Kustomize/manifests; examples require a consumer-built image. |
+| MQTT-D1 / DOC4 | **Resolved** | Package docs now match covered-topic retain/orphan-drop behavior. |
+| MQTT-D2 | **Resolved** | Large MQTT files were split below the repository limit. |
+| MQTT-D3 / L5 | **Resolved observability gap** | Ack-after-reconnect duplicate is counted on `MQTTAckAfterReconnect`. |
+| MQTT-D4 | **Accepted contract** | QoS 0 remains best-effort/lossy under pressure and lifecycle windows. |
+| MQTT-D5 | **Accepted constraint** | Durable sessions require one stable broker-session domain; multi-URL client failover is Ephemeral-only. |
+| MQTT-D6 / L1 | **Resolved for compliant brokers** | Local cap violations ack-drop with metric; malformed/advertised-limit-violating broker packets still fail closed. |
+| MQTT-F1 | **Still present, now disclosed precisely** | Default clustered bound is about 336.5 seconds. |
+| MQTT-F2 | **Resolved disclosure gap** | Undeclared computable budgets are logged; declared SLOs are enforced. |
+| MQTT-F3 | **Mitigated, not resolved** | Persistent+hostname now warns but remains valid and unsafe on Deployment/ECS. |
+| MQTT-F4 | **Mitigated, not resolved** | Single-replica memory-lease acknowledgement is explicit; actual replica count remains external outside the CDK HA profile. |
+| MQTT-F5 | **Still present by design** | Lease-loss step-down can require single-use session/process restart. |
+| MQTT-F6 | **Changed** | Cross-generation/store identity guards improved; ManagedSubscriptionStore still has no independent fencing token. |
+| MQTT-R1 | **Resolved only in generic Supervisor** | Post-swap convergence watch exists; shipped AWS bootstrap bypasses it. |
+| MQTT-R2 | **Still present by design** | MQTT changes are stop/rebuild/start, not hitless. |
+| MQTT-R3 / O2 | **Still present by design** | Permanent subscription rejection flaps the whole session; runbook now exists. |
+| MQTT-R4 | **Still present in direct APIs** | Command path adds windowing; base Supervisor/bootstrap apply directly unless configured otherwise. |
+| MQTT-R5 | **Resolved admission gap** | Durable desired subscriptions require managed history. |
+| MQTT-R6 | **Still present by design** | Failed managed removal stays fail-closed until revert/drain/migration. |
+| MQTT-L1 | **Resolved** | Authorized representational poison no longer terminal-loops the session. |
+| MQTT-L2 | **Resolved** | Pre-first-Reconcile traffic is treated as covered and retained. |
+| MQTT-L3 | **Resolved** | Receiver emit error requests bounded recovery. |
+| MQTT-L4 | **Resolved** | Recycle-window discard is metered. |
+| MQTT-L5 | **Resolved** | Ack-after-reconnect duplicate window is metered. |
+| MQTT-L6 | **Resolved** | Persistent+`clean_start:true` warns. |
+| MQTT-L7 | **Still present and now linked to MQTT-CORE-1** | Whole-session Retry recycle is intentional; no-identity redelivery can make it unbounded. |
+| MQTT-L8/L9 | **Still present by contract** | Shutdown/QoS 0 loss remains; one close-time branch is unmetered. |
+| MQTT-O1 | **Still present by contract** | Paho outbound session state is in-memory; bridge delivery modes supply durability. |
+| MQTT-O3 | **Resolved original misuse** | MQTT breaker sender uses token admission; CB-1 is a separate slot-identity defect. |
+| MQTT-O4 | **Mitigated** | Lifecycle event eviction remains bounded and is now metered. |
+| MQTT-O5/O6 | **Still present, low** | Error substring matching and unbounded discard-path Disconnect remain. |
+| MQTT-DOC1/DOC2/DOC3/DOC5 | **Resolved** | Takeover code, queue size, missing metric catalogue, and connect-latency references corrected. |
+| MQTT-DOC6 | **Mostly resolved** | Poison, subscription-flap, and migration runbooks plus capacity math shipped; current gaps are listed in §8. |
+
+---
+
+## 11. What is already production-grade
+
+The negative production-readiness verdict should not obscure the engineering that is ready:
+
+- Manual MQTT acknowledgment preserves ack-after-runtime-settlement for QoS 1/2.
+- Covered-topic QoS 1/2 is retained unacknowledged; orphan cleanup is explicit and metered.
+- Broker network operations and reconcile operations are bounded.
+- Reconnect uses jitter and authoritative re-subscription.
+- Reconcile state is epoch-guarded; partial broker success does not become false desired state.
+- Ingress memory is count- and byte-bounded with overflow-safe admission math.
+- Local poison caps have an explicit ack-drop escape and dedicated metric/runbook.
+- Reserved bridge headers are stripped at the trust boundary; transport metadata cannot be spoofed through MQTT user properties.
+- Plaintext credentials fail closed unless explicitly allowed; TLS requires complete material and TLS 1.2 minimum.
+- Lease ownership uses boot-nonce identity, bounded calls, local fail-closed deadlines, DynamoDB conditional updates, and fenced outbox completion.
+- Invalid watched config preserves the last-good runtime; watcher failures retry and surface degraded health.
+- The container build is static, distroless, non-root, structured-log friendly, and healthcheck capable.
+- Documentation now states default failover math, deployment identity hazards, QoS loss boundaries, and capacity formulas honestly in most sections.
+
+---
+
+## 12. Remediation order
+
+1. **Fix MQTT-CORE-1 and its documentation/test.** This is the only confirmed cross-cutting defect that lets one producer message create an unbounded session recovery loop.
+2. **Delete bootstrap lifecycle duplication.** Reuse `bridge.Supervisor` for preflight, candidate cleanup, apply status, and convergence instead of maintaining a second weaker swap state machine.
+3. **Use one clustered predicate.** Apply identical validation for explicit mode and static endpoints.
+4. **Close candidate-runtime cleanup.** Stop every failed/uninstalled runtime and abort on uncertain old-runtime Stop.
+5. **Decide the broker-path failover contract.** If 30–60 seconds means node-local MQTT isolation too, implement health-triggered step-down and budget it.
+6. **Turn Persistent+hostname from warning into admission.**
+7. **Add one real proof, not more fake coverage.** Separate processes, real broker, real lease/outbox store, verified owner kill, asserted configured SLO, broker-path isolation, and broker-invalid reload.
+8. **Eliminate the accepted goroutine-growth baseline.**
+9. **Close the operator gaps:** MQTT alarms, `ConfigDegraded` rollback flow, standalone split-brain, shutdown breach, and consolidated message-loss triage.
+
+The shortest safe route is reuse, not another subsystem: reuse `bridge.Supervisor`, reuse one clustered predicate, and add one production-shaped failover test.
+
+### Release-only follow-up — not a production finding
+
+After the production-readiness findings are closed, run the existing module
+release train, publish the command image digest, and switch installation/rollback
+documentation from pre-release wording to the verified released references.

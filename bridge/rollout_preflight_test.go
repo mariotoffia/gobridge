@@ -23,6 +23,38 @@ func TestClassifyRolloutDelta_LiveSafe_BenignChange(t *testing.T) {
 	require.Empty(t, reason)
 }
 
+// TestClassifyRolloutDelta_ReplacementRequired_MemberRosterChange validates that
+// changing bridge.cluster.members is replacement-required. The roster IS the
+// membership epoch the barrier freezes, so carrying a roster change through the
+// barrier would commit under the OLD roster's acks and leave the cohort running
+// a config declaring a DIFFERENT one (design §8, F6).
+func TestClassifyRolloutDelta_ReplacementRequired_MemberRosterChange(t *testing.T) {
+	oldCfg := supervisorTestConfigWithSession("r1", "sess")
+	oldCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"a", "b"}}
+	newCfg := supervisorTestConfigWithSession("r1", "sess")
+	newCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"a", "b", "c"}}
+
+	class, reason := classifyRolloutDelta(oldCfg, newCfg)
+
+	require.Equal(t, rolloutReplacementRequired, class)
+	require.Contains(t, reason, "bridge.cluster.members")
+}
+
+// TestClassifyRolloutDelta_LiveSafe_MemberRosterReorder validates the roster is
+// compared as the SET it is. A reorder (or a repeated id) names the same cohort,
+// and the frozen epoch is stored sorted+deduped, so it must NOT be misread as a
+// membership change that forces whole-cohort replacement for a no-op edit.
+func TestClassifyRolloutDelta_LiveSafe_MemberRosterReorder(t *testing.T) {
+	oldCfg := supervisorTestConfigWithSession("r1", "sess")
+	oldCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"a", "b", "c"}}
+	newCfg := supervisorTestConfigWithSession("r1", "sess")
+	newCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"c", "a", "b", "a"}}
+
+	class, reason := classifyRolloutDelta(oldCfg, newCfg)
+
+	require.Equal(t, rolloutLiveSafe, class, "same cohort, different spelling (reason=%q)", reason)
+}
+
 // TestClassifyRolloutDelta_ReplacementRequired_StoreTargetChange validates that
 // changing a durable store's target (lease store type) is replacement-required:
 // the old store's backlog would be stranded, so ADR 0012 whole-cohort
@@ -189,30 +221,32 @@ func TestClassifyClusterReload_RefuseLeavingCoordinatedCluster(t *testing.T) {
 	require.Equal(t, clusterReloadRefuse, disp)
 }
 
-// TestClassifyRolloutDelta_ReplacementRequired_ClusterMembershipChange proves a
-// change to bridge.cluster.endpoints (the cohort roster) is replacement-required.
-// The roster IS the membership epoch the barrier freezes at Propose and the set
-// decideRollout compares against (F6), so rolling it live is self-referential:
-// the epoch is frozen from the OLD roster, every member acks and commits, and
-// the cohort then runs a config declaring a DIFFERENT roster than the one that
-// authorised the change. A member the delta adds never acked; a member it
-// removes still holds leases while no future rollout can include it.
-func TestClassifyRolloutDelta_ReplacementRequired_ClusterMembershipChange(t *testing.T) {
+// TestClassifyRolloutDelta_ReplacementRequired_ClusterEndpointsChange proves a
+// change to bridge.cluster.endpoints is replacement-required.
+//
+// NOTE the reason, which is NOT membership: cluster.endpoints is THIS instance's
+// advertised CAPABILITY map (keyed by capability, e.g. http), not a peer roster —
+// the cohort roster is bridge.cluster.members, covered separately above. The HTTP
+// forwarder resolves remote exclusive requests through this map, so changing it
+// under live traffic retargets in-flight forwards mid-rollout. An earlier version
+// of this test described the key as the roster; that misreading is precisely what
+// made the barrier freeze a one-"member" epoch named "http".
+func TestClassifyRolloutDelta_ReplacementRequired_ClusterEndpointsChange(t *testing.T) {
 	for name, mutate := range map[string]func(*ports.ClusterConfig){
-		"member added":   func(c *ports.ClusterConfig) { c.Endpoints["node-c"] = "10.0.0.3:8080" },
-		"member removed": func(c *ports.ClusterConfig) { delete(c.Endpoints, "node-b") },
-		"member moved":   func(c *ports.ClusterConfig) { c.Endpoints["node-b"] = "10.0.0.9:8080" },
+		"capability added":      func(c *ports.ClusterConfig) { c.Endpoints["grpc"] = "10.0.0.3:8080" },
+		"capability removed":    func(c *ports.ClusterConfig) { delete(c.Endpoints, "http") },
+		"capability retargeted": func(c *ports.ClusterConfig) { c.Endpoints["http"] = "10.0.0.9:8080" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			oldCfg := supervisorTestConfigWithSession("r1", "sess")
 			oldCfg.Bridge.Cluster = &ports.ClusterConfig{
 				Rollout:   rolloutModeCoordinated,
-				Endpoints: map[string]string{"node-a": "10.0.0.1:8080", "node-b": "10.0.0.2:8080"},
+				Endpoints: map[string]string{"http": "10.0.0.1:8080"},
 			}
 			newCfg := supervisorTestConfigWithSession("r1", "sess")
 			newCfg.Bridge.Cluster = &ports.ClusterConfig{
 				Rollout:   rolloutModeCoordinated,
-				Endpoints: map[string]string{"node-a": "10.0.0.1:8080", "node-b": "10.0.0.2:8080"},
+				Endpoints: map[string]string{"http": "10.0.0.1:8080"},
 			}
 			mutate(newCfg.Bridge.Cluster)
 

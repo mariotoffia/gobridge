@@ -3,6 +3,7 @@ package bridge
 import (
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -118,29 +119,40 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 }
 
 // clusterShapeChanged reports a non-empty, operator-facing reason when a delta
-// alters the cohort's OWN definition rather than what the cohort runs. Both
-// fields it guards are self-referential — the barrier is built out of them, so
+// alters the cohort's OWN definition rather than what the cohort runs. Every
+// field it guards is self-referential — the barrier is built out of them, so
 // they cannot be rolled out through it:
 //
-//   - bridge.cluster.endpoints IS the membership epoch the proposer freezes and
+//   - bridge.cluster.members IS the membership epoch the proposer freezes and
 //     the coordinator compares live membership against (F6). Rolling it would
 //     freeze the epoch from the OLD roster, commit under the OLD roster's acks,
 //     and leave the cohort running a config that declares a DIFFERENT roster: a
 //     member the delta adds never acked anything, and a member it removes keeps
 //     holding leases while no future rollout may include it.
+//   - bridge.cluster.endpoints is this instance's advertised capability map; the
+//     HTTP forwarder resolves remote exclusive requests through it, so changing
+//     it under live traffic retargets in-flight forwards mid-rollout.
 //   - bridge.cluster.rollout selects whether a member drives the barrier at all.
 //     Flipping it mid-cohort leaves some members coordinating and others
 //     refusing — no single path can decide the next change.
 //
-// Both are topology transitions and keep ADR 0012's whole-cohort replacement.
+// All are topology transitions and keep ADR 0012's whole-cohort replacement.
 func clusterShapeChanged(oldCfg, newCfg *ports.BridgeConfig) string {
 	var oldEndpoints, newEndpoints map[string]string
+	var oldMembers, newMembers []string
 	var oldMode, newMode string
 	if c := oldCfg.Bridge.Cluster; c != nil {
-		oldEndpoints, oldMode = c.Endpoints, c.Rollout
+		oldEndpoints, oldMembers, oldMode = c.Endpoints, c.Members, c.Rollout
 	}
 	if c := newCfg.Bridge.Cluster; c != nil {
-		newEndpoints, newMode = c.Endpoints, c.Rollout
+		newEndpoints, newMembers, newMode = c.Endpoints, c.Members, c.Rollout
+	}
+	// Compare the roster as the SET it is: a reorder or a repeated id names the
+	// same cohort, so only a real membership change is replacement-required.
+	if !slices.Equal(sortedSet(oldMembers), sortedSet(newMembers)) {
+		return fmt.Sprintf("bridge.cluster.members changed (%d -> %d members); the roster IS the "+
+			"membership epoch the rollout barrier freezes, so a change to it cannot be carried by "+
+			"the barrier itself", len(sortedSet(oldMembers)), len(sortedSet(newMembers)))
 	}
 	if !maps.Equal(oldEndpoints, newEndpoints) {
 		// Endpoint ADDRESSES are not secret, but they are deployment detail; the

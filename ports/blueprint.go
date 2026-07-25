@@ -115,13 +115,31 @@ type BridgeSettings struct {
 // mode (config/validate.go: validateClusterEndpoints).
 type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	// Members is the STATIC roster of member ids forming the coordinated-rollout
+	// cohort. It is the membership epoch the rollout barrier freezes at Propose
+	// and compares live membership against (design §7 F6), so it MUST be
+	// identical on every member and MUST NOT contain duplicates.
+	//
+	// It is deliberately a SEPARATE key from Endpoints: Endpoints is THIS
+	// instance's capability map keyed by capability name ("http"), not a peer
+	// roster, so its keys cannot serve as member ids (a cohort would freeze the
+	// epoch as ["http"] — a one-member barrier, i.e. no barrier at all).
+	//
+	// A member id must match the id the process announces to the barrier
+	// (bridge.WithClusterRollout's MemberID, wired by the composition root from
+	// the node's own stable identity — task id, pod name, host). It cannot be
+	// derived from bridge.instance_id, which is empty in a shared-config cohort
+	// so that every task derives a unique metric identity at runtime.
+	//
+	// Required (non-empty) when Rollout is "coordinated"; ignored otherwise.
+	Members []string `yaml:"members,omitempty" json:"members,omitempty"`
 	// Rollout selects the live-config-change strategy for this clustered
 	// deployment. Empty (default) keeps the legacy refuse-live-reconfig
 	// behavior (ADR 0012): a clustered node rejects any live config delta and
 	// requires whole-cohort replacement. "coordinated" opts into the
 	// coordinated rollout barrier (design cluster-config-rollout-protocol.md),
 	// which admits live-safe deltas across the cohort under a lease-elected
-	// coordinator. Full value validation lands with the admin/proposer API.
+	// coordinator, and additionally requires a non-empty Members roster.
 	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 }
 

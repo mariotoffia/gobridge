@@ -306,6 +306,34 @@ const (
 	MetricConfigDegraded = "ConfigDegraded"
 )
 
+// Coordinated cluster rollout metrics (design cluster-config-rollout-protocol.md
+// §9). They exist because a rollout is the one config change whose outcome is
+// NOT local: a member can be perfectly healthy while the cohort's barrier is
+// stuck, and no per-node signal would show it.
+//
+// MetricClusterRolloutState is a 0/1 gauge per rollout state (TagKeyState =
+// "proposed" | "staging" | "committed" | "aborted"), emitted by every member
+// from its own observation of the shared rollout row. Exactly one state reads 1
+// at a time. Alert on "proposed" or "staging" staying 1 for longer than the
+// rollout TTL: the barrier is not converging.
+//
+// MetricClusterRolloutAcks reports how many epoch members have acknowledged the
+// active rollout, alongside MetricClusterRolloutEpoch (the frozen epoch size).
+// acks < epoch while the state gauge sits on "staging" identifies a specific
+// member holding the cohort up.
+//
+// MetricClusterRolloutResolved counts terminal outcomes (TagKeyOutcome =
+// "committed" | "aborted"). Every member counts the same resolution, so the
+// series is per-member: a member that never observes a resolution its peers did
+// has diverged. A rising aborted rate means changes are being rejected —
+// read the rollout row's reason (or deep health) for which member and why.
+const (
+	MetricClusterRolloutState    = "ClusterRolloutState"
+	MetricClusterRolloutAcks     = "ClusterRolloutAcks"
+	MetricClusterRolloutEpoch    = "ClusterRolloutEpoch"
+	MetricClusterRolloutResolved = "ClusterRolloutResolved"
+)
+
 // Standard dimension key names for metric tags.
 const (
 	TagKeyLeaseID   = "lease_id"
@@ -321,6 +349,11 @@ const (
 	// TagKeyReason dimensions a drop/filter/expire counter by the terminal
 	// reason so a single MessagesDropped series can be split by cause.
 	TagKeyReason = "reason"
+	// TagKeyOutcome dimensions a counter by the terminal outcome of a
+	// multi-step protocol — used by the coordinated cluster rollout resolution
+	// counter (committed/aborted). Distinct from TagKeyState, which names a
+	// point-in-time lifecycle state rather than how something ended.
+	TagKeyOutcome = "outcome"
 	// TagKeyProcessor dimensions a filter-drop counter by the processor that
 	// discarded the message. Processor names are operator-defined and bounded,
 	// so cardinality stays low.

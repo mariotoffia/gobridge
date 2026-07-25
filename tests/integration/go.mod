@@ -28,6 +28,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
@@ -41,6 +42,7 @@ require (
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout v0.0.0-00010101000000-000000000000 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
@@ -80,3 +82,7 @@ require (
 )
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout => ../../adapters/aws/store/dynamodbrollout
+
+replace github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout => ../../adapters/native/store/memoryrollout

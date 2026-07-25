@@ -27,11 +27,7 @@ func TestSupervisorCoordinatedRollout_LiveSafeDeltaIsProposedToTheBarrier(t *tes
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(
 		WithOnSwap(onSwap),
-		WithClusterRollout(ClusterRolloutConfig{
-			Store:      store,
-			MemberID:   "node-a",
-			Membership: func() []string { return []string{"node-a", "node-b"} },
-		}),
+		WithClusterRollout(testRolloutConfig(store, "node-a")),
 	)
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
@@ -65,6 +61,96 @@ func TestSupervisorCoordinatedRollout_LiveSafeDeltaIsProposedToTheBarrier(t *tes
 	assert.Equal(t, 0, s.Config().Version, "the applied config version must not advance on Propose")
 }
 
+// TestRolloutMembers_RosterIsClusterMembersNotEndpoints pins the membership
+// authority. bridge.cluster.endpoints is THIS instance's CAPABILITY map, keyed by
+// capability name and validated to carry an "http" key (config.validateClusterEndpoints)
+// — it is NOT a peer roster. Reading its keys as member ids would freeze every
+// cohort's epoch as ["http"]: a one-member barrier that commits on a single ack,
+// i.e. no barrier at all, which is the entire invariant (I2) this protocol exists
+// to provide. The roster therefore comes from bridge.cluster.members only.
+func TestRolloutMembers_RosterIsClusterMembersNotEndpoints(t *testing.T) {
+	cfg := supervisorTestConfig("r1")
+	cfg.Bridge.Cluster = &ports.ClusterConfig{
+		Endpoints: map[string]string{"http": "http://10.0.0.1:8080"},
+		Members:   []string{"node-a", "node-b", "node-c"},
+	}
+
+	assert.Equal(t, []string{"node-a", "node-b", "node-c"}, rolloutMembers(cfg))
+	assert.NotContains(t, rolloutMembers(cfg), "http",
+		"an endpoint CAPABILITY key must never be mistaken for a cohort member id")
+}
+
+// TestRolloutMembers_AbsentRosterIsUnknown proves an absent roster resolves to
+// nil rather than an empty-but-present epoch: the caller must fail closed, never
+// propose against a guessed cohort.
+func TestRolloutMembers_AbsentRosterIsUnknown(t *testing.T) {
+	assert.Nil(t, rolloutMembers(nil))
+
+	cfg := supervisorTestConfig("r1")
+	assert.Nil(t, rolloutMembers(cfg), "no cluster block at all")
+
+	cfg.Bridge.Cluster = &ports.ClusterConfig{Endpoints: map[string]string{"http": "http://h:1"}}
+	assert.Empty(t, rolloutMembers(cfg), "endpoints alone declare no roster")
+}
+
+// TestSupervisorCoordinatedRollout_EmptyRosterFailsClosed proves the PROPOSER's
+// own defence against a vacuous epoch, independent of the startup gate that
+// normally catches it first. Freezing an empty epoch would make
+// Rollout.CanCommit trivially true — every member's ack vacuously covered — so
+// the first coordinator observation would commit a config no member validated.
+//
+// Driven directly rather than through a running Supervisor because a coordinated
+// deployment with no roster cannot start at all (see
+// TestSupervisorRun_RefusesAnEmptyRoster); this pins the second line of defence
+// for a roster that empties out AFTER boot.
+func TestSupervisorCoordinatedRollout_EmptyRosterFailsClosed(t *testing.T) {
+	store := memoryrollout.NewStore()
+	s := newTestSupervisor(WithClusterRollout(testRolloutConfig(store, "node-a")))
+
+	applied := coordinatedClusteredCfg("r1")
+	applied.Bridge.Cluster.Members = nil
+	proposed := coordinatedClusteredCfg("r1")
+	proposed.Bridge.Cluster.Members = nil
+	proposed.Version = 99
+
+	err := s.proposeCoordinatedRollout(context.Background(), applied, proposed, proposed)
+
+	require.Error(t, err, "an unknown cohort roster must refuse, not propose a vacuous epoch")
+	assert.Contains(t, err.Error(), "bridge.cluster.members")
+	_, storeErr := store.Current(context.Background())
+	assert.Error(t, storeErr, "nothing may be proposed without a roster")
+}
+
+// TestSupervisorRun_RefusesAnEmptyRoster proves the startup gate: a coordinated
+// deployment whose roster is missing never starts. Every reload would be refused
+// anyway, so failing at boot turns a 3am discovery into a deploy-time one.
+func TestSupervisorRun_RefusesAnEmptyRoster(t *testing.T) {
+	s := newTestSupervisor(WithClusterRollout(testRolloutConfig(memoryrollout.NewStore(), "node-a")))
+	cfg := coordinatedClusteredCfg("r1")
+	cfg.Bridge.Cluster.Members = nil
+
+	err := s.Run(t.Context(), cfg, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bridge.cluster.members")
+	assert.Nil(t, s.Runtime())
+}
+
+// TestSupervisorRun_RefusesAMemberIdOutsideTheRoster proves the startup gate
+// catches the wiring mistake the blueprint validator cannot see: the member id
+// is composition-root wiring, not config. A node outside its own roster can
+// never Ack, so every rollout it proposes is guaranteed to deadline-abort while
+// blocking the cohort's next change for the whole TTL.
+func TestSupervisorRun_RefusesAMemberIdOutsideTheRoster(t *testing.T) {
+	s := newTestSupervisor(WithClusterRollout(testRolloutConfig(memoryrollout.NewStore(), "node-z")))
+
+	err := s.Run(t.Context(), coordinatedClusteredCfg("r1"), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "node-z")
+	assert.Nil(t, s.Runtime())
+}
+
 // seedForeignRollout opens a rollout on store for a candidate config that is NOT
 // the one under test, so a subsequent local Propose collides with it.
 func seedForeignRollout(t *testing.T, store *memoryrollout.Store, members ...string) {
@@ -95,11 +181,7 @@ func TestSupervisorCoordinatedRollout_ForeignActiveRolloutFailsClosed(t *testing
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(
 		WithOnSwap(onSwap),
-		WithClusterRollout(ClusterRolloutConfig{
-			Store:      store,
-			MemberID:   "node-a",
-			Membership: func() []string { return []string{"node-a", "node-b"} },
-		}),
+		WithClusterRollout(testRolloutConfig(store, "node-a")),
 	)
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
@@ -135,11 +217,7 @@ func TestSupervisorCoordinatedRollout_PeerProposedSameDeltaJoins(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(
 		WithOnSwap(onSwap),
-		WithClusterRollout(ClusterRolloutConfig{
-			Store:      store,
-			MemberID:   "node-a",
-			Membership: func() []string { return []string{"node-a", "node-b"} },
-		}),
+		WithClusterRollout(testRolloutConfig(store, "node-a")),
 	)
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
@@ -174,30 +252,23 @@ func TestSupervisorCoordinatedRollout_PeerProposedSameDeltaJoins(t *testing.T) {
 // outside the frozen epoch), so the barrier it opened could only ever
 // deadline-abort — a guaranteed-dead rollout that blocks every other proposal
 // for its whole TTL (invariant I1 allows one active rollout).
+//
+// Driven directly: the startup gate refuses this wiring outright
+// (TestSupervisorRun_RefusesAMemberIdOutsideTheRoster), so this pins the
+// proposer's own defence for a roster edited after boot.
 func TestSupervisorCoordinatedRollout_SelfExcludedMemberFailsClosed(t *testing.T) {
 	store := memoryrollout.NewStore()
-	onSwap, swaps := swapChan(1)
-	s := newTestSupervisor(
-		WithOnSwap(onSwap),
-		WithClusterRollout(ClusterRolloutConfig{
-			Store:      store,
-			MemberID:   "node-z", // not in the cohort below
-			Membership: func() []string { return []string{"node-a", "node-b"} },
-		}),
-	)
-	ch := make(chan *ports.BridgeConfig, 1)
-	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
-	defer func() { cancel(); <-errCh }()
+	// node-z is not in coordinatedClusteredCfg's roster.
+	s := newTestSupervisor(WithClusterRollout(testRolloutConfig(store, "node-z")))
 
 	proposed := coordinatedClusteredCfg("r1")
 	proposed.Version = 99
-	require.True(t, sendConfig(ch, proposed, time.Second))
 
-	ev := awaitSwap(t, swaps)
-	require.Error(t, ev.Error, "a self-excluded member must refuse, not open a dead rollout")
-	assert.False(t, ev.Deferred)
-	_, err := store.Current(context.Background())
-	assert.Error(t, err, "nothing may be proposed when this node is outside the epoch")
+	err := s.proposeCoordinatedRollout(context.Background(), coordinatedClusteredCfg("r1"), proposed, proposed)
+
+	require.Error(t, err, "a self-excluded member must refuse, not open a dead rollout")
+	_, storeErr := store.Current(context.Background())
+	assert.Error(t, storeErr, "nothing may be proposed when this node is outside the epoch")
 }
 
 // TestSupervisorCoordinatedRollout_PeerEpochExcludesThisNodeFailsClosed proves
@@ -211,11 +282,7 @@ func TestSupervisorCoordinatedRollout_PeerEpochExcludesThisNodeFailsClosed(t *te
 	onSwap, swaps := swapChan(1)
 	s := newTestSupervisor(
 		WithOnSwap(onSwap),
-		WithClusterRollout(ClusterRolloutConfig{
-			Store:      store,
-			MemberID:   "node-a",
-			Membership: func() []string { return []string{"node-a", "node-b"} },
-		}),
+		WithClusterRollout(testRolloutConfig(store, "node-a")),
 	)
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)

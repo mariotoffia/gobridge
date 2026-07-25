@@ -53,9 +53,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 	// live roster is a SET: sort AND dedup it before comparing to the frozen
 	// epoch (which NewRollout already sorted and deduped), so a transient
 	// duplicate member id from the membership source is not misread as a change.
-	epoch := slices.Clone(membership)
-	slices.Sort(epoch)
-	epoch = slices.Compact(epoch)
+	epoch := sortedSet(membership)
 	if !slices.Equal(epoch, r.MembershipEpoch()) {
 		return rolloutActionAbort, fmt.Sprintf(
 			"membership changed during rollout: epoch=%v now=%v", r.MembershipEpoch(), epoch)
@@ -176,10 +174,33 @@ func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now ti
 // was deposed AFTER the live one already decided (F5) is surfaced so the loop
 // steps down. An empty store (no rollout proposed) is a benign no-op.
 //
-// F5 caveat: the store fence only rejects a stale RE-decision (see
+// # F5b — first-decision fencing: DECIDED, residual accepted
+//
+// The store fence only rejects a stale RE-decision (see
 // persistence.Rollout.coordVersion), so a deposed coordinator that decides
-// FIRST is not rejected. firstSideEffectAllowed's lock-delay is what bounds
-// that window in practice; the outcome is fail-safe either way.
+// FIRST is not rejected. The design (§7 F5b) left open whether to close that
+// with a coordinator-claim write — one extra write per election that stamps the
+// live epoch on the rollout row before any decision. It is deliberately NOT
+// added, because every reachable outcome of the residual is already fail-safe
+// and the window is bounded three times over:
+//
+//  1. A zombie COMMIT still has to satisfy the full ack barrier (I2). If every
+//     epoch member acked, committing is the CORRECT outcome — the only
+//     irregularity is which process wrote it.
+//  2. A zombie ABORT just keeps the old config serving. The operator retries;
+//     nothing swapped, nothing was lost.
+//  3. The window itself: rolloutCoordinator.tick RENEWS the lease before every
+//     observation, so a deposed coordinator's renewal is rejected and it steps
+//     down before reaching a decision. Only a takeover landing between a
+//     successful renewal and the decision write can slip through, and the
+//     successor's lock delay (firstSideEffectAllowed, one full lease TTL) means
+//     it is not racing a live decision even then.
+//
+// A claim write would trade a per-election write and a new failure mode
+// (a claim that succeeds while the decision does not) for closing a window whose
+// every outcome is already safe. If the confirm window (§8.1, Phase 7) ever
+// makes a decision externally visible BEFORE the barrier is satisfied, revisit:
+// that is the first change that would make a zombie decision observable.
 func coordinatorStep(
 	ctx context.Context,
 	store ports.ClusterRolloutStore,

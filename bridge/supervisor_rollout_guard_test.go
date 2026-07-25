@@ -14,9 +14,17 @@ import (
 // coordinatedClusteredCfg is clusteredCfg opted into cluster.rollout:
 // coordinated — the steady state in which live-safe deltas are eligible for the
 // coordinated rollout barrier instead of the ADR 0012 refusal.
+// coordinatedClusteredCfg builds a clustered config opted into the coordinated
+// rollout barrier, with the two-member roster the barrier tests freeze as their
+// membership epoch. The roster lives in bridge.cluster.members — NOT
+// cluster.endpoints, which is this instance's capability map and would freeze a
+// one-"member" epoch named "http".
 func coordinatedClusteredCfg(id string) *ports.BridgeConfig {
 	cfg := clusteredCfg(id)
-	cfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated"}
+	cfg.Bridge.Cluster = &ports.ClusterConfig{
+		Rollout: "coordinated",
+		Members: []string{"node-a", "node-b"},
+	}
 	return cfg
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -47,65 +48,151 @@ type ClusterRolloutConfig struct {
 	Store ports.ClusterRolloutStore
 
 	// MemberID identifies this node within the membership epoch. It MUST be
-	// stable for the node and distinct across the cohort — decideRollout
+	// stable for the node, distinct across the cohort, and MUST appear verbatim
+	// in the applied config's bridge.cluster.members roster — decideRollout
 	// compares live membership against the frozen epoch by set equality, so a
 	// duplicate or drifting ID aborts every rollout. Required.
+	//
+	// It is injected rather than read from config because a coordinated cohort
+	// shares ONE config document: bridge.instance_id is empty there precisely so
+	// each task derives its own runtime identity, and bridge.cluster.endpoints is
+	// a capability map, not a roster. Only the composition root knows this node's
+	// stable identity (ECS task id, pod name, host), so only it can supply this.
 	MemberID string
 
-	// Membership returns the current cohort member IDs. It MUST return the same
-	// set on every member and MUST NOT include duplicates. When nil, the
-	// membership is derived from the applied config's bridge.cluster.endpoints.
-	Membership func() []string
+	// Lease elects the rollout coordinator on a well-known lease id, and its
+	// LeaseToken is the fencing token passed to Commit/Abort (I3). Required: a
+	// cohort with no coordinator never decides, so every rollout would sit until
+	// its TTL and expire. It may be the same LeaseStore the deployment already
+	// uses for exclusive routes — the lease id is distinct.
+	Lease ports.LeaseStore
 
 	// TTL bounds an unresolved rollout before the coordinator aborts it.
 	// Zero selects defaultRolloutTTL.
 	TTL time.Duration
+
+	// LeaseTTL bounds how long a crashed coordinator blocks its successor, and
+	// doubles as the lock delay a fresh coordinator waits out before its first
+	// decision (§6). Zero selects defaultCoordLeaseTTL.
+	LeaseTTL time.Duration
+
+	// PollInterval is how often this member re-reads the rollout row.
+	// Zero selects defaultRolloutPollInterval.
+	PollInterval time.Duration
 }
 
 // rolloutBarrier is the per-Supervisor proposer state.
 type rolloutBarrier struct {
-	store      ports.ClusterRolloutStore
-	memberID   string
-	membership func() []string
-	ttl        time.Duration
+	store        ports.ClusterRolloutStore
+	lease        ports.LeaseStore
+	memberID     string
+	ttl          time.Duration
+	leaseTTL     time.Duration
+	pollInterval time.Duration
+
+	// candMu guards the staged candidate below.
+	candMu sync.Mutex
+	// cand holds the candidate this node's OWN config source delivered, staged
+	// for the applier by digest (design §5, transport option (b) — see the
+	// candidate-transport note at the top of rollout_applier.go). Only one
+	// rollout is active at a time (I1), so one slot is enough; a newer candidate
+	// overwrites the older one, which by then belongs to a rollout that has
+	// already resolved or is about to deadline-abort.
+	cand stagedCandidate
+}
+
+// stagedCandidate is a candidate config held between its proposal and the
+// barrier's decision.
+type stagedCandidate struct {
+	// digest identifies the candidate in the rollout row.
+	digest string
+	// frozen is the immutable content the applier verifies, classifies, and
+	// builds against.
+	frozen *ports.BridgeConfig
+	// source is the ORIGINAL pointer the config manager emitted. It exists
+	// solely so the commit-time SwapEvent can echo it back: the manager
+	// correlates apply results by exact pointer identity (a stale ack must not
+	// regress running to an older generation with identical content), so a swap
+	// event carrying the frozen clone instead would be discarded as foreign and
+	// leave ReconfigurePending — and therefore deep health's Degraded — latched
+	// true forever after every successful rollout.
+	source *ports.BridgeConfig
+}
+
+// stage records the candidate config this node proposed or joined, keyed by its
+// digest, so the applier can build and adopt it without re-fetching. frozen is
+// already frozen (cloneConfigForBuild) and validated by the node's own
+// config-source load path; source is the manager's original pointer.
+func (b *rolloutBarrier) stage(digest string, frozen, source *ports.BridgeConfig) {
+	b.candMu.Lock()
+	defer b.candMu.Unlock()
+	b.cand = stagedCandidate{digest: digest, frozen: frozen, source: source}
+}
+
+// candidate returns the staged candidate for digest, or ok=false when this node
+// has not (yet) seen that candidate through its own config source. Not-staged is
+// the normal state for a member whose watcher is lagging: it simply does not
+// vote yet, and the rollout deadline (F1) bounds the wait.
+func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
+	b.candMu.Lock()
+	defer b.candMu.Unlock()
+	if digest == "" || digest != b.cand.digest {
+		return stagedCandidate{}, false
+	}
+	return b.cand, true
 }
 
 // newRolloutBarrier validates the wiring and applies defaults. It returns nil
 // when the configuration is incomplete, so a half-wired barrier degrades to the
 // ADR 0012 refusal (fail closed) rather than silently proposing nothing.
 func newRolloutBarrier(cfg ClusterRolloutConfig) *rolloutBarrier {
-	if cfg.Store == nil || cfg.MemberID == "" {
+	if cfg.Store == nil || cfg.Lease == nil || cfg.MemberID == "" {
 		return nil
 	}
-	ttl := cfg.TTL
-	if ttl <= 0 {
-		ttl = defaultRolloutTTL
-	}
 	return &rolloutBarrier{
-		store:      cfg.Store,
-		memberID:   cfg.MemberID,
-		membership: cfg.Membership,
-		ttl:        ttl,
+		store:        cfg.Store,
+		lease:        cfg.Lease,
+		memberID:     cfg.MemberID,
+		ttl:          orDefault(cfg.TTL, defaultRolloutTTL),
+		leaseTTL:     orDefault(cfg.LeaseTTL, defaultCoordLeaseTTL),
+		pollInterval: orDefault(cfg.PollInterval, defaultRolloutPollInterval),
 	}
 }
 
-// members resolves the membership epoch for a proposal. An explicit Membership
-// function wins; otherwise the static bridge.cluster.endpoints keys of the
-// applied config are used (the validated static-membership shape). It returns
-// nil when membership cannot be determined — the caller MUST fail closed rather
-// than propose against a guessed epoch.
-func (b *rolloutBarrier) members(cfg *ports.BridgeConfig) []string {
-	if b.membership != nil {
-		return b.membership()
+// orDefault selects fallback for a non-positive duration.
+func orDefault(d, fallback time.Duration) time.Duration {
+	if d <= 0 {
+		return fallback
 	}
+	return d
+}
+
+// rolloutMembers resolves the membership epoch from the applied config's static
+// bridge.cluster.members roster. It is the ONE membership source: the proposer
+// freezes the epoch from it and the coordinator compares live membership against
+// it, so the two cannot disagree and report a spurious F6 membership change on
+// every rollout.
+//
+// It returns nil when the roster is absent — the caller MUST fail closed rather
+// than propose against a guessed epoch. Duplicates are NOT removed here:
+// persistence.NewRollout sorts and dedups the epoch it freezes, and decideRollout
+// dedups the live roster before comparing, so a duplicate is inert either way.
+func rolloutMembers(cfg *ports.BridgeConfig) []string {
 	if cfg == nil || cfg.Bridge.Cluster == nil {
 		return nil
 	}
-	out := make([]string, 0, len(cfg.Bridge.Cluster.Endpoints))
-	for id := range cfg.Bridge.Cluster.Endpoints {
-		out = append(out, id)
-	}
-	return out
+	return slices.Clone(cfg.Bridge.Cluster.Members)
+}
+
+// sortedSet renders member ids as the canonical set the barrier compares on:
+// sorted and deduplicated. persistence.NewRollout stores the frozen epoch in
+// exactly this form, so every comparison against it — the coordinator's live
+// membership check (F6) and the replacement-required roster check — must
+// normalise the same way or a reorder reads as a membership change.
+func sortedSet(ids []string) []string {
+	out := slices.Clone(ids)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // proposeCoordinatedRollout hands a live-safe clustered delta to the rollout
@@ -119,7 +206,10 @@ func (b *rolloutBarrier) members(cfg *ports.BridgeConfig) []string {
 // commit without every real member's ack; this node absent from its own epoch —
 // a rollout it can never Ack; and a collision with a DIFFERENT in-flight rollout
 // (see joinActive).
-func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newCfg *ports.BridgeConfig) error {
+// sourceCfg is the ORIGINAL pointer the config manager emitted; it is staged
+// alongside the frozen candidate so the commit-time SwapEvent can echo it back
+// (see stagedCandidate.source).
+func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
 	b := s.rollout
 	if b == nil {
 		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but this process has no "+
@@ -128,22 +218,22 @@ func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newC
 			"(bridge.WithClusterRollout) or perform a whole-cohort replacement "+
 			"(docs/runbooks/cluster-config-rollout.md) (attempted_config_version=%d)", newCfg.Version)
 	}
-	members := b.members(oldCfg)
-	if len(members) > 0 && !slices.Contains(members, b.memberID) {
+	members := rolloutMembers(oldCfg)
+	if len(members) == 0 {
+		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but the cohort roster "+
+			"bridge.cluster.members is empty, so a rollout cannot freeze a membership epoch and the "+
+			"live reload is refused (the running config keeps serving) "+
+			"(attempted_config_version=%d)", newCfg.Version)
+	}
+	if !slices.Contains(members, b.memberID) {
 		return fmt.Errorf("bridge: this node's rollout member id %q is not in the cohort membership "+
 			"epoch %v, so it could never Ack its own proposal (persistence.Rollout rejects a voter "+
 			"outside the frozen epoch) and the rollout could only deadline-abort while blocking every "+
 			"other proposal for its whole TTL. The live reload is refused (the running config keeps "+
-			"serving); align bridge.WithClusterRollout's MemberID with bridge.cluster.endpoints "+
+			"serving); align bridge.WithClusterRollout's MemberID with bridge.cluster.members "+
 			"(attempted_config_version=%d)", b.memberID, members, newCfg.Version)
 	}
-	if len(members) == 0 {
-		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but the cohort membership "+
-			"is unknown (no bridge.cluster.endpoints and no membership source), so a rollout cannot "+
-			"freeze a membership epoch and the live reload is refused (the running config keeps "+
-			"serving) (attempted_config_version=%d)", newCfg.Version)
-	}
-	if err := b.propose(ctx, newCfg, members); err != nil {
+	if err := b.propose(ctx, newCfg, sourceCfg, members); err != nil {
 		return fmt.Errorf("bridge: proposing the coordinated cluster rollout failed, so the live reload "+
 			"is refused and the running config keeps serving (attempted_config_version=%d): %w",
 			newCfg.Version, err)
@@ -156,12 +246,11 @@ func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newC
 // conditional create fails with shared.ErrAlreadyExists and this node simply
 // joins the generation the peer opened. Any other error — including a collision
 // with a DIFFERENT active rollout — fails closed.
-func (b *rolloutBarrier) propose(ctx context.Context, newCfg *ports.BridgeConfig, members []string) error {
-	raw, ok := configCanonicalBytes(newCfg)
+func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.BridgeConfig, members []string) error {
+	digest, ok := configCanonicalBytesDigest(newCfg)
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the candidate config digest for a coordinated rollout")
 	}
-	digest := candidateConfigDigest(raw)
 	_, err := b.store.Propose(ctx, persistence.RolloutProposal{
 		ProposerID:    b.memberID,
 		ConfigDigest:  digest,
@@ -169,13 +258,20 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg *ports.BridgeConfig
 		Members:       members,
 		TTL:           b.ttl,
 	})
-	if err == nil {
-		return nil
+	if err != nil {
+		if !errors.Is(err, shared.ErrAlreadyExists) {
+			return err
+		}
+		if joinErr := b.joinActive(ctx, digest); joinErr != nil {
+			return joinErr
+		}
 	}
-	if !errors.Is(err, shared.ErrAlreadyExists) {
-		return err
-	}
-	return b.joinActive(ctx, digest)
+	// Staged only on success: a delta that could not be proposed or joined must
+	// not be adoptable by the applier — the guard fails it closed, and a staged
+	// candidate for a rollout this node is not part of would be adopted the
+	// moment some OTHER rollout happened to carry the same digest.
+	b.stage(digest, newCfg, sourceCfg)
+	return nil
 }
 
 // joinActive resolves a Propose that lost to an already-active rollout. The

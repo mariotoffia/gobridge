@@ -478,6 +478,24 @@ func configWatchHealth(sup *bridge.Supervisor, mgr *config.Manager) httpapi.Conf
 			status.Reason = "desired configuration is not running"
 		}
 	}
+	// A coordinated cluster rollout makes ReconfigurePending expected rather
+	// than alarming for as long as the barrier is undecided: this member has
+	// deliberately not applied a config the cohort has not committed. Surface
+	// the barrier so an operator reading /deephealth sees WHO the cohort is
+	// waiting for instead of a bare "desired configuration is not running".
+	if rollout, ok := sup.RolloutStatus(); ok {
+		status.Rollout = &httpapi.ClusterRolloutHealth{
+			MemberID:        rollout.MemberID,
+			Generation:      rollout.Generation,
+			State:           rollout.State,
+			ConfigVersion:   rollout.ConfigVersion,
+			Epoch:           rollout.Epoch,
+			Acked:           rollout.Acked,
+			Nacked:          rollout.Nacked,
+			Reason:          rollout.Reason,
+			CandidateStaged: rollout.Staged,
+		}
+	}
 	return status
 }
 
