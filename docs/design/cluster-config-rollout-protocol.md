@@ -1,8 +1,12 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
-Status: **proposed design — not implemented**. When shipped, the draft ADR in
-§12 is promoted to `docs/adr/0013-…` (ADRs in this repo document shipped
-behavior only) and ADR 0012 gains a `Superseded by 0013` line.
+Status: **partially implemented** — Phases 1–3 are done (protocol state, durable
+store, orchestration logic + guard-lift); Phase 4 (operator surface) is in
+progress; Phases 5–7 are not started. The barrier is NOT wired into any
+composition root yet, so shipped behavior is unchanged: a clustered deployment
+still refuses live reloads per ADR 0012. See §11 for the per-phase status. When
+shipped, the draft ADR in §12 is promoted to `docs/adr/0013-…` (ADRs in this repo
+document shipped behavior only) and ADR 0012 gains a `Superseded by 0013` line.
 Date: 2026-07-23
 Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
 `docs/runbooks/cluster-config-rollout.md`
@@ -332,7 +336,7 @@ only consumes what earlier phases shipped, and each lands green on
 `make lint` + `make test`. The §-references map the phase to the part of
 this design it implements.
 
-### Phase 1 — Protocol state (§4, §5 port)
+### Phase 1 — Protocol state (§4, §5 port) — ✅ IMPLEMENTED
 
 - `domain/persistence`: `Rollout`, `RolloutAck`, `RolloutProposal`, state
   machine + invariants I1–I5.
@@ -355,7 +359,10 @@ this design it implements.
   including the concurrency races), race-clean, plus unit round-trip/decode and
   corruption fail-closed (unit + ddblocal) coverage.
 
-### Phase 3 — Orchestration logic + guard-lift (§6, §7, §8 classes) — ✅ CORE IMPLEMENTED
+### Phase 3 — Orchestration logic + guard-lift (§6, §7, §8 classes) — ✅ IMPLEMENTED
+
+Phase 3's own scope is complete. The barrier-drive items it listed as deferred
+moved to Phase 4 and are tracked there.
 
 Delivered (all in `bridge/`, unit-tested on fakes + `clocktest`):
 
@@ -411,7 +418,67 @@ goroutines, so its natural proof is integration, not unit):
   heartbeat rows); it MUST return **distinct** member IDs — `decideRollout`
   compares live membership against the frozen epoch by set-equality.
 
-### Phase 4 — Operator surface (§6 proposer, §8 config key, §9)
+### Phase 4 — Operator surface (§6 proposer, §8 config key, §9) — 🚧 IN PROGRESS
+
+Delivered so far:
+
+- **Proposer half of the barrier (§6).** `bridge/rollout_barrier.go`:
+  `ClusterRolloutConfig` + `bridge.WithClusterRollout` (opt-in Supervisor
+  option), `rolloutBarrier.propose` (digest via `configCanonicalBytes` +
+  `candidateConfigDigest`; a peer's `ErrAlreadyExists` is success — this node
+  joins that generation), and membership resolution.
+- **Guard lift now drives the barrier (§6).** The `clusterReloadCoordinated`
+  branch in `Supervisor.apply` proposes the delta and DEFERS locally instead of
+  Phase 3's fail-closed error. It still fails closed on every path where the
+  delta could not be proposed (no barrier wired, unknown membership epoch,
+  store error) — an unproposed delta is never reported as deferred, because an
+  in-band applier resolves a deferral as committed.
+- **Deferral reason (§11 `reload.go` item).** `SwapEvent.DeferReason`
+  (`paused` | `rollout_pending`); `cmd/gobridge/reload.go` branches on it, so a
+  rollout hand-off is no longer reported as "bridge paused by admin".
+- **Q1 decided (membership authority):** the epoch comes from an injected
+  membership function, defaulting to the **static `bridge.cluster.endpoints`**
+  keys. Heartbeat rows are NOT introduced — they are a new subsystem with their
+  own TTL and failure modes, and nothing in this phase needs them. When endpoint
+  auto-discovery becomes a supported clustered shape, revisit with heartbeat
+  rows; until then a coordinated deployment must declare static endpoints (the
+  validator rule below must enforce this).
+
+Remaining in this phase:
+
+- **Applier loop:** observe the rollout store (`ConsistentRead`), run
+  `evaluateProposal`, build-without-swap via `Builder.Plan`, `Ack`/`Nack`, swap
+  on `Committed` via `BuildPlan.Commit` (arming `watchPostSwapConvergence` — F8),
+  discard on `Aborted` via `BuildPlan.Close`, guarded by `nodeRolloutGate`.
+- **Coordinator `Run` loop:** ticker goroutine composing `elect` → lock-delay →
+  `observe`, plus lease renewal (`Renew` MUST NOT bump the fencing version),
+  `Release` on terminal/ctx-cancel, and step-down on
+  `shared.ErrStaleFencingToken` (F5).
+- **`nodeRolloutGate` persistence** — the high-water is in-memory, so a late
+  push is not rejected across a restart.
+- **Candidate transport (§5) — OPEN DESIGN ITEM.** §5 has the proposer write the
+  candidate *inactive* to the config source, but the DynamoDB config source is
+  hardcoded to a single `current` slot
+  (`adapters/aws/config/dynamodb/loader.go`: `skCurrent`), so no inactive row
+  exists. Two options: (a) add a staged sort key + a small port so members fetch
+  candidate bytes by digest, or (b) let each member's own config watcher deliver
+  the candidate and rely on the rollout row's digest as the cross-member
+  agreement check. **(b) is cheaper but currently unsafe**: it writes `current`
+  before the barrier commits, so a member restarting after an *aborted* rollout
+  boots the aborted config while the cohort stays on the old one — the
+  mixed-version cohort G2 forbids, and a safety regression against today's
+  refusal. Choose (a), or (b) plus a joiner rule that pins boot to the last
+  committed generation, before the applier loop lands.
+- Admin config-txn API propose path; `config/validate.go` rules; metrics + deep
+  health; single-process integration tests (§10).
+
+Until the applier and coordinator land, `WithClusterRollout` must not be wired
+in any composition root: a proposed rollout reaches no decision and expires at
+its TTL. Every outcome is fail-safe (no member swaps, the running config keeps
+serving), but the delta does not take effect. No composition root wires it
+today, so shipped behavior is unchanged — clustered live reload still refuses.
+
+### Phase 4 scope reference (original)
 
 - Admin config-txn API propose path (writes candidate **inactive** to the
   config source, stamps `candidateConfigDigest`, calls `Propose`).

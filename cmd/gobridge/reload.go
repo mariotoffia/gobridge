@@ -395,6 +395,19 @@ func (p *reloadPipeline) applyCommitted(ctx context.Context, cfg *ports.BridgeCo
 	}
 }
 
+// deferredApplyResult renders the waiter result for a deferred (committed-not-
+// applied) swap. Every cause resolves to ports.ErrApplyInFlight — the applier
+// must never roll back a deferral — but the message names the actual cause so an
+// operator reading a commit response is not sent after a pause that does not
+// exist.
+func deferredApplyResult(reason bridge.DeferReason) error {
+	if reason == bridge.DeferReasonRolloutPending {
+		return fmt.Errorf("config proposed to the coordinated cluster rollout barrier; "+
+			"it takes effect on this node when the barrier commits: %w", ports.ErrApplyInFlight)
+	}
+	return fmt.Errorf("bridge paused; config recorded for resume: %w", ports.ErrApplyInFlight)
+}
+
 // onSwap is the Supervisor's swap callback. It logs every swap (preserving the
 // binary's reconfiguration logging) and resolves the applyCommitted waiter, if
 // any, for the swapped config. It is TOTAL: the Supervisor fires it for success,
@@ -402,6 +415,10 @@ func (p *reloadPipeline) applyCommitted(ctx context.Context, cfg *ports.BridgeCo
 func (p *reloadPipeline) onSwap(ev bridge.SwapEvent) {
 	if p.logger != nil {
 		switch {
+		case ev.Deferred && ev.DeferReason == bridge.DeferReasonRolloutPending:
+			p.logger.Info("reconfiguration deferred to the coordinated cluster rollout barrier; " +
+				"the delta is proposed cluster-wide and takes effect on this node when the " +
+				"barrier commits (no operator action required)")
 		case ev.Deferred:
 			p.logger.Info("reconfiguration deferred (bridge paused by admin); " +
 				"config recorded and will take effect on resume")
@@ -439,7 +456,7 @@ func (p *reloadPipeline) onSwap(ev bridge.SwapEvent) {
 	// mistake it for either a successful swap or a rollback-safe failure.
 	res := ev.Error
 	if ev.Deferred {
-		res = fmt.Errorf("bridge paused; config recorded for resume: %w", ports.ErrApplyInFlight)
+		res = deferredApplyResult(ev.DeferReason)
 	}
 	// done is buffered (cap 1). A non-blocking send keeps the Supervisor's Run
 	// loop unblocked even if failPendingWaiters (pipeline shutdown) raced and

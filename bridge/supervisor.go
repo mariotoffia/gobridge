@@ -41,6 +41,33 @@ const (
 	SwapAuto
 )
 
+// DeferReason names WHY a SwapEvent was deferred. A deferred swap is
+// committed-not-applied, but the follow-up an operator must take differs per
+// cause, so the cause travels with the event instead of being assumed by the
+// consumer.
+type DeferReason string
+
+const (
+	// DeferReasonPaused: the bridge is paused by an admin StopBridge. The config
+	// is recorded as the resume target and takes effect on the next StartBridge.
+	DeferReasonPaused DeferReason = "paused"
+
+	// DeferReasonRolloutPending: the delta was handed to the coordinated cluster
+	// rollout barrier. It is proposed cluster-wide and this node swaps only when
+	// the barrier reaches Committed (or discards it on Abort) — no operator
+	// action is required, unlike a pause.
+	DeferReasonRolloutPending DeferReason = "rollout_pending"
+)
+
+// deferReasonWhenPaused returns the pause reason only when the event is
+// actually deferred, so a non-deferred event never carries a stale cause.
+func deferReasonWhenPaused(paused bool) DeferReason {
+	if paused {
+		return DeferReasonPaused
+	}
+	return ""
+}
+
 // SwapEvent is emitted on each reconfiguration attempt via the
 // OnSwap callback.
 type SwapEvent struct {
@@ -51,12 +78,18 @@ type SwapEvent struct {
 	Duration  time.Duration
 
 	// Deferred is true when the Supervisor deliberately did NOT apply NewConfig
-	// and instead recorded it as the desired state to resume later — currently
-	// only when the bridge is paused by an admin StopBridge. A deferred event
-	// carries Error == nil (it is not a failure): the config is committed and
-	// will take effect on the next StartBridge, so an in-band applier MUST treat
-	// it as committed-not-applied (no rollback), not as a successful swap.
+	// and instead recorded it as the desired state to resume later — an admin
+	// StopBridge pause, or a hand-off to the coordinated rollout barrier. A
+	// deferred event carries Error == nil (it is not a failure): the config is
+	// committed and will take effect on resume/commit, so an in-band applier MUST
+	// treat it as committed-not-applied (no rollback), not as a successful swap.
 	Deferred bool
+
+	// DeferReason names the cause when Deferred is true (empty otherwise).
+	// Consumers MUST branch on it rather than assuming a pause: rendering a
+	// rollout-pending deferral as "paused by admin" sends an operator to the
+	// wrong runbook.
+	DeferReason DeferReason
 }
 
 // Supervisor manages the runtime lifecycle and applies new
@@ -71,6 +104,7 @@ type Supervisor struct {
 	transports          map[string]ports.TransportFactory
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
+	rollout             *rolloutBarrier
 	credStore           ports.CredentialStore
 	pushCredStore       ports.PushCredentialStore
 	pollCredStore       ports.PullCredentialStore
@@ -289,6 +323,29 @@ func WithSupervisorBlueprintValidator(v ports.BlueprintValidator) SupervisorOpti
 // backlog/cutover procedure.
 func WithAllowDestructiveReload(allow bool) SupervisorOption {
 	return func(s *Supervisor) { s.allowDestructiveReload = allow }
+}
+
+// WithClusterRollout wires the coordinated cluster rollout barrier
+// (design cluster-config-rollout-protocol.md §6). It is opt-in and additive: a
+// clustered deployment that does not configure it keeps the ADR 0012 refusal for
+// every live reload, and an incompletely configured barrier is ignored (the
+// refusal stands) rather than half-applied.
+//
+// With the barrier wired, a live-safe delta in a deployment whose config sets
+// cluster.rollout: coordinated is proposed to the shared rollout store and
+// deferred locally instead of refused; this node swaps only when the barrier
+// commits.
+//
+// INCOMPLETE — proposer half only. The applier loop (build-without-swap, Ack /
+// Nack, swap on Committed) and the coordinator Run loop (lease-elected commit /
+// abort) are not wired yet, so a proposed rollout currently reaches no decision
+// and expires at its TTL. Every outcome is fail-safe — no member ever swaps, the
+// running config keeps serving — but a delta handed to the barrier today does
+// NOT take effect. Do not wire this in a composition root until the applier and
+// coordinator land; until then a clustered deployment should keep the ADR 0012
+// whole-cohort replacement procedure.
+func WithClusterRollout(cfg ClusterRolloutConfig) SupervisorOption {
+	return func(s *Supervisor) { s.rollout = newRolloutBarrier(cfg) }
 }
 
 // NewSupervisor creates a Supervisor with SwapAuto mode and
@@ -700,9 +757,10 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		}
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
-				NewConfig: newCfg,
-				Deferred:  pausedForGuard,
+				OldConfig:   cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig:   newCfg,
+				Deferred:    pausedForGuard,
+				DeferReason: deferReasonWhenPaused(pausedForGuard),
 			})
 		}
 		return
@@ -720,32 +778,44 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 	switch disp, reason := classifyClusterReload(oldCfgForGuard, frozenCfg); disp {
 	case clusterReloadCoordinated:
 		// A live-safe delta within a coordinated cluster is eligible for the
-		// coordinated rollout barrier, which will drive the all-member commit.
-		// That barrier drive (proposer + applier/coordinator goroutines) is a
-		// later phase and is NOT wired yet, so this build fails CLOSED rather than
-		// (a) swapping uncoordinated here — which would split the cohort — or
-		// (b) emitting a success-shaped Deferred event, which in-band appliers
-		// resolve as committed and which, unlike the paused path, records no
-		// desired config, silently DROPPING the change. Failing closed keeps the
-		// running config serving and surfaces a visible, coordinated-specific
-		// error. When the barrier lands, this branch drives it instead of erroring.
-		err := fmt.Errorf("bridge: coordinated cluster rollout is configured "+
-			"(cluster.rollout: coordinated) and this delta is live-safe, but the coordinated "+
-			"rollout barrier is not yet active in this build, so the live reload is refused and "+
-			"the current config keeps serving. Apply the change through the coordinated rollout "+
-			"operator surface when available, or perform a whole-cohort replacement "+
-			"(docs/runbooks/cluster-config-rollout.md) (attempted_config_version=%d)", frozenCfg.Version)
-		if s.logger != nil {
-			s.logger.Error("supervisor: coordinated cluster rollout configured but its barrier is not "+
-				"yet active; refusing the live-safe delta fail-closed (the running config keeps serving)",
-				"error", err, "attempted_config_version", frozenCfg.Version)
+		// rollout barrier, which drives the all-member commit. This node must not
+		// swap here under any outcome: swapping uncoordinated would split the
+		// cohort across config versions, which is the whole reason ADR 0012
+		// refuses clustered live reloads.
+		if err := s.proposeCoordinatedRollout(ctx, oldCfgForGuard, frozenCfg); err != nil {
+			// Fail CLOSED: the running config keeps serving and the failure is
+			// visible. Never emit a success-shaped Deferred event here — an in-band
+			// applier resolves that as committed while nothing recorded the desired
+			// config, silently DROPPING the change.
+			if s.logger != nil {
+				s.logger.Error("supervisor: coordinated cluster rollout could not be proposed; "+
+					"refusing the live-safe delta fail-closed (the running config keeps serving)",
+					"error", err, "attempted_config_version", frozenCfg.Version)
+			}
+			s.emitConfigReload(false)
+			if s.onSwap != nil {
+				s.safeOnSwap(SwapEvent{
+					OldConfig: cloneConfigSnapshot(oldCfgForGuard),
+					NewConfig: newCfg,
+					Error:     err,
+				})
+			}
+			return
 		}
-		s.emitConfigReload(false)
+		// Proposed. The delta is committed-not-applied on this node until the
+		// barrier reaches Committed, so the event is a DEFERRAL naming the
+		// barrier — distinct from an admin pause, which needs operator action.
+		if s.logger != nil {
+			s.logger.Info("supervisor: live-safe delta proposed to the coordinated cluster rollout "+
+				"barrier; this node applies it when the barrier commits",
+				"attempted_config_version", frozenCfg.Version)
+		}
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
-				NewConfig: newCfg,
-				Error:     err,
+				OldConfig:   cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig:   newCfg,
+				Deferred:    true,
+				DeferReason: DeferReasonRolloutPending,
 			})
 		}
 		return
@@ -861,9 +931,10 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// with a committed-not-applied (no-rollback) outcome.
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfg),
-				NewConfig: newCfg,
-				Deferred:  true,
+				OldConfig:   cloneConfigSnapshot(oldCfg),
+				NewConfig:   newCfg,
+				Deferred:    true,
+				DeferReason: DeferReasonPaused,
 			})
 		}
 		return
