@@ -79,16 +79,43 @@ type ClusterRolloutConfig struct {
 	// PollInterval is how often this member re-reads the rollout row.
 	// Zero selects defaultRolloutPollInterval.
 	PollInterval time.Duration
+
+	// Encode and Decode round-trip a *ports.BridgeConfig through the durable
+	// last-committed config artifact (design Phase-4 residual): Encode on commit
+	// (to persist the committed bytes), Decode on boot / reconcile (to rebuild the
+	// committed config a member boots on or converges to). They are INJECTED
+	// because bridge must not import config/parser (arch-lint): the composition
+	// root supplies config/parser.MarshalBridgeConfigJSON and a registry-bound
+	// parser.Parse. Encode MUST be the round-trippable wire form (NOT the canonical
+	// digest projection) so Decode can reconstruct the config.
+	//
+	// Both optional: when either is nil the committed-artifact residual protection
+	// is disabled and the joiner keeps the conservative fail-closed refusal for an
+	// aborted/undecided boot config. Wire both in a coordinated production
+	// deployment.
+	Encode func(*ports.BridgeConfig) ([]byte, error)
+	Decode func([]byte) (*ports.BridgeConfig, error)
 }
 
 // rolloutBarrier is the per-Supervisor proposer state.
 type rolloutBarrier struct {
-	store        ports.ClusterRolloutStore
-	lease        ports.LeaseStore
-	memberID     string
-	ttl          time.Duration
-	leaseTTL     time.Duration
-	pollInterval time.Duration
+	store ports.ClusterRolloutStore
+	// committedStore is the durable last-committed config artifact port. It is the
+	// same backing store as `store` when that store implements it (the usual case),
+	// discovered by assertion in newRolloutBarrier; nil otherwise, which — like a
+	// nil codec — disables the committed-artifact residual protection.
+	committedStore ports.ClusterCommittedConfigStore
+	lease          ports.LeaseStore
+	memberID       string
+	ttl            time.Duration
+	leaseTTL       time.Duration
+	pollInterval   time.Duration
+
+	// encode/decode round-trip a config through the durable committed-config
+	// artifact (see ClusterRolloutConfig.Encode/Decode). Both nil disables the
+	// committed-artifact residual protection.
+	encode func(*ports.BridgeConfig) ([]byte, error)
+	decode func([]byte) (*ports.BridgeConfig, error)
 
 	// candMu guards the staged candidate below.
 	candMu sync.Mutex
@@ -142,6 +169,33 @@ func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 	return b.cand, true
 }
 
+// writeCommittedArtifact durably records the config the cohort committed at
+// generation gen as the last-committed artifact (design Phase-4 residual). It is
+// idempotent across the cohort — every adopting member writes the same
+// (generation, digest) pair, and the store treats a matching re-write as a no-op
+// — and a no-op when no codec is wired. The recorded digest is the CANONICAL
+// digest (identity, matching the rollout row); the bytes are the round-trippable
+// wire form a (re)joining member decodes.
+func (b *rolloutBarrier) writeCommittedArtifact(ctx context.Context, gen uint64, version int, cfg *ports.BridgeConfig) error {
+	if b.encode == nil || b.committedStore == nil {
+		return nil
+	}
+	raw, err := b.encode(cfg)
+	if err != nil {
+		return fmt.Errorf("bridge: encoding the committed config for the durable rollout artifact failed: %w", err)
+	}
+	digest, ok := configCanonicalBytesDigest(cfg)
+	if !ok {
+		return fmt.Errorf("bridge: cannot compute the committed config digest for the durable rollout artifact")
+	}
+	return b.committedStore.PutCommittedConfig(ctx, persistence.CommittedRolloutConfig{
+		Generation:    gen,
+		ConfigVersion: version,
+		ConfigBytes:   raw,
+		Digest:        digest,
+	})
+}
+
 // newRolloutBarrier validates the wiring and applies defaults. It returns nil
 // when the configuration is incomplete, so a half-wired barrier degrades to the
 // ADR 0012 refusal (fail closed) rather than silently proposing nothing.
@@ -149,14 +203,23 @@ func newRolloutBarrier(cfg ClusterRolloutConfig) *rolloutBarrier {
 	if cfg.Store == nil || cfg.Lease == nil || cfg.MemberID == "" {
 		return nil
 	}
-	return &rolloutBarrier{
+	b := &rolloutBarrier{
 		store:        cfg.Store,
 		lease:        cfg.Lease,
 		memberID:     cfg.MemberID,
 		ttl:          orDefault(cfg.TTL, defaultRolloutTTL),
 		leaseTTL:     orDefault(cfg.LeaseTTL, defaultCoordLeaseTTL),
 		pollInterval: orDefault(cfg.PollInterval, defaultRolloutPollInterval),
+		encode:       cfg.Encode,
+		decode:       cfg.Decode,
 	}
+	// The committed-config artifact is a separate small port; the same backing
+	// store usually implements it. Discover that capability rather than adding a
+	// second public wiring field for what is almost always one object.
+	if cs, ok := cfg.Store.(ports.ClusterCommittedConfigStore); ok {
+		b.committedStore = cs
+	}
+	return b
 }
 
 // orDefault selects fallback for a non-positive duration.

@@ -185,7 +185,9 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 	r, err := a.store.Current(ctx)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
-			return nil // no rollout has ever been proposed — nothing to drive
+			// No active rollout, but the durable artifact may still be ahead of this
+			// member (a commit it missed whose row was later cleared).
+			return a.reconcileMissedCommit(ctx, 0)
 		}
 		return err
 	}
@@ -202,18 +204,31 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 		applied := staged && configContentEqual(a.sup.Config(), cand.frozen)
 		a.obs.observe(r, a.memberID, staged, applied)
 	}
+	// adoptGen is the generation adopt already handled this step (the active
+	// committed rollout). reconcile must not re-drive it in the same step or it
+	// would burn a second retry attempt back-to-back on a transient failure.
+	var adoptGen uint64
 	switch r.State() {
 	case persistence.RolloutProposed, persistence.RolloutStaging:
-		return a.vote(ctx, r)
+		if err := a.vote(ctx, r); err != nil {
+			return err
+		}
 	case persistence.RolloutCommitted:
-		return a.adopt(ctx, r)
+		adoptGen = r.Generation()
+		if err := a.adopt(ctx, r); err != nil {
+			return err
+		}
 	default:
 		// Aborted. Nothing to discard: the candidate build is released the
 		// instant it has proven itself (see vote), so an abort costs this node
 		// no cleanup — RECONFIG-2's candidate-cleanup obligation is discharged
 		// at proof time rather than deferred across the whole staging window.
-		return nil
 	}
+	// Fallback: converge to the durable last-committed artifact if it is AHEAD of
+	// what this member applied — a commit it missed because the active row moved on
+	// (residual seq (2)). Runs AFTER adopt so the normal path (which applies with
+	// the staged candidate's source pointer) wins and this is a no-op then.
+	return a.reconcileMissedCommit(ctx, adoptGen)
 }
 
 // vote runs the pre-build gate for an undecided rollout and records this node's
@@ -340,29 +355,44 @@ func (a *rolloutApplier) adopt(ctx context.Context, r persistence.Rollout) error
 	cand, staged := a.sup.rollout.candidate(r.ConfigDigest())
 	if !staged {
 		// Committed, but this node never staged the candidate — it was down when
-		// its config source delivered it, or it joined after the commit. Its own
-		// watcher re-delivers the committed config on the normal reload path
-		// (the boot config IS the committed config), so there is nothing to do
-		// here and nothing is lost. Do NOT record the generation: staging may
-		// still arrive on a later observation.
+		// its config source delivered it, or it joined after the commit. It catches
+		// up through the durable committed artifact instead (reconcileMissedCommit,
+		// run each step), which fetches the committed BYTES so no staged candidate
+		// is needed. Do NOT record the generation here: reconcile owns it.
 		return nil
 	}
-	// Restart-safe idempotence without a durable counter: a node that already
-	// runs this generation's content must not rebuild its runtime just because
-	// its in-memory gate was reset by the restart.
-	if configContentEqual(a.sup.Config(), cand.frozen) {
-		a.gate.record(r.Generation())
-		return nil
+	if a.applyCommittedGeneration(ctx, r.Generation(), r.ConfigVersion(), a.adoptable(cand), cand.frozen) {
+		// Only a member that actually applied the generation records the durable
+		// artifact — its running config now IS the committed one.
+		a.persistCommittedArtifact(ctx, r, cand.frozen)
+	}
+	return nil
+}
+
+// applyCommittedGeneration swaps the runtime to a committed generation and owns
+// the bounded-retry / give-up-degraded behaviour shared by adopt (a staged
+// candidate) and reconcileMissedCommit (config decoded from the durable
+// artifact). apply is the pointer handed to applyBarrierCommitted (adopt passes
+// the source pointer so the manager correlates the swap; reconcile has only the
+// decoded config); content is the agreed content the swap is verified against. It
+// returns true once this member is running that content.
+func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint64, version int, apply, content *ports.BridgeConfig) bool {
+	// Restart-safe idempotence without a durable counter: a node that already runs
+	// this generation's content must not rebuild its runtime just because its
+	// in-memory gate was reset by the restart.
+	if configContentEqual(a.sup.Config(), content) {
+		a.gate.record(gen)
+		return true
 	}
 	if a.sup.logger != nil {
 		a.sup.logger.Info("supervisor: coordinated cluster rollout committed; applying the candidate",
-			"generation", r.Generation(), "config_version", r.ConfigVersion())
+			"generation", gen, "config_version", version)
 	}
-	if a.attemptGen != r.Generation() {
-		a.attemptGen, a.attempts = r.Generation(), 0
+	if a.attemptGen != gen {
+		a.attemptGen, a.attempts = gen, 0
 	}
 	a.attempts++
-	a.sup.applyBarrierCommitted(ctx, a.adoptable(cand))
+	a.sup.applyBarrierCommitted(ctx, apply)
 
 	// Did the swap actually take? applyConfig publishes the new config only on a
 	// path that adopted it (including the admin-paused branch, which records it
@@ -370,9 +400,9 @@ func (a *rolloutApplier) adopt(ctx context.Context, r persistence.Rollout) error
 	// content is therefore the honest answer, and it matters: the barrier has
 	// already committed cluster-wide, so a member that silently fails to apply
 	// leaves the mixed-version cohort G2 forbids.
-	if configContentEqual(a.sup.Config(), cand.frozen) {
-		a.gate.record(r.Generation())
-		return nil
+	if configContentEqual(a.sup.Config(), content) {
+		a.gate.record(gen)
+		return true
 	}
 	// The swap failed. It recovered the old config, counted a reload failure, and
 	// latched degraded — but on its own that leaves this member on the previous
@@ -383,25 +413,105 @@ func (a *rolloutApplier) adopt(ctx context.Context, r persistence.Rollout) error
 		if a.sup.logger != nil {
 			a.sup.logger.Error("supervisor: applying the committed cluster rollout failed; retrying "+
 				"(this member runs an OLDER generation than the cohort until it succeeds)",
-				"generation", r.Generation(), "attempt", a.attempts, "max_attempts", maxAdoptAttempts)
+				"generation", gen, "attempt", a.attempts, "max_attempts", maxAdoptAttempts)
 		}
-		return nil
+		return false
 	}
 	// Out of retries: stop rebuilding the runtime in a loop and leave the
 	// divergence loudly visible instead. RolloutStatus reports applied=false and
 	// the supervisor stays degraded, so an operator sees WHICH member diverged
 	// rather than a cohort that merely looks committed everywhere.
-	a.gate.record(r.Generation())
+	a.gate.record(gen)
 	if a.sup.logger != nil {
 		a.sup.logger.Error("supervisor: giving up applying the committed cluster rollout after repeated "+
 			"failures; THIS MEMBER RUNS AN OLDER CONFIG GENERATION THAN THE COHORT. Investigate this "+
 			"node and restart it once the cause is fixed",
-			"generation", r.Generation(), "config_version", r.ConfigVersion(), "attempts", a.attempts)
+			"generation", gen, "config_version", version, "attempts", a.attempts)
 	}
 	a.sup.markDegraded(fmt.Sprintf("coordinated cluster rollout generation %d committed but could not "+
 		"be applied on this member after %d attempts; it runs an older config generation than the rest "+
-		"of the cohort", r.Generation(), a.attempts))
+		"of the cohort", gen, a.attempts))
+	return false
+}
+
+// reconcileMissedCommit converges a running member to the durable last-committed
+// artifact when it is AHEAD of the generation this member has applied — the case
+// where the member missed a commit because the active rollout row was overwritten
+// by the next proposal before it observed the commit (design residual seq (2)),
+// or was down when the commit happened and never staged the candidate. It fetches
+// the committed BYTES (option (a)), so it needs no staged candidate.
+//
+// A no-op when no codec is wired, the artifact is not ahead, or the decoded bytes
+// fail their digest check (the running config is then kept — better than building
+// a corrupt artifact). Returns a store error to the caller for retry.
+//
+// PHASE-6 wiring dependency: reconcile (like the joiner's boot substitution)
+// applies a config the config MANAGER did not emit — the decoded artifact, not a
+// manager-correlated pointer. A production composition root that wires
+// onSwap -> ports config manager NotifyApplyResult must reconcile the manager's
+// desired/running fingerprint after a barrier-driven swap (e.g. re-sync running to
+// the committed config), or ReconfigurePending / deep-health Degraded can latch
+// true despite the member being correctly converged. The barrier is not wired into
+// any production root in Phase 5, so this does not manifest here; it is a Phase-6
+// obligation tracked in the design doc.
+func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uint64) error {
+	if a.sup.rollout.decode == nil || a.sup.rollout.committedStore == nil {
+		return nil
+	}
+	committed, err := a.sup.rollout.committedStore.CommittedConfig(ctx)
+	if errors.Is(err, shared.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !a.gate.admits(committed.Generation) {
+		return nil // already applied this generation (or newer), or the baseline seed
+	}
+	if adoptGen >= committed.Generation {
+		// adopt already drove this generation (or newer) through the staged-candidate
+		// path in this same step — including a transient failure that left the gate
+		// unrecorded. Re-driving it here would consume a second retry attempt in the
+		// same poll; leave it to adopt's next-poll retry.
+		return nil
+	}
+	cfg, err := a.sup.rollout.decode(committed.ConfigBytes)
+	if err != nil {
+		if a.sup.logger != nil {
+			a.sup.logger.Error("supervisor: the durable last-committed rollout artifact could not be "+
+				"decoded to reconcile a missed commit; the running config is kept",
+				"generation", committed.Generation, "error", err)
+		}
+		return nil
+	}
+	// Integrity: the reconstructed config must match the digest the artifact
+	// records, or the bytes are corrupt and must not be built.
+	if raw, ok := configCanonicalBytes(cfg); !ok || candidateConfigDigest(raw) != committed.Digest {
+		if a.sup.logger != nil {
+			a.sup.logger.Error("supervisor: the durable last-committed rollout artifact failed its digest "+
+				"check on reconcile; the running config is kept", "generation", committed.Generation)
+		}
+		return nil
+	}
+	a.applyCommittedGeneration(ctx, committed.Generation, committed.ConfigVersion, cfg, cfg)
 	return nil
+}
+
+// persistCommittedArtifact records the just-adopted generation as the durable
+// last-committed config artifact. It is best-effort: the swap has already
+// succeeded (this member runs the committed config), so a failed write must NOT
+// roll it back — it only means a future restart of THIS member might fall back to
+// an older committed artifact until a peer's adopt (idempotent) writes this
+// generation. It is a no-op when no codec is wired.
+func (a *rolloutApplier) persistCommittedArtifact(ctx context.Context, r persistence.Rollout, cfg *ports.BridgeConfig) {
+	if err := a.sup.rollout.writeCommittedArtifact(ctx, r.Generation(), r.ConfigVersion(), cfg); err != nil {
+		if a.sup.logger != nil {
+			a.sup.logger.Warn("supervisor: recording the durable last-committed rollout artifact failed; "+
+				"the swap succeeded and this member runs the committed config, but a restart before a peer "+
+				"writes this generation may fall back to an older committed artifact",
+				"generation", r.Generation(), "error", err)
+		}
+	}
 }
 
 // adoptable picks which of the staged pointers to apply.

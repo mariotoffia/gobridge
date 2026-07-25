@@ -15,7 +15,10 @@ import (
 // the external test package because the store adapter layer may not depend on
 // ports (the production package satisfies ports.ClusterRolloutStore
 // structurally).
-var _ ports.ClusterRolloutStore = (*memoryrollout.Store)(nil)
+var (
+	_ ports.ClusterRolloutStore         = (*memoryrollout.Store)(nil)
+	_ ports.ClusterCommittedConfigStore = (*memoryrollout.Store)(nil)
+)
 
 func newTestStore() *memoryrollout.Store {
 	return memoryrollout.NewStore(

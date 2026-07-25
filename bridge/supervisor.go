@@ -337,14 +337,21 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 // deferred locally instead of refused; this node swaps only when the barrier
 // commits.
 //
-// INCOMPLETE — proposer half only. The applier loop (build-without-swap, Ack /
-// Nack, swap on Committed) and the coordinator Run loop (lease-elected commit /
-// abort) are not wired yet, so a proposed rollout currently reaches no decision
-// and expires at its TTL. Every outcome is fail-safe — no member ever swaps, the
-// running config keeps serving — but a delta handed to the barrier today does
-// NOT take effect. Do not wire this in a composition root until the applier and
-// coordinator land; until then a clustered deployment should keep the ADR 0012
-// whole-cohort replacement procedure.
+// The full barrier is wired and proven end to end: the applier loop
+// (build-without-swap, Ack / Nack, swap on Committed), the lease-elected
+// coordinator loop (commit / abort under a fencing token), the joiner startup
+// rule, and — when Encode/Decode are supplied — the durable last-committed config
+// artifact that lets a (re)joining member boot on the committed config after an
+// abort and a member that missed a commit reconcile to it. Coverage is the
+// bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
+// and the long-running multi-process UC-CR proofs (design §10 / Phase 5).
+//
+// It is still opt-in and NOT wired by any production composition root — that is
+// Phase 6's ship step (see the design doc), which also carries the composition
+// obligations noted there (an explicit deploy-time artifact seed, and re-syncing
+// the config manager's fingerprint after a barrier-driven swap). Until Phase 6, a
+// production clustered deployment keeps the ADR 0012 whole-cohort replacement
+// procedure.
 func WithClusterRollout(cfg ClusterRolloutConfig) SupervisorOption {
 	return func(s *Supervisor) { s.rollout = newRolloutBarrier(cfg) }
 }
@@ -455,18 +462,21 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	if err != nil {
 		return fmt.Errorf("supervisor: initial config freeze: %w", err)
 	}
-	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
-	if err != nil {
-		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
-	}
 	// Coordinated-rollout startup gate (design §6): this node must be in its own
 	// cohort roster, and — the joiner rule — must not boot onto a config the
 	// barrier has not committed. The operator's change is durably in the config
-	// source BEFORE the barrier decides, so an aborted or still-undecided
-	// candidate would otherwise start this node on a config no other member runs.
-	// Checked before anything is built.
-	if err := s.checkCoordinatedRolloutPreflight(ctx, appliedInitial); err != nil {
+	// source BEFORE the barrier decides, so an aborted or still-undecided candidate
+	// would otherwise start this node on a config no other member runs. With the
+	// committed-config artifact wired, this SUBSTITUTES the durable committed config
+	// for such a boot config rather than refusing (design Phase-4 residual); without
+	// it, the conservative refusal stands. Runs before anything is built.
+	appliedInitial, err = s.resolveCoordinatedBoot(ctx, appliedInitial)
+	if err != nil {
 		return err
+	}
+	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
+	if err != nil {
+		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
 	}
 	rt, err := s.buildRuntime(ctx, appliedInitial)
 	if err != nil {

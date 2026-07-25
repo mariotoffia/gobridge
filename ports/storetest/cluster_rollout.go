@@ -47,6 +47,19 @@ func RunClusterRolloutStoreTests(t *testing.T, newStore func() ports.ClusterRoll
 	t.Run("ProposeMalformedRejected", func(t *testing.T) { rolloutProposeMalformed(t, newStore()) })
 	t.Run("MutateUnknownGenerationNotFound", func(t *testing.T) { rolloutMutateUnknownGen(t, newStore()) })
 	t.Run("ConcurrentProposeSingleWinner", func(t *testing.T) { rolloutConcurrentPropose(t, newStore()) })
+
+	// Durable last-committed config artifact (design Phase-4 residual): the bytes
+	// a (re)joining member boots on and a member that missed a commit reconciles
+	// to, independent of the active rollout row.
+	t.Run("CommittedConfigEmptyNotFound", func(t *testing.T) { committedConfigEmpty(t, newStore()) })
+	t.Run("CommittedConfigPutThenGet", func(t *testing.T) { committedConfigPutGet(t, newStore()) })
+	t.Run("CommittedConfigAdvancesGeneration", func(t *testing.T) { committedConfigAdvances(t, newStore()) })
+	t.Run("CommittedConfigLowerGenerationNoOp", func(t *testing.T) { committedConfigLowerNoOp(t, newStore()) })
+	t.Run("CommittedConfigSameGenerationIdempotent", func(t *testing.T) { committedConfigIdempotent(t, newStore()) })
+	t.Run("CommittedConfigSameGenerationDifferentDigestConflicts", func(t *testing.T) { committedConfigDigestConflict(t, newStore()) })
+	t.Run("CommittedConfigMalformedRejected", func(t *testing.T) { committedConfigMalformed(t, newStore()) })
+	t.Run("CommittedConfigReturnsCopy", func(t *testing.T) { committedConfigReturnsCopy(t, newStore()) })
+	t.Run("ConcurrentPutCommittedConfigMonotonic", func(t *testing.T) { committedConfigConcurrentMonotonic(t, newStore()) })
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -473,6 +486,175 @@ func rolloutMutateUnknownGen(t *testing.T, store ports.ClusterRolloutStore) {
 	if err := store.Abort(ctx, stale, coordToken(1), "x"); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("Abort unknown gen: err = %v, want ErrNotFound", err)
 	}
+}
+
+// ── committed-config artifact subtests ─────────────────────────────────────
+
+func committedCfg(gen uint64, version int, digest string) persistence.CommittedRolloutConfig {
+	return persistence.CommittedRolloutConfig{
+		Generation:    gen,
+		ConfigVersion: version,
+		ConfigBytes:   []byte("digest:" + digest),
+		Digest:        digest,
+	}
+}
+
+// committedStore asserts the rollout store also implements the committed-config
+// artifact port (the same backing store implements both) so the committed
+// subtests can exercise it. Fails the test if it does not.
+func committedStore(t *testing.T, store ports.ClusterRolloutStore) ports.ClusterCommittedConfigStore {
+	t.Helper()
+	cs, ok := store.(ports.ClusterCommittedConfigStore)
+	if !ok {
+		t.Fatalf("store %T does not implement ports.ClusterCommittedConfigStore", store)
+	}
+	return cs
+}
+
+func putCommitted(t *testing.T, store ports.ClusterRolloutStore, c persistence.CommittedRolloutConfig) {
+	t.Helper()
+	if err := committedStore(t, store).PutCommittedConfig(context.Background(), c); err != nil {
+		t.Fatalf("PutCommittedConfig(gen=%d): %v", c.Generation, err)
+	}
+}
+
+func committedConfigEmpty(t *testing.T, store ports.ClusterRolloutStore) {
+	if _, err := committedStore(t, store).CommittedConfig(context.Background()); !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("CommittedConfig on empty store: err = %v, want ErrNotFound", err)
+	}
+}
+
+func committedConfigPutGet(t *testing.T, store ports.ClusterRolloutStore) {
+	want := committedCfg(3, 42, "deadbeef")
+	putCommitted(t, store, want)
+	got, err := committedStore(t, store).CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedConfig: %v", err)
+	}
+	if got.Generation != want.Generation || got.ConfigVersion != want.ConfigVersion ||
+		got.Digest != want.Digest || string(got.ConfigBytes) != string(want.ConfigBytes) {
+		t.Fatalf("CommittedConfig = %+v, want %+v", got, want)
+	}
+}
+
+// committedConfigAdvances proves the artifact tracks the newest committed
+// generation: a higher generation overwrites the stored one.
+func committedConfigAdvances(t *testing.T, store ports.ClusterRolloutStore) {
+	putCommitted(t, store, committedCfg(1, 10, "aa"))
+	putCommitted(t, store, committedCfg(2, 20, "bb"))
+	got, err := committedStore(t, store).CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedConfig: %v", err)
+	}
+	if got.Generation != 2 || got.Digest != "bb" {
+		t.Fatalf("CommittedConfig = gen %d digest %q, want gen 2 digest bb", got.Generation, got.Digest)
+	}
+}
+
+// committedConfigLowerNoOp proves a stale writer cannot regress the artifact: a
+// booting member seeding an older generation (e.g. the baseline seed 0 after a
+// commit already advanced) is a silent no-op success, never an overwrite.
+func committedConfigLowerNoOp(t *testing.T, store ports.ClusterRolloutStore) {
+	putCommitted(t, store, committedCfg(5, 50, "hi"))
+	if err := committedStore(t, store).PutCommittedConfig(context.Background(), committedCfg(0, 1, "baseline")); err != nil {
+		t.Fatalf("stale lower-generation Put must be a no-op success, got: %v", err)
+	}
+	got, err := committedStore(t, store).CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedConfig: %v", err)
+	}
+	if got.Generation != 5 || got.Digest != "hi" {
+		t.Fatalf("CommittedConfig regressed to gen %d digest %q, want gen 5 digest hi", got.Generation, got.Digest)
+	}
+}
+
+// committedConfigIdempotent proves re-Putting the SAME generation with the SAME
+// digest is a no-op success — every member commits the same config, so N members
+// each write the artifact at commit and must not conflict with one another.
+func committedConfigIdempotent(t *testing.T, store ports.ClusterRolloutStore) {
+	putCommitted(t, store, committedCfg(2, 20, "same"))
+	putCommitted(t, store, committedCfg(2, 20, "same"))
+	got, err := committedStore(t, store).CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedConfig: %v", err)
+	}
+	if got.Generation != 2 {
+		t.Fatalf("CommittedConfig = gen %d, want gen 2", got.Generation)
+	}
+}
+
+// committedConfigDigestConflict proves two DIFFERENT configs at the same
+// generation is a loud failure: the cohort agreed on one artifact per
+// generation, so a divergent digest at a committed generation is corruption.
+func committedConfigDigestConflict(t *testing.T, store ports.ClusterRolloutStore) {
+	putCommitted(t, store, committedCfg(2, 20, "one"))
+	err := committedStore(t, store).PutCommittedConfig(context.Background(), committedCfg(2, 20, "two"))
+	if !errors.Is(err, shared.ErrRolloutDigestMismatch) {
+		t.Fatalf("conflicting digest at same generation: err = %v, want ErrRolloutDigestMismatch", err)
+	}
+	if got := mustCommitted(t, store); got.Digest != "one" {
+		t.Fatalf("conflicting Put mutated the artifact to digest %q, want one", got.Digest)
+	}
+}
+
+func committedConfigMalformed(t *testing.T, store ports.ClusterRolloutStore) {
+	bad := persistence.CommittedRolloutConfig{Generation: 1, ConfigVersion: 1} // no bytes, no digest
+	if err := committedStore(t, store).PutCommittedConfig(context.Background(), bad); !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("malformed committed config: err = %v, want ErrInvalidConfig", err)
+	}
+}
+
+// committedConfigReturnsCopy proves the store never hands back an aliased
+// ConfigBytes slice a caller could mutate to corrupt stored state — the defensive
+// copies on the read/write paths are load-bearing.
+func committedConfigReturnsCopy(t *testing.T, store ports.ClusterRolloutStore) {
+	putCommitted(t, store, committedCfg(2, 20, "copy"))
+	got := mustCommitted(t, store)
+	if len(got.ConfigBytes) > 0 {
+		got.ConfigBytes[0] ^= 0xff // mutate the returned slice
+	}
+	again := mustCommitted(t, store)
+	if string(again.ConfigBytes) != "digest:copy" {
+		t.Fatalf("store returned an aliased ConfigBytes slice: re-read = %q, want %q",
+			again.ConfigBytes, "digest:copy")
+	}
+}
+
+// committedConfigConcurrentMonotonic proves the CAS is monotonic under
+// concurrency: many members racing to write increasing generations settle on the
+// single highest — no lost update leaves the artifact behind the newest commit.
+func committedConfigConcurrentMonotonic(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			gen := uint64(i + 1)
+			if err := committedStore(t, store).PutCommittedConfig(ctx, committedCfg(gen, i+1, fmt.Sprintf("d%d", gen))); err != nil {
+				t.Errorf("PutCommittedConfig(gen=%d): %v", gen, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got := mustCommitted(t, store)
+	if got.Generation != n {
+		t.Fatalf("CommittedConfig = gen %d, want highest gen %d (lost update under concurrency)", got.Generation, n)
+	}
+	if got.Digest != fmt.Sprintf("d%d", n) {
+		t.Fatalf("CommittedConfig digest = %q, want d%d", got.Digest, n)
+	}
+}
+
+func mustCommitted(t *testing.T, store ports.ClusterRolloutStore) persistence.CommittedRolloutConfig {
+	t.Helper()
+	c, err := committedStore(t, store).CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedConfig: %v", err)
+	}
+	return c
 }
 
 // rolloutConcurrentPropose proves I1's split-brain guard (design F4): many

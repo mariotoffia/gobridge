@@ -31,6 +31,103 @@ import (
 // procedure — still the mandated path for replacement-required deltas (§8) —
 // legitimately boots every member onto a config no rollout ever carried.
 
+// resolveCoordinatedBoot decides which config a coordinated member actually
+// boots on and returns it (build-ready). It is the durable-artifact evolution of
+// the joiner rule: rather than only APPROVING or REFUSING the boot config, it can
+// substitute the durable last-committed config when the boot config is a
+// candidate the barrier has not committed — closing the restart-into-window and
+// restart-after-abort residuals without the availability cost of a refusal.
+//
+// It falls back to the conservative checkCoordinatedRolloutPreflight (refuse an
+// aborted/undecided boot config) whenever the deployment is not coordinated, no
+// barrier is wired, or the committed-artifact codec is not wired — so a
+// deployment that has not opted into the durable artifact is unaffected.
+func (s *Supervisor) resolveCoordinatedBoot(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+	if s.rollout == nil || !coordinatedRollout(cfg) ||
+		s.rollout.decode == nil || s.rollout.encode == nil || s.rollout.committedStore == nil {
+		if err := s.checkCoordinatedRolloutPreflight(ctx, cfg); err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+	if err := s.checkRolloutMembership(cfg); err != nil {
+		return nil, err
+	}
+	return s.resolveBootFromCommittedArtifact(ctx, cfg)
+}
+
+// resolveBootFromCommittedArtifact is the committed-artifact boot resolution (see
+// resolveCoordinatedBoot). It seeds the baseline on a fresh cohort, boots the
+// config unchanged when it IS the committed one or a whole-cohort replacement,
+// and otherwise substitutes the durable committed config so the member never runs
+// a config the barrier has not committed (G2).
+func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+	bootDigest, ok := configCanonicalBytesDigest(cfg)
+	if !ok {
+		return nil, fmt.Errorf("bridge: cannot compute the boot config digest to check it against the " +
+			"cluster rollout committed artifact; refusing to start")
+	}
+	committed, err := s.rollout.committedStore.CommittedConfig(ctx)
+	if errors.Is(err, shared.ErrNotFound) {
+		// No committed artifact yet: no barrier rollout has ever committed, so there
+		// is no cohort-committed config to recover to. Do NOT seed off `current` —
+		// in the write→propose window `current` holds an un-proposed CANDIDATE, and
+		// a member cannot locally tell that from a deploy baseline, so seeding it
+		// would durably poison the baseline and split the cohort. Fall back to the
+		// conservative joiner rule (refuse an aborted/undecided boot config, boot on
+		// current otherwise) until the first commit establishes the artifact. (An
+		// explicit deploy-time seed is a Phase-6 composition concern.)
+		if jerr := s.checkRolloutJoinerRule(ctx, cfg); jerr != nil {
+			return nil, jerr
+		}
+		return cfg, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact could "+
+			"not be read at startup, so this node cannot tell whether its boot config is the one the cohort "+
+			"committed; refusing to start (config_version=%d): %w", cfg.Version, err)
+	}
+	if committed.Digest == bootDigest {
+		return cfg, nil // the boot config IS the last committed config
+	}
+	// The boot config differs from the committed artifact. Reconstruct the
+	// committed config; fail closed if it cannot be rebuilt — booting on the wrong
+	// config is the split-brain the whole protocol prevents.
+	committedCfg, err := s.rollout.decode(committed.ConfigBytes)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
+			"(generation=%d config_version=%d) could not be decoded, so this node cannot recover the "+
+			"config the cohort is running; refusing to start: %w", committed.Generation, committed.ConfigVersion, err)
+	}
+	// Integrity: the reconstructed committed config must match the digest the
+	// artifact records (F10-style), mirroring reconcileMissedCommit. A
+	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-
+	// preserving codec) must not be booted as if it were the committed config.
+	if raw, ok := configCanonicalBytes(committedCfg); !ok || candidateConfigDigest(raw) != committed.Digest {
+		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
+			"(generation=%d) failed its digest check after decoding, so its bytes are not the config the "+
+			"cohort committed; refusing to start", committed.Generation)
+	}
+	s.stageBootConfig(cfg, bootDigest)
+	// A replacement-required delta cannot roll through the barrier. Boot on the
+	// new config ONLY when it is strictly NEWER than the committed artifact — a
+	// forward whole-cohort replacement. A same-or-older replacement-delta is a
+	// stale or rolled-back boot config (the member's config source is lagging), so
+	// boot on the committed config instead of running a config no peer runs (G2).
+	// A live-safe delta always belongs to the barrier: boot on the committed
+	// config and let the barrier roll the candidate `cfg` (staged above).
+	if class, _ := classifyRolloutDelta(committedCfg, cfg); class == rolloutReplacementRequired &&
+		cfg.Version > committed.ConfigVersion {
+		return cfg, nil
+	}
+	frozen, err := cloneConfigForBuild(committedCfg)
+	if err != nil {
+		return nil, fmt.Errorf("bridge: cluster.rollout: freezing the decoded committed config for boot "+
+			"failed; refusing to start (committed generation=%d): %w", committed.Generation, err)
+	}
+	return frozen, nil
+}
+
 // checkCoordinatedRolloutPreflight is the startup gate for a coordinated
 // clustered deployment with a rollout store wired; every other shape is
 // unaffected and returns nil. It runs before anything is built, so a

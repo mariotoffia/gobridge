@@ -52,6 +52,15 @@ func (f *flakyRolloutStore) Current(ctx context.Context) (persistence.Rollout, e
 	}
 	return f.inner.Current(ctx)
 }
+func (f *flakyRolloutStore) PutCommittedConfig(ctx context.Context, cfg persistence.CommittedRolloutConfig) error {
+	return f.inner.PutCommittedConfig(ctx, cfg)
+}
+func (f *flakyRolloutStore) CommittedConfig(ctx context.Context) (persistence.CommittedRolloutConfig, error) {
+	if f.failReads {
+		return persistence.CommittedRolloutConfig{}, errStoreUnavailable
+	}
+	return f.inner.CommittedConfig(ctx)
+}
 
 // proposeAndAck opens a rollout over epoch and records acks/nacks against a real
 // memory store, returning the store ready for a coordinator observation.

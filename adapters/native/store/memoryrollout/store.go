@@ -3,6 +3,7 @@ package memoryrollout
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -18,10 +19,11 @@ import (
 // generation is opened only once the previous rollout is terminal (invariant
 // I1); generations are strictly monotonic.
 type Store struct {
-	mu      sync.Mutex
-	current *persistence.Rollout // nil until the first Propose
-	clk     clock.Clock
-	logger  *slog.Logger
+	mu        sync.Mutex
+	current   *persistence.Rollout                // nil until the first Propose
+	committed *persistence.CommittedRolloutConfig // nil until the first Put/seed
+	clk       clock.Clock
+	logger    *slog.Logger
 }
 
 // Option configures a Store.
@@ -117,6 +119,53 @@ func (s *Store) Current(ctx context.Context) (persistence.Rollout, error) {
 		return persistence.Rollout{}, shared.ErrNotFound.WithMessage("no rollout has been proposed")
 	}
 	return *s.current, nil
+}
+
+// PutCommittedConfig durably records the last-committed config artifact under
+// the store mutex, enforcing monotonicity and same-generation idempotence (see
+// the port contract). A lower generation is a no-op; a same-generation Put with
+// a different digest is corruption.
+func (s *Store) PutCommittedConfig(ctx context.Context, cfg persistence.CommittedRolloutConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trace(ctx, "put-committed", cfg.Generation)
+
+	if s.committed != nil {
+		switch {
+		case cfg.Generation < s.committed.Generation:
+			return nil // stale writer: never regress the artifact
+		case cfg.Generation == s.committed.Generation:
+			if cfg.Digest != s.committed.Digest {
+				return shared.ErrRolloutDigestMismatch.
+					WithMessage("committed config digest conflict at the same generation").
+					With("generation", cfg.Generation).
+					With("stored", s.committed.Digest).With("given", cfg.Digest)
+			}
+			return nil // idempotent: same generation, same digest
+		}
+	}
+	stored := cfg
+	stored.ConfigBytes = slices.Clone(cfg.ConfigBytes) // defensive: own our bytes
+	s.committed = &stored
+	return nil
+}
+
+// CommittedConfig returns the last-committed config artifact, or ErrNotFound if
+// nothing has been committed or seeded yet.
+func (s *Store) CommittedConfig(ctx context.Context) (persistence.CommittedRolloutConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trace(ctx, "committed", 0)
+
+	if s.committed == nil {
+		return persistence.CommittedRolloutConfig{}, shared.ErrNotFound.WithMessage("no committed config artifact")
+	}
+	out := *s.committed
+	out.ConfigBytes = slices.Clone(s.committed.ConfigBytes) // never hand back an aliased slice
+	return out, nil
 }
 
 // mutate serializes a transition against the current rollout: it locates the

@@ -14,7 +14,10 @@ import (
 // Compile-time assertion that *Store satisfies the port it adapts. It lives in
 // the external test package because the store adapter layer may not depend on
 // ports (the production package satisfies ports.ClusterRolloutStore structurally).
-var _ ports.ClusterRolloutStore = (*dynamodbrollout.Store)(nil)
+var (
+	_ ports.ClusterRolloutStore         = (*dynamodbrollout.Store)(nil)
+	_ ports.ClusterCommittedConfigStore = (*dynamodbrollout.Store)(nil)
+)
 
 func TestMain(m *testing.M) {
 	ddblocal.Configure(ddblocal.WithCleanOrphans(true))

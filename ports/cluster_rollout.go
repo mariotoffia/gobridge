@@ -85,3 +85,38 @@ type ClusterRolloutStore interface {
 	// ErrNotFound if none has ever been proposed.
 	Current(ctx context.Context) (persistence.Rollout, error)
 }
+
+// ClusterCommittedConfigStore is the durable last-committed configuration
+// artifact (design Phase-4 residual): the exact config bytes a (re)joining member
+// boots on and a member that missed a commit reconciles to. It is a SEPARATE port
+// from ClusterRolloutStore (kept small per the project's interface rule) because
+// it is a distinct concern with a distinct lifecycle: the active rollout row is
+// single-active, digest-only, and overwritten on the next Propose, whereas the
+// committed artifact carries bytes and MUST survive across proposals. The same
+// backing store typically implements both (one DynamoDB table, two rows).
+type ClusterCommittedConfigStore interface {
+	// PutCommittedConfig durably records the cohort's last-committed config
+	// artifact. Implementations MUST enforce, via conditional write / CAS:
+	//
+	//   - Monotonicity: a Put whose Generation is STRICTLY GREATER than the stored
+	//     one overwrites it; a Put whose Generation is LOWER is a no-op success (a
+	//     stale writer -- e.g. a booting member seeding the baseline generation 0
+	//     after a commit already advanced -- must never regress the artifact).
+	//
+	//   - Idempotence at the same Generation: the same generation with the SAME
+	//     digest is a no-op success (every member commits the same config, so N
+	//     members each write the artifact at commit without conflicting). The same
+	//     generation with a DIFFERENT digest is corruption -- two configs cannot
+	//     share a committed generation -- and returns ErrRolloutDigestMismatch.
+	//     NOTE: this conflict is only detectable at the CURRENT generation; a
+	//     divergent config for an ALREADY-SUPERSEDED generation is swallowed by the
+	//     lower-generation no-op rule (it cannot regress the newer artifact anyway).
+	//
+	// A malformed artifact (no bytes / no digest) is rejected with
+	// ErrInvalidConfig (CommittedRolloutConfig.Validate).
+	PutCommittedConfig(ctx context.Context, cfg persistence.CommittedRolloutConfig) error
+
+	// CommittedConfig returns the cohort's last-committed config artifact, or
+	// ErrNotFound if nothing has been committed or seeded yet.
+	CommittedConfig(ctx context.Context) (persistence.CommittedRolloutConfig, error)
+}

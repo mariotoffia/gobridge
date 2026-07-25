@@ -497,6 +497,33 @@ remains, and (3) is a real availability cost. **Phase 5 must close this before
 the barrier is wired anywhere**, by giving the cohort a durable last-committed
 configuration artifact (option (a)'s staged/committed pair, or an equivalent).
 
+> **RESOLVED (Phase 5A).** Implemented as a durable last-committed config artifact
+> on the coordination store, `ports.ClusterCommittedConfigStore` (a second
+> DynamoDB row `ROLLOUT#committed` beside the rollout row; memory equivalent).
+> It carries the round-trippable config BYTES (option (a)) plus the canonical
+> digest; a `ClusterRolloutConfig.Encode`/`Decode` codec is injected because
+> `bridge` may not import `config/parser`. On commit the adopting member writes
+> the artifact (idempotent, monotonic); the joiner then **boots on the committed
+> config** instead of `current` when `current` holds a candidate the barrier has
+> not committed (closes 1 and 3), and the applier **reconciles** to it when the
+> active row moved on before a member observed the commit (closes 2). A
+> replacement-required delta that is strictly newer than the artifact still boots
+> on the new config (whole-cohort replacement preserved).
+>
+> Two scoped limitations, both fail-safe (never split the cohort):
+> - **No baseline auto-seed.** A candidate sitting in `current` during the
+>   write→propose window is locally indistinguishable from a deploy baseline, so
+>   the artifact is NOT seeded off `current`; it is established by the first real
+>   commit. Before that first commit a coordinated member falls back to the
+>   conservative joiner rule (today's behavior). An explicit deploy-time seed is a
+>   Phase-6 composition option.
+> - **Phase-6 config-manager reconciliation.** The joiner's boot substitution and
+>   the applier's reconcile apply a config the config MANAGER did not emit. A
+>   production root wiring `onSwap -> Manager.NotifyApplyResult` must re-sync the
+>   manager's desired/running fingerprint after a barrier-driven swap, or
+>   `ReconfigurePending` / deep-health `Degraded` can latch true despite correct
+>   convergence. Not reachable in Phase 5 (test-only barrier, no manager wired).
+
 Second, smaller limitation: an Ack proves the candidate passes the wired
 `BlueprintValidator` and that this member can build its stores and runtime
 options; it does NOT cover the runtime's route-graph validation, which runs in
@@ -511,6 +538,44 @@ unchanged — the file-based AWS root refuses clustered live reload per ADR 0012
 Wiring it is Phase 6's ship step, gated on Phase 5.
 
 ### Phase 5 — Cluster proof (§10 long-running)
+
+> **STATUS (Phase 5A + 5B partial).** The BLOCKING residual is closed and proven
+> across all three test levels; the committed-config codec round-trip (the one
+> Phase-5A risk) is proven end to end with the REAL parser codec + real DynamoDB.
+>
+> - **Unit** (`bridge/`, `domain/persistence/`, `ports/storetest/`): the domain
+>   artifact + `Validate`; the `ClusterCommittedConfigStore` conformance suite
+>   (memory + DynamoDB, incl. concurrent monotonicity); the joiner boot resolution
+>   (seq 1 & 3, whole-cohort-replacement carve-out, version gate, digest recheck,
+>   fail-closed); the applier reconcile (seq 2, idempotence, baseline-seed
+>   exclusion); commit-writes-artifact.
+> - **Integration** (`tests/integration/integration_cluster_rollout_committed_test.go`,
+>   real DynamoDB + real codec): commit writes the artifact and the REAL codec
+>   decodes it; a RESTARTED Supervisor over the same durable stores, booting on the
+>   rejected candidate, starts on the last COMMITTED config (seq 3) — which only
+>   passes because the `MarshalBridgeConfigJSON` ↔ `Parse` round-trip is
+>   digest-stable for decoded (production-shape) configs.
+> - **Long-running multi-process** (`tests/longrunning/rollout_uc_cr_test.go`,
+>   real separate OS processes + real DynamoDB): **UC-CR1** — N=3 happy path,
+>   all three members Ack a live-safe change through their OWN config source and
+>   the lease-elected coordinator commits it (this is also **UC-CR7**: cross-member
+>   digest agreement — a divergent digest would Nack, not Ack). **UC-CR3** — a real
+>   `SIGKILL` leaves the rollout unable to gather the frozen member's Ack, the
+>   coordinator aborts it on the deadline, and the killed member — restarted as a
+>   fresh process whose config source still holds the rejected candidate — rejoins
+>   on the last committed generation. A killed COORDINATOR is succeeded by a live
+>   member that drives the abort (UC-CR2 coordinator-failover, demonstrated here).
+>
+> **Q2 sizing (measured):** N=3 propose→all-committed staging duration ≈ **1 s** on
+> DynamoDB Local; the `defaultRolloutTTL` = 5 min default has ample margin —
+> retained.
+>
+> Remaining (additional coverage, non-blocking): UC-CR4 (nack→abort) and UC-CR5
+> (replacement-required refused) are proven in the integration suite over real
+> DynamoDB; a dedicated multi-process UC-CR8 (foreign-rollout collision) does not
+> fit the shared-config-source shape naturally — it is covered by the `joinActive`
+> unit tests — and UC-CR6 (committed config unreachable broker → `ConfigDegraded`)
+> awaits a controllable transport in the harness.
 
 - UC-CR1…UC-CR6 on the `nodeProcess` harness (real processes, real
   DynamoDB, real broker).

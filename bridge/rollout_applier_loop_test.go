@@ -381,6 +381,12 @@ func (f *failingRolloutStore) Abort(context.Context, uint64, persistence.LeaseTo
 func (f *failingRolloutStore) Current(context.Context) (persistence.Rollout, error) {
 	return persistence.Rollout{}, f.err
 }
+func (f *failingRolloutStore) PutCommittedConfig(context.Context, persistence.CommittedRolloutConfig) error {
+	return f.err
+}
+func (f *failingRolloutStore) CommittedConfig(context.Context) (persistence.CommittedRolloutConfig, error) {
+	return persistence.CommittedRolloutConfig{}, f.err
+}
 
 var _ ports.ClusterRolloutStore = (*failingRolloutStore)(nil)
 

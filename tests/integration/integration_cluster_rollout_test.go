@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -9,10 +10,27 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
+
+// rolloutRealCodec returns the production-shape committed-config codec: Encode is
+// parser.MarshalBridgeConfigJSON (the round-trippable wire form) and Decode is
+// parser.Parse over a registry. This is what a real composition root injects; the
+// unit tests use a fake codec, so wiring the REAL one here is what proves the
+// durable committed artifact round-trips a config through DynamoDB and back with a
+// digest the joiner/reconcile paths accept (the Phase-5A open item).
+func rolloutRealCodec() (func(*ports.BridgeConfig) ([]byte, error), func([]byte) (*ports.BridgeConfig, error)) {
+	encode := func(cfg *ports.BridgeConfig) ([]byte, error) {
+		return parser.MarshalBridgeConfigJSON(cfg)
+	}
+	decode := func(b []byte) (*ports.BridgeConfig, error) {
+		return parser.Parse(bytes.NewReader(b), parser.FormatJSON, newTestRegistry())
+	}
+	return encode, decode
+}
 
 // Coordinated cluster rollout against REAL DynamoDB (design §10 integration
 // row). The in-package bridge tests drive the same protocol over the memory
@@ -30,6 +48,24 @@ import (
 // long-running UC-CR suite.
 func rolloutTestCohort(t *testing.T, memberID string) (*bridge.Supervisor, chan *ports.BridgeConfig, chan bridge.SwapEvent) {
 	t.Helper()
+	stores := newRolloutCohortStores(t)
+	s, changes, swaps, _ := rolloutMember(t, memberID, stores, rolloutCohortConfig(memberID, 0))
+	return s, changes, swaps
+}
+
+// rolloutCohortStores are the shared coordination stores a cohort (or a member
+// across a restart) coordinates through: one DynamoDB rollout store (also the
+// committed-config artifact store) and one DynamoDB coordinator lease. Reusing
+// the same stores across two rolloutMember calls is how a "restart" is modelled
+// — the durable committed artifact survives the process the way it survives a
+// real restart.
+type rolloutCohortStores struct {
+	rollout *dynamodbrollout.Store
+	lease   *dynamodblease.Store
+}
+
+func newRolloutCohortStores(t *testing.T) rolloutCohortStores {
+	t.Helper()
 	client := ddblocal.Client(t)
 
 	rolloutTable := ddblocal.UniqueTable("rollout-int")
@@ -46,6 +82,20 @@ func rolloutTestCohort(t *testing.T, memberID string) (*bridge.Supervisor, chan 
 	}
 	ddblocal.CleanupTable(t, client, leaseTable)
 
+	return rolloutCohortStores{rollout: rolloutStore, lease: leaseStore}
+}
+
+// rolloutMember builds and runs a coordinated Supervisor over the given shared
+// stores, booting on bootCfg. It wires the REAL committed-config codec so the
+// durable artifact is exercised exactly as production would. It returns the
+// supervisor, its change channel, its swap-event channel, and a cancel func that
+// stops JUST this member (for modelling a restart without tearing down the
+// shared stores).
+func rolloutMember(
+	t *testing.T, memberID string, stores rolloutCohortStores, bootCfg *ports.BridgeConfig,
+) (*bridge.Supervisor, chan *ports.BridgeConfig, chan bridge.SwapEvent, context.CancelFunc) {
+	t.Helper()
+	encode, decode := rolloutRealCodec()
 	swaps := make(chan bridge.SwapEvent, 8)
 	s := newCfgTestSupervisor(
 		// The blueprint validator is what makes an Ack mean "this member can run
@@ -63,8 +113,8 @@ func rolloutTestCohort(t *testing.T, memberID string) (*bridge.Supervisor, chan 
 			}
 		}),
 		bridge.WithClusterRollout(bridge.ClusterRolloutConfig{
-			Store:    rolloutStore,
-			Lease:    leaseStore,
+			Store:    stores.rollout,
+			Lease:    stores.lease,
 			MemberID: memberID,
 			// The lease TTL doubles as the coordinator's lock delay, so it bounds
 			// how long the first decision takes; the poll interval is how often a
@@ -72,14 +122,16 @@ func rolloutTestCohort(t *testing.T, memberID string) (*bridge.Supervisor, chan 
 			LeaseTTL:     250 * time.Millisecond,
 			PollInterval: 50 * time.Millisecond,
 			TTL:          2 * time.Minute,
+			Encode:       encode,
+			Decode:       decode,
 		}),
 	)
 
 	changes := make(chan *ports.BridgeConfig, 1)
-	cancel, errCh := runSupervisorInBackground(context.Background(), s, rolloutCohortConfig(memberID, 0), changes)
+	cancel, errCh := runSupervisorInBackground(context.Background(), s, bootCfg, changes)
 	t.Cleanup(func() { cancel(); <-errCh })
 	waitForSupervisorRuntime(t, s, errCh, 10*time.Second)
-	return s, changes, swaps
+	return s, changes, swaps, cancel
 }
 
 // rolloutCohortConfig is a clustered config opted into the coordinated barrier,
