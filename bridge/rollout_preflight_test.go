@@ -188,3 +188,55 @@ func TestClassifyClusterReload_RefuseLeavingCoordinatedCluster(t *testing.T) {
 
 	require.Equal(t, clusterReloadRefuse, disp)
 }
+
+// TestClassifyRolloutDelta_ReplacementRequired_ClusterMembershipChange proves a
+// change to bridge.cluster.endpoints (the cohort roster) is replacement-required.
+// The roster IS the membership epoch the barrier freezes at Propose and the set
+// decideRollout compares against (F6), so rolling it live is self-referential:
+// the epoch is frozen from the OLD roster, every member acks and commits, and
+// the cohort then runs a config declaring a DIFFERENT roster than the one that
+// authorised the change. A member the delta adds never acked; a member it
+// removes still holds leases while no future rollout can include it.
+func TestClassifyRolloutDelta_ReplacementRequired_ClusterMembershipChange(t *testing.T) {
+	for name, mutate := range map[string]func(*ports.ClusterConfig){
+		"member added":   func(c *ports.ClusterConfig) { c.Endpoints["node-c"] = "10.0.0.3:8080" },
+		"member removed": func(c *ports.ClusterConfig) { delete(c.Endpoints, "node-b") },
+		"member moved":   func(c *ports.ClusterConfig) { c.Endpoints["node-b"] = "10.0.0.9:8080" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldCfg := supervisorTestConfigWithSession("r1", "sess")
+			oldCfg.Bridge.Cluster = &ports.ClusterConfig{
+				Rollout:   rolloutModeCoordinated,
+				Endpoints: map[string]string{"node-a": "10.0.0.1:8080", "node-b": "10.0.0.2:8080"},
+			}
+			newCfg := supervisorTestConfigWithSession("r1", "sess")
+			newCfg.Bridge.Cluster = &ports.ClusterConfig{
+				Rollout:   rolloutModeCoordinated,
+				Endpoints: map[string]string{"node-a": "10.0.0.1:8080", "node-b": "10.0.0.2:8080"},
+			}
+			mutate(newCfg.Bridge.Cluster)
+
+			class, reason := classifyRolloutDelta(oldCfg, newCfg)
+
+			require.Equal(t, rolloutReplacementRequired, class)
+			require.NotEmpty(t, reason, "replacement-required must carry an operator-facing reason")
+		})
+	}
+}
+
+// TestClassifyRolloutDelta_ReplacementRequired_RolloutModeChange proves that
+// turning the coordinated barrier itself on or off is replacement-required. Both
+// sides of classifyClusterReload must already be coordinated for the delta to
+// reach here at all, so the only way this fires is a cohort mid-flip — which
+// would leave some members driving a barrier the others ignore.
+func TestClassifyRolloutDelta_ReplacementRequired_RolloutModeChange(t *testing.T) {
+	oldCfg := supervisorTestConfigWithSession("r1", "sess")
+	oldCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: rolloutModeCoordinated}
+	newCfg := supervisorTestConfigWithSession("r1", "sess")
+	newCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: ""}
+
+	class, reason := classifyRolloutDelta(oldCfg, newCfg)
+
+	require.Equal(t, rolloutReplacementRequired, class)
+	require.NotEmpty(t, reason)
+}

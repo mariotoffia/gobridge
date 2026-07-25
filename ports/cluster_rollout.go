@@ -27,9 +27,12 @@ import (
 //   - I3 (fencing): Commit and Abort carry the coordinator's lease token. A
 //     token that is invalid, or whose version is below the version that last
 //     decided this rollout, is rejected with ErrStaleFencingToken -- a deposed
-//     coordinator cannot override the live one. A same-or-newer token that
-//     re-decides in the SAME direction is an idempotent no-op success (a
-//     coordinator that crashed mid-decide may safely resume: goal G3).
+//     coordinator cannot OVERRIDE a decision the live one already made. A
+//     same-or-newer token that re-decides in the SAME direction is an idempotent
+//     no-op success (a coordinator that crashed mid-decide may safely resume:
+//     goal G3). Note the scope: the recorded version is zero until the first
+//     decision, so I3 does not fence the FIRST decision -- see the coordVersion
+//     doc on persistence.Rollout for why that residual is fail-safe.
 //
 //   - I4 (terminal-immutable): once Committed or Aborted, a rollout admits no
 //     ack/nack and no cross-direction decision (commit-of-aborted /

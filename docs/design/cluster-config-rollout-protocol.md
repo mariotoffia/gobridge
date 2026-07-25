@@ -1,18 +1,15 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
-Status: **partially implemented** — Phases 1–3 are done (protocol state, durable
-store, orchestration logic + guard-lift); Phase 4 (operator surface) is in
-progress; Phases 5–7 are not started. The barrier is NOT wired into any
-composition root yet, so shipped behavior is unchanged: a clustered deployment
-still refuses live reloads per ADR 0012. See §11 for the per-phase status. When
-shipped, the draft ADR in §12 is promoted to `docs/adr/0013-…` (ADRs in this repo
-document shipped behavior only) and ADR 0012 gains a `Superseded by 0013` line.
-Date: 2026-07-23
-Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
-`docs/runbooks/cluster-config-rollout.md`
-Prior art & split-brain analysis: `cluster-config-rollout-research.md`
-(xDS, ZooKeeper reconfig, Raft, KRaft, K8s, NETCONF confirmed-commit, NSO,
-Paxos Commit, fencing theory — the design choices below cite its rules)
+Status: **partially implemented** — Phases 1–3 done (protocol state, durable
+store, orchestration logic + guard-lift); Phase 4 (operator surface) in progress;
+Phases 5–7 not started (§11). The barrier is NOT wired into any composition root,
+so shipped behavior is unchanged: a clustered deployment still refuses live
+reloads per ADR 0012. At ship time §12 is promoted to `docs/adr/0013-…` (ADRs
+here document shipped behavior only) and 0012 gains `Superseded by 0013`.
+Date: 2026-07-23 · Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
+`docs/runbooks/cluster-config-rollout.md` · Prior art & split-brain analysis:
+`cluster-config-rollout-research.md` (xDS, ZooKeeper reconfig, Raft, KRaft, K8s,
+NETCONF confirmed-commit, NSO, Paxos Commit, fencing theory — cited below)
 
 ---
 
@@ -121,7 +118,9 @@ Invariants (enforced by domain constructors + store conditions):
 - I1 `Propose` only when no rollout is in `Proposed|Staging`.
 - I2 `Commit` only when `State==Staging ∧ keys(Acks) == MembershipEpoch`.
 - I3 `Commit`/`Abort` only with a fencing token ≥ the recorded coordinator
-  token (a deposed coordinator cannot flip state).
+  token. **Scope:** the recorded token is written *by* a decision, so it is
+  zero until the first one — I3 rejects a stale **re-**decision, not a stale
+  first decision (see F5).
 - I4 Terminal states never transition.
 - I5 A member acks at most once per generation; ack after `Aborted` is a
   no-op error.
@@ -217,7 +216,8 @@ live-safe (§8); everything else still refuses fail-closed exactly as today.
 | F2 | Member Nacks (validation/build fails) | Abort everywhere; candidates discarded | Coordinator on first Nack |
 | F3 | Coordinator crashes mid-rollout | Rollout lease expires (TTL); successor resumes from store state and commits/aborts | LeaseStore election + idempotent coordinator |
 | F4 | Two concurrent proposes | Second `Propose` fails the conditional create (I1) | CAS |
-| F5 | Deposed coordinator tries Commit/Abort | Rejected — stale fencing token (I3) | Token condition |
+| F5 | Deposed coordinator tries Commit/Abort **after the live one decided** | Rejected — stale fencing token (I3) | Token condition |
+| F5b | Deposed coordinator decides **first** (no decision recorded yet) | **Not fenced** — accepted. Fail-safe: a zombie Commit still needs the full ack barrier (I2), a zombie Abort just keeps the old config serving. Bounded in practice by the successor's lock-delay (§6) | Residual — closing it needs an explicit coordinator-claim write before the first decision (see Phase 4) |
 | F6 | Membership changes mid-rollout (join/leave) | Abort; operator retries (cheap — nothing swapped) | Strict epoch equality; simplest safe rule |
 | F7 | Member crashes after Commit, before its swap | Rejoins and boots the committed gen — same config, no split | Joiner rule |
 | F8 | Committed config fails to converge on a node (e.g. broker unreachable) | No distributed rollback; that node latches `ConfigDegraded` via MQTT-R1, alarmed — parity with single-node behavior | §2 N5 |
@@ -331,10 +331,10 @@ store rows, never sleeps):
 
 ## 11. Phasing
 
-Each phase is a separately mergeable slice, in dependency order — a phase
-only consumes what earlier phases shipped, and each lands green on
-`make lint` + `make test`. The §-references map the phase to the part of
-this design it implements.
+Each phase is a separately mergeable slice, in dependency order — a phase only
+consumes what earlier phases shipped, and each lands green on `make lint` +
+`make test`. The §-references map a phase to the part of this design it
+implements.
 
 ### Phase 1 — Protocol state (§4, §5 port) — ✅ IMPLEMENTED
 
@@ -346,14 +346,15 @@ this design it implements.
 
 ### Phase 2 — Durable store (§5 store invariants) — ✅ IMPLEMENTED
 
-- `adapter_store_dynamodb_rollout` — conditional writes + `ConsistentRead`,
-  idioms from `dynamodblease`; single-Region invariant stated in code docs.
-  Delivered as `adapters/aws/store/dynamodbrollout` (single-row + monotonic
-  `rev` optimistic-lock CAS; `attribute_not_exists(#pk)` for the fresh-propose
-  single-winner). Domain gained a reconstitution factory
-  (`persistence.RolloutSnapshot` / `Snapshot` / `RehydrateRollout`) so the
-  aggregate—not a parallel state machine—owns every invariant across a
-  serialize/reload round trip.
+- `adapter_store_dynamodb_rollout` — delivered as
+  `adapters/aws/store/dynamodbrollout`: conditional writes + `ConsistentRead`,
+  `dynamodblease` idioms (including its error-classification policy: ctx
+  sentinels pass through, throttling is `ErrThrottled`), single-row + monotonic
+  `rev` optimistic-lock CAS, `attribute_not_exists(#pk)` for the fresh-propose
+  single-winner, single-Region invariant stated in code docs. Domain gained a
+  reconstitution factory (`persistence.RolloutSnapshot` / `Snapshot` /
+  `RehydrateRollout`) so the aggregate — not a parallel state machine — owns
+  every invariant across a serialize/reload round trip.
 - `.go-arch-lint.yml` component + `lint-arch-mapping-test.sh` sentinel.
 - Done: the same conformance suite green against DynamoDB Local (25/25,
   including the concurrency races), race-clean, plus unit round-trip/decode and
@@ -361,9 +362,7 @@ this design it implements.
 
 ### Phase 3 — Orchestration logic + guard-lift (§6, §7, §8 classes) — ✅ IMPLEMENTED
 
-Phase 3's own scope is complete. The barrier-drive items it listed as deferred
-moved to Phase 4 and are tracked there.
-
+Scope complete; the barrier-drive items it deferred moved to Phase 4.
 Delivered (all in `bridge/`, unit-tested on fakes + `clocktest`):
 
 - **Rollout classes (§8):** `classifyRolloutDelta` (live-safe vs
@@ -391,32 +390,18 @@ Delivered (all in `bridge/`, unit-tested on fakes + `clocktest`):
 - **Applier units:** `candidateConfigDigest`/`verifyCandidateDigest` (F10,
   `shared.ErrRolloutDigestMismatch`), `nodeRolloutGate` high-water (F7 +
   late-push rejection), `evaluateProposal` (digest-first, then class → Ack/Nack).
-- **Failure matrix:** F1,F2,F3,F5(coordinator),F6,F7,F9,F10 covered by new
-  units; F4 + F5(store fencing) by the Phase-1 conformance suite
-  (`DoubleProposeConflicts`, `CommitStaleTokenRejected`); F8 by the reused
-  single-node post-swap convergence watch (`watchPostSwapConvergence` →
-  `ConfigDegraded`, §2 N5).
+- **Failure matrix:** F1,F2,F3,F6,F7,F9,F10 covered by new units; F4 + F5
+  (post-decision store fencing) by the Phase-1 conformance suite
+  (`DoubleProposeConflicts`, `CommitStaleTokenRejected`); F5b is an accepted
+  residual pending the Phase-4 decision; F8 by the reused single-node post-swap
+  convergence watch (`watchPostSwapConvergence` → `ConfigDegraded`, §2 N5).
 
 Deferred to Phase 4 (**barrier-drive wiring** — needs the proposer and running
-goroutines, so its natural proof is integration, not unit):
-
-- **Coordinator `Run` loop:** the ticker goroutine that calls `elect` →
-  lock-delay → `observe` on a cadence, renewing the lease and releasing on
-  terminal; started when `coordinatedRollout(cfg)`. The logic it composes is
-  tested; the goroutine lifecycle (renew, ctx-cancel, release) is Phase-4
-  integration.
-- **Applier goroutine:** observe the rollout store (`ConsistentRead`), run
-  `evaluateProposal`, build-without-swap via `Builder.Plan`, `Ack`/`Nack`,
-  swap on `Committed` via `BuildPlan.Commit` (arming `watchPostSwapConvergence`
-  — F8), discard on `Aborted` via `BuildPlan.Close`. `nodeRolloutGate` guards
-  re-application.
-- **`nodeRolloutGate` persistence:** the high-water is in-memory today; make it
-  durable node state so a late push is rejected across a restart (F7's
-  re-adopt already works via the joiner rule / `AdoptValid`).
-- **Membership source (Q1):** `rolloutCoordinator` takes membership as an
-  injected `func() []string` (faked in units). Wire the real source (leaning
-  heartbeat rows); it MUST return **distinct** member IDs — `decideRollout`
-  compares live membership against the frozen epoch by set-equality.
+goroutines, so its natural proof is integration, not unit): the coordinator
+`Run` loop, the applier goroutine, `nodeRolloutGate` persistence, and the real
+membership source. All four are tracked in Phase 4's remaining list below;
+`decideRollout` compares live membership against the frozen epoch by
+set-equality, so whatever source lands MUST return **distinct** member IDs.
 
 ### Phase 4 — Operator surface (§6 proposer, §8 config key, §9) — 🚧 IN PROGRESS
 
@@ -425,14 +410,22 @@ Delivered so far:
 - **Proposer half of the barrier (§6).** `bridge/rollout_barrier.go`:
   `ClusterRolloutConfig` + `bridge.WithClusterRollout` (opt-in Supervisor
   option), `rolloutBarrier.propose` (digest via `configCanonicalBytes` +
-  `candidateConfigDigest`; a peer's `ErrAlreadyExists` is success — this node
-  joins that generation), and membership resolution.
+  `candidateConfigDigest`), `joinActive` (disambiguates `ErrAlreadyExists`), and
+  membership resolution.
 - **Guard lift now drives the barrier (§6).** The `clusterReloadCoordinated`
   branch in `Supervisor.apply` proposes the delta and DEFERS locally instead of
   Phase 3's fail-closed error. It still fails closed on every path where the
-  delta could not be proposed (no barrier wired, unknown membership epoch,
+  delta could not be proposed (no barrier wired, unknown membership epoch, this
+  node outside its own epoch, a collision with a *different* in-flight rollout,
   store error) — an unproposed delta is never reported as deferred, because an
-  in-band applier resolves a deferral as committed.
+  in-band applier resolves a deferral as committed. `ErrAlreadyExists` is
+  success **only** after `Current` confirms the active rollout carries this
+  node's exact candidate digest (a peer won the create for the same delta).
+- **Cohort-shape deltas are replacement-required (§8).** `clusterShapeChanged`
+  adds `bridge.cluster.endpoints` and `bridge.cluster.rollout` to the
+  replacement-required class: both are self-referential — the roster IS the
+  membership epoch the barrier freezes (F6), and the mode selects whether a
+  member drives the barrier at all — so neither can be carried by the barrier.
 - **Deferral reason (§11 `reload.go` item).** `SwapEvent.DeferReason`
   (`paused` | `rollout_pending`); `cmd/gobridge/reload.go` branches on it, so a
   rollout hand-off is no longer reported as "bridge paused by admin".
@@ -452,10 +445,18 @@ Remaining in this phase:
   discard on `Aborted` via `BuildPlan.Close`, guarded by `nodeRolloutGate`.
 - **Coordinator `Run` loop:** ticker goroutine composing `elect` → lock-delay →
   `observe`, plus lease renewal (`Renew` MUST NOT bump the fencing version),
-  `Release` on terminal/ctx-cancel, and step-down on
-  `shared.ErrStaleFencingToken` (F5).
+  `Release` on terminal/ctx-cancel, step-down on `shared.ErrStaleFencingToken`
+  (F5), and wiring `rolloutCoordinatorConfig.Membership` to the same static
+  `cluster.endpoints` source the proposer uses (Q1) — the two MUST agree or
+  `decideRollout` reads a membership change (F6) on every rollout.
 - **`nodeRolloutGate` persistence** — the high-water is in-memory, so a late
   push is not rejected across a restart.
+- **First-decision fencing (F5b) — decide whether to close it.** Options: a
+  coordinator-claim write that stamps the live epoch on the rollout row before
+  any decision (closes F5b, costs one write per election), or accept the
+  residual and rely on the lock-delay. Accepting is defensible — every zombie
+  outcome is fail-safe — but the choice must be explicit, not inherited from an
+  overclaimed invariant.
 - **Candidate transport (§5) — OPEN DESIGN ITEM.** §5 has the proposer write the
   candidate *inactive* to the config source, but the DynamoDB config source is
   hardcoded to a single `current` slot
@@ -469,8 +470,29 @@ Remaining in this phase:
   mixed-version cohort G2 forbids, and a safety regression against today's
   refusal. Choose (a), or (b) plus a joiner rule that pins boot to the last
   committed generation, before the applier loop lands.
-- Admin config-txn API propose path; `config/validate.go` rules; metrics + deep
-  health; single-process integration tests (§10).
+- **Digest determinism across members — UNPROVEN.** Every member computes the
+  candidate digest itself, so the barrier only works if `configCanonicalBytes`
+  is byte-identical cohort-wide. It hashes `shared.RevealSecrets(cfg)`, so any
+  per-node difference in secret resolution or env interpolation yields a
+  different digest: the first proposer wins and every peer then Nacks (F10), so
+  every rollout aborts. Decide what is in the digest (revealed vs referenced
+  secrets) and prove it in Phase 5 before the applier ships.
+- **Applier must verify the digest BEFORE decoding** the candidate bytes
+  (`evaluateProposal`'s doc comment): its own check is a backstop, not the guard
+  against decoding tampered input.
+- **`config/validate.go` rules** — `coordinated` requires the versioned DDB
+  config source (reject file/EFS, §2 N3), a configured rollout store, and
+  non-empty static `bridge.cluster.endpoints` (the Q1 decision). Admission is
+  also where this node's member id must be required to appear in
+  `bridge.cluster.endpoints`; today that is only a runtime refusal in
+  `proposeCoordinatedRollout`, i.e. found at reload time, not at admission.
+- **Admin config-txn API propose path**; metrics (`ClusterRolloutState`/`Acks`/
+  `Resolved`) + deep-health `rollout` section; single-process integration tests
+  (§10 — happy path + Nack abort). Q3 (retain the last N aborted rollouts as an
+  audit trail vs overwrite) is decided here, with the admin read surface.
+- **Housekeeping:** `bridge/supervisor.go` is >2000 lines against the 500-line
+  project rule and this phase added ~110 to it; extract the cluster guard-lift
+  block when the barrier drive lands.
 
 Until the applier and coordinator land, `WithClusterRollout` must not be wired
 in any composition root: a proposed rollout reaches no decision and expires at
@@ -478,28 +500,19 @@ its TTL. Every outcome is fail-safe (no member swaps, the running config keeps
 serving), but the delta does not take effect. No composition root wires it
 today, so shipped behavior is unchanged — clustered live reload still refuses.
 
-### Phase 4 scope reference (original)
-
-- Admin config-txn API propose path (writes candidate **inactive** to the
-  config source, stamps `candidateConfigDigest`, calls `Propose`).
-- `config/validate.go` rules (`coordinated` requires DDB source + rollout
-  store; reject `coordinated` + file/EFS).
-- Metrics (`ClusterRolloutState`/`Acks`/`Resolved`) + deep-health `rollout`
-  section.
-- **`reload.go` `onSwap` deferral messaging:** when the barrier drive lands and
-  once more produces a non-error "pending" outcome, distinguish it from the
-  admin-pause deferral — `reload.go` currently hardcodes "bridge paused by
-  admin" for every `Deferred` event, so add a deferral reason (e.g. a
-  `SwapEvent` field) so a coordinated-pending state is not misreported as a
-  pause. (Phase 3 sidesteps this by failing closed rather than deferring.)
-- Barrier-drive wiring listed under Phase 3 "deferred" above (coordinator
-  `Run`, applier goroutine, membership source, gate persistence).
-- Done: single-process integration tests (§10) — happy path + Nack abort.
-
 ### Phase 5 — Cluster proof (§10 long-running)
 
 - UC-CR1…UC-CR6 on the `nodeProcess` harness (real processes, real
   DynamoDB, real broker).
+- **UC-CR7 — cross-member digest agreement.** Three real processes, each
+  loading the change through its OWN config source, must compute the SAME
+  candidate digest and all Ack. This is the Phase-4 determinism item's proof;
+  without it a cohort-wide Nack storm only shows up in production.
+- **UC-CR8 — foreign-rollout collision.** A second, different change proposed
+  while one is in flight must be refused at the proposer with the running config
+  still serving, and must NOT be reported as a deferral (`joinActive`).
+- Q2 sizing: measure staging duration on the N=3 fleet and set the rollout TTL
+  default from it (today `defaultRolloutTTL` = 5 min, unvalidated).
 - Done: suite green; every barrier is a store row or stdout token, no
   sleeps.
 
@@ -507,12 +520,19 @@ today, so shipped behavior is unchanged — clustered live reload still refuses.
 
 - Runbook "coordinated mode" chapter; promote §12 verbatim to
   `docs/adr/0013`; flip CLUSTER-3 status in `PROD_READY_ISSUES.md`.
+- The runbook must carry the operator-facing consequences of the §8
+  replacement-required classes — notably that changing
+  `bridge.cluster.endpoints` or `bridge.cluster.rollout` keeps ADR 0012's
+  whole-cohort procedure even in a coordinated cohort.
 
 ### Phase 7 — Confirm window (§8.1; optional, separate go/no-go)
 
 - `confirm_window` config, provisional swap + deadman revert to N−1,
   `Converged`/`Confirmed` records.
-- Done: UC-CR7 — one node never converges → whole cohort deadman-reverts;
+- Q4 (strict all-ack vs Kafka-style "commit centrally, fence non-converged
+  members out of serving") is revisited here, not earlier: the confirm window
+  is the first mechanism that makes converged-vs-acked distinguishable.
+- Done: UC-CR9 — one node never converges → whole cohort deadman-reverts;
   traffic proof on the reverted generation.
 
 ## 12. Draft ADR 0013 (promote verbatim at ship time)
@@ -559,22 +579,12 @@ today, so shipped behavior is unchanged — clustered live reload still refuses.
 > - Distributed post-commit rollback — requires the same barrier again with
 >   traffic in flight; alarm-and-operate matches the existing model.
 
-## 13. Open questions (decide before phase 3)
+## 13. Open questions — each owned by a phase
 
-- Q1 Membership authority when `cluster.endpoints` is absent: dedicated
-  heartbeat rows in the rollout store vs deriving from lease endpoints.
-  Leaning: heartbeat rows (explicit epoch, no coupling to session leases).
-  Research note: gossip-style views are advisory only — the frozen list in
-  the rollout record is the safety input either way.
-- Q2 Rollout deadline default: proposal is `2 × convergence budget floor +
-  member build budget` ≈ 5 minutes (NETCONF's confirmed-commit default is
-  600 s — same order of magnitude); needs sizing against slow fleets.
-- Q3 Should `Aborted` rollouts be retained (audit trail) or overwritten by
-  the next Propose? Leaning: retain last N (IOS-XR keeps 100 commit IDs;
-  a generation ledger, not a boolean), expose via admin API.
-- Q4 Long-term evolution: strict all-ack (this design) vs Kafka-style
-  "commit centrally, fence non-converged members out of serving" — our
-  lease failover already *is* the fencing mechanism (a member that cannot
-  apply could release leases and a converged member takes over). Deferred:
-  strict-abort is simpler and matches the operator contract; revisit if
-  cohort sizes grow beyond ~10.
+| Q | Question | Owned by | State |
+|---|---|---|---|
+| Q1 | Membership authority when `cluster.endpoints` is absent (heartbeat rows vs lease endpoints) | Phase 4 | **Decided:** static `cluster.endpoints` only; no heartbeat subsystem. Revisit when endpoint auto-discovery becomes a supported shape. Gossip views would stay advisory either way — the frozen list in the rollout row is the safety input |
+| Q2 | Rollout deadline default (`2 × convergence budget floor + member build budget` ≈ 5 min; NETCONF's confirmed-commit default is 600 s) | Phase 5 | Open — needs sizing against a real fleet, so it is measured on the UC-CR1 run |
+| Q3 | Retain `Aborted` rollouts as an audit trail, or overwrite on the next Propose? | Phase 4 | Open — leaning retain last N (IOS-XR keeps 100 commit IDs: a generation ledger, not a boolean), exposed via the admin API |
+| Q4 | Strict all-ack (this design) vs Kafka-style "commit centrally, fence non-converged members out of serving" — our lease failover already *is* a fencing mechanism | Phase 7 | Deferred — strict-abort is simpler and matches the operator contract; the confirm window is the first thing that makes converged-vs-acked distinguishable. Revisit if cohorts grow beyond ~10 |
+| F5b | Fence the *first* coordinator decision (claim write), or accept the residual? | Phase 4 | Open — see §7 F5b |

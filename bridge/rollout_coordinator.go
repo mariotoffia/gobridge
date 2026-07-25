@@ -173,8 +173,13 @@ func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now ti
 // terminal is true only once the rollout is decided, so the Run loop can stop.
 // A store error is returned with terminal=false and no state flipped: an outage
 // (F9) is retried by the loop; a stale-token rejection because this coordinator
-// was deposed (F5) is surfaced so the loop steps down. An empty store (no
-// rollout proposed) is a benign no-op.
+// was deposed AFTER the live one already decided (F5) is surfaced so the loop
+// steps down. An empty store (no rollout proposed) is a benign no-op.
+//
+// F5 caveat: the store fence only rejects a stale RE-decision (see
+// persistence.Rollout.coordVersion), so a deposed coordinator that decides
+// FIRST is not rejected. firstSideEffectAllowed's lock-delay is what bounds
+// that window in practice; the outcome is fail-safe either way.
 func coordinatorStep(
 	ctx context.Context,
 	store ports.ClusterRolloutStore,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -113,9 +114,11 @@ func (b *rolloutBarrier) members(cfg *ports.BridgeConfig) []string {
 // deferred would be acknowledged as committed while no member ever applies it.
 //
 // Fail-closed cases: no barrier wired (the operator opted into coordinated
-// rollout in config but the process has no rollout store), or an undeterminable
+// rollout in config but the process has no rollout store); an undeterminable
 // membership epoch — proposing against a guessed epoch would let the coordinator
-// commit without every real member's ack.
+// commit without every real member's ack; this node absent from its own epoch —
+// a rollout it can never Ack; and a collision with a DIFFERENT in-flight rollout
+// (see joinActive).
 func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newCfg *ports.BridgeConfig) error {
 	b := s.rollout
 	if b == nil {
@@ -126,6 +129,14 @@ func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newC
 			"(docs/runbooks/cluster-config-rollout.md) (attempted_config_version=%d)", newCfg.Version)
 	}
 	members := b.members(oldCfg)
+	if len(members) > 0 && !slices.Contains(members, b.memberID) {
+		return fmt.Errorf("bridge: this node's rollout member id %q is not in the cohort membership "+
+			"epoch %v, so it could never Ack its own proposal (persistence.Rollout rejects a voter "+
+			"outside the frozen epoch) and the rollout could only deadline-abort while blocking every "+
+			"other proposal for its whole TTL. The live reload is refused (the running config keeps "+
+			"serving); align bridge.WithClusterRollout's MemberID with bridge.cluster.endpoints "+
+			"(attempted_config_version=%d)", b.memberID, members, newCfg.Version)
+	}
 	if len(members) == 0 {
 		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but the cohort membership "+
 			"is unknown (no bridge.cluster.endpoints and no membership source), so a rollout cannot "+
@@ -141,23 +152,69 @@ func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newC
 }
 
 // propose stages newCfg as a candidate generation. It is idempotent across the
-// cohort: when another member already proposed this generation the conditional
-// create fails with shared.ErrAlreadyExists, which is SUCCESS for this node — it
-// simply joins the rollout the peer opened. Any other error fails closed.
+// cohort: when another member already proposed THIS SAME candidate the
+// conditional create fails with shared.ErrAlreadyExists and this node simply
+// joins the generation the peer opened. Any other error — including a collision
+// with a DIFFERENT active rollout — fails closed.
 func (b *rolloutBarrier) propose(ctx context.Context, newCfg *ports.BridgeConfig, members []string) error {
 	raw, ok := configCanonicalBytes(newCfg)
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the candidate config digest for a coordinated rollout")
 	}
+	digest := candidateConfigDigest(raw)
 	_, err := b.store.Propose(ctx, persistence.RolloutProposal{
 		ProposerID:    b.memberID,
-		ConfigDigest:  candidateConfigDigest(raw),
+		ConfigDigest:  digest,
 		ConfigVersion: newCfg.Version,
 		Members:       members,
 		TTL:           b.ttl,
 	})
-	if err != nil && !errors.Is(err, shared.ErrAlreadyExists) {
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, shared.ErrAlreadyExists) {
 		return err
+	}
+	return b.joinActive(ctx, digest)
+}
+
+// joinActive resolves a Propose that lost to an already-active rollout. The
+// store's ErrAlreadyExists answers "a rollout is active" (invariant I1 is
+// per-store), NOT "your rollout is active" — so it MUST be disambiguated by
+// reading the active row back:
+//
+//   - same candidate digest → a peer won the conditional create for this exact
+//     delta and this node joins that generation: success.
+//   - any other digest → a DIFFERENT change is in flight. Reporting success here
+//     would defer this delta against a barrier that commits somebody else's
+//     config: the admin API resolves a deferral as committed-not-applied (no
+//     rollback) and the delta then never applies on any member — a silent drop.
+//     Fail closed; the operator retries once the in-flight rollout resolves.
+func (b *rolloutBarrier) joinActive(ctx context.Context, digest string) error {
+	r, err := b.store.Current(ctx)
+	if err != nil {
+		return fmt.Errorf("bridge: a cluster rollout is already active but it could not be read back to "+
+			"check whether it carries this delta, so the change cannot be safely deferred to it: %w", err)
+	}
+	if r.ConfigDigest() != digest {
+		return fmt.Errorf("bridge: a DIFFERENT cluster config rollout is already in flight "+
+			"(generation=%d state=%q config_version=%d); one rollout at a time is the barrier's "+
+			"invariant, so this delta was NOT proposed. Wait for the in-flight rollout to commit or "+
+			"abort, then retry", r.Generation(), r.State(), r.ConfigVersion())
+	}
+	if r.State().IsTerminal() {
+		return fmt.Errorf("bridge: the rollout carrying this delta (generation=%d) already reached %q "+
+			"before this node joined it; retry the change", r.Generation(), r.State())
+	}
+	// Same digest, but the peer froze the epoch from ITS roster. If this node is
+	// not in that epoch it can never Ack (the aggregate rejects a voter outside
+	// the epoch), so joining would defer forever behind a rollout guaranteed to
+	// deadline-abort — the same dead-end the proposer path refuses up front.
+	if !slices.Contains(r.MembershipEpoch(), b.memberID) {
+		return fmt.Errorf("bridge: a peer proposed this delta (generation=%d) with a membership epoch %v "+
+			"that excludes this node %q, so this node could never Ack it; the cohort's members disagree "+
+			"about the roster — reconcile bridge.cluster.endpoints across the cohort and retry",
+			r.Generation(), r.MembershipEpoch(), b.memberID)
 	}
 	return nil
 }

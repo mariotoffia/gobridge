@@ -323,6 +323,29 @@ func retryExhausted(op string) error {
 		With("retries", maxCASRetries)
 }
 
+// wrapErr classifies an SDK failure per the repo's error-wrapping policy (the
+// same rules dynamodblease's mapError implements).
+//
+// Rule 1: context.Canceled / context.DeadlineExceeded are CANONICAL sentinels
+// and pass through identity-equal. A cancelled caller (shutdown, a bounded
+// store-op context) is not a store outage, and a coordinator loop that
+// relabelled it as one would retry a store it was told to stop touching.
+//
+// Throttling maps to ErrThrottled so a caller backs off rather than driving the
+// CAS retry loop into a hot partition. Everything else — including
+// ResourceNotFoundException — stays the safe transient default: a missing table
+// is a real, retryable-looking outage, and it must NOT become shared.ErrNotFound
+// because Current/coordinatorStep read that as "no rollout has been proposed",
+// which would make a misprovisioned cluster look permanently idle.
 func wrapErr(err error, msg string) error {
-	return shared.ErrUnavailable.WithMessage("dynamodbrollout: " + msg).Wrap(err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	sentinel := shared.ErrUnavailable
+	var prov *ddbtypes.ProvisionedThroughputExceededException
+	var reqLimit *ddbtypes.RequestLimitExceeded
+	if errors.As(err, &prov) || errors.As(err, &reqLimit) {
+		sentinel = shared.ErrThrottled
+	}
+	return sentinel.WithMessage("dynamodbrollout: " + msg).Wrap(err)
 }

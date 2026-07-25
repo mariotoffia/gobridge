@@ -93,8 +93,18 @@ type Rollout struct {
 	// coordVersion is the fencing high-water mark: the lease-token version of
 	// the coordinator that last flipped the rollout to a terminal state. Zero
 	// while non-terminal. A Commit/Abort carrying a strictly lower token is
-	// rejected as stale (invariant I3), which is what lets a deposed
-	// coordinator's late decision lose to the live one.
+	// rejected as stale (invariant I3).
+	//
+	// SCOPE — because it is zero until the FIRST decision, I3 rejects a stale
+	// RE-decision, not a stale first decision: before any coordinator has
+	// decided, every valid token passes the fence, so a deposed coordinator can
+	// still decide first. Closing that needs the row to learn the live
+	// coordinator epoch before a decision (an explicit claim write — a protocol
+	// addition). The residual is fail-safe: a zombie Commit still requires the
+	// full ack barrier (I2), a zombie Abort just keeps the old config serving,
+	// and bridge.firstSideEffectAllowed's lock-delay makes a successor wait a
+	// full lease TTL before acting. Pinned by
+	// TestRolloutFencingIsRejectionOfReDecisionOnly.
 	coordVersion uint64
 }
 

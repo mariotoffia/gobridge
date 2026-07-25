@@ -88,3 +88,70 @@ func TestReadAttributeCorruptionFailsClosed(t *testing.T) {
 		t.Fatalf("corrupt row was mutated (%d PutItem calls); must fail closed", f.putCalls)
 	}
 }
+
+// errDynamo is a dynamoAPI stub whose GetItem always fails with a fixed error,
+// so a test can assert how an SDK failure is classified.
+type errDynamo struct{ err error }
+
+func (e *errDynamo) GetItem(context.Context, *dynamodb.GetItemInput, ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	return nil, e.err
+}
+
+func (e *errDynamo) PutItem(context.Context, *dynamodb.PutItemInput, ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	return nil, e.err
+}
+
+func (e *errDynamo) CreateTable(context.Context, *dynamodb.CreateTableInput, ...func(*dynamodb.Options)) (*dynamodb.CreateTableOutput, error) {
+	return nil, e.err
+}
+
+func (e *errDynamo) DescribeTable(context.Context, *dynamodb.DescribeTableInput, ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error) {
+	return nil, e.err
+}
+
+func storeWithClientErr(err error) *Store {
+	return &Store{client: &errDynamo{err: err}, tableName: "t", clk: clock.System}
+}
+
+// TestReadErrorClassification pins this adapter to the repo's error-wrapping
+// policy, which dynamodblease already implements: a cancelled/expired caller
+// context is a CANONICAL sentinel returned identity-equal (never relabelled as a
+// store outage), and throttling is ErrThrottled so a caller backs off instead of
+// hammering a hot partition with the CAS retry loop. Anything unrecognised stays
+// the safe transient default.
+//
+// ResourceNotFoundException is deliberately NOT mapped to shared.ErrNotFound
+// here (unlike dynamodblease): Current/coordinatorStep read ErrNotFound as "no
+// rollout has been proposed — nothing to drive", so a missing TABLE mapped that
+// way would silently look like an idle cluster forever.
+func TestReadErrorClassification(t *testing.T) {
+	notFound := &ddbtypes.ResourceNotFoundException{}
+	for name, tc := range map[string]struct {
+		in   error
+		want error
+	}{
+		"context canceled":  {in: context.Canceled, want: context.Canceled},
+		"context deadline":  {in: context.DeadlineExceeded, want: context.DeadlineExceeded},
+		"throughput":        {in: &ddbtypes.ProvisionedThroughputExceededException{}, want: shared.ErrThrottled},
+		"request limit":     {in: &ddbtypes.RequestLimitExceeded{}, want: shared.ErrThrottled},
+		"internal error":    {in: &ddbtypes.InternalServerError{}, want: shared.ErrUnavailable},
+		"missing table":     {in: notFound, want: shared.ErrUnavailable},
+		"unknown sdk error": {in: errors.New("boom"), want: shared.ErrUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := storeWithClientErr(tc.in).Current(context.Background())
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Current with %v: err = %v, want errors.Is(_, %v)", tc.in, err, tc.want)
+			}
+			if errors.Is(err, shared.ErrNotFound) {
+				t.Fatalf("a store failure must never masquerade as ErrNotFound (no rollout proposed): %v", err)
+			}
+		})
+	}
+	// Rule 1: the canonical sentinel is returned UNCHANGED, not wrapped in a
+	// BridgeError that relabels a shutdown as a store outage.
+	_, err := storeWithClientErr(context.Canceled).Current(context.Background())
+	if err != context.Canceled { //nolint:errorlint // identity is exactly what Rule 1 requires
+		t.Fatalf("context.Canceled must pass through identity-equal, got %#v", err)
+	}
+}

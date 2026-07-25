@@ -434,3 +434,82 @@ func TestRollout_Nack_OnTerminalRejected(t *testing.T) {
 		t.Fatalf("nack-after-abort err = %v, want ErrRolloutTerminal", err)
 	}
 }
+
+// TestRolloutFencingIsRejectionOfReDecisionOnly pins the ACTUAL reach of
+// invariant I3, which is narrower than "a deposed coordinator cannot flip
+// state": coordVersion is the version of the token that LAST DECIDED, and it is
+// zero while the rollout is non-terminal. So before any decision exists, every
+// valid token passes the fence — including a deposed coordinator's.
+//
+// This is pinned, not fixed, because closing it needs the rollout row to learn
+// the live coordinator epoch BEFORE a decision (an explicit claim/heartbeat
+// write, a protocol addition, not a domain tweak). The residual is fail-SAFE and
+// bounded:
+//   - a zombie Commit still requires the full ack barrier (I2) — it can only do
+//     what the live coordinator was about to do;
+//   - a zombie Abort leaves the OLD config serving (nothing swaps), costing the
+//     operator a retry, not correctness;
+//   - bridge.firstSideEffectAllowed makes a successor wait one full lease TTL
+//     before its first side effect, so a zombie must be more than a lease TTL
+//     stale to still be acting at all.
+//
+// Once a decision exists, the fence does bite — the second half of this test.
+func TestRolloutFencingIsRejectionOfReDecisionOnly(t *testing.T) {
+	live := persistence.LeaseToken{Owner: "node-live", Version: 9}
+	deposed := persistence.LeaseToken{Owner: "node-zombie", Version: 2}
+
+	// Before any decision: the deposed token is NOT rejected.
+	r, err := persistence.NewRollout(1, persistence.RolloutProposal{
+		ProposerID: "node-live", ConfigDigest: "d", Members: []string{"node-a"}, TTL: time.Minute,
+	}, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("persistence.NewRollout: %v", err)
+	}
+	if r.CoordinatorVersion() != 0 {
+		t.Fatalf("a fresh rollout must record no coordinator epoch, got %d", r.CoordinatorVersion())
+	}
+	aborted, err := r.WithAbort(deposed, "zombie abort")
+	if err != nil {
+		t.Fatalf("documented gap: a pre-decision abort by a deposed coordinator is currently "+
+			"ACCEPTED; if this now errors the fence was strengthened — update this test and the "+
+			"design doc F5 row: %v", err)
+	}
+	if aborted.State() != persistence.RolloutAborted {
+		t.Fatalf("state = %q, want aborted", aborted.State())
+	}
+
+	// After a decision: the fence bites — the live coordinator cannot re-decide
+	// across directions, and a token older than the deciding one is stale.
+	if _, err := aborted.WithCommit(live); err == nil {
+		t.Fatal("commit of an aborted rollout must be rejected (I4)")
+	}
+	older := persistence.LeaseToken{Owner: "node-older", Version: 1}
+	if _, err := aborted.WithAbort(older, "older"); err == nil {
+		t.Fatal("an abort carrying a token below the deciding version must be stale-rejected (I3)")
+	}
+}
+
+// TestRolloutAckIsNotIdempotent pins invariant I5 as a STRICT at-most-once vote:
+// a member re-acking the same generation with the same build digest is rejected,
+// not silently accepted. A member whose Ack response was lost therefore MUST
+// recover by reading Current (its own ack is visible there) rather than blindly
+// retrying the write — the applier loop's contract, recorded here so a later
+// phase does not mistake the rejection for a wedge.
+func TestRolloutAckIsNotIdempotent(t *testing.T) {
+	r, err := persistence.NewRollout(1, persistence.RolloutProposal{
+		ProposerID: "c", ConfigDigest: "d", Members: []string{"node-a"}, TTL: time.Minute,
+	}, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("persistence.NewRollout: %v", err)
+	}
+	acked, err := r.WithAck("node-a", "build:1", time.Now())
+	if err != nil {
+		t.Fatalf("first ack: %v", err)
+	}
+	if _, err := acked.WithAck("node-a", "build:1", time.Now()); err == nil {
+		t.Fatal("a repeated ack must be rejected (I5); recover by reading Current, not by retrying")
+	}
+	if _, ok := acked.Acks()["node-a"]; !ok {
+		t.Fatal("the recorded ack must remain readable so a retrying member can self-diagnose")
+	}
+}
