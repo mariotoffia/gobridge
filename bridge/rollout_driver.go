@@ -85,6 +85,7 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 		store:    d.barrier.store,
 		memberID: d.barrier.memberID,
 		obs:      obs,
+		clk:      clk,
 	}
 	coord := newRolloutCoordinator(rolloutCoordinatorConfig{
 		Store: d.barrier.store,
@@ -176,6 +177,17 @@ func (h supervisorRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.Br
 }
 
 func (h supervisorRolloutHost) MarkDegraded(reason string) { h.s.markDegraded(reason) }
+
+// Converged reports whether the Supervisor's active runtime has reached the
+// post-swap readiness level the convergence watch uses (MQTT-R1). It is the same
+// signal watchPostSwapConvergence samples, read on demand for the confirm window.
+func (h supervisorRolloutHost) Converged(ctx context.Context) bool {
+	rt := h.s.Runtime()
+	if rt == nil {
+		return false
+	}
+	return rt.ReadinessLevel(ctx) >= convergenceReadyLevel
+}
 
 func (h supervisorRolloutHost) RolloutLogger() *slog.Logger { return h.s.logger }
 

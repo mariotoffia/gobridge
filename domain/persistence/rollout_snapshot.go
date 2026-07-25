@@ -26,6 +26,12 @@ type RolloutSnapshot struct {
 	Reason             string
 	Deadline           time.Time
 	CoordinatorVersion uint64
+	// Confirm window (design §8.1). ConfirmWindow is frozen at Propose;
+	// ConfirmDeadline is stamped at a provisional commit (zero otherwise);
+	// Converged records post-swap convergence keyed by member id.
+	ConfirmWindow   time.Duration
+	ConfirmDeadline time.Time
+	Converged       map[string]RolloutConverged
 }
 
 // Snapshot returns a flat, deep-copied projection of the rollout suitable for a
@@ -43,6 +49,9 @@ func (r Rollout) Snapshot() RolloutSnapshot {
 		Reason:             r.reason,
 		Deadline:           r.deadline,
 		CoordinatorVersion: r.coordVersion,
+		ConfirmWindow:      r.confirmWindow,
+		ConfirmDeadline:    r.confirmDeadline,
+		Converged:          maps.Clone(r.converged),
 	}
 }
 
@@ -105,9 +114,14 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 		}
 	}
 
-	if s.State.IsTerminal() != (s.CoordinatorVersion > 0) {
+	// "Decided" (a coordinator flipped it) is exactly the set of states that no
+	// longer accept votes: Committed (provisional or final), Aborted, Confirmed,
+	// Reverted. Each of those records a coordinator fencing version; the two
+	// pre-commit states must not. (Committed carries a version even under a
+	// confirm window, though it is not yet terminal.)
+	if !s.State.acceptsVotes() != (s.CoordinatorVersion > 0) {
 		return Rollout{}, shared.ErrInvalidRolloutProposal.
-			WithMessage("rollout terminal state and coordinator version disagree").
+			WithMessage("rollout decided state and coordinator version disagree").
 			With("state", string(s.State)).With("coordinatorVersion", s.CoordinatorVersion)
 	}
 	switch s.State {
@@ -121,6 +135,44 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 		}
 	}
 
+	converged := maps.Clone(s.Converged)
+	if converged == nil {
+		converged = make(map[string]RolloutConverged)
+	}
+	for m := range converged {
+		if !slices.Contains(epoch, m) {
+			return Rollout{}, shared.ErrInvalidRolloutProposal.
+				WithMessage("rollout convergence from a non-member").With("member", m)
+		}
+	}
+	// Confirm-window coherence (design §8.1): convergence and a confirm deadline
+	// only exist post-commit; a Confirmed rollout must carry whole-epoch
+	// convergence.
+	postCommit := s.State == RolloutCommitted || s.State == RolloutConfirmed || s.State == RolloutReverted
+	if len(converged) > 0 && !postCommit {
+		return Rollout{}, shared.ErrInvalidRolloutProposal.
+			WithMessage("convergence recorded before commit").With("state", string(s.State))
+	}
+	if !s.ConfirmDeadline.IsZero() && !postCommit {
+		return Rollout{}, shared.ErrInvalidRolloutProposal.
+			WithMessage("confirm deadline stamped before commit").With("state", string(s.State))
+	}
+	if s.State == RolloutConfirmed && len(converged) != len(epoch) {
+		return Rollout{}, shared.ErrInvalidRolloutProposal.
+			WithMessage("confirmed rollout is missing whole-epoch convergence").
+			With("converged", len(converged)).With("epoch", len(epoch))
+	}
+	// A Committed row's provisional-vs-final nature rests ENTIRELY on
+	// confirmDeadline (IsTerminal), so a windowed commit MUST carry a deadline and a
+	// base commit MUST NOT. A corrupt/dropped deadline that left confirmWindow > 0
+	// would otherwise rehydrate as a terminal final commit — silently skipping the
+	// whole confirm barrier — so fail closed on the mismatch (design §8.1).
+	if s.State == RolloutCommitted && (s.ConfirmWindow > 0) != !s.ConfirmDeadline.IsZero() {
+		return Rollout{}, shared.ErrInvalidRolloutProposal.
+			WithMessage("committed rollout confirm window and confirm deadline disagree").
+			With("confirmWindow", s.ConfirmWindow.String()).With("hasConfirmDeadline", !s.ConfirmDeadline.IsZero())
+	}
+
 	return Rollout{
 		generation:      s.Generation,
 		state:           s.State,
@@ -132,6 +184,9 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 		reason:          s.Reason,
 		deadline:        s.Deadline,
 		coordVersion:    s.CoordinatorVersion,
+		confirmWindow:   s.ConfirmWindow,
+		confirmDeadline: s.ConfirmDeadline,
+		converged:       converged,
 	}, nil
 }
 
@@ -139,7 +194,7 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 // a corruption guard for a rehydrated state string.
 func (s RolloutState) valid() bool {
 	switch s {
-	case RolloutProposed, RolloutStaging, RolloutCommitted, RolloutAborted:
+	case RolloutProposed, RolloutStaging, RolloutCommitted, RolloutAborted, RolloutConfirmed, RolloutReverted:
 		return true
 	default:
 		return false

@@ -289,7 +289,13 @@ func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sour
 			"serving); align bridge.WithClusterRollout's MemberID with bridge.cluster.members "+
 			"(attempted_config_version=%d)", b.memberID, members, newCfg.Version)
 	}
-	if err := b.propose(ctx, newCfg, sourceCfg, members); err != nil {
+	// The confirm window governing this rollout comes from the RUNNING config
+	// (oldCfg): every member currently runs it and reads the same value, so the
+	// window frozen in the proposal is deterministic across the cohort. A change TO
+	// the window is a cluster.* delta, which is replacement-required, so old and new
+	// agree for any live-safe delta anyway.
+	confirmWindow := clusterConfirmWindow(oldCfg)
+	if err := b.propose(ctx, newCfg, sourceCfg, members, confirmWindow); err != nil {
 		return fmt.Errorf("bridge: proposing the coordinated cluster rollout failed, so the live reload "+
 			"is refused and the running config keeps serving (attempted_config_version=%d): %w",
 			newCfg.Version, err)
@@ -297,12 +303,21 @@ func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sour
 	return nil
 }
 
+// clusterConfirmWindow reads the coordinated-rollout confirm window (design §8.1)
+// from a config, or 0 when absent — the base protocol.
+func clusterConfirmWindow(cfg *ports.BridgeConfig) time.Duration {
+	if cfg == nil || cfg.Bridge.Cluster == nil {
+		return 0
+	}
+	return cfg.Bridge.Cluster.ConfirmWindowDuration()
+}
+
 // propose stages newCfg as a candidate generation. It is idempotent across the
 // cohort: when another member already proposed THIS SAME candidate the
 // conditional create fails with shared.ErrAlreadyExists and this node simply
 // joins the generation the peer opened. Any other error — including a collision
 // with a DIFFERENT active rollout — fails closed.
-func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.BridgeConfig, members []string) error {
+func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.BridgeConfig, members []string, confirmWindow time.Duration) error {
 	digest, ok := configCanonicalBytesDigest(newCfg)
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the candidate config digest for a coordinated rollout")
@@ -313,6 +328,7 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 		ConfigVersion: newCfg.Version,
 		Members:       members,
 		TTL:           b.ttl,
+		ConfirmWindow: confirmWindow,
 	})
 	if err != nil {
 		if !errors.Is(err, shared.ErrAlreadyExists) {
@@ -354,7 +370,10 @@ func (b *rolloutBarrier) joinActive(ctx context.Context, digest string) error {
 			"invariant, so this delta was NOT proposed. Wait for the in-flight rollout to commit or "+
 			"abort, then retry", r.Generation(), r.State(), r.ConfigVersion())
 	}
-	if r.State().IsTerminal() {
+	if r.State() != persistence.RolloutProposed && r.State() != persistence.RolloutStaging {
+		// Already committed (provisionally or finally), confirmed, reverted, or
+		// aborted — the vote phase for this generation is over, so this node cannot
+		// join it. Retry once it resolves.
 		return fmt.Errorf("bridge: the rollout carrying this delta (generation=%d) already reached %q "+
 			"before this node joined it; retry the change", r.Generation(), r.State())
 	}

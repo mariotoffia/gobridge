@@ -35,6 +35,7 @@ const (
 	rolloutTokReady     = "ROLLOUT_READY"     // ROLLOUT_READY:<member>
 	rolloutTokCommitted = "ROLLOUT_COMMITTED" // ROLLOUT_COMMITTED:<member>:<version>
 	rolloutTokAborted   = "ROLLOUT_ABORTED"   // ROLLOUT_ABORTED:<member>:<generation>
+	rolloutTokConfirmed = "ROLLOUT_CONFIRMED" // ROLLOUT_CONFIRMED:<member>:<version> (confirm window)
 )
 
 // requiredRolloutEnv reads an env var the child cannot run without.
@@ -121,6 +122,7 @@ func TestRolloutNode(t *testing.T) {
 	announceReady := false
 	lastCommitted := -1
 	announcedAbortGen := uint64(0)
+	announcedConfirmGen := uint64(0)
 	for {
 		select {
 		case err := <-errCh:
@@ -149,6 +151,12 @@ func TestRolloutNode(t *testing.T) {
 			if st.State == "aborted" && st.Generation != announcedAbortGen {
 				announcedAbortGen = st.Generation
 				fmt.Fprintf(os.Stdout, "%s:%s:%d\n", rolloutTokAborted, member, st.Generation)
+			}
+			// Confirm window (design §8.1): emit CONFIRMED once the coordinator has
+			// confirmed the whole-cohort convergence and this member runs it.
+			if st.State == "confirmed" && st.Generation != announcedConfirmGen && cfg != nil {
+				announcedConfirmGen = st.Generation
+				fmt.Fprintf(os.Stdout, "%s:%s:%d\n", rolloutTokConfirmed, member, cfg.Version)
 			}
 		}
 	}

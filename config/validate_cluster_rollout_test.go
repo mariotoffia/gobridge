@@ -40,6 +40,42 @@ func TestValidateClusterRollout_AcceptsTheDefaultModes(t *testing.T) {
 	}
 }
 
+// TestValidateClusterRollout_AcceptsAConfirmWindow proves the opt-in confirm
+// window (design §8.1) validates on a coordinated cohort.
+func TestValidateClusterRollout_AcceptsAConfirmWindow(t *testing.T) {
+	cfg := coordinatedRolloutConfig()
+	cfg.Bridge.Cluster.ConfirmWindow = "90s"
+	require.NoError(t, Validate(cfg))
+}
+
+// TestValidateClusterRollout_RejectsConfirmWindowWithoutCoordinated proves a
+// confirm window only means something under the coordinated barrier: it is the
+// first mechanism that distinguishes converged-from-acked, and the refuse/standalone
+// paths have no barrier to confirm.
+func TestValidateClusterRollout_RejectsConfirmWindowWithoutCoordinated(t *testing.T) {
+	cfg := coordinatedRolloutConfig()
+	cfg.Bridge.Cluster.Rollout = "refuse"
+	cfg.Bridge.Cluster.Members = nil
+	cfg.Bridge.Cluster.ConfirmWindow = "90s"
+
+	err := Validate(cfg)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "confirm_window")
+}
+
+// TestValidateClusterRollout_RejectsAMalformedConfirmWindow proves a typo'd or
+// non-positive duration is rejected rather than silently disabling the window.
+func TestValidateClusterRollout_RejectsAMalformedConfirmWindow(t *testing.T) {
+	for _, bad := range []string{"ninety", "-5s", "0s"} {
+		cfg := coordinatedRolloutConfig()
+		cfg.Bridge.Cluster.ConfirmWindow = bad
+		err := Validate(cfg)
+		require.Error(t, err, "confirm_window %q", bad)
+		assert.Contains(t, err.Error(), "confirm_window")
+	}
+}
+
 // TestValidateClusterRollout_RejectsAnUnknownMode proves a typo is not silently
 // treated as the default. "cordinated" resolving to refuse would leave an
 // operator believing coordinated rollout is enabled while every change is

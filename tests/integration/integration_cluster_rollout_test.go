@@ -216,6 +216,58 @@ func TestClusterRolloutDDB_HappyPath(t *testing.T) {
 	}
 }
 
+// rolloutCohortConfigWindow is rolloutCohortConfig opted into the confirm window
+// (design §8.1) with the given Go-duration string.
+func rolloutCohortConfigWindow(memberID string, version int, window string) *ports.BridgeConfig {
+	cfg := rolloutCohortConfig(memberID, version)
+	cfg.Bridge.Cluster.ConfirmWindow = window
+	return cfg
+}
+
+// TestClusterRolloutDDB_ConfirmWindowConfirms drives the confirm window through
+// real DynamoDB: propose → provisional commit → the member converges against the
+// real runtime → the fenced coordinator confirms. It proves the confirm/converge
+// conditional writes behave against DynamoDB and that a real member's readiness
+// signal drives the barrier to Confirmed (not a deadman revert).
+func TestClusterRolloutDDB_ConfirmWindowConfirms(t *testing.T) {
+	stores := newRolloutCohortStores(t)
+	boot := rolloutCohortConfigWindow("node-a", 0, "30s")
+	s, changes, swaps, _ := rolloutMember(t, "node-a", stores, boot)
+
+	candidate := rolloutCohortConfigWindow("node-a", 42, "30s")
+	candidate.Bindings[0].Address = "addr/rolled"
+	changes <- candidate
+
+	awaitDeferral(t, swaps)
+
+	wait.Until(t, 25*time.Second, "the confirm window commits provisionally, converges, and confirms", func() bool {
+		status, ok := s.RolloutStatus()
+		return ok && status.State == "confirmed"
+	})
+
+	if s.Config().Version != 42 {
+		t.Fatalf("confirmed config version: got %d, want 42", s.Config().Version)
+	}
+	if got := s.Config().Bindings[0].Address; got != "addr/rolled" {
+		t.Fatalf("applied address: got %q, want addr/rolled", got)
+	}
+	status, _ := s.RolloutStatus()
+	if len(status.Converged) != 1 || status.Converged[0] != "node-a" {
+		t.Fatalf("converged members: got %v, want [node-a]", status.Converged)
+	}
+
+	// The durable committed artifact advanced to the CONFIRMED generation (not the
+	// provisional one), so a restart boots on it. Reading it back through the real
+	// codec proves the confirm-time artifact write round-trips through DynamoDB.
+	committed, err := stores.rollout.CommittedConfig(context.Background())
+	if err != nil {
+		t.Fatalf("committed artifact after confirm: %v", err)
+	}
+	if committed.ConfigVersion != 42 {
+		t.Fatalf("committed artifact version: got %d, want 42", committed.ConfigVersion)
+	}
+}
+
 // TestClusterRolloutDDB_NackAborts drives the abort path through DynamoDB: a
 // member that cannot build the candidate nacks, the fenced coordinator aborts,
 // and the running config keeps serving. The store must accept the nack and the

@@ -106,6 +106,7 @@ const (
 	ErrCodeRolloutTerminal        ErrorCode = "ROLLOUT_TERMINAL"
 	ErrCodeRolloutAckRejected     ErrorCode = "ROLLOUT_ACK_REJECTED"
 	ErrCodeRolloutDigestMismatch  ErrorCode = "ROLLOUT_DIGEST_MISMATCH"
+	ErrCodeRolloutNotConfirmable  ErrorCode = "ROLLOUT_NOT_CONFIRMABLE"
 )
 
 // BridgeError is the structured error type for the bridge.
@@ -421,6 +422,16 @@ var (
 	ErrRolloutDigestMismatch = &BridgeError{
 		Code: ErrCodeRolloutDigestMismatch, Class: ErrorPermanent,
 		Message: "rollout candidate digest mismatch",
+	}
+	// ErrRolloutNotConfirmable indicates Confirm was invoked on a committed
+	// rollout whose confirm window (design §8.1) is not satisfiable as confirmed:
+	// the window is inactive (base protocol, confirm_window == 0), or not every
+	// membership-epoch member has recorded convergence yet (invariant I7, the
+	// all-member confirm barrier). Permanent for this observation: the coordinator
+	// waits for the remaining Converge records or reverts on the confirm deadline.
+	ErrRolloutNotConfirmable = &BridgeError{
+		Code: ErrCodeRolloutNotConfirmable, Class: ErrorPermanent,
+		Message: "rollout is not confirmable: committed with all members converged required",
 	}
 )
 

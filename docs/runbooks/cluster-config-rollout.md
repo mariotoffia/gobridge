@@ -54,6 +54,27 @@ enable it, ALL of the following must hold:
 With those in place the shipped file-based image performs coordinated rollouts
 itself; there is nothing to run per-change beyond posting the config.
 
+### Confirm window (optional, `cluster.confirm_window`)
+
+By default a coordinated commit is final the moment every member has **built** the
+candidate (its Ack). Set `bridge.cluster.confirm_window: <duration>` (e.g. `90s`) to
+require every member to also **converge against its real broker** before the change
+becomes permanent — the NETCONF/NSO "commit confirmed" model:
+
+- Every member swaps **provisionally** and arms a deadman timer.
+- When the whole cohort reaches broker readiness (MQTT-R1), the coordinator writes
+  `Confirmed` and the change is permanent.
+- If any member fails to converge before the window expires, the **whole cohort
+  reverts** to the last confirmed generation (visible as rollout state `reverted`).
+  A member that crashes during the window reboots on the last **confirmed**
+  generation, never the provisional one.
+
+Cost: a failed trial costs **two** disruptions on exclusive-identity MQTT sessions
+(apply + revert), which is why it is opt-in. Use it for changes where a
+non-converging config staying active is worse than a second reconnect. Leave it
+unset (the default) for the base protocol. `confirm_window` is only valid under
+`cluster.rollout: coordinated`.
+
 ### Performing a live-safe change
 
 1. **Post the change to the config source** (the same durable write you already

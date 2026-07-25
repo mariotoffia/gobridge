@@ -35,6 +35,12 @@ const (
 	attrDeadline     = "deadline_ms"
 	attrCoordVersion = "coord_version"
 
+	// Confirm window (design §8.1). All three are absent for a base-protocol
+	// rollout; confirm_deadline_ms and converged are also absent pre-commit.
+	attrConfirmWindowMs   = "confirm_window_ms"
+	attrConfirmDeadlineMs = "confirm_deadline_ms"
+	attrConverged         = "converged"
+
 	// ack sub-attributes inside the per-member acks map value.
 	ackDigest = "d"
 	ackAtMs   = "t"
@@ -63,6 +69,15 @@ func rolloutItem(snap persistence.RolloutSnapshot, rev uint64) map[string]ddbtyp
 	}
 	if snap.Reason != "" {
 		item[attrReason] = sAttr(snap.Reason)
+	}
+	if snap.ConfirmWindow > 0 {
+		item[attrConfirmWindowMs] = nAttr(snap.ConfirmWindow.Milliseconds())
+	}
+	if !snap.ConfirmDeadline.IsZero() {
+		item[attrConfirmDeadlineMs] = nAttr(snap.ConfirmDeadline.UnixMilli())
+	}
+	if len(snap.Converged) > 0 {
+		item[attrConverged] = convergedAttr(snap.Converged)
 	}
 	return item
 }
@@ -120,6 +135,22 @@ func decodeRolloutItem(item map[string]ddbtypes.AttributeValue) (persistence.Rol
 	if err != nil {
 		return persistence.RolloutSnapshot{}, 0, corruptRow("reason: " + err.Error())
 	}
+	confirmWindowMs, err := optInt64(item, attrConfirmWindowMs)
+	if err != nil {
+		return persistence.RolloutSnapshot{}, 0, corruptRow("confirm_window_ms: " + err.Error())
+	}
+	confirmDeadlineMs, hasConfirmDeadline, err := optInt64Present(item, attrConfirmDeadlineMs)
+	if err != nil {
+		return persistence.RolloutSnapshot{}, 0, corruptRow("confirm_deadline_ms: " + err.Error())
+	}
+	converged, err := decodeConverged(item)
+	if err != nil {
+		return persistence.RolloutSnapshot{}, 0, err
+	}
+	confirmDeadline := time.Time{}
+	if hasConfirmDeadline {
+		confirmDeadline = time.UnixMilli(confirmDeadlineMs).UTC()
+	}
 
 	return persistence.RolloutSnapshot{
 		Generation:         gen,
@@ -132,7 +163,45 @@ func decodeRolloutItem(item map[string]ddbtypes.AttributeValue) (persistence.Rol
 		Reason:             reason,
 		Deadline:           time.UnixMilli(deadlineMs).UTC(),
 		CoordinatorVersion: coordVer,
+		ConfirmWindow:      time.Duration(confirmWindowMs) * time.Millisecond,
+		ConfirmDeadline:    confirmDeadline,
+		Converged:          converged,
 	}, rev, nil
+}
+
+// convergedAttr serializes the convergence set as a member→at-millis map, mirroring
+// nacksAttr's shape (a member→value map). Only the timestamp is carried; the member
+// id is the key.
+func convergedAttr(converged map[string]persistence.RolloutConverged) *ddbtypes.AttributeValueMemberM {
+	m := make(map[string]ddbtypes.AttributeValue, len(converged))
+	for member, c := range converged {
+		m[member] = nAttr(c.At.UnixMilli())
+	}
+	return &ddbtypes.AttributeValueMemberM{Value: m}
+}
+
+func decodeConverged(item map[string]ddbtypes.AttributeValue) (map[string]persistence.RolloutConverged, error) {
+	v, ok := item[attrConverged]
+	if !ok {
+		return map[string]persistence.RolloutConverged{}, nil // absent == none converged yet
+	}
+	m, ok := v.(*ddbtypes.AttributeValueMemberM)
+	if !ok {
+		return nil, corruptRow("converged is not a map")
+	}
+	converged := make(map[string]persistence.RolloutConverged, len(m.Value))
+	for member, av := range m.Value {
+		n, ok := av.(*ddbtypes.AttributeValueMemberN)
+		if !ok {
+			return nil, corruptRow("converged entry is not a number")
+		}
+		atMs, err := strconv.ParseInt(n.Value, 10, 64)
+		if err != nil {
+			return nil, corruptRow("converged timestamp: " + err.Error())
+		}
+		converged[member] = persistence.RolloutConverged{MemberID: member, At: time.UnixMilli(atMs).UTC()}
+	}
+	return converged, nil
 }
 
 func epochAttr(members []string) *ddbtypes.AttributeValueMemberL {
@@ -277,6 +346,36 @@ func optString(attrs map[string]ddbtypes.AttributeValue, key string) (string, er
 		return "", fmt.Errorf("attribute %q is not a string", key)
 	}
 	return s.Value, nil
+}
+
+// optInt64 reads an int64 attribute that MAY be absent, returning 0 when absent.
+// A present-but-wrong-typed attribute fails closed (a schema-drifted writer must
+// not be silently read as zero).
+func optInt64(attrs map[string]ddbtypes.AttributeValue, key string) (int64, error) {
+	v, present, err := optInt64Present(attrs, key)
+	if err != nil || !present {
+		return 0, err
+	}
+	return v, nil
+}
+
+// optInt64Present is optInt64 that also reports whether the attribute was present,
+// so a caller can distinguish an absent optional field from a stored zero (the
+// confirm deadline, whose zero value is a meaningful "no window").
+func optInt64Present(attrs map[string]ddbtypes.AttributeValue, key string) (int64, bool, error) {
+	v, ok := attrs[key]
+	if !ok {
+		return 0, false, nil
+	}
+	n, ok := v.(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return 0, false, fmt.Errorf("attribute %q is not a number", key)
+	}
+	parsed, err := strconv.ParseInt(n.Value, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("attribute %q is not a valid int64: %w", key, err)
+	}
+	return parsed, true, nil
 }
 
 func reqInt64(attrs map[string]ddbtypes.AttributeValue, key string) (int64, error) {

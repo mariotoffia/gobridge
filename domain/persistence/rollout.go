@@ -10,14 +10,24 @@ import (
 
 // RolloutState is the lifecycle state of a coordinated cluster config rollout.
 //
+// Base protocol (confirm_window == 0):
+//
 //	Proposed ──ack──▶ Staging ──commit(all acks)──▶ Committed  (terminal)
 //	   │                 │
 //	   └────abort────────┴────────────────────────▶ Aborted    (terminal)
 //
-// Proposed is the freshly-opened barrier before any member has acked. The
-// first Ack moves it to Staging. A Commit is only legal from Staging once every
-// membership-epoch member has acked (invariant I2). Abort is legal from either
-// non-terminal state. Committed and Aborted are terminal (invariant I4).
+// Confirm window (confirm_window > 0, design §8.1 — NETCONF/NSO confirmed-commit):
+// the commit is PROVISIONAL, so Committed is NON-terminal until a fenced decision
+// resolves it. Members Converge; the coordinator Confirms when the whole epoch
+// converged, or Reverts on the confirm deadline.
+//
+//	Staging ──provisional commit──▶ Committed ──confirm(all converged)──▶ Confirmed (terminal)
+//	                                    └────────revert(deadline)────────▶ Reverted  (terminal)
+//
+// Proposed is the freshly-opened barrier before any member has acked. The first
+// Ack moves it to Staging. A Commit is only legal from Staging once every
+// membership-epoch member has acked (invariant I2). Abort is legal from any
+// pre-commit state.
 type RolloutState string
 
 const (
@@ -26,18 +36,38 @@ const (
 	// RolloutStaging is an in-progress rollout: at least one member has acked
 	// but the all-member barrier is not yet satisfied.
 	RolloutStaging RolloutState = "staging"
-	// RolloutCommitted is the terminal success state: every member acked and
-	// the coordinator committed the new config generation.
+	// RolloutCommitted is the committed state: every member acked and the
+	// coordinator committed the new config generation. It is terminal in the base
+	// protocol; under a confirm window it is PROVISIONAL and awaits Confirm/Revert
+	// (use Rollout.IsTerminal, which is window-aware).
 	RolloutCommitted RolloutState = "committed"
-	// RolloutAborted is the terminal failure state: the coordinator aborted
-	// (deadline, nack, or operator) before all members acked.
+	// RolloutAborted is a pre-commit terminal failure state: the coordinator
+	// aborted (deadline, nack, or operator) before all members acked.
 	RolloutAborted RolloutState = "aborted"
+	// RolloutConfirmed is the confirm-window terminal success state: after a
+	// provisional commit every member converged and the coordinator confirmed
+	// (design §8.1).
+	RolloutConfirmed RolloutState = "confirmed"
+	// RolloutReverted is the confirm-window terminal failure state: a provisional
+	// commit whose confirm window expired without whole-epoch convergence; every
+	// member reverts to the last confirmed generation (design §8.1).
+	RolloutReverted RolloutState = "reverted"
 )
 
-// IsTerminal reports whether the state is Committed or Aborted -- a decided
-// rollout that admits no further ack/commit/abort transition (invariant I4).
+// IsTerminal reports whether the state is INHERENTLY terminal regardless of any
+// confirm window: Aborted, Confirmed, or Reverted. Committed is deliberately
+// excluded -- its terminality depends on whether a confirm window is active, so
+// callers that need the decided answer for a specific rollout must use the
+// window-aware Rollout.IsTerminal.
 func (s RolloutState) IsTerminal() bool {
-	return s == RolloutCommitted || s == RolloutAborted
+	return s == RolloutAborted || s == RolloutConfirmed || s == RolloutReverted
+}
+
+// acceptsVotes reports whether the state still admits Ack/Nack -- only the two
+// pre-commit states. Once committed (provisional or final) the vote phase is
+// over, so an ack/nack is rejected exactly like a terminal one.
+func (s RolloutState) acceptsVotes() bool {
+	return s == RolloutProposed || s == RolloutStaging
 }
 
 // RolloutAck is a single member's acknowledgement that it has staged (loaded
@@ -71,6 +101,11 @@ type RolloutProposal struct {
 	// TTL bounds how long the rollout may stay open before the coordinator
 	// aborts it on deadline. The store converts it to an absolute deadline.
 	TTL time.Duration
+	// ConfirmWindow is the optional NETCONF/NSO confirm window (design §8.1). Zero
+	// (the default) is the base protocol: Commit is final. A positive value makes
+	// Commit provisional -- members converge, the coordinator confirms or the
+	// deadline reverts. Frozen at propose time.
+	ConfirmWindow time.Duration
 }
 
 // Rollout is the coordination state of one cluster config rollout: an immutable
@@ -90,6 +125,19 @@ type Rollout struct {
 	nacks           map[string]string
 	reason          string
 	deadline        time.Time
+	// confirmWindow is the confirm window frozen at Propose (design §8.1). Zero
+	// means the base protocol (Commit is final/terminal). A positive value makes
+	// Commit provisional and stamps confirmDeadline.
+	confirmWindow time.Duration
+	// confirmDeadline is stamped at a PROVISIONAL commit (WithProvisionalCommit):
+	// the absolute time by which the coordinator must Confirm or every member
+	// reverts. Zero on a base-protocol (final) commit and on every pre-commit
+	// state -- it is what makes Committed non-terminal (IsTerminal).
+	confirmDeadline time.Time
+	// converged records, keyed by member id, which epoch members reached
+	// convergence after their provisional swap. Confirm requires it to cover the
+	// whole epoch (invariant I7).
+	converged map[string]RolloutConverged
 	// coordVersion is the fencing high-water mark: the lease-token version of
 	// the coordinator that last flipped the rollout to a terminal state. Zero
 	// while non-terminal. A Commit/Abort carrying a strictly lower token is
@@ -147,6 +195,8 @@ func NewRollout(generation uint64, p RolloutProposal, deadline time.Time) (Rollo
 		acks:            make(map[string]RolloutAck),
 		nacks:           make(map[string]string),
 		deadline:        deadline,
+		confirmWindow:   p.ConfirmWindow,
+		converged:       make(map[string]RolloutConverged),
 	}, nil
 }
 
@@ -180,6 +230,17 @@ func (r Rollout) Deadline() time.Time { return r.deadline }
 // CoordinatorVersion returns the fencing high-water mark (see coordVersion).
 func (r Rollout) CoordinatorVersion() uint64 { return r.coordVersion }
 
+// IsTerminal reports whether the rollout is decided and admits no further
+// transition. Unlike RolloutState.IsTerminal it is window-aware: a base-protocol
+// Committed rollout is terminal, but a provisionally-committed one (active
+// confirm window) is NOT -- it still awaits Confirm or Revert.
+func (r Rollout) IsTerminal() bool {
+	if r.state.IsTerminal() {
+		return true
+	}
+	return r.state == RolloutCommitted && r.confirmDeadline.IsZero()
+}
+
 // CanCommit reports whether the rollout satisfies the all-member barrier
 // (invariant I2): it is in Staging and every membership-epoch member has acked.
 func (r Rollout) CanCommit() bool {
@@ -200,8 +261,8 @@ func (r Rollout) CanCommit() bool {
 // (invariant I5), an empty build digest, or any ack against a terminal rollout
 // (invariant I4).
 func (r Rollout) WithAck(memberID, buildDigest string, at time.Time) (Rollout, *shared.BridgeError) {
-	if r.state.IsTerminal() {
-		return r, shared.ErrRolloutTerminal.WithMessage("cannot ack a decided rollout").With("state", string(r.state))
+	if !r.state.acceptsVotes() {
+		return r, shared.ErrRolloutTerminal.WithMessage("cannot ack a committed or decided rollout").With("state", string(r.state))
 	}
 	if err := r.checkVoter(memberID); err != nil {
 		return r, err
@@ -222,8 +283,8 @@ func (r Rollout) WithAck(memberID, buildDigest string, at time.Time) (Rollout, *
 // terminating the rollout: a nack is a signal to the coordinator, which then
 // decides to abort. Same voter rules as WithAck (invariant I5).
 func (r Rollout) WithNack(memberID, reason string) (Rollout, *shared.BridgeError) {
-	if r.state.IsTerminal() {
-		return r, shared.ErrRolloutTerminal.WithMessage("cannot nack a decided rollout").With("state", string(r.state))
+	if !r.state.acceptsVotes() {
+		return r, shared.ErrRolloutTerminal.WithMessage("cannot nack a committed or decided rollout").With("state", string(r.state))
 	}
 	if err := r.checkVoter(memberID); err != nil {
 		return r, err
@@ -240,14 +301,20 @@ func (r Rollout) WithNack(memberID, reason string) (Rollout, *shared.BridgeError
 // rollout is an idempotent no-op (design goal G3). Commit requires the barrier
 // (invariant I2); committing an aborted rollout is terminal-illegal (I4).
 func (r Rollout) WithCommit(tok LeaseToken) (Rollout, *shared.BridgeError) {
+	return r.commit(tok, time.Time{})
+}
+
+// commit is the shared commit transition. confirmDeadline zero => final commit
+// (terminal); non-zero => provisional commit awaiting Confirm/Revert.
+func (r Rollout) commit(tok LeaseToken, confirmDeadline time.Time) (Rollout, *shared.BridgeError) {
 	if err := r.checkFence(tok, "commit"); err != nil {
 		return r, err
 	}
 	switch r.state {
-	case RolloutCommitted:
-		return r, nil // idempotent: same-or-newer coordinator re-committing
-	case RolloutAborted:
-		return r, shared.ErrRolloutTerminal.WithMessage("cannot commit an aborted rollout")
+	case RolloutCommitted, RolloutConfirmed:
+		return r, nil // idempotent: same-or-newer coordinator re-committing/confirmed
+	case RolloutAborted, RolloutReverted:
+		return r, shared.ErrRolloutTerminal.WithMessage("cannot commit a decided rollout").With("state", string(r.state))
 	default:
 		if !r.CanCommit() {
 			return r, shared.ErrRolloutNotCommittable.
@@ -256,6 +323,7 @@ func (r Rollout) WithCommit(tok LeaseToken) (Rollout, *shared.BridgeError) {
 		nr := r.clone()
 		nr.state = RolloutCommitted
 		nr.coordVersion = tok.Version
+		nr.confirmDeadline = confirmDeadline
 		return nr, nil
 	}
 }
@@ -316,5 +384,9 @@ func (r Rollout) clone() Rollout {
 	nr := r
 	nr.acks = maps.Clone(r.acks)
 	nr.nacks = maps.Clone(r.nacks)
+	nr.converged = maps.Clone(r.converged)
+	if nr.converged == nil {
+		nr.converged = make(map[string]RolloutConverged)
+	}
 	return nr
 }

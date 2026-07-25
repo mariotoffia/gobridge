@@ -609,15 +609,46 @@ a non-coordinated one keeps the ADR 0012 refusal.
 - ✅ §12 promoted verbatim to `docs/adr/0013`; ADR 0012 gains "Superseded by 0013";
   CLUSTER-3 flipped to RESOLVED in `PROD_READY_ISSUES.md`.
 
-### Phase 7 — Confirm window (§8.1; optional, separate go/no-go)
+### Phase 7 — Confirm window (§8.1; optional, separate go/no-go) — ✅ IMPLEMENTED
 
-- `confirm_window` config, provisional swap + deadman revert to N−1,
-  `Converged`/`Confirmed` records.
-- Q4 (strict all-ack vs Kafka-style "commit centrally, fence non-converged
-  members out of serving") is revisited here, not earlier: the confirm window
-  is the first mechanism that makes converged-vs-acked distinguishable.
-- Done: UC-CR9 — one node never converges → whole cohort deadman-reverts;
-  traffic proof on the reverted generation.
+Companion implementation spec: `cluster-config-rollout-phase7-confirm-window.md`
+(grounded in NETCONF confirmed-commit RFC 6241 §8.4 + Cisco NSO commit-confirmed).
+
+- **Domain:** two new terminal states `RolloutConfirmed`/`RolloutReverted`; a
+  windowed `Committed` is NON-terminal (`Rollout.IsTerminal` is window-aware) until
+  a fenced `WithConfirm` (I7: whole-epoch converged) or `WithRevert` decides it.
+  `WithProvisionalCommit` stamps the confirm deadline; `WithConverged` records
+  per-member convergence (I6, at-most-once). Rehydrate fails closed on a windowed
+  `Committed` whose deadline was dropped (an adversarial-review finding).
+- **Stores:** `ClusterRolloutStore.Converge/Confirm/Revert`; the DynamoDB item gains
+  `confirm_window_ms`/`confirm_deadline_ms`/`converged`. "New proposals refused while
+  a window is pending" falls out of I1 once the active-check is window-aware.
+- **Config:** `bridge.cluster.confirm_window` (validated coordinated-only, positive).
+- **Orchestration:** the coordinator confirms once the whole epoch converged and
+  the window is still open, else reverts at the deadline (deadline checked FIRST, so
+  a late coordinator matches the members' local deadman rather than flapping). The
+  applier swaps PROVISIONALLY, records `Converge` on `RolloutHost.Converged`
+  (MQTT-R1 readiness), advances the durable committed artifact ONLY on `Confirmed`
+  (so a crash reboots onto the last CONFIRMED generation), and reverts to the cached
+  N−1 config on `Reverted` or a poll-based local deadman (a dead-coordinator
+  backstop). A member that gives up a swap stops rebuilding and never converges.
+- **Q4** stays deferred (design §13): strict revert-the-cohort matches the operator
+  contract for cohorts ≤ ~10; the confirm window merely makes converged-vs-acked
+  distinguishable, so Q4 is *revisitable*, not resolved, here.
+- **Tests:** domain state machine + rehydrate; `storetest` conformance (memory +
+  DynamoDB Local); coordinator confirm/revert; the whole drive over the fake host —
+  **happy confirm** AND **deadman revert** (`bridge.TestClusterRolloutDriver_
+  ConfirmWindow_*`); integration on real DynamoDB (`TestClusterRolloutDDB_
+  ConfirmWindowConfirms`, real convergence + real codec artifact); long-running
+  **UC-CR9** (`TestUCCR9_ConfirmWindowConfirmsAcrossProcesses`) — 3 real processes
+  converge + confirm through their own runtimes, artifact advances.
+- **UC-CR9 deadman arm — harness limitation.** The deadman-revert (one member never
+  converges → whole cohort reverts) is proven deterministically in-process
+  (`TestClusterRolloutDriver_ConfirmWindow_DeadmanRevert`, real coordinator + applier
+  + store, injectable convergence). It is NOT reproduced multi-process: forcing one
+  real member to swap-but-never-converge needs a controllable-readiness transport the
+  `nodeProcess` harness lacks — the SAME limitation this design records for UC-CR6.
+  When that transport lands, UC-CR9 gains the revert arm across real processes.
 
 ## 12. Draft ADR 0013 (promote verbatim at ship time)
 

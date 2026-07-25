@@ -1,8 +1,24 @@
 # Phase 7 implementation spec — confirm window (§8.1)
 
-Status: **in progress** · Date: 2026-07-25 · Implements: `cluster-config-rollout-protocol.md`
+Status: **implemented** · Date: 2026-07-25 · Implements: `cluster-config-rollout-protocol.md`
 §8.1, §11 Phase 7, Q4 · Companion to the canonical design (that doc's §8.1 is the
 authority; this file records the concrete code-level deltas and the grounding).
+
+Two decisions were finalized during implementation (both grounded, both adversarial-
+review-checked):
+
+- **Revert target = the cached pre-swap config, not a re-fetch of the committed
+  artifact.** The applier captures `host.Config()` (generation N−1) at the first
+  provisional observation and reverts to it. This is always N−1 AND is available for
+  the FIRST windowed rollout, which has no prior committed artifact yet (the
+  artifact-only approach would leave the first rollout unable to revert). The
+  committed artifact still governs a REBOOT during the window (the joiner boots on
+  the last confirmed generation).
+- **Confirm must land WITHIN the window.** `decideRollout` checks the deadline before
+  the confirm barrier, so once the window expires the coordinator reverts even if the
+  epoch just converged — matching the members' local deadman and preventing a late
+  coordinator from flapping the cohort N−1→N after it had reverted N→N−1. This is
+  NETCONF confirmed-commit's "confirmation must arrive before the timer".
 
 The confirm window is opt-in (`confirm_window: 0` default = base protocol,
 unchanged). It layers a NETCONF/NSO "provisional apply with deadman timer" on top

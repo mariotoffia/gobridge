@@ -108,7 +108,13 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 	}
 	switch c.Rollout {
 	case "", rolloutModeRefuse:
-		return // today's behavior; the roster is unused
+		// today's behavior; the roster is unused. A confirm window here is a
+		// configuration error: there is no barrier to confirm.
+		if c.ConfirmWindow != "" {
+			ve.Addf("bridge.cluster.confirm_window: only valid when bridge.cluster.rollout is %q; the "+
+				"refuse/standalone paths have no rollout barrier to confirm (design §8.1)", rolloutModeCoordinated)
+		}
+		return
 	case rolloutModeCoordinated:
 	default:
 		ve.Addf("bridge.cluster.rollout: %q is not a valid value; use %q (the default: refuse every "+
@@ -145,6 +151,27 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 				"acknowledgement", i, id)
 		}
 		seen[id] = struct{}{}
+	}
+	validateConfirmWindow(ve, c.ConfirmWindow)
+}
+
+// validateConfirmWindow rejects a malformed or non-positive confirm window on a
+// coordinated cohort (design §8.1). Empty is fine (the base protocol). A parse
+// failure or a value <= 0 must not silently disable the window — an operator who
+// wrote confirm_window expects a provisional apply, and a silent zero would give
+// them the base protocol under a different name.
+func validateConfirmWindow(ve *ValidationError, raw string) {
+	if raw == "" {
+		return
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		ve.Addf("bridge.cluster.confirm_window: %q is not a valid Go duration (e.g. \"90s\", \"2m\"): %v", raw, err)
+		return
+	}
+	if d <= 0 {
+		ve.Addf("bridge.cluster.confirm_window: %q must be positive; use a non-zero window to enable the "+
+			"provisional-apply confirm window, or omit it for the base protocol", raw)
 	}
 }
 

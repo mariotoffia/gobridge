@@ -61,6 +61,15 @@ func (f *flakyRolloutStore) CommittedConfig(ctx context.Context) (persistence.Co
 	}
 	return f.inner.CommittedConfig(ctx)
 }
+func (f *flakyRolloutStore) Converge(ctx context.Context, gen uint64, m string) error {
+	return f.inner.Converge(ctx, gen, m)
+}
+func (f *flakyRolloutStore) Confirm(ctx context.Context, gen uint64, tok persistence.LeaseToken) error {
+	return f.inner.Confirm(ctx, gen, tok)
+}
+func (f *flakyRolloutStore) Revert(ctx context.Context, gen uint64, tok persistence.LeaseToken, r string) error {
+	return f.inner.Revert(ctx, gen, tok, r)
+}
 
 // proposeAndAck opens a rollout over epoch and records acks/nacks against a real
 // memory store, returning the store ready for a coordinator observation.

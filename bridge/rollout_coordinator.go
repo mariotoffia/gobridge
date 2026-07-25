@@ -36,6 +36,12 @@ const (
 	// rolloutActionAbort: a Nack, the deadline, or a membership change makes the
 	// barrier unsatisfiable — flip to Aborted with the returned reason.
 	rolloutActionAbort
+	// rolloutActionConfirm: a provisionally-committed rollout whose whole epoch
+	// converged — flip to Confirmed (confirm window, design §8.1).
+	rolloutActionConfirm
+	// rolloutActionRevert: a provisionally-committed rollout whose confirm window
+	// expired without whole-epoch convergence — flip to Reverted with the reason.
+	rolloutActionRevert
 )
 
 // decideRollout computes the coordinator's next action for one observation.
@@ -45,7 +51,29 @@ const (
 // so a fully-acked rollout is never wasted merely because the clock crossed the
 // deadline in the same tick.
 func decideRollout(r persistence.Rollout, membership []string, now time.Time) (rolloutAction, string) {
-	if r.State().IsTerminal() {
+	if r.IsTerminal() {
+		return rolloutActionWait, ""
+	}
+	// Confirm window (design §8.1): a provisionally-committed rollout is past the
+	// pre-commit barrier, so it is driven by convergence, not acks. Confirm once the
+	// whole epoch converged; revert when the confirm window expires without it. This
+	// is checked before the pre-commit logic below because a windowed Committed
+	// rollout is non-terminal but has no more acks to gather.
+	if r.State() == persistence.RolloutCommitted {
+		// The deadline is checked FIRST: once the confirm window has expired, every
+		// member's local deadman is already reverting to N-1 (bridge.rolloutApplier),
+		// so a late-resuming coordinator must revert to match — confirming here would
+		// flap the cohort N-1→N after it had reverted N→N-1. This is the confirm-
+		// window analogue of "abort by inaction" (NETCONF confirmed-commit): the
+		// confirmation must land strictly within the window.
+		if now.After(r.ConfirmDeadline()) {
+			return rolloutActionRevert, fmt.Sprintf(
+				"confirm window expired with %d/%d members converged",
+				len(r.Converged()), len(r.MembershipEpoch()))
+		}
+		if r.CanConfirm() {
+			return rolloutActionConfirm, ""
+		}
 		return rolloutActionWait, ""
 	}
 	// F6: the epoch is frozen at Propose; any live-membership divergence — a
@@ -221,16 +249,28 @@ func coordinatorStep(
 		if err := store.Commit(ctx, r.Generation(), tok); err != nil {
 			return false, err // F5: deposed coordinator → stale token rejected
 		}
-		return true, nil
+		// A base commit is terminal; a provisional (windowed) commit is NOT — the
+		// coordinator keeps driving the latter to Confirm/Revert on later observations.
+		return r.ConfirmWindow() == 0, nil
 	case rolloutActionAbort:
 		if err := store.Abort(ctx, r.Generation(), tok, reason); err != nil {
 			return false, err
 		}
 		return true, nil
+	case rolloutActionConfirm:
+		if err := store.Confirm(ctx, r.Generation(), tok); err != nil {
+			return false, err // F5: deposed coordinator → stale token rejected
+		}
+		return true, nil
+	case rolloutActionRevert:
+		if err := store.Revert(ctx, r.Generation(), tok, reason); err != nil {
+			return false, err
+		}
+		return true, nil
 	default:
-		// rolloutActionWait covers both healthy-but-undecided and already
-		// terminal; only the latter stops the loop.
-		return r.State().IsTerminal(), nil
+		// rolloutActionWait covers healthy-but-undecided (incl. a pending confirm
+		// window) and already terminal; only the latter stops the loop.
+		return r.IsTerminal(), nil
 	}
 }
 

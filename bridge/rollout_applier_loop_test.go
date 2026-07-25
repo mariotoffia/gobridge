@@ -388,6 +388,13 @@ func (f *failingRolloutStore) PutCommittedConfig(context.Context, persistence.Co
 func (f *failingRolloutStore) CommittedConfig(context.Context) (persistence.CommittedRolloutConfig, error) {
 	return persistence.CommittedRolloutConfig{}, f.err
 }
+func (f *failingRolloutStore) Converge(context.Context, uint64, string) error { return f.err }
+func (f *failingRolloutStore) Confirm(context.Context, uint64, persistence.LeaseToken) error {
+	return f.err
+}
+func (f *failingRolloutStore) Revert(context.Context, uint64, persistence.LeaseToken, string) error {
+	return f.err
+}
 
 var _ ports.ClusterRolloutStore = (*failingRolloutStore)(nil)
 

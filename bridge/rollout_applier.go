@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -172,11 +173,43 @@ type rolloutApplier struct {
 	memberID string
 	gate     nodeRolloutGate
 	obs      *rolloutObserver
+	// clk stamps the confirm-window deadman check (design §8.1). System clock in
+	// production; a fake in tests. Only read from the drive goroutine.
+	clk clock.Clock
 
 	// attemptGen/attempts count consecutive apply attempts for one committed
 	// generation. Both are touched only from the drive goroutine.
 	attemptGen uint64
 	attempts   int
+
+	// Confirm-window provisional state (design §8.1). All touched only from the
+	// drive goroutine, so no lock is needed.
+	//
+	//   - provisionalGen: the generation this member provisionally swapped to in
+	//     THIS process (0 = none). It gates the revert: only a member that actually
+	//     applied the provisional generation has anything to undo.
+	//   - revertCfg: the config this member was running just BEFORE the provisional
+	//     swap (i.e. generation N-1). It is the revert target — cached rather than
+	//     re-fetched from the committed artifact because the FIRST windowed rollout
+	//     has no prior committed artifact, and the running config is always N-1.
+	//   - convergeSent: whether this member already wrote its Converge for
+	//     provisionalGen (convergence is unretractable, I6 — write it once).
+	//   - revertedGen: a generation this member already reverted locally (deadman or
+	//     an observed Revert), so it does not re-apply or re-converge it.
+	provisionalGen uint64
+	revertCfg      *ports.BridgeConfig
+	convergeSent   bool
+	revertedGen    uint64
+	// artifactGen is the generation whose durable committed artifact this member has
+	// already written on Confirm, so it does not re-write it every poll of the
+	// terminal Confirmed row.
+	artifactGen uint64
+	// gaveUpGen is the generation whose swap this member gave up on after the bounded
+	// retries. The base adopt path gets this bound from its gate guard; the confirm-
+	// window paths do not consult the gate (they must keep running convergence /
+	// deadman logic after a successful swap), so this latch is what stops them
+	// rebuilding the runtime every poll when a swap deterministically fails.
+	gaveUpGen uint64
 }
 
 // step performs one observation of the rollout row and acts on it. Store
@@ -220,9 +253,25 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 		}
 	case persistence.RolloutCommitted:
 		adoptGen = r.Generation()
-		if err := a.adopt(ctx, r); err != nil {
+		if r.ConfirmDeadline().IsZero() {
+			// Base protocol: final commit — swap and advance the committed artifact.
+			if err := a.adopt(ctx, r); err != nil {
+				return err
+			}
+		} else {
+			// Confirm window (design §8.1): provisional swap, converge, deadman revert.
+			if err := a.adoptProvisional(ctx, r); err != nil {
+				return err
+			}
+		}
+	case persistence.RolloutConfirmed:
+		adoptGen = r.Generation()
+		if err := a.adoptConfirmed(ctx, r); err != nil {
 			return err
 		}
+	case persistence.RolloutReverted:
+		adoptGen = r.Generation()
+		a.revertProvisional(ctx, r)
 	default:
 		// Aborted. Nothing to discard: the candidate build is released the
 		// instant it has proven itself (see vote), so an abort costs this node
@@ -425,8 +474,11 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// Out of retries: stop rebuilding the runtime in a loop and leave the
 	// divergence loudly visible instead. RolloutStatus reports applied=false and
 	// the supervisor stays degraded, so an operator sees WHICH member diverged
-	// rather than a cohort that merely looks committed everywhere.
+	// rather than a cohort that merely looks committed everywhere. gaveUpGen latches
+	// the give-up so the confirm-window paths (which do not consult the gate) also
+	// stop rebuilding.
 	a.gate.record(gen)
+	a.gaveUpGen = gen
 	if a.host.RolloutLogger() != nil {
 		a.host.RolloutLogger().Error("supervisor: giving up applying the committed cluster rollout after repeated "+
 			"failures; THIS MEMBER RUNS AN OLDER CONFIG GENERATION THAN THE COHORT. Investigate this "+

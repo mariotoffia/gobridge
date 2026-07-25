@@ -54,6 +54,8 @@ import (
 // mutate to corrupt store state. Mutating methods return only an error (the
 // interface stays minimal per project rule); a coordinator observes the
 // resulting state through Current.
+//
+//nolint:interfacebloat // ClusterRolloutStore is ONE cohesive coordination protocol — the whole rollout-barrier lifecycle (propose, vote, decide, confirm) — implemented WHOLESALE by every backend (memory, DynamoDB); there is no partial implementer. Splitting the confirm-window trio (Converge/Confirm/Revert) into a separate port would force the applier AND coordinator to depend on two ports for one store object with no benefit, the same reason RuntimeQuery is a single wide facade.
 type ClusterRolloutStore interface {
 	// Propose opens a new rollout at the next monotonic generation from the
 	// given proposal, returning it in the Proposed state. Returns
@@ -75,7 +77,41 @@ type ClusterRolloutStore interface {
 	// Commit commits the given generation under the coordinator's fencing
 	// token. Requires the barrier (I2); enforces fencing (I3) and
 	// terminal-immutability (I4). Idempotent under a same-or-newer token.
+	//
+	// If the rollout was proposed with a confirm window (design §8.1,
+	// RolloutProposal.ConfirmWindow > 0), the commit is PROVISIONAL: the rollout
+	// becomes Committed but NON-terminal, the store stamps a confirm deadline from
+	// its clock + the frozen window, and the rollout is resolved by Confirm or
+	// Revert (never a second Commit). With a zero window the commit is final and
+	// terminal, exactly as the base protocol.
 	Commit(ctx context.Context, generation uint64, token persistence.LeaseToken) error
+
+	// Converge records memberID's post-swap convergence (its MQTT-R1 readiness
+	// check passed) on a provisionally-committed generation (design §8.1). Legal
+	// only while the rollout is Committed with an active confirm window; enforces
+	// the confirm-window bookkeeping:
+	//
+	//   - I6 (converge-at-most-once): a member outside the frozen epoch, or a
+	//     second convergence from the same member, is rejected with
+	//     ErrRolloutAckRejected.
+	//   - A convergence before commit returns ErrRolloutNotConfirmable; against a
+	//     base-protocol (final) commit or a decided rollout, ErrRolloutTerminal.
+	//   - ErrNotFound if generation is not the active rollout.
+	Converge(ctx context.Context, generation uint64, memberID string) error
+
+	// Confirm confirms a provisionally-committed generation under the
+	// coordinator's fencing token: the confirm-window success decision (design
+	// §8.1). Requires the confirm barrier (I7: active window with every epoch
+	// member converged) else ErrRolloutNotConfirmable; enforces fencing (I3) and
+	// terminal-immutability (I4). Idempotent under a same-or-newer token.
+	Confirm(ctx context.Context, generation uint64, token persistence.LeaseToken) error
+
+	// Revert reverts a provisionally-committed generation under the coordinator's
+	// fencing token, recording reason: the confirm-window deadman decision (design
+	// §8.1). Every member then reverts to the last confirmed generation. Enforces
+	// fencing (I3) and terminal-immutability (I4). Idempotent under a same-or-newer
+	// token.
+	Revert(ctx context.Context, generation uint64, token persistence.LeaseToken, reason string) error
 
 	// Abort aborts the given generation under the coordinator's fencing token,
 	// recording reason. Enforces fencing (I3) and terminal-immutability (I4).
@@ -159,6 +195,15 @@ type RolloutHost interface {
 	// could not be applied on this member after the bounded retries, so it now runs
 	// an OLDER generation than its peers and needs operator attention.
 	MarkDegraded(reason string)
+
+	// Converged reports whether THIS member has converged on its running config:
+	// the post-swap readiness check (MQTT-R1 — every non-standby session connected
+	// and its subscriptions satisfied) is met. It is the confirm-window signal
+	// (design §8.1): an Ack proves validated+built, Converged proves
+	// converged-against-the-real-broker. The drive calls it after a provisional swap
+	// to decide whether to record this member's Converge. Best-effort and
+	// non-blocking; false when no runtime is active.
+	Converged(ctx context.Context) bool
 
 	// RolloutLogger returns the host's logger, or nil.
 	RolloutLogger() *slog.Logger

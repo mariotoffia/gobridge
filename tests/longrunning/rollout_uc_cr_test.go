@@ -28,22 +28,30 @@ import (
 // committed artifact), and coordinator lease, all on unique tables the parent can
 // read directly and the children share by table name.
 type rolloutTestbed struct {
-	infra        *testInfra
-	bridgeID     string
-	members      []string
-	rolloutTable string
-	leaseTable   string
-	configTable  string
-	rolloutStore *dynamodbrollout.Store
-	loader       *ddbconfig.Loader
-	ttl          string // optional GOBRIDGE_ROLLOUT_TTL for the children (e.g. "4s")
-	version      int    // the document version last written (base = 1)
+	infra         *testInfra
+	bridgeID      string
+	members       []string
+	rolloutTable  string
+	leaseTable    string
+	configTable   string
+	rolloutStore  *dynamodbrollout.Store
+	loader        *ddbconfig.Loader
+	ttl           string // optional GOBRIDGE_ROLLOUT_TTL for the children (e.g. "4s")
+	confirmWindow string // optional bridge.cluster.confirm_window (design §8.1), e.g. "3s"
+	version       int    // the document version last written (base = 1)
 }
 
 // newRolloutTestbed provisions the three shared tables, seeds the config source
 // with the base config, and returns the testbed. Members boot on the seeded
 // config (version 1 after the first Save).
 func newRolloutTestbed(t *testing.T, members []string, baseAddress string) *rolloutTestbed {
+	return newRolloutTestbedWindow(t, members, baseAddress, "")
+}
+
+// newRolloutTestbedWindow is newRolloutTestbed with the confirm window (design
+// §8.1) baked into the seeded config, so a member reads it off its running config
+// when a later change is proposed.
+func newRolloutTestbedWindow(t *testing.T, members []string, baseAddress, confirmWindow string) *rolloutTestbed {
 	t.Helper()
 	infra := withFreshInfra(t)
 	client := ddblocal.Client(t)
@@ -72,12 +80,12 @@ func newRolloutTestbed(t *testing.T, members []string, baseAddress string) *roll
 	// Seed the base config as document version 1. (The DynamoDB item version is
 	// managed separately by Save's CAS; the DOCUMENT version is the one the barrier
 	// and members track, so we set it explicitly per generation.)
-	require.NoError(t, loader.Save(ctx, rolloutNodeConfig(bridgeID, 1, baseAddress, members)))
+	require.NoError(t, loader.Save(ctx, rolloutNodeConfig(bridgeID, 1, baseAddress, members, confirmWindow)))
 
 	return &rolloutTestbed{
 		infra: infra, bridgeID: bridgeID, members: members,
 		rolloutTable: rolloutTable, leaseTable: leaseTable, configTable: configTable,
-		rolloutStore: rolloutStore, loader: loader, version: 1,
+		rolloutStore: rolloutStore, loader: loader, confirmWindow: confirmWindow, version: 1,
 	}
 }
 
@@ -111,7 +119,7 @@ func (b *rolloutTestbed) childEnv(member string) map[string]string {
 func (b *rolloutTestbed) saveChange(t *testing.T, address string) int {
 	t.Helper()
 	b.version++
-	require.NoError(t, b.loader.Save(context.Background(), rolloutNodeConfig(b.bridgeID, b.version, address, b.members)))
+	require.NoError(t, b.loader.Save(context.Background(), rolloutNodeConfig(b.bridgeID, b.version, address, b.members, b.confirmWindow)))
 	return b.version
 }
 
@@ -166,6 +174,65 @@ func TestUCCR1_HappyPathCommitsAcrossProcesses(t *testing.T) {
 
 	t.Logf("UC-CR1 Q2 sizing: N=3 staging duration (propose->all-committed) = %s "+
 		"(defaultRolloutTTL=5m has ample margin)", staging.Round(time.Millisecond))
+}
+
+// TestUCCR9_ConfirmWindowConfirmsAcrossProcesses is the Phase-7 confirm window
+// (design §8.1) across REAL separate processes: three bridge processes open a
+// confirm window, each provisionally swaps the candidate, records convergence
+// against its OWN runtime, and the fenced coordinator writes Confirmed once the
+// whole cohort converged — after which the durable committed artifact advances to
+// the confirmed generation. This proves cross-process Converge + Confirm and the
+// artifact-advances-on-Confirm rule that only separate processes + real DynamoDB
+// can exercise (the in-process driver test stands in for the single-process wiring).
+//
+// The DEADMAN-REVERT half of UC-CR9 (one member never converges → whole cohort
+// reverts to N-1) is proven deterministically in-process by
+// bridge.TestClusterRolloutDriver_ConfirmWindow_DeadmanRevert, which drives the
+// real coordinator + applier + store with an injectable convergence signal. It is
+// NOT reproduced here because forcing one real member to swap-but-never-converge
+// needs a controllable-readiness transport the multi-process harness does not yet
+// have — the SAME limitation the design records for UC-CR6 (committed config against
+// an unreachable broker). When that transport lands, this test gains the revert arm.
+func TestUCCR9_ConfirmWindowConfirmsAcrossProcesses(t *testing.T) {
+	members := []string{
+		ddblocal.UniqueTable("mA"), ddblocal.UniqueTable("mB"), ddblocal.UniqueTable("mC"),
+	}
+	// A confirm window with ample room for all three to converge (they do, promptly)
+	// before the deadline — the happy path confirms well inside it.
+	tb := newRolloutTestbedWindow(t, members, "addr/base", "30s")
+
+	watch := []string{rolloutTokReady, rolloutTokConfirmed}
+	nodeA := startNodeProcess(t, "A", "TestRolloutNode", tb.childEnv(members[0]), watch...)
+	nodeB := startNodeProcess(t, "B", "TestRolloutNode", tb.childEnv(members[1]), watch...)
+	nodeC := startNodeProcess(t, "C", "TestRolloutNode", tb.childEnv(members[2]), watch...)
+	nodes := []*nodeProcess{nodeA, nodeB, nodeC}
+
+	for _, n := range nodes {
+		n.awaitToken(t, rolloutTokReady, 90*time.Second)
+	}
+
+	// Propose a live-safe change under the confirm window: all three provisionally
+	// commit, converge, and the coordinator confirms.
+	version := tb.saveChange(t, "addr/confirmed")
+
+	for _, n := range nodes {
+		tok := n.awaitToken(t, rolloutTokConfirmed, 90*time.Second)
+		require.Contains(t, tok, fmt.Sprintf(":%d", version),
+			"member %s confirmed the wrong version (want %d): %q", n.name, version, tok)
+	}
+
+	// Parent-side authority: the rollout row is Confirmed at this version, the whole
+	// epoch converged, and the durable committed artifact advanced to the confirmed
+	// generation (so a reboot boots on it).
+	r := tb.currentRollout(t)
+	require.Equal(t, persistence.RolloutConfirmed, r.State(), "the rollout row must be confirmed")
+	require.Equal(t, version, r.ConfigVersion())
+	require.Len(t, r.Converged(), 3, "all three members must have converged")
+
+	committed, err := tb.rolloutStore.CommittedConfig(context.Background())
+	require.NoError(t, err, "the confirmed generation must be the durable committed artifact")
+	require.Equal(t, version, committed.ConfigVersion,
+		"the committed artifact advances to the confirmed generation")
 }
 
 // tokenVersion extracts the trailing :<version> integer from a token like

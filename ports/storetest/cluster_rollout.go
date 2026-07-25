@@ -48,6 +48,23 @@ func RunClusterRolloutStoreTests(t *testing.T, newStore func() ports.ClusterRoll
 	t.Run("MutateUnknownGenerationNotFound", func(t *testing.T) { rolloutMutateUnknownGen(t, newStore()) })
 	t.Run("ConcurrentProposeSingleWinner", func(t *testing.T) { rolloutConcurrentPropose(t, newStore()) })
 
+	// Confirm window (design §8.1): a provisional commit, per-member convergence,
+	// and a fenced Confirm/Revert. Base-protocol invariants above still hold; these
+	// exercise the windowed additions on top.
+	t.Run("ProvisionalCommitIsNotTerminal", func(t *testing.T) { rolloutProvisionalCommit(t, newStore()) })
+	t.Run("ProvisionalCommitBlocksPropose", func(t *testing.T) { rolloutProvisionalBlocksPropose(t, newStore()) })
+	t.Run("ConvergeThenConfirm", func(t *testing.T) { rolloutConvergeConfirm(t, newStore()) })
+	t.Run("ConfirmRequiresAllConverged", func(t *testing.T) { rolloutConfirmIncomplete(t, newStore()) })
+	t.Run("ConvergeTwiceRejected", func(t *testing.T) { rolloutConvergeTwice(t, newStore()) })
+	t.Run("ConvergeStrangerRejected", func(t *testing.T) { rolloutConvergeStranger(t, newStore()) })
+	t.Run("ConvergeBeforeCommitRejected", func(t *testing.T) { rolloutConvergeBeforeCommit(t, newStore()) })
+	t.Run("ConvergeOnBaseCommitRejected", func(t *testing.T) { rolloutConvergeBaseCommit(t, newStore()) })
+	t.Run("ConfirmStaleTokenRejected", func(t *testing.T) { rolloutConfirmStale(t, newStore()) })
+	t.Run("RevertFromProvisional", func(t *testing.T) { rolloutRevert(t, newStore()) })
+	t.Run("ConfirmOfRevertedRejected", func(t *testing.T) { rolloutConfirmOfReverted(t, newStore()) })
+	t.Run("ConfirmIdempotent", func(t *testing.T) { rolloutConfirmIdempotent(t, newStore()) })
+	t.Run("ConcurrentConfirmRevertAtomic", func(t *testing.T) { rolloutConcurrentConfirmRevert(t, newStore()) })
+
 	// Durable last-committed config artifact (design Phase-4 residual): the bytes
 	// a (re)joining member boots on and a member that missed a commit reconciles
 	// to, independent of the active rollout row.
@@ -333,7 +350,7 @@ func rolloutNackThenAbort(t *testing.T, store ports.ClusterRolloutStore) {
 		t.Fatalf("Nack: %v", err)
 	}
 	n := current(t, store)
-	if n.State().IsTerminal() {
+	if n.IsTerminal() {
 		t.Fatal("nack must not terminate the rollout")
 	}
 	if n.Nacks()["node-b"] != "plugin missing" {
@@ -419,7 +436,7 @@ func rolloutConcurrentCommitAbort(t *testing.T, store ports.ClusterRolloutStore)
 			commits.Load(), aborts.Load())
 	}
 	cur := current(t, store)
-	if !cur.State().IsTerminal() {
+	if !cur.IsTerminal() {
 		t.Fatalf("state after race = %q, want terminal", cur.State())
 	}
 	wantCommitted := commits.Load() > 0
@@ -485,6 +502,236 @@ func rolloutMutateUnknownGen(t *testing.T, store ports.ClusterRolloutStore) {
 	}
 	if err := store.Abort(ctx, stale, coordToken(1), "x"); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("Abort unknown gen: err = %v, want ErrNotFound", err)
+	}
+}
+
+// ── confirm-window subtests (design §8.1) ──────────────────────────────────
+
+// windowProposal is a proposal carrying a confirm window, so a Commit is
+// provisional (design §8.1).
+func windowProposal(window time.Duration, members ...string) persistence.RolloutProposal {
+	p := rolloutProposal(members...)
+	p.ConfirmWindow = window
+	return p
+}
+
+// stageWindow proposes a windowed rollout, acks every member, and returns the
+// commit-ready generation.
+func stageWindow(t *testing.T, store ports.ClusterRolloutStore, window time.Duration, members ...string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	r, err := store.Propose(ctx, windowProposal(window, members...))
+	if err != nil {
+		t.Fatalf("Propose (windowed): %v", err)
+	}
+	for _, m := range members {
+		if err := store.Ack(ctx, r.Generation(), m, "build:"+m); err != nil {
+			t.Fatalf("Ack(%s): %v", m, err)
+		}
+	}
+	return r.Generation()
+}
+
+// provisionalCommit stages a windowed rollout and commits it provisionally.
+func provisionalCommit(t *testing.T, store ports.ClusterRolloutStore, members ...string) uint64 {
+	t.Helper()
+	gen := stageWindow(t, store, 90*time.Second, members...)
+	if err := store.Commit(context.Background(), gen, coordToken(3)); err != nil {
+		t.Fatalf("provisional Commit: %v", err)
+	}
+	return gen
+}
+
+func rolloutProvisionalCommit(t *testing.T, store ports.ClusterRolloutStore) {
+	gen := provisionalCommit(t, store, "node-a", "node-b")
+	cur := current(t, store)
+	if cur.State() != persistence.RolloutCommitted {
+		t.Fatalf("state = %q, want committed", cur.State())
+	}
+	if cur.IsTerminal() {
+		t.Fatal("a provisional (windowed) commit must NOT be terminal")
+	}
+	if cur.ConfirmDeadline().IsZero() {
+		t.Fatal("a provisional commit must stamp a confirm deadline")
+	}
+	if cur.Generation() != gen {
+		t.Fatalf("generation = %d, want %d", cur.Generation(), gen)
+	}
+}
+
+// rolloutProvisionalBlocksPropose proves the "new proposals refused while a
+// confirm window is pending" rule (design §8.1) falls out of I1: a provisional
+// commit is non-terminal, so Propose still conflicts.
+func rolloutProvisionalBlocksPropose(t *testing.T, store ports.ClusterRolloutStore) {
+	provisionalCommit(t, store, "node-a")
+	_, err := store.Propose(context.Background(), rolloutProposal("node-a"))
+	if !errors.Is(err, shared.ErrAlreadyExists) {
+		t.Fatalf("Propose while confirm window pending: err = %v, want ErrAlreadyExists", err)
+	}
+}
+
+func rolloutConvergeConfirm(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	members := []string{"node-a", "node-b"}
+	gen := provisionalCommit(t, store, members...)
+	for _, m := range members {
+		if err := store.Converge(ctx, gen, m); err != nil {
+			t.Fatalf("Converge(%s): %v", m, err)
+		}
+	}
+	if !current(t, store).CanConfirm() {
+		t.Fatal("CanConfirm false after all members converged")
+	}
+	if err := store.Confirm(ctx, gen, coordToken(3)); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	cur := current(t, store)
+	if cur.State() != persistence.RolloutConfirmed || !cur.IsTerminal() {
+		t.Fatalf("state = %q terminal=%v, want confirmed/true", cur.State(), cur.IsTerminal())
+	}
+}
+
+func rolloutConfirmIncomplete(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a", "node-b")
+	if err := store.Converge(ctx, gen, "node-a"); err != nil { // only 1 of 2
+		t.Fatalf("Converge: %v", err)
+	}
+	if err := store.Confirm(ctx, gen, coordToken(3)); !errors.Is(err, shared.ErrRolloutNotConfirmable) {
+		t.Fatalf("Confirm with incomplete convergence: err = %v, want ErrRolloutNotConfirmable", err)
+	}
+	if cur := current(t, store); cur.State() != persistence.RolloutCommitted {
+		t.Fatalf("state after rejected confirm = %q, want committed", cur.State())
+	}
+}
+
+func rolloutConvergeTwice(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a", "node-b")
+	if err := store.Converge(ctx, gen, "node-a"); err != nil {
+		t.Fatalf("first Converge: %v", err)
+	}
+	if err := store.Converge(ctx, gen, "node-a"); !errors.Is(err, shared.ErrRolloutAckRejected) {
+		t.Fatalf("second Converge from same member: err = %v, want ErrRolloutAckRejected", err)
+	}
+}
+
+func rolloutConvergeStranger(t *testing.T, store ports.ClusterRolloutStore) {
+	gen := provisionalCommit(t, store, "node-a")
+	if err := store.Converge(context.Background(), gen, "stranger"); !errors.Is(err, shared.ErrRolloutAckRejected) {
+		t.Fatalf("Converge from non-epoch member: err = %v, want ErrRolloutAckRejected", err)
+	}
+}
+
+func rolloutConvergeBeforeCommit(t *testing.T, store ports.ClusterRolloutStore) {
+	gen := stageWindow(t, store, 90*time.Second, "node-a") // staged, not committed
+	if err := store.Converge(context.Background(), gen, "node-a"); !errors.Is(err, shared.ErrRolloutNotConfirmable) {
+		t.Fatalf("Converge before commit: err = %v, want ErrRolloutNotConfirmable", err)
+	}
+}
+
+func rolloutConvergeBaseCommit(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := stageAll(t, store, "node-a") // no confirm window
+	if err := store.Commit(ctx, gen, coordToken(1)); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := store.Converge(ctx, gen, "node-a"); !errors.Is(err, shared.ErrRolloutTerminal) {
+		t.Fatalf("Converge on base (final) commit: err = %v, want ErrRolloutTerminal", err)
+	}
+}
+
+func rolloutConfirmStale(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a") // coordVersion stamped at 3
+	if err := store.Converge(ctx, gen, "node-a"); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	if err := store.Confirm(ctx, gen, coordToken(2)); !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("Confirm with stale token: err = %v, want ErrStaleFencingToken", err)
+	}
+}
+
+func rolloutRevert(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a", "node-b") // never all-converged
+	if err := store.Revert(ctx, gen, coordToken(3), "confirm window expired"); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	cur := current(t, store)
+	if cur.State() != persistence.RolloutReverted || !cur.IsTerminal() {
+		t.Fatalf("state = %q terminal=%v, want reverted/true", cur.State(), cur.IsTerminal())
+	}
+	if cur.Reason() != "confirm window expired" {
+		t.Fatalf("reason = %q", cur.Reason())
+	}
+}
+
+func rolloutConfirmOfReverted(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a")
+	if err := store.Revert(ctx, gen, coordToken(3), "x"); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if err := store.Confirm(ctx, gen, coordToken(4)); !errors.Is(err, shared.ErrRolloutTerminal) {
+		t.Fatalf("Confirm of reverted: err = %v, want ErrRolloutTerminal", err)
+	}
+}
+
+func rolloutConfirmIdempotent(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a")
+	if err := store.Converge(ctx, gen, "node-a"); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+	if err := store.Confirm(ctx, gen, coordToken(3)); err != nil {
+		t.Fatalf("first Confirm: %v", err)
+	}
+	if err := store.Confirm(ctx, gen, coordToken(3)); err != nil { // resume after crash
+		t.Fatalf("idempotent re-Confirm: err = %v", err)
+	}
+	if cur := current(t, store); cur.State() != persistence.RolloutConfirmed {
+		t.Fatalf("state = %q, want confirmed", cur.State())
+	}
+}
+
+// rolloutConcurrentConfirmRevert proves the confirm-window terminal decision is
+// atomic: goroutines race Confirm (after all converged) against Revert with the
+// same token; the store settles on exactly ONE direction.
+func rolloutConcurrentConfirmRevert(t *testing.T, store ports.ClusterRolloutStore) {
+	ctx := context.Background()
+	gen := provisionalCommit(t, store, "node-a")
+	if err := store.Converge(ctx, gen, "node-a"); err != nil {
+		t.Fatalf("Converge: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	var confirms, reverts atomic.Int64
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				if err := store.Confirm(ctx, gen, coordToken(3)); err == nil {
+					confirms.Add(1)
+				}
+			} else {
+				if err := store.Revert(ctx, gen, coordToken(3), "race"); err == nil {
+					reverts.Add(1)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if confirms.Load() > 0 && reverts.Load() > 0 {
+		t.Fatalf("both directions succeeded (confirms=%d reverts=%d): decision not atomic",
+			confirms.Load(), reverts.Load())
+	}
+	cur := current(t, store)
+	if !cur.IsTerminal() {
+		t.Fatalf("state after race = %q, want terminal", cur.State())
 	}
 }
 

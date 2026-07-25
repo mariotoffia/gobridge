@@ -136,19 +136,9 @@ func TestNewRollout_DefensiveCopy(t *testing.T) {
 // RolloutState
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestRolloutState_IsTerminal(t *testing.T) {
-	cases := map[persistence.RolloutState]bool{
-		persistence.RolloutProposed:  false,
-		persistence.RolloutStaging:   false,
-		persistence.RolloutCommitted: true,
-		persistence.RolloutAborted:   true,
-	}
-	for s, want := range cases {
-		if s.IsTerminal() != want {
-			t.Errorf("%s.IsTerminal() = %v, want %v", s, s.IsTerminal(), want)
-		}
-	}
-}
+// RolloutState.IsTerminal (inherent-terminality, window-aware Rollout.IsTerminal,
+// and the two new states) is covered by TestRolloutState_IsTerminal_InherentStates
+// in rollout_confirm_test.go.
 
 // ─────────────────────────────────────────────────────────────────────────
 // WithAck (I5: at-most-once, member-in-epoch, not-terminal)

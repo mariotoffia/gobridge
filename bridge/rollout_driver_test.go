@@ -28,11 +28,12 @@ type fakeRolloutHost struct {
 	cfg         *ports.BridgeConfig
 	applied     []*ports.BridgeConfig
 	unbuildable map[int]string // config version -> nack reason
+	unconverged map[int]bool   // config version -> never reaches convergence (confirm window)
 	degraded    string
 }
 
 func newFakeRolloutHost(initial *ports.BridgeConfig) *fakeRolloutHost {
-	return &fakeRolloutHost{cfg: initial, unbuildable: map[int]string{}}
+	return &fakeRolloutHost{cfg: initial, unbuildable: map[int]string{}, unconverged: map[int]bool{}}
 }
 
 func (h *fakeRolloutHost) Config() *ports.BridgeConfig {
@@ -64,6 +65,14 @@ func (h *fakeRolloutHost) MarkDegraded(reason string) {
 }
 
 func (h *fakeRolloutHost) RolloutLogger() *slog.Logger { return nil }
+
+// Converged reports the running config as converged unless the test marked its
+// version unconverged (the confirm-window failure a UC-CR9-style test injects).
+func (h *fakeRolloutHost) Converged(context.Context) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg != nil && !h.unconverged[h.cfg.Version]
+}
 
 var _ ports.RolloutHost = (*fakeRolloutHost)(nil)
 

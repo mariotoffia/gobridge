@@ -27,7 +27,9 @@ type RolloutStatus struct {
 	// Generation is the observed rollout generation; 0 when none exists.
 	Generation uint64
 	// State is the observed rollout state ("proposed" | "staging" | "committed"
-	// | "aborted"), empty when no rollout has ever been proposed.
+	// | "aborted" | "confirmed" | "reverted"), empty when no rollout has ever been
+	// proposed. "committed" with a non-empty Converged/ConfirmPending is a confirm
+	// window in progress (design §8.1).
 	State string
 	// ConfigVersion is the config version the rollout carries.
 	ConfigVersion int
@@ -37,6 +39,11 @@ type RolloutStatus struct {
 	// Acked minus Nacked is exactly who the cohort is waiting for.
 	Acked  []string
 	Nacked []string
+	// Converged lists the members that recorded post-swap convergence during an
+	// active confirm window (design §8.1), sorted. Epoch minus Converged is who the
+	// confirm barrier is waiting for before it can Confirm; the ones still missing
+	// when the window expires are why the cohort reverts.
+	Converged []string
 	// Reason carries the abort reason (or nack aggregation) when present.
 	Reason string
 	// Staged reports whether THIS member has the candidate config its own
@@ -75,6 +82,8 @@ func rolloutStates() []persistence.RolloutState {
 		persistence.RolloutStaging,
 		persistence.RolloutCommitted,
 		persistence.RolloutAborted,
+		persistence.RolloutConfirmed,
+		persistence.RolloutReverted,
 	}
 }
 
@@ -91,14 +100,16 @@ func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged
 		Epoch:         r.MembershipEpoch(),
 		Acked:         sortedKeys(r.Acks()),
 		Nacked:        sortedKeys(r.Nacks()),
+		Converged:     sortedKeys(r.Converged()),
 		Reason:        r.Reason(),
 		Staged:        staged,
 		Applied:       applied,
 	}
 	// Count a terminal outcome exactly once per generation. Done under the same
 	// lock as the snapshot so the counter and the snapshot cannot disagree about
-	// which generation was last resolved.
-	countResolution := r.State().IsTerminal() && o.resolved != r.Generation()
+	// which generation was last resolved. Window-aware: a provisional (windowed)
+	// commit is NOT yet resolved — it counts only at Confirmed/Reverted.
+	countResolution := r.IsTerminal() && o.resolved != r.Generation()
 	if countResolution {
 		o.resolved = r.Generation()
 	}
@@ -118,12 +129,24 @@ func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged
 	o.metrics.Gauge(shared.MetricClusterRolloutAcks, float64(len(r.Acks())))
 	o.metrics.Gauge(shared.MetricClusterRolloutEpoch, float64(len(r.MembershipEpoch())))
 	if countResolution {
-		outcome := "aborted"
-		if r.State() == persistence.RolloutCommitted {
-			outcome = "committed"
-		}
 		o.metrics.Counter(shared.MetricClusterRolloutResolved, 1,
-			shared.Tag{Key: shared.TagKeyOutcome, Value: outcome})
+			shared.Tag{Key: shared.TagKeyOutcome, Value: rolloutOutcome(r.State())})
+	}
+}
+
+// rolloutOutcome maps a terminal rollout state to the resolution counter's
+// outcome tag. Committed is the base-protocol success; Confirmed/Reverted are the
+// confirm-window (design §8.1) terminal outcomes; anything else is an abort.
+func rolloutOutcome(state persistence.RolloutState) string {
+	switch state {
+	case persistence.RolloutCommitted:
+		return "committed"
+	case persistence.RolloutConfirmed:
+		return "confirmed"
+	case persistence.RolloutReverted:
+		return "reverted"
+	default:
+		return "aborted"
 	}
 }
 
