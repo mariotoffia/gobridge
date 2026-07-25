@@ -4,6 +4,7 @@ Status: accepted
 Date: 2026-07-25
 Deciders: GoBridge core
 Supersedes: 0012 (for live-safe deltas only)
+Extended by: 0014 (opt-in confirm window: provisional commit with deadman revert)
 
 ## Context
 
