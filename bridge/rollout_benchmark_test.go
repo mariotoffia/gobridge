@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -98,6 +99,62 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 	applier := &rolloutApplier{host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store, memberID: "node-a", obs: &rolloutObserver{}}
 	// Prime the gate exactly as the first post-commit observation would, so the
 	// loop below measures the STEADY state rather than the one-off adoption.
+	if err := applier.step(ctx); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.step(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRolloutApplierStep_ConfirmWindowSteadyState measures the steady-state
+// per-poll cost of the confirm-window (design §8.1) applier path: a member that has
+// provisionally swapped and converged re-reads the row every poll and re-checks the
+// deadman. It is the confirm-window twin of the base steady-state benchmark, so a
+// regression in the provisional/converge/deadman path is visible, not just the base
+// committed path.
+func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
+	store := memoryrollout.NewStore()
+	// A long window so the rollout stays provisionally-committed for the whole run
+	// (the deadman never fires and no coordinator confirms it here).
+	host := newFakeRolloutHost(soloWindowConfig(0, time.Hour))
+	barrier := newRolloutBarrier(ClusterRolloutConfig{
+		Store: store, Lease: newElectionLeaseStore(), MemberID: "node-a",
+	})
+
+	candidate := soloWindowConfig(1, time.Hour)
+	candidate.Bindings[0].Address = "addr/rolled"
+	digest, ok := configCanonicalBytesDigest(candidate)
+	if !ok {
+		b.Fatal("digest failed")
+	}
+	barrier.stage(digest, candidate, candidate)
+
+	ctx := context.Background()
+	r, err := store.Propose(ctx, persistence.RolloutProposal{
+		ProposerID: "node-a", ConfigDigest: digest, ConfigVersion: 1,
+		Members: []string{"node-a"}, TTL: time.Hour, ConfirmWindow: time.Hour,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := store.Ack(ctx, r.Generation(), "node-a", digest); err != nil {
+		b.Fatal(err)
+	}
+	if err := store.Commit(ctx, r.Generation(), persistence.LeaseToken{Owner: "c", Version: 1}); err != nil {
+		b.Fatal(err) // provisional commit (windowed)
+	}
+
+	applier := &rolloutApplier{
+		host: host, barrier: barrier, store: store, memberID: "node-a",
+		obs: &rolloutObserver{}, clk: clock.System,
+	}
+	// Prime: provisional swap + the one-off Converge, so the loop measures the
+	// converged steady state, not adoption.
 	if err := applier.step(ctx); err != nil {
 		b.Fatal(err)
 	}
