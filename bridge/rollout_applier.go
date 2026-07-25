@@ -162,7 +162,12 @@ func verifyCandidateDigest(raw []byte, expected string) error {
 const maxAdoptAttempts = 3
 
 type rolloutApplier struct {
-	sup      *Supervisor
+	// host is the runtime the applier votes for and swaps; barrier is the shared
+	// proposer/candidate/committed-artifact state. The two were once a single
+	// *Supervisor field; splitting them is what lets bootstrap.App host the same
+	// applier as the Supervisor (design Phase 6).
+	host     ports.RolloutHost
+	barrier  *rolloutBarrier
 	store    ports.ClusterRolloutStore
 	memberID string
 	gate     nodeRolloutGate
@@ -196,12 +201,12 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 	// member whose own config source has not delivered the candidate, which is
 	// otherwise invisible and is the most common reason a rollout hangs.
 	if a.obs != nil {
-		cand, staged := a.sup.rollout.candidate(r.ConfigDigest())
+		cand, staged := a.barrier.candidate(r.ConfigDigest())
 		// "applied" is answered by CONTENT, not by the local gate: after a
 		// restart the gate is empty even though this member is running the
 		// generation, and after a failed swap the gate may be set even though it
 		// is not. Content is the only answer an operator can act on.
-		applied := staged && configContentEqual(a.sup.Config(), cand.frozen)
+		applied := staged && configContentEqual(a.host.Config(), cand.frozen)
 		a.obs.observe(r, a.memberID, staged, applied)
 	}
 	// adoptGen is the generation adopt already handled this step (the active
@@ -269,7 +274,7 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 	if _, nacked := r.Nacks()[a.memberID]; nacked {
 		return nil
 	}
-	cand, staged := a.sup.rollout.candidate(r.ConfigDigest())
+	cand, staged := a.barrier.candidate(r.ConfigDigest())
 	if !staged {
 		// This node's own config source has not delivered the candidate yet.
 		// Staying silent is correct: the coordinator's deadline (F1) bounds the
@@ -281,23 +286,23 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 	if !ok {
 		return a.nack(ctx, r, "candidate config could not be canonicalised for digest verification")
 	}
-	if reason := evaluateProposal(a.sup.Config(), cand.frozen, raw, r.ConfigDigest()); reason != "" {
+	if reason := evaluateProposal(a.host.Config(), cand.frozen, raw, r.ConfigDigest()); reason != "" {
 		return a.nack(ctx, r, reason)
 	}
-	plan, err := a.sup.newBuilder(cand.frozen).Plan(ctx)
+	release, err := a.host.PlanCandidate(ctx, cand.frozen)
 	if err != nil {
 		// A Nack is a PERMANENT, unretryable verdict: the aggregate admits one
 		// vote per member per generation (I5) and the coordinator aborts on the
 		// first one (F2). It must therefore mean "this config is wrong", never
-		// "I was briefly unable to check". Plan opens stores and resolves
+		// "I was briefly unable to check". PlanCandidate opens stores and resolves
 		// credentials, so a throttled store, a flaky credential provider, or —
 		// because ctx is the drive loop's — an ordinary SIGTERM would otherwise
 		// let one restarting member poison every in-flight rollout in the cohort.
 		// Abstain instead and let the deadline (F1) decide; that outcome is
 		// recoverable by re-proposing, a nack is not.
 		if transientBuildFailure(ctx, err) {
-			if a.sup.logger != nil {
-				a.sup.logger.Warn("supervisor: abstaining from the cluster rollout vote; the candidate "+
+			if a.host.RolloutLogger() != nil {
+				a.host.RolloutLogger().Warn("cluster rollout: abstaining from the vote; the candidate "+
 					"build failed for a transient reason and a Nack would permanently abort a "+
 					"recoverable rollout", "generation", r.Generation(), "error", err)
 			}
@@ -305,7 +310,7 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 		}
 		return a.nack(ctx, r, "candidate build failed on this member: "+err.Error())
 	}
-	plan.Close()
+	release()
 
 	// The build digest proves WHAT was built. Every member builds from the
 	// digest-verified candidate, so it equals the candidate digest by
@@ -320,8 +325,8 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 		}
 		return err
 	}
-	if a.sup.logger != nil {
-		a.sup.logger.Info("supervisor: acked coordinated cluster rollout candidate",
+	if a.host.RolloutLogger() != nil {
+		a.host.RolloutLogger().Info("supervisor: acked coordinated cluster rollout candidate",
 			"generation", r.Generation(), "config_version", r.ConfigVersion(), "member", a.memberID)
 	}
 	return nil
@@ -331,8 +336,8 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 // does NOT terminate here — the coordinator observes the nack and aborts (F2),
 // so the decision stays with the single fenced decider.
 func (a *rolloutApplier) nack(ctx context.Context, r persistence.Rollout, reason string) error {
-	if a.sup.logger != nil {
-		a.sup.logger.Error("supervisor: nacking coordinated cluster rollout candidate; the "+
+	if a.host.RolloutLogger() != nil {
+		a.host.RolloutLogger().Error("supervisor: nacking coordinated cluster rollout candidate; the "+
 			"coordinator aborts the rollout and every member keeps its running config",
 			"generation", r.Generation(), "config_version", r.ConfigVersion(), "reason", reason)
 	}
@@ -352,7 +357,7 @@ func (a *rolloutApplier) adopt(ctx context.Context, r persistence.Rollout) error
 	if !a.gate.admits(r.Generation()) {
 		return nil
 	}
-	cand, staged := a.sup.rollout.candidate(r.ConfigDigest())
+	cand, staged := a.barrier.candidate(r.ConfigDigest())
 	if !staged {
 		// Committed, but this node never staged the candidate — it was down when
 		// its config source delivered it, or it joined after the commit. It catches
@@ -380,19 +385,19 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// Restart-safe idempotence without a durable counter: a node that already runs
 	// this generation's content must not rebuild its runtime just because its
 	// in-memory gate was reset by the restart.
-	if configContentEqual(a.sup.Config(), content) {
+	if configContentEqual(a.host.Config(), content) {
 		a.gate.record(gen)
 		return true
 	}
-	if a.sup.logger != nil {
-		a.sup.logger.Info("supervisor: coordinated cluster rollout committed; applying the candidate",
+	if a.host.RolloutLogger() != nil {
+		a.host.RolloutLogger().Info("supervisor: coordinated cluster rollout committed; applying the candidate",
 			"generation", gen, "config_version", version)
 	}
 	if a.attemptGen != gen {
 		a.attemptGen, a.attempts = gen, 0
 	}
 	a.attempts++
-	a.sup.applyBarrierCommitted(ctx, apply)
+	a.host.ApplyCommitted(ctx, apply)
 
 	// Did the swap actually take? applyConfig publishes the new config only on a
 	// path that adopted it (including the admin-paused branch, which records it
@@ -400,7 +405,7 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// content is therefore the honest answer, and it matters: the barrier has
 	// already committed cluster-wide, so a member that silently fails to apply
 	// leaves the mixed-version cohort G2 forbids.
-	if configContentEqual(a.sup.Config(), content) {
+	if configContentEqual(a.host.Config(), content) {
 		a.gate.record(gen)
 		return true
 	}
@@ -410,8 +415,8 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// common causes (a broker refusing a connection, a store briefly unopenable)
 	// are transient, and a retry genuinely converges the cohort.
 	if a.attempts < maxAdoptAttempts {
-		if a.sup.logger != nil {
-			a.sup.logger.Error("supervisor: applying the committed cluster rollout failed; retrying "+
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Error("supervisor: applying the committed cluster rollout failed; retrying "+
 				"(this member runs an OLDER generation than the cohort until it succeeds)",
 				"generation", gen, "attempt", a.attempts, "max_attempts", maxAdoptAttempts)
 		}
@@ -422,13 +427,13 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// the supervisor stays degraded, so an operator sees WHICH member diverged
 	// rather than a cohort that merely looks committed everywhere.
 	a.gate.record(gen)
-	if a.sup.logger != nil {
-		a.sup.logger.Error("supervisor: giving up applying the committed cluster rollout after repeated "+
+	if a.host.RolloutLogger() != nil {
+		a.host.RolloutLogger().Error("supervisor: giving up applying the committed cluster rollout after repeated "+
 			"failures; THIS MEMBER RUNS AN OLDER CONFIG GENERATION THAN THE COHORT. Investigate this "+
 			"node and restart it once the cause is fixed",
 			"generation", gen, "config_version", version, "attempts", a.attempts)
 	}
-	a.sup.markDegraded(fmt.Sprintf("coordinated cluster rollout generation %d committed but could not "+
+	a.host.MarkDegraded(fmt.Sprintf("coordinated cluster rollout generation %d committed but could not "+
 		"be applied on this member after %d attempts; it runs an older config generation than the rest "+
 		"of the cohort", gen, a.attempts))
 	return false
@@ -455,10 +460,10 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 // any production root in Phase 5, so this does not manifest here; it is a Phase-6
 // obligation tracked in the design doc.
 func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uint64) error {
-	if a.sup.rollout.decode == nil || a.sup.rollout.committedStore == nil {
+	if a.barrier.decode == nil || a.barrier.committedStore == nil {
 		return nil
 	}
-	committed, err := a.sup.rollout.committedStore.CommittedConfig(ctx)
+	committed, err := a.barrier.committedStore.CommittedConfig(ctx)
 	if errors.Is(err, shared.ErrNotFound) {
 		return nil
 	}
@@ -475,10 +480,10 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uin
 		// same poll; leave it to adopt's next-poll retry.
 		return nil
 	}
-	cfg, err := a.sup.rollout.decode(committed.ConfigBytes)
+	cfg, err := a.barrier.decode(committed.ConfigBytes)
 	if err != nil {
-		if a.sup.logger != nil {
-			a.sup.logger.Error("supervisor: the durable last-committed rollout artifact could not be "+
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact could not be "+
 				"decoded to reconcile a missed commit; the running config is kept",
 				"generation", committed.Generation, "error", err)
 		}
@@ -487,8 +492,8 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uin
 	// Integrity: the reconstructed config must match the digest the artifact
 	// records, or the bytes are corrupt and must not be built.
 	if raw, ok := configCanonicalBytes(cfg); !ok || candidateConfigDigest(raw) != committed.Digest {
-		if a.sup.logger != nil {
-			a.sup.logger.Error("supervisor: the durable last-committed rollout artifact failed its digest "+
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact failed its digest "+
 				"check on reconcile; the running config is kept", "generation", committed.Generation)
 		}
 		return nil
@@ -504,9 +509,9 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uin
 // an older committed artifact until a peer's adopt (idempotent) writes this
 // generation. It is a no-op when no codec is wired.
 func (a *rolloutApplier) persistCommittedArtifact(ctx context.Context, r persistence.Rollout, cfg *ports.BridgeConfig) {
-	if err := a.sup.rollout.writeCommittedArtifact(ctx, r.Generation(), r.ConfigVersion(), cfg); err != nil {
-		if a.sup.logger != nil {
-			a.sup.logger.Warn("supervisor: recording the durable last-committed rollout artifact failed; "+
+	if err := a.barrier.writeCommittedArtifact(ctx, r.Generation(), r.ConfigVersion(), cfg); err != nil {
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Warn("supervisor: recording the durable last-committed rollout artifact failed; "+
 				"the swap succeeded and this member runs the committed config, but a restart before a peer "+
 				"writes this generation may fall back to an older committed artifact",
 				"generation", r.Generation(), "error", err)
@@ -534,8 +539,8 @@ func (a *rolloutApplier) persistCommittedArtifact(ctx context.Context, r persist
 // applying un-agreed content is the split-brain the whole protocol prevents.
 func (a *rolloutApplier) adoptable(cand stagedCandidate) *ports.BridgeConfig {
 	if cand.source == nil || !configContentEqual(cand.source, cand.frozen) {
-		if a.sup.logger != nil && cand.source != nil {
-			a.sup.logger.Warn("supervisor: the staged candidate's source config changed after it was " +
+		if a.host.RolloutLogger() != nil && cand.source != nil {
+			a.host.RolloutLogger().Warn("supervisor: the staged candidate's source config changed after it was " +
 				"proposed; applying the content the cohort agreed on instead")
 		}
 		return cand.frozen

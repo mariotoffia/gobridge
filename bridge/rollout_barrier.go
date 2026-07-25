@@ -272,15 +272,8 @@ func sortedSet(ids []string) []string {
 // sourceCfg is the ORIGINAL pointer the config manager emitted; it is staged
 // alongside the frozen candidate so the commit-time SwapEvent can echo it back
 // (see stagedCandidate.source).
-func (s *Supervisor) proposeCoordinatedRollout(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
-	b := s.rollout
-	if b == nil {
-		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but this process has no "+
-			"rollout store wired, so the delta cannot be proposed cluster-wide and the live reload is "+
-			"refused (the running config keeps serving). Wire the rollout barrier "+
-			"(bridge.WithClusterRollout) or perform a whole-cohort replacement "+
-			"(docs/runbooks/cluster-config-rollout.md) (attempted_config_version=%d)", newCfg.Version)
-	}
+func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
+	b := d.barrier
 	members := rolloutMembers(oldCfg)
 	if len(members) == 0 {
 		return fmt.Errorf("bridge: cluster.rollout: coordinated is configured but the cohort roster "+

@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
@@ -119,4 +120,46 @@ type ClusterCommittedConfigStore interface {
 	// CommittedConfig returns the cohort's last-committed config artifact, or
 	// ErrNotFound if nothing has been committed or seeded yet.
 	CommittedConfig(ctx context.Context) (persistence.CommittedRolloutConfig, error)
+}
+
+// RolloutHost is the RUNTIME the coordinated cluster-rollout barrier drive acts
+// on. The barrier orchestration (bridge.ClusterRolloutDriver) is runtime-agnostic:
+// it drives through this port, so ONE barrier implementation serves both the
+// bridge.Supervisor and a bespoke composition root (the shipped file-based
+// bootstrap.App) without either duplicating the drive or migrating to the other's
+// swap machinery. It is a port (not a bridge type) precisely because a composition
+// root implements it and injects it into the driver — the same shape as
+// TransportFactory/StoreFactory/CredentialStore.
+//
+// It is the WHOLE of what the drive needs from its host — five operations. The
+// store protocol, the coordinator election, the joiner boot resolution, and the
+// observer are all host-agnostic and live on the driver.
+type RolloutHost interface {
+	// Config returns the running config. It is re-read on every observation so a
+	// whole-cohort roster replacement is seen without a restart, and it MUST be
+	// safe for concurrent reads (health probes and the drive both call it).
+	Config() *BridgeConfig
+
+	// PlanCandidate builds cfg WITHOUT swapping the live runtime — the Ack
+	// build-proof (validate, build stores, assemble options; NO transport
+	// sessions) — and returns a release func the drive calls immediately to
+	// discard it. A non-nil error means the candidate is unbuildable on this host,
+	// which the drive turns into a Nack (unless the failure is transient, in which
+	// case it abstains). release is nil exactly when err is non-nil.
+	PlanCandidate(ctx context.Context, cfg *BridgeConfig) (release func(), err error)
+
+	// ApplyCommitted swaps the live runtime to a committed config. It MUST publish
+	// the new running config on success and restore the previous one on failure:
+	// the drive verifies the swap took by comparing Config() content afterwards,
+	// and retries or marks the member degraded based on that, so a silent failure
+	// here would leave a mixed-version cohort undetected.
+	ApplyCommitted(ctx context.Context, cfg *BridgeConfig)
+
+	// MarkDegraded latches a fatal divergence: a generation the cohort committed
+	// could not be applied on this member after the bounded retries, so it now runs
+	// an OLDER generation than its peers and needs operator attention.
+	MarkDegraded(reason string)
+
+	// RolloutLogger returns the host's logger, or nil.
+	RolloutLogger() *slog.Logger
 }

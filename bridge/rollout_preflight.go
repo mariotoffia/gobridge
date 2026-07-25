@@ -39,6 +39,14 @@ func coordinatedRollout(cfg *ports.BridgeConfig) bool {
 	return cfg.Bridge.Cluster != nil && cfg.Bridge.Cluster.Rollout == rolloutModeCoordinated
 }
 
+// IsCoordinatedRollout reports whether cfg opts into coordinated cluster rollout
+// (clustered deployment AND cluster.rollout: coordinated). A composition root that
+// hosts the barrier itself checks this at boot to decide whether to wire the
+// ClusterRolloutDriver — the exported form of the guard's own gate.
+func IsCoordinatedRollout(cfg *ports.BridgeConfig) bool {
+	return coordinatedRollout(cfg)
+}
+
 // clusterReloadDisposition is what the apply-path cluster guard should do with a
 // reload, once no-op detection has run.
 type clusterReloadDisposition int
@@ -75,6 +83,34 @@ func classifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (clusterReloadDis
 		return clusterReloadRefuse, reason
 	}
 	return clusterReloadCoordinated, ""
+}
+
+// ClusterReloadDisposition is how a composition root that hosts the rollout
+// barrier itself (e.g. the shipped file-based bootstrap.App) must treat a clustered
+// live reload. The Supervisor applies this classification through its own internal
+// guard; a bespoke host consults ClassifyClusterReload and acts on the result.
+type ClusterReloadDisposition int
+
+const (
+	// ClusterReloadProceed: neither side is clustered — a normal single-node reload.
+	ClusterReloadProceed ClusterReloadDisposition = iota
+	// ClusterReloadRefuse: fail closed (ADR 0012) — clustered without coordinated
+	// rollout, or a coordinated delta that is replacement-required (reason set).
+	ClusterReloadRefuse
+	// ClusterReloadCoordinated: a live-safe delta within a coordinated cluster —
+	// route it through the barrier (ClusterRolloutDriver.Propose) instead of
+	// refusing. The host must still verify it actually has a driver wired.
+	ClusterReloadCoordinated
+)
+
+// ClassifyClusterReload decides how a clustered live reload from oldCfg to newCfg
+// must be handled — the exact classification the Supervisor's apply-path guard
+// uses, exported so a composition root that hosts the barrier itself can make the
+// same decision. The reason is a non-empty operator-facing string only for a
+// refused replacement-required delta.
+func ClassifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (ClusterReloadDisposition, string) {
+	disp, reason := classifyClusterReload(oldCfg, newCfg)
+	return ClusterReloadDisposition(disp), reason
 }
 
 // classifyRolloutDelta decides whether the delta from oldCfg to newCfg is

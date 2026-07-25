@@ -60,7 +60,7 @@ func TestRolloutApplier_AbstainsWhenTheBuildFailsTransiently(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	applier := &rolloutApplier{sup: s, store: store, memberID: "node-a"}
+	applier := &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: "node-a"}
 	require.NoError(t, applier.step(context.Background()))
 
 	got, err := store.Current(context.Background())
@@ -172,7 +172,7 @@ func TestRolloutApplier_RetriesAFailedAdopt(t *testing.T) {
 	require.NoError(t, err)
 	commitAs(t, store, r.Generation(), "node-a")
 
-	applier := &rolloutApplier{sup: s, store: store, memberID: "node-a"}
+	applier := &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: "node-a"}
 
 	// First attempt: the swap fails and the old config is recovered.
 	require.NoError(t, applier.step(context.Background()))
@@ -213,7 +213,7 @@ func TestRolloutApplier_GivesUpAfterRepeatedAdoptFailures(t *testing.T) {
 	require.NoError(t, err)
 	commitAs(t, store, r.Generation(), "node-a")
 
-	applier := &rolloutApplier{sup: s, store: store, memberID: "node-a", obs: &rolloutObserver{}}
+	applier := &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: "node-a", obs: &rolloutObserver{}}
 	for range maxAdoptAttempts + 3 {
 		require.NoError(t, applier.step(context.Background()))
 	}

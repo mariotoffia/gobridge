@@ -95,7 +95,7 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	applier := &rolloutApplier{sup: sup, store: store, memberID: "node-a", obs: &rolloutObserver{}}
+	applier := &rolloutApplier{host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store, memberID: "node-a", obs: &rolloutObserver{}}
 	// Prime the gate exactly as the first post-commit observation would, so the
 	// loop below measures the STEADY state rather than the one-off adoption.
 	if err := applier.step(ctx); err != nil {

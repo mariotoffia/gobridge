@@ -136,6 +136,17 @@ type App struct {
 	// because Stop reads it after releasing a.mu (like the other refs).
 	registryRef atomic.Pointer[factoryRegistry]
 
+	// Coordinated cluster rollout (design cluster-config-rollout-protocol.md
+	// Phase 6). rolloutConfig carries the coordination stores + cadence (injected
+	// via WithClusterRolloutStores for tests/custom stores, or built from the
+	// DynamoDB client in Start). rolloutDriver is this App's barrier host, built in
+	// Start ONLY when the boot config opts into cluster.rollout: coordinated; nil
+	// otherwise, so a deployment that did not opt in keeps the ADR 0012 refusal.
+	// stopRolloutDrive stops the drive goroutine on Stop.
+	rolloutConfig    bridge.ClusterRolloutConfig
+	rolloutDriver    *bridge.ClusterRolloutDriver
+	stopRolloutDrive func()
+
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
@@ -303,6 +314,29 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.logicalRef.Set(logicalCfg)
 
+	// Coordinated cluster rollout boot resolution (design Phase 6). ONLY a
+	// coordinated boot config wires the barrier host; every other deployment boots
+	// exactly as before. The joiner resolves which config this member actually boots
+	// on — the durable last-committed config when the boot config is a candidate the
+	// barrier has not committed (a restart after an abort, or mid-rollout), else the
+	// boot config unchanged — so a restarted member never runs a config no peer runs.
+	bootCfg := logicalCfg
+	if bridge.IsCoordinatedRollout(logicalCfg) {
+		if err := a.buildRolloutDriver(ctx); err != nil {
+			return err
+		}
+		if a.rolloutDriver == nil {
+			return fmt.Errorf("bootstrap: cluster.rollout: coordinated requires a stable member_id " +
+				"(bootstrap member_id, which must appear in bridge.cluster.members) and a rollout store; " +
+				"the barrier is not wired, so a coordinated deployment cannot start. Refusing to start")
+		}
+		resolved, rerr := a.rolloutDriver.ResolveBoot(ctx, logicalCfg)
+		if rerr != nil {
+			return rerr
+		}
+		bootCfg = resolved
+	}
+
 	// The file-based profile configures the admin/monitor listeners from
 	// bootstrap env/SSM (a.cfg + apiKeysRef) and expects TLS to terminate at the
 	// load balancer (ALB), so the bridge config `http:` block is not honored.
@@ -311,14 +345,14 @@ func (a *App) Start(ctx context.Context) error {
 	// cannot satisfy, so fail closed rather than silently serve the admin API in
 	// plaintext; a bare addrs/keys block is warned and ignored (Chunk 16
 	// Finding 2).
-	if err := checkIgnoredHTTPBlock(a.logger, logicalCfg); err != nil {
+	if err := checkIgnoredHTTPBlock(a.logger, bootCfg); err != nil {
 		return err
 	}
 
-	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
+	if _, err := a.applyLogicalIfChanged(ctx, bootCfg, true); err != nil {
 		return err
 	}
-	a.manager.NotifyApplyResult(logicalCfg, nil)
+	a.reconcileBootApplyResult(logicalCfg, bootCfg)
 
 	// Every node starts the transport, admin, and monitor servers regardless
 	// of NodeRole (workers still expose the admin listener today — see
@@ -422,6 +456,14 @@ func (a *App) Start(ctx context.Context) error {
 	// starting it during the pre-rootCtx initial apply, so start it here.
 	a.startConvergenceWatch(watchCtx, a.runtimeRef.Get(), a.appliedRef.Get())
 
+	// Start the coordinated cluster rollout drive (design Phase 6): one goroutine
+	// per member running the applier every tick and the coordinator half while this
+	// member holds the lease. nil when no barrier is wired or the boot config is not
+	// coordinated, so this is a no-op for every non-coordinated deployment.
+	if a.rolloutDriver != nil {
+		a.stopRolloutDrive = a.rolloutDriver.Start(watchCtx, a.clk, a.metricsExporter)
+	}
+
 	a.watchWg.Go(func() {
 		a.watchLoop(watchCtx, watchCh)
 	})
@@ -517,6 +559,14 @@ func (a *App) Stop(ctx context.Context) error {
 	// Wait for watchLoop goroutine to finish before tearing down resources
 	// it may still be using (e.g. mid-applyLogicalConfig).
 	a.watchWg.Wait()
+
+	// Stop the coordinated cluster rollout drive before tearing down the runtime it
+	// swaps: this waits for its goroutine to exit and resigns the coordinator lease
+	// so a successor takes over immediately instead of waiting out the lease TTL.
+	if a.stopRolloutDrive != nil {
+		a.stopRolloutDrive()
+		a.stopRolloutDrive = nil
+	}
 
 	manager := a.manager
 	httpServer := a.httpServer
@@ -696,12 +746,24 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			a.mu.Lock()
 			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
 			a.mu.Unlock()
-			a.manager.NotifyApplyResult(logicalCfg, err)
 			switch {
+			case errors.Is(err, ports.ErrApplyInFlight):
+				// A coordinated live-safe delta was DEFERRED to the rollout barrier:
+				// committed-not-yet-running, not a failure. Do NOT report it to the
+				// manager — its contract forbids ErrApplyInFlight there — so it does not
+				// latch a spurious apply error; the barrier's AdoptRunning reconciles the
+				// manager (desired == running) when the cohort commits. Desired stays v_new
+				// and running stays v_old, so ReconfigurePending correctly reads pending.
+				a.logger.Info("bootstrap: config reload deferred to the coordinated cluster rollout "+
+					"barrier; this node applies it when the cohort commits", "config_version", logicalCfg.Version)
 			case err != nil:
+				a.manager.NotifyApplyResult(logicalCfg, err)
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
 			case skipped:
+				a.manager.NotifyApplyResult(logicalCfg, nil)
 				a.logger.Debug("bootstrap: config reload matches the running config (already applied in-band); skipping redundant runtime swap")
+			default:
+				a.manager.NotifyApplyResult(logicalCfg, nil)
 			}
 		}
 	}
@@ -725,32 +787,24 @@ type runtimePlan struct {
 	runtime  *goruntime.Runtime
 }
 
-func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
-	// Fail closed on an uncoordinated clustered live reload (finding H8). A
-	// per-process reload has no cluster-wide version barrier or coordinated
-	// rollback, so rolling a new config into (or out of) a clustered cohort would
-	// leave members split across versions with no all-member readiness gate.
-	// Refuse the whole class here — BEFORE any Plan/build/resource creation or
-	// stop — and require an externally coordinated whole-cohort replacement
-	// (docs/runbooks/cluster-config-rollout.md). Returning an error routes
-	// through the EXISTING reload-failure path: watchLoop keeps the last-good
-	// runtime, and applyCommittedConfig surfaces committed_not_applied.
+func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig, barrierCommitted bool) error {
+	// The cluster reload seam (design cluster-config-rollout-protocol.md §6). A
+	// per-process live reload of a clustered deployment has no cluster-wide version
+	// barrier or coordinated rollback, so by default it is refused (ADR 0012): a
+	// rolling reload would split the cohort across config versions. When the
+	// deployment opts into cluster.rollout: coordinated AND this App has the barrier
+	// wired, a live-safe delta is instead PROPOSED to the barrier and DEFERRED here
+	// (clusterReloadSeam) — the local swap happens later, driven by the barrier's
+	// applier once the cohort commits, which re-enters with barrierCommitted=true to
+	// SKIP the seam and perform the actual swap.
 	//
-	// oldApplied == nil means this is the INITIAL apply (a fresh boot into a
-	// clustered config is legitimate), not a live reload, so it is exempt.
-	// bridge.IsClusteredDeployment is the SHARED predicate: guard when EITHER the
-	// applied OR the proposed config is clustered. A genuine no-op re-emit never
-	// reaches here — applyLogicalIfChanged short-circuits it on the content
-	// fingerprint before calling applyLogicalConfig, so no-op reloads stay
-	// accepted.
-	if oldApplied := a.appliedRef.Get(); oldApplied != nil &&
-		(bridge.IsClusteredDeployment(oldApplied) || bridge.IsClusteredDeployment(logical)) {
-		return fmt.Errorf("bootstrap: refusing live reload of a clustered deployment: a per-process " +
-			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload " +
-			"would split the cohort across config versions. Externally coordinate a whole-cohort " +
-			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, " +
-			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); " +
-			"see docs/runbooks/cluster-config-rollout.md")
+	// The initial apply (oldApplied == nil) and a genuine no-op re-emit never reach
+	// the seam: the seam requires an applied config, and applyLogicalIfChanged
+	// short-circuits a no-op on the content fingerprint before calling this.
+	if !barrierCommitted {
+		if handled, err := a.clusterReloadSeam(ctx, logical); handled {
+			return err
+		}
 	}
 
 	// Apply bridge.log_level first so debug logging takes effect immediately
@@ -1011,6 +1065,25 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 			status.Reason = "desired configuration is not running"
 		}
 	}
+	// Surface the coordinated cluster rollout barrier (design §9) so an operator
+	// reading deep health during a rollout sees WHO the cohort is waiting for
+	// instead of a bare "desired configuration is not running". Omitted entirely
+	// when no barrier runs.
+	if a.rolloutDriver != nil {
+		if r, ok := a.rolloutDriver.Status(); ok {
+			status.Rollout = &httpapi.ClusterRolloutHealth{
+				MemberID:        r.MemberID,
+				Generation:      r.Generation,
+				State:           r.State,
+				ConfigVersion:   r.ConfigVersion,
+				Epoch:           r.Epoch,
+				Acked:           r.Acked,
+				Nacked:          r.Nacked,
+				Reason:          r.Reason,
+				CandidateStaged: r.Staged,
+			}
+		}
+	}
 	return status
 }
 
@@ -1110,7 +1183,7 @@ func (a *App) applyLogicalIfChanged(ctx context.Context, logical *ports.BridgeCo
 		}
 		return true, nil
 	}
-	if err := a.applyLogicalConfig(ctx, logical); err != nil {
+	if err := a.applyLogicalConfig(ctx, logical, false); err != nil {
 		return false, err
 	}
 	if fp != "" {

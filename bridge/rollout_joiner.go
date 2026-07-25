@@ -42,18 +42,18 @@ import (
 // aborted/undecided boot config) whenever the deployment is not coordinated, no
 // barrier is wired, or the committed-artifact codec is not wired — so a
 // deployment that has not opted into the durable artifact is unaffected.
-func (s *Supervisor) resolveCoordinatedBoot(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
-	if s.rollout == nil || !coordinatedRollout(cfg) ||
-		s.rollout.decode == nil || s.rollout.encode == nil || s.rollout.committedStore == nil {
-		if err := s.checkCoordinatedRolloutPreflight(ctx, cfg); err != nil {
+func (d *ClusterRolloutDriver) ResolveBoot(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+	if d.barrier == nil || !coordinatedRollout(cfg) ||
+		d.barrier.decode == nil || d.barrier.encode == nil || d.barrier.committedStore == nil {
+		if err := d.checkCoordinatedRolloutPreflight(ctx, cfg); err != nil {
 			return nil, err
 		}
 		return cfg, nil
 	}
-	if err := s.checkRolloutMembership(cfg); err != nil {
+	if err := d.checkRolloutMembership(cfg); err != nil {
 		return nil, err
 	}
-	return s.resolveBootFromCommittedArtifact(ctx, cfg)
+	return d.resolveBootFromCommittedArtifact(ctx, cfg)
 }
 
 // resolveBootFromCommittedArtifact is the committed-artifact boot resolution (see
@@ -61,13 +61,13 @@ func (s *Supervisor) resolveCoordinatedBoot(ctx context.Context, cfg *ports.Brid
 // config unchanged when it IS the committed one or a whole-cohort replacement,
 // and otherwise substitutes the durable committed config so the member never runs
 // a config the barrier has not committed (G2).
-func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
+func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	bootDigest, ok := configCanonicalBytesDigest(cfg)
 	if !ok {
 		return nil, fmt.Errorf("bridge: cannot compute the boot config digest to check it against the " +
 			"cluster rollout committed artifact; refusing to start")
 	}
-	committed, err := s.rollout.committedStore.CommittedConfig(ctx)
+	committed, err := d.barrier.committedStore.CommittedConfig(ctx)
 	if errors.Is(err, shared.ErrNotFound) {
 		// No committed artifact yet: no barrier rollout has ever committed, so there
 		// is no cohort-committed config to recover to. Do NOT seed off `current` —
@@ -77,7 +77,7 @@ func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *
 		// conservative joiner rule (refuse an aborted/undecided boot config, boot on
 		// current otherwise) until the first commit establishes the artifact. (An
 		// explicit deploy-time seed is a Phase-6 composition concern.)
-		if jerr := s.checkRolloutJoinerRule(ctx, cfg); jerr != nil {
+		if jerr := d.checkRolloutJoinerRule(ctx, cfg); jerr != nil {
 			return nil, jerr
 		}
 		return cfg, nil
@@ -93,7 +93,7 @@ func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *
 	// The boot config differs from the committed artifact. Reconstruct the
 	// committed config; fail closed if it cannot be rebuilt — booting on the wrong
 	// config is the split-brain the whole protocol prevents.
-	committedCfg, err := s.rollout.decode(committed.ConfigBytes)
+	committedCfg, err := d.barrier.decode(committed.ConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
 			"(generation=%d config_version=%d) could not be decoded, so this node cannot recover the "+
@@ -108,7 +108,7 @@ func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *
 			"(generation=%d) failed its digest check after decoding, so its bytes are not the config the "+
 			"cohort committed; refusing to start", committed.Generation)
 	}
-	s.stageBootConfig(cfg, bootDigest)
+	d.stageBootConfig(cfg, bootDigest)
 	// A replacement-required delta cannot roll through the barrier. Boot on the
 	// new config ONLY when it is strictly NEWER than the committed artifact — a
 	// forward whole-cohort replacement. A same-or-older replacement-delta is a
@@ -133,14 +133,14 @@ func (s *Supervisor) resolveBootFromCommittedArtifact(ctx context.Context, cfg *
 // unaffected and returns nil. It runs before anything is built, so a
 // misconfigured or unsafe boot fails loudly at startup rather than at the first
 // live reload — which is to say, during a change, at night.
-func (s *Supervisor) checkCoordinatedRolloutPreflight(ctx context.Context, cfg *ports.BridgeConfig) error {
-	if s.rollout == nil || !coordinatedRollout(cfg) {
+func (d *ClusterRolloutDriver) checkCoordinatedRolloutPreflight(ctx context.Context, cfg *ports.BridgeConfig) error {
+	if d.barrier == nil || !coordinatedRollout(cfg) {
 		return nil
 	}
-	if err := s.checkRolloutMembership(cfg); err != nil {
+	if err := d.checkRolloutMembership(cfg); err != nil {
 		return err
 	}
-	return s.checkRolloutJoinerRule(ctx, cfg)
+	return d.checkRolloutJoinerRule(ctx, cfg)
 }
 
 // checkRolloutMembership requires this node's barrier member id to appear in the
@@ -152,7 +152,7 @@ func (s *Supervisor) checkCoordinatedRolloutPreflight(ctx context.Context, cfg *
 // deadline-abort while blocking every other proposal for the whole TTL
 // (invariant I1 permits one active rollout). Catching it at boot turns a 3am
 // discovery into a startup failure.
-func (s *Supervisor) checkRolloutMembership(cfg *ports.BridgeConfig) error {
+func (d *ClusterRolloutDriver) checkRolloutMembership(cfg *ports.BridgeConfig) error {
 	members := rolloutMembers(cfg)
 	if len(members) == 0 {
 		return fmt.Errorf("bridge: cluster.rollout: coordinated requires a non-empty "+
@@ -160,12 +160,12 @@ func (s *Supervisor) checkRolloutMembership(cfg *ports.BridgeConfig) error {
 			"and counts acknowledgements against, and an empty roster would let the barrier commit "+
 			"with ZERO acknowledgements. Refusing to start (config_version=%d)", cfg.Version)
 	}
-	if !slices.Contains(members, s.rollout.memberID) {
+	if !slices.Contains(members, d.barrier.memberID) {
 		return fmt.Errorf("bridge: this node's rollout member id %q does not appear in the cohort "+
 			"roster bridge.cluster.members %v, so it could never acknowledge a rollout and every "+
 			"change it proposes would deadline-abort while blocking the cohort's next change for the "+
 			"whole rollout TTL. Align bridge.WithClusterRollout's MemberID with the roster. Refusing "+
-			"to start (config_version=%d)", s.rollout.memberID, members, cfg.Version)
+			"to start (config_version=%d)", d.barrier.memberID, members, cfg.Version)
 	}
 	return nil
 }
@@ -176,8 +176,8 @@ func (s *Supervisor) checkRolloutMembership(cfg *ports.BridgeConfig) error {
 // cluster.rollout: coordinated (a member cannot participate in the barrier
 // without it), so an unreadable store means this node cannot tell a committed
 // config from a rejected one — and booting on the wrong one splits the cohort.
-func (s *Supervisor) checkRolloutJoinerRule(ctx context.Context, cfg *ports.BridgeConfig) error {
-	r, err := s.rollout.store.Current(ctx)
+func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *ports.BridgeConfig) error {
+	r, err := d.barrier.store.Current(ctx)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			return nil // no rollout has ever been proposed: nothing has been rejected
@@ -198,7 +198,7 @@ func (s *Supervisor) checkRolloutJoinerRule(ctx context.Context, cfg *ports.Brid
 		// says nothing about it. An in-flight rollout for a DIFFERENT candidate
 		// is the normal case for a member restarting mid-rollout: it boots the
 		// old committed config and votes on the candidate through the applier.
-		s.stageBootConfig(cfg, digest)
+		d.stageBootConfig(cfg, digest)
 		return nil
 	}
 	switch r.State() {
@@ -235,12 +235,12 @@ func (s *Supervisor) checkRolloutJoinerRule(ctx context.Context, cfg *ports.Brid
 // Staging is safe here for the same reason it is safe in the proposer: the
 // content came through this node's own validated config-source load path, and
 // the applier still verifies the digest and classifies the delta before voting.
-func (s *Supervisor) stageBootConfig(cfg *ports.BridgeConfig, digest string) {
+func (d *ClusterRolloutDriver) stageBootConfig(cfg *ports.BridgeConfig, digest string) {
 	frozen, err := cloneConfigForBuild(cfg)
 	if err != nil {
 		return // unfreezable config; the boot itself will fail on it shortly
 	}
-	s.rollout.stage(digest, frozen, cfg)
+	d.barrier.stage(digest, frozen, cfg)
 }
 
 // configCanonicalBytesDigest is the candidate digest of cfg, or ok=false when

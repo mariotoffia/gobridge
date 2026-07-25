@@ -84,7 +84,7 @@ func TestApplyLogicalConfig_DynamoDBHATamperFailsBeforeRuntimePlan(t *testing.T)
 	cfg.Stores.Lease.Config = &awsstore.DynamoDBConfig{TableName: "tampered-leases"}
 	app := NewApp(bootstrap)
 
-	err := app.applyLogicalConfig(t.Context(), cfg)
+	err := app.applyLogicalConfig(t.Context(), cfg, false)
 	require.ErrorContains(t, err, "stores.lease")
 	require.Nil(t, app.runtimeRef.Get(), "profile guard must reject before runtime Commit")
 	require.Nil(t, app.registryRef.Load(), "profile guard must reject before factory/resource plan installation")

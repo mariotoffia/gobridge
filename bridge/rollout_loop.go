@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -34,79 +33,6 @@ const (
 	// side effect (§6, firstSideEffectAllowed).
 	defaultCoordLeaseTTL = 30 * time.Second
 )
-
-// startRolloutDrive launches the barrier drive for a coordinated deployment and
-// returns a function that stops it and waits for the goroutine to exit. It
-// returns nil when the barrier is not wired or the deployment is not coordinated
-// — the drive is opt-in exactly like the barrier itself.
-func (s *Supervisor) startRolloutDrive(ctx context.Context) func() {
-	if s.rollout == nil || !coordinatedRollout(s.Config()) {
-		return nil
-	}
-	obs := &rolloutObserver{metrics: s.metrics}
-	s.mu.Lock()
-	s.rolloutObs = obs
-	s.mu.Unlock()
-
-	applier := &rolloutApplier{sup: s, store: s.rollout.store, memberID: s.rollout.memberID, obs: obs}
-	coord := newRolloutCoordinator(rolloutCoordinatorConfig{
-		Store: s.rollout.store,
-		Lease: s.rollout.lease,
-		// The coordinator's live membership and the proposer's frozen epoch MUST
-		// come from the same source or decideRollout reads a membership change
-		// (F6) on every rollout. Both read bridge.cluster.members off the applied
-		// config; Config() is re-read per observation so a whole-cohort roster
-		// replacement is seen without a restart.
-		Membership: func() []string { return rolloutMembers(s.Config()) },
-		Clock:      s.clk,
-		MemberID:   s.rollout.memberID,
-		LeaseTTL:   s.rollout.leaseTTL,
-		Logger:     s.logger,
-	})
-
-	loopCtx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.driveRollout(loopCtx, applier, coord)
-	}()
-	return func() {
-		cancel()
-		wg.Wait()
-	}
-}
-
-// driveRollout is the drive loop. It never returns an error: every failure is a
-// store outage (F9) or a lost election, both of which are retried on the next
-// tick while the running config keeps serving.
-func (s *Supervisor) driveRollout(ctx context.Context, applier *rolloutApplier, coord *rolloutCoordinator) {
-	ticker := s.clk.NewTicker(s.rollout.pollInterval)
-	defer ticker.Stop()
-	// Release the coordinator lease on the way out so a successor does not wait
-	// out the full TTL after an orderly shutdown (F3 is the crash path; an
-	// orderly stop should not pay it). Uses a context detached from the
-	// cancelled loop ctx, which is why it is bounded by the lease TTL.
-	defer coord.resign(context.WithoutCancel(ctx))
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C():
-			if err := applier.step(ctx); err != nil && s.logger != nil {
-				// F9: the rollout resolves (or deadline-aborts) when the store
-				// returns; nothing flipped, and this member keeps serving.
-				s.logger.Warn("supervisor: cluster rollout applier observation failed; retrying",
-					"error", err)
-			}
-			if err := coord.tick(ctx); err != nil && s.logger != nil {
-				s.logger.Warn("supervisor: cluster rollout coordinator observation failed; retrying",
-					"error", err)
-			}
-		}
-	}
-}
 
 // tick performs one coordinator cycle: hold or win the coordinator lease, then
 // take one fenced observation under it.

@@ -47,7 +47,7 @@ func newApplierFixture(t *testing.T, memberID string) *applierFixture {
 	return &applierFixture{
 		sup:     s,
 		store:   store,
-		applier: &rolloutApplier{sup: s, store: store, memberID: memberID},
+		applier: &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: memberID},
 		changes: changes,
 		swaps:   swaps,
 	}
@@ -270,7 +270,7 @@ func TestRolloutApplier_AdoptIsRestartSafeWithoutADurableGate(t *testing.T) {
 
 	// The restart: a brand-new applier with an empty in-memory gate, against the
 	// same durable store and the same running config.
-	restarted := &rolloutApplier{sup: f.sup, store: f.store, memberID: "node-a"}
+	restarted := &rolloutApplier{host: supervisorRolloutHost{f.sup}, barrier: f.sup.rollout, store: f.store, memberID: "node-a"}
 	require.NoError(t, restarted.step(context.Background()))
 
 	assert.Same(t, appliedRt, f.sup.Runtime(),
@@ -317,7 +317,8 @@ func TestRolloutApplier_NoRolloutIsANoOp(t *testing.T) {
 func TestRolloutApplier_StoreOutageIsReported(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
 	a := &rolloutApplier{
-		sup:      f.sup,
+		host:     supervisorRolloutHost{f.sup},
+		barrier:  f.sup.rollout,
 		store:    &failingRolloutStore{err: errors.New("dynamodb unavailable")},
 		memberID: "node-a",
 	}

@@ -176,7 +176,7 @@ func TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload(t *testing.T) {
 	}
 	app.mu.Lock()
 	app.logicalRef.Set(good)
-	err := app.applyLogicalConfig(t.Context(), good)
+	err := app.applyLogicalConfig(t.Context(), good, false)
 	app.mu.Unlock()
 	require.NoError(t, err)
 
@@ -196,7 +196,7 @@ func TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload(t *testing.T) {
 	}
 	app.mu.Lock()
 	app.logicalRef.Set(rejected)
-	err = app.applyLogicalConfig(t.Context(), rejected)
+	err = app.applyLogicalConfig(t.Context(), rejected, false)
 	app.mu.Unlock()
 	require.Error(t, err, "config with a broken route must be rejected")
 
@@ -398,7 +398,7 @@ func TestClusteredReload(t *testing.T) {
 		app.mu.Lock()
 		defer app.mu.Unlock()
 		app.logicalRef.Set(cfg)
-		return app.applyLogicalConfig(t.Context(), cfg)
+		return app.applyLogicalConfig(t.Context(), cfg, false)
 	}
 
 	t.Run("proposed clustered deployment refuses a live reload", func(t *testing.T) {

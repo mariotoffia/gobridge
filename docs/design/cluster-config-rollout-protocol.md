@@ -533,9 +533,11 @@ reference is acked by every member, committed, and then fails every member's swa
 (G2 still holds, since all members fail identically and recover the old config,
 but the change costs a cohort-wide failed swap rather than an abort).
 
-`WithClusterRollout` is wired by no composition root, so shipped behavior is
-unchanged — the file-based AWS root refuses clustered live reload per ADR 0012.
-Wiring it is Phase 6's ship step, gated on Phase 5.
+`WithClusterRollout` is wired into the shipped file-based AWS root (`bootstrap.App`)
+as of Phase 6 (§11) via the runtime-agnostic `bridge.RolloutHost` /
+`bridge.ClusterRolloutDriver` seam, since the App builds on `bridge.NewBuilder`
+rather than the Supervisor. A coordinated cohort therefore rolls live-safe deltas;
+a non-coordinated one keeps the ADR 0012 refusal.
 
 ### Phase 5 — Cluster proof (§10 long-running)
 
@@ -591,14 +593,21 @@ Wiring it is Phase 6's ship step, gated on Phase 5.
 - Done: suite green; every barrier is a store row or stdout token, no
   sleeps.
 
-### Phase 6 — Ship (§12)
+### Phase 6 — Ship (§12) — ✅ IMPLEMENTED
 
-- Runbook "coordinated mode" chapter; promote §12 verbatim to
-  `docs/adr/0013`; flip CLUSTER-3 status in `PROD_READY_ISSUES.md`.
-- The runbook must carry the operator-facing consequences of the §8
-  replacement-required classes — notably that changing
-  `bridge.cluster.endpoints` or `bridge.cluster.rollout` keeps ADR 0012's
-  whole-cohort procedure even in a coordinated cohort.
+- ✅ `WithClusterRollout` wired into the shipped file-based root `bootstrap.App`
+  via the runtime-agnostic `bridge.RolloutHost` / `bridge.ClusterRolloutDriver`
+  seam (the App uses `bridge.NewBuilder`, not the Supervisor, so the barrier was
+  extracted to host on either). Composition obligations met: boot-time joiner
+  resolution and the `config.Manager.AdoptRunning` reconcile after a barrier swap.
+  Coverage: `bootstrap/rollout_test.go` (component) + `rollout_integration_test.go`
+  (real DynamoDB Local).
+- ✅ Runbook "coordinated mode" chapter carries the operator-facing consequences of
+  the §8 replacement-required classes — notably that changing
+  `bridge.cluster.endpoints`, `bridge.cluster.members`, or `bridge.cluster.rollout`
+  keeps ADR 0012's whole-cohort procedure even in a coordinated cohort.
+- ✅ §12 promoted verbatim to `docs/adr/0013`; ADR 0012 gains "Superseded by 0013";
+  CLUSTER-3 flipped to RESOLVED in `PROD_READY_ISSUES.md`.
 
 ### Phase 7 — Confirm window (§8.1; optional, separate go/no-go)
 

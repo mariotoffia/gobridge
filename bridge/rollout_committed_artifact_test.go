@@ -78,7 +78,7 @@ func newApplierFixtureCodec(t *testing.T, memberID string, codec *configCodecFak
 	return &applierFixture{
 		sup:     s,
 		store:   store,
-		applier: &rolloutApplier{sup: s, store: store, memberID: memberID},
+		applier: &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: memberID},
 		changes: changes,
 		swaps:   swaps,
 	}

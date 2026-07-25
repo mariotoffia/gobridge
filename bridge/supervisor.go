@@ -105,7 +105,7 @@ type Supervisor struct {
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
 	rollout             *rolloutBarrier
-	rolloutObs          *rolloutObserver
+	rolloutDriver       *ClusterRolloutDriver
 	credStore           ports.CredentialStore
 	pushCredStore       ports.PushCredentialStore
 	pollCredStore       ports.PullCredentialStore
@@ -346,14 +346,28 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 // bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
 // and the long-running multi-process UC-CR proofs (design §10 / Phase 5).
 //
-// It is still opt-in and NOT wired by any production composition root — that is
-// Phase 6's ship step (see the design doc), which also carries the composition
-// obligations noted there (an explicit deploy-time artifact seed, and re-syncing
-// the config manager's fingerprint after a barrier-driven swap). Until Phase 6, a
-// production clustered deployment keeps the ADR 0012 whole-cohort replacement
-// procedure.
+// It is opt-in. The Supervisor is one RolloutHost; the shipped file-based
+// bootstrap.App is the other (design Phase 6), both driving the same barrier
+// through a bridge.ClusterRolloutDriver. A deployment that does not wire it keeps
+// the ADR 0012 whole-cohort replacement procedure.
+//
+// Wiring stores the barrier as s.rollout (kept reachable for in-package tests) and
+// builds the driver eagerly with the Supervisor as its host, so boot resolution
+// and proposals work before Run; the drive's clock and metrics are supplied later,
+// at Run, when they are finalised.
 func WithClusterRollout(cfg ClusterRolloutConfig) SupervisorOption {
-	return func(s *Supervisor) { s.rollout = newRolloutBarrier(cfg) }
+	return func(s *Supervisor) {
+		// Assign both fields together, unconditionally, so s.rolloutDriver == nil
+		// stays EXACTLY equivalent to s.rollout == nil — the fail-closed invariant
+		// every delegator relies on. A repeated WithClusterRollout whose later call
+		// is half-wired must clear a previously-built driver, not leave it stale.
+		s.rollout = newRolloutBarrier(cfg)
+		if s.rollout == nil {
+			s.rolloutDriver = nil
+			return
+		}
+		s.rolloutDriver = newRolloutDriver(supervisorRolloutHost{s}, s.rollout)
+	}
 }
 
 // NewSupervisor creates a Supervisor with SwapAuto mode and

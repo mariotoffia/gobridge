@@ -139,13 +139,10 @@ func (o *rolloutObserver) status() RolloutStatus {
 // safe for concurrent use and never blocks on a store call — health probes read
 // the last observation, they do not trigger a new one.
 func (s *Supervisor) RolloutStatus() (RolloutStatus, bool) {
-	s.mu.RLock()
-	obs := s.rolloutObs
-	s.mu.RUnlock()
-	if obs == nil {
+	if s.rolloutDriver == nil {
 		return RolloutStatus{}, false
 	}
-	return obs.status(), true
+	return s.rolloutDriver.Status()
 }
 
 // sortedKeys renders a vote map as the sorted member list health output and
