@@ -4,12 +4,21 @@ How to version, tag, and publish the multi-module workspace so external consumer
 can use `go get` and `go install`. Development-side rules live in
 [DEVELOPMENT.md — Module versioning & references](DEVELOPMENT.md#module-versioning--references).
 
-> **Current state (2026-07-16): this policy is not yet applied publicly.**
-> Published go.mod files still contain local `replace` directives, exact
-> `v0.0.0` requirements, and all-zero pseudo-versions. Only root tags `v0.1.0`
-> and `v0.2.0` exist. There are no path-prefixed module tags, so clean external
-> consumption still fails. Do not present the installation examples as working
-> until the first release procedure and external-consumer smoke gate succeed.
+## One version for everything
+
+The single most important rule here, and the one everything else serves:
+**every published module carries the same exact `vX.Y.Z`.**
+
+There is no per-module versioning, no "only tag what changed", and no
+compatibility matrix. A release is one train: every module is staged, tagged,
+and verified from the same commit lineage, in dependency order, and the version
+is only complete when the last module passes. A consumer who pins `v0.3.0` gets
+the exact set that was built and tested together.
+
+This costs a few redundant tags on modules that did not change. It buys the
+elimination of an entire category of bug — the one where the core moves, an
+adapter does not, and the mismatch only shows up in production. Do not
+"optimise" it back into per-module versions.
 
 ## Canonical release graph
 
@@ -31,10 +40,6 @@ The repository currently has **31 published modules**:
 | 1 | 26 | Direct-root adapter/processor leaf modules |
 | 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
 | 3 | 1 | `cmd/gobridge` |
-
-The remediation plan expected 24 layer-1 modules. Repository truth is 26:
-`dynamodbmanagedsubscriptions` and `sqlitemanagedsubscriptions` are additional
-store implementation modules and therefore precede their aggregate modules.
 
 The published set is the root module, every module under `adapters/` and
 `processors/`, `httpapi`, and `cmd/gobridge`. Modules under `tests/`,
@@ -70,7 +75,7 @@ make them tagged releases.
 
 The release workflow rejects any tag push unless GitHub reports
 `created=true`, `deleted=false`, `forced=false`, and `ref_protected=true`.
-Configure a repository **tag ruleset** before the first train:
+The repository **tag ruleset** enforces this and must stay in place:
 
 - target patterns `v*` and `**/v*` (the verifier remains the authoritative
   published-module allow-list);
@@ -87,33 +92,24 @@ promotion.
 
 ## Verification modes
 
-The source-safe gate is green before migration while explicitly reporting the
-known debt:
+The source-safe gate runs on every CI build and validates the release DAG plus
+the tooling itself. It reports the in-repo manifest inventory (local `replace`
+directives, `v0.0.0` requirements, helper pseudo-versions) — those are the
+**development** shape and are expected on `main`; the release tool strips them
+per-tag at publish time:
 
 ```bash
 make verify-release-preparation
 ```
 
-At this revision it reports 31 modules and the following **published-manifest**
-inventory:
-
-- 72 local replacement entries;
-- 57 exact `v0.0.0` requirements;
-- 10 all-zero pseudo-versions;
-- 0 malformed pseudo-versions.
-
-It also reports five internal helper root requirements that must be changed
-during bootstrap. Their five local replacements may remain because those
-modules are internal-only; dependency-module replacements are ignored by Go.
-
-The release-strict gate intentionally fails now:
+The release-strict gate verifies an actually-published train. It requires the
+matching tags to exist, so run it only for a version that has been released:
 
 ```bash
 make verify-published-modules RELEASE_VERSION=v0.3.0
 ```
 
-After migration and all matching tags exist, that command verifies every
-declared module with the workspace disabled:
+It verifies every declared module with the workspace disabled:
 
 ```text
 go mod download
@@ -124,14 +120,20 @@ go test -count=1 ./...
 
 Each pushed module tag runs the same static checks and commands for that module.
 The final `cmd/gobridge` tag additionally repeats the strict gate for all
-modules. CI runs only `make verify-release-preparation` before the first release;
-it does not carry a permanently red public-resolution job.
+modules. CI runs `make verify-release-preparation`, which validates the release
+DAG and tooling against the source tree; the strict public-resolution gate
+belongs to the tagged release workflow, not to CI.
 
-## First release procedure
+## Release procedure
 
-This is a one-time bottom-up migration. Run it on a dedicated release branch
-from a clean checkout with `git`, `gh`, Go 1.25+, and registry access. Replace
-the example version only with the approved stable train.
+Every release runs this same bottom-up train — there is no separate
+"first release" path. Run it on a dedicated `release/*` branch from a clean
+checkout with `git`, `gh`, Go 1.25+, and registry access. Replace the example
+version with the approved stable train.
+
+In practice you invoke it as one command (`make release VERSION=vX.Y.Z
+CONFIRM=1`, see [MODULES.md §3](MODULES.md#3-cut-a-release-make-it-go-get-able));
+the sections below document what that command does at each step.
 
 ### 1. Define proxy and workflow waits
 
@@ -250,8 +252,11 @@ go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
 It rejects every `replace` or `exclude` directive in resolved module manifests
-and in the generated consumer go.mod. Do not run this proof against `v0.1.0`
-or `v0.2.0`; the required nested tags do not exist.
+and in the generated consumer go.mod.
+
+The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
+nested module tags; they are not consumable and this proof does not apply to
+them. `v0.3.0` is the first complete train.
 
 ## Image publication
 

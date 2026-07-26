@@ -37,16 +37,28 @@ make build   # runs `make dev` automatically if go.work is missing
 
 ## 3. Cut a release (make it `go get`-able)
 
-Prerequisites (one-time): a GitHub tag ruleset as described in
-[RELEASE.md](RELEASE.md#required-github-tag-ruleset), and `gh` authenticated.
+Prerequisites: the GitHub tag ruleset described in
+[RELEASE.md](RELEASE.md#required-github-tag-ruleset) must be in place, and `gh`
+authenticated.
 
 ```bash
-# 1. Always dry-run first — prints the per-layer module→tag plan, pushes nothing:
+# 1. Move the Unreleased notes in CHANGELOG.md under the new version heading.
+#    One entry covers every module — they all share the version.
+
+# 2. Always dry-run first — prints the per-layer module→tag plan, pushes nothing:
 make release VERSION=v0.3.0
 
-# 2. Publish (one-way; immutable tags) from a release/* branch, clean tree:
+# 3. Publish (one-way; immutable tags) from a release/* branch, clean tree:
 git switch -c release/v0.3.0
 make release VERSION=v0.3.0 CONFIRM=1
+```
+
+Each tag's workflow creates its own GitHub Release automatically. Give the root
+release a human-readable body afterwards — that is the page people actually
+land on:
+
+```bash
+gh release edit v0.3.0 --title "GoBridge v0.3.0" --notes-file <notes.md>
 ```
 
 `make release` mechanizes the whole train in dependency order (root → bootstrap
