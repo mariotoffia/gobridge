@@ -211,13 +211,19 @@ func startContainers() (string, func(), error) {
 	// container's logs no matter which startup gate fails.
 	sqlContainer = sqlName
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
+	// Reclaim both names and wait until docker has forgotten them, so the runs
+	// below cannot collide with still-terminating containers from a restart.
+	_ = dockerexec.DrainRemove(emuName, dockerexec.RemoveTimeout)
+	_ = dockerexec.DrainRemove(sqlName, dockerexec.RemoveTimeout)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 
 	cleanup := func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
+		// Drain the emulator before SQL: it holds connections to the database,
+		// and SIGKILLing the pair leaves the emulator's socket teardown racing
+		// the network removal below. Waiting for each to disappear is what
+		// makes the network rm deterministic rather than best-effort.
+		_ = dockerexec.DrainRemove(emuName, dockerexec.RemoveTimeout)
+		_ = dockerexec.DrainRemove(sqlName, dockerexec.RemoveTimeout)
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 		if configPath != "" {
 			_ = os.Remove(configPath)
@@ -307,19 +313,27 @@ func startContainers() (string, func(), error) {
 		return "", nil, fmt.Errorf("emulator AMQP: %w", err)
 	}
 
-	// TCP-level stabilize only: the emulator has no probeable readiness
-	// endpoint here; AMQP protocol truth is gated by the consumer's real
-	// send/receive warmup roundtrip (see servicebus integration TestMain).
-	if err := dockerexec.StabilizeTCP(amqpPort); err != nil {
-		dockerexec.LogFailure(emuName)
-		cleanup()
-		return "", nil, fmt.Errorf("emulator stabilization: %w", err)
-	}
-
 	cs := fmt.Sprintf(
 		"Endpoint=sb://localhost:%d;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;",
 		amqpPort,
 	)
+
+	// Gate on protocol truth. Neither of the gates above proves the broker
+	// works: WaitHealthy only reports State.Running, and the published AMQP
+	// port is bound by docker-proxy at container creation, so a TCP dial (and
+	// therefore StabilizeTCP) succeeds while the emulator is still
+	// initialising or has already died. That false positive is precisely how
+	// this fixture could hand out a connection string to an emulator that
+	// never served a single message, turning a fixture fault into an
+	// unexplained 30s timeout inside every test.
+	//
+	// waitEmulatorReady requires a real send + receive roundtrip, so returning
+	// from startContainers means the emulator moves messages.
+	if err := waitEmulatorReady(cs, emulatorReadyTimeout); err != nil {
+		dumpDiagnostics()
+		cleanup()
+		return "", nil, fmt.Errorf("emulator not ready: %w", err)
+	}
 
 	return cs, cleanup, nil
 }

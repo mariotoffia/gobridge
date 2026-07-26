@@ -105,7 +105,10 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	b.start()
 
 	t.Cleanup(func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+		// Drain rather than SIGKILL: Mosquitto flushes its persistence file on
+		// SIGTERM, and waiting for the container to disappear stops a
+		// same-named restart from racing this teardown.
+		_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 		_ = os.Remove(b.confPath)
 		if dataDir != "" {
 			_ = os.RemoveAll(dataDir)
@@ -118,7 +121,9 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 func (b *BrokerInstance) start() {
 	b.t.Helper()
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+	// Reclaim the name and wait until docker has genuinely forgotten it, so
+	// `docker run` cannot collide with a still-terminating container.
+	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 
 	args := []string{
 		"run", "-d",
@@ -146,13 +151,9 @@ func (b *BrokerInstance) start() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: container unhealthy: %v", err)
 	}
-	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
 		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance: TCP not ready: %v", err)
-	}
-	if err := dockerexec.StabilizeTCP(b.port); err != nil {
-		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance: stabilize failed: %v", err)
+		b.t.Fatalf("mqttlocal.BrokerInstance: broker not ready: %v", err)
 	}
 
 	b.stopped = false
@@ -189,8 +190,9 @@ func (b *BrokerInstance) Restart() {
 	if !b.stopped {
 		b.Stop()
 	}
-	// Remove the dead container so we can reuse the name.
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+	// Remove the dead container so we can reuse the name, waiting until it is
+	// actually gone before starting a replacement.
+	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 	b.start()
 }
 
@@ -231,13 +233,9 @@ func (b *BrokerInstance) RestartGraceful() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: unhealthy: %v", err)
 	}
-	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
 		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: TCP not ready: %v", err)
-	}
-	if err := dockerexec.StabilizeTCP(b.port); err != nil {
-		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: stabilize failed: %v", err)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: broker not ready: %v", err)
 	}
 	b.stopped = false
 }

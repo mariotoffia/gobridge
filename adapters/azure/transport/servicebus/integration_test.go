@@ -20,127 +20,16 @@ import (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
+	// No warmup here any more: asblocal now gates on a real send/receive
+	// roundtrip, so ConnectionString only returns once the emulator moves
+	// messages. A warmup in the consumer could only ever paper over a fixture
+	// that reported ready too early — and because it merely logged on failure,
+	// it let the suite run on into guaranteed timeouts.
 	asblocal.Configure(asblocal.WithCleanOrphans(true))
-	if err := warmupAMQP(); err != nil {
-		fmt.Fprintf(os.Stderr, "asb warmup skipped: %v\n", err)
-		// The warmup is the only gate that proves the emulator actually
-		// serves AMQP (TCP readiness is a false positive behind
-		// docker-proxy). If it exhausted its budget, every test below will
-		// time out, so dump the container state that explains why.
-		asblocal.Diagnostics()
-	}
 	code := m.Run()
 	asblocal.Shutdown()
 	os.Exit(code)
 }
-
-// warmupAMQP exercises the Service Bus emulator's AMQP layer once
-// before any test runs. The emulator's first AMQP roundtrip after
-// container startup can exceed 30 s while the broker fully initializes
-// after TCP becomes reachable, which would cause the first Send-using
-// test to fail with "request timed out: context deadline exceeded".
-// We retry a short Send + Receive cycle on TestQueue until one
-// succeeds (clearing any leftover warmup message), or the total budget
-// is exhausted. Subsequent tests then see a hot AMQP link.
-func warmupAMQP() error {
-	cs := os.Getenv("ASB_CONNECTION_STRING")
-	if cs == "" {
-		// Skipping warmup probe without a pre-resolved connection
-		// string would require starting containers from TestMain,
-		// which the existing helpers do lazily inside tests. Use
-		// asblocal.WaitUntilReady-style flow via a transient *testing.T.
-		probe := &warmupT{}
-		cs = asblocal.ConnectionString(probe)
-		if probe.skipped {
-			return fmt.Errorf("emulator unavailable: %s", probe.skipReason)
-		}
-	}
-
-	const (
-		totalBudget    = 90 * time.Second
-		attemptTimeout = 10 * time.Second
-		backoff        = 1 * time.Second
-	)
-
-	deadline := time.Now().Add(totalBudget)
-	var lastErr error
-	for attempt := 1; time.Now().Before(deadline); attempt++ {
-		if err := warmupRoundtrip(cs, attemptTimeout); err == nil {
-			return nil
-		} else {
-			lastErr = err
-			fmt.Fprintf(os.Stderr, "asb warmup attempt %d failed: %v\n", attempt, err)
-		}
-		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
-	}
-	if lastErr != nil {
-		return fmt.Errorf("asb warmup exhausted budget %s: %w", totalBudget, lastErr)
-	}
-	return nil
-}
-
-func warmupRoundtrip(cs string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	sender, err := servicebus.NewSender(servicebus.SenderConfig{
-		QueueName:  asblocal.TestQueue,
-		Connection: servicebus.ConnectionConfig{ConnectionString: shared.NewSecret(cs)},
-		Timeout:    timeout,
-	})
-	if err != nil {
-		return fmt.Errorf("warmup sender: %w", err)
-	}
-	defer sender.Close(context.Background()) //nolint:errcheck
-
-	if err := sender.Send(ctx, ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
-		ID:      fmt.Sprintf("warmup-%d", time.Now().UnixNano()),
-		Subject: "asb-warmup",
-		Payload: []byte(`{"warmup":true}`),
-	})}); err != nil {
-		return fmt.Errorf("warmup send: %w", err)
-	}
-
-	recv, err := servicebus.NewReceiver(servicebus.ReceiverConfig{
-		QueueName:   asblocal.TestQueue,
-		MaxMessages: 1,
-		Connection:  servicebus.ConnectionConfig{ConnectionString: shared.NewSecret(cs)},
-	}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
-	if err != nil {
-		return fmt.Errorf("warmup receiver: %w", err)
-	}
-
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), timeout)
-	defer drainCancel()
-	defer recv.Close(context.Background()) //nolint:errcheck
-
-	runErr := recv.Run(drainCtx, func(ctx context.Context, del ports.Delivery) error {
-		_ = del.Ack(ctx)
-		drainCancel()
-		return nil
-	})
-	if runErr != nil && drainCtx.Err() == nil {
-		return fmt.Errorf("warmup receive: %w", runErr)
-	}
-	return nil
-}
-
-// warmupT is a minimal testing.TB that ConnectionString accepts. It
-// captures Skip calls without aborting the warmup goroutine.
-type warmupT struct {
-	testing.TB
-	skipped    bool
-	skipReason string
-}
-
-func (w *warmupT) Helper()                         {}
-func (w *warmupT) Logf(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
-func (w *warmupT) Skip(args ...any)                { w.skipped = true; w.skipReason = fmt.Sprint(args...) }
-func (w *warmupT) Skipf(format string, args ...any) {
-	w.skipped = true
-	w.skipReason = fmt.Sprintf(format, args...)
-}
-func (w *warmupT) SkipNow() { w.skipped = true }
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

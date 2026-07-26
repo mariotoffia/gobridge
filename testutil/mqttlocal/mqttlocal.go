@@ -199,7 +199,7 @@ func BrokerURL(t testing.TB) string {
 			fromEnv = true
 			wsURL = os.Getenv("MQTT_WS_URL")
 			if port, err := portFromURL(ep); err == nil {
-				initErr = dockerexec.WaitTCP(port, 10*time.Second)
+				initErr = waitBrokerReady(port, 10*time.Second)
 			}
 		} else {
 			brokerURL, wsURL, containerName, cleanupFn, initErr = startContainer(cfg)
@@ -299,7 +299,7 @@ func WaitUntilReady(t testing.TB) {
 	if err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
-	if err := dockerexec.WaitTCP(port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(port, 30*time.Second); err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
 }
@@ -364,7 +364,9 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 
 	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	// Reclaim the name and wait until docker has forgotten it, so the run
+	// below cannot collide with a still-terminating container.
+	_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
 
 	args := []string{
 		"run", "-d",
@@ -392,7 +394,9 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 	}
 
 	cleanup = func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+		// Drain so Mosquitto flushes persistence on SIGTERM, and so the
+		// published port is released before the next fixture claims one.
+		_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
 		_ = os.Remove(confPath)
 	}
 
@@ -402,20 +406,16 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 		return "", "", "", nil, fmt.Errorf("mosquitto container failed: %w", err)
 	}
 
-	// Mosquitto is a single-process broker: it opens its listener only after
-	// config load + persistence restore, so accepting TCP ⇒ operational. The
-	// MQTT-protocol truth (CONNACK/SUBACK) is gated by the consumers' session
-	// health waits; adding an MQTT client dependency here is not warranted.
-	if err := dockerexec.WaitTCP(mqttPort, 30*time.Second); err != nil {
+	// Gate on protocol truth, not on the port. Accepting TCP does NOT imply
+	// Mosquitto is operational: with Docker's userland proxy the host port is
+	// bound at container creation, so a dial succeeds while the broker is
+	// still loading config or restoring persistence — or has already exited.
+	// waitBrokerReady requires a real publish/deliver roundtrip, so returning
+	// from startContainer means the broker moves messages.
+	if err := waitBrokerReady(mqttPort, 30*time.Second); err != nil {
 		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", "", nil, fmt.Errorf("mosquitto not ready: %w", err)
-	}
-
-	if err := dockerexec.StabilizeTCP(mqttPort); err != nil {
-		dockerexec.LogFailure(name)
-		cleanup()
-		return "", "", "", nil, fmt.Errorf("mosquitto stabilization failed: %w", err)
 	}
 
 	mqttURL = fmt.Sprintf("tcp://127.0.0.1:%d", mqttPort)

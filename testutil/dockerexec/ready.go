@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -90,6 +91,29 @@ func WaitGone(name string, timeout time.Duration) error {
 		time.Sleep(pollInterval)
 	}
 	return fmt.Errorf("container %s still present after %v", name, timeout)
+}
+
+// DrainRemove stops a container gracefully and then removes it, waiting on
+// each transition rather than firing and forgetting.
+//
+// `docker rm -f` SIGKILLs: a broker loses whatever it had not yet flushed, and
+// because the call returns before docker has finished, the next start can race
+// a half-removed container or a still-bound published port. DrainRemove sends
+// SIGTERM, gives the process `timeout` to shut down cleanly, force-removes
+// whatever is left, and only returns once docker has genuinely forgotten the
+// container — so "stopped" means stopped, the mirror of a real readiness gate.
+func DrainRemove(name string, timeout time.Duration) error {
+	grace := int(timeout.Seconds())
+	if grace < 1 {
+		grace = 1
+	}
+	// `docker stop` blocks for up to the grace period, so allow for it.
+	_, _ = Run(RemoveTimeout+timeout, "stop", "-t", strconv.Itoa(grace), name)
+	if err := WaitStopped(name, timeout); err != nil {
+		return err
+	}
+	_, _ = Run(RemoveTimeout, "rm", "-f", name)
+	return WaitGone(name, timeout)
 }
 
 // WaitLogLine waits until the container's log contains substr — a readiness
