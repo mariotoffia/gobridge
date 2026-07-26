@@ -3,12 +3,12 @@ module github.com/mariotoffia/gobridge/adapters/native/store
 go 1.25.0
 
 require (
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0
+	github.com/mariotoffia/gobridge v0.3.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.3.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.3.0
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.3.0
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.3.0
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.3.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -18,6 +18,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260726190920-dd966b21db08 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -28,14 +29,4 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.47.0 // indirect
-)
-
-replace (
-	github.com/mariotoffia/gobridge => ../../..
-	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ./memorydlq
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ./memoryoutbox
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ./sqlitedlq
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ./sqlitemanagedsubscriptions
-	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ./sqliteoutbox
-	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )
