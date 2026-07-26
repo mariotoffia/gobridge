@@ -416,35 +416,13 @@ func deriveBootstrapVersions(
 		if err != nil {
 			return nil, fmt.Errorf("resolving release tool directory: %w", err)
 		}
-		output, err := runner.run(ctx, commandRequest{
-			Dir:     toolDir,
-			Env:     publicModuleEnvironment(),
-			Name:    "go",
-			Args:    []string{"list", "-m", "-json", query},
-			Timeout: moduleQueryTimeout,
-		})
+		// Same propagation race as a published tag: the bootstrap commit was
+		// pushed moments ago, so the proxy may not have fetched it yet. Wait on
+		// the observable state rather than treating "not indexed yet" as a
+		// broken helper.
+		listed, err := awaitBootstrapResolution(ctx, runner, toolDir, query, importPath, commit)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"deriving %s pseudo-version after commit %s is reachable: %w",
-				importPath,
-				commit,
-				err,
-			)
-		}
-		var listed listedModule
-		if err := json.Unmarshal(output, &listed); err != nil {
-			return nil, fmt.Errorf("decoding go list result for %s: %w", importPath, err)
-		}
-		if listed.Path != importPath {
-			return nil, fmt.Errorf("go list returned module %q for %q", listed.Path, importPath)
-		}
-		if listed.Origin.Hash != commit {
-			return nil, fmt.Errorf(
-				"go list resolved %s at origin %q, want reachable commit %q",
-				importPath,
-				listed.Origin.Hash,
-				commit,
-			)
+			return nil, err
 		}
 		if !isUsablePseudoVersion(listed.Version) {
 			return nil, fmt.Errorf(
@@ -459,9 +437,6 @@ func deriveBootstrapVersions(
 				listed.Version,
 				commit,
 			)
-		}
-		if listed.GoMod == "" {
-			return nil, fmt.Errorf("go list did not report a downloaded go.mod for internal helper %s", importPath)
 		}
 		if err := validateResolvedBootstrapGoMod(manifest, listed.GoMod, releaseVersion); err != nil {
 			return nil, fmt.Errorf("resolved bootstrap module %s: %w", importPath, err)
@@ -880,6 +855,96 @@ var (
 	modulePropagationBudget = defaultModulePropagationBudget
 	modulePropagationPoll   = defaultModulePropagationPoll
 )
+
+// awaitBootstrapResolution resolves an internal helper at a just-pushed commit,
+// retrying while the proxy has not indexed that commit yet.
+//
+// Identical reasoning to awaitModuleResolution: a helper whose commit is not
+// yet fetched looks exactly like a helper that does not exist, and only one of
+// those is a real fault. A resolved module reporting the wrong path or a
+// different origin commit is returned immediately — waiting cannot fix either.
+func awaitBootstrapResolution(
+	ctx context.Context,
+	runner commandRunner,
+	toolDir string,
+	query string,
+	importPath string,
+	commit string,
+) (listedModule, error) {
+	deadline := time.Now().Add(modulePropagationBudget)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		listed, err, fatal := tryResolveBootstrap(ctx, runner, toolDir, query, importPath, commit)
+		if err == nil {
+			return listed, nil
+		}
+		if fatal {
+			return listedModule{}, err
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return listedModule{}, fmt.Errorf(
+				"internal helper %s did not become resolvable at commit %s within %s (%d attempts): %w",
+				importPath, commit, modulePropagationBudget, attempt, lastErr,
+			)
+		}
+		fmt.Fprintf(
+			os.Stderr,
+			"release: waiting for proxy to publish %s (attempt %d): %v\n",
+			query, attempt, err,
+		)
+		select {
+		case <-ctx.Done():
+			return listedModule{}, ctx.Err()
+		case <-time.After(modulePropagationPoll):
+		}
+	}
+}
+
+// tryResolveBootstrap performs one attempt. The bool reports whether the error
+// is fatal, meaning retrying cannot help.
+func tryResolveBootstrap(
+	ctx context.Context,
+	runner commandRunner,
+	toolDir string,
+	query string,
+	importPath string,
+	commit string,
+) (listedModule, error, bool) {
+	output, err := runner.run(ctx, commandRequest{
+		Dir:     toolDir,
+		Env:     publicModuleEnvironment(),
+		Name:    "go",
+		Args:    []string{"list", "-m", "-json", query},
+		Timeout: moduleQueryTimeout,
+	})
+	if err != nil {
+		return listedModule{}, fmt.Errorf(
+			"deriving %s pseudo-version after commit %s is reachable: %w", importPath, commit, err,
+		), false
+	}
+	var listed listedModule
+	if err := json.Unmarshal(output, &listed); err != nil {
+		return listedModule{}, fmt.Errorf("decoding go list result for %s: %w", importPath, err), true
+	}
+	if listed.Path != importPath {
+		return listedModule{}, fmt.Errorf("go list returned module %q for %q", listed.Path, importPath), true
+	}
+	if listed.Origin.Hash == "" {
+		return listedModule{}, fmt.Errorf("go list reported no origin commit for %s", importPath), false
+	}
+	if listed.Origin.Hash != commit {
+		return listedModule{}, fmt.Errorf(
+			"go list resolved %s at origin %q, want reachable commit %q", importPath, listed.Origin.Hash, commit,
+		), true
+	}
+	if listed.GoMod == "" {
+		return listedModule{}, fmt.Errorf(
+			"go list did not report a downloaded go.mod for internal helper %s", importPath,
+		), false
+	}
+	return listed, nil, false
+}
 
 func awaitModuleResolution(
 	ctx context.Context,
