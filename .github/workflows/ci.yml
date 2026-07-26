@@ -9,8 +9,12 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-  schedule:
-    - cron: '17 2 * * *'
+  # Nightly schedule paused on request. Re-enable by uncommenting; GitHub only
+  # honours `schedule:` from the default branch, so this must be changed on
+  # main to take effect. The full suite still runs on every push and PR, and
+  # can be triggered on demand via workflow_dispatch.
+  # schedule:
+  #   - cron: '17 2 * * *'
 
 jobs:
   release-preparation:
