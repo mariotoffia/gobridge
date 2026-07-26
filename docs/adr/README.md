@@ -20,7 +20,9 @@ behavior that already ships, not proposals.
 | [0009](0009-durable-outbound-mqtt-session-state.md) | Durable outbound MQTT session state: in-memory store, route-layer durability | accepted |
 | [0010](0010-mqtt-loop-prevention-contract.md) | MQTT bridge-to-bridge loop-prevention contract | accepted |
 | [0011](0011-cluster-client-id-uniqueness.md) | Cluster client-ID uniqueness enforcement | accepted |
-| [0012](0012-cluster-config-whole-cohort-replacement.md) | Cluster config changes require whole-cohort replacement | accepted |
+| [0012](0012-cluster-config-whole-cohort-replacement.md) | Cluster config changes require whole-cohort replacement | superseded by 0013 (live-safe deltas) |
+| [0013](0013-coordinated-cluster-config-rollout.md) | Coordinated cluster config rollout for live-safe deltas | accepted |
+| [0014](0014-confirm-window-provisional-commit.md) | Confirm window: provisional commit with deadman revert | accepted |
 
 ## Numbering
 

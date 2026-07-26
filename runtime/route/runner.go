@@ -640,10 +640,20 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	// re-stamp below remains the only path that (re)introduces one. (W3C trace
 	// context — traceparent/tracestate — is not x-bridge.*-prefixed, is never
 	// stripped by StripReservedHeaders, and survives in BOTH modes.)
+	// MQTT-CORE-1: the adapter-stamped generated-identity marker is INTERNAL-ONLY
+	// (reserved), so both strip branches below would drop it. Preserve it across the
+	// defensive strip: it is adapter truth (the source supplied no stable identity)
+	// and drives the replay-cap termination for an uncountable redelivery. Any
+	// spoofed value only makes a producer's OWN message poison sooner, so
+	// re-stamping trusted adapter state here is safe.
+	generatedID, hadGeneratedID := env.Header(messaging.HeaderGeneratedID)
 	if r.policy.TrustBridgeHeaders {
 		env.StampHeaders(messaging.StripInternalOnlyHeaders(env.HeadersSnapshot()))
 	} else {
 		env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))
+	}
+	if hadGeneratedID {
+		env.SetHeader(messaging.HeaderGeneratedID, generatedID)
 	}
 	// Ingress redelivery-count sanitization (F3). The transport-namespaced count
 	// keys (sqs.ApproximateReceiveCount, asb.delivery-count, amqp10.delivery-count)
@@ -783,6 +793,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 			WithChainRouteID(r.routeID),
 			WithChainClock(r.clk),
 			WithChainOnProcessorTimeout(r.onProcessorAbandoned),
+			WithChainOnProcessorReturned(r.onProcessorReturnedFromAbandon),
 		); err != nil {
 			pErr := r.handleProcessorError(ctx, del, env, err)
 			if !errors.Is(err, shared.ErrMessageFiltered) {
@@ -891,10 +902,12 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 	attempts := rc + 1
 
 	if over {
-		poisonErr := shared.NewBridgeError(shared.ErrCodePoisonMessage, shared.ErrorPermanent,
-			fmt.Sprintf("panic-recovery: receive count %d >= max replay attempts %d: %v", rc, r.policy.MaxReplayAttempts, cause))
+		// MQTT-CORE-1: an UNCOUNTABLE source reaching this sink below the numeric cap
+		// gets an honest "unstable_identity" reason/category (via replayCapPoison)
+		// instead of a "receive count 0 >= max" comparison that never held.
+		poisonErr, category := r.replayCapPoison(env, rc, cause, "panic")
 		if r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore() {
-			r.emitDrop("panic")
+			r.emitDrop(category)
 			if r.logger != nil {
 				r.logger.Warn("panic-poison dropped: at replay cap with no DLQ or drop policy",
 					"route", r.routeID, "envelope_id", env.ID(), "receive_count", rc, "error", cause)
@@ -913,7 +926,7 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 			}
 			return
 		}
-		r.emitDLQ("panic")
+		r.emitDLQ(category)
 		if err := r.settleTerminal(ctx, del, env, poisonErr, attempts); err != nil && r.logger != nil {
 			r.logger.Error("panic-poison settle failed", "route", r.routeID, "error", err)
 		}

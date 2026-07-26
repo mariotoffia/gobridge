@@ -199,11 +199,7 @@ func setupMQTTSession(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "MQTT session Start %q", clientID)
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	return sess
@@ -246,11 +242,7 @@ func newMQTTCollector(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start")
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 
 	recv := paho.NewReceiver("collector-"+clientID, sess)
 	recvCtx, recvCancel := context.WithCancel(ctx)

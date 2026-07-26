@@ -8,323 +8,160 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/circuitbreaker"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// =========================================================================
-// TEST-RES-003: MQTT Source Message Drop Without DLQ
+// ═══════════════════════════════════════════════════════════════════════════
+// RES-nnn resilience regressions (TEST-6).
 //
-// Resilience gap: when an MQTT-sourced message fails delivery and the
-// source does not support Retry() (returns ErrNotSupported), the runtime
-// attempts to route the message to a DLQ. If no DLQ store is configured,
-// the message is logged at Warn level and silently dropped.
-//
-// This test EXPOSES the production bug:
-//   - MQTT source publishes 100 messages to a topic
-//   - Bridge subscribes to that topic with alwaysFailSender
-//   - Bridge is created WITHOUT a DLQ store
-//   - DirectHold delivery mode (MQTT source has no visibility control)
-//
-// Expected result (with fix): Route rejected at AddRoute, or messages
-// retried, or messages DLQ'd.
-//
-// Actual result (current code): All 100 messages silently dropped with
-// a Warn log line. Zero messages reach the target. Zero DLQ entries.
-// =========================================================================
+// These were originally OBSERVATIONAL probes: each described an expected and a
+// "broken" outcome, injected a fault, then logged which occurred while only
+// softly asserting a weak floor — so a green run could be cited as evidence
+// without ENFORCING the fixed behaviour. This file now injects each fault
+// DETERMINISTICALLY and asserts exactly one expected result per regression, so
+// a reintroduction of any gap turns the suite red instead of merely changing a
+// log line. Every referenced gap is fixed at this revision; these lock it in.
+// ═══════════════════════════════════════════════════════════════════════════
 
+// TestRES003_MQTTSourceDropWithoutDLQ exposes the silent-drop hazard: an MQTT
+// source (no Retry()) on a DirectHold route with NO DLQ store would drop a
+// failed delivery with only a Warn log.
+//
+// With fix: the runtime REJECTS the route at admission (AddRoute/Start) rather
+// than accepting a config that can silently lose messages — so the drop is
+// impossible, not merely improbable.
 func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 	_ = withFreshInfra(t)
-	const (
-		msgCount    = 100
-		srcTopic    = "res003/source"
-		testTimeout = 60 * time.Second
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	const srcTopic = "res003/source"
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// --- Publisher session: sends messages to the source topic ---
-	pubSessID := mqttlocal.UniqueClientID("res003-pub")
-	pubSess := setupMQTTSession(t, pubSessID, connectivity.SessionEphemeral)
-	pubSender := paho.NewSender(pubSess, paho.SenderOptions{
-		DefaultTopic: srcTopic,
-		QoS:          1,
-		Timeout:      5 * time.Second,
-	})
-
-	// --- Bridge: MQTT source -> alwaysFailSender, NO DLQ ---
-	rxSessID := mqttlocal.UniqueClientID("res003-rx")
-	rxSess := setupMQTTSession(t, rxSessID, connectivity.SessionEphemeral)
-
-	// Subscribe to source topic before creating bridge.
-	reconcileErr := rxSess.Reconcile(ctx, connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{
-			{Topic: srcTopic, QoS: 1},
-		},
-	})
-	if reconcileErr != nil {
-		t.Fatalf("RES-003: Reconcile failed: %v", reconcileErr)
-	}
+	rxSess := setupMQTTSession(t, mqttlocal.UniqueClientID("res003-rx"), connectivity.SessionEphemeral)
+	require.NoError(t, rxSess.Reconcile(ctx, connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: srcTopic, QoS: 1}},
+	}))
 	waitSubReady(t, rxSess, 5*time.Second)
-
 	mqttRx := paho.NewReceiver("res003-rx", rxSess)
-	failSnd := &alwaysFailSender{}
 
-	// Create a collector on a dummy output topic to confirm zero delivery.
-	outTopic := "res003/output"
-	collector := newMQTTCollector(t, outTopic, "res003-col")
-
-	// Runtime WITHOUT DLQ store -- this is the gap we are testing.
-	rt := goruntime.New(
-		goruntime.WithInstanceID("res003-bridge"),
-		goruntime.WithLogger(testLogger(t)),
-		// Deliberately omitting WithDLQStore to expose the gap.
-	)
-
+	// Runtime WITHOUT a DLQ store, DirectHold, and an MQTT source that cannot
+	// Retry(): the exact shape that would silently drop on send failure.
+	rt := goruntime.New(goruntime.WithInstanceID("res003-bridge"), goruntime.WithLogger(testLogger(t)))
 	routeCfg := goruntime.RouteConfig{
-		ID: "res003-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "res003-bind", Address: outTopic},
-		),
-		SourceCapabilities: nil, // MQTT has no source capabilities
+		ID:       "res003-route",
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+		Resolver: goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "res003-bind", Address: "res003/output"}),
 	}
-
-	err := rt.AddRoute(routeCfg, mqttRx, failSnd, nil, nil)
-	if err != nil {
-		// If AddRoute rejects the configuration, the gap is FIXED.
-		t.Logf("RES-003: AddRoute rejected config (gap may be fixed): %v", err)
-		t.Logf("RES-003: PASS -- route validation prevents silent message loss")
-		return
-	}
-
-	err = rt.Start(ctx)
-	if err != nil {
-		t.Logf("RES-003: Start rejected config: %v", err)
-		return
-	}
-	defer func() { _ = rt.Stop(context.Background()) }()
-
-	gobridgesync(t, 10*time.Second, rt)
-
-	// Publish 100 messages to the MQTT source topic.
-	t.Logf("RES-003: publishing %d messages to MQTT source topic %q", msgCount, srcTopic)
-	for i := 0; i < msgCount; i++ {
-		env := messaging.MustEnvelope(messaging.EnvelopeInput{
-			ID:      fmt.Sprintf("res003-msg-%d", i),
-			Subject: srcTopic,
-			Payload: []byte(fmt.Sprintf(`{"seq":%d}`, i)),
-			Headers: map[string]any{"test": "res003"},
-		})
-		sendErr := pubSender.Send(ctx, ports.OutboundMessage{Envelope: env})
-		if sendErr != nil {
-			t.Logf("RES-003: publish %d failed: %v", i, sendErr)
+	err := rt.AddRoute(routeCfg, mqttRx, &alwaysFailSender{}, nil, nil)
+	if err == nil {
+		if err = rt.Start(ctx); err == nil {
+			t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 		}
 	}
 
-	// Wait for the bridge to process (or drop) all messages.
-	// Since alwaysFailSender fails immediately and there is no DLQ,
-	// messages should be processed quickly (and silently dropped).
-	t.Log("RES-003: waiting 30s for bridge processing")
-	time.Sleep(30 * time.Second) // NEGATIVE: verify no messages reach target after all sends fail
-
-	// --- Assertions ---
-	targetCount := collector.count()
-	t.Logf("RES-003: messages reaching target: %d (expected: 0)", targetCount)
-	assert.Equal(t, 0, targetCount,
-		"alwaysFailSender should prevent any messages from reaching the output topic")
-
-	// The key evidence: all 100 messages were silently dropped.
-	// In a correct system, they would either:
-	// (a) be retried until success
-	// (b) be sent to a DLQ
-	// (c) cause the route to be rejected at AddRoute
-	//
-	// Currently: none of the above. Messages are logged at Warn and ACKed.
-	t.Logf("RES-003: EVIDENCE -- %d messages published to MQTT source topic", msgCount)
-	t.Logf("RES-003: EVIDENCE -- 0 messages delivered to target (all failed)")
-	t.Logf("RES-003: EVIDENCE -- no DLQ configured, so messages were silently dropped")
-	t.Logf("RES-003: EVIDENCE -- MQTT source does not support Retry(), so no redelivery")
-	t.Log("RES-003: This confirms the production gap: MQTT-sourced messages " +
-		"are silently lost when sender fails and no DLQ is configured")
+	// STRICT (was: tolerate reject OR observe silent-drop): admission MUST
+	// reject this config so no message can ever be silently dropped.
+	require.Error(t, err,
+		"runtime must REJECT DirectHold + no-DLQ + non-retryable MQTT source (would silently drop on failure)")
+	require.ErrorContains(t, err, "silently dropped",
+		"the rejection must name the silent-loss hazard so the operator can fix it (AllowRetryDrop / DLQ)")
 }
 
-// =========================================================================
-// TEST-RES-005: Auto-Extend Failure Duplicate Processing
+// TestRES005_AutoExtendFailureDuplicates exposes duplicate delivery when SQS
+// auto-extend cannot keep a long-processing message invisible.
 //
-// Resilience gap: when SQS auto-extend (ChangeMessageVisibility) fails
-// after a few successes, the code exits the extend loop silently but
-// does NOT cancel the processing goroutine's context. The goroutine
-// continues working on the message. Meanwhile, SQS makes the message
-// visible again (visibility expired) and another consumer picks it up.
-// Both process the same message — duplicate delivery.
-//
-// This test creates conditions that stress auto-extend:
-//   - VisibilityTimeout = 5s (very short)
-//   - Processing takes 8s per message (longer than visibility)
-//   - Auto-extend must fire at ~2.5s to keep the message invisible
-//   - MaxInFlight = 5 to limit concurrent processing
-//
-// Expected result (with fix): Context cancelled on extend failure;
-// processing aborts; zero duplicates.
-//
-// Actual result (current code): Processing continues past visibility
-// expiry. SQS redelivers. Both process → duplicate at MQTT target.
-//
-// PRODUCTION FIX NEEDED:
-//   - RES-005: Cancel delivery context on auto-extend failure.
-//   - sqs/delivery.go exits extend loop after 3 failures but does not
-//     cancel the processing context.
-// =========================================================================
-
+// With fix: auto-extend keeps pace (VisibilityTimeout=5s, processing=8s), so
+// SQS never redelivers and every message is delivered EXACTLY once.
 func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 50
-		outTopic    = "res005/output"
-		testTimeout = 120 * time.Second
+		msgCount = 50
+		outTopic = "res005/output"
 	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// SQS queue with short visibility timeout.
 	sqsClient := sqslocal.Client(t)
-	sqsName := sqslocal.UniqueQueue("res005-in")
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsClient, sqsName,
+	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsClient, sqslocal.UniqueQueue("res005-in"),
 		map[string]string{"VisibilityTimeout": "5"})
-
 	collector := newMQTTCollector(t, outTopic, "res005-col")
 
-	sessID := mqttlocal.UniqueClientID("res005-sess")
-	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
-	mqttSnd := setupMQTTSender(t, sess)
-
-	// SQS receiver with short visibility + auto-extend enabled.
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("res005-sess"), connectivity.SessionEphemeral)
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
-		QueueURL:          sqsInURL,
-		Client:            sqslocal.Client(t),
-		MaxMessages:       5,
-		WaitTimeSeconds:   1,
-		VisibilityTimeout: 5,
-		AutoExtend:        boolPtr(true),
+		QueueURL: sqsInURL, Client: sqsClient, MaxMessages: 5, WaitTimeSeconds: 1,
+		VisibilityTimeout: 5, AutoExtend: boolPtr(true),
 	}, testLogger(t))
 	require.NoError(t, err)
 
-	dlq := &lrDLQStore{}
-
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res005-bridge"),
-		goruntime.WithDLQStore(dlq),
+		goruntime.WithDLQStore(&lrDLQStore{}),
 		goruntime.WithLogger(testLogger(t)),
 	)
-
-	routeCfg := goruntime.RouteConfig{
+	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 		ID: "res005-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  5,
-		},
-		Processors: []ports.Processor{
-			newSlowProcessor("res005-slow", 8*time.Second),
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "res005-bind", Address: outTopic},
-		),
+		// MaxInFlight=10 keeps wall time (~40s for 50 msgs × 8s / 10) well under
+		// the 100s delivery budget on a loaded runner, while 8s processing still
+		// exceeds the 5s visibility so auto-extend is exercised.
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 10},
+		Processors:         []ports.Processor{newSlowProcessor("res005-slow", 8*time.Second)},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "res005-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
-	}
-	require.NoError(t, rt.AddRoute(routeCfg, sqsRx, mqttSnd, sess, nil))
+	}, sqsRx, setupMQTTSender(t, sess), sess, nil))
 	require.NoError(t, rt.Start(ctx))
-	defer func() { _ = rt.Stop(context.Background()) }()
-
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	gobridgesync(t, 10*time.Second, rt)
 
-	t.Logf("RES-005: sending %d messages (vis=5s, proc=8s, autoExtend=true)", msgCount)
 	sendBulkToSQS(t, sqsClient, sqsInURL, msgCount, nil)
-
-	// With 50 msgs, MaxInFlight=5, 8s each: ~80s total.
-	lrWaitFor(t, 100*time.Second,
-		fmt.Sprintf("collector >= %d", msgCount),
+	lrWaitFor(t, 100*time.Second, fmt.Sprintf("collector >= %d", msgCount),
 		func() bool { return collector.count() >= msgCount })
 
-	time.Sleep(15 * time.Second) // NEGATIVE: verify no additional duplicates from SQS redelivery
-
-	total := collector.count()
-	unique := countUnique(collector)
-	duplicates := total - unique
-
-	t.Logf("RES-005: total=%d, unique=%d, duplicates=%d, dlq=%d",
-		total, unique, duplicates, dlq.count())
-
-	if duplicates > 0 {
-		t.Logf("RES-005: EVIDENCE -- %d duplicate deliveries detected", duplicates)
-		t.Logf("RES-005: Auto-extend failure causes SQS redelivery during processing")
-		t.Logf("RES-005: Fix: cancel delivery context on extend failure (sqs/delivery.go)")
-	} else {
-		t.Logf("RES-005: No duplicates -- auto-extend kept pace at this scale")
-		t.Logf("RES-005: The gap may still exist but wasn't triggered")
-	}
-
-	// NOTE: With the current auto-extend gap, duplicates are expected.
-	// When the gap is fixed (cancel processing context on extend failure),
-	// this assertion should be tightened to: unique >= msgCount.
-	require.GreaterOrEqual(t, total, msgCount,
-		"At least %d total messages (including duplicates) must be delivered", msgCount)
+	// Deterministic replacement for the old "sleep 15s and hope no more arrive":
+	// wait until the arrival count STOPS changing, then assert exactly-once.
+	settled := wait.StableFor(t, collector.count, 5*time.Second, 60*time.Second)
+	require.Equal(t, msgCount, settled,
+		"auto-extend must keep the message invisible: NO SQS redelivery, so no duplicate arrivals")
+	require.Equal(t, msgCount, countUnique(collector),
+		"every message delivered exactly once (no auto-extend duplicates)")
 }
 
-// =========================================================================
-// TEST-RES-001: No Circuit Breaker on MQTT Sender
+// TestRES001_NoCircuitBreakerOnSender injects a deterministic degraded sender
+// (fixed-seed 80% failure + latency) behind a circuit breaker.
 //
-// When the MQTT broker is degraded (80% failure, 5s latency), all
-// semaphore slots fill up with 30s-timeout sends, stalling the pipeline.
-// A circuit breaker would fail-fast after a few failures, freeing slots.
-//
-// PRODUCTION FIX NEEDED: Add circuit breaker to paho/sender.go.
-// =========================================================================
-
+// With fix: the transient failures are retried via SQS redelivery and NEVER
+// silently lost — the pipeline keeps making progress (not wedged) and no
+// transient error is misclassified into the DLQ.
 func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 100
-		outTopic    = "res001/output"
-		testTimeout = 120 * time.Second
+		msgCount = 100
+		outTopic = "res001/output"
 	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "res001-in")
 	dlq := &lrDLQStore{}
 	collector := newMQTTCollector(t, outTopic, "res001-col")
 
-	sessID := mqttlocal.UniqueClientID("res001-sess")
-	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
-	baseSnd := setupMQTTSender(t, sess)
-	// Wrap in CB sender + degradedSender: 80% fail, 5s latency per send.
-	// CB opens after 5 consecutive failures and fails-fast with ErrUnavailable.
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("res001-sess"), connectivity.SessionEphemeral)
 	br := circuitbreaker.NewBreaker("res001-cb", circuitbreaker.Config{
-		FailureThreshold: 5,
-		SuccessThreshold: 2,
-		ResetTimeout:     5 * time.Second,
-		CountError:       shared.IsRecoverableError,
+		FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: 5 * time.Second,
+		CountError: shared.IsRecoverableError,
 	}, nil)
-	cbSnd := paho.NewCircuitBreakerSender(baseSnd, br)
-	snd := newDegradedSender(cbSnd, 80, 5*time.Second)
+	// Deterministic (fixed-seed) 80% failure + 5s latency; the CB fails fast.
+	snd := newDegradedSender(paho.NewCircuitBreakerSender(setupMQTTSender(t, sess), br), 80, 5*time.Second)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res001-bridge"),
@@ -332,131 +169,95 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
-		ID: "res001-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  10,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "res001-bind", Address: outTopic},
-		),
+		ID:                 "res001-route",
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 10},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "res001-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))
 	require.NoError(t, rt.Start(ctx))
-	defer func() { _ = rt.Stop(context.Background()) }()
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	gobridgesync(t, 10*time.Second, rt)
 
-	start := time.Now()
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
+	// The CB fails fast rather than blocking a slot for the full latency, so the
+	// pipeline drains SOME traffic within the bounded window.
+	lrWaitFor(t, 60*time.Second, "pipeline makes progress under a degraded sender",
+		func() bool { return collector.count() > 0 })
 
-	// With CB: fails fast after 5 consecutive failures, then probes every 5s.
-	// Without CB: each fail blocks for 5s on the degraded sender.
-	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
-	elapsed := time.Since(start)
-
-	delivered := collector.count()
-	t.Logf("RES-001: delivered=%d/%d in %v, dlq=%d", delivered, msgCount, elapsed, dlq.count())
-	t.Logf("RES-001: CB should fail-fast on degraded sender, freeing semaphore slots quickly")
-
-	assert.Greater(t, delivered+dlq.count(), 0,
-		"At least some messages should be processed")
+	// STRICT (was: delivered+dlq > 0): the transient degraded-sender failures are
+	// recoverable, so NONE is ever misclassified into the DLQ, and the pipeline
+	// is not wedged — a regression that wedged it (0 delivered) or misclassified
+	// a transient failure (dlq > 0) turns this red.
+	require.Zero(t, dlq.count(),
+		"transient (recoverable) send failures must be retried, never DLQ'd")
+	require.Positive(t, collector.count(),
+		"the circuit breaker must keep the pipeline making progress under a degraded sender")
 }
 
-// =========================================================================
-// TEST-RES-006: DLQ Write Blocks Semaphore
+// TestRES006_DLQWriteBlocksSemaphore drives permanent failures through a slow
+// (5s) DLQ store with MaxInFlight=10.
 //
-// When DLQ writes are slow (10s), they block semaphore slots. With
-// MaxInFlight=10, processing serializes behind the slow DLQ writes.
-//
-// PRODUCTION FIX NEEDED: Decouple DLQ writes from semaphore slots.
-// =========================================================================
-
+// With fix: DLQ writes are bulkheaded off the delivery slots, so every
+// permanently-failed message reaches the DLQ and none leaks to the output.
 func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 50
-		outTopic    = "res006/output"
-		testTimeout = 180 * time.Second
+		msgCount = 50
+		outTopic = "res006/output"
 	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "res006-in")
 	baseDLQ := &lrDLQStore{}
-	slowDLQ := newSlowDLQStore(baseDLQ, 5*time.Second) // 5s per DLQ write
 	collector := newMQTTCollector(t, outTopic, "res006-col")
-
-	sessID := mqttlocal.UniqueClientID("res006-sess")
-	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("res006-sess"), connectivity.SessionExclusive)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res006-bridge"),
-		goruntime.WithDLQStore(slowDLQ),
+		goruntime.WithDLQStore(newSlowDLQStore(baseDLQ, 5*time.Second)),
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
-		ID: "res006-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  10,
-		},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "res006-bind", Address: outTopic},
-		),
+		ID:                 "res006-route",
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 10},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "res006-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
 	}, newSQSReceiver(t, sqsInURL), &permanentFailSender{}, sess, nil))
 	require.NoError(t, rt.Start(ctx))
-	defer func() { _ = rt.Stop(context.Background()) }()
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	gobridgesync(t, 10*time.Second, rt)
 
-	start := time.Now()
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-
-	// Wait for all messages to be DLQ'd.
-	lrWaitFor(t, 160*time.Second,
-		fmt.Sprintf("DLQ >= %d", msgCount),
+	lrWaitFor(t, 160*time.Second, fmt.Sprintf("DLQ >= %d", msgCount),
 		func() bool { return baseDLQ.count() >= msgCount })
 
-	elapsed := time.Since(start)
-	t.Logf("RES-006: %d DLQ writes in %v (slowDLQ=5s, MaxInFlight=10)", msgCount, elapsed)
-
-	if elapsed > 60*time.Second {
-		t.Logf("RES-006: EVIDENCE -- slow DLQ writes serialize semaphore slots")
-		t.Logf("RES-006: With bulkhead: expected ~25s (50/10 batches * 5s)")
-		t.Logf("RES-006: Without bulkhead: DLQ write holds slot for 5s each")
-	}
-
-	assert.Equal(t, 0, collector.count(), "No messages should reach output")
+	// STRICT (was: only collector==0, with an observational elapsed>60s log):
+	// every permanently-failed message reaches the DLQ, and NONE reaches output.
+	require.Equal(t, msgCount, baseDLQ.count(),
+		"every permanently-failed message must reach the DLQ despite slow writes")
+	require.Zero(t, collector.count(), "no permanently-failed message may reach the output")
 }
 
-// =========================================================================
-// TEST-RES-011: Router Panic Swallows Messages
+// TestRES011_RouterPanicSwallowsMessages injects a processor that panics on
+// every 10th message.
 //
-// A processor that panics on 10% of messages. Panicked messages should
-// be logged + DLQ'd, but currently they are silently dropped.
-//
-// PRODUCTION FIX NEEDED: Log + metric on router panic recovery.
-// =========================================================================
-
+// With fix: a panicked message is recovered and routed to the DLQ — it is NOT
+// silently swallowed, so delivered + DLQ accounts for every message.
 func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
-		msgCount    = 100
-		outTopic    = "res011/output"
-		testTimeout = 60 * time.Second
+		msgCount   = 100
+		panicEvery = 10
+		outTopic   = "res011/output"
 	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	sqsInURL, sqsInClient := setupSQSQueue(t, "res011-in")
 	dlq := &lrDLQStore{}
 	collector := newMQTTCollector(t, outTopic, "res011-col")
-
-	sessID := mqttlocal.UniqueClientID("res011-sess")
-	sess := setupMQTTSession(t, sessID, connectivity.SessionEphemeral)
-	snd := setupMQTTSender(t, sess)
+	sess := setupMQTTSession(t, mqttlocal.UniqueClientID("res011-sess"), connectivity.SessionEphemeral)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("res011-bridge"),
@@ -464,41 +265,27 @@ func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
 		goruntime.WithLogger(testLogger(t)),
 	)
 	require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
-		ID: "res011-route",
-		Policy: routing.RoutePolicy{
-			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  20,
-		},
-		Processors: []ports.Processor{&panicProcessor{panicEvery: 10}},
-		Resolver: goruntime.NewStaticResolver(
-			routing.DispatchPlan{BindingID: "res011-bind", Address: outTopic},
-		),
+		ID:                 "res011-route",
+		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 20},
+		Processors:         []ports.Processor{&panicProcessor{panicEvery: panicEvery}},
+		Resolver:           goruntime.NewStaticResolver(routing.DispatchPlan{BindingID: "res011-bind", Address: outTopic}),
 		SourceCapabilities: directHoldCaps,
-	}, newSQSReceiver(t, sqsInURL), snd, sess, nil))
+	}, newSQSReceiver(t, sqsInURL), setupMQTTSender(t, sess), sess, nil))
 	require.NoError(t, rt.Start(ctx))
-	defer func() { _ = rt.Stop(context.Background()) }()
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
-	rt.WaitQuiescent(ctx, goruntime.QuiescenceOptions{MinQuiet: 2 * time.Second, Timeout: 35 * time.Second}) //nolint:errcheck
+	lrWaitFor(t, 40*time.Second, fmt.Sprintf("delivered+dlq == %d", msgCount),
+		func() bool { return collector.count()+dlq.count() >= msgCount })
+	settled := wait.StableFor(t, func() int { return collector.count() + dlq.count() }, 3*time.Second, 40*time.Second)
 
-	delivered := collector.count()
-	dlqCount := dlq.count()
-	total := delivered + dlqCount
-
-	t.Logf("RES-011: delivered=%d, dlq=%d, total=%d, expected=%d",
-		delivered, dlqCount, total, msgCount)
-
-	// 10% panic → 10 panicked, 90 should succeed.
-	// Current (no fix): panicked msgs silently dropped → delivered ~90, dlq=0
-	// Fixed: panicked msgs DLQ'd → delivered ~90, dlq ~10
-	if dlqCount == 0 && delivered < msgCount {
-		t.Logf("RES-011: EVIDENCE -- %d messages lost to panics (no DLQ, no log)",
-			msgCount-total)
-	}
-
-	assert.GreaterOrEqual(t, delivered, 80,
-		"At least ~90%% of non-panicking messages should be delivered")
+	// STRICT (was: delivered >= 80, with an observational "lost" log): every
+	// message is accounted for — the panicked ones (every 10th) are DLQ'd, not
+	// silently swallowed.
+	require.Equal(t, msgCount, settled, "no message may be silently swallowed by a processor panic")
+	require.Equal(t, msgCount/panicEvery, dlq.count(),
+		"exactly the panicked messages (every %dth) must be routed to the DLQ", panicEvery)
+	require.Equal(t, msgCount-msgCount/panicEvery, collector.count(),
+		"all non-panicking messages must be delivered")
 }
-
-// panicProcessor is defined in longrunning_fault_helpers_test.go.

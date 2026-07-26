@@ -1,39 +1,43 @@
-# Runbook: Cluster Config Rollout (whole-cohort replacement)
+# Runbook: Cluster config rollout — whole-cohort replacement
 
 **Applies to:** clustered deployments — `deployment_mode: clustered`, or any
 instance carrying a static `cluster.endpoints` override — where multiple
 instances share a config source, lease store, and outbox/DLQ stores.
-**Audience:** operators changing the config of a running cohort.
-**Risk:** high — an uncoordinated rollout splits the cohort across config
-versions, splitting lease ownership and stranding durable records.
+**Audience:** operators applying a change that **cannot roll live**.
+**Risk:** high — a mixed old/new cohort splits lease ownership and strands
+durable records.
 
-## Why there is no live rollout
+This runbook is the **manual stop-and-restart procedure**. You need it when:
 
-Reconfiguration is **per-process**. Each instance watches its own config source,
-validates, and swaps its runtime independently. There is **no cluster-wide
-version barrier, no all-member readiness gate, and no coordinated rollback**
-([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#clustered-live-reload-is-rejected-fail-closed)).
+- A **coordinated** cohort makes a **replacement-required** change — a durable
+  session identity (client id, subscription), a lease/outbox/DLQ **store target**,
+  `deployment_mode`, or the cohort's own `bridge.cluster.members` /
+  `bridge.cluster.endpoints` / `bridge.cluster.rollout`. The cohort refuses to
+  roll these through the barrier and names the class.
+- The cohort is **not** in coordinated mode, or its config lives on a **file /
+  EFS** source. These refuse every live config change, fail-closed, so every
+  change is a whole-cohort replacement.
 
-Because of that, the runtime **refuses every non-no-op live reload of (or into) a
-clustered deployment, fail-closed** (finding H8). The guard runs in both reload
-paths — `bridge.Supervisor.apply` and the AWS file-based composition root
-`bootstrap.App.applyLogicalConfig` — after no-op detection but before any
-build or stop. On refusal the current runtime keeps serving unchanged, the
-applied `config_version` does not advance, and the failure is surfaced through
-the existing path (`ConfigReloads{state="failure"}` counter and the failed
-`SwapEvent`; on the AWS root, a returned error that keeps the last-good runtime
-and reports `committed_not_applied` for an admin commit).
+For a **live-safe** change in a **coordinated** cohort you do **not** need this
+procedure — post the config and the cohort rolls it with no downtime. See
+[Operating a coordinated cohort](../cluster/operating.md) for that flow and for
+[which changes are live-safe](../cluster/operating.md#which-changes-roll-live-and-which-need-a-window),
+and the [cluster configuration guide](../cluster/README.md) for choosing a mode.
 
-`WithAllowDestructiveReload` does **not** bypass this guard: it only discards
-*local* durable backlog and cannot substitute for cluster consensus.
+## Why a live change is refused
 
-> **Local CAS / reference tracking is not cluster consensus.** The
-> `BridgeConfig.Version` optimistic-concurrency (CAS) field and the per-process
-> applied-config reference tracking only guard concurrent *commits* to a shared
-> config file and make per-process reloads idempotent. They are **not** a
-> cluster version barrier, **not** distributed consensus, and provide **no**
-> all-member readiness gate or coordinated rollback. Do **not** describe or rely
-> on them as resilient live reconfiguration across a cohort.
+Reconfiguration is **per-process**: each instance watches its own config source,
+validates, and swaps its runtime independently. Without the coordinated barrier
+there is **no cluster-wide version barrier, no all-member readiness gate, and no
+coordinated rollback**
+([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#clustered-live-reload-is-rejected-fail-closed)),
+so a live change would leave the cohort split across versions. The runtime
+therefore refuses a live reload of a clustered deployment: the running config
+keeps serving unchanged, the applied `config_version` does not advance, and the
+refusal is surfaced on the failure metric (`ConfigReloads{state="failure"}`).
+Discarding local durable backlog does **not** substitute for cluster consensus,
+and the config file's version (optimistic-concurrency) field only guards
+concurrent commits — it is **not** a cluster barrier.
 
 A clustered config change is therefore an **externally coordinated whole-cohort
 replacement**: stage, validate all, quiesce, drain/stop all, commit, start all,
@@ -48,11 +52,10 @@ deployment, or scripted `deploy` job). Treat the whole cohort as one unit.
    `version`) in a staging location the cohort does *not* yet read. Do not write
    it to the live config source yet.
 
-2. **Validate on every member.** Confirm the staged config passes validation for
-   the exact image/plugin set each member runs (`config.Validate` / the binary's
-   dry-run validation). A config that one member cannot load or validate would
-   wedge that member — validate against **all** members before proceeding, not
-   just one.
+2. **Validate on every member.** Confirm the staged config passes the binary's
+   dry-run validation for the exact image/plugin set each member runs. A config
+   that one member cannot load or validate would wedge that member — validate
+   against **all** members before proceeding, not just one.
 
 3. **Quiesce ingress.** Stop new work entering the cohort: detach the cohort from
    its load balancer / ingress (e.g. deregister the ALB target group), or pause
@@ -103,8 +106,26 @@ Rollback is also whole-cohort — never per-instance:
 - Do **not** leave the cohort split — do not re-enable ingress while any member
   is on a different `config_version` or below the readiness barrier.
 
+## Recovering a stuck coordinated rollout
+
+If a **coordinated** rollout will not resolve (deep health
+`config_watch.rollout.state` stuck at `proposed` / `staging`):
+
+- Deep health names the member the cohort is waiting on (the roster minus who has
+  acked) — most often one whose own config source has not yet delivered the
+  change. Confirm that member actually received the new config.
+- A rollout that cannot gather every acknowledgement **aborts on its own at its
+  deadline**; the running config keeps serving. Fix the config and re-post it, or
+  roll the config source back to the last committed document.
+- A member that restarts while the source still holds an uncommitted candidate
+  boots on the last committed config — see
+  [Operating a coordinated cohort](../cluster/operating.md#when-a-change-doesnt-go-through).
+
 ## Related
 
+- [Operating a coordinated cohort](../cluster/operating.md) — the no-downtime
+  flow for live-safe changes and how to read a rollout's health.
+- [Cluster configuration guide](../cluster/README.md) — choosing a cluster mode.
 - [Scenario 10: Dynamic Reconfiguration — Cluster Semantics and Limitations](../scenarios/10-dynamic-reconfiguration.md#cluster-semantics-and-limitations)
 - [Cluster reconfiguration](cluster-reconfiguration.md) — background on
   per-process reconfiguration and cluster invariants.

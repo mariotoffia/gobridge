@@ -13,6 +13,7 @@
 // Session modes: Ephemeral, Persistent, Exclusive.
 //
 // Key design decisions:
+//
 //   - Manual protocol acknowledgment (ack-after-durable-handoff): the Paho
 //     client runs with EnableManualAcknowledgment, so the PUBACK (QoS 1) /
 //     PUBCOMP (QoS 2) is sent only when the runtime SETTLES the delivery
@@ -24,53 +25,81 @@
 //     is safe (head-of-line: acks queue behind the oldest unsettled
 //     message). See delivery.go for the full contract and residual
 //     boundaries.
+//
 //   - No local message drops under load: the router dispatches each inbound
 //     publish SYNCHRONOUSLY — the publish callback blocks on the emit
 //     callback — so a slow downstream fills the broker's Receive Maximum
 //     window (un-acked QoS 1/2 messages) and stops read-ahead instead of
 //     spawning unbounded goroutines (backpressure).
-//   - Startup buffering, then orphan ack-and-drop: publishes arriving
-//     before a matching Receiver registers (persistent-session backlog
-//     delivered on CONNACK before route runners start) are held un-acked
-//     in a bounded buffer during a startup GRACE WINDOW (session
-//     unmatched_grace, default 30s, restarted on every (re)connect) and
-//     flushed, in order, when the handler registers — never silently
-//     acked-and-dropped. AFTER the window a still-unmatched publish is an
-//     ORPHAN broker subscription (a route removed from config whose
-//     subscription survives on the resumed clean_start=false session): it
-//     is acked-and-dropped (MetricMQTTRouterUnmatchedDropped) so its
-//     un-acked slot stops pinning the broker's Receive-Maximum in-flight
-//     window and head-of-line-blocking in-order acks for the whole
-//     session, and its exact topic is unsubscribed to converge broker
-//     state (see acl_router.go). Without this, one permanently-un-acked
+//
+//   - Startup buffering, then covered-retain / orphan ack-and-drop:
+//     publishes arriving before a matching Receiver registers
+//     (persistent-session backlog delivered on CONNACK before route
+//     runners start) are held un-acked in a bounded buffer during a
+//     startup GRACE WINDOW (session unmatched_grace, default 30s,
+//     restarted on every (re)connect) and flushed, in order, when the
+//     handler registers — never silently acked-and-dropped. AFTER the
+//     window a still-unmatched publish is classified by whether a
+//     subscription the session still wants COVERS its topic:
+//
+//     COVERED (an active broker subscription, a filter in the current
+//     plan, or pending managed history — a live route whose receiver
+//     handler registered late): the publish is RETAINED un-acked in the
+//     bounded pending buffer (MetricMQTTRouterCoveredRetained) until the
+//     handler registers and flushes it, or the broker redelivers it on
+//     reconnect. It is NEVER acked-and-dropped — that would convert
+//     startup slowness into acknowledged live-route loss and break
+//     at-least-once. Only a covered QoS 0 the buffer cannot hold is a
+//     best-effort drop (MetricMQTTRouterCoveredDropped). Before the FIRST
+//     Reconcile of a process lifetime EVERY topic is treated as covered,
+//     so a broker backlog replayed on CONNACK ahead of the first plan can
+//     never be misclassified as orphan traffic (MQTT-L2).
+//
+//     ORPHAN (no subscription still wants the topic — a route removed
+//     from config whose subscription survives on the resumed
+//     clean_start=false session): it is acked-and-dropped
+//     (MetricMQTTRouterUnmatchedDropped) so its un-acked slot stops
+//     pinning the broker's Receive-Maximum in-flight window and
+//     head-of-line-blocking in-order acks for the whole session, and its
+//     exact topic is unsubscribed to converge broker state (see
+//     acl_router_grace.go). Without this, one permanently-un-acked
 //     orphan publish stalls ingress for every route on the shared session.
 //     Unsubscribe-on-resume hygiene: MQTT offers no way to list a
-//     session's server-side subscriptions, so an orphan cannot be
-//     detected by diffing a subscription list. Instead the delta is
-//     tracked the only way the protocol allows — a publish that is still
-//     unmatched AFTER the grace window (i.e. after the session plan
-//     reconciliation has settled and every receiver has registered its
-//     filters) identifies its own topic as orphaned, and the adapter
-//     issues UNSUBSCRIBE for that exact topic (deduped per topic,
-//     rate-limited to one warn + one unsubscribe per topic), UNLESS a
-//     still-desired subscription (an active broker subscription or a filter
-//     in the current plan) covers the topic — in that case the receiver has
-//     merely not registered its handler yet, so the UNSUBSCRIBE is skipped
-//     (ack-and-drop still applies) to avoid killing a live route. A wildcard
+//     session's server-side subscriptions, so an orphan identifies itself
+//     by its own post-grace publish and is unsubscribed by that exact
+//     topic (deduped per topic, one warn + one unsubscribe). A wildcard
 //     orphan subscription may survive the concrete-topic UNSUBSCRIBE, but
 //     its publishes keep being acked-and-dropped, so the stall cannot
-//     recur. The mechanism converges broker state without a
-//     subscription-listing API.
+//     recur; configure the managed subscription store to converge
+//     wildcard filters durably.
+//
+//   - Ingress poison escape (never a session kill switch): an inbound
+//     publish that violates a LOCAL representational cap the broker
+//     cannot enforce (max_payload_bytes, the metadata byte cap, the User
+//     Property count cap) while fitting the CONNECT-advertised Maximum
+//     Packet Size is ACKED-and-DROPPED
+//     (MetricMQTTIngressPoisonDropped) — a deliberate, loudly counted
+//     loss. Terminating the session instead would hand any authorized
+//     publisher a permanent kill switch: the un-acked packet would be
+//     redelivered on every clean_start=false resume and re-latch the
+//     session terminal forever (MQTT-L1). Only violations a compliant
+//     broker can never forward (malformed packets, total size above the
+//     advertised maximum) fail the session closed, at the raw pre-decode
+//     guard (ingress_conn.go).
+//
 //   - Per-receiver topic filtering: each Receiver registers the MQTT topic
 //     filters of its subscriptions (wildcards + and # supported); a
 //     publish is dispatched only to receivers whose filters match, so
 //     routes sharing one session do not process each other's traffic.
+//
 //   - Header injection prevention: reserved x-bridge.* headers are stripped
 //     from incoming MQTT messages at ingress; on egress, INTERNAL-ONLY
 //     reserved headers are stripped so bridge bookkeeping does not leak to
 //     non-bridge subscribers (see acl_headers.go).
+//
 //   - QoS completion: Sender.Send blocks until PUBACK (QoS 1) or PUBCOMP
 //     (QoS 2), so a nil return confirms broker acceptance.
+//
 //   - QoS/retain are broker<->client packet semantics, not end-to-end
 //     guarantees.
 //

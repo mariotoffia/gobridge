@@ -28,7 +28,8 @@ var _ ports.Sender = (*CircuitBreakerSender)(nil)
 // NewCircuitBreakerSender wraps the given sender with a circuit breaker.
 // The breaker is supplied by the composition root so this adapter never
 // imports the breaker implementation package — only the ports.CircuitBreaker
-// contract.
+// contract (plus its optional ports.CircuitBreakerAdmitter capability,
+// preferred by ports.AdmitCircuitBreaker for generation-safe accounting).
 func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *CircuitBreakerSender {
 	sessionID := ""
 	if inner.session != nil {
@@ -52,20 +53,29 @@ func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *Circu
 // Send checks the circuit breaker state before delegating to the inner
 // sender. Records the outcome for state transitions.
 //
+// Admission goes through ports.AdmitCircuitBreaker: route max_in_flight
+// drives CONCURRENT Sends through this one breaker, and the token-less
+// BeforeRequest/AfterRequest pair would account an outcome that arrives
+// after a state transition against the current generation — a stale
+// half-open probe release or a spurious re-open (MQTT-O3). The settle
+// callback carries the admission generation, so the breaker discards
+// stale outcomes instead.
+//
 // On circuit-open rejection, the emitted MetricMQTTPublishFailures
 // counter carries BOTH a reason=circuit_open tag AND the session_id
 // tag — matching the tagging convention used by Sender.Send so that
 // operators can correlate publish failures (whether broker-side or
 // breaker-side) by session.
 func (s *CircuitBreakerSender) Send(ctx context.Context, msg ports.OutboundMessage) error {
-	if err := s.breaker.BeforeRequest(); err != nil {
+	settle, err := ports.AdmitCircuitBreaker(s.breaker)
+	if err != nil {
 		s.metrics.Counter(MetricMQTTPublishFailures, 1,
 			shared.Tag{Key: "reason", Value: "circuit_open"},
 			shared.Tag{Key: shared.TagKeySessionID, Value: s.sessionID},
 		)
 		return err
 	}
-	err := s.inner.Send(ctx, msg)
-	s.breaker.AfterRequest(err)
+	err = s.inner.Send(ctx, msg)
+	settle(err)
 	return err
 }

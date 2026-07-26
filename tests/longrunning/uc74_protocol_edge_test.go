@@ -42,10 +42,13 @@ func TestUC74_MQTTRetainedMessages(t *testing.T) {
 		Payload: []byte(`{"retained":true}`),
 	})
 	require.NoError(t, retainedSnd.Send(ctx, ports.OutboundMessage{Envelope: env}))
-	time.Sleep(1 * time.Second) // SYNC: let retained message propagate to broker
 
-	// Collector subscribes — should immediately receive the retained message.
+	// Collector subscribes — the QoS 1 PUBACK above means the broker has
+	// stored the retained message, so the subscribe delivers it. Wait for
+	// that delivery instead of guessing propagation time.
 	collector := newMQTTCollector(t, "uc74/retained", "uc74-col")
+	lrWaitFor(t, 30*time.Second, "retained message delivered on subscribe",
+		func() bool { return collector.count() >= 1 })
 
 	// SQS input queue.
 	sqsURL, sqsClient := setupSQSQueue(t, "uc74")

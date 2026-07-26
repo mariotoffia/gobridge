@@ -422,17 +422,7 @@ func drainEvents(sess *paho.Session, n int, timeout time.Duration) {
 
 func waitForCount(t *testing.T, c *atomic.Int64, want int64, timeout time.Duration, desc string) {
 	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		if c.Load() >= want {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for %s (got %d, want %d)", desc, c.Load(), want)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+	wait.Until(t, timeout, desc, func() bool { return c.Load() >= want })
 }
 
 // ---------------------------------------------------------------------------

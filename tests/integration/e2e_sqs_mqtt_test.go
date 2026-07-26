@@ -251,7 +251,14 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 
 	sendToSQS(t, sqsClient, queueURL, `{"crash":"test"}`, nil)
 
-	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
+	// Deterministic crash point: wait until the message is persisted as a
+	// pending shared-outbox record. A's drain poll is 30s, so it cannot
+	// drain before the crash below.
+	pkA := persistence.OutboxPartitionKey(sessionID, "bind-1")
+	e2eWaitFor(t, 10*time.Second, "outbox record pending before crash", func() bool {
+		recs, err := outboxStore.QueryPending(ctxA, pkA, 1)
+		return err == nil && len(recs) >= 1
+	})
 
 	cancelA()
 	_ = rtA.Stop(context.Background())
@@ -344,7 +351,13 @@ func TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover(t *testing.T) {
 
 	sendToSQS(t, sqsClient, queueURL, `{"takeover":"test"}`, nil)
 
-	time.Sleep(3 * time.Second) // OTHER: simulated crash delay — let message enter pipeline before killing instance A
+	// Deterministic crash point: wait until the message is persisted as a
+	// pending shared-outbox record (A has no session, so it cannot drain).
+	pkA := persistence.OutboxPartitionKey(sessionID, "bind-1")
+	e2eWaitFor(t, 10*time.Second, "outbox record pending before crash", func() bool {
+		recs, err := outboxStore.QueryPending(ctxA, pkA, 1)
+		return err == nil && len(recs) >= 1
+	})
 
 	cancelA()
 	_ = rtA.Stop(context.Background())

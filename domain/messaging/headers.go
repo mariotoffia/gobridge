@@ -28,6 +28,15 @@ const (
 	HeaderRouteOverride   = "x-bridge.route-override"
 	HeaderForwardedFrom   = "x-bridge.forwarded-from"
 	HeaderForwardedHop    = "x-bridge.forwarded-hop"
+	// HeaderGeneratedID marks that Envelope.ID was ADAPTER-GENERATED rather than
+	// carried by the producer. A count-less source transport (MQTT, AMQP 0-9-1,
+	// HTTP) that stamps a fresh id on every broker redelivery cannot be counted by
+	// the replay ledger — each redelivery resets the attempt count, so
+	// MaxReplayAttempts never fires (MQTT-CORE-1). The runtime reads this marker to
+	// treat such a message as UNCOUNTABLE and sink it terminally instead of looping
+	// forever. It is INTERNAL-ONLY: never serialized to a peer, so an adapter must
+	// stamp it locally at ingress and it can never be spoofed inbound.
+	HeaderGeneratedID = "x-bridge.generated-id"
 )
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.
@@ -62,7 +71,8 @@ func IsReservedHeader(key string) bool {
 // exposed to a non-bridge consumer. Case-insensitive.
 func IsInternalOnlyHeader(key string) bool {
 	return equalsAnyFold(key,
-		HeaderRouteID, HeaderRouteOverride, HeaderSourceID, HeaderContentType)
+		HeaderRouteID, HeaderRouteOverride, HeaderSourceID, HeaderContentType,
+		HeaderGeneratedID)
 }
 
 // IsBridgeToBridgeHeader reports whether key is a reserved header that

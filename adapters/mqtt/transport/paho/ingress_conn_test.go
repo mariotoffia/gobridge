@@ -12,8 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 func TestMQTTIngressConn_FragmentedAndCoalescedReadsPreservePackets(t *testing.T) {
@@ -25,7 +23,6 @@ func TestMQTTIngressConn_FragmentedAndCoalescedReadsPreservePackets(t *testing.T
 	guarded := newMQTTIngressConn(
 		underlying,
 		uint32(len(wire)),
-		64,
 		nil,
 	)
 
@@ -58,7 +55,6 @@ func TestMQTTIngressConn_RemainingLengthVarintBoundariesPass(t *testing.T) {
 			guarded := newMQTTIngressConn(
 				newTestNetConn(packet, 7),
 				uint32(len(packet)),
-				uint32(remainingLength),
 				nil,
 			)
 
@@ -76,7 +72,6 @@ func TestMQTTIngressConn_QoSVariableHeadersPass(t *testing.T) {
 			guarded := newMQTTIngressConn(
 				newTestNetConn(packet, 2),
 				uint32(len(packet)),
-				4,
 				nil,
 			)
 
@@ -96,7 +91,6 @@ func TestMQTTIngressConn_NonPublishPacketsPassThrough(t *testing.T) {
 	guarded := newMQTTIngressConn(
 		newTestNetConn(wire, len(wire)),
 		uint32(len(wire)),
-		1,
 		nil,
 	)
 
@@ -105,83 +99,53 @@ func TestMQTTIngressConn_NonPublishPacketsPassThrough(t *testing.T) {
 	assert.Equal(t, wire, got)
 }
 
-func TestMQTTIngressConn_OversizePayloadRejectsBeforePahoDecode(t *testing.T) {
-	packet := testPublishPacket(1, "guard/oversize", nil, []byte("12345"))
-	var rejected error
-	guarded := newMQTTIngressConn(
-		newTestNetConn(packet, 2),
-		uint32(len(packet)),
-		4,
-		func(err error) { rejected = err },
-	)
+// TestMQTTIngressConn_RepresentationalCapViolationsPassThrough pins the
+// MQTT-L1 boundary: a packet violating only a LOCAL representational cap
+// (oversize payload, too many user properties, oversize metadata) but
+// fitting the advertised Maximum Packet Size is FORWARDED by a compliant
+// broker, so the raw guard must NOT reject it terminally — there is no way
+// to ack below Paho, and an un-acked terminal rejection is a
+// publisher-triggerable permanent redelivery/terminal loop. The guard
+// passes such packets through; the router callback acks-and-drops them
+// (TestRouter_IngressPoisonAckDrop*).
+func TestMQTTIngressConn_RepresentationalCapViolationsPassThrough(t *testing.T) {
+	tests := []struct {
+		name   string
+		packet []byte
+	}{
+		{
+			name:   "payload above max_payload_bytes",
+			packet: testPublishPacket(1, "guard/oversize", nil, bytes.Repeat([]byte{'p'}, int(DefaultMaxPayloadBytes)+1)),
+		},
+		{
+			name:   "user property count above cap",
+			packet: testPublishPacket(1, "guard/properties", testUserProperties(maxIngressUserProperties+1), []byte("ok")),
+		},
+		{
+			name: "topic plus properties metadata above cap",
+			packet: testPublishPacket(0,
+				string(bytes.Repeat([]byte{'t'}, 65_535)),
+				bytes.Repeat([]byte{0x01, 0x00}, 32_765),
+				nil,
+			),
+		},
+	}
 
-	got, err := io.ReadAll(guarded)
-	require.Error(t, err)
-	assert.Empty(t, got)
-	assert.Same(t, rejected, err)
-	assert.ErrorIs(t, err, shared.ErrPayloadTooLarge)
-	var ingressErr *mqttIngressError
-	require.ErrorAs(t, err, &ingressErr)
-	assert.Equal(t, mqttIngressPayloadTooLarge, ingressErr.kind)
-	assert.NotContains(t, err.Error(), "guard/oversize")
-	assert.NotContains(t, err.Error(), "12345")
-}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			poisonCount := 0
+			guarded := newMQTTIngressConn(
+				newTestNetConn(test.packet, 1<<12),
+				uint32(len(test.packet)),
+				func(error) { poisonCount++ },
+			)
 
-func TestMQTTIngressConn_PropertyAmplificationRejectsBeforePahoDecode(t *testing.T) {
-	properties := testUserProperties(maxIngressUserProperties + 1)
-	packet := testPublishPacket(1, "guard/properties", properties, []byte("ok"))
-	var rejected error
-	guarded := newMQTTIngressConn(
-		newTestNetConn(packet, 3),
-		uint32(len(packet)),
-		2,
-		func(err error) { rejected = err },
-	)
-
-	_, err := io.ReadAll(guarded)
-	require.Error(t, err)
-	assert.Same(t, rejected, err)
-	assert.ErrorIs(t, err, shared.ErrInvalidPayload)
-	var ingressErr *mqttIngressError
-	require.ErrorAs(t, err, &ingressErr)
-	assert.Equal(t, mqttIngressUserPropertiesTooLarge, ingressErr.kind)
-}
-
-func TestMQTTIngressConn_RawPropertyLengthAndMetadataCapsReject(t *testing.T) {
-	t.Run("raw properties", func(t *testing.T) {
-		properties := bytes.Repeat([]byte{0x01, 0x00}, int(maxIngressPropertyBytes/2)+1)
-		packet := testPublishPacket(0, "t", properties, nil)
-		guarded := newMQTTIngressConn(
-			newTestNetConn(packet, len(packet)),
-			uint32(len(packet)),
-			1,
-			nil,
-		)
-
-		_, err := io.ReadAll(guarded)
-		require.Error(t, err)
-		var ingressErr *mqttIngressError
-		require.ErrorAs(t, err, &ingressErr)
-		assert.Equal(t, mqttIngressPropertiesTooLarge, ingressErr.kind)
-	})
-
-	t.Run("topic plus properties metadata", func(t *testing.T) {
-		topic := string(bytes.Repeat([]byte{'t'}, 65_535))
-		properties := bytes.Repeat([]byte{0x01, 0x00}, 32_765)
-		packet := testPublishPacket(0, topic, properties, nil)
-		guarded := newMQTTIngressConn(
-			newTestNetConn(packet, len(packet)),
-			uint32(len(packet)),
-			1,
-			nil,
-		)
-
-		_, err := io.ReadAll(guarded)
-		require.Error(t, err)
-		var ingressErr *mqttIngressError
-		require.ErrorAs(t, err, &ingressErr)
-		assert.Equal(t, mqttIngressMetadataTooLarge, ingressErr.kind)
-	})
+			got, err := io.ReadAll(guarded)
+			require.NoError(t, err, "representational cap violations must reach the callback ack-drop, not raw-guard terminal")
+			assert.Equal(t, test.packet, got)
+			assert.Zero(t, poisonCount)
+		})
+	}
 }
 
 func TestMQTTIngressConn_MalformedPacketsRejectWithTypedCause(t *testing.T) {
@@ -240,7 +204,6 @@ func TestMQTTIngressConn_MalformedPacketsRejectWithTypedCause(t *testing.T) {
 			var rejected error
 			guarded := newMQTTIngressConn(
 				newTestNetConn(test.wire, 1),
-				1<<20,
 				1<<20,
 				func(err error) { rejected = err },
 			)
@@ -312,7 +275,6 @@ func TestMQTTIngressConn_PartialFrameTransportErrorsDoNotPoison(t *testing.T) {
 			guarded := newMQTTIngressConn(
 				test.conn,
 				1<<20,
-				1<<20,
 				func(error) { poisonCount++ },
 			)
 
@@ -357,7 +319,6 @@ func TestMQTTIngressConn_CompleteMalformedFramesPoisonExactlyOnce(t *testing.T) 
 			guarded := newMQTTIngressConn(
 				underlying,
 				1<<20,
-				1<<20,
 				func(error) { poisonCount++ },
 			)
 
@@ -382,7 +343,6 @@ func TestMQTTIngressConn_MaximumPacketSizeRejectsBeforeBodyRead(t *testing.T) {
 	guarded := newMQTTIngressConn(
 		underlying,
 		uint32(len(packet)-1),
-		64,
 		nil,
 	)
 
@@ -396,7 +356,7 @@ func TestMQTTIngressConn_MaximumPacketSizeRejectsBeforeBodyRead(t *testing.T) {
 
 func TestMQTTIngressConn_DelegatesWritesAddressesAndDeadlines(t *testing.T) {
 	underlying := newTestNetConn(nil, 0)
-	guarded := newMQTTIngressConn(underlying, 1024, 16, nil)
+	guarded := newMQTTIngressConn(underlying, 1024, nil)
 	deadline := time.Unix(1_700_000_000, 123)
 
 	n, err := guarded.Write([]byte("outbound"))
@@ -417,7 +377,7 @@ func TestMQTTIngressConn_DelegatesWritesAddressesAndDeadlines(t *testing.T) {
 
 func TestMQTTIngressConn_ContextCancellationAndCloseUnblockRead(t *testing.T) {
 	server, client := net.Pipe()
-	guarded := newMQTTIngressConn(client, 1024, 16, nil)
+	guarded := newMQTTIngressConn(client, 1024, nil)
 	t.Cleanup(func() { _ = server.Close() })
 	readStarted := make(chan struct{})
 	readDone := make(chan error, 1)

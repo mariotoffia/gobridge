@@ -4,6 +4,15 @@ Status: accepted
 Date: 2026-07-16
 Deciders: GoBridge core
 Supersedes: 0007
+Superseded by: 0013 (for live-safe deltas only)
+
+> **Superseded by [0013](0013-coordinated-cluster-config-rollout.md) for live-safe
+> deltas.** A coordinated cohort (`cluster.rollout: coordinated` on the versioned
+> DynamoDB config source) now rolls live-safe deltas through an all-member barrier
+> instead of refusing them. This ADR still governs everything else: a
+> non-coordinated cluster, an EFS/file-sourced cluster, and any
+> replacement-required delta (durable-identity or store-target change) keep the
+> whole-cohort replacement procedure below.
 
 ## Context
 

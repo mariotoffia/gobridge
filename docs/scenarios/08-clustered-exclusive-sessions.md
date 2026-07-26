@@ -561,15 +561,16 @@ in `startup_allowance` or the measured deployment evidence.
 
 #### Warm-standby deployment invariant
 
-The blueprint contains no replica count or peer-health inventory at preflight,
-so GoBridge cannot honestly prove that a healthy warm standby exists. For every
-declared objective at or below 60 seconds, the deployment must enforce at least
-one healthy, continuously polling standby. The repository task that owns adding
-that enforcement to the shipped AWS deployment model is
-`PROD_READY_ISSUES_PLAN.md` **Task 11: Ship a DynamoDB-coordinated ECS HA
-profile**. Until Task 11 supplies replica and health information, operators must
-enforce and verify the invariant in their orchestrator; configuration validation
-must not be presented as proof.
+The blueprint itself contains no replica count or peer-health inventory at
+preflight, so config validation alone cannot prove that a healthy warm standby
+exists — never present configuration validation as that proof. The shipped AWS
+deployment model now enforces the invariant outside the blueprint: the
+[`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha)
+deploys one control task plus at least two workers (`WorkerDesiredCount` may
+never be below two) across a required two-AZ subnet spread, so any single task
+loss leaves at least one continuously polling warm standby. A deployment that
+does **not** use this construct must still enforce and verify the invariant in
+its own orchestrator.
 
 #### Measurement and alerting
 

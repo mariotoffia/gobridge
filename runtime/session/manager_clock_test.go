@@ -12,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // minimalLeaseStore is a tiny in-memory LeaseStore used by the session
@@ -128,21 +129,13 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 		_ = mgr.Close(context.Background())
 	}()
 
-	// Wait until the session manager has acquired the lease and entered
-	// the renewLoop (at which point the fake timer is registered).
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := mgr.Token(); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("session manager did not acquire lease")
-		}
-		time.Sleep(5 * time.Millisecond) // OTHER: real-time sync for clocktest.Fake
-	}
-	// OTHER: real-time sync for clocktest.Fake
-	// Give the goroutine a moment to reach `<-timer.C()` after acquire.
-	time.Sleep(20 * time.Millisecond)
+	// Wait until the session manager has acquired the lease and the renew
+	// goroutine has registered its interval timer with the fake clock
+	// (TimerCount counts non-stopped, non-fired timers). The timer's channel
+	// is buffered, so once it is registered an Advance can never lose the
+	// fire even if the goroutine has not yet reached `<-timer.C()`.
+	wait.Until(t, 2*time.Second, "lease acquired", func() bool { _, ok := mgr.Token(); return ok })
+	wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 	if got := store.renewCount(); got != 0 {
 		t.Fatalf("no renew should have fired yet, got %d", got)
@@ -167,9 +160,10 @@ func TestSessionManager_RenewInterval_FakeClock(t *testing.T) {
 		t.Fatalf("after first advance: expected 1 renew, got %d", got)
 	}
 
-	// OTHER: real-time sync for clocktest.Fake
-	// Allow the renew goroutine to call timer.Reset before the next advance.
-	time.Sleep(20 * time.Millisecond)
+	// Firing removed the timer from the fake clock (TimerCount drops to 0);
+	// wait for the renew goroutine's timer.Reset to re-register it so the
+	// next Advance is guaranteed to hit an armed timer.
+	wait.Until(t, 2*time.Second, "renew timer re-armed", func() bool { return fake.TimerCount() >= 1 })
 
 	// Still no second renew without further advance.
 	select {

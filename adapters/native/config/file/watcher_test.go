@@ -298,7 +298,7 @@ func TestWatcher_DebounceCoalesces(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		writeYAML(t, path, "rapid-"+string(rune('0'+i)))
-		// SYNC: space writes so fsnotify delivers separate events.
+		// OTHER: fsnotify coalescing window — events intentionally debounced.
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -417,6 +417,6 @@ func waitForTicker(t *testing.T, fc *clocktest.Fake) {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for poll ticker to register")
 		}
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond) // OTHER: poll pacing — loop exits on fc.TickerCount()
 	}
 }

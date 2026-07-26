@@ -549,6 +549,46 @@ func (m *Manager) NotifyApplyResult(cfg *ports.BridgeConfig, err error) {
 	}
 }
 
+// AdoptRunning reconciles the RUNNING state to a config the manager did NOT emit.
+// A coordinated cluster rollout creates exactly this case: the barrier applies the
+// applier's frozen candidate, or the durable committed artifact decoded at
+// boot/reconcile — a DIFFERENT pointer than the desired emit, which
+// NotifyApplyResult drops as foreign (it correlates by that exact pointer). Left
+// unreconciled, runningFingerprint stays behind and ReconfigurePending — and thus
+// deep-health Degraded — latches true forever though the member is converged.
+//
+// It advances runningVersion/runningFingerprint to cfg and clears any prior apply
+// error WITHOUT the emit-pointer correlation. When cfg matches the current desired
+// content this clears the pending signal (the ordinary rollout: the cohort
+// committed the operator's change and this member now runs it). When it does not —
+// a boot-time substitution to the committed config while the source still holds a
+// rejected candidate — the divergence stays visible, which is correct: the
+// operator must reconcile the source.
+//
+// A composition root calls this AFTER a confirmed barrier-driven swap, with the
+// config the runtime is actually serving. A nil cfg is ignored; an unhashable cfg
+// fails closed exactly like NotifyApplyResult (running is left behind and the
+// unverifiable convergence is surfaced). Safe for concurrent use.
+func (m *Manager) AdoptRunning(cfg *ports.BridgeConfig) {
+	if cfg == nil {
+		return
+	}
+	fp, hashErr := configFingerprint(cfg)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyResultSeen = true
+	if hashErr != nil {
+		// Cannot fingerprint the adopted config, so convergence cannot be PROVEN:
+		// leave runningFingerprint behind and surface the error (fail closed).
+		m.lastApplyErr = fmt.Errorf("config manager: barrier-applied config cannot be fingerprinted, "+
+			"convergence unverifiable: %w", hashErr)
+		return
+	}
+	m.runningVersion = cfg.Version
+	m.runningFingerprint = fp
+	m.lastApplyErr = nil
+}
+
 // configFingerprint returns a stable content fingerprint of the FULL logical
 // config, used to detect whether the running config still matches the desired
 // one WITHOUT relying on the operator-controlled, non-unique BridgeConfig.Version.

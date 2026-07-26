@@ -143,18 +143,32 @@ func TestDebouncedStrategy_ResetOnNewChange(t *testing.T) {
 	defer cancel()
 
 	fake := clocktest.New()
-	in := make(chan *ports.BridgeConfig, 1)
+	// Unbuffered input: each send returns only once the goroutine has consumed
+	// the config (startup creates the timer stopped before the first receive),
+	// leaving the timer.Reset call as the only gap — gated on TimerCount below.
+	in := make(chan *ports.BridgeConfig)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("first")
-	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	// TimerCount 0→1 happens only when the goroutine arms the debounce timer
+	// for "first"; Advance before that would cull the stopped timer.
+	wait.Until(t, time.Second, "debounce timer armed for first", func() bool {
+		return fake.TimerCount() == 1
+	})
 	fake.Advance(quiet / 2)
 
 	assertNoEmission(t, out, 0)
 
 	in <- stratCfg("second")
-	time.Sleep(1 * time.Millisecond) // let goroutine reach select
 	fake.Advance(quiet / 2)
+	// If Advance raced the goroutine's Reset for "second", the old deadline
+	// (exactly quiet after the first arm) fired and TimerCount dropped to 0;
+	// Reset then drains the stale fire before the select can see it and
+	// re-arms. Either way TimerCount()==1 here proves the timer is armed for
+	// "second" with a deadline the final Advance(quiet) reaches.
+	wait.Until(t, time.Second, "debounce timer re-armed for second", func() bool {
+		return fake.TimerCount() == 1
+	})
 
 	assertNoEmission(t, out, 0)
 
@@ -189,12 +203,17 @@ func TestDebouncedStrategy_ContextCancel_PendingTimer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := clocktest.New()
-	in := make(chan *ports.BridgeConfig, 1)
+	// Unbuffered input: the send returns only once the goroutine consumed it.
+	in := make(chan *ports.BridgeConfig)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
 
-	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	// Timer armed (0→1) proves the goroutine batched "pending" — the state
+	// this test must cancel out of.
+	wait.Until(t, time.Second, "debounce timer armed", func() bool {
+		return fake.TimerCount() == 1
+	})
 	fake.Advance(quiet / 4)
 	cancel()
 
@@ -212,11 +231,15 @@ func TestDebouncedStrategy_InputChannelClosed_PendingTimer(t *testing.T) {
 	defer cancel()
 
 	fake := clocktest.New()
-	in := make(chan *ports.BridgeConfig, 1)
+	// Unbuffered input: the send returns only once the goroutine consumed it.
+	in := make(chan *ports.BridgeConfig)
 	out := NewDebouncedStrategy(quiet, fake).Filter(ctx, in)
 
 	in <- stratCfg("last")
-	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	// Timer armed (0→1) proves "last" is batched; the close below must flush it.
+	wait.Until(t, time.Second, "debounce timer armed", func() bool {
+		return fake.TimerCount() == 1
+	})
 	fake.Advance(quiet / 4)
 	close(in)
 
@@ -420,7 +443,12 @@ func TestWindowedStrategy_ContextCancel(t *testing.T) {
 	out := NewWindowedStrategy(quiet, maxDelay, fake).Filter(ctx, in)
 
 	in <- stratCfg("pending")
-	time.Sleep(1 * time.Millisecond) // let goroutine reach select
+	// TimerCount 2 (quiet + max timers armed) is only reachable after the
+	// goroutine consumed "pending"; startup transients never exceed one live
+	// timer, so no unbuffered send is needed here.
+	wait.Until(t, time.Second, "windowed quiet+max timers armed", func() bool {
+		return fake.TimerCount() == 2
+	})
 	fake.Advance(quiet / 4)
 	cancel()
 

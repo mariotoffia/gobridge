@@ -17,6 +17,15 @@ import (
 
 const headerMQTTResponseTopic = "mqtt.response-topic"
 
+// headerMQTTGeneratedID is an ADAPTER-INTERNAL user-property key that
+// publishWithIdentity stamps alongside a generated mqtt.message-id to record
+// that the resolved identity is adapter-minted (the producer supplied no stable
+// mqtt.message-id / correlation data). It never crosses the wire: it is added
+// only to the in-memory callback copy before fan-out, and EnvelopeFromPublish
+// consumes it into messaging.HeaderGeneratedID rather than emitting it as an
+// application header (MQTT-CORE-1).
+const headerMQTTGeneratedID = "mqtt.generated-id"
+
 // HeaderMessageID is the user-property key used to round-trip the
 // domain Envelope.ID through MQTT. On receive, this header takes
 // precedence for setting Envelope.ID; the correlation-id header is
@@ -120,6 +129,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	}
 	var subject string
 	var expiresAt time.Time
+	// generatedIdentity records that the resolved Envelope.ID is adapter-minted
+	// (no producer mqtt.message-id / correlation data). It is set either by the
+	// headerMQTTGeneratedID marker publishWithIdentity stamps before fan-out, or
+	// by the direct-caller fallback below. It flows to the runtime as
+	// messaging.HeaderGeneratedID so the replay cap can terminate an uncountable
+	// redelivery loop (MQTT-CORE-1).
+	generatedIdentity := false
 	// droppedHeaders counts every inbound header that fails the length/safety
 	// filter — both MQTT v5 properties (correlation data, content type, response
 	// topic) and arbitrary user properties. It feeds MetricMQTTIngressHeaderDropped
@@ -162,6 +178,13 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 				}
 				continue
 			}
+			if u.Key == headerMQTTGeneratedID {
+				// Adapter-internal marker stamped by publishWithIdentity alongside a
+				// generated mqtt.message-id. Consume it (never emit it as an
+				// application header) and record that the identity is adapter-minted.
+				generatedIdentity = true
+				continue
+			}
 			if u.Key == HeaderMQTTTopic || u.Key == HeaderMQTTRetained || u.Key == HeaderMQTTQoS {
 				// Adapter-controlled: never let an inbound user property
 				// override the recorded transport-level topic, retained
@@ -200,6 +223,15 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	id := publishIdentity(pub)
 	if id == "" {
 		id = newIngressEnvelopeID()
+		generatedIdentity = true
+	}
+
+	// Record an adapter-minted identity so the runtime replay cap can terminate a
+	// count-less redelivery loop (MQTT-CORE-1). StampHeaders is the trusted setter,
+	// so this reserved internal-only key is preserved; it is stripped again at
+	// egress by PublishFromEnvelope's IsInternalOnlyHeader filter.
+	if generatedIdentity {
+		headers[messaging.HeaderGeneratedID] = "true"
 	}
 
 	// id is always non-empty (generate fallback above); now is non-zero.
@@ -397,9 +429,12 @@ func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
 		properties = *pub.Properties
 		properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
 	}
-	properties.User = append(properties.User, pahov5.UserProperty{
-		Key: HeaderMessageID, Value: newIngressEnvelopeID(),
-	})
+	properties.User = append(properties.User,
+		pahov5.UserProperty{Key: HeaderMessageID, Value: newIngressEnvelopeID()},
+		// Marker so EnvelopeFromPublish records the identity as adapter-minted
+		// (MQTT-CORE-1). Consumed there; never emitted as a header or sent to a peer.
+		pahov5.UserProperty{Key: headerMQTTGeneratedID, Value: "1"},
+	)
 	owned.Properties = &properties
 	return &owned
 }

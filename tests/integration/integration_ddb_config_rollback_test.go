@@ -10,6 +10,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ===============================================================
@@ -79,7 +80,13 @@ func TestDDBRollback_InvalidOverlay_ManagerDrops(t *testing.T) {
 		t.Fatalf("save invalid: %v", err)
 	}
 
-	time.Sleep(500 * time.Millisecond) // NEGATIVE: verify Manager drops invalid config (no swap event)
+	// Deterministic rejection signal: the Manager records the dropped overlay
+	// as a per-layer watch error for layer "ddb" instead of emitting a config.
+	// Once recorded, the invalid event was consumed without an emission, so
+	// the zero-swap assertion below is a real proof, not a timing window.
+	wait.Until(t, 5*time.Second, "manager records ddb overlay rejection", func() bool {
+		return mgr.WatchErrors()["ddb"] != nil
+	})
 
 	if count := swapCount.Load(); count != 0 {
 		t.Errorf("swap count: got %d, want 0 (Manager should drop)", count)
@@ -333,7 +340,11 @@ func TestDDBRollback_MultipleFailures_OldConfigSurvives(t *testing.T) {
 	if err := loader.Save(ctx, invalidOverlay); err != nil {
 		t.Fatalf("save invalid: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay
+	// Gate on the observable rejection (per-layer watch error) so the poll has
+	// seen and dropped the invalid version before the next save replaces it.
+	wait.Until(t, 5*time.Second, "manager records ddb overlay rejection", func() bool {
+		return mgr.WatchErrors()["ddb"] != nil
+	})
 
 	// Step 2: Broken overlay (build fails, rollback).
 	brokenOverlay := &ports.BridgeConfig{
@@ -440,7 +451,11 @@ func TestDDBRollback_InvalidThenValid_RecoversFully(t *testing.T) {
 	if err := loader.Save(ctx, invalidOverlay); err != nil {
 		t.Fatalf("save invalid: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher detect invalid overlay before saving valid one
+	// Gate on the observable rejection (per-layer watch error) so the poll has
+	// seen and dropped the invalid version before the valid save replaces it.
+	wait.Until(t, 5*time.Second, "manager records ddb overlay rejection", func() bool {
+		return mgr.WatchErrors()["ddb"] != nil
+	})
 
 	// Valid overlay adding r2.
 	validOverlay := overlayWithRoute("test-bridge", "r2")

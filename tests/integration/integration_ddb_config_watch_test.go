@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ===============================================================
@@ -387,7 +388,11 @@ func TestDDBWatch_InvalidThenValid_OnlyValidEmits(t *testing.T) {
 		t.Fatalf("save invalid: %v", err)
 	}
 
-	time.Sleep(300 * time.Millisecond) // SYNC: let config watcher poll pick up invalid version
+	// Gate on the observable rejection (per-layer watch error) so the poll has
+	// seen and dropped the invalid version before the valid save replaces it.
+	wait.Until(t, 5*time.Second, "manager records ddb overlay rejection", func() bool {
+		return mgr.WatchErrors()["ddb"] != nil
+	})
 
 	// Save valid overlay with log_level change.
 	validOverlay := minimalOverlay("test-bridge")

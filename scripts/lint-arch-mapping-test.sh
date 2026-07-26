@@ -60,10 +60,12 @@ expect adapter_transport_http          /adapters/http/transport
 expect adapter_store_native_memorylease   /adapters/native/store/memorylease
 expect adapter_store_native_memoryoutbox  /adapters/native/store/memoryoutbox
 expect adapter_store_native_memorydlq     /adapters/native/store/memorydlq
+expect adapter_store_native_memoryrollout /adapters/native/store/memoryrollout
 expect adapter_store_native_sqliteoutbox  /adapters/native/store/sqliteoutbox
 expect adapter_store_native_sqlitedlq     /adapters/native/store/sqlitedlq
 expect adapter_store_native_sqlitemanagedsubscriptions /adapters/native/store/sqlitemanagedsubscriptions
 expect adapter_store_aws_dynamodblease    /adapters/aws/store/dynamodblease
+expect adapter_store_aws_dynamodbrollout  /adapters/aws/store/dynamodbrollout
 expect adapter_store_aws_dynamodboutbox   /adapters/aws/store/dynamodboutbox
 expect adapter_store_aws_dynamodbdlq      /adapters/aws/store/dynamodbdlq
 expect adapter_store_aws_dynamodbmanagedsubscriptions /adapters/aws/store/dynamodbmanagedsubscriptions

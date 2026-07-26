@@ -199,13 +199,13 @@ func BrokerURL(t testing.TB) string {
 			fromEnv = true
 			wsURL = os.Getenv("MQTT_WS_URL")
 			if port, err := portFromURL(ep); err == nil {
-				initErr = waitForTCP(port, 10*time.Second)
+				initErr = dockerexec.WaitTCP(port, 10*time.Second)
 			}
 		} else {
 			brokerURL, wsURL, containerName, cleanupFn, initErr = startContainer(cfg)
 		}
 	} else if !fromEnv && containerName != "" {
-		if !isContainerRunning(containerName) {
+		if !dockerexec.IsRunning(containerName) {
 			t.Logf("mqttlocal: container %s died, restarting...", containerName)
 			if cleanupFn != nil {
 				cleanupFn()
@@ -256,7 +256,7 @@ func ForceStart(t testing.TB) string {
 	}
 	resolved = false
 
-	removeOrphans(containerPrefix)
+	dockerexec.RemoveOrphans(containerPrefix)
 
 	mqttURL, wsEndpoint, name, cleanup, err := startContainer(cfg)
 	if err != nil {
@@ -299,7 +299,7 @@ func WaitUntilReady(t testing.TB) {
 	if err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
-	if err := waitForTCP(port, 30*time.Second); err != nil {
+	if err := dockerexec.WaitTCP(port, 30*time.Second); err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
 }
@@ -332,17 +332,17 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 	}
 
 	if c.cleanOrphans {
-		removeOrphans(containerPrefix)
+		dockerexec.RemoveOrphans(containerPrefix)
 	}
 
-	mqttPort, err := freePort()
+	mqttPort, err := dockerexec.FreePort()
 	if err != nil {
 		return "", "", "", nil, fmt.Errorf("find free MQTT port: %w", err)
 	}
 
 	var wsPort int
 	if c.webSocket {
-		wsPort, err = freePort()
+		wsPort, err = dockerexec.FreePort()
 		if err != nil {
 			return "", "", "", nil, fmt.Errorf("find free WebSocket port: %w", err)
 		}
@@ -396,20 +396,24 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 		_ = os.Remove(confPath)
 	}
 
-	if err := waitForContainerHealthy(name, 15*time.Second); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.WaitHealthy(name, 15*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", "", nil, fmt.Errorf("mosquitto container failed: %w", err)
 	}
 
-	if err := waitForTCP(mqttPort, 30*time.Second); err != nil {
-		logContainerFailure(name)
+	// Mosquitto is a single-process broker: it opens its listener only after
+	// config load + persistence restore, so accepting TCP ⇒ operational. The
+	// MQTT-protocol truth (CONNACK/SUBACK) is gated by the consumers' session
+	// health waits; adding an MQTT client dependency here is not warranted.
+	if err := dockerexec.WaitTCP(mqttPort, 30*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", "", nil, fmt.Errorf("mosquitto not ready: %w", err)
 	}
 
-	if err := stabilize(mqttPort); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.StabilizeTCP(mqttPort); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", "", nil, fmt.Errorf("mosquitto stabilization failed: %w", err)
 	}
@@ -422,5 +426,6 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 	return mqttURL, wsURLOut, name, cleanup, nil
 }
 
-// Helper functions (removeOrphans, isContainerRunning, waitForContainerHealthy,
-// buildConfig, waitForTCP, stabilize, logContainerFailure, freePort) are in helpers.go.
+// buildConfig is in helpers.go; container lifecycle gates (WaitHealthy,
+// WaitTCP, StabilizeTCP, RemoveOrphans, LogFailure, FreePort) come from
+// testutil/dockerexec.

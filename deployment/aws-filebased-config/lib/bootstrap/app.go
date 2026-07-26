@@ -136,6 +136,17 @@ type App struct {
 	// because Stop reads it after releasing a.mu (like the other refs).
 	registryRef atomic.Pointer[factoryRegistry]
 
+	// Coordinated cluster rollout (design cluster-config-rollout-protocol.md
+	// Phase 6). rolloutConfig carries the coordination stores + cadence (injected
+	// via WithClusterRolloutStores for tests/custom stores, or built from the
+	// DynamoDB client in Start). rolloutDriver is this App's barrier host, built in
+	// Start ONLY when the boot config opts into cluster.rollout: coordinated; nil
+	// otherwise, so a deployment that did not opt in keeps the ADR 0012 refusal.
+	// stopRolloutDrive stops the drive goroutine on Stop.
+	rolloutConfig    bridge.ClusterRolloutConfig
+	rolloutDriver    *bridge.ClusterRolloutDriver
+	stopRolloutDrive func()
+
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
@@ -164,6 +175,24 @@ type App struct {
 	// cmd/gobridge polling sup.Terminal(), which likewise covers the wedged
 	// nil-runtime case the concrete *runtime.Runtime check alone misses.
 	wedged atomic.Bool
+
+	// rootCtx is the App-lifetime context (== watchCtx) set in Start and cancelled
+	// by Stop. The post-swap convergence watch (RECONFIG-1) derives from it so it
+	// lives across reloads and stops with the App. nil before Start completes.
+	rootCtx context.Context
+
+	// Post-swap convergence state (RECONFIG-1). A committed swap only proves the
+	// new runtime BUILT and Start returned; MQTT dials/reconciles in the
+	// background, so a valid-but-broker-rejected config can be acknowledged as
+	// applied while the transport never reaches broker truth. The convergence watch
+	// polls the installed runtime's readiness and, if it does not reach
+	// LevelSubscribed within the activation budget, latches an applied-but-not-
+	// converged degraded state (surfaced in deep health + MetricConfigDegraded).
+	convergenceMu          sync.Mutex
+	convergenceDegraded    bool
+	convergenceReason      string
+	convergenceRt          *goruntime.Runtime
+	convergenceWatchCancel context.CancelFunc
 
 	// mu protects started, watchCancel, and serializes config reloads.
 	mu      sync.Mutex
@@ -285,6 +314,29 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.logicalRef.Set(logicalCfg)
 
+	// Coordinated cluster rollout boot resolution (design Phase 6). ONLY a
+	// coordinated boot config wires the barrier host; every other deployment boots
+	// exactly as before. The joiner resolves which config this member actually boots
+	// on — the durable last-committed config when the boot config is a candidate the
+	// barrier has not committed (a restart after an abort, or mid-rollout), else the
+	// boot config unchanged — so a restarted member never runs a config no peer runs.
+	bootCfg := logicalCfg
+	if bridge.IsCoordinatedRollout(logicalCfg) {
+		if err := a.buildRolloutDriver(ctx); err != nil {
+			return err
+		}
+		if a.rolloutDriver == nil {
+			return fmt.Errorf("bootstrap: cluster.rollout: coordinated requires a stable member_id " +
+				"(bootstrap member_id, which must appear in bridge.cluster.members) and a rollout store; " +
+				"the barrier is not wired, so a coordinated deployment cannot start. Refusing to start")
+		}
+		resolved, rerr := a.rolloutDriver.ResolveBoot(ctx, logicalCfg)
+		if rerr != nil {
+			return rerr
+		}
+		bootCfg = resolved
+	}
+
 	// The file-based profile configures the admin/monitor listeners from
 	// bootstrap env/SSM (a.cfg + apiKeysRef) and expects TLS to terminate at the
 	// load balancer (ALB), so the bridge config `http:` block is not honored.
@@ -293,14 +345,14 @@ func (a *App) Start(ctx context.Context) error {
 	// cannot satisfy, so fail closed rather than silently serve the admin API in
 	// plaintext; a bare addrs/keys block is warned and ignored (Chunk 16
 	// Finding 2).
-	if err := checkIgnoredHTTPBlock(a.logger, logicalCfg); err != nil {
+	if err := checkIgnoredHTTPBlock(a.logger, bootCfg); err != nil {
 		return err
 	}
 
-	if _, err := a.applyLogicalIfChanged(ctx, logicalCfg, true); err != nil {
+	if _, err := a.applyLogicalIfChanged(ctx, bootCfg, true); err != nil {
 		return err
 	}
-	a.manager.NotifyApplyResult(logicalCfg, nil)
+	a.reconcileBootApplyResult(logicalCfg, bootCfg)
 
 	// Every node starts the transport, admin, and monitor servers regardless
 	// of NodeRole (workers still expose the admin listener today — see
@@ -396,7 +448,21 @@ func (a *App) Start(ctx context.Context) error {
 
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	a.watchCancel = watchCancel
+	a.rootCtx = watchCtx
 	a.started = true
+
+	// RECONFIG-1: watch the INITIALLY-applied runtime for convergence too (initial
+	// startup has the same truthfulness gap as a reload). installPlan skipped
+	// starting it during the pre-rootCtx initial apply, so start it here.
+	a.startConvergenceWatch(watchCtx, a.runtimeRef.Get(), a.appliedRef.Get())
+
+	// Start the coordinated cluster rollout drive (design Phase 6): one goroutine
+	// per member running the applier every tick and the coordinator half while this
+	// member holds the lease. nil when no barrier is wired or the boot config is not
+	// coordinated, so this is a no-op for every non-coordinated deployment.
+	if a.rolloutDriver != nil {
+		a.stopRolloutDrive = a.rolloutDriver.Start(watchCtx, a.clk, a.metricsExporter)
+	}
 
 	a.watchWg.Go(func() {
 		a.watchLoop(watchCtx, watchCh)
@@ -494,6 +560,14 @@ func (a *App) Stop(ctx context.Context) error {
 	// it may still be using (e.g. mid-applyLogicalConfig).
 	a.watchWg.Wait()
 
+	// Stop the coordinated cluster rollout drive before tearing down the runtime it
+	// swaps: this waits for its goroutine to exit and resigns the coordinator lease
+	// so a successor takes over immediately instead of waiting out the lease TTL.
+	if a.stopRolloutDrive != nil {
+		a.stopRolloutDrive()
+		a.stopRolloutDrive = nil
+	}
+
 	manager := a.manager
 	httpServer := a.httpServer
 	transportServer := a.transportServer
@@ -538,7 +612,9 @@ func (a *App) Stop(ctx context.Context) error {
 		}
 	}
 	if currentRuntime != nil {
-		if err := stopRuntime(currentRuntime, currentApplied); err != nil && firstErr == nil {
+		// Derive the drain from the shutdown ctx: one budget for the whole
+		// SIGTERM path, not shutdown_timeout + drain_timeout stacked (MQTT-C4).
+		if err := stopRuntime(ctx, currentRuntime, currentApplied); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -670,12 +746,24 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			a.mu.Lock()
 			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
 			a.mu.Unlock()
-			a.manager.NotifyApplyResult(logicalCfg, err)
 			switch {
+			case errors.Is(err, ports.ErrApplyInFlight):
+				// A coordinated live-safe delta was DEFERRED to the rollout barrier:
+				// committed-not-yet-running, not a failure. Do NOT report it to the
+				// manager — its contract forbids ErrApplyInFlight there — so it does not
+				// latch a spurious apply error; the barrier's AdoptRunning reconciles the
+				// manager (desired == running) when the cohort commits. Desired stays v_new
+				// and running stays v_old, so ReconfigurePending correctly reads pending.
+				a.logger.Info("bootstrap: config reload deferred to the coordinated cluster rollout "+
+					"barrier; this node applies it when the cohort commits", "config_version", logicalCfg.Version)
 			case err != nil:
+				a.manager.NotifyApplyResult(logicalCfg, err)
 				a.logger.Warn("bootstrap: config reload rejected; keeping last good runtime", "error", err)
 			case skipped:
+				a.manager.NotifyApplyResult(logicalCfg, nil)
 				a.logger.Debug("bootstrap: config reload matches the running config (already applied in-band); skipping redundant runtime swap")
+			default:
+				a.manager.NotifyApplyResult(logicalCfg, nil)
 			}
 		}
 	}
@@ -699,32 +787,24 @@ type runtimePlan struct {
 	runtime  *goruntime.Runtime
 }
 
-func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig) error {
-	// Fail closed on an uncoordinated clustered live reload (finding H8). A
-	// per-process reload has no cluster-wide version barrier or coordinated
-	// rollback, so rolling a new config into (or out of) a clustered cohort would
-	// leave members split across versions with no all-member readiness gate.
-	// Refuse the whole class here — BEFORE any Plan/build/resource creation or
-	// stop — and require an externally coordinated whole-cohort replacement
-	// (docs/runbooks/cluster-config-rollout.md). Returning an error routes
-	// through the EXISTING reload-failure path: watchLoop keeps the last-good
-	// runtime, and applyCommittedConfig surfaces committed_not_applied.
+func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig, barrierCommitted bool) error {
+	// The cluster reload seam (design cluster-config-rollout-protocol.md §6). A
+	// per-process live reload of a clustered deployment has no cluster-wide version
+	// barrier or coordinated rollback, so by default it is refused (ADR 0012): a
+	// rolling reload would split the cohort across config versions. When the
+	// deployment opts into cluster.rollout: coordinated AND this App has the barrier
+	// wired, a live-safe delta is instead PROPOSED to the barrier and DEFERRED here
+	// (clusterReloadSeam) — the local swap happens later, driven by the barrier's
+	// applier once the cohort commits, which re-enters with barrierCommitted=true to
+	// SKIP the seam and perform the actual swap.
 	//
-	// oldApplied == nil means this is the INITIAL apply (a fresh boot into a
-	// clustered config is legitimate), not a live reload, so it is exempt.
-	// bridge.IsClusteredDeployment is the SHARED predicate: guard when EITHER the
-	// applied OR the proposed config is clustered. A genuine no-op re-emit never
-	// reaches here — applyLogicalIfChanged short-circuits it on the content
-	// fingerprint before calling applyLogicalConfig, so no-op reloads stay
-	// accepted.
-	if oldApplied := a.appliedRef.Get(); oldApplied != nil &&
-		(bridge.IsClusteredDeployment(oldApplied) || bridge.IsClusteredDeployment(logical)) {
-		return fmt.Errorf("bootstrap: refusing live reload of a clustered deployment: a per-process " +
-			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload " +
-			"would split the cohort across config versions. Externally coordinate a whole-cohort " +
-			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, " +
-			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); " +
-			"see docs/runbooks/cluster-config-rollout.md")
+	// The initial apply (oldApplied == nil) and a genuine no-op re-emit never reach
+	// the seam: the seam requires an applied config, and applyLogicalIfChanged
+	// short-circuits a no-op on the content fingerprint before calling this.
+	if !barrierCommitted {
+		if handled, err := a.clusterReloadSeam(ctx, logical); handled {
+			return err
+		}
 	}
 
 	// Apply bridge.log_level first so debug logging takes effect immediately
@@ -799,14 +879,20 @@ func (a *App) applyOverlap(
 	oldRegistry *factoryRegistry,
 ) error {
 	if err := plan.runtime.Start(ctx); err != nil {
+		// RECONFIG-2: a candidate whose late Start fails still opened stores,
+		// sessions, and adapter resources during Build. Stop it before returning so
+		// repeated failing applies do not leak store handles and background state.
+		// Bounded teardown (context.Background) like every other reload-path stop.
+		_ = stopRuntime(context.Background(), plan.runtime, plan.logical)
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
 
 	// If anything below panics, ensure the started runtime is cleaned up.
+	// Reload-path drain: NOT bounded by process shutdown (context.Background).
 	installed := false
 	defer func() {
 		if !installed {
-			_ = stopRuntime(plan.runtime, plan.logical)
+			_ = stopRuntime(context.Background(), plan.runtime, plan.logical)
 		}
 	}()
 
@@ -814,7 +900,7 @@ func (a *App) applyOverlap(
 	installed = true
 
 	if oldRuntime != nil {
-		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
+		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
 			a.logger.Warn("bootstrap: stop old runtime after overlap swap", "error", err)
 		}
 	}
@@ -847,18 +933,33 @@ func (a *App) applyPrepareCommit(
 	defer a.closeSupersededHTTP(ctx, oldRegistry)
 
 	if oldRuntime != nil {
-		if err := stopRuntime(oldRuntime, oldApplied); err != nil {
-			a.logger.Warn("bootstrap: stop old runtime before prepare/commit swap", "error", err)
+		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
+			// RECONFIG-2: prepare/commit stops the old runtime BEFORE committing the
+			// new one, so a failed stop leaves the old runtime in an uncertain state
+			// (its exclusive broker session / lease may still be held). Proceeding to
+			// commit a new runtime onto the same identity would risk two owners.
+			// Abort instead: keep the old runtime installed (runtimeRef unchanged) and
+			// surface the error as committed_not_applied so an operator reconciles.
+			return fmt.Errorf("bootstrap: abort prepare/commit swap; old runtime did not stop cleanly "+
+				"(uncertain ownership, refusing to commit a replacement): %w", err)
 		}
 	}
 	a.runtimeRef.Set(nil)
 
 	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
+		// RECONFIG-2: a partially-built candidate from a failed Commit still holds
+		// resources; stop it (nil-safe) before rebuilding the previous runtime.
+		if newRuntime != nil {
+			_ = stopRuntime(context.Background(), newRuntime, plan.logical)
+		}
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
 	}
 	if err := newRuntime.Start(ctx); err != nil {
+		// RECONFIG-2: stop the committed-but-unstarted candidate before recovering,
+		// so its opened stores/sessions are released rather than leaked.
+		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
@@ -890,6 +991,12 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 		err = plan.runtime.Start(ctx)
 	}
 	if err != nil {
+		// RECONFIG-2: the recovery candidate itself failed to commit/start. Stop it
+		// (nil-safe) so it does not leak resources on top of the failed swap before
+		// entering the wedged state that the orchestrator restarts out of.
+		if plan.runtime != nil {
+			_ = stopRuntime(context.Background(), plan.runtime, logical)
+		}
 		a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
 		a.enterWedgedState()
 		return
@@ -906,12 +1013,18 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 // all) is a separate, harder failure already surfaced via /live and the
 // terminal backstop, so it is intentionally not folded in here.
 func (a *App) degradedConfigWatch() (bool, string) {
+	// RECONFIG-1: an applied-but-not-converged swap is a degraded state even when
+	// the config-watch layer itself is healthy. Report it alongside (or instead of)
+	// a watcher error so operators see the same ConfigDegraded signal the generic
+	// Supervisor emits.
+	convDegraded, convReason := a.convergenceDegradedState()
+
 	if a.manager == nil {
-		return false, ""
+		return convDegraded, convReason
 	}
 	errs := a.manager.WatchErrors()
 	if len(errs) == 0 {
-		return false, ""
+		return convDegraded, convReason
 	}
 	layers := make([]string, 0, len(errs))
 	for layer := range errs {
@@ -922,7 +1035,11 @@ func (a *App) degradedConfigWatch() (bool, string) {
 	for i, layer := range layers {
 		parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
 	}
-	return true, "config watch degraded: " + strings.Join(parts, "; ")
+	reason := "config watch degraded: " + strings.Join(parts, "; ")
+	if convDegraded {
+		reason += "; " + convReason
+	}
+	return true, reason
 }
 
 func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
@@ -946,6 +1063,25 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 		status.Degraded = true
 		if status.Reason == "" {
 			status.Reason = "desired configuration is not running"
+		}
+	}
+	// Surface the coordinated cluster rollout barrier (design §9) so an operator
+	// reading deep health during a rollout sees WHO the cohort is waiting for
+	// instead of a bare "desired configuration is not running". Omitted entirely
+	// when no barrier runs.
+	if a.rolloutDriver != nil {
+		if r, ok := a.rolloutDriver.Status(); ok {
+			status.Rollout = &httpapi.ClusterRolloutHealth{
+				MemberID:        r.MemberID,
+				Generation:      r.Generation,
+				State:           r.State,
+				ConfigVersion:   r.ConfigVersion,
+				Epoch:           r.Epoch,
+				Acked:           r.Acked,
+				Nacked:          r.Nacked,
+				Reason:          r.Reason,
+				CandidateStaged: r.Staged,
+			}
 		}
 	}
 	return status
@@ -978,6 +1114,12 @@ func (a *App) installPlan(plan *runtimePlan) {
 	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
 	// points at this registry's mux.
 	a.registryRef.Store(plan.registry)
+	// RECONFIG-1: begin (or supersede) the post-swap convergence watch for the
+	// freshly installed runtime. Skipped during the pre-rootCtx initial apply
+	// (Start begins the initial watch explicitly once rootCtx exists).
+	if a.rootCtx != nil {
+		a.startConvergenceWatch(a.rootCtx, plan.runtime, plan.logical)
+	}
 	if a.onRuntimeInstalled != nil {
 		a.onRuntimeInstalled()
 	}
@@ -1041,7 +1183,7 @@ func (a *App) applyLogicalIfChanged(ctx context.Context, logical *ports.BridgeCo
 		}
 		return true, nil
 	}
-	if err := a.applyLogicalConfig(ctx, logical); err != nil {
+	if err := a.applyLogicalConfig(ctx, logical, false); err != nil {
 		return false, err
 	}
 	if fp != "" {

@@ -31,10 +31,8 @@ package sqslocal
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -126,7 +124,7 @@ func Endpoint(t testing.TB) string {
 			endpoint, containerName, cleanupFn, initErr = startContainer()
 		}
 	} else if !fromEnv && containerName != "" {
-		if !isContainerRunning(containerName) {
+		if !dockerexec.IsRunning(containerName) {
 			t.Logf("sqslocal: container %s died, restarting...", containerName)
 			if cleanupFn != nil {
 				cleanupFn()
@@ -175,7 +173,7 @@ func ForceStart(t testing.TB) string {
 	}
 	resolved = false
 
-	removeOrphans(containerPrefix)
+	dockerexec.RemoveOrphans(containerPrefix)
 
 	ep, name, cleanup, err := startContainer()
 	if err != nil {
@@ -271,10 +269,10 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	if opts.cleanOrphans {
-		removeOrphans(containerPrefix)
+		dockerexec.RemoveOrphans(containerPrefix)
 	}
 
-	port, err := freePort()
+	port, err := dockerexec.FreePort()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("find free port: %w", err)
 	}
@@ -303,23 +301,23 @@ func startContainer() (string, string, func(), error) {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 	}
 
-	if err := waitForContainerHealthy(name, 15*time.Second); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.WaitHealthy(name, 15*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, err
 	}
 
 	if err := waitForServiceReady(ep, 30*time.Second); err != nil {
-		logContainerFailure(name)
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, err
 	}
 
-	if err := stabilize(func() error {
+	if err := dockerexec.Stabilize(func() error {
 		_, e := newClient(ep).ListQueues(context.Background(), &sqs.ListQueuesInput{})
 		return e
 	}); err != nil {
-		logContainerFailure(name)
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("ElasticMQ stabilization failed: %w", err)
 	}
@@ -327,81 +325,13 @@ func startContainer() (string, string, func(), error) {
 	return ep, name, cleanup, nil
 }
 
-func removeOrphans(prefix string) {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
-		"--filter", "name="+prefix)
-	if err != nil || len(out) == 0 {
-		return
-	}
-	ids := strings.Fields(strings.TrimSpace(string(out)))
-	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
-	}
-}
-
-func isContainerRunning(name string) bool {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-		"--format", "{{.State.Running}}", name)
-	return err == nil && len(out) > 0 && out[0] == 't'
-}
-
-func waitForContainerHealthy(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if strings.HasPrefix(s, "true") {
-				return nil
-			}
-			if strings.Contains(s, "false") {
-				return fmt.Errorf("container %s exited (inspect: %s)", name, s)
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("container %s did not reach running state within %v", name, timeout)
-}
-
+// waitForServiceReady gates on protocol truth: ElasticMQ is ready when it
+// answers a real ListQueues call, not merely when its port accepts TCP.
 func waitForServiceReady(ep string, timeout time.Duration) error {
 	client := newClient(ep)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		_, lastErr = client.ListQueues(context.Background(), &sqs.ListQueuesInput{})
-		if lastErr == nil {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("ElasticMQ at %s did not become ready within %v: %v", ep, timeout, lastErr)
-}
-
-func stabilize(probe func() error) error {
-	for i := 0; i < 3; i++ {
-		if err := probe(); err != nil {
+	return dockerexec.WaitProbe("ElasticMQ at "+ep, timeout, 500*time.Millisecond,
+		func() error {
+			_, err := client.ListQueues(context.Background(), &sqs.ListQueuesInput{})
 			return err
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
-}
-
-func logContainerFailure(name string) {
-	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "30", name)
-	if len(out) > 0 {
-		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
-	}
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
+		})
 }

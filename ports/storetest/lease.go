@@ -31,7 +31,7 @@ func (o *LeaseTestOptions) waitForExpiry(ttl time.Duration) {
 		o.WaitForExpiry(ttl)
 		return
 	}
-	time.Sleep(ttl + 500*time.Millisecond)
+	time.Sleep(ttl + 500*time.Millisecond) // ESSENTIAL: wall-clock fallback when the store offers no fake-clock hook — real emulator TTLs only expire in real time
 }
 
 func (o *LeaseTestOptions) leaseTTL() time.Duration {

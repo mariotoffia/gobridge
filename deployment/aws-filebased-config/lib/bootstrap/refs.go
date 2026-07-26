@@ -83,7 +83,17 @@ func (r *apiKeysRef) MonitorKey() string {
 	return r.monitorKey
 }
 
-func stopRuntime(rt *goruntime.Runtime, cfg *ports.BridgeConfig) error {
+// stopRuntime stops rt with the configured drain timeout, derived from ctx
+// so a caller-imposed deadline also bounds the drain. The process-shutdown
+// path passes the app's shutdown context: previously the drain ran on a
+// FRESH background budget stacked AFTER the app's own shutdown budget, so a
+// slow teardown could take shutdown_timeout + drain_timeout (> 60s worst
+// case) and blow through the Kubernetes termination grace period into a
+// SIGKILL mid-drain (MQTT-C4). Reload paths pass context.Background(): a
+// hot-reload drain is not bounded by process shutdown. Delivery guarantees
+// survive either way (unsettled deliveries fall back to broker redelivery);
+// the single budget is what keeps the drained-shutdown intent honest.
+func stopRuntime(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeConfig) error {
 	if rt == nil {
 		return nil
 	}
@@ -93,7 +103,7 @@ func stopRuntime(rt *goruntime.Runtime, cfg *ports.BridgeConfig) error {
 		drainTimeout = cfg.Bridge.DrainTimeoutDuration()
 	}
 
-	stopCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	stopCtx, cancel := context.WithTimeout(ctx, drainTimeout)
 	defer cancel()
 	return rt.Stop(stopCtx)
 }

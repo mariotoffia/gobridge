@@ -677,6 +677,21 @@ func (m *Manager) renewLoop(
 				return stepDownForLoss()
 			}
 
+			// CLUSTER-2: node-local broker-path failover. The lease store is still
+			// reachable (renewals below keep succeeding), but this owner's broker
+			// path has stayed non-converged past the configured threshold — so a
+			// standby cannot take over on lease loss alone. Step down voluntarily to
+			// release the lease and let a healthy standby seize it. Opt-in
+			// (brokerHealthStepDown > 0) so a globally-down broker does not churn the
+			// lease between nodes that all fail to connect.
+			if m.brokerHealthStepDownDue() {
+				m.log(ctx, slog.LevelWarn,
+					"broker path non-converged beyond broker_health_step_down; stepping down so a standby can take over",
+					"threshold", m.brokerHealthStepDown)
+				m.metrics.Counter(shared.MetricBrokerHealthStepDown, 1, leaseTag)
+				return stepDownForLoss()
+			}
+
 			m.mu.Lock()
 			token := m.token
 			m.mu.Unlock()

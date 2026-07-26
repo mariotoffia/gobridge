@@ -18,8 +18,11 @@ A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure S
 ### Production (container image / composition root)
 
 The shipped **production** binary is the file-based composition root
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, published as the
-container image **`ghcr.io/mariotoffia/gobridge`**. It registers the MQTT, AWS
+`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, which **will be
+published** as the container image **`ghcr.io/mariotoffia/gobridge`** once the
+first `cmd/gobridge/vX.Y.Z` command release is cut — the release workflow pushes
+the image **by digest** and records the verified digest in
+`gobridge-image-digest.txt` (see **[RELEASE.md](RELEASE.md)**). It registers the MQTT, AWS
 SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores, and is
 the binary the AWS ECS/EFS deployment profile runs. Start here for any real
 deployment: see the **[Deployment Guide](docs/deployment-guide.md)** and the

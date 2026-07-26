@@ -20,6 +20,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,11 +40,7 @@ func setupRabbitMQSession(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "RabbitMQ session Start")
-
-	select {
-	case <-sess.Events():
-	case <-time.After(10 * time.Second):
-	}
+	waitConnected(t, sess, 30*time.Second)
 
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	return sess
@@ -94,11 +91,7 @@ func setupArtemisSession(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "Artemis session Start")
-
-	select {
-	case <-sess.Events():
-	case <-time.After(10 * time.Second):
-	}
+	waitConnected(t, sess, 30*time.Second)
 
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	return sess
@@ -162,6 +155,9 @@ func newRabbitMQCollector(
 			return nil
 		})
 	}()
+	// Deterministic subscribe gate: the receiver closes Started() once its
+	// consumer is registered on the queue — no publish/subscribe race.
+	wait.RequireClosed(t, recv.Started(), 10*time.Second)
 
 	t.Cleanup(func() {
 		recvCancel()
@@ -190,6 +186,8 @@ func newArtemisCollector(
 			return nil
 		})
 	}()
+	// Deterministic subscribe gate: Started() closes once the AMQP link is up.
+	wait.RequireClosed(t, recv.Started(), 10*time.Second)
 
 	t.Cleanup(func() {
 		recvCancel()

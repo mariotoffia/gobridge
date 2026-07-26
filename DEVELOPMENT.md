@@ -13,6 +13,10 @@ This guide covers everything you need to set up a development environment, build
 
 gobridge is a multi-module Go workspace. Each adapter and processor is a separate Go module so consumers only import what they need. The workspace root `go.work` ties them together for development.
 
+For the everyday workflow — bootstrapping the workspace, adding a module, and cutting a
+`go get`-able release — see [MODULES.md](MODULES.md); it is the simple front door and
+links here and to [RELEASE.md](RELEASE.md) for depth.
+
 ```
 gobridge/
 ├── go.work                 # Workspace definition

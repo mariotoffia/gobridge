@@ -100,6 +100,40 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
 		}
 		opts.ClientID = resolved
+		// Persistent mode keys the broker's durable session (subscriptions +
+		// queued offline QoS 1/2) to the effective client_id. A hostname suffix is
+		// stable only where the hostname is (StatefulSet pods, VMs); on a Kubernetes
+		// Deployment or ECS task every rollout mints a NEW pod/task name → new
+		// client_id → new broker session, ORPHANING the old session's queued
+		// messages until session_expiry_interval silently expires them — loss by
+		// timeout, invisible to the bridge (MQTT-F3 / IDENTITY-1).
+		//
+		// IDENTITY-1: a startup warning is not an admission boundary, so this
+		// combination is now REJECTED at build time unless the operator explicitly
+		// asserts a stable-host profile via assert_stable_client_identity. The
+		// assertion is the operator vouching for StatefulSet/VM identity; it does
+		// not make Deployment/ECS safe. See docs/transports/mqtt.md#deployment-identity
+		// (StatefulSet, Exclusive mode, or Ephemeral+$share are the safe shapes).
+		if mode == connectivity.SessionPersistent && opts.ClientIDSuffix == ClientIDSuffixHostname {
+			if !opts.AssertStableClientIdentity {
+				return nil, shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+					"mqtt session %q: session_mode=persistent with client_id_suffix=hostname is unsafe on a "+
+						"Kubernetes Deployment or ECS service — every rollout mints a new hostname → new "+
+						"client_id → new broker session, stranding the previous session's queued QoS 1/2 "+
+						"messages until session_expiry_interval silently expires them. Use a StatefulSet, "+
+						"session_mode: exclusive, or ephemeral + $share; or set assert_stable_client_identity: "+
+						"true to affirm a stable-host profile (StatefulSet/VM)", spec.ID))
+			}
+			if f.Logger != nil {
+				f.Logger.Warn("mqtt: session_mode=persistent with client_id_suffix=hostname admitted only "+
+					"because assert_stable_client_identity=true — the operator vouches for a stable hostname "+
+					"(StatefulSet, VM). This is UNSAFE on a Deployment/ECS service (silent QoS 1/2 loss by "+
+					"session_expiry).",
+					"session_id", spec.ID,
+					"client_id", opts.ClientID,
+				)
+			}
+		}
 	}
 	if spec.ManagedSubscriptionsRequired {
 		if mode == connectivity.SessionEphemeral {

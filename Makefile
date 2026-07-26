@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory test-failover-gate lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -43,6 +43,10 @@ export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
 export RELEASE_API_URL RELEASE_REPOSITORY RELEASE_IMAGE RELEASE_IMAGE_DIGEST
 export RELEASE_INITIAL_IMAGE_DIGEST RELEASE_CURRENT_IMAGE_DIGEST
 
+VERSION ?=
+CONFIRM ?= 0
+DRY_RUN ?=
+
 # Default target
 all: build test
 
@@ -51,8 +55,18 @@ all: build test
 # ============================================================================
 
 build: ## Build all modules
+	@test -f go.work || $(MAKE) dev
 	@echo "Building all modules..."
 	go build ./...
+
+.PHONY: dev
+dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
+	@echo "Regenerating go.work from on-disk modules..."
+	@rm -f go.work go.work.sum
+	@go work init
+	@go work use -r .
+	@go work edit -dropuse ./scripts/release
+	@echo "Workspace ready. (scripts/release is excluded by design — it builds with GOWORK=off.)"
 
 # ============================================================================
 # Container image
@@ -80,6 +94,16 @@ update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-re
 verify-release-preparation: ## Test the release tooling and validate the canonical DAG; report current migration inventory
 	@cd scripts/release && GOWORK=off go test -race -count=1 ./...
 	@cd scripts/release && GOWORK=off go run . source --repo ../..
+
+.PHONY: modules-check
+modules-check: ## Fail if the on-disk published-module set drifts from scripts/release/modules.json
+	@mkdir -p reports
+	@echo "=== published-module registration ==="
+	@bash -c 'set -o pipefail; cd scripts/release && GOWORK=off go run . source --repo ../.. 2>&1 | tee $(PWD)/reports/modules-check.log'
+
+.PHONY: release
+release: ## Run the dependency-ordered release train. Dry-run by default; CONFIRM=1 publishes. Requires VERSION=vX.Y.Z
+	@VERSION="$(VERSION)" CONFIRM="$(CONFIRM)" DRY_RUN="$(DRY_RUN)" REMOTE="$(RELEASE_REMOTE)" bash scripts/release/run.sh
 
 verify-published-modules: ## Strictly verify every published module (requires RELEASE_VERSION=vX.Y.Z and completed tags)
 	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
@@ -254,6 +278,36 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 MiB cgroup
 	@scripts/test-mqtt-ingress-memory.sh
 
+# TEST-1: promote a bounded, separate-OS-process, real-broker + real-DynamoDB
+# failover proof into the PR gate. Like test-mqtt-ingress-memory, this compiles
+# and runs a SINGLE longrunning-tagged test (not the whole hours-long suite) so
+# an outage-recovery regression is caught on every PR instead of only nightly.
+# TestUC3SeparateProcessFailover launches two real gobridge node processes that
+# compete for one DynamoDB exclusive lease, SIGKILLs the verified owner, and
+# asserts the standby reaches ServiceLevelFull with an advanced fencing version
+# within uc3FailoverSLO (~5s observed, 15s ceiling). Bounded to a few minutes.
+test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate-process MQTT failover proof (PR gate; requires Docker, -tags=longrunning)
+	@mkdir -p reports
+	@echo "Running bounded separate-process failover gate (TEST-1)..."
+	@echo "Report will be saved to: reports/test-failover-gate.log"
+	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=1.0 \
+	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=1.0 \
+	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=1.0 \
+		go test -count=1 -race -timeout 420s -v -tags=longrunning \
+			-run "^TestUC3SeparateProcessFailover$$" ./tests/longrunning/ 2>&1 | tee reports/test-failover-gate.log; \
+		rc=$${PIPESTATUS[0]}; \
+		echo ""; \
+		echo "========================================"; \
+		echo "  Test Report: reports/test-failover-gate.log"; \
+		echo "========================================"; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "FAILED tests:"; \
+			grep -E "^--- FAIL:" reports/test-failover-gate.log || true; \
+		fi; \
+		exit $$rc'
+
 # ============================================================================
 # Lint
 #
@@ -268,6 +322,7 @@ test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 M
 
 lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym ## Run every static check (arch, gofmt, go vet, golangci-lint, aggcheck, aclcheck, cfgshape, registrychk, pluginsym); writes reports/*
 	@mkdir -p reports
+	@$(MAKE) --no-print-directory modules-check
 	@echo "=== Architecture lint ==="
 	@bash -c 'set -o pipefail; go-arch-lint check --project-path . --max-warnings 1024 --output-color=false 2>&1 | tee reports/go-arch-lint.log'
 	@go-arch-lint graph --out reports/go-arch-lint-graph.svg
@@ -489,10 +544,12 @@ audit-timings: ## Check for unauthorized timing calls in production code
 		echo "All timing calls are authorized."; \
 	fi
 
-audit-test-timings: ## Check for new time.Sleep calls in test code
+audit-test-timings: ## Check for new time.Sleep calls in test code and test infrastructure
 	@echo "Checking for new time.Sleep calls in tests..."
-	@VIOLATIONS=$$(rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
-		'time\.Sleep\(' . \
+	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
+		'time\.Sleep\(' . ; \
+		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
+		'time\.Sleep\(' testutil ports/storetest tests/testutil ; } \
 		| sort \
 		| grep -v -F -f audit/test-timing-allowlist.txt); \
 	if [ -n "$$VIOLATIONS" ]; then \

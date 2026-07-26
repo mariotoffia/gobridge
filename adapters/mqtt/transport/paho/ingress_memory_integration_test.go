@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -12,12 +11,18 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
-func TestMQTTIngressPredecodeGuard_RealBrokerPropertyAmplificationNeverReachesSDKCallback(t *testing.T) {
+// TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTerminal
+// pins the MQTT-L1 escape against a real broker: a publish exceeding the User
+// Property count cap fits the advertised Maximum Packet Size, so the broker
+// forwards it. The adapter must ACK-and-DROP it (freeing the broker in-flight
+// slot, counting MQTTIngressPoisonDropped) and the session must stay healthy
+// — the pre-fix behavior latched the session terminal, handing any authorized
+// publisher a permanent kill switch via broker redelivery on every resume.
+func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTerminal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires a real local MQTT broker")
 	}
@@ -70,50 +75,35 @@ func TestMQTTIngressPredecodeGuard_RealBrokerPropertyAmplificationNeverReachesSD
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		health := source.Health(ctx)
-		var ingressErr *mqttIngressError
-		return !health.Ready &&
-			errors.As(health.LastError, &ingressErr) &&
-			ingressErr.kind == mqttIngressUserPropertiesTooLarge
-	}, 15*time.Second, 10*time.Millisecond)
+		return source.router.IngressPoisonDroppedCount() == 1
+	}, 15*time.Second, 10*time.Millisecond,
+		"over-cap user properties must be acked-and-dropped on the poison counter")
 
 	health := source.Health(ctx)
+	assert.True(t, health.Ready, "a poison publish must NOT latch the session terminal (MQTT-L1)")
+	assert.NoError(t, health.LastError)
 	assert.Zero(t, health.UnsettledCount,
-		"predecode rejection must not enter Paho's acknowledgment tracker")
+		"the poison drop settles immediately; it must not linger in the unsettled window")
 	dispatchDepth, _ := source.IngressMemoryStats()
 	assert.Zero(t, dispatchDepth)
 	assert.Zero(t, source.router.PendingCount())
 	assert.Zero(t, source.router.routeCount.Load(),
-		"raw property amplification must not reach the Paho publish callback")
-	assert.Zero(t, source.router.dropCount.Load(),
-		"the decoded callback poison path must not observe a predecode rejection")
-
-	terminalEvents := 0
-	for {
-		select {
-		case event, ok := <-source.Events():
-			if !ok {
-				assert.Equal(t, 1, terminalEvents,
-					"one raw violation must own one terminal lifecycle transition")
-				return
-			}
-			if event.Type == ports.SessionError {
-				terminalEvents++
-				var ingressErr *mqttIngressError
-				require.ErrorAs(t, event.Err, &ingressErr)
-				assert.Equal(t, mqttIngressUserPropertiesTooLarge, ingressErr.kind)
-			}
-		case <-ctx.Done():
-			t.Fatal("predecode terminal lifecycle did not close")
-		}
-	}
+		"a poison publish must be dropped before handler dispatch")
 }
 
-func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *testing.T) {
+// TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows pins
+// the full MQTT-L1 escape sequence for the easiest poison to trigger — a
+// payload one byte over max_payload_bytes, well inside the advertised
+// Maximum Packet Size: the packet is acked-and-dropped, the session stays
+// up, a later good publish flows normally, and after a Reload (reconnect,
+// clean_start=false persistent session) the broker does NOT redeliver the
+// poison — proving the ack genuinely freed the broker-side slot rather than
+// parking the packet for the next resume (the pre-fix terminal loop).
+func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires a real local MQTT broker")
 	}
-	const topic = "ingress-memory/poison-redelivery"
+	const topic = "ingress-memory/poison-ack-drop"
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	t.Cleanup(cancel)
 
@@ -124,7 +114,7 @@ func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *test
 	t.Cleanup(broker.Stop)
 
 	clientID := mqttlocal.UniqueClientID("ingress-memory-poison")
-	sourceOptions := SessionOptions{
+	source := NewSession(SessionOptions{
 		BrokerURLs:               []string{broker.URL()},
 		ClientID:                 clientID,
 		ConnectTimeout:           10 * time.Second,
@@ -134,13 +124,31 @@ func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *test
 		ReceiveMaximum:           2,
 		MaxPayloadBytes:          4,
 		IngressMemoryBudgetBytes: DefaultIngressMemoryBudgetBytes,
-	}
-	source := NewSession(sourceOptions, connectivity.SessionPersistent, nil)
+	}, connectivity.SessionPersistent, nil)
 	t.Cleanup(func() { _ = source.Close(context.Background()) })
 	require.NoError(t, source.Start(ctx))
 	require.NoError(t, source.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
+
+	receiver := NewReceiver("poison-ack-drop", source, WithTopicFilters(topic))
+	received := make(chan string, 4)
+	receiverDone := make(chan error, 1)
+	go func() {
+		receiverDone <- receiver.Run(ctx, func(emitCtx context.Context, delivery ports.Delivery) error {
+			payload := string(delivery.Envelope().Payload())
+			if err := delivery.Ack(emitCtx); err != nil {
+				return err
+			}
+			received <- payload
+			return nil
+		})
+	}()
+	select {
+	case <-receiver.Started():
+	case <-ctx.Done():
+		t.Fatal("receiver did not start")
+	}
 
 	publisher := NewSession(SessionOptions{
 		BrokerURLs:     []string{broker.URL()},
@@ -160,62 +168,60 @@ func TestIngressMemoryPoison_TerminalDisconnectRedeliversWithoutAckWedge(t *test
 		}))
 	}
 
-	send("12345")
+	send("12345") // 5 bytes > max_payload_bytes 4, within broker + advertised limits
 	require.Eventually(t, func() bool {
-		health := source.Health(ctx)
-		return !health.Ready &&
-			errors.Is(health.LastError, shared.ErrTransportClosedPermanently) &&
-			health.UnsettledCount == 0
+		return source.router.IngressPoisonDroppedCount() == 1
 	}, 15*time.Second, 10*time.Millisecond,
-		"oversize QoS 1 must enter one operator-visible terminal teardown without tracking an impossible ACK")
-	require.NoError(t, source.Close(ctx))
+		"oversize payload must be acked-and-dropped on the poison counter")
 
-	recoveredOptions := sourceOptions
-	recoveredOptions.MaxPayloadBytes = 16
-	recovered := NewSession(recoveredOptions, connectivity.SessionPersistent, nil)
-	t.Cleanup(func() { _ = recovered.Close(context.Background()) })
-	require.NoError(t, recovered.Start(ctx))
-	require.NoError(t, recovered.Reconcile(ctx, connectivity.SessionPlan{
+	health := source.Health(ctx)
+	require.True(t, health.Ready, "a poison publish must NOT latch the session terminal (MQTT-L1)")
+
+	send("good") // 4 bytes: within the cap; the same connection must still deliver
+	select {
+	case payload := <-received:
+		require.Equal(t, "good", payload, "traffic after a poison drop must flow on the same connection")
+	case <-ctx.Done():
+		t.Fatal("later QoS 1 delivery blocked after poison ack-drop")
+	}
+
+	// Reconnect the persistent session. The contract under test: the POISON
+	// payload is NEVER delivered to the receiver — on the original
+	// connection it was dropped before dispatch, and after the resume its
+	// ack freed the broker slot (a copy whose ack raced the deliberate
+	// disconnect would be redelivered and dropped AGAIN, never delivered).
+	// Already-settled GOOD traffic MAY legitimately redeliver here: the
+	// Delivery.Ack marks paho's tracker, but the PUBACK flush can race this
+	// deliberate reload — the documented at-least-once residual — so the
+	// assertion drains duplicates rather than demanding only-new traffic.
+	require.NoError(t, source.Reload(ctx))
+	require.NoError(t, source.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}))
-	receiver := NewReceiver("poison-redelivery", recovered, WithTopicFilters(topic))
-	received := make(chan string, 2)
-	receiverDone := make(chan error, 1)
-	go func() {
-		receiverDone <- receiver.Run(ctx, func(emitCtx context.Context, delivery ports.Delivery) error {
-			payload := string(delivery.Envelope().Payload())
-			if err := delivery.Ack(emitCtx); err != nil {
-				return err
-			}
-			received <- payload
-			return nil
-		})
-	}()
-	select {
-	case <-receiver.Started():
-	case <-ctx.Done():
-		t.Fatal("recovery receiver did not start")
+	send("post")
+	for {
+		var payload string
+		select {
+		case payload = <-received:
+		case <-ctx.Done():
+			t.Fatal("post-reload delivery did not arrive")
+		}
+		require.NotEqual(t, "12345", payload,
+			"the poison payload must NEVER be delivered to the receiver, resumed session included")
+		if payload == "post" {
+			break
+		}
+		require.Equal(t, "good", payload,
+			"only the at-least-once redelivery of settled traffic may precede the post-reload marker")
 	}
-
-	select {
-	case payload := <-received:
-		require.Equal(t, "12345", payload, "terminally rejected packet must redeliver")
-	case <-ctx.Done():
-		t.Fatal("terminally rejected packet did not redeliver")
-	}
-	send("next")
-	select {
-	case payload := <-received:
-		require.Equal(t, "next", payload, "redelivered poison ACK must not block later acknowledgements")
-	case <-ctx.Done():
-		t.Fatal("later QoS 1 delivery remained blocked after poison redelivery")
-	}
+	assert.GreaterOrEqual(t, source.router.IngressPoisonDroppedCount(), int64(1),
+		"every arrival of the poison packet is dropped and counted, never dispatched")
 
 	cancel()
 	select {
 	case err := <-receiverDone:
 		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(5 * time.Second):
-		t.Fatal("recovery receiver did not stop")
+		t.Fatal("receiver did not stop")
 	}
 }

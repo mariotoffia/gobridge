@@ -8,6 +8,7 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 
 	"github.com/mariotoffia/gobridge/circuitbreaker"
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -231,7 +232,9 @@ func TestAnaCBSender_RecoversAfterResetTimeout(t *testing.T) {
 		ResetTimeout:     50 * time.Millisecond,
 		CountError:       func(error) bool { return true },
 	}
-	br := circuitbreaker.NewBreaker("ana-cb-recover", cfg, nil)
+	fc := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	br := circuitbreaker.NewBreaker("ana-cb-recover", cfg, nil,
+		circuitbreaker.WithBreakerClock(fc))
 
 	// Trip the breaker.
 	_ = br.BeforeRequest()
@@ -242,8 +245,9 @@ func TestAnaCBSender_RecoversAfterResetTimeout(t *testing.T) {
 		t.Fatal("breaker must reject right after trip")
 	}
 
-	// OTHER: wait past the reset timeout, then probe → should be allowed.
-	time.Sleep(80 * time.Millisecond)
+	// Deterministic: advance the fake clock past ResetTimeout; the next
+	// BeforeRequest observes the elapsed window and admits the probe.
+	fc.Advance(cfg.ResetTimeout + time.Millisecond)
 
 	if err := br.BeforeRequest(); err != nil {
 		t.Fatalf("breaker should allow probe after reset timeout, got %v", err)

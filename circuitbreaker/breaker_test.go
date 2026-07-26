@@ -233,6 +233,64 @@ func TestBreaker_HalfOpen_AbandonedProbeReclaimed(t *testing.T) {
 	}
 }
 
+// TestBreaker_CB1_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot pins CB-1:
+// a probe whose slot was reclaimed (it exceeded probe_timeout) must NOT, when it
+// finally reports, release the newer probe that has since taken a slot, nor vote
+// in the current half-open epoch. Before the fix the token carried no slot
+// identity, so the late outcome released the oldest remaining slot — the newer
+// probe's — letting the breaker exceed HalfOpenMaxProbes and, worse, letting an
+// abandoned probe's late success close the circuit.
+//
+// Mutation check: revert AfterRequestToken to releaseProbeLocked() (oldest) and
+// this fails — the late success releases B's slot (HalfOpenInFlight drops to 0)
+// and closes the circuit.
+func TestBreaker_CB1_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot(t *testing.T) {
+	cfg := circuitbreaker.Config{
+		FailureThreshold:  1,
+		SuccessThreshold:  1, // one success would close — so a stray vote is observable
+		ResetTimeout:      10 * time.Second,
+		HalfOpenMaxProbes: 1,
+	}.WithDefaults()
+
+	fake := clocktest.NewAt(time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC))
+	b := circuitbreaker.NewBreaker("cb1", cfg, nil,
+		circuitbreaker.WithBreakerClock(fake),
+		circuitbreaker.WithHalfOpenProbeTimeout(5*time.Second))
+	b.ForceStateForTest(circuitbreaker.StateHalfOpen, time.Time{})
+
+	// Probe A takes the only slot and then goes silent (slow/abandoned).
+	tokA, err := b.BeforeRequestToken()
+	if err != nil {
+		t.Fatalf("probe A should be admitted: %v", err)
+	}
+
+	// Past the probe timeout, A's slot is reclaimed and probe B is admitted.
+	fake.Advance(6 * time.Second) // > 5s probe timeout
+	if _, err := b.BeforeRequestToken(); err != nil {
+		t.Fatalf("probe B should be admitted after A reclaimed: %v", err)
+	}
+	if got := b.HalfOpenInFlight(); got != 1 {
+		t.Fatalf("HalfOpenInFlight = %d, want 1 (only probe B)", got)
+	}
+
+	// A finally reports SUCCESS — a stale outcome for a slot that no longer exists.
+	b.AfterRequestToken(tokA, nil)
+
+	m := b.GetMetrics()
+	if got := b.HalfOpenInFlight(); got != 1 {
+		t.Fatalf("HalfOpenInFlight = %d after A's late outcome, want 1 (B's slot untouched)", got)
+	}
+	if m.State != circuitbreaker.StateHalfOpen.String() {
+		t.Fatalf("state = %q after reclaimed probe's late success, want half-open (must not vote)", m.State)
+	}
+	if m.StaleOutcomes != 1 {
+		t.Fatalf("StaleOutcomes = %d, want 1 (the reclaimed probe's discarded outcome)", m.StaleOutcomes)
+	}
+	if m.TotalSuccesses != 0 {
+		t.Fatalf("TotalSuccesses = %d, want 0 (a reclaimed probe's outcome must not count)", m.TotalSuccesses)
+	}
+}
+
 // TestBreaker_HalfOpenProbeTimeout_DefaultsFromResetTimeout validates that
 // the probe timeout defaults to 2×ResetTimeout when no explicit timeout is
 // configured, so an abandoned probe is still eventually reclaimed.

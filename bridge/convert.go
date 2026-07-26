@@ -93,13 +93,7 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 // config.deploymentIsClustered so the two agree on exactly which deployments are
 // clustered.
 func IsClusteredDeployment(cfg *ports.BridgeConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.Bridge.DeploymentMode == "clustered" {
-		return true
-	}
-	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+	return ports.IsClusteredDeployment(cfg)
 }
 
 func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Config, error) {
@@ -211,6 +205,13 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 			return nil, fmt.Errorf("invalid startup_allowance %q: must be a non-negative duration", rs.StartupAllowance)
 		}
 		sc.StartupAllowance = d
+	}
+	if rs.BrokerHealthStepDown != "" {
+		d, err := time.ParseDuration(rs.BrokerHealthStepDown)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid broker_health_step_down %q: must be a positive duration", rs.BrokerHealthStepDown)
+		}
+		sc.BrokerHealthStepDown = d
 	}
 
 	ds, err := toDrainStrategyE(rs)

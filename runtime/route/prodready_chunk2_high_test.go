@@ -304,15 +304,68 @@ func TestHigh4_ProcessorTimeout_InvokesCircuitBreakerHook(t *testing.T) {
 	}
 }
 
-// TestHigh4_AbandonedProcessorCircuitBreaker proves the route-level breaker: once
-// maxAbandonedProcessors abandons accumulate WITHOUT an intervening terminal
-// settle the route wedges (terminal), and a terminal settle resets the counter so
-// the breaker measures abandons-since-last-resolution rather than a lifetime
-// total. This bounds the residual HIGH-4 hazard when HIGH-1's ledger is defeated
-// (unstable per-message identity) or the cap is disabled (MaxReplayAttempts=0).
+// TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn proves the paired decrement
+// (CORE-RES-2): when a processor abandoned on a genuine timeout FINALLY returns,
+// the WithChainOnProcessorReturned hook fires exactly once, so the route breaker's
+// outstanding count drops back. A processor that never returns never fires it, so
+// its leak stays counted.
 //
-// Mutation check: remove the wedge call in onProcessorAbandoned and this fails —
-// the route never wedges no matter how many goroutines are abandoned.
+// Mutation check: delete the done-waiter goroutine in chain.go's timeout branch
+// and this fails — the return hook never fires after the processor unblocks.
+func TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn(t *testing.T) {
+	proc := &blockingProcessor{entered: make(chan struct{}), release: make(chan struct{})}
+	clk := clocktest.New()
+	var abandons, returns atomic.Int32
+
+	env := countLessEnv("core-res2-chain")
+	done := make(chan error, 1)
+	go func() {
+		done <- RunChain(context.Background(), []ports.Processor{proc}, env,
+			WithChainTimeout(30*time.Second),
+			WithChainClock(clk),
+			WithChainOnProcessorTimeout(func() { abandons.Add(1) }),
+			WithChainOnProcessorReturned(func() { returns.Add(1) }),
+		)
+	}()
+
+	<-proc.entered
+	waitTimerCount(t, clk, 1)
+	clk.Advance(30 * time.Second)
+
+	if err := <-done; !errors.Is(err, shared.ErrProcessorTimeout) {
+		t.Fatalf("RunChain err = %v, want ErrProcessorTimeout", err)
+	}
+	if got := abandons.Load(); got != 1 {
+		t.Fatalf("abandon hook fired %d times, want 1", got)
+	}
+	// The abandoned goroutine has NOT returned yet: the return hook must not have
+	// fired while the processor is still blocked.
+	if got := returns.Load(); got != 0 {
+		t.Fatalf("return hook fired %d times before the processor unblocked, want 0", got)
+	}
+
+	// Release the abandoned processor: its done channel closes, so the return hook
+	// must fire exactly once.
+	close(proc.release)
+	deadline := time.After(2 * time.Second)
+	for returns.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("return hook never fired after the abandoned processor returned (CORE-RES-2)")
+		default:
+		}
+	}
+	if got := returns.Load(); got != 1 {
+		t.Fatalf("return hook fired %d times, want exactly 1", got)
+	}
+}
+
+// TestHigh4_AbandonedProcessorCircuitBreaker pins the CORE-RES-2 semantics: the
+// breaker counts OUTSTANDING abandoned processor goroutines, not consecutive
+// abandons-since-settle. An abandoned goroutine that RETURNS (honours
+// cancellation, even late) decrements the count, so any number of
+// abandon-then-return pairs never trips it; only goroutines that never return
+// accumulate to the ceiling.
 func TestHigh4_AbandonedProcessorCircuitBreaker(t *testing.T) {
 	r := NewRouteRunnerFromConfig(RouteRunnerConfig{
 		RouteID: "high4",
@@ -320,28 +373,26 @@ func TestHigh4_AbandonedProcessorCircuitBreaker(t *testing.T) {
 		Sender:  stubSender{},
 	})
 
-	// A terminal settle keeps resetting the counter, so a poison-then-settle
-	// message (cap fires well below the breaker) never trips it.
+	// Abandon-then-return pairs (slow processors that eventually unwind) never
+	// trip the breaker regardless of volume — outstanding returns to zero each time.
 	for i := 0; i < maxAbandonedProcessors*3; i++ {
 		r.onProcessorAbandoned()
-		if i%2 == 1 {
-			r.resetAbandonedProcessors() // simulate an intervening terminal settle
-		}
+		r.onProcessorReturnedFromAbandon() // the abandoned goroutine finally returned
 		if r.isWedged() {
-			t.Fatalf("route wedged after %d abandons WITH interleaved resets; the breaker must measure abandons-since-settle", i+1)
+			t.Fatalf("route wedged after %d abandon/return pairs; the breaker must count OUTSTANDING leaks only", i+1)
 		}
 	}
 
-	// Now accumulate abandons with NO reset: the breaker must trip at the ceiling.
-	r.resetAbandonedProcessors()
+	// Now accumulate abandons whose goroutines NEVER return (truly hung): the
+	// breaker must trip exactly at the outstanding ceiling.
 	for i := 0; i < maxAbandonedProcessors; i++ {
 		if r.isWedged() {
-			t.Fatalf("wedged early at abandon %d, want exactly at %d", i, maxAbandonedProcessors)
+			t.Fatalf("wedged early at outstanding %d, want exactly at %d", i, maxAbandonedProcessors)
 		}
 		r.onProcessorAbandoned()
 	}
 	if !r.isWedged() {
-		t.Fatalf("route did not wedge after %d consecutive abandoned processors", maxAbandonedProcessors)
+		t.Fatalf("route did not wedge with %d outstanding abandoned processors", maxAbandonedProcessors)
 	}
 	if !errors.Is(r.wedgeError(), ErrRouteTerminal) {
 		t.Fatalf("wedge error = %v, want it to wrap ErrRouteTerminal (escalate)", r.wedgeError())

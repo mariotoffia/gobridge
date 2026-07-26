@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,8 +26,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -298,18 +299,19 @@ func (r *noopReceiver) Run(ctx context.Context, _ func(context.Context, ports.De
 // dockerKill kills a Docker container by name.
 func dockerKill(t *testing.T, name string) {
 	t.Helper()
-	out, err := exec.Command("docker", "kill", name).CombinedOutput()
+	out, err := dockerexec.Run(dockerexec.ExecTimeout, "kill", name)
 	if err != nil {
 		t.Logf("dockerKill %q: %v\n%s", name, err, out)
 	}
 }
 
-// dockerRestart restarts a Docker container by name (kill + start).
+// dockerRestart restarts a Docker container by name (kill + start), gating on
+// docker reporting the container stopped — not a fixed sleep — before start.
 func dockerRestart(t *testing.T, name string) {
 	t.Helper()
 	dockerKill(t, name)
-	time.Sleep(500 * time.Millisecond) // OTHER: let container fully stop before restarting
-	out, err := exec.Command("docker", "start", name).CombinedOutput()
+	require.NoError(t, dockerexec.WaitStopped(name, 15*time.Second), "dockerRestart %q", name)
+	out, err := dockerexec.Run(dockerexec.RunTimeout, "start", name)
 	if err != nil {
 		t.Fatalf("dockerRestart %q: start failed: %v\n%s", name, err, out)
 	}
@@ -357,11 +359,7 @@ func setupMQTTSessionWithBroker(
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx),
 		"MQTT session Start %q at %s", clientID, brokerURL)
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	return sess
@@ -419,11 +417,7 @@ func newMQTTCollectorWithBroker(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "collector Start at %s", brokerURL)
-
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 
 	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
@@ -600,10 +594,7 @@ func newPersistentCollectorWithBroker(
 
 	ctx := context.Background()
 	require.NoError(t, sess.Start(ctx), "persistent collector Start at %s", brokerURL)
-	select {
-	case <-sess.Events():
-	case <-time.After(5 * time.Second):
-	}
+	waitConnected(t, sess, 15*time.Second)
 	require.NoError(t, sess.Reconcile(ctx, connectivity.SessionPlan{
 		Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
 	}), "persistent collector Reconcile")
@@ -653,6 +644,22 @@ func waitSubReady(t *testing.T, sess *paho.Session, timeout time.Duration) {
 	})
 }
 
+// healthReporter is the one-method slice of a transport session the connect
+// gate needs; paho, amqp091, and amqp10 sessions all satisfy it.
+type healthReporter interface {
+	Health(context.Context) ports.SessionHealth
+}
+
+// waitConnected gates hard on the session reporting Connected — replacing the
+// old "select on Events() or proceed silently after N s" pattern, which let a
+// test continue against a session that never connected.
+func waitConnected(t *testing.T, sess healthReporter, timeout time.Duration) {
+	t.Helper()
+	lrWaitFor(t, timeout, "session connected", func() bool {
+		return sess.Health(context.Background()).Connected
+	})
+}
+
 // requireMQTTSessionReady asserts that the runtime reports the given
 // session as Connected and Ready. Fails fast (no polling) — call after
 // gobridgesync returns to verify the helper saw the session at all.
@@ -678,20 +685,16 @@ func requireMQTTSessionReady(t *testing.T, rt *goruntime.Runtime, sessionID stri
 // for each bridge and fails the test.
 func gobridgesync(t *testing.T, timeout time.Duration, runtimes ...*goruntime.Runtime) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		allReady := true
+	if wait.Poll(timeout, func() bool {
 		for _, rt := range runtimes {
 			dh := rt.DeepHealth(context.Background())
 			if !dh.ReadyForTraffic || dh.ServiceLevel != ports.ServiceLevelFull {
-				allReady = false
-				break
+				return false
 			}
 		}
-		if allReady {
-			return
-		}
-		time.Sleep(50 * time.Millisecond) // SYNC: poll for bridge readiness
+		return true
+	}) {
+		return
 	}
 	// Dump health for debugging on failure
 	for _, rt := range runtimes {

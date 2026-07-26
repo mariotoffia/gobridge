@@ -30,7 +30,15 @@ type Breaker struct {
 	// legacy outcome landing during half-open released a slot it never
 	// acquired, underflowing the probe accounting and admitting extra
 	// concurrent probes past HalfOpenMaxProbes. Guarded by mu.
-	legacyOutstanding    int
+	legacyOutstanding int
+	// nextProbeID assigns each admitted half-open probe slot a unique id so
+	// AfterRequestToken releases and counts ONLY the token's own live slot
+	// (CB-1). Without per-slot identity, a reclaimed probe's late outcome
+	// released the oldest remaining slot — which by then belonged to a newer
+	// probe — letting the breaker exceed HalfOpenMaxProbes. Monotonic, never
+	// reset; starts at 1 so a zero Token.slotID means "no specific slot"
+	// (the token-less legacy surface). Guarded by mu.
+	nextProbeID          uint64
 	config               Config
 	consecutiveFailures  int
 	consecutiveSuccesses int
@@ -66,6 +74,9 @@ type Breaker struct {
 // through the token-less legacy surface (so reclaim keeps legacyOutstanding
 // consistent).
 type probeSlot struct {
+	// id uniquely identifies this admission for the lifetime of the slot so a
+	// token releases exactly its own slot (CB-1). 0 is never assigned.
+	id       uint64
 	deadline time.Time
 	legacy   bool
 }
@@ -82,6 +93,11 @@ type Token struct {
 	// probe is true when the admission consumed a half-open probe slot;
 	// AfterRequestToken releases a slot only for such tokens.
 	probe bool
+	// slotID identifies the exact probe slot this admission took, so
+	// AfterRequestToken releases and counts ONLY that slot and a reclaimed
+	// probe's late outcome cannot free a newer probe's slot (CB-1). 0 on a
+	// closed-era admission or the token-less legacy surface.
+	slotID uint64
 }
 
 // BreakerOption configures a Breaker.
@@ -242,7 +258,10 @@ func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 	if len(b.halfOpenProbes) >= b.config.HalfOpenMaxProbes {
 		return Token{}, shared.ErrUnavailable.WithRetryAfter(b.config.ResetTimeout / 2)
 	}
+	b.nextProbeID++
+	id := b.nextProbeID
 	b.halfOpenProbes = append(b.halfOpenProbes, probeSlot{
+		id:       id,
 		deadline: b.clk.Now().Add(b.probeTimeout),
 		legacy:   legacy,
 	})
@@ -250,7 +269,7 @@ func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 	if legacy {
 		b.legacyOutstanding++
 	}
-	return Token{generation: b.generation, probe: true}, nil
+	return Token{generation: b.generation, probe: true, slotID: id}, nil
 }
 
 // reclaimExpiredProbesLocked drops probe slots whose admission deadline
@@ -260,12 +279,13 @@ func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 // rejecting every request. Slots are admission-ordered, hence
 // deadline-ordered (the clock is monotonic), so the expired ones form a
 // prefix. Reclaiming does NOT advance the generation: a healthy concurrent
-// probe (with HalfOpenMaxProbes>1) keeps its slot and its outcome still
-// counts. By the same token, an outcome that arrives AFTER its slot was
-// reclaimed still matches the generation and is counted — a belated success
-// is still a success, a belated failure still real evidence; reclaim frees
-// the slot for concurrency, it does not disqualify the vote. Must be called
-// with b.mu held.
+// probe (with HalfOpenMaxProbes>1) keeps its slot and its outcome still counts.
+// An outcome that arrives AFTER its OWN slot was reclaimed is, by contrast,
+// stale evidence about an abandoned probe: AfterRequestToken matches on the
+// per-slot id (CB-1), finds the slot gone, and discards the outcome rather than
+// counting it or releasing whatever slot is now oldest. Reclaim frees the slot
+// for concurrency; the slot-id match is what keeps a late outcome from voting in
+// or perturbing a newer probe's epoch. Must be called with b.mu held.
 func (b *Breaker) reclaimExpiredProbesLocked() {
 	if len(b.halfOpenProbes) == 0 {
 		return
@@ -290,6 +310,15 @@ func (b *Breaker) reclaimExpiredProbesLocked() {
 // reclaimed by reclaimExpiredProbesLocked after an abandoned probe's
 // deadline elapsed — so a late outcome can never underflow the probe
 // accounting. Must be called with b.mu held.
+// releaseProbeLocked releases the OLDEST outstanding half-open probe slot. It is
+// used only by the token-LESS legacy surface (AfterRequest), which carries no
+// slot id. LIMITATION: if the legacy and token surfaces are MIXED on one breaker
+// with HalfOpenMaxProbes>1, a legacy release can free a token probe's slot (its
+// later outcome is then discarded as stale — aggregate counts stay consistent, no
+// under/overflow). Not reachable in production: HalfOpenMaxProbes defaults to 1
+// and every caller uses a single surface (ResilientCircuitBreaker prefers the
+// token AdmitRequest; the CB processor uses BeforeRequestToken only). Prefer the
+// token surface (BeforeRequestToken/AdmitRequest) whenever concurrency > 1.
 func (b *Breaker) releaseProbeLocked() {
 	if len(b.halfOpenProbes) == 0 {
 		return
@@ -300,6 +329,27 @@ func (b *Breaker) releaseProbeLocked() {
 		b.legacyOutstanding--
 	}
 	b.halfOpenInFlight.Store(int32(len(b.halfOpenProbes)))
+}
+
+// releaseProbeByIDLocked removes the probe slot with the given id and reports
+// whether it was found. It returns false when the slot is no longer live —
+// already released, or reclaimed by reclaimExpiredProbesLocked after the probe
+// exceeded its deadline — so a reclaimed probe's late outcome releases NOTHING
+// (never a newer probe's slot) and is treated as stale by the caller (CB-1).
+// Must be called with b.mu held.
+func (b *Breaker) releaseProbeByIDLocked(id uint64) bool {
+	for i := range b.halfOpenProbes {
+		if b.halfOpenProbes[i].id != id {
+			continue
+		}
+		if b.halfOpenProbes[i].legacy && b.legacyOutstanding > 0 {
+			b.legacyOutstanding--
+		}
+		b.halfOpenProbes = append(b.halfOpenProbes[:i], b.halfOpenProbes[i+1:]...)
+		b.halfOpenInFlight.Store(int32(len(b.halfOpenProbes)))
+		return true
+	}
+	return false
 }
 
 // AfterRequest records the outcome of a request and transitions state.
@@ -333,6 +383,19 @@ func (b *Breaker) AfterRequest(err error) {
 	b.AfterRequestToken(tok, err)
 }
 
+// AdmitRequest implements ports.CircuitBreakerAdmitter: the generation-safe
+// admission surface for callers with multiple requests in flight on one
+// breaker. It is BeforeRequestToken/AfterRequestToken with the Token carried
+// inside the settle closure, so port-side adapters get stale-outcome
+// discarding without the concrete Token type crossing the port boundary.
+func (b *Breaker) AdmitRequest() (func(error), error) {
+	tok, err := b.BeforeRequestToken()
+	if err != nil {
+		return nil, err
+	}
+	return func(outcome error) { b.AfterRequestToken(tok, outcome) }, nil
+}
+
 // AfterRequestToken records the outcome of a request admitted by
 // BeforeRequestToken. An outcome whose Token predates the current
 // circuit generation is stale evidence about a previous epoch — it is
@@ -357,14 +420,25 @@ func (b *Breaker) AfterRequestToken(tok Token, err error) {
 		return
 	}
 	if tok.probe {
-		// The generation matched, so no transition has happened since
-		// the admission: the breaker is still half-open and this token
-		// holds one of its probe slots. Only probe tokens release a
-		// slot, and releaseProbeLocked no-ops when the slot was already
-		// reclaimed, so an outcome that never took one (a closed-era
-		// admission or a token-less legacy call) — or a late outcome for
-		// an already-reclaimed probe — cannot underflow the accounting.
-		b.releaseProbeLocked()
+		if tok.slotID != 0 {
+			// Token surface (CB-1): release and count ONLY this token's own live
+			// slot. If releaseProbeByIDLocked reports the slot is gone, the probe
+			// exceeded its deadline and was reclaimed as abandoned — its late
+			// outcome is stale evidence about a slot that no longer exists, so
+			// discard it. This prevents both releasing a NEWER probe's slot (which
+			// would let the breaker exceed HalfOpenMaxProbes) and voting in an
+			// epoch the probe never legitimately completed in.
+			if !b.releaseProbeByIDLocked(tok.slotID) {
+				b.staleOutcomes++
+				b.mu.Unlock()
+				return
+			}
+		} else {
+			// Token-less legacy surface: it carries no slot id, so release the
+			// oldest slot it took (bounded by legacyOutstanding). No-ops when the
+			// slot was already reclaimed, so it cannot underflow the accounting.
+			b.releaseProbeLocked()
+		}
 	}
 	b.totalRequests++
 

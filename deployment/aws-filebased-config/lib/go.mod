@@ -17,6 +17,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0
 	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/localstack v0.0.0
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
@@ -52,11 +53,13 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -84,6 +87,7 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../../adapters/native/store/memorydlq
 	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../../adapters/native/store/memoryoutbox
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout => ../../../adapters/native/store/memoryrollout
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../../adapters/native/store/sqlitedlq
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../../adapters/native/store/sqlitemanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../../adapters/native/store/sqliteoutbox
@@ -100,6 +104,8 @@ replace github.com/mariotoffia/gobridge/adapters/aws/store => ../../../adapters/
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../../adapters/aws/store/dynamodbdlq
 
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../../adapters/aws/store/dynamodblease
+
+replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout => ../../../adapters/aws/store/dynamodbrollout
 
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../../adapters/aws/store/dynamodboutbox
 

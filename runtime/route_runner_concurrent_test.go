@@ -194,9 +194,9 @@ func TestRouteRunner_BackpressureOnSemFull(t *testing.T) {
 //
 // ───────────────────────────────────────────────────────────────────
 func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
-	var sendCompleted int64
-
+	var sendStarted, sendCompleted int64
 	sender := NewConcurrentSender(func(_ *messaging.Envelope) error {
+		atomic.StoreInt64(&sendStarted, 1)
 		time.Sleep(200 * time.Millisecond) // OTHER: simulated processing duration
 		atomic.StoreInt64(&sendCompleted, 1)
 		return nil
@@ -227,7 +227,7 @@ func TestRouteRunner_GracefulShutdownWaitsInFlight(t *testing.T) {
 		_ = receiver.Emit(ctx, del)
 	}()
 
-	time.Sleep(50 * time.Millisecond) // STARTUP: let emit reach receiver before cancel
+	waitFor(t, 2*time.Second, "send in flight before cancel", func() bool { return atomic.LoadInt64(&sendStarted) == 1 })
 	cancel()
 
 	select {
@@ -277,19 +277,21 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 
 	receiver1 := NewFakeReceiver()
 	receiver2 := NewFakeReceiver()
+	sender1 := makeSender()
+	sender2 := makeSender()
 
 	runner1 := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:   "global-route-1",
 		Policy:    routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver:  receiver1,
-		Sender:    makeSender(),
+		Sender:    sender1,
 		GlobalSem: globalSem,
 	})
 	runner2 := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 		RouteID:   "global-route-2",
 		Policy:    routing.RoutePolicy{MaxInFlight: 5, DeliveryMode: routing.DeliveryDirectHold},
 		Receiver:  receiver2,
-		Sender:    makeSender(),
+		Sender:    sender2,
 		GlobalSem: globalSem,
 	})
 
@@ -320,7 +322,7 @@ func TestGlobalSemaphore_LimitsCrossRoute(t *testing.T) {
 	}
 
 	emitWg.Wait()
-	time.Sleep(200 * time.Millisecond) // SYNC: let in-flight sends complete for peak measurement
+	waitFor(t, 2*time.Second, "all 6 sends complete", func() bool { return sender1.SentCount()+sender2.SentCount() >= 6 })
 	cancel()
 	runWg.Wait()
 

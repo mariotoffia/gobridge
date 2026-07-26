@@ -29,10 +29,8 @@ package artemislocal
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,7 +121,7 @@ func Endpoint(t testing.TB) string {
 			endpoint, consoleURL, cleanupFn, initErr = startContainer()
 		}
 	} else if initErr == nil && !fromEnv && containerName != "" {
-		if !isContainerRunning(containerName) {
+		if !dockerexec.IsRunning(containerName) {
 			if cleanupFn != nil {
 				cleanupFn()
 			}
@@ -223,14 +221,14 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	if opts.cleanOrphans {
-		removeOrphans(containerPrefix)
+		dockerexec.RemoveOrphans(containerPrefix)
 	}
 
-	amqpPort, err := freePort()
+	amqpPort, err := dockerexec.FreePort()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("find free AMQP port: %w", err)
 	}
-	webPort, err := freePort()
+	webPort, err := dockerexec.FreePort()
 	if err != nil {
 		return "", "", nil, fmt.Errorf("find free web port: %w", err)
 	}
@@ -256,22 +254,32 @@ func startContainer() (string, string, func(), error) {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
 	}
 
-	if err := waitForContainerHealthy(name, 30*time.Second); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.WaitHealthy(name, 30*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("container: %w", err)
 	}
 
-	if err := waitForTCP(amqpPort, 60*time.Second); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.WaitTCP(amqpPort, 60*time.Second); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("AMQP port: %w", err)
 	}
 
-	if err := stabilize(amqpPort); err != nil {
-		logContainerFailure(name)
+	if err := dockerexec.StabilizeTCP(amqpPort); err != nil {
+		dockerexec.LogFailure(name)
 		cleanup()
 		return "", "", nil, fmt.Errorf("stabilization: %w", err)
+	}
+
+	// Protocol truth: Artemis accepts TCP well before its AMQP acceptor
+	// authenticates — gate on a real SASL dial, not the socket.
+	amqpEP := fmt.Sprintf("amqp://127.0.0.1:%d", amqpPort)
+	if err := dockerexec.WaitProbe("Artemis AMQP on "+amqpEP, 30*time.Second, time.Second,
+		amqpProbe(amqpEP)); err != nil {
+		dockerexec.LogFailure(name)
+		cleanup()
+		return "", "", nil, err
 	}
 
 	containerName = name
@@ -280,109 +288,19 @@ func startContainer() (string, string, func(), error) {
 	return ep, console, cleanup, nil
 }
 
-func removeOrphans(prefix string) {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "ps", "-aq",
-		"--filter", "name="+prefix)
-	if err != nil || len(out) == 0 {
-		return
-	}
-	ids := strings.Fields(strings.TrimSpace(string(out)))
-	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, args...)
-	}
-}
+// amqpProbe gates on a real AMQP 1.0 SASL dial — success proves the broker
+// authenticates and speaks the protocol, not merely that the port is open.
+func amqpProbe(ep string) func() error {
+	return func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-func isContainerRunning(name string) bool {
-	out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-		"--format", "{{.State.Running}}", name)
-	return err == nil && len(out) > 0 && out[0] == 't'
-}
-
-func waitForContainerHealthy(name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
-			"--format", "{{.State.Running}} {{.State.ExitCode}}", name)
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if strings.HasPrefix(s, "true") {
-				return nil
-			}
-			if strings.Contains(s, "false") {
-				return fmt.Errorf("container %s exited (inspect: %s)", name, s)
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("container %s did not reach running state within %v", name, timeout)
-}
-
-func waitForTCP(port int, timeout time.Duration) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("TCP connect to %s failed within %v: %v", addr, timeout, lastErr)
-}
-
-func stabilize(port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	for i := 0; i < 3; i++ {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		conn, err := amqp.Dial(ctx, ep, &amqp.ConnOptions{
+			SASLType: amqp.SASLTypePlain(user(), password()),
+		})
 		if err != nil {
 			return err
 		}
-		_ = conn.Close()
-		time.Sleep(500 * time.Millisecond)
+		return conn.Close()
 	}
-
-	ep := fmt.Sprintf("amqp://127.0.0.1:%d", port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if tryAMQPConnect(ep) {
-			return nil
-		}
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("AMQP protocol not ready on port %d within 30s", port)
-}
-
-func tryAMQPConnect(ep string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := amqp.Dial(ctx, ep, &amqp.ConnOptions{
-		SASLType: amqp.SASLTypePlain(user(), password()),
-	})
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-func logContainerFailure(name string) {
-	out, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "50", name)
-	if len(out) > 0 {
-		fmt.Fprintf(os.Stderr, "--- docker logs %s ---\n%s\n--- end ---\n", name, out)
-	}
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
 }

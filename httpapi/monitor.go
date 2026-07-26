@@ -276,6 +276,42 @@ type ConfigWatchHealth struct {
 	DesiredVersion     *int   `json:"desired_version,omitempty"`
 	RunningVersion     *int   `json:"running_version,omitempty"`
 	LastApplyError     string `json:"last_apply_error,omitempty"`
+	// Rollout surfaces the coordinated cluster rollout barrier as this member
+	// last observed it. Omitted entirely unless the deployment runs one
+	// (bridge.cluster.rollout: coordinated with a barrier wired). It answers the
+	// question no per-node signal can: a healthy member whose config change is
+	// stuck behind a peer that has not acknowledged.
+	Rollout *ClusterRolloutHealth `json:"rollout,omitempty"`
+}
+
+// ClusterRolloutHealth is the deep-health projection of the coordinated cluster
+// rollout barrier (design cluster-config-rollout-protocol.md §9).
+type ClusterRolloutHealth struct {
+	// MemberID is this node's identity within the cohort roster.
+	MemberID string `json:"member_id"`
+	// Generation and State describe the observed rollout; State is empty when
+	// no rollout has ever been proposed in this cohort.
+	Generation uint64 `json:"generation"`
+	State      string `json:"state,omitempty"`
+	// ConfigVersion is the config version the rollout carries.
+	ConfigVersion int `json:"config_version"`
+	// Epoch is the frozen membership epoch; Acked and Nacked are who has voted.
+	// Epoch minus Acked minus Nacked is exactly who the cohort is waiting for.
+	Epoch  []string `json:"epoch,omitempty"`
+	Acked  []string `json:"acked,omitempty"`
+	Nacked []string `json:"nacked,omitempty"`
+	// Reason carries the abort reason or nack aggregation when present.
+	Reason string `json:"reason,omitempty"`
+	// CandidateStaged reports whether THIS member has received the candidate
+	// config from its own config source. False on a long-staging rollout
+	// identifies this member as the one holding the cohort up.
+	CandidateStaged bool `json:"candidate_staged"`
+	// Applied reports whether this member is actually RUNNING the generation.
+	// Meaningful once State is "committed", where it is the signal that
+	// separates a healthy cohort from a split one: the rollout row reads
+	// committed on every member, but a member whose local swap failed is still
+	// on the previous generation. Alert on state=committed AND applied=false.
+	Applied bool `json:"applied"`
 }
 
 type deepHealthSessionResponse struct {

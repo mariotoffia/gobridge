@@ -103,6 +103,13 @@ type BootstrapConfig struct {
 	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
 	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
 
+	// DynamoDBHARolloutTableName names the DynamoDB table backing the coordinated
+	// cluster rollout barrier's shared state (proposals, acks, the durable
+	// last-committed config artifact). Empty selects the adapter default
+	// ("gobridge-rollouts"). It is used only when the logical config opts into
+	// bridge.cluster.rollout: coordinated.
+	DynamoDBHARolloutTableName string `json:"dynamodb_ha_rollout_table_name,omitempty"`
+
 	ConfigFilePath string `json:"config_file_path"`
 	PollInterval   string `json:"poll_interval,omitempty"`
 
@@ -172,6 +179,20 @@ type BootstrapConfig struct {
 	// already unique per Fargate task; set it explicitly for a deterministic,
 	// operator-chosen identity.
 	InstanceID string `json:"instance_id,omitempty"`
+
+	// MemberID is this node's STABLE identity within a coordinated cluster rollout
+	// cohort (design cluster-config-rollout-protocol.md §6). It is required only
+	// when the logical config opts into bridge.cluster.rollout: coordinated, and it
+	// MUST appear verbatim in that config's bridge.cluster.members roster — the
+	// barrier freezes the roster as its membership epoch and counts acknowledgements
+	// against it, so a drifting or absent id aborts every rollout.
+	//
+	// Unlike InstanceID (a metrics dimension that may derive a per-task "<host>-<pid>"
+	// value, which changes across restarts), MemberID MUST be restart-stable: it is
+	// the cohort identity a restarted task rejoins under. The deployment supplies it
+	// deterministically per node (e.g. a per-task ordinal or a stable DNS name); it
+	// is empty for a non-coordinated deployment.
+	MemberID string `json:"member_id,omitempty"`
 
 	// DevMode enables local development features such as static test
 	// credentials when SSMEndpoint is set. SSMEndpoint without DevMode

@@ -102,7 +102,7 @@ func startAppWithSSE(t *testing.T, bridgeID string) *App {
 func reloadConfig(t *testing.T, app *App, cfg *ports.BridgeConfig) {
 	t.Helper()
 	app.mu.Lock()
-	err := app.applyLogicalConfig(t.Context(), cfg)
+	err := app.applyLogicalConfig(t.Context(), cfg, false)
 	app.mu.Unlock()
 	require.NoError(t, err)
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func TestMain(m *testing.M) {
@@ -219,14 +220,7 @@ func (s *fakeDLQStore) Purge(_ context.Context, _ time.Time) (int, error) { retu
 
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond) // SYNC: poll for condition
-	}
-	t.Fatalf("timed out waiting for: %s", desc)
+	wait.Until(t, timeout, desc, fn)
 }
 
 func fastSessionConfig(sessionID string) session.Config {

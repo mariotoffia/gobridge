@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -70,6 +71,14 @@ type Drainer struct {
 	idleMu    sync.Mutex
 	idleCh    chan struct{}
 	idleSince time.Time
+
+	// drainStalled latches once the batch watchdog abandons a send goroutine
+	// because a Sender ignored context cancellation (CORE-RES-1). Run checks it
+	// after each batch and stops scheduling further batches — each of which could
+	// leak another parked sender — escalating terminal so a restart reclaims the
+	// leaked goroutine. Set in waitBatch (Run goroutine), read in Run; atomic so a
+	// test can observe it without racing the Run goroutine.
+	drainStalled atomic.Bool
 
 	// onBatchComplete is invoked after each drain batch with the number
 	// of records successfully sent+completed. Optional.

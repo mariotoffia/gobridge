@@ -53,19 +53,16 @@ them under a rolling reload splits ownership or strands durable records:
   removing/renaming a persistent/exclusive MQTT session identity.
 
 These are **hard-refused at swap time**, per process, not merely warned. The
-Supervisor rejects the reload and keeps the OLD runtime serving (metric
+bridge rejects the reload and keeps the OLD runtime serving (metric
 `ConfigReloads{state="failure"}`):
 
-- `destructiveReloadShape` gate on a paused/resume reload (`bridge/supervisor.go:620`).
-- `storeIdentityChanged` — store `type`/path/table change (`bridge/supervisor.go:690`).
-- `leaseSessionIDChanged` — lease-bearing exclusive `session_id` change
-  (`bridge/supervisor.go:701`).
+- A destructive reload shape on a paused/resume reload.
+- A store `type`/path/table change.
+- A lease-bearing exclusive `session_id` change.
 
-The only override is `WithAllowDestructiveReload` (`bridge/supervisor.go:267-277`),
-which discards the stranded backlog by design — do not set it for a routine
-change. Separately, `config/validate.go` rejects clustered-invalid shapes (for
-example cluster endpoint and clustered exclusive HTTP `direct_hold` rules,
-`config/validate.go:62-63`) at load, before any swap.
+The only override discards the stranded backlog by design — do not set it for a routine
+change. Separately, config validation rejects clustered-invalid shapes (for
+example cluster endpoint and clustered exclusive HTTP `direct_hold` rules) at load, before any swap.
 
 ## Action — drain-and-stop for an invariant change
 
@@ -85,7 +82,7 @@ broker may pin an unacknowledged shared delivery to the old ClientID. Preserve
 the managed-filter ledger and follow the
 [persistent MQTT managed-filter migration runbook](mqtt-managed-subscription-migration.md);
 a terminal migration-required result means restore the exact old identity and
-handlers, drain, then retry. `WithAllowDestructiveReload` does not make this
+handlers, drain, then retry. The destructive-reload override does not make this
 safe, and GoBridge does not claim portable broker redistribution.
 
 ## Rollback
@@ -96,7 +93,7 @@ safe, and GoBridge does not claim portable broker redistribution.
   split-inducing config).
 - **To revert a committed config across a clustered cohort, roll back the whole
   cohort externally — do _not_ re-commit or live-restore the previous config.** A
-  re-commit through the admin transaction flow bumps `BridgeConfig.Version`, and
+  re-commit through the admin transaction flow bumps the config version, and
   any content difference is a non-no-op, so a per-process live reload of the
   previous config is **refused fail-closed** just like the forward change (finding
   H8). Follow
@@ -123,7 +120,7 @@ done
 ```
 
 `GET /api/v1/monitor/topology` exposes `config_version` when a config provider is
-wired (`httpapi/monitor.go:186-211`) alongside `running`. Every instance should
+wired alongside `running`. Every instance should
 report the same `config_version` with `running: true`. Treat persistent version
 divergence as an alertable condition; if an instance lags, it is wedged on a
 config it cannot load — inspect its logs before forcing anything.

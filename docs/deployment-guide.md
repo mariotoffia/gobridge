@@ -6,7 +6,8 @@ wherever you run GoBridge; the concrete artifact differs by how you build it. Fo
 cloud-specific guidance, see [What's Next](#whats-next).
 
 > **The shipped container image is the AWS file-based deployment profile, not a
-> platform-neutral image.** The published image runs
+> platform-neutral image.** The image (published by digest at the first command
+> release — see [Pin Images by Digest](#pin-images-by-digest)) runs
 > `deployment/aws-filebased-config` and is bound to AWS. It **requires** SSM to
 > resolve secrets — `admin_api_key_param` is mandatory
 > (`deployment/aws-filebased-config/lib/model/bootstrap.go:123-125`), the SSM
@@ -439,9 +440,13 @@ orchestrators already restart by default.
 For reproducible builds, pin images by digest (`name@sha256:...`) rather than a
 floating tag such as `:latest` — both the `Dockerfile` base/runtime images and
 the GoBridge image referenced in task/pod specs. A moving tag makes a rebuild
-non-reproducible and can pull an unexpected image on the next deploy. Released
-image tags are `v0.1.0` and `v0.2.0`; a tag such as `v1.2.3` in older examples
-is illustrative, not a published release. The
+non-reproducible and can pull an unexpected image on the next deploy. No image
+tags are published yet: the release workflow pushes the GoBridge image **by
+digest only** (never `ghcr.io/...:vX.Y.Z`) after the first `cmd/gobridge/vX.Y.Z`
+command release is cut, recording the verified digest in
+`gobridge-image-digest.txt`. The `v0.1.0` / `v0.2.0` / `v1.2.3` tags in these
+examples are illustrative placeholders; at release, pin the concrete digest from
+that asset (see [RELEASE.md](../RELEASE.md)). The
 [image upgrade/rollback runbook](runbooks/upgrade-rollback-and-sqlite-durability.md#pin-images-by-digest)
 shows how to resolve a tag to its digest.
 
@@ -525,7 +530,8 @@ to give GoBridge enough time to drain before the orchestrator sends `SIGKILL`.
 
 ### Non-AWS Docker / Kubernetes (build your own image)
 
-The published image (`ghcr.io/mariotoffia/gobridge`) is the **AWS file-based
+The image (`ghcr.io/mariotoffia/gobridge`, published by digest at the first
+command release) is the **AWS file-based
 profile**: it reads its bootstrap from env/SSM and registers the AWS-oriented
 composition root. It is **not** a general off-AWS image — running it outside AWS
 without SSM and the expected bootstrap will not work. For a non-AWS Docker/K8s
@@ -699,6 +705,12 @@ Two built-in adapters are available:
 |---------|---------|---------|
 | CloudWatch | `adapters/aws/metrics/cloudwatch` | AWS CloudWatch |
 | OTLP | `adapters/otel/metrics` | Any OTLP-compatible collector |
+
+> **The shipped AWS file-based image accepts only `noop` or `cloudwatch` for its
+> `metrics_exporter`** — those are the sole values its bootstrap wires
+> (`deployment/aws-filebased-config/lib/bootstrap/metrics.go`), and any other
+> value is rejected at startup. **OTLP requires a custom composition root** that
+> registers `adapters/otel/metrics`; it is not reachable from the stock image.
 
 The runtime emits metrics automatically when a `MetricsExporter` is
 registered. Key metrics include `DeliveryE2ELatency`, `MessagesReceived`,

@@ -81,6 +81,29 @@ func TestValidateBlueprintGraph_StandaloneSharedDoesNotRequireReplicaCapability(
 	}
 }
 
+// TestValidateBlueprintGraph_StaticEndpointsTriggersClusteredValidation pins
+// CLUSTER-1: a deployment that activates clustered runtime behavior via a static
+// cluster.endpoints override (NOT deployment_mode: clustered) must run the SAME
+// clustered replica-safety validation. Before the fix, only the deployment_mode
+// spelling triggered it, so a static-endpoints cohort could pass validation while
+// N-fold consuming the same traffic or colliding on ClientID.
+func TestValidateBlueprintGraph_StaticEndpointsTriggersClusteredValidation(t *testing.T) {
+	// Missing replica identity capability on a shared subscription must error under
+	// BOTH clustered spellings identically.
+	viaMode := clusteredSharedConfig("persistent", nil)
+	viaEndpoints := clusteredSharedConfig("persistent", nil)
+	viaEndpoints.Bridge.DeploymentMode = "" // not the explicit clustered spelling
+	viaEndpoints.Bridge.Cluster = &ports.ClusterConfig{Endpoints: map[string]string{"http": "http://10.0.1.10:8080"}}
+
+	modeResult := validate.ValidateBlueprintGraph(viaMode)
+	endpointsResult := validate.ValidateBlueprintGraph(viaEndpoints)
+
+	require.NotNil(t, modeResult)
+	require.NotNil(t, endpointsResult, "static cluster.endpoints must trigger clustered validation (CLUSTER-1)")
+	assert.True(t, endpointsResult.HasErrors())
+	assert.Contains(t, endpointsResult.Error(), "replica identity")
+}
+
 func TestValidateBlueprintGraph_TypedNilReplicaIdentityReturnsError(t *testing.T) {
 	var typedNil *typedNilReplicaIdentityConfig
 	var result *ports.BlueprintValidationError

@@ -10,14 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-const (
-	mqttPublishPacketType = 3
-
-	// maxIngressPropertyBytes bounds the raw property block before Paho can
-	// materialize strings, slices, and property structs. The independent User
-	// Property count check covers the worst encoded-byte-to-struct amplification.
-	maxIngressPropertyBytes = maxIngressMetadataBytes
-)
+const mqttPublishPacketType = 3
 
 var (
 	errMQTTVBINonCanonical = errors.New("non-canonical MQTT variable byte integer")
@@ -29,10 +22,6 @@ type mqttIngressErrorKind uint8
 const (
 	mqttIngressMalformed mqttIngressErrorKind = iota + 1
 	mqttIngressPacketTooLarge
-	mqttIngressPayloadTooLarge
-	mqttIngressPropertiesTooLarge
-	mqttIngressMetadataTooLarge
-	mqttIngressUserPropertiesTooLarge
 )
 
 // mqttIngressError is the secret-safe typed cause returned by the raw MQTT
@@ -53,30 +42,6 @@ func (e *mqttIngressError) Error() string {
 	case mqttIngressPacketTooLarge:
 		return fmt.Sprintf(
 			"mqtt: inbound packet size %d exceeds Maximum Packet Size %d before decoding",
-			e.actual,
-			e.limit,
-		)
-	case mqttIngressPayloadTooLarge:
-		return fmt.Sprintf(
-			"mqtt: inbound payload size %d exceeds max_payload_bytes %d before decoding",
-			e.actual,
-			e.limit,
-		)
-	case mqttIngressPropertiesTooLarge:
-		return fmt.Sprintf(
-			"mqtt: inbound properties size %d exceeds predecode cap %d",
-			e.actual,
-			e.limit,
-		)
-	case mqttIngressMetadataTooLarge:
-		return fmt.Sprintf(
-			"mqtt: inbound metadata size %d exceeds predecode cap %d",
-			e.actual,
-			e.limit,
-		)
-	case mqttIngressUserPropertiesTooLarge:
-		return fmt.Sprintf(
-			"mqtt: inbound User Property count %d exceeds predecode cap %d",
 			e.actual,
 			e.limit,
 		)
@@ -105,20 +70,17 @@ type mqttIngressConn struct {
 	packetOffset      int
 	readErr           error
 	maximumPacketSize uint32
-	maxPayloadBytes   uint32
 	onViolation       func(error)
 }
 
 func newMQTTIngressConn(
 	conn net.Conn,
 	maximumPacketSize uint32,
-	maxPayloadBytes uint32,
 	onViolation func(error),
 ) *mqttIngressConn {
 	return &mqttIngressConn{
 		Conn:              conn,
 		maximumPacketSize: maximumPacketSize,
-		maxPayloadBytes:   maxPayloadBytes,
 		onViolation:       onViolation,
 	}
 }
@@ -236,51 +198,30 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) error {
 	if propertiesLength > len(body)-offset {
 		return newMQTTMalformedError()
 	}
-	if uint64(propertiesLength) > maxIngressPropertyBytes {
-		return &mqttIngressError{
-			kind:   mqttIngressPropertiesTooLarge,
-			actual: uint64(propertiesLength),
-			limit:  maxIngressPropertyBytes,
-			cause:  shared.ErrInvalidPayload,
-		}
-	}
 
-	// Match the decoded callback guard's conservative metadata accounting:
-	// worst-case fixed-header/Remaining-Length/property-length widths and a
-	// packet identifier slot even for QoS 0.
-	metadataBytes := uint64(1+4+2+topicLength+2+4) + uint64(propertiesLength)
-	if metadataBytes > maxIngressMetadataBytes {
-		return &mqttIngressError{
-			kind:   mqttIngressMetadataTooLarge,
-			actual: metadataBytes,
-			limit:  maxIngressMetadataBytes,
-			cause:  shared.ErrInvalidPayload,
-		}
-	}
-
+	// Structural validation only. The LOCAL representational caps —
+	// max_payload_bytes, the metadata byte cap, and the User Property count
+	// cap — are deliberately NOT enforced here (MQTT-L1): the CONNECT
+	// advertises only the whole-packet Maximum Packet Size (max_payload_bytes
+	// + the metadata allowance), so a COMPLIANT broker forwards packets that
+	// violate any individual local cap while fitting the advertised total.
+	// Rejecting such a packet at this level is terminal (there is no way to
+	// ack below Paho), and a terminal rejection of a broker-forwardable
+	// packet is a publisher-triggerable permanent kill switch: the un-acked
+	// packet is redelivered on every clean_start=false resume and re-latches
+	// the session forever. Those caps are enforced by the router callback
+	// instead (ingressCapViolation), which ACKS-and-DROPS the violation so
+	// the broker frees the in-flight slot and never redelivers it. Decode of
+	// an over-cap packet is transient and bounded: the whole packet was
+	// already read into this guard's buffer (≤ the advertised Maximum Packet
+	// Size enforced above), Paho decodes one packet at a time per connection,
+	// and the callback drops the decoded form before anything retains it.
+	// This guard's job remains bounding the RAW read (total packet size) and
+	// failing closed on malformed structure — both producible only by a
+	// broken broker, where terminal is the correct posture.
 	properties := body[offset : offset+propertiesLength]
-	userProperties, err := validateRawPublishProperties(properties)
-	if err != nil {
+	if _, err := validateRawPublishProperties(properties); err != nil {
 		return newMQTTMalformedError()
-	}
-	if userProperties > maxIngressUserProperties {
-		return &mqttIngressError{
-			kind:   mqttIngressUserPropertiesTooLarge,
-			actual: uint64(userProperties),
-			limit:  maxIngressUserProperties,
-			cause:  shared.ErrInvalidPayload,
-		}
-	}
-	offset += propertiesLength
-
-	payloadBytes := len(body) - offset
-	if c.maxPayloadBytes > 0 && uint64(payloadBytes) > uint64(c.maxPayloadBytes) {
-		return &mqttIngressError{
-			kind:   mqttIngressPayloadTooLarge,
-			actual: uint64(payloadBytes),
-			limit:  uint64(c.maxPayloadBytes),
-			cause:  shared.ErrPayloadTooLarge,
-		}
 	}
 	return nil
 }

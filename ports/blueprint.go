@@ -42,6 +42,26 @@ type BridgeConfig struct {
 	HTTP        *HTTPConfig     `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
+// IsClusteredDeployment is the SINGLE canonical predicate for "is this a
+// clustered deployment": either deployment_mode is "clustered" OR a static
+// cluster.endpoints override is present. A nil config is never clustered.
+//
+// It lives in ports (which every layer imports) so runtime composition,
+// config validation, and blueprint validation cannot drift onto different
+// spellings — a mismatch previously let a static-endpoints deployment activate
+// clustered runtime behavior while bypassing the clustered replica-safety
+// validation (finding CLUSTER-1). bridge.IsClusteredDeployment and
+// config.deploymentIsClustered delegate here.
+func IsClusteredDeployment(cfg *BridgeConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Bridge.DeploymentMode == "clustered" {
+		return true
+	}
+	return cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0
+}
+
 // ConfigWatchDef configures how the configuration source is watched
 // for changes. Mode selects the detection mechanism:
 //   - "notify" (default): filesystem event notifications, debounced by Debounce
@@ -95,6 +115,53 @@ type BridgeSettings struct {
 // mode (config/validate.go: validateClusterEndpoints).
 type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	// Members is the STATIC roster of member ids forming the coordinated-rollout
+	// cohort. It is the membership epoch the rollout barrier freezes at Propose
+	// and compares live membership against (design §7 F6), so it MUST be
+	// identical on every member and MUST NOT contain duplicates.
+	//
+	// It is deliberately a SEPARATE key from Endpoints: Endpoints is THIS
+	// instance's capability map keyed by capability name ("http"), not a peer
+	// roster, so its keys cannot serve as member ids (a cohort would freeze the
+	// epoch as ["http"] — a one-member barrier, i.e. no barrier at all).
+	//
+	// A member id must match the id the process announces to the barrier
+	// (bridge.WithClusterRollout's MemberID, wired by the composition root from
+	// the node's own stable identity — task id, pod name, host). It cannot be
+	// derived from bridge.instance_id, which is empty in a shared-config cohort
+	// so that every task derives a unique metric identity at runtime.
+	//
+	// Required (non-empty) when Rollout is "coordinated"; ignored otherwise.
+	Members []string `yaml:"members,omitempty" json:"members,omitempty"`
+	// Rollout selects the live-config-change strategy for this clustered
+	// deployment. Empty (default) keeps the legacy refuse-live-reconfig
+	// behavior (ADR 0012): a clustered node rejects any live config delta and
+	// requires whole-cohort replacement. "coordinated" opts into the
+	// coordinated rollout barrier (design cluster-config-rollout-protocol.md),
+	// which admits live-safe deltas across the cohort under a lease-elected
+	// coordinator, and additionally requires a non-empty Members roster.
+	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
+	// ConfirmWindow opts a coordinated rollout into the NETCONF/NSO confirm window
+	// (design §8.1): a Go duration string (e.g. "90s"). Empty or "0s" (the default)
+	// is the base protocol — a commit is final. A positive value makes every commit
+	// PROVISIONAL: each member swaps then must reach convergence, the coordinator
+	// confirms when the whole cohort converged, and if confirmation never lands every
+	// member reverts to the last confirmed generation. Only valid when Rollout is
+	// "coordinated". A failed trial costs two disruptions (apply + revert), so it is
+	// opt-in.
+	ConfirmWindow string `yaml:"confirm_window,omitempty" json:"confirm_window,omitempty"`
+}
+
+// ConfirmWindowDuration parses the confirm window (design §8.1). Empty or malformed
+// yields 0 (the base protocol — commit is final); the config validator rejects a
+// malformed or non-positive value on the load path, so a value reaching here is
+// either absent or already valid.
+func (c ClusterConfig) ConfirmWindowDuration() time.Duration {
+	d, err := time.ParseDuration(c.ConfirmWindow)
+	if err != nil || d < 0 {
+		return 0
+	}
+	return d
 }
 
 // ShutdownTimeoutDuration parses the shutdown timeout string, falling back to
@@ -374,6 +441,14 @@ type RouteSessionDef struct {
 	// StartupAllowance is explicit bounded time reserved for process-side work
 	// outside lease, broker-connect, and reconcile calls. Empty means zero.
 	StartupAllowance string `yaml:"startup_allowance,omitempty" json:"startup_allowance,omitempty"`
+
+	// BrokerHealthStepDown, when set (a positive duration string, e.g. "90s"),
+	// makes an ACTIVE exclusive owner step down after its broker path stays
+	// non-converged (disconnected / not re-subscribed) that long, so a healthy
+	// standby can take over a node-local broker outage the lease machinery alone
+	// cannot detect (CLUSTER-2). Empty/zero disables it (broker-path failover is
+	// opt-in). It extends the worst-case failover budget by up to this value.
+	BrokerHealthStepDown string `yaml:"broker_health_step_down,omitempty" json:"broker_health_step_down,omitempty"`
 
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`
 	DrainBatchSize      int               `yaml:"drain_batch_size,omitempty" json:"drain_batch_size,omitempty"`

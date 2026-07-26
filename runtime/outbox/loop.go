@@ -33,6 +33,15 @@ const transientRetryFloor = 5 * time.Second
 // drainer stops waiting, records the stall, and proceeds so it can never wedge.
 const drainWedgeGrace = 30 * time.Second
 
+// ErrDrainStalled is returned by Run once the batch watchdog has abandoned a
+// send goroutine because a Sender ignored context cancellation (CORE-RES-1).
+// Scheduling further batches would leak one parked sender (plus its waiter) per
+// batch, unbounded. Returning it from Run stops all further batches immediately
+// and, via startBackground's terminal-on-error path, escalates to a runtime
+// restart — the only way to reclaim the already-leaked goroutine, since Go
+// cannot force-return a hung Send.
+var ErrDrainStalled = errors.New("runtime: outbox-drainer: partition stalled; a sender ignored context cancellation")
+
 // Run polls the outbox for pending records and sends them. It blocks
 // until the context is cancelled or a fencing error occurs. The polling
 // interval is determined by the configured DrainStrategy.
@@ -77,6 +86,16 @@ func (d *Drainer) Run(ctx context.Context) error {
 			}
 			d.hasDrained = true
 			n, transient, err := d.drainBatch(ctx, token)
+			if d.drainStalled.Load() {
+				// CORE-RES-1: the batch watchdog abandoned a send goroutine because a
+				// Sender ignored cancellation. Stop scheduling batches (each could leak
+				// another) and escalate terminal so a restart reclaims the leaked
+				// goroutine — Go cannot force-return the hung Send.
+				d.log(ctx, slog.LevelError,
+					"outbox partition stalled: a sender ignored context cancellation; stopping drain and escalating terminal to bound the goroutine leak",
+					"partition_key", d.partitionKey, "route", d.routeID)
+				return ErrDrainStalled
+			}
 			if err != nil {
 				if errors.Is(err, shared.ErrStaleFencingToken) {
 					d.log(ctx, slog.LevelWarn, "stale fencing token, waiting for new lease")
@@ -256,6 +275,20 @@ func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
 	}
 }
 
+// storeOpContext bounds a single outbox-store operation (Claim) so a black-holed
+// store call cannot pin this drainer partition indefinitely (STORE-1). The bound
+// reuses the route's SendTimeout (falling back to the default), a dependency-call
+// bound of the same class; a DeadlineExceeded is treated like any transient store
+// error and the partition is re-polled on the next cycle. The caller MUST invoke
+// the returned cancel.
+func (d *Drainer) storeOpContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := d.policy.SendTimeout
+	if timeout <= 0 {
+		timeout = routing.DefaultSendTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
@@ -268,7 +301,12 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 		)
 	}
 
-	records, err := d.outboxStore.Claim(ctx, d.partitionKey, token, d.currentBatchSize)
+	// STORE-1: bound the Claim so a black-holed store call cannot pin this
+	// drainer partition indefinitely. A DeadlineExceeded is returned like any
+	// other transient Claim error and the partition is re-polled next cycle.
+	claimCtx, claimCancel := d.storeOpContext(ctx)
+	records, err := d.outboxStore.Claim(claimCtx, d.partitionKey, token, d.currentBatchSize)
+	claimCancel()
 	if err != nil {
 		return 0, 0, err
 	}
@@ -548,6 +586,10 @@ func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeou
 		return
 	case <-watchdog.C():
 		d.metrics.Counter(shared.MetricOutboxDrainStalled, 1, tags...)
+		// CORE-RES-1: latch the partition stalled so Run stops scheduling further
+		// batches. Without this, every later batch could leak another parked
+		// sender+waiter (a sender ignoring ctx never returns), unbounded.
+		d.drainStalled.Store(true)
 		d.log(ctx, slog.LevelWarn,
 			"drain batch exceeded watchdog; a sender is ignoring context cancellation — abandoning the in-flight send so the drainer does not wedge",
 			"batch_timeout", batchTimeout, "waited", d.clk.Since(start))
@@ -563,9 +605,12 @@ func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeou
 	// after Send returns nil, which has not happened), so it stays Claimed and
 	// is re-claimed on a later cycle — at-least-once preserved, nothing falsely
 	// completed. The abandoned goroutine LEAKS until its hung Send eventually
-	// returns (if ever) — an accepted, bounded-per-batch cost that trades one
-	// leaked goroutine for a live drainer. Its late atomic increments land on
-	// heap-escaped batch counters and are harmless. Senders MUST honor ctx.
+	// returns (if ever); its late atomic increments land on heap-escaped batch
+	// counters and are harmless. CORE-RES-1: we latch drainStalled here so Run
+	// stops scheduling further batches (each could leak another parked
+	// sender+waiter) and escalates terminal — bounding the leak to the ONE
+	// goroutine that tripped the watchdog rather than one-per-batch forever.
+	// Senders MUST honor ctx.
 }
 
 // orderingGroup is an ordered run of claimed outbox records delivered as

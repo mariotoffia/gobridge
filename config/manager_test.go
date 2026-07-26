@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 type stubLoader struct {
@@ -285,17 +286,25 @@ func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
 	out, err := mgr.Watch(ctx)
 	require.NoError(t, err)
 
-	// Push three configs rapidly without consuming.
+	// Push three configs rapidly without consuming. A single supervisor
+	// goroutine forwards watchCh in order and the watch loop processes events
+	// serially, so each emit drains the stale buffered config: the out buffer
+	// deterministically ends holding v3.
 	cfg1 := minimalValidConfig("v1")
 	cfg2 := minimalValidConfig("v2")
 	cfg3 := minimalValidConfig("v3")
 
 	watchCh <- cfg1
-	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg1 before pushing cfg2
 	watchCh <- cfg2
-	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg2 before pushing cfg3
 	watchCh <- cfg3
-	time.Sleep(50 * time.Millisecond) // SYNC: let watcher goroutine process cfg3 before reading output
+	// SYNC sentinel: an invalid config (missing bridge.id) is processed
+	// strictly after cfg3's emit completed (serial loop); it is dropped
+	// without touching out and records a layer watch error. WatchDegraded()
+	// therefore proves v3 is the buffered config before we read.
+	watchCh <- &ports.BridgeConfig{}
+	wait.Until(t, 2*time.Second, "watch loop processed all pushed configs", func() bool {
+		return mgr.WatchDegraded()
+	})
 
 	// Now read: should get the latest config (v3), not v1.
 	select {

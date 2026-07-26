@@ -188,10 +188,11 @@ func setupMQTTSession(t *testing.T, clientID string, mode connectivity.SessionMo
 		t.Fatalf("setupMQTTSession Start %q: %v", clientID, err)
 	}
 
-	select {
-	case <-sess.Events():
-	case <-time.After(3 * time.Second):
-	}
+	// Hard connect gate — the old "select on Events() or proceed after 3s"
+	// silently continued against a session that never connected.
+	wait.Until(t, 10*time.Second, "MQTT session connected", func() bool {
+		return sess.Health(context.Background()).Connected
+	})
 
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	return sess

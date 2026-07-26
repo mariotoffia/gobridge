@@ -120,6 +120,11 @@ type GoBridgeAlarms struct {
 	outboxDrainStalled     awscloudwatch.IAlarm
 	dlqDepth               awscloudwatch.IAlarm
 	dlqWriteFailures       awscloudwatch.IAlarm
+
+	mqttIngressPoison   awscloudwatch.IAlarm
+	reconcileFailures   awscloudwatch.IAlarm
+	mqttSessionTakeover awscloudwatch.IAlarm
+	mqttQoSDowngraded   awscloudwatch.IAlarm
 }
 
 const (
@@ -142,6 +147,13 @@ const (
 	metricOutboxDrainStalled   = "OutboxDrainStalled"
 	metricDLQDepth             = "DLQDepth"
 	metricDLQWriteFailures     = "DLQWriteFailures"
+	// MQTT rollup metric names (mirror adapters/mqtt/.../metrics.go). The MQTT
+	// docs instruct operators to alert on these; wiring them here closes the gap
+	// where the bundle carried none of them (finding §8 alarms.go).
+	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
+	metricReconcileFailures        = "ReconcileFailures"
+	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
+	metricMQTTQoSDowngraded        = "MQTTQoSDowngraded"
 )
 
 // FailureToFullMetricName is emitted only by the credentialed external failover probe.
@@ -428,6 +440,26 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 		g.dlqWriteFailures = newRollupAlarm(c, "HADLQWriteFailures", ns, metricDLQWriteFailures,
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge failed to write a dead-letter entry.")
+
+		// MQTT operational alarms the transport docs instruct operators to wire
+		// (finding §8 alarms.go). Sum>0 over the window with NOT_BREACHING on missing
+		// data (these are event counters, absent when healthy).
+		g.mqttIngressPoison = newRollupAlarm(c, "HAMQTTIngressPoisonDropped", ns, metricMQTTIngressPoisonDropped,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge MQTT ingress dropped a poison message exceeding local payload/property caps.")
+		g.reconcileFailures = newRollupAlarm(c, "HAReconcileFailures", ns, metricReconcileFailures,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge MQTT subscription reconcile failed (a permanent SUBACK rejection flaps the whole session).")
+		g.mqttSessionTakeover = newRollupAlarm(c, "HAMQTTSessionTakeover", ns, metricMQTTSessionTakeover,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge MQTT session was taken over by another client on the same ClientID (identity collision or failover).")
+		g.mqttQoSDowngraded = newRollupAlarm(c, "HAMQTTQoSDowngraded", ns, metricMQTTQoSDowngraded,
+			"Sum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge MQTT broker granted a lower QoS than requested; delivery guarantees are weaker than configured.")
 	}
 
 	return g
@@ -575,6 +607,13 @@ func (g *GoBridgeAlarms) OutboxRecordFailuresAlarm() awscloudwatch.IAlarm {
 func (g *GoBridgeAlarms) OutboxDrainStalledAlarm() awscloudwatch.IAlarm { return g.outboxDrainStalled }
 func (g *GoBridgeAlarms) DLQDepthAlarm() awscloudwatch.IAlarm           { return g.dlqDepth }
 func (g *GoBridgeAlarms) DLQWriteFailuresAlarm() awscloudwatch.IAlarm   { return g.dlqWriteFailures }
+
+func (g *GoBridgeAlarms) MQTTIngressPoisonAlarm() awscloudwatch.IAlarm { return g.mqttIngressPoison }
+func (g *GoBridgeAlarms) ReconcileFailuresAlarm() awscloudwatch.IAlarm { return g.reconcileFailures }
+func (g *GoBridgeAlarms) MQTTSessionTakeoverAlarm() awscloudwatch.IAlarm {
+	return g.mqttSessionTakeover
+}
+func (g *GoBridgeAlarms) MQTTQoSDowngradedAlarm() awscloudwatch.IAlarm { return g.mqttQoSDowngraded }
 
 func validateAlarmsProps(p *AlarmsProps) {
 	if p == nil {

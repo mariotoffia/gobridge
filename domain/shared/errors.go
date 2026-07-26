@@ -99,6 +99,16 @@ const (
 	ErrCodeOutboxNotPending        ErrorCode = "OUTBOX_NOT_PENDING"
 )
 
+// Cluster rollout aggregate state-machine error codes.
+const (
+	ErrCodeInvalidRolloutProposal ErrorCode = "INVALID_ROLLOUT_PROPOSAL"
+	ErrCodeRolloutNotCommittable  ErrorCode = "ROLLOUT_NOT_COMMITTABLE"
+	ErrCodeRolloutTerminal        ErrorCode = "ROLLOUT_TERMINAL"
+	ErrCodeRolloutAckRejected     ErrorCode = "ROLLOUT_ACK_REJECTED"
+	ErrCodeRolloutDigestMismatch  ErrorCode = "ROLLOUT_DIGEST_MISMATCH"
+	ErrCodeRolloutNotConfirmable  ErrorCode = "ROLLOUT_NOT_CONFIRMABLE"
+)
+
 // BridgeError is the structured error type for the bridge.
 // Transport adapters and runtime components return BridgeError instances
 // so the pipeline can classify failures for retry, DLQ, or drop decisions.
@@ -366,6 +376,62 @@ var (
 	ErrOutboxNotPending = &BridgeError{
 		Code: ErrCodeOutboxNotPending, Class: ErrorPermanent,
 		Message: "outbox record is not pending",
+	}
+)
+
+// Sentinel errors -- cluster rollout aggregate state-machine.
+var (
+	// ErrInvalidRolloutProposal indicates an attempt to open a rollout with a
+	// malformed proposal (zero generation, empty proposer/digest, no members,
+	// or a duplicate/empty member id). Permanent: callers must fix inputs.
+	ErrInvalidRolloutProposal = &BridgeError{
+		Code: ErrCodeInvalidRolloutProposal, Class: ErrorPermanent,
+		Message: "invalid rollout proposal",
+	}
+	// ErrRolloutNotCommittable indicates Commit was invoked on a rollout that
+	// is not in Staging with every membership-epoch member acked (invariant
+	// I2, the all-member barrier). Permanent: the coordinator must gather the
+	// remaining acks or abort before it can commit.
+	ErrRolloutNotCommittable = &BridgeError{
+		Code: ErrCodeRolloutNotCommittable, Class: ErrorPermanent,
+		Message: "rollout is not committable: staging with all acks required",
+	}
+	// ErrRolloutTerminal indicates a state transition (ack, commit, abort) was
+	// invoked against a rollout that has already reached a terminal state in a
+	// direction that cannot be reconciled (invariant I4, terminal-immutable):
+	// acking a decided rollout, committing an aborted one, or aborting a
+	// committed one. Permanent. A same-direction re-decision with a live
+	// fencing token is instead an idempotent no-op, not this error.
+	ErrRolloutTerminal = &BridgeError{
+		Code: ErrCodeRolloutTerminal, Class: ErrorPermanent,
+		Message: "rollout is already in a terminal state",
+	}
+	// ErrRolloutAckRejected indicates an Ack or Nack that violates the barrier
+	// bookkeeping (invariant I5): a member outside the frozen membership epoch,
+	// a second vote from a member that already acked or nacked, or an ack with
+	// an empty build digest. Permanent: retry with the same inputs will not
+	// help.
+	ErrRolloutAckRejected = &BridgeError{
+		Code: ErrCodeRolloutAckRejected, Class: ErrorPermanent,
+		Message: "rollout ack/nack rejected",
+	}
+	// ErrRolloutDigestMismatch indicates that candidate config bytes fetched by
+	// a member do not match the digest recorded in the rollout row, or that the
+	// row carries no digest to verify against (F10). Permanent: the member
+	// Nacks rather than build unverified or substituted bytes.
+	ErrRolloutDigestMismatch = &BridgeError{
+		Code: ErrCodeRolloutDigestMismatch, Class: ErrorPermanent,
+		Message: "rollout candidate digest mismatch",
+	}
+	// ErrRolloutNotConfirmable indicates Confirm was invoked on a committed
+	// rollout whose confirm window (design §8.1) is not satisfiable as confirmed:
+	// the window is inactive (base protocol, confirm_window == 0), or not every
+	// membership-epoch member has recorded convergence yet (invariant I7, the
+	// all-member confirm barrier). Permanent for this observation: the coordinator
+	// waits for the remaining Converge records or reverts on the confirm deadline.
+	ErrRolloutNotConfirmable = &BridgeError{
+		Code: ErrCodeRolloutNotConfirmable, Class: ErrorPermanent,
+		Message: "rollout is not confirmable: committed with all members converged required",
 	}
 )
 

@@ -4,14 +4,13 @@ package longrunning_test
 
 import (
 	"context"
-	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
@@ -77,40 +76,18 @@ func newMQTTSession(
 
 // killAllGobridgeContainers removes all Docker containers whose names match
 // any of the known gobridge prefixes. This prevents stale containers from
-// interfering with fresh infrastructure.
+// interfering with fresh infrastructure. Uses the bounded dockerexec sweep so
+// a hung docker daemon cannot stall the whole suite.
 func killAllGobridgeContainers(t *testing.T) {
 	t.Helper()
 
-	prefixes := []string{
+	for _, prefix := range []string{
 		"gobridge-sqslocal-",
 		"gobridge-ddblocal-",
 		"gobridge-mqtt-",
 		"gobridge-mqttinst-",
 		"ddb-local-",
-	}
-
-	for _, prefix := range prefixes {
-		out, err := exec.Command(
-			"docker", "ps", "-aq", "--filter", "name="+prefix,
-		).Output()
-		if err != nil {
-			t.Logf("killAllGobridgeContainers: docker ps for %q: %v", prefix, err)
-			continue
-		}
-
-		ids := strings.TrimSpace(string(out))
-		if ids == "" {
-			continue
-		}
-
-		// Split on newlines — each line is a container ID.
-		containerIDs := strings.Fields(ids)
-		args := append([]string{"rm", "-f"}, containerIDs...)
-
-		rmOut, rmErr := exec.Command("docker", args...).CombinedOutput()
-		if rmErr != nil {
-			t.Logf("killAllGobridgeContainers: docker rm -f %q: %v\n%s",
-				prefix, rmErr, rmOut)
-		}
+	} {
+		dockerexec.RemoveOrphans(prefix)
 	}
 }

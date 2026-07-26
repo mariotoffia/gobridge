@@ -41,6 +41,33 @@ const (
 	SwapAuto
 )
 
+// DeferReason names WHY a SwapEvent was deferred. A deferred swap is
+// committed-not-applied, but the follow-up an operator must take differs per
+// cause, so the cause travels with the event instead of being assumed by the
+// consumer.
+type DeferReason string
+
+const (
+	// DeferReasonPaused: the bridge is paused by an admin StopBridge. The config
+	// is recorded as the resume target and takes effect on the next StartBridge.
+	DeferReasonPaused DeferReason = "paused"
+
+	// DeferReasonRolloutPending: the delta was handed to the coordinated cluster
+	// rollout barrier. It is proposed cluster-wide and this node swaps only when
+	// the barrier reaches Committed (or discards it on Abort) — no operator
+	// action is required, unlike a pause.
+	DeferReasonRolloutPending DeferReason = "rollout_pending"
+)
+
+// deferReasonWhenPaused returns the pause reason only when the event is
+// actually deferred, so a non-deferred event never carries a stale cause.
+func deferReasonWhenPaused(paused bool) DeferReason {
+	if paused {
+		return DeferReasonPaused
+	}
+	return ""
+}
+
 // SwapEvent is emitted on each reconfiguration attempt via the
 // OnSwap callback.
 type SwapEvent struct {
@@ -51,12 +78,18 @@ type SwapEvent struct {
 	Duration  time.Duration
 
 	// Deferred is true when the Supervisor deliberately did NOT apply NewConfig
-	// and instead recorded it as the desired state to resume later — currently
-	// only when the bridge is paused by an admin StopBridge. A deferred event
-	// carries Error == nil (it is not a failure): the config is committed and
-	// will take effect on the next StartBridge, so an in-band applier MUST treat
-	// it as committed-not-applied (no rollback), not as a successful swap.
+	// and instead recorded it as the desired state to resume later — an admin
+	// StopBridge pause, or a hand-off to the coordinated rollout barrier. A
+	// deferred event carries Error == nil (it is not a failure): the config is
+	// committed and will take effect on resume/commit, so an in-band applier MUST
+	// treat it as committed-not-applied (no rollback), not as a successful swap.
 	Deferred bool
+
+	// DeferReason names the cause when Deferred is true (empty otherwise).
+	// Consumers MUST branch on it rather than assuming a pause: rendering a
+	// rollout-pending deferral as "paused by admin" sends an operator to the
+	// wrong runbook.
+	DeferReason DeferReason
 }
 
 // Supervisor manages the runtime lifecycle and applies new
@@ -71,6 +104,8 @@ type Supervisor struct {
 	transports          map[string]ports.TransportFactory
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
+	rollout             *rolloutBarrier
+	rolloutDriver       *ClusterRolloutDriver
 	credStore           ports.CredentialStore
 	pushCredStore       ports.PushCredentialStore
 	pollCredStore       ports.PullCredentialStore
@@ -114,11 +149,20 @@ type Supervisor struct {
 	// Terminal() returns false while swapping so the liveness backstop never
 	// kills the process mid-swap (CRITICAL 3).
 	swapping bool
-	// degraded records that live reconfiguration is no longer available
-	// (the config change stream closed unexpectedly) while the current
-	// runtime keeps serving. Not terminal (Finding 1).
-	degraded       bool
-	degradedReason string
+	// degraded records a non-terminal config-machinery problem while the
+	// current runtime keeps serving: live reconfiguration is no longer
+	// available (the config change stream closed unexpectedly — Finding 1),
+	// or a committed reload never converged on the broker within its
+	// activation budget (applied-but-not-converged, MQTT-R1 — set and
+	// cleared by the post-swap convergence watch). degradedReason
+	// distinguishes the two in deep health. degradedByConvergence marks the
+	// convergence watch as the owner of the current degraded state, so a
+	// LATER watcher (a new swap or an admin resume) or a deliberate
+	// StopBridge can clear a stale applied-but-not-converged alarm it did
+	// not set itself — while never touching a foreign degraded cause.
+	degraded              bool
+	degradedReason        string
+	degradedByConvergence bool
 
 	// lifecycleMu serializes control-plane mutations: apply() (config-driven
 	// swaps, run from the Run goroutine) and StartBridge/StopBridge (admin,
@@ -282,6 +326,50 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 	return func(s *Supervisor) { s.allowDestructiveReload = allow }
 }
 
+// WithClusterRollout wires the coordinated cluster rollout barrier
+// (design cluster-config-rollout-protocol.md §6). It is opt-in and additive: a
+// clustered deployment that does not configure it keeps the ADR 0012 refusal for
+// every live reload, and an incompletely configured barrier is ignored (the
+// refusal stands) rather than half-applied.
+//
+// With the barrier wired, a live-safe delta in a deployment whose config sets
+// cluster.rollout: coordinated is proposed to the shared rollout store and
+// deferred locally instead of refused; this node swaps only when the barrier
+// commits.
+//
+// The full barrier is wired and proven end to end: the applier loop
+// (build-without-swap, Ack / Nack, swap on Committed), the lease-elected
+// coordinator loop (commit / abort under a fencing token), the joiner startup
+// rule, and — when Encode/Decode are supplied — the durable last-committed config
+// artifact that lets a (re)joining member boot on the committed config after an
+// abort and a member that missed a commit reconcile to it. Coverage is the
+// bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
+// and the long-running multi-process UC-CR proofs (design §10 / Phase 5).
+//
+// It is opt-in. The Supervisor is one RolloutHost; the shipped file-based
+// bootstrap.App is the other (design Phase 6), both driving the same barrier
+// through a bridge.ClusterRolloutDriver. A deployment that does not wire it keeps
+// the ADR 0012 whole-cohort replacement procedure.
+//
+// Wiring stores the barrier as s.rollout (kept reachable for in-package tests) and
+// builds the driver eagerly with the Supervisor as its host, so boot resolution
+// and proposals work before Run; the drive's clock and metrics are supplied later,
+// at Run, when they are finalised.
+func WithClusterRollout(cfg ClusterRolloutConfig) SupervisorOption {
+	return func(s *Supervisor) {
+		// Assign both fields together, unconditionally, so s.rolloutDriver == nil
+		// stays EXACTLY equivalent to s.rollout == nil — the fail-closed invariant
+		// every delegator relies on. A repeated WithClusterRollout whose later call
+		// is half-wired must clear a previously-built driver, not leave it stale.
+		s.rollout = newRolloutBarrier(cfg)
+		if s.rollout == nil {
+			s.rolloutDriver = nil
+			return
+		}
+		s.rolloutDriver = newRolloutDriver(supervisorRolloutHost{s}, s.rollout)
+	}
+}
+
 // NewSupervisor creates a Supervisor with SwapAuto mode and
 // DirectStrategy by default.
 func NewSupervisor(opts ...SupervisorOption) *Supervisor {
@@ -388,6 +476,18 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	if err != nil {
 		return fmt.Errorf("supervisor: initial config freeze: %w", err)
 	}
+	// Coordinated-rollout startup gate (design §6): this node must be in its own
+	// cohort roster, and — the joiner rule — must not boot onto a config the
+	// barrier has not committed. The operator's change is durably in the config
+	// source BEFORE the barrier decides, so an aborted or still-undecided candidate
+	// would otherwise start this node on a config no other member runs. With the
+	// committed-config artifact wired, this SUBSTITUTES the durable committed config
+	// for such a boot config rather than refusing (design Phase-4 residual); without
+	// it, the conservative refusal stands. Runs before anything is built.
+	appliedInitial, err = s.resolveCoordinatedBoot(ctx, appliedInitial)
+	if err != nil {
+		return err
+	}
 	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
@@ -412,9 +512,32 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	s.durableIdentities = initialIdentities
 	s.mu.Unlock()
 
+	// Start the coordinated-rollout barrier drive (applier + coordinator) once
+	// the runtime is serving. It is a no-op unless the deployment opted in AND a
+	// barrier is wired, so a non-clustered or ADR-0012 deployment starts nothing.
+	stopDrive := s.startRolloutDrive(ctx)
+	if stopDrive == nil {
+		stopDrive = func() {}
+	}
+	// Backstop only: every shutdown path below goes through shutdown(), which
+	// stops the drive FIRST. This defer covers a path that returns without it.
+	defer stopDrive()
+
+	// shutdown drains the bridge in the one order that is safe: stop the barrier
+	// drive, THEN stop the runtime. The drive can be mid-swap (a committed
+	// rollout applies on ITS goroutine, not this one), so draining first would
+	// stop the old runtime while a replacement is still being built and started —
+	// publishing a fully-started runtime that nothing references and nothing will
+	// ever Stop. stopDrive waits for that goroutine to unwind, which is bounded by
+	// the swap deadline, and it is idempotent so the defer above is harmless.
+	shutdown := func() error {
+		stopDrive()
+		return s.stopCurrent(ctx)
+	}
+
 	if changes == nil {
 		<-ctx.Done()
-		return s.stopCurrent(ctx)
+		return shutdown()
 	}
 
 	filtered := s.strategy.Filter(ctx, changes)
@@ -422,7 +545,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	for {
 		select {
 		case <-ctx.Done():
-			return s.stopCurrent(ctx)
+			return shutdown()
 		case newCfg, ok := <-filtered:
 			if !ok {
 				// The config change stream closed WITHOUT a shutdown request
@@ -435,7 +558,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 				// ctx is actually cancelled.
 				select {
 				case <-ctx.Done():
-					return s.stopCurrent(ctx)
+					return shutdown()
 				default:
 				}
 				s.markDegraded("config change stream closed; live reconfiguration unavailable")
@@ -444,7 +567,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 						"keeping current runtime serving (live reconfiguration disabled until restart)")
 				}
 				<-ctx.Done()
-				return s.stopCurrent(ctx)
+				return shutdown()
 			}
 			s.apply(ctx, newCfg)
 		}
@@ -453,10 +576,14 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 
 // markDegraded records that the supervisor can no longer apply config
 // changes even though the current runtime keeps serving. Not terminal.
+// It takes ownership of the degraded state away from any convergence
+// watcher (degradedByConvergence=false) so a watcher can never clear a
+// foreign cause recorded here.
 func (s *Supervisor) markDegraded(reason string) {
 	s.mu.Lock()
 	s.degraded = true
 	s.degradedReason = reason
+	s.degradedByConvergence = false
 	s.mu.Unlock()
 
 	// Export the degraded state so operators can alert on a bridge running
@@ -554,9 +681,23 @@ func (s *Supervisor) StopBridge(ctx context.Context) error {
 	// Latch the deliberate pause regardless of drain outcome: rt.Stop has already
 	// marked the runtime stopped/single-use, so a subsequent config reload must
 	// not silently resume the bridge while an operator intends it paused.
+	// A deliberate pause also invalidates any applied-but-not-converged
+	// observation (MQTT-R1): the convergence watcher abandons on pause (it is
+	// pause-aware), and a mark it already set would otherwise scream "revert
+	// the config" about a bridge that is merely paused — clear the
+	// convergence-owned state (never a foreign degraded cause).
 	s.mu.Lock()
 	s.paused = true
+	clearedConvergence := s.degradedByConvergence
+	if clearedConvergence {
+		s.degraded = false
+		s.degradedReason = ""
+		s.degradedByConvergence = false
+	}
 	s.mu.Unlock()
+	if clearedConvergence {
+		s.emitConfigDegradedGauge(false)
+	}
 	return stopErr
 }
 
@@ -613,10 +754,36 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	s.wedged = false
 	s.paused = false
 	s.mu.Unlock()
+	// An admin resume is a fresh Start with the same false-success shape as a
+	// reload commit: Start returns before the transport ever reaches the
+	// broker, and broker-side state may have changed during the very
+	// maintenance window StopBridge exists for (rotated credentials, ACL
+	// edits). Watch the resumed runtime exactly like a committed swap
+	// (MQTT-R1), under the long-lived Run context — the admin-request ctx
+	// dies with the handler.
+	s.watchPostSwapConvergence(baseCtx, newRt, cfg)
 	return nil
 }
 
+// apply performs a config-driven reconfiguration, subject to every preflight
+// including the clustered-reload guard.
 func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
+	s.applyConfig(ctx, newCfg, false)
+}
+
+// applyBarrierCommitted applies a config the coordinated cluster rollout barrier
+// has ALREADY committed cluster-wide, so it bypasses the clustered-reload guard
+// (design §6 applier). The bypass is safe for exactly this caller: the barrier
+// only reaches Committed after every member of the frozen epoch acked a
+// validated, built candidate, which is a strictly stronger check than the guard
+// — the guard's job is to stop an UNCOORDINATED per-process reload, and this one
+// is the coordinated commit itself. Every other preflight (durable session
+// identity, store identity, orphaned backlog, paused) still runs.
+func (s *Supervisor) applyBarrierCommitted(ctx context.Context, newCfg *ports.BridgeConfig) {
+	s.applyConfig(ctx, newCfg, true)
+}
+
+func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig, barrierCommitted bool) {
 	// Serialize against admin StartBridge/StopBridge so two control-plane
 	// operations never both build and publish a runtime (HIGH: control-plane
 	// TOCTOU leaks a fully-started runtime).
@@ -665,49 +832,24 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		}
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
-				NewConfig: newCfg,
-				Deferred:  pausedForGuard,
+				OldConfig:   cloneConfigSnapshot(oldCfgForGuard),
+				NewConfig:   newCfg,
+				Deferred:    pausedForGuard,
+				DeferReason: deferReasonWhenPaused(pausedForGuard),
 			})
 		}
 		return
 	}
 
-	// (2) Cluster guard: refuse the reload fail-closed when EITHER the applied OR
-	// the proposed config is clustered (entering and leaving a cohort are equally
-	// unsafe). A per-process reload has no cluster-wide version barrier or
-	// coordinated rollback, so a rolling live reload would split the cohort across
-	// config versions — require an externally coordinated whole-cohort
-	// stop/deploy/start (docs/runbooks/cluster-config-rollout.md). Deliberately NOT
-	// bypassable by WithAllowDestructiveReload: that escape hatch discards LOCAL
-	// durable backlog and cannot substitute for cluster consensus. Uses the SHARED
-	// IsClusteredDeployment predicate (bridge/convert.go) and reports through the
-	// EXISTING reload-failure paths (failure-tagged metric + failed SwapEvent), so
-	// the current runtime keeps serving unchanged. Not a no-op (checked above).
-	if IsClusteredDeployment(oldCfgForGuard) || IsClusteredDeployment(frozenCfg) {
-		err := fmt.Errorf("bridge: refusing live reload of a clustered deployment: a per-process "+
-			"reload has no cluster-wide version barrier or coordinated rollback, so a rolling reload "+
-			"would split the cohort across config versions. Externally coordinate a whole-cohort "+
-			"replacement (stage, validate every member, quiesce ingress, drain/stop all members, "+
-			"commit, start all members, verify the version/readiness barrier, then re-enable ingress); "+
-			"see docs/runbooks/cluster-config-rollout.md. WithAllowDestructiveReload does not apply "+
-			"(attempted_config_version=%d)", frozenCfg.Version)
-		if s.logger != nil {
-			s.logger.Error("supervisor: refusing live reload of a clustered deployment; a per-process "+
-				"reload has no cluster-wide version barrier — coordinate an external whole-cohort "+
-				"stop/deploy/start (docs/runbooks/cluster-config-rollout.md)",
-				"error", err, "attempted_config_version", frozenCfg.Version)
-		}
-		s.emitConfigReload(false)
-		if s.onSwap != nil {
-			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfgForGuard),
-				NewConfig: newCfg,
-				Error:     err,
-			})
-		}
+	// (2) Cluster guard (lifted for coordinated rollout — design
+	// cluster-config-rollout-protocol.md §6; the three outcomes live in
+	// rollout_guard.go). Skipped only for a config the barrier already committed
+	// cluster-wide, which is a strictly stronger check than the guard performs.
+	// Not a no-op (checked above).
+	if !barrierCommitted && s.clusterReloadGuard(ctx, oldCfgForGuard, frozenCfg, newCfg) {
 		return
 	}
+	// clusterReloadProceed: continue to normal apply.
 
 	// MQTT and similar durable broker sessions are external stores. Changing or
 	// removing their identity can strand subscriptions and queued QoS messages,
@@ -789,9 +931,10 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// with a committed-not-applied (no-rollback) outcome.
 		if s.onSwap != nil {
 			s.safeOnSwap(SwapEvent{
-				OldConfig: cloneConfigSnapshot(oldCfg),
-				NewConfig: newCfg,
-				Deferred:  true,
+				OldConfig:   cloneConfigSnapshot(oldCfg),
+				NewConfig:   newCfg,
+				Deferred:    true,
+				DeferReason: DeferReasonPaused,
 			})
 		}
 		return
@@ -959,6 +1102,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		s.wedged = false
 		s.degraded = false
 		s.degradedReason = ""
+		s.degradedByConvergence = false
 		s.mu.Unlock()
 
 		if s.logger != nil {
@@ -970,6 +1114,13 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 		// gauge reset and the success counter so operators see recovery.
 		s.emitConfigDegradedGauge(false)
 		s.emitConfigReload(true)
+
+		// Success above means built + Start returned — NOT that the transport
+		// ever reached the broker (MQTT dials/reconciles in background
+		// goroutines). Watch the committed runtime until its sessions
+		// genuinely converge and surface applied-but-not-converged as a
+		// distinct degraded state otherwise (MQTT-R1).
+		s.watchPostSwapConvergence(ctx, newRt, frozenCfg)
 	}
 
 	if s.onSwap != nil {

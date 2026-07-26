@@ -41,7 +41,6 @@ func (s *Session) attemptGuardedConnection(
 	guarded := newMQTTIngressConn(
 		raw,
 		maximumPacketSize,
-		s.opts.MaxPayloadBytes,
 		s.rejectPredecodeIngress,
 	)
 	return packets.NewThreadSafeConn(guarded), nil

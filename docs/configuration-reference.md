@@ -126,6 +126,20 @@ bridge:
     # NOT a peer/instance map — leave it unset to auto-discover instead.
     endpoints:
       http: "http://10.0.1.10:8080"
+    # Live-config-change strategy. Default (unset, or "refuse") is ADR 0012:
+    # a clustered node refuses every live config delta and changes are rolled by
+    # whole-cohort replacement. "coordinated" opts into the barrier protocol in
+    # docs/cluster/spec/cluster-config-rollout-protocol.md and additionally requires
+    # `members` below, a versioned CAS-capable config source, and a rollout store
+    # wired by the composition root. NOTE: no shipped composition root wires one
+    # yet, so "coordinated" currently fails every reload closed (visibly, with the
+    # running config still serving) rather than coordinating anything.
+    rollout: refuse
+    # The cohort ROSTER — the membership epoch the rollout barrier freezes and
+    # counts acknowledgements against. Required and non-empty when rollout is
+    # "coordinated"; identical on every member; no duplicates. This is a peer
+    # list, unlike `endpoints` above.
+    members: [instance-01, instance-02]
 ```
 
 ## `config_watch` -- File Watch Settings

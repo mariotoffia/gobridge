@@ -215,45 +215,12 @@ hash is accepted from operator input.
 
 ### 4. Stage, tag, and push each dependency layer
 
-This function obtains module order from the canonical manifest. It verifies each
-module before tagging, pushes one immutable tag, waits for that tag's strict
-workflow, and then waits for the public proxy. Do not batch-push tags.
-
-```bash
-release_module() {
-  module="$1"
-  module_dir="$module"
-  if [ "$module" = "." ]; then
-    module_dir="."
-    tag="$VERSION"
-    import_path="github.com/mariotoffia/gobridge"
-  else
-    tag="${module}/${VERSION}"
-    import_path="github.com/mariotoffia/gobridge/${module}"
-  fi
-
-  make stage-published-module \
-    RELEASE_MODULE="$module" \
-    RELEASE_VERSION="$VERSION" \
-    RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
-
-  git add "${module_dir}/go.mod"
-  if [ -f "${module_dir}/go.sum" ]; then
-    git add "${module_dir}/go.sum"
-  fi
-  git commit -m "release: ${module} ${VERSION}"
-  git tag "$tag"
-  git push origin "$tag"
-  wait_for_release_workflow "$tag"
-  wait_for_proxy "$import_path"
-}
-
-for layer in 1 2 3; do
-  while IFS= read -r module; do
-    release_module "$module"
-  done < <(make --no-print-directory release-modules RELEASE_LAYER="$layer")
-done
-```
+This dependency-ordered stage/tag/push/wait loop is mechanized by
+[`scripts/release/run.sh`](scripts/release/run.sh), invoked as `make release
+VERSION=vX.Y.Z CONFIRM=1`. See [MODULES.md §3](MODULES.md#3-cut-a-release-make-it-go-get-able).
+Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan. The
+surrounding sections (§1 waits, §2 root, §3 bootstrap above; §5 smoke below) document what each step does;
+`run.sh` performs them in order and must not be bypassed to retag.
 
 Layer 2 cannot start until all layer-1 tags are green and visible. The final
 module cannot start until all three layer-2 tags are green and visible. If a

@@ -31,7 +31,7 @@ diagnosing why leadership churns.
 
 3. Confirm fencing is holding the line. `STALE_FENCING_TOKEN` means a guarded
    write (outbox claim/complete, lease renewal, route forward) was **rejected**
-   because the caller's `LeaseToken.Version` was older than the current owner's —
+   because the caller's fencing token version was older than the current owner's —
    the safety mechanism working, not data corruption
    ([troubleshooting.md#stale_fencing_token](../troubleshooting.md#stale_fencing_token)).
    `NO_ROUTE_OWNER` is the forwarder mid-hand-off and self-heals
@@ -55,6 +55,34 @@ diagnosing why leadership churns.
   and verify every instance reads the same store
   ([troubleshooting.md#no_route_owner](../troubleshooting.md#no_route_owner)).
 - Background and invariants: [ARCHITECTURE.md §16 — Clustered Deployment](../../ARCHITECTURE.md#16-clustered-deployment).
+
+## Standalone multi-replica split brain (no distributed lease store)
+
+The diagnosis above assumes a **distributed** lease store (DynamoDB). A different,
+more dangerous split brain occurs when an exclusive route runs with an **in-memory
+/ non-distributed** lease store and the deployment is scaled to **more than one
+replica**: each process holds its OWN private lease, so every replica believes it
+is the sole active owner. There is no fencing between them — they all consume the
+same logical traffic in parallel (N-fold duplication) with no `LeaseTransfers` and
+no `STALE_FENCING_TOKEN` to signal it, because nothing is shared.
+
+**Detection.** `/api/v1/monitor/ready` reports `role: standalone` (not `active`/
+`standby`) on *every* replica, and duplicate downstream deliveries scale with the
+replica count. The builder emits a **`SPLIT-BRAIN RISK`** warning at startup when
+an exclusive/lease-bearing route is configured without a distributed lease
+backend — grep startup logs for it.
+
+**Action.**
+
+- Enforce **`replicas: 1`** for any standalone (in-memory-lease) exclusive
+  deployment — a single-instance memory lease is the only safe replica count.
+  On Kubernetes pin the Deployment/StatefulSet to `replicas: 1`; on ECS set the
+  service desired count to 1.
+- To run more than one replica for HA, switch to a **distributed `LeaseStore`
+  (DynamoDB)** so exactly one replica holds the lease at a time — then the
+  distributed-store diagnosis above applies.
+- The `SPLIT-BRAIN RISK` startup warning is not an admission boundary; treat it as
+  a hard configuration error in any multi-replica deployment.
 
 ## Related runbooks
 
