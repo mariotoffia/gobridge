@@ -1,13 +1,15 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
-Status: **partially implemented** — Phases 1–4 done (protocol state, durable
-store, orchestration logic + guard-lift, and the full barrier drive + operator
-surface); Phases 5–7 not started (§11). The barrier is NOT wired into any
-composition root, so shipped behavior is unchanged: a clustered deployment still
-refuses live reloads per ADR 0012. At ship time §12 is promoted to
-`docs/adr/0013-…` (ADRs here document shipped behavior only) and 0012 gains
-`Superseded by 0013`.
-Date: 2026-07-25 · Relates to: ADR 0012, `PROD_READY_ISSUES.md` §3 CLUSTER-3,
+Status: **fully implemented** — all phases 1–7 shipped (§11). Phase 7 (§8.1
+confirm window) is the FINAL phase; there is no phase beyond it. The barrier is
+wired into the shipped file-based root (`bootstrap.App`) via the runtime-agnostic
+`bridge.RolloutHost` / `bridge.ClusterRolloutDriver` seam, so a coordinated cohort
+performs live-safe rollouts; a non-coordinated one keeps the ADR 0012 refusal. §12
+was promoted to `docs/adr/0013-…` (0012 gains `Superseded by 0013`); the Phase-7
+confirm window is `docs/adr/0014-…` (extends 0013). ADRs here document shipped
+behavior only.
+Date: 2026-07-26 · Relates to: ADR 0012, ADR 0013, ADR 0014,
+`PROD_READY_ISSUES.md` §3 CLUSTER-3,
 `docs/runbooks/cluster-config-rollout.md` · Prior art & split-brain analysis:
 `cluster-config-rollout-research.md` (xDS, ZooKeeper reconfig, Raft, KRaft, K8s,
 NETCONF confirmed-commit, NSO, Paxos Commit, fencing theory — cited below)
@@ -251,7 +253,7 @@ requires a versioned, CAS-capable config source and a wired rollout store; those
 are composition-root wiring, invisible to the blueprint validator, so a root that
 wires no rollout store makes every coordinated reload fail closed.
 
-### 8.1 Confirm-window extension (Model B — opt-in, later phase)
+### 8.1 Confirm-window extension (Model B — opt-in, Phase 7 — ✅ IMPLEMENTED)
 
 The base protocol's `Ack` proves *validated + built*, not *converged against
 the real broker* (research §4, Model A vs B). An opt-in confirm window adds
