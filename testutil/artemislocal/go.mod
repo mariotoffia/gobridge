@@ -6,7 +6,7 @@ require github.com/Azure/go-amqp v1.5.1
 
 require (
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.0
 )
 
 replace github.com/mariotoffia/gobridge => ../..
