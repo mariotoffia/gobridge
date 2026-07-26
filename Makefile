@@ -294,8 +294,8 @@ test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=1.0 \
 	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=1.0 \
 	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=1.0 \
-		go test -count=1 -race -timeout 420s -v -tags=longrunning \
-			-run "^TestUC3SeparateProcessFailover$$" ./tests/longrunning/ 2>&1 | tee reports/test-failover-gate.log; \
+		go -C tests/longrunning test -count=1 -race -timeout 420s -v -tags=longrunning \
+			-run "^TestUC3SeparateProcessFailover$$" ./ 2>&1 | tee reports/test-failover-gate.log; \
 		rc=$${PIPESTATUS[0]}; \
 		echo ""; \
 		echo "========================================"; \
