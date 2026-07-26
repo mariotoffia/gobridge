@@ -303,12 +303,19 @@ long-running test without the tag is a CI accident.
 
 - Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
   Docker, writes `reports/test-long-running.log`).
-- CI: scheduled nightly and available through manual workflow dispatch, not on
-  every PR. One focused exception runs on every integration job:
-  `TestMQTTIngressMemory` is compiled with the long-running tag and executed
-  inside a Docker container with a finite 512 MiB cgroup limit. CI sets
-  `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1`, so unavailable/unlimited cgroup accounting
-  fails instead of skipping; local Darwin runs retain the explicit skip.
+- CI: **never**. Nothing carrying the `longrunning` tag runs in the cloud —
+  not on a PR, not on a schedule, not in a release gate. That includes the two
+  bounded single-test proofs, which are developer-machine runs like the rest:
+  - `make test-mqtt-ingress-memory` — `TestMQTTIngressMemory` inside a Docker
+    container with a finite 512 MiB cgroup limit. Set
+    `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` to make unavailable/unlimited cgroup
+    accounting fail instead of skip; Darwin retains the explicit skip.
+  - `make test-failover-gate` — `TestUC3SeparateProcessFailover` runs two real
+    bridge processes against a real broker and DynamoDB, kills the lease owner,
+    and asserts the standby recovers. Bounded to a few minutes.
+
+  Run both before merging anything that touches clustering, leases, outbox
+  draining or MQTT ingress: CI cannot catch a regression in them.
 - Never run inside `make test` or `make test-integration` — Makefile
   excludes `tests/longrunning/` explicitly.
 
