@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"

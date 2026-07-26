@@ -12,7 +12,6 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../adapters/mqtt/transport/paho
 	github.com/mariotoffia/gobridge/adapters/native/config/file => ../../adapters/native/config/file
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../adapters/native/store/memorydlq
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
@@ -32,7 +31,6 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
@@ -42,7 +40,6 @@ require (
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout v0.0.0-00010101000000-000000000000 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
@@ -84,5 +81,3 @@ require (
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
 
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout => ../../adapters/aws/store/dynamodbrollout
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout => ../../adapters/native/store/memoryrollout

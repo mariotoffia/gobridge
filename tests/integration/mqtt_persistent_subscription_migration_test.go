@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"

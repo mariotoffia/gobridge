@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memorydlq"
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions"

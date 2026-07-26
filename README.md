@@ -156,7 +156,8 @@ gobridge/
 
 | Store | Module | Use Case |
 |-------|--------|----------|
-| Memory | `adapters/native/store/memory*` | Development and testing |
+| Memory (DLQ, Outbox) | `adapters/native/store/memory*` | Development and testing |
+| Memory (Lease, Rollout) | `adapters/native/memorylease`, `adapters/native/memoryrollout` (root module) | Reference in-memory implementations of the lease/rollout ports; live in the root module because the core's own tests exercise them |
 | SQLite | `adapters/native/store/sqlite*` | Single-process deployments (OutboxStore, DLQStore only) |
 | DynamoDB | `adapters/aws/store/dynamodb*` | Production, clustered deployments |
 
