@@ -42,7 +42,7 @@ import (
 
 const (
 	containerPrefix = "gobridge-artemis-"
-	defaultImage    = "apache/activemq-artemis:latest-alpine"
+	defaultImage    = "apache/activemq-artemis:2.44.0-alpine@sha256:1bce124d2324faeb1253e2db4bb68d64decf46412ecfd8d9ef46c08b1b4af5b4"
 	defaultUser     = "admin"
 	defaultPassword = "admin"
 )
@@ -130,7 +130,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("Artemis not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("Artemis not available: %v", initErr)
+		}
+		t.Skipf("Artemis not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -238,6 +244,10 @@ func startContainer() (string, string, func(), error) {
 
 	cleanup := func() {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	}
+
+	if err := dockerexec.EnsureImage(imageName()); err != nil {
+		return "", "", nil, err
 	}
 
 	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "-d",

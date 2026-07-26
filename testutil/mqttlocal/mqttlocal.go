@@ -57,6 +57,10 @@ import (
 
 const containerPrefix = "gobridge-mqtt-"
 
+// defaultImage is pinned by digest, like rabbitmqlocal. A floating :latest
+// means CI can break on a day nobody changed anything.
+const defaultImage = "eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c"
+
 type config struct {
 	image            string
 	persistence      bool
@@ -81,7 +85,7 @@ var (
 	cleanupFn     func()
 	initErr       error
 	cfg           = config{
-		image:            "eclipse-mosquitto:latest",
+		image:            defaultImage,
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,
 		maxQueuedBytes:   -1,
@@ -215,7 +219,13 @@ func BrokerURL(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("Mosquitto not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("Mosquitto not available: %v", initErr)
+		}
+		t.Skipf("Mosquitto not available (docker absent): %v", initErr)
 	}
 	return brokerURL
 }
@@ -362,11 +372,24 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 	_ = confFile.Close()
 	confPath := confFile.Name()
 
+	// os.CreateTemp makes the file 0600, owned by the user running the tests.
+	// A bind mount preserves that uid and mode on Linux, so a container running
+	// as a non-root user cannot read it. Nothing secret here.
+	if err := os.Chmod(confPath, 0o644); err != nil {
+		_ = os.Remove(confPath)
+		return "", "", "", nil, fmt.Errorf("chmod config readable by container uid: %w", err)
+	}
+
 	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
 
 	// Reclaim the name and wait until docker has forgotten it, so the run
 	// below cannot collide with a still-terminating container.
 	_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
+
+	if err := dockerexec.EnsureImage(c.image); err != nil {
+		_ = os.Remove(confPath)
+		return "", "", "", nil, err
+	}
 
 	args := []string{
 		"run", "-d",

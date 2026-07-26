@@ -132,7 +132,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("RabbitMQ not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("RabbitMQ not available: %v", initErr)
+		}
+		t.Skipf("RabbitMQ not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -316,6 +322,10 @@ func startContainer() (string, string, func(), error) {
 
 	cleanup := func() {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	}
+
+	if err := dockerexec.EnsureImage(imageName()); err != nil {
+		return "", "", nil, err
 	}
 
 	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "-d",

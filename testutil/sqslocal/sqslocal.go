@@ -47,6 +47,10 @@ import (
 
 const containerPrefix = "gobridge-sqslocal-"
 
+// defaultImage is pinned by digest, like rabbitmqlocal: a floating :latest
+// means CI can break on a day nobody changed anything.
+const defaultImage = "softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c"
+
 type options struct {
 	cleanOrphans bool
 	memory       string // e.g. "512m", "1g" — passed to --memory
@@ -134,7 +138,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("ElasticMQ not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("ElasticMQ not available: %v", initErr)
+		}
+		t.Skipf("ElasticMQ not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -290,7 +300,11 @@ func startContainer() (string, string, func(), error) {
 	if opts.cpus != "" {
 		args = append(args, "--cpus", opts.cpus)
 	}
-	args = append(args, "softwaremill/elasticmq-native:latest")
+	args = append(args, defaultImage)
+	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+		return "", "", nil, err
+	}
+
 	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)

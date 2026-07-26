@@ -61,6 +61,10 @@ import (
 
 const containerPrefix = "gobridge-localstack-"
 
+// defaultImage is pinned by digest, like rabbitmqlocal: a floating :latest
+// means CI can break on a day nobody changed anything.
+const defaultImage = "localstack/localstack:2026.7.0@sha256:2a81e5da4c32bb53e8d86e92050a12937f9be1915c5a4afad0931f75c112fc7e"
+
 type options struct {
 	cleanOrphans bool
 	services     []string
@@ -147,7 +151,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("LocalStack not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("LocalStack not available: %v", initErr)
+		}
+		t.Skipf("LocalStack not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -246,7 +256,11 @@ func startContainer() (string, string, func(), error) {
 	if token := os.Getenv("LOCALSTACK_AUTH_TOKEN"); token != "" {
 		args = append(args, "-e", "LOCALSTACK_AUTH_TOKEN="+token)
 	}
-	args = append(args, "localstack/localstack:latest")
+	args = append(args, defaultImage)
+
+	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+		return "", "", nil, err
+	}
 
 	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {

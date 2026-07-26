@@ -48,6 +48,10 @@ import (
 
 const containerPrefix = "gobridge-ddblocal-"
 
+// defaultImage is pinned by digest, like rabbitmqlocal: a floating :latest
+// means CI can break on a day nobody changed anything.
+const defaultImage = "amazon/dynamodb-local:3.3.0@sha256:d89f8fcc6b1a39cb35976c248ed42a28c66ae00dc043099210f5571e42648ab4"
+
 type options struct {
 	cleanOrphans bool
 	memory       string // e.g. "512m", "1g" — passed to --memory
@@ -139,7 +143,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("DynamoDB Local not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("DynamoDB Local not available: %v", initErr)
+		}
+		t.Skipf("DynamoDB Local not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -273,8 +283,12 @@ func startContainer() (string, string, func(), error) {
 	if opts.cpus != "" {
 		args = append(args, "--cpus", opts.cpus)
 	}
-	args = append(args, "amazon/dynamodb-local:latest",
+	args = append(args, defaultImage,
 		"-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory")
+	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+		return "", "", nil, err
+	}
+
 	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)

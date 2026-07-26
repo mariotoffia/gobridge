@@ -48,7 +48,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	}
 
 	c := config{
-		image:            "eclipse-mosquitto:latest",
+		image:            defaultImage,
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,
 		maxQueuedBytes:   -1,
@@ -74,6 +74,13 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		t.Fatalf("mqttlocal.NewBrokerInstance: write config: %v", err)
 	}
 	_ = confFile.Close()
+	// os.CreateTemp makes the file 0600. The data dir below is already chmod'ed
+	// for the container's uid; the config file needs the same treatment or
+	// Mosquitto cannot read it once it drops privileges. Nothing secret here.
+	if err := os.Chmod(confFile.Name(), 0o644); err != nil {
+		_ = os.Remove(confFile.Name())
+		t.Fatalf("mqttlocal.NewBrokerInstance: chmod config: %v", err)
+	}
 
 	// When persistence is enabled, create a host-side temp directory for
 	// Mosquitto data. This directory is bind-mounted into every container
@@ -124,6 +131,10 @@ func (b *BrokerInstance) start() {
 	// Reclaim the name and wait until docker has genuinely forgotten it, so
 	// `docker run` cannot collide with a still-terminating container.
 	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
+
+	if err := dockerexec.EnsureImage(b.cfg.image); err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance: %v", err)
+	}
 
 	args := []string{
 		"run", "-d",
