@@ -67,6 +67,7 @@ var (
 	fromEnv      bool
 	connStr      string
 	emuContainer string
+	sqlContainer string
 	configPath   string
 	cleanupFn    func()
 	initErr      error
@@ -132,6 +133,8 @@ func ConnectionString(t testing.TB) string {
 	} else if !fromEnv && emuContainer != "" {
 		if !dockerexec.IsRunning(emuContainer) {
 			t.Logf("asblocal: emulator container %s died, restarting...", emuContainer)
+			// Capture why it died before cleanup removes the container.
+			dumpDiagnostics()
 			if cleanupFn != nil {
 				cleanupFn()
 			}
@@ -204,6 +207,9 @@ func startContainers() (string, func(), error) {
 	netName := networkPrefix + suffix
 	sqlName := containerPrefix + "sql-" + suffix
 	emuName := containerPrefix + "emu-" + suffix
+	// Recorded before anything starts so Diagnostics can dump either
+	// container's logs no matter which startup gate fails.
+	sqlContainer = sqlName
 
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
@@ -396,6 +402,39 @@ func configJSON() string {
     }
   }
 }`
+}
+
+// Diagnostics dumps emulator and SQL container state plus recent container
+// logs to stderr.
+//
+// The emulator can pass every container-level readiness gate and still never
+// serve AMQP: `docker run -p` makes docker-proxy bind the published host port
+// immediately, so a TCP dial succeeds while the broker inside the container is
+// absent or dead. When that happens the only evidence of the cause lives in
+// the container's own log, which no failure path currently captures. Call this
+// whenever a readiness or warmup gate gives up.
+func Diagnostics() {
+	mu.Lock()
+	defer mu.Unlock()
+	dumpDiagnostics()
+}
+
+// dumpDiagnostics is the unlocked form, for callers already holding mu.
+func dumpDiagnostics() {
+	for _, name := range []string{emuContainer, sqlContainer} {
+		if name == "" {
+			continue
+		}
+		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+			"--format", "Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}",
+			name)
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "--- docker inspect %s ---\n%s\n", name, out)
+		} else {
+			fmt.Fprintf(os.Stderr, "--- docker inspect %s failed: %v ---\n", name, err)
+		}
+		dockerexec.LogFailure(name)
+	}
 }
 
 func removeNetworks(prefix string) {

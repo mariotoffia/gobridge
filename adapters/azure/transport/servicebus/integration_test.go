@@ -23,6 +23,11 @@ func TestMain(m *testing.M) {
 	asblocal.Configure(asblocal.WithCleanOrphans(true))
 	if err := warmupAMQP(); err != nil {
 		fmt.Fprintf(os.Stderr, "asb warmup skipped: %v\n", err)
+		// The warmup is the only gate that proves the emulator actually
+		// serves AMQP (TCP readiness is a false positive behind
+		// docker-proxy). If it exhausted its budget, every test below will
+		// time out, so dump the container state that explains why.
+		asblocal.Diagnostics()
 	}
 	code := m.Run()
 	asblocal.Shutdown()
