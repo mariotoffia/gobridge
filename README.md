@@ -92,6 +92,7 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 
 | Document | Description |
 |----------|-------------|
+| [Changelog](CHANGELOG.md) | What changed in each release (one entry per version, all modules) |
 | [Architecture](ARCHITECTURE.md) | System design, hexagonal layers, core concepts, message flow |
 | [Domain Model (DDD)](DDD.md) | Bounded contexts, aggregates, invariants, context map |
 | [Ubiquitous Language](UBIQUITOUS.md) | Authoritative glossary of terms used in code, config, logs, and docs |
