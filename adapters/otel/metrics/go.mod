@@ -3,7 +3,7 @@ module github.com/mariotoffia/gobridge/adapters/otel/metrics
 go 1.25.0
 
 require (
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.42.0
@@ -33,5 +33,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../../../
