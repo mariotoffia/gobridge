@@ -43,21 +43,24 @@ For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, c
 
 ## Installation
 
-> **⚠️ External `go get` requires released, path-prefixed submodule tags — a
-> prerequisite release step that is not yet performed.** This repository is a
-> Go **multi-module workspace**: the submodules below depend on sibling modules
-> via in-repo `replace` directives and `v0.0.0` requirements that only resolve
-> inside this checkout (`go.work`). Go **ignores `replace` directives in
-> dependencies**, so a clean external `go get` of a submodule currently fails to
-> resolve those siblings (`unknown revision … v0.0.0`). Until every submodule is
-> published with a **path-prefixed semver tag** and its internal `v0.0.0`/zero
-> pseudo-version requirements are replaced with the released versions, consume
-> these modules from an **in-repo workspace** (clone this repo and work within
-> `go.work`), not via `go get`. See the release checklist in
-> **[RELEASE.md](RELEASE.md)** (published module set, path-prefixed tag policy,
-> and the first-release migration that removes `replace` directives).
+**One version for everything.** GoBridge publishes 31 modules from this
+repository, and every one of them carries the *same* version. There is no
+compatibility matrix to consult and no per-module changelog to cross-check: pick
+a version, use it everywhere, and the pieces are guaranteed to be the set that
+was built, tested, and released together.
 
-Once the submodules are published (see the release checklist), the modules are consumed with:
+```bash
+go get github.com/mariotoffia/gobridge@v0.3.0
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@v0.3.0
+go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs@v0.3.0
+```
+
+If those three lines look boring, that is the point — mixing `v0.3.0` of the core
+with `v0.2.x` of an adapter is not a thing you can accidentally do. Every module
+in a release is tagged from one commit train, and the release is only published
+if *all* of it passes. See [RELEASE.md](RELEASE.md) for the policy.
+
+The full set:
 
 ```bash
 # Core module (domain, ports, runtime, config, bridge) -- zero external deps
@@ -177,9 +180,9 @@ make check            # Build + lint + unit tests
 make verify-release-preparation # Source-safe release DAG/tooling preflight
 ```
 
-The release-strict `make verify-published-modules RELEASE_VERSION=vX.Y.Z` gate
-is intentionally expected to fail until the staged first-release migration and
-matching path-prefixed tags described in [RELEASE.md](RELEASE.md) exist.
+To cut a release, see [MODULES.md §3](MODULES.md#3-cut-a-release-make-it-go-get-able):
+`make release VERSION=vX.Y.Z` is a dry run, `CONFIRM=1` publishes the whole
+train in dependency order.
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for full setup instructions.
 
