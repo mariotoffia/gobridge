@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +24,63 @@ const (
 	stabilizeAttempts = 3
 	stabilizeInterval = 100 * time.Millisecond
 )
+
+// PullTimeout bounds an explicit image pull. It is deliberately far larger
+// than RunTimeout: pulling SQL Server or LocalStack on a cold cache moves
+// well over a gigabyte.
+const PullTimeout = 15 * time.Minute
+
+// EnsureImage makes sure ref is present locally, pulling it if it is not.
+//
+// Call this before `docker run`. Otherwise the run performs an implicit pull
+// inside its own (short) timeout, so the fixture succeeds on a warm cache and
+// fails on a cold one — a fresh CI runner pulls every image for the first
+// time, and a multi-gigabyte image will not arrive inside RunTimeout. That is
+// a timing-dependent failure disguised as a container fault, so separating
+// "fetch the image" from "start the container" makes startup deterministic:
+// each step then gets a budget appropriate to what it actually does.
+func EnsureImage(ref string) error {
+	if _, err := Run(InspectTimeout, "image", "inspect", ref); err == nil {
+		return nil // already local; no network dependency at all
+	}
+	if out, err := Run(PullTimeout, "pull", ref); err != nil {
+		return fmt.Errorf("pull %s: %w\n%s", ref, err, out)
+	}
+	return nil
+}
+
+// MustSucceed reports whether a fixture that failed to start should fail the
+// test rather than skip it.
+//
+// Skipping on fixture failure is how a broken fixture hides indefinitely: the
+// Service Bus emulator crashed on every CI run for an unknown length of time
+// while `go test` still printed `ok` for the package, because every test in it
+// skipped. A skip is only honest when the environment genuinely cannot run the
+// fixture — no Docker on a developer laptop. If Docker is here and the fixture
+// still would not start, that is a failure and must be reported as one.
+//
+// GOBRIDGE_REQUIRE_FIXTURES=1 forces failure; GOBRIDGE_REQUIRE_FIXTURES=0
+// forces the old skip behaviour for a deliberately Docker-less run.
+func MustSucceed() bool {
+	switch os.Getenv("GOBRIDGE_REQUIRE_FIXTURES") {
+	case "1", "true":
+		return true
+	case "0", "false":
+		return false
+	}
+	// CI is set by GitHub Actions and every other mainstream CI. There, a
+	// fixture that cannot start is always a failure.
+	if os.Getenv("CI") != "" {
+		return true
+	}
+	return DockerAvailable()
+}
+
+// DockerAvailable reports whether a docker binary is on PATH.
+func DockerAvailable() bool {
+	_, err := exec.LookPath("docker")
+	return err == nil
+}
 
 // RemoveOrphans force-removes every container whose name matches prefix.
 // Best-effort sweep for TestMain / ForceStart; errors are ignored.
@@ -90,6 +149,29 @@ func WaitGone(name string, timeout time.Duration) error {
 		time.Sleep(pollInterval)
 	}
 	return fmt.Errorf("container %s still present after %v", name, timeout)
+}
+
+// DrainRemove stops a container gracefully and then removes it, waiting on
+// each transition rather than firing and forgetting.
+//
+// `docker rm -f` SIGKILLs: a broker loses whatever it had not yet flushed, and
+// because the call returns before docker has finished, the next start can race
+// a half-removed container or a still-bound published port. DrainRemove sends
+// SIGTERM, gives the process `timeout` to shut down cleanly, force-removes
+// whatever is left, and only returns once docker has genuinely forgotten the
+// container — so "stopped" means stopped, the mirror of a real readiness gate.
+func DrainRemove(name string, timeout time.Duration) error {
+	grace := int(timeout.Seconds())
+	if grace < 1 {
+		grace = 1
+	}
+	// `docker stop` blocks for up to the grace period, so allow for it.
+	_, _ = Run(RemoveTimeout+timeout, "stop", "-t", strconv.Itoa(grace), name)
+	if err := WaitStopped(name, timeout); err != nil {
+		return err
+	}
+	_, _ = Run(RemoveTimeout, "rm", "-f", name)
+	return WaitGone(name, timeout)
 }
 
 // WaitLogLine waits until the container's log contains substr — a readiness

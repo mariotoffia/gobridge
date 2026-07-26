@@ -42,6 +42,7 @@
     "testutil/asblocal",
     "testutil/ddblocal",
     "testutil/localstack",
+    "testutil/mqttlocal",
     "testutil/rabbitmqlocal",
     "testutil/wait"
   ]

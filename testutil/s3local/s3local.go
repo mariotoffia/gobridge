@@ -38,6 +38,9 @@ import (
 
 const (
 	containerPrefix = "gobridge-s3local-"
+	// defaultImage is pinned by digest, like rabbitmqlocal: a floating
+	// :latest means CI can break on a day nobody changed anything.
+	defaultImage    = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
 	defaultUser     = "minioadmin"
 	defaultPassword = "minioadmin"
 )
@@ -109,7 +112,13 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("MinIO not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("MinIO not available: %v", initErr)
+		}
+		t.Skipf("MinIO not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -192,12 +201,16 @@ func startContainer() (string, string, func(), error) {
 	name := containerPrefix + fmt.Sprintf("%d", port)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
+	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+		return "", "", nil, err
+	}
+
 	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:9000", port),
 		"-e", "MINIO_ROOT_USER="+defaultUser,
 		"-e", "MINIO_ROOT_PASSWORD="+defaultPassword,
-		"quay.io/minio/minio:latest",
+		defaultImage,
 		"server", "/data",
 	)
 	if err != nil {

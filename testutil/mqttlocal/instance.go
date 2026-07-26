@@ -48,7 +48,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	}
 
 	c := config{
-		image:            "eclipse-mosquitto:latest",
+		image:            defaultImage,
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,
 		maxQueuedBytes:   -1,
@@ -74,6 +74,13 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		t.Fatalf("mqttlocal.NewBrokerInstance: write config: %v", err)
 	}
 	_ = confFile.Close()
+	// os.CreateTemp makes the file 0600. The data dir below is already chmod'ed
+	// for the container's uid; the config file needs the same treatment or
+	// Mosquitto cannot read it once it drops privileges. Nothing secret here.
+	if err := os.Chmod(confFile.Name(), 0o644); err != nil {
+		_ = os.Remove(confFile.Name())
+		t.Fatalf("mqttlocal.NewBrokerInstance: chmod config: %v", err)
+	}
 
 	// When persistence is enabled, create a host-side temp directory for
 	// Mosquitto data. This directory is bind-mounted into every container
@@ -105,7 +112,10 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	b.start()
 
 	t.Cleanup(func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+		// Drain rather than SIGKILL: Mosquitto flushes its persistence file on
+		// SIGTERM, and waiting for the container to disappear stops a
+		// same-named restart from racing this teardown.
+		_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 		_ = os.Remove(b.confPath)
 		if dataDir != "" {
 			_ = os.RemoveAll(dataDir)
@@ -118,7 +128,13 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 func (b *BrokerInstance) start() {
 	b.t.Helper()
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+	// Reclaim the name and wait until docker has genuinely forgotten it, so
+	// `docker run` cannot collide with a still-terminating container.
+	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
+
+	if err := dockerexec.EnsureImage(b.cfg.image); err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance: %v", err)
+	}
 
 	args := []string{
 		"run", "-d",
@@ -146,13 +162,9 @@ func (b *BrokerInstance) start() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: container unhealthy: %v", err)
 	}
-	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
 		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance: TCP not ready: %v", err)
-	}
-	if err := dockerexec.StabilizeTCP(b.port); err != nil {
-		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance: stabilize failed: %v", err)
+		b.t.Fatalf("mqttlocal.BrokerInstance: broker not ready: %v", err)
 	}
 
 	b.stopped = false
@@ -189,8 +201,9 @@ func (b *BrokerInstance) Restart() {
 	if !b.stopped {
 		b.Stop()
 	}
-	// Remove the dead container so we can reuse the name.
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", b.name)
+	// Remove the dead container so we can reuse the name, waiting until it is
+	// actually gone before starting a replacement.
+	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 	b.start()
 }
 
@@ -231,13 +244,9 @@ func (b *BrokerInstance) RestartGraceful() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: unhealthy: %v", err)
 	}
-	if err := dockerexec.WaitTCP(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
 		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: TCP not ready: %v", err)
-	}
-	if err := dockerexec.StabilizeTCP(b.port); err != nil {
-		dockerexec.LogFailure(b.name)
-		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: stabilize failed: %v", err)
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: broker not ready: %v", err)
 	}
 	b.stopped = false
 }

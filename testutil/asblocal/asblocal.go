@@ -49,8 +49,14 @@ const (
 	containerPrefix = "gobridge-asblocal-"
 	networkPrefix   = "gobridge-asbnet-"
 
-	defaultSQLImage      = "mcr.microsoft.com/mssql/server:2022-latest"
-	defaultEmulatorImage = "mcr.microsoft.com/azure-messaging/servicebus-emulator:latest"
+	// Pinned by digest, like rabbitmqlocal. A floating :latest means CI can
+	// break on a day nobody changed anything — and it did: the emulator's
+	// :latest moved from 2.0.0 to 2.0.1 mid-investigation, which had to be
+	// ruled out by hand before the real cause could be found.
+	// mssql publishes no immutable tag matching 2022-latest, so the tag here is
+	// informational and the digest is what actually resolves.
+	defaultSQLImage      = "mcr.microsoft.com/mssql/server:2022-latest@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89"
+	defaultEmulatorImage = "mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.1@sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3"
 
 	sqlPassword = "Str0ngPa$$w0rd!"
 )
@@ -67,6 +73,7 @@ var (
 	fromEnv      bool
 	connStr      string
 	emuContainer string
+	sqlContainer string
 	configPath   string
 	cleanupFn    func()
 	initErr      error
@@ -132,6 +139,8 @@ func ConnectionString(t testing.TB) string {
 	} else if !fromEnv && emuContainer != "" {
 		if !dockerexec.IsRunning(emuContainer) {
 			t.Logf("asblocal: emulator container %s died, restarting...", emuContainer)
+			// Capture why it died before cleanup removes the container.
+			dumpDiagnostics()
 			if cleanupFn != nil {
 				cleanupFn()
 			}
@@ -140,7 +149,13 @@ func ConnectionString(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("ASB emulator not available: %v", initErr)
+		// A fixture that will not start is a failure wherever it could have
+		// started; skipping here is what let a permanently broken emulator
+		// report `ok` for its whole package. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("ASB emulator not available: %v", initErr)
+		}
+		t.Skipf("ASB emulator not available (docker absent): %v", initErr)
 	}
 	return connStr
 }
@@ -204,14 +219,23 @@ func startContainers() (string, func(), error) {
 	netName := networkPrefix + suffix
 	sqlName := containerPrefix + "sql-" + suffix
 	emuName := containerPrefix + "emu-" + suffix
+	// Recorded before anything starts so Diagnostics can dump either
+	// container's logs no matter which startup gate fails.
+	sqlContainer = sqlName
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
+	// Reclaim both names and wait until docker has forgotten them, so the runs
+	// below cannot collide with still-terminating containers from a restart.
+	_ = dockerexec.DrainRemove(emuName, dockerexec.RemoveTimeout)
+	_ = dockerexec.DrainRemove(sqlName, dockerexec.RemoveTimeout)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 
 	cleanup := func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emuName)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", sqlName)
+		// Drain the emulator before SQL: it holds connections to the database,
+		// and SIGKILLing the pair leaves the emulator's socket teardown racing
+		// the network removal below. Waiting for each to disappear is what
+		// makes the network rm deterministic rather than best-effort.
+		_ = dockerexec.DrainRemove(emuName, dockerexec.RemoveTimeout)
+		_ = dockerexec.DrainRemove(sqlName, dockerexec.RemoveTimeout)
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", netName)
 		if configPath != "" {
 			_ = os.Remove(configPath)
@@ -237,6 +261,28 @@ func startContainers() (string, func(), error) {
 	}
 	_ = cfgFile.Close()
 	configPath = cfgFile.Name()
+
+	// os.CreateTemp makes the file 0600, owned by the user running the tests.
+	// The emulator image runs as uid 1654, so on Linux (where a bind mount
+	// preserves the host's uid and mode) it cannot read its own config and
+	// exits immediately with
+	//   System.UnauthorizedAccessException: Access to the path
+	//   '/ServiceBus_Emulator/ConfigFiles/Config.json' is denied.
+	// Docker Desktop on macOS masks this, because its file sharing remaps
+	// ownership — which is why this reproduces only in CI. World-readable is
+	// correct here: the file holds nothing secret, only queue/topic names.
+	if err := os.Chmod(configPath, 0o644); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("chmod config readable by container uid: %w", err)
+	}
+
+	// Fetch before running: an implicit pull inside `docker run` would have to
+	// finish inside RunTimeout, which a multi-gigabyte SQL Server image will
+	// not do on a cold cache.
+	if err := dockerexec.EnsureImage(sqlImageName()); err != nil {
+		cleanup()
+		return "", nil, err
+	}
 
 	// Start SQL Server.
 	out, err = dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
@@ -266,6 +312,11 @@ func startContainers() (string, func(), error) {
 		dockerexec.LogFailure(sqlName)
 		cleanup()
 		return "", nil, fmt.Errorf("sql server: %w", err)
+	}
+
+	if err := dockerexec.EnsureImage(emulatorImageName()); err != nil {
+		cleanup()
+		return "", nil, err
 	}
 
 	// Start Service Bus Emulator.
@@ -301,19 +352,27 @@ func startContainers() (string, func(), error) {
 		return "", nil, fmt.Errorf("emulator AMQP: %w", err)
 	}
 
-	// TCP-level stabilize only: the emulator has no probeable readiness
-	// endpoint here; AMQP protocol truth is gated by the consumer's real
-	// send/receive warmup roundtrip (see servicebus integration TestMain).
-	if err := dockerexec.StabilizeTCP(amqpPort); err != nil {
-		dockerexec.LogFailure(emuName)
-		cleanup()
-		return "", nil, fmt.Errorf("emulator stabilization: %w", err)
-	}
-
 	cs := fmt.Sprintf(
 		"Endpoint=sb://localhost:%d;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;",
 		amqpPort,
 	)
+
+	// Gate on protocol truth. Neither of the gates above proves the broker
+	// works: WaitHealthy only reports State.Running, and the published AMQP
+	// port is bound by docker-proxy at container creation, so a TCP dial (and
+	// therefore StabilizeTCP) succeeds while the emulator is still
+	// initialising or has already died. That false positive is precisely how
+	// this fixture could hand out a connection string to an emulator that
+	// never served a single message, turning a fixture fault into an
+	// unexplained 30s timeout inside every test.
+	//
+	// waitEmulatorReady requires a real send + receive roundtrip, so returning
+	// from startContainers means the emulator moves messages.
+	if err := waitEmulatorReady(cs, emulatorReadyTimeout); err != nil {
+		dumpDiagnostics()
+		cleanup()
+		return "", nil, fmt.Errorf("emulator not ready: %w", err)
+	}
 
 	return cs, cleanup, nil
 }
@@ -396,6 +455,39 @@ func configJSON() string {
     }
   }
 }`
+}
+
+// Diagnostics dumps emulator and SQL container state plus recent container
+// logs to stderr.
+//
+// The emulator can pass every container-level readiness gate and still never
+// serve AMQP: `docker run -p` makes docker-proxy bind the published host port
+// immediately, so a TCP dial succeeds while the broker inside the container is
+// absent or dead. When that happens the only evidence of the cause lives in
+// the container's own log, which no failure path currently captures. Call this
+// whenever a readiness or warmup gate gives up.
+func Diagnostics() {
+	mu.Lock()
+	defer mu.Unlock()
+	dumpDiagnostics()
+}
+
+// dumpDiagnostics is the unlocked form, for callers already holding mu.
+func dumpDiagnostics() {
+	for _, name := range []string{emuContainer, sqlContainer} {
+		if name == "" {
+			continue
+		}
+		out, err := dockerexec.Run(dockerexec.InspectTimeout, "inspect",
+			"--format", "Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error={{.State.Error}}",
+			name)
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "--- docker inspect %s ---\n%s\n", name, out)
+		} else {
+			fmt.Fprintf(os.Stderr, "--- docker inspect %s failed: %v ---\n", name, err)
+		}
+		dockerexec.LogFailure(name)
+	}
 }
 
 func removeNetworks(prefix string) {

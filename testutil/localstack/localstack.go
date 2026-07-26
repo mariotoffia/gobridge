@@ -41,6 +41,7 @@ package localstack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -60,6 +61,10 @@ import (
 )
 
 const containerPrefix = "gobridge-localstack-"
+
+// defaultImage is pinned by digest, like rabbitmqlocal: a floating :latest
+// means CI can break on a day nobody changed anything.
+const defaultImage = "localstack/localstack:2026.7.0@sha256:2a81e5da4c32bb53e8d86e92050a12937f9be1915c5a4afad0931f75c112fc7e"
 
 type options struct {
 	cleanOrphans bool
@@ -147,7 +152,20 @@ func Endpoint(t testing.TB) string {
 	}
 
 	if initErr != nil {
-		t.Skipf("LocalStack not available: %v", initErr)
+		// A missing licence token is a declared prerequisite, not a broken
+		// fixture: the repository cannot supply the credential for itself, so
+		// this stays a skip everywhere. It is named, so "not configured" is
+		// distinguishable from "does not work" — which is exactly what the old
+		// blanket skip made impossible.
+		if errors.Is(initErr, ErrNoAuthToken) {
+			t.Skipf("LocalStack skipped: %v", initErr)
+		}
+		// Anything else is a fixture that will not start, and that is a failure
+		// wherever it could have started. See dockerexec.MustSucceed.
+		if dockerexec.MustSucceed() {
+			t.Fatalf("LocalStack not available: %v", initErr)
+		}
+		t.Skipf("LocalStack not available (docker absent): %v", initErr)
 	}
 	return endpoint
 }
@@ -217,9 +235,32 @@ func newAWSConfig(ep string) aws.Config {
 
 // --- container lifecycle ---
 
+// ErrNoAuthToken reports that LOCALSTACK_AUTH_TOKEN is not configured.
+//
+// The LocalStack image refuses to start without one, quitting with exit code
+// 55 ("License activation failed"). That is a credential this repository
+// cannot supply for itself, so it is a declared prerequisite rather than a
+// broken fixture, and it stays a skip even where MustSucceed would otherwise
+// demand a failure.
+//
+// It is deliberately a *named* sentinel. Before this, the missing token was
+// swallowed by the same blanket skip that hid the Service Bus emulator being
+// permanently broken — the package printed `ok` and nobody could tell the
+// difference between "not configured" and "does not work". Set the token (a
+// repository secret in CI) and these tests run.
+var ErrNoAuthToken = errors.New(
+	"LOCALSTACK_AUTH_TOKEN is not set; LocalStack refuses to start without a license")
+
 func startContainer() (string, string, func(), error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return "", "", nil, fmt.Errorf("docker not found: %w", err)
+	}
+
+	// Checked before anything is started: without it the container exits
+	// immediately, and every readiness gate then reports a confusing
+	// "connection refused" instead of the real reason.
+	if os.Getenv("LOCALSTACK_AUTH_TOKEN") == "" {
+		return "", "", nil, ErrNoAuthToken
 	}
 
 	if opts.cleanOrphans {
@@ -246,7 +287,11 @@ func startContainer() (string, string, func(), error) {
 	if token := os.Getenv("LOCALSTACK_AUTH_TOKEN"); token != "" {
 		args = append(args, "-e", "LOCALSTACK_AUTH_TOKEN="+token)
 	}
-	args = append(args, "localstack/localstack:latest")
+	args = append(args, defaultImage)
+
+	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+		return "", "", nil, err
+	}
 
 	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
 	if err != nil {
