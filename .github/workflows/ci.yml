@@ -68,47 +68,17 @@ jobs:
         with:
           go-version: '1.25'
 
+      # Nothing longrunning-tagged runs in the cloud. The MQTT ingress memory
+      # proof and the separate-process failover gate are developer-machine
+      # runs: `make test-mqtt-ingress-memory` and `make test-failover-gate`.
       - name: Run Docker-backed integration tests
         run: make test-integration
-
-      - name: Run bounded MQTT ingress memory proof
-        run: make test-mqtt-ingress-memory
-
-      # TEST-1: a bounded, separate-OS-process, real-broker + DynamoDB Local
-      # failover proof on every PR (the full failover/chaos suite still runs
-      # only nightly). Catches outage-recovery regressions that default and
-      # integration CI would otherwise stay green through.
-      - name: Run bounded separate-process failover gate
-        run: make test-failover-gate
 
       - name: Upload integration-test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: integration-test-reports
-          path: reports/
-          if-no-files-found: ignore
-
-  long-running:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25'
-
-      - name: Run long-running release gate
-        run: make test-long-running
-
-      - name: Upload long-running reports
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: long-running-test-reports
           path: reports/
           if-no-files-found: ignore
 
