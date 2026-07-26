@@ -18,7 +18,7 @@ may need a process restart to complete takeover.
 
 1. Check readiness on the surviving instance. `GET /api/v1/monitor/ready`
    accepts a `?level=` of `live`, `running`, `connected`, `subscribed`, or
-   `full` (`httpapi/monitor.go`, `handleReady`). Gate on the level you need —
+   `full`. Gate on the level you need —
    `connected` proves the transport is up, `full` proves the instance reached
    its complete readiness. A 200 with `"status":"ready"` at your target level
    means this instance is serving.
@@ -67,7 +67,7 @@ may need a process restart to complete takeover.
    delay and starts observation at zero when no prior observer confirmed time.
 
 4. Distinguish a clean takeover from a stuck single-active session. The MQTT
-   (Paho) session is **single-use**: once closed it cannot be re-`Start`ed, so
+   (Paho) session is **single-use**: once closed it cannot be restarted, so
    an instance re-acquiring the lease must **restart the process** to get a fresh
    session (see [Scenario 8](../scenarios/08-clustered-exclusive-sessions.md)).
    A terminal runtime fails `GET /api/v1/monitor/live` closed.

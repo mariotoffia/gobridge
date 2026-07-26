@@ -31,7 +31,7 @@ diagnosing why leadership churns.
 
 3. Confirm fencing is holding the line. `STALE_FENCING_TOKEN` means a guarded
    write (outbox claim/complete, lease renewal, route forward) was **rejected**
-   because the caller's `LeaseToken.Version` was older than the current owner's —
+   because the caller's fencing token version was older than the current owner's —
    the safety mechanism working, not data corruption
    ([troubleshooting.md#stale_fencing_token](../troubleshooting.md#stale_fencing_token)).
    `NO_ROUTE_OWNER` is the forwarder mid-hand-off and self-heals

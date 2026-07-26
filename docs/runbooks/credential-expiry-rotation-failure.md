@@ -37,9 +37,7 @@ a transient backend blip; the work is fixing the source.
      read access to the secret; `{code=UNAVAILABLE}` — the backend is down.
 
 3. On the shipped AWS image, secrets resolve from SSM at startup and
-   `admin_api_key_param` is mandatory
-   (`deployment/aws-filebased-config/lib/model/bootstrap.go:123-125`,
-   `deployment/aws-filebased-config/lib/bootstrap/secrets.go`). A rotation that
+   `admin_api_key_param` is mandatory. A rotation that
    never lands often means the SSM parameter was updated under a different name
    or the task role cannot read it.
 

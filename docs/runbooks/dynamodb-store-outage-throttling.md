@@ -27,11 +27,10 @@ full store outage stops durable progress and can trigger failover.
    - `LeaseRenewLatency` rising with `LeaseAcquireFailures` — the owner is
      struggling to renew against DynamoDB, not to reach the broker.
    - `OutboxDrainLatency` rising with `OutboxDeferred` — claimed records miss
-     their batch deadline because store calls are slow
-     (`domain/shared/metrics.go:77-82`).
-   - `OutboxDepthFailures` — the `CountPending` query returned a real read
-     error; the drainer skipped the `OutboxDepth` gauge that cycle
-     (`domain/shared/metrics.go:61-70`), so investigate the store, not the backlog.
+     their batch deadline because store calls are slow.
+   - `OutboxDepthFailures` — the pending-count query returned a real read
+     error; the drainer skipped the `OutboxDepth` gauge that cycle,
+     so investigate the store, not the backlog.
 
 2. Read the DynamoDB CloudWatch metrics for each affected table (lease, outbox,
    DLQ) and its GSIs:
@@ -42,7 +41,7 @@ full store outage stops durable progress and can trigger failover.
    - `SystemErrors` (5xx) > 0 — a service-side outage rather than throttling.
 
 3. Separate throttling from a conditional-write conflict. Repeated
-   `OutboxClaimConflicts` (`domain/shared/metrics.go:83-90`) or
+   `OutboxClaimConflicts` or
    conditional-check-failed responses on the outbox table point at claim
    contention between drainers, not raw capacity. A `STALE_FENCING_TOKEN`
    ([troubleshooting.md#stale_fencing_token](../troubleshooting.md#stale_fencing_token))

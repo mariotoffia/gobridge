@@ -40,7 +40,7 @@ bridge.
 The watcher reacts to filesystem change events (and, as a backstop, a periodic
 content check). It cannot tell *why* the file changed or whether the tool that
 changed it has finished writing. It sees "the file changed" and reads whatever is
-on disk at that moment (`adapters/native/config/file/acl_watcher.go`).
+on disk at that moment.
 
 ## How an in-place write can be read half-finished
 
@@ -62,8 +62,7 @@ has no way to know the writer was not done.
 ## How a partial file can look like a valid empty config
 
 gobridge requires exactly one field for a config to be valid: `bridge.id`. It does
-NOT require any routes, receivers, or senders (`config/validate.go`,
-`validateBridgeFields`). A config with a bridge id and nothing else is accepted.
+NOT require any routes, receivers, or senders. A config with a bridge id and nothing else is accepted.
 
 Picture an external tool rewriting the file in place, top to bottom. Suppose the
 full, intended file is:
@@ -209,10 +208,9 @@ the stability gate only narrows the window, it does not remove the requirement.
 
 ## Why gobridge itself does not need this
 
-gobridge's own config writer is already atomic. `config/parser/WriteFile`
-(`config/parser/write.go:22-86`) writes the new config to a temporary file in the
-target's directory (`os.CreateTemp(dir, ".gobridge-config-*.yaml.tmp")`), fsyncs
-it, then `os.Rename`s it over the target and fsyncs the directory. So when gobridge
+gobridge's own config writer is already atomic. It writes the new config to a
+temporary file in the target's directory, fsyncs it, then renames it over the
+target and fsyncs the directory. So when gobridge
 rewrites its own config — through the admin config transactions API, for example —
 the watcher never sees a partial file. This runbook exists only because external
 tools do not automatically follow the same discipline.

@@ -18,33 +18,32 @@ a wrong purge loses messages.
 Each metric names a distinct cause; read them before acting
 ([monitoring.md#key-metrics](../aws-deployment/monitoring.md#key-metrics)).
 
-1. `OutboxDepth` is the true PENDING backlog gauge (`domain/shared/metrics.go:25-50`).
+1. `OutboxDepth` is the true PENDING backlog gauge.
    A steadily rising value with normal drain latency means ingress outpaces the
-   drainer — scale drain throughput. On a store without `OutboxDepthReporter`
-   the depth falls back to the claimed count and saturates at the batch size, so
+   drainer — scale drain throughput. On a store without depth reporting, the
+   depth falls back to the claimed count and saturates at the batch size, so
    confirm against `OutboxClaimBatchSize` (a liveness signal, not backlog).
 
 2. `OutboxDrainStalled` is the single signal that a **sender is wedged** —
    in-flight sends did not return within a grace past the batch deadline,
-   the signature of a `Sender` that ignores context cancellation
-   (`domain/shared/metrics.go:97-105`). The runtime does not kill the wedged
+   the signature of a sender that ignores context cancellation. The runtime does
+   not kill the wedged
    goroutines; this is a diagnostic, not a self-recovery, signal. If it is
    non-zero, the partition is stuck on the target transport, not the store.
 
 3. `DrainSkippedNoLease` counts drain cycles skipped because the drainer holds
-   no lease (`domain/shared/metrics.go:91-96`). A short burst on a standby is
+   no lease. A short burst on a standby is
    normal. A continuously-rising value on a route that should drain means a
    **misconfigured lease** — commonly a `shared_outbox` route bound to a
    non-exclusive session that never acquires a lease.
 
 4. `OutboxDeferred` rising under load flags a drain budget too small for the
-   batch size (`domain/shared/metrics.go:77-82`) — records are claimed but the
+   batch size — records are claimed but the
    batch deadline expires before the sends complete.
 
-5. `OutboxStranded` (non-zero) means a reload explicitly authorized with
-   `WithAllowDestructiveReload` left observable pending records with no drainer
-   (`domain/shared/metrics.go:106-118`). Non-forced orphaning reloads are refused
-   before swap. Cross-check [Cluster reconfiguration](cluster-reconfiguration.md).
+5. `OutboxStranded` (non-zero) means an explicitly authorized destructive reload
+   left observable pending records with no drainer. Non-forced orphaning reloads
+   are refused before swap. Cross-check [Cluster reconfiguration](cluster-reconfiguration.md).
 
 6. Confirm the drainer is actually running: `GET /api/v1/monitor/topology`
    (authenticated) shows `running` and the route list

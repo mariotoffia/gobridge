@@ -1,6 +1,6 @@
 # Runbook: DynamoDB Outbox GSI Migration
 
-**Applies to:** the `dynamodb` outbox store (`adapters/aws/store/dynamodboutbox`).
+**Applies to:** the `dynamodb` outbox store.
 **Audience:** operators upgrading a bridge whose outbox table was created by an
 earlier build.
 **Risk:** medium -- the outbox holds undelivered messages; a wrong step can
@@ -9,9 +9,7 @@ strand or duplicate deliveries.
 ## What changed
 
 The outbox table's secondary indexes were reshaped, and the base-table sort-key
-VALUE encoding was made injective. Current schema
-(`adapters/aws/store/dynamodboutbox/acl_store.go:326-395`; preflight and the
-authoritative schema comment: `acl_preflight.go:35-96`, `doc.go`):
+VALUE encoding was made injective. Current schema:
 
 | Index | Old build | Current build |
 |-------|-----------|---------------|
@@ -23,7 +21,7 @@ authoritative schema comment: `acl_preflight.go:35-96`, `doc.go`):
 
 Base-table KEY SCHEMA is unchanged: `PK` (hash, `S`), `SK` (range, `S`). The SK
 VALUE encoding changed: it is now `OUTBOX#<esc(envelope_id)>#<esc(binding_id)>`,
-where each component percent-escapes `#` and `%` (`acl_marshal.go:26-111`). A
+where each component percent-escapes `#` and `%`. A
 component with no `#` or `%` encodes byte-for-byte identically to the old raw
 `OUTBOX#<envelope_id>#<binding_id>` form, so a rolling deploy keeps existing keys
 stable; only previously-ambiguous `#`-bearing IDs change shape. Both schemes keep
@@ -38,15 +36,14 @@ See [Cross-scheme SK migration](#cross-scheme-sk-migration) below.
 - `ExpiryIndex` is **sparse**: the `has_expiry` attribute (value `"1"`) is
   written only for records that carry a non-zero `expires_at`, and it is removed
   on any terminal transition. Expire sweeps therefore scan exactly the
-  expiry-eligible candidate set instead of the whole table
-  (`acl_store.go:1354-1420`, `acl_marshal.go:180`).
+  expiry-eligible candidate set instead of the whole table.
 - `ClaimIndex` is the **per-partition age-ordered claim path** (hash `PK`, range
-  `claim_sort` -- a zero-padded `created_at`-millis + `seq` composite,
-  `acl_marshal.go:117-160`). A Claim query reads it oldest-first and STOPS after
+  `claim_sort` -- a zero-padded `created_at`-millis + `seq` composite). A Claim
+  query reads it oldest-first and STOPS after
   `limit`, so a healthy backlog drains in O(limit) Query cost. Without it, Claim
   pages the whole partition to find the oldest-N, which goes O(backlog) after an
   outage. It is **sparse** -- only pending/claimed records carry `claim_sort`
-  (stamped at Persist, removed at Complete/Expire, `acl_store.go:477,1238,1405`)
+  (stamped at Persist, removed at Complete/Expire)
   -- and it projects **ALL** so a claim query returns the full item without a
   base-table read.
 - The SK value encoding was made **injective** so distinct `(envelope, binding)`
@@ -63,8 +60,8 @@ degrade or break:
 - **Expire** queries `ExpiryIndex`. If that index is absent the sweep fails or
   finds nothing, so records with a set expiry are not swept to the DLQ on time.
 - **Claim** uses `ClaimIndex` when it is present and correct; when it is absent
-  Claim degrades to an exhaustive whole-partition scan (`acl_store.go:712-724`,
-  classification `acl_errors.go:112-156`). The scan is always correct but
+  Claim degrades to an exhaustive whole-partition scan. The scan is always
+  correct but
   O(backlog) per batch, so recovery after an outage self-throttles the table and
   failover catch-up is slow. Absence is deliberately tolerated -- an un-migrated
   table is NOT rejected. A present-but-misprojected `ClaimIndex` is a different
@@ -72,13 +69,13 @@ degrade or break:
 
 ### `ClaimIndex` must be `Projection: ALL`
 
-Startup preflight (`acl_preflight.go:78-95`, projection check `:159-168`) treats
+Startup preflight treats
 `ClaimIndex` as optional but, when it exists, enforces both its key schema AND
 `Projection: ALL`. The claim query filters on the non-key `status` attribute, so a
 `KEYS_ONLY` or `INCLUDE`-projected `ClaimIndex` would fail every Claim at runtime.
-Preflight rejects that mismatch at boot (fatal `ErrInvalidConfig`) rather than
-letting it wedge delivery later. A runtime scan-degrade (`acl_errors.go:124-153`,
-latched in `acl_store.go:1030-1038`) is the belt-and-suspenders for a skipped or
+Preflight rejects that mismatch at boot (fatal `INVALID_CONFIG`) rather than
+letting it wedge delivery later. A runtime scan-degrade is the belt-and-suspenders
+for a skipped or
 fail-open preflight: a `does not project` error latches the scan fallback with one
 WARN instead of mis-classifying it as a permanent fault. When you provision
 `ClaimIndex` by hand or via IaC, set `ProjectionType: ALL`.
@@ -91,10 +88,10 @@ Recreating is the simplest and safest option **once the outbox is empty**.
    routes to `direct_hold` so nothing new is persisted to this outbox.
 2. **Drain to empty.** Let the drainers deliver all pending records. Confirm
    with a `Scan` count (or the `OutboxDepth` gauge) reaching 0.
-3. **Delete the table**, then let the bridge recreate it: `Store.CreateTable`
+3. **Delete the table**, then let the bridge recreate it: table creation
    provisions the full current schema -- base table plus all three GSIs
    (`ExpiryIndex`, `RecordIDIndex`, `ClaimIndex`) -- in a single call, and is
-   idempotent (`acl_store.go:326-395`). Or apply the new schema via your IaC.
+   idempotent. Or apply the new schema via your IaC.
 4. **Resume writers.**
 
 Because the table is empty at step 3, no messages are lost, and every record the
@@ -114,7 +111,7 @@ create runs an async backfill -- sequence the calls and wait for each to reach
 > are never claimed and never delivered. Create `ClaimIndex` LAST, only after the
 > pre-upgrade backlog has drained (or you have backfilled `claim_sort` onto it).
 > Until then, the scan fallback claims old and new rows alike, so leaving
-> `ClaimIndex` absent is the safe state (`doc.go:113-122`).
+> `ClaimIndex` absent is the safe state.
 
 1. **Delete `StatusIndex`** (`UpdateTable` `GlobalSecondaryIndexUpdates` ->
    `Delete`). Wait until it is gone.
@@ -158,8 +155,7 @@ the in-place steps above -- an old record missing `claim_sort` is INVISIBLE to a
 The scan fallback has no such blind spot. Prefer draining the old backlog before
 creating `ClaimIndex`. If you must provision it while old records remain, backfill
 first: `Scan` for pending/claimed items with no `claim_sort` and `UpdateItem` the
-encoded value (zero-padded `created_at`-millis, then `seq`; see `claimSortKey`,
-`acl_marshal.go:117-160`).
+encoded value (zero-padded `created_at`-millis, then `seq`).
 
 ## Cross-scheme SK migration
 
@@ -168,16 +164,17 @@ Upgrading from a build that wrote raw-concatenation sort keys
 injective encoding needs no key rewrite for the common case, and never drops a
 message. The two schemes share the `OUTBOX#` prefix on purpose, so the Claim scan
 fallback's `begins_with(SK, "OUTBOX#")` finds and drains both old raw rows and new
-escaped rows during the transition (`acl_marshal.go:26-111`, `doc.go:95-122`).
+escaped rows during the transition.
 
 Old and new keys diverge only for a component containing `#` or `%`. For those,
-a new escaped SK can equal an old raw SK only in a narrow case -- e.g. new
-`sortKey("a#b","c")` equals old raw `OUTBOX#a%23b#c` written for envelope `a%23b`.
+a new escaped SK can equal an old raw SK only in a narrow case -- e.g. the
+escaped SK for envelope `a#b` + binding `c` equals old raw `OUTBOX#a%23b#c`
+written for envelope `a%23b`.
 When a new distinct record's `attribute_not_exists(SK)` put hits an old raw row on
 such a key, Persist does NOT blind-count it a duplicate (which would ack and drop
 the distinct message). It reads the occupying row strongly-consistently and, on an
-envelope/binding MISMATCH, returns a TRANSIENT error so the record is retried
-(`acl_store.go:484-560`). It lands once the legacy row is claimed, completed and
+envelope/binding MISMATCH, returns a TRANSIENT error so the record is retried.
+It lands once the legacy row is claimed, completed and
 TTL-compacted -- self-healing, no silent drop.
 
 No operator action is required for the SK migration itself. It matters here only
@@ -223,6 +220,5 @@ mind the ordering:
 - Persist a test message with a short TTL and confirm the Expire sweep moves it
   to the DLQ after expiry.
 - Confirm no old-build backlog remains before `ClaimIndex` went live (or that you
-  backfilled `claim_sort`): a flat `DynamoDBOutboxClaimScanPages` counter
-  (`MetricClaimScanPages`, `metrics.go:22`) and a drained `OutboxDepth` gauge both
-  indicate the fast path is claiming everything.
+  backfilled `claim_sort`): a flat `DynamoDBOutboxClaimScanPages` counter and a
+  drained `OutboxDepth` gauge both indicate the fast path is claiming everything.

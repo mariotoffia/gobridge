@@ -85,6 +85,7 @@ tenant-scoped routing.
 - **8. Clustered MQTT with Exclusive Sessions** ([08-clustered-exclusive-sessions.md](08-clustered-exclusive-sessions.md)) — Coordinates multiple bridge instances so only one holds a given MQTT session.
 - **11. Multi-Tenant Azure Service Bus** ([11-multi-tenant-azure-servicebus.md](11-multi-tenant-azure-servicebus.md)) — Isolates tenants across Azure Service Bus namespaces or queues with per-tenant credentials.
 - **14. Multi-Tenant Priority Routing** ([14-multi-tenant-priority-routing.md](14-multi-tenant-priority-routing.md)) — Combines tenant scoping with priority lanes on the route table.
+- **23. Coordinated Cluster Config Rollout** ([23-coordinated-cluster-rollout.md](23-coordinated-cluster-rollout.md)) — Rolls a live-safe config change across a whole cohort behind an all-member commit barrier, with optional auto-revert.
 
 ### Configuration management
 
@@ -92,6 +93,7 @@ Layered configuration sources and live reconfiguration without restart.
 
 - **9. Layered Configuration with DynamoDB Overlay** ([09-layered-dynamodb-config.md](09-layered-dynamodb-config.md)) — Layers a DynamoDB overlay on top of the file-based config source.
 - **10. Dynamic Reconfiguration** ([10-dynamic-reconfiguration.md](10-dynamic-reconfiguration.md)) — Applies a new config at runtime and shows which components reload in place.
+- **23. Coordinated Cluster Config Rollout** ([23-coordinated-cluster-rollout.md](23-coordinated-cluster-rollout.md)) — Changes a whole cohort's config at once, with no downtime, behind an all-member commit barrier (plus an optional confirm-window auto-revert).
 
 ### Security & credentials
 
@@ -135,7 +137,7 @@ quickstart to a multi-bridge cluster.
 
 Reverse index for readers who already know which broker they need to bridge.
 
-- **MQTT** — [1](01-mqtt-to-mqtt.md), [3](03-mqtt-to-sqs.md), [4](04-fanout-with-filtering.md), [8](08-clustered-exclusive-sessions.md)
+- **MQTT** — [1](01-mqtt-to-mqtt.md), [3](03-mqtt-to-sqs.md), [4](04-fanout-with-filtering.md), [8](08-clustered-exclusive-sessions.md), [23](23-coordinated-cluster-rollout.md)
 - **AWS SQS** — [2](02-sqs-to-sqs.md), [3](03-mqtt-to-sqs.md), [12](12-dynamic-destination-routing.md)
 - **Azure Service Bus** — [11](11-multi-tenant-azure-servicebus.md)
 - **RabbitMQ / AMQP 0.9.1** — [19](19-rabbitmq-to-rabbitmq.md), [21](21-amqp-cross-protocol.md)
@@ -155,6 +157,7 @@ Reverse index for readers who know which capability they need to evaluate.
 - **Layered configuration** — [9](09-layered-dynamodb-config.md)
 - **Credentials & rotation** — [15](15-http-ingress-with-credentials.md), [22](22-k8s-secret-mount-credentials.md)
 - **Clustered exclusive sessions** — [8](08-clustered-exclusive-sessions.md)
+- **Coordinated cluster rollout / confirm window** — [23](23-coordinated-cluster-rollout.md)
 - **Priority routing** — [14](14-multi-tenant-priority-routing.md)
 - **Content-based routing** — [4](04-fanout-with-filtering.md), [13](13-content-based-sse-routing.md)
 - **Observability (logs / traces / metrics)** — [18](18-observability.md)

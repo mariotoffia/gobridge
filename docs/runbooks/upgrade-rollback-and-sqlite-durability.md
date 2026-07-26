@@ -63,8 +63,7 @@ the container's ephemeral filesystem, stopping or replacing the task destroys an
 records it still holds — silent message loss with no error.
 
 The AWS CDK profile guards against this: the Phase-1 validator rejects any store
-path that is not under the EFS mount root, returning `ErrStorePathOutsideMount`
-(`deployment/aws-filebased-config/cdk/constructs/internal/validation/phase1.go:173-202`).
+path that is not under the EFS mount root, returning `ErrStorePathOutsideMount`.
 **Operators wiring their own Kubernetes or Docker deployment get no such guard.**
 Put every SQLite store path on a persistent volume (a `PersistentVolumeClaim`, a
 bind-mounted host path, or a network filesystem), never on the container's

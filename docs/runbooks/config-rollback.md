@@ -27,8 +27,7 @@ delivery. The transaction flow is reversible, which is the point of this runbook
      "http://<host>:8080/api/v1/admin/config" | jq .
    ```
 
-2. Interpret the commit outcome you got back
-   (`httpapi/admin_config.go:156-194`):
+2. Interpret the commit outcome you got back:
    - `{"status":"committed","version":N}` (200) — disk and runtime both updated.
    - `{"status":"committed_applying","version":N}` (202) — the durable write
      succeeded and the applier is still swapping (or the bridge is paused/shutting
@@ -42,7 +41,7 @@ delivery. The transaction flow is reversible, which is the point of this runbook
      the running runtime have diverged** and you must reconcile.
 
 3. In a fleet sharing one config file, compare `config_version` across instances
-   (surfaced on the monitor plane, `httpapi/monitor.go`): an instance whose
+   (surfaced on the monitor plane): an instance whose
    version lags the others has not yet converged.
 
 4. **`ConfigDegraded == 1` — applied but not converged.** A reload reports
@@ -51,7 +50,7 @@ delivery. The transaction flow is reversible, which is the point of this runbook
    config (denied credentials, an ACL-rejected topic filter) therefore commits
    as a **successful** reload while the transport never reaches broker truth.
    Past the transport's activation budget the post-swap convergence watch flips
-   `ConfigDegraded` to `1`. Both the generic Supervisor **and** the shipped AWS
+   `ConfigDegraded` to `1`. Both the generic runtime **and** the shipped AWS
    bootstrap emit this signal (the bootstrap gained a post-swap convergence
    watch — RECONFIG-1). Read the reason from deep health:
 
