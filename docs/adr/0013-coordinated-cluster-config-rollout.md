@@ -20,14 +20,14 @@ a frozen membership epoch; every member validates and builds it, then acks; a
 lease-elected, fencing-protected coordinator commits only when acks cover the
 epoch, else aborts (timeout, Nack, membership change). Members swap only on
 observing Committed. Post-commit convergence remains per-node (MQTT-R1). The
-protocol is opt-in (`cluster.rollout: coordinated`), requires the versioned DDB
+protocol is opt-in (`bridge.cluster.rollout: coordinated`), requires the versioned DDB
 config source, and applies only to deltas passing the live-safe preflight —
 durable-identity and store-target changes keep 0012's whole-cohort replacement.
 
 The barrier is runtime-hosted: `bridge.Supervisor` and the shipped file-based
-`bootstrap.App` both drive it through a `bridge.ClusterRolloutDriver` /
-`bridge.RolloutHost` seam, so the shipped image performs coordinated live-safe
-changes rather than the ADR 0012 refusal.
+`bootstrap.App` both drive it through a `bridge.ClusterRolloutDriver` bound to a
+`ports.RolloutHost` seam (the host is a port, not a bridge type), so the shipped
+image performs coordinated live-safe changes rather than the ADR 0012 refusal.
 
 ## Consequences
 

@@ -68,8 +68,8 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 }
 
 // rolloutModeCoordinated opts a clustered deployment into the coordinated
-// rollout barrier (docs/design/cluster-config-rollout-protocol.md §8). Any other
-// value keeps ADR 0012's refuse-live-reconfig behavior.
+// rollout barrier (docs/cluster/spec/cluster-config-rollout-protocol.md §8). Any
+// other value keeps ADR 0012's refuse-live-reconfig behavior.
 const rolloutModeCoordinated = "coordinated"
 
 // rolloutModeRefuse is the explicit spelling of the default.

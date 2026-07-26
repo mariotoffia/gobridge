@@ -129,7 +129,7 @@ bridge:
     # Live-config-change strategy. Default (unset, or "refuse") is ADR 0012:
     # a clustered node refuses every live config delta and changes are rolled by
     # whole-cohort replacement. "coordinated" opts into the barrier protocol in
-    # docs/design/cluster-config-rollout-protocol.md and additionally requires
+    # docs/cluster/spec/cluster-config-rollout-protocol.md and additionally requires
     # `members` below, a versioned CAS-capable config source, and a rollout store
     # wired by the composition root. NOTE: no shipped composition root wires one
     # yet, so "coordinated" currently fails every reload closed (visibly, with the

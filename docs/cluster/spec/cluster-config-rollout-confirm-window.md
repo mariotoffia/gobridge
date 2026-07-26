@@ -1,8 +1,10 @@
-# Phase 7 implementation spec — confirm window (§8.1)
+# Confirm window — implementation spec (§8.1)
 
-Status: **implemented** · Date: 2026-07-25 · Implements: `cluster-config-rollout-protocol.md`
-§8.1, §11 Phase 7, Q4 · Companion to the canonical design (that doc's §8.1 is the
-authority; this file records the concrete code-level deltas and the grounding).
+Status: **implemented** · Date: 2026-07-25 · Implements:
+[`cluster-config-rollout-protocol.md`](cluster-config-rollout-protocol.md) §8.1,
+Q4 · Ships as [ADR 0014](../../adr/0014-confirm-window-provisional-commit.md) ·
+Companion to the canonical design (that doc's §8.1 is the authority; this file
+records the concrete code-level deltas and the grounding).
 
 Two decisions were finalized during implementation (both grounded, both adversarial-
 review-checked):

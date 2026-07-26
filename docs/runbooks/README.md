@@ -28,7 +28,7 @@ metric names ([monitoring](../aws-deployment/monitoring.md)), error codes
 |---------|---------|
 | [Image upgrade / rollback and SQLite durability](upgrade-rollback-and-sqlite-durability.md) | Image version rollout and rollback; SQLite backup/restore and the durable-volume requirement. |
 | [Cluster reconfiguration](cluster-reconfiguration.md) | Roll a config change across a fleet: allowed vs. disallowed live changes, drain-and-stop, convergence verification. |
-| [Cluster config rollout](cluster-config-rollout.md) | Whole-cohort replacement for a clustered config change (live reload is rejected fail-closed): stage, validate all, quiesce, drain/stop all, commit, start all, verify version/readiness barrier, whole-cohort rollback. |
+| [Cluster config rollout (whole-cohort replacement)](cluster-config-rollout.md) | The manual stop-and-restart for a change that can't roll live — a replacement-required change, or any change in a non-coordinated / file-sourced cohort: stage, validate all, quiesce, drain/stop all, commit, start all, verify version/readiness barrier, whole-cohort rollback. Coordinated cohorts roll **live-safe** changes with no downtime — see the [cluster docs](../cluster/README.md). |
 | [Persistent MQTT managed-filter migration](mqtt-managed-subscription-migration.md) | Remove durable wildcard/shared filters safely; restore, drain, and retry when a broker pins an unacknowledged shared delivery. |
 | [External config writers must write atomically](external-config-atomic-writes.md) | An external tool writes the watched config file; ensure temp-file + rename, never truncate-in-place. |
 | [DynamoDB outbox GSI migration](dynamodb-outbox-gsi-migration.md) | Reshape an outbox table created by an earlier build. |
