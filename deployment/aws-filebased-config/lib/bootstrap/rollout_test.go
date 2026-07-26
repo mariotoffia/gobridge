@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
-	"github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout"
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/memoryrollout"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"

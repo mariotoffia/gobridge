@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout"
+	"github.com/mariotoffia/gobridge/adapters/native/memoryrollout"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/ports/storetest"

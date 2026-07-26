@@ -10,7 +10,7 @@ import (
 
 	dblease "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"

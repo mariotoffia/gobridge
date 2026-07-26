@@ -188,12 +188,12 @@ components:
   # Driven adapters: persistence implementations. One component per
   # backing store so that, e.g., the SQLite outbox cannot accidentally
   # depend on the DynamoDB lease store.
-  adapter_store_native_memorylease: { in: [adapters/native/store/memorylease] }
+  adapter_store_native_memorylease: { in: [adapters/native/memorylease] }
   adapter_store_native_memoryoutbox:
     { in: [adapters/native/store/memoryoutbox] }
   adapter_store_native_memorydlq: { in: [adapters/native/store/memorydlq] }
   adapter_store_native_memoryrollout:
-    { in: [adapters/native/store/memoryrollout] }
+    { in: [adapters/native/memoryrollout] }
   adapter_store_native_sqliteoutbox:
     { in: [adapters/native/store/sqliteoutbox] }
   adapter_store_native_sqlitedlq: { in: [adapters/native/store/sqlitedlq] }

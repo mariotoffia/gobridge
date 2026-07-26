@@ -13,9 +13,7 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../adapters/aws/transport/sqs
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../adapters/mqtt/transport/paho
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../adapters/native/store/memorydlq
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout => ../../adapters/native/store/memoryrollout
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 	github.com/mariotoffia/gobridge/processors/circuitbreaker => ../../processors/circuitbreaker
 	github.com/mariotoffia/gobridge/processors/transform => ../../processors/transform
@@ -40,7 +38,6 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
@@ -74,7 +71,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryrollout v0.0.0-00010101000000-000000000000 // indirect
 	github.com/ohler55/ojg v1.28.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rabbitmq/amqp091-go v1.10.0 // indirect

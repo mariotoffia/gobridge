@@ -37,7 +37,6 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memorylease v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
@@ -72,8 +71,6 @@ replace github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../ad
 replace github.com/mariotoffia/gobridge/adapters/native/store => ../../adapters/native/store
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../adapters/native/store/memorydlq
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memorylease => ../../adapters/native/store/memorylease
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 

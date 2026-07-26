@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	"github.com/mariotoffia/gobridge/adapters/native/store/memorylease"
+	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"

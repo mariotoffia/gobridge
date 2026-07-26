@@ -57,10 +57,10 @@ expect adapter_transport_amqp10        /adapters/amqp/transport/amqp10
 expect adapter_transport_http          /adapters/http/transport
 
 # Store implementation adapters.
-expect adapter_store_native_memorylease   /adapters/native/store/memorylease
+expect adapter_store_native_memorylease   /adapters/native/memorylease
 expect adapter_store_native_memoryoutbox  /adapters/native/store/memoryoutbox
 expect adapter_store_native_memorydlq     /adapters/native/store/memorydlq
-expect adapter_store_native_memoryrollout /adapters/native/store/memoryrollout
+expect adapter_store_native_memoryrollout /adapters/native/memoryrollout
 expect adapter_store_native_sqliteoutbox  /adapters/native/store/sqliteoutbox
 expect adapter_store_native_sqlitedlq     /adapters/native/store/sqlitedlq
 expect adapter_store_native_sqlitemanagedsubscriptions /adapters/native/store/sqlitemanagedsubscriptions
@@ -225,11 +225,22 @@ report_bad "adapter -> config (non-config adapter)" "$cfg_bad"
 #    store/<leaf>). Every other adapter-to-adapter import
 #    (transport->transport, store-leaf->sibling-leaf, credential->
 #    transport, cross-cloud, …) is a forbidden sibling edge.
+#
+#    `adapters/native/memorylease` and `adapters/native/memoryrollout` are
+#    the same aggregator -> leaf inversion, but they sit one directory up
+#    from adapters/native/store/ because they are the reference in-memory
+#    implementations the ROOT module's own bridge tests exercise. Anything
+#    under adapters/native/store/ belongs to the layer-2
+#    adapters/native/store module, and the root module (layer 0) may not
+#    require a higher layer (scripts/release/model.go: "dependencies must be
+#    in a lower layer"). The relationship is unchanged; only the directory
+#    moved, for that module-boundary reason.
 adapter_bad="$(printf '%s\n' "$adapter_edges" | awk -F'\t' '
     NF==2 && $2 ~ /^github\.com\/mariotoffia\/gobridge\/adapters\// {
         f=$1; p=$2;
         if (f ~ /^adapters\/native\/store\/[^\/]+\.go$/ && p ~ /^github\.com\/mariotoffia\/gobridge\/adapters\/native\/store\//) next;
         if (f ~ /^adapters\/aws\/store\/[^\/]+\.go$/    && p ~ /^github\.com\/mariotoffia\/gobridge\/adapters\/aws\/store\//) next;
+        if (f ~ /^adapters\/native\/store\/[^\/]+\.go$/ && p ~ /^github\.com\/mariotoffia\/gobridge\/adapters\/native\/memory(lease|rollout)$/) next;
         print f "  ->  " p;
     }' || true)"
 report_bad "adapter -> sibling adapter" "$adapter_bad"
