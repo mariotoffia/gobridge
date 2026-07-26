@@ -65,17 +65,67 @@ wait_for_proxy() {
   done
 }
 wait_for_release_workflow() {
-  local tag="$1" run_id="" _
+  local tag="$1" run_id="" conclusion="" _
   for _ in $(seq 1 30); do
     run_id="$(gh run list --workflow release.yml --event push --branch "$tag" \
       --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-    if [ -n "$run_id" ]; then gh run watch "$run_id" --exit-status; return; fi
+    [ -n "$run_id" ] && break
     sleep 5
   done
-  die "release workflow did not appear for $tag"
+  [ -n "$run_id" ] || die "release workflow did not appear for $tag"
+
+  if gh run watch "$run_id" --exit-status >/dev/null 2>&1; then
+    echo "-- ${tag}: release workflow green"
+    return
+  fi
+
+  # One bounded retry. A tag cannot be re-pushed, so a run that failed on
+  # something transient (proxy propagation, a registry hiccup) would otherwise
+  # force an entire new version train for a fault that has already cleared.
+  # The verifier retries propagation internally now, so a genuine defect fails
+  # again here rather than being retried away.
+  conclusion="$(gh run view "$run_id" --json conclusion --jq '.conclusion // empty')"
+  echo "-- ${tag}: release workflow ${conclusion}; re-running once" >&2
+  gh run rerun "$run_id" --failed >/dev/null 2>&1 || die "could not re-run workflow for $tag"
+  sleep 10
+  gh run watch "$run_id" --exit-status >/dev/null 2>&1 \
+    || die "release workflow failed for $tag after one re-run (run $run_id)"
+  echo "-- ${tag}: release workflow green after re-run"
 }
 import_for() { # module dir -> import path
   if [ "$1" = "." ]; then echo "github.com/mariotoffia/gobridge"; else echo "github.com/mariotoffia/gobridge/$1"; fi
+}
+tag_published() { # tag -> 0 if it already exists on the remote
+  git ls-remote --exit-code --tags "$REMOTE" "refs/tags/$1" >/dev/null 2>&1
+}
+# Publish one module unless its tag already exists.
+#
+# Tags are immutable, so a train that stopped part-way can only be continued,
+# never restarted: re-running `git tag` on a published module aborts the whole
+# thing. Skipping an already-published tag makes this script resumable, while
+# still waiting for that module's workflow and proxy propagation — so a resumed
+# run applies exactly the same gates as an uninterrupted one.
+publish_module() { # module dir
+  local module="$1" tag import
+  tag="$(tag_for "$module")"
+  import="$(import_for "$module")"
+  if tag_published "$tag"; then
+    echo "-- ${tag} already published; verifying and continuing"
+  else
+    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
+      ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+    if [ "$module" = "." ]; then
+      git add go.mod go.sum 2>/dev/null || true
+    else
+      git add "${module}/go.mod"
+      [ -f "${module}/go.sum" ] && git add "${module}/go.sum"
+    fi
+    git diff --cached --quiet || git commit -m "release: ${module} ${VERSION}"
+    git tag "$tag"
+    git push "$REMOTE" "$tag"
+  fi
+  wait_for_release_workflow "$tag"
+  wait_for_proxy "$import"
 }
 tag_for() { # module dir -> tag
   if [ "$1" = "." ]; then echo "$VERSION"; else echo "$1/$VERSION"; fi
@@ -83,20 +133,13 @@ tag_for() { # module dir -> tag
 
 # §2 root
 echo "== §2 root =="
-make stage-published-module RELEASE_MODULE=. RELEASE_VERSION="$VERSION"
-if ! git diff --quiet -- go.mod go.sum; then
-  git add go.mod go.sum && git commit -m "release: root ${VERSION}"
-fi
-git tag "$VERSION"
-git push "$REMOTE" "$VERSION"
-wait_for_release_workflow "$VERSION"
-wait_for_proxy "$(import_for .)"
+publish_module .
 
 # §3 bootstrap internal test helpers
 echo "== §3 bootstrap =="
 make stage-release-bootstrap RELEASE_VERSION="$VERSION"
 git add testutil/*/go.mod
-git commit -m "release: bootstrap test helpers for ${VERSION}"
+git diff --cached --quiet || git commit -m "release: bootstrap test helpers for ${VERSION}"
 git push "$REMOTE" "HEAD:refs/heads/${branch}"
 BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
 make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
@@ -106,16 +149,7 @@ for layer in 1 2 3; do
   echo "== §4 layer ${layer} =="
   while IFS= read -r module; do
     [ -n "$module" ] || continue
-    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
-      RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
-    git add "${module}/go.mod"
-    if [ -f "${module}/go.sum" ]; then git add "${module}/go.sum"; fi
-    git commit -m "release: ${module} ${VERSION}"
-    tag="$(tag_for "$module")"
-    git tag "$tag"
-    git push "$REMOTE" "$tag"
-    wait_for_release_workflow "$tag"
-    wait_for_proxy "$(import_for "$module")"
+    publish_module "$module"
   done < <(make --no-print-directory release-modules RELEASE_LAYER="$layer")
 done
 

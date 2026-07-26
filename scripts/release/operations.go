@@ -19,16 +19,29 @@ import (
 )
 
 const (
-	publicGoProxy       = "https://proxy.golang.org,direct"
-	gitCommandTimeout   = 2 * time.Minute
-	moduleQueryTimeout  = 3 * time.Minute
-	moduleDownloadLimit = 10 * time.Minute
-	moduleVerifyLimit   = 2 * time.Minute
-	moduleBuildLimit    = 15 * time.Minute
-	moduleTestLimit     = 30 * time.Minute
-	moduleTidyLimit     = 10 * time.Minute
-	smokeCommandLimit   = 10 * time.Minute
-	smokeOverallLimit   = 25 * time.Minute
+	publicGoProxy      = "https://proxy.golang.org,direct"
+	gitCommandTimeout  = 2 * time.Minute
+	moduleQueryTimeout = 3 * time.Minute
+
+	// A tag push starts this workflow immediately, so the first resolution of
+	// the module the push just created races proxy.golang.org indexing it.
+	// The module is correct; the proxy has simply not fetched it yet, and the
+	// symptom is an empty GoMod or a plain "not found".
+	//
+	// Waiting is therefore part of the gate, not a workaround: we wait ON an
+	// observable state (the module resolves, reports its go.mod, and its
+	// origin matches the tag commit) with time only as the failure budget.
+	// Nothing is weakened — every assertion still has to pass, and a module
+	// that never appears still fails the release.
+	defaultModulePropagationBudget = 10 * time.Minute
+	defaultModulePropagationPoll   = 10 * time.Second
+	moduleDownloadLimit            = 10 * time.Minute
+	moduleVerifyLimit              = 2 * time.Minute
+	moduleBuildLimit               = 15 * time.Minute
+	moduleTestLimit                = 30 * time.Minute
+	moduleTidyLimit                = 10 * time.Minute
+	smokeCommandLimit              = 10 * time.Minute
+	smokeOverallLimit              = 25 * time.Minute
 )
 
 type commandRequest struct {
@@ -852,6 +865,109 @@ func resolveSiblingRequirements(
 	return nil
 }
 
+// awaitModuleResolution resolves query from the public proxy, retrying until
+// the module reports its downloaded go.mod from the expected tag commit or the
+// propagation budget expires.
+//
+// Every check is the same as a single-shot resolution would apply; the only
+// difference is that a not-yet-indexed module is retried instead of failing the
+// release. A wrong path, a wrong version, or an origin that does not match the
+// tag commit is returned immediately — those are real faults that no amount of
+// waiting can fix, and retrying them would only delay a certain failure.
+// Overridable so tests exercising the failure path do not sit through the real
+// propagation budget. Production never reassigns them.
+var (
+	modulePropagationBudget = defaultModulePropagationBudget
+	modulePropagationPoll   = defaultModulePropagationPoll
+)
+
+func awaitModuleResolution(
+	ctx context.Context,
+	runner commandRunner,
+	toolDir string,
+	query string,
+	importPath string,
+	version string,
+	expectedCommit string,
+) (listedModule, error) {
+	deadline := time.Now().Add(modulePropagationBudget)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		listed, err, fatal := tryResolveModule(ctx, runner, toolDir, query, importPath, version, expectedCommit)
+		if err == nil {
+			return listed, nil
+		}
+		if fatal {
+			return listedModule{}, err
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return listedModule{}, fmt.Errorf(
+				"published module %s did not become resolvable within %s (%d attempts): %w",
+				query, modulePropagationBudget, attempt, lastErr,
+			)
+		}
+		fmt.Fprintf(
+			os.Stderr,
+			"release: waiting for proxy to publish %s (attempt %d): %v\n",
+			query, attempt, err,
+		)
+		select {
+		case <-ctx.Done():
+			return listedModule{}, ctx.Err()
+		case <-time.After(modulePropagationPoll):
+		}
+	}
+}
+
+// tryResolveModule performs one resolution attempt. The bool reports whether
+// the error is fatal, meaning retrying cannot help.
+func tryResolveModule(
+	ctx context.Context,
+	runner commandRunner,
+	toolDir string,
+	query string,
+	importPath string,
+	version string,
+	expectedCommit string,
+) (listedModule, error, bool) {
+	output, err := runner.run(ctx, commandRequest{
+		Dir:     toolDir,
+		Env:     publicModuleEnvironment(),
+		Name:    "go",
+		Args:    []string{"list", "-m", "-json", query},
+		Timeout: moduleQueryTimeout,
+	})
+	if err != nil {
+		// Not indexed yet is indistinguishable from a transient proxy error
+		// here, and both are cured by waiting.
+		return listedModule{}, fmt.Errorf("published module %s is not publicly resolvable: %w", query, err), false
+	}
+	var listed listedModule
+	if err := json.Unmarshal(output, &listed); err != nil {
+		return listedModule{}, fmt.Errorf("decoding published module resolution for %s: %w", query, err), true
+	}
+	if listed.Path != importPath || listed.Version != version {
+		return listedModule{}, fmt.Errorf("resolved %s as %s@%s", query, listed.Path, listed.Version), true
+	}
+	if listed.GoMod == "" {
+		// The proxy answered but has not materialised the module yet.
+		return listedModule{}, fmt.Errorf("published module %s did not report its downloaded go.mod", query), false
+	}
+	if listed.Origin.Hash == "" {
+		return listedModule{}, fmt.Errorf("published module %s reported no origin commit", query), false
+	}
+	if listed.Origin.Hash != expectedCommit {
+		// A resolved module from the wrong commit is a real fault: the tag was
+		// moved, or a stale cache is serving different content. Fail loudly.
+		return listedModule{}, fmt.Errorf(
+			"published module %s resolved from origin %q, want tag commit %s",
+			query, listed.Origin.Hash, expectedCommit,
+		), true
+	}
+	return listed, nil, false
+}
+
 func resolvePublishedModule(
 	ctx context.Context,
 	runner commandRunner,
@@ -870,33 +986,9 @@ func resolvePublishedModule(
 	if err != nil {
 		return fmt.Errorf("resolving release tool directory: %w", err)
 	}
-	output, err := runner.run(ctx, commandRequest{
-		Dir:     toolDir,
-		Env:     publicModuleEnvironment(),
-		Name:    "go",
-		Args:    []string{"list", "-m", "-json", query},
-		Timeout: moduleQueryTimeout,
-	})
+	listed, err := awaitModuleResolution(ctx, runner, toolDir, query, importPath, version, expectedCommit)
 	if err != nil {
-		return fmt.Errorf("published module %s is not publicly resolvable: %w", query, err)
-	}
-	var listed listedModule
-	if err := json.Unmarshal(output, &listed); err != nil {
-		return fmt.Errorf("decoding published module resolution for %s: %w", query, err)
-	}
-	if listed.Path != importPath || listed.Version != version {
-		return fmt.Errorf("resolved %s as %s@%s", query, listed.Path, listed.Version)
-	}
-	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
-		return fmt.Errorf(
-			"published module %s resolved from origin %q, want tag commit %s",
-			query,
-			listed.Origin.Hash,
-			expectedCommit,
-		)
-	}
-	if listed.GoMod == "" {
-		return fmt.Errorf("published module %s did not report its downloaded go.mod", query)
+		return err
 	}
 	data, err := os.ReadFile(listed.GoMod)
 	if err != nil {
