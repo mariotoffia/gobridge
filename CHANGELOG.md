@@ -10,6 +10,27 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-27
+
+Completes 0.3.2: same modules, plus the two release-pipeline fixes that
+0.3.2's own train exposed. This is the first version whose train runs clean
+end to end, including the container image association and `latest` promotion.
+
+### Fixed
+
+- `image-association` used a single variable both to re-resolve the tag being
+  released and to locate the Release hosting the digest asset. Once Releases
+  became root-only these are different commits — root is tagged first — so the
+  job failed after the image had already built and passed its vulnerability
+  scan. Split into `VERIFY_TAG` and `RELEASE_TAG`. In 0.3.2 this left the
+  scanned image published to GHCR by digest but not recorded on the release,
+  and `latest` unmoved.
+- Waiting on a layer spawned one `gh run watch` per module, which for the
+  26-module layer exhausted the GitHub API rate limit and failed the layer on
+  `HTTP 403` even though every workflow had succeeded. A single `gh run list`
+  per poll cycle now covers a whole layer, so polling cost is constant
+  regardless of layer size.
+
 ## [0.3.2] - 2026-07-27
 
 Re-release of the withdrawn 0.3.1. Same contents, plus the push fix below.
@@ -165,7 +186,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.3
 [0.3.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.2
 [0.3.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.0
