@@ -400,10 +400,12 @@ jobs:
           EXPECTED_DIGEST: ${{ needs.image.outputs.digest }}
           EXPECTED_REF: ${{ needs.image.outputs.ref }}
           ORIGINAL_SHA: ${{ github.sha }}
-          # The digest asset attaches to the version's single Release, which is
-          # the root tag (vX.Y.Z), not the command tag — cmd/gobridge no longer
-          # gets a Release of its own. Root is tagged first, so by the time the
-          # image job runs on the final tag, that Release exists.
+          # Two distinct tags, and conflating them is a bug I already shipped
+          # once. VERIFY_TAG is the tag being released (cmd/gobridge/vX.Y.Z);
+          # it must still resolve to the commit this run validated. RELEASE_TAG
+          # is where the digest asset lands — the version's single Release,
+          # created on the root tag (vX.Y.Z), which is a DIFFERENT commit.
+          VERIFY_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_TAG: ${{ needs.validate.outputs.version }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -414,6 +416,7 @@ jobs:
             const expectedRef = process.env.EXPECTED_REF;
             const originalSHA = process.env.ORIGINAL_SHA;
             const tag = process.env.RELEASE_TAG;
+            const verifyTag = process.env.VERIFY_TAG;
             const {owner, repo} = context.repo;
 
             if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest)) {
@@ -428,7 +431,9 @@ jobs:
             const expectedBody = `${expectedRef}\n`;
 
             async function requireRemoteTag() {
-              const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+              // Re-resolve the tag being RELEASED, not the one hosting the
+              // asset: only the former is expected to equal expectedCommit.
+              const ref = await github.rest.git.getRef({owner, repo, ref: `tags/${verifyTag}`});
               let object = ref.data.object;
               for (let depth = 0; depth < 8 && object.type === 'tag'; depth++) {
                 const annotated = await github.rest.git.getTag({
