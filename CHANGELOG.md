@@ -10,6 +10,59 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-27
+
+Security patch, plus the release pipeline fixes that the 0.3.0 train exposed.
+
+### Security
+
+- `golang.org/x/net` raised to `v0.57.0` across every module.
+  [CVE-2026-25681](https://github.com/advisories) (HIGH, arbitrary code
+  execution in `golang.org/x/net/html`) affects `v0.52.0`, which 0.3.0 resolved
+  transitively. The 0.3.0 container image was never published for exactly this
+  reason: the release workflow's Trivy gate refused it. The Go modules were
+  published, so anyone on 0.3.0 should move to 0.3.1.
+
+### Fixed
+
+- The release train raced the Go module proxy. A tag push starts the release
+  workflow immediately, and its first act is to resolve from
+  `proxy.golang.org` the module that push just created — before the proxy has
+  fetched it. Both the published-module and internal-helper resolutions now
+  wait on the observable state (module resolves, reports its `go.mod`, origin
+  matches the tag commit) with time only as the failure budget. A wrong path,
+  wrong version or mismatched origin still fails immediately; waiting cannot
+  fix those.
+- The release train could not be resumed. Tags are immutable, so a train that
+  stopped part-way could only be continued, never restarted — re-running it
+  aborted on `git tag` for an already-published module. Publishing now skips a
+  tag that exists on the remote while still applying every gate to it.
+- Five modules (`cmd/gobridge`, the CDK profile, `scripts/pluginsym`,
+  `scripts/registrychk`, `tests/docsexamples`) could not `go mod tidy` outside
+  the workspace: they reached `testutil/mqttlocal` through the paho adapter's
+  tests but carried no `replace` for it. Every module in the repository now
+  tidies standalone.
+
+- A data race in `adapters/mqtt/transport/paho`: a test's ack counter was
+  written from the router's grace-loop goroutine and read from the test body
+  without synchronisation. Making it atomic exposed the real defect underneath
+  — the assertion assumed the ack had already happened, when it can come from
+  either `Reconcile`'s settle pass or the grace loop. It now waits on that
+  state instead of assuming an ordering the router never promised.
+
+### Changed
+
+- One GitHub Release per version instead of one per module. All 31 modules
+  still get tags, strict verification and proxy checks; only the root tag gets
+  a human-facing Release page. The image digest asset attaches to it.
+- Release trains publish each dependency layer concurrently instead of one
+  module at a time. A layer means "these modules do not depend on each other",
+  so waiting a full workflow round-trip between each of layer 1's 26 modules
+  was pure queueing — about 80 minutes of it. Layers remain strictly
+  sequential, because staging a layer runs `go mod tidy` against the previous
+  layer's published versions. No gate changed: every tag still gets its own
+  workflow, strict verification and proxy check.
+
 ## [0.3.0] - 2026-07-26
 
 First release that can be installed from outside this repository. Earlier tags
@@ -92,5 +145,6 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.0

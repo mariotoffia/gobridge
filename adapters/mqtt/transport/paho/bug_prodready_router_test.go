@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // MQTT-L1: every broker-forwardable representational cap violation is
@@ -182,11 +184,14 @@ func TestRouter_PreFirstReconcileBacklogRetainedThenReclassified(t *testing.T) {
 	sess.handleConnectionUp()
 	clk.Advance(testGrace + time.Second)
 
-	acked := 0
+	// atomic: the router may invoke this ack from its grace-loop goroutine
+	// (graceLoop -> sweepUnmatched -> settlePending -> dropOrphan), so a plain
+	// int here is a data race against the assertions below, not merely untidy.
+	var acked atomic.Int64
 	sess.Router().dispatch(&pahov5.Publish{Topic: "live/backlog", QoS: 1, Payload: []byte("x")},
-		func() error { acked++; return nil })
+		func() error { acked.Add(1); return nil })
 
-	assert.Zero(t, acked, "pre-first-Reconcile backlog must stay UN-ACKED (retained), not PUBACK-dropped")
+	assert.Zero(t, acked.Load(), "pre-first-Reconcile backlog must stay UN-ACKED (retained), not PUBACK-dropped")
 	assert.Equal(t, int64(0), sess.Router().UnmatchedDroppedCount(),
 		"live backlog must not be miscounted as benign orphan cleanup (MQTT-L2)")
 	assert.Equal(t, int64(1), sess.Router().CoveredRetainedCount())
@@ -197,7 +202,12 @@ func TestRouter_PreFirstReconcileBacklogRetainedThenReclassified(t *testing.T) {
 	// retained entry is reclassified as a true orphan (acked + dropped) by
 	// the reconcile's settle pass.
 	require.NoError(t, sess.Reconcile(context.Background(), connectivity.SessionPlan{}))
-	assert.Equal(t, 1, acked, "the reclassified orphan is acked to free the broker slot")
+	// The ack can come from Reconcile's settle pass or from the grace loop,
+	// whichever reaches the entry first, so this is an eventual state. Waiting
+	// ON it is deterministic; asserting immediately assumed an ordering the
+	// router never promised and failed roughly one run in ten.
+	wait.Until(t, 5*time.Second, "reclassified orphan is acked to free the broker slot",
+		func() bool { return acked.Load() == 1 })
 	assert.Equal(t, int64(1), sess.Router().UnmatchedDroppedCount())
 	assert.Zero(t, sess.Router().PendingCount())
 

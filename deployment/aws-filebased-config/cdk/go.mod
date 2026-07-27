@@ -51,7 +51,7 @@ require (
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260507130243-4750750b6096 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
@@ -72,7 +72,7 @@ require (
 	golang.org/x/lint v0.0.0-20241112194109-818c5a804067 // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260213145524-e0ab670178e1 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	golang.org/x/tools/cmd/godoc v0.1.0-deprecated // indirect
@@ -115,3 +115,5 @@ replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 replace github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
 
 replace github.com/mariotoffia/gobridge/testutil/localstack => ../../../testutil/localstack
+
+replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/mqttlocal

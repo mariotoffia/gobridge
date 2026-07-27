@@ -504,6 +504,18 @@ linters:
       # plus its config (vendor patterns, etc.).
       - linters: [gochecknoglobals]
         path: "^scripts/"
+
+      # forbidigo bans time.Now/time.After so production code waits on an
+      # injected clock. scripts/release is a one-shot CLI whose job is to wait
+      # on real external systems — proxy.golang.org publishing a tag it cannot
+      # influence, and GitHub Actions finishing a run. Real elapsed time is the
+      # quantity being measured, so there is nothing to inject a fake clock
+      # into: a fake would make the tool return before the proxy has the
+      # module, which is the exact bug these waits were added to fix. The
+      # package-level propagation budget is overridable so tests do not sit
+      # through it (see main_propagation_test.go).
+      - linters: [forbidigo, gochecknoglobals]
+        path: "^scripts/release/"
       - linters: [gochecknoglobals, gochecknoinits]
         path: "_test\\.go$"
 
