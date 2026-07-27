@@ -131,6 +131,77 @@ tag_for() { # module dir -> tag
   if [ "$1" = "." ]; then echo "$VERSION"; else echo "$1/$VERSION"; fi
 }
 
+# Publish every module in one layer, concurrently.
+#
+# A layer means "these modules do not depend on each other" — that is the whole
+# reason the DAG has layers. Publishing them one at a time made each tag wait a
+# full workflow round-trip (~150s) before the next was even pushed, so 26
+# independent layer-1 modules cost over an hour of pure queueing. Layers must
+# still be sequential: staging a layer-2 module runs `go mod tidy`, which has to
+# resolve its layer-1 siblings at this version from the public proxy.
+#
+# Staging stays sequential because it edits the working tree and commits; only
+# the waiting is parallel, which is the part that actually took the time. Every
+# gate is unchanged — each tag gets its own workflow, its own strict
+# verification and its own proxy check.
+publish_layer() { # layer number
+  local layer="$1" module tag import modules=() tags=() imports=() failed=0
+  while IFS= read -r module; do
+    [ -n "$module" ] || continue
+    modules+=("$module")
+  done < <(make --no-print-directory release-modules RELEASE_LAYER="$layer")
+  [ ${#modules[@]} -gt 0 ] || return 0
+
+  # 1. stage + tag + push every module in the layer (sequential; local work)
+  for module in "${modules[@]}"; do
+    tag="$(tag_for "$module")"
+    if tag_published "$tag"; then
+      echo "-- ${tag} already published; will verify"
+    else
+      make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
+        ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+      if [ "$module" = "." ]; then
+        git add go.mod go.sum 2>/dev/null || true
+      else
+        git add "${module}/go.mod"
+        [ -f "${module}/go.sum" ] && git add "${module}/go.sum"
+      fi
+      git diff --cached --quiet || git commit -m "release: ${module} ${VERSION}"
+      git tag "$tag"
+    fi
+    tags+=("$tag")
+    imports+=("$(import_for "$module")")
+  done
+
+  # 2. push the layer's tags in one atomic ref update, so a rejected ref does
+  #    not leave the layer half-published.
+  local unpushed=()
+  for tag in "${tags[@]}"; do
+    tag_published "$tag" || unpushed+=("refs/tags/${tag}")
+  done
+  if [ ${#unpushed[@]} -gt 0 ]; then
+    echo "-- pushing ${#unpushed[@]} tag(s) for layer ${layer}"
+    git push --atomic "$REMOTE" "${unpushed[@]}"
+  fi
+
+  # 3. wait for all of the layer's workflows concurrently
+  echo "-- waiting for ${#tags[@]} workflow(s) in layer ${layer}"
+  local pids=() idx=0
+  for tag in "${tags[@]}"; do
+    ( wait_for_release_workflow "$tag" ) &
+    pids+=($!)
+  done
+  for idx in "${!pids[@]}"; do
+    wait "${pids[$idx]}" || { echo "release: workflow failed for ${tags[$idx]}" >&2; failed=1; }
+  done
+  [ "$failed" = "0" ] || die "layer ${layer} had failing release workflows"
+
+  # 4. wait for proxy propagation of the whole layer before the next one stages
+  for import in "${imports[@]}"; do
+    wait_for_proxy "$import"
+  done
+}
+
 # §2 root
 echo "== §2 root =="
 publish_module .
@@ -144,13 +215,10 @@ git push "$REMOTE" "HEAD:refs/heads/${branch}"
 BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
 make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
 
-# §4 layers 1..3
+# §4 layers 1..3 — sequential between layers, concurrent within each
 for layer in 1 2 3; do
   echo "== §4 layer ${layer} =="
-  while IFS= read -r module; do
-    [ -n "$module" ] || continue
-    publish_module "$module"
-  done < <(make --no-print-directory release-modules RELEASE_LAYER="$layer")
+  publish_layer "$layer"
 done
 
 # §5 final public proof

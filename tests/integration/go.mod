@@ -74,8 +74,8 @@ require (
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0
 	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

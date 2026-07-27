@@ -112,6 +112,11 @@ jobs:
     needs:
       - validate
       - external-consumer-smoke
+    # One release per version, not one per module. Every module still gets its
+    # tag, its strict verification and its proxy check; only the root module
+    # gets a human-facing Release page, because 31 of them is noise nobody
+    # reads and the root tag is the version users actually pin.
+    if: needs.validate.outputs.path == '.'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -174,11 +179,13 @@ jobs:
     needs:
       - validate
       - external-consumer-smoke
-      - github-release
+    # github-release is deliberately absent: it now fires only on the root tag,
+    # in a different workflow run, and `needs` cannot span runs. The gates that
+    # matter for publishing an image are unchanged — the tag validated and the
+    # published modules resolve from outside the workspace.
     if: >-
       needs.validate.outputs.path == 'cmd/gobridge' &&
-      needs.external-consumer-smoke.result == 'success' &&
-      needs.github-release.result == 'success'
+      needs.external-consumer-smoke.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -371,7 +378,6 @@ jobs:
   image-association:
     needs:
       - validate
-      - github-release
       - image
     if: >-
       needs.validate.outputs.path == 'cmd/gobridge' &&
@@ -394,7 +400,11 @@ jobs:
           EXPECTED_DIGEST: ${{ needs.image.outputs.digest }}
           EXPECTED_REF: ${{ needs.image.outputs.ref }}
           ORIGINAL_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          # The digest asset attaches to the version's single Release, which is
+          # the root tag (vX.Y.Z), not the command tag — cmd/gobridge no longer
+          # gets a Release of its own. Root is tagged first, so by the time the
+          # image job runs on the final tag, that Release exists.
+          RELEASE_TAG: ${{ needs.validate.outputs.version }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
