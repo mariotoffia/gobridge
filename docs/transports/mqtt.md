@@ -584,6 +584,59 @@ Token-style auth is supported: a password (or bearer token) with no username
 sets the CONNECT password flag independently of the username flag, so a
 token-in-password credential is no longer dropped for want of a username.
 
+### Mutual TLS from a credential store
+
+The two halves of mutual TLS are configured independently, and either can come
+from a store instead of the filesystem:
+
+- **Server-certificate validation** — the CA that must have signed the broker's
+  certificate (`ca_cert_file` / `ca_cert_pem`, or `ca` from the store).
+- **Client certificate (mTLS)** — the keypair this bridge presents to the
+  broker (`cert_file` + `key_file`, `cert_pem` + `key_pem`, or `cert`/`key`
+  from the store).
+
+Pointing at a credential URI supplies both, so no certificate material appears
+in the YAML or on disk:
+
+```yaml
+options:
+  credentials_uri: "pms:///gobridge/prod/mqtt"   # AWS Parameter Store
+  session:
+    broker_url: "ssl://broker.example.com:8883"  # TLS comes from the SCHEME
+    tls:
+      enable: true
+      insecure_skip_verify: false
+```
+
+The stored JSON supplies the material the resolver merges into `tls`:
+
+```json
+{
+  "username": "bridge",
+  "password": "…",
+  "ca":   "-----BEGIN CERTIFICATE-----\n…",
+  "cert": "-----BEGIN CERTIFICATE-----\n…",
+  "key":  "-----BEGIN PRIVATE KEY-----\n…"
+}
+```
+
+`ca` accepts a single PEM or a list, for a chain or during CA rotation. The
+parser also accepts `certPem`/`certificate` and `keyPem`/`privateKey` as
+aliases. Rotating any of it in the store is picked up by the credential refresh
+path — see [Credential rotation](../credentials-rotation.md).
+
+Two behaviours worth knowing, both fail-closed:
+
+- **TLS is selected by the URL scheme, not `tls.enable`.** A `tcp://` broker URL
+  stays cleartext even with `enable: true`. Use `ssl://`, `mqtts://`, `tls://`
+  or `wss://`.
+- **Credentials are refused over a cleartext connection** unless
+  `allow_plaintext_credentials: true` is set explicitly. This is re-checked
+  after the store resolves, so a `credentials_uri`-only config cannot smuggle
+  secrets onto a `tcp://` broker.
+
+The same pattern works for AMQP 0-9-1, AMQP 1.0 and Azure Service Bus.
+
 ## Settlement Semantics
 
 > **QoS 2 is NOT exactly-once across a bridge restart.** autopaho keeps the

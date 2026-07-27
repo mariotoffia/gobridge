@@ -2,16 +2,30 @@
 
 A message-bridge framework for Go. Route messages between MQTT, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 brokers, and other transports with pluggable processors, durable outbox delivery, dead-letter queue management, and observability.
 
-## Features
+## Capabilities
 
-- **Multi-transport routing**: MQTT v5, AWS SQS, Azure Service Bus, RabbitMQ (AMQP 0-9-1), AMQP 1.0 with a clean port/adapter model
-- **Delivery guarantees**: DirectHold (send-then-ack) and SharedOutbox (persist-then-ack with durable outbox drainer)
-- **Processor chain**: Middleware for filtering, transformation, circuit breaking, and tenant isolation
-- **Pluggable stores**: LeaseStore, OutboxStore, DLQStore with Memory and DynamoDB implementations; SQLite for OutboxStore and DLQStore
-- **Credential management**: URI-based resolution (file://, pms://) with scheme dispatch and caching
-- **HTTP APIs**: Admin server for bridge lifecycle, route injection, and DLQ management; Monitor server for health probes and topology
-- **Observability**: OpenTelemetry metrics and tracing, CloudWatch metrics, correlation-aware structured logging via slog
-- **Zero-dependency core**: The root module has no external dependencies -- only import the adapters you need
+Every capability is an abstract **port** in the core; the technologies are
+**adapters** you opt into. The core itself has no external dependencies — you
+import only the adapters you use.
+
+| Capability | What it does | Implementations |
+|---|---|---|
+| **Transport** | Receive and send messages | MQTT v5 · AWS SQS · Azure Service Bus · RabbitMQ (AMQP 0-9-1) · AMQP 1.0 (Artemis, Solace, Qpid) · HTTP (POST in, SSE out) |
+| **Delivery guarantee** | How hard it tries not to lose a message | `DirectHold` (send-then-ack) · `SharedOutbox` (persist-then-ack, durable drainer) |
+| **Outbox store** | Durable hand-off so a crash mid-delivery loses nothing | Memory · SQLite · DynamoDB |
+| **Dead-letter store** | Quarantines undeliverable messages instead of blocking or dropping them | Memory · SQLite · DynamoDB |
+| **Lease store** | Elects one owner per stream so replicas never double-deliver | Memory · DynamoDB |
+| **Clustering** | Run several replicas: exactly-once ownership, automatic failover, coordinated config rollout | Lease-backed (DynamoDB for multi-node; memory for single-process) |
+| **Rollout store** | Moves the whole cluster to a new config together, or not at all | Memory · DynamoDB |
+| **Managed subscriptions** | Tracks which subscriptions a node owns across restarts | SQLite · DynamoDB |
+| **Processor chain** | Acts on messages in flight | Filter · Transform · Circuit breaker · Tenant isolation |
+| **Credentials** | Resolves secrets and TLS material at run time, with rotation | `file://` · `pms://` (AWS Parameter Store) |
+| **TLS / mTLS** | Server-cert validation and client certificates, from files, inline PEM, or a credential store | MQTT · AMQP 0-9-1 · AMQP 1.0 · Service Bus |
+| **Config source** | Where the bridge reads its configuration | File · DynamoDB (layered, hot-reloadable) |
+| **HTTP APIs** | Operate a running bridge | Admin (lifecycle, route injection, DLQ) · Monitor (health, topology) |
+| **Observability** | Tells you what moved and what is stuck | OpenTelemetry metrics + tracing · CloudWatch metrics · correlation-aware `slog` |
+
+Full documentation: **<https://mariotoffia.github.io/gobridge/>**
 
 ## Quick Start
 
