@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.2
 )
 
 require (
@@ -13,5 +13,3 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../../../..
