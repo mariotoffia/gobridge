@@ -67,7 +67,7 @@ hop-provenance contract.**
 
 - **The contract is documented for operators.** The `no_local` key, its default,
   and the `$share` exception are on the MQTT transport page
-  ([transports/mqtt.md](../transports/mqtt.md#session-options-reference-optionssession)).
+  ([transports/mqtt.md](../transports/mqtt-options.md#session-options-reference-optionssession)).
 
 ## Consequences
 

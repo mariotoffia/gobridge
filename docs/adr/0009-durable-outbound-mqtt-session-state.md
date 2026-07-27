@@ -53,12 +53,12 @@ runtime can reason about it.
   Because both modes recover the in-flight loss on the source side within those
   boundaries, no durability advisory fires today. The full conditional contract —
   the rows that are safe and the rows that can still lose or duplicate — is the
-  [source-to-destination guarantee matrix](../transports/mqtt.md#source-to-destination-guarantee-matrix).
+  [source-to-destination guarantee matrix](../transports/mqtt-behavior.md#source-to-destination-guarantee-matrix).
 
 - **The stance is documented for operators.** The MQTT transport page states
   prominently that QoS 2 is not exactly-once across a restart and that durability
   comes from the route mode, not the protocol
-  ([transports/mqtt.md](../transports/mqtt.md#settlement-semantics)).
+  ([transports/mqtt.md](../transports/mqtt-behavior.md#settlement-semantics)).
 
 ## Consequences
 
@@ -71,7 +71,7 @@ runtime can reason about it.
   clean-start source, a source offline-queue expiry, a crash before Persist, or
   an explicit drop policy — loss is possible, and an accepted-but-unconfirmed
   send can duplicate. The [guarantee
-  matrix](../transports/mqtt.md#source-to-destination-guarantee-matrix) is the
+  matrix](../transports/mqtt-behavior.md#source-to-destination-guarantee-matrix) is the
   source of truth for which row applies.
 - An operator evaluating an end-to-end exactly-once claim must account for the
   in-memory store: the guarantee is at-least-once-plus-dedup, delivered by the

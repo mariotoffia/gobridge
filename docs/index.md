@@ -34,7 +34,7 @@ walks a working bridge end to end. Then skim the
 
 | Transport | Everyday description |
 |---|---|
-| [MQTT](transports/mqtt.md) | The lightweight protocol devices and sensors use |
+| [MQTT](transports/mqtt.md) | The lightweight protocol devices and sensors use — [options](transports/mqtt-options.md) · [behaviour](transports/mqtt-behavior.md) |
 | [AWS SQS](transports/sqs.md) | Amazon's managed queue |
 | [Azure Service Bus](transports/servicebus.md) | Microsoft's managed queue and topics |
 | [RabbitMQ / AMQP 0-9-1](transports/amqp091.md) | The widely-used in-house message broker |

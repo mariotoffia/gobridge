@@ -264,7 +264,7 @@ bounded window. What survives the reload is conditional: a Persistent/Exclusive
 QoS 1/2 source redelivers anything not settled before the drain completes, so
 those messages are not lost. An Ephemeral session, a QoS 0 source, or a drain
 that aborts on timeout can drop in-flight messages. See
-[MQTT — settlement semantics](../transports/mqtt.md#settlement-semantics) for the
+[MQTT — settlement semantics](../transports/mqtt-behavior.md#settlement-semantics) for the
 drain bound and loss windows.
 
 ### Access Point Design

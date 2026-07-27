@@ -103,7 +103,7 @@ tagged `session_id`; `MQTTRouterBuffered` is untagged):
 | `MQTTRouterBuffered` | Counter | A publish held in the bounded pending buffer because it arrived before a matching handler registered (the CONNACK backlog racing receiver registration). |
 
 A rising `MQTTRouterDropped` is the backpressure signal detailed under
-[MQTT backpressure and dispatch](../transports/mqtt.md#backpressure-and-dispatch).
+[MQTT backpressure and dispatch](../transports/mqtt-behavior.md#backpressure-and-dispatch).
 
 ### Traces
 

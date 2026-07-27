@@ -109,7 +109,7 @@ inbound identity in precedence order:
    (`newIngressEnvelopeID`). This is **not** a topic+payload hash: two
    legitimate equal-valued publishes with no producer ID get distinct IDs, so
    `shared_outbox` does not silently collapse them. See
-   [MQTT — Envelope identity and no-ID redelivery](transports/mqtt.md#envelope-identity-and-no-id-redelivery).
+   [MQTT — Envelope identity and no-ID redelivery](transports/mqtt-behavior.md#envelope-identity-and-no-id-redelivery).
 
 This enables `countUnique()` to work correctly on MQTT collectors for
 all throughput, resilience, and backpressure tests.

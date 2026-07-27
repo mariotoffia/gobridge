@@ -286,7 +286,7 @@ test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 M
 # compete for one DynamoDB exclusive lease, SIGKILLs the verified owner, and
 # asserts the standby reaches ServiceLevelFull with an advanced fencing version
 # within uc3FailoverSLO (~5s observed, 15s ceiling). Bounded to a few minutes.
-test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate-process MQTT failover proof (PR gate; requires Docker, -tags=longrunning)
+test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate-process MQTT failover proof (local only; requires Docker, -tags=longrunning)
 	@mkdir -p reports
 	@echo "Running bounded separate-process failover gate (TEST-1)..."
 	@echo "Report will be saved to: reports/test-failover-gate.log"
