@@ -173,16 +173,25 @@ publish_layer() { # layer number
     imports+=("$(import_for "$module")")
   done
 
-  # 2. push the layer's tags in one atomic ref update, so a rejected ref does
-  #    not leave the layer half-published.
-  local unpushed=()
+  # 2. push the layer's tags ONE AT A TIME.
+  #
+  #    Do not batch these into a single `git push`. GitHub does not create a
+  #    workflow event for every ref in a bulk tag push — past roughly three
+  #    tags the remainder silently get no workflow run at all. A 26-tag atomic
+  #    push therefore publishes every tag while triggering almost no
+  #    verification, which is worse than slow: the tags are immutable, so the
+  #    version cannot be re-verified afterwards.
+  #
+  #    This is not the slow part. A push is a second or two; the ~150s workflow
+  #    wait is what costs time, and that is what runs concurrently below.
+  local pushed=0
   for tag in "${tags[@]}"; do
-    tag_published "$tag" || unpushed+=("refs/tags/${tag}")
+    if ! tag_published "$tag"; then
+      git push "$REMOTE" "refs/tags/${tag}"
+      pushed=$((pushed + 1))
+    fi
   done
-  if [ ${#unpushed[@]} -gt 0 ]; then
-    echo "-- pushing ${#unpushed[@]} tag(s) for layer ${layer}"
-    git push --atomic "$REMOTE" "${unpushed[@]}"
-  fi
+  [ "$pushed" -eq 0 ] || echo "-- pushed ${pushed} tag(s) for layer ${layer}"
 
   # 3. wait for all of the layer's workflows concurrently
   echo "-- waiting for ${#tags[@]} workflow(s) in layer ${layer}"
