@@ -306,13 +306,16 @@ long-running test without the tag is a CI accident.
 - CI: **never**. Nothing carrying the `longrunning` tag runs in the cloud —
   not on a PR, not on a schedule, not in a release gate. That includes the two
   bounded single-test proofs, which are developer-machine runs like the rest:
-  - `make test-mqtt-ingress-memory` — `TestMQTTIngressMemory` inside a Docker
-    container with a finite 512 MiB cgroup limit. Set
-    `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` to make unavailable/unlimited cgroup
-    accounting fail instead of skip; Darwin retains the explicit skip.
-  - `make test-failover-gate` — `TestUC3SeparateProcessFailover` runs two real
-    bridge processes against a real broker and DynamoDB, kills the lease owner,
-    and asserts the standby recovers. Bounded to a few minutes.
+  Both bounded proofs are part of that single target, not separate ones:
+  - `TestUC3SeparateProcessFailover` runs two real bridge processes against a
+    real broker and DynamoDB, kills the lease owner, and asserts the standby
+    recovers. It is picked up by the suite like any other test.
+  - `TestMQTTIngressMemory` is re-run by `make test-long-running` inside a
+    container with an enforced 512 MiB cgroup. It cannot assert anything
+    without a real memory bound — run through the ordinary suite it detects no
+    limit and skips itself — so the harness is the test, not a convenience.
+    `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` makes an absent limit fail instead of
+    skip; Darwin retains the explicit skip.
 
   Run both before merging anything that touches clustering, leases, outbox
   draining or MQTT ingress: CI cannot catch a regression in them.

@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-cdk-norace test-integration test-long-running test-mqtt-ingress-memory test-failover-gate lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -182,8 +182,23 @@ release-image-upload-decision: ## Decide whether the exact digest asset may be u
 # Test targets
 # ============================================================================
 
-test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integration tests skipped)
+test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration tests skipped)
 	@mkdir -p reports
+	# jsii construct trees and the AWS fixture harness cannot run under
+	# -race, so they are a separate non-race pass rather than a separate
+	# target. `make test` is the whole unit surface, race and not.
+	@echo "Running non-race CDK assertion suites..."
+	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
+		./constructs/internal/grants ./constructs/internal/gobridgebase \
+		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
+		./constructs/gobridgealbattachment ./constructs/internal/singleton \
+		./constructs/internal/validation ./registry
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -race -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestSandboxEnvFrom_' ./integration
+	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+		go test -count=1 -timeout 120s -tags=integration_aws \
+		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
 	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
@@ -208,21 +223,6 @@ test: audit-timings audit-test-timings ## Run unit tests only (no Docker, integr
 	fi; \
 	exit $$rc'
 
-test-cdk-norace: ## Run CDK assertions excluded from race builds
-	@echo "Running non-race CDK assertion suites..."
-	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
-		./constructs/internal/grants ./constructs/internal/gobridgebase \
-		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
-		./constructs/gobridgealbattachment ./constructs/internal/singleton \
-		./constructs/internal/validation ./registry
-	@echo "Running race-enabled source-safe AWS integration harness validation..."
-	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
-		go test -race -count=1 -timeout 120s -tags=integration_aws \
-		-run '^TestSandboxEnvFrom_' ./integration
-	@echo "Running non-race source-safe JSII VPC fixture synthesis..."
-	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
-		go test -count=1 -timeout 120s -tags=integration_aws \
-		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
 	@mkdir -p reports
@@ -274,39 +274,12 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 			grep -E "^FAIL\s" reports/test-long-running.log || true; \
 		fi; \
 		exit $$rc'
-
-test-mqtt-ingress-memory: ## Run the MQTT ingress proof inside an enforced 512 MiB cgroup
+	# The MQTT ingress memory proof needs a REAL memory limit: run through
+	# ./... above it detects no cgroup bound and skips itself, so the whole
+	# point of the test is lost. The harness re-runs that single test inside a
+	# container with an enforced 512 MiB cgroup, which is the only way it
+	# actually asserts anything.
 	@scripts/test-mqtt-ingress-memory.sh
-
-# TEST-1: promote a bounded, separate-OS-process, real-broker + real-DynamoDB
-# failover proof into the PR gate. Like test-mqtt-ingress-memory, this compiles
-# and runs a SINGLE longrunning-tagged test (not the whole hours-long suite) so
-# an outage-recovery regression is caught on every PR instead of only nightly.
-# TestUC3SeparateProcessFailover launches two real gobridge node processes that
-# compete for one DynamoDB exclusive lease, SIGKILLs the verified owner, and
-# asserts the standby reaches ServiceLevelFull with an advanced fencing version
-# within uc3FailoverSLO (~5s observed, 15s ceiling). Bounded to a few minutes.
-test-failover-gate: audit-timings audit-test-timings ## Run the bounded separate-process MQTT failover proof (local only; requires Docker, -tags=longrunning)
-	@mkdir -p reports
-	@echo "Running bounded separate-process failover gate (TEST-1)..."
-	@echo "Report will be saved to: reports/test-failover-gate.log"
-	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=1.0 \
-	GOBRIDGE_SQS_MEMORY=512m GOBRIDGE_SQS_CPUS=1.0 \
-	GOBRIDGE_DDB_MEMORY=512m GOBRIDGE_DDB_CPUS=1.0 \
-		go -C tests/longrunning test -count=1 -race -timeout 420s -v -tags=longrunning \
-			-run "^TestUC3SeparateProcessFailover$$" ./ 2>&1 | tee reports/test-failover-gate.log; \
-		rc=$${PIPESTATUS[0]}; \
-		echo ""; \
-		echo "========================================"; \
-		echo "  Test Report: reports/test-failover-gate.log"; \
-		echo "========================================"; \
-		if [ $$rc -ne 0 ]; then \
-			echo ""; \
-			echo "FAILED tests:"; \
-			grep -E "^--- FAIL:" reports/test-failover-gate.log || true; \
-		fi; \
-		exit $$rc'
 
 # ============================================================================
 # Lint
