@@ -2,17 +2,12 @@ module github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox
 
 go 1.25.0
 
-replace (
-	github.com/mariotoffia/gobridge => ../../../..
-	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../../testutil/ddblocal
-)
-
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
 	github.com/aws/smithy-go v1.25.1
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge v0.3.2
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260727055442-323c61c8437d
 )
 
 require (
