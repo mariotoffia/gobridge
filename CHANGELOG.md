@@ -10,7 +10,27 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-07-27
+## [0.3.2] - 2026-07-27
+
+Re-release of the withdrawn 0.3.1. Same contents, plus the push fix below.
+
+### Fixed
+
+- Release trains pushed a layer's tags in one batch. GitHub does not create a
+  workflow event for every ref in a bulk tag push — past roughly three tags the
+  remainder silently get no run at all — so 26 layer-1 tags published without
+  ever being verified. Tags are immutable, so they could not be re-triggered.
+  Tags are now pushed one at a time; the concurrent part is the workflow wait,
+  which is where the time actually goes.
+
+## [0.3.1] - 2026-07-27 [WITHDRAWN]
+
+**Do not use.** Only 27 of 31 modules were tagged, and 26 of those were never
+verified by the release workflow. `cmd/gobridge`, `httpapi`,
+`adapters/aws/store` and `adapters/native/store` have no 0.3.1 tag at all, so
+the version is not a usable set. Superseded by 0.3.2, which contains
+everything below.
+
 
 Security patch, plus the release pipeline fixes that the 0.3.0 train exposed.
 
@@ -145,6 +165,7 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.2
 [0.3.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.0
