@@ -11,6 +11,12 @@ CONFIRM="${CONFIRM:-0}"
 REMOTE="${REMOTE:-origin}"
 if [ "$CONFIRM" = "1" ]; then DRY_RUN="${DRY_RUN:-0}"; else DRY_RUN=1; fi
 
+# Polling pacing. 20s across a whole layer keeps API usage far below the
+# 5000/hour limit even for the 26-module layer.
+WORKFLOW_POLL_SECONDS="${WORKFLOW_POLL_SECONDS:-20}"
+WORKFLOW_APPEAR_GRACE="${WORKFLOW_APPEAR_GRACE:-180}"
+WORKFLOW_BUDGET="${WORKFLOW_BUDGET:-5400}"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
@@ -92,6 +98,52 @@ wait_for_release_workflow() {
     || die "release workflow failed for $tag after one re-run (run $run_id)"
   echo "-- ${tag}: release workflow green after re-run"
 }
+# Wait for every tag in a layer using ONE API call per poll cycle.
+#
+# The obvious implementation — a `gh run watch` per tag, backgrounded — spawns
+# one independent poller per module, each hitting the API every few seconds.
+# For a 26-module layer that exhausted the 5000/hour limit mid-train and failed
+# the layer on HTTP 403, even though the workflows themselves were healthy. The
+# observer, not the work, was the problem.
+#
+# `gh run list` returns every run's state in a single response, so the polling
+# cost is constant regardless of how many modules a layer holds.
+#
+# A tag with no run at all is treated as fatal once the grace period passes:
+# that is the signature of a bulk tag push silently not triggering workflows,
+# and it must never be mistaken for "still starting".
+wait_for_layer_workflows() {
+  local tags=("$@")
+  local start now snapshot tag state pending missing
+  start="$(date +%s)"
+  while :; do
+    snapshot="$(gh run list --workflow release.yml --limit 100 \
+      --json headBranch,status,conclusion \
+      --jq '.[] | "\(.headBranch)\t\(.status)\t\(.conclusion // "-")"' 2>/dev/null)" || {
+      sleep "$WORKFLOW_POLL_SECONDS"; continue
+    }
+    pending=0
+    missing=0
+    for tag in "${tags[@]}"; do
+      state="$(printf '%s\n' "$snapshot" | awk -F'\t' -v t="$tag" '$1==t {print $2"/"$3; exit}')"
+      case "$state" in
+        completed/success) ;;
+        "")               missing=$((missing + 1)); pending=$((pending + 1)) ;;
+        completed/*)      die "release workflow ${state#completed/} for $tag" ;;
+        *)                pending=$((pending + 1)) ;;
+      esac
+    done
+    [ "$pending" -eq 0 ] && { echo "-- all ${#tags[@]} workflow(s) green"; return 0; }
+    now="$(date +%s)"
+    if [ "$missing" -gt 0 ] && [ $((now - start)) -gt "$WORKFLOW_APPEAR_GRACE" ]; then
+      die "$missing tag(s) never triggered a release workflow (bulk push?)"
+    fi
+    [ $((now - start)) -lt "$WORKFLOW_BUDGET" ] || die "timed out waiting for layer workflows"
+    echo "-- ${pending}/${#tags[@]} workflow(s) still running"
+    sleep "$WORKFLOW_POLL_SECONDS"
+  done
+}
+
 import_for() { # module dir -> import path
   if [ "$1" = "." ]; then echo "github.com/mariotoffia/gobridge"; else echo "github.com/mariotoffia/gobridge/$1"; fi
 }
@@ -145,7 +197,7 @@ tag_for() { # module dir -> tag
 # gate is unchanged — each tag gets its own workflow, its own strict
 # verification and its own proxy check.
 publish_layer() { # layer number
-  local layer="$1" module tag import modules=() tags=() imports=() failed=0
+  local layer="$1" module tag import modules=() tags=() imports=()
   while IFS= read -r module; do
     [ -n "$module" ] || continue
     modules+=("$module")
@@ -193,17 +245,9 @@ publish_layer() { # layer number
   done
   [ "$pushed" -eq 0 ] || echo "-- pushed ${pushed} tag(s) for layer ${layer}"
 
-  # 3. wait for all of the layer's workflows concurrently
+  # 3. wait for the layer's workflows with a single shared poller
   echo "-- waiting for ${#tags[@]} workflow(s) in layer ${layer}"
-  local pids=() idx=0
-  for tag in "${tags[@]}"; do
-    ( wait_for_release_workflow "$tag" ) &
-    pids+=($!)
-  done
-  for idx in "${!pids[@]}"; do
-    wait "${pids[$idx]}" || { echo "release: workflow failed for ${tags[$idx]}" >&2; failed=1; }
-  done
-  [ "$failed" = "0" ] || die "layer ${layer} had failing release workflows"
+  wait_for_layer_workflows "${tags[@]}"
 
   # 4. wait for proxy propagation of the whole layer before the next one stages
   for import in "${imports[@]}"; do
