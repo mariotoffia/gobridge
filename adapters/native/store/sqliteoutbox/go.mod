@@ -3,7 +3,7 @@ module github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox
 go 1.25.0
 
 require (
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.3
 	modernc.org/sqlite v1.47.0
 )
 
@@ -19,5 +19,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../../../..
