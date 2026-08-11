@@ -171,7 +171,6 @@ func collectPathPatterns(tpl assertions.Template) map[float64][]string {
 }
 
 func TestALBAttachment_Single_Synth(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -227,7 +226,6 @@ func TestALBAttachment_Single_Synth(t *testing.T) {
 }
 
 func TestALBAttachment_Single_AllTGsTargetSingleService(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML declares an HTTP receiver, so all three target
 	// groups (control, monitor, transport) are emitted.
@@ -257,7 +255,6 @@ func TestALBAttachment_Single_AllTGsTargetSingleService(t *testing.T) {
 }
 
 func TestALBAttachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML declares an HTTP receiver, so the worker service
 	// gets its own transport target group in addition to the shared
@@ -294,7 +291,6 @@ func TestALBAttachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 // LB-attached target group. This is the regression guard for the
 // alarms `TargetGroup needs to be attached to a LoadBalancer` panic.
 func TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -322,7 +318,6 @@ func TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor(t *testing.T) {
 // process actually serves — admin (8080), monitor (8081), transport
 // (8082) — so ALB traffic and health checks reach the right listener.
 func TestALBAttachment_PortsPerConcern(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -367,7 +362,6 @@ func TestALBAttachment_PortsPerConcern(t *testing.T) {
 // flips to 9090, the monitor TG + HealthCheckPort flip to 9091, and this
 // test FAILs.
 func TestALBAttachment_Ports_IgnoreHTTPOverride_MatchBootstrap(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, httpOverrideReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -413,7 +407,6 @@ func TestALBAttachment_Ports_IgnoreHTTPOverride_MatchBootstrap(t *testing.T) {
 }
 
 func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -448,7 +441,6 @@ func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
 }
 
 func TestALBAttachment_HealthCheckOverride(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -472,7 +464,6 @@ func TestALBAttachment_HealthCheckOverride(t *testing.T) {
 }
 
 func TestALBAttachment_NegativeBasePriority_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -488,7 +479,6 @@ func TestALBAttachment_NegativeBasePriority_Panics(t *testing.T) {
 }
 
 func TestALBAttachment_BothFacadesNil_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	defer func() {
@@ -506,7 +496,6 @@ func TestALBAttachment_BothFacadesNil_Panics(t *testing.T) {
 }
 
 func TestALBAttachment_BothFacadesSet_Panics(t *testing.T) {
-	defer jsii.Close()
 	app1 := awscdk.NewApp(nil)
 	stack1 := awscdk.NewStack(app1, jsii.String("S1"), nil)
 	vpc1 := awsec2.NewVpc(stack1, jsii.String("Vpc"), nil)
@@ -532,7 +521,6 @@ func TestALBAttachment_BothFacadesSet_Panics(t *testing.T) {
 }
 
 func TestALBAttachment_PriorityCollision_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -567,7 +555,6 @@ func TestALBAttachment_PriorityCollision_Panics(t *testing.T) {
 }
 
 func TestALBAttachment_NoCollisionOutsideReservedRange(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -591,7 +578,6 @@ func TestALBAttachment_NoCollisionOutsideReservedRange(t *testing.T) {
 }
 
 func TestALBAttachment_NilProps_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, stack, _, _ := newApp(t)
 	defer func() {
 		if r := recover(); r == nil {
@@ -616,7 +602,6 @@ func newAttachment(t *testing.T, prio int) (awscdk.Stack, *gobridgealbattachment
 }
 
 func TestALBAttachment_URLAccessors_NonNil(t *testing.T) {
-	defer jsii.Close()
 	_, att := newAttachment(t, 0)
 	if att.PublicDnsName() == nil {
 		t.Fatal("PublicDnsName nil")
@@ -635,7 +620,6 @@ func resolveOutput(t *testing.T, stack awscdk.Stack, value *string) string {
 }
 
 func TestALBAttachment_AdminURL_HasPathSuffix(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	resolved := awscdk.Stack_Of(stack).Resolve(att.AdminURL())
 	// Resolution returns a Fn::Join intrinsic; serialize and check
@@ -651,7 +635,6 @@ func TestALBAttachment_AdminURL_HasPathSuffix(t *testing.T) {
 }
 
 func TestALBAttachment_HealthzURL_HasPathSuffix(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	resolved := awscdk.Stack_Of(stack).Resolve(att.HealthzURL())
 	s := fmt.Sprintf("%v", resolved)
@@ -673,7 +656,6 @@ func outputNames(tpl assertions.Template) map[string]bool {
 }
 
 func TestALBAttachment_WithCfnOutputs_Prefixed(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	att.WithCfnOutputs("OrdersBridge")
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -686,7 +668,6 @@ func TestALBAttachment_WithCfnOutputs_Prefixed(t *testing.T) {
 }
 
 func TestALBAttachment_WithCfnOutputs_EmptyPrefix(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	att.WithCfnOutputs("")
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -714,7 +695,6 @@ func ssmParameterNames(tpl assertions.Template) []string {
 }
 
 func TestALBAttachment_WithSSMExports_DefaultSet(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	att.WithSSMExports("/gobridge/prod/test")
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -737,7 +717,6 @@ func TestALBAttachment_WithSSMExports_DefaultSet(t *testing.T) {
 }
 
 func TestALBAttachment_WithSSMExports_IncludeARNs(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	att.WithSSMExports("/gobridge/prod/test", ssmexports.IncludeARNs())
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -763,7 +742,6 @@ func TestALBAttachment_WithSSMExports_IncludeARNs(t *testing.T) {
 }
 
 func TestALBAttachment_WithSSMExports_ManifestVersionMatchesConst(t *testing.T) {
-	defer jsii.Close()
 	stack, att := newAttachment(t, 0)
 	att.WithSSMExports("/gobridge/prod/test")
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -782,7 +760,6 @@ func TestALBAttachment_WithSSMExports_ManifestVersionMatchesConst(t *testing.T) 
 }
 
 func TestALBAttachment_WithSSMExports_EmptyPrefix_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, att := newAttachment(t, 0)
 	defer func() {
 		r := recover()
@@ -797,7 +774,6 @@ func TestALBAttachment_WithSSMExports_EmptyPrefix_Panics(t *testing.T) {
 }
 
 func TestALBAttachment_WithSSMExports_NoLeadingSlash_Panics(t *testing.T) {
-	defer jsii.Close()
 	_, att := newAttachment(t, 0)
 	defer func() {
 		r := recover()

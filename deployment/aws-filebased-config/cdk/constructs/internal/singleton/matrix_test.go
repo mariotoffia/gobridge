@@ -18,7 +18,6 @@ import (
 // facades created in the same Stack must panic with the documented
 // prefix and a Fix line listing the kind of each instance.
 func Test_TierB_Validation_MultipleGoBridgeInStack(t *testing.T) {
-	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
 
 	app := awscdk.NewApp(nil)

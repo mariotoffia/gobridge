@@ -67,7 +67,6 @@ func TestGoBridgeDynamoDBHA_RejectsCoordinatedRolloutOnInterchangeableWorkers(t 
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer jsii.Close()
 			defer func() {
 				recovered := recover()
 				if recovered == nil || !strings.Contains(fmt.Sprint(recovered), tc.want) {
@@ -94,7 +93,6 @@ func TestGoBridgeDynamoDBHA_RejectsCoordinatedRolloutOnInterchangeableWorkers(t 
 // replacement), so an operator who documents it in the config must not be
 // blocked.
 func TestGoBridgeDynamoDBHA_AcceptsExplicitRefuseRollout(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarnessWithYAML(t, withClusterBlock(t, "  cluster:\n    rollout: refuse\n"), nil)
 	if h.bridge == nil {
 		t.Fatal("explicit rollout: refuse must synthesize")
@@ -112,7 +110,6 @@ func TestGoBridgeDynamoDBHA_AcceptsExplicitRefuseRollout(t *testing.T) {
 // the operator-run scale-to-zero procedure — but 100/200 makes the overlap
 // structural, and this pins that it is gone.
 func TestGoBridgeDynamoDBHA_WorkerServiceForcesWholeCohortReplacement(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -151,7 +148,6 @@ func TestGoBridgeDynamoDBHA_WorkerServiceForcesWholeCohortReplacement(t *testing
 // overlapping policy the old worker cohort survived that race; at 0/100 it does
 // not, so the dependency is what keeps a failed deploy recoverable.
 func TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControlSeeder(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -186,11 +182,11 @@ func TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControlSeeder(t *testing.T)
 // in source comments: an operator reading the stack must see that this profile
 // replaces the whole cohort and cannot do coordinated live rollout.
 func TestGoBridgeDynamoDBHA_AdvertisesWholeCohortReplacementPolicy(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
+	tagged := 0
 	for logicalID, raw := range *services {
 		tags := map[string]string{}
 		rawTags, _ := (*raw)["Properties"].(map[string]any)["Tags"].([]any)
@@ -204,6 +200,12 @@ func TestGoBridgeDynamoDBHA_AdvertisesWholeCohortReplacementPolicy(t *testing.T)
 			t.Fatalf("service %s: gobridge:config-rollout tag = %q, want %q",
 				logicalID, got, "whole-cohort-replacement")
 		}
+		tagged++
+	}
+	// Without this the loop asserts nothing when the lookup returns no services,
+	// and the test would keep passing while the capability tag disappeared.
+	if tagged != 2 {
+		t.Fatalf("ECS services carrying the capability tag = %d, want 2 (control and worker)", tagged)
 	}
 
 	infos := assertions.Annotations_FromStack(h.stack).

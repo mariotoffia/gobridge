@@ -15,7 +15,6 @@ import (
 )
 
 func TestGrantEFS(t *testing.T) {
-	defer jsii.Close()
 
 	tests := []struct {
 		name        string

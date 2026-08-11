@@ -70,7 +70,6 @@ func newBuilt(t *testing.T, mode gobridgebase.Mode, yaml string) (awscdk.Stack, 
 }
 
 func TestNew_Control_TaskDefHasMainAndSeederContainers(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -106,7 +105,6 @@ func TestNew_Control_TaskDefHasMainAndSeederContainers(t *testing.T) {
 }
 
 func TestNew_Control_MainMountIsRW_WorkerMountIsRO(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name       string
 		mode       gobridgebase.Mode
@@ -142,7 +140,6 @@ func TestNew_Control_MainMountIsRW_WorkerMountIsRO(t *testing.T) {
 }
 
 func TestNew_Seeder_EnvAndDependency(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name     string
 		mode     gobridgebase.Mode
@@ -214,7 +211,6 @@ func envFor(envs []any, name string) string {
 }
 
 func TestNew_PortMappings_FromBootstrapDefaults(t *testing.T) {
-	defer jsii.Close()
 	// Without HTTP receivers in yaml, transport HTTP port is omitted;
 	// admin + monitor come from bootstrap defaults.
 	_, b := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
@@ -239,7 +235,6 @@ func mapPorts(p []gobridgebase.PortMapping) map[int]bool {
 }
 
 func TestNew_LogGroup_PrefixAndDefaultRetainPolicy(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tpl.ResourceCountIs(jsii.String("AWS::Logs::LogGroup"), jsii.Number(2))
@@ -270,7 +265,6 @@ func TestNew_LogGroup_PrefixAndDefaultRetainPolicy(t *testing.T) {
 }
 
 func TestNew_LogGroup_RemovalPolicyOverride(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc, efs := newScope(t)
 	src := source.NewAsset(writeTempYAML(t, sampleYAML))
 	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
@@ -294,7 +288,6 @@ func TestNew_LogGroup_RemovalPolicyOverride(t *testing.T) {
 }
 
 func TestNew_IAMStatementsPresentForEfsAndS3Asset(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -325,7 +318,6 @@ func TestNew_IAMStatementsPresentForEfsAndS3Asset(t *testing.T) {
 }
 
 func TestNew_Worker_EFSGrantOmitsClientWrite(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newBuilt(t, gobridgebase.ModeWorker, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -363,7 +355,6 @@ func normalizeActions(v any) []string {
 }
 
 func TestNew_PanicsOnInvalidProps(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name    string
 		mutate  func(p *gobridgebase.Props)
@@ -423,7 +414,6 @@ func mainContainer(t *testing.T, stack awscdk.Stack) map[string]any {
 // the monitor /live endpoint, a StopTimeout longer than the drain budget, and
 // a non-root User.
 func TestNew_Main_HealthCheckStopTimeoutAndUser(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	m := mainContainer(t, stack)
 
@@ -456,7 +446,6 @@ func TestNew_Main_HealthCheckStopTimeoutAndUser(t *testing.T) {
 // TestNew_Main_HealthCheckDisabled verifies DisableHealthCheck removes the
 // probe (for the ALB-target-health-check case).
 func TestNew_Main_HealthCheckDisabled(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc, efs := newScope(t)
 	src := source.NewAsset(writeTempYAML(t, sampleYAML))
 	gobridgebase.New(stack, jsii.String("X"), &gobridgebase.Props{
@@ -479,7 +468,6 @@ func TestNew_Main_HealthCheckDisabled(t *testing.T) {
 // unpinned ref) must panic rather than synth a dead-on-arrival task whose main
 // container waits forever on a seeder that can never be pulled.
 func TestNew_PanicsOnPlaceholderSeederDigest(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name    string
 		ref     string

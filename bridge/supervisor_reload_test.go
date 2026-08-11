@@ -144,10 +144,18 @@ func TestSupervisorReload_VersionOnlyBumpRestartsEverySession(t *testing.T) {
 		"a version-only bump is not a content no-op; it rebuilds every session")
 }
 
-// BenchmarkSupervisorReload_FullSessionRestart measures what the retained
-// semantics cost per accepted config change: one full teardown and rebuild of
-// every session in the config, driven by a delta that touches one route. It is
-// the number an operator's change-batching budget is derived from.
+// BenchmarkSupervisorReload_FullSessionRestart measures the SUPERVISOR's own
+// cost of the retained semantics: per accepted config change, one full teardown
+// and rebuild of every session in the config — canonicalisation, plan build,
+// session/receiver/sender construction, old-runtime stop — driven by a delta
+// that touches one route.
+//
+// It is a FLOOR, not an operator budget. The transports here are in-memory fakes:
+// no broker dial, TLS handshake, CONNECT/CONNACK, or subscription reconciliation
+// is measured, and in production those dominate a full-session reload by orders
+// of magnitude. Read this number as a regression guard on the supervisor's own
+// rebuild path; derive an operator change-batching budget from a real-broker
+// reconnect measurement instead.
 func BenchmarkSupervisorReload_FullSessionRestart(b *testing.B) {
 	onSwap, swaps := swapChan(b.N + 1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))

@@ -22,7 +22,6 @@ import (
 // [100..199] window of the default-priority attachment must trigger
 // a panic with the exact documented sentence.
 func Test_TierB_Validation_ALBPriorityCollision(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)

@@ -12,7 +12,6 @@ import (
 )
 
 func TestGrantLogsWrite(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	lg := awslogs.LogGroup_FromLogGroupArn(stack, jsii.String("LG"),
 		jsii.String("arn:aws:logs:us-east-1:111122223333:log-group:/gobridge/test:*"))

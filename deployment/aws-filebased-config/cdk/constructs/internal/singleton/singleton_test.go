@@ -72,7 +72,6 @@ func resetCleanup(t *testing.T) {
 }
 
 func TestSingleton_OneSingle_NoPanic(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -80,7 +79,6 @@ func TestSingleton_OneSingle_NoPanic(t *testing.T) {
 }
 
 func TestSingleton_OneCluster_NoPanic(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -88,14 +86,12 @@ func TestSingleton_OneCluster_NoPanic(t *testing.T) {
 }
 
 func TestSingleton_Zero_NoPanic(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	awscdk.NewStack(app, jsii.String("S"), nil)
 }
 
 func TestSingleton_SingleAndCluster_SameStack_Panics(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -128,7 +124,6 @@ func TestSingleton_SingleAndCluster_SameStack_Panics(t *testing.T) {
 }
 
 func TestSingleton_TwoSingle_SameStack_Panics(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -152,7 +147,6 @@ func TestSingleton_TwoSingle_SameStack_Panics(t *testing.T) {
 }
 
 func TestSingleton_DifferentStacks_NoPanic(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	a := awscdk.NewStack(app, jsii.String("StackA"), nil)
@@ -162,7 +156,6 @@ func TestSingleton_DifferentStacks_NoPanic(t *testing.T) {
 }
 
 func TestSingleton_ResetForTest_ClearsState(t *testing.T) {
-	defer jsii.Close()
 	resetCleanup(t)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)

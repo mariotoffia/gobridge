@@ -25,7 +25,6 @@ func newTestStack(t *testing.T) (awscdk.Stack, awsec2.IVpc) {
 }
 
 func TestGoBridgeEfsConfig_DefaultConfig(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -45,7 +44,6 @@ func TestGoBridgeEfsConfig_DefaultConfig(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_TwoAccessPointsRootPath(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -83,7 +81,6 @@ func TestGoBridgeEfsConfig_TwoAccessPointsRootPath(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_CustomerManagedKey(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	key := awskms.NewKey(stack, jsii.String("CMK"), nil)
@@ -98,7 +95,6 @@ func TestGoBridgeEfsConfig_CustomerManagedKey(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_BackupDefaultOn(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -116,7 +112,6 @@ func TestGoBridgeEfsConfig_BackupDefaultOn(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_DisableBackup(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -128,7 +123,6 @@ func TestGoBridgeEfsConfig_DisableBackup(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_RemovalPolicyDestroy(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -145,7 +139,6 @@ func TestGoBridgeEfsConfig_RemovalPolicyDestroy(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_ReuseExistingFileSystem(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	imported := awsefs.FileSystem_FromFileSystemAttributes(stack, jsii.String("Imported"),
@@ -180,7 +173,6 @@ func TestGoBridgeEfsConfig_ReuseExistingFileSystem(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_ThroughputOverride(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	gobridgecdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
@@ -196,7 +188,6 @@ func TestGoBridgeEfsConfig_ThroughputOverride(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_VpcSubnetsGetter(t *testing.T) {
-	defer jsii.Close()
 	stack, vpc := newTestStack(t)
 
 	sel := &awsec2.SubnetSelection{SubnetType: awsec2.SubnetType_PRIVATE_WITH_EGRESS}
@@ -209,7 +200,6 @@ func TestGoBridgeEfsConfig_VpcSubnetsGetter(t *testing.T) {
 }
 
 func TestGoBridgeEfsConfig_NilVpcPanics(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("TestStack"), nil)
 

@@ -114,7 +114,6 @@ func t20BaseMainContainer(t *testing.T, td map[string]any) map[string]any {
 // main container's LogConfiguration is awslogs with the expected stream
 // prefix.
 func Test_T20_Base_TaskDef_FargateBaselineShape(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -153,7 +152,6 @@ func Test_T20_Base_TaskDef_FargateBaselineShape(t *testing.T) {
 // invariant we assert (admin + transport both on tcp) is the contract; the
 // exact numeric for transport defaults to the bootstrap-defined 8082.
 func Test_T20_Base_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseHTTPYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 	td := t20BaseFindTaskDef(t, tpl)
@@ -184,7 +182,6 @@ func Test_T20_Base_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
 // policy includes the S3 statements emitted by Asset.GrantRead — namely
 // s3:GetObject* and s3:GetBucket* (the latter covers GetBucketLocation).
 func Test_T20_Base_IAM_SeederAssetReadGrants(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -220,7 +217,6 @@ func Test_T20_Base_IAM_SeederAssetReadGrants(t *testing.T) {
 // role policies include ClientMount but NEVER ClientWrite (defense in
 // depth complement to the RO mount).
 func Test_T20_Base_IAM_EFSPerMode(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name           string
 		mode           gobridgebase.Mode
@@ -271,7 +267,6 @@ func Test_T20_Base_IAM_EFSPerMode(t *testing.T) {
 // duplicate here is intentional per T20 spec which requires per-construct
 // mount-readOnly assertions in this targeted file.)
 func Test_T20_Base_Mounts_PerModeReadOnlyFlag(t *testing.T) {
-	defer jsii.Close()
 	for _, tc := range []struct {
 		name string
 		mode gobridgebase.Mode
@@ -316,7 +311,6 @@ stores:
 `
 
 func Test_T20_Base_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultDynamoStoreYAML)
 	assembly := awscdk.App_Of(stack).Synth(nil)
 	rendered := assembly.GetStackByName(stack.StackName()).Template()
@@ -342,7 +336,6 @@ receivers:
 `
 
 func Test_T20_Base_IAM_AWSSQSAliasGetsExactQueueGrant(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -378,7 +371,6 @@ sessions:
 `
 
 func Test_T20_Base_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -411,7 +403,6 @@ stores:
 `
 
 func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultLeaseStoreYAML)
 	assembly := awscdk.App_Of(stack).Synth(nil)
 	rendered, err := json.Marshal(assembly.GetStackByName(stack.StackName()).Template())
@@ -432,7 +423,6 @@ func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
 // with no DynamoDB store emits none. Guards J4: the AWS profile must
 // grant the table actions the DynamoDB store adapter performs.
 func Test_T20_Base_IAM_DynamoDBStoreGrant(t *testing.T) {
-	defer jsii.Close()
 
 	t.Run("granted-with-table-name", func(t *testing.T) {
 		stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDynamoStoreYAML)

@@ -17,7 +17,6 @@ import (
 const tableARN = "arn:aws:dynamodb:us-east-1:111122223333:table/bridge-store"
 
 func TestGrantDynamoDBLeaseStore_ExactRuntimeActions(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("Lease"), jsii.String(tableARN))
 	grants.GrantDynamoDBLeaseStore(role, table)
@@ -30,7 +29,6 @@ func TestGrantDynamoDBLeaseStore_ExactRuntimeActions(t *testing.T) {
 }
 
 func TestGrantDynamoDBOutboxStore_ExactRuntimeActionsAndIndexes(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("Outbox"), jsii.String(tableARN))
 	grants.GrantDynamoDBOutboxStore(role, table)
@@ -51,7 +49,6 @@ func TestGrantDynamoDBOutboxStore_ExactRuntimeActionsAndIndexes(t *testing.T) {
 }
 
 func TestGrantDynamoDBManagedSubscriptionsStore_ExactRuntimeActions(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("History"), jsii.String(tableARN))
 	grants.GrantDynamoDBManagedSubscriptionsStore(role, table)
@@ -63,7 +60,6 @@ func TestGrantDynamoDBManagedSubscriptionsStore_ExactRuntimeActions(t *testing.T
 }
 
 func TestGrantDynamoDBDLQStore_ExactRuntimeActionsAndIndexes(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("DLQ"), jsii.String(tableARN))
 	grants.GrantDynamoDBDLQStore(role, table)

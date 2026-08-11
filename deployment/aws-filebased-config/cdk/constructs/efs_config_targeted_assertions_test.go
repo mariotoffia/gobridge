@@ -18,7 +18,6 @@ import (
 // but we additionally assert that no LifecyclePolicies are emitted on the
 // default props (the construct should not opt-in to IA tiering by default).
 func Test_T20_Efs_FileSystem_BaselineProps(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -50,7 +49,6 @@ func Test_T20_Efs_FileSystem_BaselineProps(t *testing.T) {
 // HasResourceProperties match (which only requires SOMEONE to match) — here
 // we walk every AP independently to ensure the invariant holds for both.
 func Test_T20_Efs_AccessPoints_PosixAndAclShape(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)

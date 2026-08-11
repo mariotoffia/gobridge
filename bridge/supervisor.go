@@ -825,9 +825,11 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	// a single route's address — rebuilds the entire runtime, so unrelated routes'
 	// broker sessions are torn down and re-established with them (full-session
 	// reload, the accepted tradeoff for HIGH-10; diff-based reload is out of
-	// scope). Operators must batch config changes and budget the QoS 0 / ephemeral
-	// -session loss window per reload. bridge/supervisor_reload_test.go pins it.
-	// Acknowledge it WITHOUT a swap so the running runtime,
+	// scope). Operators must batch config changes and budget the loss window this
+	// opens for QoS 0 and ephemeral sessions on every reload;
+	// bridge/supervisor_reload_test.go pins the semantics.
+	//
+	// Acknowledge a no-op WITHOUT a swap so the running runtime,
 	// applied config, version, and reference are all preserved. onSwap MUST still
 	// fire (an in-band applier blocks on the result for this exact config pointer);
 	// mirror the paused/live distinction with Deferred so a no-op re-emit received

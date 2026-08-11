@@ -74,7 +74,6 @@ func countSSMImports(t *testing.T, stack awscdk.Stack, prefixes ...string) int {
 }
 
 func TestLookupBridge_PanicsOnEmptyPrefix(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	defer func() {
 		r := recover()
@@ -89,7 +88,6 @@ func TestLookupBridge_PanicsOnEmptyPrefix(t *testing.T) {
 }
 
 func TestLookupBridge_PanicsOnPrefixWithoutLeadingSlash(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	defer func() {
 		r := recover()
@@ -104,7 +102,6 @@ func TestLookupBridge_PanicsOnPrefixWithoutLeadingSlash(t *testing.T) {
 }
 
 func TestLookupBridge_DefaultLooksUpThreeParams(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix)
 
@@ -132,7 +129,6 @@ func TestLookupBridge_DefaultLooksUpThreeParams(t *testing.T) {
 }
 
 func TestLookupBridge_WithIncludeARNsLooksUpSixParams(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix, ssmexports.IncludeARNs())
 
@@ -149,7 +145,6 @@ func TestLookupBridge_WithIncludeARNsLooksUpSixParams(t *testing.T) {
 }
 
 func TestLookupBridge_LogicalIdsAreDeterministic(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	// Two LookupBridge calls with distinct ids under the same stack
 	// must coexist without logical-id collision.
@@ -164,7 +159,6 @@ func TestLookupBridge_LogicalIdsAreDeterministic(t *testing.T) {
 }
 
 func TestLookupBridge_ManifestVersionDummyToleratedOnFirstSynth(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	gobridgecdk.LookupBridge(stack, "Ref", testPrefix)
 
@@ -181,7 +175,6 @@ func TestLookupBridge_ManifestVersionDummyToleratedOnFirstSynth(t *testing.T) {
 }
 
 func TestLookupBridge_ManifestVersionMismatchEmitsAnnotationError(t *testing.T) {
-	defer jsii.Close()
 
 	// Pre-seed App context with a value that disagrees with the
 	// consumer-side ManifestVersion constant. This skips the
@@ -221,7 +214,6 @@ func TestLookupBridge_ManifestVersionMismatchEmitsAnnotationError(t *testing.T) 
 }
 
 func TestLookupBridge_AccessorTokensAreNonNil(t *testing.T) {
-	defer jsii.Close()
 	_, stack := newStack(t, nil)
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix, ssmexports.IncludeARNs())
 

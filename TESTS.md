@@ -104,6 +104,32 @@ Every resource (goroutine, file, container, channel) is registered
 with `t.Cleanup` or `defer` **at acquisition**, not "later, at the
 end". Guarantees cleanup runs even when an early `require` aborts.
 
+### 2.7 Never call `jsii.Close()` in a CDK test
+
+The exception to 2.6, and it is not optional. `jsii.Close()` crashes
+the test binary at random.
+
+`jsii-runtime-go`'s `ensureStarted` spawns a goroutine that sits in
+`p.cmd.Wait()` on the node kernel process. `Process.Close()` writes
+`{"exit":0}` to that process's stdin — deliberately making it exit —
+and then calls `p.cmd.Wait()` **itself**. Two concurrent
+`(*exec.Cmd).Wait` on one command. Go 1.26's `Wait` ends with
+`closeDescriptors(c.parentIOPipes); c.parentIOPipes = nil`, so the
+loser of the race iterates a half-torn slice and segfaults on a nil
+`io.Closer`. Under Go ≤1.25 the second `Wait` merely returned
+`ECHILD` ("Runtime process exited abnormally: wait: no child
+processes"), which is why this only surfaced recently.
+
+So **every `jsii.Close()` is a coin flip**, and the code is identical
+in every `jsii-runtime-go` release from v1.127.0 to v1.139.0 — there
+is no version to upgrade to. Let the test binary exit instead: the
+kernel child gets EOF on stdin and exits on its own (verified: no
+stray node processes). Removing the calls also cut the CDK module's
+suite from ~110s to ~24s, because each `Close()` forced the next test
+to re-spawn node and re-import the whole CDK assembly.
+
+Do not "fix" a leak that is not there by adding it back.
+
 ---
 
 ## 3. Architectural correctness

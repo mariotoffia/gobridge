@@ -13,7 +13,6 @@ import (
 )
 
 func TestGrantSSMRead_SecureStringWithCMK(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	key := awskms.Key_FromKeyArn(stack, jsii.String("K"),
 		jsii.String("arn:aws:kms:us-east-1:111122223333:key/abcd1234-12ab-34cd-56ef-1234567890ab"))
@@ -36,7 +35,6 @@ func TestGrantSSMRead_SecureStringWithCMK(t *testing.T) {
 }
 
 func TestGrantSSMRead_PlainStringNoKMS(t *testing.T) {
-	defer jsii.Close()
 	stack, role := newTestStack(t)
 	param := awsssm.StringParameter_FromStringParameterName(
 		stack, jsii.String("P"), jsii.String("/gobridge/plain"))
