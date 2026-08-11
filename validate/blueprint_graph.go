@@ -73,7 +73,7 @@ func ValidateBlueprintGraph(cfg *ports.BridgeConfig) *ports.BlueprintValidationE
 			if _, ok := sessionIDs[r.SessionID]; !ok {
 				ve.Addf("receivers[%d] (%s): session_id %q not found in sessions", i, r.ID, r.SessionID)
 			} else if sess := sessionsByID[r.SessionID]; r.Transport != "" && sess.Transport != "" && r.Transport != sess.Transport {
-				// ADV-F1-P2: a session unions its receivers by SessionID
+				// a session unions its receivers by SessionID
 				// regardless of transport; only fire when both transports
 				// are explicitly set and differ, so there is no false positive.
 				ve.Addf("receivers[%d] (%s): receiver transport %q does not match session %q transport %q: "+

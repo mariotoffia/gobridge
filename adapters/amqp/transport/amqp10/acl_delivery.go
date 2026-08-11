@@ -59,7 +59,7 @@ type Delivery struct {
 	// permanently consumes this delivery's link-credit slot (go-amqp only
 	// replenishes credit on a completed disposition), so the receiver
 	// uses this to count failures and force a link rebuild before credit
-	// exhaustion stalls it silently (finding F2). Guarded by
+	// exhaustion stalls it silently. Guarded by
 	// onSettleFailedOnce.
 	onSettleFailed     func(err error)
 	onSettleFailedOnce sync.Once
@@ -67,7 +67,7 @@ type Delivery struct {
 	// delayWarnOnce dedupes the "delayed retry" Warn to once
 	// per receiver link. It is shared by every Delivery created from the
 	// same link (set by receiverLink.Receive) so an unhonored delayed
-	// retry warns once per link rather than once per message (G-N2). A nil
+	// retry warns once per link rather than once per message (G). A nil
 	// guard (directly-constructed deliveries) warns on each call.
 	delayWarnOnce *sync.Once
 }
@@ -146,7 +146,7 @@ func (d *Delivery) fireOnSettleFailed(err error) {
 // finishSettle records the outcome of a settlement attempt, fires the
 // in-flight tracking hook, and — on failure — notifies the owning
 // Receiver so it can observe the leaked link credit and force a link
-// rebuild before the receiver stalls silently (finding F2).
+// rebuild before the receiver stalls silently.
 func (d *Delivery) finishSettle(err error) {
 	d.mu.Lock()
 	d.settleDone = true
@@ -222,7 +222,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 		// outcome. The x-opt-delivery-time annotation asks the broker to
 		// schedule redelivery at now+after; a honoring broker applies the
 		// spacing, a non-honoring one falls back to its own policy.
-		// Surface the broker-delegated scheduling two ways (G-N2): a
+		// Surface the broker-delegated scheduling two ways (G): a
 		// per-message counter for rate/alerting and a once-per-link Warn
 		// (deduped via delayWarnOnce).
 		d.metrics.Counter(MetricAMQP10DelayedRetryDeferred, 1)

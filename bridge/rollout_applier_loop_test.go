@@ -108,7 +108,7 @@ func commitAs(t *testing.T, store *memoryrollout.Store, gen uint64, members ...s
 // TestRolloutApplier_AcksLiveSafeCandidate proves the vote half of the barrier:
 // a member that can verify the digest, classify the delta live-safe, and BUILD
 // the candidate records an Ack. The ack is what the coordinator counts against
-// the epoch (I2), so without it no rollout can ever commit.
+// the epoch, so without it no rollout can ever commit.
 func TestRolloutApplier_AcksLiveSafeCandidate(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
 	r := f.propose(t, liveSafeCandidate(99))
@@ -125,7 +125,7 @@ func TestRolloutApplier_AcksLiveSafeCandidate(t *testing.T) {
 
 // TestRolloutApplier_VotesAtMostOncePerGeneration proves repeated observations
 // are idempotent. The drive re-reads the row every tick, so a second vote would
-// otherwise be attempted on every poll and rejected by the aggregate (I5) —
+// otherwise be attempted on every poll and rejected by the aggregate —
 // turning a normal cadence into a permanent error stream.
 func TestRolloutApplier_VotesAtMostOncePerGeneration(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
@@ -143,7 +143,7 @@ func TestRolloutApplier_VotesAtMostOncePerGeneration(t *testing.T) {
 
 // TestRolloutApplier_NacksReplacementRequiredCandidate proves the §8 class gate
 // runs on the APPLIER, not only on the proposer. A member whose local view makes
-// the delta replacement-required must Nack so the coordinator aborts (F2) — the
+// the delta replacement-required must Nack so the coordinator aborts — the
 // coordinated path can never admit a delta the single-node path would refuse.
 func TestRolloutApplier_NacksReplacementRequiredCandidate(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
@@ -164,8 +164,8 @@ func TestRolloutApplier_NacksReplacementRequiredCandidate(t *testing.T) {
 // TestRolloutApplier_NoStagedCandidateDoesNotVote proves a member whose own
 // config source has not delivered the candidate stays SILENT rather than
 // guessing. Voting without the candidate would either ack a config it never
-// validated (breaking what I2 means) or nack a change that is merely in flight.
-// The coordinator's deadline (F1) bounds the wait.
+// validated (breaking what means) or nack a change that is merely in flight.
+// The coordinator's deadline bounds the wait.
 func TestRolloutApplier_NoStagedCandidateDoesNotVote(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
 
@@ -185,7 +185,7 @@ func TestRolloutApplier_NoStagedCandidateDoesNotVote(t *testing.T) {
 }
 
 // TestRolloutApplier_NonEpochMemberDoesNotVote proves a node outside the frozen
-// epoch never votes. The aggregate would reject it (I5), so attempting would turn
+// epoch never votes. The aggregate would reject it, so attempting would turn
 // every observation into an error; more importantly a vote from outside the epoch
 // has no meaning for a barrier that counts acks against the epoch.
 func TestRolloutApplier_NonEpochMemberDoesNotVote(t *testing.T) {
@@ -221,7 +221,7 @@ func TestRolloutApplier_AdoptsCommittedGeneration(t *testing.T) {
 
 // TestRolloutApplier_AbortedGenerationNeverSwaps proves the abort path: a member
 // that acked and built must NOT apply when the coordinator aborts. A member
-// swapping on an aborted rollout is precisely the mixed-version cohort G2
+// swapping on an aborted rollout is precisely the mixed-version cohort
 // forbids.
 func TestRolloutApplier_AbortedGenerationNeverSwaps(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
@@ -280,14 +280,14 @@ func TestRolloutApplier_AdoptIsRestartSafeWithoutADurableGate(t *testing.T) {
 // TestRolloutApplier_NacksUnbuildableCandidate proves an Ack means "validated
 // AND built". A candidate that passes classification but fails the prepare phase
 // on THIS member must be nacked, so one member's inability to build the config
-// aborts the rollout instead of committing a config it cannot run (F2).
+// aborts the rollout instead of committing a config it cannot run.
 //
 // Scope of the proof, deliberately: prepare validates the blueprint, opens the
 // durable stores, and assembles runtime options — it does NOT open transport
 // sessions, which belong to the commit phase. So an Ack means "this member can
 // build it", not "this member reached the broker with it". That is the design's
 // Model A (§8.1): commit is not convergence, and a committed config that fails
-// to converge is alarmed per node (F8), never rolled back.
+// to converge is alarmed per node, never rolled back.
 func TestRolloutApplier_NacksUnbuildableCandidate(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
 	cand := coordinatedClusteredCfg("r1")
@@ -312,7 +312,7 @@ func TestRolloutApplier_NoRolloutIsANoOp(t *testing.T) {
 }
 
 // TestRolloutApplier_StoreOutageIsReported proves a real store failure surfaces
-// as an error the drive logs and retries (F9), instead of being swallowed into a
+// as an error the drive logs and retries, instead of being swallowed into a
 // silent stall. Nothing may flip during an outage.
 func TestRolloutApplier_StoreOutageIsReported(t *testing.T) {
 	f := newApplierFixture(t, "node-a")
@@ -365,7 +365,7 @@ func TestRolloutApplier_DriveAppliesCommittedRollout(t *testing.T) {
 }
 
 // failingRolloutStore fails every call with a store error, standing in for a
-// DynamoDB outage (F9).
+// DynamoDB outage.
 type failingRolloutStore struct{ err error }
 
 func (f *failingRolloutStore) Propose(context.Context, persistence.RolloutProposal) (persistence.Rollout, error) {
@@ -403,7 +403,7 @@ var _ ports.ClusterRolloutStore = (*failingRolloutStore)(nil)
 // member computes the candidate digest itself from the config its OWN source
 // delivered, so two independently-constructed but content-identical configs MUST
 // canonicalise to the same digest — otherwise the first proposer wins and every
-// peer nacks (F10), aborting every rollout the cohort ever attempts.
+// peer nacks, aborting every rollout the cohort ever attempts.
 func TestCandidateConfigDigest_IsStableAcrossIndependentLoads(t *testing.T) {
 	a, aok := configCanonicalBytesDigest(liveSafeCandidate(99))
 	b, bok := configCanonicalBytesDigest(liveSafeCandidate(99))

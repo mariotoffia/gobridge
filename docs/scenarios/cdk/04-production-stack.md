@@ -35,8 +35,8 @@ flowchart TB
             T2[Fargate Task 2]
         end
         EFS[(EFS Config)]
-        T1 --- EFS
-        T2 --- EFS
+        --- EFS
+        --- EFS
         subgraph Endpoints ["VPC Endpoints"]
             VPCE[SSM / SQS / ECR / CW Logs]
         end

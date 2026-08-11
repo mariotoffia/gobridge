@@ -14,7 +14,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-2 (HIGH): No-Local is an OPT-IN per-session control (SessionOptions.NoLocal
+// (HIGH): No-Local is an OPT-IN per-session control (SessionOptions.NoLocal
 // / `no_local`, default OFF). When enabled it sets MQTT5 NoLocal on every
 // ordinary subscription so a same-broker MQTT->MQTT bridge does not receive —
 // and re-forward — its OWN publishes (the self-amplification loop of Scenario
@@ -79,7 +79,7 @@ func TestBug_Subscribe_NoLocal_OptInPerSession(t *testing.T) {
 	reconcileNoLocal := func(t *testing.T, noLocal bool) *captureSubConn {
 		t.Helper()
 		// Exclusive mode so a $share subscription is a legitimate configuration
-		// (a single leaseholder), not the HIGH-3 scale-out collision.
+		// (a single leaseholder), not the scale-out collision.
 		sess := NewSession(SessionOptions{
 			BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 			ClientID:   "nolocal",
@@ -108,11 +108,11 @@ func TestBug_Subscribe_NoLocal_OptInPerSession(t *testing.T) {
 		ordinary, ok := fake.specFor("sensors/+/temp")
 		require.True(t, ok, "the ordinary subscription was issued")
 		require.False(t, ordinary.NoLocal,
-			"A-2: no_local defaults off — an ordinary subscription must NOT set NoLocal")
+			"no_local defaults off — an ordinary subscription must NOT set NoLocal")
 
 		shared, ok := fake.specFor("$share/g/commands/#")
 		require.True(t, ok, "the shared subscription was issued")
-		require.False(t, shared.NoLocal, "A-2: a shared subscription never sets NoLocal")
+		require.False(t, shared.NoLocal, "a shared subscription never sets NoLocal")
 	})
 
 	t.Run("opt-in sets NoLocal for ordinary but never for shared", func(t *testing.T) {
@@ -121,11 +121,11 @@ func TestBug_Subscribe_NoLocal_OptInPerSession(t *testing.T) {
 		ordinary, ok := fake.specFor("sensors/+/temp")
 		require.True(t, ok, "the ordinary subscription was issued")
 		require.True(t, ordinary.NoLocal,
-			"A-2: with no_local enabled an ordinary subscription must set NoLocal to break the self-delivery loop")
+			"with no_local enabled an ordinary subscription must set NoLocal to break the self-delivery loop")
 
 		shared, ok := fake.specFor("$share/g/commands/#")
 		require.True(t, ok, "the shared subscription was issued")
 		require.False(t, shared.NoLocal,
-			"A-2: a shared subscription ($share) must NOT set NoLocal even when opted in — MQTT5 §3.8.3.1 Protocol Error")
+			"a shared subscription ($share) must NOT set NoLocal even when opted in — MQTT5 §3.8.3.1 Protocol Error")
 	})
 }

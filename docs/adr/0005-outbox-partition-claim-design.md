@@ -68,7 +68,7 @@ future work.
   shared storetest suite.
 - No starvation: every Claim considers every claimable record in the partition,
   so an old record whose envelope ID sorts late can no longer be permanently
-  skipped — the liveness bug the bounded window had (H1). Client memory stays
+  skipped — the liveness bug the bounded window had. Client memory stays
   bounded (~`2 * retain`) because the retained set is trimmed as it pages, and
   cancellation is honoured between pages so a Claim never outlives its context.
 - Tradeoff: each Claim reads the WHOLE claimable backlog of the partition, so

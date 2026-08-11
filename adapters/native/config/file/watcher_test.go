@@ -50,7 +50,7 @@ func writeYAML(t *testing.T, path string, bridgeID string) {
 }
 
 // readRecorder wraps a Watcher.readFile seam to count invocations and capture
-// the bytes returned by each read. It lets a test PROVE the HIGH-2 stability
+// the bytes returned by each read. It lets a test PROVE the stability
 // gate's confirm step performs an ACTUAL second read of identical bytes before
 // emitting — rather than replaying cached first-sighting bytes when the confirm
 // timer fires. Without this a regression that emitted the candidate on the timer
@@ -159,7 +159,7 @@ func TestWatcher_PollMode(t *testing.T) {
 		WithClock(fc),
 	)
 	// Count reads through the seam so we can prove the confirm step RE-READS
-	// the file (HIGH-2), not just replays cached first-sighting bytes.
+	// the file, not just replays cached first-sighting bytes.
 	rec := newReadRecorder(os.ReadFile)
 	w.readFile = rec.read
 
@@ -175,7 +175,7 @@ func TestWatcher_PollMode(t *testing.T) {
 	writeYAML(t, path, "polled")
 	fc.Advance(100 * time.Millisecond) // poll tick detects the change → held for stability
 
-	// Stability gate (HIGH-2): a detected change is applied only after a
+	// Stability gate: a detected change is applied only after a
 	// confirming re-read one settle window (debounce) later returns the same
 	// bytes. Poll mode arms a one-shot confirm timer for that re-read; advance
 	// through it so the settled content is delivered.

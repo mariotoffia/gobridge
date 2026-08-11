@@ -23,7 +23,7 @@ import (
 
 // latencyRecorder is a processor that records how long the downstream chain
 // (next) takes for each successfully processed message. Use percentile()
-// after the test to compute P50/P95/P99 latencies.
+// after the test to compute latencies.
 type latencyRecorder struct {
 	mu        sync.Mutex
 	latencies []time.Duration
@@ -208,7 +208,7 @@ func (r *benchmarkReport) throughput() float64 {
 }
 
 // logReport prints a structured benchmark report to t.Log, including
-// stage latency breakdowns (P50/P95/P99) and counter totals extracted
+// stage latency breakdowns and counter totals extracted
 // from the RecordingExporter.
 func (r *benchmarkReport) logReport(t *testing.T, exporter *ports.RecordingExporter) {
 	t.Helper()

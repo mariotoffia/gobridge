@@ -20,9 +20,9 @@ import (
 // increments MetricMQTTEventDropped for the evicted event, while preserving the
 // newest event and the buffer depth.
 //
-// NOTE (B-2 / D-2): the original RES-011 test asserted this path emitted NO
+// NOTE: the original RES-011 test asserted this path emitted NO
 // metric ("normal drop-oldest"), which was precisely the doc/code disagreement
-// B-2 identified — the F-6 comment and operator guidance promise an alertable
+// identified — the comment and operator guidance promise an alertable
 // MetricMQTTEventDropped that the common eviction never incremented. Evicting
 // the oldest undelivered event IS event loss, so it now meters exactly one drop.
 func TestBugRES011_PushEvent_DropOldest_EmitsMetric(t *testing.T) {

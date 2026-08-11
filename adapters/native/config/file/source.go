@@ -60,7 +60,7 @@ func NewSource(path string, registry *ports.Registry, opts ...SourceOption) *Sou
 }
 
 // Load reads and parses the configuration file. A cancelled ctx short-circuits
-// before any filesystem work (I6); a missing file maps to shared.ErrNotFound
+// before any filesystem work; a missing file maps to shared.ErrNotFound
 // so callers can classify it, while parse errors pass through from the parser.
 //
 // Load reads the file itself (rather than delegating to parser.ParseFile) so it

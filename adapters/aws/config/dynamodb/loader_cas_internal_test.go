@@ -15,7 +15,7 @@ import (
 )
 
 // casFakeDDB models DynamoDB's conditional-write and strong-read semantics
-// for the config CAS path (J3): PutItem is honoured only when the
+// for the config CAS path: PutItem is honoured only when the
 // attribute_not_exists / version==expected condition holds.
 type casFakeDDB struct {
 	hasRow        bool
@@ -112,7 +112,7 @@ func newCASLoader(f *casFakeDDB) *Loader {
 	}
 }
 
-// Regression for J3: Save must use a strong read and a conditional
+// Regression: Save must use a strong read and a conditional
 // (compare-and-set) write so a concurrent admin write cannot be silently
 // lost. A stale expected-version write is rejected as ErrVersionMismatch.
 func TestSave_CompareAndSet(t *testing.T) {

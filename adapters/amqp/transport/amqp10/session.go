@@ -57,7 +57,7 @@ type Session struct {
 
 	// builtLinkCount and builtDurableReceiver enforce the
 	// dedicated-session contract for durable AMQP 1.0 receivers at BUILD
-	// time (HIGH-3). One Session multiplexes every receiver/sender bound
+	// time. One Session multiplexes every receiver/sender bound
 	// to its session_id over a single connection, and closing a durable
 	// receiver forces a full connection teardown (the pinned go-amqp
 	// cannot non-closing-detach a durable link — a closing detach is an
@@ -100,7 +100,7 @@ type Session struct {
 	// rotated material.
 	liveCreds amqp10Credentials
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
 	// (re)connect maps a dial error to shared.ErrNotAuthorized, forcing an
@@ -128,7 +128,7 @@ var _ ports.Session = (*Session)(nil)
 // gate durable receivers on an explicit container_id: applyDefaults
 // synthesises a per-instance container_id (unique per replica, stable
 // across reconnects, but DIFFERENT across process restarts). The
-// restart-safety gate for durable subscriptions (HIGH-1) lives in
+// restart-safety gate for durable subscriptions lives in
 // Factory.NewReceiver, which production always goes through (every link is
 // built via the ports.TransportFactory interface). A direct embedder that
 // builds a durable receiver on a NewSession-built session with a generated
@@ -288,7 +288,7 @@ func (s *Session) Start(ctx context.Context) error {
 	done := make(chan struct{})
 	s.mu.Lock()
 	if s.closed {
-		// F3: Close() won the race between connect() storing s.conn and
+		// Close() won the race between connect() storing s.conn and
 		// this monitor install. Abort the install so we neither leak an
 		// immortal monitor goroutine nor return nil for a closed session.
 		closedErr := shared.ErrUnavailable.
@@ -312,7 +312,7 @@ func (s *Session) Start(ctx context.Context) error {
 }
 
 func (s *Session) connect(ctx context.Context) error {
-	// HIGH-3 reactive-recovery chokepoint: every (re)connect — the initial
+	// reactive-recovery chokepoint: every (re)connect — the initial
 	// dial and every reconnect after a credential rotation dropped the
 	// connection — routes through doConnect. When a hard rotation revoked the
 	// old credentials, the redial fails SASL and doConnect maps it to
@@ -429,7 +429,7 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 // subscription plan and the number of registered receivers, so existing
 // behaviour (no receivers registered) is preserved exactly.
 //
-// G-N3: the reported active count is additionally clamped to the
+// the reported active count is additionally clamped to the
 // link-derived up count (registered receivers whose link is live), so a
 // plan wanting more subscriptions than there are self-establishing
 // receivers cannot over-report active during startup.
@@ -463,7 +463,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	// linkUp is the link-derived count of registered receivers whose AMQP
 	// link is actually established. Health clamps the reported active count
-	// to it (G-N3) so a plan wanting more subscriptions than there are
+	// to it (G) so a plan wanting more subscriptions than there are
 	// self-establishing receivers cannot over-report active during startup.
 	linkUp := registered - downCount
 
@@ -488,7 +488,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		active = linkUp
 	}
 
-	// F5: a plan that wants more subscriptions than are currently active
+	// a plan that wants more subscriptions than are currently active
 	// (receivers still starting, or fewer receivers registered than the
 	// reconciled plan requires) is NOT Full even when every registered
 	// receiver's link is up. Report Degraded so readiness reflects the
@@ -515,7 +515,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 // reserveLink records a build-time link reservation on this session and
 // enforces the dedicated-session contract for durable AMQP 1.0 receivers
-// (HIGH-3). durableReceiver reports whether the link being built is a
+// durableReceiver reports whether the link being built is a
 // durable receiver (durability_mode > 0).
 //
 // It returns a non-nil error when the reservation would place a durable
@@ -858,7 +858,7 @@ func (s *Session) monitorLoop(ctx context.Context) {
 // not yet succeeded. It deliberately does NOT probe a live connection —
 // when s.conn is still non-nil it is a no-op — so it cannot detect a
 // silent half-open drop (that is the AMQP idle_timeout's job). See
-// monitorLoop and SessionOptions.ConnectionMonitorFallback (finding F4).
+// monitorLoop and SessionOptions.ConnectionMonitorFallback.
 func (s *Session) tryReconnect(ctx context.Context) {
 	s.mu.Lock()
 	if s.closed {
@@ -900,7 +900,7 @@ func (s *Session) handleConnLost(ctx context.Context, lost amqpConn) {
 	s.amqpSess = nil
 	s.connected = false
 	s.markAllReceiversDownLocked()
-	// F8: mark senders down too, symmetric with notifyDisconnect. A
+	// mark senders down too, symmetric with notifyDisconnect. A
 	// Done()-driven connection loss invalidates sender links exactly as a
 	// link-error-driven one does; omitting this skews Session.Health
 	// (senders reported up on a dead connection until their next Send).

@@ -196,7 +196,7 @@ func (r *router) signalPendingChangedLocked() {
 
 // purgeStalePendingLocked drops every pending entry stamped with an epoch
 // older than the current connEpoch — i.e. buffered under a PREVIOUS broker
-// connection (A-1). Their protocol acks are dead (paho returns
+// connection. Their protocol acks are dead (paho returns
 // ErrPacketNotFound for a packet ID from a closed connection), so they are
 // deliberately NOT invoked; a clean_start=false broker redelivers the QoS 1/2
 // fresh on the new connection. QoS 0 stale entries are a best-effort loss (no

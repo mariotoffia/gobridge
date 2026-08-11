@@ -169,7 +169,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// until the client gives up. Blocking here turned readiness lag into an
 	// availability sink — every early request pinned a goroutine and
 	// connection until cancellation, so a slow start could accumulate
-	// blocked handlers (HIGH-4). When ready IS closed the later emit read
+	// blocked handlers. When ready IS closed the later emit read
 	// is guaranteed non-nil because Run stores emit and closes ready under
 	// the same lock.
 	select {
@@ -260,7 +260,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Ownership routing runs ONLY for non-forwarded (client-origin) requests.
 	// A request that already carries a trusted forward marker deliberately
 	// SKIPS this Locate() re-check and is processed locally to terminate the
-	// single-hop chain (finding F5). Re-checking ownership on a forwarded
+	// single-hop chain. Re-checking ownership on a forwarded
 	// request and bouncing it back on disagreement would risk an A->B->A loop,
 	// which the single-hop contract exists to prevent. The accepted cost is a
 	// bounded duplicate window: if the forwarding peer acted on a locator cache

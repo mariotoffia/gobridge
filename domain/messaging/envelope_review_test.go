@@ -10,7 +10,7 @@ import (
 // Envelope Deep Copy Review Tests
 //
 // Validates deep copy completeness for header value types that were
-// identified as missing by expert review (SEC-011, GO-2).
+// identified as missing by expert review (SEC-011).
 // ═══════════════════════════════════════════════════════════════════
 
 // TestEnvelope_Clone_DeepCopiesByteSliceHeaders validates that []byte header

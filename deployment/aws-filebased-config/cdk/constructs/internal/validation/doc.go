@@ -9,7 +9,7 @@
 //     against the already-parsed *ports.BridgeConfig (carried by
 //     internal/source.Materialized). Returns the FIRST error it
 //     encounters as a typed Go error. No CDK Annotations are emitted
-//     here — Annotations belong to Phase 2 (T07) which surfaces
+//     here — Annotations belong to Phase 2 which surfaces
 //     warnings and aggregates non-fatal findings without aborting
 //     synth.
 //   - Phase 2 (separate package, not implemented here): Annotation-
@@ -44,8 +44,7 @@
 //
 // Rows 9 (priority collision), 10 (subnet selection), 11 (multiple
 // GoBridge in a stack) and the Phase-2 SQS/SSM URI cross-checks live
-// in other tasks (attachment ctor, Efs construct, T13 singleton,
-// T07).
+// in other constructs (attachment ctor, Efs construct, singleton).
 //
 // # Validation order (deterministic)
 //
@@ -71,7 +70,7 @@
 //
 // When Raw() returns nil (hand-built configs in tests, future code
 // paths that bypass the parser), the store-path checks are skipped
-// silently. Phase 2 (T07) will catch semantic drift via a deeper
+// silently. Phase 2 will catch semantic drift via a deeper
 // reflection-based pass.
 //
 // # No CDK / jsii imports

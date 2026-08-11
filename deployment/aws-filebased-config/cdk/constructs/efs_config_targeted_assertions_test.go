@@ -13,11 +13,11 @@ import (
 	gobridgecdk "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 )
 
-// Test_T20_Efs_FileSystem_BaselineProps asserts encryption + perf/throughput
+// TestEfs_FileSystem_BaselineProps asserts encryption + perf/throughput
 // modes. ThroughputMode and Encrypted are also covered by efs_config_test.go,
 // but we additionally assert that no LifecyclePolicies are emitted on the
 // default props (the construct should not opt-in to IA tiering by default).
-func Test_T20_Efs_FileSystem_BaselineProps(t *testing.T) {
+func TestEfs_FileSystem_BaselineProps(t *testing.T) {
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -43,12 +43,12 @@ func Test_T20_Efs_FileSystem_BaselineProps(t *testing.T) {
 	}
 }
 
-// Test_T20_Efs_AccessPoints_PosixAndAclShape asserts that BOTH access points
+// TestEfs_AccessPoints_PosixAndAclShape asserts that BOTH access points
 // share the same root-path / POSIX user / CreationInfo (mode 0755, uid/gid
 // 1000) shape. The existing tests assert path + uid/gid via a generic
 // HasResourceProperties match (which only requires SOMEONE to match) — here
 // we walk every AP independently to ensure the invariant holds for both.
-func Test_T20_Efs_AccessPoints_PosixAndAclShape(t *testing.T) {
+func TestEfs_AccessPoints_PosixAndAclShape(t *testing.T) {
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)

@@ -44,7 +44,7 @@ type CredentialAware interface {
 }
 
 // AuthFailureReporter is an OPTIONAL capability of a CredentialAware target
-// (HIGH-3). The CredentialRefresher injects a URI-bound callback at Watch time;
+// The CredentialRefresher injects a URI-bound callback at Watch time;
 // the target invokes it when a LIVE broker op (reconnect/send/receive) maps an
 // error to shared.ErrNotAuthorized. That forces an immediate "Reactive
 // re-resolve" (UBIQUITOUS.md) instead of stalling on revoked credentials until
@@ -75,7 +75,7 @@ type CredentialRefresher struct {
 	// onRotation, when set, is invoked with the URI after each rotation is
 	// applied. The builder wires it to the CredentialResolver's InvalidateCache
 	// so the pull-side cache drops the stale entry and the next synchronous
-	// resolve fetches the rotated material (contract C4).
+	// resolve fetches the rotated material (contract).
 	onRotation func(uri string)
 
 	mu     sync.Mutex
@@ -96,7 +96,7 @@ type RefresherOption func(*CredentialRefresher)
 
 // WithRotationCallback sets a callback invoked with the URI after each applied
 // rotation. The builder passes CredentialResolver.InvalidateCache so the pull
-// cache is dropped in lock-step with a push rotation (contract C4). nil is
+// cache is dropped in lock-step with a push rotation (contract). nil is
 // ignored.
 func WithRotationCallback(fn func(uri string)) RefresherOption {
 	return func(r *CredentialRefresher) {
@@ -147,7 +147,7 @@ func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger,
 	return r
 }
 
-// NotifyAuthFailure is the reactive-recovery hook (F2). A live transport that
+// NotifyAuthFailure is the reactive-recovery hook. A live transport that
 // observes a broker authorization failure (shared.ErrNotAuthorized) on a
 // watched URI calls this to force an IMMEDIATE credential re-resolve instead of
 // leaving the session stuck on the revoked credentials for up to a full poll
@@ -218,7 +218,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		return
 	}
 
-	// HIGH-3: inject the reactive-recovery hook. A target that also implements
+	// inject the reactive-recovery hook. A target that also implements
 	// AuthFailureReporter gets a URI-bound callback so that when a LIVE broker
 	// op (reconnect/send/receive) maps an error to shared.ErrNotAuthorized it
 	// forces an immediate re-resolve instead of stalling on revoked credentials
@@ -330,7 +330,7 @@ func (r *CredentialRefresher) run(
 			applyWG.Wait()
 
 			// Invalidate the pull cache so subsequent synchronous resolves see
-			// the rotated material (contract C4). Done once per rotation, after
+			// the rotated material (contract). Done once per rotation, after
 			// the push targets are updated.
 			if r.onRotation != nil {
 				r.onRotation(uri)
@@ -341,7 +341,7 @@ func (r *CredentialRefresher) run(
 
 // applyOne applies creds to a single target under a bounded context and records
 // the outcome: MetricCredentialRotationApplied on success, a WARN log plus a
-// reactive re-resolve trigger (F2) when the transport rejects the credentials
+// reactive re-resolve trigger when the transport rejects the credentials
 // with an authorization failure.
 func (r *CredentialRefresher) applyOne(
 	parent context.Context,
@@ -363,7 +363,7 @@ func (r *CredentialRefresher) applyOne(
 		}
 		// The transport rejected the credentials as unauthorized: force an
 		// out-of-band re-resolve so the next attempt uses freshly fetched
-		// material rather than waiting for the poll timer (F2).
+		// material rather than waiting for the poll timer.
 		r.NotifyAuthFailure(uri, err)
 		return
 	}

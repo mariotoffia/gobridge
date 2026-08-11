@@ -19,7 +19,7 @@ func warnLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
-// TestDiscoverHost_MultipleCandidates_WarnsAndPicksFirst covers finding F8: on a
+// TestDiscoverHost_MultipleCandidates_WarnsAndPicksFirst covers on a
 // multi-homed host the resolver must pick the first non-loopback IPv4
 // deterministically AND emit an ambiguity WARN so operators can pin the address.
 func TestDiscoverHost_MultipleCandidates_WarnsAndPicksFirst(t *testing.T) {

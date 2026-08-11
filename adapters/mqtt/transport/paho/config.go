@@ -25,7 +25,7 @@ type SessionOptions struct {
 	// ClientID at build time so N replicas sharing ONE config file (a
 	// Kubernetes Deployment or ECS service with replicas>1 and a single
 	// ConfigMap) get DISTINCT client_ids — which $share scale-out REQUIRES —
-	// without per-pod config templating (M-3). Supported tokens:
+	// without per-pod config templating. Supported tokens:
 	//   - "hostname": append "-<os.Hostname()>" (the pod name under K8s, the
 	//     task id under ECS). STABLE across restarts of the same replica, so
 	//     it is the preferred choice and a resumed Persistent session keeps
@@ -38,7 +38,7 @@ type SessionOptions struct {
 	// identity contract requires a STABLE, SHARED client_id across instances:
 	// the lease serialises connections and the standby resumes the broker
 	// session on takeover, so a unique-per-instance id would strand queued
-	// QoS messages (see acl_session.go and scenario 08 / H-1). Empty means
+	// QoS messages (see acl_session.go and scenario 08 /). Empty means
 	// ClientID is used verbatim (the default).
 	ClientIDSuffix string `mapstructure:"client_id_suffix" yaml:"client_id_suffix,omitempty" json:"client_id_suffix,omitempty"`
 	// AssertStableClientIdentity is the operator's explicit assertion that the
@@ -46,7 +46,7 @@ type SessionOptions struct {
 	// restarts (a StatefulSet pod or a VM), so a resumed Persistent session keeps
 	// its durable broker session and does not orphan queued QoS 1/2 messages.
 	//
-	// IDENTITY-1: session_mode=persistent + client_id_suffix=hostname is REJECTED
+	// session_mode=persistent + client_id_suffix=hostname is REJECTED
 	// at build time UNLESS this is true, because on a Kubernetes Deployment or ECS
 	// service every rollout mints a new hostname → new client_id → new broker
 	// session, stranding the previous session's queued messages until
@@ -75,7 +75,7 @@ type SessionOptions struct {
 	// deadline, so without an adapter-owned timeout a wedged broker (a
 	// SUBSCRIBE whose SUBACK never arrives on a half-open connection) hangs
 	// the reconcile — and any startup/hot-reload step awaiting it —
-	// indefinitely (HIGH-2). Each broker op is wrapped in
+	// indefinitely. Each broker op is wrapped in
 	// context.WithTimeout(ctx, reconcile_timeout) so it fails fast and the
 	// caller can retry on the next reconcile. A non-positive value is
 	// coerced to DefaultReconcileTimeout (30s): unlike the tuning knobs
@@ -101,7 +101,7 @@ type SessionOptions struct {
 	// AllowPlaintextCredentials opts IN to sending the MQTT CONNECT
 	// username/password over a NON-TLS broker URL (tcp://, mqtt://, ws://,
 	// or a schemeless URL), where autopaho dials in cleartext and the
-	// credentials travel on the wire in the clear (HIGH-4). It defaults
+	// credentials travel on the wire in the clear. It defaults
 	// FALSE and the adapter FAILS CLOSED when credentials are configured
 	// without every broker_urls entry using a TLS scheme (ssl://, mqtts://,
 	// tls://, mqtt+ssl://, tcps://, wss://). Note that tls.enable does NOT
@@ -146,7 +146,7 @@ type SessionOptions struct {
 	receiveMaximumExplicit      bool `mapstructure:"-" yaml:"-" json:"-"`
 	ingressMemoryBudgetExplicit bool `mapstructure:"-" yaml:"-" json:"-"`
 	// ReconnectDelay is the BASE delay for the jittered exponential
-	// reconnect backoff (M-4): the delay before the first reconnect
+	// reconnect backoff: the delay before the first reconnect
 	// attempt after a failure, grown by reconnectBackoffFactor per
 	// subsequent attempt up to ReconnectMaxDelay, then equal-jittered to
 	// spread a reconnecting fleet (anti thundering-herd). Zero uses
@@ -154,7 +154,7 @@ type SessionOptions struct {
 	// test environments but increase load on the broker in production.
 	ReconnectDelay time.Duration `mapstructure:"reconnect_delay" yaml:"reconnect_delay" json:"reconnect_delay"`
 	// ReconnectMaxDelay caps the jittered-exponential reconnect backoff
-	// envelope (M-4). The per-attempt base delay grows from ReconnectDelay
+	// envelope. The per-attempt base delay grows from ReconnectDelay
 	// up to this ceiling; equal-jitter is then applied within the envelope.
 	// Zero uses DefaultReconnectMaxDelay (2m). Must be >= ReconnectDelay;
 	// a smaller value is clamped up to the base at Start.
@@ -204,7 +204,7 @@ type SessionOptions struct {
 // schemes; every other scheme (tcp, mqtt, ws, or schemeless) dials in
 // CLEARTEXT — and the CONNECT packet's username/password travel in the clear.
 // Note: cfg.TlsCfg is applied by autopaho ONLY on a TLS scheme, so tls.enable
-// on a tcp:// URL is a silent no-op (HIGH-4).
+// on a tcp:// URL is a silent no-op.
 func schemeUsesTLS(brokerURL string) bool {
 	u, err := url.Parse(brokerURL)
 	if err != nil {
@@ -236,14 +236,14 @@ func allBrokerURLsUseTLS(urls []string) bool {
 
 // hasCredentials reports whether the session carries MQTT CONNECT
 // authentication material (username or password). MQTT sends these in the
-// CONNECT packet in cleartext, so they are the credentials the HIGH-4 gate
+// CONNECT packet in cleartext, so they are the credentials the gate
 // protects. Unlike AMQP, autopaho does NOT source credentials from broker-URL
 // userinfo for the CONNECT — only these fields — so the gate checks them alone.
 func (o *SessionOptions) hasCredentials() bool {
 	return o.Username != "" || !o.Password.IsZero()
 }
 
-// plaintextCredentialViolation is the single source of truth for the HIGH-4
+// plaintextCredentialViolation is the single source of truth for the
 // cleartext-credential gate: it reports whether sending the given credential
 // state over the given broker URLs would put username/password on the wire in
 // the clear without the explicit allow_plaintext_credentials opt-in. Both the
@@ -259,7 +259,7 @@ func plaintextCredentialViolation(hasCreds, allowPlaintext bool, brokerURLs []st
 	return hasCreds && !allowPlaintext && !allBrokerURLsUseTLS(brokerURLs)
 }
 
-// errPlaintextCredentials is the fail-closed error every HIGH-4 gate returns so
+// errPlaintextCredentials is the fail-closed error every gate returns so
 // the message (and its BridgeError code) is identical whether the violation is
 // caught at static config validation, at runtime credential rotation, or at the
 // dial-time defense-in-depth guard.
@@ -271,7 +271,7 @@ func errPlaintextCredentials() error {
 }
 
 // validatePlaintextCredentials fails closed when username/password credentials
-// are configured but NOT every broker URL uses a TLS scheme (HIGH-4). The MQTT
+// are configured but NOT every broker URL uses a TLS scheme. The MQTT
 // CONNECT packet carries username/password in cleartext, so on a tcp:// (or
 // other non-TLS) broker they travel on the wire in the clear. It is the
 // explicit-opt-in gate: allow_plaintext_credentials=true is the escape hatch
@@ -380,7 +380,7 @@ const DefaultReconnectAttemptTimeout = 10 * time.Second
 // long.
 const DefaultUnmatchedGrace = 30 * time.Second
 
-// Reconnect-backoff defaults (M-4). autopaho's reconnect loop calls
+// Reconnect-backoff defaults. autopaho's reconnect loop calls
 // ReconnectBackoff(attempt) before each (re)connect; attempt 0 (the first
 // try) is always 0 delay. From attempt 1 the base delay grows
 // exponentially by reconnectBackoffFactor up to DefaultReconnectMaxDelay,
@@ -400,7 +400,7 @@ const (
 
 // DefaultReconcileTimeout bounds each broker SUBSCRIBE / UNSUBSCRIBE issued
 // during SessionPlan reconciliation when reconcile_timeout is unset or
-// non-positive (HIGH-2). 30s comfortably covers a healthy broker's SUBACK /
+// non-positive. 30s comfortably covers a healthy broker's SUBACK /
 // UNSUBACK round-trip while ensuring a wedged broker cannot hang the reconcile
 // (and any startup / hot-reload step awaiting it) indefinitely. It is a
 // liveness safety bound, so a non-positive configured value is coerced UP to

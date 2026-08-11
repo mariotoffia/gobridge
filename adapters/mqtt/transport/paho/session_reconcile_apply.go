@@ -184,11 +184,11 @@ func (s *Session) reconcile(
 			// When enabled it breaks the same-session MQTT->MQTT self-delivery
 			// loop (Scenario 01) but MUST stay off for a shared subscription
 			// ($share), where it is an MQTT 5 Protocol Error the broker rejects
-			// with a DISCONNECT (A-2).
+			// with a DISCONNECT.
 			//
 			// RetainHandling is 1 for persistent/exclusive sessions so a
 			// reconnect that resumes the session does not trigger a full
-			// retained-message replay per filter (A-7); ephemeral sessions keep
+			// retained-message replay per filter; ephemeral sessions keep
 			// 0 (each connect is a fresh subscription that must rehydrate
 			// retained state).
 			toSub = append(toSub, subscribeSpec{
@@ -211,7 +211,7 @@ func (s *Session) reconcile(
 		}
 		// Adapter-owned deadline per SUBSCRIBE too: a broker that accepts the
 		// connection but never returns SUBACK must not hang the reconcile — and
-		// any startup / hot-reload step awaiting it — indefinitely (HIGH-2).
+		// any startup / hot-reload step awaiting it — indefinitely.
 		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 			return err
 		}
@@ -379,7 +379,7 @@ func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeErro
 }
 
 // retainHandlingForMode returns the MQTT5 RetainHandling value for a session of
-// the given mode (A-7). Persistent and exclusive sessions resume across
+// the given mode. Persistent and exclusive sessions resume across
 // reconnects, so RetainHandling 1 ("send retained only if the subscription did
 // not already exist") hydrates retained state on the first subscribe yet
 // suppresses a redundant retained replay on every subsequent reconnect that

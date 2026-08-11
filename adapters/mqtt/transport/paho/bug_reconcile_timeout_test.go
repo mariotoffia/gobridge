@@ -23,7 +23,7 @@ import (
 // context handed to each broker SUBSCRIBE / UNSUBSCRIBE carries a deadline and
 // can optionally block until that context is cancelled (simulating a broker
 // that accepts the connection but never returns SUBACK / UNSUBACK). It backs
-// the HIGH-2 regression tests for the adapter-owned reconcile timeout.
+// the regression tests for the adapter-owned reconcile timeout.
 type reconcileProbeCM struct {
 	// block, when true, makes Subscribe/Unsubscribe wait for ctx.Done and
 	// return ctx.Err() — a wedged broker op that must not hang the reconcile.
@@ -84,7 +84,7 @@ func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) ([]
 
 var _ pahoConnection = (*reconcileProbeCM)(nil)
 
-// TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline proves HIGH-2: even
+// TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline proves: even
 // when the reconcile ctx carries NO deadline (the runtime frequently passes a
 // deadline-less context), the adapter wraps EACH broker SUBSCRIBE and
 // UNSUBSCRIBE in its own context.WithTimeout(reconcile_timeout). Before the
@@ -116,12 +116,12 @@ func TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline(t *testing.T) {
 	require.True(t, probe.subscribeCalled, "reconcile must issue the SUBSCRIBE")
 	require.True(t, probe.unsubscribeCalled, "reconcile must issue the UNSUBSCRIBE")
 	require.True(t, probe.subscribeHadDDL,
-		"HIGH-2: SUBSCRIBE ctx must carry the adapter-owned reconcile deadline")
+		"SUBSCRIBE ctx must carry the adapter-owned reconcile deadline")
 	require.True(t, probe.unsubscribeHadDDL,
-		"HIGH-2: UNSUBSCRIBE ctx must carry the adapter-owned reconcile deadline")
+		"UNSUBSCRIBE ctx must carry the adapter-owned reconcile deadline")
 }
 
-// TestBug_Reconcile_WedgedSubscribe_FailsBoundedNotHang proves HIGH-2's
+// TestBug_Reconcile_WedgedSubscribe_FailsBoundedNotHang proves's
 // liveness guarantee: a SUBSCRIBE whose SUBACK never arrives (wedged broker)
 // must fail via the adapter-owned timeout rather than hang the reconcile — and
 // any startup / hot-reload step awaiting it — forever. The caller ctx is
@@ -147,9 +147,9 @@ func TestBug_Reconcile_WedgedSubscribe_FailsBoundedNotHang(t *testing.T) {
 	case err := <-done:
 		require.Error(t, err, "a wedged SUBSCRIBE must fail via the reconcile timeout, not hang")
 		require.True(t, errors.Is(err, context.DeadlineExceeded),
-			"HIGH-2: wedged SUBSCRIBE must surface as a deadline-exceeded timeout, got %v", err)
+			"wedged SUBSCRIBE must surface as a deadline-exceeded timeout, got %v", err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("HIGH-2 regression: reconcile hung on a wedged SUBSCRIBE past the adapter-owned timeout")
+		t.Fatal("regression: reconcile hung on a wedged SUBSCRIBE past the adapter-owned timeout")
 	}
 }
 
@@ -174,9 +174,9 @@ func TestBug_Reconcile_WedgedUnsubscribe_FailsBoundedNotHang(t *testing.T) {
 	case err := <-done:
 		require.Error(t, err, "a wedged UNSUBSCRIBE must fail via the reconcile timeout, not hang")
 		require.True(t, errors.Is(err, context.DeadlineExceeded),
-			"HIGH-2: wedged UNSUBSCRIBE must surface as a deadline-exceeded timeout, got %v", err)
+			"wedged UNSUBSCRIBE must surface as a deadline-exceeded timeout, got %v", err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("HIGH-2 regression: reconcile hung on a wedged UNSUBSCRIBE past the adapter-owned timeout")
+		t.Fatal("regression: reconcile hung on a wedged UNSUBSCRIBE past the adapter-owned timeout")
 	}
 }
 

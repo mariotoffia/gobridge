@@ -29,7 +29,7 @@ func messageToHeaders(msg *amqp.Message) map[string]any {
 	h := make(map[string]any, size)
 
 	if msg.Properties != nil {
-		// F9: render the message-id / correlation-id to their canonical
+		// render the message-id / correlation-id to their canonical
 		// STRING form (messageIDToString handles string/uuid/ulong/binary)
 		// so a go-amqp SDK type (amqp.UUID, []byte) never lands in the
 		// domain envelope headers, where audit JSON would otherwise emit
@@ -117,7 +117,7 @@ var errUnrepresentableBody = errors.New("amqp10: message body cannot be represen
 type receiverLink struct {
 	raw rawReceiver
 	// delayDeferredWarn dedupes the delayed-retry-deferred Warn to once
-	// per link (G-N2). It is shared with every Delivery this link creates.
+	// per link (G). It is shared with every Delivery this link creates.
 	delayDeferredWarn sync.Once
 }
 
@@ -125,7 +125,7 @@ type receiverLink struct {
 // ACL wrapper depends on. It is defined inside the ACL boundary (where SDK
 // types are permitted) so a test double can inject a receiver whose
 // RejectMessage FAILS, making the malformed-ingress settlement-failure
-// path (HIGH-2) unit-testable without a live broker. It embeds settler
+// path unit-testable without a live broker. It embeds settler
 // because a *Delivery settles through the same underlying link, so a
 // *amqp.Receiver satisfies both in one value.
 type rawReceiver interface {
@@ -165,7 +165,7 @@ func (r *receiverLink) Receive(
 	env, err := messageToEnvelope(msg, clk)
 	if err != nil {
 		// A malformed message is rejected at the broker so it is not
-		// redelivered in an infinite loop. HIGH-2: the reject is itself a
+		// redelivered in an infinite loop.: the reject is itself a
 		// settlement that can FAIL (deadline exceeded, connection dropped);
 		// if it does, the delivery is STILL UNSETTLED. Reporting
 		// errIngressRejected here would emit a false "rejected" metric,
@@ -186,7 +186,7 @@ func (r *receiverLink) Receive(
 	}
 	d := NewDelivery(env, msg, r.raw, logger, metrics, clk)
 	// Share the per-link warn guard so a deferred delayed retry warns
-	// once per link, not once per message (G-N2).
+	// once per link, not once per message (G).
 	d.delayWarnOnce = &r.delayDeferredWarn
 	if metrics != nil {
 		metrics.Timer(MetricAMQP10ReceiveLatency, clk.Since(arrived),
@@ -256,7 +256,7 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 	case msg.Properties != nil && msg.Properties.AbsoluteExpiryTime != nil:
 		expiresAt = *msg.Properties.AbsoluteExpiryTime
 	case msg.Header != nil && msg.Header.TTL > 0:
-		// F7: a ttl-only message (Header.TTL set, no AbsoluteExpiryTime)
+		// a ttl-only message (Header.TTL set, no AbsoluteExpiryTime)
 		// would otherwise cross the bridge as immortal — the relative
 		// lifetime is dropped and nothing downstream can expire it. Stamp
 		// a concrete expiry of receive-time + TTL so the producer's
@@ -349,7 +349,8 @@ func messageBody(msg *amqp.Message) ([]byte, error) {
 }
 
 // messageIDToString renders an AMQP 1.0 message-id (which may be a
-// string, uuid, ulong, or binary per the spec) into the string form the
+// string, uuid, ulong, or binary in the AMQP 1.0 message-id type union)
+// into the string form the
 // envelope ID uses. A deterministic rendering (uuid canonical form,
 // ulong decimal, binary hex) preserves downstream message-id dedup for
 // non-string ids instead of substituting a random envelope ID
@@ -372,7 +373,7 @@ func messageIDToString(id any) string {
 
 // renderAMQP10AppPropertyValue converts a go-amqp application-property
 // value into a domain-safe representation so no SDK type crosses the ACL
-// into envelope headers (F9 application-property path). Audit JSON would
+// into envelope headers (the application-property path). Audit JSON would
 // otherwise emit raw byte arrays or opaque amqp.* values. SDK carriers
 // render deterministically (amqp.UUID -> canonical string, amqp.Symbol ->
 // string, binary -> hex); stdlib primitives (including time.Time) pass

@@ -65,7 +65,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // an unrecoverable component failure that cancelled the runtime. Kubernetes uses
 // this probe to restart the container, so failing closed on a terminal runtime
 // is what turns a dead-but-running process into an automatic restart, while a
-// deliberate pause must NOT be mistaken for death (CRITICAL 1 / CRITICAL 3).
+// deliberate pause must NOT be mistaken for death.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
 	if rt := s.currentRuntime(); rt != nil && rt.Terminal() {
@@ -84,8 +84,8 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 //	?level=full        — all routes have handler registered (ServiceLevelFull)
 //
 // Operators map probes to levels:
-//   - K8s liveness:   /live (200 while recoverable, 503 once terminal)
-//   - K8s readiness:  /ready?level=connected (tolerates intermittent broker hiccups)
+//   - K8s liveness: /live (200 while recoverable, 503 once terminal)
+//   - K8s readiness: /ready?level=connected (tolerates intermittent broker hiccups)
 //   - Pre-traffic:    /ready?level=full (strict, every route ready to dispatch)
 //
 // When ?level= is absent, the legacy contract applies: 200 with
@@ -94,7 +94,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 // structured form {status, role, level, requested}, returning 503 when
 // have<want.
 //
-// HIGH-3: the legacy (no ?level=) default now requires LevelFull — every
+// the legacy (no ?level=) default now requires LevelFull — every
 // session subscribed AND every route ready to dispatch — rather than the old
 // running+healthy check. running+healthy stayed green while an ISOLATED route or
 // session was permanently faulting (superviseRoute/superviseSession record
@@ -122,7 +122,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	rawLevel := r.URL.Query().Get("level")
 	if rawLevel == "" {
 		// Legacy path: preserve historical {status,role} / {error} shape, but
-		// gate on the achieved readiness level (HIGH-3) so an isolated route or
+		// gate on the achieved readiness level so an isolated route or
 		// session fault sheds traffic instead of advertising a false green.
 		if rt.ReadinessLevel(r.Context()) < ports.LevelFull {
 			writeErr(w, http.StatusServiceUnavailable, "not ready")
@@ -334,7 +334,7 @@ type deepHealthRouteResponse struct {
 	DeliveryMode string `json:"delivery_mode"`
 	Ready        bool   `json:"ready"`      // route runner started + receiver started
 	InFlight     int    `json:"in_flight"`  // currently-processing delivery count
-	RouteDead    bool   `json:"route_dead"` // route wedged flapping at the supervisor backoff cap (F5)
+	RouteDead    bool   `json:"route_dead"` // route wedged flapping at the supervisor backoff cap
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {

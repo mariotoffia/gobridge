@@ -218,7 +218,7 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	// Mirror the sqlite DLQ write: a metadata-only entry (no envelope) has a
 	// zero-value Snapshot whose ID() is empty. Marshalling it would produce a
 	// non-empty zero-JSON ({"CreatedAt":…,"ExpiresAt":…}) carrying an EMPTY
-	// envelope ID, which the mandatory-ID guard in Envelope.UnmarshalJSON (C09)
+	// envelope ID, which the mandatory-ID guard in Envelope.UnmarshalJSON
 	// rejects on read-back — a latent silent-loss. Store "" (the empty sentinel
 	// unmarshalEntry already skips) unless the entry actually carries an
 	// envelope (c09-1).

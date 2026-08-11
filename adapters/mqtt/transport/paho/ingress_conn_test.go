@@ -100,7 +100,7 @@ func TestMQTTIngressConn_NonPublishPacketsPassThrough(t *testing.T) {
 }
 
 // TestMQTTIngressConn_RepresentationalCapViolationsPassThrough pins the
-// MQTT-L1 boundary: a packet violating only a LOCAL representational cap
+// boundary: a packet violating only a LOCAL representational cap
 // (oversize payload, too many user properties, oversize metadata) but
 // fitting the advertised Maximum Packet Size is FORWARDED by a compliant
 // broker, so the raw guard must NOT reject it terminally — there is no way

@@ -12,7 +12,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-6 (MEDIUM): a sender's default_topic is used verbatim as the PUBLISH topic
+// (MEDIUM): a sender's default_topic is used verbatim as the PUBLISH topic
 // when an outbound message carries no Address, bypassing the runtime
 // AddressValidator. A wildcard / $-reserved / malformed default_topic would then
 // only fail at first publish — as a broker DISCONNECT that tears down the shared
@@ -46,7 +46,7 @@ func TestFactory_NewSender_ValidatesDefaultTopic(t *testing.T) {
 				Config: Config{Sender: SenderOptions{QoS: 1, DefaultTopic: tc.topic}},
 			}
 			_, err := f.NewSender(context.Background(), spec, sess)
-			require.Error(t, err, "A-6: an invalid default_topic must be rejected at build time")
+			require.Error(t, err, "an invalid default_topic must be rejected at build time")
 			require.ErrorIs(t, err, shared.ErrInvalidPayload)
 		})
 	}
@@ -57,7 +57,7 @@ func TestFactory_NewSender_ValidatesDefaultTopic(t *testing.T) {
 			Config: Config{Sender: SenderOptions{QoS: 1, DefaultTopic: "sensors/archive/x"}},
 		}
 		_, err := f.NewSender(context.Background(), spec, sess)
-		require.NoError(t, err, "A-6: a valid default_topic must build")
+		require.NoError(t, err, "a valid default_topic must build")
 	})
 
 	t.Run("accepts an empty default_topic (no fallback)", func(t *testing.T) {
@@ -66,6 +66,6 @@ func TestFactory_NewSender_ValidatesDefaultTopic(t *testing.T) {
 			Config: Config{Sender: SenderOptions{QoS: 1}},
 		}
 		_, err := f.NewSender(context.Background(), spec, sess)
-		require.NoError(t, err, "A-6: an empty default_topic is legal — the fallback is simply unset")
+		require.NoError(t, err, "an empty default_topic is legal — the fallback is simply unset")
 	})
 }

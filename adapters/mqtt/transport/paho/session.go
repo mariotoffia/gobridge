@@ -48,7 +48,7 @@ type Session struct {
 	events   chan ports.SessionEvent
 	// eventsClosed guards the single close of s.events. TWO paths close
 	// it — Close (terminal shutdown) and Reload's Start-failure signal
-	// (F-1: closing events routes the dead session into the runtime
+	// (closing events routes the dead session into the runtime
 	// manager's events-channel-close restart path). Both honor this flag
 	// under s.mu so a double-close cannot panic, and pushEvent checks it
 	// so no send can race the close. Start clears it (and re-materialises
@@ -86,7 +86,7 @@ type Session struct {
 	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
 	// (only reset when a NEW takeover arrives post-stability) would make every
 	// later ordinary reconnect pay the stale penalty forever, busting the
-	// failover window (A-4). Guarded by mu.
+	// failover window. Guarded by mu.
 	lastTakeoverAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
 	// is set on every connect edge and never reset to 0 on disconnect: the
@@ -104,7 +104,7 @@ type Session struct {
 	// stale reconcile write its subscriptions into the FRESH, just-reset
 	// activeSubs, so the next connect-edge reconcile computes an empty delta and
 	// silently skips re-subscribing on an ephemeral (clean_start) session — a
-	// real, if narrow, subscription-loss window (A-3). Distinct from the
+	// real, if narrow, subscription-loss window. Distinct from the
 	// router's own connEpoch (different struct, different mutex). Guarded by mu.
 	connEpoch uint64
 
@@ -166,7 +166,7 @@ type Session struct {
 
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
-	// mode — the client_id-collision footgun for scale-out (HIGH-3). Guarded
+	// mode — the client_id-collision footgun for scale-out. Guarded
 	// by mu; deduplicated so the warning fires once per session lifetime, not
 	// on every reconcile.
 	sharedSubWarned bool
@@ -209,7 +209,7 @@ type Session struct {
 	// it nil. Guarded by mu when read or written.
 	reconcileSnapshotHook func()
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live CONNECT
 	// is rejected with an authorization failure (CONNACK 0x86/0x87 →
@@ -263,7 +263,7 @@ func (s *Session) SetIngressQuiescenceWaiter(waiter func(context.Context) error)
 // sessionEventsBuffer is the capacity of the session lifecycle-event
 // channel. It is a named constant so the Reload-failure re-Start
 // (acl_session.go) can re-materialise a channel with the SAME capacity
-// it was constructed with (F-1).
+// it was constructed with.
 const sessionEventsBuffer = 16
 
 // NewSession creates an MQTT Session from the given options.
@@ -310,7 +310,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	// broker-side session (subscriptions AND queued offline QoS 1/2), so each
 	// process restart wipes the backlog the persistent mode exists to retain.
 	// The analogous SessionExpiryInterval=0 misconfiguration warns above;
-	// warn here too (MQTT-L6). Exclusive + clean_start=true is separately
+	// warn here too. Exclusive + clean_start=true is separately
 	// OVERRIDDEN to false at dial time (it would cause a takeover loop).
 	if mode == connectivity.SessionPersistent && opts.CleanStart && logger != nil {
 		logger.Warn("mqtt: clean_start=true on a persistent session DISCARDS the broker-side "+
@@ -368,9 +368,9 @@ func (s *Session) clock() clock.Clock {
 // session is not connected). The Sender publishes through this
 // pahoConnection.PublishEnvelope seam rather than reaching for the raw
 // autopaho.ConnectionManager, so port-side egress stays inside the ACL
-// boundary (F-2). The snapshot is taken under mu because Reload/reconnect
+// boundary. The snapshot is taken under mu because Reload/reconnect
 // can swap s.cm; the returned value is used without the lock, exactly as
-// the pre-F-2 ConnectionManager() accessor was.
+// the ConnectionManager() accessor was.
 func (s *Session) connection() pahoConnection {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -35,7 +35,7 @@ evidence, guarding against removing subscriptions the plan still wants.
 - **Ack-and-drop past grace.** Once the grace window elapses, an unmatched
   publish is acked and dropped. The topic is recorded as evidence of a live
   orphan subscription so the adapter can act on fact, not on the config diff
-  alone. **This was later refined (HIGH-1): past-grace handling now splits by
+  alone. **This was later refined: past-grace handling now splits by
   whether the current plan still covers the topic — a covered topic is retained,
   not dropped. See the [2026-07-10 addendum](#addendum-2026-07-10-covered-qos-1-and-2-retention-past-grace).**
 
@@ -58,7 +58,7 @@ evidence, guarding against removing subscriptions the plan still wants.
   the new plan is empty and the last successfully applied plan held
   subscriptions, reconcile intentionally UNSUBSCRIBEs every managed subscription
   it established (`session_reconcile.go`;
-  `TestC7_Reconcile_EmptyPlanRemovesManagedSubs`), so the broker stops delivering
+  `TestReconcile_EmptyPlanRemovesManagedSubs`), so the broker stops delivering
   on stale filters the router would otherwise ack-drop as orphans forever. Only a
   genuinely sender-only transition — an empty plan re-affirming an applied plan
   that itself held no subscriptions, with no broker-observed grants and no managed
@@ -123,7 +123,7 @@ commit 9d8effb (2026-07-10). The date above is the addendum's commit date.
 
 The original **Ack-and-drop past grace** decision above described an
 *unconditional* ack-and-drop once the grace window elapses. That is no longer
-accurate. A later hardening (HIGH-1) split the past-grace path by whether the
+accurate. A later hardening split the past-grace path by whether the
 current routing plan still **covers** the publish's topic:
 
 - **Covered topic, handler registered late.** The publish is **retained

@@ -172,7 +172,7 @@ func TestUCCR1_HappyPathCommitsAcrossProcesses(t *testing.T) {
 	require.Equal(t, version, r.ConfigVersion())
 	require.Len(t, r.Acks(), 3, "all three members must have acked")
 
-	t.Logf("UC-CR1 Q2 sizing: N=3 staging duration (propose->all-committed) = %s "+
+	t.Logf("UC-CR1 sizing: N=3 staging duration (propose->all-committed) = %s "+
 		"(defaultRolloutTTL=5m has ample margin)", staging.Round(time.Millisecond))
 }
 

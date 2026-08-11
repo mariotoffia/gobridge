@@ -201,7 +201,7 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) error {
 
 	// Structural validation only. The LOCAL representational caps —
 	// max_payload_bytes, the metadata byte cap, and the User Property count
-	// cap — are deliberately NOT enforced here (MQTT-L1): the CONNECT
+	// cap — are deliberately NOT enforced here: the CONNECT
 	// advertises only the whole-packet Maximum Packet Size (max_payload_bytes
 	// + the metadata allowance), so a COMPLIANT broker forwards packets that
 	// violate any individual local cap while fitting the advertised total.

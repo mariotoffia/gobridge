@@ -177,7 +177,7 @@ func TestRouter_Close_WaitsForInflightHandlers(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// M2: Close() respects ctx deadline when handlers block
+// Close() respects ctx deadline when handlers block
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestRouter_Close_RespectsCtxDeadline validates that Session.Close returns
@@ -245,7 +245,7 @@ func TestRouter_Close_RespectsCtxDeadline(t *testing.T) {
 // session_lifecycle.go for the rationale).
 
 // ═══════════════════════════════════════════════════════════════════════════
-// L5: Router handler panic recovery
+// Router handler panic recovery
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestRouter_HandlerPanic_DoesNotCrash validates that a panicking handler
@@ -276,7 +276,7 @@ func TestRouter_HandlerPanic_DoesNotCrash(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// T23: Payload deep-copy isolation
+// Payload deep-copy isolation
 //
 // Each handler goroutine must receive an independent copy of the Payload
 // byte slice so that mutations in one handler cannot affect another.

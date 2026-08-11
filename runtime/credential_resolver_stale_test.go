@@ -43,7 +43,7 @@ func (p *programmableRepo) set(creds *connectivity.CredentialSet, err error) {
 	p.creds, p.err = creds, err
 }
 
-// TestCredentialResolver_ServesStaleOnRetryableError is the F5 regression
+// TestCredentialResolver_ServesStaleOnRetryableError is the regression
 // test (retryable branch): once a cache entry has expired, a RETRYABLE
 // (transient) backend failure must serve the last-known-good value instead of
 // failing the rebuild, emit MetricCredentialStaleServed, and NOT extend the
@@ -87,7 +87,7 @@ func TestCredentialResolver_ServesStaleOnRetryableError(t *testing.T) {
 	require.Equal(t, "fresh-user", got.Password().Username(), "recovery must be immediate; stale must not be pinned by a refreshed TTL")
 }
 
-// TestCredentialResolver_PropagatesPermanentError is the F5 regression test
+// TestCredentialResolver_PropagatesPermanentError is the regression test
 // (permanent branch): a PERMANENT backend error must propagate even when a
 // stale cached value exists — stale credentials must never mask a revocation
 // (NOT_AUTHORIZED) or a hard NOT_FOUND.
@@ -120,7 +120,7 @@ func TestCredentialResolver_PropagatesPermanentError(t *testing.T) {
 	require.NotEmpty(t, rec.FindEntries(shared.MetricCredentialResolveFailure), "the resolve failure must be counted")
 }
 
-// TestCredentialResolver_NilCredsIsErrorNotPermanentMiss is the F10 regression
+// TestCredentialResolver_NilCredsIsErrorNotPermanentMiss is the regression
 // test: a repository that returns (nil, nil) must be treated as a hard error
 // (INVALID_PAYLOAD) rather than cached as a permanent miss / allowed to connect
 // anonymously, and the resolver must recover cleanly once the backend returns

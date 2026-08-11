@@ -295,7 +295,7 @@ func TestHandleDLQRedrive_AllFailed(t *testing.T) {
 
 // ═══════════════════════════════════════════════════════════════════
 // No redrive-safe injection: shared_outbox/binding entries are REFUSED
-// ([HIGH-3])
+// ()
 //
 // Without InjectRedrive a replay reuses the ORIGINAL envelope ID, which a
 // shared_outbox route's retained (envelope_id, binding_id) dedup row swallows
@@ -354,7 +354,7 @@ func newRecordingRedriveServer(t *testing.T) (*http.ServeMux, *memorydlq.Store, 
 }
 
 // TestHandleDLQRedrive_NoRedriveSafe_RefusesBindingEntry_AllowsDirect pins
-// [HIGH-3] test (a)+(c): against a runtime that lacks InjectRedrive (but DOES
+// test (a)+(c): against a runtime that lacks InjectRedrive (but DOES
 // expose InjectToBinding), a binding-scoped entry is REFUSED — never injected
 // (not even via InjectToBinding, whose original-ID replay a shared_outbox dedup
 // row would swallow) and never deleted, so its evidence is preserved — while a
@@ -417,7 +417,7 @@ func TestHandleDLQRedrive_NoRedriveSafe_RefusesBindingEntry_AllowsDirect(t *test
 
 // recordingInjectOnlyRuntime wraps a real ports.Runtime and implements ONLY
 // plain Inject — no InjectToBinding, no InjectRedrive. A direct entry redrives
-// through it; a binding entry is refused ([HIGH-3]).
+// through it; a binding entry is refused ().
 type recordingInjectOnlyRuntime struct {
 	ports.Runtime
 	mu           sync.Mutex
@@ -431,7 +431,7 @@ func (r *recordingInjectOnlyRuntime) Inject(_ context.Context, routeID string, _
 	return nil
 }
 
-// TestHandleDLQRedrive_NoRedriveSafe_RefusesBindingEntry_NoInject pins [HIGH-3]
+// TestHandleDLQRedrive_NoRedriveSafe_RefusesBindingEntry_NoInject pins
 // test (a): a runtime that lacks BOTH InjectRedrive and InjectToBinding must
 // REFUSE a binding entry outright — no inject at all (the pre-fix code fanned
 // out to a plain Inject here, re-delivering to the route's other bindings) —
@@ -482,7 +482,7 @@ func TestHandleDLQRedrive_NoRedriveSafe_RefusesBindingEntry_NoInject(t *testing.
 	assert.Contains(t, logOut, "binding-A")
 }
 
-// TestHandleDLQRedrive_NoRedriveSafe_DirectEntry_StillWorks pins [HIGH-3] test
+// TestHandleDLQRedrive_NoRedriveSafe_DirectEntry_StillWorks pins test
 // (c): a COLLISION-FREE direct entry (no binding, EMPTY envelope ID, no dedup-id
 // header) has nothing an outbox or transport can dedup on — injectToBinding
 // assigns a fresh id — so it still redrives via plain Inject and is deleted even
@@ -578,7 +578,7 @@ func TestHandleDLQRedrive_NoRedriveSafe_DirectEntryWithID_RefusedNotDeleted(t *t
 	assert.Contains(t, errs[0].(map[string]any)["error"], "redrive-safe injection")
 }
 
-// TestHandleDLQRedrive_RedriveSafe_BindingEntry_ProceedsAndDeletes pins [HIGH-3]
+// TestHandleDLQRedrive_RedriveSafe_BindingEntry_ProceedsAndDeletes pins
 // test (b): when the runtime DOES implement redrive-safe injection
 // (the concrete runtime.Runtime does), a binding-scoped entry whose binding
 // still exists redrives via InjectRedrive (fresh ID + provenance) and is then
@@ -619,7 +619,7 @@ func (s *stubSender) sentSnapshots() []*messaging.Envelope {
 }
 
 // TestHandleDLQRedrive_UsesRedriveSafeInjection_FreshIDWithProvenance pins the
-// D1 (CRITICAL) wiring: against a real runtime the redrive takes the
+// (CRITICAL) wiring: against a real runtime the redrive takes the
 // redriveInjector capability, so the replay is re-issued under a FRESH
 // envelope ID with the original ID preserved as x-bridge.causation-id.
 // Reusing the original ID is a verified silent-loss path on shared_outbox

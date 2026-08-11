@@ -233,7 +233,7 @@ func TestBreaker_HalfOpen_AbandonedProbeReclaimed(t *testing.T) {
 	}
 }
 
-// TestBreaker_CB1_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot pins CB-1:
+// TestBreaker_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot pins:
 // a probe whose slot was reclaimed (it exceeded probe_timeout) must NOT, when it
 // finally reports, release the newer probe that has since taken a slot, nor vote
 // in the current half-open epoch. Before the fix the token carried no slot
@@ -244,7 +244,7 @@ func TestBreaker_HalfOpen_AbandonedProbeReclaimed(t *testing.T) {
 // Mutation check: revert AfterRequestToken to releaseProbeLocked() (oldest) and
 // this fails — the late success releases B's slot (HalfOpenInFlight drops to 0)
 // and closes the circuit.
-func TestBreaker_CB1_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot(t *testing.T) {
+func TestBreaker_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot(t *testing.T) {
 	cfg := circuitbreaker.Config{
 		FailureThreshold:  1,
 		SuccessThreshold:  1, // one success would close — so a stray vote is observable
@@ -494,7 +494,7 @@ func TestConfig_WithDefaults(t *testing.T) {
 	if cfg.CountError == nil {
 		t.Fatal("expected default CountError to be non-nil")
 	}
-	// F5: the default classifier counts transient/recoverable errors but must
+	// the default classifier counts transient/recoverable errors but must
 	// NOT count a tenant in-flight quota reject (that is a per-tenant fairness
 	// signal, not downstream ill-health — counting it lets one throttled tenant
 	// trip a shared breaker and deny every other tenant).
@@ -512,7 +512,7 @@ func TestConfig_WithDefaults(t *testing.T) {
 	}
 }
 
-// TestBreaker_TenantQuotaExceeded_DoesNotTrip is the F5 core guard: a burst of
+// TestBreaker_TenantQuotaExceeded_DoesNotTrip is the core guard: a burst of
 // tenant in-flight quota rejects must leave a shared breaker CLOSED, so one
 // throttled tenant cannot deny every other tenant behind the same breaker.
 func TestBreaker_TenantQuotaExceeded_DoesNotTrip(t *testing.T) {

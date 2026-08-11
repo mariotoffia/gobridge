@@ -333,7 +333,7 @@ func TestPollBasedWrapper_OnRotationInvokedBeforeEmission(t *testing.T) {
 // fakeUncachedPull implements both Resolve (the cached/build-time value)
 // and ResolveUncached (fresh backend reads from a queue) with separate
 // counters and sources so tests can prove which path the wrapper uses and
-// exercise the F1 build-window seed divergence deterministically.
+// exercise the build-window seed divergence deterministically.
 //
 //   - Resolve      → returns cached (what a freshly built session holds).
 //   - ResolveUncached → pops fresh from an independent queue (the backend).
@@ -364,7 +364,7 @@ var _ UncachedPullCredentialStore = (*fakeUncachedPull)(nil)
 // wrapped store exposes ResolveUncached, the poll TICKS bypass the cached
 // Resolve path — a rotation poll that reads a TTL cache cannot detect
 // rotations before the TTL expires. The seed performs exactly ONE cached
-// read to learn the build-time baseline (F1); all subsequent poll reads
+// read to learn the build-time baseline; all subsequent poll reads
 // are uncached.
 func TestPollBasedWrapper_PrefersUncachedResolve(t *testing.T) {
 	t.Parallel()
@@ -406,18 +406,18 @@ func TestPollBasedWrapper_PrefersUncachedResolve(t *testing.T) {
 		t.Fatal("timed out waiting for rotation emission")
 	}
 
-	require.Equal(t, int64(1), pull.cachedCalls.Load(), "seed must read the cached baseline exactly once (F1); ticks must be uncached")
+	require.Equal(t, int64(1), pull.cachedCalls.Load(), "seed must read the cached baseline exactly once; ticks must be uncached")
 	require.GreaterOrEqual(t, pull.uncachedCalls.Load(), int64(2), "ticks must bypass the cache or rotations hide behind the TTL")
 }
 
-// TestPollBasedWrapper_SeedSurfacesBuildWindowRotation is the F1 regression
+// TestPollBasedWrapper_SeedSurfacesBuildWindowRotation is the regression
 // test: a rotation that lands in the build→watch window (the freshly built
 // session holds the STALE build-time cached value, but the backend already
 // holds the ROTATED value) must be surfaced as a rotation at SEED time —
 // immediately, without waiting for a poll tick — EVEN WHEN EmitOnStart is
 // false (the shipped production default before this fix).
 //
-// Counterfactual: before the F1 fix the seed adopted the fresh uncached
+// Counterfactual: before the fix the seed adopted the fresh uncached
 // value as the dedup baseline and, with EmitOnStart=false, emitted nothing;
 // every later poll then saw "no change" and the session ran on the
 // rotated-out (revoked) credentials forever. With the fix, the seed compares
@@ -453,12 +453,12 @@ func TestPollBasedWrapper_SeedSurfacesBuildWindowRotation(t *testing.T) {
 		require.Equal(t, "fresh-user", got.Password().Username(),
 			"seed must emit the fresh (rotated) value, not the stale build-time value")
 	case <-time.After(2 * time.Second):
-		t.Fatal("F1 regression: rotation landing in the build window was silently swallowed")
+		t.Fatal("regression: rotation landing in the build window was silently swallowed")
 	}
 	require.Equal(t, int64(1), rotations.Load(), "OnRotation must fire for a build-window rotation")
 }
 
-// TestPollBasedWrapper_RefreshForcesImmediateReResolve is the F2 regression
+// TestPollBasedWrapper_RefreshForcesImmediateReResolve is the regression
 // test: after a hard rotation the broker rejects the live credentials
 // (NOT_AUTHORIZED). The transport/refresher calls Refresh(uri) to force an
 // out-of-band re-resolve INSTEAD of waiting up to a full PollInterval

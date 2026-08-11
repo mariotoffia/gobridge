@@ -14,10 +14,10 @@ import (
 // OnConnectionUp callback (registered in Start) on every (re)connect,
 // which calls this method.
 //
-// Ownership (finding C7): the runtime session manager is the SINGLE
+// Ownership: the runtime session manager is the SINGLE
 // owner of reconnect reconciliation. It reacts to the SessionConnected
 // event by calling Reconcile, whose outcome is authoritative and whose
-// failure propagates out of Manager.Run (finding S9). This method must
+// failure propagates out of Manager.Run. This method must
 // therefore NOT reconcile inline; it only resets local subscription
 // state and emits the event.
 //
@@ -29,9 +29,9 @@ import (
 // first, letting the manager's reconcile observe stale subscriptions,
 // compute an empty delta, and skip the re-subscribe — which, combined
 // with an inline reconcile that swallowed its own failure, could leave a
-// topic silently unsubscribed with no error surfaced (finding C7).
+// topic silently unsubscribed with no error surfaced.
 //
-// Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
+// Lock discipline: this callback takes ONLY s.mu for the
 // subscription-state reset and MUST NOT acquire reloadGate. autopaho invokes
 // OnConnectionUp synchronously on its sole connection-management goroutine and
 // documents that the callback "must not block" (autopaho.ClientConfig.
@@ -43,7 +43,7 @@ import (
 //
 // The TOCTOU a lock here would close — a prior-connection reconcile writing
 // stale subscription state AFTER this reset — is instead closed
-// WITHOUT any new lock by the connEpoch generation counter (A-3): this reset
+// WITHOUT any new lock by the connEpoch generation counter: this reset
 // bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
 // longer matches. That keeps activeSubs empty for the new connection, so the
 // authoritative reconnect reconcile issues a full re-subscribe rather than

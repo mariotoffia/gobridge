@@ -9,7 +9,7 @@ import (
 )
 
 // egressReportingSender is a minimal ports.Sender that also implements
-// ports.NonDurableEgressReporter, so the F-3 advisory helper can be exercised
+// ports.NonDurableEgressReporter, so the advisory helper can be exercised
 // without a real transport adapter.
 type egressReportingSender struct {
 	nonDurable bool
@@ -32,7 +32,7 @@ func (plainSender) Send(context.Context, ports.OutboundMessage) error { return n
 const syntheticEarlyAckMode routing.DeliveryMode = "synthetic_early_ack"
 
 // TestEgressDurabilityAdvisory_TruthTable pins the full decision table of the
-// F-3 advisory helper. It proves the advisory is SILENT for both real delivery
+// advisory helper. It proves the advisory is SILENT for both real delivery
 // modes (they gate the source ack behind egress durability) and fires ONLY for
 // a non-durable-egress sender on a mode that acks the source early.
 func TestEgressDurabilityAdvisory_TruthTable(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// CRITICAL 3 (runtime side): a deliberate Stop is a CLEAN pause, not an
+// (runtime side): a deliberate Stop is a CLEAN pause, not an
 // unrecoverable death. Before the KEYSTONE split, Stop set terminal=true on
 // entry, so /live flipped to 503 and the liveness backstop killed the process
 // even for a healthy, deliberate stop. After the split a clean Stop leaves the
@@ -30,7 +30,7 @@ func TestStop_CleanDeliberateStop_IsNotTerminal(t *testing.T) {
 	// and the backstop does not restart the process.
 	assert.False(t, rt.IsRunning(), "runtime must not be running after Stop")
 	assert.False(t, rt.Terminal(),
-		"a clean deliberate Stop must NOT report terminal (CRITICAL 1/3)")
+		"a clean deliberate Stop must NOT report terminal")
 
 	// The runtime is single-use: resume means the supervisor builds a NEW
 	// runtime, so an in-place restart must be rejected (not silently reused).

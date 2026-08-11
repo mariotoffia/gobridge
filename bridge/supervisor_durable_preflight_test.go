@@ -18,7 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Fakes for the durable-reload preflight (HIGH-2 / HIGH-3).
+// Fakes for the durable-reload preflight.
 // ---------------------------------------------------------------------------
 
 // pendingOutboxStore implements ports.OutboxStore AND the OPTIONAL
@@ -235,7 +235,7 @@ func TestDurableReloadPreflight_DLQStoreRemoval(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Integration: apply() must refuse the swap and keep the OLD runtime serving
-// when a reload would strand a non-empty outbox partition (HIGH-2 wiring).
+// when a reload would strand a non-empty outbox partition.
 // ---------------------------------------------------------------------------
 
 // backlogStoreFactory yields a pendingOutboxStore reporting a configurable
@@ -360,7 +360,7 @@ func TestDestructiveReloadShape(t *testing.T) {
 // later StartBridge cannot resume onto a config that strands durable backlog.
 // While paused the old runtime is Stopped and its stores CLOSED, so the live
 // depth preflight cannot run — the paused path fails closed on config shape
-// alone (FIX 2, HIGH-3 paused path).
+// alone (the paused path).
 // ---------------------------------------------------------------------------
 
 func TestSupervisor_PausedDestructiveReload_Refused(t *testing.T) {
@@ -479,7 +479,7 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 	// RETAINED). SESSION#s1 loses its drainer and the explicit destructive option
 	// authorizes the swap. NOTE: this deliberately does NOT change a
 	// lease-bearing session_id (s1 -> s2) — that is refused as a cluster
-	// ownership invariant (HIGH-2); dropping the session orphans the same
+	// ownership dropping the session orphans the same
 	// partition without tripping that refusal.
 	newCfg := supervisorTestConfigWithSession("r1", "s1")
 	newCfg.Routes[0].DeliveryMode = "direct_hold"
@@ -529,7 +529,7 @@ func TestSupervisor_ReloadOrphanDrainedAfterSwap_NoStrandSignal(t *testing.T) {
 	defer func() { cancel(); <-errCh }()
 
 	// Orphan SESSION#s1 without changing a lease-bearing session_id (refused as a
-	// HIGH-2 cluster invariant): drop the inline session and switch to direct_hold.
+	// cluster): drop the inline session and switch to direct_hold.
 	newCfg := supervisorTestConfigWithSession("r1", "s1")
 	newCfg.Routes[0].DeliveryMode = "direct_hold"
 	newCfg.Routes[0].Session = nil

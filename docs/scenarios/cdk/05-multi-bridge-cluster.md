@@ -283,7 +283,7 @@ sequenceDiagram
     Control->>EFS: Write bridge.yaml
     Control-->>Admin: 200 (committed, version N)
 
-    Note over W1,W2: Workers poll EFS at poll_interval
+    Note over: Workers poll EFS at poll_interval
 
     W1->>EFS: Stat bridge.yaml (mtime check)
     EFS-->>W1: mtime changed

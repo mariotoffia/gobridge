@@ -118,7 +118,7 @@ type Watcher struct {
 	baselineHashSet bool
 
 	// coalescedReloads counts reloads whose predecessor was still queued and
-	// had to be evicted so the newest config could be enqueued (I4). It is a
+	// had to be evicted so the newest config could be enqueued. It is a
 	// convergence signal, not a loss signal: the consumer still receives the
 	// latest file state.
 	coalescedReloads atomic.Uint64
@@ -345,7 +345,7 @@ func (w *Watcher) LastApplied() time.Time {
 }
 
 // CoalescedReloads returns the number of parsed reloads that superseded a
-// still-queued predecessor (I4). A non-zero value means the consumer is
+// still-queued predecessor. A non-zero value means the consumer is
 // slower than the file changes; every reload is still eventually delivered as
 // the latest config, none are silently dropped.
 func (w *Watcher) CoalescedReloads() uint64 {
@@ -402,7 +402,7 @@ func (w *Watcher) runNotify(
 	defer resync.Stop()
 
 	// armDebounce (re)starts the debounce timer. It doubles as the stability
-	// settle window (HIGH-2): when reloadIfChanged reports a not-yet-confirmed
+	// settle window: when reloadIfChanged reports a not-yet-confirmed
 	// change (pending), we re-arm here so the SAME bytes are re-read one window
 	// later; only a change that reads identically twice is applied, holding a
 	// torn mid-write snapshot back.
@@ -483,7 +483,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 	ticker := w.clk.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
-	// armConfirm schedules the stability re-read (HIGH-2 torn-write guard).
+	// armConfirm schedules the stability re-read (the torn-write guard).
 	// Poll mode has no debounce timer, so a dedicated one-shot timer (w.debounce)
 	// provides the settle window across which a change must read identically
 	// twice before it is applied.
@@ -530,7 +530,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 // content's hash, so the resync gate sees "no change" and the bridge silently
 // runs a partial config. Mirrors Source.Load's read-once pattern.
 //
-// Stability gate (HIGH-2, torn in-place write): a non-atomic write can briefly
+// Stability gate (torn in-place write): a non-atomic write can briefly
 // leave the file holding a truncated-but-parseable snapshot. A single read at
 // that instant would parse and apply the partial config, dropping routes and
 // triggering a real runtime swap. So a newly-changed content is NOT emitted on
@@ -598,7 +598,7 @@ func (w *Watcher) emitParsed(data []byte, ch chan *ports.BridgeConfig) bool {
 		}
 		return false
 	}
-	// Latest-wins coalescing (I4). The consumer channel is buffered to one.
+	// Latest-wins coalescing. The consumer channel is buffered to one.
 	// Instead of silently discarding a valid reload when that slot is full —
 	// which would leave the consumer stuck on a stale config — evict the
 	// superseded pending config and enqueue the newest, so a slow consumer

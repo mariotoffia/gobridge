@@ -15,7 +15,7 @@ import (
 // DIFFERENT partitions (here two session identities) must yield TWO distinct,
 // independently-claimable records; neither may be swallowed as a duplicate.
 //
-// This pins the H2 contract: a GLOBAL (EnvelopeID, BindingID) identity silently
+// This pins the contract: a GLOBAL (EnvelopeID, BindingID) identity silently
 // loses a message re-persisted under a new partition after a session-identity
 // change (acked upstream, delivered by nobody, recorded nowhere). DynamoDB is
 // already partition-scoped and passes unchanged; the memory/SQLite backends

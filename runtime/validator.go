@@ -63,7 +63,7 @@ func validateRoutes(entries []*routeEntry, hasOutboxStore, hasLeaseStore, hasDLQ
 //     (replayBudgetExhausted); a record is only poisoned once BOTH halves hold.
 //   - OnExpired            — DLQ vs drop for an expired record.
 //   - OnPermanentFailure   — DLQ vs DROP for a permanent send failure OR a
-//     poisoned record. THIS is the CRITICAL-1 field: a single per-partition
+//     poisoned record. THIS is the field: a single per-partition
 //     drainer bakes in one OnPermanentFailure, so a record persisted by a
 //     dlq-policy route but drained under a drop-policy route is DROPPED with no
 //     DLQ evidence after the source was already ACKed — silent message loss.
@@ -95,12 +95,12 @@ func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
 
 // validateSharedOutboxPartitions rejects a configuration where two or more
 // shared_outbox routes drain the SAME session partition with divergent
-// drain-relevant policy (finding 17 + CRITICAL-1). A session partition has
+// drain-relevant policy (finding 17 +). A session partition has
 // exactly one drainer — the first route to claim it wins (bridge_start
 // drainerSessions guard) — so the other routes' records would be silently
 // drained under the first route's SendTimeout / MaxReplayAttempts / ReplayBudget
 // / OnExpired / OnPermanentFailure. The OnPermanentFailure case is the
-// CRITICAL-1 message-loss hazard: a record persisted by a dlq-policy route,
+// message-loss hazard: a record persisted by a dlq-policy route,
 // source-ACKed after Persist, then drained (and permanently-failed or poisoned)
 // under a drop-policy route is Completed with NO DLQ entry — the source delivery
 // is gone and the DLQ evidence the operator configured is lost. Rather than let
@@ -279,7 +279,7 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 	//
 	// We deliberately do NOT reject a binding whose (non-empty) session simply
 	// has no drainer in THIS runtime: that is the normal cross-instance handoff
-	// (T11) where one instance ingests and persists while a different instance
+	// where one instance ingests and persists while a different instance
 	// owns the session lease and drains. Local drainer absence is therefore not
 	// proof of orphaning, so it cannot be a Start-time error without breaking
 	// cross-instance topologies.
@@ -404,7 +404,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	}
 
 	// Total worst-case time the message can hold the source before it is settled,
-	// checked against the fixed visibility window (F4). Per-processor budgets are
+	// checked against the fixed visibility window. Per-processor budgets are
 	// own-time-only and disarm during next() (route/chain.go), so N compliant
 	// processors can legally consume N×ProcessorTimeout before the send even
 	// starts; add the send budget and the bounded DLQ-write budget the failure
@@ -418,7 +418,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	// case only when a DLQ write is actually reachable: a DLQ store exists AND the
 	// terminal policy is not drop. A drop-policy route, or any route in a
 	// deployment with no DLQ store, settles the source in-memory on failure, so
-	// counting the budget there would over-reject a safe config at startup (F4).
+	// counting the budget there would over-reject a safe config at startup.
 	dlqBudget := time.Duration(0)
 	if hasDLQStore && policy.OnPermanentFailure != routing.FailureDrop {
 		dlqBudget = dlqWriteBudget
@@ -442,7 +442,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 // side drifting is caught.
 const dlqWriteBudget = 10500 * time.Millisecond
 
-// validateBackoff rejects negative Backoff fields (F8). WithDefaults fills only
+// validateBackoff rejects negative Backoff fields. WithDefaults fills only
 // ZERO fields, so a negative interval/multiplier survives to here. A negative
 // MaxInterval is the dangerous one: route.retryDelay only clamps exponential
 // growth behind a `> 0` MaxInterval guard, so a negative cap never fires and

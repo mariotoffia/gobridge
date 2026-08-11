@@ -158,7 +158,7 @@ func TestDeliveryRetryScheduleFailsNoComplete(t *testing.T) {
 // fails. CompleteMessage can fail AMBIGUOUSLY — the broker may have
 // COMMITTED the complete while the client only saw a timeout /
 // connection-lost response — so cancelling the ONLY scheduled copy would
-// erase the message from both places: permanent loss (CRITICAL-1). The
+// erase the message from both places: permanent loss. The
 // adapter prefers duplicates over loss: the copy stays scheduled and the
 // settle error is surfaced.
 //

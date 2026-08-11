@@ -15,7 +15,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// A4-R1: budget-exhaustion poison is observable at the point of loss
+// budget-exhaustion poison is observable at the point of loss
 //
 // The age-based root-cause decoupling of replay_count is now IMPLEMENTED
 // (WP-REPLAY-BUDGET): a record is poisoned only once wall-clock time since its

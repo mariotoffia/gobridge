@@ -23,7 +23,7 @@ import (
 //
 // preparedBuild is unexported on purpose: the only supported public
 // entry points are Builder.Build (single-shot) and Builder.Plan +
-// BuildPlan.Commit (explicit two-phase). See M-3 / W-7.
+// BuildPlan.Commit (explicit two-phase). See.
 type preparedBuild struct {
 	cfg    *ports.BridgeConfig
 	stores *storeResult
@@ -60,7 +60,7 @@ type BuildPlan struct {
 	// consumed is set the instant Commit is invoked — BEFORE complete runs — so
 	// the plan is one-shot regardless of outcome. complete()'s failure defers
 	// close the prep-opened store handles, so a retried Commit would build a
-	// runtime over already-closed handles (HIGH-4); marking consumed up front
+	// runtime over already-closed handles; marking consumed up front
 	// makes a second Commit fail instead.
 	consumed bool
 	// closed records that Close/Abort has released the prep-opened stores of a
@@ -100,7 +100,7 @@ func (b *Builder) Plan(ctx context.Context) (*BuildPlan, error) {
 // returns an error, whether the FIRST call succeeded OR failed. The
 // plan is marked consumed BEFORE complete runs: complete()'s failure
 // path closes the prep-opened store handles, so a retried Commit would
-// otherwise build a runtime over already-closed stores (HIGH-4). A
+// otherwise build a runtime over already-closed stores. A
 // caller that wants to retry a failed reload must Plan again.
 func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 	if p == nil {
@@ -130,7 +130,7 @@ func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 // Close releases the transport-independent store handles a Plan opened but never
 // committed into a runtime. It is the abort path for a caller that prepares a
 // plan and then decides not to Commit it: without it the opened SQLite/DynamoDB
-// store handles leak for the plan's lifetime (HIGH-4). Close is idempotent and
+// store handles leak for the plan's lifetime. Close is idempotent and
 // safe on a nil plan.
 //
 // Close is a deliberate NO-OP once Commit has been invoked: on Commit success
@@ -492,7 +492,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 // to its cluster peers. Explicitly configured cluster.endpoints win; otherwise
 // a registered EndpointResolver is consulted.
 //
-// Posture on resolution failure (cluster finding C11): in a clustered
+// Posture on resolution failure (cluster): in a clustered
 // deployment (deployment_mode: clustered) a failed resolution is a STARTUP
 // ERROR — continuing with nil endpoints would silently disable cluster
 // forwarding for the whole process lifetime, leaving peers unable to forward

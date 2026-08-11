@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3), satisfying
+// SetAuthFailureCallback wires the reactive-recovery hook, satisfying
 // the bridge.AuthFailureReporter capability (matched structurally by the
 // CredentialRefresher in another module). A nil callback clears it.
 func (s *Session) SetAuthFailureCallback(cb func(error)) {
@@ -35,7 +35,7 @@ func (s *Session) reportAuthFailure(err error) {
 }
 
 // handleConnectError is the body of autopaho's OnConnectError callback,
-// extracted so the HIGH-3 reactive-recovery chokepoint is unit-testable without
+// extracted so the reactive-recovery chokepoint is unit-testable without
 // a live broker. autopaho surfaces a rejected CONNECT here; after a hard
 // rotation revoked the old credentials the broker answers CONNACK 0x86/0x87
 // (bad user/pass, not authorized), which MapError classifies as
@@ -130,7 +130,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 	credsChanged := creds.Password() != nil &&
 		(s.liveCreds.Username != user || s.liveCreds.Password != pass)
 	if credsChanged {
-		// HIGH-4 (runtime rotation is the hole the static/deferred gates miss):
+		// (runtime rotation is the hole the static/deferred gates miss):
 		// a rotation that would put username/password on a PLAINTEXT transport
 		// is gated identically to static config. Validate the CANDIDATE creds
 		// BEFORE mutating liveCreds/opts so a rejected rotation leaves the
@@ -181,11 +181,11 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 		//
 		// ponytail: cm==nil also matches the brief window where a
 		// Reload-failure has torn the CM down and the supervisor re-Start
-		// has not yet re-installed one (F-1). Returning nil is still
+		// has not yet re-installed one. Returning nil is still
 		// correct there — credsChanged already updated s.liveCreds and
 		// s.opts above (under s.mu), and the imminent re-Start's dial
 		// re-seeds liveCreds from s.opts, so the rotated credentials are
-		// applied on the next CONNECT. The F-1 events-close restart bounds
+		// applied on the next CONNECT. The events-close restart bounds
 		// this window (the session no longer stays dead), so this is a
 		// transient "picked up on next connect", not a false success
 		// against a permanently dead session.

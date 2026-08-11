@@ -9,8 +9,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract C3 and
-// finding H2: when an operator supplies ONLY LeaseTTL (bridge/convert.go no
+// TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract and
+// when an operator supplies ONLY LeaseTTL (bridge/convert.go no
 // longer seeds DefaultConfig, so RenewInterval/RenewJitter arrive zero), the
 // derived-then-clamped renew interval, jitter, and per-call timeout must satisfy
 // the expiry-margin invariant with margin:
@@ -20,7 +20,7 @@ import (
 // for a spread of realistic TTLs including the documented 45s HA value. The
 // derivation goes through clampRenewTimings — the same construction path
 // newManager takes — because the raw 75%-of-TTL derivation does not itself
-// reserve headroom for the per-call timeout (finding H2).
+// reserve headroom for the per-call timeout.
 func TestDeriveRenewTimings_SatisfyInvariant(t *testing.T) {
 	ttls := []time.Duration{
 		30 * time.Second,
@@ -48,7 +48,7 @@ func TestDeriveRenewTimings_SatisfyInvariant(t *testing.T) {
 }
 
 // TestNewManager_DerivesFromTTLOnly verifies the full construction-time
-// derivation path (findings 1, 4, 6, C3): a Config carrying only LeaseTTL
+// derivation path (findings 1, 4, 6): a Config carrying only LeaseTTL
 // derives a safe renew interval, jitter, acquire-poll cadence, and per-call
 // timeout, and the standby acquire-poll is no slower than the owner's renew
 // cadence (finding 6).
@@ -84,7 +84,7 @@ func TestNewManager_DerivesFromTTLOnly(t *testing.T) {
 // TestNewManager_HonorsPinnedIntervalWithZeroJitter verifies the deliberate
 // asymmetry documented in newManager: a pinned RenewInterval with a zero
 // RenewJitter is honored as "no jitter" (deterministic cadence) rather than
-// reinterpreted as "derive". This keeps timing tests deterministic; the C3
+// reinterpreted as "derive". This keeps timing tests deterministic; the
 // production path (both zero) still derives both.
 func TestNewManager_HonorsPinnedIntervalWithZeroJitter(t *testing.T) {
 	cfg := Config{
@@ -155,7 +155,7 @@ func TestConfigValidate(t *testing.T) {
 				LeaseTTL:      45 * time.Second,
 				RenewInterval: 14 * time.Second,
 				RenewJitter:   1 * time.Second, // 3 × (14 + 0.5) = 43.5s < 45s WITHOUT call timeout
-				// RenewCallTimeout left zero derives to 5s: 3 × (14 + 0.5 + 5) = 58.5s >= 45s (finding H2).
+				// RenewCallTimeout left zero derives to 5s: 3 × (14 + 0.5 + 5) = 58.5s >= 45s.
 				MaxRenewFails: 3,
 			},
 			wantErr: true,
@@ -203,7 +203,7 @@ func TestConfigValidate(t *testing.T) {
 
 // TestClampRenewTimings pins the defensive construction-time clamp: an unsafe
 // explicit combination is shrunk until the worst-case span (including the
-// per-call renew timeout, finding H2) fits under the TTL, while a safe
+// per-call renew timeout) fits under the TTL, while a safe
 // combination is left untouched.
 func TestClampRenewTimings(t *testing.T) {
 	ttl := 45 * time.Second
@@ -227,7 +227,7 @@ func TestClampRenewTimings(t *testing.T) {
 	}
 }
 
-// TestRenewWorstCaseSpan_FoldsInCallTimeout pins finding H2: the invariant must
+// TestRenewWorstCaseSpan_FoldsInCallTimeout pins the invariant must
 // count the per-call renew timeout, because renewLoop resets its timer AFTER the
 // renew call returns, so a hung call adds its full RenewCallTimeout to the
 // spacing between attempts. The pre-fix HA preset (14s/1s/5s call timeout)

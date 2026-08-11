@@ -1,7 +1,7 @@
 package runtime_test
 
 // ═══════════════════════════════════════════════════════════════════════
-// S6 — MQTT Delivery.Retry Unsupported: retryOrFallback tests
+// MQTT Delivery.Retry Unsupported: retryOrFallback tests
 //
 // When a source transport does not support Retry (returns ErrNotSupported),
 // the RouteRunner must fall back to DLQ routing with "retry_unsupported"

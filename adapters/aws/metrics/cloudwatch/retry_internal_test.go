@@ -16,7 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// J9 regression: a failed retryable PutMetricData must requeue the drained
+// regression: a failed retryable PutMetricData must requeue the drained
 // datums so a subsequent flush re-attempts delivery instead of silently
 // losing metrics.
 func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
@@ -59,7 +59,7 @@ func TestFlush_RequeuesOnFailure_ThenDelivers(t *testing.T) {
 	}
 }
 
-// J9 regression: the retry buffer is bounded; beyond the bound the oldest
+// regression: the retry buffer is bounded; beyond the bound the oldest
 // datums are dropped and counted rather than growing without limit.
 func TestRequeue_BoundedDropsOldest(t *testing.T) {
 	b := newBatcher(Config{
@@ -89,7 +89,7 @@ func TestRequeue_BoundedDropsOldest(t *testing.T) {
 	}
 }
 
-// J10 regression: invalid dimensions (empty name/value) are dropped, values are
+// regression: invalid dimensions (empty name/value) are dropped, values are
 // truncated to the CloudWatch 256-byte limit, and at most 30 are kept.
 func TestBuildDimensions_ValidatesAndBounds(t *testing.T) {
 	b := testBatcher(100)
@@ -120,7 +120,7 @@ func TestBuildDimensions_ValidatesAndBounds(t *testing.T) {
 	}
 }
 
-// MF-2 regression: a dimension value longer than 256 bytes whose 256th byte
+// regression: a dimension value longer than 256 bytes whose 256th byte
 // lands mid-rune must be truncated on a rune boundary, so the produced datum
 // is always valid UTF-8. A byte-slice truncation would corrupt the rune and
 // CloudWatch would reject the whole all-or-nothing PutMetricData batch.
@@ -150,7 +150,7 @@ func TestBuildDimensions_TruncatesOnRuneBoundary(t *testing.T) {
 	}
 }
 
-// N5 regression: a negative MaxRetryDatums must be clamped to the default, not
+// regression: a negative MaxRetryDatums must be clamped to the default, not
 // treated as "disable the bound" (which would let the retry buffer grow
 // without limit since the requeue guard is maxRetry > 0).
 func TestApplyDefaults_ClampsNegativeMaxRetryDatums(t *testing.T) {

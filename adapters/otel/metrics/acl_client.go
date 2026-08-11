@@ -21,19 +21,19 @@ import (
 )
 
 // errInstrumentLimit is returned when the instrument cache is full and
-// a new (likely dynamic) metric name is rejected (K9).
+// a new (likely dynamic) metric name is rejected.
 var errInstrumentLimit = errors.New("instrument cache limit reached")
 
 // rejectReportInterval bounds how often a full-cache rejection is
-// surfaced through the error handler (N4). Once the cache is full every
+// surfaced through the error handler. Once the cache is full every
 // new dynamic name is rejected on every emit; reporting each one would
 // flood the handler, so reports are throttled to one per interval.
 const rejectReportInterval = time.Minute
 
-// MetricExporterRejectedDatums is the self-metric (MF-5) reporting the
+// MetricExporterRejectedDatums is the self-metric reporting the
 // cumulative number of metric emissions this exporter REJECTED at
 // emit-time — the datum never entered the export pipeline. Here the
-// reason is a full instrument cache (K9): a new dynamic metric name has
+// reason is a full instrument cache: a new dynamic metric name has
 // nowhere to record. Published through the exporter's own pipeline as an
 // observable counter so silent self-loss is visible on the same backend
 // as the metrics themselves. The name and the emit-time-rejection
@@ -72,13 +72,13 @@ type otelMeterClient struct {
 
 	// lastRejectReport holds the UnixNano of the last full-cache
 	// rejection surfaced through onError. It rate-limits rejection
-	// reporting (N4) to one report per rejectReportInterval via a
+	// reporting to one report per rejectReportInterval via a
 	// lock-free CAS, so a dynamic-name flood neither floods the handler
 	// nor contends on mu. Bounded memory: one timestamp, no per-name state.
 	lastRejectReport atomic.Int64
 
 	// rejectedTotal counts every rejected emission. It backs the
-	// MetricExporterRejectedDatums observable self-metric (MF-5) so
+	// MetricExporterRejectedDatums observable self-metric so
 	// self-loss is visible through the exporter's own pipeline, not
 	// only through the (possibly suppressed) error handler.
 	rejectedTotal atomic.Int64
@@ -94,7 +94,7 @@ type otelMeterClient struct {
 func newMeterClient(ctx context.Context, cfg Config) (*otelMeterClient, error) {
 	var exporterOpts []otlpmetrichttp.Option
 	// Only pin the endpoint when explicitly configured; otherwise the
-	// SDK honors OTEL_EXPORTER_OTLP[_METRICS]_ENDPOINT env vars (K7).
+	// SDK honors OTEL_EXPORTER_OTLP[_METRICS]_ENDPOINT env vars.
 	if cfg.Endpoint != "" {
 		exporterOpts = append(exporterOpts, otlpmetrichttp.WithEndpointURL(cfg.Endpoint))
 	}
@@ -112,7 +112,7 @@ func newMeterClient(ctx context.Context, cfg Config) (*otelMeterClient, error) {
 
 	// resource.Default() already merges OTEL_SERVICE_NAME and
 	// OTEL_RESOURCE_ATTRIBUTES; only override attributes explicitly set
-	// via options so env-provided values are not clobbered (K7).
+	// via options so env-provided values are not clobbered.
 	var resAttrs []attribute.KeyValue
 	if cfg.ServiceName != "" {
 		resAttrs = append(resAttrs, semconv.ServiceName(cfg.ServiceName))
@@ -175,7 +175,7 @@ func newMeterClientFromProvider(mp *sdkmetric.MeterProvider, cfg Config) *otelMe
 }
 
 // registerSelfMetrics installs the MetricExporterRejectedDatums
-// observable counter (MF-5). The callback observes the cumulative
+// observable counter. The callback observes the cumulative
 // reject count on every collection; nothing is observed while the
 // count is zero so healthy pipelines carry no extra series. Failure to
 // create the instrument is surfaced through the error handler — the
@@ -198,10 +198,10 @@ func (c *otelMeterClient) registerSelfMetrics() {
 // reportInstrumentError surfaces an instrument-acquisition failure through
 // the configured error handler. The port methods have no error return, so
 // without a handler these failures are lost; the handler is the classified
-// visibility path (K3).
+// visibility path.
 //
 // A full-cache rejection (errInstrumentLimit) is reported at most once per
-// rejectReportInterval (N4): under dynamic-name misuse every emit is
+// rejectReportInterval: under dynamic-name misuse every emit is
 // rejected, and reporting each one would flood the handler. The formatted
 // error is built only when a report is actually emitted, so the rejected
 // hot path stays allocation-free. Bounded memory: a single timestamp, no
@@ -231,7 +231,7 @@ func (c *otelMeterClient) reportInstrumentError(name string, err error) {
 // allowRejectReport reports whether a full-cache rejection may be surfaced
 // now, throttling to one report per rejectReportInterval. It is lock-free
 // (a single load plus CAS) so the rejected hot path never contends on
-// c.mu, and concurrent floods yield exactly one report per window (N4).
+// c.mu, and concurrent floods yield exactly one report per window.
 func (c *otelMeterClient) allowRejectReport() bool {
 	now := c.clk.Now().UnixNano()
 	last := c.lastRejectReport.Load()
@@ -327,7 +327,7 @@ func (c *otelMeterClient) instrumentCountLocked() int {
 // isFullLocked reports whether the instrument cache has reached
 // maxInstruments. Callers must hold c.mu (read or write). The caches only
 // grow (there is no eviction), so once this is true it stays true — the
-// RLock fast path (N4) relies on that to reject a new name without taking
+// RLock fast path relies on that to reject a new name without taking
 // the write Lock. maxInstruments <= 0 disables the bound.
 func (c *otelMeterClient) isFullLocked() bool {
 	return c.maxInstruments > 0 && c.instrumentCountLocked() >= c.maxInstruments
@@ -342,7 +342,7 @@ func (c *otelMeterClient) getOrCreateCounter(name string) (metric.Int64Counter, 
 		return counter, nil
 	}
 	if full {
-		// N4 fast path: the cache is full and this name is not cached.
+		// fast path: the cache is full and this name is not cached.
 		// Because the caches only grow, the name will always be rejected;
 		// return the sentinel without taking the write Lock so a
 		// dynamic-name flood cannot serialize the hot path. The formatted
@@ -378,7 +378,7 @@ func (c *otelMeterClient) getOrCreateGauge(name string) (metric.Float64Gauge, er
 		return gauge, nil
 	}
 	if full {
-		// N4 fast path: see getOrCreateCounter.
+		// fast path: see getOrCreateCounter.
 		return nil, errInstrumentLimit
 	}
 
@@ -415,7 +415,7 @@ func (c *otelMeterClient) getOrCreateHistogram(name string, opts ...metric.Float
 		return histogram, nil
 	}
 	if full {
-		// N4 fast path: see getOrCreateCounter.
+		// fast path: see getOrCreateCounter.
 		return nil, errInstrumentLimit
 	}
 
@@ -457,7 +457,7 @@ func buildDefaultAttrs(tags []shared.Tag) []attribute.KeyValue {
 
 // observedMetricExporter wraps a metric Exporter to surface export
 // failures through an error callback that would otherwise be
-// invisible (K3). All non-Export methods are inherited from the
+// invisible. All non-Export methods are inherited from the
 // embedded Exporter interface.
 type observedMetricExporter struct {
 	sdkmetric.Exporter

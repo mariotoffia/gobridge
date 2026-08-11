@@ -79,7 +79,7 @@ func TestSupervisor_InitialBuildFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "initial build")
 }
 
-// TestSupervisor_StaticallyInvalidConfigFailsAtBuild validates finding 5 / C2:
+// TestSupervisor_StaticallyInvalidConfigFailsAtBuild validates finding 5 /:
 // a statically-rejectable initial config (direct_hold with multiple bindings and
 // no resolver) is rejected during the BUILD phase — complete() runs the
 // runtime's ValidateRoutes before Start — so the supervisor reports it as
@@ -532,7 +532,7 @@ func TestSupervisor_EmptyConfig_Rejected(t *testing.T) {
 // TestSupervisor_SwapUpdatesObservableConfigVersion validates that the
 // running config version is observable via Supervisor.Config after a
 // successful swap, and stays at the old version after a failed swap. It also
-// pins the swap-log field semantics operators alert on (finding A6): a
+// pins the swap-log field semantics operators alert on: a
 // failed swap logs config_version = the still-running version, not the
 // rejected one, so a wedged instance is distinguishable from a healthy one.
 // GoBridge observes the running version, it does not coordinate versions
@@ -580,7 +580,7 @@ func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
 	// NOT the rejected 9) and the rejected version as attempted_config_version.
 	// Logging the failed version as config_version would make a wedged instance
 	// emit the same (config_version, *) pair as a healthy one, defeating the
-	// divergence alert the docs tell operators to build (finding A6).
+	// divergence alert the docs tell operators to build.
 	failRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration failed")
 	assert.Equal(t, float64(8), failRec["config_version"])
 	assert.Equal(t, float64(9), failRec["attempted_config_version"])
@@ -607,14 +607,14 @@ func lastLogRecord(t *testing.T, buf *bytes.Buffer, want string) map[string]any 
 
 // clusteredCfg returns a minimal valid CLUSTERED BridgeConfig
 // (deployment_mode: clustered) with a unique route ID. It is the clustered
-// counterpart of quickCfg used by the H8 fail-closed reload guard tests.
+// counterpart of quickCfg used by the fail-closed reload guard tests.
 func clusteredCfg(id string) *ports.BridgeConfig {
 	cfg := supervisorTestConfig(id)
 	cfg.Bridge.DeploymentMode = "clustered"
 	return cfg
 }
 
-// TestSupervisorClusteredReload proves the H8 fail-closed guard: a per-process
+// TestSupervisorClusteredReload proves fail-closed guard: a per-process
 // live reload of (or into) a CLUSTERED deployment is refused, keeping the
 // current runtime and applied config/version untouched and firing the existing
 // failed-swap event + failure metric. WithAllowDestructiveReload must NOT bypass

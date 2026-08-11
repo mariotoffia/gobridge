@@ -23,7 +23,7 @@ const (
 	remoteParent  = "00-" + remoteTraceID + "-" + remoteSpanID + "-01"
 )
 
-// K1 true-regression: an ingress W3C traceparent must be extracted into
+// true-regression: an ingress W3C traceparent must be extracted into
 // the OTel context so the started span is a CHILD of the remote parent,
 // and the child context must be injectable onto outbound headers with a
 // new span ID under the SAME trace ID. Before the fix traceparent was
@@ -93,7 +93,7 @@ func TestPropagation_NoParent_StartsRoot(t *testing.T) {
 	assert.False(t, spans[0].Parent.IsValid(), "root span must have no parent")
 }
 
-// K8: spans exported through a real OTLP HTTP exporter must reach a
+// spans exported through a real OTLP HTTP exporter must reach a
 // collector; a shutdown flushes the batch. Uses httptest, no sleeps.
 func TestTracer_ExportReachesCollector(t *testing.T) {
 	t.Parallel()
@@ -119,7 +119,7 @@ func TestTracer_ExportReachesCollector(t *testing.T) {
 	assert.GreaterOrEqual(t, hits.Load(), int32(1), "collector must receive at least one export")
 }
 
-// K6: sampler ratios outside [0,1] are rejected at construction.
+// sampler ratios outside [0,1] are rejected at construction.
 func TestNew_RejectsOutOfRangeSamplerRatio(t *testing.T) {
 	t.Parallel()
 
@@ -131,7 +131,7 @@ func TestNew_RejectsOutOfRangeSamplerRatio(t *testing.T) {
 	require.Error(t, err)
 }
 
-// MF-9: W3C header lookup must be case-insensitive — a transport that
+// W3C header lookup must be case-insensitive — a transport that
 // stamps "Traceparent" (HTTP-style casing) must not silently break
 // trace continuity.
 func TestPropagation_ExtractIsCaseInsensitive(t *testing.T) {

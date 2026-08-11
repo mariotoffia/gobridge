@@ -148,7 +148,7 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 // tracker was reset, the broker will redeliver, and downstream dedup absorbs
 // the duplicate, so the settlement reports SUCCESS. Each mapped success is a
 // GUARANTEED broker redelivery, so it is counted on
-// MetricMQTTAckAfterReconnect (MQTT-L5): a burst after a reconnect storm is
+// MetricMQTTAckAfterReconnect: a burst after a reconnect storm is
 // the leading indicator of a duplicate flood on routes without downstream
 // dedup. Every other ack error is classified via MapError and remains a
 // settlement failure.
@@ -194,7 +194,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 		// the connection is being torn down. QoS 1/2 is redelivered by the
 		// resumed session; QoS 0 is a best-effort loss. Counted on the same
 		// stale-purge metric as the epoch-mismatch branch so this drop is
-		// never silent (MQTT-L4).
+		// never silent.
 		r.releaseQueueReservation(pub)
 		r.stalePurged.Add(1)
 		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
@@ -290,7 +290,7 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 	if r.discarding {
 		r.mu.Unlock()
 		// Same recycle-window discard as enqueueDispatch's, for an item already
-		// drained from dispatchCh when the discard began (MQTT-L4).
+		// drained from dispatchCh when the discard began.
 		r.releaseQueueReservation(pub)
 		r.stalePurged.Add(1)
 		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)

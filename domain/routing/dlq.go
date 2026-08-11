@@ -9,7 +9,7 @@ import (
 // DLQEntry represents a dead-letter queue record. The embedded envelope
 // is private and isolated: NewDLQEntry deep-clones the supplied envelope
 // so it cannot be mutated through references retained by the caller, and
-// Snapshot returns a clone for any read or hand-off (the DDD R5
+// Snapshot returns a clone for any read or hand-off (the DDD
 // aggregate-snapshot rule). All identity fields are private; access is
 // via read-only value-receiver accessors. DLQEntry is passed by value
 // through ports.DLQStore, so a copy's accessor values cannot affect

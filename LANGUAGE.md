@@ -158,7 +158,7 @@ Warning: This permanently deletes all rows in `users` and cannot be undone. Veri
 Do NOT make any of the following unnaturally terse, even when terse mode is active:
 
 - Production code (Go source, scripts, configuration files).
-- Public documentation in this repo: `AGENT.md`, `README.md`, `ARCHITECTURE.md`, `DDD.md`, `UBIQUITOUS.md`, `PLUGIN.md`, `TESTS.md`, `DEVELOPMENT.md`, `LANGUAGE.md` itself, anything under `docs/`, `_design/`, runbooks, asciidoc specs.
+- Public documentation in this repo: `AGENTS.md`, `README.md`, `ARCHITECTURE.md`, `DDD.md`, `UBIQUITOUS.md`, `PLUGIN.md`, `TESTS.md`, `DEVELOPMENT.md`, `LANGUAGE.md` itself, anything under `docs/`, `_design/`, runbooks, asciidoc specs.
 - Commit messages and PR descriptions.
 - Code comments where the comment exists to explain non-obvious logic.
 - AsciiDoc design specs under `_design/`.

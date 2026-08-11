@@ -46,7 +46,7 @@ type Sender struct {
 	// (Finding: c8-auth-permanent).
 	authGrace *authGrace
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
 	// SendMessage / SendMessageBatch call is classified as
@@ -226,8 +226,9 @@ func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
 // name, or the queue name embedded as the last path segment of the URL
 // (the form scenario configs use, e.g. `address: orders`). Anything else
 // is rejected with shared.ErrInvalidTopic without contacting the SDK or
-// emitting metrics. Per-message dynamic addressing for SQS is explicitly
-// out of scope (see ARCHITECTURE_PLAN "Non-Goals"). The logical
+// emitting metrics. Per-message dynamic addressing for SQS is deliberately
+// out of scope: a sender is bound to one queue at build time, so honouring
+// an arbitrary Address would silently bypass that binding. The logical
 // Envelope.Subject is mapped to the "Subject" SQS message attribute by
 // buildSendInput and never selects the queue.
 func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {

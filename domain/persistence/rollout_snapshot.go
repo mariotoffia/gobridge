@@ -62,8 +62,8 @@ func (r Rollout) Snapshot() RolloutSnapshot {
 // never act on a malformed row. The guards mirror the domain invariants:
 //   - generation > 0 and a known lifecycle state;
 //   - a non-empty, member-valid, duplicate-free membership epoch (I-epoch);
-//   - every ack/nack references an epoch member (invariant I5);
-//   - terminal state iff a coordinator fencing version is recorded (I3/I4);
+//   - every ack/nack references an epoch member;
+//   - terminal state iff a coordinator fencing version is recorded;
 //   - Proposed carries no acks and Staging carries at least one (the first ack
 //     is what advances Proposed -> Staging).
 //

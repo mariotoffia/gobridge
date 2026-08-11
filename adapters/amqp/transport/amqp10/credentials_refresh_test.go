@@ -121,7 +121,7 @@ func tlsMat(cert, key string, ca []string, insecure bool) *connectivity.TLSMater
 }
 
 // TestSetAuthFailureCallback_ReconnectAuthFailure_ForcesReactiveReResolve
-// verifies the HIGH-3 reactive-recovery wiring: when a live (re)connect dial is
+// verifies the reactive-recovery wiring: when a live (re)connect dial is
 // rejected with an authorization failure, the URI-bound callback injected by
 // the CredentialRefresher is invoked exactly once with shared.ErrNotAuthorized,
 // forcing an immediate re-resolve instead of stalling on revoked credentials.

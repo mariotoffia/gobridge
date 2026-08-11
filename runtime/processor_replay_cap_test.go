@@ -42,7 +42,7 @@ func newReplayCapRunner(maxReplay int, dlqStore *FakeDLQStore) *route.RouteRunne
 }
 
 // TestHandleProcessorError_ReplayCap_PoisonsToDLQ is the regression test for
-// FIX 2: handleProcessorError's recoverable branch had NO MaxReplayAttempts
+// handleProcessorError's recoverable branch had NO MaxReplayAttempts
 // gate, so a deterministically-transient processor failure (a repeating chain
 // timeout) redelivered forever, each attempt pinning a concurrency slot for the
 // full ProcessorTimeout and eventually wedging the route semaphore on brokers

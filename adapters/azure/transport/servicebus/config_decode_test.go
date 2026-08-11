@@ -138,7 +138,7 @@ func TestPluginOptionsDecode_PrefetchKey_Rejected(t *testing.T) {
 	require.Contains(t, err.Error(), "prefetch")
 }
 
-// TestPluginOptionsDecode_RetryBlock_Succeeds is the config test for F5:
+// TestPluginOptionsDecode_RetryBlock_Succeeds is the config test:
 // the SDK retry-policy surface (connection.retry) must decode through the
 // strict production decoder. Without json tags on RetryConfig the nested
 // block would fail under ErrorUnused, leaving the SDK retry layer

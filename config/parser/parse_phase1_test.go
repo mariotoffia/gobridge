@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// ─── FIX-003 Phase 1 parser tests ──────────────────────────────────
+// ─── Two-stage plugin decode ────────────────────────────────────────
 //
 // Cover the two-stage decode for every plugin attachment point in
 // ports/blueprint.go. Stories per attachment point:

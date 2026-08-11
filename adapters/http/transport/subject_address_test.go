@@ -1,5 +1,5 @@
 // Tests covering the subject/address separation contract for the
-// HTTP/SSE adapter (T10):
+// HTTP/SSE adapter:
 //
 //   - The HTTP POST ingress half is unchanged: body.Subject is the
 //     logical Envelope.Subject and there is no transport-address

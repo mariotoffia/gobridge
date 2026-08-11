@@ -63,7 +63,7 @@ var (
 	// (Config.ConfigSingleWriter). A plain last-writer-wins Save on a shared
 	// non-CAS backend can silently clobber a peer admin instance's acknowledged
 	// commit, so the durable write is refused rather than performed silently
-	// (see [HIGH-1]). It is a deployment-configuration condition, not a
+	// (see). It is a deployment-configuration condition, not a
 	// client-correctable one: either wire a CAS store or assert single-writer.
 	errConfigStoreNotCAS = errors.New("config commit refused: non-CAS store is cluster-unsafe")
 )
@@ -112,7 +112,7 @@ type configTxnManager struct {
 	// defaults it to true for the direct, in-process, single-manager
 	// construction used by tests and embedders; Server.New overrides it from
 	// Config.ConfigSingleWriter so a real deployment fails closed on a shared
-	// non-CAS store by default (see [HIGH-1]).
+	// non-CAS store by default (see).
 	singleWriter bool
 }
 
@@ -470,7 +470,7 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 	// Save is taken ONLY when the operator asserted a single writer
 	// (m.singleWriter); otherwise the commit fails closed with
 	// errConfigStoreNotCAS rather than performing a silent last-writer-wins Save
-	// (see [HIGH-1]).
+	// (see).
 	if cas, ok := m.store.(ports.ConditionalConfigStore); ok {
 		if err := cas.SaveIfVersion(ctx, merged, m.active.baseVersion); err != nil {
 			if errors.Is(err, shared.ErrVersionMismatch) {
@@ -484,7 +484,7 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 		// cannot serialize concurrent commits. The read-time version guard above
 		// is NOT atomic with this write, so two admin instances that both read
 		// version N would each pass it and the second plain Save would clobber
-		// the first acknowledged commit (silent lost update; [HIGH-1]). Refuse
+		// the first acknowledged commit (silent lost update;). Refuse
 		// the durable write instead of performing it silently. The operator must
 		// either wire a ports.ConditionalConfigStore (always safe) or assert a
 		// single writer via Config.ConfigSingleWriter.

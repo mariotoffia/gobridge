@@ -16,7 +16,7 @@ import (
 
 // Preflight validates that the configured DynamoDB table's key schema and
 // required global secondary indexes match what the DLQ role needs. It is a
-// build-time safeguard against a misprovisioned or copy-pasted table name (H3):
+// build-time safeguard against a misprovisioned or copy-pasted table name:
 // a DLQ pointed at a table lacking RouteIndex/CategoryIndex would fail every
 // filtered List/DeleteByFilter at runtime, and one with the wrong primary key
 // would corrupt dead-letter storage.

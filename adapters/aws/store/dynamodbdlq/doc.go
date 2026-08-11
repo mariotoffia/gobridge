@@ -10,7 +10,8 @@
 //   - RouteIndex: PK=route_id, SK=failed_at (for List by route)
 //   - CategoryIndex: PK=category, SK=failed_at (for List by category)
 //
-// See ARCHITECTURE_NEW-STORES.md for table schema and operational guidance.
+// Operational guidance: docs/processors-and-stores.md, plus
+// docs/runbooks/poison-message-dlq-growth.md for DLQ growth incidents.
 //
 // # Authoritative key schema (verified by factory preflight)
 //

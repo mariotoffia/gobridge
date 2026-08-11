@@ -19,12 +19,13 @@ import (
 //	Receiver.Run uses r.id as the handler key when calling
 //	router.Register. If Run is invoked twice on the same Receiver
 //	concurrently:
-//	  1. Run #1 registers handler H1 under key r.id.
-//	  2. Run #2 registers handler H2 under key r.id (silently overwrites
-//	     H1 in the router map — see TestAnaRouter_DuplicateRegister).
-//	  3. Now only H2 receives messages.
+//	  1. Run #1 registers its handler under key r.id.
+//	  2. Run #2 registers its handler under the SAME key, silently
+//	     overwriting the first — see TestAnaRouter_DuplicateRegister.
+//	  3. Only the second handler now receives messages.
 //	  4. When Run #1's ctx fires (or its goroutine returns first), its
-//	     deferred Unregister(r.id) removes H2 — the wrong handler.
+//	     deferred Unregister(r.id) removes the SECOND handler — the
+//	     wrong one.
 //	  5. Run #2 now appears alive but has no handler in the router and
 //	     will never see another message until ctx fires.
 //

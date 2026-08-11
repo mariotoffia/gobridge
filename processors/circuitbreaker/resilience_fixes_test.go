@@ -13,15 +13,15 @@ package circuitbreaker
 // +------+--------------------------------------------+----------+
 // | ID   | Description                                | Status   |
 // +------+--------------------------------------------+----------+
-// | T001 | Half-open limits concurrent probes to 1    | PASS     |
-// | T002 | Half-open custom max probes                | PASS     |
-// | T003 | Permanent errors don't trip breaker        | PASS     |
-// | T004 | Mixed errors: only transient counted       | PASS     |
-// | T005 | Custom error classifier                    | PASS     |
-// | T006 | Eviction prefers half-open over open       | PASS     |
-// | T007 | Default config sets HalfOpenMaxProbes      | PASS     |
-// | T008 | Half-open probe released after afterRequest| PASS     |
-// | T009 | Concurrent half-open probes limited        | PASS     |
+// | | Half-open limits concurrent probes to 1 | PASS |
+// | | Half-open custom max probes | PASS |
+// | | Permanent errors don't trip breaker | PASS |
+// | | Mixed errors: only transient counted | PASS |
+// | | Custom error classifier | PASS |
+// | | Eviction prefers half-open over open | PASS |
+// | | Default config sets HalfOpenMaxProbes | PASS |
+// | | Half-open probe released after afterRequest| PASS |
+// | | Concurrent half-open probes limited | PASS |
 // +------+--------------------------------------------+----------+
 // ===============================================
 

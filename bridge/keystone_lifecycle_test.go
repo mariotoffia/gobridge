@@ -52,7 +52,7 @@ func (f *slowDrainTransportFactory) NewReceiver(_ context.Context, _ ports.Recei
 
 var _ ports.TransportFactory = (*slowDrainTransportFactory)(nil)
 
-// TestSupervisor_TerminalFalseDuringHealthySwap reproduces CRITICAL 3: while a
+// TestSupervisor_TerminalFalseDuringHealthySwap reproduces: while a
 // perfectly healthy reconfiguration swap is in progress, Supervisor.Terminal()
 // must stay false for the WHOLE window. Before the fix, the old (stopping)
 // runtime reported terminal for the entire swap, so the liveness backstop
@@ -97,7 +97,7 @@ func TestSupervisor_TerminalFalseDuringHealthySwap(t *testing.T) {
 	<-pollDone
 
 	require.False(t, sawTerminal.Load(),
-		"Supervisor.Terminal() must stay false during a healthy swap (CRITICAL 3)")
+		"Supervisor.Terminal() must stay false during a healthy swap")
 
 	cancel()
 	<-errCh
@@ -126,7 +126,7 @@ func (e *reloadExporter) Close(context.Context) error {
 
 var _ ports.MetricsExporter = (*reloadExporter)(nil)
 
-// TestSupervisor_SharedExporterSurvivesReload reproduces CRITICAL 2: the
+// TestSupervisor_SharedExporterSurvivesReload reproduces: the
 // Supervisor shares ONE metrics exporter across every runtime it builds. A
 // runtime's Stop must FLUSH (buffered data must not be lost) but must NOT
 // CLOSE the shared exporter — before the fix the first reload's Stop closed
@@ -155,7 +155,7 @@ func TestSupervisor_SharedExporterSurvivesReload(t *testing.T) {
 	require.GreaterOrEqual(t, int(exp.flushCalls.Load()), 1,
 		"runtime.Stop must flush the shared exporter on reload")
 	require.Equal(t, 0, int(exp.closeCalls.Load()),
-		"runtime.Stop must NOT close the SHARED exporter (CRITICAL 2)")
+		"runtime.Stop must NOT close the SHARED exporter")
 
 	// Full process shutdown: the final runtime stops too. Still no runtime-driven
 	// Close — the composition root is the sole owner of Close.
@@ -386,7 +386,7 @@ func TestSupervisor_HungSwapCompleteBoundedByDeadline(t *testing.T) {
 	<-errCh
 }
 
-// TestSupervisor_StopBridgeThenStartBridge covers CRITICAL 1 at the supervisor
+// TestSupervisor_StopBridgeThenStartBridge covers at the supervisor
 // seam the http admin layer calls: a deliberate StopBridge must be a clean pause
 // (runtime non-terminal, so /live stays 200 and the backstop does not restart),
 // and a subsequent StartBridge must rebuild a fresh runtime and succeed — never
@@ -407,12 +407,12 @@ func TestSupervisor_StopBridgeThenStartBridge(t *testing.T) {
 	// Deliberate pause: clean stop, NOT terminal.
 	require.NoError(t, s.StopBridge(ctx))
 	require.False(t, rt0.IsRunning(), "StopBridge must stop the runtime")
-	require.False(t, rt0.Terminal(), "a deliberate StopBridge must not be terminal (CRITICAL 1)")
+	require.False(t, rt0.Terminal(), "a deliberate StopBridge must not be terminal")
 	require.False(t, s.Terminal(), "supervisor must not report terminal after a clean pause")
 
 	// Resume: builds a FRESH runtime and starts it (single-use runtime means
 	// resume != in-place restart). Must succeed, not 409-forever.
-	require.NoError(t, s.StartBridge(ctx), "StartBridge after StopBridge must succeed (CRITICAL 1)")
+	require.NoError(t, s.StartBridge(ctx), "StartBridge after StopBridge must succeed")
 
 	rt1 := s.Runtime()
 	require.NotNil(t, rt1)

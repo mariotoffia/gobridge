@@ -5,8 +5,7 @@
 
 This document describes the typed-plugin-config contract that every
 pluggable component in gobridge (transport, store, processor,
-credential source, config-source, etc.) implements. It is the binding
-output of FIX-003 (PHASE0–PHASE6, branch `fix-003-typed-plugin-config`).
+credential source, config-source, etc.) implements. 
 The `cfgshape` analyzer at `scripts/cfgshape/analyzer.go` enforces the
 rules below in `make lint`; this page is the human-readable companion.
 
@@ -373,8 +372,6 @@ mechanically.
   the canonical `options:` wire form.
 * `scripts/cfgshape/analyzer.go` — the enforcement rules.
 * `scripts/lint-arch-mapping-test.sh` — adapter component sentinels.
-* `FIX-003.md` — the design rationale and phased migration runbook.
-* `ARCH_LINT_PLAN.md` § F-003 / ARCH-003 — the architectural framing
-  this document closes.
+* `PLUGIN.md` — the day-to-day guide for adding or changing a plugin.
 * `ARCHITECTURE.md` § "Hexagonal Architecture Layers" — the
   layer-and-import picture this contract slots into.

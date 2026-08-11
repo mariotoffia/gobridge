@@ -37,11 +37,11 @@ type sqlSession struct {
 // pool wider than one would fracture an in-memory store into disjoint copies;
 // on a file database it would also invite SQLITE_BUSY between in-process
 // goroutines. A single writer connection removes both hazards for these
-// single-process stores (I2).
+// single-process stores.
 //
 // ponytail: single-writer ceiling. Good enough for the single-process
 // deployments this store targets; a read-heavy file deployment would upgrade
-// to a separate read-only connection pool over the WAL. See I2.
+// to a separate read-only connection pool over the WAL. See.
 func openSession(path string, nowMs int64) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -55,9 +55,9 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 	// timeout that first conversion fails fast with SQLITE_BUSY under
 	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
 	// block-and-retry up to the timeout — the retry policy for cross-process
-	// contention on a file database, including the initial WAL conversion (I2).
+	// contention on a file database, including the initial WAL conversion.
 	//
-	// synchronous=FULL is pinned explicitly (D1): this outbox is the durable
+	// synchronous=FULL is pinned explicitly: this outbox is the durable
 	// hand-off between an at-least-once receive and an at-least-once send, so a
 	// committed record MUST survive an OS/host crash. modernc.org/sqlite
 	// currently defaults to FULL, but that is an UNPINNED upstream default; a
@@ -97,7 +97,7 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 		return nil, wrapErr(err, "sqliteoutbox: migrate fence updated_at", "path", path)
 	}
 
-	// Identity migration (H2): drop the legacy GLOBAL UNIQUE(envelope_id,
+	// Identity migration: drop the legacy GLOBAL UNIQUE(envelope_id,
 	// binding_id) in favour of the partition-scoped idx_outbox_identity, then
 	// (idempotently) (re)create every index. Runs AFTER the column migrations
 	// so the rebuild copies a table that already has all columns.
@@ -118,7 +118,7 @@ func openSession(path string, nowMs int64) (*sqlSession, error) {
 	return &sqlSession{db: db}, nil
 }
 
-// migrateColumn adds a column to a pre-existing table that predates it (I1).
+// migrateColumn adds a column to a pre-existing table that predates it.
 // CREATE TABLE IF NOT EXISTS in schemaSQL already covers fresh databases;
 // this handles upgrade-in-place for older files without dropping data.
 // Idempotent: a no-op once the column exists.
@@ -360,7 +360,7 @@ func (s *sqlSession) persist(ctx context.Context, records []*persistence.OutboxR
 // claim selects up to limit claimable IDs and atomically flips them to
 // claimed under the supplied owner+version, then hydrates the rows.
 //
-// now/staleClaim drive the optional time-stale reclaim (I1): when
+// now/staleClaim drive the optional time-stale reclaim: when
 // staleClaim > 0 a record that is still claimed but whose claimed_at is older
 // than now-staleClaim is treated as claimable, recovering a claim stranded by
 // a crashed owner. When staleClaim == 0 the store is strictly version-only.
@@ -469,7 +469,7 @@ func (s *sqlSession) claim(ctx context.Context, pk string, token persistence.Lea
 		return nil, wrapErr(err, "sqliteoutbox: update claim",
 			"partitionKey", pk, "ownerID", token.Owner, "recordCount", len(ids))
 	}
-	// The single-writer connection (I2) plus the enclosing transaction means
+	// The single-writer connection plus the enclosing transaction means
 	// every id selected as claimable is still claimable at UPDATE time, so the
 	// guarded UPDATE affects exactly len(ids) rows. A shortfall would signal a
 	// broken isolation assumption; fail closed rather than hydrate rows this
@@ -521,7 +521,7 @@ func fetchByIDsTx(ctx context.Context, tx *sql.Tx, ids []string) ([]*persistence
 // order. Complete/Release compare RowsAffected against len(ids) as a fence
 // check; a duplicate id updates a single physical row once, so leaving
 // duplicates in would make the achievable RowsAffected fall below len and
-// trip a spurious ErrStaleFencingToken (M4). Collapsing them is loss-free
+// trip a spurious ErrStaleFencingToken. Collapsing them is loss-free
 // because the guarded UPDATE ... WHERE id IN (...) is idempotent per id.
 func dedupIDs(ids []string) []string {
 	if len(ids) < 2 {
@@ -603,7 +603,7 @@ func (s *sqlSession) release(ctx context.Context, recordIDs []string, token pers
 }
 
 // expire flips pending records past their expires_at deadline to
-// expired, scoped to partition (M1). Claimed records and records in
+// expired, scoped to partition. Claimed records and records in
 // other partitions are left untouched. Returns rows affected.
 func (s *sqlSession) expire(ctx context.Context, before time.Time, partition string) (int, error) {
 	res, err := s.db.ExecContext(ctx, expireOutboxSQL, partition, before.UnixMilli())

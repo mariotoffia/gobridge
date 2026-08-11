@@ -14,13 +14,12 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════
-// S12 Timeout Alignment Tests
+// Timeout Alignment Tests
 //
-// Validates the S12 changes that align lease-related timeouts:
+// Validates the changes that align lease-related timeouts:
 //   - DefaultSessionConfig produces correct new defaults
 //   - RenewInterval defaults derive from LeaseTTL / MaxRenewFails when left
-//     zero; the presets pin it just under that to keep a sub-TTL margin
-//     (A8-R1-leasettl-margin)
+//     zero; the presets pin it just under that to keep a sub-TTL margin.
 //   - Session manager lifecycle works with derived intervals
 //
 // ┌─────────────┐     ┌───────────────┐     ┌────────────────┐
@@ -36,7 +35,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════
 
 // TestDefaultSessionConfig_S12Defaults validates that DefaultSessionConfig
-// returns the S12-aligned timeout values including drain-related fields.
+// returns the timeout values including drain-related fields.
 func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
 	cfg := session.DefaultConfig("test", true)
 
@@ -48,7 +47,7 @@ func TestDefaultSessionConfig_S12Defaults(t *testing.T) {
 		{"LeaseTTL", cfg.LeaseTTL, 360 * time.Second},
 		// RenewInterval is pinned to 110s (not the derived 120s) so that
 		// RenewInterval*MaxRenewFails = 330s < 360s LeaseTTL, lifting the final
-		// renew off the expiry boundary (A8-R1-leasettl-margin).
+		// renew off the expiry boundary.
 		{"RenewInterval", cfg.RenewInterval, 110 * time.Second},
 		{"RenewJitter", cfg.RenewJitter, 5 * time.Second},
 		{"StepDownGrace", cfg.StepDownGrace, 15 * time.Second},

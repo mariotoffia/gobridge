@@ -341,7 +341,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 	}
 	defer func() { _ = sess.Close(context.Background()) }()
 
-	// Emulate the runtime session manager (finding C7: it is the single
+	// Emulate the runtime session manager (it is the single
 	// owner of reconnect reconciliation). The pump is the sole consumer of
 	// sess.Events() and drives Reconcile on every SessionConnected — the
 	// initial connect and every reconnect after the outage.
@@ -386,7 +386,7 @@ func TestRes_BrokerOutage_ReconnectResubscribesAndDelivers(t *testing.T) {
 
 	// Phase 3: bring broker back. The pump observes a second
 	// SessionConnected and drives the reconnect reconcile (the single owner
-	// per C7), which re-subscribes the plan and emits a second
+	// of the reconcile), which re-subscribes the plan and emits a second
 	// SessionReconciled.
 	broker.Restart()
 	pump.waitCount(t, ports.SessionConnected, 2, 30*time.Second, "SessionConnected after restart")
@@ -428,7 +428,7 @@ func waitForCount(t *testing.T, c *atomic.Int64, want int64, timeout time.Durati
 // ---------------------------------------------------------------------------
 // reconcilePump emulates the runtime session manager for integration tests.
 //
-// Per finding C7 the runtime session manager is the SINGLE owner of reconnect
+// Per finding the runtime session manager is the SINGLE owner of reconnect
 // reconciliation: it consumes SessionConnected events and drives
 // Session.Reconcile, whose outcome is authoritative. paho's OnConnectionUp no
 // longer reconciles inline, so an integration test that exercises a real

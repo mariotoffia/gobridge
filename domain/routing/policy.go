@@ -313,7 +313,7 @@ func (p RoutePolicy) Validate() error {
 	if p.ReplayBudget < 0 {
 		return invalidDuration("ReplayBudget", p.ReplayBudget)
 	}
-	// Reject negative Backoff fields (F8). WithDefaults fills only ZERO fields, so
+	// Reject negative Backoff fields. WithDefaults fills only ZERO fields, so
 	// a negative survives it. A negative MaxInterval is the dangerous one:
 	// route.retryDelay only clamps exponential growth behind a `> 0` MaxInterval
 	// guard, so a negative cap never fires and float64 growth reaches

@@ -64,7 +64,7 @@ func newInjectReq(body string) *http.Request {
 // TestInjectEnvelope_NoID_GeneratesNonSentinel verifies that omitting
 // the "id" field triggers server-side generation. The generated ID
 // MUST NOT collapse to the historical "test-envelope" sentinel that
-// hid the H-3 root regression — every call gets a unique value.
+// hid the root regression — every call gets a unique value.
 func TestInjectEnvelope_NoID_GeneratesNonSentinel(t *testing.T) {
 	seen := make(map[string]struct{})
 	for i := 0; i < 5; i++ {

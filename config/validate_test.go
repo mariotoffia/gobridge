@@ -166,7 +166,7 @@ func TestValidate_ExclusiveSessionWithoutLeaseStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires stores.lease")
 }
 
-// TestValidate_SessionRenewTiming_BadCombo validates the C3 cross-field
+// TestValidate_SessionRenewTiming_BadCombo validates the cross-field
 // invariant: when renew_interval is set explicitly, (renew_interval +
 // jitter/2) * max_renew_fails must stay below lease_ttl, otherwise the owner
 // can exhaust all tolerated renewal failures before the lease expires and a
@@ -184,7 +184,7 @@ func TestValidate_SessionRenewTiming_BadCombo(t *testing.T) {
 }
 
 // TestValidate_SessionRenewTiming_JitterPushesOverLease proves the jitter term
-// participates in the invariant (C3): a combo that is valid without jitter
+// participates in the a combo that is valid without jitter
 // becomes invalid once lease_renew_jitter is added.
 func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
 	cfg := validConfig()
@@ -201,12 +201,12 @@ func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
 }
 
 // TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease proves the
-// per-attempt renew_call_timeout term participates in the C3 invariant (finding
-// H2). All other terms are safe on their own — the operator-set
+// per-attempt renew_call_timeout term participates in the invariant (finding
+// All other terms are safe on their own — the operator-set
 // renew_call_timeout alone pushes the worst-case span over lease_ttl. Without
 // the fix (old formula (renew+jitter/2)*maxFails, omitting call_timeout) this
 // combo PASSES: (14+0.5)*3 = 43.5s < 45s. With the fix it is rejected:
-// (14+0.5+5)*3 = 58.5s >= 45s — the exact HIGH-1 gap.
+// (14+0.5+5)*3 = 58.5s >= 45s — the exact gap.
 func TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Session.RenewInterval = "14s"
@@ -235,7 +235,7 @@ func TestValidate_SessionRenewTiming_OK(t *testing.T) {
 }
 
 // TestValidate_SessionRenewTiming_DerivedRenewSkipped validates that an empty
-// renew_interval (derived from lease_ttl downstream, contract C3) is not
+// renew_interval (derived from lease_ttl downstream, contract) is not
 // subjected to the invariant, so a derive-config never produces a false
 // split-brain rejection even with a tiny lease_ttl.
 func TestValidate_SessionRenewTiming_DerivedRenewSkipped(t *testing.T) {

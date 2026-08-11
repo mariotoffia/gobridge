@@ -235,8 +235,8 @@ func (r *CredentialResolver) ResolveUncached(ctx context.Context, uri string) (*
 //
 // It is the single choke point every resolve path funnels through
 // (build-time synchronous resolve, uncached rotation polls, reactive
-// re-resolves), so it owns credential-resolve observability (F4) and the
-// stale-while-error policy (F5):
+// re-resolves), so it owns credential-resolve observability and the
+// stale-while-error policy:
 //
 //   - On any repository error it emits MetricCredentialResolveFailure tagged
 //     with the error code.
@@ -249,7 +249,7 @@ func (r *CredentialResolver) ResolveUncached(ctx context.Context, uri string) (*
 //     propagates — stale credentials must never mask a revocation or a
 //     misconfiguration.
 //
-// F10: a repository that returns (nil, nil) is treated as a contract
+// a repository that returns (nil, nil) is treated as a contract
 // violation (INVALID_PAYLOAD) rather than cached as a permanent miss, so the
 // hot path cannot hammer the backend and a transport never connects anonymously.
 func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivity.CredentialSet, error) {
@@ -261,7 +261,7 @@ func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivi
 
 	creds, err := repo.Get(ctx, uri)
 	if err == nil && creds == nil {
-		// F10: defensive. A repository must return an error when it has no
+		// defensive. A repository must return an error when it has no
 		// credentials; (nil, nil) would otherwise be cached as a permanent
 		// miss (hammering the backend every call) and let a transport connect
 		// anonymously. Convert it to a hard, non-retryable error.
@@ -286,7 +286,7 @@ func (r *CredentialResolver) fetch(ctx context.Context, uri string) (*connectivi
 	return creds, nil
 }
 
-// serveStaleOnError implements the F5 stale-while-error policy: if err is a
+// serveStaleOnError implements stale-while-error policy: if err is a
 // RETRYABLE (transient) failure and a last-known-good — even expired — cached
 // entry exists, it returns a clone of that entry (WARN + metric) so the caller
 // survives a bounded source outage. It returns nil (propagate the error) for
@@ -382,7 +382,7 @@ func (r *CredentialResolver) resolveRepo(uri string) (ports.CredentialRepository
 // getCached returns a fresh (non-expired) cached CredentialSet or nil.
 //
 // Unlike a plain expiry cache it does NOT delete the entry on expiry: the
-// expired-but-known-good value is retained so serveStaleOnError (F5) can
+// expired-but-known-good value is retained so serveStaleOnError can
 // return it during a bounded source outage. Memory stays bounded by the
 // setCached eviction path (which prefers expired entries) and explicit
 // InvalidateCache calls.
@@ -401,7 +401,7 @@ func (r *CredentialResolver) getCached(uri string) *connectivity.CredentialSet {
 }
 
 // getStale returns a clone of the cached CredentialSet for uri REGARDLESS of
-// expiry, or nil when no entry exists. Used only by the F5 stale-while-error
+// expiry, or nil when no entry exists. Used only by the stale-while-error
 // path; the returned value is deliberately not re-cached, so the TTL is not
 // extended and the next resolve re-probes the backend.
 func (r *CredentialResolver) getStale(uri string) *connectivity.CredentialSet {

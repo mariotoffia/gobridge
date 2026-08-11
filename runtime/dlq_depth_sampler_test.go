@@ -14,7 +14,7 @@ import (
 )
 
 // dlqDepthStore is a full ports.DLQStore that ALSO implements the OPTIONAL
-// ports.DLQDepthReporter capability, so the runtime's DLQ-depth sampler (XCUT-B)
+// ports.DLQDepthReporter capability, so the runtime's DLQ-depth sampler
 // can read a standing backlog. It embeds the shared FakeDLQStore for the store
 // methods and adds Depth.
 type dlqDepthStore struct {
@@ -29,7 +29,7 @@ var (
 	_ ports.DLQDepthReporter = (*dlqDepthStore)(nil)
 )
 
-// XCUT-B / H-OBS DLQ-1: unlike OutboxDepth (sampled every drain cycle), the DLQ
+// / H-OBS DLQ-1: unlike OutboxDepth (sampled every drain cycle), the DLQ
 // has no loop of its own, so the standing backlog is invisible after traffic
 // stops. The runtime lifecycle must spawn a periodic sampler that emits
 // shared.MetricDLQDepth on rt.clk cadence.

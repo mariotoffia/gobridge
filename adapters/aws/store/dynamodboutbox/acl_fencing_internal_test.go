@@ -46,7 +46,7 @@ func assertNoDDBCalls(t *testing.T, f *fakeDDB) {
 	}
 }
 
-// TestClaim_InvalidToken_RejectedNoMutation pins the F1 fencing guard on the
+// TestClaim_InvalidToken_RejectedNoMutation pins fencing guard on the
 // DynamoDB Claim path: a zero-value / invalid LeaseToken is rejected with
 // shared.ErrStaleFencingToken, claims 0 records, and issues NO DynamoDB call
 // (not even the O(1) fence read) — the raw-DDB path can never run with a bad
@@ -70,7 +70,7 @@ func TestClaim_InvalidToken_RejectedNoMutation(t *testing.T) {
 	}
 }
 
-// TestComplete_InvalidToken_RejectedNoMutation pins the F1 fencing guard on the
+// TestComplete_InvalidToken_RejectedNoMutation pins fencing guard on the
 // DynamoDB Complete path. The record's base-table keys are pre-cached so the
 // ONLY DynamoDB op a guard-less Complete could reach is the terminal
 // UpdateItem; the guard rejects the invalid token first, so updateItemCalls
@@ -92,7 +92,7 @@ func TestComplete_InvalidToken_RejectedNoMutation(t *testing.T) {
 	}
 }
 
-// TestRelease_InvalidToken_RejectedNoMutation pins the F1 fencing guard on the
+// TestRelease_InvalidToken_RejectedNoMutation pins fencing guard on the
 // DynamoDB Release path, identical in shape to Complete.
 func TestRelease_InvalidToken_RejectedNoMutation(t *testing.T) {
 	for _, tc := range invalidTokens {

@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3), satisfying
+// SetAuthFailureCallback wires the reactive-recovery hook, satisfying
 // the bridge.AuthFailureReporter capability (matched structurally by the
 // CredentialRefresher in another module). A nil callback clears it.
 func (s *Session) SetAuthFailureCallback(cb func(error)) {
@@ -93,7 +93,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 		return nil
 	}
 	// Force-detach the stale connection UNDER THE LOCK before releasing it
-	// (review #4). Marking the session disconnected and dropping s.conn here —
+	// Marking the session disconnected and dropping s.conn here —
 	// instead of leaving it installed and waiting for the async Close to
 	// eventually fire NotifyClose — guarantees a sender that grabs the seam
 	// (connectionIfReady) after this point cannot publish on the old connection
@@ -135,7 +135,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 	// The connection is already detached from session state; announce the
 	// disconnect and EXPLICITLY wake the reconnect loop to redial with the
 	// rotated material, rather than relying on the async Close below to fire
-	// NotifyClose (which never happens if that Close wedges — review #4). The
+	// NotifyClose (which never happens if that Close wedges). The
 	// send is coalesced (buffered cap 1): concurrent rotations collapse to a
 	// single scheduled reconnect.
 	s.pushEvent(ports.SessionDisconnected, nil)

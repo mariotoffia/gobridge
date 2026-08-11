@@ -41,15 +41,15 @@ func warnBufLogger() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), &buf
 }
 
-// TestClaim_DeepBacklog_IsObservable is the FIX 2 regression. H1 made Claim page
+// TestClaim_DeepBacklog_IsObservable guards the claim cost. Claim pages
 // the WHOLE partition to guarantee oldest-first delivery, which is O(backlog): a
 // deep backlog (e.g. draining after an egress outage on an exclusive session)
 // must not drain quadratically and SILENTLY. Crossing deepBacklogPageWarn emits
 // ONE loud WARN (throttled to once per Claim) and increments MetricClaimScanPages
 // tagged by partition; a shallow backlog does neither. This also gives the
-// deep-backlog path a scale test (the H1 ordering test only used backlog=60).
+// deep-backlog path a scale test (the ordering test only used backlog=60).
 //
-// Counterfactual: pre-FIX-2 the same deep scan happened with no WARN and no
+// Counterfactual: before the fix the same deep scan happened with no WARN and no
 // counter, so an operator recovering from an outage had no signal that each
 // Claim was re-reading the whole partition.
 func TestClaim_DeepBacklog_IsObservable(t *testing.T) {

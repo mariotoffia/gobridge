@@ -125,7 +125,7 @@ func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 }
 
 // testPersistPartialOverlap pins the per-record Persist idempotency contract
-// (C1): a batch that partially overlaps already-persisted records persists
+// a batch that partially overlaps already-persisted records persists
 // the new records and silently skips the existing ones; ErrDuplicateRecord
 // is returned ONLY when every record in the batch already existed. This is
 // what makes a fan-out re-persist after a partial failure safe: without it,
@@ -487,10 +487,10 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 	}
 }
 
-// testExpireScopedToPartition proves Expire is partition-scoped (M1): a sweep
+// testExpireScopedToPartition proves Expire is partition-scoped: a sweep
 // for one partition must NOT expire another partition's pending-expired records,
-// even though both are past their expiry. A drainer holding partition S1's lease
-// must never destroy S2's records.
+// even though both are past their expiry. A drainer holding partition the lease
+// must never destroy the records.
 func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	past := time.Now().Add(-1 * time.Hour)
@@ -522,7 +522,7 @@ func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("query p2: %v", err)
 	}
 	if len(p2) != 1 {
-		t.Fatalf("M1: unswept partition 2 must retain its pending record, got %d", len(p2))
+		t.Fatalf("unswept partition 2 must retain its pending record, got %d", len(p2))
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-8 (MED): the map config path (tlsConfigFromMap) must parse the in-memory
+// (MED): the map config path (tlsConfigFromMap) must parse the in-memory
 // PEM keys (ca_cert_pem / cert_pem / key_pem) exactly like the typed decode
 // path. Before the fix a library consumer wiring TLS through a map silently got
 // system roots and no client certificate — an opaque auth failure that only

@@ -33,7 +33,7 @@ func envWithHeader(key string, value any) *messaging.Envelope {
 	})
 }
 
-// F4: a tenant header stamped as a typed integer (int/int64/uint32) by a
+// a tenant header stamped as a typed integer (int/int64/uint32) by a
 // transport — or rehydrated as an integral float64 by a JSON round-trip
 // (DLQ/outbox save-load) — is coerced to its decimal string and flows through
 // enforcement; it must NOT be silently dropped as "no tenant".
@@ -70,7 +70,7 @@ func TestProcess_TenantHeader_IntegerCoercion(t *testing.T) {
 	}
 }
 
-// F4: a header that is PRESENT but not a coercible identity (bool/struct/bytes,
+// a header that is PRESENT but not a coercible identity (bool/struct/bytes,
 // or a fractional / non-finite / out-of-safe-range float64) is a MALFORMED
 // identity and must be rejected with ErrInvalidPayload — never silently treated
 // as untenanted (which would fail-open the message).
@@ -112,7 +112,7 @@ func TestProcess_TenantHeader_PresentButNonString_Rejected(t *testing.T) {
 	}
 }
 
-// F4: an ABSENT header keeps the existing fail-open (RequireTenant=false) and
+// an ABSENT header keeps the existing fail-open (RequireTenant=false) and
 // reject-when-required (RequireTenant=true) behavior — the type-trap fix must
 // not change the absent-header contract.
 func TestProcess_TenantHeader_Absent_KeepsExistingBehavior(t *testing.T) {
@@ -137,7 +137,7 @@ func TestProcess_TenantHeader_Absent_KeepsExistingBehavior(t *testing.T) {
 	})
 }
 
-// F4: an empty-string tenant header is treated the same as absent (fail-open
+// an empty-string tenant header is treated the same as absent (fail-open
 // when not required), not as a malformed identity.
 func TestProcess_TenantHeader_EmptyString_TreatedAsAbsent(t *testing.T) {
 	p := mustNew(t, Config{RequireTenant: false})

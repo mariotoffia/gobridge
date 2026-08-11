@@ -233,7 +233,7 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 	// Full requires every route runner to be Ready (handler registered). A route
 	// that is not ready OR latched dead (RouteDead — wedged flapping at the
 	// supervisor cap) cannot dispatch, so the instance is not Full even though
-	// every session is subscribed (HIGH-2). This keeps LevelFull an honest
+	// every session is subscribed. This keeps LevelFull an honest
 	// "every route ready to serve" signal that the legacy /ready default relies on.
 	for _, rh := range dh.Routes {
 		if !rh.Ready || rh.RouteDead {

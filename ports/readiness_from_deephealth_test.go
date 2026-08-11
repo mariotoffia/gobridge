@@ -78,7 +78,7 @@ func TestReadinessLevelFromDeepHealth(t *testing.T) {
 			want: ports.LevelSubscribed,
 		},
 		{
-			// HIGH-2: a latched-dead route (wedged flapping at the supervisor cap)
+			// a latched-dead route (wedged flapping at the supervisor cap)
 			// cannot dispatch, so it caps the instance below Full even though its
 			// Started signal fired (Ready: true).
 			name: "subscribed but a route latched dead pins subscribed",

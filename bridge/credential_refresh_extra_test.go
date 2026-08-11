@@ -38,7 +38,7 @@ func (b *syncBuffer) String() string {
 
 // reactivePushStore is an inlinePushStore that ALSO implements the reactive
 // refresh capability (Refresh(uri)), recording every Refresh call so a test can
-// prove the F2 auth-failure hook forwards to it.
+// prove the auth-failure hook forwards to it.
 type reactivePushStore struct {
 	out          chan *connectivity.CredentialSet
 	refreshCalls chan string
@@ -75,7 +75,7 @@ func (p *reactivePushStore) Refresh(uri string) {
 }
 
 // authRejectingSession rejects every ApplyCredentials with ErrNotAuthorized so
-// a test can exercise the apply-error reactive-refresh path (F2).
+// a test can exercise the apply-error reactive-refresh path.
 type authRejectingSession struct {
 	*fakeSession
 }
@@ -114,7 +114,7 @@ func (s *ctxHonoringSession) ApplyCredentials(ctx context.Context, _ *connectivi
 	return err
 }
 
-// TestCredentialRefresher_NotifyAuthFailureForcesRefresh verifies the F2 hook:
+// TestCredentialRefresher_NotifyAuthFailureForcesRefresh verifies the hook:
 // a NOT_AUTHORIZED report on a watched URI forwards to the push store's
 // reactive Refresh, while a non-authorization error does not.
 func TestCredentialRefresher_NotifyAuthFailureForcesRefresh(t *testing.T) {
@@ -136,7 +136,7 @@ func TestCredentialRefresher_NotifyAuthFailureForcesRefresh(t *testing.T) {
 	wait.Silent(t, push.refreshCalls, 100*time.Millisecond)
 }
 
-// TestCredentialRefresher_ApplyAuthFailureTriggersRefresh verifies the F2
+// TestCredentialRefresher_ApplyAuthFailureTriggersRefresh verifies the
 // apply-error path: when a transport rejects rotated credentials with
 // NOT_AUTHORIZED, the refresher forces an out-of-band re-resolve.
 func TestCredentialRefresher_ApplyAuthFailureTriggersRefresh(t *testing.T) {
@@ -157,7 +157,7 @@ func TestCredentialRefresher_ApplyAuthFailureTriggersRefresh(t *testing.T) {
 }
 
 // reportingSession is a CredentialAware target that ALSO implements
-// AuthFailureReporter (HIGH-3). It captures the URI-bound callback the
+// AuthFailureReporter. It captures the URI-bound callback the
 // refresher injects at Watch time so a test can drive it directly and prove it
 // forwards to the reactive push store's Refresh.
 type reportingSession struct {
@@ -183,7 +183,7 @@ func (s *reportingSession) callback() func(error) {
 }
 
 // TestCredentialRefresher_InjectsURIBoundAuthFailureCallback verifies the
-// HIGH-3 injection: a target implementing AuthFailureReporter receives a
+// injection: a target implementing AuthFailureReporter receives a
 // URI-bound callback at Watch time that, when invoked with
 // shared.ErrNotAuthorized, forces the reactive Refresh for that URI; a non-auth
 // error does not.
@@ -235,7 +235,7 @@ func TestCredentialRefresher_NonReporterTargetSkippedCleanly(t *testing.T) {
 	})
 	push.out <- connectivity.NewCredentialSet(pwCred("u", "p"), nil)
 
-	// The apply-error path still forces a reactive refresh (existing F2), proving
+	// The apply-error path still forces a reactive refresh (existing), proving
 	// the non-reporter target is watched cleanly.
 	require.Equal(t, "file://creds", wait.RequireReceive(t, push.refreshCalls, 2*time.Second))
 }
@@ -325,7 +325,7 @@ func TestCredentialRefresher_PerApplyTimeoutBoundsHungApply(t *testing.T) {
 	require.Error(t, err, "a hung ApplyCredentials must be cancelled by the per-apply timeout")
 }
 
-// TestCredentialRefresher_EmitsRotationAppliedMetric verifies the F4 success
+// TestCredentialRefresher_EmitsRotationAppliedMetric verifies the success
 // counter: MetricCredentialRotationApplied is emitted once per applied rotation.
 func TestCredentialRefresher_EmitsRotationAppliedMetric(t *testing.T) {
 	t.Parallel()

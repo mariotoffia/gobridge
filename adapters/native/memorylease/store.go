@@ -140,7 +140,7 @@ func (s *Store) errNotAcknowledged() error {
 
 // cloneEndpoints returns an independent copy of the endpoints map so that
 // neither the store's internal lease state nor a returned LeaseInfo can
-// alias a caller-supplied or caller-held map (finding #29: LeaseInfo is a
+// alias a caller-supplied or caller-held map (LeaseInfo is a
 // read-only snapshot DTO; the LeaseStore owns the lease invariants and
 // defensively copies endpoints at every boundary). Returns nil for a nil
 // input to preserve the "no endpoints" signal.

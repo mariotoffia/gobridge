@@ -362,7 +362,7 @@ func (e *Envelope) SharePayloadFrom(src *Envelope) {
 // When the input ID is empty the helper substitutes a UNIQUE
 // monotonic value of the shape "must-envelope-N" (N from a process-
 // global atomic counter). The previous implementation substituted the
-// constant literal "test-envelope" — the root regression behind H-3:
+// constant literal "test-envelope" — the root of the regression:
 // because every envelope sharing the same ID, five production sites
 // that were forgetting to set MessageID went undetected (collision
 // hid the bug in audit logs and outbox storage). Using a unique value

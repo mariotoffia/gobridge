@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MF-5: rejected emissions must be visible through the exporter's own
+// rejected emissions must be visible through the exporter's own
 // pipeline as the ExporterRejectedDatums self-metric, not only through
 // the error handler.
 func TestExporter_SelfMetric_ReportsRejectedDatums(t *testing.T) {
@@ -44,7 +44,7 @@ func TestExporter_SelfMetric_ReportsRejectedDatums(t *testing.T) {
 	assert.Equal(t, int64(2), sum.DataPoints[0].Value, "each rejected emission counts once")
 }
 
-// MF-5: a healthy pipeline must not carry the self-loss series — nothing
+// a healthy pipeline must not carry the self-loss series — nothing
 // is observed while the rejected count is zero.
 func TestExporter_SelfMetric_AbsentWithoutRejections(t *testing.T) {
 	t.Parallel()
@@ -63,7 +63,7 @@ func TestExporter_SelfMetric_AbsentWithoutRejections(t *testing.T) {
 	assert.False(t, ok, "self-metric must be absent while nothing was rejected")
 }
 
-// MF-8: WithInstanceTag stamps every emitted metric with the
+// WithInstanceTag stamps every emitted metric with the
 // instance_id attribute so fleet instances do not collide.
 func TestExporter_InstanceTag_OnEveryMetric(t *testing.T) {
 	t.Parallel()
@@ -93,7 +93,7 @@ func TestExporter_InstanceTag_OnEveryMetric(t *testing.T) {
 	assert.True(t, found, "expected %s=bridge-7 attribute", otelmetrics.TagKeyInstanceID)
 }
 
-// MF-8: an empty id derives a hostname-pid identity instead of silently
+// an empty id derives a hostname-pid identity instead of silently
 // dropping the tag.
 func TestWithInstanceTag_DerivesWhenEmpty(t *testing.T) {
 	t.Parallel()

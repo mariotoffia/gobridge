@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
-// TestWatchTerminal_TransientPositiveDoesNotExit reproduces the CRITICAL 3
+// TestWatchTerminal_TransientPositiveDoesNotExit reproduces
 // backstop hardening: a single (or a few isolated) transient positive terminal
 // reads — exactly what a swap window can produce — must NOT trip the process
 // exit. Only terminalConfirmSamples CONSECUTIVE positives may. Here the
@@ -39,7 +39,7 @@ func TestWatchTerminal_TransientPositiveDoesNotExit(t *testing.T) {
 	select {
 	case got := <-done:
 		if got {
-			t.Fatal("watchTerminal must NOT exit on isolated transient positives (CRITICAL 3)")
+			t.Fatal("watchTerminal must NOT exit on isolated transient positives")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchTerminal did not return")

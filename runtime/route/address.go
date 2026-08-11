@@ -30,7 +30,7 @@ func RenderAddress(template string, vars map[string]any) (string, error) {
 			// An unterminated placeholder ('{' with no matching '}') is a
 			// malformed template, symmetric with the missing-key case below: fail
 			// loudly rather than silently appending the raw '{...' remainder and
-			// returning a partially-rendered address (F6).
+			// returning a partially-rendered address.
 			return "", fmt.Errorf("unterminated placeholder in address template %q (missing '}')", template)
 		}
 		end += start

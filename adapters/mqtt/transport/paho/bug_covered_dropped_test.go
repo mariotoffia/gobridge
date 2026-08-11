@@ -16,7 +16,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HIGH-1: a still-COVERED live-route publish must NEVER be acked-and-dropped
+// a still-COVERED live-route publish must NEVER be acked-and-dropped
 // after the grace window — that converts startup slowness into acknowledged
 // loss and breaks at-least-once.
 //
@@ -68,7 +68,7 @@ func (h *recordingLogHandler) warnCountContaining(substr string) int {
 // TestBug_SettleUnmatched_CoveredRetained_OrphanDropped drives settleUnmatched
 // via two post-grace unmatched publishes — one on a COVERED topic (a
 // still-desired subscription whose handler registered late) and one on an
-// ORPHAN topic (a route removed from config) — and asserts HIGH-1: the covered
+// ORPHAN topic (a route removed from config) — and asserts: the covered
 // publish is RETAINED un-acked (never ack-dropped, so at-least-once holds) and
 // is delivered once its handler finally registers, while the orphan is
 // acked-and-dropped.
@@ -103,7 +103,7 @@ func TestBug_SettleUnmatched_CoveredRetained_OrphanDropped(t *testing.T) {
 	r.dispatch(&pahov5.Publish{Topic: "removed/route/9", QoS: 1, Payload: []byte("y")},
 		func() error { orphanAcked.Add(1); return nil })
 
-	// HIGH-1: the covered publish is RETAINED un-acked (never ack-dropped); only
+	// the covered publish is RETAINED un-acked (never ack-dropped); only
 	// the orphan is acked-and-dropped.
 	require.Equal(t, int32(0), coveredAcked.Load(),
 		"the covered publish must NOT be acked-and-dropped — that would be acknowledged live-route loss")
@@ -119,7 +119,7 @@ func TestBug_SettleUnmatched_CoveredRetained_OrphanDropped(t *testing.T) {
 	require.Len(t, rec.FindEntries(MetricMQTTRouterUnmatchedDropped), 1,
 		"the orphan-drop metric is emitted exactly once")
 	require.Empty(t, rec.FindEntries(MetricMQTTRouterCoveredDropped),
-		"no covered QoS 1/2 is ever dropped (HIGH-1)")
+		"no covered QoS 1/2 is ever dropped")
 
 	// The covered retention WARNs so a slow/absent receiver is alarming.
 	require.Equal(t, 1, logs.warnCountContaining("RETAINED covered"),
@@ -144,7 +144,7 @@ func TestBug_SettleUnmatched_CoveredRetained_OrphanDropped(t *testing.T) {
 	got := append([]string(nil), delivered...)
 	mu.Unlock()
 	require.Equal(t, []string{"x"}, got,
-		"the RETAINED covered publish is delivered (not lost) once its handler registers (HIGH-1)")
+		"the RETAINED covered publish is delivered (not lost) once its handler registers")
 	require.Equal(t, int32(1), coveredAcked.Load(),
 		"the covered publish is acked only AFTER real delivery, preserving at-least-once")
 	require.Equal(t, 0, r.PendingCount(), "the pending buffer is drained after the flush")

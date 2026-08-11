@@ -17,7 +17,7 @@ import (
 const TagKeyInstanceID = "instance_id"
 
 // defaultMaxInstruments bounds the per-name instrument cache to guard
-// against unbounded cardinality from dynamic metric names (K9).
+// against unbounded cardinality from dynamic metric names.
 // ponytail: 1024 distinct instrument names is far above the bounded,
 // static set the runtime emits (see domain/shared/metrics.go); dynamic
 // names beyond this ceiling are rejected and surfaced via the error
@@ -26,7 +26,7 @@ const defaultMaxInstruments = 1024
 
 // Config holds the configuration for the OTEL metrics exporter.
 //
-// Environment variables (K7): when Endpoint / ServiceName are left
+// Environment variables: when Endpoint / ServiceName are left
 // unset via options, the adapter honors the standard OpenTelemetry
 // environment variables before falling back to built-in defaults.
 // Precedence is: explicit WithXxx option > OTEL_* env var > default.
@@ -48,15 +48,15 @@ type Config struct {
 	DefaultTags []shared.Tag `json:"defaultTags,omitempty"`
 	// InstanceID, when set, is added to DefaultTags as the
 	// "instance_id" attribute so per-instance series in a fleet do not
-	// collide (MF-8). Set via WithInstanceTag.
+	// collide. Set via WithInstanceTag.
 	InstanceID string `json:"instanceId,omitempty"`
 	// FlushInterval is how often to export metrics. Default: 60 seconds.
 	FlushInterval time.Duration `json:"flushInterval,omitempty"`
 	// ExportTimeout bounds a single periodic export. Zero keeps the SDK
-	// default (K3).
+	// default.
 	ExportTimeout time.Duration `json:"exportTimeout,omitempty"`
 	// MaxInstruments bounds the instrument cache to reject unbounded
-	// dynamic metric names (K9). Zero means defaultMaxInstruments.
+	// dynamic metric names. Zero means defaultMaxInstruments.
 	MaxInstruments int `json:"maxInstruments,omitempty"`
 	// Insecure uses HTTP instead of HTTPS. Default: false.
 	Insecure bool `json:"insecure,omitempty"`
@@ -64,8 +64,8 @@ type Config struct {
 	Headers map[string]string `json:"headers,omitempty"`
 
 	// errorHandler receives export/backpressure failures and rejected
-	// instrument creations that would otherwise be invisible (K3, K9).
-	// Defaults to a slog.Default() Warn logger (MF-5); explicitly
+	// instrument creations that would otherwise be invisible.
+	// Defaults to a slog.Default() Warn logger; explicitly
 	// installing nil suppresses reporting. Not serialized.
 	errorHandler func(error)
 	// errorHandlerSet distinguishes "never configured" (default warn
@@ -113,7 +113,7 @@ func WithDefaultTags(tags ...shared.Tag) Option {
 
 // WithInstanceTag adds an "instance_id" attribute (TagKeyInstanceID) to
 // every emitted metric so per-instance series in a fleet do not collide
-// (MF-8). Pass the bridge's configured InstanceID
+// Pass the bridge's configured InstanceID
 // (ports.BridgeSettings.InstanceID); an empty id derives
 // "<hostname>-<pid>".
 func WithInstanceTag(id string) Option {
@@ -152,7 +152,7 @@ func WithExportTimeout(d time.Duration) Option {
 
 // WithMaxInstruments bounds the number of distinct metric instruments
 // (counters+gauges+histograms) the exporter will create. Emits beyond
-// the bound are rejected and surfaced via the error handler (K9).
+// the bound are rejected and surfaced via the error handler.
 func WithMaxInstruments(n int) Option {
 	return func(e *Exporter) {
 		e.config.MaxInstruments = n
@@ -175,7 +175,7 @@ func WithHeaders(headers map[string]string) Option {
 
 // WithErrorHandler installs a callback invoked when a metric export
 // fails or an instrument is rejected. When never configured, failures
-// are logged at Warn level via slog.Default() (MF-5); pass nil to
+// are logged at Warn level via slog.Default(); pass nil to
 // explicitly suppress reporting.
 func WithErrorHandler(fn func(error)) Option {
 	return func(e *Exporter) {
@@ -202,7 +202,7 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.errorHandler == nil && !cfg.errorHandlerSet {
 		// Export failures and rejected instruments must not be silent
-		// by default (MF-5). Opt out with WithErrorHandler(nil).
+		// by default. Opt out with WithErrorHandler(nil).
 		cfg.errorHandler = func(err error) {
 			slog.Default().Warn("otel-metrics: export failure", slog.String("error", err.Error()))
 		}

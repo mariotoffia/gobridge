@@ -224,7 +224,7 @@ There is **no** supported *live* rollout for a clustered deployment: a live relo
 
 ### Clustered live reload is rejected, fail-closed
 
-A per-process live reload cannot roll a clustered cohort safely: there is no cluster-wide version barrier, no all-member readiness gate, and no coordinated rollback. So the runtime **refuses every non-no-op live reload of (or into) a clustered deployment wholesale** (finding H8), rather than adopting a split-inducing config.
+A per-process live reload cannot roll a clustered cohort safely: there is no cluster-wide version barrier, no all-member readiness gate, and no coordinated rollback. So the runtime **refuses every non-no-op live reload of (into) a clustered deployment wholesale**, rather than adopting a split-inducing config.
 
 The guard fires in both reload paths -- the `Supervisor` (`bridge.Supervisor.apply`) and the AWS file-based composition root (`bootstrap.App.applyLogicalConfig`) -- **after no-op detection but before any Plan/build/store query or stop**. It triggers when **either** the currently-applied **or** the proposed config is clustered (`deployment_mode: clustered`, or a static `cluster.endpoints` override), covering both *entering* and *leaving* a cohort via live reload. On refusal:
 

@@ -65,7 +65,7 @@ func TestBug_Reconcile_RemovingCoverage_ReclassifiesRetainedPending(t *testing.T
 	sess.mu.Unlock()
 
 	// Past the grace window a covered publish whose handler has not registered
-	// is RETAINED un-acked (HIGH-1) — this is the pinned entry.
+	// is RETAINED un-acked — this is the pinned entry.
 	clk.Advance(testGrace + time.Second)
 	var acked int32
 	var ackMu sync.Mutex

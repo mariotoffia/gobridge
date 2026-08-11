@@ -44,7 +44,7 @@ flowchart TB
     end
 
     VIP -->|"lease holder"| R1
-    VIP -.->|"waiting for lease"| R2
+    VIP -.->|"waiting for lease"|
 
     subgraph AWS ["AWS"]
         SQS["SQS Queue\ntelemetry-events"]
@@ -249,7 +249,7 @@ In this scenario we use both for defense in depth: the exclusive session ensures
 
 When set, the bridge does not open the MQTT connection until the lease is acquired. The standby instance has no open TCP connection to the broker. This is important for two reasons:
 
-1. **A shared `client_id` stays safe.** Exclusive instances share one stable `client_id` (above), so the lease is what guarantees only one of them is ever connected. `connect_after_lease` enforces that: the standby holds no connection, so it cannot take over the active owner's broker session before it actually owns the lease. Without it, a booting standby would connect with the shared `client_id` and *session-takeover-kick* the live owner mid-stream. (This is the reverse hazard from the H-1 stranding one: shared id + no lease gate = mutual kicking; unique id = stranded queues. The lease + a shared id + `connect_after_lease` is the only combination that both serialises connections and carries the session on failover.)
+1. **A shared `client_id` stays safe.** Exclusive instances share one stable `client_id` (above), so the lease is what guarantees only one of them is ever connected. `connect_after_lease` enforces that: the standby holds no connection, so it cannot take over the active owner's broker session before it actually owns the lease. Without it, a booting standby would connect with the shared `client_id` and *session-takeover-kick* the live owner mid-stream. (This is the reverse hazard from the stranding one: shared id + no lease gate = mutual kicking; unique id = stranded queues. The lease + a shared id + `connect_after_lease` is the only combination that both serialises connections and carries the session on failover.)
 
 2. **Resource conservation.** The standby instance consumes no broker resources until it takes over.
 
@@ -287,14 +287,14 @@ sequenceDiagram
     participant LS as Lease Store (DynamoDB)
     participant B2 as bridge-02
 
-    Note over B1,B2: Startup - both instances compete for lease
+    Note over: Startup - both instances compete for lease
 
     B1->>LS: AcquireLease(bridge-01, ttl=300s)
     LS-->>B1: Granted (fencing_token=1)
     B2->>LS: AcquireLease(bridge-02, ttl=300s)
     LS-->>B2: Denied (held by bridge-01)
 
-    Note over B1: Active - connects MQTT, processes messages
+    Note over: Active - connects MQTT, processes messages
 
     B1->>B1: Connect MQTT (connect_after_lease)
     B1->>B1: Subscribe $share/bridge-group/telemetry/#
@@ -309,16 +309,16 @@ sequenceDiagram
         LS-->>B2: Held by bridge-01, not expired
     end
 
-    Note over B1: Failure - bridge-01 crashes
+    Note over: Failure - bridge-01 crashes
 
     B1--xB1: Process crash
 
-    Note over B2: Detection - lease expires after 300s
+    Note over: Detection - lease expires after 300s
 
     B2->>LS: AcquireLease(bridge-02, ttl=300s)
     LS-->>B2: Granted (fencing_token=2)
 
-    Note over B2: Takeover - bridge-02 becomes active
+    Note over: Takeover - bridge-02 becomes active
 
     B2->>B2: Connect MQTT (connect_after_lease)
     B2->>B2: Subscribe $share/bridge-group/telemetry/#
@@ -403,12 +403,12 @@ The outbox store uses monotonically increasing fencing tokens to prevent duplica
 Each lease acquisition generates a new fencing token (an incrementing integer). When the active instance writes to the outbox, it stamps each record with its current fencing token. When the outbox drainer sends records to SQS and marks them complete, it includes the fencing token in a conditional write:
 
 1. **bridge-01** acquires lease with `fencing_token=1`.
-2. **bridge-01** persists outbox record `{id: R1, fencing_token: 1, status: pending}`.
-3. **bridge-01** crashes before delivering R1 to SQS.
+2. **bridge-01** persists outbox record `{id:, fencing_token: 1, status: pending}`.
+3. **bridge-01** crashes before delivering to SQS.
 4. **bridge-02** acquires lease with `fencing_token=2`.
-5. **bridge-02** claims R1: conditional update sets `fencing_token=2, status: claimed`.
-6. **bridge-01** recovers momentarily and tries to complete R1 with `fencing_token=1`. The conditional write fails because the record now has `fencing_token=2`.
-7. **bridge-02** delivers R1 to SQS. Because bridge-01 crashed *before* its own send (step 3), this interleaving yields a single delivery; the general contract is at-least-once (below).
+5. **bridge-02** claims: conditional update sets `fencing_token=2, status: claimed`.
+6. **bridge-01** recovers momentarily and tries to complete with `fencing_token=1`. The conditional write fails because the record now has `fencing_token=2`.
+7. **bridge-02** delivers to SQS. Because bridge-01 crashed *before* its own send (step 3), this interleaving yields a single delivery; the general contract is at-least-once (below).
 
 The DynamoDB conditional expression ensures that only the current lease holder can commit outbox records. Stale holders are fenced out of the *commit*, not the *send*: had bridge-01 reached SQS before crashing, bridge-02's redelivery would be a duplicate at the destination. Fencing guarantees at-most-once **commit**, while delivery stays at-least-once, so downstream consumers must be idempotent.
 

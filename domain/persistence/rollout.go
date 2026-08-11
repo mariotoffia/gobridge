@@ -26,7 +26,7 @@ import (
 //
 // Proposed is the freshly-opened barrier before any member has acked. The first
 // Ack moves it to Staging. A Commit is only legal from Staging once every
-// membership-epoch member has acked (invariant I2). Abort is legal from any
+// membership-epoch member has acked. Abort is legal from any
 // pre-commit state.
 type RolloutState string
 
@@ -111,7 +111,7 @@ type RolloutProposal struct {
 // Rollout is the coordination state of one cluster config rollout: an immutable
 // value whose transitions (WithAck / WithNack / WithCommit / WithAbort) return
 // a NEW Rollout, never mutating the receiver. The store persists it and applies
-// transitions under its own compare-and-set; the invariants I2/I3/I4/I5 live
+// transitions under its own compare-and-set; the invariants live
 // here so they hold for every store backend without duplication.
 //
 // aggregate-root
@@ -136,20 +136,20 @@ type Rollout struct {
 	confirmDeadline time.Time
 	// converged records, keyed by member id, which epoch members reached
 	// convergence after their provisional swap. Confirm requires it to cover the
-	// whole epoch (invariant I7).
+	// whole epoch.
 	converged map[string]RolloutConverged
 	// coordVersion is the fencing high-water mark: the lease-token version of
 	// the coordinator that last flipped the rollout to a terminal state. Zero
 	// while non-terminal. A Commit/Abort carrying a strictly lower token is
-	// rejected as stale (invariant I3).
+	// rejected as stale.
 	//
-	// SCOPE — because it is zero until the FIRST decision, I3 rejects a stale
+	// SCOPE — because it is zero until the FIRST decision, rejects a stale
 	// RE-decision, not a stale first decision: before any coordinator has
 	// decided, every valid token passes the fence, so a deposed coordinator can
 	// still decide first. Closing that needs the row to learn the live
 	// coordinator epoch before a decision (an explicit claim write — a protocol
 	// addition). The residual is fail-safe: a zombie Commit still requires the
-	// full ack barrier (I2), a zombie Abort just keeps the old config serving,
+	// full ack barrier, a zombie Abort just keeps the old config serving,
 	// and bridge.firstSideEffectAllowed's lock-delay makes a successor wait a
 	// full lease TTL before acting. Pinned by
 	// TestRolloutFencingIsRejectionOfReDecisionOnly.
@@ -242,7 +242,7 @@ func (r Rollout) IsTerminal() bool {
 }
 
 // CanCommit reports whether the rollout satisfies the all-member barrier
-// (invariant I2): it is in Staging and every membership-epoch member has acked.
+// it is in Staging and every membership-epoch member has acked.
 func (r Rollout) CanCommit() bool {
 	if r.state != RolloutStaging || len(r.acks) != len(r.membershipEpoch) {
 		return false
@@ -258,8 +258,7 @@ func (r Rollout) CanCommit() bool {
 // WithAck records member's acknowledgement of the proposed generation and, if
 // this is the first ack, advances Proposed → Staging. Rejects an ack from a
 // member outside the frozen epoch, a second ack/nack from the same member
-// (invariant I5), an empty build digest, or any ack against a terminal rollout
-// (invariant I4).
+// an empty build digest, or any ack against a terminal rollout.
 func (r Rollout) WithAck(memberID, buildDigest string, at time.Time) (Rollout, *shared.BridgeError) {
 	if !r.state.acceptsVotes() {
 		return r, shared.ErrRolloutTerminal.WithMessage("cannot ack a committed or decided rollout").With("state", string(r.state))
@@ -281,7 +280,7 @@ func (r Rollout) WithAck(memberID, buildDigest string, at time.Time) (Rollout, *
 
 // WithNack records member's rejection of the proposed generation without
 // terminating the rollout: a nack is a signal to the coordinator, which then
-// decides to abort. Same voter rules as WithAck (invariant I5).
+// decides to abort. Same voter rules as WithAck.
 func (r Rollout) WithNack(memberID, reason string) (Rollout, *shared.BridgeError) {
 	if !r.state.acceptsVotes() {
 		return r, shared.ErrRolloutTerminal.WithMessage("cannot nack a committed or decided rollout").With("state", string(r.state))
@@ -296,10 +295,10 @@ func (r Rollout) WithNack(memberID, reason string) (Rollout, *shared.BridgeError
 }
 
 // WithCommit commits the rollout under the coordinator's fencing token. The
-// token gate (invariant I3) runs first: an invalid or stale token is rejected
+// token gate runs first: an invalid or stale token is rejected
 // regardless of state. A same-or-newer token against an already-committed
-// rollout is an idempotent no-op (design goal G3). Commit requires the barrier
-// (invariant I2); committing an aborted rollout is terminal-illegal (I4).
+// rollout is an idempotent no-op (design goal). Commit requires the barrier
+// committing an aborted rollout is terminal-illegal.
 func (r Rollout) WithCommit(tok LeaseToken) (Rollout, *shared.BridgeError) {
 	return r.commit(tok, time.Time{})
 }
@@ -329,9 +328,9 @@ func (r Rollout) commit(tok LeaseToken, confirmDeadline time.Time) (Rollout, *sh
 }
 
 // WithAbort aborts the rollout under the coordinator's fencing token, recording
-// reason. Same fencing gate as WithCommit (invariant I3). A same-or-newer token
+// reason. Same fencing gate as WithCommit. A same-or-newer token
 // against an already-aborted rollout is an idempotent no-op; aborting a
-// committed rollout is terminal-illegal (invariant I4).
+// committed rollout is terminal-illegal.
 func (r Rollout) WithAbort(tok LeaseToken, reason string) (Rollout, *shared.BridgeError) {
 	if err := r.checkFence(tok, "abort"); err != nil {
 		return r, err
@@ -350,7 +349,7 @@ func (r Rollout) WithAbort(tok LeaseToken, reason string) (Rollout, *shared.Brid
 	}
 }
 
-// checkVoter enforces the shared Ack/Nack preconditions (invariant I5): the
+// checkVoter enforces the shared Ack/Nack preconditions: the
 // member is in the frozen epoch and has not already acked or nacked.
 func (r Rollout) checkVoter(memberID string) *shared.BridgeError {
 	if !slices.Contains(r.membershipEpoch, memberID) {
@@ -365,7 +364,7 @@ func (r Rollout) checkVoter(memberID string) *shared.BridgeError {
 	return nil
 }
 
-// checkFence enforces the fencing gate (invariant I3): the token must be valid
+// checkFence enforces the fencing gate: the token must be valid
 // and carry a version >= the recorded coordinator high-water mark. A lower
 // version is a deposed coordinator and is rejected as stale.
 func (r Rollout) checkFence(tok LeaseToken, op string) *shared.BridgeError {

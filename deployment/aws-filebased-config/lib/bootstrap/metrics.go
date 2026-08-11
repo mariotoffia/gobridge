@@ -18,7 +18,7 @@ import (
 //     zero-metrics behaviour.
 //   - (exporter, nil) for "cloudwatch" — a live CloudWatch exporter wired
 //     with the default rollup metrics (so the declarative alarms match its
-//     zero-dimension rollup series, MF-4) and the per-instance dimension.
+//     zero-dimension rollup series) and the per-instance dimension.
 //   - (nil, err) for any unknown value — fail fast (Validate already rejects
 //     these before Start reaches here; the case is retained defensively so
 //     the selection is total).
@@ -34,7 +34,7 @@ func newMetricsExporter(ctx context.Context, cfg deployinfra.BootstrapConfig, lo
 		opts := []cwmetrics.Option{
 			// Double-publish a zero-dimension rollup copy so the
 			// declarative CloudWatch alarms (which carry no dimensions)
-			// actually match the emitted series (MF-4).
+			// actually match the emitted series.
 			cwmetrics.WithRollupMetrics(cwmetrics.DefaultRollupMetrics()...),
 			// Empty InstanceID derives "<hostname>-<pid>", already unique
 			// per Fargate task; a set value gives a deterministic identity.

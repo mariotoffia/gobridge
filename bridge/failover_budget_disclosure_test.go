@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// MQTT-F2: with NO failover_slo declared, the worst-case failover budget was
+// with NO failover_slo declared, the worst-case failover budget was
 // previously computed nowhere — an operator selecting the clustered HA
 // profile could assume ~lease-TTL failover while the real worst case is
 // minutes. Every build must now DISCLOSE the computed budget for exclusive

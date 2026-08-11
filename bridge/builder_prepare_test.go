@@ -36,7 +36,7 @@ func directHoldConfig() *ports.BridgeConfig {
 				DeliveryMode: "direct_hold",
 				Bindings:     []string{"b1"},
 				// drop policies keep the route valid under build-time
-				// ValidateRoutes (Finding 5 / C2); the default is "dlq" which
+				// ValidateRoutes (Finding 5 /); the default is "dlq" which
 				// needs a DLQ store this minimal config omits.
 				Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
 			},

@@ -1,7 +1,7 @@
 package runtime_test
 
 // Residual test coverage for the runtime side of production-readiness
-// Findings 2 and 6 (contract C1): Runtime.Stop must release EVERY resource a
+// Findings 2 and 6 (contract): Runtime.Stop must release EVERY resource a
 // build opened, even when the runtime was never Started (the supervisor stops
 // a runtime whose swap failed) and even for sessions no session manager owns
 // (non-shared_outbox binding sessions registered via RegisterSessionSender).
@@ -30,7 +30,7 @@ func (s *closableFakeLeaseStore) Close() error {
 	return nil
 }
 
-// TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores validates C1
+// TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores validates
 // (Finding 2): a runtime that was BUILT but never Started still owns opened
 // sessions (route entry + registered session sender) and store handles. Stop
 // on that runtime must close all of them — the supervisor relies on this to
@@ -57,11 +57,11 @@ func TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores(t *testing.T) {
 	require.NoError(t, rt.Stop(stopCtx))
 
 	assert.True(t, entrySess.IsClosed(),
-		"route-entry session of a never-started runtime must be closed by Stop (Finding 2/C1)")
+		"route-entry session of a never-started runtime must be closed by Stop")
 	assert.True(t, bindSess.IsClosed(),
-		"session-sender session of a never-started runtime must be closed by Stop (Finding 2/C1)")
+		"session-sender session of a never-started runtime must be closed by Stop")
 	assert.Equal(t, 1, lease.closes,
-		"prep-opened store handle of a never-started runtime must be closed by Stop (Finding 2/C1)")
+		"prep-opened store handle of a never-started runtime must be closed by Stop")
 }
 
 // TestRuntime_Stop_UnmanagedBindingSession_Closed validates the started-runtime

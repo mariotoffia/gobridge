@@ -98,7 +98,7 @@ func (r *Receiver) pollAndConvert(
 
 			recvCount := approximateReceiveCount(msg.Attributes)
 
-			// Adapter-enforced poison backstop (Chunk 13 HIGH-2). When
+			// Adapter-enforced poison backstop (Chunk 13). When
 			// poison_max_receives is configured and this malformed message has
 			// resurfaced at least that many times, DELETE it to break an
 			// otherwise-unbounded redelivery hot loop on a source queue with no
@@ -150,7 +150,7 @@ func (r *Receiver) pollAndConvert(
 
 // dropPoisonMessage deletes a malformed ("poison") message the receiver
 // cannot convert, as the adapter-enforced backstop once poison_max_receives is
-// reached (Chunk 13 HIGH-2). It is a controlled, observable drop that breaks an
+// reached (Chunk 13). It is a controlled, observable drop that breaks an
 // otherwise-unbounded redelivery hot loop on a source queue with no native
 // redrive policy. Best effort and bounded by the settlement timeout: a failed
 // delete counts a settlement error and lets the message redeliver (the loop
@@ -210,7 +210,7 @@ func (r *Receiver) dropPoisonMessage(
 
 // checkRedrivePolicy performs a best-effort startup check of the source
 // queue's native redrive policy (maxReceiveCount -> DLQ) and reconciles it
-// with the adapter poison backstop (Chunk 13 HIGH-2 + destructive-preemption
+// with the adapter poison backstop (Chunk 13 + destructive-preemption
 // follow-up).
 //
 // It NEVER fails startup for a permission or availability reason: a
@@ -438,7 +438,7 @@ func (r *Receiver) convertMessage(
 
 	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
 
-	// T08: no fallback to the configured queue name/URL. Subject comes
+	// no fallback to the configured queue name/URL. Subject comes
 	// only from an explicit "Subject" message attribute (or the inner
 	// SNS Subject when SNSUnwrap is enabled); otherwise it is empty.
 	subject := ""
@@ -472,7 +472,7 @@ func (r *Receiver) convertMessage(
 
 	// Headers go through EnvelopeInput so NewEnvelope's
 	// StripReservedHeaders is the single chokepoint for reserved-prefix
-	// sanitation — see I4 in the round-1 reviewer notes.
+	// sanitation.
 	//
 	// CreatedAt prefers the broker's SentTimestamp (parsed into the
 	// sqs.SentTimestamp header by attributesToHeaders) over the bridge
@@ -612,7 +612,7 @@ type snsPayload struct {
 // the sns_unwrap option, not enforceable here.) The original SNS
 // metadata is preserved in headers under sns.* keys. When the SNS
 // notification has no Subject field, snsPayload.subject is empty and
-// hasSubject=false so callers leave Envelope.Subject untouched (T08: no
+// hasSubject=false so callers leave Envelope.Subject untouched (no
 // fallback to TopicArn or queue name).
 func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
 	var raw struct {

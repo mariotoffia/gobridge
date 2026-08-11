@@ -27,7 +27,7 @@ func TestClassifyRolloutDelta_LiveSafe_BenignChange(t *testing.T) {
 // changing bridge.cluster.members is replacement-required. The roster IS the
 // membership epoch the barrier freezes, so carrying a roster change through the
 // barrier would commit under the OLD roster's acks and leave the cohort running
-// a config declaring a DIFFERENT one (design §8, F6).
+// a config declaring a DIFFERENT one (design §8).
 func TestClassifyRolloutDelta_ReplacementRequired_MemberRosterChange(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")
 	oldCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"a", "b"}}

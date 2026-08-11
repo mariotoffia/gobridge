@@ -20,7 +20,7 @@ import (
 // FIRST Reconcile — the initial one in runExclusive — succeeds; the SECOND —
 // driven by the SessionConnected event the renew loop consumes — blocks until
 // its context is cancelled (it honors ctx, exactly as paho's ConnectionManager
-// Subscribe does). Without the F1 bound the renew select loop would block here
+// Subscribe does). Without the bound the renew select loop would block here
 // forever and the lease would silently expire.
 type hungReconcileSession struct {
 	mu             sync.Mutex
@@ -48,7 +48,7 @@ func (s *hungReconcileSession) Start(context.Context) error {
 	ev := s.events
 	s.mu.Unlock()
 	// Emit a reconnect event so the renew loop's event branch fires an
-	// event-driven Reconcile (the call F1 bounds).
+	// event-driven Reconcile (the call bounds).
 	select {
 	case ev <- ports.SessionEvent{Type: ports.SessionConnected}:
 	default:
@@ -64,7 +64,7 @@ func (s *hungReconcileSession) Reconcile(ctx context.Context, _ connectivity.Ses
 	case s.hungEntered <- struct{}{}:
 	default:
 	}
-	<-ctx.Done() // stalled SUBACK; unblocks only when the F1 bound cancels ctx
+	<-ctx.Done() // stalled SUBACK; unblocks only when the bound cancels ctx
 	return ctx.Err()
 }
 
@@ -96,7 +96,7 @@ func (s *hungReconcileSession) Close(context.Context) error {
 }
 
 // TestSessionManager_RenewLoop_HungReconcileDoesNotStarveRenewal is the
-// regression test for finding F1: a reconnect-driven Reconcile that never
+// regression test for a reconnect-driven Reconcile that never
 // completes must NOT block the renew select loop indefinitely. Before the fix
 // the loop blocks in handleSessionEvent -> Reconcile forever, the renew timer
 // never fires, and the lease silently expires while the broker-resumed
@@ -105,7 +105,7 @@ func (s *hungReconcileSession) Close(context.Context) error {
 // and the session is restarted with the lease released.
 func TestSessionManager_RenewLoop_HungReconcileDoesNotStarveRenewal(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
-	// Never fail a renew: the ONLY thing that must free the loop is the F1
+	// Never fail a renew: the ONLY thing that must free the loop is the
 	// reconcile bound, not a renew failure.
 	store := newLeaseLossStore(1<<30, nil)
 	sess := newHungReconcileSession()
@@ -133,7 +133,7 @@ func TestSessionManager_RenewLoop_HungReconcileDoesNotStarveRenewal(t *testing.T
 	// The event-driven (hung) Reconcile must be reached.
 	wait.RequireReceive(t, sess.hungEntered, 2*time.Second)
 
-	// F1: the bound cuts off the hung reconcile; Run returns (session-failure
+	// the bound cuts off the hung reconcile; Run returns (session-failure
 	// restart path) rather than hanging forever, and the lease is released.
 	select {
 	case err := <-runErr:
@@ -145,7 +145,7 @@ func TestSessionManager_RenewLoop_HungReconcileDoesNotStarveRenewal(t *testing.T
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return: a hung reconcile starved the renew loop " +
-			"(F1: lease would silently expire while the broker-resumed subscription keeps delivering)")
+			"(lease would silently expire while the broker-resumed subscription keeps delivering)")
 	}
 	wait.Until(t, 2*time.Second, "lease released on session-failure restart", func() bool {
 		return store.releaseCount() >= 1

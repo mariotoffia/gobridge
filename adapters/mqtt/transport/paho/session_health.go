@@ -29,7 +29,7 @@ import (
 //     missing or stale broker subscriptions), every unique desired topic filter
 //     is active at or above requested QoS, every expected receiver handler is
 //     registered, and no publishes are
-//     still buffered waiting for a handler (A-5: a covered
+//     still buffered waiting for a handler (a covered
 //     subscription whose receiver died keeps its messages retained in the
 //     pending buffer, so a non-empty buffer degrades readiness even while a
 //     surviving receiver keeps the session-total handler count above zero)
@@ -173,7 +173,7 @@ func expectedHandlersRegistered(expected, registered []string) bool {
 
 // Events returns the channel on which session lifecycle events are emitted.
 //
-// Read under s.mu: the F-1 Reload-failure re-Start reassigns s.events (it
+// Read under s.mu: the Reload-failure re-Start reassigns s.events (it
 // re-materialises a fresh channel after the terminal-death close), so an
 // unlocked read could race that write under the race detector. The runtime
 // manager re-invokes Events() at the top of each handleEvents (once per Run,
@@ -190,7 +190,7 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 
 	if s.closed || s.eventsClosed {
 		// s.closed: terminal shutdown. s.eventsClosed: a Reload-failure
-		// already closed s.events to signal terminal death (F-1) and a
+		// already closed s.events to signal terminal death and a
 		// re-Start has not yet re-materialised it. Both are checked under
 		// s.mu that also guards close(s.events), so no send can race the
 		// close.
@@ -203,14 +203,14 @@ func (s *Session) pushEvent(t ports.SessionEventType, err error) {
 	default:
 		// Channel full: drop the OLDEST event to make room for this one.
 		// This drop-oldest eviction is the common back-pressure path under an
-		// event storm (F-6): it can evict an unconsumed SessionConnected before
+		// event storm: it can evict an unconsumed SessionConnected before
 		// the manager reads it, so a reconcile that would have run on that
 		// connect edge is deferred to the NEXT connect edge. Bounded (the
 		// session reconnects and re-emits) and drop-oldest by design — not
 		// hardened (non-evictable / coalesce-by-type) on purpose.
 		//
 		// Every actually-lost event increments MetricMQTTEventDropped exactly
-		// once: the evicted oldest here (B-2/D-2 — previously this drop was
+		// once: the evicted oldest here (previously this drop was
 		// silent and only the impossible double-failure below was metered), and
 		// the new event below if it still cannot be enqueued. Alert on
 		// MetricMQTTEventDropped if it is non-zero in steady state.

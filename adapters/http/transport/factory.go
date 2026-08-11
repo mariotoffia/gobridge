@@ -139,7 +139,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ port
 	// Validate the EFFECTIVE path (configured or generated) so a bad
 	// operator path — or a spec ID carrying ServeMux metacharacters —
 	// fails the build with an error instead of panicking the process
-	// inside mux.HandleFunc (HTTP-M4).
+	// inside mux.HandleFunc (HTTP).
 	if err := validateMountPath(path); err != nil {
 		return nil, err
 	}

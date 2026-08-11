@@ -85,7 +85,7 @@ func TestDetectSwapMode_IntroduceExclusiveViaReceiverConfig(t *testing.T) {
 	})
 }
 
-// TestDetectSwapMode_ConfigDeclaredExclusiveOnSilentTransport covers HIGH-1: a
+// TestDetectSwapMode_ConfigDeclaredExclusiveOnSilentTransport covers: a
 // config that DECLARES an exclusive session must pick the serialized
 // PrepareCommit swap even when its transport is capability-silent (models
 // amqp10, which obeys the single-use exclusive rule but never advertises

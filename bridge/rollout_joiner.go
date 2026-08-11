@@ -21,7 +21,7 @@ import (
 // has NOT agreed to run. Without this gate a member restarting in that window —
 // or at any time after an ABORTED rollout, since the rejected document stays in
 // the source until the operator rolls it back — would boot straight onto a
-// config no other member is running. That is the mixed-version cohort goal G2
+// config no other member is running. That is the mixed-version cohort goal
 // forbids and, since ADR 0012 refuses clustered live reload outright today, it
 // would be a safety REGRESSION rather than a limitation.
 //
@@ -60,7 +60,7 @@ func (d *ClusterRolloutDriver) ResolveBoot(ctx context.Context, cfg *ports.Bridg
 // resolveCoordinatedBoot). It seeds the baseline on a fresh cohort, boots the
 // config unchanged when it IS the committed one or a whole-cohort replacement,
 // and otherwise substitutes the durable committed config so the member never runs
-// a config the barrier has not committed (G2).
+// a config the barrier has not committed.
 func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	bootDigest, ok := configCanonicalBytesDigest(cfg)
 	if !ok {
@@ -100,7 +100,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"config the cohort is running; refusing to start: %w", committed.Generation, committed.ConfigVersion, err)
 	}
 	// Integrity: the reconstructed committed config must match the digest the
-	// artifact records (F10-style), mirroring reconcileMissedCommit. A
+	// artifact records, mirroring reconcileMissedCommit. A
 	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-
 	// preserving codec) must not be booted as if it were the committed config.
 	if raw, ok := configCanonicalBytes(committedCfg); !ok || candidateConfigDigest(raw) != committed.Digest {
@@ -113,7 +113,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	// new config ONLY when it is strictly NEWER than the committed artifact — a
 	// forward whole-cohort replacement. A same-or-older replacement-delta is a
 	// stale or rolled-back boot config (the member's config source is lagging), so
-	// boot on the committed config instead of running a config no peer runs (G2).
+	// boot on the committed config instead of running a config no peer runs.
 	// A live-safe delta always belongs to the barrier: boot on the committed
 	// config and let the barrier roll the candidate `cfg` (staged above).
 	if class, _ := classifyRolloutDelta(committedCfg, cfg); class == rolloutReplacementRequired &&
@@ -150,7 +150,7 @@ func (d *ClusterRolloutDriver) checkCoordinatedRolloutPreflight(ctx context.Cont
 // A node outside its own roster can never Ack (the aggregate rejects a voter
 // outside the frozen epoch), so every rollout it proposes is guaranteed to
 // deadline-abort while blocking every other proposal for the whole TTL
-// (invariant I1 permits one active rollout). Catching it at boot turns a 3am
+// (invariant permits one active rollout). Catching it at boot turns a 3am
 // discovery into a startup failure.
 func (d *ClusterRolloutDriver) checkRolloutMembership(cfg *ports.BridgeConfig) error {
 	members := rolloutMembers(cfg)

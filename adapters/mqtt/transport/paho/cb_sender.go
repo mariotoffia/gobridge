@@ -57,7 +57,7 @@ func NewCircuitBreakerSender(inner *Sender, breaker ports.CircuitBreaker) *Circu
 // drives CONCURRENT Sends through this one breaker, and the token-less
 // BeforeRequest/AfterRequest pair would account an outcome that arrives
 // after a state transition against the current generation — a stale
-// half-open probe release or a spurious re-open (MQTT-O3). The settle
+// half-open probe release or a spurious re-open. The settle
 // callback carries the admission generation, so the breaker discards
 // stale outcomes instead.
 //

@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// SetAuthFailureCallback wires the reactive-recovery hook on the
 // Sender, satisfying the bridge.AuthFailureReporter capability (matched
 // structurally by the CredentialRefresher in another module). A nil callback
 // clears it.
@@ -35,7 +35,7 @@ func (s *Sender) reportAuthFailure(err error) {
 	}
 }
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// SetAuthFailureCallback wires the reactive-recovery hook on the
 // Receiver. See Sender.SetAuthFailureCallback.
 func (r *Receiver) SetAuthFailureCallback(cb func(error)) {
 	if cb == nil {
@@ -69,7 +69,7 @@ func (r *Receiver) reportAuthFailure(err error) {
 //     never consumes a secret), and the credential builder evaluates
 //     UseManagedIdentity BEFORE client-secret, so leaving it set would
 //     ignore the rotated secret and keep authenticating as the wrong
-//     identity (HIGH-2).
+//     identity.
 //   - A non-empty Username with an EMPTY Password is malformed (neither
 //     a valid client secret nor a connection string) and is rejected
 //     with shared.ErrInvalidPayload rather than silently clearing
@@ -107,7 +107,7 @@ func credentialsToConnection(existing ConnectionConfig, set *connectivity.Creden
 			// client-secret auth and silently falls through to
 			// DefaultAzureCredential — authenticating as the wrong identity.
 			// Reject loudly instead of drifting; leave the caller's existing
-			// connection untouched (HIGH-2 follow-up).
+			// connection untouched.
 			return existing, false, shared.ErrInvalidPayload.WithMessage(
 				"servicebus: rotated credential supplies a username but no client secret; provide the secret for AAD client-secret auth, or omit the username to rotate a connection string")
 		default:
@@ -121,7 +121,7 @@ func credentialsToConnection(existing ConnectionConfig, set *connectivity.Creden
 			// client-secret auth"; clear the flag so the rotated secret
 			// takes effect. Including out.UseManagedIdentity in the change
 			// guard ensures a stuck flag alone still triggers the switch
-			// even when the ClientID/secret already match (HIGH-2).
+			// even when the ClientID/secret already match.
 			if out.ClientID != set.Password().Username() ||
 				!out.ClientSecret.Equal(set.Password().Password()) ||
 				out.UseManagedIdentity {

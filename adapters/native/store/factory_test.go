@@ -93,7 +93,7 @@ func TestSQLiteStoreFactory_NewOutboxStore(t *testing.T) {
 }
 
 // Verifies the SQLite factory accepts the runtime-derived StaleClaimDuration
-// (I1 wiring). Deterministic stale-reclaim behaviour is covered with a fake
+// Deterministic stale-reclaim behaviour is covered with a fake
 // clock in the sqliteoutbox package; here we only pin that the factory wires
 // the option through and still constructs a usable store.
 func TestSQLiteStoreFactory_NewOutboxStore_WithStaleClaimDuration(t *testing.T) {

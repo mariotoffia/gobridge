@@ -117,7 +117,7 @@ func TestBuildDrainStrategy_InvalidDuration_ReturnsError(t *testing.T) {
 }
 
 // TestToRoutePolicy_InvalidJitter_ReturnsError validates that an
-// out-of-range backoff jitter is rejected (finding #27, range [0,1]).
+// out-of-range backoff jitter is rejected (range [0,1]).
 func TestToRoutePolicy_InvalidJitter_ReturnsError(t *testing.T) {
 	for _, j := range []float64{-0.1, 1.5} {
 		_, err := toRoutePolicyE(ports.RouteDef{

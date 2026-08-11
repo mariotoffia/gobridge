@@ -22,7 +22,7 @@ func generatedIDEnv(id string) *messaging.Envelope {
 	return env
 }
 
-// TestMQTTCore1_UncountableRedelivery_PoisonsWithoutRetry proves the MQTT-CORE-1
+// TestMQTTCore1_UncountableRedelivery_PoisonsWithoutRetry proves
 // fix: a count-less source whose identity is adapter-generated cannot be counted
 // by the replay ledger (each broker redelivery mints a fresh id, resetting the
 // count), so a deterministically-failing message would recycle the source
@@ -51,7 +51,7 @@ func TestMQTTCore1_UncountableRedelivery_PoisonsWithoutRetry(t *testing.T) {
 		t.Fatalf("HandleDelivery: %v", err)
 	}
 	if del.retried {
-		t.Fatalf("uncountable redelivery was retried; want terminal poison on first failure (MQTT-CORE-1)")
+		t.Fatalf("uncountable redelivery was retried; want terminal poison on first failure")
 	}
 	if !del.acked {
 		t.Fatalf("uncountable redelivery not settled; want terminal ack")

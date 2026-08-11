@@ -246,7 +246,7 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 // combined set without losing either capability. A password whose
 // username is empty is written as the opaque "secret" shape so the
 // reader reconstructs the empty-username credential (e.g. a Service Bus
-// SAS connection string, HIGH-2) instead of rejecting a username-less
+// SAS connection string) instead of rejecting a username-less
 // password.
 //
 // Every serialized payload is validated by round-tripping it back
@@ -254,7 +254,7 @@ func parseSimpleCredentials(value string) (*connectivity.CredentialSet, error) {
 // returned for storage. An admin Create/Update must never persist a
 // value that a later Get or rotation poll cannot parse, because a single
 // unreadable write would otherwise become a persistent credential outage
-// (HIGH-1): empty sets, torn TLS halves, empty passwords, and any other
+// empty sets, torn TLS halves, empty passwords, and any other
 // unreadable shape are rejected here at write time.
 func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	m := make(map[string]any)
@@ -300,7 +300,7 @@ func serializeCredentialSet(creds *connectivity.CredentialSet) (string, error) {
 	return string(data), nil
 }
 
-// ensureReadable is the write-side round-trip guard (HIGH-1). It reparses the
+// ensureReadable is the write-side round-trip guard. It reparses the
 // serialized payload with the package's own reader and confirms the result is
 // an equivalent CredentialSet, so Create/Update can never persist a value that
 // a subsequent Get or rotation poll would reject. The failure is classified as

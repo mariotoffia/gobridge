@@ -14,7 +14,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Circuit Breaker Audit Tests
 //
-// Validates edge cases identified by QA-030, QA-032:
+// Validates edge cases identified:
 //   - State.String() for unknown state value
 //   - Concurrent half-open probe limiting
 //   - Config.WithDefaults zero-value handling

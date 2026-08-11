@@ -47,7 +47,7 @@ func (f *closableLinkFactory) NewSender(_ context.Context, _ ports.SenderSpec, _
 	return f.send, nil
 }
 
-// TestComplete_FailureClosesReceiversAndSenders covers HIGH-5: when complete()
+// TestComplete_FailureClosesReceiversAndSenders covers: when complete()
 // fails AFTER receivers and senders are built (here ValidateRoutes rejects a
 // dlq-default route with no DLQ store), every receiver/sender that implements
 // ports.ContextCloser must be closed. Otherwise the network clients / broker
@@ -81,12 +81,12 @@ func TestComplete_FailureClosesReceiversAndSenders(t *testing.T) {
 	require.Error(t, err, "complete must reject a dlq-default route with no DLQ store")
 
 	require.Equal(t, int32(1), recv.closes.Load(),
-		"a receiver built before a complete() failure must be closed exactly once (HIGH-5)")
+		"a receiver built before a complete() failure must be closed exactly once")
 	require.Equal(t, int32(1), send.closes.Load(),
-		"a sender built before a complete() failure must be closed exactly once (HIGH-5)")
+		"a sender built before a complete() failure must be closed exactly once")
 }
 
-// TestComplete_SuccessDoesNotCloseLinks guards the HIGH-5 defer against
+// TestComplete_SuccessDoesNotCloseLinks guards defer against
 // over-firing: a SUCCESSFUL complete must NOT close the receivers/senders — the
 // returned runtime owns them and closes them on Stop.
 func TestComplete_SuccessDoesNotCloseLinks(t *testing.T) {
@@ -151,7 +151,7 @@ func (f *failSecondSenderFactory) NewSender(_ context.Context, _ ports.SenderSpe
 	return nil, fmt.Errorf("boom: second sender build fails")
 }
 
-// TestComplete_PartialReceiverBuildClosesBuilt covers the HIGH-5 partial-build
+// TestComplete_PartialReceiverBuildClosesBuilt covers partial-build
 // leak: buildReceiversWithURIs returns (nil, nil, err) when a LATER receiver
 // fails, so complete's return-value-scoped receiver defer sees nil and cannot
 // release the receivers already built this pass. The helper must close its own
@@ -179,7 +179,7 @@ func TestComplete_PartialReceiverBuildClosesBuilt(t *testing.T) {
 	require.Error(t, err, "complete must fail when the second receiver build errors")
 
 	require.Equal(t, int32(1), first.closes.Load(),
-		"receiver built before a mid-loop build failure must be closed exactly once (HIGH-5)")
+		"receiver built before a mid-loop build failure must be closed exactly once")
 }
 
 // TestComplete_PartialSenderBuildClosesBuilt is the sender mirror: with no
@@ -207,5 +207,5 @@ func TestComplete_PartialSenderBuildClosesBuilt(t *testing.T) {
 	require.Error(t, err, "complete must fail when the second sender build errors")
 
 	require.Equal(t, int32(1), first.closes.Load(),
-		"sender built before a mid-loop build failure must be closed exactly once (HIGH-5)")
+		"sender built before a mid-loop build failure must be closed exactly once")
 }

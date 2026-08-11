@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Coverage for finding 9 (audit D2): a batch-deadline/cancel abort mid-batch
+// Coverage for finding 9 (audit): a batch-deadline/cancel abort mid-batch
 // must Release every claimed-but-undelivered record back to pending and count
 // it as DEFERRED — never as a success. Both drain-loop deferral sites are
 // pinned:
@@ -37,7 +37,7 @@ type deferredFakeStore struct {
 	released  []string
 
 	// expireCalls records the partition each Expire call was scoped to, so
-	// H1 tests can assert the bulk sweep is deferred for dlq-policy drainers
+	// tests can assert the bulk sweep is deferred for dlq-policy drainers
 	// and runs (scoped to the drainer's partition) for drop-policy drainers.
 	expireCalls []string
 	// expireCount is the count Expire returns (default 0).
@@ -48,13 +48,13 @@ type deferredFakeStore struct {
 	completeGate <-chan struct{}
 	completeErr  error
 
-	// releaseErr, when non-nil, is returned by Release. Used by the M4 test to
+	// releaseErr, when non-nil, is returned by Release. Used by the test to
 	// simulate a store I/O error on Release (distinct from a stale token).
 	releaseErr error
 
 	// completeSignal, when non-nil, receives each id passed to Complete
 	// (non-blocking), so a test can deterministically observe WHETHER Complete
-	// ran — used by the HIGH-2 post-send-fence test to prove a watchdog-abandoned
+	// ran — used by the post-send-fence test to prove a watchdog-abandoned
 	// send never completes.
 	completeSignal chan string
 }
@@ -111,7 +111,7 @@ func (s *deferredFakeStore) Release(_ context.Context, ids []string, _ persisten
 	defer s.mu.Unlock()
 	if s.releaseErr != nil {
 		// A failed Release leaves the record claimed; do not record it as
-		// released. Mirrors the real stores' fail-closed behavior (M4).
+		// released. Mirrors the real stores' fail-closed behavior.
 		return s.releaseErr
 	}
 	s.released = append(s.released, ids...)

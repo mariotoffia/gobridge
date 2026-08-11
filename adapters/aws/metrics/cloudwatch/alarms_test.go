@@ -88,7 +88,7 @@ func TestDefaultAlarms_Severities(t *testing.T) {
 	}
 }
 
-// MF-4: OutboxDepth is a continuously emitted gauge — missing data means
+// OutboxDepth is a continuously emitted gauge — missing data means
 // the emitter is dead, so its alarms treat missing data as breaching.
 // Event counters treat missing data as notBreaching (no events = healthy).
 func TestDefaultAlarms_TreatMissingData(t *testing.T) {
@@ -105,7 +105,7 @@ func TestDefaultAlarms_TreatMissingData(t *testing.T) {
 
 // H-OBS: the silent-loss counters and the DLQ-depth backlog gauge must be in
 // the default rollup set, else a dimensionless fleet alarm can never match
-// their route/partition-dimensioned base series (MF-4). Fails before the fix
+// their route/partition-dimensioned base series. Fails before the fix
 // that added them to DefaultRollupMetrics.
 func TestDefaultRollupMetrics_CoversSilentLossCounters(t *testing.T) {
 	rollups := map[string]bool{}

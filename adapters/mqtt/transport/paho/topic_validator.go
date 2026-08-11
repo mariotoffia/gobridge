@@ -39,7 +39,7 @@ func NewAddressValidator() ports.AddressValidator {
 // even "/" are all legal MQTT publish topics (MQTT 5.0 §4.7.1.1 — only the
 // WHOLE Topic Name must be at least one character; individual levels may be
 // zero-length). Real devices produce such topics, and a dynamic-destination
-// mirror route re-publishing a source topic must not reject them (A-13). The
+// mirror route re-publishing a source topic must not reject them. The
 // wildcard, $-prefix, null and length rules below are the only structural
 // constraints on a publish Topic Name.
 //

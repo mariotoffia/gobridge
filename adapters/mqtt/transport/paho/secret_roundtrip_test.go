@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestConfig_SecretRoundTrip proves the G1 secret contract for a plugin config:
+// TestConfig_SecretRoundTrip proves secret contract for a plugin config:
 // (1) a YAML/JSON scalar string decodes into the shared.Secret-typed
 // Session.Password field (raw value reachable only via Reveal); (2) a DEFAULT
 // json/yaml marshal REDACTS the value (defense in depth — a stray marshal must

@@ -17,11 +17,11 @@ import (
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 )
 
-// Test_T21_Integration_Cluster_ScaleAndKill deploys a GoBridgeCluster
+// TestIntegration_Cluster_ScaleAndKill deploys a GoBridgeCluster
 // with WorkerDesiredCount=2, scales the worker service to 3, kills
 // one task, and asserts the service self-heals back to 3 RUNNING
 // while the ALB health endpoint remains 200 throughout.
-func Test_T21_Integration_Cluster_ScaleAndKill(t *testing.T) {
+func TestIntegration_Cluster_ScaleAndKill(t *testing.T) {
 	env := RequireSandbox(t)
 
 	app := NewApp(t, env)
@@ -109,7 +109,7 @@ func Test_T21_Integration_Cluster_ScaleAndKill(t *testing.T) {
 		t.Fatalf("no running worker tasks to kill")
 	}
 	victim := tasks.TaskArns[0]
-	reason := "T21-integration-kill"
+	reason := "integration-kill"
 	if _, err := ecsClient.StopTask(ctx, &ecs.StopTaskInput{
 		Cluster: &clusterArn,
 		Task:    &victim,

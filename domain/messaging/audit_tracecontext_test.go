@@ -9,7 +9,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // ParseTraceparent Edge Case Audit Tests
 //
-// Validates edge cases identified by QA-005:
+// Validates edge cases identified:
 //   - Correct part count but wrong segment lengths
 //   - Uppercase hex rejection (spec requires lowercase)
 //   - All-zero trace ID and span ID rejection

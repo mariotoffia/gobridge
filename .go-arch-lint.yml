@@ -81,7 +81,7 @@ excludeFiles:
 #                        parsing, RawConfig.Decode (mapstructure),
 #                        wire-format marshallers, FileStore. The only
 #                        Layer-2 location permitted to import
-#                        yaml.v3 / mapstructure (W-9 / L-2 split)
+#                        yaml.v3 / mapstructure
 #       runtime       -- Use case orchestration (route execution engine)
 #       bridge        -- Composition factory: assembles use cases from
 #                        config
@@ -142,7 +142,7 @@ components:
   # ---- Layer 2: Ports + Application Services + Shared Kernel ----
   ports: { in: [ports, ports/**] }
   # The pure (vendor-free) inner-ring shared kernel: validation,
-  # merge, manager. The W-9 finding was resolved (L-2) by extracting
+  # merge, manager. The finding was resolved by extracting
   # the YAML / JSON parser and FileStore into the sibling
   # `config_parser` component below; this `config` component is now
   # stdlib-only and carries NO vendor concession.
@@ -170,7 +170,7 @@ components:
   # In-process processor adapters (message-transformation chain). One
   # component per role so a future processor cannot quietly import a
   # sibling processor's internals -- the same anti-sibling-coupling
-  # rule that protects transport_* and store_* siblings (see F-001).
+  # rule that protects transport_* and store_* siblings.
   processor_filter:         { in: [processors/filter, processors/filter/**] }
   processor_tenant:         { in: [processors/tenant, processors/tenant/**] }
   processor_transform:      { in: [processors/transform, processors/transform/**] }
@@ -253,10 +253,10 @@ vendors:
   # config_parser concession: the wire-format adapter parses YAML /
   # JSON. This is the only Layer-2 component allowed to import yaml.v3
   # (the prior `config` shared kernel carve-out was narrowed to this
-  # adapter component by L-2 / W-9).
+  # adapter component).
   yaml: { in: gopkg.in/yaml.v3 }
   # config_parser concession: typed plugin option decoding for the
-  # two-stage parser (FIX-003). mapstructure honours `json:"..."` tags
+  # two-stage parser. mapstructure honours `json:"..."` tags
   # (the repo-wide adapter Config convention) which yaml.v3 alone does
   # not. Restricted to config_parser just like yaml.
   mapstructure: { in: github.com/go-viper/mapstructure/v2 }
@@ -270,9 +270,9 @@ vendors:
   # broader `encoding/json` ban. The blueprint marshallers that
   # historically lived in ports/ have been relocated to config/ to keep
   # the inner ring dependency-neutral, not tag-free (schema-tagged DTOs
-  # by design, M-11).
+  # by design).
 
-  # SANCTIONED EXCEPTION (M-10): domain/messaging owns the stable
+  # SANCTIONED EXCEPTION: domain/messaging owns the stable
   # on-disk Envelope JSON schema (envelope_json.go MarshalJSON/UnmarshalJSON)
   # and is the SINGLE SOURCE OF TRUTH for the durable wire format that
   # sqlitedlq, dynamodbdlq, sqliteoutbox, dynamodboutbox, … serialise to
@@ -367,7 +367,7 @@ deps:
   domain_events:
     canUse: [_no_external_deps_]
   # NOTE on domain_persistence (FIX-004 Phase 5):
-  # The strict reading of FIX-004 lists `domain_persistence: { mayDependOn:
+  # The strict reading lists `domain_persistence: { mayDependOn:
   # [domain_shared] }`. In practice OutboxRecord embeds a messaging.Envelope
   # because an outbox record IS a persisted envelope; banning that edge
   # would force the persistence model to carry an opaque payload-bytes +
@@ -381,11 +381,11 @@ deps:
 
   # Ports define the contracts adapters implement. They reference domain
   # value objects only; they MUST NOT know about config, runtime,
-  # bridge, or any adapter. Per FIX-003 Phase 5 the inner ring is
+  # bridge, or any adapter. Per Phase 5 the inner ring is
   # dependency-neutral: ports does NOT carry yaml/json/mapstructure
   # runtime dependencies; wire-format marshalling lives in config/. The
   # blueprint structs in ports/ DO carry yaml/json struct TAGS, however
-  # (schema-tagged DTOs by design, M-11) -- "format-neutral" here means
+  # (schema-tagged DTOs by design) -- "format-neutral" here means
   # dependency-neutral, not tag-free.
   ports:
     mayDependOn:
@@ -406,8 +406,8 @@ deps:
   # behaviour over ports; the YAML/JSON parser and FileStore live in
   # the sibling `config_parser` component which holds the only
   # remaining vendor concession (yaml.v3, mapstructure). This
-  # component is stdlib-only -- the W-9 inner-ring vendor carve-out
-  # was removed by L-2. As of L-3 it MAY depend on `validate` because
+  # component is stdlib-only -- the inner-ring vendor carve-out
+  # was removed. It MAY depend on `validate` because
   # cross-reference / route-graph validation now lives there
   # (config.Validate composes field-level checks with
   # validate.ValidateBlueprintGraph).
@@ -432,7 +432,7 @@ deps:
   # ports.ConfigStore implementation. It is the only Layer-2
   # location permitted to import yaml.v3 or mapstructure (the
   # historical "shared kernel vendor concession" was narrowed to
-  # this component by L-2 / W-9). It MUST NOT depend on runtime,
+  # this component). It MUST NOT depend on runtime,
   # bridge, or any adapter; it MAY depend on `config` because
   # FileStore composes Validate / DefaultMerge from the model.
   config_parser:
@@ -723,7 +723,7 @@ deps:
   # SDKs are listed explicitly so swapping SDKs is a reviewable policy
   # change.
   #
-  # mayDependOn is narrowed to ACTUAL usage (M-23). A sender/receiver
+  # mayDependOn is narrowed to ACTUAL usage. A sender/receiver
   # moves messaging.Envelope values, reads connectivity.CredentialSet
   # for auth, classifies failures via domain/shared errors, and stamps
   # timestamps from domain/clock -- so messaging + connectivity + shared
@@ -776,7 +776,7 @@ deps:
   # and depend on nothing else. They MUST NOT import their aggregator;
   # the aggregator imports them, never the reverse.
   #
-  # mayDependOn is narrowed to ACTUAL usage (M-23). Each store carries
+  # mayDependOn is narrowed to ACTUAL usage. Each store carries
   # only the aggregate it backs plus the shared error / clock contexts
   # it touches -- not the full domain spread:
   #   * lease + outbox stores -> domain/persistence (+ clock, shared)
@@ -840,7 +840,7 @@ deps:
   # ports.StoreFactory port to the application by composing several
   # leaf implementations.
   adapter_store_native_factory:
-    # Narrowed to ACTUAL usage (M-23): the factory composes the five
+    # Narrowed to ACTUAL usage: the factory composes the five
     # native store impls and exposes them through ports.StoreFactory; it
     # imports no domain context directly (the leaves carry those).
     mayDependOn:
@@ -853,11 +853,11 @@ deps:
       - adapter_store_native_sqlitemanagedsubscriptions
 
   adapter_store_aws_factory:
-    # Narrowed to ACTUAL usage (M-23): composes the three DynamoDB store
+    # Narrowed to ACTUAL usage: composes the three DynamoDB store
     # impls behind ports.StoreFactory and touches the AWS SDK.
     #
     # domain_shared (asymmetric with the native sibling on purpose): the
-    # DynamoDB factory owns a build-time schema-preflight posture (H3).
+    # DynamoDB factory owns a build-time schema-preflight posture.
     # DynamoDB has a control-plane schema (tables + GSIs) that the native
     # sqlite/memory stores lack, so ONLY this factory runs DescribeTable at
     # construction and must classify the leaf's returned error to decide
@@ -887,9 +887,9 @@ deps:
   # privilege (mirrored in ARCHITECTURE.md §2) even where only one is
   # imported today, so a later Validate / DefaultMerge call needs no
   # rule edit. The DOMAIN context spread, by contrast, is narrowed to
-  # actual usage (M-23): both loaders stamp clock timestamps and classify
+  # actual usage: both loaders stamp clock timestamps and classify
   # failures via domain/shared (the file loader maps a missing config file
-  # to shared.ErrNotFound, I6), and neither touches
+  # to shared.ErrNotFound), and neither touches
   # messaging / persistence / routing / connectivity / events.
   adapter_config_native_file:
     mayDependOn: [config, config_parser, domain_clock, domain_shared, ports]
@@ -900,7 +900,7 @@ deps:
 
   # ---- Layer 3: Credential adapters ----
   #
-  # Narrowed to ACTUAL usage (M-23): credential adapters resolve
+  # Narrowed to ACTUAL usage: credential adapters resolve
   # connectivity.CredentialSet values and classify failures via
   # domain/shared; the file adapter also stamps clock timestamps. No
   # messaging / persistence / routing / events edge.
@@ -912,7 +912,7 @@ deps:
 
   # ---- Layer 3: Observability adapters ----
   #
-  # Narrowed to ACTUAL usage (M-23): exporters read the metric / tag
+  # Narrowed to ACTUAL usage: exporters read the metric / tag
   # taxonomy from domain/shared and implement the ports exporter
   # contract; only the CloudWatch adapter stamps clock timestamps. No
   # messaging / persistence / routing / connectivity / events edge.
@@ -920,7 +920,7 @@ deps:
     mayDependOn: [domain_clock, domain_shared, ports]
     canUse: [aws]
   adapter_metrics_otel:
-    # domain_clock: the instrument-limit reject-report throttle (N4) needs an
+    # domain_clock: the instrument-limit reject-report throttle needs an
     # injectable time source; forbidigo bans direct time.Now, so it reads the
     # timestamp via domain/clock like every other timing-aware adapter.
     mayDependOn: [domain_clock, domain_shared, ports]
@@ -931,7 +931,7 @@ deps:
 
   # ---- Layer 3: Cluster resolver adapters ----
   #
-  # Narrowed to ACTUAL usage (M-23). The native resolver probes local
+  # Narrowed to ACTUAL usage. The native resolver probes local
   # interfaces (net) and is stdlib-only. The ECS resolver queries the
   # task-metadata endpoint over net/http and additionally reads
   # domain/clock: its bounded startup retry (finding 10) needs an

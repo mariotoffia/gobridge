@@ -28,7 +28,7 @@ const (
 	metricTypeHistogram
 )
 
-// Exporter self-metric names (MF-5). The exporter reports its own data
+// Exporter self-metric names. The exporter reports its own data
 // loss through its own pipeline so silent metric loss is observable on
 // the same dashboard as the metrics themselves. Both are published with
 // ZERO dimensions (fleet-rollup style) so a single alarm can watch them.
@@ -45,7 +45,7 @@ const (
 	MetricExporterDroppedDatums = "ExporterDroppedDatums"
 	// MetricExporterRejectedDatums counts emissions REJECTED at add() time
 	// because the value was NaN or ±Inf (CloudWatch rejects the whole
-	// all-or-nothing batch for such a datum — MF-2). This is an emit-time
+	// all-or-nothing batch for such a datum). This is an emit-time
 	// rejection: the datum never entered the export pipeline and was never
 	// published — contrast MetricExporterDroppedDatums (accepted, then lost).
 	// The OTel adapter uses the same name with the same emit-time-rejection
@@ -71,7 +71,7 @@ type metricData struct {
 	// rollup marks a zero-dimension fleet-rollup copy of the datum
 	// (see WithRollupMetrics). Rollup datums carry NO dimensions —
 	// not even DefaultTags — so a dimensionless CloudWatch alarm can
-	// match them (MF-4).
+	// match them.
 	rollup bool
 }
 
@@ -89,7 +89,7 @@ type aggregate struct {
 }
 
 // counterAggregate accumulates counter increments per (name, tags)
-// within the flush window into one datum (MF-6): 500 increments/s no
+// within the flush window into one datum: 500 increments/s no
 // longer produce 500 datums/s, they produce one summed datum per flush.
 type counterAggregate struct {
 	name   string
@@ -123,7 +123,7 @@ type batcher struct {
 	maxSize int
 	// maxBuffered is the HARD cap on pending state (gauge samples +
 	// distinct aggregate series). Beyond it new samples/series are
-	// dropped and counted (MF-1): a stalled CloudWatch endpoint must
+	// dropped and counted: a stalled CloudWatch endpoint must
 	// never grow process memory without bound. <= 0 disables the cap
 	// (tests only; applyDefaults always sets it for production).
 	maxBuffered int
@@ -131,7 +131,7 @@ type batcher struct {
 	aggregates  map[string]*aggregate
 	counters    map[string]*counterAggregate
 	// rollups lists metric names that are double-published without any
-	// dimensions so dimensionless alarms match them (MF-4).
+	// dimensions so dimensionless alarms match them.
 	rollups map[string]struct{}
 	clk     clock.Clock
 	logger  *slog.Logger
@@ -146,7 +146,7 @@ type batcher struct {
 	// overflow) or dropped after a non-retryable PutMetricData error.
 	// rejectedTotal counts NaN/±Inf emissions rejected at add().
 	// The *Reported watermarks track what has already been surfaced as
-	// self-metric datums through the pipeline (MF-5).
+	// self-metric datums through the pipeline.
 	droppedTotal     int64
 	rejectedTotal    int64
 	droppedReported  int64
@@ -188,7 +188,7 @@ func (b *batcher) pendingLocked() int {
 // reached the flush-trigger threshold (caller should signal a flush —
 // it must NOT flush inline nor spawn a goroutine, see Exporter).
 //
-// Values that are NaN or ±Inf are rejected here (MF-2): CloudWatch
+// Values that are NaN or ±Inf are rejected here: CloudWatch
 // rejects them with InvalidParameterValue, and since PutMetricData is
 // all-or-nothing one poison datum would fail whole batches forever.
 func (b *batcher) add(md metricData) bool {
@@ -298,7 +298,7 @@ func (b *batcher) dropForCapacityLocked(name string) {
 // drain removes and converts all buffered metrics to CloudWatch format,
 // prepending any datums requeued from a previous failed flush so they are
 // re-attempted ahead of fresh samples. It also appends self-metric datums
-// for any drops/rejects not yet reported (MF-5).
+// for any drops/rejects not yet reported.
 func (b *batcher) drain() []cwtypes.MetricDatum {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -365,7 +365,7 @@ func (b *batcher) drain() []cwtypes.MetricDatum {
 }
 
 // selfMetricsLocked builds zero-dimension datums reporting drops and
-// rejects accumulated since the last report (MF-5). Callers must hold
+// rejects accumulated since the last report. Callers must hold
 // b.mu.
 func (b *batcher) selfMetricsLocked(now time.Time) []cwtypes.MetricDatum {
 	var result []cwtypes.MetricDatum
@@ -426,7 +426,7 @@ func (b *batcher) requeue(datums []cwtypes.MetricDatum) int64 {
 }
 
 // recordDropped counts datums dropped after a non-retryable
-// PutMetricData rejection (MF-3 classification).
+// PutMetricData rejection (classification).
 func (b *batcher) recordDropped(n int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -455,7 +455,7 @@ func (b *batcher) rejectedCount() int64 {
 //
 // rollup datums get NO dimensions at all — not even DefaultTags — so a
 // dimensionless alarm matches them and fleet instances aggregate into
-// one series by design (MF-4).
+// one series by design.
 func (b *batcher) buildDimensions(tags []shared.Tag, rollup bool) []cwtypes.Dimension {
 	if rollup {
 		return nil
@@ -501,7 +501,7 @@ func (b *batcher) buildDimensions(tags []shared.Tag, rollup bool) []cwtypes.Dime
 // on a UTF-8 rune boundary. A naive byte slice can split a multi-byte rune,
 // producing invalid UTF-8 that CloudWatch rejects with InvalidParameterValue
 // — and since PutMetricData is all-or-nothing, one poison datum fails the
-// entire batch (MF-2/J10).
+// entire batch.
 //
 // Operator caution (aggregation collision): truncation is lossy, and
 // CloudWatch identifies a metric series by its full set of dimension
@@ -526,7 +526,7 @@ func truncateField(s string) string {
 
 // seriesKey builds an unambiguous aggregation map key from a metric
 // name, its tags, and the rollup marker. Every component is
-// length-prefixed (MF-7): the old "|"-joined form folded distinct
+// length-prefixed: the old "|"-joined form folded distinct
 // series whose concatenations collided (e.g. tag value containing "|")
 // and truncated names containing the separator. The metric name and
 // tags are stored on the aggregate structs — the key is never decoded.
@@ -553,7 +553,7 @@ func appendKeyComponent(sb *strings.Builder, s string) {
 
 // estimateDatumSize conservatively estimates the serialized request
 // size contribution of one datum so batches stay under the CloudWatch
-// 1 MB PutMetricData payload limit (MF-6).
+// 1 MB PutMetricData payload limit.
 func estimateDatumSize(d cwtypes.MetricDatum) int {
 	size := 160 // field names, timestamp, value/statistic-set overhead
 	if d.MetricName != nil {
@@ -572,7 +572,7 @@ func estimateDatumSize(d cwtypes.MetricDatum) int {
 }
 
 // addCounter buffers a counter sample. Increments aggregate per
-// (name, tags) within the flush window (MF-6). Returns true when the
+// (name, tags) within the flush window. Returns true when the
 // pending state has reached the flush-trigger threshold.
 func (b *batcher) addCounter(name string, value int64, tags []shared.Tag) bool {
 	return b.add(metricData{
@@ -624,7 +624,7 @@ func (b *batcher) addTimer(name string, duration time.Duration, tags []shared.Ta
 // (the CloudWatch PutMetricData hard limits). A no-op when the batcher is
 // empty.
 //
-// Error classification (MF-3): a non-retryable (validation-class 4xx)
+// Error classification: a non-retryable (validation-class 4xx)
 // rejection drops ONLY the offending batch — counted and logged — and
 // sending continues, so one poison datum can no longer black out the whole
 // pipeline. Retryable errors (throttling, 5xx, network) requeue everything

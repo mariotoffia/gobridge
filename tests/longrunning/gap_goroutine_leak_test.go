@@ -19,7 +19,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Gap Test: Goroutine Leak Detection (Category 9 — Performance)  [TEST-5]
+// Gap Test: Goroutine Leak Detection (Category 9 — Performance) [TEST-5]
 //
 // Runs many bridge start/stop cycles, then proves the goroutine count DRAINS
 // back toward the baseline within a bounded window — eventual near-zero growth,

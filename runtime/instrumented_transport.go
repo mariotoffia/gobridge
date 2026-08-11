@@ -191,7 +191,7 @@ func (r *instrumentedReceiverStartedSignaler) Started() <-chan struct{} {
 // instrumentedDelivery wraps a Delivery to count visibility extensions
 // and record ack/delete latency.
 //
-// HAZARD (F10): embedding ports.Delivery promotes every current and FUTURE
+// HAZARD: embedding ports.Delivery promotes every current and FUTURE
 // method of the wrapped Delivery, but a wrapper is opaque to interface probing —
 // a caller doing `d.(SomeOptionalCap)` sees THIS concrete type, not the inner
 // delivery, so any optional capability the underlying Delivery grows (e.g. a

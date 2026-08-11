@@ -334,7 +334,7 @@ func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-// TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete pins [HIGH-2]: a
+// TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete pins: a
 // negative limit must be rejected with 400 BEFORE any DeleteByFilter call. The
 // DeleteByFilter port contract treats Limit <= 0 as "delete EVERY matching
 // entry", so copying a negative limit into the filter would silently turn a
@@ -432,7 +432,7 @@ func TestHandleDLQDeleteByFilter_PositiveLimit_BoundsDelete(t *testing.T) {
 }
 
 // TestHandleDLQDeleteByFilter_ZeroLimit_UnboundedWithinFilter documents the
-// deliberate [HIGH-2] decision: limit == 0 (the omitted-field default) stays
+// deliberate decision: limit == 0 (the omitted-field default) stays
 // "unbounded within the provided filter" per the port contract — here, delete
 // all entries for the given route. The hasFilter guard keeps a limit==0 request
 // with NO other filter unambiguous (it still demands confirm_delete_all).

@@ -15,31 +15,31 @@ import (
 //
 // Implementations MUST enforce, via conditional writes / compare-and-set:
 //
-//   - I1 (single active rollout): Propose succeeds only when there is no active
+//   - (single active rollout): Propose succeeds only when there is no active
 //     (Proposed or Staging) rollout. A Propose while one is active returns
 //     ErrAlreadyExists. Propose after the last rollout reached a terminal state
 //     opens a NEW rollout at the next generation (strictly monotonic).
 //
-//   - I2 (all-member barrier): Commit succeeds only from Staging with every
+//   - (all-member barrier): Commit succeeds only from Staging with every
 //     membership-epoch member acked. Otherwise ErrRolloutNotCommittable. This
 //     is enforced by the domain (persistence.Rollout.WithCommit); the store
 //     applies it under its CAS.
 //
-//   - I3 (fencing): Commit and Abort carry the coordinator's lease token. A
+//   - (fencing): Commit and Abort carry the coordinator's lease token. A
 //     token that is invalid, or whose version is below the version that last
 //     decided this rollout, is rejected with ErrStaleFencingToken -- a deposed
 //     coordinator cannot OVERRIDE a decision the live one already made. A
 //     same-or-newer token that re-decides in the SAME direction is an idempotent
 //     no-op success (a coordinator that crashed mid-decide may safely resume:
-//     goal G3). Note the scope: the recorded version is zero until the first
-//     decision, so I3 does not fence the FIRST decision -- see the coordVersion
+//     goal). Note the scope: the recorded version is zero until the first
+//     decision, so does not fence the FIRST decision -- see the coordVersion
 //     doc on persistence.Rollout for why that residual is fail-safe.
 //
-//   - I4 (terminal-immutable): once Committed or Aborted, a rollout admits no
+//   - (terminal-immutable): once Committed or Aborted, a rollout admits no
 //     ack/nack and no cross-direction decision (commit-of-aborted /
 //     abort-of-committed) -> ErrRolloutTerminal.
 //
-//   - I5 (ack-at-most-once): Ack/Nack from a member outside the frozen epoch,
+//   - (ack-at-most-once): Ack/Nack from a member outside the frozen epoch,
 //     or a second vote from a member that already acked or nacked, is rejected
 //     with ErrRolloutAckRejected.
 //
@@ -59,13 +59,13 @@ import (
 type ClusterRolloutStore interface {
 	// Propose opens a new rollout at the next monotonic generation from the
 	// given proposal, returning it in the Proposed state. Returns
-	// ErrAlreadyExists if a rollout is currently active (I1), or
+	// ErrAlreadyExists if a rollout is currently active, or
 	// ErrInvalidRolloutProposal for a malformed proposal.
 	Propose(ctx context.Context, proposal persistence.RolloutProposal) (persistence.Rollout, error)
 
 	// Ack records memberID's acknowledgement (with the digest of the build it
 	// staged) of the given generation, advancing Proposed -> Staging on the
-	// first ack. See I4/I5 for rejections; ErrNotFound if generation is not the
+	// first ack. See for rejections; ErrNotFound if generation is not the
 	// active rollout.
 	Ack(ctx context.Context, generation uint64, memberID, buildDigest string) error
 
@@ -75,8 +75,8 @@ type ClusterRolloutStore interface {
 	Nack(ctx context.Context, generation uint64, memberID, reason string) error
 
 	// Commit commits the given generation under the coordinator's fencing
-	// token. Requires the barrier (I2); enforces fencing (I3) and
-	// terminal-immutability (I4). Idempotent under a same-or-newer token.
+	// token. Requires the barrier; enforces fencing and
+	// terminal-immutability. Idempotent under a same-or-newer token.
 	//
 	// If the rollout was proposed with a confirm window (design §8.1,
 	// RolloutProposal.ConfirmWindow > 0), the commit is PROVISIONAL: the rollout
@@ -86,12 +86,12 @@ type ClusterRolloutStore interface {
 	// terminal, exactly as the base protocol.
 	Commit(ctx context.Context, generation uint64, token persistence.LeaseToken) error
 
-	// Converge records memberID's post-swap convergence (its MQTT-R1 readiness
+	// Converge records memberID's post-swap convergence (its readiness
 	// check passed) on a provisionally-committed generation (design §8.1). Legal
 	// only while the rollout is Committed with an active confirm window; enforces
 	// the confirm-window bookkeeping:
 	//
-	//   - I6 (converge-at-most-once): a member outside the frozen epoch, or a
+	//   - (converge-at-most-once): a member outside the frozen epoch, or a
 	//     second convergence from the same member, is rejected with
 	//     ErrRolloutAckRejected.
 	//   - A convergence before commit returns ErrRolloutNotConfirmable; against a
@@ -101,20 +101,20 @@ type ClusterRolloutStore interface {
 
 	// Confirm confirms a provisionally-committed generation under the
 	// coordinator's fencing token: the confirm-window success decision (design
-	// §8.1). Requires the confirm barrier (I7: active window with every epoch
-	// member converged) else ErrRolloutNotConfirmable; enforces fencing (I3) and
-	// terminal-immutability (I4). Idempotent under a same-or-newer token.
+	// §8.1). Requires the confirm barrier (active window with every epoch
+	// member converged) else ErrRolloutNotConfirmable; enforces fencing and
+	// terminal-immutability. Idempotent under a same-or-newer token.
 	Confirm(ctx context.Context, generation uint64, token persistence.LeaseToken) error
 
 	// Revert reverts a provisionally-committed generation under the coordinator's
 	// fencing token, recording reason: the confirm-window deadman decision (design
 	// §8.1). Every member then reverts to the last confirmed generation. Enforces
-	// fencing (I3) and terminal-immutability (I4). Idempotent under a same-or-newer
+	// fencing and terminal-immutability. Idempotent under a same-or-newer
 	// token.
 	Revert(ctx context.Context, generation uint64, token persistence.LeaseToken, reason string) error
 
 	// Abort aborts the given generation under the coordinator's fencing token,
-	// recording reason. Enforces fencing (I3) and terminal-immutability (I4).
+	// recording reason. Enforces fencing and terminal-immutability.
 	// Idempotent under a same-or-newer token.
 	Abort(ctx context.Context, generation uint64, token persistence.LeaseToken, reason string) error
 
@@ -197,7 +197,7 @@ type RolloutHost interface {
 	MarkDegraded(reason string)
 
 	// Converged reports whether THIS member has converged on its running config:
-	// the post-swap readiness check (MQTT-R1 — every non-standby session connected
+	// the post-swap readiness check (every non-standby session connected
 	// and its subscriptions satisfied) is met. It is the confirm-window signal
 	// (design §8.1): an Ack proves validated+built, Converged proves
 	// converged-against-the-real-broker. The drive calls it after a provisional swap

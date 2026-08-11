@@ -15,14 +15,14 @@ import (
 )
 
 // TestApp_CommitAppliesExactlyOnceWithActiveWatcher is the NEW-DEFECT
-// regression for the double-apply introduced by ConfigApplier wiring (FIX 2):
+// regression for the double-apply introduced by ConfigApplier wiring:
 //
 // applyCommittedConfig writes the committed config to disk (changing its
 // content hash) and applies it in-band. With an ACTIVE poll watcher, the
 // watcher then detects the hash change and re-emits the same config; before the
 // fix, watchLoop applied it UNCONDITIONALLY, so every admin commit triggered a
 // SECOND full stop→rebuild→start swap (a redundant outage plus doubled exposure
-// to the swap-failure→wedge path). The original FIX 2 test masked this by
+// to the swap-failure→wedge path). The original test masked this by
 // pinning PollInterval to "1h" (dormant watcher).
 //
 // This test runs a live watcher (short poll) and asserts:

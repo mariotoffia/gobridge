@@ -133,7 +133,7 @@ func TestToSessionConfig_FromRouteSessionDef(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 // TestToSessionConfig_ConnectAfterLease_DefaultsOnForExclusive is the regression
-// test for finding F6: a RouteSessionDef source is always an exclusive
+// test for a RouteSessionDef source is always an exclusive
 // single-owner session, so connect_after_lease must default ON when the
 // blueprint omits it — otherwise a booting standby with clean_start=false
 // resumes a broker-persisted subscription and consumes WITHOUT the lease. An
@@ -161,7 +161,7 @@ func TestToSessionConfig_ConnectAfterLease_DefaultsOnForExclusive(t *testing.T) 
 	}
 }
 
-// Finding C3-7: AcquirePollInterval and RenewCallTimeout are now blueprint-
+// Finding: AcquirePollInterval and RenewCallTimeout are now blueprint-
 // exposed. RenewCallTimeout in particular is part of the failover-safety
 // invariant (folded into renewWorstCaseSpan), so it must be tunable from a
 // blueprint. Verify both parse into the session config.
@@ -191,7 +191,7 @@ func TestToSessionConfig_NilReturnsNil(t *testing.T) {
 	}
 }
 
-// TestToSessionConfig_DerivesRenewIntervalFromTTL validates contract C3: when
+// TestToSessionConfig_DerivesRenewIntervalFromTTL validates contract: when
 // only lease_ttl is configured, RenewInterval is left ZERO so the session
 // manager derives it from LeaseTTL downstream. Seeding it (the old bug via
 // session.DefaultConfig, which pins RenewInterval=110s) suppressed the
@@ -212,7 +212,7 @@ func TestToSessionConfig_DerivesRenewIntervalFromTTL(t *testing.T) {
 	}
 }
 
-// TestToSessionConfig_DerivesRenewJitterFromTTL is the regression for FIX 6:
+// TestToSessionConfig_DerivesRenewJitterFromTTL is the regression:
 // session.DefaultConfig pins RenewJitter to a fixed 5s, and toSessionConfig only
 // reset RenewInterval, leaving the 5s jitter in place. The session manager
 // derives jitter (renew/4) ONLY when BOTH RenewInterval and RenewJitter are
@@ -236,7 +236,7 @@ func TestToSessionConfig_DerivesRenewJitterFromTTL(t *testing.T) {
 }
 
 // TestToSessionConfig_LeaseRenewJitter validates that the lease_renew_jitter
-// YAML field is plumbed into session.Config.RenewJitter (contract C3).
+// YAML field is plumbed into session.Config.RenewJitter (contract).
 func TestToSessionConfig_LeaseRenewJitter(t *testing.T) {
 	rs := &ports.RouteSessionDef{SessionID: "s1", RenewJitter: "5s"}
 
@@ -416,7 +416,7 @@ func TestToDrainStrategy_AdaptiveBackoff(t *testing.T) {
 	}
 }
 
-// TestIsClusteredDeployment covers the shared clustered predicate (finding H8):
+// TestIsClusteredDeployment covers the shared clustered predicate:
 // deployment_mode == "clustered" OR a static cluster.endpoints override; a nil
 // config is never clustered. This is the one definition the store-distribution
 // guard and the fail-closed reload guard both key on, so its boundary cases are

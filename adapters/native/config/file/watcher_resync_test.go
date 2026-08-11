@@ -135,7 +135,7 @@ func TestWatcher_Notify_ResyncCatchesMissedEvents(t *testing.T) {
 	waitForTicker(t, fc)         // resync ticker registered
 	fc.Advance(w.resyncInterval) // resync tick: detects the missed change, holds it pending
 
-	// Stability gate (HIGH-2): the resync-detected change is applied only after
+	// Stability gate: the resync-detected change is applied only after
 	// a confirming re-read one settle window (debounce) later returns the same
 	// bytes. The resync path arms that debounce re-read.
 	waitForTimer(t, fc)

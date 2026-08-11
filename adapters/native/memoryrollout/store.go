@@ -17,7 +17,7 @@ import (
 // (persistence.Rollout) as its compare-and-set: the mutex serializes access so
 // the domain's invariant checks run atomically against the current state. A new
 // generation is opened only once the previous rollout is terminal (invariant
-// I1); generations are strictly monotonic.
+// generations are strictly monotonic.
 type Store struct {
 	mu        sync.Mutex
 	current   *persistence.Rollout                // nil until the first Propose
@@ -54,7 +54,7 @@ func NewStore(opts ...Option) *Store {
 }
 
 // Propose opens a new rollout at the next monotonic generation. It fails with
-// ErrAlreadyExists if a rollout is currently active (invariant I1).
+// ErrAlreadyExists if a rollout is currently active.
 func (s *Store) Propose(ctx context.Context, proposal persistence.RolloutProposal) (persistence.Rollout, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

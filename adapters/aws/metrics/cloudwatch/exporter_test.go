@@ -50,7 +50,7 @@ func TestBatcher_AddCounter(t *testing.T) {
 	}
 }
 
-// MF-6 regression: counter increments for the same (name, tags) aggregate
+// regression: counter increments for the same (name, tags) aggregate
 // into ONE summed datum per flush window instead of one datum per increment.
 func TestBatcher_CounterAggregatesPerNameAndTags(t *testing.T) {
 	b := testBatcher(100)
@@ -218,7 +218,7 @@ func TestBatcher_MultipleHistogramKeys(t *testing.T) {
 	}
 }
 
-// MF-7 regression: the aggregation key must not fold distinct series whose
+// regression: the aggregation key must not fold distinct series whose
 // name/tag concatenations collide under a naive separator-joined encoding.
 func TestSeriesKey_NoAmbiguity(t *testing.T) {
 	a := seriesKey("m", []shared.Tag{{Key: "a", Value: "1|b=2"}}, false)
@@ -241,7 +241,7 @@ func TestSeriesKey_NoAmbiguity(t *testing.T) {
 	}
 }
 
-// MF-7: names and tags are preserved verbatim on the aggregate structs —
+// names and tags are preserved verbatim on the aggregate structs —
 // a metric name containing the old "|" separator survives drain intact.
 func TestBatcher_SeparatorInNameSurvivesDrain(t *testing.T) {
 	b := testBatcher(100)
@@ -257,7 +257,7 @@ func TestBatcher_SeparatorInNameSurvivesDrain(t *testing.T) {
 }
 
 // Verifies applyDefaults sets flush interval, buffer size, and the
-// real CloudWatch API batch limits (MF-6).
+// real CloudWatch API batch limits.
 func TestConfig_Defaults(t *testing.T) {
 	cfg := &Config{Namespace: "Test"}
 	applyDefaults(cfg)
@@ -279,7 +279,7 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 }
 
-// MF-6: a configured MaxBatchSize above the API hard limit is clamped.
+// a configured MaxBatchSize above the API hard limit is clamped.
 func TestConfig_ClampsMaxBatchSizeToAPILimit(t *testing.T) {
 	cfg := &Config{MaxBatchSize: 5000, MaxBatchBytes: 5_000_000}
 	applyDefaults(cfg)
@@ -346,7 +346,7 @@ func TestOptions(t *testing.T) {
 	}
 }
 
-// MF-8: WithInstanceTag("") auto-derives a hostname-pid identity.
+// WithInstanceTag("") auto-derives a hostname-pid identity.
 func TestWithInstanceTag_DerivesWhenEmpty(t *testing.T) {
 	e := &Exporter{config: Config{}}
 	WithInstanceTag("")(e)
@@ -355,7 +355,7 @@ func TestWithInstanceTag_DerivesWhenEmpty(t *testing.T) {
 	}
 }
 
-// MF-8: an InstanceID becomes an instance_id dimension on every
+// an InstanceID becomes an instance_id dimension on every
 // dimensioned datum via DefaultTags.
 func TestApplyDefaults_InstanceTagJoinsDefaultTags(t *testing.T) {
 	cfg := &Config{InstanceID: "bridge-7"}

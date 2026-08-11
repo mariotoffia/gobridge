@@ -44,14 +44,14 @@ func withUnsubscribe(fn func(topic string)) routerOption {
 // withCovered installs the predicate the router uses to tell a REAL
 // live-route loss (a still-desired subscription whose handler registered
 // late) from benign orphan cleanup when it acks-and-drops a publish past
-// the grace window (M-3). Nil treats every post-grace drop as an orphan
+// the grace window. Nil treats every post-grace drop as an orphan
 // (the legacy/test behaviour).
 func withCovered(fn func(topic string) bool) routerOption {
 	return func(r *router) { r.covered = fn }
 }
 
 // withSessionTag records the session's client_id so router loss/drop metrics
-// carry a session_id tag (A-11). Empty values are ignored (the tag is omitted).
+// carry a session_id tag. Empty values are ignored (the tag is omitted).
 func withSessionTag(id string) routerOption {
 	return func(r *router) { r.sessionID = id }
 }
@@ -214,7 +214,7 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 					r.releaseQueueReservationLocked(pending.pub)
 				}
 				// Flush entries taken before the recycle began: same
-				// recycle-window discard class, same metric (MQTT-L4).
+				// recycle-window discard class, same metric.
 				r.stalePurged.Add(int64(len(flush)))
 				r.metrics.Counter(MetricMQTTRouterStalePurged, int64(len(flush)), r.sessionTag()...)
 				ready = nil // old socket ACKs die with the recycled generation

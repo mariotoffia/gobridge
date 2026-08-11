@@ -17,7 +17,7 @@ import (
 // signalClock wraps a clocktest.Fake and reports, over channels, the two
 // lifecycle events the auto-extend goroutine emits — so these
 // timing-allowlisted tests can hand-shake deterministically instead of
-// sleeping to sync with the fake clock (ASB-N1):
+// sleeping to sync with the fake clock (ASB):
 //
 //   - NewTicker signals `started`: the goroutine has armed its renewal
 //     ticker and is (about to be) parked in select, so the first Advance

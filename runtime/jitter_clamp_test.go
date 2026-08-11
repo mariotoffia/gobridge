@@ -64,7 +64,7 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 }
 
 // TestGlobalMaxInFlight_NegativeClamp validates that negative values
-// are clamped to 0, meaning no global semaphore is created (QA-H5).
+// are clamped to 0, meaning no global semaphore is created (QA).
 func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

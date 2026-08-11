@@ -32,7 +32,7 @@ const (
 	// carried by the producer. A count-less source transport (MQTT, AMQP 0-9-1,
 	// HTTP) that stamps a fresh id on every broker redelivery cannot be counted by
 	// the replay ledger — each redelivery resets the attempt count, so
-	// MaxReplayAttempts never fires (MQTT-CORE-1). The runtime reads this marker to
+	// MaxReplayAttempts never fires. The runtime reads this marker to
 	// treat such a message as UNCOUNTABLE and sink it terminally instead of looping
 	// forever. It is INTERNAL-ONLY: never serialized to a peer, so an adapter must
 	// stamp it locally at ingress and it can never be spoofed inbound.

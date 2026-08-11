@@ -94,7 +94,7 @@ type SessionOptions struct {
 	// new subscription and orphan everything retained for the old one. The
 	// factory consults it to fail-closed a durable receiver
 	// (durability_mode > 0) built without an explicit container_id
-	// (HIGH-1). Unexported internal bookkeeping: never decoded from, nor
+	// Unexported internal bookkeeping: never decoded from, nor
 	// marshalled to, config.
 	containerIDGenerated bool
 }
@@ -259,7 +259,7 @@ func DefaultSenderOptions() SenderConfig {
 // validate checks the session options. When credentialsPending is true
 // the caller has an unresolved credentials_uri whose resolved set may
 // still supply the SASL EXTERNAL client certificate, so the EXTERNAL
-// cert-material check is deferred to Config.ApplyCredentials (F10 deferred
+// cert-material check is deferred to Config.ApplyCredentials (deferred
 // path). Every other check still runs at parse time.
 func (o *SessionOptions) validate(credentialsPending bool) error {
 	if o.Address == "" {
@@ -273,7 +273,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 			"amqp10: invalid sasl_mechanism %q (want plain, external, or anonymous)", o.SASLMechanism))
 	}
 
-	// F1: tls.enable is a silent no-op unless the address scheme selects
+	// tls.enable is a silent no-op unless the address scheme selects
 	// TLS. go-amqp applies ConnOptions.TLSConfig only for the "amqps" and
 	// "amqp+ssl" schemes; on a plaintext "amqp" (or schemeless) address
 	// the dial — and any SASL PLAIN credentials — travel in CLEARTEXT
@@ -299,7 +299,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 		return err
 	}
 
-	// F10: SASL EXTERNAL authenticates via the mTLS client certificate.
+	// SASL EXTERNAL authenticates via the mTLS client certificate.
 	// Without enabled TLS and client key-pair material it surfaces only as
 	// an opaque broker SASL failure at dial; reject it up front. When
 	// credentialsPending, the certificate may still arrive via the
@@ -311,7 +311,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 				"(tls.enable with cert_file/key_file or cert_pem/key_pem)")
 	}
 
-	// F11: the AMQP 1.0 spec fixes the smallest permissible max-frame-size
+	// the AMQP 1.0 spec fixes the smallest permissible max-frame-size
 	// at 512 octets (MIN-MAX-FRAME-SIZE). A smaller positive value is
 	// rejected by the peer at open; catch it here. Zero means "unset" so
 	// applyDefaults can supply the default.
@@ -519,7 +519,7 @@ func (o *SessionOptions) applyDefaults() {
 		// lifetime and unique per instance. It still changes across
 		// process restarts, so a durable receiver (durability_mode > 0)
 		// built through the factory without an explicit container_id is
-		// REJECTED at build time (HIGH-1); containerIDGenerated records
+		// REJECTED at build time; containerIDGenerated records
 		// that this id is synthesised so the factory can enforce that gate.
 		o.ContainerID = generateContainerID()
 		o.containerIDGenerated = true

@@ -166,9 +166,9 @@ func TestUC63_MemoryStability(t *testing.T) {
 // UC64: Latency Percentiles
 //
 // Sends 10,000 messages through DirectHold with a latencyRecorder
-// processor and measures P50/P95/P99 send latencies.
+// processor and measures send latencies.
 //
-// Assert: P50 < 500ms, P95 < 2s, P99 < 5s.
+// Assert: < 500ms, < 2s, < 5s.
 // =========================================================================
 
 func TestUC64_LatencyPercentiles(t *testing.T) {
@@ -231,11 +231,11 @@ func TestUC64_LatencyPercentiles(t *testing.T) {
 	t.Logf("UC64: delivered=%d, dlq=%d", collector.count(), dlq.count())
 
 	require.Less(t, p50, 500*time.Millisecond,
-		"P50 latency must be < 500ms (got %v)", p50)
+		"latency must be < 500ms (got %v)", p50)
 	require.Less(t, p95, 2*time.Second,
-		"P95 latency must be < 2s (got %v)", p95)
+		"latency must be < 2s (got %v)", p95)
 	require.Less(t, p99, 5*time.Second,
-		"P99 latency must be < 5s (got %v)", p99)
+		"latency must be < 5s (got %v)", p99)
 }
 
 // =========================================================================

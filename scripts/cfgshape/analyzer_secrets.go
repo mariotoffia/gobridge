@@ -29,7 +29,7 @@ var strongSecretSubstrings = []string{
 }
 
 // pemSecretSuffixes mark an exported string field as carrying TLS
-// private-key/cert PEM material (G2): a raw "KeyPEM"/"CertPEM"/
+// private-key/cert PEM material: a raw "KeyPEM"/"CertPEM"/
 // "ClientKey" string leaks through logs/JSON/fmt like a password and
 // must be wrapped in shared.Secret. "pem" covers *PEM/*KeyPEM; "clientkey"
 // catches a bare client-key field. ("privatekey" is already a strong
@@ -42,7 +42,7 @@ var pemSecretSuffixes = []string{"pem", "clientkey"}
 // suffix (AccessToken, AuthToken, SASToken) so prefixes like
 // TokenBucket / Tokenizer are NOT flagged. PEM/private-key suffixes
 // (KeyPEM, PEM, PrivateKey, ClientKey) are flagged too so raw TLS
-// material strings must be wrapped in shared.Secret (G2).
+// material strings must be wrapped in shared.Secret.
 func isSecretFieldName(name string) bool {
 	lower := strings.ToLower(name)
 	for _, s := range strongSecretSubstrings {

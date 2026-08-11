@@ -32,7 +32,7 @@ const (
 	// the lease was still held and renewing. It is emitted INSTEAD OF
 	// LeaseStateLost so a subscription blip is never mis-observed as a lease
 	// loss/transfer; the session is surfaced to superviseSession for isolated
-	// restart (C7-N2). Appended last to keep the existing iota values stable.
+	// restart. Appended last to keep the existing iota values stable.
 	LeaseStateReconcileFailed
 )
 
@@ -131,7 +131,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 		cfg.MaxRenewFails = defaults.MaxRenewFails
 	}
 	// Derive the renewal cadence from the TTL when the operator supplies only
-	// LeaseTTL (C3: bridge/convert.go no longer seeds DefaultConfig, so this is
+	// LeaseTTL (bridge/convert.go no longer seeds DefaultConfig, so this is
 	// now the production path). deriveRenewInterval/deriveRenewJitter target the
 	// MaxRenewFails-th renew at ~75% of the TTL, folding jitter into the
 	// expiry-margin invariant so renew×maxFails+jitter < ttl with margin.
@@ -140,7 +140,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 	// caller pinned RenewInterval it is explicit enough that a zero RenewJitter
 	// is honored as "no jitter" (deterministic cadence) rather than reinterpreted
 	// as "derive"; an operator wanting spread on a pinned interval sets the
-	// lease_renew_jitter field. The C3 production path leaves both zero, so both
+	// lease_renew_jitter field. The production path leaves both zero, so both
 	// are derived.
 	renewIntervalDerived := cfg.RenewInterval <= 0
 	if renewIntervalDerived {
@@ -153,7 +153,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 		cfg.RenewJitter = deriveRenewJitter(cfg.RenewInterval)
 	}
 	// Resolve RenewCallTimeout BEFORE the expiry-margin clamp so it participates
-	// in the worst-case renew span (finding H2): renewLoop resets its timer
+	// in the worst-case renew span: renewLoop resets its timer
 	// AFTER each renew call, so a hung call's full RenewCallTimeout adds to the
 	// spacing between attempts and must be counted before deciding whether the
 	// timings fit under the TTL.
@@ -301,7 +301,7 @@ func (m *Manager) SetEndpoints(endpoints map[string]string) {
 // left to settle). stepDown consults it to early-complete the StepDownGrace
 // wait: when there is nothing in flight, waiting the full grace only adds
 // takeover latency (a new owner keys off the lease store, not this wait).
-// When unset (nil), stepDown waits the full grace as before (finding F9).
+// When unset (nil), stepDown waits the full grace as before.
 // Must be called before Run; not safe for concurrent use with Run. The
 // predicate itself may be invoked concurrently with the drainer and must be
 // safe for that (Drainer.IdleSince is).
@@ -312,7 +312,7 @@ func (m *Manager) SetDrainIdleCheck(fn func() bool) {
 // leaseEventBuffer is the capacity of the LeaseStateChanged channel. Lease
 // transitions are low-frequency but observability-critical; the buffer is sized
 // so a slow consumer rarely fills it, and pushLeaseEvent coalesces on overflow
-// rather than silently dropping (finding L15).
+// rather than silently dropping.
 const leaseEventBuffer = 64
 
 // LeaseStateChanged returns a channel that receives lease state transitions.
@@ -329,7 +329,7 @@ func (m *Manager) LeaseEventDrops() uint64 { return m.leaseEventDrops.Load() }
 // buffered event (the least relevant — state has moved on since) and enqueues
 // the new one, incrementing a drop counter for observability. The current
 // state is more valuable to a consumer than a stale one, so overwrite-oldest
-// preserves the freshest transitions (finding L15).
+// preserves the freshest transitions.
 func (m *Manager) pushLeaseEvent(state LeaseState, token persistence.LeaseToken, err error) {
 	evt := LeaseStateEvent{State: state, Token: token, Timestamp: m.clk.Now(), Err: err}
 	for {
@@ -397,7 +397,7 @@ func (m *Manager) handleEvents(ctx context.Context) error {
 				// a session FAILURE so superviseSession restarts this one
 				// session in isolation, instead of the previous silent "clean
 				// stop" that let a non-exclusive session die permanently with
-				// no restart and no error (finding L14).
+				// no restart and no error.
 				return fmt.Errorf("runtime: session-manager: %w", errSessionEventsClosed)
 			}
 			if err := m.handleSessionEvent(ctx, ev); err != nil {
@@ -421,11 +421,11 @@ func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent)
 				"subscription_count", len(m.plan.Subscriptions),
 			)
 		}
-		// HIGH-6: race the reconnect Reconcile against a hard ceiling so a broker
+		// race the reconnect Reconcile against a hard ceiling so a broker
 		// SDK call that ignores ctx cannot block the renew select loop and starve
 		// lease renewal into a silent expiry + dual-consumer split-brain. The
 		// renewal timer stays serviceable; on the ceiling the error flows through
-		// the session-failure path, which closes the source session (CRITICAL-1)
+		// the session-failure path, which closes the source session
 		// before releasing the lease.
 		if err := m.boundedReconcile(ctx, m.plan); err != nil {
 			m.log(ctx, slog.LevelError, "reconcile failed on reconnect", "error", err)
@@ -564,7 +564,7 @@ func (m *Manager) nextRenewDelay() time.Duration {
 // small de-synchronising jitter. Standbys poll on a DEDICATED cadence
 // (m.acquirePoll), decoupled from the (typically much larger) owner renew
 // interval, so a takeover is not delayed by up to a full renew interval
-// (finding M6). The ±25% jitter spreads competing standbys so they do not
+// The ±25% jitter spreads competing standbys so they do not
 // stampede the lease store on expiry. Floored at 1ms.
 func (m *Manager) acquirePollDelay() time.Duration {
 	base := m.acquirePoll

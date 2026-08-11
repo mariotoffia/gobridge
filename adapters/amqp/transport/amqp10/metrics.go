@@ -22,7 +22,7 @@ const (
 	// therefore measures broker-delegated retry scheduling, NOT a failure
 	// — the previous name ("Unhonored") asserted a non-honoring broker on
 	// every delayed retry, a 100% false positive on honoring brokers
-	// (finding 5 / G-N2). See acl_delivery.go Retry.
+	// (finding 5 / G). See acl_delivery.go Retry.
 	MetricAMQP10DelayedRetryDeferred = "AMQP10DelayedRetryDeferred"
 	// MetricAMQP10IngressRejected counts inbound messages that failed
 	// envelope conversion at ingress and were rejected back to the
@@ -36,6 +36,6 @@ const (
 	// credit and stalls the receiver with Health still Full. The receiver
 	// forces a link rebuild once failures cross a threshold; this counter
 	// makes the leaked-credit condition observable before then (finding
-	// F2). See receiver.go settlementFailed / forceSettleRebuild.
+	// See receiver.go settlementFailed / forceSettleRebuild.
 	MetricAMQP10SettleFailed = "AMQP10SettleFailed"
 )

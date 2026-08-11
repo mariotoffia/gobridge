@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Finding C3-M (readiness): a deferred-connect standby's source session never
+// Finding (readiness): a deferred-connect standby's source session never
 // connects until this instance wins the lease. The pre-fix readiness derivation
 // required every session connected, so such a standby was pinned at LevelRunning
 // and a level=connected readiness probe marked it permanently unready — ejecting

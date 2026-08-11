@@ -1,7 +1,7 @@
 package sqliteoutbox
 
 // Internal regression tests for the production-readiness remediation:
-//   - H2  partition-scoped duplicate identity (schema rebuild migration).
+//   - partition-scoped duplicate identity (schema rebuild migration).
 //   - MED fatal storage-fault classification + store-health metric.
 //   - MED PRAGMA synchronous=FULL pin (counterfactual over a DSN override).
 //   - LOW partial compaction indexes are actually used by the sweep DELETEs.
@@ -255,7 +255,7 @@ func TestTransientFaultNotCountedAsFatal(t *testing.T) {
 	}
 }
 
-// --- H2: identity migration (schema rebuild) -------------------------------
+// --- identity migration (schema rebuild) -------------------------------
 
 // A database carrying the legacy GLOBAL UNIQUE(envelope_id, binding_id) is
 // rebuilt in place: the inline constraint is dropped, the partition-scoped

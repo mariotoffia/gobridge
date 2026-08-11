@@ -68,7 +68,7 @@ func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConf
 
 // NewOutboxStore creates a SQLite outbox store from the typed config.
 // The stale-claim window is threaded into the store so a claim stranded
-// by a crashed owner is reclaimed once it goes stale (I1); the typed
+// by a crashed owner is reclaimed once it goes stale; the typed
 // config's stale_claim_duration (when > 0) overrides the runtime-derived
 // value, and when both are zero the store stays strictly version-only.
 // A non-zero retention overrides the store's default compaction window

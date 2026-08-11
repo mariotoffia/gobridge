@@ -129,7 +129,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			// intervention it (and any sibling un-acked deliveries) would
 			// pin broker Receive-Maximum slots until an unrelated
 			// connection teardown, wedging ingress as slots accumulate
-			// (MQTT-L3). For durable QoS 1/2 (ack != nil), request the same
+			// For durable QoS 1/2 (ack != nil), request the same
 			// bounded, rate-limited session recycle a Delivery.Retry uses:
 			// the resumed session redelivers every unsettled delivery
 			// (duplicates absorbed downstream, the documented at-least-once

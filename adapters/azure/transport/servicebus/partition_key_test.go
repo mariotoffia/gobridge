@@ -1,6 +1,6 @@
 package servicebus
 
-// partition_key_test.go — F6: PartitionKey must be settable on egress
+// partition_key_test.go —: PartitionKey must be settable on egress
 // (asb.partition-key header) and PRESERVED in scheduled-retry copies so
 // a retry on a partitioned entity without sessions keeps its ordering
 // context instead of being re-hashed onto a different partition.

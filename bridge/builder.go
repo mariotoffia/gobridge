@@ -134,7 +134,7 @@ func WithAuditLogger(a ports.AuditLogger) BuilderOption {
 // (its Refresh method). The wiring is a runtime type assertion in
 // CredentialRefresher.NotifyAuthFailure, so without this a rename of
 // PollBasedWrapper.Refresh would silently disable reactive credential
-// recovery (the F2 hard-rotation fast-path) instead of breaking the build.
+// recovery (the hard-rotation fast-path) instead of breaking the build.
 var _ reactiveCredentialStore = (*credentials.PollBasedWrapper)(nil)
 
 // effectivePushStore returns the push credential store the build should
@@ -154,13 +154,13 @@ func (b *Builder) effectivePushStore() ports.PushCredentialStore {
 }
 
 // pullCacheNeedsRotationInvalidation reports whether a rotation observed by the
-// refresher must explicitly invalidate the pull cache (contract C4). Only an
+// refresher must explicitly invalidate the pull cache (contract). Only an
 // EXPLICITLY-registered push store (WithPushCredentialStore) rotates out of band
 // from the pull cache and can leave it holding stale material. The lazy poll
 // wrapper (effectivePushStore's fallback, used by WithPolledCredentialStore)
 // wraps this SAME resolver and refreshes its cache via ResolveUncached on the
 // detecting poll BEFORE publishing, so invalidating there would delete the
-// just-cached fresh entry and blind F5 stale-serve for up to a poll interval
+// just-cached fresh entry and blind stale-serve for up to a poll interval
 // after every rotation (adversarial Finding 1).
 func (b *Builder) pullCacheNeedsRotationInvalidation() bool {
 	return b.pushCredStore != nil

@@ -16,7 +16,7 @@ import (
 )
 
 // Compile-time assertion that the in-memory store implements the optional
-// OutboxReleaser capability the drainer type-asserts for the A4 transient-
+// OutboxReleaser capability the drainer type-asserts for the transient-
 // failure fast path. It lives in the test file because the production
 // package satisfies its ports structurally (no ports import) per
 // .go-arch-lint.yml; only memorydlq carries an in-package ports assertion.
@@ -76,7 +76,7 @@ func mustPersist(t *testing.T, store *memoryoutbox.Store, id, sessionID string) 
 	}
 }
 
-// TestRelease_AllowsSameOwnerRetryAfterTransientFailure proves the A4
+// TestRelease_AllowsSameOwnerRetryAfterTransientFailure proves
 // fast path: a live owner returns a transiently-failed claimed record to
 // pending via Release and re-claims it on the next drain with the SAME
 // token version — no fencing-version bump and no wall-clock stale-claim

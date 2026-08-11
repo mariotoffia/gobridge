@@ -132,7 +132,7 @@ func TestBuildClientOptions_InvalidPEM(t *testing.T) {
 	}
 }
 
-// --- F1: user-assigned managed identity ------------------------------------
+// --- user-assigned managed identity ------------------------------------
 
 // TestManagedIdentityCredentialOptions_SystemAssigned validates that with
 // no ClientID the helper returns nil, i.e. NewManagedIdentityCredential
@@ -144,7 +144,7 @@ func TestManagedIdentityCredentialOptions_SystemAssigned(t *testing.T) {
 }
 
 // TestManagedIdentityCredentialOptions_UserAssigned is the regression
-// guard for F1: a configured ClientID MUST reach the credential options
+// guard: a configured ClientID MUST reach the credential options
 // as a user-assigned client ID. The pre-fix code passed nil and silently
 // dropped ClientID.
 func TestManagedIdentityCredentialOptions_UserAssigned(t *testing.T) {
@@ -165,7 +165,7 @@ func TestManagedIdentityCredentialOptions_UserAssigned(t *testing.T) {
 	}
 }
 
-// --- F5: configurable SDK retry policy -------------------------------------
+// --- configurable SDK retry policy -------------------------------------
 
 // TestRetryConfig_ToSDK_ZeroValueKeepsDefaults asserts an unset
 // RetryConfig reports hasRetry=false so buildClientOptions leaves
@@ -198,7 +198,7 @@ func TestRetryConfig_ToSDK_Translates(t *testing.T) {
 
 // TestBuildClientOptions_WithRetry asserts a configured RetryConfig
 // surfaces on the returned ClientOptions even when no TLS is set (the
-// pre-F5 code returned nil, dropping any retry override).
+// code returned nil, dropping any retry override).
 func TestBuildClientOptions_WithRetry(t *testing.T) {
 	cfg := ConnectionConfig{Retry: RetryConfig{MaxRetries: 1}}
 	opts, err := buildClientOptions(cfg)

@@ -34,7 +34,7 @@ type CircuitBreaker interface {
 // state while a request was in flight, so with several requests in flight
 // on one breaker a late outcome is mis-accounted against the CURRENT
 // generation — a stale half-open probe release or a spurious re-open
-// (MQTT-O3). AdmitRequest closes that: the returned settle callback is
+// AdmitRequest closes that: the returned settle callback is
 // bound to the generation the request was admitted in, and the
 // implementation discards an outcome settled after a state transition.
 // Adapters that may have concurrent requests in flight (route

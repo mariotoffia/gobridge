@@ -10,7 +10,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// M-5 (MEDIUM): default receive_maximum 65535 = unbounded memory.
+// (MEDIUM): default receive_maximum 65535 = unbounded memory.
 //
 // paho buffers up to Receive Maximum full publishes under manual
 // acknowledgement, and this adapter's startup pending buffer is sized to the
@@ -28,7 +28,7 @@ import (
 //
 // Counterfactual (proven by disabling the NewSession coercion): pre-fix an
 // unset receive_maximum stays 0 and the pending buffer keeps the 65535-entry
-// default — the multi-GiB memory ceiling M-5 removes.
+// default — the multi-GiB memory ceiling removes.
 func TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer(t *testing.T) {
 	require.Equal(t, uint16(192), DefaultReceiveMaximum,
 		"the default is the byte-budgeted 192 ceiling, not the 65535 protocol maximum")
@@ -39,7 +39,7 @@ func TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer(t *testing.T) {
 	}, connectivity.SessionEphemeral, nil)
 
 	require.Equal(t, DefaultReceiveMaximum, s.opts.ReceiveMaximum,
-		"an unset (0) receive_maximum is coerced to the lowered default (M-5)")
+		"an unset (0) receive_maximum is coerced to the lowered default")
 
 	r := s.Router()
 	r.mu.RLock()
@@ -69,7 +69,7 @@ func TestBug_ReceiveMaximumExplicit_NotCoerced(t *testing.T) {
 	require.Equal(t, 2048, limit, "the pending buffer tracks the explicit Receive Maximum")
 }
 
-// TestBug_ReceiveMaximumDefault_WarnsOnCoercion asserts FIX 3 (MEDIUM-4): the
+// TestBug_ReceiveMaximumDefault_WarnsOnCoercion asserts: the
 // previously SILENT default coercion now emits a WARN, matching the sibling
 // session_expiry coercion in the same constructor. An operator implicitly
 // relying on the old 65535 ceiling gets a visible signal that they were capped
@@ -86,9 +86,9 @@ func TestBug_ReceiveMaximumDefault_WarnsOnCoercion(t *testing.T) {
 	}, connectivity.SessionEphemeral, slog.New(logs))
 
 	require.Equal(t, DefaultReceiveMaximum, s.opts.ReceiveMaximum,
-		"an unset receive_maximum is still coerced to the lowered default (value unchanged by FIX 3)")
+		"an unset receive_maximum is still coerced to the lowered default (value unchanged)")
 	require.Equal(t, 1, logs.warnCountContaining("receive_maximum"),
-		"FIX 3: an unset receive_maximum must WARN on coercion (visibility of the lowered default), "+
+		"an unset receive_maximum must WARN on coercion (visibility of the lowered default), "+
 			"matching the session_expiry sibling")
 }
 

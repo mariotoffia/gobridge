@@ -8,7 +8,7 @@ ownership if rolled instead of drained.
 
 ## Overview
 
-**Current behaviour (finding H8): a clustered live reload is rejected
+**Current behaviour: a clustered live reload is rejected
 fail-closed.** Every non-no-op live reload of (or into) a clustered deployment is
 refused by the runtime and by the AWS composition root, keeping the running
 instance on its last-good config. Clustered config changes MUST go through the
@@ -23,7 +23,7 @@ each instance watches its own config source, reloads, validates, and swaps its
 runtime independently, with **no cluster-wide version barrier and no coordinated
 rollback**
 ([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#cluster-semantics-and-limitations)).
-Before H8, rolling a config change through a cohort therefore let the fleet run a
+Before, rolling a config change through a cohort therefore let the fleet run a
 **mix of old and new definitions** until every instance converged — indefinitely
 if one stayed wedged on a config it could not load. That split-version window is
 exactly what the fail-closed guard now blocks: local config CAS / reference
@@ -96,7 +96,7 @@ safe, and GoBridge does not claim portable broker redistribution.
   re-commit through the admin transaction flow bumps the config version, and
   any content difference is a non-no-op, so a per-process live reload of the
   previous config is **refused fail-closed** just like the forward change (finding
-  H8). Follow
+  Follow
   [Cluster Config Rollout — Rollback (whole-cohort)](cluster-config-rollout.md#rollback-whole-cohort):
   keep ingress quiesced, stop **all** members, restore the previous config to the
   live source, then restart all members behind the version/readiness barrier. The

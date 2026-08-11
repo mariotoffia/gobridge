@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// TestGeneratedIdentity_MarkedAndScoped proves the MQTT-CORE-1 marking:
+// TestGeneratedIdentity_MarkedAndScoped proves marking:
 //
 //   - a publish WITHOUT a producer identity, run through publishWithIdentity (the
 //     production ingress path), yields an envelope marked messaging.HeaderGeneratedID

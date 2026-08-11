@@ -174,7 +174,7 @@ type BootstrapConfig struct {
 	// MetricsExporter=cloudwatch. Empty defaults to DefaultMetricsNamespace.
 	MetricsNamespace string `json:"metrics_namespace,omitempty"`
 	// InstanceID stamps the per-instance "instance_id" metric dimension so
-	// per-task series in a fleet do not collide (MF-8). Empty lets the
+	// per-task series in a fleet do not collide. Empty lets the
 	// exporter derive a per-task identity ("<hostname>-<pid>"), which is
 	// already unique per Fargate task; set it explicitly for a deterministic,
 	// operator-chosen identity.

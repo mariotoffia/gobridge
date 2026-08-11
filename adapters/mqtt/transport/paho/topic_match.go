@@ -90,7 +90,7 @@ func stripSharedSubscriptionPrefix(filter string) string {
 // subscription ("$share/<group>/<filter>"). A shared subscription makes the
 // broker LOAD-BALANCE a topic's deliveries across the group's members, which
 // is the horizontal scale-out path — and the one that REQUIRES a UNIQUE
-// per-instance client_id (HIGH-3): replicas that reuse a client_id form a
+// per-instance client_id: replicas that reuse a client_id form a
 // SINGLE broker session and take each other over (self-DOS) instead of sharing
 // the load. Any "$share/" prefix — even a malformed one — signals that
 // scale-out intent, so detection is intentionally broader than the strict

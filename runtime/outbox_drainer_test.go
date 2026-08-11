@@ -310,7 +310,7 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// T1 Regression: break-in-select deadlock fix (labeled break loop)
+// Regression: break-in-select deadlock fix (labeled break loop)
 //
 // These tests verify that drainBatch exits promptly when the context is
 // cancelled, without hanging on wg.Wait() due to semaphore slots that

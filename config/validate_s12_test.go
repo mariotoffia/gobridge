@@ -9,7 +9,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════
-// S12 Validation Tests — staleClaimDuration and session durations
+// Validation Tests — staleClaimDuration and session durations
 //
 // Validates:
 //   - Warning when stale_claim_duration > 2 * max(step_down_grace)

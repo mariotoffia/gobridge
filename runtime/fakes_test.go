@@ -542,7 +542,7 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 }
 
 // Release implements the optional ports.OutboxReleaser capability so the
-// fake exercises the drainer's A4 transient-failure fast path. Fencing is
+// fake exercises the drainer's transient-failure fast path. Fencing is
 // owner+version+status, identical to the real memory/SQLite stores: a
 // record is returned to pending only when it is currently claimed by
 // token.Owner at token.Version; any mismatch yields ErrStaleFencingToken.
@@ -571,7 +571,7 @@ func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition 
 
 	count := 0
 	for _, rec := range s.records {
-		// Partition-scoped (M1): mirror the production stores so a sweep only
+		// Partition-scoped: mirror the production stores so a sweep only
 		// touches records in the supplied partition.
 		if persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID()) != partition {
 			continue

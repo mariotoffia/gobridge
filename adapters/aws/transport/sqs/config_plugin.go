@@ -195,7 +195,7 @@ func (c Config) Validate() error {
 		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
 	}
 	// poison_max_receives is an adapter-enforced backstop for poison messages
-	// (Chunk 13 HIGH-2): 0 disables it (rely on native redrive), any positive
+	// (Chunk 13): 0 disables it (rely on native redrive), any positive
 	// value bounds the redelivery hot loop. Its destructive delete must not
 	// preempt a native DLQ, so poison_max_receives == 1 (drop on first receive)
 	// requires the explicit poison_drop_without_dlq opt-in; the queue-aware
@@ -265,7 +265,7 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // Below the floor the runtime runs a fixed, non-renewed window, so the
 // validator must still enforce the finite SendTimeout-vs-window check to
 // prevent source redelivery mid-send. It satisfies
-// ports.VisibilityTimeoutConfig (Finding 2 / D2).
+// ports.VisibilityTimeoutConfig (Finding 2 /).
 func (c Config) AutoExtendEnabled() bool {
 	flag := c.AutoExtend == nil || *c.AutoExtend
 	effSecs := c.VisibilityTimeout

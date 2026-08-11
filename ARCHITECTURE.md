@@ -86,7 +86,7 @@ closer to the center. The rules below are enforced by `make lint`
 |---|---|
 | `domain/` | Standard library, no vendor, and no outer-layer project packages — only the documented domain context-map edges (`persistence`→`messaging`/`shared`, `routing`→`messaging`/`shared`, `connectivity`→`shared`; see DDD.md §2) |
 | `ports/` | `domain` |
-| `config/` | `domain` (every bounded context), `ports` — **stdlib-only**: the inner ring carries no vendor concession (W-9 / L-2) |
+| `config/` | `domain` (every bounded context), `ports` — **stdlib-only**: the inner ring carries no vendor concession |
 | `config/parser/` | `config`, `domain` (every bounded context), `ports`, `gopkg.in/yaml.v3`, `github.com/go-viper/mapstructure/v2` — the only Layer-2 location allowed to ship those vendor deps |
 | `observability/` | Standard library only |
 | `logging/` | Standard library only |
@@ -197,7 +197,7 @@ throughout this document.
    └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-What this map enforces (the F-001 anti-coupling guarantees):
+What this map enforces (the anti-coupling guarantees):
 
 - No transport adapter can import another transport adapter
   (e.g. `adapter_transport_mqtt_paho` cannot reach
@@ -214,9 +214,9 @@ What this map enforces (the F-001 anti-coupling guarantees):
   composition root injects a concrete `*circuitbreaker.Breaker`.
 - Only `adapter_config_native_file` and `adapter_config_aws_dynamodb`
   may import the `config` shared kernel or its sibling `config/parser`
-  wire-format adapter. The W-9 inner-ring vendor concession was
-  removed by the L-2 split: yaml.v3 / mapstructure now live solely
-  in `config/parser`.
+  wire-format adapter. The inner ring once carried a vendor concession
+  of its own; that was removed by splitting the wire format out, so
+  yaml.v3 and mapstructure now live solely in `config/parser`.
 - `cmd/` and `deployment/` are the only components with
   `anyProjectDeps + anyVendorDeps`. They are the boundary between the
   hexagon and the operating environment.
@@ -239,7 +239,7 @@ The composition root (`cmd/`, `deployment/`) is the sole place that
 constructs the concrete `*circuitbreaker.Breaker` and injects it into
 adapters via their typed `Config`.
 
-This split is the F-004 outcome: the breaker is a project-internal
+This split is the outcome: the breaker is a project-internal
 resilience primitive, not an adapter dependency. New adapters that
 need protection get a `CircuitBreaker ports.CircuitBreaker` field on
 their `Config`, never a direct import of the `circuitbreaker`
@@ -266,8 +266,12 @@ The blueprint and plugin `Config` structs in `ports/` carry yaml/json struct tag
 
 See `docs/typed-plugin-config.adoc` for the contract, the registry
 API, the per-step checklist for adding a new plugin, and the
-anti-patterns the analyzer rejects. The architectural framing lives in
-`ARCH_LINT_PLAN.md` § F-003 / ARCH-003 (Closed via FIX-003).
+anti-patterns the analyzer rejects.
+
+The architectural reason for the split: plugin configuration must be a
+typed struct owned by the plugin, never an untyped option map threaded
+through the inner ring. `ports` therefore declares the struct and
+`config/parser` alone knows how to decode it.
 
 ---
 
@@ -1341,10 +1345,10 @@ All roles return HTTP 200 (the instance is healthy and ready to serve). Load bal
 
 The following are inherent characteristics of the chosen design, not bugs to be fixed:
 
-**Failover Window (F1)** -- The failover window equals `LeaseTTL` (default 360s). This is fundamental to any lease-based system without active heartbeats. The 360s default prioritizes network-interruption tolerance over fast failover. Reducing the TTL increases store write costs and risk of spurious failovers under transient network issues.
+**Failover Window** -- The failover window equals `LeaseTTL` (default 360s). This is fundamental to any lease-based system without active heartbeats. The 360s default prioritizes network-interruption tolerance over fast failover. Reducing the TTL increases store write costs and risk of spurious failovers under transient network issues.
 
-**No Route Distribution (G1)** -- All instances run all routes identically. The system uses per-session lease fencing rather than route sharding. This simplifies deployment (every instance is identical) at the cost of redundant ingress work on standby instances.
+**No Route Distribution** -- All instances run all routes identically. The system uses per-session lease fencing rather than route sharding. This simplifies deployment (every instance is identical) at the cost of redundant ingress work on standby instances.
 
-**Standby Ingress Work (S1)** -- Standby instances poll, process, persist to outbox, and ack source deliveries -- all before the drainer (which is lease-gated) can drain. This is a direct consequence of the identical-instance design. A lease-aware receiver that pauses ingress on standby would add significant complexity and coupling between the ingress and lease layers.
+**Standby Ingress Work** -- Standby instances poll, process, persist to outbox, and ack source deliveries -- all before the drainer (which is lease-gated) can drain. This is a direct consequence of the identical-instance design. A lease-aware receiver that pauses ingress on standby would add significant complexity and coupling between the ingress and lease layers.
 
-**Single Backing Store (S11)** -- DynamoDB (or equivalent) is the sole distributed backing store for lease, outbox, and DLQ. DynamoDB's 99.999% availability SLA with global tables makes this a reasonable infrastructure choice. Adding a fallback store would require dual-write consistency, which is harder than the problem it solves.
+**Single Backing Store** -- DynamoDB (or equivalent) is the sole distributed backing store for lease, outbox, and DLQ. DynamoDB's 99.999% availability SLA with global tables makes this a reasonable infrastructure choice. Adding a fallback store would require dual-write consistency, which is harder than the problem it solves.

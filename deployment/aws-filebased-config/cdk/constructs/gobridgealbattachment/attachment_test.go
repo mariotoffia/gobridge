@@ -313,7 +313,7 @@ func TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor(t *testing.T) {
 	}
 }
 
-// TestALBAttachment_PortsPerConcern is the core B1 regression guard:
+// TestALBAttachment_PortsPerConcern is the core regression guard:
 // each concern's target group must sit on the container port the
 // process actually serves — admin (8080), monitor (8081), transport
 // (8082) — so ALB traffic and health checks reach the right listener.
@@ -587,7 +587,7 @@ func TestALBAttachment_NilProps_Panics(t *testing.T) {
 	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), nil)
 }
 
-// --- T15: accessors + outputs ---
+// --- accessors + outputs ---
 
 func newAttachment(t *testing.T, prio int) (awscdk.Stack, *gobridgealbattachment.GoBridgeALBAttachment) {
 	t.Helper()

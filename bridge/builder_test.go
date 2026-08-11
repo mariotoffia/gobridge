@@ -115,7 +115,7 @@ func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*p
 
 // CountPending advertises the OPTIONAL ports.OutboxDepthReporter capability and
 // reports every partition empty. The supervisor's durable-reload preflight
-// (HIGH-2/HIGH-3) refuses a reload that orphans a NON-empty outbox partition; a
+// refuses a reload that orphans a NON-empty outbox partition; a
 // store that cannot prove its depth is treated as non-empty (fail closed). This
 // fake proves empty so the many existing reload/orphaning tests that use it keep
 // exercising the allow path. Tests that want to exercise the REFUSE path use a
@@ -220,7 +220,7 @@ func testConfig() *ports.BridgeConfig {
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"b1"},
 				// drop policies keep the shared testConfig route valid under the
-				// build-time ValidateRoutes call (Finding 5 / C2): the default
+				// build-time ValidateRoutes call (Finding 5 /): the default
 				// on_permanent_failure/on_expired is "dlq", which requires a DLQ
 				// store. Tests that need DLQ behaviour set it explicitly.
 				Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
@@ -986,7 +986,7 @@ func TestBuilder_DrainMaxFieldsReachSessionConfig(t *testing.T) {
 // factory implementing VisibilityTimeoutProvider causes the builder to
 // populate SourceVisibilityTimeout on the resulting route. When
 // SendTimeout >= VisibilityTimeout/2, the route is rejected — and, since
-// Finding 5 / C2 moved static route validation into complete(), that
+// Finding 5 / moved static route validation into complete(), that
 // rejection now happens at BUILD time (before the old runtime is stopped),
 // not only at Start().
 func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
@@ -1010,11 +1010,11 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 
 // TestBuilder_ReceiverConfigVisibilityTimeoutOverridesFactory proves the
 // per-route receiver config (ports.VisibilityTimeoutConfig) wins over the
-// transport Factory's VisibilityTimeoutProvider constant (D2). The
+// transport Factory's VisibilityTimeoutProvider constant. The
 // factory reports 30s, under which SendTimeout=8s is safe (8 < 15). The
 // receiver config reports a shorter 10s window with auto-extend OFF (a
 // fixed window), under which the same SendTimeout is unsafe (8 > 5), so
-// the route must be rejected. Since Finding 5 / C2 moved static route
+// the route must be rejected. Since Finding 5 / moved static route
 // validation into complete(), that rejection now happens at BUILD time. If
 // the builder ignored the config and used the factory constant, no error
 // would fire — making this a true regression guard.
@@ -1043,10 +1043,10 @@ func TestBuilder_ReceiverConfigVisibilityTimeoutOverridesFactory(t *testing.T) {
 // TestBuilder_AutoExtendSkipsVisibilityTimeoutCheck proves that when the
 // receiver auto-extends its window (SQS/ASB auto_extend, on by default),
 // the validator skips the SendTimeout-vs-window check even for a short
-// window (D2 headline). Same 10s window and 8s SendTimeout as the test
+// window. Same 10s window and 8s SendTimeout as the test
 // above — which would be rejected with a fixed window — but auto-extend
 // ON makes it a valid config, so Start() must succeed. Guards against the
-// D2 threading fix over-rejecting the default, auto-extend-backed config.
+// threading fix over-rejecting the default, auto-extend-backed config.
 func TestBuilder_AutoExtendSkipsVisibilityTimeoutCheck(t *testing.T) {
 	cfg := testConfig()
 	cfg.Routes[0].DeliveryMode = "direct_hold"
@@ -1093,7 +1093,7 @@ func (c fakeCapabilityConfig) Capabilities() []ports.Capability { return c.caps 
 
 // TestBuilder_ReceiverConfigCapabilitiesOverrideFactory proves a per-route
 // receiver config (ports.CapabilityConfig) wins over the transport
-// Factory's transport-wide Capabilities() constant (C14 F4). The fake sqs
+// Factory's transport-wide Capabilities() constant. The fake sqs
 // factory declares CapVisibilityExtension, under which failed messages are
 // treated as redeliverable and the retry-fallback silent-drop check is
 // skipped. testConfig has no DLQ store and does not set AllowRetryDrop, so
@@ -1129,7 +1129,7 @@ func TestBuilder_ReceiverConfigCapabilitiesOverrideFactory(t *testing.T) {
 				Build(context.Background())
 
 			if tc.wantError {
-				require.Error(t, err, "no redelivery capability + no DLQ must fail the route at build (F4)")
+				require.Error(t, err, "no redelivery capability + no DLQ must fail the route at build")
 				assert.Contains(t, err.Error(), "does not support retry/redelivery")
 			} else {
 				require.NoError(t, err)
@@ -1179,7 +1179,7 @@ func TestBuilder_ValidatesStaticAddressAtBuildTime(t *testing.T) {
 			Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx1", Address: address}},
 			Routes: []ports.RouteDef{
 				// drop policies keep the route valid under the build-time
-				// ValidateRoutes call (Finding 5 / C2) so this test isolates
+				// ValidateRoutes call (Finding 5 /) so this test isolates
 				// static ADDRESS validation, not DLQ-policy validation.
 				{ID: "r1", ReceiverID: "rx1", DeliveryMode: "direct_hold", Bindings: []string{"b1"},
 					Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"}},

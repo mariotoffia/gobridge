@@ -17,7 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// TestConfigTxnCommit_NonCASStore_WithoutSingleWriter_Refused pins the [HIGH-1]
+// TestConfigTxnCommit_NonCASStore_WithoutSingleWriter_Refused pins the
 // root-cause fix at the manager boundary: a durable commit through a store that
 // does NOT implement ports.ConditionalConfigStore, when single-writer was NOT
 // asserted, must FAIL CLOSED with errConfigStoreNotCAS and perform NO Save. The
@@ -110,7 +110,7 @@ func TestConfigTxnCommit_CASStore_CommitsWithoutSingleWriter(t *testing.T) {
 }
 
 // TestHandleConfigTxnCommit_NonCASStore_WithoutSingleWriter_Returns500 exercises
-// the full [HIGH-1] path through Server.New wiring + the HTTP handler: a Server
+// the full path through Server.New wiring + the HTTP handler: a Server
 // built with a non-CAS FileStore and Config.ConfigSingleWriter unset (the
 // fail-closed default) must reject the durable commit with 500 and an actionable
 // message instead of performing a silent last-writer-wins write to the file.

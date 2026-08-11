@@ -53,8 +53,8 @@ flowchart TD
 
     Client([Internal Clients]) --> ALB
 
-    style T1 fill:#f96,stroke:#333
-    style T2 fill:#f96,stroke:#333
+    style fill:#f96,stroke:#333
+    style fill:#f96,stroke:#333
     style Other fill:#6bf,stroke:#333
 ```
 

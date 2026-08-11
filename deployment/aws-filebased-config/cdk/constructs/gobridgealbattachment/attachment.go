@@ -50,7 +50,8 @@
 // Listener rule priorities live in [BasePriority, BasePriority+99].
 // The constructor scans the listener's existing children for any
 // CfnListenerRule whose priority falls inside that range and panics
-// with the verbatim collision message documented in the design doc.
+// with a collision message naming the offending priority and the
+// reserved range.
 // Rules added to the listener AFTER this construct is built are not
 // detected — keep this construct as the last touch on the listener,
 // or pick a BasePriority well outside any consumer-managed range.
@@ -61,7 +62,7 @@
 // target group when HTTP receivers are declared) are emitted as
 // distinct CDK resources but all forward to the single Fargate service.
 // Keeping the layout uniform across Single and Cluster keeps the
-// listener-rule wiring and the T15 URL/output layer simple.
+// listener-rule wiring and the URL/output layer simple.
 package gobridgealbattachment
 
 import (
@@ -217,7 +218,7 @@ type AttachmentProps struct {
 
 // GoBridgeALBAttachment is the L2 construct that wires a GoBridge
 // facade into a consumer ALB listener. The minimal accessor surface
-// (TargetGroups + Listener) is the contract T15 layers on for URL
+// (TargetGroups + Listener) is the contract layers on for URL
 // outputs.
 type GoBridgeALBAttachment struct {
 	constructs.Construct
@@ -462,7 +463,7 @@ func (a *GoBridgeALBAttachment) PublicDnsName() *string { return a.dnsName }
 
 // AdminURL returns the deploy-time URL where the admin API is
 // reachable: `https://<albdns>/api/v1/`. HTTPS is hard-coded per
-// design (T15) — consumers that terminate HTTP-only must front the
+// design — consumers that terminate HTTP-only must front the
 // ALB themselves.
 func (a *GoBridgeALBAttachment) AdminURL() *string { return a.adminURL }
 

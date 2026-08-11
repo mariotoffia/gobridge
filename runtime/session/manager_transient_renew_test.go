@@ -17,7 +17,7 @@ import (
 
 // transientRenewStore fails exactly one Renew (the failRenewAt-th) with a
 // TRANSIENT (non-definitive) error and returns a Current row the test configures
-// up front. It drives the F7 authoritative-read decision: after the transient
+// up front. It drives the authoritative-read decision: after the transient
 // failure hits MaxRenewFails, renewLoop calls Current to decide whether the
 // lease was really lost.
 type transientRenewStore struct {
@@ -87,7 +87,7 @@ func (s *transientRenewStore) Current(_ context.Context, leaseID string) (persis
 func (s *transientRenewStore) releaseCount() int32 { return atomic.LoadInt32(&s.releases) }
 
 // TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown is the
-// regression test for finding F7: a run of TRANSIENT renew failures that reaches
+// regression test for a run of TRANSIENT renew failures that reaches
 // MaxRenewFails must NOT step down blindly. renewLoop first does one
 // authoritative Current read; it steps down only when the lease is provably lost
 // (or unverifiable), and treats a still-held lease as a no-op — converting a
@@ -131,27 +131,27 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer reset", func() bool { return fake.TimerCount() >= 1 })
 
-		// Renew #2 fails transiently -> MaxRenewFails reached -> F7 Current read.
+		// Renew #2 fails transiently -> MaxRenewFails reached -> Current read.
 		fake.Advance(renewInterval)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.RequireReceive(t, currentCh, 2*time.Second) // authoritative read ran
 
 		// Still owner -> NO step-down: the loop resets its timer and keeps going.
 		// Renew #3 (recovery) fires, proving the lease was retained.
-		wait.Until(t, 2*time.Second, "renew timer reset after F7 no-op", func() bool { return fake.TimerCount() >= 1 })
+		wait.Until(t, 2*time.Second, "renew timer reset no-op", func() bool { return fake.TimerCount() >= 1 })
 		fake.Advance(renewInterval)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 
 		if store.releaseCount() != 0 {
-			t.Fatalf("F7: lease must NOT be released when the authoritative read still shows us as owner, releases=%d", store.releaseCount())
+			t.Fatalf("lease must NOT be released when the authoritative read still shows us as owner, releases=%d", store.releaseCount())
 		}
 		select {
 		case <-sess.closedCh:
-			t.Fatal("F7: session must NOT be closed (no step-down) when the lease is still held")
+			t.Fatal("session must NOT be closed (no step-down) when the lease is still held")
 		default:
 		}
 		if got := sess.startCount(); got != 1 {
-			t.Fatalf("F7: session must not have been restarted, startCount=%d", got)
+			t.Fatalf("session must not have been restarted, startCount=%d", got)
 		}
 	})
 
@@ -192,7 +192,7 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer reset", func() bool { return fake.TimerCount() >= 1 })
 
-		fake.Advance(renewInterval) // renew #2 fails transiently -> F7 read
+		fake.Advance(renewInterval) // renew #2 fails transiently -> read
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.RequireReceive(t, currentCh, 2*time.Second)
 
@@ -239,7 +239,7 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer reset", func() bool { return fake.TimerCount() >= 1 })
 
-		fake.Advance(renewInterval) // renew #2 fails transiently -> F7 read
+		fake.Advance(renewInterval) // renew #2 fails transiently -> read
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.RequireReceive(t, currentCh, 2*time.Second)
 
@@ -286,7 +286,7 @@ func TestSessionManager_TransientRenewFailure_ChecksBeforeStepDown(t *testing.T)
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.Until(t, 2*time.Second, "renew timer reset", func() bool { return fake.TimerCount() >= 1 })
 
-		fake.Advance(renewInterval) // renew #2 fails transiently -> F7 read
+		fake.Advance(renewInterval) // renew #2 fails transiently -> read
 		wait.RequireReceive(t, renewCh, 2*time.Second)
 		wait.RequireReceive(t, currentCh, 2*time.Second)
 

@@ -7,7 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// The H-3 rule — production code must use messaging.NewEnvelope and
+// The rule — production code must use messaging.NewEnvelope and
 // surface the error so caller-supplied input can be classified into a
 // BridgeError, rather than panicking or silently substituting a
 // placeholder ID — is enforced by the forbidigo rule
@@ -46,7 +46,7 @@ func TestNewEnvelopeReturnsError(t *testing.T) {
 	}
 }
 
-// TestMustEnvelopeProducesUniqueFallbackIDs guards the H-3 regression
+// TestMustEnvelopeProducesUniqueFallbackIDs guards the regression
 // at the helper level: even MustEnvelope must NOT collapse empty IDs
 // onto a single literal. The compromise (counter-based fallback)
 // keeps each invocation distinct so test fixtures can never mask

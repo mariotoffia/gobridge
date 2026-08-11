@@ -29,7 +29,7 @@ func persistCrashRec(t *testing.T, s *sqliteoutbox.Store, id, sessionID string) 
 	}
 }
 
-// TestClaimedRecordCrashRecovery_StaleReclaim is the I1 regression: a record
+// TestClaimedRecordCrashRecovery_StaleReclaim is the regression: a record
 // claimed by an owner that then crashes (never Complete/Release) must be
 // recoverable after the process restarts. It reproduces the single-instance
 // SQLite-outbox + memory-lease topology where the reset lease lands on the
@@ -97,7 +97,7 @@ func TestClaimedRecordCrashRecovery_StaleReclaim(t *testing.T) {
 // version-only behaviour (no stale-claim duration configured): a claimed
 // record whose owner crashed and re-drains at the same version is NEVER
 // reclaimed no matter how much wall-clock time passes. This is exactly the
-// I1 durability gap; the stale-claim path above is the fix.
+// durability gap; the stale-claim path above is the fix.
 func TestClaimedRecordCrashRecovery_VersionOnlyStrands(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "outbox.db")
@@ -127,7 +127,7 @@ func TestClaimedRecordCrashRecovery_VersionOnlyStrands(t *testing.T) {
 	}
 }
 
-// TestConcurrentClaims_NoDuplicateNoLoss is the I2 regression: concurrent
+// TestConcurrentClaims_NoDuplicateNoLoss is the regression: concurrent
 // claimers sharing a fencing version against a single file-backed partition
 // must partition the pending records with no duplicate and no lost row, and
 // no SQLITE_BUSY failure. The single writer connection plus the guarded claim

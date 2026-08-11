@@ -23,9 +23,9 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.Equal(t, 1*time.Second, cfg.RenewJitter, "RenewJitter")
 	assert.Equal(t, 3, cfg.MaxRenewFails, "MaxRenewFails")
 	assert.Equal(t, 10*time.Second, cfg.RenewInterval,
-		"RenewInterval pinned to 10s so the full worst-case span (incl. call timeout) < LeaseTTL (H2)")
+		"RenewInterval pinned to 10s so the full worst-case span (incl. call timeout) < LeaseTTL")
 	assert.Equal(t, 3*time.Second, cfg.RenewCallTimeout,
-		"RenewCallTimeout pinned to 3s and folded into the worst-case span (H2)")
+		"RenewCallTimeout pinned to 3s and folded into the worst-case span")
 
 	// Invariant 1: a graceful step-down must finish before the lease would
 	// expire, so the old owner stops sending before a new owner takes over.
@@ -33,7 +33,7 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 
 	// Invariant 2: MaxRenewFails renew attempts fit STRICTLY inside one TTL,
 	// so the third (recovering) attempt lands before expiry instead of exactly
-	// on the boundary (A8-R1-leasettl-margin). RenewInterval is pinned (not the
+	// on the boundary. RenewInterval is pinned (not the
 	// derived LeaseTTL/MaxRenewFails, which would sit on the boundary).
 	assert.Less(t, cfg.RenewInterval*time.Duration(cfg.MaxRenewFails), cfg.LeaseTTL,
 		"RenewInterval * MaxRenewFails must be < LeaseTTL")
@@ -42,9 +42,9 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	// TTL. Each of the MaxRenewFails attempts can be delayed by up to
 	// RenewInterval + RenewJitter/2 (max positive jitter) PLUS the per-call
 	// renew timeout, because renewLoop resets its timer AFTER the renew call
-	// returns and a hung call burns the full RenewCallTimeout (finding H2). So
+	// returns and a hung call burns the full RenewCallTimeout. So
 	// the owner must detect loss and step down before its own lease expires
-	// (A9-J5): 3 × (10 + 0.5 + 3) = 40.5s < 45s. Omitting the call timeout
+	// 3 × (10 + 0.5 + 3) = 40.5s < 45s. Omitting the call timeout
 	// under-counted by 3 × 3 = 9s and, for the old 14s/5s preset, landed at
 	// 58.5s — 13.5s PAST the TTL.
 	jitteredWorstCase := time.Duration(cfg.MaxRenewFails) * (cfg.RenewInterval + cfg.RenewJitter/2 + cfg.RenewCallTimeout)
@@ -69,7 +69,7 @@ func TestHAConfig_FailoverInvariants(t *testing.T) {
 	assert.NotNil(t, cfg.DrainStrategy, "DrainStrategy inherited from default")
 }
 
-// TestLeaseRenewMargin_BothConfigs pins the A8-R1-leasettl-margin invariant
+// TestLeaseRenewMargin_BothConfigs pins the lease-TTL renew-margin invariant
 // for BOTH presets: RenewInterval*MaxRenewFails must be STRICTLY less than
 // LeaseTTL, so the final (MaxRenewFails-th) renew attempt lands before the
 // lease-expiry boundary rather than on it. That margin makes the documented

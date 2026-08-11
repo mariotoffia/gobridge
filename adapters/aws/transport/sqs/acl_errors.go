@@ -190,7 +190,7 @@ func MapError(err error) *shared.BridgeError {
 // back-pressure, a transient InternalError — was flattened to a terminal
 // rejected/transient verdict that does not match how the SAME condition
 // classifies on the single-message send path (MapError). Classifying the Code
-// first keeps a retryable target outage retryable (Chunk 13 HIGH-1) instead of
+// first keeps a retryable target outage retryable (Chunk 13) instead of
 // turning it into a permanent reject that costs the source its retry.
 //
 // It returns (nil, false) for a Code outside that set so the caller falls back

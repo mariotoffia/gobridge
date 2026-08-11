@@ -235,14 +235,14 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // in the background while a message is in flight, mirroring
 // ReceiverConfig.autoExtendEnabled (default on when unset). It satisfies
 // ports.VisibilityTimeoutConfig so the validator can skip the finite
-// SendTimeout-vs-window check for auto-extended routes (Finding 2 / D2).
+// SendTimeout-vs-window check for auto-extended routes (Finding 2 /).
 func (c Config) AutoExtendEnabled() bool {
 	return c.Receiver.AutoExtend == nil || *c.Receiver.AutoExtend
 }
 
 // Capabilities reports the SOURCE capabilities this receiver config
 // actually honours, so a route can advertise an HONEST, mode-aware set
-// instead of the Factory's transport-wide default (F4/F8).
+// instead of the Factory's transport-wide default.
 //
 // PeekLock (the default) renews locks (CapVisibilityExtension) and
 // redelivers via abandon / lock expiry (CapSourceRedelivery). A delayed

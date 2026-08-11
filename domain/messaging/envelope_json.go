@@ -25,7 +25,7 @@ type envelopeJSON struct {
 // This is what storage adapters wrote before the un-export change;
 // keeping the keys identical preserves on-disk compatibility.
 //
-// ARCHITECTURAL EXCEPTION (M-10): this marshaller is the SINGLE SOURCE
+// ARCHITECTURAL EXCEPTION: this marshaller is the SINGLE SOURCE
 // OF TRUTH for the durable Envelope wire format. Every store adapter
 // (sqlitedlq, dynamodbdlq, sqliteoutbox, dynamodboutbox, …) persists
 // envelopes through it, so the schema lives here, in the domain, on

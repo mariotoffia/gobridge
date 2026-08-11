@@ -124,7 +124,7 @@ func (s *Session) reconcileUnderGate(
 	// convergence. Errors and reconnect generation changes leave it false.
 	s.subscriptionsSatisfied = false
 	// Shared-subscription scale-out on a stable/shared-ClientID mode is the
-	// client_id-collision footgun (HIGH-3): every replica MUST use a UNIQUE
+	// client_id-collision footgun: every replica MUST use a UNIQUE
 	// client_id, else they form a single broker session and take each other
 	// over instead of load-balancing. We cannot see the other replicas'
 	// ClientIDs from one process, so surface the requirement once. Ephemeral
@@ -266,7 +266,7 @@ func (s *Session) reconcileUnderGate(
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
 	// (re)established on the broker. Signal SessionReconciled from this
-	// single owner. Per finding C7 the runtime session manager drives
+	// single owner. Per finding the runtime session manager drives
 	// Reconcile on every SessionConnected, so emitting here (rather than
 	// inline in OnConnectionUp) is what preserves the "all subscriptions
 	// re-established after reconnect" contract (ports.SessionReconciled)
@@ -286,7 +286,7 @@ func cloneSessionPlan(plan connectivity.SessionPlan) connectivity.SessionPlan {
 }
 
 // reconcileTimeout returns the adapter-owned deadline applied to EACH broker
-// SUBSCRIBE / UNSUBSCRIBE during reconciliation (HIGH-2). A non-positive
+// SUBSCRIBE / UNSUBSCRIBE during reconciliation. A non-positive
 // configured value is coerced to DefaultReconcileTimeout: this is a liveness
 // safety bound (a wedged broker whose SUBACK/UNSUBACK never arrives must not
 // hang the reconcile, nor the startup / hot-reload step awaiting it), so unlike

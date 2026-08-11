@@ -2,8 +2,7 @@
 // +build integration_aws
 
 // Package integration hosts the opt-in AWS integration tests for the
-// aws-filebased-config CDK profile (T21 of
-// 2026-05-07-aws-filebased-config-cdk-redesign-design.md).
+// aws-filebased-config CDK profile.
 //
 // All files are guarded by the build tag `integration_aws`; the
 // default `go build ./...` and `go test ./...` never see them.

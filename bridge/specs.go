@@ -131,7 +131,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // subscriptions.
 //
 // Without this the broker session reconciles an empty plan. That is the
-// F1 production blocker for the PLAN-DRIVEN transports — MQTT (paho) and
+// production blocker for the PLAN-DRIVEN transports — MQTT (paho) and
 // amqp091 — which establish their subscriptions/topology ONLY from
 // plan.Subscriptions in Session.Reconcile, so an empty plan subscribes to
 // nothing. amqp10 receivers self-establish links lazily on start (the plan
@@ -144,7 +144,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // config doesn't implement the interface, or whose exchange is empty,
 // contributes nothing (MQTT / SQS / ASB publish directly to an address and need
 // no pre-declaration). This threads the exchange name into PublisherPlan.Topic
-// so amqp091's declarePublisher best-effort declares the publish-side exchange (F1-P3).
+// so amqp091's declarePublisher best-effort declares the publish-side exchange.
 //
 // When two senders name the SAME exchange the FIRST wins (matching the broker's
 // first-declare-wins). If a later sibling declares a GENUINELY DIFFERENT
@@ -226,6 +226,6 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 }
 
 // Package bridge specs.go intentionally omits a StoreSpec converter:
-// post-PHASE3 the bridge passes the typed PluginConfig from
+// the bridge passes the typed PluginConfig from
 // ports.StoreConfig directly to the StoreFactory and threads outbox
 // runtime tuning (stale claim duration) through ports.OutboxRuntimeOptions.

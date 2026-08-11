@@ -18,7 +18,7 @@ import (
 )
 
 // TestSessionManager_DefinitiveLeaseLoss_StepsDownImmediately is the
-// regression test for finding H2/C2: a Renew error that PROVES the lease is no
+// regression test for a Renew error that PROVES the lease is no
 // longer ours (stale fencing token, not-found, version mismatch) must bypass
 // the MaxRenewFails consecutive-failure counter and step down after the FIRST
 // such error. Before the fix the manager treated definitive signals like
@@ -92,7 +92,7 @@ func TestSessionManager_DefinitiveLeaseLoss_StepsDownImmediately(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("session was NOT closed after a definitive lease-loss signal: " +
 			"the manager is burning MaxRenewFails renew intervals while a new " +
-			"owner consumes in parallel (dual-active window, finding H2/C2)")
+			"owner consumes in parallel (dual-active window)")
 	}
 
 	// The lease row is released as part of step-down.
@@ -150,7 +150,7 @@ func (s *deadlineRecordingLeaseStore) snapshot() (acquire, renew []bool) {
 }
 
 // TestSessionManager_LeaseCalls_CarryPerCallDeadline is the regression test
-// for finding H3/C3: every lease-store Acquire and Renew call must carry a
+// for every lease-store Acquire and Renew call must carry a
 // per-call context deadline (derived RenewCallTimeout = min(RenewInterval/2,
 // 5s), floored at 1s) so a hung backend cannot stretch step-down and takeover
 // unboundedly. It asserts the deadline at the STORE side, proving the timeout
@@ -209,7 +209,7 @@ func TestSessionManager_LeaseCalls_CarryPerCallDeadline(t *testing.T) {
 	for i, has := range acquires {
 		if !has {
 			t.Fatalf("Acquire call %d carried NO context deadline: a hung lease "+
-				"store call can stall takeover unboundedly (finding H3/C3)", i)
+				"store call can stall takeover unboundedly", i)
 		}
 	}
 	if len(renews) == 0 {
@@ -218,7 +218,7 @@ func TestSessionManager_LeaseCalls_CarryPerCallDeadline(t *testing.T) {
 	for i, has := range renews {
 		if !has {
 			t.Fatalf("Renew call %d carried NO context deadline: a hung lease "+
-				"store call can stall step-down unboundedly (finding H3/C3)", i)
+				"store call can stall step-down unboundedly", i)
 		}
 	}
 }
@@ -278,9 +278,9 @@ func (s *eventsClosableSession) Close(context.Context) error {
 func (s *eventsClosableSession) closeEvents() { close(s.events) }
 
 // TestSessionManager_SessionFailure_ReleasesOwnLease is the regression test
-// for finding M12 (release-then-reacquire) on the session-failure exit path:
+// for finding (release-then-reacquire) on the session-failure exit path:
 // when renewLoop exits with a session failure (here: the Events channel closes
-// unexpectedly while ctx is still live, finding L14), the manager must
+// unexpectedly while ctx is still live), the manager must
 // RELEASE the lease it still holds before surfacing the error. Before the fix
 // the unexpired lease was left in place, so superviseSession's restarted Run
 // blocked in Acquire against the manager's OWN lease until LeaseTTL
@@ -320,7 +320,7 @@ func TestSessionManager_SessionFailure_ReleasesOwnLease(t *testing.T) {
 	// The transport's event pump dies: Events closes while ctx is live.
 	sess.closeEvents()
 
-	// (L14) Run must SURFACE the failure — not treat it as a clean stop or a
+	// Run must SURFACE the failure — not treat it as a clean stop or a
 	// lease loss — so superviseSession restarts the session in isolation.
 	var err error
 	select {
@@ -336,19 +336,19 @@ func TestSessionManager_SessionFailure_ReleasesOwnLease(t *testing.T) {
 		t.Fatal("test invariant broken: ctx must still be live")
 	}
 
-	// (M12) The still-held lease must have been released so a restarted Run
+	// The still-held lease must have been released so a restarted Run
 	// re-acquires immediately instead of blocking until LeaseTTL self-expiry.
 	if store.releaseCount() < 1 {
 		t.Fatal("lease was NOT released on the session-failure exit: a restarted " +
 			"Run blocks in Acquire against our own unexpired lease until TTL " +
-			"self-expiry (finding M12)")
+			"self-expiry")
 	}
 	if _, held := mgr.Token(); held {
 		t.Fatal("hasLease must be cleared on the session-failure exit")
 	}
 
 	// The definitive-loss signal for observers is ReconcileFailed — not Lost —
-	// so a session failure is never mis-observed as a lease transfer (C7-N2).
+	// so a session failure is never mis-observed as a lease transfer.
 	sawReconcileFailed := false
 	for {
 		select {
@@ -408,7 +408,7 @@ func (s *releaseTimestampLeaseStore) Current(_ context.Context, leaseID string) 
 }
 
 // TestSessionManager_StepDownGrace_NotAbortedByShutdown is the regression test
-// for finding M13: stepDown's grace window gives in-flight outbox
+// for stepDown's grace window gives in-flight outbox
 // Send+Complete a full settle window and "must not be aborted by caller
 // cancellation" (its documented contract). Before the fix the grace select
 // listened on ctx.Done(), so a shutdown racing a step-down skipped the grace
@@ -473,7 +473,7 @@ func TestSessionManager_StepDownGrace_NotAbortedByShutdown(t *testing.T) {
 
 	// The SteppedDown event is pushed BEFORE the grace wait begins; the source
 	// close signal follows it. Use the close signal as the "grace started"
-	// marker, then immediately cancel the caller — the exact race M13 covers.
+	// marker, then immediately cancel the caller — the exact race covers.
 	wait.RequireReceive(t, sess.closedCh, 3*time.Second)
 	graceStart := time.Now()
 	cancel()
@@ -482,7 +482,7 @@ func TestSessionManager_StepDownGrace_NotAbortedByShutdown(t *testing.T) {
 	if elapsed := released.Sub(graceStart); elapsed < minElapsed {
 		t.Fatalf("lease released %s after step-down began, before the %s grace "+
 			"window elapsed: caller cancellation aborted the settle window, so "+
-			"in-flight outbox Send+Complete become fenced duplicates (finding M13)",
+			"in-flight outbox Send+Complete become fenced duplicates",
 			elapsed, grace)
 	}
 
@@ -494,7 +494,7 @@ func TestSessionManager_StepDownGrace_NotAbortedByShutdown(t *testing.T) {
 }
 
 // TestSessionManager_LeaseEventOverflow_EvictsOldestAndCounts is the
-// regression test for finding L15: when the LeaseStateChanged buffer is full,
+// regression test for when the LeaseStateChanged buffer is full,
 // pushLeaseEvent must evict the OLDEST buffered event (keeping the freshest
 // transitions for a late consumer) and count the eviction — never silently
 // drop the newest event.
@@ -510,7 +510,7 @@ func TestSessionManager_LeaseEventOverflow_EvictsOldestAndCounts(t *testing.T) {
 	}
 
 	if drops := mgr.LeaseEventDrops(); drops != extra {
-		t.Fatalf("expected %d evictions counted, got %d (finding L15: overflow "+
+		t.Fatalf("expected %d evictions counted, got %d (overflow "+
 			"must be observable, not silent)", extra, drops)
 	}
 

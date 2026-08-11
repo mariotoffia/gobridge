@@ -315,7 +315,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 	uniqueB := countUnique(collectorB)
 	t.Logf("UC49: SharedOutbox: unique=%d, total=%d, dlq=%d",
 		uniqueA, collectorA.count(), dlqA.count())
-	t.Logf("UC49: DirectHold:   unique=%d, total=%d, dlq=%d",
+	t.Logf("UC49: DirectHold: unique=%d, total=%d, dlq=%d",
 		uniqueB, collectorB.count(), dlqB.count())
 
 	gap := msgCount - uniqueB

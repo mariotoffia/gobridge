@@ -35,7 +35,7 @@ func (f *fakeBridgeController) StopBridge(context.Context) error {
 
 var _ BridgeController = (*fakeBridgeController)(nil)
 
-// TestHandleLive_200AfterCleanStop reproduces CRITICAL 1/3 at the liveness
+// TestHandleLive_200AfterCleanStop reproduces/3 at the liveness
 // probe: after a deliberate (clean) runtime Stop the runtime is NOT terminal,
 // so /live must stay 200 and Kubernetes must NOT restart the container.
 func TestHandleLive_200AfterCleanStop(t *testing.T) {
@@ -53,13 +53,13 @@ func TestHandleLive_200AfterCleanStop(t *testing.T) {
 	s.handleLive(rec, httptest.NewRequest(http.MethodGet, "/live", nil))
 
 	require.Equal(t, http.StatusOK, rec.Code,
-		"/live must return 200 after a clean deliberate stop (CRITICAL 1/3)")
+		"/live must return 200 after a clean deliberate stop")
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "alive", body["status"])
 }
 
-// TestAdmin_StopThenStart_NoPermanent409 reproduces CRITICAL 1: POST
+// TestAdmin_StopThenStart_NoPermanent409 reproduces: POST
 // /bridge/stop followed by POST /bridge/start must both succeed when routed
 // through the supervisor (BridgeController). Before the fix, stop was
 // process-suicide and any later start hit a permanent single-use 409.
@@ -81,7 +81,7 @@ func TestAdmin_StopThenStart_NoPermanent409(t *testing.T) {
 	startRec := httptest.NewRecorder()
 	s.handleStart(startRec, adminRequest(http.MethodPost, "/api/v1/admin/bridge/start"))
 	require.Equal(t, http.StatusOK, startRec.Code,
-		"/bridge/start after /bridge/stop must succeed, never a permanent 409 (CRITICAL 1)")
+		"/bridge/start after /bridge/stop must succeed, never a permanent 409")
 	require.Equal(t, 1, ctrl.startCalls, "start must route through the supervisor")
 
 	var body map[string]string

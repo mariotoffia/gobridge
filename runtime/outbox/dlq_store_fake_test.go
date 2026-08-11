@@ -10,7 +10,7 @@ import (
 )
 
 // fakeDLQStore is a minimal ports.DLQStore for drainer tests that need a router
-// whose HasStore() reports true so the DLQ path (not the H3 drop path) runs. It
+// whose HasStore() reports true so the DLQ path (not the drop path) runs. It
 // records Write calls so a test can assert a durable DLQ entry was written, and
 // can be primed to fail Write to exercise the fail-closed (no-Complete) branch.
 // All reader/admin methods return zero values — the drainer never reads.

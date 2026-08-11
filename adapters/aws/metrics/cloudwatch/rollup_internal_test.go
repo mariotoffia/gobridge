@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MF-4: a metric listed in RollupMetrics is double-published — the
+// a metric listed in RollupMetrics is double-published — the
 // normal dimensioned datum plus a zero-dimension fleet-rollup copy that
 // dimensionless CloudWatch alarms can match.
 func TestBatcher_RollupDoublePublishesWithoutDimensions(t *testing.T) {
@@ -60,7 +60,7 @@ func TestBatcher_RollupDoublePublishesWithoutDimensions(t *testing.T) {
 	}
 }
 
-// MF-4: gauges and histograms in the rollup set are also double-published.
+// gauges and histograms in the rollup set are also double-published.
 func TestBatcher_RollupCoversGaugesAndHistograms(t *testing.T) {
 	b := newBatcher(Config{
 		BufferSize:    100,
@@ -86,7 +86,7 @@ func TestBatcher_RollupCoversGaugesAndHistograms(t *testing.T) {
 	}
 }
 
-// MF-4: every metric the default alarms target must be in the canonical
+// every metric the default alarms target must be in the canonical
 // rollup list, otherwise the alarms can never fire (a dimensionless
 // alarm never matches dimensioned data).
 func TestDefaultAlarms_TargetsAreRollupMetrics(t *testing.T) {
@@ -101,7 +101,7 @@ func TestDefaultAlarms_TargetsAreRollupMetrics(t *testing.T) {
 	}
 }
 
-// MF-8: rollup copies must not carry the instance tag — they aggregate
+// rollup copies must not carry the instance tag — they aggregate
 // the fleet by design; the dimensioned primary carries it.
 func TestBatcher_RollupIgnoresInstanceTag(t *testing.T) {
 	cfg := Config{

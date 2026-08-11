@@ -14,7 +14,7 @@ import (
 )
 
 // newReactiveTestSession builds a minimal Session sufficient to exercise the
-// HIGH-3 reactive-recovery chokepoint (handleConnectError) without a broker.
+// reactive-recovery chokepoint (handleConnectError) without a broker.
 func newReactiveTestSession(t *testing.T) *Session {
 	t.Helper()
 	s := NewSession(SessionOptions{
@@ -26,7 +26,7 @@ func newReactiveTestSession(t *testing.T) *Session {
 }
 
 // TestSession_SetAuthFailureCallback_ConnackDenied_ForcesReactiveReResolve
-// verifies the HIGH-3 wiring: a CONNECT rejected by the broker with a CONNACK
+// verifies the wiring: a CONNECT rejected by the broker with a CONNACK
 // not-authorized reason (0x87) — the shape a hard credential rotation produces —
 // invokes the URI-bound callback injected by the CredentialRefresher with
 // shared.ErrNotAuthorized, forcing an immediate re-resolve.

@@ -22,7 +22,7 @@ import (
 // touches: a fake clock (deterministic backoff), a recording exporter (to
 // observe the restart metric), and an initialised componentErrors map. healthy
 // is seeded true on purpose so a test can prove the supervisor never flips it —
-// the C3-FU2 isolation invariant is that a quarantined/restarting session must
+// the isolation invariant is that a quarantined/restarting session must
 // NOT fail global readiness, which would get the whole pod restarted and defeat
 // the isolation. logger is left nil (the supervisor guards nil); the zero mu
 // and false terminal are ready to use.
@@ -53,7 +53,7 @@ func waitForBackoffTimer(t *testing.T, clk *clocktest.Fake) {
 // A session that keeps failing to reconnect/re-acquire its lease must be
 // restarted in isolation: the failure is recorded + metered, but the runtime is
 // neither cancelled nor marked unhealthy/terminal, so every unrelated route (and
-// every other session) keeps running (C3-FU2).
+// every other session) keeps running.
 func TestSuperviseSession_RestartsTransientErrorWithoutTerminating(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(0, 0))
 	rec := &ports.RecordingExporter{}
@@ -115,7 +115,7 @@ func TestSuperviseSession_RestartsTransientErrorWithoutTerminating(t *testing.T)
 		"a recovered session must not linger as a phantom failed component")
 	// ... and the runtime is NOT torn down and NOT marked unhealthy: the
 	// isolation invariant. A flipped healthy/terminal would fail readiness/
-	// liveness and restart the whole pod — exactly what C3-FU2 forbids.
+	// liveness and restart the whole pod — exactly what forbids.
 	assert.False(t, rt.Terminal(), "session error must not make the runtime terminal")
 	assert.True(t, rt.Healthy(), "session error must not flip the global healthy flag")
 
@@ -130,7 +130,7 @@ func TestSuperviseSession_RestartsTransientErrorWithoutTerminating(t *testing.T)
 	}
 }
 
-// Finding L11: a ErrStaleFencingToken means another instance currently owns the
+// Finding: a ErrStaleFencingToken means another instance currently owns the
 // lease. Previously the supervisor stopped cleanly, which permanently abandoned
 // standby duty — the instance could never re-acquire when the active one later
 // stepped down, silently removing the only failover target. The corrected
@@ -198,7 +198,7 @@ func TestSuperviseSession_StaleFencingTokenRestartsKeepingStandbyDuty(t *testing
 	}
 }
 
-// Finding C3-CRITICAL: a ErrSessionUnrecoverable (a single-use session that
+// Finding: a ErrSessionUnrecoverable (a single-use session that
 // cannot re-Start after a step-down Close) must be ESCALATED to terminal — the
 // supervisor RETURNS the error (so startBackground flips terminal and the pod
 // restarts with a fresh session) instead of looping on the dead instance, which
@@ -295,7 +295,7 @@ func requireCall(t *testing.T, callCh <-chan int, want int) {
 // window. Deterministic jitter (randFloat==0 => wait = backoff/2) lets the test
 // prove the reset by the size of the advance that fires the next timer: only a
 // reset (minBackoff/2 = 500ms) timer fires on a 500ms advance; an un-reset
-// ladder would arm a >= 2s timer that 500ms cannot fire (C3-FU2 hardening).
+// ladder would arm a >= 2s timer that 500ms cannot fire (the escalation hardening).
 func TestSuperviseSession_BackoffResetsAfterSustainedRecovery(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(0, 0))
 	rec := &ports.RecordingExporter{}
@@ -359,7 +359,7 @@ func TestSuperviseSession_BackoffResetsAfterSustainedRecovery(t *testing.T) {
 // A session that blips once and then recovers must NOT leave a permanent
 // phantom in componentErrors / failed_components: the recorded fault is cleared
 // before the (now healthy) retry, so /health stops reporting a stale failed
-// component for the pod's remaining life (C3-FU2 hardening).
+// component for the pod's remaining life (the escalation hardening).
 func TestSuperviseSession_ComponentErrorClearedAfterRecovery(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(0, 0))
 	rec := &ports.RecordingExporter{}

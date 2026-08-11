@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 )
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3). It satisfies
+// SetAuthFailureCallback wires the reactive-recovery hook. It satisfies
 // the bridge.AuthFailureReporter capability (matched structurally by the
 // CredentialRefresher, which lives in a different module). A nil callback clears
 // the hook. Safe to call concurrently with reportAuthFailure via the atomic

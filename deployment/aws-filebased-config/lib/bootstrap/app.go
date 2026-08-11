@@ -615,7 +615,7 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	if currentRuntime != nil {
 		// Derive the drain from the shutdown ctx: one budget for the whole
-		// SIGTERM path, not shutdown_timeout + drain_timeout stacked (MQTT-C4).
+		// SIGTERM path, not shutdown_timeout + drain_timeout stacked.
 		if err := stopRuntime(ctx, currentRuntime, currentApplied); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -1116,7 +1116,7 @@ func (a *App) installPlan(plan *runtimePlan) {
 	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
 	// points at this registry's mux.
 	a.registryRef.Store(plan.registry)
-	// RECONFIG-1: begin (or supersede) the post-swap convergence watch for the
+	// RECONFIG-1: begin (supersede) the post-swap convergence watch for the
 	// freshly installed runtime. Skipped during the pre-rootCtx initial apply
 	// (Start begins the initial watch explicitly once rootCtx exists).
 	if a.rootCtx != nil {

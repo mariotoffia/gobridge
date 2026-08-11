@@ -380,7 +380,7 @@ it at runtime too.
   panic and classified it as `permanent` because panics indicate a bug.
 * **Likely cause.** Nil-pointer or out-of-range access in custom
   processor code; assumption about envelope shape that does not hold.
-* **Recovery.** Treat as a P1 bug — the DLQ entry's `LastError` carries
+* **Recovery.** Treat as a bug — the DLQ entry's `LastError` carries
   the panic message and stack. Fix the processor and replay the affected
   DLQ entries.
 * **Related metrics.** `RouteErrors{route_id="…"}`.

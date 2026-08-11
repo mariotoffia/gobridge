@@ -11,7 +11,7 @@ rollout barrier)
 ADR 0013's coordinated commit is final the moment every member has **built** the
 candidate (its Ack). One of 0013's stated consequences is "Commit ≠ converged": a
 committed config can still fail to converge against the real broker on a node
-(MQTT-R1) and is *alarmed, not rolled back*. That is the right default — most
+and is *alarmed, not rolled back*. That is the right default — most
 changes should not pay a rollback — but for some changes a syntactically-valid
 config that cannot reach its broker (an ACL-denied topic, rotated-away credentials,
 an unreachable endpoint) staying active is worse than a second reconnect, and the
@@ -30,7 +30,7 @@ duration; empty/`0` is the base ADR 0013 protocol). When set, a coordinated comm
 is **provisional**:
 
 - Every member swaps the candidate **provisionally** and arms a local deadman timer.
-- A member records `Converge` once its post-swap readiness check (MQTT-R1 — every
+- A member records `Converge` once its post-swap readiness check (every
   non-standby session connected and subscribed) passes.
 - The lease-elected, fencing-protected coordinator writes `Confirmed` only when the
   **whole epoch** has converged **and** the window is still open. Confirmation must
@@ -69,9 +69,9 @@ mixed-version cohort (revert is whole-cohort, not per-member).
 ## Rejected alternatives
 
 - **Kafka-style "commit centrally, fence non-converged members out of serving"**
-  (design Q4) — deferred, not adopted. Strict whole-cohort revert is simpler and
+  (design) — deferred, not adopted. Strict whole-cohort revert is simpler and
   matches the operator contract for cohorts ≤ ~10; the confirm window is merely the
-  first mechanism that makes converged-vs-acked distinguishable, so Q4 is revisitable
+  first mechanism that makes converged-vs-acked distinguishable, so is revisitable
   when cohorts grow, not resolved here.
 - **Confirm without a deadman (wait indefinitely for convergence)** — a coordinator
   or member death would wedge the cohort on an unconfirmed generation forever;

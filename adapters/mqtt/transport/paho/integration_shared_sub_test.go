@@ -17,7 +17,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// S4: MQTT v5 Shared Subscription Integration Tests
+// MQTT v5 Shared Subscription Integration Tests
 //
 // Validates that $share/group/topic subscriptions distribute messages
 // across subscribers (competing consumer) while plain subscriptions
@@ -105,7 +105,7 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 
 // TestIntegration_PlainSubscription_FanOut validates that two clients
 // subscribing to a plain topic (without $share/) each receive ALL
-// messages, demonstrating the N-fold duplication that S4 prevents.
+// messages, demonstrating the N-fold duplication that prevents.
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────

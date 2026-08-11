@@ -97,7 +97,7 @@ extras (`stream`, `target`, `hash`, `expected`, `actual`, `uri`, `path`,
 ## Override paths
 
 - Override pinned image: pass `SeederImage` prop to the CDK `Seeder`
-  construct (T10) — overrides `image.txt` entirely.
+  construct — overrides `image.txt` entirely.
 - Refresh pinned digest:
 
   ```sh

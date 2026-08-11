@@ -25,7 +25,7 @@ const (
 	// failures (per-delivery auto-extend and the session renewer).
 	// MetricASBLockRenewals counts only successes, so a renewer failing
 	// silently was previously invisible; this makes renewal degradation
-	// alertable (F7).
+	// alertable.
 	MetricASBLockRenewalFailures = "ASBLockRenewalFailures"
 
 	// MetricASBLockRenewerStopped signals that a lock renewer gave up
@@ -34,7 +34,7 @@ const (
 	// session renewer reports its current session as persistently
 	// un-renewable (it keeps running to cover future sessions — see
 	// runSessionRenewer). A non-zero rate here means locks are lapsing
-	// and messages are being redelivered/dead-lettered (F7).
+	// and messages are being redelivered/dead-lettered.
 	//
 	// Dimensioned by asbTagKeyRenewerScope so operators can tell an
 	// imminent redelivery from a recoverable degradation: scope

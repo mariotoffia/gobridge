@@ -4,7 +4,7 @@ Status: accepted
 Date: 2026-07-13
 Deciders: GoBridge core
 Decision recorded: commit 4d8d76d (2026-07-13, this ADR file)
-Implementation: original Session-Taken-Over handling (`noteSessionTakeover`) in commit 761a048 (2026-07-03); opt-in `client_id_suffix` uniquifier and Exclusive-session rejection in commit e48e879 (2026-07-10); takeover-penalty/decay and nonce fail-closed (A-15) hardening in commit 4d8d76d (2026-07-13)
+Implementation: original Session-Taken-Over handling (`noteSessionTakeover`) in commit 761a048 (2026-07-03); opt-in `client_id_suffix` uniquifier and Exclusive-session rejection in commit e48e879 (2026-07-10); takeover-penalty/decay and nonce fail-closed hardening in commit 4d8d76d (2026-07-13)
 
 ## Context
 
@@ -50,7 +50,7 @@ do not hard-mandate a suffix at build.**
   back to a bare timestamp, which can collide for two replicas started in the
   same tick on coarse-clock VMs. `clientNonceFallback` mixes wall-clock, PID, and
   hostname and hashes to the same width, so two replicas differing only in PID or
-  host still get **distinct** tokens (finding A-15).
+  host still get **distinct** tokens.
 
 - **The suffix is rejected on Exclusive sessions.** `factory.NewSession` refuses
   `client_id_suffix` when `session_mode: exclusive`, because exclusive failover

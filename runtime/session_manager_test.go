@@ -77,7 +77,7 @@ func TestSessionManager_ExclusiveLease(t *testing.T) {
 // Scenario: run manager; force renew errors; poll until lease cleared; cancel context and assert Run returns non-nil error.
 func TestSessionManager_StepDown(t *testing.T) {
 	// ControllableSession (not FakeSession): its Close does not close the
-	// events channel, so after the C3 step-down Close the renew loop blocks
+	// events channel, so after the step-down Close the renew loop blocks
 	// on its timer across re-acquire terms instead of spinning on a closed
 	// channel.
 	sess := NewControllableSession()

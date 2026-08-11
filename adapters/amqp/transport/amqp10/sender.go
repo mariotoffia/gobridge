@@ -46,8 +46,7 @@ type Sender struct {
 	// closed is set by Close under mu. Once closed, createLink refuses to
 	// re-attach a link (and thus re-register the sender in session
 	// health), so a late Send/SendBatch returns a permanent
-	// transport-closed error instead of silently resurrecting the sender
-	// (finding F14).
+	// transport-closed error instead of silently resurrecting the sender.
 	closed bool
 
 	// attach creates a new sender link on the current session connection.
@@ -60,7 +59,7 @@ type Sender struct {
 // NewSender creates an AMQP 1.0 Sender.
 //
 // LOW-LEVEL constructor. It does NOT enforce the dedicated-session contract
-// (HIGH-3) — Factory.NewSender reserves the link so a sender cannot share a
+// Factory.NewSender reserves the link so a sender cannot share a
 // session with a durable receiver. Production builds every link through the
 // ports.TransportFactory interface (Factory.NewSender); this constructor
 // stays permissive for tests. Use Factory.NewSender in production.
@@ -257,7 +256,7 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 }
 
 func (s *Sender) createLink(ctx context.Context) error {
-	// F14: createLink is the single choke point for link attach (called
+	// createLink is the single choke point for link attach (called
 	// under s.mu from Send and ensureLink). Refuse once closed so a late
 	// Send cannot re-attach a link and re-enter session health.
 	if s.closed {

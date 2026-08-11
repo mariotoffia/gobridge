@@ -447,7 +447,7 @@ type OutboxSnapshot struct {
 // Use it whenever the envelope must outlive the aggregate or be handed
 // to mutator code (DLQ writer, retry submitter) so that subsequent
 // mutations cannot corrupt the persisted aggregate state. This satisfies
-// the DDD R5 aggregate-boundary rule: callers receive an isolated
+// the DDD aggregate-boundary rule: callers receive an isolated
 // messaging.Envelope rather than a shared reference.
 func (r *OutboxRecord) Snapshot() *messaging.Envelope {
 	return r.envelope.Clone()

@@ -56,7 +56,7 @@ type TokenConfig struct {
 func (TokenConfig) Kind() string    { return "test.token" }
 func (TokenConfig) Validate() error { return nil }
 
-// PEMFlaggedConfig proves the G2 PEM/private-key suffixes are flagged: a
+// PEMFlaggedConfig proves PEM/private-key suffixes are flagged: a
 // raw KeyPEM/CertPEM/CACertPEM string leaks TLS material exactly like a
 // password and must be wrapped in shared.Secret.
 type PEMFlaggedConfig struct {

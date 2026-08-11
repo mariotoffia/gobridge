@@ -260,7 +260,7 @@ func (p *Processor) Process(ctx context.Context, env *messaging.Envelope, next p
 		}
 		if scope, ok := ports.DeliveryScopeFrom(ctx); ok {
 			// Decrement when the WHOLE delivery settles (after the send), not
-			// when Process returns mid-chain. This is the F3 fix: the tenant is
+			// when Process returns mid-chain. This is the fix: the tenant is
 			// the last processor, so the send happens in the RouteRunner AFTER
 			// the chain returns — a defer here would fire before the send even
 			// starts, making MaxInFlight a no-op. In route-runner use ctx is

@@ -74,7 +74,7 @@ func checkValidateMethods(pass *analysis.Pass) {
 			// produces enough false negatives on indirect test paths
 			// (configs exercised through factories rather than via a
 			// direct .Validate() call) that it would block legitimate
-			// code. Tracked as a known gap — see FIX-003 follow-ups.
+			// code. This is a known, accepted gap in the checker.
 			_ = pkgDir
 		}
 	}

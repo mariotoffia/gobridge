@@ -14,7 +14,7 @@ import (
 )
 
 // orderingSender is a gated recording sender for the per-ordering-key
-// serialization test (finding #28). Each Send records the envelope ID in
+// serialization test. Each Send records the envelope ID in
 // invocation order, tracks per-key concurrent in-flight (and its peak),
 // then blocks on a shared release channel so the test can hold a known
 // set of sends simultaneously in flight and observe whether same-key
@@ -136,7 +136,7 @@ func makeOrderingRecord(t *testing.T, id, orderingKey string) *persistence.Outbo
 	return rec
 }
 
-// TestOutboxDrainer_PerOrderingKeySerialization verifies finding #28:
+// TestOutboxDrainer_PerOrderingKeySerialization verifies:
 // records sharing a non-empty ordering key are delivered SEQUENTIALLY in
 // persisted order and never overlap in time, while records with distinct
 // keys (and keyless records) drain concurrently.

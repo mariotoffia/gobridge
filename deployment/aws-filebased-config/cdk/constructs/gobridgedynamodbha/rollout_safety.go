@@ -8,7 +8,7 @@ import (
 )
 
 // Deployment safety switch for the autoscaled DynamoDB-coordinated HA facade
-// (HIGH-9). Two rules, both enforced at synth time:
+// Two rules, both enforced at synth time:
 //
 //   - a config that opts into the coordinated cluster rollout barrier is
 //     rejected, because this profile's workers cannot host it; and

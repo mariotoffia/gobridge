@@ -11,7 +11,7 @@ loss tolerance.**
 make test-long-running
 
 # Single test
-go test -race -timeout 1200s -v -tags=longrunning -run TestUC1 ./tests/longrunning/...
+go test -race -timeout 1200s -v -tags=longrunning -run TestUC1./tests/longrunning/...
 
 # With environment overrides (skip container auto-start)
 DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
@@ -56,20 +56,20 @@ This prevents the broker from dropping messages under load.
 tests/longrunning/
   longrunning_test.go            # TestMain + shared helpers (SQS/MQTT/DDB setup)
   longrunning_helpers_test.go    # Reusable processors and wrapper senders
-  uc1_sqs_mqtt_sqs_test.go       # UC1:  Clustered SQS -> MQTT -> SQS
-  uc2_mqtt_fanout_sqs_test.go    # UC2:  Content-routed fan-out
-  uc3_cluster_failover_test.go   # UC3:  3-instance cascading failover
-  uc4_bidirectional_test.go      # UC4:  Bidirectional SQS <-> MQTT
-  uc5_pipeline_chain_test.go     # UC5:  4-stage pipeline chain
-  uc6_burst_backpressure_test.go # UC6:  Burst + poison -> DLQ
-  uc7_transport_combos_test.go   # UC7-11: Transport combinations
-  uc12_cluster_lease_test.go     # UC12-16: Cluster & lease coordination
-  uc17_message_shape_test.go     # UC17-21: Message size & shape
+  uc1_sqs_mqtt_sqs_test.go # UC1: Clustered SQS -> MQTT -> SQS
+  uc2_mqtt_fanout_sqs_test.go # UC2: Content-routed fan-out
+  uc3_cluster_failover_test.go # UC3: 3-instance cascading failover
+  uc4_bidirectional_test.go # UC4: Bidirectional SQS <-> MQTT
+  uc5_pipeline_chain_test.go # UC5: 4-stage pipeline chain
+  uc6_burst_backpressure_test.go # UC6: Burst + poison -> DLQ
+  uc7_transport_combos_test.go # UC7-11: Transport combinations
+  uc12_cluster_lease_test.go # UC12-16: Cluster & lease coordination
+  uc17_message_shape_test.go # UC17-21: Message size & shape
   uc22_routing_filtering_test.go # UC22-26: Routing & filtering
-  uc27_failure_recovery_test.go  # UC27-29: Failure & recovery (part A)
+  uc27_failure_recovery_test.go # UC27-29: Failure & recovery (part A)
   uc27_failure_recovery_b_test.go# UC30-32: Failure & recovery (part B)
-  uc33_backpressure_test.go      # UC33-37: Backpressure & concurrency
-  uc38_outbox_modes_test.go      # UC38-41: Outbox delivery modes
+  uc33_backpressure_test.go # UC33-37: Backpressure & concurrency
+  uc38_outbox_modes_test.go # UC38-41: Outbox delivery modes
 ```
 
 ---
@@ -213,7 +213,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
 | UC63 | Memory stability | 10,000 | Final heap < 2× initial. Max < 500MB. |
-| UC64 | Latency percentiles | 10,000 | P50 < 500ms, P95 < 2s, P99 < 5s. |
+| UC64 | Latency percentiles | 10,000 | < 500ms, < 2s, < 5s. |
 | UC65 | Throughput ceiling (4 batches) | 6,500 | All delivered. Max msgs/sec logged. |
 | UC66 | Multi-tenant isolation (10 tenants) | 5,000 | Tenants 1-9 < 30s each. Tenant 0 < 120s. |
 | UC67 | Concurrent Reconcile during flow | 3,000 | >= 3,000 unique. No races. |
@@ -281,7 +281,7 @@ Defined in `longrunning_perf_helpers_test.go`:
 
 | Type | Kind | Purpose |
 |------|------|---------|
-| `latencyRecorder` | processor | Records per-message latency, provides P50/P95/P99 |
+| `latencyRecorder` | processor | Records per-message latency, provides |
 | `heapSampler` | sampler | Background goroutine sampling runtime.ReadMemStats |
 | `tenantSlowProcessor` | processor | Adds delay for a specific tenant (by header) |
 

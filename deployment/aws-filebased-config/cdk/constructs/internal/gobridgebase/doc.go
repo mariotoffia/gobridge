@@ -1,5 +1,5 @@
 // Package gobridgebase is the shared facade base used by the
-// GoBridgeSingle (T11) and GoBridgeCluster (T12) public constructs.
+// GoBridgeSingle and GoBridgeCluster public constructs.
 //
 // It owns the parts of the deployment that are identical for the
 // single-node and clustered topologies:

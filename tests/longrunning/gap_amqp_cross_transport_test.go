@@ -276,7 +276,7 @@ func TestGap_AMQP091_To_MQTT_CrossTransport(t *testing.T) {
 		assert.Contains(t, string(msg.Payload()), `"origin":"amqp091"`,
 			"msg %d: payload should contain origin marker", i)
 
-		// T12: the MQTT ingress side must surface the *transport address*
+		// the MQTT ingress side must surface the *transport address*
 		// (publish topic) under the dedicated mqtt.topic header — distinct
 		// from the logical Envelope.Subject above. This proves that subject
 		// and transport address travel as independent fields end-to-end.

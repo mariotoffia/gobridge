@@ -175,7 +175,7 @@ func TestSupervisor_CompleteFailure_NextConfigRecovers(t *testing.T) {
 // TestSupervisor_SwapFailure_Overlap validates that when a swap fails in
 // overlap mode the supervisor recovers by rebuilding with the old config.
 //
-// Finding 5 / C2: static route validation now runs at build/complete time (via
+// Finding 5 /: static route validation now runs at build/complete time (via
 // Runtime.ValidateRoutes), so a statically-rejectable config fails during the
 // build phase of the overlap swap — BEFORE Start — and never even reaches
 // Start. The recovery contract is unchanged: the old runtime keeps serving.
@@ -204,7 +204,7 @@ func TestSupervisor_SwapFailure_Overlap(t *testing.T) {
 // TestSupervisor_SwapFailure_PrepareCommit validates that when a swap fails in
 // PrepareCommit mode the supervisor recovers with the old config.
 //
-// Finding 5 / C2: with static route validation moved to build/complete time, a
+// Finding 5 /: with static route validation moved to build/complete time, a
 // statically-rejectable config fails inside complete() (after prepare opened
 // its stores) BEFORE the new runtime is ever started, so the failure surfaces
 // via the "complete" phase, not "start". The old runtime is already stopped in

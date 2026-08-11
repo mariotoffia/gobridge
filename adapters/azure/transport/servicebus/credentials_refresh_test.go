@@ -41,7 +41,7 @@ func TestCredentialsToConnection_NilSet_NoChange(t *testing.T) {
 }
 
 // TestCredentialsToConnection_ClientSecretClearsManagedIdentity pins
-// HIGH-2: rotating from managed identity to an AAD client secret MUST
+// rotating from managed identity to an AAD client secret MUST
 // clear UseManagedIdentity. The credential builder (rawNewAzClient)
 // evaluates managed identity BEFORE client-secret auth, so a lingering
 // flag would ignore the rotated secret and keep authenticating as the
@@ -61,7 +61,7 @@ func TestCredentialsToConnection_ClientSecretClearsManagedIdentity(t *testing.T)
 	require.Equal(t, "app-client", out.ClientID)
 	require.Equal(t, "app-secret", out.ClientSecret.Reveal())
 	require.False(t, out.UseManagedIdentity,
-		"managed identity must be cleared so the rotated client secret takes effect (HIGH-2)")
+		"managed identity must be cleared so the rotated client secret takes effect")
 	require.Equal(t, "tenant-1", out.TenantID, "tenant preserved")
 }
 
@@ -87,7 +87,7 @@ func TestCredentialsToConnection_ManagedIdentityFlagStuck_ClearedWhenSecretMatch
 }
 
 // TestCredentialsToConnection_UsernameWithoutSecret_Rejected pins the
-// HIGH-2 follow-up: a rotation credential that supplies a username but NO
+// follow-up: a rotation credential that supplies a username but NO
 // secret is malformed (client-secret auth needs both; the connection-
 // string path needs an empty username). It must be rejected with
 // shared.ErrInvalidPayload and MUST NOT clear UseManagedIdentity — the
@@ -132,7 +132,7 @@ func TestCredentialsToConnection_UsernameWithSecret_PrefersClientSecret(t *testi
 	require.True(t, changed)
 	require.Equal(t, "app-client", out.ClientID)
 	require.Equal(t, "app-secret", out.ClientSecret.Reveal())
-	require.False(t, out.UseManagedIdentity, "a valid client secret clears managed identity (HIGH-2)")
+	require.False(t, out.UseManagedIdentity, "a valid client secret clears managed identity")
 }
 
 // TestApplyCredentials_Sender_UsernameWithoutSecret_Rejected proves the

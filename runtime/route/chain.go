@@ -42,11 +42,11 @@ type chainOptions struct {
 	// transient timeout instead and the delivery is retried.
 	outstanding *atomic.Int64
 	// onProcessorTimeout, when set, is called once per genuine per-processor
-	// timeout abandon (HIGH-4). Route shutdown-grace abandons do NOT call it.
+	// timeout abandon. Route shutdown-grace abandons do NOT call it.
 	onProcessorTimeout func()
 	// onProcessorReturned, when set, is called exactly once when a goroutine that
 	// was ABANDONED on a genuine timeout finally returns (its done channel closes)
-	// — the paired decrement to onProcessorTimeout's increment (CORE-RES-2). It
+	// the paired decrement to onProcessorTimeout's increment (CORE-RES-2). It
 	// lets the route breaker track OUTSTANDING abandoned goroutines rather than
 	// consecutive-since-settle abandons: a truly hung processor never fires it, so
 	// its leak stays counted until a restart clears it. Never fired for
@@ -97,7 +97,7 @@ func WithChainRouteID(id string) ChainOption {
 // WithChainOnProcessorTimeout registers a callback invoked exactly once each time
 // a processor goroutine is ABANDONED on a genuine per-processor timeout (NOT on
 // shutdown-grace, which is a clean stop). The RouteRunner uses it to drive a
-// route-level circuit breaker (HIGH-4): a count-less source that redelivers a
+// route-level circuit breaker: a count-less source that redelivers a
 // timeout-poison message leaks an abandoned goroutine per redelivery, so once
 // too many accumulate without a terminal settle the route wedges instead of
 // amplifying forever. A nil callback is a no-op.
@@ -290,7 +290,7 @@ func invokeProcessor(
 		// load-bearing for memory safety: honour cancellation, and do not mutate
 		// the envelope after calling next().
 		cancelProc()
-		// N3 — root-vs-shutdown classification. cfg.root is the ctx RunChain was
+		// root-vs-shutdown classification. cfg.root is the ctx RunChain was
 		// called with (runner.go: the receiver's per-delivery callback ctx, which
 		// the runtime passes straight through processDelivery→handleDelivery — the
 		// latter only derives a trace-span child, never a per-delivery-cancellable
@@ -299,7 +299,7 @@ func invokeProcessor(
 		// shutdown-grace rather than counted as a processor-timeout. Caveat: a
 		// custom receiver adapter that handed a PER-DELIVERY-cancellable ctx would
 		// weaken this (a per-delivery cancel would be misread as shutdown and a
-		// real processor-timeout would go uncounted, only softening the HIGH-4
+		// real processor-timeout would go uncounted, only softening the
 		// breaker); the in-tree adapters do not, and that is an adapter-contract
 		// concern, not a runtime one.
 		if cfg.root.Err() != nil {
@@ -314,7 +314,7 @@ func invokeProcessor(
 		}
 		logTimeout(ctx, cfg, name, env)
 		emitTimeoutMetric(cfg)
-		// HIGH-4: signal the route-level circuit breaker that a processor
+		// signal the route-level circuit breaker that a processor
 		// goroutine was abandoned on a genuine timeout, so a count-less source
 		// amplifying timeout-poison redeliveries eventually pauses the route
 		// instead of leaking unbounded abandoned goroutines. Shutdown-grace

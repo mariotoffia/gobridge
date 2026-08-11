@@ -206,7 +206,7 @@ func TestApp_NonCoordinatedClusteredReload_StillRefuses(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Deployment safety switch (HIGH-9): an interchangeable, autoscaled worker can
+// Deployment safety switch: an interchangeable, autoscaled worker can
 // never host the coordinated rollout barrier. ECS assigns each replacement task
 // a fresh id, so no worker carries the restart-stable member_id the barrier
 // counts acknowledgements against. These are the runtime half of the switch; the

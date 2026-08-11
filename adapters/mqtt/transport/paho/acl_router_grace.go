@@ -22,7 +22,7 @@ func (r *router) beginGrace() {
 	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
 	// Advance the connection generation. Entries buffered from here on are
 	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
-	// entries stamped with a prior epoch are purged (A-1).
+	// entries stamped with a prior epoch are purged.
 	r.connEpoch++
 	r.clearUnsettledLocked()
 	// Replacement ingress may be buffered while global quiescence remains.
@@ -112,7 +112,7 @@ func (r *router) graceLoop(timerC <-chan time.Time, unsubCh <-chan string) {
 // Timer.Reset from another goroutine; if that timer had ALREADY fired, a stale
 // tick is left sitting in the timer channel and the worker would act on it
 // immediately after the re-arm — sweeping BEFORE the new deadline, ack-dropping
-// orphans and firing retention metrics ahead of the configured grace (A-12).
+// orphans and firing retention metrics ahead of the configured grace.
 // graceDeadline is advanced under r.mu on every arm, so comparing it against
 // now distinguishes a genuine expiry from a stale tick: a premature tick re-arms
 // the timer for the remaining window and skips the sweep. Runs on the grace
@@ -137,7 +137,7 @@ func (r *router) sweepIfExpired() {
 // COVERED by a subscription the session wants (a receiver whose handler has not
 // registered yet) is RETAINED in place — un-acked — so at-least-once holds
 // until the handler registers (RegisterFiltered flushes it) or the broker
-// redelivers on reconnect (HIGH-1); ack-dropping it would be acknowledged
+// redelivers on reconnect; ack-dropping it would be acknowledged
 // live-route loss. Only a true ORPHAN (a topic no subscription still wants) is
 // acked, dropped, and (deduped) unsubscribed. Runs on the grace worker. The
 // covered entries it retains ARE counted on MetricMQTTRouterCoveredRetained
@@ -288,7 +288,7 @@ func (r *router) enqueueUnsub(topic string) {
 //
 // COVERED topics are NEVER routed here: a still-desired subscription whose
 // receiver handler registered late is RETAINED un-acked instead
-// (settleUnmatched → retainCovered, HIGH-1), because ack-dropping it would
+// (settleUnmatched → retainCovered), because ack-dropping it would
 // convert startup slowness into acknowledged live-route loss and break
 // at-least-once. Orphan classification is done by the caller with r.mu
 // released (covered() takes the session mutex).
@@ -309,7 +309,7 @@ func (r *router) dropOrphan(pub *pahov5.Publish, ack func() error) {
 // settleUnmatched handles a publish that matched NO registered handler AFTER
 // the startup grace window. It NEVER ack-drops a still-covered topic — doing so
 // would convert startup slowness into acknowledged live-route loss and break
-// at-least-once (HIGH-1). A covered publish is RETAINED un-acked in the pending
+// at-least-once. A covered publish is RETAINED un-acked in the pending
 // buffer (bounded by receive_maximum) so a late RegisterFiltered flushes it, or
 // the broker redelivers it on reconnect. Only a true orphan (a topic no
 // subscription still wants) is acked, dropped, and unsubscribed. covered() MUST
@@ -327,7 +327,7 @@ func (r *router) settleUnmatched(pub *pahov5.Publish, ack func() error) {
 // retainCovered keeps a still-covered publish that matched no handler past the
 // grace window UN-ACKED in the pending buffer, so at-least-once holds until the
 // receiver handler registers (RegisterFiltered flushes it) or the broker
-// redelivers it on reconnect (HIGH-1). It first re-scans handlers under r.mu to
+// redelivers it on reconnect. It first re-scans handlers under r.mu to
 // close the TOCTOU where a handler registered between the dispatch miss and
 // here (dispatching to it directly). On a buffer refusal the fallback preserves
 // the QoS contract: QoS 1/2 (reachable only when a broker exceeds the granted
@@ -395,7 +395,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 }
 
 // noteCoveredRetained records n covered publishes on topic retained un-acked
-// past the grace window (HIGH-1): it always bumps the counter and metric, and
+// past the grace window: it always bumps the counter and metric, and
 // WARN-logs ONCE per topic (deduped via coveredWarned) so a high-throughput
 // covered backlog does not spam the log while every retention is still counted.
 func (r *router) noteCoveredRetained(topic string, n int) {

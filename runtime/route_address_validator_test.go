@@ -28,7 +28,7 @@ func (r *recordingAddressValidator) ValidateAddress(string) error {
 	return r.err
 }
 
-// TestRouteRunner_AddressValidator_Reject_RoutesDLQ covers the AP-005
+// TestRouteRunner_AddressValidator_Reject_RoutesDLQ covers
 // generic dispatch path: a non-nil AddressValidator that returns an
 // error must short-circuit the send and route the message to the DLQ
 // with shared.ErrInvalidTopic semantics.
@@ -71,7 +71,7 @@ func TestRouteRunner_AddressValidator_Reject_RoutesDLQ(t *testing.T) {
 		"rejected address must produce one DLQ entry")
 	if dlqStore.Count() == 1 {
 		entry := dlqStore.Entries[0]
-		// AP-005 maps validator failure to ErrInvalidTopic; the DLQ
+		// maps validator failure to ErrInvalidTopic; the DLQ
 		// entry's ErrorCode must therefore advertise that.
 		if entry.ErrorCode() != string(shared.ErrInvalidTopic.Code) {
 			t.Fatalf("expected DLQ ErrorCode %q, got %q",

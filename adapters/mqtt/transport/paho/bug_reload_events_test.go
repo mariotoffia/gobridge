@@ -16,7 +16,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// F-1 (HIGH): Zombie session after a failed credential-rotation Reload during
+// (HIGH): Zombie session after a failed credential-rotation Reload during
 // a broker outage.
 //
 // Reload tears the ConnectionManager down (autopaho Disconnect is terminal in
@@ -36,11 +36,11 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestBug_ReloadStartFailure_ClosesEvents_ThenReStartReMaterialises is the
-// deterministic seam test (no broker) for F-1. It drives Start/Reload/Start
+// deterministic seam test (no broker). It drives Start/Reload/Start
 // through connectOverride:
 //
 //	Start #1 (dial ok)      → events channel ev1 is live.
-//	Reload (dial FAILS)     → re-Start fails; F-1 CLOSES ev1 (terminal-death
+//	Reload (dial FAILS) → re-Start fails; CLOSES ev1 (terminal-death
 //	                          signal that unblocks the runtime's handleEvents).
 //	Start #3 (dial ok)      → re-materialises a FRESH open events channel ev2
 //	                          and reconnects (Health.Connected true).
@@ -81,7 +81,7 @@ func TestBug_ReloadStartFailure_ClosesEvents_ThenReStartReMaterialises(t *testin
 	require.Equal(t, int32(2), dialCount.Load(), "Reload attempts exactly one re-Start dial")
 	require.Equal(t, int32(1), disconnects.Load(), "Reload tears the old CM down once")
 
-	// F-1: the events channel is CLOSED to signal terminal death. This is the
+	// the events channel is CLOSED to signal terminal death. This is the
 	// hook the runtime manager (handleEvents → errSessionEventsClosed) turns
 	// into a superviseSession restart. Pre-fix this times out (the hang).
 	wait.RequireClosed(t, ev1, 2*time.Second)
@@ -110,7 +110,7 @@ func TestBug_ReloadStartFailure_ClosesEvents_ThenReStartReMaterialises(t *testin
 }
 
 // TestBug_ReloadStartFailure_ClosedGuard_NoDoubleClosePanic asserts the
-// double-close guard (F-1 correctness detail #1): after a Reload-failure has
+// double-close guard: after a Reload-failure has
 // already closed the events channel, a subsequent Close must NOT panic
 // (Close also finalises s.events). Runs the real Close path.
 func TestBug_ReloadStartFailure_ClosedGuard_NoDoubleClosePanic(t *testing.T) {
@@ -141,10 +141,10 @@ func TestBug_ReloadStartFailure_ClosedGuard_NoDoubleClosePanic(t *testing.T) {
 	}, "Close after a Reload-failure events-close must not double-close/panic")
 }
 
-// TestBug_ReloadStartFailure_LiveBroker_ReconnectsAfterOutage is the F-1
+// TestBug_ReloadStartFailure_LiveBroker_ReconnectsAfterOutage is the
 // live-broker portion (Mosquitto via mqttlocal). It exercises the FULL path:
 // a real connect, a Reload whose internal re-Start fails (simulated outage via
-// connectOverride for that dial ONLY), the F-1 events-close, and then a
+// connectOverride for that dial ONLY), the events-close, and then a
 // supervisor-style re-Start that reconnects to the REAL broker once the
 // "outage" clears.
 //
@@ -179,7 +179,7 @@ func TestBug_ReloadStartFailure_LiveBroker_ReconnectsAfterOutage(t *testing.T) {
 
 	require.Error(t, s.Reload(ctx), "Reload's re-Start fails during the outage")
 
-	// F-1: the events channel closes → the runtime manager would restart.
+	// the events channel closes → the runtime manager would restart.
 	// Pre-fix this times out (the permanent zombie).
 	wait.RequireClosed(t, ev1, 5*time.Second)
 

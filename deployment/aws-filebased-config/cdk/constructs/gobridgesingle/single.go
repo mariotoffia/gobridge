@@ -41,7 +41,7 @@ import (
 // SsmParamRegistry.
 type SingleProps struct {
 	// Vpc is the VPC the Fargate task and the EFS mount targets
-	// live in. Required (no default lookup at this stage — T11
+	// live in. Required (no default lookup at this stage
 	// keeps it explicit; the design's optional-VPC behaviour will
 	// land alongside the auto-lookup helper).
 	Vpc awsec2.IVpc
@@ -122,7 +122,7 @@ type SingleProps struct {
 // GoBridgeSingle is the L2 facade construct that deploys the
 // single-task control profile of gobridge: one Fargate task with RW
 // EFS mount, no worker, no clustering. It is a thin wrapper over
-// [gobridgebase] (T10) — all task-def, EFS, IAM, seeder and asset
+// [gobridgebase] — all task-def, EFS, IAM, seeder and asset
 // machinery is owned by the shared base; this construct only adds
 // the surrounding ECS service, security group, EFS ingress rule and
 // runs the Phase 1 / Phase 2 tier-B validators on the resolved
@@ -160,7 +160,7 @@ type GoBridgeSingle struct {
 //  7. Run Phase 2 aggregated validation via CDK Annotations so a
 //     single synth surfaces every missing registry reference.
 //
-// TODO(T13): synth-time scope scan to enforce singleton
+// TODO: synth-time scope scan to enforce singleton
 // constraint — error if multiple GoBridgeSingle / GoBridgeCluster
 // siblings exist in the same Stack tree.
 func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProps) *GoBridgeSingle {

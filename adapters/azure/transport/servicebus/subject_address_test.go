@@ -1,5 +1,5 @@
 // Tests covering the subject/address separation contract for the
-// Azure Service Bus adapter (T09):
+// Azure Service Bus adapter:
 //
 //   - Service Bus senders are bound to a single queue or topic
 //     (cfg.QueueName / cfg.TopicName). ports.OutboundMessage.Address
@@ -390,7 +390,7 @@ func runReceiverOnce(t *testing.T, cfg ReceiverConfig, msg *azservicebus.Receive
 	return got
 }
 
-// Acceptance test for T09: a queue message with no native Service Bus
+// Acceptance test: a queue message with no native Service Bus
 // Subject yields an empty Envelope.Subject. The configured QueueName
 // must NOT be promoted into Envelope.Subject.
 func TestReceiver_NoNativeSubject_QueueYieldsEmptySubject(t *testing.T) {
@@ -403,7 +403,7 @@ func TestReceiver_NoNativeSubject_QueueYieldsEmptySubject(t *testing.T) {
 	}
 }
 
-// Acceptance test for T09: a topic/subscription message with no
+// Acceptance test: a topic/subscription message with no
 // native Service Bus Subject yields an empty Envelope.Subject. The
 // configured TopicName must NOT be promoted into Envelope.Subject.
 func TestReceiver_NoNativeSubject_TopicYieldsEmptySubject(t *testing.T) {

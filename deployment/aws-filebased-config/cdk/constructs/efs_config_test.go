@@ -157,7 +157,7 @@ func TestGoBridgeEfsConfig_ReuseExistingFileSystem(t *testing.T) {
 	// Backup is also skipped when reusing FS (we don't own the lifecycle).
 	tpl.ResourceCountIs(jsii.String("AWS::Backup::BackupPlan"), jsii.Number(0))
 
-	// Orphan SG fix (T10 follow-up a): no SG is created on the
+	// Orphan SG fix: no SG is created on the
 	// reuse-existing path. Imported SG is created by the test
 	// (ImpSG) but the construct itself does not add another one.
 	if cfg.SecurityGroup() != nil {

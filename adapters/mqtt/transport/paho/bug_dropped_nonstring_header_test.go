@@ -7,7 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestPublishFromEnvelope_NonStringHeaderIncrementsCounter is the MQTT-N1
+// TestPublishFromEnvelope_NonStringHeaderIncrementsCounter is the MQTT
 // regression: a bridge-to-bridge header whose value is NOT a string (here a
 // non-string idempotency-key) is dropped on egress because it cannot become
 // an MQTT user property. Before the fix the drop was silent; now it must

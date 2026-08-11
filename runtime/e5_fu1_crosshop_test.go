@@ -14,7 +14,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// E5-FU1: stale bridge-to-bridge redelivery count must be stripped at egress
+// stale bridge-to-bridge redelivery count must be stripped at egress
 //
 // In a bridge A → bridge B topology the source transport's redelivery-count
 // header is transport-namespaced (not x-bridge.* reserved), so nothing strips
@@ -99,7 +99,7 @@ func TestE5FU1_DirectHold_StripsStaleReceiveCountFromOutbound(t *testing.T) {
 	}
 
 	// WHY: the stale upstream count must be stripped from the outbound clone so
-	// the downstream bridge does not misread it as its own receiveCount (E5-FU1).
+	// the downstream bridge does not misread it as its own receiveCount.
 	if _, present := msg.Envelope.Headers()[asbDeliveryCountHeader]; present {
 		t.Errorf("outbound envelope still carries %q; stale upstream count must be stripped", asbDeliveryCountHeader)
 	}
@@ -179,7 +179,7 @@ func TestE5FU1_SharedOutbox_StripsStaleReceiveCountFromPersisted(t *testing.T) {
 	snap := rec.Snapshot()
 
 	// WHY: a drained record forwarded to the next hop must not carry the stale
-	// upstream count, or the downstream bridge would misread it (E5-FU1).
+	// upstream count, or the downstream bridge would misread it.
 	if _, present := snap.Headers()[asbDeliveryCountHeader]; present {
 		t.Errorf("persisted envelope still carries %q; stale upstream count must be stripped", asbDeliveryCountHeader)
 	}

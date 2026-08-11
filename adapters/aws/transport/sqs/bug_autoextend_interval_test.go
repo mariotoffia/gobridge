@@ -15,7 +15,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG M6: SQS auto-extend ticker interval never updates
+// BUG: SQS auto-extend ticker interval never updates
 //
 // When Extend() updates visibilityTimeout, the auto-extend loop continued
 // ticking at the original interval because the ticker was never Reset().

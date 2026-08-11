@@ -99,7 +99,7 @@ func newConfigTestServer(t *testing.T, cfg *ports.BridgeConfig, opts ...Option) 
 	apiCfg.ConfigProvider = func() *ports.BridgeConfig { return cfg }
 	// The FileStore is non-CAS; this single-process test IS the single writer,
 	// so assert it to permit durable commits (the fail-closed default refuses a
-	// non-CAS commit without this assertion — see [HIGH-1]).
+	// non-CAS commit without this assertion — see).
 	apiCfg.ConfigSingleWriter = true
 
 	s := New(rt, apiCfg, opts...)

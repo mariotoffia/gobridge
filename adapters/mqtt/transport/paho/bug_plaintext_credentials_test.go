@@ -1,4 +1,4 @@
-// Validates HIGH-4: the MQTT CONNECT username/password travel in cleartext,
+// Validates: the MQTT CONNECT username/password travel in cleartext,
 // so configuring them over a non-TLS broker URL (tcp://, mqtt://, ws://, or
 // schemeless) is REJECTED at config validation / session build unless the
 // operator explicitly opts in via allow_plaintext_credentials=true. A TLS

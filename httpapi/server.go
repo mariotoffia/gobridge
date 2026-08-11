@@ -65,7 +65,7 @@ type Config struct {
 	// composition-root supervisor rather than the runtime directly. This makes
 	// POST /bridge/stop a CLEAN, deliberate pause (not process-suicide) and lets
 	// POST /bridge/start rebuild a fresh runtime afterwards — the runtime is
-	// single-use, so an in-place restart would always 409 (CRITICAL 1). Wired to
+	// single-use, so an in-place restart would always 409. Wired to
 	// bridge.Supervisor in the composition root. When nil, the handlers fall back
 	// to the runtime's own Start/Stop (legacy behavior, used by tests that hold
 	// only a runtime).
@@ -131,7 +131,7 @@ type Config struct {
 	// last-writer-wins Save. A plain Save on a shared non-CAS backend lets two
 	// admin instances that both read version N each pass the read-time version
 	// guard and clobber each other's acknowledged commit (silent lost update;
-	// see [HIGH-1]). Only assert this when the deployment guarantees a single
+	// see). Only assert this when the deployment guarantees a single
 	// admin writer; a multi-instance cluster MUST use a ConditionalConfigStore
 	// instead, which is always safe regardless of this flag.
 	ConfigSingleWriter bool `json:"config_single_writer,omitempty"`
@@ -318,7 +318,7 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		// single writer. newTxnManager defaults to single-writer (the in-process
 		// construction used by tests/embedders); the real server path must fail
 		// closed on a shared non-CAS store unless ConfigSingleWriter is set, so
-		// no silent last-writer-wins durable commit path remains (see [HIGH-1]).
+		// no silent last-writer-wins durable commit path remains (see).
 		s.configTxn.singleWriter = cfg.ConfigSingleWriter
 	}
 	s.adminThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)

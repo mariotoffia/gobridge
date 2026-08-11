@@ -303,10 +303,10 @@ func TestE2E_S4_SQSToMQTT_BridgeCrashAndRestart(t *testing.T) {
 
 	msgs := collector.getMessages()
 	if len(msgs) == 0 {
-		t.Fatal("S4: expected at least 1 message")
+		t.Fatal("expected at least 1 message")
 	}
 	if string(msgs[0].Payload()) != `{"crash":"test"}` {
-		t.Errorf("S4: payload = %q, want %q", string(msgs[0].Payload()), `{"crash":"test"}`)
+		t.Errorf("payload = %q, want %q", string(msgs[0].Payload()), `{"crash":"test"}`)
 	}
 }
 
@@ -402,10 +402,10 @@ func TestE2E_S5_SQSToMQTT_SecondaryBridgeTakeover(t *testing.T) {
 
 	msgs := collector.getMessages()
 	if len(msgs) == 0 {
-		t.Fatal("S5: expected at least 1 message")
+		t.Fatal("expected at least 1 message")
 	}
 	if string(msgs[0].Payload()) != `{"takeover":"test"}` {
-		t.Errorf("S5: payload = %q, want %q", string(msgs[0].Payload()), `{"takeover":"test"}`)
+		t.Errorf("payload = %q, want %q", string(msgs[0].Payload()), `{"takeover":"test"}`)
 	}
 }
 
@@ -423,7 +423,7 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	wait.Until(t, 5*time.Second, "S6 subscriptions active", func() bool {
+	wait.Until(t, 5*time.Second, "subscriptions active", func() bool {
 		h := sess.Health(context.Background())
 		return h.Connected && h.SubscriptionsActive == h.SubscriptionsWanted
 	})
@@ -489,7 +489,7 @@ func TestE2E_S6_SQSToMQTT_RoundTrip(t *testing.T) {
 		t.Fatal("expected message in SQS queue B")
 	}
 	_ = sqsClientB // suppress unused
-	t.Logf("S6: Round-trip complete, body = %s", bodies[0])
+	t.Logf("Round-trip complete, body = %s", bodies[0])
 }
 
 // validates twenty messages flow through shared_outbox to MQTT without loss.
@@ -547,7 +547,7 @@ func TestE2E_S7_SQSToMQTT_MultipleMessages(t *testing.T) {
 
 	msgs := collector.getMessages()
 	if len(msgs) < msgCount {
-		t.Fatalf("S7: received %d, want %d", len(msgs), msgCount)
+		t.Fatalf("received %d, want %d", len(msgs), msgCount)
 	}
 
 	rxPayloads := make(map[string]bool, len(msgs))
@@ -557,7 +557,7 @@ func TestE2E_S7_SQSToMQTT_MultipleMessages(t *testing.T) {
 	for i := 0; i < msgCount; i++ {
 		want := fmt.Sprintf(`{"seq":%d}`, i)
 		if !rxPayloads[want] {
-			t.Errorf("S7: missing payload %s", want)
+			t.Errorf("missing payload %s", want)
 		}
 	}
 }

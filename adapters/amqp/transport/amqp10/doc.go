@@ -108,7 +108,7 @@
 // both enforced FAIL-CLOSED by Factory.NewReceiver — a misconfiguration is
 // rejected at build, not discovered as silent message loss in production:
 //
-//  1. Explicit, stable session.container_id (HIGH-1). A durable
+//  1. Explicit, stable session.container_id. A durable
 //     subscription's broker identity is container-id + link name. When
 //     container_id is omitted, applyDefaults synthesises a per-instance
 //     "gobridge-<entropy>" id: stable across reconnects but DIFFERENT on
@@ -118,7 +118,7 @@
 //     rejected. (A stable subscription_name alone is not enough: container-id
 //     is part of the identity, so a regenerated one changes it regardless.)
 //
-//  2. Dedicated session (HIGH-3). A durable receiver MUST be the only link
+//  2. Dedicated session. A durable receiver MUST be the only link
 //     on its Session (its own session_id) — the factory refuses to build a
 //     durable receiver on a session that already hosts a receiver or sender,
 //     and refuses any sibling link on a session already claimed by a durable

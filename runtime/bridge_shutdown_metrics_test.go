@@ -17,7 +17,7 @@ import (
 // (it consumes the whole flush budget, then returns nil) and records whether
 // Close was ever called. The runtime is a SHARED-exporter borrower: it must
 // Flush buffered data on Stop but must NOT Close the exporter (the composition
-// root owns Close). See CRITICAL 2.
+// root owns Close). See.
 type slowFlushExporter struct {
 	ports.NoopExporter
 	mu          sync.Mutex
@@ -43,7 +43,7 @@ func (e *slowFlushExporter) Close(ctx context.Context) error {
 }
 
 // TestStop_FlushesButDoesNotCloseSharedExporter is the regression guard for
-// CRITICAL 2: the metrics exporter (and tracer) are SHARED by every runtime
+// the metrics exporter (tracer) are SHARED by every runtime
 // across config reloads and are owned by the composition root. runtime.Stop must
 // FLUSH buffered data on every stop but must NOT Close the exporter — a
 // per-runtime Close killed the shared CloudWatch flush goroutine on the FIRST
@@ -67,5 +67,5 @@ func TestStop_FlushesButDoesNotCloseSharedExporter(t *testing.T) {
 	defer exp.mu.Unlock()
 	assert.True(t, exp.flushCalled, "Flush must be invoked during Stop so buffered data flushes")
 	assert.False(t, exp.closeCalled,
-		"Stop must NOT Close a shared exporter — the composition root owns Close (CRITICAL 2)")
+		"Stop must NOT Close a shared exporter — the composition root owns Close")
 }

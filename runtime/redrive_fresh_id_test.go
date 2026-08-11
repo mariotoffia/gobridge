@@ -10,7 +10,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Regression tests for the DLQ-redrive silent-loss defect (audit D1,
+// Regression tests for the DLQ-redrive silent-loss defect (audit,
 // CRITICAL): redriving a shared-outbox message under its ORIGINAL envelope ID
 // collides with the outbox's retained dedup row (UNIQUE envelope_id,
 // binding_id — completed/poisoned rows are kept as evidence), so Persist
@@ -59,7 +59,7 @@ func redriveFreshIDSetup(t *testing.T) (*goruntime.Runtime, *FakeOutboxStore, *F
 }
 
 // TestInjectRedrive_SharedOutbox_FreshIDBypassesRetainedDedupRow replays the
-// D1 loss sequence: a record for the original envelope ID is already retained
+// loss sequence: a record for the original envelope ID is already retained
 // in the outbox (here: persisted by the original delivery), then the operator
 // redrives the same message. InjectRedrive must persist a NEW record under a
 // fresh envelope ID carrying x-bridge.causation-id = original ID. The pre-fix
@@ -92,7 +92,7 @@ func TestInjectRedrive_SharedOutbox_FreshIDBypassesRetainedDedupRow(t *testing.T
 
 	records := outbox.Records()
 	if len(records) != 2 {
-		t.Fatalf("D1: redrive must persist a NEW outbox record; record count got %d, want 2 "+
+		t.Fatalf("redrive must persist a NEW outbox record; record count got %d, want 2 "+
 			"(the redrive was silently swallowed by the retained dedup row)", len(records))
 	}
 
@@ -108,7 +108,7 @@ func TestInjectRedrive_SharedOutbox_FreshIDBypassesRetainedDedupRow(t *testing.T
 		env := rec.Snapshot()
 		got, ok := env.Header(messaging.HeaderCausationID)
 		if !ok || got != "orig-env-1" {
-			t.Fatalf("D1: redriven record must carry provenance %s=orig-env-1, got %v (present=%v)",
+			t.Fatalf("redriven record must carry provenance %s=orig-env-1, got %v (present=%v)",
 				messaging.HeaderCausationID, got, ok)
 		}
 		if env.Subject() != "device.state.update" {
@@ -124,7 +124,7 @@ func TestInjectRedrive_SharedOutbox_FreshIDBypassesRetainedDedupRow(t *testing.T
 }
 
 // TestInjectToBinding_SharedOutbox_OriginalIDIsSwallowedByDedup is the
-// CONTROL documenting the D1 hazard the redrive-safe path exists to avoid:
+// CONTROL documenting the hazard the redrive-safe path exists to avoid:
 // injecting under the original envelope ID against a retained row returns
 // SUCCESS (the duplicate is ACKed as already-persisted) while persisting
 // nothing — the caller cannot distinguish this from a real replay. Guards the

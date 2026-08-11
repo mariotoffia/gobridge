@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 //     covering scan of every row), whereas this tiny status-only partial index
 //     lets the fleet-wide COUNT be served by an index whose size is exactly the
 //     pending backlog — bounded cost, and near-free to maintain since it holds
-//     only pending rows (F2 CountPending bounded-cost contract).
+//     only pending rows (the CountPending bounded-cost contract).
 //   - idx_outbox_identity is the partition-scoped duplicate-detection identity
 //     (partition_key, envelope_id, binding_id) that INSERT OR IGNORE keys on.
 //     It REPLACES the legacy global UNIQUE(envelope_id, binding_id) so the same
@@ -133,7 +133,7 @@ const (
 	// exists, letting the caller count RowsAffected to detect an
 	// all-duplicate batch. seq is the monotonic per-partition persist
 	// sequence: MAX(seq)+1 within the partition is race-free here because
-	// the pool is capped at a single writer connection (I2) and the batch
+	// the pool is capped at a single writer connection and the batch
 	// runs in one transaction.
 	//
 	// first_attempted_at is intentionally omitted from the column list, so a
@@ -233,7 +233,7 @@ const (
 // claimableWhere is the reusable predicate identifying rows a Claim may take:
 // a pending row, a row claimed under a strictly-older fence version (a
 // preempted owner), or — when time-stale reclaim is enabled — a row that is
-// still claimed but whose claim was stranded past the stale cutoff (I1:
+// still claimed but whose claim was stranded past the stale cutoff (
 // crash-recovery for an owner that died mid-drain without completing or
 // releasing, mirroring the DynamoDB backend's stale-claim fallback). The
 // claim_version placeholder is always present; the claimed_at cutoff
@@ -264,7 +264,7 @@ func selectClaimableIDsSQL(staleEnabled bool) string {
 // still 0) and never moved by a later reclaim. The SQLite store claims via SQL
 // without rehydrating and calling OutboxRecord.Claim, so this CASE mirrors the
 // aggregate's stamp-once guard on the store side. The WHERE clause repeats the
-// claimableWhere fence (I2: the claim UPDATE is guarded, not a blind id-list
+// claimableWhere fence (the claim UPDATE is guarded, not a blind id-list
 // write) so a row that stopped being claimable between select and update is
 // never stolen.
 //

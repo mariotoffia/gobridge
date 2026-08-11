@@ -115,7 +115,7 @@ func TestAnaSender_ApplyTimeout_PreservesShorterParentDeadline(t *testing.T) {
 }
 
 // TestAnaSender_ApplyTimeout_ConfiguredTimeoutTightensLongerParentDeadline
-// pins the M-1 fix: when the configured SenderOptions.Timeout is STRICTER
+// pins the fix: when the configured SenderOptions.Timeout is STRICTER
 // (shorter) than the caller's deadline, applyTimeout tightens to it, so an
 // operator-set sender.timeout is no longer silently shadowed by a looser
 // route policy.send_timeout. (The reverse — a configured timeout LOOSER than

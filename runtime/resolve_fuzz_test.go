@@ -5,7 +5,7 @@ package runtime
 //
 // FuzzValidateMQTTTopic was moved to
 // adapters/mqtt/transport/paho/topic_validator_test.go as part of
-// AP-005 — MQTT topic validation lives next to the paho factory now.
+// MQTT topic validation lives next to the paho factory now.
 // ═══════════════════════════════════════════════
 
 import (

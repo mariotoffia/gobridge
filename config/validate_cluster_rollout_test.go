@@ -92,7 +92,7 @@ func TestValidateClusterRollout_RejectsAnUnknownMode(t *testing.T) {
 
 // TestValidateClusterRollout_RejectsAnEmptyRoster is the rule that matters most.
 // The roster is the membership epoch the barrier freezes and counts
-// acknowledgements against (I2); an EMPTY epoch is vacuously covered by zero
+// acknowledgements against; an EMPTY epoch is vacuously covered by zero
 // acknowledgements, so the first coordinator observation would commit a config
 // no member ever validated — the barrier would silently not be a barrier.
 func TestValidateClusterRollout_RejectsAnEmptyRoster(t *testing.T) {

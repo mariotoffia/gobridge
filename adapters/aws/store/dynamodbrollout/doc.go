@@ -5,7 +5,7 @@
 // # Single row, optimistic concurrency
 //
 // A rollout store is a SINGLE-POINT coordinator — one active rollout at a time
-// (invariant I1) — so the whole aggregate lives in ONE item under a fixed
+// so the whole aggregate lives in ONE item under a fixed
 // partition key. Every mutation is a read-modify-write: the store reads the row
 // with a strongly ConsistentRead, rehydrates the domain aggregate
 // (persistence.RehydrateRollout), applies the requested transition, and writes
@@ -16,7 +16,7 @@
 // one, is the source of truth for every invariant.
 //
 // A fresh Propose on an empty store uses `attribute_not_exists(#pk)` so exactly
-// one racer opens generation 1 (I1's split-brain guard); the rest observe the
+// one racer opens generation 1 (the split-brain guard); the rest observe the
 // now-present row and get ErrAlreadyExists.
 //
 // # Single Region

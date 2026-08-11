@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestApp_ConfigApplierAppliesCommitInBand is the FIX 2 regression: the
+// TestApp_ConfigApplierAppliesCommitInBand is the regression: the
 // filebased bootstrap must wire httpapi's ConfigApplier hook so a config
 // committed through the admin transactions API converges the running runtime
 // in-band, instead of leaving the committed_not_applied / errConfigApplyFailed

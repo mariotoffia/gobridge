@@ -408,7 +408,7 @@ func TestEdge_LocatorErrorReturns502(t *testing.T) {
 // 9. TestEdge_SendWithNoClients
 // ---------------------------------------------------------------------------
 
-// Safe-by-default (HIGH-1): a broadcast with no connected subscribers is a
+// Safe-by-default: a broadcast with no connected subscribers is a
 // zero delivery, so Send returns a TRANSIENT (Unavailable-class) error and
 // the route runner does NOT ack the source. Accepting the loss requires the
 // explicit at_most_once_accept_loss opt-in (asserted separately below).

@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Full-session reload semantics (HIGH-10, accepted tradeoff).
+// Full-session reload semantics (accepted tradeoff).
 //
 // The Supervisor detects no-ops on the WHOLE config only. Any accepted delta —
 // however narrow — rebuilds the entire runtime: every session, receiver, sender,

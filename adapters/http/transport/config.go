@@ -181,7 +181,7 @@ func (c Config) Validate() error {
 	}
 	if key := c.APIKey.Reveal(); key != "" && len(key) < minAPIKeyLength {
 		// Name the 16-char minimum as the cause. A short inline key that
-		// an earlier build accepted now fails this floor (HTTP-N3); an
+		// an earlier build accepted now fails this floor (HTTP); an
 		// error that did not spell out the minimum left operators
 		// guessing why. Reporting the too-short length of an
 		// already-rejected, unusable key is a config-time aid, not a
@@ -196,7 +196,7 @@ func (c Config) Validate() error {
 	if c.FailOnZeroDelivery && c.AtMostOnceAcceptLoss {
 		// One demands a transient error on zero delivery, the other demands
 		// accepting the loss and acking. Refuse the ambiguous config at
-		// build time rather than silently picking one (HIGH-1).
+		// build time rather than silently picking one.
 		return fmt.Errorf("http: fail_on_zero_delivery and at_most_once_accept_loss are mutually exclusive")
 	}
 	return nil
@@ -271,7 +271,7 @@ func (c Config) effectiveDedupWindow() int {
 
 // validateMountPath rejects operator-supplied paths that would panic
 // http.ServeMux registration at bridge build time (a mux pattern like
-// "POST <path>" panics on malformed input — HTTP-M4). A valid mount
+// "POST <path>" panics on malformed input — HTTP). A valid mount
 // path starts with '/', carries no whitespace or control characters,
 // and no ServeMux pattern metacharacters ('{', '}' wildcards): the
 // configured path is a LITERAL mount point, never a pattern.

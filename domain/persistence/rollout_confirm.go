@@ -15,7 +15,7 @@ import (
 // Committed rollout (Rollout.IsTerminal) and the shared commit helper live there.
 
 // RolloutConverged records that a member reached convergence (its post-swap
-// MQTT-R1 readiness check passed) on the provisionally-committed generation. It
+// readiness check passed) on the provisionally-committed generation. It
 // is the confirm-window counterpart to RolloutAck: an Ack proves validated+built,
 // a RolloutConverged proves converged-against-the-real-broker.
 type RolloutConverged struct {
@@ -36,7 +36,7 @@ func (r Rollout) ConfirmDeadline() time.Time { return r.confirmDeadline }
 // Converged returns a copy of the recorded convergence records keyed by member id.
 func (r Rollout) Converged() map[string]RolloutConverged { return maps.Clone(r.converged) }
 
-// CanConfirm reports whether the confirm barrier (invariant I7) is satisfied: the
+// CanConfirm reports whether the confirm barrier is satisfied: the
 // rollout is provisionally committed (active confirm window) and every
 // membership-epoch member has recorded convergence.
 func (r Rollout) CanConfirm() bool {
@@ -57,7 +57,7 @@ func (r Rollout) CanConfirm() bool {
 // WithProvisionalCommit commits the rollout PROVISIONALLY under a confirm window:
 // the state becomes Committed but non-terminal, and confirmDeadline is stamped
 // (supplied by the store from its clock + the frozen window). Every other rule is
-// identical to WithCommit (barrier I2, fencing I3, idempotency). A caller passes
+// identical to WithCommit (barrier, fencing, idempotency). A caller passes
 // the zero time to get a final commit -- use WithCommit for that.
 func (r Rollout) WithProvisionalCommit(tok LeaseToken, confirmDeadline time.Time) (Rollout, *shared.BridgeError) {
 	return r.commit(tok, confirmDeadline)
@@ -65,7 +65,7 @@ func (r Rollout) WithProvisionalCommit(tok LeaseToken, confirmDeadline time.Time
 
 // WithConverged records member's post-swap convergence on a provisionally-
 // committed generation. Legal only while Committed with an active confirm window;
-// rejects a non-epoch member or a second convergence (invariant I6), a
+// rejects a non-epoch member or a second convergence, a
 // base-protocol (terminal) commit, or any pre-commit / decided state.
 func (r Rollout) WithConverged(memberID string, at time.Time) (Rollout, *shared.BridgeError) {
 	if r.IsTerminal() {
@@ -89,7 +89,7 @@ func (r Rollout) WithConverged(memberID string, at time.Time) (Rollout, *shared.
 }
 
 // WithConfirm confirms a provisionally-committed rollout under the coordinator's
-// fencing token. The fence (I3) runs first. Requires the confirm barrier (I7:
+// fencing token. The fence runs first. Requires the confirm barrier (
 // active window + every epoch member converged). An already-confirmed rollout
 // under a same-or-newer token is an idempotent no-op; confirming a
 // reverted/aborted rollout, or a base-protocol commit, is terminal-illegal.
@@ -122,7 +122,7 @@ func (r Rollout) WithConfirm(tok LeaseToken) (Rollout, *shared.BridgeError) {
 
 // WithRevert reverts a provisionally-committed rollout under the coordinator's
 // fencing token, recording reason (deadman outcome). Same fencing gate as
-// WithConfirm (I3). Legal only from a provisional (windowed) Committed state; an
+// WithConfirm. Legal only from a provisional (windowed) Committed state; an
 // already-reverted rollout under a same-or-newer token is idempotent; reverting a
 // confirmed/aborted rollout or a base-protocol commit is illegal.
 func (r Rollout) WithRevert(tok LeaseToken, reason string) (Rollout, *shared.BridgeError) {

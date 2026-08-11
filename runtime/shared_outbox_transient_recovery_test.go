@@ -20,7 +20,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════
-// Shared-Outbox Transient Egress-Failure Recovery (Scenario #3 unit, A4)
+// Shared-Outbox Transient Egress-Failure Recovery (Scenario #3 unit)
 //
 // The broker-crash case is exercised end-to-end in
 // tests/longrunning/gap_broker_crash_test.go with a real Mosquitto
@@ -35,7 +35,7 @@ import (
 //   2. The drainer claims the records and invokes the egress sender.
 //   3. The sender fails with a transient BridgeError (broker disconnect).
 //   4. NO record is completed; instead each is RELEASED back to pending
-//      via the OutboxReleaser fast path (A4), so the same live owner can
+//      via the OutboxReleaser fast path, so the same live owner can
 //      re-claim it on the next drain — no fencing-version bump and no
 //      wall-clock stale-claim wait.
 //   5. The sender recovers (returns nil); the next drain re-claims the
@@ -60,7 +60,7 @@ import (
 // instead of raced against real time.
 // ═══════════════════════════════════════════════════════════════════════
 
-// TestSharedOutbox_TransientSenderFailure_RecoversOnRetry validates A4:
+// TestSharedOutbox_TransientSenderFailure_RecoversOnRetry validates:
 // the egress sender fails transiently (simulating a broker disconnect),
 // the drainer releases each claimed record back to pending instead of
 // completing it, and after the sender recovers the very next drain
@@ -132,7 +132,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 		RouteID:      "transient-route",
 		PartitionKey: pk,
 		LeaseID:      sessionID,
-		// Default replay cap: the A4 release fast path plus the drainer's
+		// Default replay cap: the release fast path plus the drainer's
 		// transient backoff floor mean each record is re-claimed only once
 		// per recovery cycle (replay_count tops out at 2 here), so the
 		// default cap of DefaultMaxReplayAttempts is never approached.
@@ -175,7 +175,7 @@ func TestSharedOutbox_TransientSenderFailure_RecoversOnRetry(t *testing.T) {
 	require.Zero(t, dlqStore.Count(),
 		"transient failures must not route to DLQ")
 
-	// A4: each record was RELEASED back to pending (not left claimed), so
+	// each record was RELEASED back to pending (not left claimed), so
 	// the same owner re-claims it on the next drain — the whole point.
 	for _, rec := range outbox.Records() {
 		require.Equalf(t, persistence.OutboxPending, rec.Status(),
@@ -216,7 +216,7 @@ func envID(i int) string {
 	return "transient-msg-" + string(rune('a'+i))
 }
 
-// TestSharedOutbox_OrderingGroup_TransientFailure_NoOvertake is the A4
+// TestSharedOutbox_OrderingGroup_TransientFailure_NoOvertake is the
 // ordering-overtake regression (adversarial review finding 1). Records A and
 // B share one ordering key, so they form a single ordering group processed
 // in persisted order A→B. The egress sender fails A transiently on its first

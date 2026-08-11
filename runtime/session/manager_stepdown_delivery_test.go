@@ -67,7 +67,7 @@ func (s *fencedSink) doubleAckCount() int {
 
 // TestSessionManager_StepDownConcurrentWithInflightDelivery hardens the
 // three-phase step-down against an outbox delivery that is IN FLIGHT across a
-// failover (adversarial Probe 5 / C3-FU4). Prior coverage exercises the fakes
+// failover (adversarial Probe 5 /). Prior coverage exercises the fakes
 // and the single-use regression but never a delivery straddling the step-down.
 //
 // A delivery snapshots the owner's lease token — exactly as

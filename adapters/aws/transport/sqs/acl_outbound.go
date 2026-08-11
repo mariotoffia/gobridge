@@ -64,7 +64,7 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 		// Route through the auth grace so a transient static-key rotation /
 		// IAM-propagation window classifies temporary (retryable) instead of
 		// permanent (Finding: c8-auth-permanent). classify ALSO reports a
-		// permanent authorization failure to the reactive-recovery hook (HIGH-3)
+		// permanent authorization failure to the reactive-recovery hook
 		// so a hard key revocation forces an immediate re-resolve.
 		return s.classify(err)
 	}
@@ -111,7 +111,7 @@ func (s *Sender) sendBatchChunk(
 	if err != nil {
 		// A whole-batch auth failure gets the same bounded grace as a
 		// single send (Finding: c8-auth-permanent) and reports a permanent
-		// authorization failure to the reactive-recovery hook (HIGH-3).
+		// authorization failure to the reactive-recovery hook.
 		e := s.classify(err)
 		for j := range results {
 			results[j].Err = e
@@ -148,7 +148,7 @@ func (s *Sender) sendBatchChunk(
 		// SenderFault verdict, so a per-entry retryable target outage (KMS
 		// grant still propagating, KMS/request throttling, a transient
 		// InternalError) stays retryable instead of becoming a terminal reject
-		// that costs the source its retry (Chunk 13 HIGH-1). A Code outside
+		// that costs the source its retry (Chunk 13). A Code outside
 		// that set falls back to the SenderFault verdict: a request the caller
 		// malformed is rejected, anything else is treated as transient.
 		base, matched := classifyBatchEntryCode(derefStr(f.Code))
@@ -546,7 +546,7 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 // envelope payload, subject and id. md5 is sufficient — SQS only uses
 // the value as an opaque key for dedup, not for security.
 //
-// T08 review: Subject is now a logical event subject (no longer
+// review: Subject is now a logical event subject (no longer
 // implicitly populated from the queue name/URL on receive) and may be
 // empty. Mixing it into the hash is benign: when env.ID is set it is
 // the primary disambiguator, so distinct logical messages do not
@@ -554,7 +554,7 @@ func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
 // envelopes that share payload+id+subject deliberately collide so
 // SQS dedup treats them as duplicates. When env.ID is empty the
 // CreatedAt timestamp keeps each call unique. No semantic change is
-// required for T08.
+// required.
 func generateDeduplicationID(env *messaging.Envelope) string {
 	h := md5.New()
 	h.Write(env.Payload())

@@ -453,7 +453,7 @@ func TestReceiver_SessionRebuild_StaleBuildDoesNotClobberNewer(t *testing.T) {
 	require.Equal(t, int32(0), readStack(cs2).closeCalls.Load(), "the live conn2 stack is not closed")
 }
 
-// --- Regression: stale client pinned in session renewer (FIX 2) -------------
+// --- Regression: stale client pinned in session renewer -------------
 
 // The session renewer must resolve the live receiver seam via
 // currentClient() on EVERY tick: after a credential-rotation stack swap

@@ -16,7 +16,7 @@ import (
 // Header priority:
 //
 //	Correlation ID: X-Correlation-ID > X-Request-ID > generate
-//	Trace/Span:     traceparent (W3C) > X-Trace-ID / X-Span-ID > generate
+//	Trace/Span: traceparent (W3C) > X-Trace-ID / X-Span-ID > generate
 func (s *Server) correlationMW(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

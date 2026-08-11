@@ -500,7 +500,7 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Verifies that posting to a receiver before Run is called returns 503
-// IMMEDIATELY (HIGH-4): readiness is a non-blocking check, so the handler
+// IMMEDIATELY: readiness is a non-blocking check, so the handler
 // must return without any client-side cancellation. The request carries a
 // background context with NO timeout — without the fix ServeHTTP would
 // block on readiness until the (never-cancelled) context is done and the
@@ -524,7 +524,7 @@ func TestIntegration_HTTPPost_ReceiverNotReady(t *testing.T) {
 		close(done)
 	}()
 
-	// A block here is the HIGH-4 regression: readiness lag pinning the
+	// A block here is the regression: readiness lag pinning the
 	// handler goroutine until the client gives up.
 	wait.RequireClosed(t, done, 2*time.Second)
 

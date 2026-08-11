@@ -17,7 +17,7 @@ import (
 // cluster rollout barrier is built out of exactly that identity — bootstrap
 // member_id must appear verbatim in bridge.cluster.members, and the barrier
 // freezes that roster as its membership epoch — so a cohort of interchangeable
-// tasks can never satisfy it (HIGH-9).
+// tasks can never satisfy it.
 //
 // These tests pin the two halves of the deployment safety switch:
 //

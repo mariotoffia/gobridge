@@ -17,7 +17,7 @@ import (
 )
 
 // rejectingAddressValidator implements ports.AddressValidator for tests
-// that exercise the AP-005 per-binding validator dispatch path. Every
+// that exercise the per-binding validator dispatch path. Every
 // call returns an error so the runtime maps it to ErrInvalidTopic.
 type rejectingAddressValidator struct{}
 
@@ -160,7 +160,7 @@ func TestResolvePlans_NoResolver_AddressValidatorRejects(t *testing.T) {
 		Sender:   sender,
 		DLQ:      dlq.New(dlqStore),
 		Bindings: bindings,
-		// AP-005: validation is now a transport-supplied capability
+		// validation is now a transport-supplied capability
 		// dispatched per binding by the runtime. The test wires a
 		// rejecting validator to assert the fallback path enforces it.
 		AddressValidators: map[string]ports.AddressValidator{

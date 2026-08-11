@@ -148,7 +148,7 @@ Usage of %s:
 	}
 
 	// The reload pipeline reports DEFINITIVE apply outcomes back to the config
-	// manager (XCUT-A) so the manager's desired-vs-running divergence tracking
+	// manager so the manager's desired-vs-running divergence tracking
 	// (RunningVersion / ReconfigurePending) actually clears after a swap. The
 	// manager correlates by the EXACT config pointer it emitted, which the
 	// pipeline forwards unchanged as SwapEvent.NewConfig.
@@ -225,7 +225,7 @@ Usage of %s:
 	//   // so runtime.Stop only Flushes them — it never Closes them. This
 	//   // composition root owns their Close and must call it exactly once at
 	//   // process shutdown, or the exporter's flush goroutine leaks and buffered
-	//   // spans are dropped (CRITICAL 2):
+	//   // spans are dropped:
 	//   defer me.Close(context.Background())
 	//   defer tr.Close(context.Background())
 	//   sup := bridge.NewSupervisor(
@@ -304,7 +304,7 @@ Usage of %s:
 	// runtime for the exact boot config pointer (mgr.Load's desiredConfig). Tell
 	// the manager so RunningVersion advances off its pre-apply sentinel and
 	// ReconfigurePending clears — otherwise the first divergence report would
-	// show the boot config as never-applied until a later reload (XCUT-A). This
+	// show the boot config as never-applied until a later reload. This
 	// is the definitive success ack for the boot config; later reloads are acked
 	// through pipeline.onSwap.
 	mgr.NotifyApplyResult(cfg, nil)
@@ -333,8 +333,7 @@ Usage of %s:
 			},
 			// Route admin start/stop through the supervisor so POST /bridge/stop
 			// is a clean deliberate pause (not process-suicide) and POST
-			// /bridge/start rebuilds a fresh single-use runtime afterwards
-			// (CRITICAL 1).
+			// /bridge/start rebuilds a fresh single-use runtime afterwards.
 			BridgeController: sup,
 			// Apply a committed config in-band by feeding it to the Supervisor's
 			// reload path (bypassing the debounce window) and blocking until the
@@ -402,7 +401,7 @@ Usage of %s:
 	case err := <-supDone:
 		// The supervisor self-exited: its single result is now consumed, so the
 		// bounded shutdown wait below must not read supDone a second time — that
-		// read would block until the full ShutdownTimeout elapsed (C3-FU5).
+		// read would block until the full ShutdownTimeout elapsed.
 		supExited = true
 		if err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("supervisor exited unexpectedly", "error", err)
@@ -510,7 +509,7 @@ const terminalPollInterval = 5 * time.Second
 // be a transient read during a healthy reconfiguration swap window; requiring N
 // consecutive confirmations means a swap-window blip never kills a healthy
 // process, while a genuine terminal/wedged state (which persists) still trips
-// after N×terminalPollInterval (CRITICAL 3).
+// after N×terminalPollInterval.
 const terminalConfirmSamples = 3
 
 // awaitSupervisorShutdown blocks — bounded by the shutdown deadline (done) —
@@ -519,7 +518,7 @@ const terminalConfirmSamples = 3
 // and its single result was consumed by the primary select in run(); there is
 // nothing left to wait for, so it returns immediately rather than reading the
 // now-drained supDone a second time. A second read would never complete and the
-// call would block until the full ShutdownTimeout elapsed (C3-FU5).
+// call would block until the full ShutdownTimeout elapsed.
 func awaitSupervisorShutdown(alreadyExited bool, supDone <-chan error, done <-chan struct{}, logger *slog.Logger) {
 	if alreadyExited {
 		return

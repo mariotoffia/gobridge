@@ -31,7 +31,7 @@ func newCoordFixture(t *testing.T, memberID string, members ...string) *coordFix
 	t.Helper()
 	// The store stamps rollout deadlines from ITS clock and the coordinator
 	// compares against ITS clock, so both must be the same fake — otherwise a
-	// deadline lands decades away from "now" and F1 is untestable.
+	// deadline lands decades away from "now" and is untestable.
 	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
 	store := memoryrollout.NewStore(memoryrollout.WithClock(clk))
 	lease := newElectionLeaseStore()
@@ -110,7 +110,7 @@ func TestRolloutCoordinatorTick_LockDelayDefersTheFirstDecision(t *testing.T) {
 }
 
 // TestRolloutCoordinatorTick_CommitsWhenTheEpochIsAcked proves the barrier's
-// central invariant end to end through the loop (I2): the coordinator commits
+// central invariant end to end through the loop: the coordinator commits
 // exactly when acks cover the frozen epoch, and not before.
 func TestRolloutCoordinatorTick_CommitsWhenTheEpochIsAcked(t *testing.T) {
 	f := newCoordFixture(t, "node-a", "node-a", "node-b")
@@ -132,7 +132,7 @@ func TestRolloutCoordinatorTick_CommitsWhenTheEpochIsAcked(t *testing.T) {
 	assert.Equal(t, persistence.RolloutCommitted, got.State())
 }
 
-// TestRolloutCoordinatorTick_AbortsOnNack proves F2 through the loop: a single
+// TestRolloutCoordinatorTick_AbortsOnNack proves through the loop: a single
 // Nack aborts the rollout immediately rather than waiting out the deadline, so
 // an operator learns a member rejected the change in seconds, not minutes.
 func TestRolloutCoordinatorTick_AbortsOnNack(t *testing.T) {
@@ -150,9 +150,9 @@ func TestRolloutCoordinatorTick_AbortsOnNack(t *testing.T) {
 	assert.Contains(t, got.Reason(), "cannot build", "the abort reason must carry the member's nack")
 }
 
-// TestRolloutCoordinatorTick_AbortsOnDeadline proves F1 through the loop: a
+// TestRolloutCoordinatorTick_AbortsOnDeadline proves through the loop: a
 // rollout whose members never all ack is aborted at its deadline, so a crashed
-// member cannot block the cohort's config indefinitely (invariant I1 permits
+// member cannot block the cohort's config indefinitely (invariant permits
 // only one active rollout, so a wedged one would block every future change).
 func TestRolloutCoordinatorTick_AbortsOnDeadline(t *testing.T) {
 	f := newCoordFixture(t, "node-a", "node-a", "node-b")
@@ -178,7 +178,7 @@ func TestRolloutCoordinatorTick_AbortsOnDeadline(t *testing.T) {
 	assert.Contains(t, got.Reason(), "deadline")
 }
 
-// TestRolloutCoordinatorTick_StepsDownWhenDeposed proves F5 through the loop. A
+// TestRolloutCoordinatorTick_StepsDownWhenDeposed proves through the loop. A
 // coordinator whose lease was taken over must stop acting: its renewal is
 // rejected under the stale token, it drops the token, and it takes no further
 // side effect. Continuing would mean two coordinators deciding one rollout.
@@ -202,7 +202,7 @@ func TestRolloutCoordinatorTick_StepsDownWhenDeposed(t *testing.T) {
 }
 
 // TestRolloutCoordinatorTick_RenewsBeforeDeciding pins the mitigation that makes
-// the F5b residual acceptable (see coordinatorStep's F5b note). The store fence
+// the residual acceptable (see coordinatorStep's note). The store fence
 // cannot reject a deposed coordinator's FIRST decision, so the loop must not
 // give it the chance: every tick renews the lease BEFORE observing, and a
 // rejected renewal steps down without any decision write.
@@ -228,7 +228,7 @@ func TestRolloutCoordinatorTick_RenewsBeforeDeciding(t *testing.T) {
 }
 
 // TestRolloutCoordinatorTick_ReElectsAfterStepDown proves the successor path
-// (F3): once the lease is free again the same member can win it back and resume
+// once the lease is free again the same member can win it back and resume
 // from durable store state — recovery is resumption, not repair.
 func TestRolloutCoordinatorTick_ReElectsAfterStepDown(t *testing.T) {
 	f := newCoordFixture(t, "node-a", "node-a")
@@ -255,7 +255,7 @@ func TestRolloutCoordinatorTick_ReElectsAfterStepDown(t *testing.T) {
 
 // TestRolloutCoordinator_ResignReleasesTheLease proves an orderly shutdown hands
 // the coordinator role over immediately instead of making the cohort wait out
-// the full lease TTL. F3 (crash) is what the TTL is for; a clean stop should not
+// the full lease TTL. A crash is what the TTL is for; a clean stop should not
 // pay it.
 func TestRolloutCoordinator_ResignReleasesTheLease(t *testing.T) {
 	f := newCoordFixture(t, "node-a", "node-a")
@@ -277,7 +277,7 @@ func TestRolloutCoordinator_ResignIsSafeWithoutALease(t *testing.T) {
 	assert.Empty(t, f.lease.held())
 }
 
-// TestRolloutCoordinatorTick_MembershipChangeAborts proves F6 through the loop:
+// TestRolloutCoordinatorTick_MembershipChangeAborts proves through the loop:
 // a live roster that no longer matches the frozen epoch makes strict all-ack
 // unachievable, so the rollout aborts cheaply (nothing has swapped) rather than
 // committing under a roster the cohort no longer has.

@@ -29,7 +29,7 @@ const (
 	// It is the ingress counterpart to MetricMQTTNonStringHeaderDropped:
 	// without it a peer publishing a spec-legal-but-rejected header (e.g. an
 	// over-long value) loses it silently, and a route filtering on that
-	// header misroutes with nothing to debug from (M-2). Reserved and
+	// header misroutes with nothing to debug from. Reserved and
 	// adapter-controlled keys stripped on purpose are NOT counted here — only
 	// application/bridge user properties lost to the safety filter.
 	MetricMQTTIngressHeaderDropped = "MQTTIngressHeaderDropped"
@@ -67,7 +67,7 @@ const (
 	// cannot retain is a best-effort loss. Covered QoS 1/2 is NEVER counted
 	// here: it is RETAINED un-acked instead (MetricMQTTRouterCoveredRetained)
 	// so at-least-once holds — dropping a covered live-route QoS 1/2 would be
-	// acknowledged loss (HIGH-1). ANY non-zero value means a receiver handler
+	// acknowledged loss. ANY non-zero value means a receiver handler
 	// registered later than unmatched_grace (30s default) while a covered QoS 0
 	// backlog overflowed the buffer. Split out from
 	// MetricMQTTRouterUnmatchedDropped so this loss is not masked by benign
@@ -76,7 +76,7 @@ const (
 
 	// MetricMQTTRouterCoveredRetained counts publishes on a STILL-COVERED topic
 	// RETAINED un-acked past the startup grace window because their receiver
-	// handler had not registered yet (HIGH-1). Unlike MetricMQTTRouterCoveredDropped
+	// handler had not registered yet. Unlike MetricMQTTRouterCoveredDropped
 	// these are NOT lost: rather than ack-and-drop a still-desired live-route
 	// publish (which would convert startup slowness into acknowledged loss and
 	// break at-least-once), the router keeps it in the bounded pending buffer
@@ -102,13 +102,13 @@ const (
 	// MetricMQTTRouterDropped (QoS 0 best-effort overflow) and from the
 	// covered/orphan past-grace drops (MetricMQTTRouterCoveredDropped /
 	// MetricMQTTRouterUnmatchedDropped) so this protocol-violation loss is never
-	// masked (c4-qos12-overflow / F-2 / M-1).
+	// masked (c4-qos12-overflow /).
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
 	// MetricMQTTRouterStalePurged counts publishes DISCARDED because they
 	// belong to a PRIOR broker connection generation. Two branches feed it:
 	//
-	//   - Reconnect purge (A-1): pre-registration pending publishes buffered
+	//   - Reconnect purge: pre-registration pending publishes buffered
 	//     under a previous connection are purged on reconnect. Their protocol
 	//     acks died with the old connection (paho ErrPacketNotFound), and a
 	//     clean_start=false broker REDELIVERS every un-acked QoS 1/2 with
@@ -116,7 +116,7 @@ const (
 	//     copy pile up beside its ghost until the count cap (==
 	//     receive_maximum) ack-drops a LIVE message as a bogus
 	//     MetricMQTTRouterOverflowDropped, breaking at-least-once.
-	//   - Recycle-window discard (MQTT-L4): publishes still arriving on (or
+	//   - Recycle-window discard: publishes still arriving on (or
 	//     already queued from) the OLD socket while a recovery/managed-cleanup
 	//     recycle is disconnecting it are released without dispatch or ack.
 	//     Previously this branch was the router's only fully silent drop.
@@ -144,7 +144,7 @@ const (
 	// terminating the session on it would hand every publisher a permanent
 	// kill switch: the un-acked packet would be redelivered on each
 	// clean_start=false resume and re-latch the session terminal forever
-	// (MQTT-L1). Instead the packet is acked (freeing the broker's in-flight
+	// Instead the packet is acked (freeing the broker's in-flight
 	// slot and stopping redelivery) and dropped, and this counter is the
 	// deliberate-loss record. ANY non-zero value means a publisher is sending
 	// packets this bridge is configured to refuse — alert on it and find the
@@ -159,7 +159,7 @@ const (
 	// ErrPacketNotFound). The settlement still reports SUCCESS to the runtime
 	// — the broker redelivers the packet on the resumed session and downstream
 	// idempotency/dedup absorbs the duplicate (documented at-least-once
-	// residual, MQTT-L5) — but each count here is a GUARANTEED broker
+	// residual) — but each count here is a GUARANTEED broker
 	// redelivery: a burst after a reconnect storm is the leading indicator of
 	// a duplicate flood on routes without downstream dedup (direct_hold).
 	MetricMQTTAckAfterReconnect = "MQTTAckAfterReconnect"

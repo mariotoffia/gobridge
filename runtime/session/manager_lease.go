@@ -17,7 +17,7 @@ import (
 // renewal failures cross MaxRenewFails. runExclusive/runExclusiveDeferred match
 // it with errors.Is to distinguish a GENUINE lease loss (re-acquire — a real
 // transfer) from any OTHER renewLoop exit, chiefly a reconcile-on-reconnect
-// failure that must not masquerade as a lease transfer (C7-N2).
+// failure that must not masquerade as a lease transfer.
 var errLeaseLostAfterRenewal = errors.New("lease lost after renewal failures")
 
 // errSessionEventsClosed is returned when the session's Events channel closes
@@ -53,13 +53,13 @@ func (*activationLeaseLoss) Unwrap() error { return errLeaseLostAfterRenewal }
 // retrying the same dead session forever — the pre-fix behaviour that wedged the
 // cluster: each capped-backoff retry re-Acquired via the store's same-owner
 // fast path, bumped the lease version, and perpetually reset every standby's
-// observation window (finding C3-CRITICAL). Ordinary permanently-closed restart
+// observation window. Ordinary permanently-closed restart
 // paths release the lease before returning. Fail-closed managed migration is the
 // exception: accepted route work or a broker-pinned delivery may remain, so the
 // lease expires naturally while the orchestrator restarts the pod.
 var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
 
-// releaseAndReturn is the connect-failure recovery path (finding C3-CRITICAL /
+// releaseAndReturn is the connect-failure recovery path (finding /
 // M12): a term acquired the lease but could not make the session usable
 // (Start/ensureConnected/Reconcile failed while we hold the lease). It releases
 // the just-acquired lease best-effort — otherwise a restarted Run would block in
@@ -115,7 +115,7 @@ func escalatesToUnrecoverable(err error, escalatable bool) bool {
 // longer ours (another owner has taken over, or the row is gone). These are the
 // permanent fencing signals; the owner must step down IMMEDIATELY rather than
 // burn MaxRenewFails renew intervals waiting — during which it would keep
-// consuming alongside the new owner (finding H2). Transient store errors
+// consuming alongside the new owner. Transient store errors
 // (timeouts, throttling, unavailability) are NOT definitive and still go
 // through the consecutive-failure counter.
 func isDefinitiveLeaseLoss(err error) bool {
@@ -127,7 +127,7 @@ func isDefinitiveLeaseLoss(err error) bool {
 
 // withCallTimeout derives a per-call context bounding a single lease-store
 // Acquire/Renew so a hung backend (e.g. a stalled DynamoDB request) cannot
-// stretch step-down and takeover unboundedly (finding H3). The timeout is
+// stretch step-down and takeover unboundedly. The timeout is
 // real-clock (context deadlines are not driven by the injected Clock); this is
 // deliberate, as it bounds a genuinely-blocking I/O call.
 func (m *Manager) withCallTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -155,8 +155,7 @@ func (m *Manager) releaseTimeout() time.Duration {
 // cancellation so the release completes even during shutdown, and emits the
 // matching audit/observability signals. Used by stepDown and by the
 // reconcile-failure/events-closed recovery path so a restarted Run re-acquires
-// immediately instead of blocking in Acquire until LeaseTTL self-expiry
-// (finding M12).
+// immediately instead of blocking in Acquire until LeaseTTL self-expiry.
 func (m *Manager) releaseOwnedLeaseBestEffort(ctx context.Context, token persistence.LeaseToken, reason string) {
 	if m.leaseStore == nil {
 		return
@@ -392,7 +391,7 @@ func (m *Manager) runExclusiveDeferred(ctx context.Context) error {
 		}
 		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
 		// reconnect failure is surfaced for isolated restart instead of being
-		// relabelled as a lease transfer (C7-N2).
+		// relabelled as a lease transfer.
 		if propErr := m.afterRenewLoopExit(ctx, token, err); propErr != nil {
 			return propErr
 		}
@@ -459,7 +458,7 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 		}
 		// A genuine lease loss re-acquires (real transfer); a reconcile-on-
 		// reconnect failure is surfaced for isolated restart instead of being
-		// relabelled as a lease transfer (C7-N2).
+		// relabelled as a lease transfer.
 		if propErr := m.afterRenewLoopExit(ctx, token, err); propErr != nil {
 			return propErr
 		}
@@ -468,7 +467,7 @@ func (m *Manager) runExclusive(ctx context.Context) error {
 
 func (m *Manager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseToken, error) {
 	leaseTag := shared.Tag{Key: shared.TagKeyLeaseID, Value: m.sessionID}
-	// Rate-limited escalation for a lease-store OUTAGE (finding L9). Normal
+	// Rate-limited escalation for a lease-store OUTAGE. Normal
 	// standby contention (another live owner) is expected and stays quiet; only
 	// genuine store failures escalate Warn -> Error so an outage is not silent.
 	const (
@@ -526,7 +525,7 @@ func (m *Manager) acquireLeaseWithRetry(ctx context.Context) (persistence.LeaseT
 		}
 
 		// Standbys poll on a DEDICATED, faster cadence than owners renew, so a
-		// takeover is not delayed by up to a full renew interval (finding M6).
+		// takeover is not delayed by up to a full renew interval.
 		select {
 		case <-ctx.Done():
 			return persistence.LeaseToken{}, ctx.Err()
@@ -548,7 +547,7 @@ func isExpectedAcquireContention(err error) bool {
 // but stalls SUBACK would otherwise block the renew select loop indefinitely,
 // so the renew timer.C() case is never selected and the lease silently expires
 // while the broker-resumed subscription keeps delivering to this now-non-owner
-// alongside the new owner — two live consumers for unbounded time (finding F1).
+// alongside the new owner — two live consumers for unbounded time.
 //
 // Bounding the call at min(RenewCallTimeout, LeaseTTL/4) caps how long the loop
 // can be blocked so the renew timer still fires before expiry; a hung Reconcile
@@ -587,7 +586,7 @@ func (m *Manager) eventReconcileContext(ctx context.Context) (context.Context, c
 }
 
 // leaseStillHeld does one authoritative Current read to decide whether a run of
-// TRANSIENT renew failures actually cost us the lease (finding F7). It returns
+// TRANSIENT renew failures actually cost us the lease. It returns
 // true ONLY when the store is reachable AND still names us as the unexpired
 // owner. A Current error (store unreachable) or an other-owner / expired /
 // absent row returns false: ownership is then lost or unverifiable, and the
@@ -643,11 +642,10 @@ func (m *Manager) renewLoop(
 			if !ok {
 				// Unexpected Events-channel close (ctx is still live): surface
 				// it as a session failure so the one session is restarted,
-				// instead of the old silent clean stop / false lease.lost
-				// (finding L14).
+				// instead of the old silent clean stop / false lease.lost.
 				return fmt.Errorf("runtime: session-manager: %w", errSessionEventsClosed)
 			}
-			// F1: bound the reconnect-driven Reconcile so a stalled SUBACK
+			// bound the reconnect-driven Reconcile so a stalled SUBACK
 			// cannot block this select and starve lease renewal. On timeout the
 			// wrapped ctx error propagates and the session is cleanly restarted.
 			// cancel() is called explicitly (not deferred) so the per-event
@@ -665,7 +663,7 @@ func (m *Manager) renewLoop(
 			// ROOT-CAUSE fail-closed gate (split-brain renew-fail/read-succeed):
 			// once our own lease deadline (last successful acquire/renew + TTL)
 			// has passed, step down UNCONDITIONALLY — before any renew attempt or
-			// authoritative Current read. The F7 Current-read mitigation below
+			// authoritative Current read. The Current-read mitigation below
 			// only applies BEFORE expiry; a write-failing/read-succeeding
 			// partition keeps Current naming us past our real expiry, so relying
 			// on it after the deadline is exactly what let an expired owner keep
@@ -721,7 +719,7 @@ func (m *Manager) renewLoop(
 				// The lease is provably no longer ours (a new owner took over or
 				// the row is gone). Step down NOW rather than waiting out
 				// MaxRenewFails renew intervals while consuming alongside the new
-				// owner (finding H2).
+				// owner.
 				m.log(ctx, slog.LevelWarn, "lease definitively lost, stepping down immediately",
 					"error", err)
 				m.metrics.Counter(shared.MetricLeaseExpiries, 1, leaseTag)
@@ -735,7 +733,7 @@ func (m *Manager) renewLoop(
 				m.log(ctx, slog.LevelWarn, "lease renewal failed (transient)",
 					"failures", consecutiveFailures, "error", err)
 				if consecutiveFailures >= m.maxRenewFails {
-					// F7: before surrendering the lease on a run of TRANSIENT
+					// before surrendering the lease on a run of TRANSIENT
 					// failures, do ONE authoritative Current read. A transient
 					// store blip that never actually cost us the lease would
 					// otherwise force a step-down — and for a single-use MQTT
@@ -866,24 +864,24 @@ func (m *Manager) finishStepDown(ctx context.Context, token persistence.LeaseTok
 //     MetricLeaseTransfers-bearing re-acquire — MetricReconcileFailures was
 //     already emitted at the failure site) and return the error so the caller
 //     surfaces it to superviseSession for isolated restart, keeping
-//     lease-transfer observability uncontaminated (C7-N2). hasLease is cleared
+//     lease-transfer observability uncontaminated. hasLease is cleared
 //     so a drainer does not act on a lease this failing session is no longer
 //     renewing during the restart window.
 //
-// Release-then-reacquire recovery (finding M12): on a session failure the
+// Release-then-reacquire recovery: on a session failure the
 // still-held lease is RELEASED best-effort here before the restart, so the
 // restarted Run re-acquires immediately instead of blocking in Acquire against
 // our own unexpired lease until LeaseTTL self-expiry. Fencing + durable outbox
 // retry preserve correctness across the release/re-acquire, and the source
 // session is closed (bounded) on the failure path BEFORE the release so a standby
-// never overlaps a still-subscribed old owner (CRITICAL-1). The release is
+// never overlaps a still-subscribed old owner. The release is
 // detached from ctx so it completes even if the caller is shutting down.
 //
-// B1 — wedged-Close guard: the M12 release is CONDITIONAL on the bounded source
+// wedged-Close guard: the release is CONDITIONAL on the bounded source
 // Close actually completing. If Close ignored ctx and only the ceiling unblocked
 // it (completed == false), the source is STILL subscribed; releasing the lease
 // would let a standby acquire and overlap a still-consuming old owner — the exact
-// split-brain CRITICAL-1 exists to close. A session whose Close ignores ctx is
+// split-brain exists to close. A session whose Close ignores ctx is
 // unrecoverable in-process, so we do NOT release (the lease stays held and
 // expires only by natural TTL, keeping single-owner) and instead escalate to a
 // terminal ErrSessionUnrecoverable. superviseSession flips the runtime terminal;
@@ -904,7 +902,7 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 		m.mu.Lock()
 		m.hasLease = false
 		m.mu.Unlock()
-		// CRITICAL-1: STOP consuming before the lease becomes releasable by a
+		// STOP consuming before the lease becomes releasable by a
 		// standby. This branch is reached on a session failure (reconcile-on-
 		// reconnect failure or an unexpected Events-channel close) while the
 		// session is still connected/subscribed. Releasing the lease WITHOUT
@@ -914,7 +912,7 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 		// (bounded, so a wedged Close cannot hang the manager or stall a standby)
 		// BEFORE releasing the lease.
 		if !m.closeSourceBounded(ctx, "session failure") {
-			// B1: Close ignored ctx and did not complete within the bounded
+			// Close ignored ctx and did not complete within the bounded
 			// ceiling — the source is STILL subscribed. Do NOT release the lease
 			// (that would re-open the split-brain); escalate to terminal so the
 			// pod restart forcibly tears down the wedged transport. The lease

@@ -10,7 +10,7 @@ image directly. That image already ships everything the seeder needs:
 ## Pin format
 
 [`image.txt`](image.txt) is intentionally a **single-line, parseable manifest**
-(not YAML/JSON) so the Go CDK construct (T10) can read it with a trivial
+(not YAML/JSON) so the Go CDK construct can read it with a trivial
 `os.ReadFile` + `strings.TrimSpace`. The line shape is:
 
 ```

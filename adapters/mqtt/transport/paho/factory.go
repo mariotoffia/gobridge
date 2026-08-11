@@ -48,7 +48,7 @@ func (f *Factory) Capabilities() []ports.Capability {
 		ports.CapSharedConsumer,
 		// MQTT receivers subscribe ONLY when the session manager reconciles the
 		// SessionPlan, so a receiver on an unmanaged session is silently inert;
-		// the builder enforces a manager for these (ADV-P4-FU1).
+		// the builder enforces a manager for these.
 		ports.CapPlanDrivenSubscriptions,
 	}
 }
@@ -106,9 +106,9 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 		// Deployment or ECS task every rollout mints a NEW pod/task name → new
 		// client_id → new broker session, ORPHANING the old session's queued
 		// messages until session_expiry_interval silently expires them — loss by
-		// timeout, invisible to the bridge (MQTT-F3 / IDENTITY-1).
+		// timeout, invisible to the bridge.
 		//
-		// IDENTITY-1: a startup warning is not an admission boundary, so this
+		// A startup warning is not an admission boundary, so this
 		// combination is now REJECTED at build time unless the operator explicitly
 		// asserts a stable-host profile via assert_stable_client_identity. The
 		// assertion is the operator vouching for StatefulSet/VM identity; it does
@@ -215,7 +215,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if opts.ThrottleRetryAfter == 0 {
 		opts.ThrottleRetryAfter = DefaultSenderOptions().ThrottleRetryAfter
 	}
-	// Validate a configured default_topic as an MQTT PUBLISH topic (A-6). It is
+	// Validate a configured default_topic as an MQTT PUBLISH topic. It is
 	// used verbatim as the publish topic when an outbound message carries no
 	// Address (sender.go), bypassing the runtime AddressValidator that guards
 	// resolved addresses. A wildcard, $-reserved, or otherwise malformed

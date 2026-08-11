@@ -23,7 +23,7 @@ const headerMQTTResponseTopic = "mqtt.response-topic"
 // mqtt.message-id / correlation data). It never crosses the wire: it is added
 // only to the in-memory callback copy before fan-out, and EnvelopeFromPublish
 // consumes it into messaging.HeaderGeneratedID rather than emitting it as an
-// application header (MQTT-CORE-1).
+// application header.
 const headerMQTTGeneratedID = "mqtt.generated-id"
 
 // HeaderMessageID is the user-property key used to round-trip the
@@ -72,8 +72,8 @@ const maxHeaderValueLen = 256
 // UTF-8 with no control characters. MQTT v5 user properties, ContentType,
 // ResponseTopic and CorrelationData are UTF-8 strings by spec, so this
 // admits legal non-ASCII values (e.g. "Malmö") that the previous
-// printable-ASCII-only filter dropped silently (M-2). Control characters
-// (including NUL, newline, and C1 controls) are still rejected to prevent
+// printable-ASCII-only filter dropped silently. Control characters
+// (including NUL, newline, and controls) are still rejected to prevent
 // log/header injection; invalid UTF-8 (arbitrary binary, e.g. non-text
 // CorrelationData) is rejected because it cannot round-trip as a header.
 func isSafeHeaderValue(s string) bool {
@@ -110,7 +110,7 @@ func isSafeHeaderValue(s string) bool {
 // An optional MetricsExporter (variadic, mirroring PublishFromEnvelope)
 // counts application/bridge user properties dropped by the safety filter
 // (unsafe key/value or over-length) on MetricMQTTIngressHeaderDropped, so
-// the otherwise-silent ingress drop is observable (M-2). Reserved and
+// the otherwise-silent ingress drop is observable. Reserved and
 // adapter-controlled keys stripped by policy are NOT counted. When no
 // exporter is supplied the drop is still applied, just uncounted
 // (test/legacy call sites).
@@ -134,12 +134,12 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	// headerMQTTGeneratedID marker publishWithIdentity stamps before fan-out, or
 	// by the direct-caller fallback below. It flows to the runtime as
 	// messaging.HeaderGeneratedID so the replay cap can terminate an uncountable
-	// redelivery loop (MQTT-CORE-1).
+	// redelivery loop.
 	generatedIdentity := false
 	// droppedHeaders counts every inbound header that fails the length/safety
 	// filter — both MQTT v5 properties (correlation data, content type, response
 	// topic) and arbitrary user properties. It feeds MetricMQTTIngressHeaderDropped
-	// so a correlation-id loss is observable rather than silent (A-14).
+	// so a correlation-id loss is observable rather than silent.
 	droppedHeaders := 0
 
 	if pub.Properties != nil {
@@ -227,7 +227,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	}
 
 	// Record an adapter-minted identity so the runtime replay cap can terminate a
-	// count-less redelivery loop (MQTT-CORE-1). StampHeaders is the trusted setter,
+	// count-less redelivery loop. StampHeaders is the trusted setter,
 	// so this reserved internal-only key is preserved; it is stripped again at
 	// egress by PublishFromEnvelope's IsInternalOnlyHeader filter.
 	if generatedIdentity {
@@ -284,11 +284,11 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 // The returned *pahov5.Publish is the SDK boundary output this ACL helper
 // exists to produce; it is consumed by the pahoConn ACL seam
 // (acl_client.go PublishEnvelope), which is the single production egress
-// path since the Sender was routed through the seam (F-2).
+// path since the Sender was routed through the seam.
 //
 // An optional MetricsExporter (variadic, mirroring NewSession) is used to
 // count bridge-to-bridge / application headers dropped because their value
-// is not a string (MQTT-N1): such a value cannot become an MQTT user
+// is not a string: such a value cannot become an MQTT user
 // property, so the drop is recorded via MetricMQTTNonStringHeaderDropped
 // instead of vanishing silently. When no exporter is supplied the drop is
 // still applied, just uncounted (test/legacy call sites).
@@ -371,7 +371,7 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 			if !ok {
 				// A bridge-to-bridge / application header with a non-string
 				// value cannot be serialised as an MQTT user property.
-				// Count the drop (finding MQTT-N1) so a lost idempotency-key
+				// Count the drop so a lost idempotency-key
 				// or tenant-id is observable rather than silent.
 				droppedNonString++
 				continue
@@ -432,7 +432,7 @@ func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
 	properties.User = append(properties.User,
 		pahov5.UserProperty{Key: HeaderMessageID, Value: newIngressEnvelopeID()},
 		// Marker so EnvelopeFromPublish records the identity as adapter-minted
-		// (MQTT-CORE-1). Consumed there; never emitted as a header or sent to a peer.
+		// Consumed there; never emitted as a header or sent to a peer.
 		pahov5.UserProperty{Key: headerMQTTGeneratedID, Value: "1"},
 	)
 	owned.Properties = &properties

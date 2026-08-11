@@ -47,7 +47,7 @@ func withFS(
 	}
 }
 
-// TestGet_NilCredentialsEnvelopeReturnsError is the F3 regression test: an
+// TestGet_NilCredentialsEnvelopeReturnsError is the regression test: an
 // envelope with no credentials — {"version":1} (key absent) or
 // {"credentials":null} — must return an error, never (nil, nil), so the
 // transport does not connect anonymously and the poller does not skip it.
@@ -82,7 +82,7 @@ func TestGet_NilCredentialsEnvelopeReturnsError(t *testing.T) {
 	}
 }
 
-// TestNew_ReadOnlyMount_DirExists_NoCrash is an F6 regression test: when the
+// TestNew_ReadOnlyMount_DirExists_NoCrash is an regression test: when the
 // base directory cannot be created because the mount is read-only but the
 // directory already exists (an operator-provisioned K8s Secret volume), New
 // must succeed rather than crash-loop the pod.
@@ -99,7 +99,7 @@ func TestNew_ReadOnlyMount_DirExists_NoCrash(t *testing.T) {
 	require.NotNil(t, repo)
 }
 
-// TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues is an F6 regression test:
+// TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues is an regression test:
 // a loose-permission directory whose chmod fails with EROFS/EPERM (operator-
 // controlled mount) must be tolerated with a WARN, not a hard error.
 func TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues(t *testing.T) {
@@ -122,7 +122,7 @@ func TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues(t *testing.T) {
 	require.Contains(t, logs.String(), "cannot tighten base directory permissions")
 }
 
-// TestNew_LooseDir_ChmodUnexpectedError_HardFails verifies the F6 relaxation is
+// TestNew_LooseDir_ChmodUnexpectedError_HardFails verifies the relaxation is
 // scoped: a chmod failure that is NOT a read-only/permission condition is still
 // a hard error (a real, unexpected problem must surface).
 func TestNew_LooseDir_ChmodUnexpectedError_HardFails(t *testing.T) {

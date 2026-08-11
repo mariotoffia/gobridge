@@ -28,7 +28,7 @@ func TestInjectCredentials(t *testing.T) {
 		{
 			// Explicit (or rotated) credentials WIN over URL userinfo,
 			// otherwise a credential rotation would silently keep
-			// redialling with the old embedded credentials (F8).
+			// redialling with the old embedded credentials.
 			name:   "explicit credentials override existing user-info",
 			broker: "amqp://alice:pw@localhost:5672/",
 			user:   "bob",

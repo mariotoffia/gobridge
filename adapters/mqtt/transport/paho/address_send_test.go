@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestSender_UsesOutboundAddressNotSubject pins the T05 contract:
+// TestSender_UsesOutboundAddressNotSubject pins the contract:
 // Sender.Send selects the publish topic from msg.Address (or
 // SenderOptions.DefaultTopic when Address is empty); it never reads
 // msg.Envelope.Subject() for topic selection. The logical subject is
@@ -102,7 +102,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 }
 
 // TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic verifies the
-// T05 acceptance criterion: an MQTT round-trip preserves the logical
+// acceptance criterion: an MQTT round-trip preserves the logical
 // Envelope.Subject (carried via HeaderGobridgeSubject) and records the
 // publish topic separately under HeaderMQTTTopic.
 func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {

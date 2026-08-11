@@ -41,7 +41,7 @@ type Sender struct {
 	metrics   ports.MetricsExporter
 	clk       clock.Clock
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live Send maps
 	// an SDK error to shared.ErrNotAuthorized (SAS/AAD revocation), forcing an
@@ -157,10 +157,9 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	if err = sendOne(sendCtx, used, env, s.cfg.DefaultSessionID, s.clock()); err != nil {
 		// A terminally CLOSED sender link never recovers on its own; tear
 		// it down so the NEXT Send rebuilds a fresh link (fenced against a
-		// concurrent credential rotation). See invalidateOnClosedLink /
-		// HIGH-1.
+		// concurrent credential rotation). See invalidateOnClosedLink.
 		s.invalidateOnClosedLink(ctx, used, err)
-		// HIGH-3 reactive-recovery chokepoint: sendOne already classified the
+		// reactive-recovery chokepoint: sendOne already classified the
 		// SDK error via MapError. When a SAS/AAD revocation makes it
 		// shared.ErrNotAuthorized, force an immediate re-resolve instead of
 		// failing every send on revoked material until the next poll.
@@ -198,7 +197,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 // Chunks continue independently after a chunk-level failure. See
 // ports.BatchSender for the contract.
 func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([]ports.BatchResult, error) {
-	// HIGH-3: SendBatch also participates in reactive recovery. sendChunk
+	// SendBatch also participates in reactive recovery. sendChunk
 	// aggregates a MapError-classified error per message into results[i].Err
 	// rather than returning one error, so the report is fired from a scan of
 	// the aggregated results below (see the ErrNotAuthorized scan after the
@@ -268,7 +267,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 
 	// If the shared batch link went terminally CLOSED, tear it down so the
 	// NEXT Send/SendBatch rebuilds a fresh one instead of reusing the dead
-	// link forever (fenced against a concurrent rotation). See HIGH-1.
+	// link forever (fenced against a concurrent rotation). See.
 	for i := range results {
 		if isClosedLinkError(results[i].Err) {
 			s.invalidateOnClosedLink(ctx, client, results[i].Err)
@@ -276,7 +275,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 		}
 	}
 
-	// HIGH-3: a batch-only sender has no single-Send/receive path to fire the
+	// a batch-only sender has no single-Send/receive path to fire the
 	// reactive-recovery report, so surface a revocation from the aggregated
 	// per-message results here. Report once — NotifyAuthFailure is per-URI
 	// rate-limited, so one call per batch is sufficient and cheapest. A SEPARATE
@@ -385,7 +384,7 @@ func (s *Sender) buildSender(ctx context.Context, conn ConnectionConfig) (asbSen
 // the NEXT Send rebuilds a fresh one (ensureAndSnapshotClient). A closed
 // AMQP sender never recovers on its own; without this every later send
 // reuses the dead link and fails until the process restarts or a
-// credential rotation happens to swap it (HIGH-1).
+// credential rotation happens to swap it.
 //
 // Only the SDK's TYPED CodeClosed condition triggers it
 // (isClosedLinkError): CodeConnectionLost self-heals inside the SDK on

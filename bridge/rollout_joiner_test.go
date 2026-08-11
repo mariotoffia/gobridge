@@ -85,7 +85,7 @@ func TestJoinerRule_AllowsTheCommittedConfig(t *testing.T) {
 // source BEFORE the barrier decides, so after an ABORT the source still holds
 // the rejected document while the cohort keeps running the previous one. A node
 // restarting then would boot alone on a config nobody else runs — the
-// mixed-version cohort G2 forbids, and a safety REGRESSION against today's
+// mixed-version cohort forbids, and a safety REGRESSION against today's
 // blanket refusal. It must fail closed instead.
 func TestJoinerRule_RefusesAnAbortedConfig(t *testing.T) {
 	store := memoryrollout.NewStore()

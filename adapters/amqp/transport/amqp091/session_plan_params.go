@@ -18,7 +18,7 @@ type subscriptionDecl struct {
 
 // subscriptionParams extracts the declaration topology from a
 // SubscriptionPlan. The values are read from the typed Config attached
-// to SubscriptionPlan.Config (post PHASE3 there is no legacy Options
+// to SubscriptionPlan.Config (post there is no legacy Options
 // carrier).
 func subscriptionParams(sub connectivity.SubscriptionPlan) subscriptionDecl {
 	d := subscriptionDecl{exchangeType: "direct"}

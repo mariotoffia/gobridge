@@ -97,7 +97,7 @@ The bridge cannot detect its orchestrator, so a startup warning is not an
 admission boundary. `Factory.NewSession` therefore **rejects**
 `session_mode: persistent` combined with `client_id_suffix: hostname` (returns
 `INVALID_CONFIG`) unless the operator explicitly asserts a stable-host profile
-with `assert_stable_client_identity: true` (IDENTITY-1). The assertion is the
+with `assert_stable_client_identity: true`. The assertion is the
 operator vouching for StatefulSet/VM identity — it does **not** make a
 Deployment/ECS service safe; an admitted session still warns it is unsafe there.
 On a Deployment/ECS service use one of the safe shapes instead:

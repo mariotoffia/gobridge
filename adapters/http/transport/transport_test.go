@@ -397,7 +397,7 @@ func TestReceiver_ClusterForward(t *testing.T) {
 // internal forward token — is trusted as already-forwarded and processed
 // locally instead of being re-forwarded (loop prevention). A bare
 // X-Bridge-Forwarded marker WITHOUT the token is covered by the
-// spoofing tests in prodready_security_test.go.
+// spoofing tests in security_test.go.
 func TestReceiver_ForwardedRequestNotReforwarded(t *testing.T) {
 	const forwardToken = "peer-forward-token-secret-1"
 	remotePeer := &persistence.PeerInfo{

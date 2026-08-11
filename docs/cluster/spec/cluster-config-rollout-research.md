@@ -28,7 +28,7 @@ should GoBridge reuse vs build?
 
 RFC 8342 (NMDA) formalizes the last gap: `intended` vs `operational`
 datastores — *accepted ≠ applied*; convergence is checked by diffing them,
-tolerating transient remnants. (GoBridge's MQTT-R1 convergence watch is
+tolerating transient remnants. (GoBridge's convergence watch is
 exactly this instrument.)
 
 ## 2. The transferable rules (cross-system synthesis)
@@ -126,7 +126,7 @@ Commit*; AWS Builders' Library leader election; DynamoDB docs):
 Recommendation: **A as the base protocol** (phase 1–5 of the protocol doc),
 **B as the opt-in confirm-window layer on top** (rule 8) — commit is followed
 by a per-node deadman window of T seconds; nodes report convergence
-(MQTT-R1/NMDA-style intended-vs-operational); the coordinator writes
+(NMDA-style intended-vs-operational); the coordinator writes
 `Confirmed` when all converge, else stays silent and every node reverts
 locally by re-applying generation N−1 **through the normal apply pipeline**
 (rule 9 — revert is not a special path). C is rejected for exclusive-identity
@@ -140,7 +140,7 @@ Reuse (unchanged): `ports.LeaseStore` (fenced coordinator election),
 config source (candidate payload, CAS versions), the admin config-transaction
 API (operator front door; its commit response already reports
 `rolled_back`-style outcomes), `bridge.Supervisor` prepare/commit (candidate
-build), MQTT-R1 convergence watch (the NMDA "operational" check), lease
+build), convergence watch (the NMDA "operational" check), lease
 step-down + fenced claims (self-fencing).
 
 Build (one small port + one state machine): `ClusterRolloutStore` and the

@@ -973,16 +973,16 @@ Catalog of all test functions in the gobridge repository.
 | TestBuilder_CompleteCreatesSessionsAndRoutes | validates Complete creates sessions and wires routes | unit | builder_prepare | pass |
 | TestBuilder_CompleteFailsOnSessionCreationError | validates Complete fails on session creation error | unit | builder_prepare | pass |
 | TestBuilder_CompleteNilPrepared | validates Complete returns error for nil PreparedBuild | unit | builder_prepare | pass |
-| TestF2_StopReleasesLeaseWithValidContext | validates Stop uses fresh context for lease release when stop context is expired | unit | runtime_resilience | pass |
-| TestF3_DrainOnShutdown | validates final drain sweep sends pending records during shutdown | unit | runtime_resilience | pass |
-| TestF3_DrainOnShutdown_NoLease | validates no final drain when lease is not held | unit | runtime_resilience | pass |
-| TestF4_DirectHoldSharedConsumerRejected | validates validator rejects direct_hold with shared consumer source | unit | runtime_resilience | pass |
-| TestF4_DirectHoldAllowUnfenced | validates AllowUnfenced bypasses shared consumer fencing check | unit | runtime_resilience | pass |
-| TestF5_DrainBatchSkipsTOCTOUCheck | validates drainBatch does not call leaseStore.Current() before Claim | unit | runtime_resilience | pass |
-| TestF6_StaleFencingTokenDoesNotKillRuntime | validates stale fencing token on one drainer does not kill runtime | unit | runtime_resilience | pass |
-| TestF6_CriticalErrorStillKillsRuntime | validates non-fencing errors still mark runtime unhealthy | unit | runtime_resilience | pass |
-| TestF7_ReacquiredLeaseRestartsDeadSession | validates session.Start re-called when health shows disconnected on re-acquisition | unit | runtime_resilience | pass |
-| TestF7_StepDownClosesSessionAndReacquireRestarts | validates step-down closes the source session (no split-brain) and re-acquire restarts it | unit | runtime_resilience | pass |
+| TestStopReleasesLeaseWithValidContext | validates Stop uses fresh context for lease release when stop context is expired | unit | runtime_resilience | pass |
+| TestDrainOnShutdown | validates final drain sweep sends pending records during shutdown | unit | runtime_resilience | pass |
+| TestDrainOnShutdown_NoLease | validates no final drain when lease is not held | unit | runtime_resilience | pass |
+| TestDirectHoldSharedConsumerRejected | validates validator rejects direct_hold with shared consumer source | unit | runtime_resilience | pass |
+| TestDirectHoldAllowUnfenced | validates AllowUnfenced bypasses shared consumer fencing check | unit | runtime_resilience | pass |
+| TestDrainBatchSkipsTOCTOUCheck | validates drainBatch does not call leaseStore.Current() before Claim | unit | runtime_resilience | pass |
+| TestStaleFencingTokenDoesNotKillRuntime | validates stale fencing token on one drainer does not kill runtime | unit | runtime_resilience | pass |
+| TestCriticalErrorStillKillsRuntime | validates non-fencing errors still mark runtime unhealthy | unit | runtime_resilience | pass |
+| TestReacquiredLeaseRestartsDeadSession | validates session.Start re-called when health shows disconnected on re-acquisition | unit | runtime_resilience | pass |
+| TestStepDownClosesSessionAndReacquireRestarts | validates step-down closes the source session (no split-brain) and re-acquire restarts it | unit | runtime_resilience | pass |
 | TestDrainBatch_ParallelSends | validates records in a drain batch are sent concurrently | unit | outbox_drainer_concurrent | pass |
 | TestDrainBatch_ConcurrencyLimit | validates MaxDrainConcurrency caps simultaneous goroutines | unit | outbox_drainer_concurrent | pass |
 | TestDrainBatch_ErrorIsolation | validates one record failure does not block others | unit | outbox_drainer_concurrent | pass |
@@ -999,65 +999,65 @@ Catalog of all test functions in the gobridge repository.
 | TestDepthCache_PreventsRepeatedQueries | validates cache prevents repeated QueryPending calls | unit | outbox_depth_cache | pass |
 | TestDepthCache_ExpiresAfterTTL | validates cache expires and triggers new query | unit | outbox_depth_cache | pass |
 | TestDepthCache_AtCapacityCachedImmediately | validates at-capacity status is cached | unit | outbox_depth_cache | pass |
-| TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly | validates drainBatch exits promptly on mid-batch context cancellation (T1 regression) | unit | outbox_drainer | pass |
-| TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly | validates Run exits promptly with pre-cancelled context (T1 regression) | unit | outbox_drainer | pass |
-| TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency | validates concurrent semaphore consistency on cancellation (T1 regression) | unit | outbox_drainer | pass |
-| TestPushEvent_ConcurrentClose_NoPanic | validates concurrent pushEvent and Close does not panic (T2 regression) | unit | session_pushevent | pass |
-| TestPushEvent_AfterClose_IsNoop | validates pushEvent after Close is a silent no-op (T2 regression) | unit | session_pushevent | pass |
-| TestPushEvent_BufferFull_DropsOldest | validates pushEvent drops oldest event when buffer is full (T2 regression) | unit | session_pushevent | pass |
-| TestDepthCache_EvictionClearsOnBurst | validates depth cache clears map when burst exceeds maxEntries (T9) | unit | medium_fixes | pass |
-| TestDepthCacheTTL_WiredFromPolicy | validates DepthCacheTTL from RoutePolicy reaches RouteRunner (T10) | unit | medium_fixes | pass |
-| TestDrainConfig_WiredFromSessionConfig | validates DrainMaxBatchSize/DrainMaxConcurrency wired from SessionConfig (T11) | unit | medium_fixes | pass |
-| TestQueryPendingError_FailsClosed | validates QueryPending error fails delivery instead of bypassing (T12) | unit | medium_fixes | pass |
-| TestQueryPendingSuccess_PersistsNormally | validates successful QueryPending allows normal outbox persist (T12) | unit | medium_fixes | pass |
-| TestAbsoluteMaxBatchSize_Clamps | validates absoluteMaxBatchSize clamps excessive MaxBatchSize (T13) | unit | medium_fixes | pass |
-| TestNormalMaxBatchSize_NotClamped | validates reasonable MaxBatchSize preserved without clamping (T13) | unit | medium_fixes | pass |
-| TestOutboxDrainer_EmitsRecordFailureMetric | validates MetricOutboxRecordFailures emitted on record failure (T14) | unit | medium_fixes | pass |
-| TestOutboxDrainer_SuccessEmitsCompletion | validates successful send emits completion, not failure metric (T14) | unit | medium_fixes | pass |
-| TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess | validates batch size halves on consecutive zero-success cycles (T16) | unit | medium_fixes | pass |
-| TestSessionManager_LogsLeaseReleaseError | validates lease release error logged in SessionManager.Close (T17) | unit | medium_fixes | pass |
-| TestFakeProcessor_AtomicCalled | validates FakeProcessor.CalledCount is atomic-safe under concurrency (T18) | unit | medium_fixes | pass |
-| TestBatchSizeClamped_PreventsAbsoluteMaxBypass | validates BatchSize clamped to prevent absoluteMaxBatchSize bypass (T13) | unit | medium_fixes | pass |
-| TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric | validates stale token does not emit RecordFailures metric (T14) | unit | medium_fixes | pass |
-| TestDefaultSessionConfig_IncludesDrainDefaults | validates DefaultSessionConfig includes drain field defaults (T11) | unit | medium_fixes | pass |
-| TestRouteRunner_SharedOutbox_DepthCacheExercised | validates SharedOutbox route exercises depth cache QueryPending path (T19) | unit | low_fixes | pass |
-| TestRouteRunner_DirectHold_NoQueryPending | validates DirectHold route never calls QueryPending (T19) | unit | low_fixes | pass |
-| TestDrainerNameGeneration | validates drainer name generation produces correct numeric suffixes for all indices (T20) | unit | low_fixes | pass |
-| TestOutboxDrainerConfig_DrainBatchSize_Default | validates DrainBatchSize=0 defaults to 100 (T21) | unit | low_fixes | pass |
-| TestOutboxDrainerConfig_DrainBatchSize_Custom | validates explicit DrainBatchSize is respected (T21) | unit | low_fixes | pass |
-| TestOutboxDrainer_FinalDrain_CompletesAfterCancel | validates finalDrain completes after Run context cancelled (T22) | unit | low_fixes | pass |
-| TestWithGlobalMaxInFlight_NegativeClampedToZero | validates negative globalMaxInFlight clamped to 0 (T24) | unit | low_fixes | pass |
-| TestWithGlobalMaxInFlight_Zero_DisablesThrottling | validates zero globalMaxInFlight disables throttling (T24) | unit | low_fixes | pass |
-| TestWithGlobalMaxInFlight_Positive_Accepted | validates positive globalMaxInFlight accepted (T24) | unit | low_fixes | pass |
-| TestRouter_Route_PayloadDeepCopy | validates Payload mutation in one handler does not affect another (T23) | unit | low_fixes | pass |
-| TestRouter_Route_NilPayload | validates nil Payload does not panic and handlers receive nil (T23) | unit | low_fixes | pass |
-| TestRouter_Route_EmptyPayload | validates empty Payload is deep-copied as non-nil zero-length slice (T23) | unit | low_fixes | pass |
-| TestRouter_Route_OriginalPayloadUnmutated | validates original Publish.Payload not affected by handler mutations (T23) | unit | low_fixes | pass |
-| TestRouter_Route_ConcurrentHandlers_IndependentPayloads | validates concurrent handlers receive independent payload copies (T23) | unit | low_fixes | pass |
-| TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped | validates negative DrainBatchSize clamped to default 100 (T21) | unit | low_fixes | pass |
-| TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize | validates DrainMaxBatchSize < DrainBatchSize is raised to match (T21) | unit | low_fixes | pass |
-| TestRouteRunner_SharedOutbox_NilOutboxStore_Retries | validates SharedOutbox with nil OutboxStore retries without panic (T19) | unit | low_fixes | pass |
-| TestRouter_Route_ConcurrentPropertiesRead | validates concurrent handlers reading shared Properties do not race (T23) | unit | low_fixes | pass |
-| TestDirectHold_RetryUnsupported_FallsToDLQ | validates direct_hold fallback to DLQ when del.Retry returns ErrNotSupported (S6) | unit | retry_fallback | pass |
-| TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError | validates error propagation when both retry and DLQ fail (S6) | unit | retry_fallback | pass |
-| TestHandleProcessorError_RetryUnsupported_FallsToDLQ | validates processor error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
-| TestSharedOutbox_RetryUnsupported_FallsToDLQ | validates shared_outbox persist error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
-| TestHandleExpired_RetryUnsupported_FallsToDLQ | validates expired message DLQ fallback on failed first write and unsupported retry (S6) | unit | retry_fallback | pass |
-| TestHandleResolveError_RetryUnsupported_FallsToDLQ | validates resolve error DLQ fallback when retry unsupported (S6) | unit | retry_fallback | pass |
-| TestDirectHold_RetrySupported_NoFallback | validates normal retry path with no DLQ fallback regression (S6) | unit | retry_fallback | pass |
-| TestSessionManager_ReconnectReconcileError_LogsAndPropagates | validates Reconcile error propagation from handleEvents on reconnect (S9) | unit | session_reconnect | pass |
-| TestSessionManager_ReconnectReconcileError_EmitsMetric | validates MetricReconcileFailures emitted on reconnect Reconcile failure (S9) | unit | session_reconnect | pass |
-| TestSessionManager_ReconnectReconcileOK_NoError | validates successful reconnect Reconcile does not emit failure metric (S9) | unit | session_reconnect | pass |
-| TestSessionManager_RenewLoop_ReconnectReconcileError_Exits | validates renewLoop exits when Reconcile fails on reconnect (S9) | unit | session_reconnect | pass |
-| TestRouteRunner_ProcessorPanic_DoesNotCrash | validates panicking processor does not crash process (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_ProcessorPanic_RetriesDelivery | validates delivery retried after processor panic with reason (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_SenderPanic_DoesNotCrash | validates panicking sender does not crash process (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_SenderPanic_RetriesDelivery | validates delivery retried after sender panic (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_DeliveryPanic_EmitsMetric | validates DeliveryPanics counter emitted with route_id tag (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_DeliveryPanic_SlotsReleased | validates semaphore slot released after panic so next msg proceeds (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected | validates concurrent deliveries unaffected by one panic (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic | validates retry error after panic does not crash (S13) | unit | s13_delivery_panic | pass |
-| TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash | validates nested panic in retry handler caught by inner recover (S13) | unit | s13_delivery_panic | pass |
+| TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly | validates drainBatch exits promptly on mid-batch context cancellation | unit | outbox_drainer | pass |
+| TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly | validates Run exits promptly with pre-cancelled context | unit | outbox_drainer | pass |
+| TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency | validates concurrent semaphore consistency on cancellation | unit | outbox_drainer | pass |
+| TestPushEvent_ConcurrentClose_NoPanic | validates concurrent pushEvent and Close does not panic | unit | session_pushevent | pass |
+| TestPushEvent_AfterClose_IsNoop | validates pushEvent after Close is a silent no-op | unit | session_pushevent | pass |
+| TestPushEvent_BufferFull_DropsOldest | validates pushEvent drops oldest event when buffer is full | unit | session_pushevent | pass |
+| TestDepthCache_EvictionClearsOnBurst | validates depth cache clears map when burst exceeds maxEntries | unit | medium_fixes | pass |
+| TestDepthCacheTTL_WiredFromPolicy | validates DepthCacheTTL from RoutePolicy reaches RouteRunner | unit | medium_fixes | pass |
+| TestDrainConfig_WiredFromSessionConfig | validates DrainMaxBatchSize/DrainMaxConcurrency wired from SessionConfig | unit | medium_fixes | pass |
+| TestQueryPendingError_FailsClosed | validates QueryPending error fails delivery instead of bypassing | unit | medium_fixes | pass |
+| TestQueryPendingSuccess_PersistsNormally | validates successful QueryPending allows normal outbox persist | unit | medium_fixes | pass |
+| TestAbsoluteMaxBatchSize_Clamps | validates absoluteMaxBatchSize clamps excessive MaxBatchSize | unit | medium_fixes | pass |
+| TestNormalMaxBatchSize_NotClamped | validates reasonable MaxBatchSize preserved without clamping | unit | medium_fixes | pass |
+| TestOutboxDrainer_EmitsRecordFailureMetric | validates MetricOutboxRecordFailures emitted on record failure | unit | medium_fixes | pass |
+| TestOutboxDrainer_SuccessEmitsCompletion | validates successful send emits completion, not failure metric | unit | medium_fixes | pass |
+| TestAdaptBatchSize_HalvesOnConsecutiveZeroSuccess | validates batch size halves on consecutive zero-success cycles | unit | medium_fixes | pass |
+| TestSessionManager_LogsLeaseReleaseError | validates lease release error logged in SessionManager.Close | unit | medium_fixes | pass |
+| TestFakeProcessor_AtomicCalled | validates FakeProcessor.CalledCount is atomic-safe under concurrency | unit | medium_fixes | pass |
+| TestBatchSizeClamped_PreventsAbsoluteMaxBypass | validates BatchSize clamped to prevent absoluteMaxBatchSize bypass | unit | medium_fixes | pass |
+| TestOutboxDrainer_StaleFencingToken_NoRecordFailureMetric | validates stale token does not emit RecordFailures metric | unit | medium_fixes | pass |
+| TestDefaultSessionConfig_IncludesDrainDefaults | validates DefaultSessionConfig includes drain field defaults | unit | medium_fixes | pass |
+| TestRouteRunner_SharedOutbox_DepthCacheExercised | validates SharedOutbox route exercises depth cache QueryPending path | unit | low_fixes | pass |
+| TestRouteRunner_DirectHold_NoQueryPending | validates DirectHold route never calls QueryPending | unit | low_fixes | pass |
+| TestDrainerNameGeneration | validates drainer name generation produces correct numeric suffixes for all indices | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_Default | validates DrainBatchSize=0 defaults to 100 | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_Custom | validates explicit DrainBatchSize is respected | unit | low_fixes | pass |
+| TestOutboxDrainer_FinalDrain_CompletesAfterCancel | validates finalDrain completes after Run context cancelled | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_NegativeClampedToZero | validates negative globalMaxInFlight clamped to 0 | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_Zero_DisablesThrottling | validates zero globalMaxInFlight disables throttling | unit | low_fixes | pass |
+| TestWithGlobalMaxInFlight_Positive_Accepted | validates positive globalMaxInFlight accepted | unit | low_fixes | pass |
+| TestRouter_Route_PayloadDeepCopy | validates Payload mutation in one handler does not affect another | unit | low_fixes | pass |
+| TestRouter_Route_NilPayload | validates nil Payload does not panic and handlers receive nil | unit | low_fixes | pass |
+| TestRouter_Route_EmptyPayload | validates empty Payload is deep-copied as non-nil zero-length slice | unit | low_fixes | pass |
+| TestRouter_Route_OriginalPayloadUnmutated | validates original Publish.Payload not affected by handler mutations | unit | low_fixes | pass |
+| TestRouter_Route_ConcurrentHandlers_IndependentPayloads | validates concurrent handlers receive independent payload copies | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainBatchSize_NegativeClamped | validates negative DrainBatchSize clamped to default 100 | unit | low_fixes | pass |
+| TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize | validates DrainMaxBatchSize < DrainBatchSize is raised to match | unit | low_fixes | pass |
+| TestRouteRunner_SharedOutbox_NilOutboxStore_Retries | validates SharedOutbox with nil OutboxStore retries without panic | unit | low_fixes | pass |
+| TestRouter_Route_ConcurrentPropertiesRead | validates concurrent handlers reading shared Properties do not race | unit | low_fixes | pass |
+| TestDirectHold_RetryUnsupported_FallsToDLQ | validates direct_hold fallback to DLQ when del.Retry returns ErrNotSupported | unit | retry_fallback | pass |
+| TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError | validates error propagation when both retry and DLQ fail | unit | retry_fallback | pass |
+| TestHandleProcessorError_RetryUnsupported_FallsToDLQ | validates processor error DLQ fallback when retry unsupported | unit | retry_fallback | pass |
+| TestSharedOutbox_RetryUnsupported_FallsToDLQ | validates shared_outbox persist error DLQ fallback when retry unsupported | unit | retry_fallback | pass |
+| TestHandleExpired_RetryUnsupported_FallsToDLQ | validates expired message DLQ fallback on failed first write and unsupported retry | unit | retry_fallback | pass |
+| TestHandleResolveError_RetryUnsupported_FallsToDLQ | validates resolve error DLQ fallback when retry unsupported | unit | retry_fallback | pass |
+| TestDirectHold_RetrySupported_NoFallback | validates normal retry path with no DLQ fallback regression | unit | retry_fallback | pass |
+| TestSessionManager_ReconnectReconcileError_LogsAndPropagates | validates Reconcile error propagation from handleEvents on reconnect | unit | session_reconnect | pass |
+| TestSessionManager_ReconnectReconcileError_EmitsMetric | validates MetricReconcileFailures emitted on reconnect Reconcile failure | unit | session_reconnect | pass |
+| TestSessionManager_ReconnectReconcileOK_NoError | validates successful reconnect Reconcile does not emit failure metric | unit | session_reconnect | pass |
+| TestSessionManager_RenewLoop_ReconnectReconcileError_Exits | validates renewLoop exits when Reconcile fails on reconnect | unit | session_reconnect | pass |
+| TestRouteRunner_ProcessorPanic_DoesNotCrash | validates panicking processor does not crash process | unit | s13_delivery_panic | pass |
+| TestRouteRunner_ProcessorPanic_RetriesDelivery | validates delivery retried after processor panic with reason | unit | s13_delivery_panic | pass |
+| TestRouteRunner_SenderPanic_DoesNotCrash | validates panicking sender does not crash process | unit | s13_delivery_panic | pass |
+| TestRouteRunner_SenderPanic_RetriesDelivery | validates delivery retried after sender panic | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_EmitsMetric | validates DeliveryPanics counter emitted with route_id tag | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_SlotsReleased | validates semaphore slot released after panic so next msg proceeds | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_OtherMessagesUnaffected | validates concurrent deliveries unaffected by one panic | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_RetryFails_NoSecondPanic | validates retry error after panic does not crash | unit | s13_delivery_panic | pass |
+| TestRouteRunner_DeliveryPanic_RetryPanics_NoProcessCrash | validates nested panic in retry handler caught by inner recover | unit | s13_delivery_panic | pass |
 | TestIntegration_HTTPPost_RuntimePipeline_FakeSender | validates full HTTP POST through runtime pipeline to fake sender | integration | http_transport | pass |
 | TestIntegration_HTTPPost_FilterDrop_NoSend | validates filter processor drops spam messages without forwarding | integration | http_transport | pass |
 | TestIntegration_SSEClient_ReceivesMultipleEvents | validates SSE client receives multiple broadcast events | integration | http_transport | pass |

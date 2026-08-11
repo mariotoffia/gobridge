@@ -9,7 +9,7 @@
 ./adapters/aws/transport/sqs/sender_timeout_test.go:32:			time.Sleep(10 * time.Millisecond) // OTHER: shift wall clock for distinguishable deadlines
 ./adapters/azure/transport/servicebus/integration_test.go:69:		time.Sleep(backoff) // OTHER: external emulator warmup backoff between probes
 ./adapters/http/transport/benchmark_test.go:103:				time.Sleep(time.Millisecond) // OTHER: polling for SSE client registration in benchmark
-./adapters/http/transport/integration_edge_cases_r3_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
+./adapters/http/transport/integration_edge_cases_lifecycle_test.go:357:		time.Sleep(2 * time.Second) // OTHER: simulates slow remote for context cancellation test
 ./adapters/http/transport/integration_single_bridge_test.go:57:		time.Sleep(10 * time.Millisecond) // OTHER: internal polling interval in test helper
 ./adapters/http/transport/subject_address_test.go:303:		time.Sleep(10 * time.Millisecond)
 ./adapters/http/transport/subject_address_test.go:363:		time.Sleep(10 * time.Millisecond)
@@ -39,7 +39,7 @@
 ./runtime/cross_instance_test.go:280:	time.Sleep(100 * time.Millisecond) // NEGATIVE: verify sess not started before lease acquisition
 ./runtime/edge_cases_test.go:319:	time.Sleep(200 * time.Millisecond) // FIXED: wait for message expiry (100ms TTL + margin)
 ./runtime/jitter_clamp_test.go:125:		time.Sleep(100 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/medium_fixes_test.go:173:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
+./runtime/drainer_policy_wiring_test.go:173:	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
 ./runtime/metrics_integration_test.go:242:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:248:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing
 ./runtime/metrics_integration_test.go:254:		time.Sleep(50 * time.Millisecond) // OTHER: simulated event timeline spacing

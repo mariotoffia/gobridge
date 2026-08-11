@@ -13,7 +13,7 @@ import (
 
 // ═══════════════════════════════════════════════════════════════════════════
 // blocking-#3: runtime credential rotation (Session.ApplyCredentials) is the
-// hole the static/deferred HIGH-4 gates miss. A tcp:// (plaintext) session that
+// hole the static/deferred gates miss. A tcp:// (plaintext) session that
 // started WITHOUT credentials could have username/password injected at rotation
 // and sent in cleartext on the next CONNECT. The rotation MUST re-run the same
 // plaintext-credentials gate BEFORE mutating liveCreds/opts, and a dial-time

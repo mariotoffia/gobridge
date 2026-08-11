@@ -78,7 +78,7 @@ func (a *rolloutApplier) adoptProvisional(ctx context.Context, r persistence.Rol
 }
 
 // recordConvergence writes this member's Converge exactly once, when its post-swap
-// readiness check (MQTT-R1) passes. Convergence is unretractable (I6), so a Nack-
+// readiness check passes. Convergence is unretractable, so a Nack-
 // like premature write must never happen: it writes only on a genuine ready signal.
 func (a *rolloutApplier) recordConvergence(ctx context.Context, r persistence.Rollout) error {
 	if a.convergeSent {
@@ -127,7 +127,7 @@ func (a *rolloutApplier) adoptConfirmed(ctx context.Context, r persistence.Rollo
 	// The cohort confirmed, so N is the config to run even if a local deadman had
 	// reverted this member to N-1 in a prior tick. Idempotent when this member
 	// already runs N; suppress rebuild churn once it has given up on the swap (that
-	// member is degraded and alarmed, F8 — a confirmed gen it cannot apply is a
+	// member is degraded and alarmed, — a confirmed gen it cannot apply is a
 	// per-node convergence failure, not a retry-forever).
 	a.revertedGen = 0
 	applied := configContentEqual(a.host.Config(), cand.frozen)

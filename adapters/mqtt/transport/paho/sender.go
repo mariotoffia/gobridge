@@ -79,13 +79,13 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	// Apply timeout: honour whichever of the configured sender timeout and
-	// the caller's deadline is stricter (see applyTimeout for the M-1 rule).
+	// the caller's deadline is stricter (see applyTimeout for the rule).
 	ctx, timeoutCancel := s.applyTimeout(ctx)
 	defer timeoutCancel()
 
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: s.session.opts.ClientID}
 
-	// Publish through the ACL's domain-shaped seam (F-2) rather than the raw
+	// Publish through the ACL's domain-shaped seam rather than the raw
 	// autopaho.ConnectionManager: the seam serialises the envelope and returns
 	// only the reason code, keeping port-side egress SDK-free.
 	start := s.session.clock().Now()
@@ -178,7 +178,7 @@ const defaultSendTimeout = 60 * time.Second
 //   - Timeout > 0 (configured): apply it whenever it is stricter than the
 //     caller's remaining deadline (or there is none). This stops an
 //     operator-set options.sender.timeout from being silently shadowed by a
-//     looser route policy.send_timeout (M-1). A configured timeout LOOSER
+//     looser route policy.send_timeout. A configured timeout LOOSER
 //     than the caller's deadline is ignored — we never extend the caller's
 //     ceiling, so the route send_timeout remains the upper bound.
 func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

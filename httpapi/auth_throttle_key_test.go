@@ -32,12 +32,12 @@ func TestThrottleKeyFromRequest_IgnoresXFF(t *testing.T) {
 	assert.Equal(t, "unixsocket", throttleKeyFromRequest(req))
 }
 
-// TestRequireAdminAuth_ThrottleKeyedOnRemoteAddr_NotXFF is the FIX 3 regression:
+// TestRequireAdminAuth_ThrottleKeyedOnRemoteAddr_NotXFF is the regression:
 // an attacker rotating X-Forwarded-For on every request from one transport peer
 // must STILL be throttled. The pre-fix code keyed the limiter on the spoofable
 // leftmost XFF, so each rotated value looked like a new client and reset the
 // counter — defeating the limiter entirely (and, under an AWS ALB that APPENDS
-// to client XFF, this held in the shipped topology). It also verifies FIX 9:
+// to client XFF, this held in the shipped topology). It also verifies:
 // Retry-After is derived from AuthFailureWindow, not the old hardcoded 60.
 func TestRequireAdminAuth_ThrottleKeyedOnRemoteAddr_NotXFF(t *testing.T) {
 	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -72,7 +72,7 @@ func TestRequireAdminAuth_ThrottleKeyedOnRemoteAddr_NotXFF(t *testing.T) {
 	rec := do()
 	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 
-	// FIX 9: Retry-After tracks AuthFailureWindow (90s -> "90"), not "60".
+	// Retry-After tracks AuthFailureWindow (90s -> "90"), not "60".
 	assert.Equal(t, "90", rec.Header().Get("Retry-After"))
 }
 

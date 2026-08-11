@@ -1,5 +1,5 @@
 // Tests covering the subject/address separation contract for the
-// AMQP 1.0 adapter (T07):
+// AMQP 1.0 adapter:
 //
 //   - Sender links are address-bound; non-empty OutboundMessage.Address
 //     must match the configured sender link address. Mismatches are
@@ -268,7 +268,7 @@ func TestSender_SendBatch_NilEnvelopeFailsFast(t *testing.T) {
 	}
 }
 
-// TestMessageToEnvelope_NoFallbackOnMissingSubject pins the T07
+// TestMessageToEnvelope_NoFallbackOnMissingSubject pins
 // acceptance criterion: an inbound AMQP 1.0 message without
 // Properties.Subject MUST yield Envelope.Subject == "" (no link-address
 // fallback).

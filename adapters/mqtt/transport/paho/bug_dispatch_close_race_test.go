@@ -11,7 +11,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// B1 (BLOCKER regression): the serialized dispatch worker (finding 6) is a
+// (BLOCKER regression): the serialized dispatch worker (finding 6) is a
 // SECOND producer into r.wg. Close does shutdown() (closes r.stop) then
 // r.wg.Wait(); if dispatchCh still holds buffered items at Close (handler
 // latency → backpressure), dispatchLoop's select can still pick a buffered

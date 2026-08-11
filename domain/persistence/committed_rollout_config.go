@@ -16,7 +16,7 @@ import "github.com/mariotoffia/gobridge/domain/shared"
 // residuals), and a member that missed a commit reconciles to it (closing the
 // commit-overwritten window). Generation is monotonic — 0 is the baseline seed,
 // a real commit uses the rollout generation — and Digest lets a reader verify
-// the bytes it fetched (it recomputes the digest and compares, F10-style).
+// the bytes it fetched (it recomputes the digest and compares).
 //
 // It is a flat data-transfer value (like RolloutSnapshot), not an aggregate: the
 // store owns how it maps to durable attributes; Validate is the shared

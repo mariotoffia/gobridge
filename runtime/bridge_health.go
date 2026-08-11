@@ -78,7 +78,7 @@ func (rt *Runtime) DLQAdmin() ports.DLQAdmin {
 }
 
 // OutboxPending reports the number of PENDING outbox records currently held for
-// partitionKey, using the OPTIONAL ports.OutboxDepthReporter capability the F2
+// partitionKey, using the OPTIONAL ports.OutboxDepthReporter capability the
 // workstream added (forwarded through runtime.InstrumentedOutboxStore).
 //
 // ok is true ONLY when the depth was actually proven: the store is configured
@@ -196,7 +196,7 @@ type (
 // NOT-ready (see healthUnderDeadline) makes the probe fail closed instead of
 // hanging. 5s is comfortably longer than a healthy broker's Health latency yet
 // well under a typical probe period, so it never false-trips a live session.
-// HIGH-4: it is now the SHARED deadline for the whole concurrent probe sweep
+// it is now the SHARED deadline for the whole concurrent probe sweep
 // (probeSessionsHealth), so the sweep costs ~one ceiling regardless of how many
 // sessions are wedged — not O(N × ceiling).
 const defaultSessionHealthTimeout = 5 * time.Second
@@ -212,7 +212,7 @@ const deepHealthProbeConcurrency = 8
 // probeSessionsHealth probes every session's Health CONCURRENTLY under ONE
 // shared, clock-driven deadline, returning results indexed to sessions.
 //
-// HIGH-4: probing sessions SEQUENTIALLY cost O(N × ceiling) — a fleet of wedged
+// probing sessions SEQUENTIALLY cost O(N × ceiling) — a fleet of wedged
 // sessions (12 × 5s = 60s) blows the 30–60s failover objective and piles
 // concurrent probes on every scrape. A single deadline shared by every probe
 // caps the WHOLE sweep at ~one ceiling regardless of session count; any session
@@ -229,7 +229,7 @@ const deepHealthProbeConcurrency = 8
 // Health the moment the deadline fires — only the inner Health goroutine may
 // linger, writing to its own buffered channel, never the shared slice).
 //
-// ponytail (MEDIUM-1): a genuinely-hung plugin still leaks the single inner
+// ponytail: a genuinely-hung plugin still leaks the single inner
 // Health goroutine per probed session until it unblocks — Go cannot cancel a
 // non-cooperative call. The bounded pool caps how many are spawned per sweep;
 // fully eliminating the leak needs a plugin-side cancellable Health contract,
@@ -403,7 +403,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		}
 		// route_dead latches once a route has flapped routeDeadRestartThreshold
 		// times without a stable run — a steady-state signal distinct from the
-		// rate-based restart counter (F5). It is suppressed once the route's
+		// rate-based restart counter. It is suppressed once the route's
 		// CURRENT run has outlived the stability window: a route that flapped to
 		// the threshold then recovered and kept running never re-enters
 		// superviseRoute to reset the counter, so reading liveness here keeps a
@@ -430,7 +430,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	allReady := running && healthy
 	aggSL := ports.ServiceLevelFull
 
-	// HIGH-4: probe every session's Health CONCURRENTLY under one shared deadline
+	// probe every session's Health CONCURRENTLY under one shared deadline
 	// so the sweep costs ~one ceiling instead of O(N × ceiling) when sessions are
 	// wedged. Results are indexed to sessSnaps; an un-returned probe is left
 	// not-ready/ServiceLevelNone (fail closed) by probeSessionsHealth.
@@ -461,7 +461,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		// A deferred-connect standby's source session intentionally stays
 		// disconnected until this instance wins the lease; excluding it from the
 		// ready aggregate keeps a healthy standby reportable rather than
-		// permanently un-ready (finding C3-M readiness).
+		// permanently un-ready (finding readiness).
 		deferredStandby := snap.connectAfterLease && !snap.hasLease
 		if !sh.Ready && !deferredStandby {
 			allReady = false
@@ -486,7 +486,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			}
 		}
 		// A supervised route that has recorded a fault is not ready even though
-		// its Started signal already fired (finding L12).
+		// its Started signal already fired.
 		if routeErr[rs.id] {
 			ready = false
 		}
@@ -502,7 +502,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			InFlight:     inFlight,
 			RouteDead:    dead,
 		})
-		// HIGH-2: a route that is not ready OR latched dead means this instance
+		// a route that is not ready OR latched dead means this instance
 		// cannot dispatch that route, so it MUST NOT advertise traffic-ready.
 		// Previously only the session loop narrowed allReady, so a down route left
 		// ReadyForTraffic=true and an LB kept steering traffic at a bridge that

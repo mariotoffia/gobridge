@@ -6,9 +6,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 )
 
-// TestNewFactory_NilClockOptionKeepsDefault is the regression test for
-// CLOCK_FINDINGS Minor #3: ensures that `NewFactory(WithClock(nil))`
-// preserves the `clock.System` default rather than clobbering it.
+// TestNewFactory_NilClockOptionKeepsDefault: `NewFactory(WithClock(nil))`
+// must preserve the `clock.System` default rather than clobbering it.
+// A nil clock would panic at the first Now() call, far from the option
+// that caused it.
 func TestNewFactory_NilClockOptionKeepsDefault(t *testing.T) {
 	t.Parallel()
 

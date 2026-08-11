@@ -7,7 +7,7 @@
 //
 // The suites pin the canonical settlement state machine documented on
 // ports.Delivery and the emit-callback contract documented on ports.Receiver.
-// A wave-6 transport adapter wires its implementation in with, e.g.:
+// A transport adapter wires its implementation in with, e.g.:
 //
 //	func TestSQSDeliveryConformance(t *testing.T) {
 //	    transporttest.RunDeliveryConformanceTests(t, newSQSDeliveryProbe, transporttest.Caps{

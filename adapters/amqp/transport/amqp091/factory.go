@@ -84,7 +84,7 @@ func (f *Factory) Capabilities() []ports.Capability {
 		// amqp091 receivers subscribe (queue-declare + bind + consume) ONLY when
 		// the session manager reconciles the SessionPlan, so a receiver on an
 		// unmanaged session is silently inert; the builder enforces a manager
-		// for these (ADV-P4-FU1).
+		// for these.
 		ports.CapPlanDrivenSubscriptions,
 	}
 	// Advertise exclusive-identity once an exclusive consumer has been built

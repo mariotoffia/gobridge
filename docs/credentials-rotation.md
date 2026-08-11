@@ -232,7 +232,7 @@ hook: when a rotation apply is itself rejected as unauthorized, `applyOne` calls
 `NotifyAuthFailure` is also the public hook a live transport calls when its
 own connection reports `NOT_AUTHORIZED`.
 
-Stock transports are now wired to this hook (HIGH-3). At `Watch` time the
+Stock transports are now wired to this hook. At `Watch` time the
 refresher injects a URI-bound callback into any registered target that
 implements the optional `bridge.AuthFailureReporter` capability
 (`SetAuthFailureCallback(func(err error))`); the target invokes it from its live

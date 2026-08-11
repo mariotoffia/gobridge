@@ -6,7 +6,7 @@ package dynamodboutbox
 // PATH (a table lacking the ClaimIndex GSI).
 //
 // On the fallback path Claim pages the WHOLE partition to guarantee oldest-first
-// delivery (H1), so a sustained deep backlog — e.g. draining after an egress
+// delivery, so a sustained deep backlog — e.g. draining after an egress
 // outage on an exclusive session — makes each Claim O(backlog) and draining N
 // records cost ~N/limit scans (quadratic). This counter, paired with the loud
 // WARN emitted at the same threshold, makes that cost observable instead of a

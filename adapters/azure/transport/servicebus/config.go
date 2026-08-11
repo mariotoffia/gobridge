@@ -189,7 +189,7 @@ func validateSubQueue(subQueue string) error {
 // queue whenever QueueName is set and silently ignores TopicName /
 // SubscriptionName, so a both-set config would consume from the wrong
 // entity with no startup error. Exactly one entity kind is allowed: a
-// queue, OR a topic + subscription (HIGH-3).
+// queue, OR a topic + subscription.
 func validateReceiverEntityExclusive(queueName, topicName, subscriptionName string) error {
 	if queueName != "" && (topicName != "" || subscriptionName != "") {
 		return errors.New("servicebus: receiver sets both queue_name and topic_name/subscription_name; exactly one entity kind is allowed (a queue OR a topic+subscription) — the queue would be selected and the topic silently ignored, so remove one")
@@ -201,7 +201,7 @@ func validateReceiverEntityExclusive(queueName, topicName, subscriptionName stri
 // a queue and a topic. entityName selects the queue whenever QueueName
 // is set and silently ignores TopicName, so a both-set config would
 // publish to the wrong entity with no startup error. Exactly one is
-// allowed (HIGH-3).
+// allowed.
 func validateSenderEntityExclusive(queueName, topicName string) error {
 	if queueName != "" && topicName != "" {
 		return errors.New("servicebus: sender sets both queue_name and topic_name; exactly one is allowed — the queue would be selected and the topic silently ignored, so remove one")

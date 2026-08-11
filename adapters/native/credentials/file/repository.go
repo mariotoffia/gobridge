@@ -274,7 +274,7 @@ func New(basePath string, opts ...Option) (*Repository, error) {
 }
 
 // ensureBaseDir creates and hardens the base directory, tolerating an
-// operator-owned, read-only Secret mount (F6). K8s mounts Secrets read-only
+// operator-owned, read-only Secret mount. K8s mounts Secrets read-only
 // (and often with a defaultMode that grants group/other read), so the previous
 // unconditional MkdirAll + hard-fail chmod crash-looped the pod on a perfectly
 // valid deployment.
@@ -302,7 +302,7 @@ func (r *Repository) ensureBaseDir() error {
 // not touch the mode of directories that already exist, so without this a
 // repository pointed at an old 0755 tree would keep leaking credential names.
 //
-// F6: when the chmod fails because the mount is read-only or unowned
+// when the chmod fails because the mount is read-only or unowned
 // (EROFS/EPERM) — an operator-controlled Secret volume — the failure is logged
 // at WARN and tolerated rather than returned, so a valid immutable-mount
 // deployment does not crash-loop. A genuine, fixable leak (a writable directory
@@ -376,7 +376,7 @@ func (r *Repository) Get(ctx context.Context, uri string) (*connectivity.Credent
 	}
 
 	if stored.Credentials == nil {
-		// F3: an envelope with no credentials — {"version":1} (key absent) or
+		// an envelope with no credentials — {"version":1} (key absent) or
 		// {"credentials":null} — previously resolved to (nil, nil): the
 		// transport then connected anonymously and the poller skipped the nil
 		// forever. Treat it as a hard, non-retryable payload error instead.
@@ -564,7 +564,7 @@ func (r *Repository) List(ctx context.Context, prefix string) ([]string, error) 
 		if err != nil {
 			return err
 		}
-		// Abort a large walk promptly if the caller cancelled (N5): the
+		// Abort a large walk promptly if the caller cancelled: the
 		// entry-time ctx check above only covers the first entry.
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
@@ -706,7 +706,7 @@ func (r *Repository) writeCredentials(filePath string, stored *storedCredentials
 
 // atomicWriteFile writes data to a temp file in the destination directory,
 // fsyncs it, atomically renames it over path, then fsyncs the directory so the
-// rename is durable (I3). A crash mid-write or a concurrent external reader can
+// rename is durable. A crash mid-write or a concurrent external reader can
 // therefore only ever observe the complete old file or the complete new file —
 // never a truncated or partially written secret. The temp file is 0600 from
 // creation and removed on every error path.

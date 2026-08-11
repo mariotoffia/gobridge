@@ -16,14 +16,14 @@ import (
 )
 
 // coordLeaseID is the well-known lease that elects the rollout coordinator. Its
-// LeaseToken is the fencing token passed to Commit/Abort (invariant I3), so
+// LeaseToken is the fencing token passed to Commit/Abort, so
 // election and fencing reuse the existing LeaseStore — no new election code.
 const coordLeaseID = "cluster/rollout-coordinator"
 
 // rolloutAction is the coordinator's verdict for a single observation of the
 // rollout row. The coordinator is stateless across observations: decideRollout
 // is a pure function of (rollout, live membership, now). A successor coordinator
-// elected after a crash (F3) resumes by computing the same verdict from durable
+// elected after a crash resumes by computing the same verdict from durable
 // store state — recovery is resumption, not repair.
 type rolloutAction int
 
@@ -76,7 +76,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 		}
 		return rolloutActionWait, ""
 	}
-	// F6: the epoch is frozen at Propose; any live-membership divergence — a
+	// the epoch is frozen at Propose; any live-membership divergence — a
 	// joiner or a departure — makes strict all-ack unachievable, so abort. The
 	// live roster is a SET: sort AND dedup it before comparing to the frozen
 	// epoch (which NewRollout already sorted and deduped), so a transient
@@ -86,7 +86,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 		return rolloutActionAbort, fmt.Sprintf(
 			"membership changed during rollout: epoch=%v now=%v", r.MembershipEpoch(), epoch)
 	}
-	// F2: any Nack aborts immediately, without waiting out the deadline.
+	// any Nack aborts immediately, without waiting out the deadline.
 	if reason := aggregateNacks(r.Nacks()); reason != "" {
 		return rolloutActionAbort, reason
 	}
@@ -94,7 +94,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 	if r.CanCommit() {
 		return rolloutActionCommit, ""
 	}
-	// F1: an incomplete rollout that outran its deadline aborts; survivors keep
+	// an incomplete rollout that outran its deadline aborts; survivors keep
 	// the old committed config and a crashed member rejoins on it.
 	if now.After(r.Deadline()) {
 		return rolloutActionAbort, fmt.Sprintf(
@@ -105,7 +105,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 
 // rolloutCoordinatorConfig wires a rolloutCoordinator to its collaborators.
 // Membership is injected as a function so Phase 3 can unit-test on a fake roster;
-// its real source (heartbeat rows vs lease endpoints, open question Q1) lands
+// its real source (heartbeat rows vs lease endpoints, open question) lands
 // with the operator surface in a later phase.
 type rolloutCoordinatorConfig struct {
 	Store      ports.ClusterRolloutStore
@@ -121,7 +121,7 @@ type rolloutCoordinatorConfig struct {
 // holds the coordinator lease. It is deliberately caller-driven: elect() once,
 // then observe() on a cadence (the Run loop, wired in the supervisor). All
 // durable state lives in the store, so a successor coordinator resumes by
-// electing and observing — recovery is resumption, not repair (F3).
+// electing and observing — recovery is resumption, not repair.
 type rolloutCoordinator struct {
 	store      ports.ClusterRolloutStore
 	lease      ports.LeaseStore
@@ -198,11 +198,11 @@ func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now ti
 //
 // terminal is true only once the rollout is decided, so the Run loop can stop.
 // A store error is returned with terminal=false and no state flipped: an outage
-// (F9) is retried by the loop; a stale-token rejection because this coordinator
-// was deposed AFTER the live one already decided (F5) is surfaced so the loop
+// is retried by the loop; a stale-token rejection because this coordinator
+// was deposed AFTER the live one already decided is surfaced so the loop
 // steps down. An empty store (no rollout proposed) is a benign no-op.
 //
-// # F5b — first-decision fencing: DECIDED, residual accepted
+// # — first-decision fencing: DECIDED, residual accepted
 //
 // The store fence only rejects a stale RE-decision (see
 // persistence.Rollout.coordVersion), so a deposed coordinator that decides
@@ -212,7 +212,7 @@ func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now ti
 // added, because every reachable outcome of the residual is already fail-safe
 // and the window is bounded three times over:
 //
-//  1. A zombie COMMIT still has to satisfy the full ack barrier (I2). If every
+//  1. A zombie COMMIT still has to satisfy the full ack barrier. If every
 //     epoch member acked, committing is the CORRECT outcome — the only
 //     irregularity is which process wrote it.
 //  2. A zombie ABORT just keeps the old config serving. The operator retries;
@@ -241,13 +241,13 @@ func coordinatorStep(
 		if errors.Is(err, shared.ErrNotFound) {
 			return false, nil // no rollout proposed yet — nothing to drive
 		}
-		return false, err // F9: outage — no decision this cycle, loop retries
+		return false, err // outage — no decision this cycle, loop retries
 	}
 	action, reason := decideRollout(r, membership, now)
 	switch action {
 	case rolloutActionCommit:
 		if err := store.Commit(ctx, r.Generation(), tok); err != nil {
-			return false, err // F5: deposed coordinator → stale token rejected
+			return false, err // deposed coordinator → stale token rejected
 		}
 		// A base commit is terminal; a provisional (windowed) commit is NOT — the
 		// coordinator keeps driving the latter to Confirm/Revert on later observations.
@@ -259,7 +259,7 @@ func coordinatorStep(
 		return true, nil
 	case rolloutActionConfirm:
 		if err := store.Confirm(ctx, r.Generation(), tok); err != nil {
-			return false, err // F5: deposed coordinator → stale token rejected
+			return false, err // deposed coordinator → stale token rejected
 		}
 		return true, nil
 	case rolloutActionRevert:

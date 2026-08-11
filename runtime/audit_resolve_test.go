@@ -176,4 +176,4 @@ func TestBindingResolver_NoMatch(t *testing.T) {
 
 // TestValidateMQTTTopic_LeadingSlash and TestValidateMQTTTopic_TrailingSlash
 // were moved to adapters/mqtt/transport/paho/topic_validator_test.go as
-// part of AP-005 — MQTT topic validation is no longer a runtime concern.
+// part — MQTT topic validation is no longer a runtime concern.

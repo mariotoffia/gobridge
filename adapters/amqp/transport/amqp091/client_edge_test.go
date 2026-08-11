@@ -12,7 +12,7 @@ import (
 
 // TestInjectCredentials_ExistingUserInfo validates that explicitly
 // configured (or rotated) credentials OVERRIDE userinfo embedded in the
-// broker URL. Before F8 the embedded userinfo won, which made a
+// broker URL. Before the embedded userinfo won, which made a
 // credential rotation report success while every redial silently kept
 // the old embedded credentials.
 func TestInjectCredentials_ExistingUserInfo(t *testing.T) {

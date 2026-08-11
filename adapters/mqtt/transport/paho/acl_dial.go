@@ -38,7 +38,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	recoveryConnect := s.recoveryNeedsSessionPresent
 	s.mu.Unlock()
 
-	// HIGH-4 defense-in-depth: Factory.NewSession validates the plaintext-
+	// defense-in-depth: Factory.NewSession validates the plaintext-
 	// credential transport before construction and Session.ApplyCredentials
 	// re-gates on rotation, but a DIRECT NewSession caller (bypassing the
 	// factory) — or any future path that seeds credentials onto opts — could
@@ -54,7 +54,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
 	}
 
-	// ponytail: M-6 / HIGH-5 — this session relies on autopaho's DEFAULT
+	// ponytail: — this session relies on autopaho's DEFAULT
 	// IN-MEMORY packet/session store (cfg.Session left nil ⇒ state.NewInMemory
 	// in autopaho). CEILING: outbound QoS 1/2 packets IN FLIGHT at process
 	// death are LOST (the un-acked PUBLISH / PUBREL state does not survive),
@@ -75,18 +75,18 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	// (direct_hold, shared_outbox) are loss-safe, so no advisory fires today.
 	// docs/transports/mqtt.md documents the requirement. A file-backed
 	// session.SessionManager (assigned to cfg.Session) is the deferred,
-	// ADR-level alternative and is out of scope here (deferred finding M-6; see
+	// ADR-level alternative and is out of scope here (deferred see
 	// scenario-01 docs).
 	cfg := autopaho.ClientConfig{
 		ServerUrls: serverURLs,
 		KeepAlive:  s.opts.KeepAlive,
 
-		// OnConnectionUp fires on every (re)connect. Per finding C7, the
+		// OnConnectionUp fires on every (re)connect. Per the
 		// runtime session manager is the SINGLE owner of reconnect
 		// reconciliation and failure propagation: it observes the
 		// SessionConnected event emitted here and drives Reconcile, whose
 		// outcome is authoritative (a rejected re-subscribe propagates out
-		// of Manager.Run so the bridge can restart/alarm — finding S9).
+		// of Manager.Run so the bridge can restart/alarm —).
 		// This callback therefore only resets local subscription state and
 		// signals SessionConnected; it MUST NOT reconcile inline. See
 		// handleConnectionUp for the reset-before-signal ordering that lets
@@ -164,7 +164,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		}
 	}
 
-	// Reconnect pacing (M-4): a JITTERED EXPONENTIAL base delay derived
+	// Reconnect pacing: a JITTERED EXPONENTIAL base delay derived
 	// from reconnect_delay (floor) and reconnect_max_delay (ceiling), plus
 	// an escalating session-takeover penalty so a ClientID collision (two
 	// instances mutually kicking each other) backs off instead of storming;
@@ -252,7 +252,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		if tlsOpts.InsecureSkipVerify && s.logger != nil {
 			// insecure_skip_verify disables server-certificate validation,
 			// exposing the connection to MITM. It has legitimate test/mesh
-			// uses, but must never pass unnoticed in production (L-3).
+			// uses, but must never pass unnoticed in production.
 			s.logger.Warn("mqtt: TLS certificate verification DISABLED "+
 				"(insecure_skip_verify) — the broker's identity is NOT "+
 				"validated; use only on a trusted transport",
@@ -286,7 +286,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	if err := cm.AwaitConnection(awaitCtx); err != nil {
 		cmCancel()
 		// Bounded teardown so a discard-path disconnect cannot block forever if the
-		// SDK ignores cancellation of its already-cancelled root (MQTT-RES-3).
+		// SDK ignores cancellation of its already-cancelled root.
 		disCtx, disCancel := s.discardDisconnectContext()
 		_ = cm.Disconnect(disCtx)
 		disCancel()

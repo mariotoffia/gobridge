@@ -210,7 +210,7 @@ const (
 	// MetricReceiveCountUnparseable counts deliveries whose source-transport
 	// redelivery-count header was PRESENT but uninterpretable as an integer, so
 	// receiveCount failed open to a first delivery (count 0) and
-	// MaxReplayAttempts could not cap replays (E5-FU3). Failing open is
+	// MaxReplayAttempts could not cap replays. Failing open is
 	// deliberate — a good message is never DLQ'd on a parse error — but a
 	// permanently-failing recoverable send on such a message would otherwise
 	// retry unbounded with no signal; a rising value makes that observable and
@@ -246,7 +246,7 @@ const (
 	MetricReconcileFailures = "ReconcileFailures"
 	// MetricSessionRestarts counts per-session supervised restarts: a session
 	// manager returned a transient error and was restarted in isolation
-	// (capped backoff) instead of tearing down the whole runtime (C3-FU2).
+	// (capped backoff) instead of tearing down the whole runtime.
 	// A rising value flags a session that keeps failing to reconnect/re-acquire
 	// its lease while the rest of the bridge stays up — alert on it.
 	MetricSessionRestarts = "SessionRestarts"
@@ -321,7 +321,7 @@ const (
 //   - live reconfiguration is no longer available (the config-change stream
 //     closed and the bridge is running blind on its last good config);
 //   - a reload was APPLIED but its transport sessions never CONVERGED within
-//     the transport's declared activation budget (MQTT-R1: reload success
+//     the transport's declared activation budget (reload success
 //     signals are green while the transport cannot reach its broker state —
 //     e.g. an ACL-denied topic or rotated-away credentials committed as a
 //     successful swap). This clears on its own when the sessions later

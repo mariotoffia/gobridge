@@ -67,7 +67,7 @@ func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest
 		OutboxStore: store,
 		Sender:      sender,
 		// A real (fake) DLQ store so HasStore() is true: WithDefaults() sets
-		// OnPermanentFailure=FailureDLQ, and H3 now routes poison/permanent to the
+		// OnPermanentFailure=FailureDLQ, and now routes poison/permanent to the
 		// DROP path when no store is configured. These tests assert the DLQ path
 		// (emitDLQ → DLQEntries), so they must run with a store behind the router.
 		DLQ:          dlq.New(&fakeDLQStore{}),
@@ -90,7 +90,7 @@ func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest
 // now decides.
 //
 // Probe: reverting the criterion in processRecord to d.poisonAgeReached(rec)
-// makes this test fail (the record would be DLQ'd), which is exactly the A4-R1
+// makes this test fail (the record would be DLQ'd), which is exactly the
 // premature-DLQ-from-outage defect this work package fixes.
 func TestDrainer_TransientOutageWithinBudget_NeverPoisons(t *testing.T) {
 	clk := clocktest.NewAt(budgetBase)

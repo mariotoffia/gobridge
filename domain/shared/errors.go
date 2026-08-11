@@ -390,7 +390,7 @@ var (
 	}
 	// ErrRolloutNotCommittable indicates Commit was invoked on a rollout that
 	// is not in Staging with every membership-epoch member acked (invariant
-	// I2, the all-member barrier). Permanent: the coordinator must gather the
+	// the all-member barrier). Permanent: the coordinator must gather the
 	// remaining acks or abort before it can commit.
 	ErrRolloutNotCommittable = &BridgeError{
 		Code: ErrCodeRolloutNotCommittable, Class: ErrorPermanent,
@@ -398,7 +398,7 @@ var (
 	}
 	// ErrRolloutTerminal indicates a state transition (ack, commit, abort) was
 	// invoked against a rollout that has already reached a terminal state in a
-	// direction that cannot be reconciled (invariant I4, terminal-immutable):
+	// direction that cannot be reconciled (terminal-immutable):
 	// acking a decided rollout, committing an aborted one, or aborting a
 	// committed one. Permanent. A same-direction re-decision with a live
 	// fencing token is instead an idempotent no-op, not this error.
@@ -407,7 +407,7 @@ var (
 		Message: "rollout is already in a terminal state",
 	}
 	// ErrRolloutAckRejected indicates an Ack or Nack that violates the barrier
-	// bookkeeping (invariant I5): a member outside the frozen membership epoch,
+	// bookkeeping: a member outside the frozen membership epoch,
 	// a second vote from a member that already acked or nacked, or an ack with
 	// an empty build digest. Permanent: retry with the same inputs will not
 	// help.
@@ -417,7 +417,7 @@ var (
 	}
 	// ErrRolloutDigestMismatch indicates that candidate config bytes fetched by
 	// a member do not match the digest recorded in the rollout row, or that the
-	// row carries no digest to verify against (F10). Permanent: the member
+	// row carries no digest to verify against. Permanent: the member
 	// Nacks rather than build unverified or substituted bytes.
 	ErrRolloutDigestMismatch = &BridgeError{
 		Code: ErrCodeRolloutDigestMismatch, Class: ErrorPermanent,
@@ -426,7 +426,7 @@ var (
 	// ErrRolloutNotConfirmable indicates Confirm was invoked on a committed
 	// rollout whose confirm window (design §8.1) is not satisfiable as confirmed:
 	// the window is inactive (base protocol, confirm_window == 0), or not every
-	// membership-epoch member has recorded convergence yet (invariant I7, the
+	// membership-epoch member has recorded convergence yet (the
 	// all-member confirm barrier). Permanent for this observation: the coordinator
 	// waits for the remaining Converge records or reverts on the confirm deadline.
 	ErrRolloutNotConfirmable = &BridgeError{

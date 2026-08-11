@@ -83,7 +83,7 @@ type Runtime struct {
 	// unrecoverable death: /live stays 200 and the liveness backstop must not
 	// restart the process. It still makes the runtime single-use (Start
 	// rejects), so "resume" means the supervisor builds a fresh runtime
-	// (findings: CRITICAL 1 admin stop, CRITICAL 3 healthy-swap liveness).
+	// (admin stop, healthy-swap liveness).
 	stopped bool
 	// stopDone is published by the Stop call that transitions the runtime to
 	// terminal, and closed as the very last action of that Stop (after every
@@ -97,14 +97,14 @@ type Runtime struct {
 	// routeFlaps counts CONSECUTIVE sub-stability-window restarts per supervised
 	// route (keyed "route:<id>", like componentErrors). superviseRoute increments
 	// it on a quick flap and resets it on a stable run; DeepHealth latches
-	// RouteHealth.RouteDead once it reaches routeDeadRestartThreshold (F5).
+	// RouteHealth.RouteDead once it reaches routeDeadRestartThreshold.
 	routeFlaps map[string]int
 	// routeRunStart records the wall-clock start of each supervised route's
 	// CURRENT run (keyed "route:<id>"), set before run() and cleared after it
 	// returns. DeepHealth reads it to suppress a latched route_dead once the live
 	// run has outlived the stability window: a route that flaps to the threshold
 	// then recovers and keeps running never re-enters superviseRoute to reset the
-	// flap counter, so without this it would advertise route_dead forever (F5).
+	// flap counter, so without this it would advertise route_dead forever.
 	routeRunStart map[string]time.Time
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
@@ -285,7 +285,7 @@ func New(opts ...Option) *Runtime {
 	// derive DISTINCT lease owners. Without it their identical ownerID matched
 	// the lease store's same-owner fast path and each replica instantly
 	// re-seized the other's lease — a permanent ping-pong that reset every
-	// standby's observation window and starved failover (finding C3-HIGH).
+	// standby's observation window and starved failover.
 	// instance_id remains the human-facing display identity (logs, health, the
 	// source-id header); only the lease ownership token is nonce-suffixed.
 	rt.leaseOwnerID = rt.instanceID + "#" + generateID()
@@ -317,7 +317,7 @@ func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
 // bounded detached context and an error is returned.
 //
 // Stop is idempotent and safe to call on a runtime that was BUILT but never
-// Started (C1): the composition-root supervisor calls Stop() on a runtime whose
+// Started: the composition-root supervisor calls Stop() on a runtime whose
 // swap failed, so Stop must release every prep-opened resource — lease/outbox/
 // DLQ stores, all opened sessions (including unmanaged binding sessions), and
 // any session managers — even though no background goroutine ever ran. After
@@ -356,8 +356,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// runtime stopped (single-use) but do NOT trip terminal. terminal keeps
 	// whatever a background component already set (bridge.go component-failure
 	// trips), so an ABNORMAL stop stays terminal and the liveness backstop still
-	// restarts the process, while a clean admin/swap Stop leaves /live at 200
-	// (CRITICAL 1 / CRITICAL 3).
+	// restarts the process, while a clean admin/swap Stop leaves /live at 200.
 	rt.stopped = true
 	cancel := rt.cancel
 	rt.mu.Unlock()
@@ -461,7 +460,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		// (e.g. a drainer still finalising) may therefore emit a counter or span
 		// after its provider is closed. That is benign: OTel Counter/Start calls
 		// on a shut-down provider are no-ops and the SDK is concurrency-safe, so
-		// no panic, race, or corruption results (OTEL-N6).
+		// no panic, race, or corruption results (OTEL).
 		errs = append(errs, ctx.Err())
 	}
 
@@ -474,7 +473,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	// as the store-close does below, wait a bounded grace for the drainer wg to
 	// CONFIRM done BEFORE we close managers. The grace is
 	// clampedStoreCloseGrace(ctx): the policy-derived worst-case, but never longer
-	// than the incoming shutdown ctx's remaining deadline (B6) so the detached
+	// than the incoming shutdown ctx's remaining deadline so the detached
 	// (WithoutCancel) wait cannot outlive the platform kill budget and get
 	// SIGKILLed mid-drain. If the grace elapses we still close managers (leases
 	// MUST release so another instance can take over — a stale-token Complete from
@@ -531,7 +530,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	// C1: close every session that no manager owns. A built-but-never-started
+	// close every session that no manager owns. A built-but-never-started
 	// runtime has no managers at all, so ALL of its opened sessions land here;
 	// a started runtime reaches here only for unmanaged binding sessions
 	// (session senders never promoted to a drainer). Dedupe by pointer so a
@@ -576,7 +575,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		// OS resources implement io.Closer; in-memory stores do not and are
 		// skipped. Reconfiguration always builds a fresh runtime with its own
 		// store instances before Stopping the old one, so a closed handle is
-		// never shared with a live runtime. (Finding I5 + finding 13.)
+		// never shared with a live runtime. (Finding + finding 13.)
 		for _, s := range stores {
 			if c, ok := s.(io.Closer); ok {
 				if err := c.Close(); err != nil {
@@ -604,7 +603,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		// supplied them, which Closes them exactly once at process shutdown. A
 		// per-runtime Close here killed the shared CloudWatch flush goroutine on
 		// the FIRST reload, so all later metrics were silently dropped for the
-		// process lifetime (CRITICAL 2).
+		// process lifetime.
 		//
 		// The tracer (ports.Tracer) exposes only Close, no Flush, so there is
 		// nothing to flush per-stop; like the metrics exporter it is neither
@@ -682,7 +681,7 @@ func (rt *Runtime) effectiveStoreCloseGrace() time.Duration {
 const storeCloseGraceMargin = 1 * time.Second
 
 // clampedStoreCloseGrace bounds the derived store-close grace by the incoming
-// shutdown ctx's remaining deadline (B6).
+// shutdown ctx's remaining deadline.
 //
 // effectiveStoreCloseGrace can derive a grace as large as
 // SendTimeout + min(SendTimeout, 5s) (~65s for a 60s SendTimeout), and the
@@ -794,7 +793,7 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 				// startBackground path is never wired to a fencing-capable
 				// component today.
 				//
-				// HAZARD (F9): if a future component IS wired through bare
+				// HAZARD: if a future component IS wired through bare
 				// startBackground and returns ErrStaleFencingToken, its goroutine
 				// would stop here with rt.healthy still true — a silent,
 				// unsupervised death behind a green liveness probe. Log loudly so
@@ -831,7 +830,7 @@ var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unex
 // superviseSession wraps a session manager's Run so a transient failure
 // (broker reconnect, lease re-acquire) restarts JUST that session with jittered,
 // capped exponential backoff, instead of tearing down the whole runtime and
-// every unrelated route (C3-FU2). Isolation guarantees, by design:
+// every unrelated route. Isolation guarantees, by design:
 //
 //   - The global healthy/terminal flags are NEVER flipped, so a failing session
 //     cannot trip /live (pod restart) or /health and sink unrelated routes.
@@ -859,12 +858,12 @@ var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unex
 // A ErrStaleFencingToken (another instance currently owns the lease) is treated
 // as RESTARTABLE, not a clean stop: the manager is re-run so a standby keeps
 // supervising and can re-acquire on the next transfer, instead of silently
-// abandoning failover duty (finding L11). A ErrSessionUnrecoverable (a single-use
+// abandoning failover duty. A ErrSessionUnrecoverable (a single-use
 // session that can no longer Start after a step-down Close) is ESCALATED to
 // terminal — the manager has already released the lease, so a standby takes over
 // while the orchestrator restarts this pod with a fresh session instance; looping
 // on the dead instance would re-seize the lease via the store's same-owner fast
-// path and wedge the cluster (finding C3-CRITICAL). A PANIC is intentionally NOT
+// path and wedge the cluster. A PANIC is intentionally NOT
 // recovered here so it still propagates to startBackground's recover and remains
 // terminal — a panic is a bug, fail-fast; only transient errors are isolated and
 // retried.
@@ -921,13 +920,13 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 			// lease. This is NOT a reason to abandon the session supervisor: a
 			// standby that stops supervising can never re-acquire when the active
 			// instance later steps down, silently removing the only failover
-			// target (finding L11). It falls through to the jittered capped
+			// target. It falls through to the jittered capped
 			// backoff below and re-runs the manager, which re-enters its
 			// acquire/standby loop — keeping standby duty alive.
 			if errors.Is(err, session.ErrSessionUnrecoverable) {
 				// A single-use session was closed by a prior step-down and
 				// cannot be re-Started in this process. Retrying the dead
-				// instance forever is the C3-CRITICAL zombie loop: each retry
+				// instance forever is the zombie loop: each retry
 				// re-Acquired the lease via the store's same-owner fast path,
 				// bumped the version and reset every standby's observation
 				// window, wedging the whole cluster while liveness stayed green.
@@ -981,7 +980,7 @@ var errRouteUnexpectedStop = errors.New("runtime: route runner stopped unexpecte
 
 // superviseRoute wraps a route runner's Run so a failing route is isolated with
 // jittered, capped exponential backoff instead of tearing down the whole runtime
-// (findings C1-MED "one permanent link error kills every route" and C2-HIGH "one
+// (findings "one permanent link error kills every route" and "one
 // permanently-failing route tears down the entire runtime"). It MIRRORS
 // superviseSession's isolation contract:
 //
@@ -1050,7 +1049,7 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 			}
 			rt.setComponentError(name, err)
 			if errors.Is(err, route.ErrRouteTerminal) {
-				// HIGH-2/HIGH-3/HIGH-4: the route runner declared itself
+				// the route runner declared itself
 				// UNRESTARTABLE in this process — either its single-use receiver
 				// was already Closed and cannot be re-Run (a fresh Run would flap
 				// the SAME dead instance at the backoff cap forever behind green
@@ -1075,7 +1074,7 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 			if rt.clk.Since(runStart) >= stabilityWindow {
 				// The run reached the stability window before failing: treat it as a
 				// fresh healthy-then-degraded cycle — reset both the backoff and the
-				// consecutive-flap counter that drives route_dead (F5).
+				// consecutive-flap counter that drives route_dead.
 				backoff = minBackoff
 				rt.resetRouteFlap(name)
 			} else {
@@ -1083,7 +1082,7 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 				// routeDeadRestartThreshold of these in a row with no stable run
 				// between, DeepHealth latches route_dead=true so ops alert on the
 				// steady STATE (a route wedged at the backoff cap behind a green
-				// liveness probe) rather than on the restart RATE alone (F5).
+				// liveness probe) rather than on the restart RATE alone.
 				rt.recordRouteFlap(name)
 			}
 			wait := equalJitter(backoff, randFloat)
@@ -1144,7 +1143,7 @@ const routeStabilityWindow = 30 * time.Second
 
 // routeDeadRestartThreshold is the number of CONSECUTIVE sub-stability-window
 // route restarts (quick flaps with no stable run between them) after which
-// DeepHealth latches RouteHealth.RouteDead=true (F5). A route that flaps this
+// DeepHealth latches RouteHealth.RouteDead=true. A route that flaps this
 // many times has almost certainly wedged at the supervisor backoff cap — e.g. a
 // single-use receiver whose Run cannot be re-entered — so ops can alert on that
 // steady STATE rather than on the restart rate. Kept small: with the
@@ -1153,7 +1152,7 @@ const routeStabilityWindow = 30 * time.Second
 const routeDeadRestartThreshold = 5
 
 // recordRouteFlap increments a route's consecutive sub-stability-window restart
-// counter (F5). Called by superviseRoute when a run fails before reaching the
+// counter. Called by superviseRoute when a run fails before reaching the
 // stability window. Lazily allocates the map so it is safe even when a test
 // drives superviseRoute directly, bypassing Start's allocation.
 func (rt *Runtime) recordRouteFlap(name string) {
@@ -1167,7 +1166,7 @@ func (rt *Runtime) recordRouteFlap(name string) {
 
 // resetRouteFlap clears a route's consecutive-flap counter once a run stayed up
 // for the stability window (a recovery) or the route stopped cleanly, so a
-// recovered route drops route_dead instead of latching it forever (F5). This
+// recovered route drops route_dead instead of latching it forever. This
 // fires only when a run RETURNS after the window; a route that recovers and keeps
 // running is handled complementarily by the DeepHealth read-time liveness check
 // (see routeRunStart). delete on a nil map is a no-op, so this is safe even
@@ -1180,7 +1179,7 @@ func (rt *Runtime) resetRouteFlap(name string) {
 
 // setRouteRunStart records the start time of a supervised route's current run so
 // DeepHealth can distinguish a live, recovered route (its run has outlived the
-// stability window) from one still wedged in the flap regime (F5). Lazily
+// stability window) from one still wedged in the flap regime. Lazily
 // allocates the map like recordRouteFlap so tests driving superviseRoute directly
 // are safe.
 func (rt *Runtime) setRouteRunStart(name string, at time.Time) {
@@ -1194,7 +1193,7 @@ func (rt *Runtime) setRouteRunStart(name string, at time.Time) {
 
 // clearRouteRunStart drops the current-run marker when a run returns (the route is
 // now between runs — in backoff or being re-entered), so route_dead is not
-// suppressed while the route is not actually up (F5). delete on a nil map is a
+// suppressed while the route is not actually up. delete on a nil map is a
 // no-op.
 func (rt *Runtime) clearRouteRunStart(name string) {
 	rt.mu.Lock()

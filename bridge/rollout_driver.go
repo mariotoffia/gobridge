@@ -91,7 +91,7 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 		Store: d.barrier.store,
 		Lease: d.barrier.lease,
 		// The coordinator's live membership and the proposer's frozen epoch MUST
-		// come from the same source or decideRollout reads a membership change (F6)
+		// come from the same source or decideRollout reads a membership change
 		// on every rollout. Both read bridge.cluster.members off the running config.
 		Membership: func() []string { return rolloutMembers(d.host.Config()) },
 		Clock:      clk,
@@ -112,13 +112,13 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 }
 
 // drive is the drive loop. It never returns an error: every failure is a store
-// outage (F9) or a lost election, both retried on the next tick while the running
+// outage or a lost election, both retried on the next tick while the running
 // config keeps serving.
 func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, applier *rolloutApplier, coord *rolloutCoordinator) {
 	ticker := clk.NewTicker(d.barrier.pollInterval)
 	defer ticker.Stop()
 	// Release the coordinator lease on the way out so a successor does not wait out
-	// the full TTL after an orderly shutdown (F3 is the crash path; an orderly stop
+	// the full TTL after an orderly shutdown (a crash is what the TTL is for; an orderly stop
 	// should not pay it). Detached from the cancelled loop ctx, bounded by the TTL.
 	defer coord.resign(context.WithoutCancel(ctx))
 
@@ -129,7 +129,7 @@ func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, appli
 			return
 		case <-ticker.C():
 			if err := applier.step(ctx); err != nil && logger != nil {
-				// F9: the rollout resolves (or deadline-aborts) when the store
+				// the rollout resolves (deadline-aborts) when the store
 				// returns; nothing flipped, and this member keeps serving.
 				logger.Warn("cluster rollout: applier observation failed; retrying", "error", err)
 			}
@@ -179,7 +179,7 @@ func (h supervisorRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.Br
 func (h supervisorRolloutHost) MarkDegraded(reason string) { h.s.markDegraded(reason) }
 
 // Converged reports whether the Supervisor's active runtime has reached the
-// post-swap readiness level the convergence watch uses (MQTT-R1). It is the same
+// post-swap readiness level the convergence watch uses. It is the same
 // signal watchPostSwapConvergence samples, read on demand for the confirm window.
 func (h supervisorRolloutHost) Converged(ctx context.Context) bool {
 	rt := h.s.Runtime()

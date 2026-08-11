@@ -1,7 +1,7 @@
 package runtime_test
 
 // ═══════════════════════════════════════════════════════════════════════
-// S9 — Reconnect Reconcile Errors: propagation tests
+// Reconnect Reconcile Errors: propagation tests
 //
 // When a sess reconnects and Reconcile fails (ACL change, topic
 // deletion), the SessionManager must log the error, emit a metric,
@@ -250,7 +250,7 @@ func TestSessionManager_ReconnectReconcileOK_NoError(t *testing.T) {
 //	T2: Push SessionConnected, ReconcileErr set
 //	T3: renewLoop receives error from handleSessionEvent
 //	T4: Run surfaces the reconcile error directly (no re-acquire) so
-//	    superviseSession can restart this session in isolation (C7-N2)
+//	    superviseSession can restart this session in isolation
 //
 // ───────────────────────────────────────────────────────────────
 //
@@ -302,7 +302,7 @@ func TestSessionManager_RenewLoop_ReconnectReconcileError_Exits(t *testing.T) {
 }
 
 // TestSessionManager_ExclusiveReconcileFailure_EmitsDistinctSignalNotLeaseTransfer
-// is the regression guard for C7-N2. When an exclusive session's reconcile
+// is the regression guard. When an exclusive session's reconcile
 // fails on reconnect (inside renewLoop) the lease is still held and renewing —
 // it is NOT a lease loss. The manager must therefore:
 //

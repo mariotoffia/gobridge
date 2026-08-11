@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// MQTT-R1: the convergence budget derives from the largest transport-declared
+// the convergence budget derives from the largest transport-declared
 // post-takeover activation, floored so transports without the capability
 // still get one connect + one reconcile of patience.
 func TestConvergenceBudget_DerivesFromTransportTiming(t *testing.T) {
@@ -44,7 +44,7 @@ func TestConvergenceBudget_DerivesFromTransportTiming(t *testing.T) {
 	})
 }
 
-// MQTT-R1: an applied runtime that never reaches broker state within the
+// an applied runtime that never reaches broker state within the
 // activation budget flips the supervisor into the DISTINCT
 // applied-but-not-converged degraded state — a reload that reported success
 // while the transport is down must not stay green. When the sessions later
@@ -74,7 +74,7 @@ func TestSupervisor_ConvergenceWatch_MarksAppliedNotConvergedThenClearsOnConverg
 		degraded, reason := s.Degraded()
 		return degraded && strings.Contains(reason, "not converged")
 	}, 5*time.Second, 5*time.Millisecond,
-		"budget expiry must surface the applied-but-not-converged degraded state (MQTT-R1)")
+		"budget expiry must surface the applied-but-not-converged degraded state")
 
 	degraded, reason := s.Degraded()
 	require.True(t, degraded)
@@ -200,7 +200,7 @@ func TestSupervisor_ConvergenceWatch_ClearsPredecessorMarkOnConvergence(t *testi
 	assert.False(t, degraded, "convergence resolves a predecessor watcher's convergence-owned mark")
 }
 
-// MQTT-R1: a watcher whose runtime was replaced by a later swap must abandon
+// a watcher whose runtime was replaced by a later swap must abandon
 // silently — the successor swap owns the convergence signal — and must never
 // clobber a degraded state it does not own.
 func TestSupervisor_ConvergenceWatch_AbandonsWhenRuntimeReplaced(t *testing.T) {

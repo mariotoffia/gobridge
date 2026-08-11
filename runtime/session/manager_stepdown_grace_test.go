@@ -13,7 +13,7 @@ import (
 )
 
 // TestSessionManager_StepDown_SkipsGraceWhenDrainIdle is the regression test for
-// finding F9: stepDown must NOT wait out the full StepDownGrace when the
+// stepDown must NOT wait out the full StepDownGrace when the
 // destination outbox drainer reports idle (no in-flight records to settle) —
 // waiting then only adds takeover latency because a new owner keys off the lease
 // store, not this wait.
@@ -101,7 +101,7 @@ func TestSessionManager_StepDown_SkipsGraceWhenDrainIdle(t *testing.T) {
 }
 
 // TestSessionManager_StepDown_WaitsGraceWhenDrainBusy is the complementary
-// regression for finding F9: when the destination drainer reports BUSY (has
+// regression for when the destination drainer reports BUSY (has
 // claimable pending outbox work), stepDown MUST wait out the full StepDownGrace
 // before releasing the lease so in-flight Send+Complete can settle in-process —
 // the early-exit is idle-ONLY. A regression that skips the grace unconditionally

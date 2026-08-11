@@ -140,11 +140,11 @@ func TestWithPolledCredentialStore_OrderIndependent(t *testing.T) {
 }
 
 // TestPullCacheInvalidation_OnlyForExplicitPushStore validates adversarial
-// Finding 1: the post-rotation InvalidateCache (contract C4) must be wired ONLY
+// Finding 1: the post-rotation InvalidateCache (contract) must be wired ONLY
 // for an explicitly-registered push store, which rotates out of band from the
 // pull cache. The lazy poll wrapper (WithPolledCredentialStore) wraps the same
 // resolver and refreshes its cache on the detecting poll, so invalidating there
-// would delete a just-cached fresh entry and blind F5 stale-serve for a poll
+// would delete a just-cached fresh entry and blind stale-serve for a poll
 // interval. The builder must therefore NOT invalidate on the polled path.
 func TestPullCacheInvalidation_OnlyForExplicitPushStore(t *testing.T) {
 	t.Parallel()
@@ -158,7 +158,7 @@ func TestPullCacheInvalidation_OnlyForExplicitPushStore(t *testing.T) {
 
 	decoupled := NewBuilder(cfg, WithPushCredentialStore(&fakePushStore{}))
 	require.True(t, decoupled.pullCacheNeedsRotationInvalidation(),
-		"an explicitly-registered push store must invalidate the pull cache on rotation (contract C4)")
+		"an explicitly-registered push store must invalidate the pull cache on rotation (contract)")
 }
 
 // TestCredentialRefresher_NoopWithoutPush verifies the refresher is a

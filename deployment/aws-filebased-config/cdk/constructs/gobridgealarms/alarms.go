@@ -72,7 +72,7 @@ type AlarmsProps struct {
 	// deployment without that exporter emits no such metrics and the alarms
 	// would sit in INSUFFICIENT_DATA. The alarms carry NO dimensions and so
 	// only match the zero-dimension rollup series the exporter
-	// double-publishes (MF-4). They publish to AlarmTopic like every other
+	// double-publishes. They publish to AlarmTopic like every other
 	// alarm in the bundle.
 	EnableRollupAlarms bool
 
@@ -505,7 +505,7 @@ func newDynamoDBAlarms(scope constructs.Construct, prefix string, table awsdynam
 
 // newRollupAlarm builds a dimensionless alarm on a custom runtime rollup
 // metric. The alarm carries no DimensionsMap so it matches only the
-// zero-dimension rollup series the exporter double-publishes (MF-4).
+// zero-dimension rollup series the exporter double-publishes.
 func newRollupAlarm(scope constructs.Construct, id, namespace, metricName, statistic string,
 	threshold *float64, period awscdk.Duration, evals *float64,
 	action awscloudwatch.IAlarmAction, treatMissing awscloudwatch.TreatMissingData, desc string,

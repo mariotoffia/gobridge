@@ -41,7 +41,7 @@ type Sender struct {
 	// abandoned counts publisher channels currently parked on background
 	// reapers after a publish wedged past its deadline but whose wedged
 	// publish has not yet returned (the reaper is still blocked on <-done).
-	// It bounds the HIGH-4 leak: on a broker with heartbeats the wedged
+	// It bounds the leak: on a broker with heartbeats the wedged
 	// publishes unblock within the heartbeat read deadline and the reapers
 	// decrement it, but with heartbeats disabled (or a black-holed network)
 	// they could otherwise accumulate without bound. Once it reaches
@@ -137,7 +137,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		}
 	}
 
-	// Back-pressure on the abandoned-publish budget (HIGH-4): if too many
+	// Back-pressure on the abandoned-publish budget: if too many
 	// prior publishes wedged and their reapers have not drained yet, refuse
 	// new publishes fast (transient) rather than stacking another wedged
 	// channel on an unresponsive connection. The budget frees as the wedged
@@ -169,7 +169,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	// Reserve one abandoned-publish slot BEFORE issuing the wedgeable publish
-	// (HIGH-4 / review #2). Reserving up-front — not charging after the
+	// Reserving up-front — not charging after the
 	// timeout unlocks — makes the cap a hard bound on already-admitted callers:
 	// a caller that would push the reaper count past cfg.MaxAbandonedPublishes
 	// is refused here rather than allowed to publish, wedge, and only then
@@ -217,7 +217,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	res, perr := outcome.res, outcome.err
 	if perr != nil {
 		// A ctx-derived publish/confirm error means the broker accepted the
-		// publish but stalled before the publisher confirm (review #1). Closing
+		// publish but stalled before the publisher confirm. Closing
 		// the channel synchronously (resetChannelLocked → sc.Close) would wait
 		// for channel.close-ok on the SAME stalled broker and wedge s.mu,
 		// blocking every future send, shutdown and reconfig. Route it through
@@ -332,7 +332,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 			return results, nil
 		}
 	}
-	// Abandoned-publish back-pressure (HIGH-4): mirror Send's budget guard so
+	// Abandoned-publish back-pressure: mirror Send's budget guard so
 	// a batch cannot stack more wedged publishes once the reapers are saturated.
 	if s.abandonedBudgetExhausted() {
 		results := make([]ports.BatchResult, len(msgs))
@@ -377,7 +377,7 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 
 	s.mu.Lock()
 	// Reserve one abandoned-publish slot for the whole batch BEFORE any
-	// wedgeable publish (HIGH-4 / review #2), so a batch that would push the
+	// wedgeable publish, so a batch that would push the
 	// reaper count past cfg.MaxAbandonedPublishes is refused up-front instead of
 	// being allowed to publish, wedge, and only then blow the budget. A batch
 	// abandons at most one channel (it stops at the first publish wedge, and a
@@ -495,7 +495,7 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 	// ponytail: confirm-drain is confirm-preferred, bounded at-least-once.
 	// A message whose confirm already arrived is recorded with its real
 	// outcome via Settled() BEFORE the (possibly expired) sendCtx is honoured
-	// (review #6) — otherwise a delivered message loses the ctx.Done() select
+	// otherwise a delivered message loses the ctx.Done() select
 	// race and is misreported transient, duplicating on retry. The residual
 	// ceiling: publishes whose confirms are GENUINELY still in flight when the
 	// deadline fires are ambiguous (broker may or may not have persisted them)
@@ -522,7 +522,7 @@ func (s *Sender) sendBatchPipelined(ctx context.Context, msgs []ports.OutboundMe
 			switch {
 			case isPublishCtxError(err):
 				// The broker accepted the publish but stalled before the
-				// confirm (review #1). Closing the channel synchronously would
+				// confirm. Closing the channel synchronously would
 				// wait for channel.close-ok on the SAME stalled broker under
 				// s.mu, wedging every future send/shutdown/reconfig. Abandon it
 				// asynchronously after the loop instead. The stalled channel is
@@ -749,7 +749,7 @@ func reapWedgedChannel(done <-chan struct{}, sc channelCloser) {
 }
 
 // tryReserveAbandonedPublish atomically reserves one slot of the per-sender
-// abandoned-publish budget (HIGH-4) BEFORE a wedgeable publish is issued, so
+// abandoned-publish budget BEFORE a wedgeable publish is issued, so
 // the cap bounds already-admitted concurrent callers rather than only callers
 // that arrive after exhaustion. It returns false when the budget is already at
 // cfg.MaxAbandonedPublishes (a non-positive cap disables the guard). The CAS

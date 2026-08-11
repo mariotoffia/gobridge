@@ -140,7 +140,7 @@ type VisibilityTimeoutProvider interface {
 // When a receiver config satisfies it, the builder uses this per-route
 // window instead of the transport Factory's VisibilityTimeoutProvider
 // constant, so the runtime validator checks SendTimeout against the
-// window the route will actually run with (Finding 2 / D2).
+// window the route will actually run with (Finding 2 /).
 //
 // AutoExtendEnabled reports whether the receiver renews the window in the
 // background (SQS/ASB auto_extend). When true the finite-window

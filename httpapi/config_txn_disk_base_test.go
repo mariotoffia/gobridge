@@ -23,7 +23,7 @@ func bindingIDSet(bindings []ports.BindingDef) map[string]bool {
 }
 
 // TestConfigTxn_ComputeMerged_BasesOnDisk_NotStaleMemory is the content-level
-// regression for FIX 5: the CAS reads the disk version (Begin/Commit) but the
+// regression: the CAS reads the disk version (Begin/Commit) but the
 // pre-fix computeMerged based the merged CONTENT on the in-memory applied config
 // (configProvider). An operator's out-of-band disk edit that the watcher had not
 // yet applied therefore passed the version-only CAS and was silently clobbered
@@ -69,7 +69,7 @@ func TestConfigTxn_ComputeMerged_BasesOnDisk_NotStaleMemory(t *testing.T) {
 }
 
 // TestConfigTxn_Commit_DiskVersionBump_Conflicts is the version-level guard for
-// FIX 5: a concurrent disk edit that bumps the version after the transaction
+// a concurrent disk edit that bumps the version after the transaction
 // baselined must be caught by the commit-time CAS (which reads the disk version)
 // rather than silently overwriting the newer file.
 func TestConfigTxn_Commit_DiskVersionBump_Conflicts(t *testing.T) {

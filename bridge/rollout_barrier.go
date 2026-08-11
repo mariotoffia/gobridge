@@ -25,15 +25,15 @@ import (
 // is what keeps the cohort from running mixed versions.
 //
 // Every member proposes the delta it received from its own config source; the
-// first Propose wins the conditional create (I1) and the rest join the same
+// first Propose wins the conditional create and the rest join the same
 // generation. The digest recorded in the rollout row is the cross-member
 // agreement check: a member whose config source handed it different bytes
-// computes a different digest, cannot verify the proposal, and Nacks (F10) —
+// computes a different digest, cannot verify the proposal, and Nacks —
 // so a divergent config aborts the rollout instead of splitting the cohort.
 
 const (
 	// defaultRolloutTTL bounds how long a proposed rollout may stay unresolved
-	// before the coordinator aborts it (F1). The design's sizing (§13 Q2) is
+	// before the coordinator aborts it. The design's sizing (§13 Q2) is
 	// 2 × convergence budget floor + member build budget ≈ 5 minutes; NETCONF's
 	// confirmed-commit default (600 s) is the same order of magnitude.
 	defaultRolloutTTL = 5 * time.Minute
@@ -61,7 +61,7 @@ type ClusterRolloutConfig struct {
 	MemberID string
 
 	// Lease elects the rollout coordinator on a well-known lease id, and its
-	// LeaseToken is the fencing token passed to Commit/Abort (I3). Required: a
+	// LeaseToken is the fencing token passed to Commit/Abort. Required: a
 	// cohort with no coordinator never decides, so every rollout would sit until
 	// its TTL and expire. It may be the same LeaseStore the deployment already
 	// uses for exclusive routes — the lease id is distinct.
@@ -122,7 +122,7 @@ type rolloutBarrier struct {
 	// cand holds the candidate this node's OWN config source delivered, staged
 	// for the applier by digest (design §5, transport option (b) — see the
 	// candidate-transport note at the top of rollout_applier.go). Only one
-	// rollout is active at a time (I1), so one slot is enough; a newer candidate
+	// rollout is active at a time, so one slot is enough; a newer candidate
 	// overwrites the older one, which by then belongs to a rollout that has
 	// already resolved or is about to deadline-abort.
 	cand stagedCandidate
@@ -159,7 +159,7 @@ func (b *rolloutBarrier) stage(digest string, frozen, source *ports.BridgeConfig
 // candidate returns the staged candidate for digest, or ok=false when this node
 // has not (yet) seen that candidate through its own config source. Not-staged is
 // the normal state for a member whose watcher is lagging: it simply does not
-// vote yet, and the rollout deadline (F1) bounds the wait.
+// vote yet, and the rollout deadline bounds the wait.
 func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 	b.candMu.Lock()
 	defer b.candMu.Unlock()
@@ -233,7 +233,7 @@ func orDefault(d, fallback time.Duration) time.Duration {
 // rolloutMembers resolves the membership epoch from the applied config's static
 // bridge.cluster.members roster. It is the ONE membership source: the proposer
 // freezes the epoch from it and the coordinator compares live membership against
-// it, so the two cannot disagree and report a spurious F6 membership change on
+// it, so the two cannot disagree and report a spurious membership change on
 // every rollout.
 //
 // It returns nil when the roster is absent — the caller MUST fail closed rather
@@ -250,7 +250,7 @@ func rolloutMembers(cfg *ports.BridgeConfig) []string {
 // sortedSet renders member ids as the canonical set the barrier compares on:
 // sorted and deduplicated. persistence.NewRollout stores the frozen epoch in
 // exactly this form, so every comparison against it — the coordinator's live
-// membership check (F6) and the replacement-required roster check — must
+// membership check and the replacement-required roster check — must
 // normalise the same way or a reorder reads as a membership change.
 func sortedSet(ids []string) []string {
 	out := slices.Clone(ids)
@@ -347,7 +347,7 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 }
 
 // joinActive resolves a Propose that lost to an already-active rollout. The
-// store's ErrAlreadyExists answers "a rollout is active" (invariant I1 is
+// store's ErrAlreadyExists answers "a rollout is active" (invariant is
 // per-store), NOT "your rollout is active" — so it MUST be disambiguated by
 // reading the active row back:
 //

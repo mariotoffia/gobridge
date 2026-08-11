@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
 )
 
-// TestIntegration_Receiver_GracefulStop_NoLeakedConsumer is the F-1
+// TestIntegration_Receiver_GracefulStop_NoLeakedConsumer is the
 // regression proof against a live broker: a DIRECT embedder (no route
 // runner) that drives Run and stops it (ctx cancel) must NOT leave a
 // consumer registered — even WITHOUT calling Receiver.Close — because a

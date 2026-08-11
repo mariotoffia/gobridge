@@ -416,7 +416,7 @@ const (
 	// receiver bound to a session that never gets a manager is silently inert:
 	// nothing reconciles its plan, so it subscribes to nothing. The bridge
 	// builder uses this capability to require a session manager for every
-	// plan-driven receiver and to FAIL the build otherwise (ADV-P4-FU1).
+	// plan-driven receiver and to FAIL the build otherwise.
 	//
 	// Self-establishing transports (amqp10, whose receivers attach links on
 	// start independently of the plan) and address-direct transports

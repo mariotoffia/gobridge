@@ -16,8 +16,8 @@ import (
 // RouteRunner Concurrent Delivery & Global Semaphore
 //
 // Tests verifying that MaxInFlight now effectively limits concurrent
-// processing (P5) and the global semaphore throttles cross-route
-// concurrency (P6).
+// processing and the global semaphore throttles cross-route
+// concurrency.
 //
 // Summary:
 // ┌──────┬──────────────────────────────────────────────┬──────────┐

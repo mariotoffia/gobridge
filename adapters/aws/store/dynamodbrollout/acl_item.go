@@ -16,7 +16,7 @@ const (
 	DefaultTableName = "gobridge-rollouts"
 
 	// singletonPK is the fixed partition key of the single rollout row: a rollout
-	// store holds exactly one active rollout at a time (invariant I1), so the
+	// store holds exactly one active rollout at a time, so the
 	// aggregate is one item, not one-per-generation. A new generation overwrites
 	// the row (guarded by the revision counter), so history is not retained —
 	// matching the in-memory reference store's single-slot semantics.

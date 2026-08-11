@@ -68,7 +68,7 @@ func (b *Builder) validateFailoverBudgets() error {
 		}
 		if canonical.inputs.failoverSLO == 0 {
 			// No SLO declared: nothing to enforce, but the worst case must not
-			// stay silent (MQTT-F2). The auto-selected HA profile's 45s lease
+			// stay silent. The auto-selected HA profile's 45s lease
 			// TTL invites an operator to assume ~45s failover while the real
 			// worst case — lease TTL + poll boundaries + acquire-call budget +
 			// transport post-takeover activation — is several minutes with
@@ -175,7 +175,7 @@ func (b *Builder) failoverManagerCandidate(source, sessionID string, sc session.
 
 // logFailoverBudgetDisclosure computes and logs the worst-case failover
 // budget for one exclusive session whose config declares NO failover_slo
-// (MQTT-F2). Best-effort by design: a budget that cannot be computed
+// Best-effort by design: a budget that cannot be computed
 // (unknown transport timing, degenerate lease values) logs what is known
 // and never fails the build — enforcement is exactly what declaring
 // failover_slo buys.

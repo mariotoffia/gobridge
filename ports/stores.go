@@ -178,7 +178,7 @@ type LeaseStore interface {
 //     partition is REQUIRED — there is no magic empty-string "all partitions"
 //     value: the sweep is authorized by the caller's lease over that one
 //     partition, so it MUST NOT cross into partitions the caller does not own
-//     (M1). Claimed records are never expired here; a claimed-but-stale record
+//     Claimed records are never expired here; a claimed-but-stale record
 //     is reclaimed through Claim/IsClaimable, never expired out from under a
 //     potentially still-valid owner.
 //

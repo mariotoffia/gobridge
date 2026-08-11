@@ -141,7 +141,7 @@ func TestNewRollout_DefensiveCopy(t *testing.T) {
 // in rollout_confirm_test.go.
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithAck (I5: at-most-once, member-in-epoch, not-terminal)
+// WithAck (at-most-once, member-in-epoch, not-terminal)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRollout_Ack_FirstAckMovesToStaging(t *testing.T) {
@@ -206,7 +206,7 @@ func TestRollout_Ack_OnTerminalRejected(t *testing.T) {
 
 func TestRollout_Ack_EmptyBuildDigestRejected(t *testing.T) {
 	// An ack with no build digest is meaningless (the coordinator cannot verify
-	// the member converged to the right artifact) and is rejected (I5 guard).
+	// the member converged to the right artifact) and is rejected.
 	_, err := mustPropose(t).WithAck("node-a", "", time.Unix(1, 0))
 	if !errors.Is(err, shared.ErrRolloutAckRejected) {
 		t.Fatalf("empty-digest ack err = %v, want ErrRolloutAckRejected", err)
@@ -214,7 +214,7 @@ func TestRollout_Ack_EmptyBuildDigestRejected(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithCommit (I2: requires Staging + all acks; I3: fencing; I4: terminal)
+// WithCommit (requires Staging + all acks;: fencing;: terminal)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRollout_Commit_RequiresAllAcks(t *testing.T) {
@@ -231,7 +231,7 @@ func TestRollout_Commit_RequiresAllAcks(t *testing.T) {
 
 func TestRollout_Commit_FromProposedRejected(t *testing.T) {
 	// A Proposed rollout (no acks yet) is not committable: exercises the
-	// Proposed branch of the I2 barrier check, distinct from Staging+incomplete.
+	// Proposed branch of the barrier check, distinct from Staging+incomplete.
 	r := mustPropose(t)
 	if r.State() != persistence.RolloutProposed || r.CanCommit() {
 		t.Fatalf("precondition: want Proposed & !CanCommit, got %q canCommit=%v", r.State(), r.CanCommit())
@@ -276,7 +276,7 @@ func TestRollout_Commit_Idempotent(t *testing.T) {
 
 func TestRollout_Commit_NewerTokenIdempotentKeepsFence(t *testing.T) {
 	// A NEWER coordinator re-committing an already-committed rollout is an
-	// idempotent no-op success (design goal G3, "same-or-newer token").
+	// idempotent no-op success (design goal, "same-or-newer token").
 	c, _ := mustStaged(t).WithCommit(tok(2))
 	c2, err := c.WithCommit(tok(3))
 	if err != nil {
@@ -319,7 +319,7 @@ func TestRollout_Commit_OnAbortedRejected(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithAbort (I3: fencing; I4: terminal)
+// WithAbort (fencing;: terminal)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRollout_Abort_FromProposedOrStaging(t *testing.T) {
@@ -373,7 +373,7 @@ func TestRollout_Abort_OnCommittedRejected(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithNack (F2 input; coordinator later aborts)
+// WithNack (coordinator later aborts)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRollout_Nack_RecordsWithoutTerminating(t *testing.T) {
@@ -426,7 +426,7 @@ func TestRollout_Nack_OnTerminalRejected(t *testing.T) {
 }
 
 // TestRolloutFencingIsRejectionOfReDecisionOnly pins the ACTUAL reach of
-// invariant I3, which is narrower than "a deposed coordinator cannot flip
+// token fencing, which is narrower than "a deposed coordinator cannot flip
 // state": coordVersion is the version of the token that LAST DECIDED, and it is
 // zero while the rollout is non-terminal. So before any decision exists, every
 // valid token passes the fence — including a deposed coordinator's.
@@ -435,7 +435,7 @@ func TestRollout_Nack_OnTerminalRejected(t *testing.T) {
 // the live coordinator epoch BEFORE a decision (an explicit claim/heartbeat
 // write, a protocol addition, not a domain tweak). The residual is fail-SAFE and
 // bounded:
-//   - a zombie Commit still requires the full ack barrier (I2) — it can only do
+//   - a zombie Commit still requires the full ack barrier — it can only do
 //     what the live coordinator was about to do;
 //   - a zombie Abort leaves the OLD config serving (nothing swaps), costing the
 //     operator a retry, not correctness;
@@ -462,7 +462,7 @@ func TestRolloutFencingIsRejectionOfReDecisionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("documented gap: a pre-decision abort by a deposed coordinator is currently "+
 			"ACCEPTED; if this now errors the fence was strengthened — update this test and the "+
-			"design doc F5 row: %v", err)
+			"design doc row: %v", err)
 	}
 	if aborted.State() != persistence.RolloutAborted {
 		t.Fatalf("state = %q, want aborted", aborted.State())
@@ -471,15 +471,15 @@ func TestRolloutFencingIsRejectionOfReDecisionOnly(t *testing.T) {
 	// After a decision: the fence bites — the live coordinator cannot re-decide
 	// across directions, and a token older than the deciding one is stale.
 	if _, err := aborted.WithCommit(live); err == nil {
-		t.Fatal("commit of an aborted rollout must be rejected (I4)")
+		t.Fatal("commit of an aborted rollout must be rejected")
 	}
 	older := persistence.LeaseToken{Owner: "node-older", Version: 1}
 	if _, err := aborted.WithAbort(older, "older"); err == nil {
-		t.Fatal("an abort carrying a token below the deciding version must be stale-rejected (I3)")
+		t.Fatal("an abort carrying a token below the deciding version must be stale-rejected")
 	}
 }
 
-// TestRolloutAckIsNotIdempotent pins invariant I5 as a STRICT at-most-once vote:
+// TestRolloutAckIsNotIdempotent pins invariant as a STRICT at-most-once vote:
 // a member re-acking the same generation with the same build digest is rejected,
 // not silently accepted. A member whose Ack response was lost therefore MUST
 // recover by reading Current (its own ack is visible there) rather than blindly
@@ -497,7 +497,7 @@ func TestRolloutAckIsNotIdempotent(t *testing.T) {
 		t.Fatalf("first ack: %v", err)
 	}
 	if _, err := acked.WithAck("node-a", "build:1", time.Now()); err == nil {
-		t.Fatal("a repeated ack must be rejected (I5); recover by reading Current, not by retrying")
+		t.Fatal("a repeated ack must be rejected; recover by reading Current, not by retrying")
 	}
 	if _, ok := acked.Acks()["node-a"]; !ok {
 		t.Fatal("the recorded ack must remain readable so a retrying member can self-diagnose")

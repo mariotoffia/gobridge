@@ -139,7 +139,7 @@ func TestSharedOutbox_BasicFlow(t *testing.T) {
 	})
 }
 
-// TestSharedOutbox_BindingInheritsRouteSession is the regression test for A1:
+// TestSharedOutbox_BindingInheritsRouteSession is the regression test:
 // a shared_outbox binding that omits its own SessionID must inherit the route
 // session so the outbox record persists under the same SESSION#<id> partition
 // the single drainer polls. Without the inheritance the record is orphaned and
@@ -204,7 +204,7 @@ func TestSharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 	})
 
 	// The record drains through the route session's sender only when the
-	// binding inherited the route SessionID (A1); otherwise it is orphaned.
+	// binding inherited the route SessionID; otherwise it is orphaned.
 	waitFor(t, 2*time.Second, "message drained via inherited session", func() bool {
 		return sender.SentCount() >= 1
 	})
@@ -292,7 +292,7 @@ func TestSharedOutbox_OrphanBindingPlan_NotAckedOrLost(t *testing.T) {
 }
 
 // TestSharedOutbox_DrainPreservesLogicalSubject is the acceptance test for
-// T04: the drainer must dispatch using OutboxRecord.Address as the destination
+// the drainer must dispatch using OutboxRecord.Address as the destination
 // while leaving the persisted envelope's logical Subject untouched.
 func TestSharedOutbox_DrainPreservesLogicalSubject(t *testing.T) {
 	outbox := NewFakeOutboxStore()

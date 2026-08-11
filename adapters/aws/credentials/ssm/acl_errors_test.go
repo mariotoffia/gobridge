@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// Regression for J8: SSM SDK errors must be classified by behaviour so
+// Regression: SSM SDK errors must be classified by behaviour so
 // callers can react correctly, instead of collapsing every failure into
 // a generic "unavailable".
 func TestMapAWSError_Classification(t *testing.T) {

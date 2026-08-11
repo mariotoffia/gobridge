@@ -97,7 +97,7 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 //
 // All ValidateMQTTTopic / TestValidateMQTTTopic_* tests have been moved to
 // adapters/mqtt/transport/paho/topic_validator_test.go. The runtime no
-// longer owns MQTT topic semantics — see AP-005 (M-1).
+// longer owns MQTT topic semantics —.
 
 // ---------------------------------------------------------------------------
 // BindingResolver + MatchByHeader
@@ -255,7 +255,7 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 //
 // MQTT-specific resolver-level validation tests were removed as part of
-// AP-005 — BindingResolver no longer performs transport-aware address
+// BindingResolver no longer performs transport-aware address
 // validation. The route runner now invokes a per-binding
 // ports.AddressValidator returned by TransportFactory.AddressValidator,
 // so the equivalent end-to-end coverage lives next to the runner

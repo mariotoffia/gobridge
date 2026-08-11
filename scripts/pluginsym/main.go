@@ -3,7 +3,7 @@
 // composition root that wires concrete factories into the
 // *bridge.Supervisor / *bridge.Builder (factory side).
 //
-// Asymmetry is the AP-008 anti-pattern: an adapter registers a
+// Asymmetry is the anti-pattern: an adapter registers a
 // PluginConfig decoder for kind "foo" but no factory is ever wired
 // (or vice-versa). The runtime then fails at composition time with
 // an unhelpful error, and CI never noticed.

@@ -206,7 +206,7 @@ type ClusterProps struct {
 // EFS mount plus N worker Fargate tasks with RO EFS mount, sharing
 // a single EFS filesystem (one control access point, one worker
 // access point) and a single ECS cluster. It is a thin wrapper
-// over two [gobridgebase] (T10) instances — all task-def, EFS, IAM,
+// over two [gobridgebase] instances — all task-def, EFS, IAM,
 // asset and seeder machinery is owned by the shared base; this
 // construct only adds the surrounding ECS services, security
 // groups, EFS ingress rules and runs the Phase 1 / Phase 2 tier-B
@@ -280,7 +280,7 @@ type GoBridgeCluster struct {
 //  7. Run Phase 2 aggregated validation via CDK Annotations so a
 //     single synth surfaces every missing registry reference.
 //
-// TODO(T13): synth-time scope scan to enforce singleton
+// TODO: synth-time scope scan to enforce singleton
 // constraint — error if multiple GoBridgeSingle / GoBridgeCluster
 // siblings exist in the same Stack tree.
 func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterProps) *GoBridgeCluster {

@@ -83,7 +83,7 @@ func NewStore(client *dynamodb.Client, opts ...Option) *Store {
 
 // Propose opens a new rollout at the next monotonic generation. On an empty
 // store it creates generation 1 with a conditional PutItem that exactly one
-// racer can win (invariant I1); the rest observe the now-present row and get
+// racer can win; the rest observe the now-present row and get
 // ErrAlreadyExists. Over a terminal row it opens generation+1, guarded by the
 // revision counter so a concurrent proposer cannot double-open.
 func (s *Store) Propose(ctx context.Context, proposal persistence.RolloutProposal) (persistence.Rollout, error) {

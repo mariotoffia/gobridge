@@ -19,8 +19,7 @@ Companion docs in this folder:
 [`cluster-config-rollout-research.md`](cluster-config-rollout-research.md)
 (prior art & split-brain analysis — the external specs this design reuses).
 
-Date: 2026-07-26 · Relates to: ADR 0012, ADR 0013, ADR 0014,
-`PROD_READY_ISSUES.md` §3 CLUSTER-3 · Operations:
+Date: 2026-07-26 · Relates to: ADR 0012, ADR 0013, ADR 0014 · Operations:
 [`docs/runbooks/cluster-config-rollout.md`](../../runbooks/cluster-config-rollout.md)
 · Plain-language configuration guide: [`docs/cluster/README.md`](../README.md)
 
@@ -67,7 +66,7 @@ Non-goals
 - N4 Per-topic partial service (MQTT-RES-1) — unrelated, stays as is.
 - N5 Post-commit distributed rollback. Commit means "every member validated
   and built the candidate"; per-node convergence after swap remains guarded
-  by the existing MQTT-R1 watch (`ConfigDegraded`), same as single-node.
+  by the existing convergence watch (`ConfigDegraded`), same as single-node.
 
 ## 3. Protocol overview
 
@@ -84,7 +83,7 @@ operator ── POST config ──► any node (existing admin txn API)
                               │  Nack / timeout / epoch change → Abort(gen)
         every member ─────────┘  observes Committed → swap (prepare→commit)
                                  observes Aborted   → discard candidate
-                                 post-swap: MQTT-R1 convergence watch as today
+                                 post-swap: convergence watch as today
 ```
 
 States: `Proposed → Staging → Committed | Aborted` (terminal). One active
@@ -200,7 +199,7 @@ with an unseen generation — run rollout-class preflight (§8); fetch + digest-
 verify candidate; validate; **build a candidate runtime via the existing
 `applyPrepareCommit` prepare path but do not swap**; `Ack` (or `Nack` with
 the error). Then wait: on `Committed` → complete the prepared swap (post-swap
-MQTT-R1 watch runs as today); on `Aborted` → discard the candidate runtime
+the convergence watch runs as today); on `Aborted` → discard the candidate runtime
 (existing candidate-cleanup path, RECONFIG-2). Store notifications are
 hints, never truth: every decision re-reads the rollout row with
 `ConsistentRead` (research rule 11). **Each node is itself a token-checking
@@ -237,7 +236,7 @@ is live-safe (§8); everything else still refuses fail-closed exactly as today.
 | F5b | Deposed coordinator decides **first** (no decision recorded yet) | **Not fenced** — accepted. Fail-safe: a zombie Commit still needs the full ack barrier (I2), a zombie Abort just keeps the old config serving. Bounded in practice by the successor's lock-delay (§6) | Residual — accepted (§11) |
 | F6 | Membership changes mid-rollout (join/leave) | Abort; operator retries (cheap — nothing swapped) | Strict epoch equality; simplest safe rule |
 | F7 | Member crashes after Commit, before its swap | Rejoins and boots the committed gen — same config, no split | Joiner rule |
-| F8 | Committed config fails to converge on a node (e.g. broker unreachable) | No distributed rollback; that node latches `ConfigDegraded` via MQTT-R1, alarmed — parity with single-node behavior (unless a confirm window is set, §8.1) | §2 N5 |
+| F8 | Committed config fails to converge on a node (e.g. broker unreachable) | No distributed rollback; that node latches `ConfigDegraded` via the convergence watch, alarmed — parity with single-node behavior (unless a confirm window is set, §8.1) | §2 N5 |
 | F9 | Store unavailable mid-rollout | No state flips possible; members keep old config; rollout resolves (or deadline-aborts) when the store returns | All transitions are store writes |
 | F10 | Candidate bytes tampered / mismatched | Member digest check fails → Nack → abort | Digest in rollout row |
 
@@ -288,7 +287,7 @@ bridge:
 
 - On `Committed`, every node performs its swap **provisionally**, arming a
   local deadman timer of `confirm_window`.
-- Each node that reaches convergence (the MQTT-R1 readiness check — the
+- Each node that reaches convergence (the post-swap readiness check — the
   NMDA "intended vs operational" instrument) writes a `Converged` record.
 - The coordinator writes `Confirmed` (fenced CAS) when all epoch members
   converged; nodes observing `Confirmed` disarm their timers.

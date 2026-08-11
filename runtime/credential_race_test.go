@@ -3,7 +3,7 @@ package runtime_test
 // ═══════════════════════════════════════════════
 // CredentialResolver Race & Cache Tests
 //
-// Tests validating TOCTOU race fix (GO-3) and
+// Tests validating TOCTOU race fix and
 // cache behavior under concurrent access.
 //
 // Summary:

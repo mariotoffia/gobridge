@@ -86,7 +86,7 @@ const rolloutModeRefuse = "refuse"
 //     cohort to coordinate, and the guard never consults the barrier.
 //   - coordinated REQUIRES a non-empty bridge.cluster.members roster. The roster
 //     is the membership epoch the barrier freezes at Propose and counts acks
-//     against (I2); with an empty epoch every ack set vacuously covers it, so the
+//     against; with an empty epoch every ack set vacuously covers it, so the
 //     first coordinator observation would commit a config no member validated.
 //   - A duplicate member id is rejected rather than deduped: it means the roster
 //     was written by hand against a real cohort and one id is wrong, and the
@@ -208,7 +208,7 @@ func deploymentIsClustered(cfg *ports.BridgeConfig) bool {
 }
 
 // validateClusterEndpoints rejects the copied-from-docs peer-membership shape of
-// cluster.endpoints at load time instead of at forward time (finding HIGH-1).
+// cluster.endpoints at load time instead of at forward time.
 // cluster.endpoints advertises THIS instance's CAPABILITY endpoints keyed by
 // capability (e.g. http -> "http://host:port"); the HTTP forwarder looks up
 // target.Endpoints["http"] to forward a remote exclusive request
@@ -251,8 +251,8 @@ func validateClusterEndpoints(ve *ValidationError, cfg *ports.BridgeConfig) {
 }
 
 // validateClusteredExclusiveHTTPDirectHold rejects direct_hold delivery for a
-// clustered exclusive route whose ingress is the HTTP transport (finding
-// HIGH-4). Forwarded trusted HTTP requests deliberately skip the ownership
+// clustered exclusive route whose ingress is the HTTP transport.
+// Forwarded trusted HTTP requests deliberately skip the ownership
 // re-check (adapters/http/transport/receiver.go), and direct_hold sends straight
 // from the sender boundary with NO lease/fencing token
 // (runtime/route/runner.go), so a request forwarded to an owner that has just
@@ -341,10 +341,10 @@ func routeIsExclusive(cfg *ports.BridgeConfig, r ports.RouteDef) bool {
 // a standby take over while the old owner still believes it holds it, risking
 // split-brain. The per-attempt renewCallTimeout term matters because renewLoop
 // resets its timer AFTER the renew call returns, so a hung backend adds up to
-// renew_call_timeout to every attempt (finding H2). This mirrors the invariant
+// renew_call_timeout to every attempt. This mirrors the invariant
 // runtime/session Config.Validate enforces (renewWorstCaseSpan); duplicating it
 // in the config layer fails a statically-rejectable blueprint before any
-// runtime is built (contract C3). renew_interval left empty is derived
+// runtime is built (contract). renew_interval left empty is derived
 // downstream and is safe, so it is not checked here; lease_ttl empty falls back
 // to the runtime default.
 func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
@@ -390,7 +390,7 @@ func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
 			maxFails = defaultMaxRenewFails
 		}
 		// renew_call_timeout is an operator-settable blueprint field (finding
-		// H2 folded it into the safety invariant). When unset/zero the runtime
+		// folded it into the safety). When unset/zero the runtime
 		// derives it as min(renewInterval/2, 5s) floored at 1s
 		// (runtime/session.deriveRenewCallTimeout); the literals below duplicate
 		// that derivation so the config-layer worst case matches the runtime's.
@@ -443,7 +443,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 
 // validateConnectLeaseBudget warns when a deferred-connect (connect_after_lease)
 // lease-bound session's broker connect+reconcile budget can consume so much of
-// the lease TTL that the FIRST renewal completes at or after expiry (finding F2).
+// the lease TTL that the FIRST renewal completes at or after expiry.
 // For such a session the lease is acquired FIRST, then the broker connect AND the
 // subscription reconcile run (each bounded by the transport's connect budget),
 // and only then does the renew loop start — so the first renewal completes no
@@ -453,7 +453,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 //
 // after acquisition. The reconcile term is included because the runtime does not
 // begin renewing until subscriptions are re-established (ports.SessionReconciled);
-// omitting it understates real failover time (finding H4 — the budget math must
+// omitting it understates real failover time (finding — the budget math must
 // count connect AND reconcile, not connect alone). There is no dedicated
 // reconcile-timeout knob, so the subscribe round-trip is modelled conservatively
 // as one additional connect_timeout worth of broker interaction — an advisory
@@ -476,7 +476,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 //
 // Eager-connect sessions (connect_after_lease=false) connect BEFORE acquiring
 // the lease, so their connect budget does not erode the post-acquire TTL and is
-// skipped. nil defaults to true for these always-exclusive sessions (finding F6).
+// skipped. nil defaults to true for these always-exclusive sessions.
 func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 	const (
 		defaultMaxRenewFails = 3
@@ -531,7 +531,7 @@ func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 		// reconcile-timeout knob exists, so model the subscribe round-trip
 		// conservatively as one more connect_timeout worth of broker
 		// interaction. Including it stops the failover budget from understating
-		// real failover time (finding H4).
+		// real failover time.
 		reconcile := connect
 		firstRenew := connect + reconcile + renew + jitter/2 + callTimeout
 		if firstRenew >= lease {
@@ -550,7 +550,7 @@ func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 // connect_timeout is a transport-specific raw option (mqtt/amqp), so it is read
 // defensively from the session raw map (mirroring validateStaleClaimDuration); a
 // missing key, an unknown/absent raw map, or a non-duration value returns
-// ok=false so the F2 advisory is simply skipped rather than emitting a spurious
+// ok=false so the advisory is simply skipped rather than emitting a spurious
 // error the transport validator owns.
 func sessionConnectTimeout(cfg *ports.BridgeConfig, sessionID string) (time.Duration, bool) {
 	for i := range cfg.Sessions {
@@ -581,7 +581,7 @@ func sessionConnectTimeout(cfg *ports.BridgeConfig, sessionID string) (time.Dura
 }
 
 // derivedRenewIntervalForConfig duplicates runtime/session.deriveRenewInterval so
-// the F2 advisory uses the SAME effective renew interval the runtime derives when
+// the advisory uses the SAME effective renew interval the runtime derives when
 // renew_interval is left empty. The config package must not import runtime/session
 // (layering), so the formula and its literals are duplicated with this note; keep
 // it in sync with deriveRenewInterval/deriveRenewJitter.

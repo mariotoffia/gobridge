@@ -17,7 +17,7 @@ import (
 //
 // Encryption is always on. Performance mode is locked to General Purpose.
 // Both access points share root path "/" and identical POSIX identity;
-// RW vs RO separation is enforced at IAM and ECS volume level (see T08
+// RW vs RO separation is enforced at IAM and ECS volume level (see
 // grants and the facade mount config), NOT at POSIX user level.
 type GoBridgeEfsConfigProps struct {
 	// Vpc is the VPC in which EFS mount targets are created. Required.
@@ -59,7 +59,7 @@ type GoBridgeEfsConfigProps struct {
 	PosixGID *string
 }
 
-// GoBridgeEfsConfig is an L2 construct that creates (or reuses) an EFS
+// GoBridgeEfsConfig is an construct that creates (reuses) an EFS
 // filesystem with two access points - Control (intended RW) and Worker
 // (intended RO) - sharing root path "/".
 type GoBridgeEfsConfig struct {

@@ -27,7 +27,7 @@ func (f *dispatchTransportFactory) NewSender(_ context.Context, _ ports.SenderSp
 	return f.sender, nil
 }
 
-// TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject is the T11
+// TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject is the
 // acceptance test at the bridge.NewBuilder().Build() boundary. It asserts
 // that:
 //
@@ -38,10 +38,10 @@ func (f *dispatchTransportFactory) NewSender(_ context.Context, _ ports.SenderSp
 //   - The outbound envelope is a clone of the source delivery envelope
 //     (separate pointer) so downstream mutation cannot leak back into
 //     the source.
-func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
+func TestBridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 	const (
-		bindingAddress = "topic/test/T11"
-		logicalSubject = "logical.subject.T11"
+		bindingAddress = "topic/test/addressed"
+		logicalSubject = "logical.subject.addressed"
 		envelopeID     = "msg-t11"
 	)
 
@@ -118,11 +118,11 @@ func TestT11_BridgeBuilder_PropagatesAddress_PreservesSubject(t *testing.T) {
 		"source envelope Subject must remain unmutated")
 }
 
-// TestT11_BridgeBuilder_RejectsEmptyBindingAddress verifies that the
+// TestBridgeBuilder_RejectsEmptyBindingAddress verifies that the
 // configured BlueprintValidator (config.Validate) is run before any
 // transport, sender, or route is constructed and that an empty
 // BindingDef.Address is rejected.
-func TestT11_BridgeBuilder_RejectsEmptyBindingAddress(t *testing.T) {
+func TestBridgeBuilder_RejectsEmptyBindingAddress(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "bridge-t11-neg"},
 		Receivers: []ports.ReceiverDef{

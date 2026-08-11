@@ -73,7 +73,7 @@ type subscribeSpec struct {
 	// subscription already exists broker-side, so the broker suppresses a full
 	// retained replay — avoiding the reconnect-storm where each network blip
 	// re-delivers every retained message per filter and direct routes
-	// re-process retained state (A-7).
+	// re-process retained state.
 	RetainHandling byte
 }
 
@@ -129,7 +129,7 @@ type pahoConn struct {
 	// metrics is the session's exporter, threaded so PublishEnvelope can
 	// count egress header drops (MetricMQTTNonStringHeaderDropped) on the
 	// Sender path — the same counting the Sender used to do when it called
-	// PublishFromEnvelope directly (F-2). May be nil; PublishFromEnvelope
+	// PublishFromEnvelope directly. May be nil; PublishFromEnvelope
 	// tolerates a nil exporter (drop applied, uncounted).
 	metrics ports.MetricsExporter
 }

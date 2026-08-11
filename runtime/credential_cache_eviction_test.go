@@ -9,12 +9,12 @@ package runtime
 // +------+-----------------------------------------------------+
 // | ID   | Description                                         |
 // +------+-----------------------------------------------------+
-// | B5T1 | Filling to exactly maxEntries does NOT evict         |
-// | B5T2 | Entry 1001 triggers batch eviction of ~100 entries  |
-// | B5T3 | Eviction removes oldest entries (earliest expiry)   |
-// | B5T4 | Concurrent Resolve overflow -- no race conditions   |
-// | B5T5 | InvalidateCache works correctly after batch eviction|
-// | B5T6 | Expired entries evicted first before batch eviction |
+// | | Filling to exactly maxEntries does NOT evict |
+// | | Entry 1001 triggers batch eviction of ~100 entries |
+// | | Eviction removes oldest entries (earliest expiry) |
+// | | Concurrent Resolve overflow -- no race conditions |
+// | | InvalidateCache works correctly after batch eviction|
+// | | Expired entries evicted first before batch eviction |
 // +------+-----------------------------------------------------+
 
 import (

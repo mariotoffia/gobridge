@@ -17,12 +17,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-// Test_T21_Integration_Single_SQS_Roundtrip deploys the same single
+// TestIntegration_Single_SQS_Roundtrip deploys the same single
 // fixture, then uses the AWS SDK directly to SendMessage to the
 // inbound queue and ReceiveMessage from the outbound queue. The route
 // is configured 1:1 (inbound -> outbound) so a unique payload sent
 // to inbound must reappear on outbound within the polling window.
-func Test_T21_Integration_Single_SQS_Roundtrip(t *testing.T) {
+func TestIntegration_Single_SQS_Roundtrip(t *testing.T) {
 	env := RequireSandbox(t)
 
 	app := NewApp(t, env)

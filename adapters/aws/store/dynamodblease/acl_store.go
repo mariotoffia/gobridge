@@ -33,7 +33,7 @@ const (
 	// attrTTL is the legacy DynamoDB TTL attribute. New code never WRITES it,
 	// but every mutating operation issues `REMOVE #ttl` to strip any stale
 	// value a pre-fix build may have stamped, so a TTL reaper can never delete
-	// an actively-held lease row and reset its fencing version (see MF-1/J1).
+	// an actively-held lease row and reset its fencing version.
 	attrTTL = "ttl"
 )
 

@@ -108,12 +108,12 @@ func t20BaseMainContainer(t *testing.T, td map[string]any) map[string]any {
 	return nil
 }
 
-// Test_T20_Base_TaskDef_FargateBaselineShape asserts the structural baseline
+// TestBase_TaskDef_FargateBaselineShape asserts the structural baseline
 // of the emitted ECS TaskDefinition: NetworkMode=awsvpc, Cpu/Memory match the
 // bootstrap defaults, FARGATE compatibility, ExecutionRole present, and the
 // main container's LogConfiguration is awslogs with the expected stream
 // prefix.
-func Test_T20_Base_TaskDef_FargateBaselineShape(t *testing.T) {
+func TestBase_TaskDef_FargateBaselineShape(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -141,8 +141,8 @@ func Test_T20_Base_TaskDef_FargateBaselineShape(t *testing.T) {
 	}
 }
 
-// Test_T20_Base_PortMappings_AdminPlusHTTPReceiver covers the port-mapping
-// dimension required by T20: the yaml fixture declares an HTTP receiver
+// TestBase_PortMappings_AdminPlusHTTPReceiver covers the port-mapping
+// dimension required: the yaml fixture declares an HTTP receiver
 // (transport=http on port 9000-equivalent default 8082) plus admin defaults
 // to 8080. The TaskDefinition must surface BOTH PortMappings entries with
 // ContainerPort + Protocol=tcp.
@@ -151,7 +151,7 @@ func Test_T20_Base_TaskDef_FargateBaselineShape(t *testing.T) {
 // production knob to override to 9000 from the construct surface today. The
 // invariant we assert (admin + transport both on tcp) is the contract; the
 // exact numeric for transport defaults to the bootstrap-defined 8082.
-func Test_T20_Base_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
+func TestBase_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseHTTPYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 	td := t20BaseFindTaskDef(t, tpl)
@@ -178,10 +178,10 @@ func Test_T20_Base_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
 	}
 }
 
-// Test_T20_Base_IAM_SeederAssetReadGrants asserts the seeder asset task role
+// TestBase_IAM_SeederAssetReadGrants asserts the seeder asset task role
 // policy includes the S3 statements emitted by Asset.GrantRead — namely
 // s3:GetObject* and s3:GetBucket* (the latter covers GetBucketLocation).
-func Test_T20_Base_IAM_SeederAssetReadGrants(t *testing.T) {
+func TestBase_IAM_SeederAssetReadGrants(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -212,11 +212,11 @@ func Test_T20_Base_IAM_SeederAssetReadGrants(t *testing.T) {
 	}
 }
 
-// Test_T20_Base_IAM_EFSPerMode asserts the per-mode EFS grant matrix:
+// TestBase_IAM_EFSPerMode asserts the per-mode EFS grant matrix:
 // control role policies include BOTH ClientMount and ClientWrite; worker
 // role policies include ClientMount but NEVER ClientWrite (defense in
 // depth complement to the RO mount).
-func Test_T20_Base_IAM_EFSPerMode(t *testing.T) {
+func TestBase_IAM_EFSPerMode(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		mode           gobridgebase.Mode
@@ -261,12 +261,12 @@ func Test_T20_Base_IAM_EFSPerMode(t *testing.T) {
 	}
 }
 
-// Test_T20_Base_Mounts_PerModeReadOnlyFlag asserts MountPoints[0].ReadOnly is
+// TestBase_Mounts_PerModeReadOnlyFlag asserts MountPoints[0].ReadOnly is
 // false for control and true for worker on the gobridge main container.
 // (Existing TestNew_Control_MainMountIsRW_WorkerMountIsRO covers this; the
-// duplicate here is intentional per T20 spec which requires per-construct
+// duplicate here is intentional spec which requires per-construct
 // mount-readOnly assertions in this targeted file.)
-func Test_T20_Base_Mounts_PerModeReadOnlyFlag(t *testing.T) {
+func TestBase_Mounts_PerModeReadOnlyFlag(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mode gobridgebase.Mode
@@ -310,7 +310,7 @@ stores:
     type: dynamodb
 `
 
-func Test_T20_Base_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
+func TestBase_IAM_DynamoDBStoreGrantUsesRuntimeDefaultTable(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultDynamoStoreYAML)
 	assembly := awscdk.App_Of(stack).Synth(nil)
 	rendered := assembly.GetStackByName(stack.StackName()).Template()
@@ -335,7 +335,7 @@ receivers:
       wait_time_seconds: 20
 `
 
-func Test_T20_Base_IAM_AWSSQSAliasGetsExactQueueGrant(t *testing.T) {
+func TestBase_IAM_AWSSQSAliasGetsExactQueueGrant(t *testing.T) {
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -370,7 +370,7 @@ sessions:
       credentials_uri: pms://name/path
 `
 
-func Test_T20_Base_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
+func TestBase_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -402,7 +402,7 @@ stores:
     type: dynamodb
 `
 
-func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
+func TestBase_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDefaultLeaseStoreYAML)
 	assembly := awscdk.App_Of(stack).Synth(nil)
 	rendered, err := json.Marshal(assembly.GetStackByName(stack.StackName()).Template())
@@ -417,12 +417,12 @@ func Test_T20_Base_IAM_DefaultLeaseTableGetsTTLPreflightGrant(t *testing.T) {
 	}
 }
 
-// Test_T20_Base_IAM_DynamoDBStoreGrant asserts that a bridge config
+// TestBase_IAM_DynamoDBStoreGrant asserts that a bridge config
 // referencing a DynamoDB-backed store with an explicit table_name emits
 // DynamoDB read/write IAM actions on the task role, and that a config
-// with no DynamoDB store emits none. Guards J4: the AWS profile must
+// with no DynamoDB store emits none. Guards: the AWS profile must
 // grant the table actions the DynamoDB store adapter performs.
-func Test_T20_Base_IAM_DynamoDBStoreGrant(t *testing.T) {
+func TestBase_IAM_DynamoDBStoreGrant(t *testing.T) {
 
 	t.Run("granted-with-table-name", func(t *testing.T) {
 		stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseDynamoStoreYAML)

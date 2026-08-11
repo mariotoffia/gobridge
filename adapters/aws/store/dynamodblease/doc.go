@@ -5,7 +5,8 @@
 // Table: gobridge-leases (configurable)
 // Key: PK = "LEASE#<lease_id>"
 //
-// See ARCHITECTURE_NEW-STORES.md for table schema and operational guidance.
+// Operational guidance: docs/processors-and-stores.md, plus
+// docs/runbooks/lease-flapping-split-brain.md for lease incidents.
 //
 // # Authoritative key schema (verified by factory preflight)
 //

@@ -49,7 +49,7 @@ func (s *Session) handleServerDisconnect(code byte) {
 // from the third occurrence an explicit Error log names the
 // misconfiguration. MetricMQTTSessionTakeover counts every occurrence.
 //
-// Exception (HIGH-3): when shared subscriptions ($share) are active and the
+// Exception: when shared subscriptions ($share) are active and the
 // mode is NOT Exclusive, a single takeover already proves the scale-out
 // client_id-collision self-DOS (replicas that must be unique are sharing an
 // identity), so the Error log fires on the FIRST occurrence and names the
@@ -67,7 +67,7 @@ func (s *Session) noteSessionTakeover() {
 	s.lastTakeoverAt = now
 	streak := s.takeoverStreak
 	// A takeover while shared subscriptions ($share) are active is the
-	// smoking gun of the HIGH-3 self-DOS: another instance connected with the
+	// smoking gun of the self-DOS: another instance connected with the
 	// SAME client_id where scale-out demands UNIQUE ones. The only mode where
 	// a shared client_id is legitimate is Exclusive (a single leaseholder, so
 	// a takeover there is a normal lease handoff, not a collision). For every
@@ -118,7 +118,7 @@ func (s *Session) noteSessionTakeover() {
 // 0 for streak <= 1 (single takeover = legitimate failover; the standby
 // must not be slowed down), then 1s << (streak-2) capped at 64s.
 //
-// The penalty is gated on recency (A-4): it only applies while takeovers are
+// The penalty is gated on recency: it only applies while takeovers are
 // still actively arriving (the last one within takeoverStabilityWindow). Once
 // the collision resolves and no takeover has occurred for that window, the
 // penalty decays to 0 even though takeoverStreak is still high — an ordinary

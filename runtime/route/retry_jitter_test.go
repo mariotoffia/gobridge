@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestRetryDelay_JitterZeroIsDeterministic verifies finding #27: a zero
+// TestRetryDelay_JitterZeroIsDeterministic verifies: a zero
 // JitterFactor reproduces the exact deterministic exponential backoff,
 // even when the injected randomness source would otherwise shift it.
 func TestRetryDelay_JitterZeroIsDeterministic(t *testing.T) {

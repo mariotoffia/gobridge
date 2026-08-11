@@ -96,7 +96,7 @@ const (
 	// only that window; under a backlog deeper than the window an OLD record
 	// whose envelope ID sorted lexicographically late was never even
 	// CONSIDERED, so it starved indefinitely and per-partition ordered delivery
-	// silently broke (H1). Claim now scans EVERY claimable record in the
+	// silently broke. Claim now scans EVERY claimable record in the
 	// partition (paging until LastEvaluatedKey is nil) so the retained oldest-N
 	// are the TRUE oldest-N, matching the ascending-(CreatedAt, Seq)
 	// claim-ordering contract memory/sqlite honour via `ORDER BY created_at,
@@ -116,7 +116,7 @@ const (
 	// deepBacklogPageWarn is the number of DynamoDB Query pages a single Claim
 	// may scan before the store emits ONE loud WARN (throttled to once per
 	// Claim) and bumps MetricClaimScanPages. Because Claim pages the WHOLE
-	// partition to guarantee oldest-first delivery (H1), a partition whose
+	// partition to guarantee oldest-first delivery, a partition whose
 	// claimable backlog spans more pages than this makes each Claim O(backlog):
 	// an outage-recovery deep backlog would otherwise drain quadratically and
 	// SILENTLY. Crossing the threshold is the operator's signal to provision the
@@ -210,7 +210,7 @@ type Store struct {
 	// instead of resolving through the eventually consistent RecordIDIndex
 	// GSI (which can lag and report not-found, causing duplicate delivery).
 	// It is a bounded LRU so claimed-but-never-completed entries (lease
-	// churn) cannot grow it without limit; see keyCache (J-N1).
+	// churn) cannot grow it without limit; see keyCache (J).
 	keys *keyCache
 
 	// claimIndexAbsent latches true the first time a ClaimIndex Query fails
@@ -652,7 +652,7 @@ func (s *Store) fenceTTLEpoch(now time.Time) int64 {
 // check, A's next claim fails the fence condition and surfaces
 // shared.ErrStaleFencingToken.
 func (s *Store) Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
-	// Fencing guard (F1): the DynamoDB claim path bypasses the OutboxRecord
+	// Fencing guard: the DynamoDB claim path bypasses the OutboxRecord
 	// aggregate and drives raw conditional writes, so it must reject an invalid
 	// (zero-value) fencing token itself — BEFORE the fence read/advance and any
 	// per-record TransactWriteItems. A LeaseToken with an empty Owner or zero
@@ -846,7 +846,7 @@ func (s *Store) claimByIndex(
 // claimRetentionFactor*limit by (CreatedAt, Seq, EnvelopeID), then claims the
 // oldest N. DynamoDB Query returns items in SK order (lexicographic by envelope
 // ID, unrelated to record age), so the FIRST items encountered are NOT the
-// oldest; exhaustive paging proves the true oldest-N (H1), at O(backlog) cost —
+// oldest; exhaustive paging proves the true oldest-N, at O(backlog) cost —
 // the very cost the ClaimIndex fast path exists to avoid. Bounded retention
 // keeps client memory flat; a deep backlog is surfaced via deepBacklogPageWarn.
 func (s *Store) claimByScan(
@@ -918,7 +918,7 @@ func (s *Store) claimByScan(
 	}
 
 	var startKey map[string]ddbtypes.AttributeValue
-	// Claim pages the whole partition (H1), so a deep backlog makes this loop
+	// Claim pages the whole partition, so a deep backlog makes this loop
 	// O(backlog). Count pages/records scanned and, once a single Claim crosses
 	// deepBacklogPageWarn, emit ONE loud WARN (throttled via deepBacklogWarned)
 	// plus a partition-tagged counter so an outage-recovery quadratic drain on
@@ -1208,7 +1208,7 @@ func (s *Store) claimOne(
 // Complete marks the given records as completed after successful target delivery.
 // The caller's fencing token must match the claim_version on each record.
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// Fencing guard (F1): the completion fence is owner+version+status enforced
+	// Fencing guard: the completion fence is owner+version+status enforced
 	// via raw conditional UpdateItems that bypass the OutboxRecord aggregate, so
 	// reject an invalid (zero-value) token here — BEFORE resolving any record
 	// key or issuing an UpdateItem. An empty Owner or zero Version can never
@@ -1248,7 +1248,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			// let the record be re-DELIVERED on the next stale/version reclaim;
 			// a transient timeout instead keeps it claimed so the caller
 			// retries Complete once the GSI catches up, closing the
-			// duplicate-delivery window (at-least-once still holds). See J-N3.
+			// duplicate-delivery window (at-least-once still holds). See.
 			return shared.ErrTimeout.
 				WithMessage("outbox record key resolution timed out: RecordIDIndex GSI lag").
 				With("recordID", id)
@@ -1308,7 +1308,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // released record — the record is pending again, so it is claimable by any
 // token at or above the partition fence.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// Fencing guard (F1): Release fencing is owner+version+status, identical to
+	// Fencing guard: Release fencing is owner+version+status, identical to
 	// Complete, applied via raw conditional UpdateItems that bypass the
 	// OutboxRecord aggregate, so reject an invalid (zero-value) token here —
 	// BEFORE resolving any record key or issuing an UpdateItem. An empty Owner
@@ -1377,7 +1377,7 @@ func (s *Store) Release(ctx context.Context, recordIDs []string, token persisten
 }
 
 // Expire marks pending records whose ExpiresAt is before the given time as
-// expired, SCOPED to the supplied partition (M1). Claimed records are never
+// expired, SCOPED to the supplied partition. Claimed records are never
 // expired here, and records in other partitions are left untouched even when
 // past their expiry. Returns the count.
 //
@@ -1405,7 +1405,7 @@ func (s *Store) expireByStatus(ctx context.Context, status, partition string, be
 			KeyConditionExpression: aws.String("#he = :flag AND expires_at < :before"),
 			// FilterExpression scopes the index scan (hashed on has_expiry, not
 			// the partition) to a single partition so a lease-holder's sweep
-			// never expires another partition's records (M1).
+			// never expires another partition's records.
 			// ponytail: the ExpiryIndex hash is the single has_expiry="1" flag, so
 			// this partition-scoped Expire still READS every partition's
 			// expiry-eligible rows and filters client-side — cost is O(global

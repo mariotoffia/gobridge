@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// idempotentOutboxStore is a test double implementing the C3 contract: the
+// idempotentOutboxStore is a test double implementing the contract: the
 // stores agent is making ports.OutboxStore.Persist idempotent PER RECORD.
 // Duplicate envelope records (keyed by envelope-id + binding-id) are skipped,
 // genuinely new records are persisted, and ErrDuplicateRecord is returned ONLY
@@ -97,7 +97,7 @@ func (s *idempotentOutboxStore) calls() int {
 }
 
 // sequenceResolver returns a different plan set on each Resolve call, driving
-// the C3 partial-overlap redelivery scenario: first pass resolves {A}, the
+// the partial-overlap redelivery scenario: first pass resolves {A}, the
 // redelivery resolves {A, B}.
 type sequenceResolver struct {
 	mu  sync.Mutex
@@ -117,7 +117,7 @@ func (r *sequenceResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]
 }
 
 // TestRouteRunner_SharedOutbox_PartialOverlapRedelivery_PersistsMissingLeg is
-// the C3 verification. It proves that with the new per-record-idempotent
+// the verification. It proves that with the new per-record-idempotent
 // Persist contract, a redelivery whose fan-out partially overlaps an
 // already-persisted set does NOT lose the new leg:
 //

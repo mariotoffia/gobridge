@@ -22,7 +22,7 @@ import (
 // lease-table name copy-pasted — the config shapes are identical) would accept
 // the FIRST record per partition and then classify every subsequent record a
 // duplicate (attribute_not_exists(SK) fails against the existing PK-only item),
-// which the dispatcher acks and drops — a silent message shredder (H3).
+// which the dispatcher acks and drops — a silent message shredder.
 //
 // Semantics:
 //   - Table missing (ResourceNotFound): NON-fatal, returns nil. Build-then-

@@ -136,7 +136,7 @@ func newFakeStore(f *fakeDDB) *Store {
 	}
 }
 
-// Regression for J5: reading the monotonic claim fence must be an O(1)
+// Regression: reading the monotonic claim fence must be an O(1)
 // single GetItem on the per-partition fence row, not a full-partition scan.
 func TestClaim_FenceRead_IsSingleGetItem(t *testing.T) {
 	f := newFakeDDB()
@@ -165,7 +165,7 @@ func TestClaim_FenceRead_IsSingleGetItem(t *testing.T) {
 	}
 }
 
-// Regression for J2: Complete addresses records via the Claim-populated key
+// Regression: Complete addresses records via the Claim-populated key
 // cache and never touches the eventually consistent RecordIDIndex GSI on the
 // happy path (which could lag and report not-found → duplicate delivery).
 func TestComplete_UsesCachedKeys_NoGSILookup(t *testing.T) {
@@ -190,7 +190,7 @@ func TestComplete_UsesCachedKeys_NoGSILookup(t *testing.T) {
 	}
 }
 
-// Regression for J2: on a cold key cache Complete retries the lagging GSI up
+// Regression: on a cold key cache Complete retries the lagging GSI up
 // to the configured bound instead of giving up after a single not-found and
 // duplicating the message later.
 func TestComplete_RetriesLaggingGSI(t *testing.T) {
@@ -217,7 +217,7 @@ func TestComplete_RetriesLaggingGSI(t *testing.T) {
 	}
 }
 
-// Regression for J-N3: when the key cache misses and the RecordIDIndex GSI
+// Regression: when the key cache misses and the RecordIDIndex GSI
 // never converges within the bounded resolve retry, Complete must return a
 // retryable (transient) error, NOT a permanent ErrNotFound. The record was
 // just claimed (it exists in the base table), so the caller must retry
@@ -248,7 +248,7 @@ func TestComplete_GSILagExhaustion_ReturnsRetryable(t *testing.T) {
 	}
 }
 
-// Regression for J-N1: record keys are cached on Claim and only evicted on
+// Regression: record keys are cached on Claim and only evicted on
 // terminal Complete, so records this instance claimed but never completes
 // (lease churn) would grow the cache without bound. The LRU cap keeps it
 // bounded and retains the hottest (most-recently-claimed) keys that a
@@ -384,7 +384,7 @@ func TestClaim_RecordRaceLost_SkipsRecord(t *testing.T) {
 	}
 }
 
-// FIX 4: a per-record claim aborted by a DynamoDB TransactionConflict is still
+// a per-record claim aborted by a DynamoDB TransactionConflict is still
 // a benign skip (no error, no record), but it must be COUNTED via
 // shared.MetricOutboxClaimConflicts so a Claim under-filling because of contention is
 // observable — and a plain record-level ConditionalCheckFailed (a normal lost
@@ -619,7 +619,7 @@ func TestClaim_TransactionPairsFenceCheckWithRecordUpdate(t *testing.T) {
 	}
 }
 
-// Regression for the poison-record deadlock (finding 1 / contract C2): the
+// Regression for the poison-record deadlock (finding 1 / contract): the
 // store must never filter claimable records by replay count — poison
 // detection is the drainer's decision. A record whose replay_count is far
 // past any poison threshold must still be claimable so the drainer can

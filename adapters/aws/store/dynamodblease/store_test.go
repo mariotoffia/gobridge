@@ -97,7 +97,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 		}
 
 		// Takeover of an actively-held lease uses a local-clock observation
-		// window (finding M5): the taker must first observe the lease, then wait
+		// window: the taker must first observe the lease, then wait
 		// at least the lease TTL before it may seize. A single post-expiry
 		// acquire is therefore rejected; the pre-expiry attempt establishes the
 		// observation baseline.
@@ -118,7 +118,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	})
 
 	t.Run("ObservationWindowAbortsOnRenewal", func(t *testing.T) {
-		// Finding M5: the takeover observation window keys on the liveness tuple
+		// Finding: the takeover observation window keys on the liveness tuple
 		// (owner, version, renewed_at). If the owner renews after the taker
 		// begins observing, renewed_at advances, the tuple changes, and the
 		// observation window RESETS — the taker must NOT seize an actively

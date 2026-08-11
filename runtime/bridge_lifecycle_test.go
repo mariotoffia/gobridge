@@ -10,10 +10,10 @@ package runtime_test
 // +------+-----------------------------------------------------+
 // | ID   | Description                                         |
 // +------+-----------------------------------------------------+
-// | B1T1 | Start after failed Start (validation error)         |
-// | B1T2 | Start after Stop completes (full lifecycle restart) |
-// | B1T3 | Concurrent Start calls (only one succeeds)          |
-// | B1T4 | Stop works correctly after Start (no double unlock) |
+// | | Start after failed Start (validation error) |
+// | | Start after Stop completes (full lifecycle restart) |
+// | | Concurrent Start calls (only one succeeds) |
+// | | Stop works correctly after Start (no double unlock) |
 // +------+-----------------------------------------------------+
 
 import (

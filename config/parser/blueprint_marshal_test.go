@@ -20,9 +20,9 @@ type fakeBlueprintConfig struct {
 func (f fakeBlueprintConfig) Kind() string    { return f.KindName }
 func (f fakeBlueprintConfig) Validate() error { return nil }
 
-// Phase 5 of FIX-003 relocates the blueprint marshallers from ports/ to
-// config/ so the inner ring stays format-neutral. These tests lock in
-// the bridge-level options projection for both wire formats so the
+// The blueprint marshallers live in config/ rather than ports/ so the
+// inner ring stays format-neutral. These tests lock in the bridge-level
+// options projection for both wire formats so the
 // FileStore (config.WriteFile / parser.MarshalYAML) and DynamoDB Save
 // (parser.MarshalBridgeConfigJSON) paths do not silently drop typed
 // PluginConfig payloads.

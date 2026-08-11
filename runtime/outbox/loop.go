@@ -170,10 +170,10 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 // caller has already confirmed lease ownership, so exactly one instance performs
 // the sweep per partition. Expire is pending-only (claimed records are reclaimed
 // via Claim, never expired out from under a live owner), so the sweep never
-// races an in-flight send; it is partition-scoped (M1) so a drainer holding one
+// races an in-flight send; it is partition-scoped so a drainer holding one
 // partition's lease can never expire another partition's records.
 //
-// H1: the bulk sweep is DEFERRED entirely for on_expired:dlq routes. The sweep
+// the bulk sweep is DEFERRED entirely for on_expired:dlq routes. The sweep
 // only transitions records to the terminal "expired" state with a counter — it
 // destroys the envelope without routing it — so under the default ExpiredDLQ
 // policy a broker outage would erase evidence the operator asked to preserve.
@@ -276,7 +276,7 @@ func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
 }
 
 // storeOpContext bounds a single outbox-store operation (Claim) so a black-holed
-// store call cannot pin this drainer partition indefinitely (STORE-1). The bound
+// store call cannot pin this drainer partition indefinitely. The bound
 // reuses the route's SendTimeout (falling back to the default), a dependency-call
 // bound of the same class; a DeadlineExceeded is treated like any transient store
 // error and the partition is re-polled on the next cycle. The caller MUST invoke
@@ -301,7 +301,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 		)
 	}
 
-	// STORE-1: bound the Claim so a black-holed store call cannot pin this
+	// bound the Claim so a black-holed store call cannot pin this
 	// drainer partition indefinitely. A DeadlineExceeded is returned like any
 	// other transient Claim error and the partition is re-polled next cycle.
 	claimCtx, claimCancel := d.storeOpContext(ctx)
@@ -451,7 +451,7 @@ loop:
 						d.releaseRemainder(batchCtx, group[ri+1:], token)
 					case errors.Is(err, errReleaseFailed):
 						// Transient egress failure whose Release ALSO failed with
-						// a store error (M4). The head stays durably Claimed. Stop
+						// a store error. The head stays durably Claimed. Stop
 						// the group WITHOUT counting a success and WITHOUT letting
 						// a later same-key record overtake the still-claimed head.
 						// Do NOT releaseRemainder: the store that just failed
@@ -460,7 +460,7 @@ loop:
 						// together. Drives the backoff floor via transientReleases.
 						atomic.AddInt64(&transientReleases, 1)
 					case errors.Is(err, errCompletionFenced):
-						// Post-send fence tripped (HIGH-2): the batch was abandoned
+						// Post-send fence tripped: the batch was abandoned
 						// by the watchdog (or cancelled) AFTER this record's Send
 						// returned, so this owner did NOT Complete it. The fence's
 						// lease check (checked FIRST) already passed, so the lease

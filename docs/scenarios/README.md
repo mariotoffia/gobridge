@@ -128,7 +128,7 @@ as a container and operating it on AWS ECS Fargate using the L3 constructs in
 quickstart to a multi-bridge cluster.
 
 - **CDK 1. Quickstart with Default VPC** ([cdk/01-quickstart-default-vpc.md](cdk/01-quickstart-default-vpc.md)) — One-command stack with a fresh VPC, EFS, and a single Fargate task.
-- **CDK 2. Custom VPC & Existing Infrastructure** ([cdk/02-custom-vpc.md](cdk/02-custom-vpc.md)) — Reuses an existing VPC, subnets, and security groups via L2 constructs.
+- **CDK 2. Custom VPC & Existing Infrastructure** ([cdk/02-custom-vpc.md](cdk/02-custom-vpc.md)) — Reuses an existing VPC, subnets, and security groups constructs.
 - **CDK 3. HTTP Transport Behind API Gateway** ([cdk/03-api-gateway.md](cdk/03-api-gateway.md)) — Fronts the HTTP transport with API Gateway for managed ingress.
 - **CDK 4. Production-Ready Stack with Monitoring** ([cdk/04-production-stack.md](cdk/04-production-stack.md)) — Adds CloudWatch dashboards, alarms, autoscaling, and least-privilege IAM.
 - **CDK 5. Multi-Bridge Cluster with Shared EFS** ([cdk/05-multi-bridge-cluster.md](cdk/05-multi-bridge-cluster.md)) — Runs multiple bridge tasks behind a shared EFS configuration mount.
@@ -164,7 +164,7 @@ Reverse index for readers who know which capability they need to evaluate.
 
 ## Authoring a new scenario
 
-A dedicated `docs/scenarios/_template.md` is tracked under backlog item L-13
+A dedicated `docs/scenarios/_template.md` is tracked under backlog item
 and will land in a later pass. Until then, copy the closest existing scenario
 and adapt it: [Scenario 1](01-mqtt-to-mqtt.md) for a transport scenario, or
 [CDK Scenario 1](cdk/01-quickstart-default-vpc.md) for a deployment scenario.

@@ -18,15 +18,15 @@ import (
 
 // Tests for the barrier's behaviour under TRANSIENT failure. They exist because
 // the barrier turns local, recoverable problems into cohort-wide, permanent ones
-// unless each is classified correctly: a vote is unretryable (I5), an abort
+// unless each is classified correctly: a vote is unretryable, an abort
 // blocks the next change for a whole TTL, and a coordinator step-down costs a
 // full lock delay.
 
 // TestRolloutApplier_AbstainsWhenTheBuildFailsTransiently proves a transient
 // build failure produces NO vote rather than a Nack.
 //
-// A Nack is permanent and unretryable (I5) and the coordinator aborts on the
-// first one (F2). Builder.Plan opens stores and resolves credentials, so it
+// A Nack is permanent and unretryable and the coordinator aborts on the
+// first one. Builder.Plan opens stores and resolves credentials, so it
 // fails on a throttled store, a flaky credential provider, and — because the
 // applier builds under the drive loop's context — an ordinary SIGTERM. Nacking
 // those would let a single restarting member abort every in-flight rollout in
@@ -145,7 +145,7 @@ func (f *flakySenderFactory) NewSender(_ context.Context, _ ports.SenderSpec, _ 
 // fails RETRIES instead of stranding itself one generation behind the cohort.
 //
 // The barrier has already committed cluster-wide at this point, so a member that
-// silently gives up leaves exactly the mixed-version cohort G2 forbids — and
+// silently gives up leaves exactly the mixed-version cohort forbids — and
 // the rollout row reads "committed" on every member, so nothing would reveal it.
 // The common causes are transient, which is precisely why a retry converges.
 func TestRolloutApplier_RetriesAFailedAdopt(t *testing.T) {

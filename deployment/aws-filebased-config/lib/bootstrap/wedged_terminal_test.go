@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// TestRecoverPrevious_GiveUpMarksWedgedAndTerminal is the core FIX 1
+// TestRecoverPrevious_GiveUpMarksWedgedAndTerminal is the core
 // regression: when a prepare/commit swap has stopped the old runtime and its
 // recoverPrevious cannot restore one (here the nil-previous give-up path), the
 // App must latch WEDGED so runtimeTerminal reports terminal. Before the fix the
@@ -93,7 +93,7 @@ func TestTerminalRuntime_Sentinel(t *testing.T) {
 	require.Contains(t, rt.ComponentErrors(), "bootstrap")
 }
 
-// TestApp_LiveProbeFailsClosedWhenWedged is the end-to-end FIX 1 regression on
+// TestApp_LiveProbeFailsClosedWhenWedged is the end-to-end regression on
 // the /live side: a running App answers /live 200; a transient nil runtime
 // (swap window) still answers 200; but a WEDGED App answers 503 so an
 // orchestrator with a liveness probe restarts the dead-but-serving task. This

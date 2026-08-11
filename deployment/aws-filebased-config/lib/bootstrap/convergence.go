@@ -32,7 +32,7 @@ const (
 	bootstrapConvergenceBudgetFloor = 60 * time.Second
 	// bootstrapConvergenceReadyLevel is the readiness level that counts as
 	// converged. LevelSubscribed (not LevelFull) because a healthy standby is
-	// capped at LevelSubscribed by design; both MQTT-R1 failure classes still trip
+	// capped at LevelSubscribed by design; both failure classes still trip
 	// it (rotated credentials never connect; a rejected SUBACK never subscribes).
 	bootstrapConvergenceReadyLevel = ports.LevelSubscribed
 )

@@ -19,7 +19,7 @@ const (
 	rolloutLiveSafe rolloutDeltaClass = iota
 	// rolloutReplacementRequired marks a delta that alters durable identity or
 	// store targets (the reasons ADR 0012 exists). It is refused live and keeps
-	// the whole-cohort replacement procedure (§2 N2).
+	// the whole-cohort replacement procedure (§2).
 	rolloutReplacementRequired
 )
 
@@ -160,7 +160,7 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 // they cannot be rolled out through it:
 //
 //   - bridge.cluster.members IS the membership epoch the proposer freezes and
-//     the coordinator compares live membership against (F6). Rolling it would
+//     the coordinator compares live membership against. Rolling it would
 //     freeze the epoch from the OLD roster, commit under the OLD roster's acks,
 //     and leave the cohort running a config that declares a DIFFERENT roster: a
 //     member the delta adds never acked anything, and a member it removes keeps

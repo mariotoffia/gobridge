@@ -3,7 +3,7 @@ package runtime_test
 // ═══════════════════════════════════════════════
 // Route Locator Locate() Tests
 //
-// Tests for the Locate method (QA-C1).
+// Tests for the Locate method (QA).
 //
 // Summary:
 // ┌──────┬────────────────────────────────────────────┬──────────┐

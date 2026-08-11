@@ -82,7 +82,7 @@ func TestMarshalYAML_RoundTrip(t *testing.T) {
 	assert.Equal(t, 100, parsed.Routes[0].Policy.MaxInFlight)
 }
 
-// TestMarshalYAML_RevealsSecretOnSave_RedactsByDefault proves the G1 split:
+// TestMarshalYAML_RevealsSecretOnSave_RedactsByDefault proves the split:
 // the authoritative config serializer (the persistence save boundary) writes
 // the REAL secret via the explicit Reveal path so a load→save→reload cycle
 // preserves it, while a plain json.Marshal of the same config redacts.

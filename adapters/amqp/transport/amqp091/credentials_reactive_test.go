@@ -15,7 +15,7 @@ import (
 )
 
 // TestSession_SetAuthFailureCallback_ReconnectAuthFailure_ForcesReactiveReResolve
-// verifies the HIGH-3 reactive-recovery wiring: when a hard rotation revokes the
+// verifies the reactive-recovery wiring: when a hard rotation revokes the
 // old credentials, the reconnect redial fails with 403 access-refused
 // (shared.ErrNotAuthorized) and the URI-bound callback injected by the
 // CredentialRefresher is invoked, forcing an immediate re-resolve instead of

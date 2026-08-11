@@ -10,7 +10,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // BridgeError Audit Tests
 //
-// Validates edge cases identified by GO-016, QA-003:
+// Validates edge cases identified:
 //   - Zero-value BridgeError.Error() returns empty string
 //   - BridgeError.Is() matches by Code only (ignoring Class)
 //   - NewBridgeError constructor correctness

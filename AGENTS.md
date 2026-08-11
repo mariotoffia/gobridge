@@ -35,6 +35,37 @@ Treat these as hard rules — they are grep-able conventions, not machine-checke
 
 Everything else (naming, layering, plugin-config shape, ACL boundary, aggregate convention, timing rules, registry symmetry, gofmt / go vet / golangci-lint rules) is enforced by `make lint` and `make test`. Do not restate those rules in PR feedback — point at the failing checker.
 
+## MUST: Never reference a planning document
+
+Comments, test names, file names and docs MUST NOT carry review or task
+identifiers — `HIGH-3`, `CRITICAL 1`, `LOW-6`, `FIX 3 (XCUT-A)`, `finding F2`,
+`T14`, `chunk-07`, `round-2`, "see the design doc". Planning documents get
+deleted; the reference outlives them and points a reader at nothing.
+
+Reference only what is durable:
+
+| Reference | Example |
+|---|---|
+| An ADR | `see ADR-0006 — DLQ redrive is at-most-once` |
+| A canonical root doc + section | `ARCHITECTURE.md §2`, `DDD.md`, `PLUGIN.md`, `TESTS.md` |
+| A live page under `docs/` | `docs/cluster/spec/cluster-config-rollout-protocol.md §7` |
+| A `UBIQUITOUS.md` term | say `Subject`, `Address`, `plan`, `lease` — the glossary word, not a ticket |
+
+Otherwise write the rule in plain English: what must hold, and why.
+
+```
+// ✗  covers the HIGH-4 rule:
+// ✓  a clustered exclusive session may not also hold an HTTP direct-hold
+//    binding — both claim the same delivery slot, so the validator rejects
+//    the pair at load time.
+```
+
+Name test files and functions after the behaviour they pin, never after the
+batch that produced them (`numeric_bounds_test.go`, not `prodready_c15_test.go`).
+
+If a plan's decision is worth keeping, promote it to an ADR or a `docs/` page
+**before** the plan is deleted, then point at that.
+
 ## How to know you're done
 
 Two commands. That's it.

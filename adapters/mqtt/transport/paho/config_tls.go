@@ -51,7 +51,7 @@ func BuildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
 		// Explicit floor (Go's client default is already TLS 1.2, so this
 		// changes no accepted-version behaviour) — a documented minimum is
-		// cheaper defence-in-depth than relying on the library default (L-3).
+		// cheaper defence-in-depth than relying on the library default.
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // caller-controlled
 	}

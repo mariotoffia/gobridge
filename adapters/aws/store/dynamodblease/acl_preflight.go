@@ -17,7 +17,7 @@ import (
 // Preflight validates that the configured DynamoDB table's key schema matches
 // what the LEASE role needs and ENFORCES that DynamoDB TTL is DISABLED on it. It
 // is a build-time safeguard against a misprovisioned or copy-pasted table name
-// (H3) and against a fatal TTL misconfiguration (finding c13-lease-ttl-warn).
+// and against a fatal TTL misconfiguration (finding c13-lease-ttl-warn).
 //
 // The lease row IS the monotonic fencing counter of record. Two dangers:
 //   - Wrong key schema (e.g. an outbox/DLQ table with extra keys or a different

@@ -33,7 +33,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestStart_SharedSessionDrainer_RejectsConfigBleed covers audit R8 / Chunk 9
+// TestStart_SharedSessionDrainer_RejectsConfigBleed covers audit / Chunk 9
 // HIGH: exactly one outbox drainer exists per session partition. When two
 // DIFFERENT shared_outbox routes reference the same session with divergent
 // sender/policy, the second route's records would silently drain under the first
@@ -74,14 +74,14 @@ func TestStart_SharedSessionDrainer_RejectsConfigBleed(t *testing.T) {
 
 	err := rt.Start(ctx)
 	if err == nil {
-		t.Fatalf("R8: Start must reject a shared-session drainer config bleed, got nil error")
+		t.Fatalf("Start must reject a shared-session drainer config bleed, got nil error")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "route-first") || !strings.Contains(msg, "route-second") {
-		t.Fatalf("R8: error must name both the drainer-owning and the bleeding route, got: %v", msg)
+		t.Fatalf("error must name both the drainer-owning and the bleeding route, got: %v", msg)
 	}
 	if !strings.Contains(msg, "mqtt-shared-sess") {
-		t.Fatalf("R8: error must name the shared session partition, got: %v", msg)
+		t.Fatalf("error must name the shared session partition, got: %v", msg)
 	}
 	// A rejected Start must not have spawned any background work needing teardown,
 	// but Stop must remain safe to call.
@@ -126,7 +126,7 @@ func TestStart_SharedSessionDrainer_AllowsAlignedConfig(t *testing.T) {
 	waitFor(t, 2*time.Second, "sess started", sess.IsStarted)
 }
 
-// TestStart_SharedSessionDrainer_NormalizesDrainDefaults covers finding #12
+// TestStart_SharedSessionDrainer_NormalizesDrainDefaults covers
 // (MEDIUM): the drainer fingerprint must be computed over the NORMALIZED (post
 // outbox.New defaulting) drain config, not the raw session fields. outbox.New
 // defaults a zero DrainBatchSize/DrainMaxBatchSize/DrainMaxConcurrency/DrainTimeout
@@ -183,22 +183,22 @@ func TestStart_SharedSessionDrainer_NormalizesDrainDefaults(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("finding #12: zero-vs-explicit-default drain configs must fingerprint EQUAL and start, got: %v", err)
+		t.Fatalf("zero-vs-explicit-default drain configs must fingerprint EQUAL and start, got: %v", err)
 	}
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	waitFor(t, 2*time.Second, "sess started", sess.IsStarted)
 }
 
-// TestStart_SharedSessionDrainer_RejectsPolicyBleed_SameSender covers finding #14
-// case (a) AND CRITICAL-1: the reject guard must key on the drain/replay/DLQ
+// TestStart_SharedSessionDrainer_RejectsPolicyBleed_SameSender: the reject guard
+// must key on the drain/replay/DLQ
 // POLICY, not merely on sender identity. Two routes share a session and use the
 // SAME sender instance, but diverge on OnPermanentFailure (DLQ vs drop) — a field
 // the single per-partition drainer bakes in from whichever route it is built
 // from, so the second route's poisoned/permanently-failed records would be
 // routed under the wrong terminal policy (dropped with NO DLQ evidence after the
-// source was already ACKed — the CRITICAL-1 message-loss path). Two guards now
+// source was already ACKed — the message-loss path). Two guards now
 // close this: the side-effect-free validateSharedOutboxPartitions (validator.go)
-// rejects it FIRST at ValidateRoutes/Start (CRITICAL-1 hardening added
+// rejects it FIRST at ValidateRoutes/Start (hardening added
 // OnPermanentFailure + ReplayBudget to its drain-relevant fingerprint), and
 // checkSharedOutboxDrainerConflicts (bridge_start.go) enforces the same plus
 // sender identity and drain tuning. Either way Start must reject and name both
@@ -240,14 +240,14 @@ func TestStart_SharedSessionDrainer_RejectsPolicyBleed_SameSender(t *testing.T) 
 	defer cancel()
 	err := rt.Start(ctx)
 	if err == nil {
-		t.Fatal("finding #14a: divergent OnPermanentFailure on one session must reject even with the SAME sender")
+		t.Fatal("divergent OnPermanentFailure on one session must reject even with the SAME sender")
 	}
 	msg := err.Error()
 	// Both guards phrase the rejection with "divergent" + both route names + the
 	// shared session; assert those (stable across whichever guard fires first)
 	// rather than one guard's exact sentence.
 	if !strings.Contains(msg, "divergent") {
-		t.Fatalf("finding #14a/CRITICAL-1: expected a divergent-policy rejection, got: %v", msg)
+		t.Fatalf("expected a divergent-policy rejection, got: %v", msg)
 	}
 	if !strings.Contains(msg, "route-first") || !strings.Contains(msg, "route-second") {
 		t.Fatalf("error must name both routes, got: %v", msg)
@@ -260,13 +260,13 @@ func TestStart_SharedSessionDrainer_RejectsPolicyBleed_SameSender(t *testing.T) 
 	}
 }
 
-// TestStart_FanOutDrainer_RejectsPolicyBleed covers finding #14 case (b): the
+// TestStart_FanOutDrainer_RejectsPolicyBleed covers case (b): the
 // SECOND drainer-construction site — fan-out target sessions referenced by
 // bindings and registered via RegisterSessionSender. Two routes fan out to the
 // SAME registered session (same sender + drain config) but carry divergent
 // OnPermanentFailure. Start builds exactly one drainer for that fan-out partition
 // from whichever route claims it first, so the other route's records would drain
-// under the wrong terminal policy (the CRITICAL-1 loss path on a fan-out
+// under the wrong terminal policy (the loss path on a fan-out
 // partition). validateSharedOutboxPartitions now compares OnPermanentFailure via
 // each binding's effective session, so it rejects this at ValidateRoutes/Start;
 // checkSharedOutboxDrainerConflicts' site-2 path enforces the same. Either way
@@ -316,11 +316,11 @@ func TestStart_FanOutDrainer_RejectsPolicyBleed(t *testing.T) {
 	defer cancel()
 	err := rt.Start(ctx)
 	if err == nil {
-		t.Fatal("finding #14b: divergent policy on a shared FAN-OUT (site-2) drainer must reject")
+		t.Fatal("divergent policy on a shared FAN-OUT (site-2) drainer must reject")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "divergent") {
-		t.Fatalf("finding #14b/CRITICAL-1: expected a divergent-policy rejection on the fan-out partition, got: %v", msg)
+		t.Fatalf("expected a divergent-policy rejection on the fan-out partition, got: %v", msg)
 	}
 	if !strings.Contains(msg, "route-x") || !strings.Contains(msg, "route-y") {
 		t.Fatalf("error must name both fan-out routes, got: %v", msg)
@@ -334,7 +334,7 @@ func TestStart_FanOutDrainer_RejectsPolicyBleed(t *testing.T) {
 }
 
 // TestSharedOutboxDrainer_ScaledTimeoutDefaultEquivalence_AllowsStart covers
-// finding #24 (LOW): the drainer fingerprint must resolve the SCALED drain-timeout
+// (LOW): the drainer fingerprint must resolve the SCALED drain-timeout
 // pair (PerRecordDrainTimeout/MaxDrainTimeout) the same way outbox.ComputeBatchDeadline
 // does, instead of comparing them raw. In scaled mode a zero PerRecordDrainTimeout
 // defaults to 3s and a zero MaxDrainTimeout to 10s at compute time, so two routes
@@ -392,14 +392,14 @@ func TestSharedOutboxDrainer_ScaledTimeoutDefaultEquivalence_AllowsStart(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("finding #24: scaled routes differing only zero-vs-default in the drain-timeout pair must fingerprint EQUAL and start, got: %v", err)
+		t.Fatalf("scaled routes differing only zero-vs-default in the drain-timeout pair must fingerprint EQUAL and start, got: %v", err)
 	}
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	waitFor(t, 2*time.Second, "sess started", sess.IsStarted)
 }
 
 // TestValidateRoutes_SharedOutbox_RejectsDivergentTerminalPolicy is the direct
-// CRITICAL-1 regression: it exercises the OPERATOR-FACING, side-effect-free
+// regression: it exercises the OPERATOR-FACING, side-effect-free
 // rt.ValidateRoutes() path (NOT Start), which invokes validateRoutes ->
 // validateSharedOutboxPartitions but NOT Start's checkSharedOutboxDrainerConflicts.
 // Before the fix, drainRelevantPolicy OMITTED OnPermanentFailure and ReplayBudget,
@@ -449,7 +449,7 @@ func TestValidateRoutes_SharedOutbox_RejectsDivergentTerminalPolicy(t *testing.T
 	t.Run("divergent OnPermanentFailure is rejected", func(t *testing.T) {
 		rt := buildRuntime(t, "bridge-validate-onperm", func(id string, p *routing.RoutePolicy) {
 			// route-alpha keeps DLQ evidence; route-beta drops. A single drainer
-			// cannot honor both — the record-loss hazard CRITICAL-1 describes.
+			// cannot honor both — the record-loss hazard describes.
 			if id == "route-alpha" {
 				p.OnPermanentFailure = routing.FailureDLQ
 			} else {
@@ -458,7 +458,7 @@ func TestValidateRoutes_SharedOutbox_RejectsDivergentTerminalPolicy(t *testing.T
 		})
 		err := rt.ValidateRoutes()
 		if err == nil {
-			t.Fatal("CRITICAL-1: ValidateRoutes must reject divergent OnPermanentFailure on a shared partition")
+			t.Fatal("ValidateRoutes must reject divergent OnPermanentFailure on a shared partition")
 		}
 		assertDivergentConflict(t, err.Error(), sessionID)
 	})
@@ -475,7 +475,7 @@ func TestValidateRoutes_SharedOutbox_RejectsDivergentTerminalPolicy(t *testing.T
 		})
 		err := rt.ValidateRoutes()
 		if err == nil {
-			t.Fatal("CRITICAL-1: ValidateRoutes must reject divergent ReplayBudget on a shared partition")
+			t.Fatal("ValidateRoutes must reject divergent ReplayBudget on a shared partition")
 		}
 		assertDivergentConflict(t, err.Error(), sessionID)
 	})

@@ -139,7 +139,7 @@ func TestApp_ConfigHealthReportsRejectedReload(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 }
 
-// TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the B3
+// TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the
 // regression: a reload that fails to apply is written into logicalRef
 // (watchLoop does this before calling applyLogicalConfig), but the admin
 // config endpoint must surface the *effective* (applied) config, never the
@@ -355,7 +355,7 @@ func getJSON(t *testing.T, url, apiKey string) (*http.Response, map[string]any) 
 	return resp, body
 }
 
-// TestClusteredReload proves the H8 fail-closed guard on the AWS composition
+// TestClusteredReload proves fail-closed guard on the AWS composition
 // root: a live reload of (or INTO) a CLUSTERED deployment is refused via the
 // existing reload-failure path (applyLogicalConfig returns an error, so
 // watchLoop keeps the last-good runtime and applyCommittedConfig surfaces

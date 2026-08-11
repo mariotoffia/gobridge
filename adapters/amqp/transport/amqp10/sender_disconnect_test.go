@@ -27,7 +27,7 @@ import (
 //
 //	t0: link L1 created on conn1 (s.linkConn = conn1)
 //	t1: conn1 dies; session reconnects to conn2 (independent of sender)
-//	t2: Sender.Send on L1 returns "broken" error (still references conn1)
+//	t2: Sender.Send returns "broken" error (still references conn1)
 //	t3: handleSendFailure must NOT close conn2
 //
 // ───────────────────────────────────────────────

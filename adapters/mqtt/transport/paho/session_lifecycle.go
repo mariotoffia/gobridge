@@ -229,7 +229,7 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 		s.mu.Unlock()
 		return shared.ErrUnavailable.WithMessage("mqtt session is closed; Reload is not allowed after Close")
 	}
-	// FIX 1: await any in-flight Start BEFORE snapshotting s.cm. A
+	// await any in-flight Start BEFORE snapshotting s.cm. A
 	// supervisor-driven Start (superviseSession re-Run) can be mid-dial with
 	// s.cm not yet installed; if Reload snapshotted s.cm now it would see nil,
 	// SKIP the teardown, then call its own Start — which the Start guard
@@ -252,7 +252,7 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 		case <-ctx.Done():
 			// Abort BEFORE any teardown — nothing was disconnected, so the
 			// session is left intact (the in-flight Start completes on its
-			// own). This does not regress F-1, which only fires once our own
+			// own). This does not regress, which only fires once our own
 			// post-teardown rebuild Start fails.
 			return MapError(ctx.Err()).
 				WithMessage("mqtt reload: context expired awaiting in-flight Start")
@@ -299,7 +299,7 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	}
 
 	if err := s.Start(ctx); err != nil {
-		// F-1: the old CM was already torn down above, and this re-Start
+		// the old CM was already torn down above, and this re-Start
 		// failed (e.g. the broker is down during a credential-rotation
 		// Reload). The session is now DEAD — with no CM there is no
 		// autopaho reconnect and no further SessionEvent, so the runtime
@@ -329,7 +329,7 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 
 // closeEventsLocked closes the session's lifecycle-event channel exactly
 // once. TWO paths close it — Close (terminal shutdown) and Reload's
-// Start-failure terminal signal (F-1) — so a guard is required to avoid a
+// Start-failure terminal signal — so a guard is required to avoid a
 // double-close panic when both run (e.g. a Close landing after a
 // Reload-failure already closed events). pushEvent also checks
 // s.eventsClosed under s.mu, so no concurrent send can race this close.
@@ -444,7 +444,7 @@ func (s *Session) Close(ctx context.Context) error {
 		}
 	}
 	// Close under s.mu via the shared guard: a prior Reload-failure may
-	// already have closed s.events (F-1), so an unguarded close here would
+	// already have closed s.events, so an unguarded close here would
 	// double-close and panic. s.closed (set above) has already stopped every
 	// pushEvent, so this only finalises the channel.
 	s.mu.Lock()

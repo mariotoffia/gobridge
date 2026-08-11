@@ -200,7 +200,7 @@ func (s *countingSession) startCount() int {
 }
 
 // TestSessionManager_LeaseLoss_StopsAndRestartsSession is the regression test
-// for finding C3: on lease loss (step-down) an exclusive session manager must
+// for on lease loss (step-down) an exclusive session manager must
 // stop the source receiver so a now-non-owner cannot keep consuming/ACKing
 // source messages during failover (split-brain), and it must re-establish the
 // receiver when it re-acquires the lease.
@@ -457,7 +457,7 @@ func TestSessionManager_SingleUseSession_ReacquireSurfacesError(t *testing.T) {
 			// On re-acquire ensureConnected cannot restart a single-use
 			// session; Run must surface ErrUnavailable, classified as
 			// ErrSessionUnrecoverable so superviseSession escalates to a process
-			// restart instead of looping on the zombie (finding C3-CRITICAL).
+			// restart instead of looping on the zombie.
 			select {
 			case err := <-runErr:
 				if !errors.Is(err, shared.ErrUnavailable) {
@@ -476,7 +476,7 @@ func TestSessionManager_SingleUseSession_ReacquireSurfacesError(t *testing.T) {
 				// the RE-ACQUIRED lease version specifically is released: step-down
 				// already releases the OLD version once, so a weaker releaseCount()>=1
 				// check would stay green even if the re-acquire-path release (the
-				// actual C3-CRITICAL fix in releaseAndReturn) were removed.
+				// actual fix in releaseAndReturn) were removed.
 				reacquired := store.currentVersion()
 				if !store.wasReleased(reacquired) {
 					t.Fatalf("expected the re-acquired lease (version %d) to be released on the "+

@@ -100,7 +100,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 
 // handleStop pauses the bridge. This is a CLEAN, deliberate stop: it does NOT
 // mark the runtime terminal, so /live stays 200 and the liveness backstop does
-// NOT restart the process (CRITICAL 1 — a prior implementation called
+// NOT restart the process (a prior implementation called
 // rt.Stop directly, tripping terminal and killing the process within seconds of
 // returning 200). When a BridgeController (the supervisor) is wired the stop is
 // routed through it so the paused runtime can later be resumed by handleStart

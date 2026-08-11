@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// TestProcessor_InFlightBreakerSurvivesEvictionChurn is the L8-FU1 regression.
+// TestProcessor_InFlightBreakerSurvivesEvictionChurn is the regression.
 //
 // Hazard: Process fetches a breaker under p.mu, then uses it OUTSIDE the lock.
 // Before the fix a concurrent evictOldest (triggered by a full, high-cardinality

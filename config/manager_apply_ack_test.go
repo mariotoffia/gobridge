@@ -39,7 +39,7 @@ func withSessionOption(id string, version int, pc ports.PluginConfig) *ports.Bri
 	return cfg
 }
 
-// TestManager_Watch_FailedSwap_KeepsManagerConsistentWithRuntime is the HIGH-1
+// TestManager_Watch_FailedSwap_KeepsManagerConsistentWithRuntime is the
 // regression (desired-ahead-of-applied). An operator writes a syntactically
 // valid config that passes validation, so the manager commits and EMITS it
 // downstream — but the runtime swap then fails and the supervisor recovers the

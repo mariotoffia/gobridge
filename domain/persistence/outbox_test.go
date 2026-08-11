@@ -54,7 +54,7 @@ func newDispatchRecord(t *testing.T, dh map[string]any) *persistence.OutboxRecor
 
 // TestOutboxRecord_DispatchHeaders_InputMapMutationDoesNotLeak proves that
 // mutating the spec's DispatchHeaders map (including nested maps) after
-// construction cannot reach into the aggregate (finding #8: deep copy at
+// construction cannot reach into the aggregate (deep copy at
 // construction).
 func TestOutboxRecord_DispatchHeaders_InputMapMutationDoesNotLeak(t *testing.T) {
 	input := map[string]any{"k": "v0", "nested": map[string]any{"inner": "i0"}}
@@ -125,7 +125,7 @@ func TestOutboxRecord_PersistenceSnapshot_RehydrateIsolatesDispatchHeaders(t *te
 	}
 }
 
-// TestOutboxRecord_OrderingKey verifies finding #28: OrderingKey reads
+// TestOutboxRecord_OrderingKey verifies: OrderingKey reads
 // the messaging.HeaderOrderingKey header from the embedded envelope and
 // reports presence only for a non-empty string key.
 func TestOutboxRecord_OrderingKey(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Finding 15 / O3 — buildStores must wrap lease and outbox stores with the
+// Finding 15 / — buildStores must wrap lease and outbox stores with the
 // runtime's metric decorators when an exporter is configured, WITHOUT masking
 // the inner stores' optional capabilities (io.Closer on both, OutboxReleaser
 // on the outbox). A bare decorator here silently degrades the drainer's

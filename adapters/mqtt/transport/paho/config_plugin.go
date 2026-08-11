@@ -138,7 +138,7 @@ func (c Config) Validate() error {
 	if err := c.Session.Will.Validate(); err != nil {
 		return err
 	}
-	// HIGH-4: fail closed on cleartext username/password over a non-TLS
+	// fail closed on cleartext username/password over a non-TLS
 	// broker. Guarded internally by broker_urls being present, so a
 	// receiver/sender spec that carries no session connection block (empty
 	// broker_urls) is unaffected; the session spec — where broker_urls and
@@ -324,7 +324,7 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		applyTLSMaterial(&c.Session.TLS, set.TLS())
 	}
 	c.CredentialsURIRef = ""
-	// HIGH-4: the resolution above may have supplied the FIRST credentials
+	// the resolution above may have supplied the FIRST credentials
 	// (a credentials_uri-only config that deferred the plaintext gate at
 	// parse time). Re-run the gate now so resolved credentials over a non-TLS
 	// broker still fail closed unless explicitly opted in.

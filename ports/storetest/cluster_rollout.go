@@ -314,7 +314,7 @@ func rolloutCommitOfAborted(t *testing.T, store ports.ClusterRolloutStore) {
 		t.Fatalf("Abort: %v", err)
 	}
 	// commit-of-aborted is the terminal-immutable direction opposite to
-	// TerminalImmutable's abort-of-committed (I4).
+	// TerminalImmutable's abort-of-committed.
 	if err := store.Commit(ctx, gen, coordToken(2)); !errors.Is(err, shared.ErrRolloutTerminal) {
 		t.Fatalf("Commit of aborted: err = %v, want ErrRolloutTerminal", err)
 	}
@@ -337,7 +337,7 @@ func rolloutTerminalImmutable(t *testing.T, store ports.ClusterRolloutStore) {
 	if err := store.Commit(ctx, gen, coordToken(1)); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// abort-of-committed must be rejected (I4).
+	// abort-of-committed must be rejected.
 	if err := store.Abort(ctx, gen, coordToken(2), "x"); !errors.Is(err, shared.ErrRolloutTerminal) {
 		t.Fatalf("Abort of committed: err = %v, want ErrRolloutTerminal", err)
 	}
@@ -560,7 +560,7 @@ func rolloutProvisionalCommit(t *testing.T, store ports.ClusterRolloutStore) {
 }
 
 // rolloutProvisionalBlocksPropose proves the "new proposals refused while a
-// confirm window is pending" rule (design §8.1) falls out of I1: a provisional
+// confirm window is pending" rule (design §8.1) falls out: a provisional
 // commit is non-terminal, so Propose still conflicts.
 func rolloutProvisionalBlocksPropose(t *testing.T, store ports.ClusterRolloutStore) {
 	provisionalCommit(t, store, "node-a")
@@ -904,7 +904,7 @@ func mustCommitted(t *testing.T, store ports.ClusterRolloutStore) persistence.Co
 	return c
 }
 
-// rolloutConcurrentPropose proves I1's split-brain guard (design F4): many
+// rolloutConcurrentPropose proves's split-brain guard (design): many
 // goroutines racing to open a rollout on an empty store yield exactly ONE
 // winner; the rest get ErrAlreadyExists and no second active rollout exists.
 func rolloutConcurrentPropose(t *testing.T, store ports.ClusterRolloutStore) {
@@ -929,7 +929,7 @@ func rolloutConcurrentPropose(t *testing.T, store ports.ClusterRolloutStore) {
 	wg.Wait()
 
 	if winners.Load() != 1 {
-		t.Fatalf("Propose winners = %d, want exactly 1 (I1: single active rollout)", winners.Load())
+		t.Fatalf("Propose winners = %d, want exactly 1 (single active rollout)", winners.Load())
 	}
 	if conflicts.Load() != n-1 {
 		t.Fatalf("Propose conflicts = %d, want %d", conflicts.Load(), n-1)

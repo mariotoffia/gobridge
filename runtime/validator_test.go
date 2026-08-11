@@ -207,7 +207,7 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 
 // TestValidator_SharedOutbox_RejectsZeroPlanStaticResolver verifies a
 // shared_outbox route whose StaticResolver is fixed at ZERO plans is rejected at
-// registration (HIGH-1). Such a resolver would persist zero outbox records for
+// registration. Such a resolver would persist zero outbox records for
 // every message and then ACK the source with no delivery — silent loss. Because
 // the cardinality is statically knowable, the misconfiguration must fail fast at
 // Start, mirroring the direct_hold PlanCount()>1 rejection.
@@ -617,7 +617,7 @@ func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
 
 // TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected verifies that a
 // route whose effective on_permanent_failure routes to the DLQ is rejected when
-// no DLQ store is configured (A5: terminal failures must not be silently dropped).
+// no DLQ store is configured (terminal failures must not be silently dropped).
 func TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -639,7 +639,7 @@ func TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected(t *testing.T
 
 // TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected verifies that a
 // route whose effective on_expired routes to the DLQ is rejected when no DLQ
-// store is configured (A5).
+// store is configured.
 func TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -720,7 +720,7 @@ func TestValidator_SharedOutbox_RejectsZeroBindingsNoResolver(t *testing.T) {
 // TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates locks in the
 // no-false-positive contract: an ingress-only instance whose binding targets a
 // non-empty session that has NO drainer in THIS runtime must still validate.
-// This is the core cross-instance handoff (T11) — a different instance owns the
+// This is the core cross-instance handoff — a different instance owns the
 // session lease and drains the shared outbox. Local drainer absence is not proof
 // of orphaning, so the per-instance validator must not reject it.
 func TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates(t *testing.T) {
@@ -756,7 +756,7 @@ func TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates(t *testing.T)
 
 // TestValidator_SharedOutbox_RejectsExplicitTargetAccept verifies that an
 // explicit ack_after=target_accept on a shared_outbox route is rejected because
-// the outbox persist — not the downstream accept — is the durability boundary (A2).
+// the outbox persist — not the downstream accept — is the durability boundary.
 func TestValidator_SharedOutbox_RejectsExplicitTargetAccept(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
@@ -791,7 +791,7 @@ func TestValidator_SharedOutbox_RejectsExplicitTargetAccept(t *testing.T) {
 
 // TestValidator_SharedOutbox_RejectsOrphanBinding asserts that a shared_outbox
 // route with no route session and a binding that omits its session_id is
-// rejected at Start. With no session to inherit (the A1 fixup needs a route
+// rejected at Start. With no session to inherit (the fixup needs a route
 // session) and an empty binding session, the outbox record would persist under
 // a BINDING#<id> partition that no drainer ever polls — the source is ACKed
 // after persist and the record is silently lost. Validation must fail closed.
@@ -828,7 +828,7 @@ func TestValidator_SharedOutbox_RejectsOrphanBinding(t *testing.T) {
 
 // TestValidator_SharedOutbox_BindingInheritsRouteSession asserts the inverse of
 // the orphan case: an empty binding session is fine when the route has a
-// session for it to inherit (A1), so validation passes.
+// session for it to inherit, so validation passes.
 func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),

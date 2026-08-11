@@ -10,7 +10,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-7 (MED): subscriptions must set MQTT5 RetainHandling per session mode. A
+// (MED): subscriptions must set MQTT5 RetainHandling per session mode. A
 // persistent/exclusive session resumes across reconnects, so it re-SUBSCRIBEs
 // with RetainHandling 1 ("send retained only if the subscription did not
 // already exist"): the first subscribe still hydrates retained state, but every
@@ -64,13 +64,13 @@ func TestBug_Subscribe_RetainHandling_ByMode(t *testing.T) {
 		spec, ok := reconcileMode(t, connectivity.SessionEphemeral).specFor("sensors/+/temp")
 		require.True(t, ok, "the subscription was issued")
 		require.Equal(t, byte(0), spec.RetainHandling,
-			"A-7: an ephemeral session must rehydrate retained state on every connect")
+			"an ephemeral session must rehydrate retained state on every connect")
 	})
 
 	t.Run("persistent subscribes with RetainHandling 1", func(t *testing.T) {
 		spec, ok := reconcileMode(t, connectivity.SessionPersistent).specFor("sensors/+/temp")
 		require.True(t, ok, "the subscription was issued")
 		require.Equal(t, byte(1), spec.RetainHandling,
-			"A-7: a persistent session must suppress the retained replay on reconnect")
+			"a persistent session must suppress the retained replay on reconnect")
 	})
 }

@@ -14,7 +14,7 @@ import (
 // but whose complete() fails: the direct_hold route defaults its failure
 // handling to "dlq" while no DLQ store is configured, so ValidateRoutes rejects
 // it at the end of complete — the same abandon-after-prepare shape Finding 2
-// exercises, reused here for the HIGH-4 one-shot invariant.
+// exercises, reused here for the one-shot invariant.
 func highFourFailingConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},
@@ -54,7 +54,7 @@ func highFourValidConfig() *ports.BridgeConfig {
 	}
 }
 
-// TestBuildPlan_FailedCommitIsNotRetryable covers HIGH-4: a Commit is one-shot
+// TestBuildPlan_FailedCommitIsNotRetryable covers: a Commit is one-shot
 // even when it FAILS. complete()'s failure defers close the prep-opened store
 // handles, so a retried Commit would build a runtime over already-closed stores
 // (and double-close them). The plan is marked consumed BEFORE complete runs, so
@@ -79,7 +79,7 @@ func TestBuildPlan_FailedCommitIsNotRetryable(t *testing.T) {
 	require.Equal(t, int32(1), outbox.closes.Load(), "failed complete closes the prep outbox once")
 
 	// Second Commit must be REJECTED as one-shot, not re-run complete over the
-	// now-closed stores (which would double-close them — the HIGH-4 hazard).
+	// now-closed stores (which would double-close them — the hazard).
 	_, err2 := plan.Commit(ctx)
 	require.Error(t, err2)
 	assert.Contains(t, err2.Error(), "already committed",
@@ -88,7 +88,7 @@ func TestBuildPlan_FailedCommitIsNotRetryable(t *testing.T) {
 		"a rejected retry must not touch (double-close) the already-released handles")
 }
 
-// TestBuildPlan_CloseReleasesUncommittedStores covers HIGH-4: a plan that is
+// TestBuildPlan_CloseReleasesUncommittedStores covers: a plan that is
 // prepared but never committed leaks the SQLite/DynamoDB handles prepare opened
 // unless Close/Abort releases them. Close is idempotent and, once a plan is
 // closed, Commit is rejected.
@@ -121,7 +121,7 @@ func TestBuildPlan_CloseReleasesUncommittedStores(t *testing.T) {
 	assert.Contains(t, err.Error(), "after Close/Abort")
 }
 
-// TestBuildPlan_CloseAfterCommitIsNoOp covers HIGH-4's other half: once a plan
+// TestBuildPlan_CloseAfterCommitIsNoOp covers's other half: once a plan
 // is committed (successfully), Close must NOT close the store handles — the
 // runtime now owns them and closes them on Stop. Close on a committed plan is a
 // deliberate no-op so it can never double-close a live runtime's stores.

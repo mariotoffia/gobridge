@@ -158,7 +158,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 	// stale-fallback paths below: a lease can expire inside its CacheTTL window
 	// (nothing pins CacheTTL below lease_ttl), and serving an expired cached owner
 	// would forward exclusive traffic to a corpse for the rest of the CacheTTL —
-	// the same hazard the fresh-read bound closes (finding C3-M). Past expiry we
+	// the same hazard the fresh-read bound closes. Past expiry we
 	// fall through to a fresh read.
 	if hasCached && now.Sub(cached.fetchedAt) < rl.cacheTTL && now.Before(cached.info.ExpiresAt) {
 		if cached.info.Owner == rl.instanceID {
@@ -175,7 +175,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// current owner, so apply the configured posture rather than blindly
 		// processing locally. Default is fail-CLOSED (consistent with the
 		// session layer): refuse the decision so a non-owner does not process an
-		// exclusive route during a store outage (finding M7).
+		// exclusive route during a store outage.
 		return rl.onOwnershipUnknown(shared.ErrUnavailable, reasonStoreBreakerOpen)
 	}
 
@@ -184,7 +184,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// A not-found lease is NORMAL: the lease is momentarily unowned (mid
 		// transfer, or before the first acquisition). It is NOT a store failure
 		// and must NOT count toward the breaker, otherwise the breaker opens on
-		// every ordinary lease transfer (finding M7). We still cannot name an
+		// every ordinary lease transfer. We still cannot name an
 		// owner, so apply the ownership-unknown posture.
 		if errors.Is(err, shared.ErrNotFound) {
 			return rl.onOwnershipUnknown(shared.ErrNoRouteOwner, reasonLeaseUnowned)
@@ -201,7 +201,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 			// lease, after which the cached owner may have stepped down and a new
 			// owner (or none) taken over. Serving an age-unbounded stale owner
 			// then forwards exclusive traffic to an instance that no longer holds
-			// the lease indefinitely (finding C3-M). Past expiry we fall through
+			// the lease indefinitely. Past expiry we fall through
 			// to the ownership-unknown posture instead.
 			if cached.info.Owner == rl.instanceID {
 				return nil, true, nil
@@ -222,7 +222,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// it as authoritative forwards exclusive traffic to a dead owner for up
 		// to TTL+observation. Apply the same ExpiresAt bound the cached
 		// stale-fallback path enforces above and fall back to the
-		// ownership-unknown posture (503 + Retry-After) instead (finding C3-M).
+		// ownership-unknown posture (503 + Retry-After) instead.
 		//
 		// The corpse is intentionally NOT cached: caching an already-expired row
 		// is pointless — the cache-hit path above now re-checks ExpiresAt and

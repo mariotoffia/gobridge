@@ -16,7 +16,7 @@ import (
 // bindings sharing a session collapse to one. The advisory depth check (L3)
 // consults EVERY distinct partition, not just plans[0]'s, so a full partition on
 // any fan-out leg still applies backpressure — a single-binding route (the
-// common case) yields exactly one key, identical to the pre-L3 behavior.
+// common case) yields exactly one key, identical to the pre-behavior.
 func (r *RouteRunner) distinctOutboxPartitions(plans []routing.DispatchPlan) []string {
 	keys := make([]string, 0, len(plans))
 	seen := make(map[string]struct{}, len(plans))
@@ -40,7 +40,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 	if err != nil {
 		return nil, err
 	}
-	// HIGH-1: fail CLOSED on a resolver that returns ZERO dispatch plans. BOTH
+	// fail CLOSED on a resolver that returns ZERO dispatch plans. BOTH
 	// delivery modes resolve through this single choke point (direct_hold and
 	// shared_outbox), so one guard closes the shared_outbox silent-ACK path: an
 	// empty plan slice otherwise reached buildOutboxRecords, persisted zero
@@ -65,7 +65,7 @@ func (r *RouteRunner) resolvePlans(ctx context.Context, env *messaging.Envelope)
 }
 
 // validatePlanBindings fails CLOSED on any resolver plan that targets a binding
-// NOT declared on a route that HAS declared bindings (HIGH-5). A custom
+// NOT declared on a route that HAS declared bindings. A custom
 // DestinationResolver returning a DispatchPlan whose BindingID is absent from
 // r.bindings would otherwise reach senderForBinding, silently FALL BACK to the
 // route DEFAULT sender, pass only generic address sanity (not the intended
@@ -137,7 +137,7 @@ func (r *RouteRunner) resolveRawPlans(ctx context.Context, env *messaging.Envelo
 // validatePlanAddresses runs the per-binding AddressValidator (when
 // registered) against every plan's rendered Address. This is the
 // single point where the runtime applies transport-level address
-// rules; AP-005 promoted this from a hardcoded MQTT branch in each
+// rules; promoted this from a hardcoded MQTT branch in each
 // dispatch site to a generic capability surfaced by TransportFactory.
 // Bindings whose transport returns a nil validator are skipped.
 func (r *RouteRunner) validatePlanAddresses(plans []routing.DispatchPlan) error {
@@ -156,10 +156,10 @@ func (r *RouteRunner) validatePlanAddresses(plans []routing.DispatchPlan) error 
 // (if any). Returns a shared.ErrInvalidTopic-wrapped error on failure.
 //
 // When a binding's transport registers NO AddressValidator, a minimal
-// TRANSPORT-AGNOSTIC sanity check still runs (F7): a {header} placeholder splices
+// TRANSPORT-AGNOSTIC sanity check still runs: a {header} placeholder splices
 // producer-controlled bytes straight into the destination address, so an
 // otherwise-unvalidated rendered address is rejected when it is empty or carries
-// an ASCII control character (NUL, CR, LF, TAB, other C0, or DEL) — bytes that
+// an ASCII control character (NUL, CR, LF, TAB, other, or DEL) — bytes that
 // are never legitimate in a transport address and are the classic
 // address/header/log-injection vector. The check is deliberately conservative: it
 // does NOT reject wildcard or other metacharacters (an MQTT '#'/'+', an AMQP
@@ -183,8 +183,8 @@ func (r *RouteRunner) validateAddress(bindingID, address string) error {
 }
 
 // genericAddressSanity is the transport-agnostic fallback address check applied
-// only when a binding's transport registers no AddressValidator (F7). It rejects
-// an empty rendered address and any ASCII control character (the C0 range below
+// only when a binding's transport registers no AddressValidator. It rejects
+// an empty rendered address and any ASCII control character (the range below
 // 0x20, or DEL 0x7f) — never valid in a transport destination and the vehicle for
 // address/header/log injection when a {header} placeholder splices
 // producer-controlled bytes into the address. It intentionally permits every
@@ -208,14 +208,14 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 
 	// Persist the envelope without the source transport's redelivery-count
 	// headers so a drained record forwarded to the next hop does not carry a
-	// stale count the downstream bridge would misread as its own (E5-FU1).
+	// stale count the downstream bridge would misread as its own.
 	// Clone so the source envelope (re-read by receiveCount on retry paths) is
 	// untouched; NewOutboxRecords shares this finalized immutable snapshot
 	// across fan-out records.
 	persisted := env.Clone()
 	stripInboundReceiveCounts(persisted)
 
-	// Continue the distributed trace across the store-and-forward hop (OTEL-N3):
+	// Continue the distributed trace across the store-and-forward hop (OTEL):
 	// stamp THIS bridge's active ingress span onto the persisted envelope's W3C
 	// headers so a record drained later — by a separate drainer that no longer
 	// holds this span in context — still propagates a bridge hop downstream.

@@ -149,7 +149,7 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 
 	// Pre-expiry takeover attempt. It MUST be rejected (the lease is still
 	// held), and for a store that takes over via a local-clock observation
-	// window (dynamodblease, finding M5) it also establishes owner-B's
+	// window (dynamodblease) it also establishes owner-B's
 	// observation baseline so the post-expiry seize is permitted. A single-clock
 	// store (memorylease) simply rejects it as still-held.
 	if _, err := store.Acquire(ctx, "lt-aet-1", "owner-B", 30*time.Second, nil); !errors.Is(err, shared.ErrAlreadyExists) {
@@ -172,7 +172,7 @@ func leaseAcquireExpiredTakeover(t *testing.T, store ports.LeaseStore, opts *Lea
 
 // leaseTakeoverOnlyAfterTTL pins that an actively-held lease cannot be seized
 // until it has been observed unowned for a full TTL on the TAKER's own clock
-// (finding M5): repeated takeover attempts before the TTL elapses must all be
+// repeated takeover attempts before the TTL elapses must all be
 // rejected, and only after the expiry wait does the takeover succeed.
 func leaseTakeoverOnlyAfterTTL(t *testing.T, store ports.LeaseStore, opts *LeaseTestOptions) {
 	ctx := context.Background()
@@ -201,7 +201,7 @@ func leaseTakeoverOnlyAfterTTL(t *testing.T, store ports.LeaseStore, opts *Lease
 }
 
 // leaseRenewAfterTakeover pins the definitive lease-loss signal the session
-// layer relies on for immediate step-down (finding H2): once a new owner has
+// layer relies on for immediate step-down: once a new owner has
 // taken over an expired lease, the OLD owner's renew with its now-stale token
 // must be fenced with ErrStaleFencingToken (never a transient error), while the
 // new owner can still renew.
@@ -241,7 +241,7 @@ func leaseRenewAfterTakeover(t *testing.T, store ports.LeaseStore, opts *LeaseTe
 // operation: it returns a DEFINITIVE signal (ErrNotFound or ErrStaleFencingToken,
 // never a transient/opaque error), does not corrupt state, and leaves the lease
 // re-acquirable with a strictly higher fencing version. The manager's
-// release-then-reacquire recovery (finding M12) tolerates a double release, so
+// release-then-reacquire recovery tolerates a double release, so
 // the store must not surprise it.
 func leaseReleaseIdempotent(t *testing.T, store ports.LeaseStore) {
 	ctx := context.Background()

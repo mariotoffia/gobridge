@@ -141,7 +141,7 @@ func (s *Session) appliedPlanTopicsLocked() []string {
 // hold s.mu.
 //
 // Before the FIRST Reconcile of a process lifetime (s.plan == nil), EVERY
-// topic is treated as covered (MQTT-L2). Manager.Run calls Start before
+// topic is treated as covered. Manager.Run calls Start before
 // Reconcile, so a resumed clean_start=false broker replays the offline
 // QoS 1/2 backlog on CONNACK while no plan is stashed yet; if that window
 // outlives the grace timer (a reloadGate held by a concurrent operation, or
@@ -188,7 +188,7 @@ func (s *Session) topicCoveredLocked(topic string) bool {
 // planHasSharedSubscriptionsLocked reports whether the last reconciled plan
 // contains at least one shared subscription ("$share/<group>/<filter>"). It is
 // the signal that this session participates in horizontal scale-out, which
-// REQUIRES a unique per-instance client_id (HIGH-3): it drives the one-time
+// REQUIRES a unique per-instance client_id: it drives the one-time
 // reconcile advisory and escalates the severity of a session takeover (a
 // takeover while shared subscriptions are active is the observable symptom of
 // replicas sharing a client_id and DOSing each other). Callers must hold s.mu.
@@ -209,7 +209,7 @@ func (s *Session) planHasSharedSubscriptionsLocked() bool {
 // is still covered by a subscription the session wants — so the router can
 // distinguish a REAL live-route loss (a covered topic acked-and-dropped
 // past grace because its receiver handler registered late) from benign
-// orphan cleanup, and split the drop metric accordingly (M-3). It must be
+// orphan cleanup, and split the drop metric accordingly. It must be
 // called WITHOUT r.mu held (it takes s.mu); both router drop sites release
 // r.mu before invoking it.
 func (s *Session) topicCovered(topic string) bool {

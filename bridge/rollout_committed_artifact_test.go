@@ -166,7 +166,7 @@ func TestSupervisorRun_BootsOnCommittedAfterAbort(t *testing.T) {
 // that missed a commit (its active rollout row moved on before it observed the
 // commit) converges to the durable last-committed artifact — fetching the
 // committed BYTES, so it needs no staged candidate. Without this it would run an
-// older generation than the cohort (a mixed-version window G2 forbids).
+// older generation than the cohort (a mixed-version window forbids).
 func TestRolloutApplier_ReconcilesToCommittedArtifact(t *testing.T) {
 	codec := newConfigCodecFake()
 	f := newApplierFixtureCodec(t, "node-a", codec)

@@ -48,7 +48,7 @@ func TestFactory_Capabilities(t *testing.T) {
 	}
 }
 
-// F4: a ReceiveAndDelete route must NOT advertise CapVisibilityExtension
+// a ReceiveAndDelete route must NOT advertise CapVisibilityExtension
 // (Extend is a no-op) nor CapSourceRedelivery (no redelivery) — otherwise
 // the validator's "no retry + no DLQ = silent drop" check is masked. A
 // PeekLock route advertises the full set.
@@ -64,7 +64,7 @@ func TestConfig_Capabilities_ModeAware(t *testing.T) {
 		}
 	}
 
-	// FIX 4: a PeekLock topic subscription (no QueueName) cannot honour a
+	// a PeekLock topic subscription (no QueueName) cannot honour a
 	// delayed Retry — scheduling would fan out to sibling subscriptions,
 	// so it falls back to an immediate Abandon and CapDelayedSend is
 	// withheld. CapVisibilityExtension/CapSourceRedelivery REMAIN, so the
@@ -95,7 +95,7 @@ func TestConfig_Capabilities_ModeAware(t *testing.T) {
 // duration (the ASB visibility analog), falling back to the 30s default
 // when lock_duration is unset. The builder threads this value into the
 // runtime validator in preference to Factory.VisibilityTimeout(), so a
-// route with a short lock_duration is correctly guarded (Finding 2 / D2).
+// route with a short lock_duration is correctly guarded (Finding 2 /).
 func TestConfig_EffectiveVisibilityTimeout(t *testing.T) {
 	if got := (Config{}).EffectiveVisibilityTimeout(); got != 30*time.Second {
 		t.Errorf("unset lock_duration: got %v, want 30s", got)

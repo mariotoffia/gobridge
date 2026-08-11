@@ -30,11 +30,11 @@ type sqlSession struct {
 // The connection pool is capped at a single open connection: modernc.org/sqlite
 // gives every *sql.Conn its own private database for ":memory:" paths (a wider
 // pool would fracture an in-memory store), and on a file database it serialises
-// writers so in-process goroutines never race into SQLITE_BUSY (I2).
+// writers so in-process goroutines never race into SQLITE_BUSY.
 //
 // ponytail: single-writer ceiling — sufficient for the single-process
 // deployments this DLQ store targets; a read-heavy deployment would add a
-// separate read-only pool over the WAL. See I2.
+// separate read-only pool over the WAL. See.
 func openSession(path string) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -48,7 +48,7 @@ func openSession(path string) (*sqlSession, error) {
 	// timeout that first conversion fails fast with SQLITE_BUSY under
 	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
 	// block-and-retry up to the timeout — the retry policy for cross-process
-	// contention on a file database, including the initial WAL conversion (I2).
+	// contention on a file database, including the initial WAL conversion.
 	//
 	// synchronous=FULL is pinned explicitly rather than relying on the driver
 	// default: WAL mode's own default is NORMAL (which can lose the last

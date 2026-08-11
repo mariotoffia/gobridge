@@ -215,7 +215,7 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 }
 
 func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
-	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
 	// version, persistence.LeaseToken.Valid) can never own a real claim, so
 	// reject it as the FIRST statement — BEFORE the fence high-water-mark
 	// advances or any record is selected — so a miswired/buggy drainer cannot
@@ -293,7 +293,7 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 // fence mismatch (the durable backends report it identically via
 // rows-affected accounting).
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
 	// version, persistence.LeaseToken.Valid) can never match a real claim's
 	// non-empty owner + non-zero version, so reject it as the FIRST statement
 	// before any fence check or state mutation. Defense-in-depth: checkFences
@@ -335,7 +335,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // Like Complete, the batch is all-or-nothing: every fence is validated
 // before any record is mutated.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// F1 fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
+	// fencing guard: a zero-value / invalid LeaseToken (empty owner OR zero
 	// version, persistence.LeaseToken.Valid) can never match a real claim, so
 	// reject it as the FIRST statement before any fence check or state mutation
 	// (defense-in-depth alongside checkFences and the aggregate's zero-claim
@@ -417,7 +417,7 @@ func (s *Store) Expire(_ context.Context, before time.Time, partition string) (i
 	count := 0
 	now := s.clk.Now()
 	for _, r := range s.records {
-		// Partition-scoped (M1): a drainer's Expire sweep is authorized only for
+		// Partition-scoped: a drainer's Expire sweep is authorized only for
 		// the partition it holds the lease on, so records in other partitions are
 		// skipped even when past their expiry.
 		if partitionKey(r) != partition {

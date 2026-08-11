@@ -75,7 +75,7 @@ func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 
 // Verifies full Create → Get round-trip for an opaque password-only credential
 // (empty username, e.g. an Azure Service Bus SAS connection string) against
-// LocalStack SSM (HIGH-2).
+// LocalStack SSM.
 func TestIntegration_SSM_CreateAndGet_OpaqueSecret(t *testing.T) {
 	ep := localstack.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
@@ -97,7 +97,7 @@ func TestIntegration_SSM_CreateAndGet_OpaqueSecret(t *testing.T) {
 
 // Verifies an admin Create of an unusable credential set is rejected locally
 // and never creates an SSM parameter, so a subsequent Get finds nothing
-// (HIGH-1 end-to-end against LocalStack).
+// (end-to-end against LocalStack).
 func TestIntegration_SSM_Create_RejectsUnreadable(t *testing.T) {
 	ep := localstack.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))

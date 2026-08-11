@@ -28,7 +28,7 @@ const (
 	defaultRolloutPollInterval = 2 * time.Second
 
 	// defaultCoordLeaseTTL bounds how long a crashed coordinator blocks its
-	// successor (F3), and — because all coordinators share the TTL — doubles as
+	// successor, and — because all coordinators share the TTL — doubles as
 	// the Chubby-style lock delay a fresh coordinator waits out before its first
 	// side effect (§6, firstSideEffectAllowed).
 	defaultCoordLeaseTTL = 30 * time.Second
@@ -39,7 +39,7 @@ const (
 //
 // Losing the election is the NORMAL state for all but one member and is not an
 // error. A stale fencing token means this coordinator was deposed and the live
-// one already decided (F5): it steps down and stops acting, rather than fighting
+// one already decided: it steps down and stops acting, rather than fighting
 // a decision the store has already fenced.
 func (c *rolloutCoordinator) tick(ctx context.Context) error {
 	if !c.tok.Valid() {
@@ -83,7 +83,7 @@ func (c *rolloutCoordinator) tick(ctx context.Context) error {
 
 	if _, err := c.observe(ctx); err != nil {
 		if errors.Is(err, shared.ErrStaleFencingToken) {
-			// F5: deposed AFTER the live coordinator already decided. The store
+			// deposed AFTER the live coordinator already decided. The store
 			// rejected the stale re-decision, which is the fence doing its job.
 			c.stepDown("coordinator was deposed; the live coordinator has already decided", err)
 			return nil
@@ -108,7 +108,7 @@ func (c *rolloutCoordinator) stepDown(reason string, err error) {
 
 // resign releases the coordinator lease on orderly shutdown so a successor can
 // take over immediately instead of waiting out the TTL. Best-effort: a failure
-// simply falls back to TTL expiry, which is the crash path (F3) and always safe.
+// simply falls back to TTL expiry, which is the crash path and always safe.
 func (c *rolloutCoordinator) resign(ctx context.Context) {
 	if !c.tok.Valid() {
 		return

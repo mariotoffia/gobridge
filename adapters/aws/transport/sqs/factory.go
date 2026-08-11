@@ -101,7 +101,7 @@ func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
 // receiver config, so it reports the transport-wide default. A route that
 // sets e.g. visibility_timeout: 120 is threaded through instead via
 // Config.EffectiveVisibilityTimeout() (ports.VisibilityTimeoutConfig),
-// which the builder prefers over this constant (D2, Phase 1b). This
+// which the builder prefers over this constant (Phase 1b). This
 // method remains the fallback for callers that provide no receiver config.
 func (f *Factory) VisibilityTimeout() time.Duration {
 	return 30 * time.Second

@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestVerifyCandidateDigest_MatchAndTamper validates F10: a node verifies the
+// TestVerifyCandidateDigest_MatchAndTamper validates: a node verifies the
 // candidate bytes it fetched against the digest recorded in the rollout row
 // before building. Untampered bytes pass; a single changed byte fails, so the
 // node will Nack rather than build a substituted config.
@@ -65,7 +65,7 @@ func TestNodeRolloutGate_RecordIsMonotonic(t *testing.T) {
 	require.True(t, g.admits(6))
 }
 
-// TestNodeRolloutGate_F7ReadoptAfterCrashBeforeSwap validates F7: a node that
+// TestNodeRolloutGate_F7ReadoptAfterCrashBeforeSwap validates: a node that
 // committed generation N but crashed before swapping recorded no high-water for
 // N (recording happens after the swap completes). On rejoin its high-water is
 // still N-1, so it re-adopts the committed generation N rather than rejecting it.
@@ -92,7 +92,7 @@ func TestEvaluateProposal_AckableWhenLiveSafeAndDigestMatches(t *testing.T) {
 	require.Empty(t, reason)
 }
 
-// TestEvaluateProposal_NackOnDigestMismatch validates F10: mismatched bytes are
+// TestEvaluateProposal_NackOnDigestMismatch validates: mismatched bytes are
 // Nacked before any classification or build.
 func TestEvaluateProposal_NackOnDigestMismatch(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")

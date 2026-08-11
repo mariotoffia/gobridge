@@ -86,7 +86,7 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 // TestRetryDelay_PublicJitterStaysWithinBounds exercises the public
 // RetryDelay (which draws from math/rand/v2) and asserts the default
 // equal-jitter keeps every sample within [d*(1-jitter), d] and never
-// above MaxInterval — finding #27 via the production entry point.
+// above MaxInterval — via the production entry point.
 func TestRetryDelay_PublicJitterStaysWithinBounds(t *testing.T) {
 	policy := routing.RoutePolicy{Backoff: routing.BackoffPolicy{
 		InitialInterval: time.Second,
@@ -115,7 +115,7 @@ func TestRetryDelay_PublicJitterStaysWithinBounds(t *testing.T) {
 // MaxReplayAttempts boundary is honored per transport for ASB and amqp10
 // sources, not only SQS. At the cap a recoverable send error poisons the message
 // to the DLQ; one below the cap the same error retries — proving the boundary is
-// exact, not off-by-one. Regression for E5 (asb) / E5-AMQP10 — before the fix
+// exact, not off-by-one. Regression (asb) / — before the fix
 // receiveCount() read only the SQS header, returned 0 for these transports, and
 // the cap never triggered.
 func TestRouteRunner_DirectHold_MaxReplay_PerTransportCount(t *testing.T) {

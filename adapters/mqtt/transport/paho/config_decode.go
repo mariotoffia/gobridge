@@ -149,7 +149,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		opts.Will = will
 	}
 
-	// HIGH-4: reject cleartext username/password over a non-TLS broker unless
+	// reject cleartext username/password over a non-TLS broker unless
 	// explicitly opted in. Guarded internally by broker_urls being present.
 	if err := opts.validatePlaintextCredentials(); err != nil {
 		return opts, err
@@ -257,7 +257,7 @@ func tlsConfigFromMap(m map[string]any) *TLSConfig {
 	// decode path and BuildTLSConfig fully support these and let them WIN over
 	// the *_file keys, but this map path previously ignored them: a library
 	// consumer passing PEM through the map silently got system roots and no
-	// client certificate — an opaque auth failure (A-8). Parse them here so both
+	// client certificate — an opaque auth failure. Parse them here so both
 	// config paths behave identically. They are shared.Secret so key material
 	// redacts on marshal/log.
 	if v, ok := m["ca_cert_pem"].(string); ok && v != "" {
@@ -280,7 +280,7 @@ func tlsConfigFromMap(m map[string]any) *TLSConfig {
 // returns (0, false) — the caller keeps the field's default — rather than an
 // error: this map path is intentionally lenient for programmatic callers, and
 // strict validation of malformed input lives on the registry/YAML surface
-// (register.go's decoder rejects unknown or unparseable keys). L-1: the two
+// (register.go's decoder rejects unknown or unparseable keys).: the two
 // public config surfaces differ in strictness by design; this leniency is the
 // documented behaviour of the map path, not an oversight.
 func optDuration(m map[string]any, key string) (time.Duration, bool) {

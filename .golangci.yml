@@ -85,12 +85,12 @@ linters:
         # 3. Runtime accessors.
         - github.com/mariotoffia/gobridge/ports.RouteLocator
         # DLQ read/admin split returned by RuntimeQuery.DLQReader and
-        # RuntimeCommand.DLQAdmin (the DLQStore seam split for finding #16).
+        # RuntimeCommand.DLQAdmin (the DLQStore seam split).
         - github.com/mariotoffia/gobridge/ports.DLQReader
         - github.com/mariotoffia/gobridge/ports.DLQAdmin
         # Builder.effectivePushStore returns either the explicitly-registered
         # push store or a poll wrapper built lazily behind the same port; the
-        # caller must not know which (order-independence, finding #13).
+        # caller must not know which (order-independence).
         - github.com/mariotoffia/gobridge/ports.PushCredentialStore
 
         # 4. Domain / port polymorphic seams.
@@ -108,7 +108,7 @@ linters:
         # lib/bootstrap): the composition root picks a MetricsExporter
         # implementation from config; callers must not know which.
         - github.com/mariotoffia/gobridge/ports.MetricsExporter
-        # FIX-003: PluginConfig is the typed plugin-options seam returned
+        # PluginConfig is the typed plugin-options seam returned
         # by Registry.Decode; RawConfig is the stage-1 carrier the
         # config parser hands to adapter decoders. Both are polymorphic
         # by construction — that is the entire point of the registry.
@@ -129,7 +129,7 @@ linters:
         # pahoConnection is the SDK-free publish seam the MQTT Sender drives
         # (Session.connection() hands it back). Package-private so Sender.Send
         # can publish through PublishEnvelope inside the ACL boundary and unit
-        # tests can inject a fake connection (F-2). *pahoConn is the sole
+        # tests can inject a fake connection. *pahoConn is the sole
         # production impl.
         - github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho.pahoConnection
         - github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm.ssmAPI
@@ -145,7 +145,7 @@ linters:
         - go.opentelemetry.io/otel/sdk/metric/metricdata.Aggregation
         # samplerFromConfig composes ParentBased/TraceIDRatioBased, both of
         # which the OTel SDK hands back as the sdktrace.Sampler interface;
-        # there is no exported concrete sampler type to return (K6).
+        # there is no exported concrete sampler type to return.
         - go.opentelemetry.io/otel/sdk/trace.Sampler
         - github.com/aws/aws-cdk-go/awscdk/v2.Stack
         - github.com/aws/aws-cdk-go/awscdk/v2/awsefs.IFileSystem
@@ -194,7 +194,7 @@ linters:
           msg: "use clock.Since via dependency injection (see domain/clock)"
         - pattern: '^time\.Until$'
           msg: "compute via clk.Now (see domain/clock)"
-        # H-3: production code must surface an invalid envelope as an
+        # production code must surface an invalid envelope as an
         # error it can classify into a BridgeError, not panic or
         # silently substitute a placeholder ID. The Must* helpers are
         # test-fixture constructors. Exempted below by the existing
@@ -204,7 +204,7 @@ linters:
         # calls it unqualified inside package messaging, so it does not
         # match this pattern.
         - pattern: '^messaging\.MustEnvelope(WithReserved)?$'
-          msg: "use messaging.NewEnvelope and surface the error (H-3)"
+          msg: "use messaging.NewEnvelope and surface the error"
 
     depguard:
       rules:
@@ -227,7 +227,7 @@ linters:
               desc: "domain must not depend on bridge"
 
         # Ports must not leak technology types. config is gated on
-        # FIX-003 (the bridge handover currently keeps config DTOs in
+        # (the bridge handover currently keeps config DTOs in
         # the inner ring transitively).
         ports:
           list-mode: lax
@@ -279,7 +279,7 @@ linters:
             - pkg: "github.com/mariotoffia/gobridge/bridge"
               desc: "runtime must not depend on bridge (composition root)"
 
-        # FIX-004 Phase 6: belt-and-suspenders cross-context bans.
+        # Phase 6: belt-and-suspenders cross-context bans.
         # The .go-arch-lint.yml deps block is the primary enforcer;
         # these depguard rules catch the same violations at file
         # scope so violations surface in the IDE / pre-commit lint
@@ -299,15 +299,15 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
-              desc: "FIX-004 bounded context: domain/shared must not import domain/messaging"
+              desc: "bounded context: domain/shared must not import domain/messaging"
             - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
-              desc: "FIX-004 bounded context: domain/shared must not import domain/persistence"
+              desc: "bounded context: domain/shared must not import domain/persistence"
             - pkg: "github.com/mariotoffia/gobridge/domain/routing"
-              desc: "FIX-004 bounded context: domain/shared must not import domain/routing"
+              desc: "bounded context: domain/shared must not import domain/routing"
             - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
-              desc: "FIX-004 bounded context: domain/shared must not import domain/connectivity"
+              desc: "bounded context: domain/shared must not import domain/connectivity"
             - pkg: "github.com/mariotoffia/gobridge/domain/clock"
-              desc: "FIX-004 bounded context: domain/shared must not import domain/clock"
+              desc: "bounded context: domain/shared must not import domain/clock"
 
         domain-messaging-isolation:
           list-mode: lax
@@ -316,15 +316,15 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/shared"
-              desc: "FIX-004 bounded context: domain/messaging must not import domain/shared"
+              desc: "bounded context: domain/messaging must not import domain/shared"
             - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
-              desc: "FIX-004 bounded context: domain/messaging must not import domain/persistence"
+              desc: "bounded context: domain/messaging must not import domain/persistence"
             - pkg: "github.com/mariotoffia/gobridge/domain/routing"
-              desc: "FIX-004 bounded context: domain/messaging must not import domain/routing"
+              desc: "bounded context: domain/messaging must not import domain/routing"
             - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
-              desc: "FIX-004 bounded context: domain/messaging must not import domain/connectivity"
+              desc: "bounded context: domain/messaging must not import domain/connectivity"
             - pkg: "github.com/mariotoffia/gobridge/domain/clock"
-              desc: "FIX-004 bounded context: domain/messaging must not import domain/clock"
+              desc: "bounded context: domain/messaging must not import domain/clock"
 
         domain-persistence-isolation:
           list-mode: lax
@@ -333,11 +333,11 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/routing"
-              desc: "FIX-004 bounded context: domain/persistence must not import domain/routing"
+              desc: "bounded context: domain/persistence must not import domain/routing"
             - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
-              desc: "FIX-004 bounded context: domain/persistence must not import domain/connectivity"
+              desc: "bounded context: domain/persistence must not import domain/connectivity"
             - pkg: "github.com/mariotoffia/gobridge/domain/clock"
-              desc: "FIX-004 bounded context: domain/persistence must not import domain/clock"
+              desc: "bounded context: domain/persistence must not import domain/clock"
 
         domain-routing-isolation:
           list-mode: lax
@@ -346,11 +346,11 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
-              desc: "FIX-004 bounded context: domain/routing must not import domain/persistence"
+              desc: "bounded context: domain/routing must not import domain/persistence"
             - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
-              desc: "FIX-004 bounded context: domain/routing must not import domain/connectivity"
+              desc: "bounded context: domain/routing must not import domain/connectivity"
             - pkg: "github.com/mariotoffia/gobridge/domain/clock"
-              desc: "FIX-004 bounded context: domain/routing must not import domain/clock"
+              desc: "bounded context: domain/routing must not import domain/clock"
 
         domain-connectivity-isolation:
           list-mode: lax
@@ -359,13 +359,13 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
-              desc: "FIX-004 bounded context: domain/connectivity must not import domain/messaging"
+              desc: "bounded context: domain/connectivity must not import domain/messaging"
             - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
-              desc: "FIX-004 bounded context: domain/connectivity must not import domain/persistence"
+              desc: "bounded context: domain/connectivity must not import domain/persistence"
             - pkg: "github.com/mariotoffia/gobridge/domain/routing"
-              desc: "FIX-004 bounded context: domain/connectivity must not import domain/routing"
+              desc: "bounded context: domain/connectivity must not import domain/routing"
             - pkg: "github.com/mariotoffia/gobridge/domain/clock"
-              desc: "FIX-004 bounded context: domain/connectivity must not import domain/clock"
+              desc: "bounded context: domain/connectivity must not import domain/clock"
 
         domain-clock-isolation:
           list-mode: lax
@@ -374,15 +374,15 @@ linters:
             - "!$test"
           deny:
             - pkg: "github.com/mariotoffia/gobridge/domain/shared"
-              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/shared)"
+              desc: "bounded context: domain/clock must remain pure stdlib (no domain/shared)"
             - pkg: "github.com/mariotoffia/gobridge/domain/messaging"
-              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/messaging)"
+              desc: "bounded context: domain/clock must remain pure stdlib (no domain/messaging)"
             - pkg: "github.com/mariotoffia/gobridge/domain/persistence"
-              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/persistence)"
+              desc: "bounded context: domain/clock must remain pure stdlib (no domain/persistence)"
             - pkg: "github.com/mariotoffia/gobridge/domain/routing"
-              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/routing)"
+              desc: "bounded context: domain/clock must remain pure stdlib (no domain/routing)"
             - pkg: "github.com/mariotoffia/gobridge/domain/connectivity"
-              desc: "FIX-004 bounded context: domain/clock must remain pure stdlib (no domain/connectivity)"
+              desc: "bounded context: domain/clock must remain pure stdlib (no domain/connectivity)"
 
     # wrapcheck allow-list (binding seed from
     # _design/error-wrapping-policy.adoc §"Confirmed wrapcheck
@@ -393,7 +393,7 @@ linters:
       # wrapcheck's built-in defaults, so the standard wrapping
       # primitives (.Errorf, errors.New/Unwrap/Join, pkg/errors
       # helpers) are repeated here explicitly. The project-specific
-      # entry is .Err() (Q2): context.Context.Err() and any *.Err()
+      # entry is.Err(): context.Context.Err() and any *.Err()
       # method returning a single error are idiomatic propagation
       # points; wrapping adds no info.
       ignore-sigs:
@@ -410,7 +410,7 @@ linters:
       ignore-sig-regexps:
         - \.Err\(\) error$
 
-      # Allow-listed packages (Q1, Q3): the entire gobridge module
+      # Allow-listed packages: the entire gobridge module
       # graph is one logical project. Decorator forwarding of
       # ports.* errors must remain transparent so domain sentinels
       # survive errors.Is/errors.As checks downstream. Pattern uses
@@ -418,7 +418,7 @@ linters:
       ignore-package-globs:
         - github.com/mariotoffia/gobridge/**
 
-      # Allow-listed interfaces (Q1): any method whose receiver
+      # Allow-listed interfaces: any method whose receiver
       # implements a ports.* interface is treated as decorator
       # forwarding by default. Real classification happens in the
       # leaf adapter that calls the SDK. wrapcheck matches against
@@ -434,7 +434,7 @@ linters:
         # Thresholds are tuned to accommodate the current state of
         # bridge.Builder (wireRoutes ~80) and config.validate (~144,
         # which is itself a smell — the schema validator is doing too
-        # much). FIX-005 final pass should ratchet these down toward
+        # much). A later pass should ratchet these down toward
         # 15 once those functions are split into per-step helpers.
         - name: cognitive-complexity
           arguments: [150]
@@ -484,7 +484,7 @@ linters:
       # - validate/blueprint_graph.go declares two lookup maps used by
       #   the resolver/route validator. Go has no const map literal;
       #   the maps are functionally immutable. (Moved here from
-      #   config/validate_resolver.go by L-3.)
+      #   config/validate_resolver.go.)
       # - adapters/http/transport/receiver.go declares an atomic.Uint64
       #   counter for HTTP-side monotonic envelope IDs. Package-shared
       #   counter (not per-receiver), legitimate atomic usage.
@@ -497,7 +497,7 @@ linters:
         path: "^domain/clock/clock\\.go$"
       # - validate/blueprint_graph.go declares two lookup maps used by
       #   the resolver/route validator (moved here from
-      #   config/validate_resolver.go by L-3). Go has no const map
+      #   config/validate_resolver.go). Go has no const map
       #   literal; the maps are functionally immutable.
       - linters: [gochecknoglobals]
         path: "^validate/blueprint_graph\\.go$"
@@ -552,7 +552,7 @@ linters:
       - linters: [revive]
         path: "_test\\.go$"
 
-      # wrapcheck Q4 exemptions: test files routinely construct
+      # wrapcheck exemptions: test files routinely construct
       # synthetic errors and return them straight from helpers; the
       # testutil/ tree is a fixture module hierarchy whose entire
       # purpose is local-service setup for tests. Neither benefits

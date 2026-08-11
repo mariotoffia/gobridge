@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// Post-swap convergence watch (MQTT-R1).
+// Post-swap convergence watch.
 //
 // A successful apply() proves only that the new runtime BUILT and its
 // Start() returned — for transports that dial and reconcile in background
@@ -47,7 +47,7 @@ const (
 // satisfied. LevelSubscribed — not LevelFull — because a healthy standby
 // instance is capped at LevelSubscribed by design (routes deliberately not
 // ready until it holds the lease), and requiring Full would flag every
-// active/standby deployment as non-converged forever. Both MQTT-R1 failure
+// active/standby deployment as non-converged forever. Both failure
 // classes still trip it: rotated-away credentials never reach connected,
 // and a broker-rejected SUBACK never satisfies subscriptions.
 const convergenceReadyLevel = ports.LevelSubscribed
@@ -142,7 +142,7 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 				marked = true
 				if s.logger != nil {
 					s.logger.Warn("supervisor: reload applied but NOT converged — reload success signals are "+
-						"green while the transport has not reached its declared broker state (MQTT-R1); "+
+						"green while the transport has not reached its declared broker state; "+
 						"MetricConfigDegraded=1 with the convergence reason until sessions converge or the "+
 						"config is reverted",
 						"config_version", configVersion,

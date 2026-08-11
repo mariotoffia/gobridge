@@ -8,7 +8,7 @@
 // kept on the types because adapters that read from disk parse them
 // in-place — but the ports package itself has no yaml/json runtime
 // dependency, so the inner ring stays dependency-neutral, not
-// tag-free (schema-tagged DTOs by design, M-11).
+// tag-free (schema-tagged DTOs by design).
 //
 // The config sub-package (in `config/`) implements the YAML/JSON
 // parser, validator, merger, and on-disk manager that produce
@@ -117,7 +117,7 @@ type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 	// Members is the STATIC roster of member ids forming the coordinated-rollout
 	// cohort. It is the membership epoch the rollout barrier freezes at Propose
-	// and compares live membership against (design §7 F6), so it MUST be
+	// and compares live membership against (design §7), so it MUST be
 	// identical on every member and MUST NOT contain duplicates.
 	//
 	// It is deliberately a SEPARATE key from Endpoints: Endpoints is THIS
@@ -408,7 +408,7 @@ type RouteSessionDef struct {
 	// the session manager derives it from RenewInterval. When BOTH
 	// renew_interval and lease_ttl are set explicitly, cross-field validation
 	// requires renewInterval*maxRenewFails + jitter < leaseTTL so a renewal
-	// storm can never outlast the lease (contract C3).
+	// storm can never outlast the lease (contract).
 	RenewJitter string `yaml:"lease_renew_jitter,omitempty" json:"lease_renew_jitter,omitempty"`
 
 	// MaxRenewFails is consecutive renewal failures before step-down.
@@ -428,7 +428,7 @@ type RouteSessionDef struct {
 	// part of the failover-safety invariant: because renewLoop resets its timer
 	// AFTER the renew call returns, real attempt spacing is
 	// renewInterval + jitter/2 + renewCallTimeout, so the worst-case detection
-	// span folds this in and must stay below lease_ttl (finding C3-HIGH). Empty
+	// span folds this in and must stay below lease_ttl. Empty
 	// means the session manager derives it from RenewInterval.
 	RenewCallTimeout string `yaml:"renew_call_timeout,omitempty" json:"renew_call_timeout,omitempty"`
 
@@ -461,7 +461,7 @@ type RouteSessionDef struct {
 	// (clean_start=false) and consuming WITHOUT the lease until reconcile
 	// converges. A RouteSessionDef source is always exclusive, so the safe
 	// default is ON: nil (omitted) resolves to true; set it explicitly to false
-	// only to opt out (finding F6). It is a pointer so an omitted flag is
+	// only to opt out. It is a pointer so an omitted flag is
 	// distinguishable from an explicit false.
 	ConnectAfterLease *bool `yaml:"connect_after_lease,omitempty" json:"connect_after_lease,omitempty"`
 }

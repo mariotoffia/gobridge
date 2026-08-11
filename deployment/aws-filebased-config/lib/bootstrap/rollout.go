@@ -112,7 +112,7 @@ func (h appRolloutHost) MarkDegraded(reason string) {
 func (h appRolloutHost) RolloutLogger() *slog.Logger { return h.a.logger }
 
 // Converged reports whether this App's active runtime reached the post-swap
-// readiness level (MQTT-R1 — the same signal the convergence watch uses). It is the
+// readiness level (the same signal the convergence watch uses). It is the
 // confirm-window signal (design §8.1): the drive records this member's Converge once
 // it is true. False when no runtime is active.
 func (h appRolloutHost) Converged(ctx context.Context) bool {

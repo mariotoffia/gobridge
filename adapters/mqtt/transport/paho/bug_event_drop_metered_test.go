@@ -10,7 +10,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// B-2 / D-2: pushEvent's drop-oldest eviction is the COMMON back-pressure path,
+// pushEvent's drop-oldest eviction is the COMMON back-pressure path,
 // yet it used to drop the evicted event silently — only the (unreachable under
 // s.mu) double-failure incremented MetricMQTTEventDropped, contradicting the
 // comment that claimed the eviction was metered. Every actually-lost event must
@@ -38,10 +38,10 @@ func TestBug_PushEvent_MetersEvictedOldest(t *testing.T) {
 	s.pushEvent(ports.SessionReconnecting, nil)
 
 	require.Len(t, rec.FindEntries(MetricMQTTEventDropped), 1,
-		"B-2: evicting the oldest event to make room must increment MetricMQTTEventDropped")
+		"evicting the oldest event to make room must increment MetricMQTTEventDropped")
 
 	// A second overflowing push evicts again — the counter tracks every loss.
 	s.pushEvent(ports.SessionReconnecting, nil)
 	require.Len(t, rec.FindEntries(MetricMQTTEventDropped), 2,
-		"B-2: each evicted event increments the drop counter")
+		"each evicted event increments the drop counter")
 }

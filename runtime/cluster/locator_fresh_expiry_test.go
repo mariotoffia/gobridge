@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Finding F3 (C3-M): the fresh-read path must apply the SAME ExpiresAt bound
+// Finding: the fresh-read path must apply the SAME ExpiresAt bound
 // the cached stale-fallback path enforces. An expired-but-not-yet-seized lease
 // row names a corpse owner; serving it as authoritative forwards exclusive
 // traffic to a dead owner for up to TTL+observation. Past ExpiresAt the locator
@@ -69,7 +69,7 @@ func TestLocator_FreshRead_BoundedByLeaseExpiry(t *testing.T) {
 }
 
 // TestLocator_FastCacheHit_BoundedByLeaseExpiry is the regression for finding
-// F3-3a: the fast cache-hit path must apply the SAME ExpiresAt bound as the
+// the fast cache-hit path must apply the SAME ExpiresAt bound as the
 // fresh-read and stale-fallback paths. A lease can expire INSIDE its CacheTTL
 // window (nothing pins CacheTTL below lease_ttl), so a live owner cached and then
 // dying while the cache entry is still "fresh" would be served as a corpse for
@@ -114,13 +114,13 @@ func TestLocator_FastCacheHit_BoundedByLeaseExpiry(t *testing.T) {
 
 		peer, local, err = rl.Locate(ctx, "route-1")
 		if err == nil {
-			t.Fatal("F3-3a: an expired cached owner must NOT be served from the fast cache-hit path; expected fail-closed")
+			t.Fatal("an expired cached owner must NOT be served from the fast cache-hit path; expected fail-closed")
 		}
 		if local || peer != nil {
-			t.Fatalf("F3-3a: expired cache hit must not process locally or name a peer, got local=%v peer=%+v", local, peer)
+			t.Fatalf("expired cache hit must not process locally or name a peer, got local=%v peer=%+v", local, peer)
 		}
 		if store.callCount() == primed {
-			t.Fatal("F3-3a: expired cache hit must fall through to a fresh store read, but no re-read occurred")
+			t.Fatal("expired cache hit must fall through to a fresh store read, but no re-read occurred")
 		}
 	})
 
@@ -146,10 +146,10 @@ func TestLocator_FastCacheHit_BoundedByLeaseExpiry(t *testing.T) {
 		fake.Advance(2 * time.Second)
 
 		if _, _, err := rl.Locate(ctx, "route-1"); err == nil {
-			t.Fatal("F3-3a: a cached owner exactly at its ExpiresAt must NOT be served; expected fail-closed")
+			t.Fatal("a cached owner exactly at its ExpiresAt must NOT be served; expected fail-closed")
 		}
 		if store.callCount() == primed {
-			t.Fatal("F3-3a: exact-boundary cache hit must fall through to a fresh store read")
+			t.Fatal("exact-boundary cache hit must fall through to a fresh store read")
 		}
 	})
 }

@@ -11,7 +11,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// T2 Regression: TOCTOU race in pushEvent (hold mutex during send)
+// Regression: TOCTOU race in pushEvent (hold mutex during send)
 //
 // These tests verify that pushEvent is safe to call concurrently with
 // Close without panicking on a closed channel.

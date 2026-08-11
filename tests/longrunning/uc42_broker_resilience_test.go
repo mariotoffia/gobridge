@@ -451,7 +451,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	uniqueB := countUnique(collectorB)
 	t.Logf("UC45: SharedOutbox: unique=%d, total=%d, dlq=%d",
 		uniqueA, collectorA.count(), dlqA.count())
-	t.Logf("UC45: DirectHold:   unique=%d, total=%d, dlq=%d",
+	t.Logf("UC45: DirectHold: unique=%d, total=%d, dlq=%d",
 		uniqueB, collectorB.count(), dlqB.count())
 
 	gap := msgCount - uniqueB

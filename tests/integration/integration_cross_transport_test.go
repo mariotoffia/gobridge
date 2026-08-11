@@ -282,9 +282,9 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2.3 Direct cross-adapter subject/address propagation tests (T12)
+// 2.3 Direct cross-adapter subject/address propagation tests
 //
-// The task list (T12) calls for direct unit tests for MQTT→AMQP 1.0 and
+// The task list calls for direct unit tests for MQTT→AMQP 1.0 and
 // SQS→MQTT subject propagation "if test infrastructure allows". Per-adapter
 // coverage already exists today:
 //
@@ -298,9 +298,9 @@ func TestIntegration_HTTP_To_MQTT_CrossTransport(t *testing.T) {
 // elevating the package-private `mockConn`/`mockSQSClient` test doubles to a
 // shared testutil package so two adapter packages can be wired together
 // in-process. That is new fake-infrastructure work and is explicitly out of
-// scope for T12 ("if test infrastructure allows").
+// scope ("if test infrastructure allows").
 //
-// TODO(T12-followup): promote adapters/amqp/transport/amqp10/mock_test.go
+// TODO: promote adapters/amqp/transport/amqp10/mock_test.go
 // (mockConn / mockSession / mockReceiver) and
 // adapters/aws/transport/sqs/mock_test.go (mockSQSClient) into a shared
 // testutil/<adapter>fake/ package, then add an in-process bridge test that

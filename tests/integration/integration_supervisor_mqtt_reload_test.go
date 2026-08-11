@@ -23,7 +23,7 @@ import (
 
 // ===========================================================================
 // Config-driven reload through the GENERIC bridge.Supervisor with an MQTT
-// destination that must reach REAL broker truth (MQTT-R1).
+// destination that must reach REAL broker truth.
 //
 // Three-phase sequence, all driven by rewriting ONE config file that a
 // poll-mode file watcher feeds into config.Manager → Supervisor.Run:
@@ -63,7 +63,7 @@ import (
 //     broker connection drives Runtime.ReadinessLevel. An inline session is
 //     always exclusive (lease handoff), which forces shared_outbox delivery
 //     and real (in-memory) lease + outbox stores.
-//   - connect_after_lease is explicitly false (the documented F6 opt-out;
+//   - connect_after_lease is explicitly false (the documented opt-out;
 //     safe here — sender-only ephemeral session, no broker subscriptions to
 //     resume): a deferred-connect session holding no lease is EXCLUDED from
 //     readiness derivation (ports.ReadinessLevelFromDeepHealth), so with the
@@ -326,7 +326,7 @@ func TestSupervisorMQTTReload_ConfigDrivenBrokerTruth(t *testing.T) {
 		t.Fatal("v2: runtime was not swapped")
 	}
 	// Immediately after the commit the supervisor is NOT degraded — the
-	// convergence budget (60s) has not elapsed. This is the MQTT-R1 false
+	// convergence budget (60s) has not elapsed. This is the false
 	// success shape the watch exists to expose.
 	if degraded, reason := sup.Degraded(); degraded {
 		t.Fatalf("v2: degraded immediately after commit (watch budget not yet elapsed): %s", reason)

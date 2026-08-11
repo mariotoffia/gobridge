@@ -12,12 +12,12 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// TestRouteRunner_DeliveryScope_ReleaseSpansSend proves F3.2: the runtime
+// TestRouteRunner_DeliveryScope_ReleaseSpansSend proves.2: the runtime
 // installs a ports.DeliveryScope on the delivery context and releases it only
 // once the WHOLE delivery finishes — AFTER the egress send. A processor that
 // registers a release on the scope therefore has its callback fire after the
 // send, NOT when Process returns mid-chain. This is the generic seam the tenant
-// in-flight decrement rides on (F3.3): the accounting spans the send instead of
+// in-flight decrement rides on: the accounting spans the send instead of
 // collapsing to nanoseconds when the last processor returns.
 //
 // Fails without the fix (remove WithDeliveryScope/defer scope.Release() from

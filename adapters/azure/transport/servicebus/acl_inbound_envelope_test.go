@@ -31,7 +31,7 @@ func TestASBReceivedToEnvelope_PreservesPopulatedMessageID(t *testing.T) {
 }
 
 // TestASBReceivedToEnvelope_EmptyMessageIDDoesNotCollapse pins the
-// H-3 root regression: 100 empty-ID messages MUST NOT collide on a
+// root regression: 100 empty-ID messages MUST NOT collide on a
 // single literal ID.
 func TestASBReceivedToEnvelope_EmptyMessageIDDoesNotCollapse(t *testing.T) {
 	clk := clocktest.NewAt(time.Now().UTC())
@@ -117,7 +117,7 @@ func TestASBWrapEnvelopeErr_ClassifiesInvalidPayload(t *testing.T) {
 }
 
 // TestASBReceivedToEnvelope_StaticSignature locks the (env, error)
-// signature added in fix-round 1. A regression that drops the error
+// signature added by a later fix. A regression that drops the error
 // return — re-introducing the silent MustEnvelope masking — will
 // fail to compile here.
 func TestASBReceivedToEnvelope_StaticSignature(t *testing.T) {

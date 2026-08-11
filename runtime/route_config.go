@@ -64,7 +64,7 @@ type RouteConfig struct {
 	// (the RegisterTransportFactory name declared under `transport:`, or the
 	// adapter's canonical PluginConfig.Kind). The runtime uses it to strip
 	// foreign redelivery-count headers on ingress so an untrusted producer on a
-	// count-less source cannot forge another transport's count key (F3). Empty
+	// count-less source cannot forge another transport's count key. Empty
 	// disables the strip. Populated by the builder from the resolved receiver
 	// transport; optional for programmatic callers.
 	SourceTransport string

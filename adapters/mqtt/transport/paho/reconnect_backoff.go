@@ -8,7 +8,7 @@ import "time"
 // grows exponentially from `base` by `factor` per attempt, capped at
 // `maxDelay`, then EQUAL-JITTER spreads it over [d/2, d).
 //
-// Why jitter (M-4): a fleet of bridge instances that all lose the same
+// Why jitter: a fleet of bridge instances that all lose the same
 // broker will otherwise retry on identical wall-clock boundaries, hammering
 // the broker in synchronised waves as it comes back (thundering herd).
 // Equal-jitter (matching runtime/bridge.go's equalJitter and

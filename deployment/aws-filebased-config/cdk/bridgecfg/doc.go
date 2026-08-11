@@ -11,12 +11,12 @@
 // blueprint authoring type-safe and to keep accidental secrets out of
 // version control, two complementary pieces live in this package:
 //
-//   - Builder (added in T04+) — a fluent API that produces a
+//   - Builder — a fluent API that produces a
 //     *ports.BridgeConfig from typed plugin configs without forcing
 //     the operator to write yaml by hand. The builder is the single
 //     source of truth that the CDK constructs feed when generating
 //     bridge.yaml.
-//   - Secret scanner (this task, T03) —
+//   - Secret scanner (this task) —
 //     ScanForPlaintextSecrets walks the produced *ports.BridgeConfig
 //     and refuses to synthesize when any sensitive field carries a
 //     literal value rather than a credential URI.

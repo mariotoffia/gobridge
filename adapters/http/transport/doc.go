@@ -45,7 +45,7 @@
 // ACL, or strip the full x-bridge.* namespace (plus traceparent/
 // tracestate) from the stream at the edge — otherwise tenant, routing,
 // correlation, and trace metadata leaks to external clients. Only the
-// INTERNAL-ONLY subset is stripped here by design (H2).
+// INTERNAL-ONLY subset is stripped here by design.
 //
 // SSE per-write deadline. The SSE handler re-arms a per-frame write
 // deadline (Config.WriteTimeout, default 15s) via http.ResponseController
@@ -89,7 +89,7 @@
 // same value as the forward token (Factory.WithForwardToken /
 // ForwarderConfig.ForwardToken) would let any authenticated caller send
 // a valid X-Bridge-Forward-Token and thereby spoof X-Bridge-Forwarded —
-// reopening the H1 header-spoofing class the token exists to close (see
+// reopening the header-spoofing class the token exists to close (see
 // "Cluster forward trust" above). Provision two independent secrets.
 //
 // # Delivery semantics

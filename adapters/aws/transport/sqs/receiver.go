@@ -36,7 +36,7 @@ type Receiver struct {
 	started     chan struct{}
 	startedOnce sync.Once
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
 	// ReceiveMessage poll is classified as shared.ErrNotAuthorized (a static-key
@@ -134,7 +134,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	// Best-effort startup check that the source queue has a native redrive
 	// policy (maxReceiveCount -> DLQ) so a malformed message the receiver
 	// cannot convert eventually reaches a DLQ instead of hot-looping forever
-	// (Chunk 13 HIGH-2). Permission-gated: a GetQueueAttributes denial degrades
+	// (Chunk 13). Permission-gated: a GetQueueAttributes denial degrades
 	// to a log, never a start failure. It DOES fail startup for one loss-
 	// critical case: a poison_max_receives backstop that would preempt an
 	// EXISTING native redrive policy (destructive delete before the DLQ

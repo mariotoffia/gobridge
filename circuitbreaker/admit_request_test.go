@@ -13,7 +13,7 @@ import (
 )
 
 // AdmitRequest is BeforeRequestToken/AfterRequestToken with the Token inside
-// the settle closure (MQTT-O3). The load-bearing property: an outcome settled
+// the settle closure. The load-bearing property: an outcome settled
 // AFTER a circuit state transition is stale evidence about a previous epoch
 // and must be discarded — not applied to the current generation.
 func TestBreaker_AdmitRequest_DiscardsOutcomeSettledAfterTransition(t *testing.T) {

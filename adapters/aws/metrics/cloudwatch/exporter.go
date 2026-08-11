@@ -21,7 +21,7 @@ const flushRetryBaseBackoff = time.Second
 
 // Exporter implements [ports.MetricsExporter] for AWS CloudWatch.
 //
-// Concurrency model (MF-1): all flushing is performed by ONE
+// Concurrency model: all flushing is performed by ONE
 // long-lived flusher goroutine. The emission path (Counter, Gauge,
 // Histogram, Timer) only appends to the in-memory batcher and — when
 // the flush-trigger threshold is reached — performs a non-blocking
@@ -60,7 +60,7 @@ func New(ctx context.Context, namespace string, opts ...Option) (*Exporter, erro
 	applyDefaults(&e.config)
 	if e.config.Logger == nil && !e.loggerSet {
 		// Self-loss and export failures must not be silent by default
-		// (MF-5). Opt out with WithLogger(nil).
+		// Opt out with WithLogger(nil).
 		e.config.Logger = slog.Default()
 	}
 
@@ -105,7 +105,7 @@ func (e *Exporter) Timer(name string, duration time.Duration, tags ...shared.Tag
 }
 
 // triggerFlush wakes the flusher goroutine without blocking or
-// spawning (MF-1). The 1-slot channel coalesces bursts: while a flush
+// spawning. The 1-slot channel coalesces bursts: while a flush
 // is pending or in progress, additional triggers are no-ops.
 func (e *Exporter) triggerFlush() {
 	select {
@@ -133,13 +133,13 @@ func (e *Exporter) Close(ctx context.Context) error {
 	return err
 }
 
-// flushLoop is the single long-lived flusher goroutine (MF-1). It
+// flushLoop is the single long-lived flusher goroutine. It
 // flushes on the periodic ticker and on buffer-full triggers. After a
 // retryable failure, trigger-driven flushes are suppressed for an
 // exponentially growing backoff (capped at FlushInterval) so a
 // stalled endpoint is not hammered; the ticker cadence still applies.
 // Non-retryable failures already dropped the offending batch inside
-// the batcher (MF-3), so no backoff is applied for them.
+// the batcher, so no backoff is applied for them.
 func (e *Exporter) flushLoop() {
 	defer e.wg.Done()
 	ticker := e.config.Clock.NewTicker(e.config.FlushInterval)
@@ -182,7 +182,7 @@ func (e *Exporter) flushLoop() {
 }
 
 // flushGovernor arbitrates trigger-driven flushes after failures
-// (MF-1). It is owned exclusively by the flusher goroutine — no
+// It is owned exclusively by the flusher goroutine — no
 // locking. Kept separate from flushLoop so the suppression policy is
 // synchronously testable with a fake clock.
 type flushGovernor struct {

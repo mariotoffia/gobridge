@@ -72,7 +72,7 @@ type Receiver struct {
 	// accepted session seam (use_sessions rotation). The single
 	// long-lived session renewer reads it to reset its consecutive-
 	// failure budget per accepted session, so a blip on one session never
-	// denies renewal to the next one it accepts (F3). Lock-free on read.
+	// denies renewal to the next one it accepts. Lock-free on read.
 	sessionGen  atomic.Uint64
 	logger      *slog.Logger
 	metrics     ports.MetricsExporter
@@ -82,7 +82,7 @@ type Receiver struct {
 	started     chan struct{}
 	startedOnce sync.Once
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live poll maps
 	// an SDK error to shared.ErrNotAuthorized (SAS/AAD revocation), forcing an
@@ -700,7 +700,7 @@ func (r *Receiver) pollLoop(ctx context.Context, emit func(context.Context, port
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			// HIGH-3 reactive-recovery chokepoint: the receive loop retries the
+			// reactive-recovery chokepoint: the receive loop retries the
 			// RAW SDK error (it never classifies it here), so map it before
 			// reporting. When a SAS/AAD revocation makes it
 			// shared.ErrNotAuthorized, force an immediate re-resolve instead of
@@ -972,7 +972,7 @@ func (r *Receiver) ensureSessionSeam(ctx context.Context) error {
 		// A newly accepted session: bump the generation so the session
 		// renewer resets its per-session failure budget and keeps
 		// renewing this seam even if a PREVIOUS session's lock was
-		// blipping when the renewer last ticked (F3).
+		// blipping when the renewer last ticked.
 		r.sessionGen.Add(1)
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "servicebus: accepted next session",
@@ -1023,7 +1023,7 @@ func (r *Receiver) releaseSessionSeam(ctx context.Context) {
 // permanently exit on renewal failures — it exits ONLY when ctx is done
 // (the poll loop stopping). Exiting early would deny renewal to every
 // session the poll loop accepts afterwards, causing a LockLost
-// redelivery storm (F3). Instead it:
+// redelivery storm. Instead it:
 //
 //   - resets its consecutive-failure budget whenever a NEW session is
 //     accepted (sessionGen changes), so a blip on a previous session

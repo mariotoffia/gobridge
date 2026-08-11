@@ -86,9 +86,9 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 // override is present. A nil config is never clustered.
 //
 // It is the one definition used across the bridge: the HA-timing baseline for
-// lease-bearing sessions (finding HIGH-3, builder/failover/post-acquire callers)
+// lease-bearing sessions (builder/failover/post-acquire callers)
 // AND the fail-closed guard that refuses an uncoordinated per-process live
-// reload of (or into) a clustered cohort (finding H8, Supervisor.apply and the
+// reload of (into) a clustered cohort (Supervisor.apply and the
 // AWS composition root). The config layer mirrors it in
 // config.deploymentIsClustered so the two agree on exactly which deployments are
 // clustered.
@@ -125,7 +125,7 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		// would silently keep the 110s renew cadence regardless of a much shorter
 		// TTL. Reset it to zero and only override when the operator explicitly
 		// configures renew_interval, letting the session manager derive it from
-		// LeaseTTL otherwise (contract C3).
+		// LeaseTTL otherwise (contract).
 		sc.RenewInterval = 0
 		// DefaultConfig also pins RenewJitter (5s). The manager derives jitter only
 		// when BOTH RenewInterval and RenewJitter are zero (manager.go: derived
@@ -134,10 +134,10 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		// instead of the derived renew/4 -- and with a small lease_ttl the
 		// expiry-margin clamp then fires on every boot. Reset it to zero for the
 		// same reason as RenewInterval, overriding only when lease_renew_jitter is
-		// set explicitly (contract C3: the production path leaves both zero).
+		// set explicitly (contract: the production path leaves both zero).
 		sc.RenewJitter = 0
 	}
-	// F6: default connect_after_lease ON for a RouteSessionDef source. It is
+	// default connect_after_lease ON for a RouteSessionDef source. It is
 	// always an exclusive single-owner session; deferring connect until the lease
 	// is won stops a booting standby from resuming a broker-persisted subscription
 	// and consuming without the lease. nil (omitted in the blueprint) => true; an
@@ -183,7 +183,7 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		sc.AcquirePollInterval = d
 	}
 	// RenewCallTimeout is part of the failover-safety invariant (finding
-	// C3-HIGH): renewWorstCaseSpan folds it in, so exposing it lets a deployment
+	// renewWorstCaseSpan folds it in, so exposing it lets a deployment
 	// tune the safety margin. Zero (unset) keeps the manager's derived default.
 	if rs.RenewCallTimeout != "" {
 		d, err := time.ParseDuration(rs.RenewCallTimeout)

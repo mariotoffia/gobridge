@@ -12,7 +12,7 @@ import (
 //
 // The MQTT-specific portion of these tests was moved to
 // adapters/mqtt/transport/paho/topic_validator_test.go as part of
-// AP-005 — MQTT topic validation is now a transport-supplied
+// MQTT topic validation is now a transport-supplied
 // AddressValidator capability and the runtime no longer owns MQTT
 // semantics. Only the transport-agnostic RenderAddress tests remain
 // here.
@@ -29,8 +29,7 @@ func TestRenderAddress_EmptyPlaceholderKey(t *testing.T) {
 
 // TestRenderAddress_UnclosedBrace validates that an unclosed brace (an opening
 // '{' with no closing '}') is rejected as a malformed template — symmetric with
-// the missing-key error — rather than silently passed through as literal text
-// (F6).
+// the missing-key error — rather than silently passed through as literal text.
 func TestRenderAddress_UnclosedBrace(t *testing.T) {
 	_, err := route.RenderAddress("prefix/{unclosed", nil)
 	if err == nil {

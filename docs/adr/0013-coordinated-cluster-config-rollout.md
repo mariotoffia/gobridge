@@ -19,7 +19,7 @@ operator posts a change to any node; it is proposed as a candidate generation wi
 a frozen membership epoch; every member validates and builds it, then acks; a
 lease-elected, fencing-protected coordinator commits only when acks cover the
 epoch, else aborts (timeout, Nack, membership change). Members swap only on
-observing Committed. Post-commit convergence remains per-node (MQTT-R1). The
+observing Committed. Post-commit convergence remains per-node. The
 protocol is opt-in (`bridge.cluster.rollout: coordinated`), requires the versioned DDB
 config source, and applies only to deltas passing the live-safe preflight —
 durable-identity and store-target changes keep 0012's whole-cohort replacement.

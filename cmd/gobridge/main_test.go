@@ -100,7 +100,7 @@ func runsWithin(d time.Duration, fn func()) bool {
 	}
 }
 
-// TestAwaitSupervisorShutdown_SkipsWaitWhenSupervisorAlreadyExited is the C3-FU5
+// TestAwaitSupervisorShutdown_SkipsWaitWhenSupervisorAlreadyExited is the
 // regression guard: once the primary select has consumed the supervisor's only
 // result, the shutdown wait must return immediately. Both channels here never
 // deliver, so a return can only come from the alreadyExited fast path — the old

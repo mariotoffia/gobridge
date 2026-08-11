@@ -15,7 +15,7 @@ import (
 
 // errorCountContaining counts captured ERROR records whose message contains
 // substr. It complements warnCountContaining (bug_covered_dropped_test.go) so
-// the HIGH-3 tests can distinguish the escalated Error from a benign Warn.
+// the tests can distinguish the escalated Error from a benign Warn.
 func (h *recordingLogHandler) errorCountContaining(substr string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -30,7 +30,7 @@ func (h *recordingLogHandler) errorCountContaining(substr string) int {
 
 const sharedSubAdvisorySubstr = "shared subscriptions ($share)"
 
-// TestBug_Takeover_SharedSubscription_EscalatesOnFirstOccurrence proves HIGH-3:
+// TestBug_Takeover_SharedSubscription_EscalatesOnFirstOccurrence proves:
 // a session takeover (0x8E) while shared subscriptions ($share) are active on a
 // NON-Exclusive session is the smoking gun of the client_id-collision self-DOS
 // (replicas that must be unique are sharing an identity and kicking each other
@@ -62,7 +62,7 @@ func TestBug_Takeover_SharedSubscription_EscalatesOnFirstOccurrence(t *testing.T
 	sess.handleServerDisconnect(disconnectSessionTakenOver)
 
 	require.Equal(t, 1, logs.errorCountContaining(sharedSubAdvisorySubstr),
-		"HIGH-3: a takeover while $share is active must escalate to Error on the FIRST occurrence")
+		"a takeover while $share is active must escalate to Error on the FIRST occurrence")
 	require.Equal(t, 0, logs.warnCountContaining("taken over by another connection"),
 		"the generic first-takeover Warn must be replaced by the shared-sub Error")
 }
@@ -99,7 +99,7 @@ func TestBug_Takeover_SharedSubscription_ExclusiveIsLegitFailover(t *testing.T) 
 }
 
 // TestBug_Reconcile_SharedSubscription_WarnsOncePerSession proves the proactive
-// half of HIGH-3: when a plan with shared subscriptions is reconciled onto a
+// half: when a plan with shared subscriptions is reconciled onto a
 // stable-client_id (non-Ephemeral) session, the adapter warns ONCE about the
 // unique-client_id requirement and deduplicates thereafter. cm is nil, so
 // Reconcile records the plan, emits the advisory, then returns — enough to
@@ -122,7 +122,7 @@ func TestBug_Reconcile_SharedSubscription_WarnsOncePerSession(t *testing.T) {
 	_ = sess.Reconcile(context.Background(), plan)
 
 	require.Equal(t, 1, logs.warnCountContaining(sharedSubAdvisorySubstr),
-		"HIGH-3: the shared-sub client_id advisory must fire exactly once per session (deduped)")
+		"the shared-sub client_id advisory must fire exactly once per session (deduped)")
 }
 
 // TestBug_Reconcile_SharedSubscription_EphemeralNotWarned pins that Ephemeral

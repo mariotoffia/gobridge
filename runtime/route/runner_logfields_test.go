@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// This file pins the O12 log-correlation fix: doHandleDelivery must stamp the
+// This file pins log-correlation fix: doHandleDelivery must stamp the
 // observability trace_id/span_id fields from the ACTIVE span when the tracer
 // exposes ports.SpanIdentity, falling back to the upstream traceparent only
 // when it does not (NoopTracer). Before the fix the fields always came from

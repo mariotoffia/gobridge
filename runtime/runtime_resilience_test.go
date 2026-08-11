@@ -18,21 +18,21 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// Runtime Resilience Tests (F2–F7)
+// Runtime Resilience Tests
 //
-// Tests for lease release context (F2), drain-on-shutdown (F3),
-// direct_hold fencing validation (F4), TOCTOU removal (F5),
-// scoped stale token errors (F6), and sess re-Start (F7).
+// Tests for lease release context, drain-on-shutdown,
+// direct_hold fencing validation, TOCTOU removal,
+// scoped stale token errors, and sess re-Start.
 // ═══════════════════════════════════════════════════════════════════
 
 // ---------------------------------------------------------------------------
-// F2: Lease Release Uses Expired Context During Timeout Shutdown
+// Lease Release Uses Expired Context During Timeout Shutdown
 // ---------------------------------------------------------------------------
 
-// TestF2_StopReleasesLeaseWithValidContext validates that Runtime.Stop
+// TestStopReleasesLeaseWithValidContext validates that Runtime.Stop
 // passes a non-expired context to SessionManager.Close even when the
 // caller's stop context has already expired.
-func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
+func TestStopReleasesLeaseWithValidContext(t *testing.T) {
 	trackLease := NewContextTrackingLeaseStore()
 
 	rt := goruntime.New(
@@ -92,13 +92,13 @@ func TestF2_StopReleasesLeaseWithValidContext(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F3: No Drain-on-Shutdown
+// No Drain-on-Shutdown
 // ---------------------------------------------------------------------------
 
-// TestF3_DrainOnShutdown validates that the OutboxDrainer delivers
+// TestDrainOnShutdown validates that the OutboxDrainer delivers
 // pending records during its lifecycle. A fast poll interval ensures
 // at least one drain cycle runs before cancellation.
-func TestF3_DrainOnShutdown(t *testing.T) {
+func TestDrainOnShutdown(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
@@ -138,9 +138,9 @@ func TestF3_DrainOnShutdown(t *testing.T) {
 	}
 }
 
-// TestF3_DrainOnShutdown_NoLease validates that the final drain sweep
+// TestDrainOnShutdown_NoLease validates that the final drain sweep
 // is skipped when the drainer does not hold a lease.
-func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
+func TestDrainOnShutdown_NoLease(t *testing.T) {
 	polled := make(chan struct{}, 256)
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
@@ -169,12 +169,12 @@ func TestF3_DrainOnShutdown_NoLease(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F4: No Fencing for direct_hold Mode
+// No Fencing for direct_hold Mode
 // ---------------------------------------------------------------------------
 
-// TestF4_DirectHoldSharedConsumerRejected validates that the validator
+// TestDirectHoldSharedConsumerRejected validates that the validator
 // rejects direct_hold delivery with a shared consumer source.
-func TestF4_DirectHoldSharedConsumerRejected(t *testing.T) {
+func TestDirectHoldSharedConsumerRejected(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("bridge-f4-reject"))
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -198,9 +198,9 @@ func TestF4_DirectHoldSharedConsumerRejected(t *testing.T) {
 	}
 }
 
-// TestF4_DirectHoldAllowUnfenced validates that the AllowUnfenced policy
+// TestDirectHoldAllowUnfenced validates that the AllowUnfenced policy
 // flag bypasses the shared consumer fencing check for direct_hold.
-func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
+func TestDirectHoldAllowUnfenced(t *testing.T) {
 	rt := goruntime.New(
 		goruntime.WithInstanceID("bridge-f4-allow"),
 		goruntime.WithDLQStore(NewFakeDLQStore()),
@@ -230,13 +230,13 @@ func TestF4_DirectHoldAllowUnfenced(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F5: Unnecessary TOCTOU Pre-Check
+// Unnecessary TOCTOU Pre-Check
 // ---------------------------------------------------------------------------
 
-// TestF5_DrainBatchSkipsTOCTOUCheck validates that drainBatch does not
+// TestDrainBatchSkipsTOCTOUCheck validates that drainBatch does not
 // call leaseStore.Current() before Claim(). The Claim conditional write
 // provides sufficient fencing.
-func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
+func TestDrainBatchSkipsTOCTOUCheck(t *testing.T) {
 	countLease := NewCountingLeaseStore()
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	_, _ = countLease.inner.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
@@ -279,13 +279,13 @@ func TestF5_DrainBatchSkipsTOCTOUCheck(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F6: Stale Fencing Token Kills Entire Runtime
+// Stale Fencing Token Kills Entire Runtime
 // ---------------------------------------------------------------------------
 
-// TestF6_StaleFencingTokenDoesNotKillRuntime validates that a stale
+// TestStaleFencingTokenDoesNotKillRuntime validates that a stale
 // fencing token from one drainer does not mark the entire runtime
 // unhealthy or cancel other routes.
-func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
+func TestStaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 	outbox := NewFakeOutboxStore()
 	lease := NewFakeLeaseStore()
 
@@ -345,9 +345,9 @@ func TestF6_StaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 	})
 }
 
-// TestF6_CriticalErrorStillKillsRuntime validates that non-fencing
+// TestCriticalErrorStillKillsRuntime validates that non-fencing
 // errors (e.g. fatal receiver failure) still mark the runtime unhealthy.
-func TestF6_CriticalErrorStillKillsRuntime(t *testing.T) {
+func TestCriticalErrorStillKillsRuntime(t *testing.T) {
 	rt := goruntime.New(
 		goruntime.WithInstanceID("bridge-f6-crit"),
 		goruntime.WithDLQStore(NewFakeDLQStore()),
@@ -374,13 +374,13 @@ func TestF6_CriticalErrorStillKillsRuntime(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F7: ConnectAfterLease Doesn't Re-Start() on Re-acquisition
+// ConnectAfterLease Doesn't Re-Start() on Re-acquisition
 // ---------------------------------------------------------------------------
 
-// TestF7_ReacquiredLeaseRestartsDeadSession validates that after a
+// TestReacquiredLeaseRestartsDeadSession validates that after a
 // lease gap where the broker disconnected the sess, re-acquisition
 // calls sess.Start() again to re-establish the connection.
-func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
+func TestReacquiredLeaseRestartsDeadSession(t *testing.T) {
 	sess := NewControllableSession()
 	leaseStore := NewFakeLeaseStore()
 
@@ -426,16 +426,16 @@ func TestF7_ReacquiredLeaseRestartsDeadSession(t *testing.T) {
 	<-errCh
 }
 
-// TestF7_StepDownClosesSessionAndReacquireRestarts validates the C3
+// TestStepDownClosesSessionAndReacquireRestarts validates the
 // cluster-safety fix on the connect-after-lease (deferred) path: losing the
 // lease must Close the source session so a non-owner stops consuming/ACKing
 // source messages during failover (no split-brain), and re-acquiring the
 // lease must Start it again so the new owner resumes consuming.
 //
 // This replaces an earlier test that asserted a "healthy" session is NOT
-// restarted on re-acquisition — that assertion encoded the very bug C3 fixes
+// restarted on re-acquisition — that assertion encoded the very bug fixes
 // (the receiver was never stopped on step-down, so it always looked healthy).
-func TestF7_StepDownClosesSessionAndReacquireRestarts(t *testing.T) {
+func TestStepDownClosesSessionAndReacquireRestarts(t *testing.T) {
 	sess := NewControllableSession()
 	leaseStore := NewFakeLeaseStore()
 

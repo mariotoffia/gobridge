@@ -362,8 +362,7 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 // nil properties produces an envelope carrying only the adapter-controlled
 // transport headers (recorded topic, retained flag, QoS) plus the
 // generated-identity marker: with no producer identity the id is adapter-minted,
-// which the adapter records so the runtime can bound the uncountable replay case
-// (MQTT-CORE-1).
+// which the adapter records so the runtime can bound the uncountable replay case.
 func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "t",
@@ -376,7 +375,7 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 		t.Errorf("expected exactly 4 headers (mqtt.topic, mqtt.retained, mqtt.qos, x-bridge.generated-id) for nil properties, got %d: %v", got, env.Headers())
 	}
 	if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderGeneratedID); !ok {
-		t.Errorf("no-identity publish: expected HeaderGeneratedID marker (MQTT-CORE-1)")
+		t.Errorf("no-identity publish: expected HeaderGeneratedID marker")
 	}
 	if v, _ := messaging.GetHeaderString(env.Headers(), HeaderMQTTTopic); v != "t" {
 		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "t")

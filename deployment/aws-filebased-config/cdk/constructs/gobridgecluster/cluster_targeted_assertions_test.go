@@ -58,10 +58,10 @@ func t20ClusterNew(t *testing.T) (awscdk.Stack, *gobridgecluster.GoBridgeCluster
 	return stack, g
 }
 
-// Test_T20_Cluster_ResourceCounts: 2 ECS Services, 2 TaskDefinitions, and a
+// TestCluster_ResourceCounts: 2 ECS Services, 2 TaskDefinitions, and a
 // log group per container per service (4 total: control main+seeder, worker
 // main+seeder).
-func Test_T20_Cluster_ResourceCounts(t *testing.T) {
+func TestCluster_ResourceCounts(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -86,13 +86,13 @@ func Test_T20_Cluster_ResourceCounts(t *testing.T) {
 	}
 }
 
-// Test_T20_Cluster_Mounts_PerTaskDef walks each TaskDefinition independently
+// TestCluster_Mounts_PerTaskDef walks each TaskDefinition independently
 // and asserts the gobridge main container's MountPoint ReadOnly flag —
 // control TD must be RW (false), worker TD must be RO (true). The existing
 // suite asserts "one of each" via a sawRW/sawRO loop; this test pins each
 // task def by its logical-id substring so a future regression that swaps
 // the mount flags fails loudly.
-func Test_T20_Cluster_Mounts_PerTaskDef(t *testing.T) {
+func TestCluster_Mounts_PerTaskDef(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -129,11 +129,11 @@ func Test_T20_Cluster_Mounts_PerTaskDef(t *testing.T) {
 	}
 }
 
-// Test_T20_Cluster_WorkerRole_NoClientWrite: the worker task role's IAM
+// TestCluster_WorkerRole_NoClientWrite: the worker task role's IAM
 // policy must contain ClientMount but NEVER ClientWrite. Iterate all
 // AWS::IAM::Policy resources whose Roles ref points at a "*Worker*" role
 // and assert the action set.
-func Test_T20_Cluster_WorkerRole_NoClientWrite(t *testing.T) {
+func TestCluster_WorkerRole_NoClientWrite(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
@@ -191,10 +191,10 @@ func Test_T20_Cluster_WorkerRole_NoClientWrite(t *testing.T) {
 	}
 }
 
-// Test_T20_Cluster_AdminPort_OnBothTaskDefs: every TaskDefinition exposes the
+// TestCluster_AdminPort_OnBothTaskDefs: every TaskDefinition exposes the
 // admin port (8080/tcp) on the gobridge main container — required for both
 // control AND worker because the cluster wiring health-checks both via ALB.
-func Test_T20_Cluster_AdminPort_OnBothTaskDefs(t *testing.T) {
+func TestCluster_AdminPort_OnBothTaskDefs(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -261,7 +261,7 @@ func resourceTags(props map[string]any) map[string]string {
 	return out
 }
 
-// Test_T20_Cluster_AdvertisesNonHA is the c15-cluster-notha honesty
+// TestCluster_AdvertisesNonHA is the c15-cluster-notha honesty
 // guard. GoBridgeCluster is a filesystem-replicated SCALE-OUT topology,
 // not coordinated-failover HA (it forces topology=filesystem_replicated,
 // under which the runtime rejects shared_outbox / route.session, and
@@ -277,7 +277,7 @@ func resourceTags(props map[string]any) map[string]string {
 // Mutation: delete the Tags_Of(...).Add + Annotations_Of(...).AddInfo
 // honesty block in NewGoBridgeCluster → the tags vanish and the info
 // annotation disappears, and this test FAILs.
-func Test_T20_Cluster_AdvertisesNonHA(t *testing.T) {
+func TestCluster_AdvertisesNonHA(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 

@@ -192,7 +192,7 @@ func TestExporter_Flush_APIError(t *testing.T) {
 }
 
 // Verifies flush splits data into batches of MaxBatchSize datums.
-// Counters aggregate per (name, tags) (MF-6), so distinct gauge samples
+// Counters aggregate per (name, tags), so distinct gauge samples
 // are used to produce many datums.
 func TestExporter_SendBatched_Splits(t *testing.T) {
 	mock := &mockCloudWatch{}

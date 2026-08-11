@@ -6,7 +6,7 @@ package runtime
 // Tests validating fixes for:
 // SEC-012: Infinite loop via self-referencing headers
 // SEC-013: Template injection leaking header values
-// GO-4: StaticResolver mutable slice return
+// StaticResolver mutable slice return
 //
 // Summary:
 // ┌──────┬────────────────────────────────────────────┬──────────┐
@@ -182,7 +182,7 @@ func TestRenderAddress_AdjacentBraces(t *testing.T) {
 }
 
 // TestStaticResolver_ReturnsCopy validates that Resolve returns an
-// independent copy, not the internal slice (GO-4).
+// independent copy, not the internal slice.
 func TestStaticResolver_ReturnsCopy(t *testing.T) {
 	plans := []routing.DispatchPlan{
 		{BindingID: "b1", Address: "addr1"},

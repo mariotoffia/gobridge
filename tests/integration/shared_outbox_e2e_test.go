@@ -548,7 +548,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G4: Crash recovery with DynamoDB stores
+// Crash recovery with DynamoDB stores
 // ---------------------------------------------------------------------------
 
 // validates crash recovery: primary persists and acks then stops before drain; secondary acquires the lease and sends the orphaned record.
@@ -679,7 +679,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G5: Fencing token validation with DynamoDB
+// Fencing token validation with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates DynamoDB conditional writes reject Complete with a stale token after another owner reclaims the record.
@@ -764,7 +764,7 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G6: Poison message with DynamoDB
+// Poison message with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates poison handling: repeated send failure exceeds MaxReplayAttempts and the record moves to the DLQ.
@@ -781,7 +781,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	// MaxReplayAttempts=3 means 3 send attempts; on the 4th claim the
 	// drainer's poison gate detects ReplayCount > MaxReplayAttempts and
 	// sends to DLQ. Stores never filter claims by replay count (contract
-	// C2) — the drainer is the sole poison authority.
+	// The drainer is the sole poison authority.
 	outboxStore := dboutbox.NewStore(client,
 		dboutbox.WithTableName(outboxTable),
 		dboutbox.WithStaleClaimDuration(200*time.Millisecond),
@@ -857,7 +857,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G7: Fan-out atomicity with DynamoDB
+// Fan-out atomicity with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates fan-out persist and drain to two sessions; idempotent re-emit of the same envelope does not duplicate sends.

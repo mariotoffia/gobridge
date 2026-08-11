@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MF-5: export failures must not be silent by default — an unset error
+// export failures must not be silent by default — an unset error
 // handler falls back to slog warn logging.
 func TestApplyDefaults_ErrorHandlerDefaultsToWarnLogger(t *testing.T) {
 	t.Parallel()
@@ -22,7 +22,7 @@ func TestApplyDefaults_ErrorHandlerDefaultsToWarnLogger(t *testing.T) {
 	cfg.errorHandler(errors.New("synthetic export failure"))
 }
 
-// MF-5: WithErrorHandler(nil) is an explicit opt-out — the default warn
+// WithErrorHandler(nil) is an explicit opt-out — the default warn
 // logger must not be installed over it.
 func TestWithErrorHandler_NilIsExplicitOptOut(t *testing.T) {
 	t.Parallel()
@@ -32,7 +32,7 @@ func TestWithErrorHandler_NilIsExplicitOptOut(t *testing.T) {
 	assert.True(t, e.config.errorHandlerSet)
 }
 
-// MF-8: a caller that already stamped instance_id via WithDefaultTags
+// a caller that already stamped instance_id via WithDefaultTags
 // must not get a duplicate tag from WithInstanceTag.
 func TestApplyDefaults_InstanceTagIdempotent(t *testing.T) {
 	t.Parallel()

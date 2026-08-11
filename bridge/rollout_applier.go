@@ -31,14 +31,14 @@ import (
 //     watcher; that is how the proposer half works (rollout_barrier.go). The
 //     rollout row's digest is the cross-member agreement check: a member whose
 //     source handed it different bytes computes a different digest and Nacks
-//     (F10), so a divergent config aborts the rollout instead of splitting the
+//     so a divergent config aborts the rollout instead of splitting the
 //     cohort.
 //
 // So each member STAGES the candidate its own source delivered
 // (rolloutBarrier.stage) and the applier builds from that. The safety hole §5
 // named for option (b) — `current` is written before the barrier decides, so a
 // member restarting after an ABORTED rollout would boot the rejected config
-// while the cohort keeps the old one (a mixed-version cohort, which G2 forbids)
+// while the cohort keeps the old one (a mixed-version cohort, which forbids)
 // — is closed by the joiner rule in rollout_joiner.go, NOT left open.
 //
 // A consequence worth stating: there are no FETCHED candidate bytes, so the
@@ -50,7 +50,7 @@ import (
 
 // evaluateProposal runs the node's pre-build applier gate for an observed
 // rollout (design §6). It verifies the candidate against the recorded digest
-// FIRST (F10), then classifies the delta (§8), returning an empty string when
+// FIRST, then classifies the delta (§8), returning an empty string when
 // the node may build and Ack or a non-empty Nack reason otherwise. The build
 // (and the Ack carrying its build digest) is the caller's job, performed only
 // when the reason is empty.
@@ -68,7 +68,7 @@ func evaluateProposal(oldCfg, candidateCfg *ports.BridgeConfig, candidateBytes [
 // (research §3: "each node is itself a token-checking resource"). Generations
 // are globally monotonic — there is one active rollout at a time — so a single
 // generation counter is a total order and subsumes the coordinator fencing epoch
-// (already enforced at the store, I3).
+// (already enforced at the store).
 //
 // It is deliberately IN-MEMORY ONLY. A durable high-water was considered (design
 // §11 Phase 4) and is not needed: across a restart the same guarantee is
@@ -111,7 +111,7 @@ func (g *nodeRolloutGate) record(gen uint64) {
 // candidateConfigDigest is the canonical digest of a candidate config artifact:
 // the hex-encoded SHA-256 of its exact bytes. The proposer stamps a rollout row
 // with this digest; every applier recomputes it over the candidate its own
-// config source delivered and compares (F10).
+// config source delivered and compares.
 //
 // Determinism across members (design §11 Phase 4 "UNPROVEN") holds because the
 // digest input, configCanonicalBytes, is a pure function of the config document:
@@ -130,7 +130,7 @@ func candidateConfigDigest(raw []byte) string {
 }
 
 // verifyCandidateDigest checks a candidate against the digest recorded in the
-// rollout row (invariant behind F10). A mismatch — a divergent config source, a
+// rollout row. A mismatch — a divergent config source, a
 // superseded artifact — or an empty expected digest is an error: the node must
 // Nack rather than build a candidate the cohort did not agree on. The compare is
 // constant-time; the inputs are not secret, but it costs nothing and avoids a
@@ -193,7 +193,7 @@ type rolloutApplier struct {
 	//     re-fetched from the committed artifact because the FIRST windowed rollout
 	//     has no prior committed artifact, and the running config is always N-1.
 	//   - convergeSent: whether this member already wrote its Converge for
-	//     provisionalGen (convergence is unretractable, I6 — write it once).
+	//     provisionalGen (convergence is unretractable, — write it once).
 	//   - revertedGen: a generation this member already reverted locally (deadman or
 	//     an observed Revert), so it does not re-apply or re-converge it.
 	provisionalGen uint64
@@ -216,7 +216,7 @@ type rolloutApplier struct {
 // notifications are hints, never truth: every decision re-reads the row through
 // the store, whose implementations read consistently (research rule 11).
 //
-// A returned error is a STORE error only — the loop logs and retries it (F9: an
+// A returned error is a STORE error only — the loop logs and retries it (an
 // outage flips no state, and members keep serving the old config). Every
 // protocol outcome (Nack, no candidate yet, not our cohort) is a normal return.
 func (a *rolloutApplier) step(ctx context.Context) error {
@@ -286,7 +286,7 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 }
 
 // vote runs the pre-build gate for an undecided rollout and records this node's
-// verdict exactly once (I5).
+// verdict exactly once.
 //
 // The build is a PROOF, not a staged runtime: Builder.Plan runs the same prepare
 // phase a real reload runs (validate, build stores, assemble options — no
@@ -303,14 +303,14 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 // It proves the candidate passes the wired ports.BlueprintValidator and that
 // this member can build its stores and runtime options. It does NOT prove the
 // transports connect (they open in the commit phase — §8.1's Model A, and why
-// F8 alarms rather than rolls back), and it does not prove the runtime's
+// alarms rather than rolls back), and it does not prove the runtime's
 // route-graph validation, which also runs in the commit phase.
 //
 // That last one makes the validator load-bearing for the barrier, not merely for
 // config hygiene: WITHOUT one, Builder.Plan trusts the input (see its doc), so a
 // dangling reference is acked by every member, committed, and then fails every
 // member's swap. The cohort stays consistent — all members fail identically and
-// recover the old config, so G2 holds — but the change costs a cohort-wide
+// recover the old config, so holds — but the change costs a cohort-wide
 // failed swap instead of an abort. A coordinated deployment should always wire
 // config.Validate.
 func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error {
@@ -326,7 +326,7 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 	cand, staged := a.barrier.candidate(r.ConfigDigest())
 	if !staged {
 		// This node's own config source has not delivered the candidate yet.
-		// Staying silent is correct: the coordinator's deadline (F1) bounds the
+		// Staying silent is correct: the coordinator's deadline bounds the
 		// wait and aborts if it never arrives, and a member that guessed instead
 		// would break the agreement the digest exists to prove.
 		return nil
@@ -341,13 +341,13 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 	release, err := a.host.PlanCandidate(ctx, cand.frozen)
 	if err != nil {
 		// A Nack is a PERMANENT, unretryable verdict: the aggregate admits one
-		// vote per member per generation (I5) and the coordinator aborts on the
-		// first one (F2). It must therefore mean "this config is wrong", never
+		// vote per member per generation and the coordinator aborts on the
+		// first one. It must therefore mean "this config is wrong", never
 		// "I was briefly unable to check". PlanCandidate opens stores and resolves
 		// credentials, so a throttled store, a flaky credential provider, or —
 		// because ctx is the drive loop's — an ordinary SIGTERM would otherwise
 		// let one restarting member poison every in-flight rollout in the cohort.
-		// Abstain instead and let the deadline (F1) decide; that outcome is
+		// Abstain instead and let the deadline decide; that outcome is
 		// recoverable by re-proposing, a nack is not.
 		if transientBuildFailure(ctx, err) {
 			if a.host.RolloutLogger() != nil {
@@ -382,7 +382,7 @@ func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error 
 }
 
 // nack records this node's rejection with an operator-facing reason. The rollout
-// does NOT terminate here — the coordinator observes the nack and aborts (F2),
+// does NOT terminate here — the coordinator observes the nack and aborts,
 // so the decision stays with the single fenced decider.
 func (a *rolloutApplier) nack(ctx context.Context, r persistence.Rollout, reason string) error {
 	if a.host.RolloutLogger() != nil {
@@ -453,7 +453,7 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 	// for resume) and restores the OLD config when the swap fails. Comparing
 	// content is therefore the honest answer, and it matters: the barrier has
 	// already committed cluster-wide, so a member that silently fails to apply
-	// leaves the mixed-version cohort G2 forbids.
+	// leaves the mixed-version cohort forbids.
 	if configContentEqual(a.host.Config(), content) {
 		a.gate.record(gen)
 		return true
@@ -502,15 +502,15 @@ func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint6
 // fail their digest check (the running config is then kept — better than building
 // a corrupt artifact). Returns a store error to the caller for retry.
 //
-// PHASE-6 wiring dependency: reconcile (like the joiner's boot substitution)
+// wiring dependency: reconcile (like the joiner's boot substitution)
 // applies a config the config MANAGER did not emit — the decoded artifact, not a
 // manager-correlated pointer. A production composition root that wires
 // onSwap -> ports config manager NotifyApplyResult must reconcile the manager's
 // desired/running fingerprint after a barrier-driven swap (e.g. re-sync running to
 // the committed config), or ReconfigurePending / deep-health Degraded can latch
 // true despite the member being correctly converged. The barrier is not wired into
-// any production root in Phase 5, so this does not manifest here; it is a Phase-6
-// obligation tracked in the design doc.
+// any production root today, so this does not manifest here. Wiring the barrier
+// into a production root is what makes this reconcile step mandatory.
 func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uint64) error {
 	if a.barrier.decode == nil || a.barrier.committedStore == nil {
 		return nil

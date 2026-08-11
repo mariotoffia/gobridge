@@ -12,7 +12,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-14 (LOW): oversized/unsafe MQTT v5 properties (CorrelationData, ContentType,
+// (LOW): oversized/unsafe MQTT v5 properties (CorrelationData, ContentType,
 // ResponseTopic) were dropped SILENTLY — only user-property drops incremented
 // MetricMQTTIngressHeaderDropped, so a correlation-id loss was invisible. Every
 // header dropped by the safety filter (property or user property) must feed the
@@ -41,9 +41,9 @@ func TestBug_EnvelopeFromPublish_MetersDroppedProperties(t *testing.T) {
 	require.NotContains(t, env.Headers(), messaging.HeaderContentType)
 	require.NotContains(t, env.Headers(), headerMQTTResponseTopic)
 
-	// A-14: all three property drops are metered on the ingress-header counter.
+	// all three property drops are metered on the ingress-header counter.
 	entries := rec.FindEntries(MetricMQTTIngressHeaderDropped)
 	require.Len(t, entries, 1, "the drop counter is emitted once with the total")
 	require.Equal(t, int64(3), entries[0].IValue,
-		"A-14: each dropped MQTT property (correlation data, content type, response topic) must be counted")
+		"each dropped MQTT property (correlation data, content type, response topic) must be counted")
 }

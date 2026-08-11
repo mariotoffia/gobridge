@@ -22,7 +22,7 @@ import (
 // [ValidationError] describing every problem found, or nil when all routes are
 // valid. It is idempotent and side-effect-free (it never mutates route entries
 // or runtime state), so it is safe to call repeatedly and BEFORE Start — the
-// builder's complete() calls it at the end of construction (C2). Start invokes
+// builder's complete() calls it at the end of construction. Start invokes
 // the same validation internally, so a runtime that fails ValidateRoutes also
 // fails Start.
 func (rt *Runtime) ValidateRoutes() error {
@@ -35,8 +35,7 @@ func (rt *Runtime) ValidateRoutes() error {
 // standing dead-letter-queue backlog (shared.MetricDLQDepth). Unlike OutboxDepth
 // — sampled every drain cycle by the drainer loop — the DLQ has no loop of its
 // own, so without this periodic sampler a stale post-burst backlog (writes
-// stopped, nothing redriven) is invisible until a manual storage scan (XCUT-B /
-// H-OBS DLQ-1). 30s aligns with the 30–60s operational alarm cadence; it is a
+// stopped, nothing redriven) is invisible until a manual storage scan. 30s aligns with the 30–60s operational alarm cadence; it is a
 // const, not a config knob, since no DLQ-sampling knob exists in the blueprint.
 const dlqDepthSampleInterval = 30 * time.Second
 
@@ -54,7 +53,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		// work. The runtime is single-use — for BOTH a clean deliberate Stop
 		// (rt.stopped) and an unrecoverable component failure (rt.terminal):
 		// reject a restart with a clear error. "Resume" after a deliberate stop
-		// means the supervisor builds a NEW runtime (CRITICAL 1).
+		// means the supervisor builds a NEW runtime.
 		return errors.New("runtime: cannot start a stopped runtime (single-use lifecycle); build a new runtime")
 	}
 
@@ -98,7 +97,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// (the caller cancels the ctx it passed to Start, rather than calling Stop),
 	// every background goroutine exits on the derived ctx — but running/healthy
 	// stay advertised, leaving a dead runtime that still reports healthy on /live
-	// and ready on /ready (finding L9). Drive Stop so resources are released and
+	// and ready on /ready. Drive Stop so resources are released and
 	// health flips. A Stop that itself cancelled the ctx already set terminal, so
 	// this observes terminal and does nothing (no double teardown). The watcher
 	// is deliberately NOT in rt.wg (Stop waits on rt.wg, so enrolling it would
@@ -148,7 +147,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		Clock:            rt.clk,
 		WriteTimeout:     dlq.RuntimeWriteTimeout,
 		WriteMaxAttempts: dlq.RuntimeWriteMaxAttempts,
-		// H2: wire Metrics/Logger so MetricDLQWriteFailures reaches the real
+		// wire Metrics/Logger so MetricDLQWriteFailures reaches the real
 		// exporter (not a NoopExporter) and router write errors are logged.
 		// Without these the production DLQ router was blind.
 		Metrics: m,
@@ -192,7 +191,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for _, entry := range rt.entries {
-		// A1: For shared_outbox routes with a primary session, bindings that
+		// For shared_outbox routes with a primary session, bindings that
 		// omit their own SessionID inherit the route session. This keeps each
 		// outbox record's partition (SESSION#<routeSession>) aligned with the
 		// drainer that polls it; without this, records persist under
@@ -287,7 +286,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 						},
 					})
 					rt.drainers = append(rt.drainers, drainer)
-					// F9: let step-down early-complete its grace when this
+					// let step-down early-complete its grace when this
 					// session's outbox has no in-flight records to settle.
 					mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 				}
@@ -350,7 +349,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					},
 				})
 				rt.drainers = append(rt.drainers, drainer)
-				// F9: let step-down early-complete its grace when this session's
+				// let step-down early-complete its grace when this session's
 				// outbox has no in-flight records to settle.
 				mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 			}
@@ -422,7 +421,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// MetricSessionRestarts + per-session readiness. This supersedes the old
 	// "reconcile blip terminates the whole bridge" behaviour, so no extra
 	// in-manager reconcile retry is added: it would duplicate this isolation and
-	// risk masking a permanent failure behind another retry layer (C7-N1).
+	// risk masking a permanent failure behind another retry layer.
 	for sid, mgr := range rt.sessionMgrs {
 		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
 	}
@@ -450,7 +449,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// (its source queue deleted, its credential revoked, a protocol mismatch on
 	// that link) is NOT a global fault: crashing the whole pod would punish every
 	// healthy co-tenant route and, since the fault is permanent, just
-	// CrashLoopBackOff without fixing anything (findings C1-MED, C2-HIGH). This
+	// CrashLoopBackOff without fixing anything. This
 	// supersedes the former REV-3-routeiso fail-fast rationale (which assumed
 	// every receiver error is global-and-unrecoverable); superviseRoute isolates
 	// the failing route with jittered capped backoff, keeps global healthy/
@@ -462,7 +461,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
 	}
 
-	// DLQ-depth sampler (XCUT-B): periodically emit the standing DLQ backlog as
+	// DLQ-depth sampler: periodically emit the standing DLQ backlog as
 	// shared.MetricDLQDepth so operators can alarm on records sitting in the DLQ
 	// after traffic stops. Unlike OutboxDepth (sampled every drain cycle by the
 	// drainer loop) the DLQ has no loop of its own. The goroutine probes the

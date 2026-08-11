@@ -21,7 +21,7 @@ import (
 // and stands in for the other, which cannot catch a wiring gap between them.
 //
 // The cohort is a single member so this process's own ack satisfies the epoch.
-// That is a legitimate cohort shape, not a shortcut: invariant I2 is "acks cover
+// That is a legitimate cohort shape, not a shortcut: invariant is "acks cover
 // the epoch", and a one-member epoch exercises the same code path a three-member
 // one does. Multi-PROCESS coverage is Phase 5's UC-CR1 on the nodeProcess
 // harness; it cannot be reproduced in-process because each member needs its own
