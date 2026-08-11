@@ -16,11 +16,13 @@ const (
 	MetricMQTTOldestUnsettledAge       = "MQTTOldestUnsettledAge"
 	MetricMQTTReceiveWindowUtilization = "MQTTReceiveWindowUtilization"
 
-	// MetricMQTTNonStringHeaderDropped counts bridge-to-bridge / application
-	// header values dropped on egress because their value is not a string
-	// and therefore cannot be serialised as an MQTT user property (e.g. a
-	// non-string idempotency-key or tenant-id). Emitted by
-	// PublishFromEnvelope so the otherwise-silent drop is observable.
+	// MetricMQTTNonStringHeaderDropped counts header values dropped on egress
+	// because they cannot be represented on the wire: a bridge-to-bridge /
+	// application value that is not a string and therefore cannot be serialised
+	// as an MQTT user property (e.g. a non-string idempotency-key or
+	// tenant-id), or a retained binary correlation header whose encoding no
+	// longer decodes. Emitted by PublishFromEnvelope so the otherwise-silent
+	// drop is observable.
 	MetricMQTTNonStringHeaderDropped = "MQTTNonStringHeaderDropped"
 
 	// MetricMQTTIngressHeaderDropped counts inbound MQTT user properties

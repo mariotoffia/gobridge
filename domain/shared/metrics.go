@@ -97,6 +97,14 @@ const (
 	MetricOutboxReplayCount       = "OutboxReplayCount"
 	MetricOutboxRecordFailures    = "OutboxRecordFailures"
 	MetricOutboxDuplicateRisk     = "OutboxDuplicateRisk"
+	// MetricOutboxDuplicateSuppressed counts ingress persists rejected because
+	// the outbox already holds that envelope identity, so the source was settled
+	// without writing a new record. A redelivery of an already-persisted message
+	// is the benign case. The same signal fires when a producer reuses an
+	// envelope ID for a DIFFERENT message: the runtime cannot tell the two apart,
+	// and suppression then discards a real message. A sustained non-zero rate on
+	// one route means its source's identity namespace is colliding.
+	MetricOutboxDuplicateSuppressed = "OutboxDuplicateSuppressed"
 	// MetricOutboxDeferred counts claimed records the drainer could NOT process
 	// this cycle (batch deadline expired before the send launched or completed)
 	// and released/left for the next drain. They are neither successes nor hard

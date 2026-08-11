@@ -37,6 +37,21 @@ const (
 	// forever. It is INTERNAL-ONLY: never serialized to a peer, so an adapter must
 	// stamp it locally at ingress and it can never be spoofed inbound.
 	HeaderGeneratedID = "x-bridge.generated-id"
+	// HeaderCorrelationData retains a producer's correlation value when it is
+	// BINARY — bytes that are not a safe header string (NUL, control characters,
+	// non-UTF-8) and so cannot round-trip through HeaderCorrelationID, which is
+	// textual. The value is those bytes in unpadded URL-safe base64, so the
+	// header survives JSON persistence, and a transport whose wire format carries
+	// binary correlation (MQTT v5 Correlation Data, AMQP correlation-id) decodes
+	// it back to the exact bytes on egress.
+	//
+	// It is INTERNAL-ONLY and reserved precisely so it cannot be spoofed: a
+	// producer on ANY source transport that sends a header with this name has it
+	// stripped by NewEnvelope, so only an ingress adapter that actually read
+	// binary correlation off the wire can install it. An unreserved name would
+	// let a producer on one transport dictate — and displace the bridge's own
+	// correlation id in — another transport's outbound correlation value.
+	HeaderCorrelationData = "x-bridge.correlation-data"
 )
 
 // IsReservedHeader returns true if the key uses the reserved x-bridge. prefix.
@@ -72,7 +87,7 @@ func IsReservedHeader(key string) bool {
 func IsInternalOnlyHeader(key string) bool {
 	return equalsAnyFold(key,
 		HeaderRouteID, HeaderRouteOverride, HeaderSourceID, HeaderContentType,
-		HeaderGeneratedID)
+		HeaderGeneratedID, HeaderCorrelationData)
 }
 
 // IsBridgeToBridgeHeader reports whether key is a reserved header that

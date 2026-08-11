@@ -156,7 +156,8 @@ func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) (*messaging.Envelope, 
 		clk = clock.System
 	}
 	id := d.MessageId
-	if id == "" {
+	generated := id == ""
+	if generated {
 		id = generateEnvelopeID()
 	}
 	created := clk.Now()
@@ -183,6 +184,17 @@ func deliveryToEnvelope(d amqp.Delivery, clk clock.Clock) (*messaging.Envelope, 
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
+	}
+	if generated {
+		// AMQP 0-9-1 carries no redelivery counter and no broker-stable message
+		// coordinate, so a requeued delivery with no publisher message-id is
+		// converted under a FRESH identity every time. Declare that instability
+		// (ports.Receiver "Envelope identity"): the runtime's replay ledger cannot
+		// accumulate attempts for such a message, so without the marker a
+		// deterministically-failing delivery requeues forever. SetHeader is the
+		// trusted per-key setter — the reserved key would be stripped from
+		// EnvelopeInput.Headers.
+		env.SetHeader(messaging.HeaderGeneratedID, "true")
 	}
 	return env, nil
 }

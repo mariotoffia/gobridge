@@ -466,7 +466,8 @@ func (r *Receiver) convertMessage(
 	}
 
 	id := aws.ToString(msg.MessageId)
-	if id == "" {
+	generatedID := id == ""
+	if generatedID {
 		id = generateEnvelopeID()
 	}
 
@@ -495,6 +496,15 @@ func (r *Receiver) convertMessage(
 	}, r.clock().Now())
 	if err != nil {
 		return nil, receiptHandle, wrapEnvelopeErr(err)
+	}
+	if generatedID {
+		// SQS always supplies a MessageId, so this is the defensive path for a
+		// message that arrives without one. Such a message is converted under a
+		// FRESH identity on every redelivery; declare that instability
+		// (ports.Receiver "Envelope identity") rather than presenting it as a
+		// stable key to dedup. SetHeader is the trusted per-key setter — the
+		// reserved key would be stripped from EnvelopeInput.Headers.
+		env.SetHeader(messaging.HeaderGeneratedID, "true")
 	}
 
 	if logging.TraceEnabled(r.logger) {

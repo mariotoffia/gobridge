@@ -232,7 +232,8 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 	if msg.Properties != nil && msg.Properties.MessageID != nil {
 		msgID = messageIDToString(msg.Properties.MessageID)
 	}
-	if msgID == "" {
+	generated := msgID == ""
+	if generated {
 		msgID = generateEnvelopeID()
 	}
 
@@ -283,6 +284,14 @@ func messageToEnvelope(msg *amqp.Message, clk clock.Clock) (*messaging.Envelope,
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
+	}
+	if generated {
+		// A message with no producer message-id is converted under a FRESH
+		// identity on every redelivery. Declare that instability (ports.Receiver
+		// "Envelope identity") so downstream dedup and the replay cap read the
+		// identity for what it is. SetHeader is the trusted per-key setter — the
+		// reserved key would be stripped from EnvelopeInput.Headers.
+		env.SetHeader(messaging.HeaderGeneratedID, "true")
 	}
 	return env, nil
 }

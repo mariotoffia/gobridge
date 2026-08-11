@@ -1108,6 +1108,16 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	pcancel()
 	if persistErr != nil {
 		if errors.Is(persistErr, shared.ErrDuplicateRecord) {
+			// The record is already durable, so settling the source loses nothing —
+			// for a redelivery. The runtime cannot distinguish that from a producer
+			// reusing an envelope ID for a different message, where the same ack
+			// discards a real one. Count the suppression so a colliding identity
+			// namespace is visible on the route rather than inferred from missing
+			// messages; ingress ownership of that namespace is a transport contract
+			// (ports.Receiver "Envelope identity").
+			r.metrics.Counter(shared.MetricOutboxDuplicateSuppressed, 1,
+				shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
+			)
 			return r.ackDelivery(ctx, del)
 		}
 		// ×: a DeadlineExceeded from the bounded store-op

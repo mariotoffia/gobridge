@@ -251,6 +251,7 @@ from the intentional filter and TTL counters.
 | `OutboxReplayCount` | `route_id` | Count | Records re-attempted after a prior claim |
 | `OutboxRecordFailures` | `route_id` | Count | Records that failed processing this drain cycle |
 | `OutboxDuplicateRisk` | `route_id` | Count | Complete failed after a successful send — the message may be re-delivered |
+| `OutboxDuplicateSuppressed` | `route_id` | Count | Ingress persist rejected because the outbox already holds that envelope identity; the source was acked without a new record. Benign for a redelivery — a sustained rate on one route means that source's producers are reusing envelope IDs, and each suppression discards a distinct message |
 | `OutboxExpiredBeforeSend` | `route_id` | Count | Record expired before the drainer launched its send |
 | `OutboxDrainStalled` | `session_id`, `route_id` | Count | Drain batch whose in-flight sends did not return within the watchdog grace (a sender ignoring `ctx`) |
 | `DrainSkippedNoLease` | `session_id`, `route_id` | Count | Drain cycle skipped because the drainer held no lease |

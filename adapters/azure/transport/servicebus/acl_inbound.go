@@ -142,6 +142,7 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock, enti
 		subject = *msg.Subject
 	}
 	id := msg.MessageID
+	generated := false
 	if orig, ok := stringProp(msg.ApplicationProperties, asbPropOriginalMessageID); ok {
 		// A bridge-scheduled retry copy salts its wire MessageID (so
 		// broker duplicate detection never discards the copy) and
@@ -166,6 +167,7 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock, enti
 			// rejecting, so a single odd message never stalls the loop and
 			// two such messages still never collide.
 			id = generateEnvelopeID()
+			generated = true
 		}
 	}
 	// A received broker absolute-expiry is stamped at construction (permissive):
@@ -186,6 +188,15 @@ func receivedToEnvelope(msg *azservicebus.ReceivedMessage, clk clock.Clock, enti
 	}, clk.Now())
 	if err != nil {
 		return nil, wrapEnvelopeErr(err)
+	}
+	if generated {
+		// Last-resort random identity: no MessageID and no SequenceNumber to
+		// anchor on, so a peek-lock redelivery of this message is converted under
+		// a FRESH id. Declare that instability (ports.Receiver "Envelope
+		// identity") rather than presenting a per-delivery random value to dedup
+		// as if it were stable. SetHeader is the trusted per-key setter — the
+		// reserved key would be stripped from EnvelopeInput.Headers.
+		env.SetHeader(messaging.HeaderGeneratedID, "true")
 	}
 	return env, nil
 }

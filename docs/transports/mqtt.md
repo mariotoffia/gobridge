@@ -117,6 +117,24 @@ behind one stable endpoint (DNS name / load balancer), never from client-side
 URL lists. Multi-URL client-side failover is available to ephemeral sessions
 only.
 
+*Canonical* means the endpoint actually dialled, not the URL as written: scheme
+aliases collapse (`tcp`/`mqtt`, and `ssl`/`tls`/`mqtts`/`mqtt+ssl`/`tcps`), an
+omitted port becomes the family default, host case, userinfo and fragment are
+ignored, and path/query count only for `ws`/`wss`. Two durable sessions spelled
+differently but reaching one endpoint are therefore rejected as duplicate
+identities at startup, instead of starting and disconnecting each other on their
+shared `client_id`.
+
+> **Upgrade note — durable session identity.** The canonical endpoint feeds the
+> fingerprint that keys managed-subscription storage. A URL written as
+> `tcp://host:1883`, `ssl://host:8883`, `ws://host:80/path` or
+> `wss://host:443/path` keeps the identity it had before, so its stored history
+> carries forward untouched. Any other spelling — an alias scheme, or an omitted
+> port — resolves to a new fingerprint, and that session starts with empty
+> managed-subscription history. Rewrite such URLs into the canonical spelling
+> **before** upgrading, or treat the change as identity-incompatible and deploy
+> it by whole-cohort replacement (see `docs/cluster/operating.md`).
+
 **`deployment_mode: standalone` is a per-process assertion.** Two replicas
 each declaring `standalone` with process-local lease stores each believe they
 own every exclusive session — real split-brain consumption. The bridge logs a

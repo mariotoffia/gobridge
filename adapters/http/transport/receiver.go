@@ -464,6 +464,12 @@ func (r *ingressRequest) toEnvelope(clk clock.Clock, keys externalKeys) (*messag
 	}
 	id := r.ID
 	if id == "" {
+		// Minted, but NOT marked messaging.HeaderGeneratedID: that marker declares
+		// "a redelivery of this message arrives under a different id", and HTTP has
+		// no source redelivery — Delivery.Retry hands the failure back to the
+		// waiting client, whose retry is a NEW request and a new message. Marking
+		// it would make the runtime terminalize (DLQ) the first transient failure
+		// instead of letting the client retry.
 		id = generateHTTPEnvelopeID(clk)
 	}
 	var expires time.Time

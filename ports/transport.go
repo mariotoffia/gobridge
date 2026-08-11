@@ -163,6 +163,37 @@ type Delivery interface {
 //     behind the emit callback; a late emit is a Receiver bug (the
 //     runtime guards this defensively and rejects the delivery, which
 //     then falls back to transport redelivery).
+//
+// # Envelope identity (canonical contract)
+//
+// Envelope.ID is the key the runtime deduplicates and replays on: the outbox
+// stores one record per (partition, envelope ID, binding) and the replay ledger
+// caps redelivery per ID. Both properties below are NORMATIVE for every source
+// adapter, and ports/transporttest.RunSourceIdentityConformanceTests asserts
+// them.
+//
+//   - Redelivery stability, or declared instability. Every Delivery the
+//     transport produces for ONE source message MUST carry the same
+//     Envelope.ID, across redelivery, reconnect, failover and process restart.
+//     A transport that MINTS an ID because the message carries none, AND whose
+//     source can redeliver that same message, MUST stamp
+//     messaging.HeaderGeneratedID on the envelope: it tells the runtime the ID
+//     changes per redelivery, so the replay cap terminates the message instead
+//     of looping on a key that never accumulates. A transport with no source
+//     redelivery — where a failed Delivery ends the message and any client
+//     retry arrives as a NEW message — has no instability to declare and MUST
+//     NOT stamp it. Silently unstable IDs are the forbidden case: they defeat
+//     both dedup and the cap.
+//
+//   - Source-scoped uniqueness. Two DISTINCT source messages reaching one
+//     Receiver MUST NOT share an Envelope.ID. Uniqueness is required within the
+//     source, not globally: IDs from different sources reach different routes
+//     and bindings and are never compared. Where the ID is derived from a
+//     PRODUCER-supplied field rather than minted by the broker or the adapter,
+//     the adapter MUST document that whoever may publish to the source owns
+//     that ID namespace — a reused ID is one identity to the outbox, and the
+//     second message is suppressed (counted on
+//     shared.MetricOutboxDuplicateSuppressed) rather than delivered.
 type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }

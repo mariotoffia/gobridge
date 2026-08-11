@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -61,11 +60,19 @@ func dialMQTTConnection(
 	}
 	defer cancel()
 
-	switch strings.ToLower(serverURL.Scheme) {
-	case "", "mqtt", "tcp":
-		return dialMQTTTCP(dialCtx, serverURL.Host)
-	case "ssl", "tls", "mqtts", "mqtt+ssl", "tcps":
-		return dialMQTTTLS(dialCtx, cfg.TlsCfg, serverURL.Host)
+	// brokerDialFamily is the single list of supported schemes, shared with
+	// durable-identity canonicalization, so a URL that passes preflight is a URL
+	// this switch can dial — including its default port when the URL omits one.
+	family, defaultPort, _ := brokerDialFamily(serverURL.Scheme)
+	address := serverURL.Host
+	if serverURL.Port() == "" && serverURL.Hostname() != "" {
+		address = net.JoinHostPort(serverURL.Hostname(), defaultPort)
+	}
+	switch family {
+	case "tcp":
+		return dialMQTTTCP(dialCtx, address)
+	case "ssl":
+		return dialMQTTTLS(dialCtx, cfg.TlsCfg, address)
 	case "ws":
 		return dialMQTTWebsocket(dialCtx, nil, cfg.WebSocketCfg, serverURL)
 	case "wss":

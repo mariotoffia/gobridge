@@ -220,6 +220,26 @@ Two rules govern the declaration:
 | `Retry(ctx, after, err)` | `delivery.Nack(false, true)` | Requeue; `after` is logged but not enforced |
 | `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
 
+## Envelope identity: publish a `message_id`
+
+A publisher's `message_id` becomes `Envelope.ID`. A delivery without one gets an
+identity minted at ingress, and AMQP 0-9-1 offers nothing stable to anchor it
+to: the delivery tag is per-channel, and a requeue carries no counter. The same
+message requeued is therefore converted under a **new** identity every time.
+
+The adapter marks such an envelope `x-bridge.generated-id`, which tells the
+runtime the identity cannot be counted. The runtime's replay ledger keys on the
+envelope ID, so for an unmarked unstable identity `max_replay_attempts` could
+never fire and a deterministically-failing message would requeue forever,
+never draining and never producing DLQ evidence.
+
+> **Behavior consequence -- no retry budget without a `message_id`.** Because
+> such a message is uncountable, the runtime does not retry it: the FIRST
+> transient failure settles it terminally, to the DLQ (or dropped, per the
+> route's `on_permanent_failure`). Setting `message_id` on the publisher is the
+> fix and the only one — this adapter derives identity from that property alone.
+> Watch `DLQEntries` after upgrading if your producers do not set it.
+
 ## Header Mapping
 
 The adapter maps AMQP 0-9-1 per-message properties to and from the envelope
