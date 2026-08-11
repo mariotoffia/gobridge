@@ -25,6 +25,20 @@ const (
 	// drop is observable.
 	MetricMQTTNonStringHeaderDropped = "MQTTNonStringHeaderDropped"
 
+	// MetricMQTTEgressRejected counts publishes refused BEFORE any byte reached
+	// the socket because the constructed packet violates a wire limit: a
+	// length-prefixed field above the MQTT v5 65,535-byte ceiling (which Paho
+	// would silently truncate, so the broker would acknowledge metadata that
+	// differs from the source), or an encoded packet larger than the Maximum
+	// Packet Size the broker granted in its CONNACK (which the broker answers
+	// with a DISCONNECT, leaving QoS 1/2 completion ambiguous and churning the
+	// session on every retry). The publish is returned to the route as a
+	// permanent rejection, so it is DLQ'd rather than retried. Any non-zero
+	// value means a producer or a route is generating messages this broker
+	// cannot accept — find the oversized field or lower the message size before
+	// the route's DLQ fills.
+	MetricMQTTEgressRejected = "MQTTEgressRejected"
+
 	// MetricMQTTIngressHeaderDropped counts inbound MQTT user properties
 	// dropped on ingress because their key or value is unsafe (not valid
 	// UTF-8, or contains a control character) or exceeds maxHeaderValueLen.

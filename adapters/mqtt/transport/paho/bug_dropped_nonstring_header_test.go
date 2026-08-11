@@ -26,7 +26,7 @@ func TestPublishFromEnvelope_NonStringHeaderIncrementsCounter(t *testing.T) {
 	})
 
 	rec := &ports.RecordingExporter{}
-	pub := PublishFromEnvelope(env, "t/out", SenderOptions{QoS: 1}, nil, rec)
+	pub := mustPublishFromEnvelope(t, env, "t/out", SenderOptions{QoS: 1}, nil, rec)
 
 	entries := rec.FindEntries(MetricMQTTNonStringHeaderDropped)
 	if len(entries) != 1 {
@@ -71,7 +71,7 @@ func TestPublishFromEnvelope_AllStringHeaders_NoDropCounter(t *testing.T) {
 	})
 
 	rec := &ports.RecordingExporter{}
-	_ = PublishFromEnvelope(env, "t/out", SenderOptions{QoS: 1}, nil, rec)
+	_ = mustPublishFromEnvelope(t, env, "t/out", SenderOptions{QoS: 1}, nil, rec)
 
 	if entries := rec.FindEntries(MetricMQTTNonStringHeaderDropped); len(entries) != 0 {
 		t.Fatalf("MetricMQTTNonStringHeaderDropped entries = %d, want 0", len(entries))

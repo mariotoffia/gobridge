@@ -74,6 +74,17 @@ type Session struct {
 	connectionUpCompleted bool
 	connectionUpErr       error
 
+	// brokerMaxPacketSize is the MQTT v5 Maximum Packet Size the broker granted
+	// in the CONNACK of the current connection; 0 means it granted none, which
+	// the spec defines as no limit beyond the protocol ceiling. Egress consults
+	// it before every PUBLISH reaches the socket. It is captured per connection
+	// edge because autopaho reconnects underneath the session and a resumed or
+	// relocated broker can grant a different ceiling. The last observed value is
+	// deliberately KEPT across a disconnect: it is a better estimate for the
+	// next connection to the same broker than "unlimited", and a fresh CONNACK
+	// always overwrites it. Guarded by mu.
+	brokerMaxPacketSize uint32
+
 	// takeoverStreak counts consecutive session-takeover disconnects
 	// (0x8E) without an intervening stable connection; connUpAt is when
 	// the current connection came up. Both guarded by mu; used to damp

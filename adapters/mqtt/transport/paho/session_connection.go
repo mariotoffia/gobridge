@@ -119,6 +119,27 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	}
 }
 
+// recordBrokerMaxPacketSize stores the Maximum Packet Size the broker granted
+// on this connection edge. The generation guard is the same one every other
+// connection callback uses: a CONNACK from a ConnectionManager that Reload or
+// recovery already discarded must never install its ceiling over the live one.
+func (s *Session) recordBrokerMaxPacketSize(generation uint64, maximumPacketSize uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration || s.closed {
+		return
+	}
+	s.brokerMaxPacketSize = maximumPacketSize
+}
+
+// brokerMaximumPacketSize returns the broker ceiling egress must respect, or 0
+// when no CONNACK has granted one.
+func (s *Session) brokerMaximumPacketSize() uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.brokerMaxPacketSize
+}
+
 func (s *Session) completeConnectionUpBarrier(generation uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

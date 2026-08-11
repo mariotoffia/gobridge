@@ -74,7 +74,7 @@ func TestCorrelationIdentity_BinaryDataRoundTripsUnchanged(t *testing.T) {
 		t.Fatalf("binary correlation data must not be published as the string correlation id header")
 	}
 
-	out := PublishFromEnvelope(env, "out/topic", SenderOptions{}, nil)
+	out := mustPublishFromEnvelope(t, env, "out/topic", SenderOptions{}, nil)
 	if out.Properties == nil {
 		t.Fatal("egress publish carries no properties; correlation data was lost")
 	}
@@ -105,7 +105,7 @@ func TestCorrelationIdentity_BinaryDataSurvivesTheRuntimeCorrelationStamp(t *tes
 	// What RouteRunner.injectHeaders does before dispatch.
 	env.SetHeader(messaging.HeaderCorrelationID, "bridge-generated-correlation")
 
-	out := PublishFromEnvelope(env, "out/topic", SenderOptions{}, nil)
+	out := mustPublishFromEnvelope(t, env, "out/topic", SenderOptions{}, nil)
 	if out.Properties == nil {
 		t.Fatal("egress publish carries no properties; correlation data was lost")
 	}
@@ -160,7 +160,7 @@ func TestCorrelationIdentity_InboundBinaryHeaderCannotBeSpoofed(t *testing.T) {
 		}
 		env.SetHeader(messaging.HeaderCorrelationID, "bridge-correlation")
 
-		out := PublishFromEnvelope(env, "out/topic", SenderOptions{}, nil)
+		out := mustPublishFromEnvelope(t, env, "out/topic", SenderOptions{}, nil)
 		if out.Properties == nil {
 			t.Fatal("egress publish carries no properties")
 		}

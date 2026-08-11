@@ -187,7 +187,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 
 	t.Run("marker does not ride egress", func(t *testing.T) {
 		env := EnvelopeFromPublish(publishWithIdentity(&pahov5.Publish{Topic: "t", Payload: []byte("p")}), nil)
-		pub := PublishFromEnvelope(env, "out/topic", SenderOptions{}, nil)
+		pub := mustPublishFromEnvelope(t, env, "out/topic", SenderOptions{}, nil)
 		if pub.Properties != nil {
 			for _, u := range pub.Properties.User {
 				if u.Key == messaging.HeaderGeneratedID || u.Key == headerMQTTGeneratedID {

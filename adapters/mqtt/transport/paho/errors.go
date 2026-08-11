@@ -15,6 +15,16 @@ func MapError(err error) *shared.BridgeError {
 		return nil
 	}
 
+	// An error that already carries a bridge classification passes through
+	// untouched. The adapter's own pre-wire rejections (an over-limit packet, a
+	// field the SDK would truncate) are permanent by construction, and the
+	// generic fallback below would relabel them ErrUnavailable — turning a
+	// rejection the route must DLQ into one it retries forever.
+	var classified *shared.BridgeError
+	if errors.As(err, &classified) {
+		return classified
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return shared.ErrTimeout.Wrap(err)
 	}

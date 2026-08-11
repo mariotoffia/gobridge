@@ -54,7 +54,7 @@ func TestAnaMore_PublishFromEnvelope_EgressHeaderPolicy(t *testing.T) {
 			"x-app-key":                     "app-value",    // application → user property
 		},
 	})
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected properties to be set")
 	}

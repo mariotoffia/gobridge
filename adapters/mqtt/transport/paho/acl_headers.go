@@ -2,6 +2,7 @@ package paho
 
 import (
 	"encoding/base64"
+	"math"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -316,8 +317,14 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 // instead of vanishing silently. When no exporter is supplied the drop is
 // still applied, just uncounted (test/legacy call sites).
 //
+// Construction FAILS (nil publish, shared.ErrPayloadTooLarge) when any
+// length-prefixed field exceeds the MQTT v5 65,535-byte ceiling. Paho would
+// otherwise slice the value and write the shortened form without an error, so
+// the broker would acknowledge metadata that differs from the source; see
+// validatePublishFieldLimits.
+//
 //aclcheck:allow-export
-func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock, metrics ...ports.MetricsExporter) *pahov5.Publish {
+func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock, metrics ...ports.MetricsExporter) (*pahov5.Publish, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -348,15 +355,24 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 	}
 
 	if env.HasExpiry() {
-		remaining := env.RemainingTTL(clk)
-		if remaining > 0 {
-			secs := uint32(remaining.Seconds())
-			if secs == 0 {
-				secs = 1
+		// An envelope with an expiry ALWAYS carries a Message Expiry Interval.
+		// The route decides whether to send; by the time the packet is built the
+		// remaining TTL can already have run out, and omitting the property then
+		// is the strictly worse outcome — the broker keeps the message for a
+		// queued subscriber with no expiry at all. MQTT v5 encodes the interval
+		// as whole seconds with no "already expired" value (zero means "no
+		// expiry"), so a non-positive or sub-second remainder clamps to one
+		// second and the broker discards it at the next opportunity.
+		secs := uint32(1)
+		if remaining := env.RemainingTTL(clk); remaining >= time.Second {
+			if seconds := uint64(remaining / time.Second); seconds < math.MaxUint32 {
+				secs = uint32(seconds)
+			} else {
+				secs = math.MaxUint32
 			}
-			props.MessageExpiry = &secs
-			hasProps = true
 		}
+		props.MessageExpiry = &secs
+		hasProps = true
 	}
 
 	if env.Headers() != nil {
@@ -435,5 +451,11 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		pub.Properties = props
 	}
 
-	return pub
+	// Last gate before the packet leaves this constructor: a field the SDK
+	// would silently truncate must fail the publish, not corrupt it.
+	if err := validatePublishFieldLimits(pub); err != nil {
+		return nil, err
+	}
+
+	return pub, nil
 }

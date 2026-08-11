@@ -47,6 +47,19 @@ const (
 	// Envelope header-map buckets, outbox/queue item state, and allocator
 	// page/size-class rounding observed by the finite-cgroup proof.
 	retainedPacketFixedBytes uint64 = 32 << 10
+	// minEncodedUserPropertyBytes is the smallest legal encoded MQTT v5 User
+	// Property: the one-byte identifier plus two empty length-prefixed UTF-8
+	// strings.
+	minEncodedUserPropertyBytes uint64 = 5
+	// maxWireUserProperties is the largest number of User Properties a packet
+	// the broker may forward can carry. The CONNECT advertises only a
+	// whole-packet Maximum Packet Size, so a compliant broker forwards a packet
+	// that fills the entire metadata allowance with minimum-size properties —
+	// tens of thousands of them, not the maxIngressUserProperties the router
+	// retains. Paho materialises every one of them (wire packet and callback
+	// copy) before the callback can ack-and-drop the violation, so the ONE
+	// decode in flight per connection must be budgeted for this count.
+	maxWireUserProperties = mqttPacketOverheadAllowance / minEncodedUserPropertyBytes
 )
 
 // wirePacketSizeFor returns the MQTT v5 Maximum Packet Size advertised to the
@@ -62,7 +75,9 @@ func wirePacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 }
 
 // decodedPacketSizeFor returns a conservative retained-heap base for one
-// accepted decoded packet representation.
+// ACCEPTED decoded packet representation. An accepted packet has passed the
+// router's local caps (onPublishReceived checks them before anything retains
+// the packet), so maxIngressUserProperties is the right property budget here.
 func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
@@ -77,16 +92,38 @@ func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	return uint32(decoded), nil
 }
 
+// transientDecodedPacketSizeFor returns the heap Paho can hold for the ONE
+// decoded packet in flight while it consumes a wire packet, INCLUDING a packet
+// the router will immediately ack-and-drop. It differs from
+// decodedPacketSizeFor by the property budget: a broker may forward a packet
+// whose metadata section is entirely minimum-size User Properties, so the
+// decode transiently materialises maxWireUserProperties of them, far above the
+// retained cap. Only this one slot pays for that amplification — an over-cap
+// packet never reaches a retained slot.
+func transientDecodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+	wire, err := wirePacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	decoded := uint64(wire) +
+		maxWireUserProperties*retainedUserPropertyBytes +
+		retainedPacketFixedBytes
+	if decoded > math.MaxUint32 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: transient decoded packet memory exceeds uint32")
+	}
+	return uint32(decoded), nil
+}
+
 // maxPacketSizeFor returns the crossing-slot base: one complete raw wire packet
-// held by mqttIngressConn plus the conservative accepted decoded representation
-// Paho builds while consuming it. A rejected packet retains only the raw half,
-// so the same slot also covers a maximum-wire rejection.
+// held by mqttIngressConn plus the worst-case decoded representation Paho builds
+// while consuming it. A rejected packet retains only the raw half, so the same
+// slot also covers a maximum-wire rejection.
 func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}
-	decoded, err := decodedPacketSizeFor(maxPayloadBytes)
+	decoded, err := transientDecodedPacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}

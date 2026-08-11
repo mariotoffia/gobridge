@@ -97,21 +97,24 @@ func TestApplyConnectLimits(t *testing.T) {
 	})
 }
 
-// TestMaxPacketSizeFor covers the pure derivation the helper delegates to.
+// TestMaxPacketSizeFor covers the pure derivation the helper delegates to. The
+// property term uses the WIRE worst case, not the router's retained cap: the
+// crossing slot holds the one decode in flight, which a compliant broker can
+// fill with minimum-size User Properties well past the retained cap.
 func TestMaxPacketSizeFor(t *testing.T) {
 	got, err := maxPacketSizeFor(0)
 	require.NoError(t, err)
 	require.Equal(t,
 		uint32(2*mqttPacketOverheadAllowance+
-			maxIngressUserProperties*retainedUserPropertyBytes+
+			maxWireUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got,
-		"crossing packet size includes one raw wire buffer, one decoded representation, and structural heap allowance")
+		"crossing packet size includes one raw wire buffer, one worst-case decoded representation, and structural heap allowance")
 	got, err = maxPacketSizeFor(256 << 10)
 	require.NoError(t, err)
 	require.Equal(t,
 		2*uint32(256<<10)+uint32(2*mqttPacketOverheadAllowance+
-			maxIngressUserProperties*retainedUserPropertyBytes+
+			maxWireUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got)
 	_, err = maxPacketSizeFor(math.MaxUint32)
@@ -122,7 +125,7 @@ func TestIngressMemoryPacketBytes_CrossingFactorCoversAcceptedAndRejectedWirePac
 	const maxPayload = uint32(256 << 10)
 	wire, err := wirePacketSizeFor(maxPayload)
 	require.NoError(t, err)
-	decoded, err := decodedPacketSizeFor(maxPayload)
+	decoded, err := transientDecodedPacketSizeFor(maxPayload)
 	require.NoError(t, err)
 	crossing, err := maxPacketSizeFor(maxPayload)
 	require.NoError(t, err)

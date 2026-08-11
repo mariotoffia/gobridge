@@ -480,6 +480,72 @@ senders:
 
 ---
 
+## Egress wire limits
+
+A publish is measured against two ceilings **before any byte reaches the
+socket**. Both refusals return a permanent rejection — the route DLQs the
+message rather than retrying it — and count `MQTTEgressRejected`. Any non-zero
+value on that counter means a producer or route is generating messages this
+broker cannot accept.
+
+**Broker Maximum Packet Size.** The broker grants a ceiling in its CONNACK
+(MQTT v5 §3.2.2.3.6); an absent property means no limit. The adapter captures
+it per connection — autopaho reconnects underneath the session, and a resumed
+or relocated broker can grant a different value — and rejects any PUBLISH whose
+encoded size exceeds it. Writing an over-limit packet instead is answered with a
+broker DISCONNECT: QoS 1/2 completion becomes ambiguous, QoS 0 has already
+reported local success, and every retry recycles the session.
+
+**Field limits.** Every length-prefixed MQTT v5 field — topic, content type,
+response topic, Correlation Data, and each User Property key and value — is
+capped at 65,535 bytes by its two-byte length prefix. The Paho SDK slices a
+longer value and writes the shortened form *without an error*, so the broker
+would acknowledge metadata that differs from the source: a cut idempotency key
+stops deduplicating, a cut tenant id mis-attributes, a cut correlation id breaks
+the reply path, and a cut multi-byte rune is not valid UTF-8 on the wire. The
+adapter refuses such a publish instead of corrupting it.
+
+**UTF-8 validity.** The same string fields must be well-formed UTF-8 and free of
+U+0000 (MQTT v5 §1.5.4). A header carrying invalid UTF-8 — from a processor, or
+from a source transport that does not enforce it — would otherwise leave as a
+malformed packet and the broker would answer with a DISCONNECT, recycling the
+session for every message that reproduces it. Correlation Data is exempt: it is
+binary on the wire, so any byte sequence is legal and round-trips intact.
+
+**Message expiry.** An envelope carrying an expiry is *always* published with a
+Message Expiry Interval. The route decides whether to send; by the time the
+packet is built the remaining TTL can already have run out, and MQTT v5 has no
+"already expired" encoding (the interval is whole seconds, and zero means "no
+expiry"). A non-positive or sub-second remainder therefore clamps to **one
+second** rather than omitting the property, which would leave the broker holding
+the message for a queued subscriber with no expiry at all.
+
+## Dialing through a proxy
+
+`ALL_PROXY` (or `all_proxy`) routes broker dials through a SOCKS5 proxy, and
+`NO_PROXY` (or `no_proxy`) exempts hosts from it. Both spellings are read on
+every dial with the **uppercase** taking precedence — the same rule
+`golang.org/x/net/proxy` and `net/http` use, so no two resolvers in the process
+can disagree about which proxy is in force.
+
+Two behaviours are deliberate and differ from `proxy.FromEnvironment`:
+
+- **An unusable value fails the dial.** An unparseable URL or a scheme that
+  cannot be built (for example `http://`, which is not a SOCKS proxy) returns an
+  error instead of quietly dialing direct. A proxy is a network-control
+  boundary; silently bypassing it is worse than a loud connect failure.
+- **`ALL_PROXY=direct`** (or `direct://`) is an explicit opt-out, for a
+  container where the variable is set for other tools but the broker must be
+  reached without it.
+
+TLS broker connections derive the certificate `ServerName` from the broker URL
+host on **both** the direct and the proxied path, so an `ssl://` connection
+through a proxy verifies the broker's identity exactly as a direct one does.
+Previously the proxied path set no name at all, leaving a certificate-validating
+proxied connection unable to verify the broker.
+
+---
+
 ## Reference
 
 This page covers sessions and a worked example. The rest of the MQTT

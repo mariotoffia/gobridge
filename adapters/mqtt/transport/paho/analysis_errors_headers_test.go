@@ -210,7 +210,7 @@ func TestAnaHdr_PublishFromEnvelope_NilEnvelopeHeaders_NoCrash(t *testing.T) {
 			t.Fatalf("PublishFromEnvelope panicked: %v", rv)
 		}
 	}()
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 0}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 0}, nil)
 	if pub == nil || pub.Topic != "t" {
 		t.Fatalf("expected pub with topic t, got %+v", pub)
 	}
@@ -230,7 +230,7 @@ func TestAnaHdr_PublishFromEnvelope_NonStringHeaderValueIsSkipped(t *testing.T) 
 			"good-key":   "ok",
 		},
 	})
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set when at least one mappable header is present")
@@ -313,7 +313,7 @@ func TestAnaHdr_PublishFromEnvelope_EmptyEnvelope_NoProperties(t *testing.T) {
 	// Note: env.Subject() is intentionally empty so PublishFromEnvelope
 	// does NOT emit a HeaderGobridgeSubject user property.
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte{}})
-	pub := PublishFromEnvelope(env, "t", SenderOptions{QoS: 0}, nil)
+	pub := mustPublishFromEnvelope(t, env, "t", SenderOptions{QoS: 0}, nil)
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
 			if u.Key != "mqtt.message-id" {
@@ -342,7 +342,7 @@ func TestAnaHdr_PublishFromEnvelope_OnlyMessageExpiry_HasProperties(t *testing.T
 		Payload:   []byte("p"),
 		ExpiresAt: nowPlus(60),
 	})
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 1}, nil)
 	if pub.Properties == nil {
 		t.Fatal("expected Properties because ExpiresAt was set")
 	}

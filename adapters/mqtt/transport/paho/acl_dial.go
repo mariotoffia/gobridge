@@ -93,6 +93,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// the manager observe an empty subscription set on reconnect.
 		OnConnectionUp: func(_ *autopaho.ConnectionManager, connack *pahov5.Connack) {
 			sessionPresent := connack != nil && connack.SessionPresent
+			// The broker's Maximum Packet Size is granted per CONNACK and must be
+			// installed BEFORE the session reports connected: the first publish
+			// after connection-up has to be measured against the ceiling this
+			// connection actually granted, not the previous one.
+			s.recordBrokerMaxPacketSize(connectionGeneration, connackMaximumPacketSize(connack))
 			s.handleConnectionUpGenerationWithSessionPresent(connectionGeneration, sessionPresent)
 		},
 		OnConnectError: func(err error) {
@@ -293,7 +298,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, MapError(err)
 	}
 
-	return newPahoConn(cm, s.metrics), cmCancel, nil
+	return newPahoConn(cm, s.metrics, s.brokerMaximumPacketSize), cmCancel, nil
 }
 
 // applyConnectCredentials sets the MQTT v5 CONNECT username/password fields

@@ -152,7 +152,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1, Retain: true}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Topic != "out/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "out/topic")
@@ -175,7 +175,7 @@ func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts.DefaultTopic, opts, nil)
+	pub := mustPublishFromEnvelope(t, env, opts.DefaultTopic, opts, nil)
 
 	if pub.Topic != "fallback/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "fallback/topic")
@@ -196,7 +196,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -231,7 +231,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Properties == nil || pub.Properties.MessageExpiry == nil {
 		t.Fatal("MessageExpiry should be set")
@@ -248,7 +248,7 @@ func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{QoS: 0}
 
-	pub := PublishFromEnvelope(env, "t", opts, nil)
+	pub := mustPublishFromEnvelope(t, env, "t", opts, nil)
 
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
@@ -576,7 +576,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 		Subject: "t",
 		Payload: []byte("p"),
 	})
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -600,7 +600,7 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 		Payload: []byte("data"),
 	})
 
-	pub := PublishFromEnvelope(original, original.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, original, original.Subject(), SenderOptions{QoS: 1}, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.ID() != original.ID() {
@@ -621,7 +621,7 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	})
 
 	opts := SenderOptions{QoS: 1}
-	pub := PublishFromEnvelope(original, original.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, original, original.Subject(), opts, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.Subject() != original.Subject() {

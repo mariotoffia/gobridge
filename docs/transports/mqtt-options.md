@@ -52,7 +52,7 @@ Every MQTT session that can own inbound state is validated independently:
 
 ```text
 packet   = ceil(decodedPacketSize(maxPayloadBytes) * 1.25)
-crossing = ceil((wirePacketSize(maxPayloadBytes) + decodedPacketSize(maxPayloadBytes)) * 1.25)
+crossing = ceil((wirePacketSize(maxPayloadBytes) + transientDecodedPacketSize(maxPayloadBytes)) * 1.25)
 window   = receiveMaximum + dispatchCapacity + routeMaxInFlight
 bound    = packet * window + crossing
 ```
@@ -65,15 +65,27 @@ plus a 128 KiB allowance covering the fixed-header byte, worst-case four-byte
 Remaining Length encoding, maximal 65,535-byte topic plus its two-byte length,
 QoS packet identifier, worst-case properties-length encoding, and bounded
 property bytes. `decodedPacketSize` adds both Paho User Property struct
-representations (capped at 128) and a 32 KiB fixed allowance for SDK structures,
-accepted Envelope header-map buckets, outbox/queue state, and allocator
-page/size-class rounding. The 25% factor covers remaining Go object and slice
-bookkeeping.
+representations and a 32 KiB fixed allowance for SDK structures, accepted
+Envelope header-map buckets, outbox/queue state, and allocator page/size-class
+rounding. The 25% factor covers remaining Go object and slice bookkeeping.
+
+The two decoded terms use **different property budgets**, and the difference is
+load-bearing. `decodedPacketSize` — the per-slot **retained** cost — budgets 128
+User Properties, because a packet exceeding that cap is acked-and-dropped by the
+publish callback before anything retains it. `transientDecodedPacketSize` — used
+only by `crossing` — budgets the **wire** worst case of 26,214 properties. The
+CONNECT advertises only a whole-packet Maximum Packet Size, so a compliant
+broker may forward a packet whose 128 KiB metadata section is filled entirely
+with five-byte (empty key, empty value) User Properties. Paho materialises every
+one of them, twice, before the callback can refuse the packet. Budgeting that
+worst case per retained slot would multiply the bound by three orders of
+magnitude; budgeting it once, for the single decode in flight, is both correct
+and affordable.
 
 The single `crossing` term is the formula's `+1` ownership slot. It covers one
 complete raw packet buffered by the predecode connection guard plus Paho's
-conservative decoded accepted representation while that wire packet is consumed.
-For a rejected packet only the raw half exists, so the same term is conservative.
+worst-case decoded representation while that wire packet is consumed. For a
+rejected packet only the raw half exists, so the same term is conservative.
 The guard checks the advertised Maximum Packet Size from Remaining Length before
 allocating and never buffers a second packet. Envelope, no-processor route, and
 outbox fan-out clones share immutable payload backing; a processor that calls
@@ -91,9 +103,11 @@ stores or transports; generic composition therefore applies default 192 and
 rejects a window that the default 256 MiB budget cannot hold.
 
 The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
-produce a 263,710,720-byte bound, below the 256 MiB default budget. Raising
+produce a 265,797,600-byte bound, below the 256 MiB default budget. Raising
 payload size, Receive Maximum, or route concurrency may require a larger budget.
-Do not tune only the message count.
+Do not tune only the message count. A budget smaller than one `crossing` slot
+(about 3 MiB at the default payload size) is rejected outright: the session
+could not decode a single legal packet.
 
 The AWS file-based profile reserves 25% of the effective Fargate task memory,
 divides it across unique included MQTT sessions, and derives the largest safe

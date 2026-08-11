@@ -132,13 +132,35 @@ type pahoConn struct {
 	// PublishFromEnvelope directly. May be nil; PublishFromEnvelope
 	// tolerates a nil exporter (drop applied, uncounted).
 	metrics ports.MetricsExporter
+	// brokerMaxPacketSize reports the Maximum Packet Size the broker granted in
+	// the CONNACK of the CURRENT connection, or 0 when it granted none. It is a
+	// func rather than a value because autopaho reconnects underneath this
+	// wrapper: each CONNACK can carry a different ceiling, and a publish must be
+	// measured against the one in force when it is written. May be nil in tests
+	// (treated as no ceiling).
+	brokerMaxPacketSize func() uint32
 }
 
 // newPahoConn wraps a live autopaho.ConnectionManager so it can be
 // stored in Session.cm (typed pahoConnection). metrics is the session's
-// exporter, used only by PublishEnvelope for egress drop counting.
-func newPahoConn(cm *autopaho.ConnectionManager, metrics ports.MetricsExporter) *pahoConn {
-	return &pahoConn{cm: cm, metrics: metrics}
+// exporter, used only by PublishEnvelope for egress drop counting;
+// brokerMaxPacketSize reads the session's per-connection broker ceiling.
+func newPahoConn(
+	cm *autopaho.ConnectionManager,
+	metrics ports.MetricsExporter,
+	brokerMaxPacketSize func() uint32,
+) *pahoConn {
+	return &pahoConn{cm: cm, metrics: metrics, brokerMaxPacketSize: brokerMaxPacketSize}
+}
+
+// connackMaximumPacketSize extracts the broker's Maximum Packet Size from a
+// CONNACK. Zero means the broker advertised none, which MQTT v5 §3.2.2.3.6
+// defines as no limit beyond the protocol ceiling.
+func connackMaximumPacketSize(connack *pahov5.Connack) uint32 {
+	if connack == nil || connack.Properties == nil || connack.Properties.MaximumPacketSize == nil {
+		return 0
+	}
+	return *connack.Properties.MaximumPacketSize
 }
 
 // AwaitConnection blocks until the underlying ConnectionManager
@@ -200,6 +222,12 @@ func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) ([]byte, er
 // transport-level destination, distinct from env.Subject()). The
 // PUBACK / PUBREC reason code is returned in publishResult so the port
 // side can map it via MapPublishReasonCode without importing the SDK.
+//
+// Two wire limits are enforced here, before the SDK is called at all: a field
+// Paho would silently truncate, and a packet larger than the Maximum Packet
+// Size the broker granted. Both return a permanent classification and count
+// MetricMQTTEgressRejected — a refused publish is a route rejection, never a
+// retry, and never bytes on the socket.
 func (c *pahoConn) PublishEnvelope(
 	ctx context.Context,
 	env *messaging.Envelope,
@@ -207,7 +235,15 @@ func (c *pahoConn) PublishEnvelope(
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {
-	pub := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
+	pub, err := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
+	if err != nil {
+		c.countEgressRejected()
+		return publishResult{}, err
+	}
+	if err := enforceEgressPacketLimit(pub, c.brokerMaximumPacketSize()); err != nil {
+		c.countEgressRejected()
+		return publishResult{}, err
+	}
 	resp, err := c.cm.Publish(ctx, pub)
 	if err != nil {
 		return publishResult{}, fmt.Errorf("paho: publish: %w", err)
@@ -216,6 +252,21 @@ func (c *pahoConn) PublishEnvelope(
 		return publishResult{}, nil
 	}
 	return publishResult{ReasonCode: resp.ReasonCode}, nil
+}
+
+// brokerMaximumPacketSize returns the ceiling in force for the current
+// connection, or 0 when the broker granted none (or no reader is wired).
+func (c *pahoConn) brokerMaximumPacketSize() uint32 {
+	if c.brokerMaxPacketSize == nil {
+		return 0
+	}
+	return c.brokerMaxPacketSize()
+}
+
+func (c *pahoConn) countEgressRejected() {
+	if c.metrics != nil {
+		c.metrics.Counter(MetricMQTTEgressRejected, 1)
+	}
 }
 
 // Underlying returns the raw autopaho.ConnectionManager. Used only by

@@ -85,7 +85,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 // resolution order: msg.Address || opts.DefaultTopic).
 func TestAnaSender_PublishFromEnvelope_UsesExplicitTopic(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
-	pub := PublishFromEnvelope(env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
 	if pub.Topic != "explicit/t" {
 		t.Fatalf("topic = %q, want %q", pub.Topic, "explicit/t")
 	}
