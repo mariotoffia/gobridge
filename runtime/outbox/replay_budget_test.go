@@ -390,3 +390,83 @@ func (h *budgetLogRecorder) messages() []string {
 	}
 	return out
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production contract: an "attempt" is a CLAIM, not a transport invocation.
+//
+// The stores increment ReplayCount when a record is CLAIMED (SQLite:
+// acl_query.go claim transaction), so work that was claimed and then deferred —
+// a batch deadline expiring before its send launched — burns the same budget as
+// work that actually reached the sender. A record can therefore be poisoned
+// having NEVER been handed to a transport.
+//
+// That is accepted, bounded-backlog policy, not a defect: the count half of the
+// poison AND-gate is deliberately cheap to spend, and the wall-clock
+// ReplayBudget is what bounds the resulting loss. This test pins BOTH halves so
+// the semantics cannot drift silently — within the budget an unsent record
+// still gets its send; past it the record is terminalized without one.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestDrainer_ClaimCountedAttemptsBoundedByBudget_ProductionContract drives a
+// record whose ReplayCount was spent entirely by claims that never reached the
+// sender.
+func TestDrainer_ClaimCountedAttemptsBoundedByBudget_ProductionContract(t *testing.T) {
+	cases := []struct {
+		name         string
+		firstAttempt time.Duration // age of FirstAttemptedAt at drain time
+		wantSends    int32
+		wantPoison   int
+	}{
+		{
+			// Count spent by claims alone, budget NOT yet reached: the record must
+			// still get a real transport attempt. Claim-counting must never
+			// terminalize work early.
+			name:         "within budget: unsent record still gets its send",
+			firstAttempt: 14 * time.Minute,
+			wantSends:    1,
+			wantPoison:   0,
+		},
+		{
+			// Budget reached: the record is poisoned WITHOUT a send, because the
+			// attempts it consumed were claims. This is the documented loss.
+			name:         "budget exhausted: poisoned without ever being sent",
+			firstAttempt: 16 * time.Minute,
+			wantSends:    0,
+			wantPoison:   1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clocktest.NewAt(budgetBase)
+			// ReplayCount 6 > MaxReplayAttempts 5, accumulated purely by claims:
+			// the record was claimed and deferred on every prior cycle.
+			rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-never-sent", 6,
+				budgetBase.Add(-tc.firstAttempt), budgetBase.Add(-tc.firstAttempt)))
+			store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+
+			var sent int32
+			sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+				atomic.AddInt32(&sent, 1)
+				return nil
+			}}
+			metrics := newDLQCountingExporter()
+			d, policy := budgetDrainer(store, sender, clk, metrics, nil)
+
+			if policy.MaxReplayAttempts >= 6 {
+				t.Fatalf("precondition: the record's claim count (6) must exceed MaxReplayAttempts, got %d",
+					policy.MaxReplayAttempts)
+			}
+			if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
+				t.Fatalf("drainBatch err = %v, want nil", err)
+			}
+
+			if n := atomic.LoadInt32(&sent); n != tc.wantSends {
+				t.Errorf("sender calls = %d, want %d", n, tc.wantSends)
+			}
+			if got := metrics.count("poison"); got != tc.wantPoison {
+				t.Errorf("poison DLQ entries = %d, want %d", got, tc.wantPoison)
+			}
+		})
+	}
+}

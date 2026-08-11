@@ -484,6 +484,17 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   `WithSupervisor*` equivalents on the `Supervisor`, which forward to every
   `Builder`/`Runtime` it creates). Without them a config-driven deployment runs
   the no-op exporters and emits nothing.
+- **Route readiness is pipeline liveness, not delivery success.** A route's
+  `ready` flag (deep health, and the `full` readiness level) means its runner and
+  receiver are up and accepting work. It does **not** mean recent deliveries
+  reached their target: a route whose destination refuses 100% of sends stays
+  `ready` while it retries, DLQs, or hands messages back to the source. That is
+  deliberate — a probe that flipped on target availability would eject the one
+  instance that is correctly retrying, and every instance at once during a
+  shared-target outage. Alert on delivery instead: `RouteErrors` (`route_id`) is
+  the delivery-stall signal, alongside `DLQEntries`, `MessagesDropped`, and
+  `OutboxDepth` for the `shared_outbox` mode. `route_dead` (a route flapping at
+  the supervisor backoff cap) is the separate *pipeline* fault state.
 - **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
   the last reconfiguration failed (with a reason) while the previous runtime
   keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.

@@ -22,6 +22,23 @@ const (
 	// standby can take over a node-local broker outage (CLUSTER-2). Only emitted
 	// when broker_health_step_down is configured (opt-in).
 	MetricBrokerHealthStepDown = "BrokerHealthStepDown"
+	// MetricRouteOwnerUnknown counts route-locator decisions taken while the
+	// current owner of an exclusivity-sensitive route could NOT be determined,
+	// tagged with TagKeyReason: "lease_expired" (the local clock is at or past
+	// the owner-written ExpiresAt), "lease_unowned" (no lease row — a normal
+	// transfer window), "store_unavailable" (a lease-store error with no usable
+	// cached owner) or "store_breaker_open" (the locator refused without calling
+	// a repeatedly-failing store).
+	//
+	// The locator reads owner expiry off ITS OWN wall clock, so fleet clock skew
+	// above the renew margin shows up here as a rising "lease_expired" count
+	// against a healthy owner, and a whole-fleet cold start shows up
+	// as "lease_expired" for one full lease-observation window before a successor
+	// acquires. Both are ADVISORY routing effects only — the locator
+	// mints no token, so data-path fencing stays skew-immune — which is exactly
+	// why they need a signal: without it an operator sees unexplained 502/503
+	// responses with no way to separate skew from a dead store.
+	MetricRouteOwnerUnknown = "RouteOwnerUnknown"
 )
 
 // Outbox metric names.
@@ -147,7 +164,18 @@ const (
 	// cardinality. Alarm on DLQDepth > 0 sustained.
 	MetricDLQDepth         = "DLQDepth"
 	MetricDLQWriteFailures = "DLQWriteFailures"
-	MetricDeliveryPanics   = "DeliveryPanics"
+	// MetricDLQWriteHold is the wall-clock time a synchronous DLQ write held its
+	// caller — and with it a route and global concurrency slot. The DLQ write is
+	// deliberately synchronous and confirmed before the source delivery is
+	// settled (evidence must be at least as durable as the message it describes),
+	// so a DLQ-store outage BACKPRESSURES intake rather than losing evidence.
+	// That hold is bounded by the router's attempt/timeout/backoff budget —
+	// 10.5s in the shipped runtime wiring — and this timer is what makes
+	// it visible: alarm on a sustained p99 approaching the ceiling, which means
+	// the DLQ store, not the route, is stalling intake. Emitted on EVERY Route
+	// call (success and failure) so the alarm has a baseline instead of silence.
+	MetricDLQWriteHold   = "DLQWriteHold"
+	MetricDeliveryPanics = "DeliveryPanics"
 	// MetricDLQRedrives counts DLQ entries an admin redrive claimed and
 	// re-injected successfully (route_id-tagged). MetricDLQRedriveFailures counts
 	// redrive attempts that failed after (or during) the claim — inject failed,

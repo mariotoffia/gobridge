@@ -32,7 +32,30 @@ type LocatorConfig struct {
 	// workload tolerates transient duplicate processing (fencing on the data
 	// path still prevents duplicate commits).
 	FailOpen bool
+
+	// Metrics receives shared.MetricRouteOwnerUnknown, the reason-tagged
+	// disclosure of every decision taken without a verifiable owner. Nil is
+	// replaced by a no-op exporter.
+	Metrics ports.MetricsExporter
 }
+
+// Reasons carried on shared.MetricRouteOwnerUnknown. They are the operator's
+// only way to separate fleet clock skew and a cold-fleet takeover window —
+// both of which surface as reasonLeaseExpired — from a failing lease store.
+const (
+	// reasonLeaseExpired: the local clock is at or past the owner-written
+	// ExpiresAt. The owner may still consider the lease live — expiry is read
+	// off THIS node's wall clock, so skew above the renew margin lands here.
+	reasonLeaseExpired = "lease_expired"
+	// reasonLeaseUnowned: no lease row exists (normal mid-transfer window).
+	reasonLeaseUnowned = "lease_unowned"
+	// reasonStoreUnavailable: the lease store failed and no usable cached owner
+	// remains.
+	reasonStoreUnavailable = "store_unavailable"
+	// reasonStoreBreakerOpen: the breaker is open, so the decision was refused
+	// without calling the repeatedly-failing store.
+	reasonStoreBreakerOpen = "store_breaker_open"
+)
 
 // DefaultLocatorConfig returns a LocatorConfig with recommended defaults.
 func DefaultLocatorConfig() LocatorConfig {
@@ -59,6 +82,7 @@ type Locator struct {
 	cooldownPeriod time.Duration
 	failOpen       bool
 	clk            clock.Clock
+	metrics        ports.MetricsExporter
 
 	mu              sync.RWMutex
 	routeSessionMap map[string]string // routeID → sessionID (exclusive routes only)
@@ -86,6 +110,9 @@ func NewLocator(instanceID string, leaseStore ports.LeaseStore, cfg LocatorConfi
 	if clk == nil {
 		clk = clock.System
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = &ports.NoopExporter{}
+	}
 	return &Locator{
 		instanceID:      instanceID,
 		leaseStore:      leaseStore,
@@ -94,6 +121,7 @@ func NewLocator(instanceID string, leaseStore ports.LeaseStore, cfg LocatorConfi
 		cooldownPeriod:  cfg.CooldownPeriod,
 		failOpen:        cfg.FailOpen,
 		clk:             clk,
+		metrics:         cfg.Metrics,
 		routeSessionMap: make(map[string]string),
 		cache:           make(map[string]cachedLease),
 	}
@@ -148,7 +176,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// processing locally. Default is fail-CLOSED (consistent with the
 		// session layer): refuse the decision so a non-owner does not process an
 		// exclusive route during a store outage (finding M7).
-		return rl.onOwnershipUnknown(shared.ErrUnavailable)
+		return rl.onOwnershipUnknown(shared.ErrUnavailable, reasonStoreBreakerOpen)
 	}
 
 	info, err := rl.leaseStore.Current(ctx, sessionID)
@@ -159,7 +187,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// every ordinary lease transfer (finding M7). We still cannot name an
 		// owner, so apply the ownership-unknown posture.
 		if errors.Is(err, shared.ErrNotFound) {
-			return rl.onOwnershipUnknown(shared.ErrNoRouteOwner)
+			return rl.onOwnershipUnknown(shared.ErrNoRouteOwner, reasonLeaseUnowned)
 		}
 
 		rl.recordFailure(now)
@@ -183,7 +211,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 				Endpoints:  cached.info.Endpoints,
 			}, false, nil
 		}
-		return rl.onOwnershipUnknown(err)
+		return rl.onOwnershipUnknown(err, reasonStoreUnavailable)
 	}
 
 	rl.recordSuccess()
@@ -200,7 +228,7 @@ func (rl *Locator) Locate(ctx context.Context, routeID string) (*persistence.Pee
 		// is pointless — the cache-hit path above now re-checks ExpiresAt and
 		// would skip it anyway — and leaving the cache untouched forces the next
 		// call to re-read until a live owner (or none) is observed.
-		return rl.onOwnershipUnknown(shared.ErrNoRouteOwner)
+		return rl.onOwnershipUnknown(shared.ErrNoRouteOwner, reasonLeaseExpired)
 	}
 
 	rl.mu.Lock()
@@ -251,7 +279,16 @@ func (rl *Locator) recordSuccess() {
 // LocatorConfig.FailOpen switches to optimistic LOCAL processing (local=true,
 // no error), trading exclusivity for availability where the workload tolerates
 // transient duplicate processing.
-func (rl *Locator) onOwnershipUnknown(err error) (*persistence.PeerInfo, bool, error) {
+//
+// Every call emits shared.MetricRouteOwnerUnknown tagged with reason, so an
+// operator can attribute the 502/503 (or the fail-open duplicate risk) to clock
+// skew, a normal transfer window, or a failing lease store.
+func (rl *Locator) onOwnershipUnknown(err error, reason string) (*persistence.PeerInfo, bool, error) {
+	// Disclose the decision BEFORE the posture branch: under FailOpen the route
+	// is processed locally with no error, so this counter is the only trace that
+	// ownership was unverifiable.
+	rl.metrics.Counter(shared.MetricRouteOwnerUnknown, 1,
+		shared.Tag{Key: shared.TagKeyReason, Value: reason})
 	if rl.failOpen {
 		return nil, true, nil
 	}

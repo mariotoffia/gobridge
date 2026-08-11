@@ -40,11 +40,36 @@ delivery. The transaction flow is reversible, which is the point of this runbook
      succeeded but the in-band apply failed and could not be restored: **disk and
      the running runtime have diverged** and you must reconcile.
 
-3. In a fleet sharing one config file, compare `config_version` across instances
+3. **After a `committed_applying` (202) — poll to resolution.** The applier
+   returns one terminal signal and does **not** call you back when the swap
+   later lands, so the resolution is read from deep health rather than waited
+   for on the commit connection:
+
+   ```bash
+   curl -s -H "X-API-Key: ${ADMIN_KEY}" \
+     "http://<host>:8080/api/v1/monitor/deephealth" \
+     | jq '.config_watch | {reconfigure_pending, desired_version, running_version, last_apply_error}'
+   ```
+
+   | Reading | Meaning | Action |
+   |---|---|---|
+   | `reconfigure_pending: true`, `running_version` < `desired_version`, no `last_apply_error` | The swap is still in flight. | Wait and re-poll. |
+   | `reconfigure_pending: false`, `running_version == desired_version` | The swap landed; the commit succeeded. | None. |
+   | `reconfigure_pending: true` **and** `last_apply_error` set | The swap failed definitively; the runtime kept the **previous** config while disk holds the new one. | Reconcile as for `committed_not_applied` (Action below). |
+   | `reconfigure_pending: true` with a `config_watch.rollout` block undecided | This member deliberately has not applied a config the cohort has not committed. | Follow [cluster config rollout](cluster-config-rollout.md), not this runbook. |
+
+   Alarm threshold: a single instance holding `reconfigure_pending: true` with no
+   `last_apply_error` for longer than the apply deadline plus one transport
+   activation budget (60 s + activation; ~2 min in the shipped profile) is a
+   stuck swap, not a slow one — treat it as `committed_not_applied`. A rollback
+   fired against the in-flight window is the one dangerous move here: the
+   runtime may still adopt the config you just reverted.
+
+4. In a fleet sharing one config file, compare `config_version` across instances
    (surfaced on the monitor plane): an instance whose
    version lags the others has not yet converged.
 
-4. **`ConfigDegraded == 1` — applied but not converged.** A reload reports
+5. **`ConfigDegraded == 1` — applied but not converged.** A reload reports
    success once the new runtime is *built and started*, but MQTT dials and
    reconciles in background goroutines. A syntactically-valid-but-broker-invalid
    config (denied credentials, an ACL-rejected topic filter) therefore commits

@@ -146,8 +146,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store:            rt.dlqStore,
 		Clock:            rt.clk,
-		WriteTimeout:     5 * time.Second,
-		WriteMaxAttempts: 2,
+		WriteTimeout:     dlq.RuntimeWriteTimeout,
+		WriteMaxAttempts: dlq.RuntimeWriteMaxAttempts,
 		// H2: wire Metrics/Logger so MetricDLQWriteFailures reaches the real
 		// exporter (not a NoopExporter) and router write errors are logged.
 		// Without these the production DLQ router was blind.
@@ -160,7 +160,12 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
+		locatorCfg := cluster.DefaultLocatorConfig()
+		// Ownership-unknown decisions are advisory (no token is minted), so the
+		// reason-tagged counter is the ONLY trace of fleet clock skew or a
+		// cold-takeover window behind a 502/503.
+		locatorCfg.Metrics = m
+		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, locatorCfg, rt.clk)
 	}
 
 	// drainerOwner maps a session ID to the route whose configuration

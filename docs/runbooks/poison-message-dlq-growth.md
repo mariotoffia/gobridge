@@ -44,7 +44,30 @@ the entry's `LastError` before you act.
    `DLQEntries` (`route_id`, `category`) is the DLQ write count; `DLQWriteFailures`
    (no dimension) means the DLQ store itself is rejecting writes or no lease was
    held; `MessagesDropped` (`route_id`, `reason`) is a terminal drop that wrote
-   **no** DLQ record — silent loss, alert on it directly.
+   **no** DLQ record — silent loss, alert on it directly; `DLQWriteHold` (timer,
+   no dimension) is how long each DLQ write held its caller.
+
+5. **Intake stalled during a poison burst? Read `DLQWriteHold`.** The DLQ write
+   is synchronous and confirmed **before** the source delivery is settled, so
+   the failure evidence is at least as durable as the message it describes. The
+   cost of that guarantee is backpressure: while the DLQ store is unhealthy each
+   DLQ-bound delivery holds its route goroutine — and a global in-flight slot —
+   for up to the write budget. In the shipped runtime wiring that ceiling is
+   **10.5 s** (2 attempts × 5 s write timeout + one 500 ms backoff); it is not
+   configurable per route.
+
+   | `DLQWriteHold` | Reading |
+   |---|---|
+   | p99 ≈ 0 | Healthy store; holds are noise. |
+   | p99 rising, `DLQWriteFailures` flat | The store is slow but still confirming — intake throughput is already reduced. |
+   | p99 at ~10.5 s with `DLQWriteFailures` rising | Every DLQ write is burning the full budget and failing. Intake for DLQ-bound traffic is effectively stopped. |
+   | **No samples at all** while a route is visibly stalled | The store is ignoring cancellation — a wedge, not a slow write. The 10.5 s ceiling assumes the store honors its write deadline; the timer is only emitted when the write returns. |
+
+   Alarm on `DLQWriteHold` p99 > 5 s for 5 minutes (half the ceiling), paired
+   with `DLQWriteFailures` > 0. This is by design, not a defect: the alternative
+   to holding is settling a source message whose failure evidence was never
+   written. Messages are not lost during the hold — they stay unsettled and are
+   redelivered.
 
 ## Action
 
@@ -67,6 +90,11 @@ the entry's `LastError` before you act.
 - **`DLQWriteFailures` rising**: the DLQ store is unhealthy or the instance holds
   no lease. Check store health (`SQLiteStoreUnhealthy` on SQLite deployments) and
   lease ownership before assuming the messages are safe.
+- **`DLQWriteHold` at the ceiling (intake stalled)**: fix the DLQ store — that is
+  the only lever. Do **not** try to restore throughput by removing the DLQ store
+  from the route: a route with no DLQ store drops permanently-failed messages
+  with a `MessagesDropped` metric instead of recording them. Reducing the poison
+  rate at the producer removes the hold at its source.
 - **Hot-looping poison on AMQP 0-9-1**: `AMQP091DelayedRetryUnhonored` means the
   broker has no delayed-redelivery primitive, so a poison message requeues
   immediately. Add an `x-delivery-limit` / dead-letter-exchange guard at the

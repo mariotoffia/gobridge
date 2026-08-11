@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -232,5 +233,176 @@ func TestApplyCommitted_PipelineShutdownResolvesWaiter(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("applyCommitted hung on pipeline shutdown instead of resolving")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production contract: ErrApplyInFlight is POLL-TO-RESOLUTION.
+//
+// An in-band apply that outruns the apply deadline returns
+// ports.ErrApplyInFlight — committed, not confirmed applied, never rolled back.
+// The accepted tradeoff is that the applier does NOT push a completion
+// notification to the (already-returned) caller. What it MUST provide is a
+// pollable state that resolves on its own: while the swap is in flight the
+// config manager reports desired-ahead-of-running (the divergence rendered on
+// /deephealth as reconfigure_pending + desired_version/running_version), and it
+// clears without operator action the moment the swap reports its terminal
+// result.
+//
+// This is the executable form of that contract, driven against a REAL
+// config.Manager so the pointer/content correlation behind the health
+// projection is exercised rather than mocked.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestApplyCommitted_InFlightResolvesByPolling_ProductionContract proves the
+// full operator loop: commit → 202 committed_applying (ErrApplyInFlight) →
+// poll: desired 2 / running 1, pending, NO apply error → the slow swap lands →
+// poll: running 2, pending cleared.
+func TestApplyCommitted_InFlightResolvesByPolling_ProductionContract(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Boot the manager on v1 and confirm it running: the baseline an operator
+	// polls against.
+	boot := testConfig("bridge-demo", 1, "info")
+	watchCh := make(chan *ports.BridgeConfig, 1)
+	mgr := config.NewManager(config.Layer{
+		Name:    "file",
+		Loader:  staticLoader{cfg: boot},
+		Watcher: chanWatcher{ch: watchCh},
+	})
+	loaded, err := mgr.Load(ctx)
+	if err != nil {
+		t.Fatalf("manager Load: %v", err)
+	}
+	mgr.NotifyApplyResult(loaded, nil)
+
+	out, err := mgr.Watch(ctx)
+	if err != nil {
+		t.Fatalf("manager Watch: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+
+	// The committed config reaches the manager and is emitted downstream; the
+	// EXACT emitted pointer is what the applier carries, so the manager can
+	// correlate the eventual result.
+	watchCh <- testConfig("bridge-demo", 2, "info")
+	desired := receiveConfig(t, out)
+
+	fake := clocktest.NewAt(time.Unix(0, 0))
+	p := newReloadPipeline(ports.NewRegistry(), discardLogger(),
+		withReloadClock(fake), withApplyDeadline(60*time.Second),
+		withApplyResultNotifier(mgr))
+	fileCh := make(chan *ports.BridgeConfig)
+	go p.run(ctx, fileCh)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- p.applyCommitted(context.Background(), desired) }()
+
+	submitted := receiveConfig(t, p.changes())
+	if submitted != desired {
+		t.Fatal("supervisor received a different config pointer than submitted")
+	}
+
+	// The swap is slow: no terminal result before the apply deadline.
+	waitForFakeTimers(t, fake, 1)
+	fake.Advance(60 * time.Second)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ports.ErrApplyInFlight) {
+			t.Fatalf("a slow swap must resolve to ErrApplyInFlight (no rollback), got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("applyCommitted did not return after the apply deadline expired")
+	}
+
+	// ── Poll #1: the caller's ambiguity is resolvable from state ────────────
+	if !mgr.ReconfigurePending() {
+		t.Fatal("an in-flight apply must read as reconfigure_pending so a poll can distinguish it from done")
+	}
+	if v, ok := mgr.AppliedVersion(); !ok || v != 2 {
+		t.Fatalf("desired_version must name the committed config, got %d (ok=%v)", v, ok)
+	}
+	if v, ok := mgr.RunningVersion(); !ok || v != 1 {
+		t.Fatalf("running_version must still name the serving config while the swap is in flight, got %d (ok=%v)", v, ok)
+	}
+	if err := mgr.LastApplyError(); err != nil {
+		t.Fatalf("an in-flight apply is NOT a failure; last_apply_error must stay empty, got: %v", err)
+	}
+
+	// ── The slow swap finally lands, with no operator action ────────────────
+	p.onSwap(bridge.SwapEvent{NewConfig: submitted, Error: nil})
+
+	// ── Poll #2: resolution is visible ──────────────────────────────────────
+	if mgr.ReconfigurePending() {
+		t.Fatal("a completed swap must clear reconfigure_pending; the poll would never resolve")
+	}
+	if v, ok := mgr.RunningVersion(); !ok || v != 2 {
+		t.Fatalf("running_version must advance to the applied config, got %d (ok=%v)", v, ok)
+	}
+	if err := mgr.LastApplyError(); err != nil {
+		t.Fatalf("successful resolution must leave no apply error, got: %v", err)
+	}
+}
+
+// TestApplyCommitted_InFlightThenFailureIsPollable_ProductionContract is the
+// other half of the contract: an in-flight apply that ultimately FAILS must
+// resolve the poll to a definitive, actionable state (running stays on the old
+// version, the error is named) rather than staying pending forever. Without
+// this, "committed_applying" would be indistinguishable from "stuck".
+func TestApplyCommitted_InFlightThenFailureIsPollable_ProductionContract(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	boot := testConfig("bridge-demo", 1, "info")
+	watchCh := make(chan *ports.BridgeConfig, 1)
+	mgr := config.NewManager(config.Layer{
+		Name:    "file",
+		Loader:  staticLoader{cfg: boot},
+		Watcher: chanWatcher{ch: watchCh},
+	})
+	loaded, err := mgr.Load(ctx)
+	if err != nil {
+		t.Fatalf("manager Load: %v", err)
+	}
+	mgr.NotifyApplyResult(loaded, nil)
+	out, err := mgr.Watch(ctx)
+	if err != nil {
+		t.Fatalf("manager Watch: %v", err)
+	}
+	t.Cleanup(mgr.Stop)
+
+	watchCh <- testConfig("bridge-demo", 2, "info")
+	desired := receiveConfig(t, out)
+
+	fake := clocktest.NewAt(time.Unix(0, 0))
+	p := newReloadPipeline(ports.NewRegistry(), discardLogger(),
+		withReloadClock(fake), withApplyDeadline(60*time.Second),
+		withApplyResultNotifier(mgr))
+	fileCh := make(chan *ports.BridgeConfig)
+	go p.run(ctx, fileCh)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- p.applyCommitted(context.Background(), desired) }()
+	submitted := receiveConfig(t, p.changes())
+
+	waitForFakeTimers(t, fake, 1)
+	fake.Advance(60 * time.Second)
+	if err := <-errCh; !errors.Is(err, ports.ErrApplyInFlight) {
+		t.Fatalf("expected ErrApplyInFlight, got: %v", err)
+	}
+
+	swapErr := errors.New("build candidate runtime: broker unreachable")
+	p.onSwap(bridge.SwapEvent{NewConfig: submitted, Error: swapErr})
+
+	if !mgr.ReconfigurePending() {
+		t.Fatal("a failed swap must keep the divergence visible: desired is not running")
+	}
+	if v, ok := mgr.RunningVersion(); !ok || v != 1 {
+		t.Fatalf("a failed swap must leave running_version on the serving config, got %d (ok=%v)", v, ok)
+	}
+	if got := mgr.LastApplyError(); got == nil || !errors.Is(got, swapErr) {
+		t.Fatalf("last_apply_error must name the definitive failure, got: %v", got)
 	}
 }

@@ -52,6 +52,16 @@ type Config struct {
 
 const (
 	defaultWriteTimeout = 30 * time.Second
+
+	// RuntimeWriteTimeout and RuntimeWriteMaxAttempts are the values the shipped
+	// runtime wires (runtime.Runtime.Start). They live here, next to
+	// [Router.MaxWriteHold], so the documented production hold ceiling
+	// (2 × 5s + 500ms backoff = 10.5s — see the poison-message-dlq-growth
+	// runbook) is derived from the SAME constants the
+	// runtime uses and cannot drift away from the runbook. The rationale for the
+	// size of the budget lives at the wiring site (runtime/bridge_start.go).
+	RuntimeWriteTimeout     = 5 * time.Second
+	RuntimeWriteMaxAttempts = 2
 )
 
 // New creates a DLQ router. If store is nil, [Router.Route] is a no-op.
@@ -98,6 +108,36 @@ func NewFromConfig(cfg Config) *Router {
 // HasStore returns true if a DLQ store is configured.
 func (r *Router) HasStore() bool {
 	return r.store != nil
+}
+
+// MaxWriteHold is the ceiling on how long [Router.Route] can hold its caller —
+// and with it a route and global concurrency slot — while the DLQ store is
+// unavailable: every attempt's write timeout plus the backoff between attempts.
+// With the shipped runtime wiring ([RuntimeWriteMaxAttempts] attempts of
+// [RuntimeWriteTimeout] plus a 500 ms backoff) that is 10.5 seconds.
+//
+// The hold itself is accepted: the write is synchronous so DLQ
+// evidence is durable before the source delivery is settled, which trades intake
+// availability for loss-safety during a DLQ-store outage. This method is the
+// operator-facing bound of that trade; [shared.MetricDLQWriteHold] reports the
+// hold actually paid. Returns 0 when no store is configured (Route is a no-op).
+//
+// The bound holds for a store that honors context cancellation. A DLQStore that
+// ignores its write context can exceed it — that shows up not as a large
+// MetricDLQWriteHold value but as the ABSENCE of one (the timer is emitted on
+// return), so a stalled route with no hold samples means a wedged store, not a
+// slow one.
+func (r *Router) MaxWriteHold() time.Duration {
+	if r.store == nil {
+		return 0
+	}
+	total := time.Duration(r.writeMaxAttempts) * r.writeTimeout
+	delay := r.writeRetryBackoff.InitialInterval
+	for range r.writeMaxAttempts - 1 {
+		total += delay
+		delay = min(time.Duration(float64(delay)*r.writeRetryBackoff.Multiplier), r.writeRetryBackoff.MaxInterval)
+	}
+	return total
 }
 
 // SetTokenFn sets the function used to check lease validity before DLQ writes.
@@ -178,6 +218,13 @@ func (r *Router) buildEntry(
 // not passed to Write, so a lease lost mid-write can still produce a
 // duplicate entry (never loss, since duplicates are reconcilable downstream).
 func (r *Router) writeConfirmed(ctx context.Context, entry routing.DLQEntry) error {
+	// Report the hold on EVERY exit path (confirmed, refused, cancelled, failed
+	// after retries): a DLQ-store outage backpressures intake for up to
+	// MaxWriteHold, which is only acceptable while it stays observable.
+	// Emitting on success too gives the alarm a baseline instead of silence.
+	start := r.clk.Now()
+	defer func() { r.metrics.Timer(shared.MetricDLQWriteHold, r.clk.Since(start)) }()
+
 	r.mu.Lock()
 	tokenFn := r.tokenFn
 	r.mu.Unlock()

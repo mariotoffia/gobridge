@@ -66,7 +66,41 @@ may need a process restart to complete takeover.
    cross-host wall-clock subtraction. A cold process still pays its real startup
    delay and starts observation at zero when no prior observer confirmed time.
 
-4. Distinguish a clean takeover from a stuck single-active session. The MQTT
+4. **Advisory 502/503 on exclusive routes? Read `RouteOwnerUnknown`.** The route
+   locator decides who owns an exclusive route by comparing **its own** wall
+   clock with the owner-written `expires_at`. That decision is advisory only —
+   the locator mints no fencing token, so the data path stays skew-immune — but
+   it does gate forwarding, and every unverifiable decision is counted on
+   `RouteOwnerUnknown` with a `reason` dimension:
+
+   | `reason` | Meaning | Action |
+   |---|---|---|
+   | `lease_expired` | This node's clock is at or past the owner's `expires_at`. | See the two causes below. |
+   | `lease_unowned` | No lease row — a normal transfer window. | None if it settles within one acquire poll. |
+   | `store_unavailable` | The lease store failed and no usable cached owner remains. | [DynamoDB store outage / throttling](dynamodb-store-outage-throttling.md). |
+   | `store_breaker_open` | The locator refused without calling a repeatedly-failing store. | As above; the breaker closes on the first success. |
+
+   A sustained `lease_expired` count has exactly two causes:
+
+   - **Fleet clock skew.** The owner renewed against its clock and considers the
+     lease live; this node's clock disagrees by more than the renew margin.
+     Budget fleet skew below one renew interval (default clustered profile: 45 s
+     `lease_ttl`, so keep skew under a few seconds) and verify NTP/chrony on
+     every node before suspecting the lease store. Skew never corrupts data —
+     it degrades routing availability.
+   - **Cold takeover after a whole-fleet restart.** Takeover requires a full
+     local lease-observation window regardless of how long ago the row expired,
+     so an hours-expired row from a previous generation still costs about one
+     `lease_ttl` before the first acquisition. Expect `lease_expired` for that
+     window after a full-fleet stop/start and include it in recovery objectives:
+     it is additive to, not covered by, the `failover_slo` above, which measures
+     failure detection on a **running** cohort.
+
+   Alarm on `RouteOwnerUnknown` (`reason=lease_expired`) sustained beyond one
+   `lease_ttl` plus one acquire poll — past that it is skew or a stuck acquire,
+   not a takeover in progress.
+
+5. Distinguish a clean takeover from a stuck single-active session. The MQTT
    (Paho) session is **single-use**: once closed it cannot be restarted, so
    an instance re-acquiring the lease must **restart the process** to get a fresh
    session (see [Scenario 8](../scenarios/08-clustered-exclusive-sessions.md)).
