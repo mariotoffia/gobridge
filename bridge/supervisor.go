@@ -820,7 +820,14 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	s.mu.RUnlock()
 
 	// (1) No-op: a re-emit whose CANONICAL content matches the applied config is
-	// not a reconfiguration. Acknowledge it WITHOUT a swap so the running runtime,
+	// not a reconfiguration. This is WHOLE-CONFIG detection and it is the only
+	// delta that avoids a restart: every accepted change — however narrow, down to
+	// a single route's address — rebuilds the entire runtime, so unrelated routes'
+	// broker sessions are torn down and re-established with them (full-session
+	// reload, the accepted tradeoff for HIGH-10; diff-based reload is out of
+	// scope). Operators must batch config changes and budget the QoS 0 / ephemeral
+	// -session loss window per reload. bridge/supervisor_reload_test.go pins it.
+	// Acknowledge it WITHOUT a swap so the running runtime,
 	// applied config, version, and reference are all preserved. onSwap MUST still
 	// fire (an in-band applier blocks on the result for this exact config pointer);
 	// mirror the paused/live distinction with Deferred so a no-op re-emit received

@@ -155,9 +155,14 @@ state has one active holder and at least two warm candidates. Worker counts
 below two are rejected. `WorkerDesiredCount` must be a resolved finite integral
 number at least two; unresolved CDK tokens fail because synth cannot prove the
 warm-standby invariant. Selected private subnets must span at least two
-Availability Zones. Worker AZ rebalancing is enabled. The single RW control
-service uses a 0/100 deployment and disables AZ rebalancing so two config writers
-never overlap.
+Availability Zones. Both services use a 0/100 deployment with AZ rebalancing
+disabled: the single RW control service so two config writers never overlap, and
+the worker service so an incompatible revision never runs as a second cohort
+beside the one it replaces. The worker service is deployed after the control
+service, so the config seeder always precedes the workers that read its output.
+The costs are an ingress gap for the duration of every deploy, AZ spread that is
+best-effort at launch instead of continuously rebalanced, and a warm-standby
+alarm that breaches for the length of each deploy.
 
 This is single-region HA. It is not cross-region disaster recovery and does not
 remove MQTT, DynamoDB, VPC, or regional failure domains.

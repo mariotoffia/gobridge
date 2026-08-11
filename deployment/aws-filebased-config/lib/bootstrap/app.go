@@ -326,9 +326,11 @@ func (a *App) Start(ctx context.Context) error {
 			return err
 		}
 		if a.rolloutDriver == nil {
-			return fmt.Errorf("bootstrap: cluster.rollout: coordinated requires a stable member_id " +
+			return fmt.Errorf("bootstrap: cluster.rollout: coordinated requires a restart-stable member_id " +
 				"(bootstrap member_id, which must appear in bridge.cluster.members) and a rollout store; " +
-				"the barrier is not wired, so a coordinated deployment cannot start. Refusing to start")
+				"the barrier is not wired, so a coordinated deployment cannot start. An interchangeable " +
+				"autoscaled worker has no such identity and must instead take config changes through " +
+				"whole-cohort replacement (see docs/runbooks/cluster-config-rollout.md). Refusing to start")
 		}
 		resolved, rerr := a.rolloutDriver.ResolveBoot(ctx, logicalCfg)
 		if rerr != nil {

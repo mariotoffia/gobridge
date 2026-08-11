@@ -39,6 +39,11 @@ const (
 	tagValueTopology = "dynamodb-coordinated-ha"
 	tagKeyHA         = "gobridge:ha"
 	tagValueHA       = "active-warm-standby"
+	// tagKeyConfigRollout advertises HOW a config change reaches this fleet, so an
+	// operator reading the deployed resources — not this source — knows the profile
+	// replaces the whole cohort and has no coordinated live rollout.
+	tagKeyConfigRollout   = "gobridge:config-rollout"
+	tagValueConfigRollout = "whole-cohort-replacement"
 )
 
 // DynamoDBHAProps configures GoBridgeDynamoDBHA. The supplied bridge config is
@@ -84,6 +89,13 @@ type DynamoDBHAProps struct {
 	// WorkerDesiredCount defaults to two and may never be less than two. With
 	// the one control task this leaves at least one continuously polling warm
 	// standby after any single task loss.
+	//
+	// The warm-standby invariant covers task LOSS, not deployment: config changes
+	// deploy by whole-cohort replacement (MinHealthyPercent=0), so the worker
+	// cohort is expected to reach zero running tasks during every deploy, and the
+	// warm-standby alarm breaches for that window by design. Availability Zone
+	// rebalancing is disabled for the same reason, so AZ spread is best-effort at
+	// launch rather than continuously maintained.
 	WorkerDesiredCount *float64
 }
 
@@ -270,15 +282,35 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	}
 	control := awsecs.NewFargateService(c, jsii.String("ControlService"), controlProps)
 
+	// Whole-cohort replacement (ADR 0012). The ECS rolling-update default (100/200)
+	// runs a complete second cohort beside the first, so a task-definition change
+	// that alters durable MQTT session identity or store targets would put two
+	// mutually incompatible generations on the same broker and the same outbox
+	// partitions at once — split ownership, or backlog stranded under keys nobody
+	// drains. 0/100 removes the lower bound and caps total tasks at the desired
+	// count, so that second cohort cannot exist.
+	//
+	// It is NOT by itself a non-overlap proof: the property constrains counts, not
+	// order, so at a desired count of two or more the scheduler may still replace
+	// in batches. An identity- or store-incompatible revision therefore keeps the
+	// operator-run scale-to-zero procedure (docs/runbooks/cluster-config-rollout.md);
+	// this narrows the window, the runbook closes it. wholeCohortAdvisory states
+	// both halves at synth time.
+	//
+	// AvailabilityZoneRebalancing must be DISABLED with it: rebalancing replaces a
+	// task by starting its replacement first, which needs headroom above the
+	// desired count that MaxHealthyPercent=100 does not grant. That costs
+	// continuous AZ redistribution — spread becomes best-effort at launch — on top
+	// of an ingress gap for the length of a worker replacement.
 	workerProps := &awsecs.FargateServiceProps{
 		Cluster:                     cluster,
 		TaskDefinition:              workerBuilt.TaskDefinition,
 		DesiredCount:                jsii.Number(workerDesired),
-		MinHealthyPercent:           jsii.Number(100),
-		MaxHealthyPercent:           jsii.Number(200),
+		MinHealthyPercent:           jsii.Number(0),
+		MaxHealthyPercent:           jsii.Number(100),
 		VpcSubnets:                  selectedSubnets,
 		SecurityGroups:              &[]awsec2.ISecurityGroup{workerSG},
-		AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_ENABLED,
+		AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_DISABLED,
 		EnableExecuteCommand:        jsii.Bool(false),
 		CircuitBreaker:              &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
 	}
@@ -286,6 +318,19 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		workerProps.ServiceName = props.WorkerServiceName
 	}
 	worker := awsecs.NewFargateService(c, jsii.String("WorkerService"), workerProps)
+
+	// Order the worker replacement AFTER the control service reaches steady state.
+	// Only the control task's seeder writes bridge.yaml onto EFS, and every task
+	// refuses to boot a config whose fingerprint does not match the one stamped
+	// into its own task definition (lib/bootstrap.validateDynamoDBHAProfile). With
+	// both services updating concurrently, new workers would boot against the
+	// still-old EFS config, fail the fingerprint check, and trip the deployment
+	// circuit breaker — while the new control task seeded the NEW config, so the
+	// rolled-back old workers would fail their fingerprint too. The overlapping
+	// deployment policy used to hide that race behind a surviving old cohort; at
+	// 0/100 it does not, so this ordering is what keeps a failed deploy
+	// recoverable.
+	worker.Node().AddDependency(control)
 
 	for _, service := range []awsecs.FargateService{control, worker} {
 		service.Node().AddDependency(data.lease)
@@ -309,6 +354,8 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 
 	awscdk.Tags_Of(c).Add(jsii.String(tagKeyTopology), jsii.String(tagValueTopology), nil)
 	awscdk.Tags_Of(c).Add(jsii.String(tagKeyHA), jsii.String(tagValueHA), nil)
+	awscdk.Tags_Of(c).Add(jsii.String(tagKeyConfigRollout), jsii.String(tagValueConfigRollout), nil)
+	awscdk.Annotations_Of(c).AddInfo(jsii.String(wholeCohortAdvisory))
 
 	facade := &GoBridgeDynamoDBHA{
 		Construct:         c,
@@ -344,6 +391,9 @@ func inspectHAConfig(
 	}
 	if cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0 {
 		return inspectedHAConfig{}, fmt.Errorf("bridge.cluster.endpoints must be omitted so every task advertises its ECS-resolved endpoint")
+	}
+	if err := rejectCoordinatedRollout(cfg); err != nil {
+		return inspectedHAConfig{}, err
 	}
 
 	lease, err := requiredDynamoDBStore("lease", cfg.Stores.Lease)

@@ -139,9 +139,10 @@ one config-control task definition and one worker task definition. The control
 service desired count is one and the worker service minimum is two. Every task
 runs the clustered runtime and can own a lease; node role controls only EFS
 config-write authority. Selected private subnets span at least two Availability
-Zones. Worker AZ rebalancing is enabled; the single RW control service uses a
-0/100 replacement policy with rebalancing disabled, preventing overlapping
-config writers.
+Zones. Both services use a 0/100 replacement policy with AZ rebalancing
+disabled — the control service to prevent overlapping config writers, the worker
+service to prevent an incompatible revision running as a second cohort — and the
+worker service depends on the control service so the config seeder runs first.
 
 The facade owns exactly three on-demand, PITR-enabled, retained tables through
 `DynamoDBHAData`: `PK`-only lease with TTL omitted, `PK`/`SK` outbox with

@@ -224,7 +224,9 @@ func (a *App) clusterReloadSeam(ctx context.Context, logical *ports.BridgeConfig
 	case bridge.ClusterReloadCoordinated:
 		if a.rolloutDriver == nil {
 			return true, a.refuseClusteredReload(logical, "cluster.rollout: coordinated is configured but "+
-				"this process has no rollout barrier wired")
+				"this process has no rollout barrier wired (it booted without a restart-stable member_id, "+
+				"without a rollout coordination store, or both). An interchangeable autoscaled worker "+
+				"cannot host the barrier")
 		}
 		// Propose to the barrier and DEFER. This node must not swap here under any
 		// outcome — an uncoordinated swap splits the cohort. The applier performs the

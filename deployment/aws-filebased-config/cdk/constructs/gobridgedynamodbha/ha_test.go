@@ -218,12 +218,12 @@ func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T
 	for logicalID, raw := range *services {
 		props := (*raw)["Properties"].(map[string]any)
 		desired[props["DesiredCount"].(float64)] = true
-		wantRebalancing := "ENABLED"
-		if strings.Contains(logicalID, "ControlService") {
-			wantRebalancing = "DISABLED" // 0/100 single-writer deployment cannot use AZ rebalancing.
-		}
-		if props["AvailabilityZoneRebalancing"] != wantRebalancing {
-			t.Fatalf("%s AvailabilityZoneRebalancing = %v, want %s", logicalID, props["AvailabilityZoneRebalancing"], wantRebalancing)
+		// Both services deploy at 0/100 — the control task because a second RW
+		// config writer must never overlap, the workers because an incompatible
+		// revision must never overlap (whole-cohort replacement). Neither leaves
+		// the headroom above the desired count that AZ rebalancing needs.
+		if props["AvailabilityZoneRebalancing"] != "DISABLED" {
+			t.Fatalf("%s AvailabilityZoneRebalancing = %v, want DISABLED", logicalID, props["AvailabilityZoneRebalancing"])
 		}
 		network := props["NetworkConfiguration"].(map[string]any)["AwsvpcConfiguration"].(map[string]any)
 		subnets := network["Subnets"].([]any)

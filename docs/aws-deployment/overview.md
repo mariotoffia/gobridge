@@ -70,9 +70,11 @@ The CDK library deliberately exposes two different multi-task profiles:
 config-control task and at least two worker tasks across a subnet selection that
 spans at least two Availability Zones. All three tasks participate in DynamoDB
 lease acquisition, so the normal steady state has one active holder and at
-least two warm candidates. Worker Availability Zone rebalancing is enabled;
-the RW control service uses a 0/100 non-overlapping replacement with rebalancing
-disabled.
+least two warm candidates. Both services use a 0/100 non-overlapping replacement
+with Availability Zone rebalancing disabled, and the worker service is deployed
+after the control service so the config seeder precedes the workers that read its
+output. Every deploy therefore replaces the whole cohort: expect an ingress gap
+and a breaching warm-standby alarm for its duration.
 
 ### Coordinated HA data plane
 
